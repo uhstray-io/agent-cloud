@@ -1009,9 +1009,10 @@ and seven-day baseline remain outstanding.
 The receiver-root warning rule evaluates the verified
 `job="receiver-host",service="o11y/receiver-host",mountpoint="/"` series and
 routes through the existing ops contact. It is configured below 10% free for
-15m; its live firing and Discord delivery still require a post-merge deploy and
-drill. The Dev-bound read-only backup readiness survey reports backup-capable
-storage and matching backup-content candidate counts only. Immutability,
+15m. The 2026-09-29 post-merge deploy and drill below later verified firing and
+ops delivery for this low-space event only. The Dev-bound read-only backup
+readiness survey reports backup-capable storage and matching backup-content
+candidate counts only. Immutability,
 isolated restore target, and restore success remain unknown; no backup, restore,
 retention change, or guest growth occurred.
 

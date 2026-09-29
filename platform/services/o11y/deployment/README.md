@@ -257,8 +257,8 @@ The provisioned `o11y_receiver_root_disk_low` warning evaluates the exact
 filesystem samples are treated as alerting. The 2026-09-28 read-only budget
 receipt measured 7.06% free, so the threshold is relevant to current conditions.
 The rule has a focused render test and deploy readback requires its exact UID to
-be active when production alerts are enabled. Live firing and Discord delivery
-still require a post-merge deploy and drill.
+be active when production alerts are enabled. The 2026-09-29 post-merge drill
+verified firing and ops delivery for this low-space event; see the receipt below.
 
 `Survey o11y Backup Readiness (Dev)` is a read-only Proxmox survey. It reads the
 single declared production o11y VM from `vm_vmid` and `vm_node` on the sole
