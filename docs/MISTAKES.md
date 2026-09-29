@@ -137,6 +137,8 @@ supersede it with a new entry and link both.
 | 10.15 | Reboot survival was asserted for podman containers and never exercised; the boot unit starts only `restart: always`, and its rootless half was never enabled — OpenBao sat down three days | Mechanism never exercised | Test (restart policy + boot unit, mutation-proven) |
 | 10.16 | The agentgateway deploy was proven only on ansible-core 2.16, which hid a list-concatenation failure on 2.19+ | Test that cannot fail | Test (real evaluation, current ansible-core) |
 | 10.17 | The agentgateway upstream-key guard read a variable that never exists at play level, so it failed every production deploy; local runs disable it | Mechanism never exercised | Test in the verify PR (see entry) |
+| 10.18 | Dry runs of five production playbooks could never pass; a register from a task check mode skips was read later, and nothing had ever run them | Mechanism never exercised | Test for #308/#313/#314; #319 pending; class Convention (data-flow rule proposed) |
+| 10.19 | Harden SSH's password-rejection probe used BatchMode with public keys off, so it exited non-zero whatever the server allowed | Test that cannot fail | Convention (probe fix pending) |
 | 9.1 | A `for` loop with an unconditional `break`, making all but one member unreachable | Minor | Convention |
 | 9.2 | Typo'd duplicate key in a hand-assembled payload; call succeeded regardless | Minor | Convention |
 | 12.1 | `gh` reported a valid token as invalid because a sandboxed `$HOME` hid the login keychain | Environment visibility | Convention |
@@ -3441,6 +3443,56 @@ that the name existed in the play's scope, and the only environments it ran in h
 
 **Enforced by.** The fix and its regression test land with the deploy session's keyed-verify
 change to the same playbook; until that PR merges, `Convention`.
+
+### 10.18 Dry runs of five production playbooks could never pass; nothing had ever run them
+
+**What happened.** On 2026-09-28, onboarding the internal DNS and CA VMs, every step's dry run
+was run before its real run, and five playbooks failed their dry run or were found unable to
+pass one. Allocate NetBox IP with `reserve=true` (task 1729) failed on its post-reserve refusal,
+because the create it checks is skipped under `--check`. Generate Service SSH Key (task 1756)
+failed on `'dict object' has no attribute 'path'`: `tempfile` registers no path in check mode,
+and the next task read it. Distribute SSH Keys, Harden SSH and Verify Host Access carried the
+same `tempfile`-then-read pattern; a lifted copy of each failed identically under `--check`.
+Provision VM's summary read skipped results as passed ("SSH: ok", "Runner: configured"), since
+Ansible's `succeeded` test accepts a skipped result. Fixed in #308, #313 and #314; the three
+key-handling playbooks move onto a shared `tasks/materialise-ssh-key.yml` in #319 (open on
+2026-09-28).
+
+**Root cause.** `test_check_mode_contract.py` classifies each task on its own and models only
+`uri` and the command family. It never follows a `register` from a task that check mode skips
+to the tasks that read it, and it cannot see `tempfile`, `slurp`, `copy` or `assert`. Guarding
+the write satisfied it, and the reader of that write was never looked at. None of these dry runs
+had been executed before, so nothing exercised the class.
+
+**The rule.** A task that check mode skips produces an empty register. Every later task that
+reads an attribute of it is guarded the same way, or reads it through `default` or an
+`is skipped` test. A summary built from registers excludes `skipped` explicitly before trusting
+`succeeded`. A new or changed playbook's dry run is executed once before it is called safe.
+
+**Enforced by.** Test for each playbook fixed in #308, #313 and #314 (behavioural,
+mutation-checked); the three key-handling playbooks gain theirs with #319. The class itself
+is Convention; proposal: a data-flow rule in `test_check_mode_contract.py` that follows registers
+from producers skipped under `--check`, with the skipped-module set taken from `ansible-doc --json`.
+
+### 10.19 Harden SSH's "password auth is rejected" probe could not fail
+
+**What happened.** `harden-ssh.yml`'s "Verify password auth is rejected" runs `ssh -o
+BatchMode=yes -o PubkeyAuthentication=no ... echo SHOULD_NOT_REACH` with
+`failed_when: _pw_test.rc == 0` and `ignore_errors: true`. `man ssh_config`: BatchMode disables
+password prompts, so with public keys also off ssh has no method it may try, and exits non-zero
+whether or not the host accepts passwords. The assert could never fail. Found on 2026-09-28 in
+the review of the shared SSH key task, before Harden SSH was run on the new DNS and CA VMs.
+
+**Root cause.** The probe measured whether this client could log in, not whether the server
+offered password authentication, and the options chosen made the answer fixed. Nothing ran it
+against a host that still accepts passwords.
+
+**The rule.** A lockout-safety probe must be shown to fail on the state it guards against. Read
+what the server offers ("Authentications that can continue" from `ssh -v`, or `sshd -T` on the
+host), not whether a crippled client succeeds.
+
+**Enforced by.** Convention until the probe fix lands with a behavioural test that fails on a
+host still offering `password`.
 
 ## 11. The largest one
 
