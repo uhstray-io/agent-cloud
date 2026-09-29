@@ -187,8 +187,11 @@
 
     - name: "Require the recorded trace rollout gate"
       ansible.builtin.include_tasks: tasks/assert-o11y-trace-rollout.yml
+      # Derived metrics activate trace processing and intentionally inherit the
+      # shared trace rollout receipts in local-dev as well as production.
       when: >-
         (o11y_trace_rollout_enabled | default(false) | bool) or
+        (o11y_trace_derived_metrics_enabled | default(false) | bool) or
         (not (local_mode | default(false) | bool) and
          groups.get('agentgateway_svc', []) | length == 1 and
          hostvars[groups['agentgateway_svc'][0]].agw_otlp_host | default('') | length > 0)
@@ -256,6 +259,19 @@
           - (o11y_cluster | default('agent-cloud-local')) is match('^[A-Za-z0-9_.-]+$')
           - (o11y_environment | default('local' if local_mode | default(false) | bool else 'prod')) in ['local', 'dev', 'prod']
         fail_msg: "Production o11y requires a declared o11y_cluster label containing only letters, digits, dots, underscores, or hyphens."
+
+    - name: "Require numeric capacity and backup/restore receipts before enabling Tempo-derived metrics"
+      ansible.builtin.assert:
+        that:
+          - o11y_capacity_receipt_id | default('') | string is match('^[1-9][0-9]*$')
+          - o11y_trace_backup_restore_receipt_id | default('') | string is match('^[1-9][0-9]*$')
+        fail_msg: >-
+          Tempo-derived metrics are opt-in. Production enablement requires numeric
+          capacity and backup/isolated-restore Semaphore receipt IDs; the shared trace
+          gate also requires metrics, alert-delivery, retention, and cardinality receipts.
+      when:
+        - not (local_mode | default(false) | bool)
+        - o11y_trace_derived_metrics_enabled | default(false) | bool
 
     - name: "Require prior config, privacy, and resource receipts before profile collection"
       ansible.builtin.assert:
@@ -498,6 +514,32 @@
       check_mode: false
       when: not ansible_check_mode
 
+    - name: Read Tempo's effective metrics-generator configuration
+      ansible.builtin.command:
+        argv:
+          - "{{ _engine }}"
+          - exec
+          - o11y-grafana
+          - sh
+          - -c
+          - curl -fsS http://tempo:3200/status/config
+      register: _tempo_config
+      changed_when: false
+      retries: 6
+      delay: 5
+      until: _tempo_config.rc == 0
+      when: not ansible_check_mode
+
+    - name: Require the effective Tempo processor, remote-write, and series limits
+      ansible.builtin.assert:
+        that:
+          - (((_tempo_config.stdout | from_yaml).overrides.defaults.metrics_generator.processors | default([], true) | list | sort) == ((['service-graphs', 'span-metrics'] | sort) if o11y_trace_derived_metrics_enabled | default(false) | bool else []))
+          - (_tempo_config.stdout | from_yaml).overrides.defaults.metrics_generator.max_active_series | int == 2000
+          - (_tempo_config.stdout | from_yaml).metrics_generator.storage.remote_write | selectattr('url', 'equalto', 'http://prometheus:9090/api/v1/write') | list | length == 1
+          - (_tempo_config.stdout | from_yaml).metrics_generator.storage.path == '/var/tempo/generator/wal'
+        fail_msg: "Tempo's effective derived-metrics configuration does not match the bounded, gated source configuration."
+      when: not ansible_check_mode
+
     - name: "Pyroscope ready (/ready) through the private compose network"
       ansible.builtin.command: "{{ _engine }} exec o11y-grafana wget -q -O /dev/null http://pyroscope:4040/ready"
       register: _pyroscope_ready
@@ -605,8 +647,13 @@
         that:
           - (_tempo_datasource_config.stdout | from_json).jsonData.tracesToMetrics.datasourceUid == 'prometheus'
           - (_tempo_datasource_config.stdout | from_json).jsonData.tracesToMetrics.tags | selectattr('key', 'equalto', 'service.name') | selectattr('value', 'equalto', 'service') | list | length == 1
+          - (_tempo_datasource_config.stdout | from_json).jsonData.tracesToMetrics.queries | selectattr('name', 'equalto', 'Span calls') | selectattr('query', 'equalto', 'sum(rate(traces_spanmetrics_calls_total{$__tags}[5m]))') | list | length == 1
           - (_tempo_datasource_config.stdout | from_json).jsonData.tracesToLogsV2.datasourceUid == 'loki'
           - (_tempo_datasource_config.stdout | from_json).jsonData.tracesToLogsV2.tags | selectattr('key', 'equalto', 'service.name') | selectattr('value', 'equalto', 'service') | list | length == 1
+          - (_tempo_datasource_config.stdout | from_json).jsonData.serviceMap.datasourceUid == 'prometheus'
+          - (_tempo_datasource_config.stdout | from_json).jsonData.tracesToProfiles.datasourceUid == 'pyroscope'
+          - (_tempo_datasource_config.stdout | from_json).jsonData.tracesToProfiles.profileTypeId == 'process_cpu:cpu:nanoseconds:cpu:nanoseconds'
+          - (_tempo_datasource_config.stdout | from_json).jsonData.tracesToProfiles.tags | selectattr('key', 'equalto', 'service.name') | selectattr('value', 'equalto', 'service_name') | list | length == 1
         fail_msg: "Grafana's live Tempo datasource is missing the committed trace correlation mappings."
       when: not ansible_check_mode
 

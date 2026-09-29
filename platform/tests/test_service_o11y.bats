@@ -1277,7 +1277,7 @@ compose = yaml.safe_load((deploy / 'compose.yml').read_text())
 assert compose['services']['tempo']['image'].endswith('grafana/tempo:2.10.8}')
 assert 'tempo-data:/var/tempo' in compose['services']['tempo']['volumes']
 assert not compose['services']['tempo'].get('ports')
-assert list(compose['services']['tempo']['environment']) == ['O11Y_TEMPO_RETENTION']
+assert list(compose['services']['tempo']['environment']) == ['O11Y_TEMPO_RETENTION', 'O11Y_TEMPO_METRIC_PROCESSORS']
 alloy_ports = compose['services']['alloy']['ports']
 assert len(alloy_ports) == 2
 assert '${O11Y_OTLP_BIND:-127.0.0.1}' in alloy_ports[0] and alloy_ports[0].endswith('}:4317')

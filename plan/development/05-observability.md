@@ -38,6 +38,35 @@ selector is sourced from Prometheus service labels, so it covers metric-enabled
 local and remote services; use Logs Drilldown and the coverage declaration for
 log-only targets.
 
+Service graph rollout records use the same per-service coverage declaration:
+logs, metrics, traces, and profiles are each marked applicable, unsupported,
+or not applicable, with an exact-target readback receipt for every applicable
+signal. Verified spans must underpin accepted graph edges. A graph node alone,
+especially an inferred peer node, does not prove that the named service emits
+traces. Per-service trace coverage requires an exact-target receipt showing
+that service's request spans reached Tempo. Do not infer an edge from inventory,
+scrape config, or an agent's exporter setting. Profile correlation requires
+Pyroscope profile data and a language bridge that adds
+pyroscope.profile.id to the span; a datasource mapping alone is not a profile
+receipt.
+
+Tempo-derived service graphs and span metrics are disabled by default. The
+production opt-in requires numeric Semaphore receipts for capacity,
+backup/isolated restore, metrics, alert delivery, retention, and cardinality.
+The Grafana 11.4 trace-to-profile datasource mapping is provisioned against
+the existing Pyroscope datasource, but no service profile pivot is claimed
+without the span bridge and live profile data. Grafana 12 trace-correlations
+UI evaluation is separate and remains behind backup/restore and capacity
+gates.
+
+> **Source configuration status, 2026-09-29:** The o11y service-graph and
+> span-metrics config, Grafana correlations, production receipt checks, and
+> coverage contract are implemented on the feature branch. The metrics
+> processors default to an empty list and retain a 2,000 active-series limit
+> when enabled. No service graph, generated span metric, trace-to-profile
+> pivot, or production rollout is claimed until the exact-target and Semaphore
+> receipts above are recorded.
+
 Pyroscope is private on the o11y network with a persistent named volume and a
 seven-day initial retention policy. Its Alloy self-profile pilot is disabled
 unless private inventory explicitly enables it after the pinned Alloy config,

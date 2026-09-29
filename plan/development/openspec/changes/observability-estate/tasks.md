@@ -35,6 +35,12 @@
 - [ ] 5.4 Configure agentgateway's sampled trace export with stable `service.name` and no prompt/completion capture; deploy gateway and receiver from reviewed `dev` through Semaphore and prove a real trace in Tempo plus metrics/log correlation.
 - [ ] 5.5 Modernize and provision the original host/container dashboard only after its node-exporter and cAdvisor inputs have named live receipts. Keep the seven Mimir dashboards deferred until Mimir and their queries are migrated to the current Grafana schema.
 
+## 6. Bounded service graph and correlation coverage
+
+- [ ] 6.1 Add the Tempo 2.10.8 service-graphs and span-metrics processors with bounded dimensions, persistent generator WAL, Prometheus remote-write, and a 2,000 active-series ceiling. Keep processors disabled by default; production enablement requires numeric capacity, backup/isolated-restore, metrics, alert-delivery, retention, and cardinality Semaphore receipts. Provision Grafana serviceMap, span-call query, existing trace-to-log, and Pyroscope trace-to-profile settings; read back the effective Tempo and datasource configuration.
+- [ ] 6.2 Extend the existing 5.1/5.2 cohorts with a per-service log, metric, trace, and profile applicability matrix and exact-target receipts for each applicable signal. Require verified spans to underpin graph edges; a node alone, including an inferred peer, does not prove service trace coverage. Mark unsupported or not-applicable signals without inventing coverage.
+- [ ] 6.3 Evaluate Grafana 12 trace-correlations UI separately after documented backup/restore and receiver-capacity gates. Do not upgrade the pinned Grafana 11.4 image as part of this baseline.
+
 The dashboard and sampled gateway path are deployed. Requests, request latency,
 and token usage have named production metric receipts; the time-to-first-token
 histogram has no series yet, and the status-labeled error series has not been

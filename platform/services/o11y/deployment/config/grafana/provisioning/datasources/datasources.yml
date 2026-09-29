@@ -37,6 +37,9 @@ datasources:
         tags:
           - key: service.name
             value: service
+        queries:
+          - name: Span calls
+            query: sum(rate(traces_spanmetrics_calls_total{$$__tags}[5m]))
       tracesToLogsV2:
         datasourceUid: loki
         tags:
@@ -44,6 +47,14 @@ datasources:
             value: service
         filterByTraceID: false
         filterBySpanID: false
+      serviceMap:
+        datasourceUid: prometheus
+      tracesToProfiles:
+        datasourceUid: pyroscope
+        profileTypeId: process_cpu:cpu:nanoseconds:cpu:nanoseconds
+        tags:
+          - key: service.name
+            value: service_name
 
   - name: Pyroscope
     type: grafana-pyroscope-datasource
