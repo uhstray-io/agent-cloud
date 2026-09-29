@@ -179,12 +179,18 @@ def test_a_change_written_but_never_reloaded_is_reloaded(tmp_path):
 
 
 def test_the_issuer_password_comes_from_a_fact_manage_secrets_actually_sets():
-    # Production task 1971 failed here: the add read `secrets[...]`, which manage-secrets only
-    # defines as a task var of its template task, while the lifted tests stubbed a `secrets`
-    # fact and passed. Check the name against the real producer, not a stub.
+    # Production task 1971 failed here (docs/MISTAKES.md 10.17, occurrence 2): the add read
+    # `secrets[...]`, which manage-secrets only defines as a task var of its template task,
+    # while the lifted tests stubbed a `secrets` fact and passed. Check the name against the
+    # real producer, not a stub.
     import re
     producer = yaml.safe_load((REPO / "platform/playbooks/tasks/manage-secrets.yml").read_text())
     facts = {k for task in producer for k in (task.get("ansible.builtin.set_fact") or {})}
     add = _task(_play(DEPLOY, "Phase 2.5"), "Add each missing issuing provisioner")
     used = re.match(r"\{\{\s*(\w+)\[", add["ansible.builtin.command"]["stdin"]).group(1)
     assert used in facts, f"{used} is not a fact manage-secrets.yml sets ({sorted(facts)})"
+    # `_resolved` is the one holding every declared secret (`_existing` is empty on a fresh
+    # store, `_shared` holds other services' keys), and each issuer's secret is declared.
+    assert used == "_resolved"
+    declared = {d["name"] for d in _play(DEPLOY, "Phase 1")["vars"]["_secret_definitions"]}
+    assert {i["secret"] for i in _play(DEPLOY, "Phase 2.5")["vars"]["_issuers"]} <= declared

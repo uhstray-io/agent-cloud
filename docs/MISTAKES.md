@@ -74,7 +74,6 @@ and why.
 | 2.22 | The controller fixture returned `secrets: []` where live Semaphore omits an empty secret list | False-green fixture | Shared filter test + playbook fixture |
 | 2.23 | Tightened the check under test and left its fixtures alone; three negative cases passed whatever the filters did | Vacuous test | Convention (this instance: mutation-checked) |
 | 2.24 | A local run proved a playbook the production controller or host could not run — **x2** | Wrong-reason pass | Convention |
-| 2.25 | Lifted-task tests stubbed an upstream play's output under a fact name the real producer never sets; the first production run failed on it | False-green fixture | Test (name checked against the producer) |
 | 3.1 | Wrote a probe value over a real credential in a live secret store | Live-state damage | **OPA (proposed)** |
 | 3.2 | Attempted to mutate a shared orchestrator credential without asking | Live-state damage | Sandbox + **OPA (proposed)** |
 | 3.3 | Treated failed workstation login as a controller access prerequisite | Wrong executor boundary | Test + convention |
@@ -143,7 +142,7 @@ and why.
 | 10.14 | A source-address allowlist was proven only where it could not fail, then failed closed in prod | Test that cannot fail | Convention |
 | 10.15 | Reboot survival was asserted for podman containers and never exercised; the boot unit starts only `restart: always`, and its rootless half was never enabled — OpenBao sat down three days | Mechanism never exercised | Test (restart policy + boot unit, mutation-proven) |
 | 10.16 | The agentgateway deploy was proven only on ansible-core 2.16, which hid a list-concatenation failure on 2.19+ | Test that cannot fail | Test (real evaluation, current ansible-core) |
-| 10.17 | The agentgateway upstream-key guard read a variable that never exists at play level, so it failed every production deploy; local runs disable it | Mechanism never exercised | Test in the verify PR (see entry) |
+| 10.17 | **x2** — A task read `secrets`, which exists only inside manage-secrets' template task: the agentgateway key guard (task 1177) and the step-ca issuer add (task 1971) | Mechanism never exercised | Test (`test_manage_secrets_scope.py`) |
 | 10.18 | Dry runs of five production playbooks could never pass; a register from a task check mode skips was read later, and nothing had ever run them | Mechanism never exercised | Test for #308/#313/#314/#319; class Convention (data-flow rule proposed) |
 | 10.19 | Harden SSH's password-rejection probe used BatchMode with public keys off, so it exited non-zero whatever the server allowed | Test that cannot fail | Test (`test_harden_password_probe.py`) |
 | 9.1 | A `for` loop with an unconditional `break`, making all but one member unreachable | Minor | Convention |
@@ -1545,31 +1544,6 @@ a capability of a production tool is established on the version production runs 
 page at that tag, or a read-only report from the host), never on the workstation's.
 
 
-### 2.25 A test stubbed an upstream play's fact under a name the producer never sets (widens 2.22)
-
-**What happened.** On 2026-09-29 the first production run of `Deploy step-ca (Dev)` (Semaphore
-task 1971) failed at "Add each missing issuing provisioner": the task read the issuer password
-from `secrets[...]`, and `tasks/manage-secrets.yml` sets no `secrets` fact. It defines `secrets`
-only as a variable of its own template task; the resolved values live in the `_resolved` fact.
-The task is `no_log`, so the templating error was hidden. The lifted-task unit tests and an
-independent review's end-to-end run on throwaway CAs both replaced Phase 1 with a stub that set
-a `secrets` fact, so both passed. The review also asserted that manage-secrets sets it with
-set_fact, citing the template task's `vars:` line. The CA was left safe: root created, API on
-loopback, no ACME, no issuer provisioners yet.
-
-**Root cause.** 2.22's rule is about an external provider's response shape. Here the interface
-was internal: a fact one play leaves for a later play. The stub encoded the consumer's
-assumption about the name instead of the producer's actual output, and nothing compared the two.
-
-**The rule.** Supersedes 2.22's scope. A test that stubs what an earlier play or task file
-produces must take the name from the producer, or carry a check that the producer really sets
-it; a stub is never evidence of an interface. A reviewer's claim that a fact exists cites the
-set_fact line, not a line that mentions the name.
-
-**Enforced by.** `test_the_issuer_password_comes_from_a_fact_manage_secrets_actually_sets` in
-`platform/tests/test_step_ca_deploy.py`, for this interface. The general case is Convention;
-proposal: a shared helper for lifted-task tests that refuses to stub a fact name no task in the
-named producer file sets.
 ## 3. Acting on live state
 
 ### 3.1 Overwriting a real credential with a probe value
@@ -3626,6 +3600,8 @@ general case.
 
 ### 10.17 A guard that could never pass in production, tested only where it is switched off
 
+**Occurrences: 2** — 2026-09-23, 2026-09-29
+
 **What happened.** `deploy-agentgateway.yml` refuses to deploy when the upstream key is empty,
 unless `agw_upstream_requires_key: false`. It read `secrets.vllm_api_key`. `manage-secrets.yml`
 defines `secrets` only as a task-level variable on its template task; at play level the name
@@ -3641,6 +3617,25 @@ that the name existed in the play's scope, and the only environments it ran in h
 
 **Enforced by.** The fix and its regression test land with the deploy session's keyed-verify
 change to the same playbook; until that PR merges, `Convention`.
+
+**Occurrence 2 — 2026-09-29.** The first production `Deploy step-ca (Dev)` run (Semaphore task
+1971) failed at "Add each missing issuing provisioner": the task read each issuer password
+from `secrets[...]`, the same name that exists only inside manage-secrets' template task. The
+task is `no_log`, and on the Semaphore image's ansible-core 2.16.5 the failure printed only
+`censored`. Before it, the admin lifetime raise had already been written to `ca.json` but not
+reloaded, and neither issuer existed; the next run recovers both (the plan reports a pending
+reload). The lifted-task unit tests and a review's throwaway-CA run both replaced Phase 1 with a
+stub that set a `secrets` fact, so both passed. Why the rule did not fire: it is worded as
+"prove a guard where it is enabled", so it was not recalled for an ordinary task reading a
+fact across plays. Its second sentence names `_resolved`, but only a reader of this entry sees
+it. Widened by the guard below: the check now runs on every task, not on recall.
+
+**Update 2026-09-29.** The first occurrence's regression test is on `dev`
+(`platform/tests/test_agentgateway_secret_defs.py`). Both occurrences are now caught by
+`test_no_task_reads_secrets_outside_the_task_that_binds_it` in
+`platform/tests/test_manage_secrets_scope.py`: no task under `platform/playbooks` or
+`platform/semaphore` may read `secrets.`/`secrets[` unless that task binds `secrets` in its
+own `vars:`.
 
 ### 10.18 Dry runs of five production playbooks could never pass; nothing had ever run them
 
