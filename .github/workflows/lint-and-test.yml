@@ -188,8 +188,8 @@ jobs:
             platform/services/inference-hunyuan3d/deployment/app/ \
             -s B101,B110 -q
 
-  test:
-    name: Unit Tests
+  python-core:
+    name: Python core
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -213,22 +213,60 @@ jobs:
           # platform/requirements-controller.txt.
           pip install -r platform/requirements-controller.txt
 
-      # Run from the REPO ROOT so `testpaths` in pyproject.toml is what selects the
-      # suites. Passing an explicit path (as this did) overrides testpaths entirely,
-      # so a suite added to that list ran nowhere and its absence looked exactly like
-      # it passing — which is what happened to the Caddyfile suite. Adding a suite is
-      # now one line in pyproject.toml, not a new step here.
-      - name: Run Python tests
+      # Keep pytest's configured root testpaths active so newly registered suites
+      # remain covered. Deselect only NetBox's node IDs; --ignore does not remove a
+      # directory listed directly in testpaths. NetBox has its own parallel job below.
+      - name: Run Python core tests
         env:
           PYTHONPATH: platform/services/netbox/deployment/workers/proxmox_discovery:platform/services/netbox/deployment/workers/pfsense_sync
-        run: pytest -v
+        run: pytest -v --durations=20 --deselect=platform/services/netbox/deployment/tests/
+
+  python-netbox:
+    name: Python NetBox
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install test dependencies
+        run: |
+          pip install pytest pyyaml netboxlabs-diode-sdk proxmoxer requests ansible-core
+          pip install -r platform/requirements-controller.txt
+
+      - name: Run NetBox Python tests
+        env:
+          PYTHONPATH: platform/services/netbox/deployment/workers/proxmox_discovery:platform/services/netbox/deployment/workers/pfsense_sync
+        run: pytest -v --durations=20 platform/services/netbox/deployment/tests
+
+  bats:
+    name: Bash Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install test dependencies
+        run: |
+          pip install pytest pyyaml netboxlabs-diode-sdk proxmoxer requests ansible-core
+          pip install -r platform/requirements-controller.txt
 
       - name: Install BATS
-        run: |
-          sudo apt-get install -y -qq bats > /dev/null 2>&1
+        run: sudo apt-get install -y -qq bats > /dev/null 2>&1
 
       - name: Run Bash tests
         run: bats platform/tests/
+
+  rego:
+    name: Rego Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
 
       # The Rego authorization policy had tests that ran only at deploy time
       # (deploy-opa.yml) and on a workstation, so a rule could merge broken. Run them
@@ -240,6 +278,26 @@ jobs:
           img=openpolicyagent/opa:1.0.0-static
           docker run --rm -v "$PWD/platform/services/opa/deployment/policies:/p:ro" "$img" check --strict /p
           docker run --rm -v "$PWD/platform/services/opa/deployment/policies:/p:ro" "$img" test /p -v
+
+  test:
+    name: Unit Tests
+    if: always()
+    needs: [python-core, python-netbox, bats, rego]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every test group to succeed
+        env:
+          PYTHON_CORE_RESULT: ${{ needs.python-core.result }}
+          PYTHON_NETBOX_RESULT: ${{ needs.python-netbox.result }}
+          BATS_RESULT: ${{ needs.bats.result }}
+          REGO_RESULT: ${{ needs.rego.result }}
+        run: |
+          printf 'Python core: %s\nPython NetBox: %s\nBATS: %s\nRego: %s\n' \
+            "$PYTHON_CORE_RESULT" "$PYTHON_NETBOX_RESULT" "$BATS_RESULT" "$REGO_RESULT"
+          test "$PYTHON_CORE_RESULT" = success
+          test "$PYTHON_NETBOX_RESULT" = success
+          test "$BATS_RESULT" = success
+          test "$REGO_RESULT" = success
 
   # ── Go: UhhCraft (Go + templ + sqlc) ─────────────────────────────────
   # Path-gated: only fires when platform/services/uhhcraft/deployment/** changes.
