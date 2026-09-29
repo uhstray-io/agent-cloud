@@ -1,11 +1,10 @@
 """Contract checks for the gated Tempo service graph and correlation config."""
 
-from pathlib import Path
 import re
+from pathlib import Path
 
 import yaml
 from jinja2 import Environment, StrictUndefined
-
 
 ROOT = Path(__file__).resolve().parents[2]
 DEPLOY = ROOT / "platform/services/o11y/deployment"
