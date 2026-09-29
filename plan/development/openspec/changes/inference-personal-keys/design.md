@@ -36,8 +36,7 @@ Verified 2026-09-27 by reading the files named, unless marked otherwise.
   and switches its config store to read-only (`crates/agentgateway/src/config.rs:390-392`
   at tag v1.5.0, read 2026-09-28), and the UI refuses writes in that mode
   (`crates/agentgateway/src/ui.rs:53`). The gateway change's task 1.10 sets
-  `UI_READ_ONLY=true` in `env.j2`, done in PR #303 (open against `dev` on 2026-09-28;
-  this tree at `f92b0bf` does not carry it yet, grep 2026-09-28). This change depends on
+  `UI_READ_ONLY=true` in `env.j2`, done in PR #303 (merged into `dev` on 2026-09-28 (merge `255b251`); `templates/env.j2:38` renders it). This change depends on
   that task instead of setting it again.
 - **Budgets and JWT at v1.5.0 (Joe, 2026-09-27, not re-verified here).** Per-key token
   budgets attach only to API keys; a JWT-authenticated caller gets no personal budget;

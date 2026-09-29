@@ -238,7 +238,8 @@ benchmarking; tuning vLLM itself (results inform dgx-spark, which owns the profi
    generation, with no GPU. It is the only host that runs benchmarks, so its address is
    the only benchmark source in every log and allow rule. Firewall: inbound SSH only;
    egress allowed to the vLLM API port, the gateway listener, the o11y host's Loki and
-   Prometheus ports, the public inference hostname and the pinned registries, and denied
+   Prometheus ports, the public inference hostname, the internal DNS host on 53 (udp and
+   tcp, once the VM's resolver is repointed) and the pinned registries, and denied
    otherwise (`firewall_deny_egress`). The A/B needs the direct path permanently, because
    the gateway's overhead must be re-measured on every gateway upgrade and every serving
    profile change, not once. So when dgx-spark narrows `vllm_api_allowed_cidr` to the
@@ -331,6 +332,15 @@ benchmarking; tuning vLLM itself (results inform dgx-spark, which owns the profi
    (`vllm/benchmarks/serve.py:2086-2089`, with `--insecure` at lines 1985-1991), so it
    runs against the direct vLLM target only, which is where decision 1 uses it, and it
    is operator-only (decision 11).
+
+   **Amended 2026-09-29 (Joe).** Mutual TLS to vLLM is decided
+   (`production-internal-ca`, decision 3 of 2026-09-28), and backend TLS lands before the
+   benchmarks, so a client that cannot present a certificate reaches neither vLLM
+   directly nor the gateway listener (gateway task 6.4). `vllm bench serve` therefore
+   runs against the public route only, where Caddy presents its own client leaf. The
+   direct-vLLM and direct-gateway numbers come from inference-perf presenting the `bench`
+   leaf. unverified: whether guidellm can present a client certificate; task 2.1 records
+   it, and a guidellm run that cannot is limited to the public route as well.
    unverified: how inference-perf `v0.7.0` is told which CA verifies the gateway's
    server certificate; task 2.1 records it.
 

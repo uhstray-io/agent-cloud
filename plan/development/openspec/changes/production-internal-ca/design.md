@@ -89,6 +89,12 @@ marked as such.
 `proxmox/vm-specs.yml`; no `step_ca_svc` group in `inventory/production.yml`; no inventory
 host for the DGX Spark nodes (the vLLM upstream appears only as a value on the gateway and
 Caddy hosts). The VM template is two cores, 2 GB, 20G (`vm-specs.yml` lines 9-11).
+
+> **Updated 2026-09-29.** The CA VM is now declared in site-config (a vm-specs entry and a
+> `step_ca_svc` group), provisioned, key-only over SSH and firewalled to SSH only
+> (`firewall_allow_rules: []`, port detection off), all through Semaphore. The step-ca
+> service is not deployed, and its service variables (`stepca_bind`, `stepca_init_acme`,
+> `stepca_name`) are not declared yet.
 `plan/ARCHITECTURE-REFERENCE.md`, which the root `CLAUDE.md` cites for the credential
 backup policy, does not exist on that branch; the policy used here is the one encoded in
 the backup playbook and in `plan/architecture/04-credentials-access.md` line 375.
@@ -193,7 +199,7 @@ engine; moving vLLM configuration into this repository.
    |---|---|---|---|
    | `caddy` client | Caddy host | client | `tls_client_auth` towards both gateway listeners |
    | `agw-verifier` client | gateway host | client | the one gateway probe path (`inference-gateway-agentgateway` task 6.1a): the gateway deploy's keyed and keyless probes, the personal-key 401 gates and the access-record verify of `agentgateway-observability` (its requirement "Every gateway request produces an access record in Loki"), all sent from the gateway host to its published port |
-   | `bench` client | benchmark VM | client | `inference-benchmarking` runs whose target is the gateway listener, sent directly and not through Caddy |
+   | `bench` client | benchmark VM | client | `inference-benchmarking` runs whose target is the gateway listener (sent directly, not through Caddy) or vLLM directly, which requires a client leaf once mutual TLS is on |
    | Gateway server | gateway host | server | `gateways.default.tls` and `gateways.ui.tls` |
    | vLLM server | DGX Spark head (handoff) | server | `--ssl-certfile`/`--ssl-keyfile` |
    | `agw-upstream` client | gateway host | client | the model's `tls.cert`/`tls.key` towards vLLM, which requires a client certificate (`--ssl-cert-reqs`, `--ssl-ca-certs` = the internal root; open question 3, decided 2026-09-28) |
@@ -401,6 +407,19 @@ Joe answered the four open questions on 2026-09-28:
    `.INTERNAL` from delegation in the DNS root zone permanently for private use
    (<https://www.icann.org/en/board-activities-and-meetings/materials/approved-resolutions-special-meeting-of-the-icann-board-29-07-2024-en>),
    so a SAN in it can never name a public host. Declared in site-config.
+
+## Amendment 2026-09-29: leaf names follow the internal naming scheme
+
+`internal-dns-naming` decision 14 (certificates follow the names) replaces decision 4's
+example SANs. Each leaf carries its instance name and its service name under
+`<site>.<zone>`: the vLLM server leaf `dgx01.vllm-primary.<site>.<zone>` and
+`vllm-primary.<site>.<zone>`; the gateway leaf `vm01.gateway`, `gateway` and `inference`
+under `<site>.<zone>` (a load balancer's leaf carries every service name that points at
+it); the Caddy leaf `vm01.caddy` and `caddy`. The gateway's model `tls.hostname` is
+`vllm-primary.<site>.<zone>`, and Caddy's `tls_server_name` towards the gateway is
+`gateway.<site>.<zone>`. These names get DNS records in the internal zone, so decision 4's
+"they need no DNS records" no longer holds. Task 4.2's guard refuses any SAN outside
+`<site>.<zone>`.
 
 ## Open Questions
 

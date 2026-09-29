@@ -423,6 +423,37 @@ are updated to this scheme through that change, not by editing it here.
 Deliberation, rejected alternatives in full and the phased plan: OpenSpec change
 `plan/development/openspec/changes/internal-dns-naming`.
 
+## Internal DNS clients and split-horizon names (decided 2026-09-29)
+
+Two operator decisions that followed the naming decision above. The section above is left
+as written; where this one differs, this one holds.
+
+**Who resolves through the internal DNS.** Only declared clients: every agent-cloud host,
+the DGX Spark nodes, and a future Tailscale subnet router (SNAT on, a separate VM or
+device) that carries work laptops. They query the internal DNS directly. Each agent-cloud
+host's resolver list names it first and the router second, so a DNS outage costs internal
+names only. The host firewall admits :53 per source: one tagged rule per `agent_cloud`
+member, generated from `firewall_allow_groups`, plus static rules for machines outside the
+inventory. It was applied to the DNS host on 2026-09-29.
+
+- Rejected: **pfSense domain-override forwarding**, the local-dev plan's original shape. It
+  answers every LAN client that asks the router, which is wider than the declared set.
+- Rejected: **the whole LAN subnet as a source**. It was the first firewall declaration
+  (2026-09-28), and it was narrowed on 2026-09-29 for the same reason.
+- Consequence: a new client class is one more firewall source in site-config. LAN clients
+  outside the set keep using the public names.
+
+**Public names answered internally.** The naming section above refuses any name outside
+`<site>.<zone>`. Gateway task 7.1 needs the internal DNS to answer one public name, the
+IdP's, with the internal Caddy address. That name is declared in a separate site-config
+list of split-horizon names. Each entry renders as its own single-name zone, answered
+only to the declared clients. The naming guard refuses a public name that is not on
+that list.
+
+- Rejected: **a managed hosts-file line** on the gateway host. It works for one host, but
+  it is a second mechanism, and it would have to be repeated on every host that needs the
+  name.
+
 ## Adding a New Service to the Proxy
 
 For a new service needing external HTTPS, follow these steps alongside the SERVICE-INTEGRATION-PLAN.md onboarding checklist.

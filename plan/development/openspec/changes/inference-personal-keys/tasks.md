@@ -9,7 +9,8 @@ with inventory identities (its tasks 1 and 4.1), including its UI read-only swit
 - [ ] 0.1 Feature branch from `dev`: `feat/inference-personal-keys`, in its own worktree
 - [ ] 0.2 Record Joe's answers, or the stated defaults, for design open questions 1 to 6
       in `design.md` before task 2 starts
-- [ ] 0.3 Validation gate: `openspec validate inference-personal-keys` passes
+- [x] 0.3 Validation gate: `openspec validate inference-personal-keys` passes (valid with
+      `--strict` 2026-09-29)
 
 ## 1. Verify the upstream facts this design leans on
 The UI read-only switch (formerly 1.1) and hot reload of a changed config (formerly 1.3)

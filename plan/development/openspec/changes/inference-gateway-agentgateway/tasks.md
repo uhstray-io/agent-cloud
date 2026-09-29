@@ -14,7 +14,7 @@
       tier, Podman); provision through onboarding phases 1 to 2; AppRole
       `agentgateway` with read on `secret/services/agentgateway`
       2026-09-17 PARTIAL: declared on site-config branch `feat/agentgateway-host` —
-      vm-specs vmid 216 on apollo (2c/4 GB/20G, podman) and the `agentgateway_svc`
+      vm-specs entry on one hypervisor node (2c/4 GB/20G, podman; node and vmid in site-config) and the `agentgateway_svc`
       inventory group (upstream = the current Caddy inference upstream, four
       identities, firewall vars). Address chosen from the inventory's declared set
       because NetBox (IPAM) was unavailable; recorded as a future feature in
@@ -27,28 +27,28 @@
       IPAM read needs `secret/services/netbox:automation_api_token`, which is absent, and
       `Provision NetBox Automation Token` (task 1058) fails inside its no_log Django-shell
       mint — NetBox side, out of this change; the address keeps its provenance note.
-      vmid moved 216 -> 218: 216/217 are the GitHub runners, absent from the ledger (adopted
-      into vm-specs); provision-vm.yml gained a foreign-VM refusal guard (MISTAKES 3.5).
-      Provisioning on apollo then hit Proxmox's rule that a cross-node clone needs SHARED
-      source storage (template 9000 sits on alphacentauri's local vm-lvms; task 1064) —
+      vmid moved to a free one: the first choice and its neighbour were the GitHub runners',
+      absent from the ledger (adopted into vm-specs); provision-vm.yml gained a foreign-VM refusal guard (MISTAKES 3.5).
+      Provisioning on that node then hit Proxmox's rule that a cross-node clone needs SHARED
+      source storage (the template sits on another node's local LVM storage; task 1064) —
       fixed as clone-on-template-node + offline migrate in agent-cloud PR #188 (from dev,
       Joe's call); `Provision VM (Dev)` runs it once merged. SSH keypair minted (task 1061)
       and backed up to site-config branch `backup/ssh-agentgateway-20260918T115852Z-6a5828`
       (task 1063, dev-bound template — the playbook is not on main yet).
-      Provision VM (Dev) with the clone-then-migrate path then created VM 218 on apollo
-      (task 1068) — but at .154, which turned out to be gh-runner-01's address: the runners
+      Provision VM (Dev) with the clone-then-migrate path then created the VM
+      (task 1068), but at an address that turned out to be gh-runner-01's: the runners
       were declared only on site-config's unmerged `feat/apply-firewall` (MISTAKES 3.6).
-      Joe's decisions: destroy 218 AS CODE (`destroy-vm.yml`, PR #189, with an
-      address-answers refusal in provision-vm), re-provision at .156 (network-swept,
+      Joe's decisions: destroy the VM AS CODE (`destroy-vm.yml`, PR #189, with an
+      address-answers refusal in provision-vm), re-provision at another address (network-swept,
       undeclared on every branch), and fold the runner declaration into the inventory
-      (done; Semaphore record re-synced). PR #189 merged; `Destroy VM (Dev)` stopped 218
-      but Proxmox's unreferenced-disk scan aborted on apollo ("no such logical volume
+      (done; Semaphore record re-synced). PR #189 merged; `Destroy VM (Dev)` stopped the VM
+      but Proxmox's unreferenced-disk scan aborted on its node ("no such logical volume
       pve/data": the cluster-wide local-lvm storage is absent on that node). Joe rejected
       skipping the scan (dead disks waste space); PR #190 makes the play sweep the node's
       ACTIVE image storages for leftover volumes itself. Merged; `Destroy VM (Dev)` task 1075
-      destroyed 218 cleanly: vm-lvms and local swept, zero leftovers, vmid gone.
-      DONE 2026-09-18: `Provision VM (Dev)` task 1076 re-created 218 on apollo at .156 (address
-      guard passed, clone on alphacentauri + offline migrate); cloud-init done; Distribute SSH
+      destroyed the VM cleanly: the node's image storages swept, zero leftovers, vmid gone.
+      DONE 2026-09-18: `Provision VM (Dev)` task 1076 re-created the VM at the new address (address
+      guard passed, clone on the template's node + offline migrate); cloud-init done; Distribute SSH
       Keys 1078; Verify Host Access 1079 (controller side) + workstation key-only login;
       Harden SSH 1080 (password REJECTED, key CONFIRMED, NOPASSWD sudo). Apply Firewall waits
       for the gateway deploy so port auto-detection sees the containers. Per-service AppRole
@@ -144,8 +144,8 @@
       This is the only UI read-only task; `inference-personal-keys` relies on it. Proves
       scenario "The UI refuses configuration writes"
       2026-09-28: done in PR #303 (`templates/env.j2` renders `UI_READ_ONLY=true`
-      unconditionally, plus a BATS assertion on the rendered env). The PR is open against
-      `dev`; this tree at `f92b0bf` does not carry it yet. `agentgateway-observability`
+      unconditionally, plus a BATS assertion on the rendered env). Merged into `dev` on
+      2026-09-28 (merge `255b251`). `agentgateway-observability`
       decision 5 makes it a prerequisite for `agw_content_logging: full`
 - [ ] 1.11 Operator UI in production: Cloudflare record `admin.inference` (applied
       2026-09-27, Apply Cloudflare Tofu (Dev) task 1616, zero-diff 1617), the Authentik skip
@@ -349,8 +349,10 @@
       the internal CA; the public path works end to end with every hop encrypted
 
 ## 7. Internal name resolution (follow-up; needs hickory-dns in production)
-- [ ] 7.1 Server-side OIDC off the Cloudflare path: a LAN split-horizon record for
-      `auth.uhstray.io` answering with the Caddy host, so the gateway's discovery, JWKS and
+- [ ] 7.1 Server-side OIDC off the Cloudflare path: a split-horizon record for
+      `auth.uhstray.io` answering with the Caddy host (declared in the site-config
+      split-horizon list, answered only to the internal DNS's declared clients:
+      `internal-dns-naming` decision 15 as amended 2026-09-29), so the gateway's discovery, JWKS and
       token calls (and OpenBao's, once `inference-personal-keys` adds its mount) reach
       Authentik through Caddy without transiting Cloudflare. The Cloudflare skip rule for
       Authentik's machine endpoints (`platform/infra/cloudflare/waf.tf:129-135`) is the

@@ -24,7 +24,8 @@ only inside the windows named below.
       Harden SSH
 - [ ] 1.3 Firewall declaration per design decision 5 (`firewall_allow_rules`, SSH inbound
       only; `firewall_deny_egress` except the vLLM API port, the gateway listener, the o11y
-      Loki and Prometheus ports, the public hostname and the pinned registries); apply with
+      Loki and Prometheus ports, the public hostname, the internal DNS host on 53 and the
+      pinned registries); apply with
       Apply Firewall
 - [ ] 1.4 Add `bench` to `agw_clients` and an `agw_client_policies.bench` entry
       (`tokens_per_hour` sized per design decision 8, `allowed_models` the served names);
