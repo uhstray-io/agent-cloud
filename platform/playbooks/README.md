@@ -65,7 +65,7 @@ See `plan/architecture/01-automation-model.md` for the full composable pattern s
 - `distribute-ssh-keys.yml` — `become: false` (writes to user-owned `~/.ssh/`)
 - `harden-ssh.yml` — `become: true` (modifies `/etc/ssh/sshd_config`)
 - `deploy-service.yml` — `become: false` (runs deploy.sh as the service user)
-- `provision-vm.yml` — runs against the Proxmox API; its post-boot play logs in to the new VM over Ansible's own connection and uses `become: true` only to write the Semaphore runner environment, after resolving the sudo password
+- `provision-vm.yml` — runs against the Proxmox API; its post-boot play logs in to the new VM over Ansible's own connection and uses `become: true` only to write the Semaphore runner environment and enable `semaphore-runner`, after resolving the sudo password
 
 Before privileged tasks, use `tasks/resolve-become-password.yml` to read the
 bootstrap sudo password from OpenBao. Disable automatic fact gathering when it
@@ -264,7 +264,7 @@ except the collector and the custom-fields converger, and all are read-only exce
 | `deploy-github-runner.yml` | Install + register one self-hosted GitHub Actions runner. Registration token minted on the CONTROLLER — the host is firewalled away from OpenBao by design |
 | `manage-github-runner-group.yml` | Converge the org runner group's repository access list as code. REFUSES to run if any declared repo is public. Read-only unless `-e dry_run=false` |
 
-### Local-Dev Conventions (Phase 0A, `LOCAL-DEV-DEPLOYMENT.md`)
+### Local-Dev Conventions (Phase 0A, `plan/archive/development/LOCAL-DEV-DEPLOYMENT.md`)
 
 - **Path vars:** playbooks reference `local_monorepo_dir` (clone location) and `local_home_dir` (convenience-symlink base) with `/home/{{ ansible_user }}` defaults — unset means byte-identical prod behavior; local inventories override them for macOS paths.
 - **Compose overlay:** `lib/common.sh`'s `compose()` appends `compose.local.yml` only when `LOCAL_MODE=true` **and** the overlay file exists; covered by `platform/tests/test_common.bats`.
@@ -323,7 +323,7 @@ used to live in `AUTOMATION-COMPOSABILITY.md`, which is now under `plan/archive/
 | `tasks/netbox-api-headers.yml` | Implemented | NetBox API headers for a stored token: `Bearer` for a v2 `nbt_` token, `Token` for a legacy v1 one |
 | `tasks/assert-local-discovery-scope.yml` | Implemented | Confine discovery to local-dev: the target allowlist is observed from the engine's networks, and no targets means discovery is disabled |
 | `tasks/bao-merge-keys.yml` | Implemented | Merge keys into one OpenBao KV-v2 path with merge-patch (siblings preserved, create with CAS, write verified) |
-| `tasks/assert-orchestrated.yml` | Implemented (unwired) | Critical Rule #1 as code: refuse deploys outside a Semaphore environment; bootstrap exemption requires `_bootstrap_play: true` + `--tags bootstrap`. Wiring blocked on marker verification (`LOCAL-DEV-DEPLOYMENT.md` §11) |
+| `tasks/assert-orchestrated.yml` | Implemented (unwired) | Critical Rule #1 as code: refuse deploys outside a Semaphore environment; bootstrap exemption requires `_bootstrap_play: true` + `--tags bootstrap`. Wiring blocked on marker verification (`plan/archive/development/LOCAL-DEV-DEPLOYMENT.md` §11) |
 
 Planned tasks (not yet implemented):
 

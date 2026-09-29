@@ -33,7 +33,7 @@ flowchart LR
 ```
 
 **Evidence (2026-06-12):**
-- Docker daemon socket: `unix:///Users/stray/.docker/run/docker.sock`.
+- Docker daemon socket: `unix://$HOME/.docker/run/docker.sock`.
 - That path **is** visible in the podman VM (under the `/Users` virtiofs share) — but virtiofs shares the *file node*, not the live socket endpoint. The listening daemon is in a different VM/kernel, so `connect()` from the podman VM fails. A unix socket is not usable across a file share.
 - Docker Desktop exposes **no TCP daemon** (`tcp://localhost:2375` is off by default, and enabling it is insecure + manual).
 - Net: the podman-VM Semaphore has exactly one engine it can drive — podman.

@@ -32,7 +32,7 @@ and why.
 |---|---------|-------|-------------|
 | 1.1 | Claimed a value was copied verbatim when it had been retyped through a string literal | Unverified claim | Convention + test |
 | 1.2 | Asserted a config gap that did not exist, without reading the file — **x4** | Unverified claim | Convention + loader test; hook proposed (count ≥ 3) |
-| 1.3 | Reported a background job as successful when its exit code had been masked by a pipe — **x2** | Unverified claim | Convention |
+| 1.3 | Reported a background job as successful when its exit code had been masked by a pipe — **x4** | Unverified claim | Convention (hook proposed) |
 | 1.4 | Guessed a resource id instead of reading the one the create call returned | Unverified claim | Convention |
 | 1.5 | Claimed per-job containerisation as an enforced control; a job that asked for nothing ran on the host | Unverified claim | Test |
 | 1.6 | Called a host addressless from one ARP sweep; it was up and answering, the sweep lost the race — **x2** (widened by 1.19) | Unverified claim | Convention |
@@ -143,8 +143,8 @@ and why.
 | 10.15 | Reboot survival was asserted for podman containers and never exercised; the boot unit starts only `restart: always`, and its rootless half was never enabled — OpenBao sat down three days | Mechanism never exercised | Test (restart policy + boot unit, mutation-proven) |
 | 10.16 | The agentgateway deploy was proven only on ansible-core 2.16, which hid a list-concatenation failure on 2.19+ | Test that cannot fail | Test (real evaluation, current ansible-core) |
 | 10.17 | The agentgateway upstream-key guard read a variable that never exists at play level, so it failed every production deploy; local runs disable it | Mechanism never exercised | Test in the verify PR (see entry) |
-| 10.18 | Dry runs of five production playbooks could never pass; a register from a task check mode skips was read later, and nothing had ever run them | Mechanism never exercised | Test for #308/#313/#314; #319 pending; class Convention (data-flow rule proposed) |
-| 10.19 | Harden SSH's password-rejection probe used BatchMode with public keys off, so it exited non-zero whatever the server allowed | Test that cannot fail | Convention (probe fix pending) |
+| 10.18 | Dry runs of five production playbooks could never pass; a register from a task check mode skips was read later, and nothing had ever run them | Mechanism never exercised | Test for #308/#313/#314/#319; class Convention (data-flow rule proposed) |
+| 10.19 | Harden SSH's password-rejection probe used BatchMode with public keys off, so it exited non-zero whatever the server allowed | Test that cannot fail | Test (`test_harden_password_probe.py`) |
 | 9.1 | A `for` loop with an unconditional `break`, making all but one member unreachable | Minor | Convention |
 | 9.2 | Typo'd duplicate key in a hand-assembled payload; call succeeded regardless | Minor | Convention |
 | 12.1 | `gh` reported a valid token as invalid because a sandboxed `$HOME` hid the login keychain | Environment visibility | Convention |
@@ -237,7 +237,7 @@ that implement it, not the setting's name.
 
 ### 1.3 A masked exit code reported as success
 
-**Occurrences: 2** — (first undated), 2026-09-25
+**Occurrences: 4** — (first undated), 2026-09-25, 2026-09-28, 2026-09-29
 
 **What happened.** Ran `make local-bootstrap 2>&1 | tail -60` in the background.
 The pipeline's exit status is `tail`'s, so the harness reported "exit code 0"
@@ -264,6 +264,25 @@ not fire: it names exit codes, and this pipe also hid the one line that said not
 a filter for failures cannot tell "none failed" from "none ran". Corollary: a test claim
 needs the run's own count of executed tests (`N passed`, the final `ok N`), never the
 absence of a failure line; and run BATS the way the hook does, without `-j`.
+
+**Occurrence 3 — 2026-09-28.** The first push of PR #319's branch ran through a
+`grep -v` filter for brevity. The push was refused and the filter left nothing that said
+so; it was noticed only because the PR head had not moved. It was pushed again with its
+output visible. Why the rule did not fire: it was written about test runs and background
+jobs, and a push did not read as either.
+
+**Occurrence 4 — 2026-09-29.** Three branch pushes were chained in one background command,
+each piped through `grep -vE '^ok |^# ' | tail -2`. The first push failed: its visible
+remainder was `error: failed to push some refs`, and the filter had discarded the pre-push
+hook's reason. The same push, run again with its whole output redirected to a file,
+passed, so the cause of the first failure is not recoverable. Why the rule did not fire:
+the pipe was added for output volume, the same reason as the first occurrence, and a
+push's exit status was not treated as one that matters.
+
+**Proposal (count ≥ 3, Convention alone is no longer acceptable).** A Claude Code
+PreToolUse hook on Bash that refuses a command in which `git push`, `pytest`, `bats` or
+`make` feeds a pipe, unless the command sets `set -o pipefail` or reads `PIPESTATUS`. The
+allowed form redirects to a file and filters the file afterwards.
 
 
 ### 1.4 Guessed a resource id rather than reading the one just returned
@@ -2490,6 +2509,9 @@ own worktree path.
 **Enforced by.** Convention. Proposal: extend 5.10's PreToolUse hook to refuse any git write
 verb whose working directory is a checkout a different live session holds.
 
+**Note 2026-09-29.** 5.10's hook is itself only proposed (index row 5.10), so this proposal
+depends on building that hook first.
+
 ### 5.15 AI attribution in a PR body, which no hook reads (widens 5.9)
 
 **What happened.** See 5.9 occurrence 2: on 2026-09-29 a site-config pull request was
@@ -3614,6 +3636,10 @@ mutation-checked); the three key-handling playbooks gain theirs with #319. The c
 is Convention; proposal: a data-flow rule in `test_check_mode_contract.py` that follows registers
 from producers skipped under `--check`, with the skipped-module set taken from `ansible-doc --json`.
 
+**Update 2026-09-29.** #319 merged on 2026-09-28. The three key-handling playbooks now carry
+behavioural tests in `platform/tests/test_materialise_ssh_key.py`, run in both check and
+real mode. The data-flow rule is still unbuilt, so the class stays Convention.
+
 ### 10.19 Harden SSH's "password auth is rejected" probe could not fail
 
 **What happened.** `harden-ssh.yml`'s "Verify password auth is rejected" runs `ssh -o
@@ -3633,6 +3659,11 @@ host), not whether a crippled client succeeds.
 
 **Enforced by.** Convention until the probe fix lands with a behavioural test that fails on a
 host still offering `password`.
+
+**Update 2026-09-29.** The probe fix landed in #319: it requires both the advertised methods
+(`ssh -v`) and `sshd -T` to show no password. Enforced by
+`platform/tests/test_harden_password_probe.py`, which fails on a host still offering
+`password`.
 
 ## 11. The largest one
 
