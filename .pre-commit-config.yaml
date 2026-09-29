@@ -39,7 +39,7 @@ repos:
         args:
           - -c
           - |
-            STAGED=$(git diff --cached --diff-filter=ACM -U0)
+            STAGED=$(git diff --cached --diff-filter=ACMR -U0)
             if [ -z "$STAGED" ]; then exit 0; fi
             MATCHES=$(echo "$STAGED" \
               | grep -nE "^\+" \
@@ -75,7 +75,7 @@ repos:
         args:
           - -c
           - |
-            STAGED=$(git diff --cached --diff-filter=ACM -U0)
+            STAGED=$(git diff --cached --diff-filter=ACMR -U0)
             if [ -z "$STAGED" ]; then exit 0; fi
             FOUND=0
             ADDED=$(echo "$STAGED" | grep -E "^\+" | grep -v "^+++")
@@ -159,7 +159,7 @@ repos:
         args:
           - -c
           - |
-            ENV_FILES=$(git diff --cached --name-only --diff-filter=ACM \
+            ENV_FILES=$(git diff --cached --name-only --diff-filter=ACMR \
               | grep -E "\.env$" \
               | grep -vE "\.(example|template|j2)$" \
               || true)

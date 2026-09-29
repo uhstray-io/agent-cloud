@@ -32,7 +32,7 @@ and why.
 |---|---------|-------|-------------|
 | 1.1 | Claimed a value was copied verbatim when it had been retyped through a string literal | Unverified claim | Convention + test |
 | 1.2 | Asserted a config gap that did not exist, without reading the file — **x4** | Unverified claim | Convention + loader test; hook proposed (count ≥ 3) |
-| 1.3 | Reported a background job as successful when its exit code had been masked by a pipe — **x4** | Unverified claim | Convention (hook proposed) |
+| 1.3 | Reported a background job as successful when its exit code had been masked by a pipe — **x5** | Unverified claim | Convention (hook proposed) |
 | 1.4 | Guessed a resource id instead of reading the one the create call returned | Unverified claim | Convention |
 | 1.5 | Claimed per-job containerisation as an enforced control; a job that asked for nothing ran on the host | Unverified claim | Test |
 | 1.6 | Called a host addressless from one ARP sweep; it was up and answering, the sweep lost the race — **x2** (widened by 1.19) | Unverified claim | Convention |
@@ -237,7 +237,7 @@ that implement it, not the setting's name.
 
 ### 1.3 A masked exit code reported as success
 
-**Occurrences: 4** — (first undated), 2026-09-25, 2026-09-28, 2026-09-29
+**Occurrences: 5** — (first undated), 2026-09-25, 2026-09-28, 2026-09-29, 2026-09-29
 
 **What happened.** Ran `make local-bootstrap 2>&1 | tail -60` in the background.
 The pipeline's exit status is `tail`'s, so the harness reported "exit code 0"
@@ -283,6 +283,15 @@ push's exit status was not treated as one that matters.
 PreToolUse hook on Bash that refuses a command in which `git push`, `pytest`, `bats` or
 `make` feeds a pipe, unless the command sets `set -o pipefail` or reads `PIPESTATUS`. The
 allowed form redirects to a file and filters the file afterwards.
+
+**Occurrence 5 — 2026-09-29.** Before pushing a fix to PR #344, `ruff check platform/ |
+tail -1` printed only ruff's closing line, "No fixes available (1 hidden fix can be enabled
+with the `--unsafe-fixes` option)", and it was read as clean. The error line above it was
+cut. The push went out; CI's Static Analysis failed on the SIM108 error (run 36598777879),
+the PR's independent reviewer flagged the same line, and it was fixed (2d78f01c) before merge.
+Why the rule did not fire: the pipe was added to shorten a lint run, and a linter's output
+was not treated as a status. Occurrence 4's proposal covers it once `ruff` is added to the
+command list; until then, `ruff check .; echo rc=$?` is the form.
 
 
 ### 1.4 Guessed a resource id rather than reading the one just returned
