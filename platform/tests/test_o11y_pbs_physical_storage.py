@@ -99,7 +99,7 @@ def test_report_is_allowlisted_and_has_no_private_topology_or_exact_capacity():
             "ext": 1, "xfs": 0, "zfs": 0, "network_fs": 1, "other_reported": 0,
         },
         "directory_locality_verified": False,
-        "configured_storage_count": 2,
+        "visible_storage_count": 2,
         "active_storage_count": 2,
         "storage_active_unknown_count": 0,
         "storage_backend_counts": {"lvm": 1, "lvmthin": 0, "directory": 1, "other": 0},
@@ -136,7 +136,7 @@ def test_report_is_allowlisted_and_has_no_private_topology_or_exact_capacity():
         "lvm_volume_group_count", "lvm_physical_volume_count", "lvm_reported_free_capacity_band",
         "lvm_thin_pool_count", "lvm_thin_reported_logical_free_capacity_band",
         "lvm_thin_reported_logical_headroom_band", "managed_directory_count",
-        "managed_directory_type_counts", "directory_locality_verified", "configured_storage_count",
+        "managed_directory_type_counts", "directory_locality_verified", "visible_storage_count",
         "active_storage_count", "storage_active_unknown_count", "storage_backend_counts", "storage_shared_true_count",
         "storage_shared_false_count", "storage_shared_unknown_count", "storage_capacity_known_count",
         "storage_capacity_unreported_count", "storage_reported_total_capacity_band_counts",
@@ -197,6 +197,37 @@ def test_absent_optional_storage_status_fields_are_counted_as_unknown():
     assert result["storage_shared_unknown_count"] == 1
 
 
+def test_zero_capacity_is_unreported_and_not_classified_as_under_100_gib():
+    data = sample()
+    data["storage"]["json"]["data"].append({
+        "storage": "private-empty", "type": "dir", "content": "images", "active": 1,
+        "shared": 0, "total": 0, "used": 0, "avail": 0,
+    })
+
+    result = inspect(data)
+
+    assert result["visible_storage_count"] == 3
+    assert result["storage_capacity_known_count"] == 1
+    assert result["storage_capacity_unreported_count"] == 2
+    assert result["storage_reported_total_capacity_band_counts"]["under-100-GiB"] == 0
+    assert result["storage_reported_available_capacity_band_counts"]["under-100-GiB"] == 0
+    assert result["storage_reported_headroom_band_counts"]["unknown"] == 0
+
+
+@pytest.mark.parametrize(
+    ("used", "filesystem_count", "other_count"),
+    [("ext4", 1, 0), ("ext3 filesystem", 1, 0), ("extended", 0, 1)],
+)
+def test_disk_usage_ext_family_requires_filesystem_prefix(used, filesystem_count, other_count):
+    data = sample()
+    data["disks"]["json"]["data"][0]["used"] = used
+
+    result = inspect(data)
+
+    assert result["device_usage_class_counts"]["filesystem"] == filesystem_count
+    assert result["device_usage_class_counts"]["other_reported"] == other_count
+
+
 def test_cli_refusal_has_only_fixed_safe_text(monkeypatch, capsys):
     data = sample()
     data["storage"]["status"] = 403
@@ -208,6 +239,29 @@ def test_cli_refusal_has_only_fixed_safe_text(monkeypatch, capsys):
     assert "private-" not in captured.out
     assert "/dev/" not in captured.out
     assert captured.err == ""
+
+
+@pytest.mark.parametrize(
+    ("section", "expected_refusal"),
+    [
+        ("disks", "incomplete disk inventory"),
+        ("lvm", "incomplete LVM inventory"),
+        ("thinpool", "incomplete thin-pool inventory"),
+        ("directories", "incomplete directory inventory"),
+        ("storage", "incomplete storage status inventory"),
+    ],
+)
+def test_cli_refusal_identifies_only_the_fixed_invalid_section(monkeypatch, capsys, section, expected_refusal):
+    data = sample()
+    data[section]["status"] = 403
+    monkeypatch.setattr(sys, "argv", ["inspect_o11y_pbs_physical_storage.py", "inspect"])
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(data)))
+
+    assert main() == 2
+    captured = capsys.readouterr()
+    assert expected_refusal in captured.out
+    assert "private-" not in captured.out
+    assert "/dev/" not in captured.out
 
 
 def test_playbook_is_dev_bound_get_only_and_keeps_raw_reads_private():

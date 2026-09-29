@@ -15,6 +15,10 @@ SAFE_REFUSALS = {
     "The private storage node declaration is missing or malformed.",
     "The declared storage node is not uniquely online.",
     "Proxmox returned an incomplete disk inventory.",
+    "Proxmox returned an incomplete LVM inventory.",
+    "Proxmox returned an incomplete thin-pool inventory.",
+    "Proxmox returned an incomplete directory inventory.",
+    "Proxmox returned an incomplete storage status inventory.",
     "Proxmox returned a malformed disk inventory.",
     "Proxmox returned a malformed LVM inventory.",
     "Proxmox returned a malformed thin-pool inventory.",
@@ -54,13 +58,14 @@ def _headroom_band_counts() -> dict[str, int]:
     return {"under-30-percent": 0, "30-to-under-70-percent": 0, "at-least-70-percent": 0, "unknown": 0}
 
 
-def _api_data(value: object, *, expected: type = list) -> object:
+def _api_data(value: object, *, section: str, expected: type = list) -> object:
+    refusal = f"Proxmox returned an incomplete {section} inventory."
     _require(
         isinstance(value, Mapping)
         and value.get("status") == 200
         and isinstance(value.get("json"), Mapping)
         and isinstance(value["json"].get("data"), expected),
-        "Proxmox returned an incomplete disk inventory.",
+        refusal,
     )
     return value["json"]["data"]
 
@@ -129,7 +134,10 @@ def _disk_facts(rows: list[object]) -> dict[str, object]:
             normalized = used.strip().lower()
             category = (
                 "lvm" if "lvm" in normalized else "zfs" if "zfs" in normalized
-                else "filesystem" if any(fs in normalized for fs in ("ext", "xfs", "btrfs", "filesystem"))
+                else "filesystem" if (
+                    re.match(r"^ext[0-9]+(?:$|[^a-z0-9])", normalized) is not None
+                    or any(fs in normalized for fs in ("xfs", "btrfs", "filesystem"))
+                )
                 else "mounted" if "mount" in normalized
                 else "partition" if "partition" in normalized else "other_reported"
             )
@@ -294,12 +302,13 @@ def _storage_facts(rows: list[object]) -> dict[str, object]:
                 _integer(t) and _integer(u) and _integer(a) and u <= t and a <= t,
                 "Proxmox returned a malformed storage status inventory.",
             )
-            total_bands[_size_band(t)] += 1
-            available_bands[_size_band(a)] += 1
-            headroom_bands[_headroom_band(t, a)] += 1
-            capacity_known += 1
+            if t > 0:
+                total_bands[_size_band(t)] += 1
+                available_bands[_size_band(a)] += 1
+                headroom_bands[_headroom_band(t, a)] += 1
+                capacity_known += 1
     return {
-        "configured_storage_count": len(rows),
+        "visible_storage_count": len(rows),
         "active_storage_count": active_count,
         "storage_active_unknown_count": active_unknown,
         "storage_backend_counts": types,
@@ -316,11 +325,11 @@ def _storage_facts(rows: list[object]) -> dict[str, object]:
 
 def inspect(payload: object) -> dict[str, object]:
     _require(isinstance(payload, Mapping), "Proxmox returned an incomplete disk inventory.")
-    disk_rows = _api_data(payload.get("disks"))
-    lvm_data = _api_data(payload.get("lvm"), expected=Mapping)
-    thin_rows = _api_data(payload.get("thinpool"))
-    directory_rows = _api_data(payload.get("directories"))
-    storage_rows = _api_data(payload.get("storage"))
+    disk_rows = _api_data(payload.get("disks"), section="disk")
+    lvm_data = _api_data(payload.get("lvm"), section="LVM", expected=Mapping)
+    thin_rows = _api_data(payload.get("thinpool"), section="thin-pool")
+    directory_rows = _api_data(payload.get("directories"), section="directory")
+    storage_rows = _api_data(payload.get("storage"), section="storage status")
     report: dict[str, object] = {
         "survey": "read-only-physical-storage-inventory",
         "capacity_basis": "reported_capacity_only",
