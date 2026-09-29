@@ -131,13 +131,28 @@ contact; missing filesystem samples become alerting. Source and render tests
 are not live firing evidence; see the 2026-09-29 production receipt below.
 
 The Dev-bound backup readiness survey uses OpenBao-sourced Proxmox credentials
-and read-only API requests against the single declared `o11y_svc` VM. It emits
-only the count of active node storage entries that declare backup content and
-the count of matching backup-content records. Those records are candidates
-only: the survey cannot establish immutable retention, identify an isolated
-restore target, or prove a restore. The separately reviewed restore workflow
-must validate the restored guest filesystem and telemetry-volume access, then
-record isolated-target cleanup before guest growth is allowed.
+and read-only API requests against the single declared `o11y_svc` VM. Its
+sanitized result contains aggregate counts only: active storage entries that
+declare backup content, their PBS versus non-PBS backend classes, and matching
+backup-content records for the VM. Missing or malformed backend types refuse
+the result; storage identifiers, paths, and free-form values are never shown.
+Listed records are candidates only: the survey cannot establish immutable
+retention, choose an artifact, identify an isolated restore target, or prove a
+restore. The separately reviewed restore workflow must validate the restored
+guest filesystem and telemetry-volume access, then record isolated-target
+cleanup before guest growth is allowed.
+
+Read-only Semaphore survey task 1835 succeeded against exact reviewed `dev`
+SHA `fb7e5315f4f8d85a6b5b26a4f24d93f4692dbc7a`; both exact-checkout and
+clean-checkout assertions passed. It reported three active backup-capable
+storage entries and zero matching backup artifacts. That run predates the
+backend-class count addition, so it provides no per-backend count. It proves
+neither artifact immutability nor isolated-restore readiness, and did not
+select storage or alter Proxmox state. Tasks 4.2 and 4.6 therefore remain
+gated. The 90d/45d retention target also remains blocked: keep the effective
+15d Prometheus / 7d Loki / 168h Tempo settings and 0B Prometheus size cap until
+the representative seven-day forecast, nonzero cap, at least 30% backing
+filesystem headroom, and immutable isolated-restore receipt pass review.
 
 ## 2026-09-29 production disk-alert receipt
 

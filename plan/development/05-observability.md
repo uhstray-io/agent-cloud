@@ -1011,10 +1011,12 @@ The receiver-root warning rule evaluates the verified
 routes through the existing ops contact. It is configured below 10% free for
 15m. The 2026-09-29 post-merge deploy and drill below later verified firing and
 ops delivery for this low-space event only. The Dev-bound read-only backup
-readiness survey reports backup-capable storage and matching backup-content
-candidate counts only. Immutability,
-isolated restore target, and restore success remain unknown; no backup, restore,
-retention change, or guest growth occurred.
+readiness survey reports bounded aggregate counts for active backup-capable
+storage by PBS versus non-PBS backend and matching backup-content candidates.
+Missing or malformed backend types fail closed; identifiers, paths, and
+free-form storage values are not emitted. Immutability, isolated restore target,
+and restore success remain unknown; no backup, restore, retention change, or
+guest growth occurred.
 
 2026-09-29: the first production survey attempt, Semaphore task 1828, failed
 before contacting Proxmox. The Authorization header lived in play-level URI
@@ -1025,6 +1027,15 @@ This was a controller-side ordering failure, not a Proxmox API or storage
 readback result; no Proxmox state was changed. The same dynamic-default pattern
 was removed from `snapshot-vm.yml`: its four authenticated requests now attach
 the header after the connection facts are frozen and retain scoped `no_log`.
+
+The read-only backup readiness survey, Semaphore task 1835, succeeded on exact
+reviewed `dev` SHA `fb7e5315f4f8d85a6b5b26a4f24d93f4692dbc7a`; exact-checkout
+and clean-checkout assertions passed. It observed three active
+backup-capable storage entries and zero matching backup artifacts for the o11y
+VM. This run predates the PBS/non-PBS count addition, so no backend split is
+claimed from this receipt. No storage was selected or Proxmox state changed.
+The result does not establish artifact immutability or isolated-restore
+readiness; estate tasks 4.2 and 4.6 and retention expansion remain gated.
 
 The corrected non-destructive production o11y deploy, Semaphore task 1830,
 succeeded on merged `dev` SHA `3390557516d05101c60132e0c20e2cc5031a1bcd`.

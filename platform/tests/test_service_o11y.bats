@@ -874,28 +874,52 @@ assert summarize.get('no_log') is True
 summary_template = summarize['ansible.builtin.set_fact']['_backup_summary']
 from jinja2 import Environment, StrictUndefined
 jinja = Environment(undefined=StrictUndefined, trim_blocks=True, lstrip_blocks=True)
-def summarize_results(results):
+def summarize_results(results, storages=None):
     rendered = jinja.from_string(summary_template).render(
-        _backup_content_reads={'results': results}
+        _backup_content_reads={'results': results},
+        _backup_storages=[] if storages is None else storages,
     )
     return yaml.safe_load(rendered)
 assert summarize_results([{'status': 403}])['listing_complete'] is False
 assert summarize_results([{'status': 200, 'json': {'data': {'unexpected': 'mapping'}}}])['listing_complete'] is False
-assert summarize_results([{'status': 200, 'json': {'data': [{'volid': 'hidden-candidate'}]}}]) == {
-    'listing_complete': True, 'candidate_artifact_count': 1,
+sanitized = summarize_results(
+    [{'status': 200, 'json': {'data': [{'volid': 'hidden-candidate'}]}}],
+    [
+        {'storage': 'hidden-pbs', 'type': 'pbs', 'path': '/private/pbs'},
+        {'storage': 'hidden-dir', 'type': 'dir', 'path': '/private/dir'},
+        {'storage': 'hidden-nfs', 'type': 'nfs', 'server': 'private.example'},
+    ],
+)
+assert sanitized == {
+    'listing_complete': True,
+    'backend_types_complete': True,
+    'pbs_storage_count': 1,
+    'non_pbs_storage_count': 2,
+    'candidate_artifact_count': 1,
 }
+assert not any(value in str(sanitized) for value in ('hidden-', '/private', 'private.example'))
+assert summarize_results([], [{'storage': 'hidden-untyped'}])['backend_types_complete'] is False
+assert summarize_results([], [{'storage': 'hidden-empty-type', 'type': ''}])['backend_types_complete'] is False
+assert summarize_results([], [{'storage': 'hidden-blank-type', 'type': '   '}])['backend_types_complete'] is False
 assert any(task.get('ansible.builtin.include_tasks') == 'tasks/assert-bao-transport.yml' for task in tasks)
 assert any(task.get('ansible.builtin.assert', {}).get('that') == "_pve_host is match('^https://')" for task in tasks)
 summary = next(task for task in tasks if task['name'] == 'Report sanitized backup and restore prerequisites')
 fields = summary['ansible.builtin.debug']['msg']
 assert set(fields) == {
     'survey', 'target_vm_verified', 'backup_capable_storage_count',
+    'backup_capable_pbs_storage_count', 'backup_capable_non_pbs_storage_count',
     'candidate_backup_artifact_count', 'artifact_immutability_verified',
     'isolated_restore_target_verified', 'restore_test_verified', 'next_gate',
 }
 assert fields['artifact_immutability_verified'] is False
 assert fields['isolated_restore_target_verified'] is False
 assert fields['restore_test_verified'] is False
+readiness_guard = next(task for task in tasks if task.get('name') == 'Require complete read-only backup listing')
+assert readiness_guard['ansible.builtin.assert']['that'] == [
+    '_backup_summary.listing_complete | bool',
+    '_backup_summary.backend_types_complete | bool',
+]
+assert tasks.index(readiness_guard) < tasks.index(summary)
 templates = yaml.safe_load(open(sys.argv[2], encoding='utf-8'))['templates']
 item, = (item for item in templates if item['name'] == 'Survey o11y Backup Readiness (Dev)')
 assert item['playbook'] == 'platform/playbooks/survey-o11y-backup-readiness.yml'

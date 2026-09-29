@@ -276,6 +276,20 @@ problem. Credential and request task logging remains suppressed.
 The same dynamic play-level header pattern was removed from `snapshot-vm.yml`:
 its Proxmox requests now attach Authorization only after the connection facts
 are frozen, while retaining the existing certificate setting and `no_log`.
+
+Read-only survey task 1835 succeeded on exact reviewed `dev` SHA
+`fb7e5315f4f8d85a6b5b26a4f24d93f4692dbc7a`; the controller SHA and clean
+checkout assertions passed. It found three active storage entries that declare
+backup content and zero matching backup artifacts for the declared o11y VM.
+No storage was selected and no Proxmox state changed. This proves neither
+artifact immutability nor isolated restore readiness. The survey source now
+adds aggregate PBS-versus-non-PBS storage counts, but task 1835 predates that
+output, so its receipt contains no per-backend count.
+
+The 90d Prometheus / 45d Loki / 1080h Tempo target remains blocked. Keep the
+current 15d / 7d / 168h retention and 0B Prometheus size cap until the measured
+seven-day capacity forecast, nonzero size cap, at least 30% backing-filesystem
+headroom, and successful immutable-backup isolated-restore receipt are reviewed.
 Follow the official [Proxmox storage reference](https://pve.proxmox.com/pve-docs/pvesm.1.html)
 for storage content semantics. Do not grow the guest or change retention until
 an immutable backup artifact has been restored and validated on a declared
