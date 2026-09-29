@@ -55,8 +55,8 @@
   tasks:
     - name: Require the supported container engine for the read-only volume survey
       ansible.builtin.assert:
-        that: _engine is match('^(podman|docker)$')
-        fail_msg: "Only Podman or Docker may be selected for the read-only o11y volume receipt."
+        that: _engine == 'podman'
+        fail_msg: "The read-only o11y volume receipt currently requires rootless Podman."
 
     - name: Require explicit production budget declarations
       ansible.builtin.assert:

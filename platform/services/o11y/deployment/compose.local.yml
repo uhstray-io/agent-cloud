@@ -11,6 +11,9 @@ networks:
     external: true
 
 services:
+  node-exporter:
+    security_opt:
+      - label=disable
   prometheus:
     mem_limit: 384m
     security_opt:

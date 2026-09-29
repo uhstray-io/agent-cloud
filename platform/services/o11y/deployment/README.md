@@ -138,20 +138,26 @@ memory headroom, and read-only mount/storage observations for each existing
 Prometheus, Loki, Tempo, Grafana, and Pyroscope named volume. Volume names are
 derived from destination-specific mounts on the running containers, then
 cross-checked against `podman volume inspect`; unresolved or ambiguous mounts
-refuse a receipt. The receipt reports allocated volume bytes and backing
-filesystem total/free bytes without printing mount paths. A production deploy
-also refuses to change config or pull images unless each resolved volume
-filesystem has at least 30% free space. Task 1789 (2026-09-28) passed the
+refuse a receipt. Allocated bytes are measured through `podman unshare du` so
+rootless volume ownership is read inside Podman's user namespace. The receipt
+reports those bytes and backing filesystem total/free bytes without printing
+mount paths. A production retention expansion refuses to change config or pull
+images unless each resolved volume filesystem has at least 30% free space.
+Ordinary deploy and recovery remain available without this expansion gate.
+The read-only volume receipt is intentionally limited to rootless Podman until
+the Docker listing and mount formats have equivalent tested support.
+Task 1789 (2026-09-28) passed the
 retention/sample/cardinality checks but observed only 805,421,056 bytes free on
 the 10,464,022,528-byte guest root; that guest observation alone does not prove
 where the named volumes live. Record exact volume-backed measurements before
-any deployment or growth decision. A clean first production deploy is allowed
-only when all five backend containers and corresponding named volumes are
-absent and guest root meets the same 30% threshold; orphaned volumes and
-partial existing stacks fail closed. This playbook does not
-resize storage. Full-disk recovery requires a separately reviewed
-backup-and-growth workflow; until that workflow exists and has been run, the
-normal deployment remains blocked by the free-space gate.
+any retention or growth decision. During a retention expansion, a clean first
+deploy is allowed only when all five backend containers and corresponding
+named volumes are absent and guest root meets the same 30% threshold. The
+read-only budget verifier remains fail-closed on missing, partial, or ambiguous
+volume state. This playbook does not resize storage. Full-disk recovery requires
+a separately reviewed backup-and-growth workflow. The destructive clean-deploy
+playbook rejects any nonbaseline production retention tuple before removing
+containers or volumes.
 
 The production target is Prometheus 90d, Loki 45d, and Tempo 1080h
 (45d). Keep the current 15d / 7d / 168h tuple until a measured capacity receipt
@@ -161,7 +167,9 @@ is available. A normal deploy refuses any production tuple change unless
 until receiver host metrics have at least seven days of CPU/memory and
 per-backend stored-byte growth, the forecast meets >=30% free disk, >=25%
 memory headroom, and CPU p95 <70%, and any guest filesystem growth is repeatable
-with backup before resize. Code now includes a private-network receiver-host
+with backup before resize. The 30% current backing-filesystem preflight is
+limited to production retention expansion; it does not block ordinary deploy
+or recovery. Code now includes a private-network receiver-host
 node_exporter with no published port, read-only root mount, and bounded CPU,
 memory, root-filesystem, and load collectors. Its exact container isolation,
 metrics availability, and host-versus-guest root filesystem parity require a

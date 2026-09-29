@@ -64,6 +64,10 @@
     _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
     _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
     _branch: "{{ service_branch | default('main') }}"
+    _o11y_retention_expansion: >-
+      {{ (o11y_prom_retention | default('15d') | string) != '15d' or
+         (o11y_loki_retention | default('7d') | string) != '7d' or
+         (o11y_tempo_retention | default('168h') | string) != '168h' }}
     # Shared by Alloy and every Prometheus scrape job. Drop known sensitive or
     # request-specific label names while retaining declared bounded dimensions
     # such as service, identity, model, status, device, and GPU labels.
@@ -96,49 +100,47 @@
           growth/backup path are verified.
       when: >-
         not (local_mode | default(false) | bool) and
-        ((o11y_prom_retention | default('15d') | string) != '15d' or
-         (o11y_loki_retention | default('7d') | string) != '7d' or
-         (o11y_tempo_retention | default('168h') | string) != '168h')
+        (_o11y_retention_expansion | bool)
 
-    - name: Require the supported container engine before volume inspection
+    - name: Require Podman before a retention-expansion volume inspection
       ansible.builtin.assert:
-        that: container_engine | default('podman') is match('^(podman|docker)$')
-        fail_msg: "Only Podman or Docker may be selected for the read-only o11y volume gate."
-      when:
-        - not ansible_check_mode
-        - not (local_mode | default(false) | bool)
+        that: container_engine | default('podman') == 'podman'
+        fail_msg: "The production o11y volume-capacity gate currently requires rootless Podman."
+      when: >-
+        not (local_mode | default(false) | bool) and
+        (_o11y_retention_expansion | bool)
 
-    - name: Read existing o11y volume backing capacity before production changes
+    - name: Read o11y volume backing capacity before retention expansion
       ansible.builtin.script:
         cmd: "{{ playbook_dir }}/files/inspect-o11y-volume-capacity.py {{ container_engine | default('podman') }} 30"
       register: _o11y_volume_preflight
       changed_when: false
       failed_when: false
       check_mode: false
-      when:
-        - not ansible_check_mode
-        - not (local_mode | default(false) | bool)
+      when: >-
+        not (local_mode | default(false) | bool) and
+        (_o11y_retention_expansion | bool)
 
-    - name: Require resolved o11y volumes and at least thirty percent backing filesystem headroom
+    - name: Require resolved o11y volumes and at least thirty percent headroom for retention expansion
       ansible.builtin.assert:
         that: _o11y_volume_preflight.rc == 0
         fail_msg: >-
-          Production o11y changes are blocked until the existing named volumes resolve
+          Production retention expansion is blocked until the existing named volumes resolve
           to their backing filesystems and every backing filesystem has at least 30%
           free space. A clean first deploy is allowed only when all five backend
           containers are absent and guest root has the same headroom. This playbook
           never resizes storage. Read-only volume receipt: {{ _o11y_volume_preflight.stdout | trim }}
-      when:
-        - not ansible_check_mode
-        - not (local_mode | default(false) | bool)
+      when: >-
+        not (local_mode | default(false) | bool) and
+        (_o11y_retention_expansion | bool)
 
     - name: Require the production backing-filesystem capacity receipt
       ansible.builtin.assert:
         that: (_o11y_volume_preflight.stdout | from_json).status in ['observed', 'first_deploy']
         fail_msg: "The sanitized o11y capacity readback did not report an acceptable state."
-      when:
-        - not ansible_check_mode
-        - not (local_mode | default(false) | bool)
+      when: >-
+        not (local_mode | default(false) | bool) and
+        (_o11y_retention_expansion | bool)
 
     - name: "Require the production DNS zone and Caddy origin before rendering Grafana OIDC"
       ansible.builtin.assert:
@@ -413,7 +415,9 @@
       register: _receiver_host_runtime
       changed_when: false
       check_mode: false
-      when: not ansible_check_mode
+      when:
+        - not ansible_check_mode
+        - not (local_mode | default(false) | bool)
 
     - name: Require the receiver-host exporter to remain private and read-only
       ansible.builtin.assert:
@@ -424,7 +428,9 @@
           - (_receiver_host_runtime.stdout | from_json).networks.keys() | first == 'o11y' or (_receiver_host_runtime.stdout | from_json).networks.keys() | first is search('_o11y$')
           - (_receiver_host_runtime.stdout | from_json).mounts | selectattr('Source', 'equalto', '/') | selectattr('Destination', 'equalto', '/host') | selectattr('RW', 'equalto', false) | list | length == 1
         fail_msg: "Receiver-host metrics are not isolated to the private Compose network with a read-only host root and no published port."
-      when: not ansible_check_mode
+      when:
+        - not ansible_check_mode
+        - not (local_mode | default(false) | bool)
 
     - name: Read receiver-host metrics from the private Prometheus API
       ansible.builtin.command:
@@ -445,7 +451,9 @@
         _receiver_host_metrics.rc == 0 and
         _receiver_host_metrics.stdout is search('node_memory_MemAvailable_bytes') and
         _receiver_host_metrics.stdout is search('node_filesystem_avail_bytes')
-      when: not ansible_check_mode
+      when:
+        - not ansible_check_mode
+        - not (local_mode | default(false) | bool)
 
     - name: Read guest-visible root filesystem size and free bytes
       ansible.builtin.command:
@@ -453,7 +461,9 @@
       register: _receiver_guest_root_df
       changed_when: false
       check_mode: false
-      when: not ansible_check_mode
+      when:
+        - not ansible_check_mode
+        - not (local_mode | default(false) | bool)
 
     - name: Verify receiver-host metrics and host-versus-guest root filesystem
       ansible.builtin.command:
@@ -465,7 +475,9 @@
       register: _receiver_host_metrics_check
       changed_when: false
       failed_when: _receiver_host_metrics_check.rc != 0
-      when: not ansible_check_mode
+      when:
+        - not ansible_check_mode
+        - not (local_mode | default(false) | bool)
 
     - name: "Tempo ready (/ready) through the private compose network"
       ansible.builtin.command: "{{ _engine }} exec o11y-grafana wget -q -O /dev/null http://tempo:3200/ready"

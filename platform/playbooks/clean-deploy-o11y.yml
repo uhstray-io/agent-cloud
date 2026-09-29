@@ -16,6 +16,18 @@
   vars:
     _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
   tasks:
+    - name: Refuse expanded retention before destructive o11y cleanup
+      ansible.builtin.assert:
+        that:
+          - (o11y_prom_retention | default('15d') | string) == '15d'
+          - (o11y_loki_retention | default('7d') | string) == '7d'
+          - (o11y_tempo_retention | default('168h') | string) == '168h'
+        fail_msg: >-
+          Clean deploy cannot expand production retention because it would destroy
+          the existing data before capacity is verified. Use the normal deploy only
+          after the reviewed capacity receipt and nonzero Prometheus cap are present.
+      when: not (local_mode | default(false) | bool)
+
     - name: "Destroy existing deployment"
       ansible.builtin.include_tasks: tasks/clean-service.yml
 

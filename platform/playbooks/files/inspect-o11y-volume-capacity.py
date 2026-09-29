@@ -28,32 +28,19 @@ def run(engine: str, *args: str) -> subprocess.CompletedProcess[str] | None:
     return proc if proc.returncode == 0 else None
 
 
-def allocated_bytes(path: str) -> int | None:
-    total = 0
-    seen: set[tuple[int, int]] = set()
-    errors: list[OSError] = []
-
-    def walk_error(error: OSError) -> None:
-        errors.append(error)
-
-    try:
-        for root, dirs, files in os.walk(path, topdown=True, followlinks=False, onerror=walk_error):
-            for item in dirs + files:
-                full = os.path.join(root, item)
-                try:
-                    info = os.lstat(full)
-                except OSError as error:
-                    errors.append(error)
-                    continue
-                key = (info.st_dev, info.st_ino)
-                if key not in seen:
-                    total += getattr(info, "st_blocks", 0) * 512
-                    seen.add(key)
-        if errors:
-            return None
-    except OSError:
+def allocated_bytes(engine: str, path: str) -> int | None:
+    """Read bytes from rootless Podman storage inside its user namespace."""
+    proc = run(engine, "unshare", "du", "-s", "-B1", "--", path)
+    if proc is None:
         return None
-    return total
+    rows = proc.stdout.splitlines()
+    if len(rows) != 1:
+        return None
+    try:
+        value = int(rows[0].split(maxsplit=1)[0])
+    except (ValueError, IndexError):
+        return None
+    return value if value >= 0 else None
 
 
 def fs_capacity(path: str) -> tuple[int, int, int] | None:
@@ -69,6 +56,8 @@ def main() -> int:
     if len(sys.argv) not in (2, 3) or not sys.argv[1]:
         return result("container_engine_missing")
     engine = sys.argv[1]
+    if engine != "podman":
+        return result("unsupported_container_engine")
     try:
         minimum_free_percent = float(sys.argv[2]) if len(sys.argv) == 3 else None
     except ValueError:
@@ -114,19 +103,19 @@ def main() -> int:
         if not isinstance(volumes, list):
             return result("volume_list_invalid")
         for logical_name in VOLUMES:
-            candidates = [
-                volume for volume in volumes
-                if isinstance(volume, dict)
+            declared_names = {f"o11y_{logical_name}", f"o11y-{logical_name}"}
+            if any(
+                isinstance(volume, dict)
                 and (
-                    (isinstance(volume.get("Labels"), dict)
-                     and volume["Labels"].get("com.docker.compose.volume") == logical_name)
-                    or (isinstance(volume.get("Name"), str)
-                        and (volume["Name"] == logical_name
-                             or volume["Name"].endswith("_" + logical_name)
-                             or volume["Name"].endswith("-" + logical_name)))
+                    (
+                        isinstance(volume.get("Labels"), dict)
+                        and volume["Labels"].get("com.docker.compose.project") == "o11y"
+                        and volume["Labels"].get("com.docker.compose.volume") == logical_name
+                    )
+                    or volume.get("Name") in declared_names
                 )
-            ]
-            if candidates:
+                for volume in volumes
+            ):
                 return result("orphaned_o11y_volume", volume=logical_name)
         root_free_percent = round(100 * root_available / root_total, 2) if root_total else 0
         if root_free_percent < minimum_free_percent:
@@ -192,21 +181,23 @@ def main() -> int:
     for logical_name, details in resolved.items():
         mountpoint = details["mountpoint"]
         capacity = fs_capacity(mountpoint)
-        size = allocated_bytes(mountpoint)
         if capacity is None:
             return result("volume_filesystem_unresolved", volume=logical_name)
-        if size is None:
-            return result("volume_size_unreadable", volume=logical_name)
         total, available, fsid = capacity
-        reports.append({
+        report: dict[str, int | str | bool] = {
             "volume": logical_name,
             "mountpoint_verified": True,
             "shares_guest_root_filesystem": fsid == root_fsid,
             "backing_filesystem_total_bytes": total,
             "backing_filesystem_available_bytes": available,
             "backing_filesystem_free_percent": round(100 * available / total, 2) if total else 0,
-            "stored_bytes": size,
-        })
+        }
+        if minimum_free_percent is None:
+            size = allocated_bytes(engine, mountpoint)
+            if size is None:
+                return result("volume_size_unreadable", volume=logical_name)
+            report["stored_bytes"] = size
+        reports.append(report)
 
     if minimum_free_percent is not None:
         blocked = next(

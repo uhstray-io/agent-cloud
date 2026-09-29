@@ -929,6 +929,7 @@ for job in scrapes:
     assert labels['environment'] == 'prod'
     assert job['metric_relabel_configs'][0]['regex'] == policy
 compose = yaml.safe_load((deploy / 'compose.yml').read_text())
+local_overlay = yaml.safe_load((deploy / 'compose.local.yml').read_text())
 assert compose['services']['grafana']['environment']['GF_METRICS_ENABLED'] == 'true'
 pyroscope = compose['services']['pyroscope']
 assert pyroscope['image'].endswith('grafana/pyroscope:2.2.0}')
@@ -990,11 +991,22 @@ metrics_check = next(task for task in verify['tasks'] if task['name'] == 'Verify
 assert metrics_check['delegate_to'] == 'localhost'
 assert metrics_check['failed_when'] == '_receiver_host_metrics_check.rc != 0'
 assert 'to_json' in metrics_check['ansible.builtin.command']['stdin']
+local_runtime_guard = ['not ansible_check_mode', 'not (local_mode | default(false) | bool)']
+for task_name in (
+    'Read the receiver-host exporter runtime boundary',
+    'Require the receiver-host exporter to remain private and read-only',
+    'Read receiver-host metrics from the private Prometheus API',
+    'Read guest-visible root filesystem size and free bytes',
+    'Verify receiver-host metrics and host-versus-guest root filesystem',
+):
+    task = next(task for task in verify['tasks'] if task['name'] == task_name)
+    assert task['when'] == local_runtime_guard
 node_exporter = compose['services']['node-exporter']
 assert node_exporter['pid'] == 'host'
 assert not node_exporter.get('ports')
 assert node_exporter['networks'] == ['o11y']
 assert '/:/host:ro,rslave' in node_exporter['volumes']
+assert 'label=disable' in local_overlay['services']['node-exporter']['security_opt']
 assert {arg for arg in node_exporter['command'] if arg.startswith('--collector.')} == {
     '--collector.disable-defaults', '--collector.cpu', '--collector.meminfo',
     '--collector.filesystem', '--collector.filesystem.mount-points-include=^/$',
@@ -1566,8 +1578,8 @@ assert result.returncode != 0 and json.loads(result.stdout)['reason'] == 'promet
 PY
 }
 
-@test "o11y: named-volume capacity receipt fails closed and deploy preflight precedes lifecycle" {
-  python3 - "$REPO_ROOT/platform/playbooks/files/inspect-o11y-volume-capacity.py" "$REPO_ROOT/platform/playbooks/verify-o11y-production-budgets.yml" "$REPO_ROOT/platform/playbooks/deploy-o11y.yml" <<'PY'
+@test "o11y: named-volume capacity receipt fails closed and expansion gate preserves recovery" {
+  python3 - "$REPO_ROOT/platform/playbooks/files/inspect-o11y-volume-capacity.py" "$REPO_ROOT/platform/playbooks/verify-o11y-production-budgets.yml" "$REPO_ROOT/platform/playbooks/deploy-o11y.yml" "$REPO_ROOT/platform/playbooks/clean-deploy-o11y.yml" <<'PY'
 import importlib.util
 import contextlib
 import io
@@ -1577,8 +1589,9 @@ import subprocess
 import sys
 from types import SimpleNamespace
 import yaml
+from jinja2 import Environment
 
-script, verifier_path, deploy_path = map(pathlib.Path, sys.argv[1:])
+script, verifier_path, deploy_path, clean_deploy_path = map(pathlib.Path, sys.argv[1:])
 spec = importlib.util.spec_from_file_location('volume_capacity', script)
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
@@ -1586,7 +1599,9 @@ module.sys.argv = [str(script), 'podman']
 missing_mount = set()
 no_containers = False
 partial_containers = False
-orphaned_volume = False
+orphaned_volume = None
+orphaned_project_volume = False
+du_calls = []
 def fake_run(_engine, *args):
     if args[:2] == ('ps', '-a'):
         rows = [] if no_containers else [{'Names': [service]} for service, _dest in module.VOLUMES.values()]
@@ -1601,18 +1616,32 @@ def fake_run(_engine, *args):
     if args[:2] == ('volume', 'inspect'):
         return SimpleNamespace(returncode=0, stdout=json.dumps([{'Mountpoint': '/tmp'}]))
     if args[:3] == ('volume', 'ls', '--format'):
-        volumes = [{'Name': 'project_pyroscope-data', 'Labels': None}] if orphaned_volume else []
+        volumes = []
+        if orphaned_volume:
+            volumes.append({'Name': orphaned_volume, 'Labels': None})
+        if orphaned_project_volume:
+            volumes.append({'Name': 'custom-volume', 'Labels': {
+                'com.docker.compose.project': 'o11y',
+                'com.docker.compose.volume': 'pyroscope-data',
+            }})
         return SimpleNamespace(returncode=0, stdout=json.dumps(volumes))
+    if args[:2] == ('unshare', 'du'):
+        du_calls.append((_engine, args))
+        return SimpleNamespace(returncode=0, stdout='24 /tmp\n')
     raise AssertionError(args)
 module.run = fake_run
 module.fs_capacity = lambda _path: (1000, 500, 1)
-module.allocated_bytes = lambda _path: 24
 captured = io.StringIO()
 with contextlib.redirect_stdout(captured):
     assert module.main() == 0
 receipt = json.loads(captured.getvalue())
 assert receipt['status'] == 'observed' and len(receipt['volumes']) == 5
 assert receipt['guest_root_filesystem_available_bytes'] == 500
+assert [volume['stored_bytes'] for volume in receipt['volumes']] == [24] * 5
+assert len(du_calls) == 5 and all(
+    call[0] == 'podman' and call[1][1:] == ('du', '-s', '-B1', '--', '/tmp')
+    for call in du_calls
+)
 assert '/tmp' not in captured.getvalue()
 missing_mount.add('pyroscope-data')
 captured = io.StringIO()
@@ -1628,38 +1657,89 @@ failure = json.loads(captured.getvalue())
 assert failure['reason'] == 'backend_container_set_partial' and failure['missing_container'] == 'o11y-pyroscope'
 partial_containers = False
 no_containers = True
-orphaned_volume = True
 module.sys.argv = [str(script), 'podman', '30']
-captured = io.StringIO()
-with contextlib.redirect_stdout(captured):
-    assert module.main() == 1
-assert json.loads(captured.getvalue())['reason'] == 'orphaned_o11y_volume'
-orphaned_volume = False
+original_allocated_bytes = module.allocated_bytes
+module.allocated_bytes = lambda *_args: (_ for _ in ()).throw(AssertionError('threshold mode must skip byte walks'))
+orphaned_volume = 'other_pyroscope-data'
 captured = io.StringIO()
 with contextlib.redirect_stdout(captured):
     assert module.main() == 0
 assert json.loads(captured.getvalue())['status'] == 'first_deploy'
+orphaned_volume = 'o11y_pyroscope-data'
+captured = io.StringIO()
+with contextlib.redirect_stdout(captured):
+    assert module.main() == 1
+assert json.loads(captured.getvalue())['reason'] == 'orphaned_o11y_volume'
+orphaned_volume = None
+orphaned_project_volume = True
+captured = io.StringIO()
+with contextlib.redirect_stdout(captured):
+    assert module.main() == 1
+assert json.loads(captured.getvalue())['reason'] == 'orphaned_o11y_volume'
+orphaned_project_volume = False
+captured = io.StringIO()
+with contextlib.redirect_stdout(captured):
+    assert module.main() == 0
+assert json.loads(captured.getvalue())['status'] == 'first_deploy'
+no_containers = False
+missing_mount.clear()
+captured = io.StringIO()
+with contextlib.redirect_stdout(captured):
+    assert module.main() == 0
+threshold_receipt = json.loads(captured.getvalue())
+assert threshold_receipt['status'] == 'observed'
+assert all('stored_bytes' not in volume for volume in threshold_receipt['volumes'])
+no_containers = True
+module.allocated_bytes = original_allocated_bytes
 module.fs_capacity = lambda _path: (1000, 200, 1)
 captured = io.StringIO()
 with contextlib.redirect_stdout(captured):
     assert module.main() == 1
 assert json.loads(captured.getvalue())['reason'] == 'first_deploy_guest_root_free_below_threshold'
+module.sys.argv = [str(script), 'docker']
+captured = io.StringIO()
+with contextlib.redirect_stdout(captured):
+    assert module.main() == 1
+assert json.loads(captured.getvalue())['reason'] == 'unsupported_container_engine'
 
 verifier = yaml.safe_load(verifier_path.read_text())
 verify_play = next(play for play in verifier if play.get('hosts') == 'o11y_svc')
 verify_tasks = verify_play['tasks']
 volume_task = next(task for task in verify_tasks if task.get('name', '').startswith('Read exact named o11y volume'))
 assert volume_task['ansible.builtin.script']['cmd'].endswith('inspect-o11y-volume-capacity.py {{ _engine }}')
+engine_guard = next(task for task in verify_tasks if task.get('name', '').startswith('Require the supported container engine'))
+assert engine_guard['ansible.builtin.assert']['that'] == "_engine == 'podman'"
 deploy = yaml.safe_load(deploy_path.read_text())
 phase_one = next(play for play in deploy if play.get('name') == 'Phase 1: Place repo + manage o11y secrets')
 names_in_phase = [task['name'] for task in phase_one['tasks']]
-preflight = names_in_phase.index('Read existing o11y volume backing capacity before production changes')
+receipt_gate = phase_one['tasks'][names_in_phase.index('Require a capacity receipt and nonzero Prometheus cap for retention expansion')]
+expansion_expression = Environment().compile_expression(
+    phase_one['vars']['_o11y_retention_expansion'].removeprefix('{{').removesuffix('}}').strip()
+)
+assert expansion_expression(o11y_prom_retention='15d', o11y_loki_retention='7d', o11y_tempo_retention='168h') is False
+assert expansion_expression(o11y_prom_retention='90d', o11y_loki_retention='45d', o11y_tempo_retention='1080h') is True
+preflight = names_in_phase.index('Read o11y volume backing capacity before retention expansion')
 assert preflight < names_in_phase.index('Configure o11y alert provisioning from OpenBao')
 phase_two = next(play for play in deploy if play.get('name') == 'Phase 2: Start o11y')
 assert phase_two['tasks'][0]['name'] == 'Run deploy.sh (container lifecycle)'
 assert '30' in phase_one['tasks'][preflight]['ansible.builtin.script']['cmd']
 assert phase_one['tasks'][preflight]['failed_when'] is False
+gate_when = phase_one['tasks'][preflight]['when']
+assert gate_when == receipt_gate['when']
+assert '_o11y_retention_expansion' in gate_when and 'local_mode' in gate_when
 assert phase_one['tasks'][preflight + 1]['ansible.builtin.assert']['that'] == '_o11y_volume_preflight.rc == 0'
 assert "['observed', 'first_deploy']" in phase_one['tasks'][preflight + 2]['ansible.builtin.assert']['that']
+assert phase_one['tasks'][preflight + 1]['when'] == gate_when
+assert phase_one['tasks'][preflight + 2]['when'] == gate_when
+clean = yaml.safe_load(clean_deploy_path.read_text())
+clean_tasks = clean[0]['tasks']
+assert clean_tasks[0]['name'] == 'Refuse expanded retention before destructive o11y cleanup'
+assert clean_tasks[0]['when'] == 'not (local_mode | default(false) | bool)'
+clean_conditions = [Environment().compile_expression(condition) for condition in clean_tasks[0]['ansible.builtin.assert']['that']]
+baseline = {'o11y_prom_retention': '15d', 'o11y_loki_retention': '7d', 'o11y_tempo_retention': '168h'}
+expanded = {'o11y_prom_retention': '90d', 'o11y_loki_retention': '45d', 'o11y_tempo_retention': '1080h'}
+assert all(condition(**baseline) for condition in clean_conditions)
+assert not all(condition(**expanded) for condition in clean_conditions)
+assert clean_tasks[1]['name'] == 'Destroy existing deployment'
 PY
 }
