@@ -14,6 +14,12 @@ on, read from the ufw 0.36.2 source (git.launchpad.net/ufw, tag 0.36.2):
   when inactive).
 - A comment containing "'" is refused (src/parser.py).
 - `status verbose` prints "Status: inactive" alone while inactive.
+- Addresses are stored normalised (src/util.py normalize_address): a host mask (/32,
+  /255.255.255.255, /128) is dropped and an IPv4 CIDR is masked to its network.
+- A rule with no address (e.g. `allow in on IFACE ...`) covers both IP families and is
+  reported per family; a state entry may carry a third element "v4" or "v6" to say only
+  that family is stored, which a delete then reports as "Could not delete non-existent
+  rule" for the other (src/frontend.py set_rule, "both").
 
 `ufw delete NUM` and any syntax the playbook is not expected to emit exit non-zero, so a
 test fails loudly rather than the stub guessing. Every invocation is appended to the log
@@ -21,10 +27,13 @@ file, which is how a test proves a dry run issued no mutating command.
 
 Environment: UFW_STUB_STATE (JSON state file), UFW_STUB_LOG (invocation log),
 UFW_STUB_DROP (optional substring: an add whose spec contains it reports "Rule added" but
-is not stored, simulating a rule that silently failed to land), PODMAN_STUB (JSON:
+is not stored, simulating a rule that silently failed to land), UFW_STUB_COLLATERAL
+(optional substring: every delete also removes the rules whose spec contains it,
+simulating a delete that took more than it named), PODMAN_STUB (JSON:
 {"ports": {"<id>": ["8080/tcp -> 0.0.0.0:8080", ...]}, "bridges": {"<net>": "<iface>"}}).
 """
 
+import ipaddress
 import json
 import os
 import sys
@@ -38,6 +47,19 @@ def _load(path):
 def _save(path, state):
     with open(path, "w") as f:
         json.dump(state, f, indent=1)
+
+
+def _normalise(addr):
+    """src/util.py normalize_address, for the address forms the playbook emits."""
+    if addr == "any":
+        return addr
+    host, _, mask = addr.partition("/")
+    v6 = ":" in host
+    if not mask or mask in (("128",) if v6 else ("32", "255.255.255.255")):
+        return str(ipaddress.ip_address(host))
+    if v6:
+        return f"{ipaddress.ip_address(host)}/{mask}"
+    return str(ipaddress.ip_network(addr, strict=False))
 
 
 def _parse(tokens):
@@ -67,7 +89,7 @@ def _parse(tokens):
             rule["proto"] = t.pop(0)
         elif word in ("from", "to"):
             last = "src" if word == "from" else "dst"
-            rule[last] = t.pop(0)
+            rule[last] = _normalise(t.pop(0))
         elif word == "port" and last:
             rule["sport" if last == "src" else "dport"] = t.pop(0)
         elif word == "comment":
@@ -115,7 +137,7 @@ def ufw(argv):
         print("Added user rules (see 'ufw status' for running firewall):")
         if not state["rules"]:
             print("(None)")
-        for spec, comment in state["rules"]:
+        for spec, comment, *_ in state["rules"]:
             print(f"ufw {spec}" + (f" comment '{comment}'" if comment else ""))
         return 0
     if argv[:1] == ["status"]:
@@ -130,7 +152,7 @@ def ufw(argv):
             print(f"Default: {state['incoming']} (incoming), {state['outgoing']} (outgoing), deny (routed)")
             print("New profiles: skip")
         print("")
-        for spec, comment in state["rules"]:
+        for spec, comment, *_ in state["rules"]:
             print(f"{spec}" + (f"  # {comment}" if comment else ""))
         return 0
     if argv[:1] == ["default"] and len(argv) == 3:
@@ -149,28 +171,40 @@ def ufw(argv):
         raise SystemExit("stub ufw: delete by NUMBER is not supported by design")
     remove, rule = _parse(argv)
     spec = _command(rule)
-    index = next((i for i, (s, _) in enumerate(state["rules"]) if s == spec), None)
+    both = rule["src"] == "any" and rule["dst"] == "any"
+
+    def say(message, families=("v4", "v6")):
+        # One line per IP family the rule covers: "(v6)" marks the second (frontend.set_rule).
+        lines = [message(fam) + (" (v6)" if fam == "v6" else "") for fam in (families if both else ("v4",))]
+        print("\n".join(lines))
+
+    index = next((i for i, r in enumerate(state["rules"]) if r[0] == spec), None)
     if remove:
         if index is None or (rule["comment"] and state["rules"][index][1] != rule["comment"]):
-            print("Could not delete non-existent rule")
+            say(lambda fam: "Could not delete non-existent rule")
             return 0
+        stored = state["rules"][index][2:] or ["v4", "v6"]
         del state["rules"][index]
+        collateral = os.environ.get("UFW_STUB_COLLATERAL")
+        if collateral:
+            state["rules"] = [r for r in state["rules"] if collateral not in r[0]]
         _save(state_path, state)
-        print("Rule deleted" if active else "Rules updated")
+        say(lambda fam: ("Rule deleted" if active else "Rules updated") if fam in stored
+            else "Could not delete non-existent rule")
         return 0
     if index is not None:
         if state["rules"][index][1] == rule["comment"]:
-            print("Skipping adding existing rule")
+            say(lambda fam: "Skipping adding existing rule")
             return 0
         state["rules"][index][1] = rule["comment"]
         _save(state_path, state)
-        print("Rule updated" if active else "Rules updated")
+        say(lambda fam: "Rule updated" if active else "Rules updated")
         return 0
     drop = os.environ.get("UFW_STUB_DROP")
     if not (drop and drop in spec):
         state["rules"].append([spec, rule["comment"]])
         _save(state_path, state)
-    print("Rule added" if active else "Rules updated")
+    say(lambda fam: "Rule added" if active else "Rules updated")
     return 0
 
 

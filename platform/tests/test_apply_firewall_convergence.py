@@ -22,6 +22,7 @@ STUB = Path(__file__).with_name("ufw_stub.py")
 FIRST = "Refuse to proceed without SSH allow CIDRs (anti-lockout)"
 SKIPPED = {"Install ufw", "Dry run, ufw not installed: report", "Dry run, ufw not installed: stop this host"}
 SSH = "192.0.2.0/24"
+CONTROLLER = {"firewall_controller_cidr": SSH}
 MUTATING = re.compile(r'^\["ufw", "(?!show|status)')
 
 
@@ -30,7 +31,8 @@ def _tag(family, port_proto, peer):
 
 
 def _run(tmp_path: Path, host_vars: dict, groups: dict | None = None, *, state: dict | None = None,
-         podman: dict | None = None, check: bool = False, drop: str | None = None):
+         podman: dict | None = None, check: bool = False, drop: str | None = None,
+         collateral: str | None = None):
     """Run the lifted play once; returns (CompletedProcess, state after)."""
     play, = yaml.safe_load(PLAYBOOK.read_text())
     names = [t.get("name") for t in play["tasks"]]
@@ -59,6 +61,8 @@ def _run(tmp_path: Path, host_vars: dict, groups: dict | None = None, *, state: 
                PODMAN_STUB=str(tmp_path / "podman.json"))
     if drop:
         env["UFW_STUB_DROP"] = drop
+    if collateral:
+        env["UFW_STUB_COLLATERAL"] = collateral
     cmd = ["ansible-playbook", "-i", str(tmp_path / "inv.yml"), str(tmp_path / "play.yml")]
     result = harness_sandbox.run(cmd + (["--check"] if check else []), tmp_path, cwd=REPO, env=env)
     after = json.loads(state_file.read_text()) if state_file.exists() else None
@@ -66,7 +70,7 @@ def _run(tmp_path: Path, host_vars: dict, groups: dict | None = None, *, state: 
 
 
 def _rules(state):
-    return dict(state["rules"])
+    return {rule[0]: rule[1] for rule in state["rules"]}
 
 
 def _changed(result) -> int:
@@ -151,7 +155,7 @@ def test_untagged_rules_are_kept_and_reported_and_a_declared_one_is_adopted(tmp_
 
 def test_ssh_is_never_pruned_while_declared_and_an_old_cidr_goes(tmp_path):
     old = "198.51.100.0/24"
-    r, state = _run(tmp_path, {}, state={"active": True, "rules": [
+    r, state = _run(tmp_path, CONTROLLER, state={"active": True, "rules": [
         [f"allow from {old} to any port 22 proto tcp", _tag("in", "22/tcp", old)],
         # a declared CIDR's SSH allow under a tag this playbook no longer writes
         [f"allow from {SSH} to any port 22 proto tcp", "agent-cloud:ssh:legacy"],
@@ -165,9 +169,9 @@ def test_a_declared_rule_that_did_not_land_stops_the_run_before_any_delete(tmp_p
     # pruning would leave ZERO SSH allows. The drift guard must refuse first.
     old = "198.51.100.0/24"
     before = {"active": True, "rules": [[f"allow from {old} to any port 22 proto tcp", _tag("in", "22/tcp", old)]]}
-    r, state = _run(tmp_path, {}, state=before, drop=f"from {SSH} to any port 22")
+    r, state = _run(tmp_path, CONTROLLER, state=before, drop=f"from {SSH} to any port 22")
     assert r.returncode != 0
-    assert "Nothing was deleted" in r.stdout
+    assert "Declared rule tags not found" in r.stdout and "Nothing was deleted" in r.stdout
     assert state["rules"] == before["rules"]
     assert not any('"delete"' in line for line in _log(tmp_path))
 
@@ -206,3 +210,68 @@ def test_narrowing_a_subnet_rule_to_group_rules_removes_only_the_tagged_subnet_r
         for p in ("udp", "tcp"):
             expected[f"allow from {host} to any port 53 proto {p}"] = _tag("in", f"53/{p}", host)
     assert _rules(state) == expected
+
+
+def test_narrowing_ssh_without_the_controller_cidr_is_refused_before_any_delete(tmp_path):
+    old = "198.51.100.0/24"
+    before = {"active": True, "rules": [[f"allow from {old} to any port 22 proto tcp", _tag("in", "22/tcp", old)]]}
+    for check in (True, False):
+        r, state = _run(tmp_path, {}, state=before, check=check)
+        assert r.returncode != 0
+        assert f"would prune SSH from {old} on target" in r.stdout and "declare firewall_controller_cidr" in r.stdout
+        assert f"allow from {old} to any port 22 proto tcp" in _rules(state)
+        assert not any('"delete"' in line for line in _log(tmp_path))
+
+
+def test_empty_detection_holds_the_upstream_rules_unless_told_it_is_real(tmp_path):
+    upstream = "192.0.2.7"
+    stale = [["allow from 192.0.2.7 to any port 443 proto tcp", _tag("in", "443/tcp", upstream)],
+             ["route allow from 192.0.2.7 to any port 443 proto tcp", _tag("route", "443/tcp", upstream)],
+             ["allow from 198.51.100.7 to any port 9000 proto tcp", _tag("in", "9000/tcp", "198.51.100.7")]]
+    host = {"firewall_upstream_source": upstream}
+    r, state = _run(tmp_path, host, state={"active": True, "rules": stale}, podman={"ports": {}})
+    assert r.returncode == 0, r.stdout + r.stderr
+    rules = _rules(state)
+    assert stale[0][0] in rules and stale[1][0] in rules and stale[2][0] not in rules
+    assert "found no published ports, so 2 stale rule(s)" in r.stdout
+    r, state = _run(tmp_path, {**host, "firewall_prune_when_detection_empty": True}, podman={"ports": {}})
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert _rules(state) == {f"allow from {SSH} to any port 22 proto tcp": _tag("in", "22/tcp", SSH)}
+
+
+def test_ssh_cidrs_spelled_non_canonically_are_matched_as_ufw_stores_them(tmp_path):
+    # ufw stores 192.0.2.5/32 as 192.0.2.5 and 198.51.100.77/24 as 198.51.100.0/24. Compared
+    # raw, both would be planned for deletion and refused (no controller CIDR declared).
+    before = {"active": True, "rules": [
+        ["allow from 192.0.2.5 to any port 22 proto tcp", "agent-cloud:ssh:legacy"],
+        ["allow from 198.51.100.0/24 to any port 22 proto tcp", "agent-cloud:ssh:legacy"],
+    ]}
+    r, state = _run(tmp_path, {"firewall_ssh_cidrs": ["192.0.2.5/32", "198.51.100.77/24"]},
+                    state=before, check=True)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert state == before
+    plan = r.stdout[r.stdout.index("TASK [Report the convergence plan]"):]
+    assert re.search(r'"delete_stale_tagged": \[\]', plan), plan
+
+
+def test_the_post_prune_check_fails_when_a_delete_took_an_ssh_allow(tmp_path):
+    before = {"active": True, "rules": [
+        ["allow from 198.51.100.7 to any port 9000 proto tcp", _tag("in", "9000/tcp", "198.51.100.7")]]}
+    r, _ = _run(tmp_path, {}, state=before)
+    assert r.returncode == 0, r.stdout + r.stderr
+    (tmp_path / "ufw.log").unlink()
+    before_run2 = json.loads((tmp_path / "ufw.json").read_text())
+    before_run2["rules"].append(["allow from 198.51.100.8 to any port 9001 proto tcp",
+                                 _tag("in", "9001/tcp", "198.51.100.8")])
+    r, state = _run(tmp_path, {}, state=before_run2, collateral="port 22")
+    assert r.returncode != 0
+    assert "is missing a declared SSH allow" in r.stdout
+    assert "TASK [Enable UFW]" not in r.stdout
+
+
+def test_a_dual_family_rule_stored_for_one_family_only_is_still_pruned(tmp_path):
+    before = {"active": True, "rules": [
+        ["allow in on podman9 to any port 53 proto udp", _tag("in-on", "53/udp", "podman9"), "v4"]]}
+    r, state = _run(tmp_path, {}, state=before)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert _rules(state) == {f"allow from {SSH} to any port 22 proto tcp": _tag("in", "22/tcp", SSH)}

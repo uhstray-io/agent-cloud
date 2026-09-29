@@ -54,8 +54,23 @@
 #     deletes only one of the pair (ufw(8), same section).
 #   - `ufw show added` is read, not `ufw status`: it lists the stored rules with their
 #     comments even while ufw is inactive, when `status` prints only "Status: inactive".
+#   - The tag prefix `agent-cloud:` is RESERVED for this playbook. A rule added by hand
+#     with a comment starting `agent-cloud:` is treated as this playbook's own and is
+#     pruned when no declaration produces that exact tag. Comment hand rules differently.
+#   - SSH (anti-orphan): no 22/tcp rule is ever pruned unless firewall_controller_cidr is
+#     declared and is one of firewall_ssh_cidrs. Narrowing firewall_ssh_cidrs on a host
+#     without it fails before any delete ("would prune SSH from X; declare
+#     firewall_controller_cidr"), in check mode too. An SSH allow from a declared CIDR is
+#     never stale, compared after normalising the address as ufw stores it.
+#   - Detection: when firewall_detect_ports is on and detection finds NO published
+#     port — a stopped container, a missing engine, the wrong user — stale INPUT/route
+#     rules from the declared upstream source(s) are HELD and reported, not pruned, unless
+#     firewall_prune_when_detection_empty: true says the empty result is real.
+#   - A rule covering both IP families is deleted per family; one family deleted while
+#     ufw reports the other as never stored is accepted, nothing deleted fails, and a pair
+#     left half-deleted fails the post-prune re-read.
 #   - Check mode reads the same state, computes the same plan, and reports the rules it
-#     would add (or retag) and would delete, changing nothing.
+#     would add (or retag), would delete and would hold, changing nothing.
 #
 # Inventory (site-config):
 #   firewall_ssh_cidrs       REQUIRED list of CIDRs allowed to SSH (group var)
@@ -71,6 +86,9 @@
 #                            (default true) — so the rule tracks whatever the
 #                            service serves (8000/tcp, 443/udp, ...) with no
 #                            hardcoded port. The container must be running.
+#   firewall_prune_when_detection_empty  default false: an empty detection result HOLDS
+#                            the stale detected-port rules (see "Convergence"); true
+#                            prunes them, for a service that really stopped publishing.
 #   firewall_upstream_source source(s) allowed to reach the DETECTED ports — a
 #                            single address/CIDR, or a LIST of them when a
 #                            service legitimately has more than one upstream
@@ -180,10 +198,28 @@
     # The tag of each SSH allow (header note "Convergence"): the drift guard, the
     # anti-lockout asserts and the declared set all read this one expression.
     _fw_ssh_tags: "{{ _ssh_cidrs | map('regex_replace', '^', 'agent-cloud:in:22/tcp:') | list }}"
-    # ...and its spec as `ufw show added` prints it (src/parser.py get_command, 0.36.2).
+    # ...and its spec as `ufw show added` prints it (src/parser.py get_command, 0.36.2), with
+    # the address normalised the way ufw stores it (src/util.py normalize_address, 0.36.2):
+    # a host mask (/32, /128) is dropped and an IPv4 CIDR is masked to its network, so a
+    # declared `192.0.2.5/32` or `192.0.2.77/24` matches the stored `192.0.2.5` or
+    # `192.0.2.0/24`. Not reproduced: dotted netmasks and IPv6 canonical form.
     _fw_ssh_specs: >-
-      {{ _ssh_cidrs | map('regex_replace', '^', 'allow from ')
-         | map('regex_replace', '$', ' to any port 22 proto tcp') | list }}
+      {%- set out = [] -%}
+      {%- for c in _ssh_cidrs -%}
+      {%- set a = c.split('/') -%}
+      {%- if a | length == 1 or a[1] in ['32', '128'] -%}
+      {%- set n = a[0] -%}
+      {%- elif ':' not in c and a[1] is match('^\\d+$') -%}
+      {%- set o = a[0].split('.') | map('int') | list -%}
+      {%- set blk = 2 ** (32 - (a[1] | int)) -%}
+      {%- set v = ((o[0] * 16777216 + o[1] * 65536 + o[2] * 256 + o[3]) // blk) * blk -%}
+      {%- set n = [v // 16777216, v // 65536 % 256, v // 256 % 256, v % 256] | join('.') ~ '/' ~ a[1] -%}
+      {%- else -%}
+      {%- set n = c -%}
+      {%- endif -%}
+      {%- set _ = out.append('allow from ' ~ n ~ ' to any port 22 proto tcp') -%}
+      {%- endfor -%}
+      {{ out }}
     _route_rules: "{{ firewall_route_rules | default([]) }}"
     _verify: "{{ firewall_verify_ssh | default(true) | bool }}"
     _engine: "{{ container_engine | default('podman') }}"
@@ -558,6 +594,40 @@
              | rejectattr('spec', 'in', _fw_ssh_specs) | list }}
         _fw_untagged: "{{ _fw_current | rejectattr('tag') | map(attribute='spec') | list }}"
         _fw_missing: "{{ _fw_declared | reject('in', _fw_current | map(attribute='tag') | list) | list }}"
+        # Detection that finds nothing (container stopped, engine missing, wrong user) is
+        # indistinguishable here from "the service publishes nothing any more", so its rules
+        # are HELD rather than pruned unless the inventory says an empty result is real.
+        _fw_detection_empty: >-
+          {{ (firewall_detect_ports | default(true) | bool)
+             and ((_detected.stdout_lines | default([])) | length == 0)
+             and not (firewall_prune_when_detection_empty | default(false) | bool) }}
+
+    - name: "Plan: which stale rules are held back, and which are pruned"
+      ansible.builtin.set_fact:
+        # A detected-port rule carries the same tag as a static one (header note), so the
+        # detected family is recognised by its peer: an INPUT or route allow FROM one of the
+        # declared upstream sources. Conservative: a static rule from an upstream is held too.
+        _fw_held: >-
+          {%- set out = [] -%}
+          {%- for r in _fw_stale if _fw_detection_empty -%}
+          {%- set f = r.tag.split(':', 3) -%}
+          {%- if f | length == 4 and f[1] in ['in', 'route'] and f[3] in _upstream_sources -%}
+          {%- set _ = out.append(r) -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ out }}
+
+    - name: "Plan: the rules this run deletes"
+      ansible.builtin.set_fact:
+        _fw_prune: "{{ _fw_stale | reject('in', _fw_held) | list }}"
+        # Every 22/tcp rule it would delete, of any family (anti-orphan guard below).
+        _fw_prune_ssh: >-
+          {%- set out = [] -%}
+          {%- for r in _fw_stale | reject('in', _fw_held)
+                if r.spec is search('port 22 proto tcp$') or ':22/tcp:' in r.tag -%}
+          {%- set _ = out.append(r) -%}
+          {%- endfor -%}
+          {{ out }}
 
     - name: "Report the convergence plan"
       ansible.builtin.debug:
@@ -566,7 +636,8 @@
           mode: "{{ 'check mode: nothing is changed' if ansible_check_mode else 'apply' }}"
           declared_rules: "{{ _fw_declared | length }}"
           would_add_or_retag: "{{ _fw_missing if ansible_check_mode else [] }}"
-          delete_stale_tagged: "{{ _fw_stale | map(attribute='spec') | list }}"
+          delete_stale_tagged: "{{ _fw_prune | map(attribute='spec') | list }}"
+          held_detection_empty: "{{ _fw_held | map(attribute='spec') | list }}"
           would_set_defaults_or_enable: "{{ ansible_check_mode and ('Status: active' not in _fw_state.stdout
                                             or 'deny (incoming)' not in _fw_state.stdout
                                             or 'allow (outgoing)' not in _fw_state.stdout) }}"
@@ -579,6 +650,29 @@
           apply; one it no longer declares must be tagged by a run with its old declaration
           before narrowing, or removed by hand.
       when: _fw_untagged | length > 0
+
+    - name: "Report stale detected-port rules held back because detection found nothing"
+      ansible.builtin.debug:
+        msg: >-
+          Port detection on {{ inventory_hostname }} found no published ports, so {{ _fw_held | length }}
+          stale rule(s) from the upstream source(s) are KEPT, not pruned: {{ _fw_held | map(attribute='spec') | list }}.
+          If the service really publishes nothing now, set firewall_prune_when_detection_empty: true.
+      when: _fw_held | length > 0
+
+    # Narrowing firewall_ssh_cidrs deletes the dropped CIDR's SSH allow. The only proof
+    # that the orchestrator keeps its own SSH path is firewall_controller_cidr, so no 22/tcp
+    # rule is pruned without it. Runs in check mode too: a dry run predicts this refusal.
+    - name: "Refuse to prune an SSH rule unless the orchestrator's SSH source is declared (anti-orphan)"
+      ansible.builtin.assert:
+        that:
+          - >-
+            (_fw_prune_ssh | length == 0)
+            or (firewall_controller_cidr is defined and firewall_controller_cidr in _ssh_cidrs)
+        fail_msg: >-
+          would prune SSH from {% for r in _fw_prune_ssh %}{{ r.spec.split(' from ')[1].split(' ')[0]
+          if ' from ' in r.spec else r.spec }}{{ '' if loop.last else ', ' }}{% endfor %}
+          on {{ inventory_hostname }}; declare firewall_controller_cidr (one of firewall_ssh_cidrs) to allow
+          it. Nothing was deleted.
 
     - name: "Refuse to prune while a declared rule is missing from the host (drift guard)"
       ansible.builtin.assert:
@@ -594,8 +688,12 @@
       ansible.builtin.command: "ufw {{ ('route delete ' ~ item.spec[6:]) if item.spec.startswith('route ') else ('delete ' ~ item.spec) }}"
       register: _fwprune
       changed_when: "_fwprune.stdout is search('Rules? (deleted|updated)')"
-      failed_when: _fwprune.rc != 0 or 'Could not delete' in _fwprune.stdout
-      loop: "{{ _fw_stale }}"
+      # A rule covering both IP families is deleted per family, and ufw reports each
+      # ("Rule deleted" / "Could not delete non-existent rule (v6)", src/frontend.py
+      # set_rule, 0.36.2). One family deleted is success when the other was never stored;
+      # nothing deleted at all fails. A pair left half-deleted is caught by the re-read.
+      failed_when: _fwprune.rc != 0 or _fwprune.stdout is not search('Rules? (deleted|updated)')
+      loop: "{{ _fw_prune }}"
       loop_control:
         label: "{{ item.spec }} ({{ item.tag }})"
       when: not ansible_check_mode
@@ -615,7 +713,7 @@
             _fw_ssh_tags | map('regex_replace', '^', " comment '") | map('regex_replace', '$', "'")
             | reject('in', _fw_after.stdout) | list | length == 0
           - >-
-            _fw_stale | map(attribute='tag') | map('regex_replace', '^', " comment '")
+            _fw_prune | map(attribute='tag') | map('regex_replace', '^', " comment '")
             | map('regex_replace', '$', "'") | select('in', _fw_after.stdout) | list | length == 0
         fail_msg: >-
           After pruning, {{ inventory_hostname }} is missing a declared SSH allow or still holds a
