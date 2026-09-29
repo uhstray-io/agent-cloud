@@ -122,6 +122,18 @@ from the UI; the agent hands over the exact template name, survey values and the
 verification commands.** Do not fabricate access by reading the controller's own
 token out of OpenBao from a workstation.
 
+## Two catalog rules, enforced by tests
+
+- **A step template new with the service deployment workflow has a `(Dev)` variant.** Its
+  playbook is not on `main` until promotion, so the base template cannot run. Enforced by
+  `test_workflow_templates_are_dev_bound_until_promoted`; only templates that predate the
+  workflow are exempt.
+- **A template whose playbook targets `{{ target_service }}` offers that survey field.**
+  Without it the play falls back to `ungrouped` and reaches no host, and the launcher
+  refuses a non-survey extra var. Enforced by `test_templates_targeting_a_group_ask_for_it`.
+  Both tests live in `platform/tests/test_workflow_registry.py`; both rules were found on
+  2026-09-28 while onboarding the internal DNS and CA VMs.
+
 ## Publish selected survey fields
 
 The declared **Publish Semaphore Template Surveys (Dev)** template runs
