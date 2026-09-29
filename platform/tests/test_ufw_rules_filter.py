@@ -42,6 +42,8 @@ def test_an_address_is_spelled_as_ufw_stores_it(given, stored):
     "allow in on eth0 to any port 22 proto tcp", "allow in to any port 22 proto tcp",
     "allow log from 192.0.2.0/24 to any port 22 proto tcp",
     "route allow from 192.0.2.0/24 to any port 22 proto tcp", "route allow from 192.0.2.0/24",
+    "route allow out on eth1 to 192.0.2.164 port 22 proto tcp",
+    "route allow in on eth0 out on eth1 to 192.0.2.164 port 22 proto tcp",
     "allow OpenSSH", "allow from 192.0.2.0/24 to any app OpenSSH",  # unreadable: counts
 ])
 def test_a_rule_that_admits_ssh_is_recognised(spec):

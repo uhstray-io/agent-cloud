@@ -64,14 +64,17 @@ def ufw_rule_admits_port(spec, port=22, protocols=("tcp",)):
     to delete it unguarded rather than guess.
     """
     words = str(spec).split()
-    if words[:1] == ["route"]:
+    route = words[:1] == ["route"]
+    if route:
         words = words[1:]
     if not words or words[0] not in _ADMITS:
         return False
     words = words[1:]
-    if words[:1] == ["out"]:
+    if words[:1] == ["out"] and not route:
         return False
-    if words[:1] == ["in"]:
+    # A route rule may name both interfaces (`in on A out on B`); either direction of a
+    # FORWARD allow can carry SSH to a forwarded host, so neither excludes it.
+    while words[:1] in (["in"], ["out"]):
         words = words[3:] if words[1:2] == ["on"] else words[1:]
     words = [w for w in words if w not in _LOG]
     proto, dports = "any", "any"
