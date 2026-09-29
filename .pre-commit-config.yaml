@@ -192,6 +192,18 @@ repos:
         pass_filenames: false
         stages: [pre-commit]
 
+  # Machine home directories (docs/MISTAKES.md 3.9): the pre-push audit's /Users|/home grep,
+  # made a gate. Fails closed like the secret gates.
+  - repo: local
+    hooks:
+      - id: no-machine-paths
+        name: check for machine home directories
+        language: system
+        entry: sh scripts/check-machine-paths.sh
+        always_run: true
+        pass_filenames: false
+        stages: [pre-commit]
+
   # Standard pre-commit hooks for general hygiene
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0

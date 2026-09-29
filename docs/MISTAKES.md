@@ -93,6 +93,7 @@ and why.
 | 4.8 | A credential-shaped test fixture was pushed; CI's unscoped all-detectors scan let it fail other PRs | Data handling | CI (scan scoped to the PR's commits) |
 | 4.9 | Private Discord destination IDs were copied into a public test fixture | Data handling | Convention |
 | 4.10 | **x3** — A heredoc script and a stdin redirect both targeted one interpreter; it parsed the operator token file as source and the syntax error printed the token | Secret in transcript | Convention — **count ≥ 3: the PreToolUse hook is now required, not proposed** |
+| 4.11 | A workstation home path reached a committed ledger entry; the audit grep for it ran by hand only | Data handling | Pre-commit hook (`no-machine-paths`) |
 | 5.1 | Security check duplicated per caller; a fix reached three copies and missed two | Duplication | Test |
 | 5.2 | Committed while a test was failing, because the check did not gate the commit (repeat 2026-09-25: a merge after a mergeability read, joined by `;`) | Process | Pre-push hook |
 | 5.3 | Merged a PR while its review was rate-limited | Process | Convention (user-stated) |
@@ -2111,6 +2112,29 @@ docs does not reach the moment of typing. With three occurrences, Convention is 
 acceptable enforcement: the PreToolUse hook proposed above is required. Until it exists,
 token-bearing calls go through one reusable script file that takes the query as arguments,
 never a fresh inline program.
+
+
+### 4.11 A workstation home path reached a committed ledger entry; the audit grep was manual
+
+**What happened.** On 2026-09-28 ledger entry 3.9, written in the same PR as the harness
+sandbox (#319), named the operator's real known_hosts path, spelled with the workstation
+account's home directory. #319 merged into `dev` with it. It was found after the merge, and #328
+redacted it under the header's redaction exception.
+
+**Root cause.** The repository's pre-push audit includes a grep for `/Users/` and `/home/`
+paths, but only as a command to run by hand. None of the pre-commit gates (trufflehog,
+private IPs, credentials, `.env`, private keys) looks for a home directory, so a path in
+prose passed every automated check.
+
+**The rule.** A path in a committed file names a placeholder (`/home/<user>`, `$HOME`,
+`{{ ansible_user }}`) or a container or service account, never a real login. A check that
+exists only as an audit step someone runs by hand is a convention; the gate belongs in the
+hook.
+
+**Enforced by.** Pre-commit gate `no-machine-paths` (`scripts/check-machine-paths.sh`,
+tested by `platform/tests/test_machine_path_hook.bats`): it refuses an added line whose
+`/Users/<name>` or `/home/<name>` is not a placeholder or an allowlisted service account.
+Fails closed, like the secret gates.
 
 ## 5. Duplication and process
 
