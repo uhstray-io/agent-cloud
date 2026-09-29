@@ -223,11 +223,12 @@ options. This config change does not run a backup or prove artifact
 immutability, retention, or restore success; the separate restore gate still
 applies before guest growth.
 
-Set **Inspect backup jobs only** to `true` to verify the reviewed Dev revision,
-o11y VM, and OpenBao access, then list sanitized candidate IDs, enabled state,
-selector type, member count, and declared-VM membership. Inspection ends before
-job detail reads or writes. Record the chosen existing job ID on the o11y host
-in private inventory, then run with inspection disabled for check mode and the
+The Semaphore survey defaults **Inspect backup jobs only** to `true`, so its
+first launch is read-only. It verifies the reviewed Dev revision, o11y VM, and
+OpenBao access, then lists sanitized candidate IDs, enabled state, selector
+type, member count, and declared-VM membership. Inspection ends before job
+detail reads or writes. Record the chosen existing job ID on the o11y host in
+private inventory, then set inspection to `false` for check mode and the
 reviewed apply.
 
 Dev-bound read-only Semaphore task 1802, at controller revision

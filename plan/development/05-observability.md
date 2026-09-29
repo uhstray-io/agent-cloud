@@ -1191,3 +1191,18 @@ When Phase 1's gate passes:
 - **Config is code.** Datasources, dashboards, scrape rules, and log pipelines are committed and provisioned on boot; the only secret is the Grafana admin password (OpenBao). A wipe + redeploy reproduces the exact same observability.
 - **The audit-logging requirement has a home.** AUTOMATION-COMPOSABILITY's OpenBao-audit→Loki pipe and orb-agent OTel export now have a concrete target (Phase 2), instead of an unbuilt dependency.
 - **Local mirrors prod.** The same compose base extends to Mimir/Tempo/MinIO/Alertmanager in prod via overlay + `manage-secrets` — one codebase, no fork; local proves the shape before prod.
+
+## 2026-09-29 production conformance receipts
+
+PR #331 merged to `dev` as `566a5e3d`; PR #332 merged as `5314ec65`. Semaphore
+inventory sync matched the private source. At exact reviewed `dev` revision
+`5314ec65`, deploy check/apply tasks 1850/1851 succeeded with a healthy stack;
+firewall check/apply tasks 1852/1853 succeeded; and collector check/apply tasks
+1854/1855 succeeded with `otlp: delivered`. The live Grafana conformance
+dashboard reports 18 tracked services and five recent failed-step reports with
+their assessment context. Scoped schedule readback confirmed `*/15 * * * *`.
+
+Generic `Verify o11y Service` task 1857 failed because it queried
+`service.name` as a Loki `service` label. This was a verifier query mismatch,
+not a collector delivery failure: conformance records use
+`job=agent-cloud-conformance` and `service=<assessed service>`.

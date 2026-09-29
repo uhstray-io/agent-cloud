@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import io
+import json
 import sys
 from pathlib import Path
 
@@ -12,8 +14,10 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "platform/playbooks/files"))
 
 from reconcile_proxmox_backup_job import (  # noqa: E402
+    _safe_refusal,
     assert_unchanged,
     inspect_candidates,
+    main,
     prepare_plan,
     verify_readback,
 )
@@ -192,6 +196,47 @@ def test_readback_requires_exact_membership_and_preserves_every_option():
         verify_readback(plan, job(vmid="100,101"))
 
 
+def test_inactive_selector_fields_normalize_for_prewrite_and_readback():
+    initial = job(all=0, pool="", exclude=None)
+    plan = plan_for(detail=initial)
+    omitted = job(vmid=plan["desired_vmid"])
+
+    assert "all" not in plan["before"]
+    assert "pool" not in plan["before"]
+    assert "exclude" not in plan["before"]
+    assert_unchanged(plan, job())
+    assert verify_readback(plan, omitted)["verified"] is True
+
+
+def test_helper_refusal_messages_are_allow_listed_and_never_echo_private_values():
+    assert _safe_refusal(ValueError("The selected backup job uses an unsupported pool or exclude selector.")) == (
+        "The selected backup job uses an unsupported pool or exclude selector."
+    )
+    assert _safe_refusal(ValueError("private-job has secret-option=hidden")) == (
+        "Backup-job reconciliation refused because Proxmox returned invalid data."
+    )
+
+
+def test_cli_refusal_reports_only_allow_listed_text(monkeypatch, capsys):
+    private_detail = job(pool="private-pool-name", comment="private operator note")
+    monkeypatch.setattr(sys, "argv", ["reconcile_proxmox_backup_job.py", "plan"])
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps({
+        "job_id": "nightly-o11y",
+        "vmid": "200",
+        "jobs": [private_detail],
+        "detail": private_detail,
+    })))
+
+    assert main() == 2
+    captured = capsys.readouterr()
+    assert json.loads(captured.out) == {
+        "refusal": "The selected backup job uses an unsupported pool or exclude selector."
+    }
+    assert captured.err == ""
+    assert "private-pool-name" not in captured.out
+    assert "private operator note" not in captured.out
+
+
 def test_playbook_requires_reviewed_dev_and_guards_every_mutation():
     plays = yaml.safe_load((ROOT / "platform/playbooks/reconcile-o11y-backup-job.yml").read_text())
     play = next(item for item in plays if item.get("name") == "Reconcile the declared o11y backup job")
@@ -207,9 +252,10 @@ def test_playbook_requires_reviewed_dev_and_guards_every_mutation():
     assert "not (local_mode | default(false) | bool)" in by_name[
         "Require the reviewed Dev revision and exact private o11y declarations"
     ][1]["ansible.builtin.assert"]["that"]
-    assert "inspect_only | default('false') | string | lower in ['true', 'false']" in by_name[
+    assert "inspect_only | default('true') | string | lower in ['true', 'false']" in by_name[
         "Require the reviewed Dev revision and exact private o11y declarations"
     ][1]["ansible.builtin.assert"]["that"]
+    assert play["vars"]["_inspect_only"] == "{{ inspect_only | default('true') | bool }}"
     assert "hostvars[_o11y_host].o11y_backup_job_id" in play["vars"]["_backup_job_id"]
     assert "_backup_job_id is match('^[A-Za-z0-9._-]{1,64}$')" in by_name[
         "Require the private selected job ID for apply mode"
@@ -238,6 +284,22 @@ def test_playbook_requires_reviewed_dev_and_guards_every_mutation():
     assert all(task.get("check_mode") is False for task in api if task["ansible.builtin.uri"]["method"] == "GET")
     assert not any(task.get("check_mode") is False for task in api if task["ansible.builtin.uri"]["method"] == "PUT")
 
+    helper_assertions = {
+        "Require safe backup-job inspection data": "_backup_inspection_result",
+        "Require a safe explicit-VMID backup-job plan": "_backup_plan_result",
+        "Refuse a backup job changed after inspection": "_backup_recheck_result",
+        "Require exact backup-job readback": "_backup_verify_result",
+    }
+    for name, result_name in helper_assertions.items():
+        task = by_name[name][1]
+        assert "refusal" in task["ansible.builtin.assert"]["fail_msg"]
+        assert f"{result_name}.stdout | from_json" in task["ansible.builtin.assert"]["fail_msg"]
+        assert "stderr" not in task["ansible.builtin.assert"]["fail_msg"]
+    for task in tasks:
+        argv = task.get("ansible.builtin.command", {}).get("argv", [])
+        if len(argv) > 2 and argv[2] in {"inspect", "plan", "recheck", "verify"}:
+            assert task.get("no_log") is True
+
 
 def test_semaphore_template_is_dev_bound_and_uses_required_reviewed_sha():
     templates = yaml.safe_load((ROOT / "platform/semaphore/templates.yml").read_text())["templates"]
@@ -262,7 +324,7 @@ def test_semaphore_template_is_dev_bound_and_uses_required_reviewed_sha():
             ),
             "type": "enum",
             "required": True,
-            "default_value": "false",
+            "default_value": "true",
             "values": [
                 {"name": "Inspect only", "value": "true"},
                 {"name": "Apply declared job membership", "value": "false"},

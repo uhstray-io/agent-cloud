@@ -13,6 +13,29 @@ JOB_ID = re.compile(r"[A-Za-z0-9._-]{1,64}")
 VMID_LIST = re.compile(r"[1-9][0-9]*(?:,[1-9][0-9]*)*")
 VMID = re.compile(r"[1-9][0-9]*")
 TRANSIENT_FIELDS = {"next-run"}
+SAFE_REFUSALS = {
+    "The declared backup job ID is missing or malformed.",
+    "The declared VMID is missing or malformed.",
+    "The declared VMID is outside the Proxmox range.",
+    "Proxmox returned a malformed backup-job list.",
+    "Proxmox returned a malformed backup job.",
+    "Proxmox returned a backup job with a malformed ID.",
+    "Proxmox returned duplicate backup-job IDs.",
+    "The declared backup job is missing or ambiguous.",
+    "The selected backup job identity changed.",
+    "The selected job is not a vzdump backup job.",
+    "The selected backup job is disabled or has malformed enabled state.",
+    "The selected backup job uses an unsupported all selector.",
+    "The selected backup job uses an unsupported pool or exclude selector.",
+    "The selected backup job has malformed explicit VMID membership.",
+    "The selected backup job has duplicate VMID members.",
+    "The backup-job list and detail read do not match.",
+    "The selected backup job changed after the initial inspection.",
+    "The backup-job VMID readback does not match the requested state.",
+    "The backup-job readback shows an unexpected option change.",
+    "Unsupported reconciliation operation.",
+}
+FALLBACK_REFUSAL = "Backup-job reconciliation refused because Proxmox returned invalid data."
 
 
 def _require(condition: bool, message: str) -> None:
@@ -35,7 +58,19 @@ def _parse_vmid(value: object) -> int:
 
 
 def _stable_config(job: Mapping[str, object]) -> dict[str, object]:
-    return {key: copy.deepcopy(value) for key, value in job.items() if key not in TRANSIENT_FIELDS}
+    stable = {key: copy.deepcopy(value) for key, value in job.items() if key not in TRANSIENT_FIELDS}
+    all_value = stable.get("all")
+    if all_value is None or all_value is False or (type(all_value) is int and all_value == 0):
+        stable.pop("all", None)
+    for selector in ("pool", "exclude"):
+        if stable.get(selector) in (None, ""):
+            stable.pop(selector, None)
+    return stable
+
+
+def _safe_refusal(exc: BaseException) -> str:
+    message = str(exc)
+    return message if message in SAFE_REFUSALS else FALLBACK_REFUSAL
 
 
 def inspect_candidates(payload: Mapping[str, object]) -> dict[str, object]:
@@ -185,7 +220,7 @@ def main() -> int:
         else:
             raise ValueError("Unsupported reconciliation operation.")
     except (IndexError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
-        print(f"Backup-job reconciliation refused: {exc}", file=sys.stderr)
+        print(json.dumps({"refusal": _safe_refusal(exc)}, separators=(",", ":")))
         return 2
     print(json.dumps(result, separators=(",", ":")))
     return 0

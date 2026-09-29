@@ -1421,7 +1421,7 @@ templates:
         description: "true lists sanitized candidates and stops before any write; false uses the private inventory job ID"
         type: enum
         required: true
-        default_value: "false"
+        default_value: "true"
         values:
           - { name: "Inspect only", value: "true" }
           - { name: "Apply declared job membership", value: "false" }

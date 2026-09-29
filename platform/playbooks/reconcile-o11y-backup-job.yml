@@ -28,7 +28,7 @@
     _vmid: "{{ hostvars[_o11y_host].vm_vmid | default('') | string if _o11y_host else '' }}"
     _node: "{{ hostvars[_o11y_host].vm_node | default('') | string if _o11y_host else '' }}"
     _backup_job_id: "{{ hostvars[_o11y_host].o11y_backup_job_id | default('') | string if _o11y_host else '' }}"
-    _inspect_only: "{{ inspect_only | default('false') | bool }}"
+    _inspect_only: "{{ inspect_only | default('true') | bool }}"
   tasks:
     - name: Require the reviewed Dev revision and exact private o11y declarations
       ansible.builtin.assert:
@@ -38,7 +38,7 @@
           - _o11y_hosts | length == 1
           - _vmid is match('^(?:[1-9][0-9]{2,8})$')
           - _node is match('^[A-Za-z0-9._-]+$')
-          - inspect_only | default('false') | string | lower in ['true', 'false']
+          - inspect_only | default('true') | string | lower in ['true', 'false']
         fail_msg: >-
           Backup-job reconciliation requires one declared production o11y VM,
           a valid inspect-only choice, and the exact reviewed Dev revision.
@@ -160,7 +160,10 @@
     - name: Require safe backup-job inspection data
       ansible.builtin.assert:
         that: _backup_inspection_result.rc == 0
-        fail_msg: "Proxmox backup-job inspection returned malformed or ambiguous data."
+        fail_msg: >-
+          Backup-job inspection refused:
+          {{ ((_backup_inspection_result.stdout | from_json).refusal
+              | default('Proxmox returned invalid inspection data.')) }}
 
     - name: Keep the sanitized backup-job candidate report private to this run
       ansible.builtin.set_fact:
@@ -218,8 +221,10 @@
       ansible.builtin.assert:
         that: _backup_plan_result.rc == 0
         fail_msg: >-
-          Backup-job inspection refused a missing, ambiguous, disabled, malformed,
-          or non-explicit job; no Proxmox write was attempted.
+          Backup-job planning refused:
+          {{ ((_backup_plan_result.stdout | from_json).refusal
+              | default('Proxmox returned invalid planning data.')) }}
+          No Proxmox write was attempted.
 
     - name: Keep the validated backup-job plan private to this run
       ansible.builtin.set_fact:
@@ -268,7 +273,11 @@
     - name: Refuse a backup job changed after inspection
       ansible.builtin.assert:
         that: _backup_recheck_result.rc == 0
-        fail_msg: "The selected backup job changed after inspection; no Proxmox write was attempted."
+        fail_msg: >-
+          Backup-job pre-write check refused:
+          {{ ((_backup_recheck_result.stdout | from_json).refusal
+              | default('The selected backup job failed its safety recheck.')) }}
+          No Proxmox write was attempted.
       when:
         - _backup_plan.changed | bool
         - not ansible_check_mode
@@ -318,7 +327,10 @@
     - name: Require exact backup-job readback
       ansible.builtin.assert:
         that: _backup_verify_result.rc == 0
-        fail_msg: "Proxmox backup-job readback did not match the explicit VMID plan."
+        fail_msg: >-
+          Backup-job readback refused:
+          {{ ((_backup_verify_result.stdout | from_json).refusal
+              | default('Proxmox returned invalid readback data.')) }}
       when: not ansible_check_mode
 
     - name: Keep the sanitized backup-job readback summary
