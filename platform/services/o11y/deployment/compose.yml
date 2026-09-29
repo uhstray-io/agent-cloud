@@ -120,6 +120,7 @@ services:
     command: ["-target=all", "-config.file=/etc/tempo/config.yml", "-config.expand-env=true"]
     environment:
       O11Y_TEMPO_RETENTION: ${O11Y_TEMPO_RETENTION:-168h}
+      O11Y_TEMPO_METRIC_PROCESSORS: "${O11Y_TEMPO_METRIC_PROCESSORS:-[]}"
     volumes:
       - ./config/tempo-config.yml:/etc/tempo/config.yml:ro
       - tempo-data:/var/tempo

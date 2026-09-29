@@ -187,6 +187,8 @@
 
     - name: "Require the recorded trace rollout gate"
       ansible.builtin.include_tasks: tasks/assert-o11y-trace-rollout.yml
+      # Derived metrics activate trace processing and intentionally inherit the
+      # shared trace rollout receipts in local-dev as well as production.
       when: >-
         (o11y_trace_rollout_enabled | default(false) | bool) or
         (o11y_trace_derived_metrics_enabled | default(false) | bool) or
@@ -531,7 +533,7 @@
     - name: Require the effective Tempo processor, remote-write, and series limits
       ansible.builtin.assert:
         that:
-          - (_tempo_config.stdout | from_yaml).overrides.defaults.metrics_generator.processors == (['service-graphs', 'span-metrics'] if o11y_trace_derived_metrics_enabled | default(false) | bool else [])
+          - (((_tempo_config.stdout | from_yaml).overrides.defaults.metrics_generator.processors | default([], true) | list | sort) == ((['service-graphs', 'span-metrics'] | sort) if o11y_trace_derived_metrics_enabled | default(false) | bool else []))
           - (_tempo_config.stdout | from_yaml).overrides.defaults.metrics_generator.max_active_series | int == 2000
           - (_tempo_config.stdout | from_yaml).metrics_generator.storage.remote_write | selectattr('url', 'equalto', 'http://prometheus:9090/api/v1/write') | list | length == 1
           - (_tempo_config.stdout | from_yaml).metrics_generator.storage.path == '/var/tempo/generator/wal'

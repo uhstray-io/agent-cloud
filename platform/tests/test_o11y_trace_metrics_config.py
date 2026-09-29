@@ -40,6 +40,11 @@ def test_tempo_metrics_are_disabled_by_default_and_gated_enablement_is_bounded()
     assert _render_env(False)["O11Y_TEMPO_METRIC_PROCESSORS"] == "[]"
     assert _render_env(True)["O11Y_TEMPO_METRIC_PROCESSORS"] == "[service-graphs, span-metrics]"
 
+    compose = yaml.safe_load((DEPLOY / "compose.yml").read_text(encoding="utf-8"))
+    assert compose["services"]["tempo"]["environment"]["O11Y_TEMPO_METRIC_PROCESSORS"] == (
+        "${O11Y_TEMPO_METRIC_PROCESSORS:-[]}"
+    )
+
     disabled = _tempo_config("[]")
     enabled = _tempo_config("[service-graphs, span-metrics]")
     assert disabled["overrides"]["defaults"]["metrics_generator"]["processors"] == []
@@ -96,6 +101,17 @@ def test_production_metrics_enablement_requires_all_recorded_gates_and_live_read
         "not (local_mode | default(false) | bool)",
         "o11y_trace_derived_metrics_enabled | default(false) | bool",
     ]
-    assert any("effective Tempo" in task["name"] for task in deploy_tasks)
+    tempo_readback = next(
+        task
+        for task in deploy_tasks
+        if task["name"] == "Require the effective Tempo processor, remote-write, and series limits"
+    )
+    processor_check = next(
+        check
+        for check in tempo_readback["ansible.builtin.assert"]["that"]
+        if "metrics_generator.processors" in check
+    )
+    assert "| default([], true) | list | sort" in processor_check
+    assert "['service-graphs', 'span-metrics']" in processor_check
     trace_gate = next(task for task in deploy_tasks if "recorded trace rollout gate" in task["name"])
     assert "o11y_trace_derived_metrics_enabled | default(false) | bool" in trace_gate["when"]
