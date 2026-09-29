@@ -1129,8 +1129,22 @@ declared node's disk/partition, LVM, thin-pool, Proxmox-managed directory, and
 storage-status APIs. It emits only aggregate counts and coarse
 `reported_capacity_only` bands; missing disk usage remains unknown, directory
 locality is unverified, and device safety, filesystem readiness, PBS
-suitability, and write authorization are always false. Live task execution and
-review remain pending. Any later idempotent disk/LVM/filesystem automation
+suitability, and write authorization are always false. Dev-bound Semaphore
+task 1981 succeeded at merged SHA `ab98eaa3489937a854431ad046ddc5cd19c5c196`;
+publisher tasks 1978 (check mode) and 1979 (apply) passed. The sanitized
+receipt reported 7 physical devices, 3 partitions, 3 unknown disk-usage
+values, 4 LVM VGs with 4 PVs, 1 thin pool, no managed directories, 6 visible
+storage-status rows (5 active), 3 explicitly non-shared rows and 3 shared
+rows, and 5 positive-capacity rows with 1 unreported. All device-selection,
+physical-safety, filesystem-readiness, PBS-readiness, and write flags remained
+false. The next survey extension checks only a private declared active,
+non-shared LVM-thin `images` row and emits fixed 256/512/1024-GiB reported
+capacity booleans with at least 30% of reported total remaining after a
+hypothetical full allocation. It reserves no capacity and does not prove VM,
+disk, filesystem, PBS, or restore readiness. PBS is planned as a VM with a new
+virtual data disk on that separately declared store; this survey does not
+initialize or choose a host disk. Live execution of the added capacity check
+and review remain pending. Any later idempotent disk/LVM/filesystem automation
 must match the privately reviewed actual layout; no device is inferred safe to
 format. Preserve current telemetry volumes and 15d/7d/168h retention until
 isolated restore, cleanup, and seven-day capacity gates pass.

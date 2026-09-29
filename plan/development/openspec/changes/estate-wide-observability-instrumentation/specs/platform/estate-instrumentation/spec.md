@@ -61,6 +61,11 @@ The platform SHALL use a reviewed, Dev-bound, GET-only survey before considering
 - **THEN** it reports aggregate disk, partition, usage-class, LVM, thin-pool, managed-directory, and storage-status facts without exposing device paths, serials, storage or filesystem names, or exact capacities
 - **AND** it performs only GET requests and reports device safety, filesystem readiness, PBS suitability, and write authorization as false
 
+#### Scenario: Declared LVM-thin image storage is checked for virtual-disk headroom
+- **WHEN** the survey reads the private VM-image storage declaration and Proxmox reports its node storage status
+- **THEN** it reports only fixed booleans for 256, 512, and 1024-GiB proposed virtual data disks, requiring exactly one matching active row with `shared=0`, `images` content, `lvmthin` type, positive consistent reported capacity, and enough available space after the proposed disk to retain at least 30% of reported total
+- **AND** missing, duplicated, malformed, inactive, shared, unsupported, or capacity-incomplete candidates fail closed; no storage ID, exact capacity, volume, or reservation is reported, and physical safety, PBS readiness, and write authorization are not claimed
+
 ### Requirement: Rollout and recovery are reproducible
 Instrumentation and receiver changes SHALL be declared as code, applied through reviewed `dev` and Semaphore, and verified per wave. A failed wave SHALL be reversible by an operator-driven reviewed declaration revert and redeploy without deleting existing telemetry volumes.
 

@@ -229,6 +229,40 @@ reviewed idempotent disk/LVM/filesystem automation must match the private
 declared layout before any write; no unused device may be presumed safe or
 selected automatically. Live survey execution remains pending.
 
+The physical survey succeeded as Dev-bound Semaphore task 1981 at merged SHA
+`ab98eaa3489937a854431ad046ddc5cd19c5c196`; publisher tasks 1978 (check mode)
+and 1979 (apply) passed. Its sanitized receipt reported 7 physical devices,
+3 partitions, 3 disk-usage values unknown, 4 LVM volume groups containing 4
+physical volumes, 1 thin pool, 0 Proxmox-managed directories, 6 visible
+storage-status rows (5 active), 3 explicitly non-shared rows, 3 shared rows,
+and 5 rows with positive reported capacity while 1 capacity was unreported.
+Device selection/safety, filesystem readiness, PBS suitability/readiness, and
+write authorization remained false. A first invocation refused because the
+private VM-image storage declaration was absent; the existing code-managed
+inventory synchronization reconciled that private declaration before task
+1981 succeeded. Private identifiers and exact capacities remain outside this
+repository.
+
+The local-only PBS placement strategy is a VM with a new virtual data disk on
+the separately declared image store; this does not authorize initializing a
+physical host disk. Extend the read-only survey to evaluate only the declared
+image-store row, requiring exactly one match, active state, explicit
+`shared=0`, `images` content, and `lvmthin` type. A `dir` row is not eligible
+because the existing survey does not establish whether a managed directory
+is local or mounted. For each proposed 256/512/1024-GiB disk, the fixed public
+boolean is true only when Proxmox-reported `avail` can cover that entire size
+and leaves `avail - size >= 30% of total`. The arithmetic is a conservative,
+point-in-time full-allocation scenario; it reserves no capacity and does not
+prove that creating the VM/disk is safe or that PBS is ready. Unknown,
+inconsistent, missing, or duplicate candidate facts yield false or a fixed
+refusal without exposing the declared ID or capacity. Proxmox documents that
+LVM-thin supports raw VM images and is local-only, and its upstream status
+implementation reports thin-pool size/used/available values; this justifies
+the bounded candidate type, not physical suitability. See the [Proxmox storage
+guide](https://pve.proxmox.com/pve-docs/pvesm.1.html) and [LVM-thin status
+implementation](https://github.com/proxmox/pve-storage/blob/master/src/PVE/Storage/LvmThinPlugin.pm).
+Live execution of the added virtual-disk capacity check remains pending.
+
 The 90d/45d retention target remains blocked: keep the effective 15d
 Prometheus / 7d Loki / 168h Tempo settings and 0B Prometheus size cap until the
 representative seven-day forecast, nonzero cap, at least 30% backing-filesystem

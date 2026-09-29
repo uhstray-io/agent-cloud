@@ -24,6 +24,7 @@ def api(data):
 
 def sample():
     return {
+        "declared_storage_id": "private-candidate",
         "disks": api([
             {"devpath": "/dev/private-disk-a", "size": 2 * 1024**4, "used": "LVM"},
             {"devpath": "/dev/private-disk-a1", "parent": "/dev/private-disk-a", "size": 1 * GIB,
@@ -51,6 +52,16 @@ def sample():
              "shared": 0, "total": 2000 * GIB, "used": 1200 * GIB, "avail": 800 * GIB},
             {"storage": "private-dir", "type": "dir", "content": "backup", "active": 1, "shared": 0},
         ]),
+    }
+
+
+def candidate_row(*, total=8192 * GIB, used=1024 * GIB, available=None, **overrides):
+    if available is None:
+        available = total - used if type(total) is int else 0
+    return {
+        "storage": "private-candidate", "type": "lvmthin", "content": "rootdir,images",
+        "active": 1, "shared": 0, "total": total, "used": used, "avail": available,
+        **overrides,
     }
 
 
@@ -118,6 +129,9 @@ def test_report_is_allowlisted_and_has_no_private_topology_or_exact_capacity():
             "under-30-percent": 0, "30-to-under-70-percent": 1,
             "at-least-70-percent": 0, "unknown": 0,
         },
+        "reported_capacity_allows_256_gib_disk_with_30pct_remaining": False,
+        "reported_capacity_allows_512_gib_disk_with_30pct_remaining": False,
+        "reported_capacity_allows_1024_gib_disk_with_30pct_remaining": False,
         "device_selected": False,
         "device_safety_verified": False,
         "filesystem_readiness_verified": False,
@@ -127,6 +141,7 @@ def test_report_is_allowlisted_and_has_no_private_topology_or_exact_capacity():
     }
     rendered = json.dumps(result)
     for private_value in ("private-disk", "private-vg", "private-pv", "private-pool", "private-dir",
+                          "private-candidate",
                           "private-lvm", "private-node", "private-server", "/dev/", "/private/",
                           str(2 * 1024**4), str(500 * GIB), str(8 * GIB)):
         assert private_value not in rendered
@@ -140,7 +155,10 @@ def test_report_is_allowlisted_and_has_no_private_topology_or_exact_capacity():
         "active_storage_count", "storage_active_unknown_count", "storage_backend_counts", "storage_shared_true_count",
         "storage_shared_false_count", "storage_shared_unknown_count", "storage_capacity_known_count",
         "storage_capacity_unreported_count", "storage_reported_total_capacity_band_counts",
-        "storage_reported_available_capacity_band_counts", "storage_reported_headroom_band_counts", "device_selected",
+        "storage_reported_available_capacity_band_counts", "storage_reported_headroom_band_counts",
+        "reported_capacity_allows_256_gib_disk_with_30pct_remaining",
+        "reported_capacity_allows_512_gib_disk_with_30pct_remaining",
+        "reported_capacity_allows_1024_gib_disk_with_30pct_remaining", "device_selected",
         "device_safety_verified", "filesystem_readiness_verified", "pbs_suitability_verified",
         "pbs_readiness_verified", "write_authorized",
     }
@@ -214,6 +232,113 @@ def test_zero_capacity_is_unreported_and_not_classified_as_under_100_gib():
     assert result["storage_reported_headroom_band_counts"]["unknown"] == 0
 
 
+def test_declared_active_local_lvmthin_images_store_reports_only_fixed_size_bools():
+    data = sample()
+    data["storage"]["json"]["data"].append(candidate_row())
+
+    result = inspect(data)
+
+    assert result["reported_capacity_allows_256_gib_disk_with_30pct_remaining"] is True
+    assert result["reported_capacity_allows_512_gib_disk_with_30pct_remaining"] is True
+    assert result["reported_capacity_allows_1024_gib_disk_with_30pct_remaining"] is True
+    rendered = json.dumps(result)
+    assert "private-candidate" not in rendered
+    assert str(8192 * GIB) not in rendered
+    assert set(result).issuperset({
+        "reported_capacity_allows_256_gib_disk_with_30pct_remaining",
+        "reported_capacity_allows_512_gib_disk_with_30pct_remaining",
+        "reported_capacity_allows_1024_gib_disk_with_30pct_remaining",
+    })
+
+
+@pytest.mark.parametrize("size_gib", (256, 512, 1024))
+def test_virtual_disk_capacity_requires_size_plus_30_percent_remaining(size_gib):
+    size = size_gib * GIB
+    total = size * 5
+    threshold_available = size + total * 3 // 10
+
+    data = sample()
+    data["storage"]["json"]["data"].append(candidate_row(
+        total=total, used=total - threshold_available, available=threshold_available,
+    ))
+    assert inspect(data)[f"reported_capacity_allows_{size_gib}_gib_disk_with_30pct_remaining"] is True
+
+    data["storage"]["json"]["data"][-1]["used"] += 1
+    data["storage"]["json"]["data"][-1]["avail"] -= 1
+    assert inspect(data)[f"reported_capacity_allows_{size_gib}_gib_disk_with_30pct_remaining"] is False
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        candidate_row(active=0),
+        candidate_row(shared=1),
+        candidate_row(content="backup"),
+        candidate_row(type="dir"),
+        candidate_row(total=0, used=0, available=0),
+        candidate_row(total=8192 * GIB, used=1024 * GIB, available=1024 * GIB),
+    ],
+)
+def test_ineligible_or_incomplete_declared_storage_fails_capacity_checks_closed(row):
+    data = sample()
+    data["storage"]["json"]["data"].append(row)
+
+    result = inspect(data)
+
+    assert all(result[key] is False for key in (
+        "reported_capacity_allows_256_gib_disk_with_30pct_remaining",
+        "reported_capacity_allows_512_gib_disk_with_30pct_remaining",
+        "reported_capacity_allows_1024_gib_disk_with_30pct_remaining",
+    ))
+
+
+@pytest.mark.parametrize("missing_field", ("active", "shared", "total", "used", "avail"))
+def test_missing_candidate_status_field_fails_capacity_checks_closed(missing_field):
+    data = sample()
+    row = candidate_row()
+    row.pop(missing_field)
+    data["storage"]["json"]["data"].append(row)
+
+    result = inspect(data)
+
+    assert all(result[key] is False for key in (
+        "reported_capacity_allows_256_gib_disk_with_30pct_remaining",
+        "reported_capacity_allows_512_gib_disk_with_30pct_remaining",
+        "reported_capacity_allows_1024_gib_disk_with_30pct_remaining",
+    ))
+
+
+def test_declared_storage_identifier_is_required_safe_and_unique():
+    for invalid in (None, "", "../private", "storage/id", "contains spaces"):
+        data = sample()
+        data["declared_storage_id"] = invalid
+        with pytest.raises(ValueError, match="private VM image-storage declaration"):
+            inspect(data)
+
+    data = sample()
+    data["storage"]["json"]["data"].extend([candidate_row(), candidate_row()])
+    with pytest.raises(ValueError, match="malformed storage status inventory"):
+        inspect(data)
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"active": 2},
+        {"shared": "0"},
+        {"content": None},
+        {"type": None},
+        {"total": "8192 GiB"},
+    ],
+)
+def test_malformed_declared_storage_row_is_refused(overrides):
+    data = sample()
+    data["storage"]["json"]["data"].append(candidate_row(**overrides))
+
+    with pytest.raises(ValueError, match="malformed storage status inventory"):
+        inspect(data)
+
+
 @pytest.mark.parametrize(
     ("used", "filesystem_count", "other_count"),
     [("ext4", 1, 0), ("ext3 filesystem", 1, 0), ("extended", 0, 1)],
@@ -238,6 +363,19 @@ def test_cli_refusal_has_only_fixed_safe_text(monkeypatch, capsys):
     captured = capsys.readouterr()
     assert "private-" not in captured.out
     assert "/dev/" not in captured.out
+    assert captured.err == ""
+
+
+def test_cli_success_prints_no_candidate_id_or_exact_capacity(monkeypatch, capsys):
+    data = sample()
+    data["storage"]["json"]["data"].append(candidate_row())
+    monkeypatch.setattr(sys, "argv", ["inspect_o11y_pbs_physical_storage.py", "inspect"])
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(data)))
+
+    assert main() == 0
+    captured = capsys.readouterr()
+    assert "private-candidate" not in captured.out
+    assert str(8192 * GIB) not in captured.out
     assert captured.err == ""
 
 
@@ -289,6 +427,14 @@ def test_playbook_is_dev_bound_get_only_and_keeps_raw_reads_private():
     assert tasks.index(validation) < first_node_read
     assert validation.get("no_log") is True
     assert "proxmox_pbs_storage_node" in str(play.get("vars"))
+    assert "proxmox_pbs_vm_storage_id" in str(play.get("vars"))
+    assert "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$" in str(tasks[0])
+    inspection = next(
+        task for task in tasks
+        if task.get("name") == "Build fixed aggregate physical and virtual-disk capacity receipt"
+    )
+    assert "declared_storage_id" in str(inspection)
+    assert inspection.get("no_log") is True
     assert all("{{ _target_node" not in str(task) for task in api_reads)
 
 

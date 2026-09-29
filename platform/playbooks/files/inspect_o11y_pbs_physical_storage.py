@@ -9,10 +9,13 @@ import sys
 from collections.abc import Mapping
 
 NODE_NAME = re.compile(r"[A-Za-z0-9._-]{1,64}")
+STORAGE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 PATH = re.compile(r"/[A-Za-z0-9._/+:-]{1,255}")
 SIZE_BANDS = ((100 * 1024**3, "under-100-GiB"), (1024**4, "100-GiB-to-under-1-TiB"))
+PROPOSED_DISK_SIZES = (256, 512, 1024)
 SAFE_REFUSALS = {
     "The private storage node declaration is missing or malformed.",
+    "The private VM image-storage declaration is missing or malformed.",
     "The declared storage node is not uniquely online.",
     "Proxmox returned an incomplete disk inventory.",
     "Proxmox returned an incomplete LVM inventory.",
@@ -256,7 +259,7 @@ def _directory_facts(rows: list[object]) -> dict[str, object]:
             "directory_locality_verified": False}
 
 
-def _storage_facts(rows: list[object]) -> dict[str, object]:
+def _storage_facts(rows: list[object], declared_storage_id: str) -> dict[str, object]:
     _require(all(isinstance(row, Mapping) for row in rows), "Proxmox returned a malformed storage status inventory.")
     seen: set[str] = set()
     types: dict[str, int] = {"lvm": 0, "lvmthin": 0, "directory": 0, "other": 0}
@@ -265,6 +268,7 @@ def _storage_facts(rows: list[object]) -> dict[str, object]:
     active_count = active_unknown = 0
     total_bands, available_bands = _size_band_counts(), _size_band_counts()
     headroom_bands = _headroom_band_counts()
+    declared_rows: list[Mapping] = []
     for row in rows:
         name, kind, content = row.get("storage"), row.get("type"), row.get("content")
         active, shared = row.get("active"), row.get("shared")
@@ -276,6 +280,8 @@ def _storage_facts(rows: list[object]) -> dict[str, object]:
             "Proxmox returned a malformed storage status inventory.",
         )
         seen.add(name)
+        if name == declared_storage_id:
+            declared_rows.append(row)
         normalized_type = kind.lower()
         category = normalized_type if normalized_type in {"lvm", "lvmthin", "dir"} else "other"
         types["directory" if category == "dir" else category] += 1
@@ -307,6 +313,38 @@ def _storage_facts(rows: list[object]) -> dict[str, object]:
                 available_bands[_size_band(a)] += 1
                 headroom_bands[_headroom_band(t, a)] += 1
                 capacity_known += 1
+    candidate = declared_rows[0] if len(declared_rows) == 1 else None
+    image_storage_eligible = False
+    if candidate is not None:
+        active, shared = candidate.get("active"), candidate.get("shared")
+        image_storage_eligible = (
+            candidate.get("type") == "lvmthin"
+            and (active is True or type(active) is int and active == 1)
+            and (shared is False or type(shared) is int and shared == 0)
+            and "images" in {entry.strip() for entry in candidate.get("content", "").split(",")}
+        )
+    capacity = None
+    if image_storage_eligible:
+        total, used, available = (candidate.get(key) for key in ("total", "used", "avail"))
+        if (
+            _integer(total, positive=True)
+            and _integer(used)
+            and _integer(available)
+            and used + available == total
+        ):
+            capacity = (total, available)
+
+    disk_capacity_facts = {}
+    for size_gib in PROPOSED_DISK_SIZES:
+        sufficient = False
+        if capacity is not None:
+            total, available = capacity
+            size_bytes = size_gib * 1024**3
+            sufficient = available >= size_bytes and (available - size_bytes) * 10 >= total * 3
+        disk_capacity_facts[
+            f"reported_capacity_allows_{size_gib}_gib_disk_with_30pct_remaining"
+        ] = sufficient
+
     return {
         "visible_storage_count": len(rows),
         "active_storage_count": active_count,
@@ -320,11 +358,18 @@ def _storage_facts(rows: list[object]) -> dict[str, object]:
         "storage_reported_total_capacity_band_counts": total_bands,
         "storage_reported_available_capacity_band_counts": available_bands,
         "storage_reported_headroom_band_counts": headroom_bands,
+        **disk_capacity_facts,
     }
 
 
 def inspect(payload: object) -> dict[str, object]:
     _require(isinstance(payload, Mapping), "Proxmox returned an incomplete disk inventory.")
+    declared_storage_id = payload.get("declared_storage_id")
+    _require(
+        isinstance(declared_storage_id, str)
+        and STORAGE_ID.fullmatch(declared_storage_id) is not None,
+        "The private VM image-storage declaration is missing or malformed.",
+    )
     disk_rows = _api_data(payload.get("disks"), section="disk")
     lvm_data = _api_data(payload.get("lvm"), section="LVM", expected=Mapping)
     thin_rows = _api_data(payload.get("thinpool"), section="thin-pool")
@@ -337,7 +382,7 @@ def inspect(payload: object) -> dict[str, object]:
         **_lvm_facts(lvm_data),
         **_thin_facts(thin_rows),
         **_directory_facts(directory_rows),
-        **_storage_facts(storage_rows),
+        **_storage_facts(storage_rows, declared_storage_id),
         "device_selected": False,
         "device_safety_verified": False,
         "filesystem_readiness_verified": False,
