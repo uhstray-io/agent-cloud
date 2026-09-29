@@ -16,6 +16,8 @@ WORKFLOW = REPO / "platform/workflows/service-onboarding"
 REGISTRY = WORKFLOW / "registry.yml"
 SCHEMAS = WORKFLOW / "schemas"
 CATALOG = REPO / "platform/semaphore/templates.yml"
+CONFORMANCE_DASHBOARD = REPO / "platform/services/o11y/deployment/config/grafana/dashboards/service-conformance.json"
+SERVICE_OVERVIEW_DASHBOARD = REPO / "platform/services/o11y/deployment/config/grafana/dashboards/service-overview.json"
 DRAWING = REPO / "docs/agent-cloud-service-deploy.excalidraw"
 OPA_DATA = REPO / "platform/services/opa/deployment/policies/agentcloud/data.json"
 
@@ -87,6 +89,30 @@ def test_non_reasoning_steps_have_an_executor_or_a_planned_one():
     for step in STEPS:
         if not step.get("schema"):
             assert step.get("executor") or step.get("planned_executor"), step["id"]
+
+
+def test_conformance_collection_and_dashboard_absence_are_explicit():
+    catalog = yaml.safe_load(CATALOG.read_text())["templates"]
+    collectors = [template for template in catalog if template["name"] == "Collect Service Conformance (Dev)"]
+    assert len(collectors) == 1
+    assert collectors[0]["repository"] == "agent-cloud dev"
+    assert "dev_variant" not in collectors[0]
+    assert collectors[0]["schedule"] == {"cron": "*/15 * * * *"}
+    assert not any(template["name"] == "Collect Service Conformance" for template in catalog)
+
+    conformance = json.loads(CONFORMANCE_DASHBOARD.read_text())
+    stats = {panel["title"]: panel for panel in conformance["panels"] if panel["type"] == "stat"}
+    assert stats["Failing steps"]["fieldConfig"]["defaults"]["noValue"] == "No recent data"
+    assert stats["Services tracked"]["fieldConfig"]["defaults"]["noValue"] == "No recent data"
+
+    overview = json.loads(SERVICE_OVERVIEW_DASHBOARD.read_text())
+    health = next(panel for panel in overview["panels"] if panel["title"] == "Scrape target health")
+    assert health["targets"][0]["expr"] == 'min by (service) (up{service=~"$service"})'
+    failed = next(panel for panel in overview["panels"] if panel["title"] == "Unhealthy scrape targets")
+    assert failed["targets"][0]["expr"] == 'up{service=~"$service"} == 0'
+    loki_panels = [panel for panel in overview["panels"] if panel["datasource"]["type"] == "loki"]
+    assert len(loki_panels) == 2
+    assert all("does not indicate service health" in panel["description"] for panel in loki_panels)
 
 
 def test_drawn_steps_match_the_drawing():
