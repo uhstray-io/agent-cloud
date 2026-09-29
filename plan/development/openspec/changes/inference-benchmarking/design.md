@@ -158,7 +158,8 @@ benchmarking; tuning vLLM itself (results inform dgx-spark, which owns the profi
    `guidellm` runs the calibration sweep that finds the saturation rate the ladder is
    scaled to (decision 3). `vllm bench serve` is a cross-check of how inference-perf
    counts its latencies, so it runs only when that could have changed: when the
-   inference-perf or `vllm bench serve` image digest differs from the last cross-checked
+   inference-perf or `vllm bench serve` image digest (the guidellm digest once mutual TLS
+   moves the cross-check to guidellm, decision 8) differs from the last cross-checked
    pair. It then runs two stages of the scaled shape's ladder, 0.5 and 1.0 times
    `R_sat`, against direct vLLM (until mutual TLS is on; decision 8's 2026-09-29
    amendment moves the cross-check to guidellm), with `--percentile-metrics ttft,tpot,itl

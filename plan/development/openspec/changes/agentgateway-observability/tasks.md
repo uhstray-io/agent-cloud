@@ -46,7 +46,8 @@ is a separate dashboard, with operations as a second dashboard.
       2026-09-29, read from site-config `main` (the Semaphore `production` record matched it,
       `sync-inventory.yml --check`): production declares `agw_otlp_host`, `agw_trace_sampling`
       and `o11y_otlp_bind`; `agw_trace_sampling` is pinned at 0.05, below the 10% decision;
-      the correction to 0.1 is proposed in site-config#46. The local inventory is not recorded here
+      the correction to 0.1 merged in site-config#46 (a8c886d, 2026-09-29); the gateway
+      redeploy that applies it is still to run. The local inventory is not recorded here
 - [ ] 1.2 `templates/config.yaml.j2`: render `accessLog.otlp` only when `agw_otlp_host`
       is set and `agw_otlp_logs` is true (today the condition is the host alone, line
       88). Render `frontendPolicies.tracing` only when `agw_otlp_host` is set and
