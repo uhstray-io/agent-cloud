@@ -135,10 +135,13 @@ Each row is a rule from the linked page, read 2026-09-22.
    > runner has neither, so there the source guard and the runtime assert are the
    > enforcement.
    >
-   > **Known limits, recorded 2026-09-28 (review of PR #319).** (a) The source guard models
-   > file modules only; a `shell` or `command` task that redirects output is treated as a read,
-   > so such a write is stopped only by the kernel sandbox, which the CI runner lacks (the
-   > runner is a disposable VM). (b) The runtime assert bounds a class, not this run: any
+   > **Known limits, recorded 2026-09-28 (review of PR #319).** (a) In `shell`/`command`
+   > tasks the source guard recognises engine verbs and a fixed set of host writes (`mkdir`,
+   > `chmod`, `chown`, `mv`, `ln`, `tee`, `touch`, `install`, `truncate`, `systemctl`;
+   > `platform/tests/test_check_mode_contract.py:52-62`), but not output redirection (`>`),
+   > `cp`, `rm` or `dd`, and it classes a `changed_when: false` task as a read (`:242-243`).
+   > Such a write is stopped only by the kernel sandbox, which the CI runner lacks (the runner
+   > is a disposable VM). (b) The runtime assert bounds a class, not this run: any
    > genuine `<temp root>/.sshkey_*` directory passes, so reaching another run's scratch needs
    > launch-level extra vars or control of `TMPDIR`; the worst case is disturbing a concurrent
    > run's scratch, not escaping it. (c) `TMPDIR` itself moves the root.
