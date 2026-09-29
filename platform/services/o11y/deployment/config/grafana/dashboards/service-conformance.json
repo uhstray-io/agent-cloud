@@ -22,7 +22,7 @@
   "description": "Per-service status of every service deployment workflow step, as last recorded by Collect Service Conformance (the only writer). Plan 15; change service-deployment-workflow task 7.5.",
   "panels": [
     {
-      "title": "Failing steps",
+      "title": "Recent failed step reports",
       "type": "stat",
       "datasource": {
         "type": "loki",

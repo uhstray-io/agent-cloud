@@ -102,13 +102,13 @@ def test_conformance_collection_and_dashboard_absence_are_explicit():
 
     conformance = json.loads(CONFORMANCE_DASHBOARD.read_text())
     stats = {panel["title"]: panel for panel in conformance["panels"] if panel["type"] == "stat"}
-    assert stats["Failing steps"]["fieldConfig"]["defaults"]["noValue"] == "No recent data"
+    assert stats["Recent failed step reports"]["fieldConfig"]["defaults"]["noValue"] == "No recent data"
     assert stats["Services tracked"]["fieldConfig"]["defaults"]["noValue"] == "No recent data"
-    failure_query = stats["Failing steps"]["targets"][0]["expr"]
+    failure_query = stats["Recent failed step reports"]["targets"][0]["expr"]
     assert 'status="fail"' in failure_query
     assert 'or (sum(count_over_time({job="agent-cloud-conformance"} [16m])) * 0)' in failure_query
-    assert "No conformance records in the window" in stats["Failing steps"]["description"]
-    assert "latest recorded result" not in stats["Failing steps"]["description"]
+    assert "No conformance records in the window" in stats["Recent failed step reports"]["description"]
+    assert "latest recorded result" not in stats["Recent failed step reports"]["description"]
 
     overview = json.loads(SERVICE_OVERVIEW_DASHBOARD.read_text())
     health = next(panel for panel in overview["panels"] if panel["title"] == "Scrape target health")
