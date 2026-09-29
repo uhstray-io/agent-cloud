@@ -48,6 +48,11 @@ The platform SHALL compare observed and forecast ingestion, storage, CPU, and me
 - **WHEN** a reviewed VM resource declaration is converged through Semaphore
 - **THEN** the live CPU, memory, hypervisor disk, and guest filesystem configuration is read back; any disk growth used an idempotent guest-growth workflow, and the existing telemetry and alert baseline remains accessible before rollout resumes
 
+#### Scenario: Existing backup job includes the receiver
+- **WHEN** an operator declares an existing Proxmox backup job for the o11y VM in private inventory and runs the reviewed Dev-bound reconciliation
+- **THEN** the workflow verifies the exact job and VM, adds the VM only to an enabled explicit-VMID selection, preserves other job settings and members, verifies the readback, and reports a no-op on repetition; jobs selected by all, pool, or exclusion fail closed
+- **AND** backup artifact presence and an isolated restore remain required before guest disk growth or longer retention
+
 ### Requirement: Rollout and recovery are reproducible
 Instrumentation and receiver changes SHALL be declared as code, applied through reviewed `dev` and Semaphore, and verified per wave. A failed wave SHALL be reversible by an operator-driven reviewed declaration revert and redeploy without deleting existing telemetry volumes.
 

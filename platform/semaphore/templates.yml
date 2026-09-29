@@ -1407,6 +1407,28 @@ templates:
     # Reports sanitized backup-capable storage and candidate artifact counts.
     # It does not mutate Proxmox or prove immutability or restore success.
 
+  - name: Reconcile o11y Backup Job (Dev)
+    playbook: platform/playbooks/reconcile-o11y-backup-job.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for backup-job reconciliation"
+        type: string
+        required: true
+      - name: inspect_only
+        title: "Inspect backup jobs only"
+        description: "true lists sanitized candidates and stops before any write; false uses the private inventory job ID"
+        type: enum
+        required: true
+        default_value: "false"
+        values:
+          - { name: "Inspect only", value: "true" }
+          - { name: "Apply declared job membership", value: "false" }
+    # Inspect-only mode lists sanitized candidates for private inventory selection.
+    # Apply mode uses the selected existing job ID and VM identity from inventory;
+    # check mode previews the narrow membership change before a write.
+
   - name: Mint Honcho Team JWT
     playbook: platform/playbooks/mint-honcho-team-jwt.yml
     # Mints a team-wide, workspace-scoped (uhstray) Honcho JWT via the container's

@@ -1018,6 +1018,18 @@ free-form storage values are not emitted. Immutability, isolated restore target,
 and restore success remain unknown; no backup, restore, retention change, or
 guest growth occurred.
 
+The next backup step is to reconcile o11y's membership in the existing
+Proxmox schedule through a Dev-bound Semaphore playbook. A read-only inspect
+mode identifies the candidate job in private task output; its exact ID belongs
+in `site-config` inventory. The apply mode uses the OpenBao Proxmox token,
+requires one declared o11y VM and an enabled job with an explicit VMID list,
+adds only that VM, and reads membership back. Proxmox's update API changes
+selection mode when given `vmid`, so `all`, `pool`, and `exclude` jobs must be
+refused rather than silently converted. The run must preserve every other
+job setting and member and be idempotent. After a scheduled backup, repeat
+the artifact survey. An artifact and a successful isolated restore are still
+separate gates before disk growth or 90-day/45-day retention.
+
 2026-09-29: the first production survey attempt, Semaphore task 1828, failed
 before contacting Proxmox. The Authorization header lived in play-level URI
 module defaults and was interpolated before the OpenBao credential tasks set
