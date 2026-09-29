@@ -24,6 +24,7 @@ SPEC.loader.exec_module(rules)
     ("192.0.2.9/255.255.255.0", "192.0.2.0/24"),
     ("2001:db8::1/128", "2001:db8::1"), ("2001:0db8::0001", "2001:db8::1"), ("2001:db8::/32", "2001:db8::/32"),
     ("any", "any"), (" 192.0.2.5 ", "192.0.2.5"), ("not-an-address", "not-an-address"),
+    ("0.0.0.0/0", "any"), ("::/0", "any"),
 ])
 def test_an_address_is_spelled_as_ufw_stores_it(given, stored):
     assert rules.ufw_address(given) == stored

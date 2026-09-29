@@ -40,8 +40,15 @@ _LOG = ("log", "log-all")
 
 
 def ufw_address(addr):
-    """The address as ufw stores it; anything unparseable (`any`, a typo) is returned as is."""
+    """The address as ufw stores it; anything unparseable (`any`, a typo) is returned as is.
+
+    The whole address space is printed as `any` (ufw 0.36.2 src/parser.py get_command), so
+    `0.0.0.0/0` and `::/0` are spelled `any`; kept literally, a declared rule from either
+    would never match its own stored form.
+    """
     text = str(addr).strip()
+    if text in ("0.0.0.0/0", "::/0"):
+        return "any"
     host, _, mask = text.partition("/")
     try:
         ip = ipaddress.ip_address(host)
