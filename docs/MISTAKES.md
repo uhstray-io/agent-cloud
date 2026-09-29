@@ -142,8 +142,8 @@ and why.
 | 10.15 | Reboot survival was asserted for podman containers and never exercised; the boot unit starts only `restart: always`, and its rootless half was never enabled — OpenBao sat down three days | Mechanism never exercised | Test (restart policy + boot unit, mutation-proven) |
 | 10.16 | The agentgateway deploy was proven only on ansible-core 2.16, which hid a list-concatenation failure on 2.19+ | Test that cannot fail | Test (real evaluation, current ansible-core) |
 | 10.17 | The agentgateway upstream-key guard read a variable that never exists at play level, so it failed every production deploy; local runs disable it | Mechanism never exercised | Test in the verify PR (see entry) |
-| 10.18 | Dry runs of five production playbooks could never pass; a register from a task check mode skips was read later, and nothing had ever run them | Mechanism never exercised | Test for #308/#313/#314; #319 pending; class Convention (data-flow rule proposed) |
-| 10.19 | Harden SSH's password-rejection probe used BatchMode with public keys off, so it exited non-zero whatever the server allowed | Test that cannot fail | Convention (probe fix pending) |
+| 10.18 | Dry runs of five production playbooks could never pass; a register from a task check mode skips was read later, and nothing had ever run them | Mechanism never exercised | Test for #308/#313/#314/#319; class Convention (data-flow rule proposed) |
+| 10.19 | Harden SSH's password-rejection probe used BatchMode with public keys off, so it exited non-zero whatever the server allowed | Test that cannot fail | Test (`test_harden_password_probe.py`) |
 | 9.1 | A `for` loop with an unconditional `break`, making all but one member unreachable | Minor | Convention |
 | 9.2 | Typo'd duplicate key in a hand-assembled payload; call succeeded regardless | Minor | Convention |
 | 12.1 | `gh` reported a valid token as invalid because a sandboxed `$HOME` hid the login keychain | Environment visibility | Convention |
@@ -2466,6 +2466,9 @@ own worktree path.
 **Enforced by.** Convention. Proposal: extend 5.10's PreToolUse hook to refuse any git write
 verb whose working directory is a checkout a different live session holds.
 
+**Note 2026-09-29.** 5.10's hook is itself only proposed (index row 5.10), so this proposal
+depends on building that hook first.
+
 ### 5.15 AI attribution in a PR body, which no hook reads (widens 5.9)
 
 **What happened.** See 5.9 occurrence 2: on 2026-09-29 a site-config pull request was
@@ -3590,6 +3593,10 @@ mutation-checked); the three key-handling playbooks gain theirs with #319. The c
 is Convention; proposal: a data-flow rule in `test_check_mode_contract.py` that follows registers
 from producers skipped under `--check`, with the skipped-module set taken from `ansible-doc --json`.
 
+**Update 2026-09-29.** #319 merged on 2026-09-28. The three key-handling playbooks now carry
+behavioural tests in `platform/tests/test_materialise_ssh_key.py`, run in both check and
+real mode. The data-flow rule is still unbuilt, so the class stays Convention.
+
 ### 10.19 Harden SSH's "password auth is rejected" probe could not fail
 
 **What happened.** `harden-ssh.yml`'s "Verify password auth is rejected" runs `ssh -o
@@ -3609,6 +3616,11 @@ host), not whether a crippled client succeeds.
 
 **Enforced by.** Convention until the probe fix lands with a behavioural test that fails on a
 host still offering `password`.
+
+**Update 2026-09-29.** The probe fix landed in #319: it requires both the advertised methods
+(`ssh -v`) and `sshd -T` to show no password. Enforced by
+`platform/tests/test_harden_password_probe.py`, which fails on a host still offering
+`password`.
 
 ## 11. The largest one
 

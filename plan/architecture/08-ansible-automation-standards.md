@@ -131,13 +131,13 @@ Each row is a rule from the linked page, read 2026-09-22.
    > still does. The tests that execute these
    > tasks run under a default-deny write sandbox where the host has one
    > (`platform/tests/harness_sandbox.py`: `sandbox-exec` on macOS, allowing only the
-   > test's directory, the temp root and `/dev`; `bwrap` on Linux). The GitHub-hosted CI
+   > test's directory, the temp root, the interpreter's temp dir and `/dev`; `bwrap` on Linux). The GitHub-hosted CI
    > runner has neither, so there the source guard and the runtime assert are the
    > enforcement.
    >
    > **Known limits, recorded 2026-09-28 (review of PR #319).** (a) In `shell`/`command`
    > tasks the source guard recognises engine verbs and a fixed set of host writes (`mkdir`,
-   > `chmod`, `chown`, `mv`, `ln`, `tee`, `touch`, `install`, `truncate`, `systemctl`;
+   > `chmod`, `chown`, `chgrp`, `mv`, `ln`, `tee`, `touch`, `install`, `truncate`, `systemctl`;
    > `platform/tests/test_check_mode_contract.py:52-62`), but not output redirection (`>`),
    > `cp`, `rm` or `dd`, and it classes a `changed_when: false` task as a read (`:242-243`).
    > Such a write is stopped only by the kernel sandbox, which the CI runner lacks (the runner
@@ -151,8 +151,8 @@ Each row is a rule from the linked page, read 2026-09-22.
    tasks (the tag rule above). `--tags verify` makes no change.
 4. **Machine-read results use `set_stats`.** One shared task,
    `platform/playbooks/tasks/emit-step-result.yml`, records the workflow step result;
-   `ANSIBLE_SHOW_CUSTOM_STATS=true` is set in both controllers' environment. `debug` stays
-   for humans.
+   the repository `ansible.cfg` sets `show_custom_stats = True`, which both controllers read
+   because they run from the repository root. `debug` stays for humans.
 5. **Secrets.** Credential tasks keep `no_log: true` (root `AGENTS.md`, "Credential
    Handling"), and tasks that render secret files add `diff: false`. A visible task never
    loops over, or prints, a protected registered result (a `no_log` result, or a `uri`
@@ -171,7 +171,7 @@ Each row is a rule from the linked page, read 2026-09-22.
 | Roles structure reusable content | Composable task files under `platform/playbooks/tasks/` included by playbooks | Predates this document; the task library is the repo's reuse unit (`plan/architecture/01-automation-model.md`). Migration to roles is out of scope |
 | Secrets in Ansible Vault | Secrets in OpenBao, fetched at run time; no Vault files | OpenBao is the platform's single secret authority (`PRINCIPLES.md`) |
 | ansible-lint defines change with `changed_when` (rule `no-changed-when`) | `no-changed-when` is in `.ansible-lint`'s `skip_list` | Recorded here as debt: under check mode an unreported change is indistinguishable from none. The check-mode guard (change task 1.4) requires `changed_when` on read-only probes; removing the skip is a follow-up |
-| `command-instead-of-module` | Skipped in `.ansible-lint`, and uses also carry `# noqa` (for example `apply-firewall.yml:160`) | The runner installs only `collections/requirements.yml` (`community.hashi_vault`, `ansible.posix`), so collection modules such as `community.general.ufw` are unavailable to it; `apply-firewall.yml:18-19` records this choice. Recorded as debt: a module call simulates under `--check`, a `command` does not |
+| `command-instead-of-module` | Skipped in `.ansible-lint`, and uses also carry `# noqa` (for example the `ufw` add loops in `apply-firewall.yml`) | The runner installs only `collections/requirements.yml` (`community.hashi_vault`, `ansible.posix`), so collection modules such as `community.general.ufw` are unavailable to it; `apply-firewall.yml:18-19` records this choice. Recorded as debt: a module call simulates under `--check`, a `command` does not |
 | Leading underscore has no meaning | `_name` marks play-local facts by convention | Readability only; nothing relies on privacy |
 
 ## Implementation Phases

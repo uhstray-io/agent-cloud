@@ -1,6 +1,6 @@
 # agentgateway — the inference edge gateway
 
-Author: Joseph A. Wisneski IV <stray@uhstray.io>. Status: local-dev proven (2026-09-17). Prod VM 218 on apollo provisioned, keyed and
+Author: Joseph A. Wisneski IV <stray@uhstray.io>. Status: local-dev proven (2026-09-17). Prod VM (node, vmid and address declared in site-config) provisioned, keyed and
 SSH-hardened through Semaphore (2026-09-18); the prod gateway rollout (Authentik app,
 edge record, key seed, deploy, firewall, Caddy block) is pending.
 
@@ -22,7 +22,7 @@ agentgateway alongside skynet" (Proposed until the operator confirms). OpenSpec 
 |---|---|---|
 | Image | `cr.agentgateway.dev/agentgateway:v1.5.0` | Chainguard glibc-dynamic base: no shell, no curl. Readiness is probed from the sibling `agentgateway-db` container over the compose network, not by a compose healthcheck |
 | Config | `deployment/templates/config.yaml.j2` → `config.yaml` (rendered, gitignored, 0644) | No credential inside: upstream key as `$VLLM_API_KEY`, db URL as `$AGW_DATABASE_URL`, client keys as `keyHash: sha256:<hex>`. 0644 because the image runs non-root and 0640 was `Permission denied` (2026-09-17) |
-| Env | `deployment/templates/env.j2` → `.env` (0600, gitignored) | `VLLM_API_KEY` + published bind/port values |
+| Env | `deployment/templates/env.j2` → `.env` (0600, gitignored) | `VLLM_API_KEY`, the budget Postgres credentials (`POSTGRES_*`, `AGW_DATABASE_URL`), `UI_READ_ONLY`, the UI's OIDC client secret and cookie secret when `agw_ui_enabled`, and the published bind/port values |
 | Listener | gateway `default`, container `:4000`, published `AGW_BIND:AGW_PORT` | Caddy proxies `inference.<zone>` here. The LLM routes are ALSO attached to the `ui` gateway (:4001) so the UI's playground calls `/v1` on its own origin through Caddy; still apiKey-gated there |
 | Readiness | container `:19001` `/healthz/ready` | upstream `management/readiness_server.rs`. Probed by deploy.sh and the verify play from the sibling `agentgateway-db` container (busybox `wget`) over the compose network — the gateway image has no shell, and the host loopback is the wrong vantage when the play runs inside the local Semaphore container |
 | Stats | container `:19002`, published `AGW_STATS_BIND:AGW_STATS_PORT` | Prometheus text on `/metrics`; every metric carries `identity` (= `apiKey.name`). Access log adds `identity` to the default `gen_ai.*` fields and `agw.ai.time_to_first_token` (streams); prompt/completion content is never logged |
