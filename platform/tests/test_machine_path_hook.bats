@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
 # scripts/check-machine-paths.sh refuses a machine account's home directory in staged
-# lines (docs/MISTAKES.md 3.9). Fixture paths are assembled at run time so this file does
+# lines (docs/MISTAKES.md 4.11). Fixture paths are assembled at run time so this file does
 # not trip the hook it tests.
 load assert_helpers
 
@@ -39,5 +39,25 @@ scan() { printf '%s\n' "$@" | "$HOOK" -; }
 
 @test "machine-path hook: a longer name that starts like an allowed one is refused" {
   run scan "+  /$(printf home)/stepper/.ssh"
+  [ "$status" -eq 1 ]
+}
+
+@test "machine-path hook: an added line that itself starts with ++ is still scanned" {
+  run scan "+++ b/docs/x.md" "+++ /$(printf Users)/erin/notes"
+  [ "$status" -eq 1 ]
+}
+
+@test "machine-path hook: a renamed file's added lines are scanned" {
+  repo="$BATS_TEST_TMPDIR/repo"
+  env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE git init -q "$repo"
+  cd "$repo"
+  # Enough unchanged lines that git reports a rename (R), not a delete plus an add.
+  seq 1 40 > a.txt
+  env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE git add a.txt
+  env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE git -c user.name=t -c user.email=t@example.com commit -qm init
+  env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE git mv a.txt b.txt
+  printf '/%s/frank/x\n' Users >> b.txt
+  env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE git add b.txt
+  run env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE "$HOOK"
   [ "$status" -eq 1 ]
 }
