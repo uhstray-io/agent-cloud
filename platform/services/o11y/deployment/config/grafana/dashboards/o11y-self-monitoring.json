@@ -4,13 +4,13 @@
   "panels": [
     {
       "id": 1,
-      "title": "O11y components up (expected 5)",
+      "title": "O11y components up (expected 6)",
       "type": "stat",
-      "description": "Prometheus, Grafana, Loki, Alloy, and Tempo self scrapes. A missing target lowers the count.",
+      "description": "Prometheus, Grafana, Loki, Alloy, Tempo, and Pyroscope self scrapes. A missing target lowers the count.",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 5, "w": 8, "x": 0, "y": 0 },
-      "fieldConfig": { "defaults": { "min": 0, "max": 5, "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "yellow", "value": 4 }, { "color": "green", "value": 5 }] } }, "overrides": [] },
-      "targets": [{ "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum(up{job=~\"prometheus|grafana|loki|alloy|tempo\"})", "instant": true }]
+      "fieldConfig": { "defaults": { "min": 0, "max": 6, "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "yellow", "value": 5 }, { "color": "green", "value": 6 }] } }, "overrides": [] },
+      "targets": [{ "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum(up{job=~\"prometheus|grafana|loki|alloy|tempo|pyroscope\"})", "instant": true }]
     },
     {
       "id": 2,
@@ -42,7 +42,7 @@
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 5 },
       "fieldConfig": { "defaults": { "min": 0, "max": 1 }, "overrides": [] },
-      "targets": [{ "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "up{job=~\"prometheus|grafana|loki|alloy|tempo\"}", "legendFormat": "{{job}}" }]
+      "targets": [{ "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "up{job=~\"prometheus|grafana|loki|alloy|tempo|pyroscope\"}", "legendFormat": "{{job}}" }]
     },
     {
       "id": 5,
@@ -52,7 +52,7 @@
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 5 },
       "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
-      "targets": [{ "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "scrape_samples_scraped{job=~\"prometheus|grafana|loki|alloy|tempo\"}", "legendFormat": "{{job}}" }]
+      "targets": [{ "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "scrape_samples_scraped{job=~\"prometheus|grafana|loki|alloy|tempo|pyroscope\"}", "legendFormat": "{{job}}" }]
     },
     {
       "id": 6,
@@ -78,11 +78,11 @@
       "id": 8,
       "title": "O11y process memory",
       "type": "timeseries",
-      "description": "Resident memory for all five o11y processes; compare trends with data volume.",
+      "description": "Resident memory for all six o11y processes; compare trends with data volume.",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 24, "x": 0, "y": 21 },
       "fieldConfig": { "defaults": { "unit": "bytes" }, "overrides": [] },
-      "targets": [{ "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "process_resident_memory_bytes{job=~\"prometheus|grafana|loki|alloy|tempo\"}", "legendFormat": "{{job}}" }]
+      "targets": [{ "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "process_resident_memory_bytes{job=~\"prometheus|grafana|loki|alloy|tempo|pyroscope\"}", "legendFormat": "{{job}}" }]
     },
     {
       "id": 9,
@@ -114,6 +114,16 @@
       "fieldConfig": { "defaults": { "unit": "s", "min": 0 }, "overrides": [] },
       "options": { "colorMode": "none" },
       "targets": [{ "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "time() - process_start_time_seconds{job=\"prometheus\"}", "instant": true }]
+    },
+    {
+      "id": 12,
+      "title": "Profile samples written / sec",
+      "type": "timeseries",
+      "description": "Alloy to Pyroscope profile writes. No series means the opt-in pilot is disabled or has not produced a sample; it is not zero-cost proof.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 37 },
+      "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] },
+      "targets": [{ "refId": "A", "expr": "sum(rate(pyroscope_write_sent_profiles_total{job=\"alloy\"}[5m]))" }]
     }
   ],
   "schemaVersion": 39,

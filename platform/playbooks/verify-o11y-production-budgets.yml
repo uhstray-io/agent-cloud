@@ -132,6 +132,23 @@
       changed_when: false
       check_mode: false
 
+    - name: Read current guest root filesystem capacity
+      ansible.builtin.command:
+        argv: [df, --block-size=1, "--output=size,avail", /]
+      register: _guest_root_disk
+      changed_when: false
+      check_mode: false
+
+    - name: Read current guest memory headroom
+      ansible.builtin.command:
+        argv:
+          - awk
+          - '/^MemTotal:/ {total=$2} /^MemAvailable:/ {available=$2} END {if (total > 0) printf "%.2f", 100 * available / total; else exit 1}'
+          - /proc/meminfo
+      register: _guest_memory_headroom
+      changed_when: false
+      check_mode: false
+
     - name: Read Loki runtime retention
       ansible.builtin.set_fact:
         _loki_retention: "{{ (_loki_config.stdout | from_yaml_all | select('mapping') | selectattr('limits_config.retention_period', 'defined') | list | first).limits_config.retention_period }}"
@@ -157,13 +174,29 @@
       changed_when: false
       check_mode: false
 
+    - name: Calculate sanitized sample-limit and series diagnostics
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/files/diagnose-o11y-budget-readback.py"]
+        stdin: >-
+          {{ {'sample_limit': _sample_limit.stdout,
+              'expected_sample_limit': o11y_scrape_sample_limit,
+              'head_series': _head_series.stdout} | to_json }}
+      register: _budget_readback_diagnostics
+      delegate_to: localhost
+      changed_when: false
+      check_mode: false
+
+    - name: Report sanitized sample-limit and series diagnostics
+      ansible.builtin.debug:
+        msg: "{{ _budget_readback_diagnostics.stdout | from_json }}"
+
     - name: Require matching live budgets and measurable cardinality
       ansible.builtin.assert:
         that:
           - _retention_comparison.rc == 0
-          - _sample_limit.stdout | trim | int == o11y_scrape_sample_limit | int
-          - (_head_series.stdout | from_json).data.result | length == 1
-          - (_head_series.stdout | from_json).data.result[0].value[1] | int > 0
+          - (_budget_readback_diagnostics.stdout | from_json).sample_limit_matches
+          - (_budget_readback_diagnostics.stdout | from_json).head_series_count_matches
+          - (_budget_readback_diagnostics.stdout | from_json).positive_head_series
         fail_msg: "A live retention/sample setting differs from inventory or active-series readback is absent."
 
     - name: Report the sanitized production budget receipt
@@ -177,3 +210,6 @@
           tempo_retention: "{{ o11y_tempo_retention }}"
           scrape_sample_limit: "{{ o11y_scrape_sample_limit | int }}"
           active_prometheus_series: "{{ (_head_series.stdout | from_json).data.result[0].value[1] | int }}"
+          guest_root_filesystem_total_bytes: "{{ _guest_root_disk.stdout_lines[1].split()[0] | int }}"
+          guest_root_filesystem_available_bytes: "{{ _guest_root_disk.stdout_lines[1].split()[1] | int }}"
+          guest_memory_headroom_percent: "{{ _guest_memory_headroom.stdout | float }}"

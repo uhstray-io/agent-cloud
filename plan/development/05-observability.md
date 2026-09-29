@@ -7,6 +7,52 @@
 > plans are merged verbatim below under provenance dividers to preserve all
 > detail; read in numbered order to execute.
 
+## Signal identity, service visibility, and profiling contract
+
+Use one bounded service identity across signals: Prometheus and Loki use
+`service`, OTLP resources use `service.name`, and profiles use `service_name`.
+Prometheus and Loki also carry inventory-bounded `cluster` and `environment`.
+Alerts add the finite `severity` and `owner` labels and group on service,
+environment, cluster, and alert name. Keep `container` and `instance` for
+drill-down only. Request IDs, user IDs, trace IDs, raw paths, addresses, prompt
+content, and secrets must stay out of Prometheus labels and Loki stream labels;
+keep investigation detail in log bodies or structured metadata.
+
+All Prometheus scrape paths and Alloy container metrics apply the shared
+forbidden-label-name policy for known sensitive and request-specific names.
+This is a deny list, not an allowlist: it cannot identify arbitrary
+vendor-specific identifiers. Before enabling a producer, inspect a
+representative metrics exposition, record its retained bounded dimensions
+(including any model, GPU, device, or node labels), and verify that its schema
+does not expose sensitive or unbounded identifiers. Extend the shared policy
+when that review finds additional label names to drop.
+
+For each deployed target, declare its stable service identity, owner, cluster
+and environment values, signal methods, profile applicability, finite label
+values, and proof. Local Compose discovery uses `<project>/<service>` so
+repeated names such as `redis` stay distinct; the container name remains detail.
+Remote metrics use the same declared
+`service` value. A missing scrape stays missing or unhealthy; dashboard queries
+must not turn absent telemetry into a healthy zero. The Service Overview
+selector is sourced from Prometheus service labels, so it covers metric-enabled
+local and remote services; use Logs Drilldown and the coverage declaration for
+log-only targets.
+
+Pyroscope is private on the o11y network with a persistent named volume and a
+seven-day initial retention policy. Its Alloy self-profile pilot is disabled
+unless private inventory explicitly enables it after the pinned Alloy config,
+target reachability, privacy, and VM headroom are verified. The initial pilot
+uses only Alloy's own pprof endpoint at `alloy:12345` under `service_name=o11y/alloy`
+and a 60-second scrape interval. Record the before/after CPU, memory, profile
+ingestion, and retained-disk measurements before adding another producer. A
+normal deploy preserves this volume and every existing telemetry volume.
+
+Use the existing Discord contact point. Group notifications by the bounded
+service and environment context, wait 30 seconds before the first grouped
+notification, then use a five-minute group interval and a four-hour repeat
+interval. Verify the provisioned rule settings by read-back; a Discord delivery
+drill is a separate runtime receipt.
+
 > **As-built check, 2026-09-22 (branch `feat/observability-estate`):** The
 > committed local o11y compose defines Grafana, Prometheus, Loki and Alloy;
 > `config/prometheus.yml` scrapes only Prometheus, and `config/config.alloy`
@@ -854,12 +900,42 @@ receiver SHA separately from the reviewed Dev controller SHA, allowing receipts
 to be earned before the stricter receiver trace gate is applied. Both revisions
 are explicit Semaphore survey inputs and read back before work begins.
 
+The requested production retention target is Prometheus 90d, Loki 45d, and
+Tempo 1080h (45d). Keep the approved 15d / 7d / 168h values effective until a
+capacity receipt is complete. The budget verifier reports current guest root
+filesystem and memory observations, but root may not hold the observability
+volumes and these values are not a forecast. The production deploy now refuses
+any retention tuple change without a nonzero Prometheus size cap and a numeric
+successful `o11y_capacity_receipt_id`. That receipt is not earnable until a
+private receiver-host collector has seven days of CPU/memory and per-backend
+stored-byte growth, the measured forecast leaves at least 30% free disk and
+25% memory headroom with CPU p95 below 70%, and any required guest growth path
+has backup-before-resize and idempotent filesystem expansion. Do not update
+private retention values or VM size until those checks pass.
+
 2026-09-28: production Semaphore task 1701 proved Grafana firing, Discord
 delivery, and active-baseline restoration. Its task record has the receipt ID,
 but this Semaphore runner did not inject `SEMAPHORE_TASK_ID` into Ansible; the
 play's earlier final message therefore printed a blank ID. The budget verifier
 must not depend on that variable. Record receipt IDs from successful Semaphore
 task records after reviewing each run's output.
+
+2026-09-28: production o11y deploy task 1783 succeeded non-destructively at
+reviewed revision `1226d8b37521064273f250eee85c2ca518830b26`. Dev-bound,
+read-only budget verifier tasks 1784 and 1785 both reached the final aggregate
+assertion after retention comparison succeeded. Their output did not identify
+whether the live sample limit, head-series result count, or positive-series
+check failed, so no runtime cause is inferred. The verifier now reports each
+check separately with only normalized integers, result count, booleans, and
+fixed invalid markers; it discards Prometheus labels and never prints raw
+readback JSON, URLs, or credentials. Rerun the verifier through Semaphore to
+collect the specific live result before changing configuration.
+
+The production active-alert delivery drill, Semaphore task 1786, also succeeded
+at the same merged revision: the rule fired, a matching Discord receipt was
+observed, the temporary target was removed, all o11y rules and the contact
+remained present, and the recovery marker cleared. This confirms the alert drill
+path only; it does not resolve the separate budget readback failure.
 
 <!-- ======================= source: O11Y-DEPLOYMENT.md ======================= -->
 

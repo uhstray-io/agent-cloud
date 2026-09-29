@@ -24,7 +24,7 @@
       "datasource": { "type": "loki", "uid": "loki" },
       "gridPos": { "h": 8, "w": 24, "x": 0, "y": 6 },
       "fieldConfig": { "defaults": {}, "overrides": [] },
-      "targets": [ { "refId": "A", "datasource": { "type": "loki", "uid": "loki" }, "expr": "sum by (container) (rate({container=~\".+\"}[5m]))", "legendFormat": "{{container}}" } ]
+      "targets": [ { "refId": "A", "datasource": { "type": "loki", "uid": "loki" }, "expr": "sum by (service) (rate({service=~\".+\"}[5m]))", "legendFormat": "{{service}}" } ]
     }
   ],
   "schemaVersion": 39,

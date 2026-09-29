@@ -65,7 +65,7 @@ See `plan/architecture/01-automation-model.md` for the full composable pattern s
 - `distribute-ssh-keys.yml` — `become: false` (writes to user-owned `~/.ssh/`)
 - `harden-ssh.yml` — `become: true` (modifies `/etc/ssh/sshd_config`)
 - `deploy-service.yml` — `become: false` (runs deploy.sh as the service user)
-- `provision-vm.yml` — runs against Proxmox API, no SSH become
+- `provision-vm.yml` — runs against the Proxmox API; its post-boot play logs in to the new VM over Ansible's own connection and uses `become: true` only to write the Semaphore runner environment, after resolving the sudo password
 
 Before privileged tasks, use `tasks/resolve-become-password.yml` to read the
 bootstrap sudo password from OpenBao. Disable automatic fact gathering when it
@@ -199,7 +199,7 @@ list of files allowed to write a private key).
 | `cleanup-netbox.yml` | Clean up orphaned NetBox objects |
 | `provision-vm.yml` | Clone Proxmox template, configure cloud-init, provision VM |
 | `provision-template.yml` | Create Proxmox VM template with cloud-init |
-| `proxmox-validate.yml` | Validate Proxmox cluster readiness (tolerates an offline node — a guest on a downed node returns no name) |
+| `proxmox-validate.yml` | Validate Proxmox cluster readiness (tolerates an offline node — a guest on a downed node returns no name), and report each online node's capacity (live use, configured guest commitment, free VM storage), most free memory first, for placing a new VM |
 | `preflight-target-group.yml` | Assert a target group resolves and its hosts are reachable before a deploy touches them |
 | `netbox-allocate-ip.yml` | Ask NetBox for free addresses and report the recorded state of named ones. Read-only unless `-e reserve=true`; reserving takes explicit static addresses and checks live pfSense DHCP configuration first |
 

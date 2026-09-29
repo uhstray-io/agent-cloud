@@ -1,0 +1,36 @@
+# Private single-node profile storage. The inventory-gated Alloy pilot is the
+# only declared producer; v2 filesystem storage and this named volume persist
+# both profile blocks and metastore state across ordinary redeploys.
+target: all
+architecture_storage: v2
+
+server:
+  http_listen_port: 4040
+  grpc_listen_port: 9095
+
+metastore:
+  raft:
+    dir: /data/metastore/raft
+  data_dir: /data/metastore/data
+  index:
+    cleanup_interval: 15m
+
+storage:
+  backend: filesystem
+  filesystem:
+    dir: /data/storage
+
+segment_writer:
+  lifecycler:
+    ring:
+      kvstore:
+        store: inmemory
+      replication_factor: 1
+
+limits:
+  retention_period: 168h
+
+self_profiling:
+  disable_push: true
+
+multitenancy_enabled: false

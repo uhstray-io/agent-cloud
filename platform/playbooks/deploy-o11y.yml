@@ -3,7 +3,8 @@
 #
 # Phase 1: Place repo + manage-secrets (Grafana admin password from OpenBao) +
 #          template .env. The committed config/ (scrape/loki/alloy/grafana
-#          provisioning) travels with the repo.
+#          provisioning) travels with the repo. Pyroscope uses its own persistent
+#          volume and stays private on the observability network.
 # Phase 2: deploy.sh — container lifecycle (pull, up, wait Grafana healthy;
 #          datasources + dashboards provision on boot).
 # Phase 3: Verify service health and, when enabled, live Grafana alert state.
@@ -63,6 +64,11 @@
     _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
     _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
     _branch: "{{ service_branch | default('main') }}"
+    # Shared by Alloy and every Prometheus scrape job. Drop known sensitive or
+    # request-specific label names while retaining declared bounded dimensions
+    # such as service, identity, model, status, device, and GPU labels.
+    _o11y_forbidden_metric_label_names_regex: >-
+      (?i).*(^|_)(request_id|requestid|user_id|userid|client_id|clientid|session_id|sessionid|trace_id|traceid|span_id|spanid|email|api_key|apikey|access_token|refresh_token|token_value|token_id|password|secret|authorization|cookie|prompt|prompt_text|raw_path|path|http_target|address|remote_addr|remote_address|source_ip|client_ip|timestamp|url|uri|query|query_text)(_|$).*
     _bao_url: "{{ openbao_addr | default('') }}"
     _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
@@ -76,6 +82,24 @@
       - { src: env.j2, dest: .env, mode: "0600" }
 
   tasks:
+    - name: "Require a capacity receipt and nonzero Prometheus cap for retention expansion"
+      ansible.builtin.assert:
+        that:
+          - o11y_prom_retention_size | default('0B') | string | trim is match('^[1-9][0-9]*(B|KB|MB|GB|TB|PB|EB)$')
+          - o11y_capacity_receipt_id | default('') | string is match('^[1-9][0-9]*$')
+        fail_msg: >-
+          Production retention differs from the approved 15d / 7d / 168h baseline.
+          A nonzero Prometheus size cap and a numeric o11y_capacity_receipt_id that
+          references a separately reviewed successful capacity receipt are required.
+          The receipt cannot be earned until receiver host metrics,
+          seven-day backend growth/CPU/memory history, measured forecast, and the guest
+          growth/backup path are verified.
+      when: >-
+        not (local_mode | default(false) | bool) and
+        ((o11y_prom_retention | default('15d') | string) != '15d' or
+         (o11y_loki_retention | default('7d') | string) != '7d' or
+         (o11y_tempo_retention | default('168h') | string) != '168h')
+
     - name: "Require the production DNS zone and Caddy origin before rendering Grafana OIDC"
       ansible.builtin.assert:
         that:
@@ -179,7 +203,17 @@
         that:
           - (local_mode | default(false) | bool) or o11y_cluster is defined
           - (o11y_cluster | default('agent-cloud-local')) is match('^[A-Za-z0-9_.-]+$')
+          - (o11y_environment | default('local' if local_mode | default(false) | bool else 'prod')) in ['local', 'dev', 'prod']
         fail_msg: "Production o11y requires a declared o11y_cluster label containing only letters, digits, dots, underscores, or hyphens."
+
+    - name: "Require prior config, privacy, and resource receipts before profile collection"
+      ansible.builtin.assert:
+        that:
+          - o11y_profile_pilot_config_receipt_id | default('') | string is match('^[1-9][0-9]*$')
+          - o11y_profile_pilot_privacy_receipt_id | default('') | string is match('^[1-9][0-9]*$')
+          - o11y_profile_pilot_resource_receipt_id | default('') | string is match('^[1-9][0-9]*$')
+        fail_msg: "Profiling remains disabled until private inventory records successful config, privacy, and resource-gate receipt IDs."
+      when: o11y_alloy_profile_pilot_enabled | default(false) | bool
 
     - name: "Place the monorepo + ensure podman/compose"
       ansible.builtin.include_tasks: tasks/place-monorepo.yml
@@ -337,6 +371,90 @@
       check_mode: false
       when: not ansible_check_mode
 
+    - name: "Pyroscope ready (/ready) through the private compose network"
+      ansible.builtin.command: "{{ _engine }} exec o11y-grafana wget -q -O /dev/null http://pyroscope:4040/ready"
+      register: _pyroscope_ready
+      changed_when: false
+      retries: 8
+      delay: 5
+      until: _pyroscope_ready.rc == 0
+      when: not ansible_check_mode
+
+    - name: Read the effective Pyroscope storage and retention configuration
+      ansible.builtin.command:
+        argv:
+          - "{{ _engine }}"
+          - exec
+          - o11y-grafana
+          - sh
+          - -c
+          - curl -fsS http://pyroscope:4040/api/v1/status/config
+      register: _pyroscope_config
+      changed_when: false
+      retries: 6
+      delay: 5
+      until: _pyroscope_config.rc == 0
+      when: not ansible_check_mode
+
+    - name: Require private persistent Pyroscope v2 storage and bounded retention
+      ansible.builtin.assert:
+        that:
+          - (_pyroscope_config.stdout | from_yaml).architecture_storage == 'v2'
+          - (_pyroscope_config.stdout | from_yaml).storage.backend == 'filesystem'
+          - (_pyroscope_config.stdout | from_yaml).storage.filesystem.dir == '/data/storage'
+          - (_pyroscope_config.stdout | from_yaml).limits.retention_period in ['168h', '1w']
+          - (_pyroscope_config.stdout | from_yaml).metastore.index.cleanup_interval in ['15m', '15m0s']
+          - (_pyroscope_config.stdout | from_yaml).self_profiling.disable_push | bool
+        fail_msg: "Pyroscope's effective configuration does not match the committed persistent storage and seven-day retention policy."
+      when: not ansible_check_mode
+
+    - name: Read the provisioned Pyroscope datasource
+      ansible.builtin.command:
+        argv:
+          - "{{ _engine }}"
+          - exec
+          - o11y-grafana
+          - sh
+          - -c
+          - >-
+            printf 'user = "admin:%s"\n' "$GF_SECURITY_ADMIN_PASSWORD" |
+            curl -fsS --config - http://127.0.0.1:3000/api/datasources/uid/pyroscope
+      register: _pyroscope_datasource_config
+      changed_when: false
+      no_log: true
+      retries: 6
+      delay: 5
+      until: _pyroscope_datasource_config.rc == 0
+      when: not ansible_check_mode
+
+    - name: Require Grafana's private Pyroscope datasource URL
+      ansible.builtin.assert:
+        that:
+          - (_pyroscope_datasource_config.stdout | from_json).type == 'grafana-pyroscope-datasource'
+          - (_pyroscope_datasource_config.stdout | from_json).url == 'http://pyroscope:4040'
+        fail_msg: "Grafana's live Pyroscope datasource does not point to the private service."
+      when: not ansible_check_mode
+
+    - name: Verify Grafana can proxy the private Pyroscope datasource
+      ansible.builtin.command:
+        argv:
+          - "{{ _engine }}"
+          - exec
+          - o11y-grafana
+          - sh
+          - -c
+          - >-
+            printf 'user = "admin:%s"\n' "$GF_SECURITY_ADMIN_PASSWORD" |
+            curl -fsS -o /dev/null --config -
+            http://127.0.0.1:3000/api/datasources/proxy/uid/pyroscope/ready
+      register: _pyroscope_datasource
+      changed_when: false
+      no_log: true
+      retries: 6
+      delay: 5
+      until: _pyroscope_datasource.rc == 0
+      when: not ansible_check_mode
+
     - name: Read the live Tempo datasource correlation settings
       ansible.builtin.command:
         argv:
@@ -488,12 +606,13 @@
         that:
           - (_self_dashboard.stdout | from_json).dashboard.uid == 'o11y-self-monitoring'
           - (_self_dashboard.stdout | from_json).dashboard.panels | length >= 11
-          - (_self_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'O11y components up (expected 5)') | list | length == 1
+          - (_self_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'O11y components up (expected 6)') | list | length == 1
           - (_self_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Tempo spans / sec') | list | length == 1
           - (_self_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Tempo trace bytes / sec') | list | length == 1
           - "'tempo_distributor_spans_received_total' in (_self_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Tempo spans / sec') | map(attribute='targets') | flatten | map(attribute='expr') | join(' ')"
           - "'tempo_distributor_bytes_received_total' in (_self_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Tempo trace bytes / sec') | map(attribute='targets') | flatten | map(attribute='expr') | join(' ')"
-        fail_msg: "Grafana has a stale or incomplete o11y dashboard; redeploy must provision all five components and Tempo ingestion panels."
+          - (_self_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Profile samples written / sec') | list | length == 1
+        fail_msg: "Grafana has a stale or incomplete o11y dashboard; redeploy must provision all six components and signal-ingestion panels."
       when: not ansible_check_mode
 
     - name: Read the provisioned agentgateway traffic dashboard
@@ -588,6 +707,11 @@
             that:
               - _o11y_rules | selectattr('uid', 'equalto', 'o11y_service_down') | list | length == 1
               - _o11y_rules | selectattr('isPaused', 'defined') | selectattr('isPaused', 'equalto', false) | list | length == _o11y_rules | length
+              - _o11y_rules | selectattr('notification_settings', 'defined') | list | length == _o11y_rules | length
+              - _o11y_rules | rejectattr('notification_settings.group_by', 'equalto', ['service', 'environment', 'cluster', 'alertname']) | list | length == 0
+              - _o11y_rules | rejectattr('notification_settings.group_wait', 'equalto', '30s') | list | length == 0
+              - _o11y_rules | rejectattr('notification_settings.group_interval', 'equalto', '5m') | list | length == 0
+              - _o11y_rules | rejectattr('notification_settings.repeat_interval', 'equalto', '4h') | list | length == 0
             fail_msg: "Grafana has missing or paused o11y rules after alert enablement."
           vars:
             _o11y_rules: "{{ _active_rules.stdout | from_json | selectattr('uid', 'match', '^o11y_') | list }}"

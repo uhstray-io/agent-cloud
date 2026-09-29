@@ -37,6 +37,10 @@ services:
     mem_limit: 384m
     security_opt:
       - label=disable
+  pyroscope:
+    mem_limit: 512m
+    security_opt:
+      - label=disable
   grafana:
     mem_limit: 256m
     security_opt:
