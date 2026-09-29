@@ -175,16 +175,20 @@ design the isolated target and immutable storage mechanism in private
 site-config before implementing a restore workflow.
 
 The follow-on restore-feasibility receipt is deliberately narrow. It reports
-the count of distinct storage IDs that Proxmox reports active and image-capable
-on at least one online node other than the source VM's node, with enough
+source-layout parse and size completeness separately from whether exactly one
+supported artifact candidate is present. It reports the count of distinct
+storage IDs that Proxmox reports active, non-shared, and image-capable on at
+least one online node other than the source VM's node, with enough
 point-in-time `avail`/`total` capacity for the complete source disk layout while
 retaining at least 30% of reported total capacity. If any source disk size is
 unknown, no storage qualifies. EFI and TPM state disks are included in the
-aggregate size. It does not choose a storage; shared storage IDs count once.
-Malformed or incomplete node/storage reads fail closed. A returned
+aggregate size. An absent or malformed `shared` field fails closed for an
+active image-capable storage; shared storage is not counted. It does not choose
+a storage; non-shared storage IDs count once. Malformed or incomplete
+node/storage reads fail closed. A returned
 `cluster/nextid` value means only that a candidate was available at read time:
 the value is suppressed and no ID is reserved. Neither result proves a future
-restore can be placed.
+restore can be placed or that an artifact is usable.
 
 The selected backup destination remains local-only PBS on a separately declared
 cluster node; the node declaration belongs in private `site-config`. The

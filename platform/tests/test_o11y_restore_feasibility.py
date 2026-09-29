@@ -13,17 +13,26 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "platform/playbooks/files"))
 
-from inspect_o11y_restore_feasibility import inspect, main  # noqa: E402
+from inspect_o11y_restore_feasibility import inspect, main, validate_nodes  # noqa: E402
 
 GIB = 1024**3
 RESTORE_BYTES = 100 * GIB + 4 * 1024**2
 
 
-def storage(identity, *, total=200 * GIB, available=180 * GIB, active=1, content="images,rootdir"):
+def storage(
+    identity,
+    *,
+    total=200 * GIB,
+    available=180 * GIB,
+    active=1,
+    shared=0,
+    content="images,rootdir",
+):
     return {
         "storage": identity,
         "type": "lvmthin",
         "active": active,
+        "shared": shared,
         "content": content,
         "total": total,
         "avail": available,
@@ -42,6 +51,7 @@ def payload():
                 {"device": "efidisk0", "size_bytes": 4 * GIB, "included_in_backup": None},
                 {"device": "tpmstate0", "size_bytes": 4 * 1024**2, "included_in_backup": None},
             ],
+            "source_disk_layout_complete": True,
         },
         "source_node": "private-node-a",
         "nodes": [
@@ -86,8 +96,9 @@ def test_reports_aggregate_api_facts_without_selection_or_private_identifiers():
         "source_layout_parsed": True,
         "source_disk_sizes_complete": True,
         "backup_inclusion_verified": False,
+        "single_supported_artifact_candidate": True,
         "storage_capacity_basis": "proxmox-reported",
-        "storage_count_scope": "distinct-image-storage-ids-off-source-online-nodes",
+        "storage_count_scope": "distinct-off-source-non-shared-image-storage-ids",
         "image_storage_ids_off_source_meeting_reported_capacity_count": 2,
         "other_node_reported_capacity_sufficient": True,
         "unused_cluster_vmid_available_now": True,
@@ -103,7 +114,7 @@ def test_reports_aggregate_api_facts_without_selection_or_private_identifiers():
     ))
     assert set(result) == {
         "survey", "source_layout_parsed", "source_disk_sizes_complete", "backup_inclusion_verified",
-        "storage_capacity_basis", "storage_count_scope",
+        "single_supported_artifact_candidate", "storage_capacity_basis", "storage_count_scope",
         "image_storage_ids_off_source_meeting_reported_capacity_count",
         "other_node_reported_capacity_sufficient",
         "unused_cluster_vmid_available_now",
@@ -137,9 +148,28 @@ def test_unsupported_artifact_format_fails_closed_for_capacity_even_with_complet
     data = payload()
     data["artifact_receipt"]["candidates"][0]["format"] = "unsupported"
     result = inspect(data)
-    assert result["source_layout_parsed"] is False
+    assert result["source_layout_parsed"] is True
     assert result["source_disk_sizes_complete"] is True
-    assert result["image_storage_ids_off_source_meeting_reported_capacity_count"] == 0
+    assert result["single_supported_artifact_candidate"] is False
+    assert result["image_storage_ids_off_source_meeting_reported_capacity_count"] == 2
+
+
+@pytest.mark.parametrize(
+    ("candidates", "candidate_count"),
+    [([], 0), ([{"format": "vma.zst"}, {"format": "pbs-vm"}], 2)],
+)
+def test_layout_and_capacity_facts_are_independent_of_candidate_count(candidates, candidate_count):
+    data = payload()
+    data["artifact_receipt"]["candidates"] = candidates
+    data["artifact_receipt"]["candidate_artifact_count"] = candidate_count
+
+    result = inspect(data)
+    assert result["source_layout_parsed"] is True
+    assert result["source_disk_sizes_complete"] is True
+    assert result["single_supported_artifact_candidate"] is False
+    assert result["image_storage_ids_off_source_meeting_reported_capacity_count"] == 2
+    assert result["artifact_immutability_verified"] is False
+    assert result["restore_test_verified"] is False
 
 
 def test_explicit_backup_inclusion_is_reported_only_when_every_disk_is_true():
@@ -170,16 +200,24 @@ def test_explicit_backup_inclusion_is_reported_only_when_every_disk_is_true():
             "duplicate storage identities",
         ),
         (
-            lambda data: data["storage_reads"][0]["json"]["data"][0].pop("avail"),
+            lambda data: data["storage_reads"][1]["json"]["data"][0].pop("avail"),
             "malformed image-storage capacity",
         ),
         (
-            lambda data: data["storage_reads"][0]["json"]["data"][0].update(total=-1),
+            lambda data: data["storage_reads"][1]["json"]["data"][0].update(total=-1),
             "malformed image-storage capacity",
         ),
         (
             lambda data: data["storage_reads"][0]["json"]["data"][0].update(content=None),
             "malformed storage-capacity listing",
+        ),
+        (
+            lambda data: data["storage_reads"][1]["json"]["data"][0].pop("shared"),
+            "malformed image-storage sharing flag",
+        ),
+        (
+            lambda data: data["storage_reads"][1]["json"]["data"][0].update(shared="0"),
+            "malformed image-storage sharing flag",
         ),
         (lambda data: data.update(nextid={"status": 200, "json": {"data": "0"}}), "malformed next-VMID"),
     ],
@@ -195,9 +233,10 @@ def test_unsupported_or_incomplete_source_facts_do_not_claim_restore_support():
     data = payload()
     data["artifact_receipt"]["candidates"][0]["format"] = "unknown-format"
     data["artifact_receipt"]["source_disk_layout"][0]["size_bytes"] = None
+    data["artifact_receipt"]["source_disk_layout_complete"] = False
 
     result = inspect(data)
-    assert result["source_layout_parsed"] is False
+    assert result["source_layout_parsed"] is True
     assert result["source_disk_sizes_complete"] is False
     assert result["backup_inclusion_verified"] is False
     assert result["image_storage_ids_off_source_meeting_reported_capacity_count"] == 0
@@ -212,6 +251,28 @@ def test_nextid_accepts_proxmox_numeric_string_or_integer_without_reporting_it(v
     assert result["unused_cluster_vmid_available_now"] is True
     assert result["vmid_reserved"] is False
     assert str(value) not in str(result)
+
+
+def test_shared_image_storage_is_excluded_even_when_reported_capacity_is_sufficient():
+    data = payload()
+    for storage_row in data["storage_reads"][1]["json"]["data"]:
+        storage_row["shared"] = 1
+
+    result = inspect(data)
+    assert result["image_storage_ids_off_source_meeting_reported_capacity_count"] == 0
+    assert result["other_node_reported_capacity_sufficient"] is False
+
+
+@pytest.mark.parametrize(
+    "nodes",
+    [
+        [{"node": "private-node/../bad", "status": "online"}],
+        [{"node": "private-node", "status": "unknown"}],
+    ],
+)
+def test_node_url_targets_are_validated_before_use(nodes):
+    with pytest.raises(ValueError, match="malformed node listing"):
+        validate_nodes(nodes)
 
 
 def test_cli_refusal_does_not_echo_proxmox_values(monkeypatch, capsys):
@@ -251,6 +312,26 @@ def test_playbook_feasibility_reads_are_dev_bound_read_only_and_hidden():
         if task["name"] == "Report aggregate restore feasibility without private identifiers"
     )
     assert "_restore_feasibility_receipt" in str(receipt)
+    validate_index = next(
+        index
+        for index, task in enumerate(tasks)
+        if task.get("name") == "Validate Proxmox node names before constructing storage URLs"
+    )
+    storage_index = next(
+        index
+        for index, task in enumerate(tasks)
+        if task.get("name") == "Read active storage status from each online cluster node"
+    )
+    assert validate_index < storage_index
+    assert tasks[validate_index].get("no_log") is True
+    assert "_restore_storage_reads.results" not in str(helper)
+    assert "_pve_nodes.json.data" not in str(helper)
+    assert "_pve_nextid.json}}" not in str(helper)
+    assert "_restore_storage_facts" in str(helper)
+    assert any(
+        task.get("name") == "Keep only validated storage status fields for the inspector"
+        for task in tasks
+    )
 
 
 def test_visible_receipt_contains_no_storage_selection_or_vmid_value():

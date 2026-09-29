@@ -35,6 +35,7 @@
           - _o11y_hosts | length == 1
           - _vmid | string is match('^[1-9][0-9]{0,8}$')
           - _node | string is match('^[A-Za-z0-9._-]+$')
+          - _node not in ['.', '..']
         fail_msg: "This read-only artifact survey requires one declared production o11y VM and an exact reviewed revision."
 
     - name: Read controller checkout revision
@@ -190,14 +191,29 @@
       no_log: true
       check_mode: false
 
+    - name: Validate Proxmox node names before constructing storage URLs
+      ansible.builtin.command:
+        argv: [python3, "{{ _feasibility_inspector }}", validate-nodes]
+        stdin: "{{ _pve_nodes.json.data | to_json }}"
+      register: _validated_nodes_inspection
+      failed_when: false
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Require validated Proxmox node names
+      ansible.builtin.assert:
+        that: _validated_nodes_inspection.rc == 0
+        fail_msg: "Proxmox returned a malformed node listing; storage reads were not attempted."
+
+    - name: Keep validated Proxmox node listing
+      ansible.builtin.set_fact:
+        _validated_node_listing: "{{ _validated_nodes_inspection.stdout | from_json }}"
+      no_log: true
+
     - name: Select online nodes for image-storage capacity reads
       ansible.builtin.set_fact:
-        _online_storage_nodes: >-
-          {{ _pve_nodes.json.data
-             | selectattr('status', 'defined')
-             | selectattr('status', 'equalto', 'online')
-             | map(attribute='node')
-             | list }}
+        _online_storage_nodes: "{{ _validated_node_listing.online_nodes }}"
       no_log: true
 
     - name: Read active storage status from each online cluster node
@@ -213,6 +229,20 @@
       register: _restore_storage_reads
       no_log: true
       check_mode: false
+
+    - name: Keep only validated storage status fields for the inspector
+      ansible.builtin.set_fact:
+        _restore_storage_facts: >-
+          {{ _restore_storage_facts | default([]) + [{
+            'item': item,
+            'status': _restore_storage_reads.results[storage_index].status | default(0),
+            'data': _restore_storage_reads.results[storage_index].json.data | default(none)
+          }] }}
+      loop: "{{ _online_storage_nodes }}"
+      loop_control:
+        index_var: storage_index
+        label: "sanitized storage capacity facts"
+      no_log: true
 
     - name: Read the current next cluster VMID candidate without reserving it
       ansible.builtin.uri:
@@ -231,9 +261,10 @@
         stdin: >-
           {{ {'artifact_receipt': _artifact_receipt,
               'source_node': _node,
-              'nodes': _pve_nodes.json.data,
-              'storage_reads': _restore_storage_reads.results,
-              'nextid': {'status': _pve_nextid.status, 'json': _pve_nextid.json}}
+              'nodes': _validated_node_listing.nodes,
+              'storage_reads': _restore_storage_facts,
+              'nextid': {'status': _pve_nextid.status,
+                         'json': {'data': _pve_nextid.json.data | default(none)}}}
              | to_json }}
       register: _restore_feasibility_inspection
       failed_when: false

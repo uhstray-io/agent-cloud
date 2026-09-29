@@ -1416,9 +1416,10 @@ templates:
         description: "Exact reviewed Dev revision for the read-only artifact detail survey"
         type: string
         required: true
-    # Reports allow-listed artifact facts, source disk layout, and aggregate
-    # off-source image-capacity/VMID feasibility only. No names, IDs, hashes,
-    # capacities, or free-form metadata are shown. A VMID is not reserved;
+    # Reports allow-listed artifact facts, source disk layout, single supported-
+    # candidate status, and aggregate off-source non-shared image-capacity/VMID
+    # feasibility only. No names, IDs, hashes, capacities, or free-form data
+    # are shown. A VMID is not reserved;
     # missing protection stays unknown, and this task never writes PVE.
 
   - name: Reconcile o11y Backup Job (Dev)

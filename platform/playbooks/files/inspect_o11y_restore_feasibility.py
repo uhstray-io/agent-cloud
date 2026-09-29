@@ -10,6 +10,7 @@ from collections.abc import Mapping
 
 NODE_ID = re.compile(r"[A-Za-z0-9._-]{1,64}")
 STORAGE_ID = re.compile(r"[A-Za-z0-9._-]{1,64}")
+DISK_DEVICE = re.compile(r"(?:ide|sata|scsi|virtio|efidisk|tpmstate)[0-9]+")
 SUPPORTED_FORMATS = {"vma", "vma.zst", "vma.gz", "vma.lzo", "pbs-vm"}
 SAFE_REFUSALS = {
     "Proxmox returned a malformed node listing.",
@@ -20,6 +21,7 @@ SAFE_REFUSALS = {
     "Proxmox returned a malformed storage-capacity listing.",
     "Proxmox returned duplicate storage identities on one node.",
     "Proxmox returned a malformed image-storage capacity.",
+    "Proxmox returned a malformed image-storage sharing flag.",
     "Proxmox returned a malformed next-VMID response.",
     "Proxmox did not return a usable next VMID.",
     "The artifact receipt is incomplete or malformed.",
@@ -48,37 +50,69 @@ def _valid_nextid(value: object) -> bool:
     return isinstance(value, str) and NEXTID_VALUE.fullmatch(value) is not None
 
 
-def _source_facts(receipt: object) -> tuple[bool, bool, bool, int | None]:
+def _source_facts(receipt: object) -> tuple[bool, bool, bool, bool, int | None]:
     _require(isinstance(receipt, Mapping), "The artifact receipt is incomplete or malformed.")
     candidates = receipt.get("candidates")
     disks = receipt.get("source_disk_layout")
     count = receipt.get("source_disk_count")
+    candidate_count = receipt.get("candidate_artifact_count")
     _require(
         isinstance(candidates, list)
         and isinstance(disks, list)
         and type(count) is int
         and count == len(disks)
+        and type(candidate_count) is int
+        and candidate_count == len(candidates)
         and bool(disks)
         and all(isinstance(candidate, Mapping) for candidate in candidates)
         and all(isinstance(disk, Mapping) for disk in disks),
         "The artifact receipt is incomplete or malformed.",
     )
     candidate = candidates[0] if len(candidates) == 1 else {}
-    format_supported = isinstance(candidate, Mapping) and candidate.get("format") in SUPPORTED_FORMATS
-    layout_parsed = format_supported and receipt.get("target_vm_verified") is True
+    candidate_format = candidate.get("format") if isinstance(candidate, Mapping) else None
+    candidate_backend = candidate.get("backend_class") if isinstance(candidate, Mapping) else None
+    single_supported_candidate = (
+        len(candidates) == 1
+        and (
+            (candidate_backend == "pbs" and candidate_format == "pbs-vm")
+            or (candidate_backend == "non-pbs" and candidate_format in SUPPORTED_FORMATS - {"pbs-vm"})
+        )
+    )
+    seen_devices: set[str] = set()
+    for disk in disks:
+        device = disk.get("device")
+        size = disk.get("size_bytes")
+        included = disk.get("included_in_backup")
+        _require(
+            isinstance(device, str)
+            and DISK_DEVICE.fullmatch(device) is not None
+            and device not in seen_devices
+            and (size is None or (type(size) is int and size > 0))
+            and (included is None or type(included) is bool),
+            "The artifact receipt is incomplete or malformed.",
+        )
+        seen_devices.add(device)
+    layout_parsed = receipt.get("target_vm_verified") is True
     sizes_complete = bool(disks) and all(
         type(disk.get("size_bytes")) is int and disk["size_bytes"] > 0 for disk in disks
+    )
+    _require(
+        type(receipt.get("source_disk_layout_complete")) is bool
+        and receipt["source_disk_layout_complete"] == sizes_complete,
+        "The artifact receipt is incomplete or malformed.",
     )
     restore_bytes = (
         sum(disk["size_bytes"] for disk in disks) if sizes_complete and layout_parsed else None
     )
     inclusion_verified = bool(disks) and all(disk.get("included_in_backup") is True for disk in disks)
-    return layout_parsed, sizes_complete, inclusion_verified, restore_bytes
+    return layout_parsed, sizes_complete, inclusion_verified, single_supported_candidate, restore_bytes
 
 
 def _online_nodes(raw_nodes: object) -> list[str]:
-    _require(isinstance(raw_nodes, list) and all(isinstance(node, Mapping) for node in raw_nodes),
-             "Proxmox returned a malformed node listing.")
+    _require(
+        isinstance(raw_nodes, list) and all(isinstance(node, Mapping) for node in raw_nodes),
+        "Proxmox returned a malformed node listing.",
+    )
     seen: set[str] = set()
     online = []
     for node in raw_nodes:
@@ -86,6 +120,7 @@ def _online_nodes(raw_nodes: object) -> list[str]:
         _require(
             isinstance(identity, str)
             and NODE_ID.fullmatch(identity) is not None
+            and identity not in {".", ".."}
             and status in {"online", "offline"},
             "Proxmox returned a malformed node listing.",
         )
@@ -95,6 +130,18 @@ def _online_nodes(raw_nodes: object) -> list[str]:
             online.append(identity)
     _require(bool(online), "Proxmox returned no online nodes.")
     return online
+
+
+def validate_nodes(raw_nodes: object) -> dict[str, object]:
+    online = _online_nodes(raw_nodes)
+    node_status = {node["node"]: node["status"] for node in raw_nodes}
+    return {
+        "nodes": [
+            {"node": node, "status": node_status[node]}
+            for node in node_status
+        ],
+        "online_nodes": online,
+    }
 
 
 def _capacity_storage_count(
@@ -139,6 +186,7 @@ def _capacity_storage_count(
             backend = storage.get("type")
             active = storage.get("active")
             content = storage.get("content")
+            shared = storage.get("shared")
             _require(
                 isinstance(identity, str)
                 and STORAGE_ID.fullmatch(identity) is not None
@@ -156,6 +204,12 @@ def _capacity_storage_count(
             content_types = {entry.strip() for entry in content.split(",") if entry.strip()}
             if active != 1 or "images" not in content_types:
                 continue
+            _require(
+                shared is True or shared is False or (type(shared) is int and shared in {0, 1}),
+                "Proxmox returned a malformed image-storage sharing flag.",
+            )
+            if shared == 1 or node == source_node:
+                continue
             total, available = storage.get("total"), storage.get("avail")
             _require(
                 _valid_nonnegative_integer(total)
@@ -168,7 +222,6 @@ def _capacity_storage_count(
             # Integer arithmetic preserves the inclusive 30% threshold exactly.
             if (
                 restore_bytes is not None
-                and node != source_node
                 and remaining_after_restore >= 0
                 and remaining_after_restore * 10 >= total * 3
             ):
@@ -177,9 +230,13 @@ def _capacity_storage_count(
 
 
 def inspect(payload: Mapping[str, object]) -> dict[str, object]:
-    layout_parsed, sizes_complete, inclusion_verified, restore_bytes = _source_facts(
-        payload.get("artifact_receipt")
-    )
+    (
+        layout_parsed,
+        sizes_complete,
+        inclusion_verified,
+        single_supported_candidate,
+        restore_bytes,
+    ) = _source_facts(payload.get("artifact_receipt"))
     storage_count = _capacity_storage_count(
         payload.get("nodes"), payload.get("storage_reads"), payload.get("source_node"), restore_bytes
     )
@@ -197,7 +254,8 @@ def inspect(payload: Mapping[str, object]) -> dict[str, object]:
         "source_disk_sizes_complete": sizes_complete,
         "backup_inclusion_verified": inclusion_verified,
         "storage_capacity_basis": "proxmox-reported",
-        "storage_count_scope": "distinct-image-storage-ids-off-source-online-nodes",
+        "single_supported_artifact_candidate": single_supported_candidate,
+        "storage_count_scope": "distinct-off-source-non-shared-image-storage-ids",
         "image_storage_ids_off_source_meeting_reported_capacity_count": storage_count,
         "other_node_reported_capacity_sufficient": storage_count > 0,
         "unused_cluster_vmid_available_now": True,
@@ -212,6 +270,10 @@ def main() -> int:
     try:
         operation = sys.argv[1]
         payload = json.load(sys.stdin)
+        if operation == "validate-nodes":
+            result = validate_nodes(payload)
+            print(json.dumps(result, separators=(",", ":")))
+            return 0
         _require(isinstance(payload, Mapping), "Proxmox returned invalid inspection data.")
         if operation != "inspect":
             raise ValueError("Unsupported restore feasibility inspection operation.")
