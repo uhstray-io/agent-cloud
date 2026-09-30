@@ -78,3 +78,26 @@ def test_a_read_that_is_not_root_and_intermediate_is_refused(tmp_path, certs):
     r = _run(tmp_path, {"_ca_root_dest_dir": str(deploy), "_ca_engine": str(_engine(tmp_path, "local", certs))})
     assert r.returncode != 0 and "did not read back as two certificates" in r.stdout
     assert not (deploy / "certs" / "step-ca-bundle.crt").exists()
+
+
+def test_a_changed_bundle_is_rewritten_in_place(tmp_path):
+    # Review of #367: a service that bind-mounts the single bundle file keeps the inode it
+    # started with, so the bundle must be rewritten in place, never replaced by a rename.
+    bundle = tmp_path / "deploy" / "certs" / "step-ca-bundle.crt"
+    bundle.parent.mkdir(parents=True)
+    bundle.write_text("an old root\n")
+    inode = bundle.stat().st_ino
+    r = _run(tmp_path, {"_ca_root_dest_dir": str(tmp_path / "deploy"), "_ca_engine": str(_engine(tmp_path, "local"))})
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert bundle.read_text().count("BEGIN CERTIFICATE") == 2
+    assert bundle.stat().st_ino == inode
+
+
+def test_a_dry_run_says_when_the_bundle_would_change(tmp_path):
+    bundle = tmp_path / "deploy" / "certs" / "step-ca-bundle.crt"
+    bundle.parent.mkdir(parents=True)
+    bundle.write_text("an old root\n")
+    r = _run(tmp_path, {"_ca_root_dest_dir": str(tmp_path / "deploy"), "_ca_engine": str(_engine(tmp_path, "local"))},
+             check=True)
+    assert r.returncode == 0 and "would be rewritten" in r.stdout, r.stdout
+    assert bundle.read_text() == "an old root\n"

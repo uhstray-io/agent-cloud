@@ -62,10 +62,36 @@
     state: directory
     mode: "0755"
 
-# 0644: public, and the unprivileged service user must read it. Changed only when the
-# bundle differs (a new root after a reset, or a renewed intermediate).
+# The bundle on the consumer now; read-only, so a dry run compares too.
+- name: "Read the bundle the consumer holds"
+  ansible.builtin.slurp:
+    src: "{{ _ca_root_bundle }}"
+  register: _ca_root_current
+  failed_when: false
+
+- name: "Name the bundle's new content"
+  ansible.builtin.set_fact:
+    _ca_root_new: "{{ _ca_root_read.stdout }}\n"
+    _ca_root_held: "{{ (_ca_root_current.content | b64decode) if (_ca_root_current.content is defined) else '' }}"
+
+# Written IN PLACE (`cat >` truncates the same file), never replaced by a rename: a service
+# that bind-mounts this one file (ERPNext's compose.local.yml does) keeps the inode it was
+# started with, so a new file would stay invisible to it until the container is recreated
+# (review of #367; the pinned-inode lesson in manage-caddy-sites.yml). 0644: public, and the
+# unprivileged service user must read it. Only when the bundle differs (a new root after a
+# reset, or a renewed intermediate), and skipped under --check.
 - name: "Write the step-ca trust bundle to {{ _ca_root_bundle }}"
-  ansible.builtin.copy:
-    content: "{{ _ca_root_read.stdout }}\n"
-    dest: "{{ _ca_root_bundle }}"
-    mode: "0644"
+  ansible.builtin.shell: |
+    set -eu
+    cat > {{ _ca_root_bundle | quote }}
+    chmod 0644 {{ _ca_root_bundle | quote }}
+  args:
+    stdin: "{{ _ca_root_new }}"
+    stdin_add_newline: false
+  changed_when: true
+  when: not ansible_check_mode and _ca_root_held != _ca_root_new
+
+- name: "Report a bundle a real run would rewrite"
+  ansible.builtin.debug:
+    msg: "check mode: {{ _ca_root_bundle }} would be rewritten with the CA's current root and intermediate"
+  when: ansible_check_mode and _ca_root_held != _ca_root_new
