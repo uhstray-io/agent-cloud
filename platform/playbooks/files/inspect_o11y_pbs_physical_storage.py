@@ -36,6 +36,7 @@ SAFE_REFUSALS = {
     "Proxmox returned a malformed directory inventory.",
     "Proxmox returned a malformed storage status inventory.",
     "Proxmox returned a malformed cluster storage config inventory.",
+    "Proxmox returned a malformed cluster storage node scope.",
     "Proxmox returned an incomplete thick-LVM storage linkage.",
     "Proxmox returned inconsistent thick-LVM capacity.",
 }
@@ -82,6 +83,29 @@ def _api_data(value: object, *, section: str, expected: type = list) -> object:
         refusal,
     )
     return value["json"]["data"]
+
+
+def _storage_applies_to_node(config: Mapping, target_node: str) -> bool:
+    """Decode Proxmox's optional comma-separated storage node restriction."""
+    if "nodes" not in config:
+        return True
+    encoded_nodes = config["nodes"]
+    _require(
+        isinstance(encoded_nodes, str) and bool(encoded_nodes),
+        "Proxmox returned a malformed cluster storage node scope.",
+    )
+    node_names = encoded_nodes.split(",")
+    _require(
+        all(
+            name == name.strip()
+            and NODE_NAME.fullmatch(name) is not None
+            and name not in {".", ".."}
+            for name in node_names
+        )
+        and len(set(node_names)) == len(node_names),
+        "Proxmox returned a malformed cluster storage node scope.",
+    )
+    return target_node in node_names
 
 
 def validate_node(payload: object) -> dict[str, object]:
@@ -483,7 +507,7 @@ def _allocation_facts(
 
 
 def _thick_lvm_facts(
-    status_rows: list[object], config_response: object, lvm_data: Mapping,
+    status_rows: list[object], config_response: object, lvm_data: Mapping, target_node: str,
 ) -> dict[str, object]:
     """Report visible non-shared thick-LVM image-store headroom only."""
     config_rows = _api_data(config_response, section="cluster storage config")
@@ -492,6 +516,10 @@ def _thick_lvm_facts(
         "Proxmox returned a malformed cluster storage config inventory.",
     )
     configs: dict[str, Mapping] = {}
+    local_configs: dict[str, Mapping] = {}
+    visible_lvm_configs: dict[str, Mapping] = {}
+    foreign_lvm_config_ids: set[str] = set()
+    foreign_lvm_config_row_count = 0
     for row in config_rows:
         storage_id, kind = row.get("storage"), row.get("type")
         _require(
@@ -500,6 +528,14 @@ def _thick_lvm_facts(
             "Proxmox returned a malformed cluster storage config inventory.",
         )
         configs[storage_id] = row
+        if kind in {"lvm", "lvmthin"}:
+            visible_lvm_configs[storage_id] = row
+            applies_locally = _storage_applies_to_node(row, target_node)
+            if applies_locally:
+                local_configs[storage_id] = row
+            else:
+                foreign_lvm_config_row_count += 1
+                foreign_lvm_config_ids.add(storage_id)
         if kind == "lvm" and "content" in row:
             _require(isinstance(row["content"], str),
                     "Proxmox returned a malformed cluster storage config inventory.")
@@ -515,33 +551,54 @@ def _thick_lvm_facts(
     # _lvm_facts already validates VG rows and rejects duplicate names. Keep this
     # join from tightening acceptance of unrelated LVM inventory rows.
     groups = {group["name"]: group for group in group_rows}
-    lvm_config_rows = [
-        (storage_id, config)
-        for storage_id, config in configs.items()
-        if config.get("type") in {"lvm", "lvmthin"}
-    ]
-    config_vg_mappings_complete = all(
-        isinstance(config.get("vgname"), str)
-        and VG_NAME.fullmatch(config["vgname"]) is not None
-        and config["vgname"] in groups
-        for _, config in lvm_config_rows
-    ) and all(
-        row["storage"] in configs and configs[row["storage"]].get("type") == row.get("type")
-        for row in status_rows
-        if row.get("type") in {"lvm", "lvmthin"}
+    local_lvm_config_rows = list(local_configs.items())
+    local_config_vg_join_incomplete_count = sum(
+        not (
+            isinstance(config.get("vgname"), str)
+            and VG_NAME.fullmatch(config["vgname"]) is not None
+            and config["vgname"] in groups
+        )
+        for _, config in local_lvm_config_rows
+    )
+    unmatched_local_status_row_count = 0
+    for row in status_rows:
+        if row.get("type") not in {"lvm", "lvmthin"}:
+            continue
+        storage_id = row["storage"]
+        visible_config = visible_lvm_configs.get(storage_id)
+        enabled = row.get("enabled")
+        foreign_disabled_pair = (
+            storage_id in foreign_lvm_config_ids
+            and visible_config is not None
+            and visible_config.get("type") == row.get("type")
+            and (enabled is False or type(enabled) is int and enabled == 0)
+        )
+        if foreign_disabled_pair:
+            continue
+        if (
+            storage_id not in local_configs
+            or local_configs[storage_id].get("type") != row.get("type")
+        ):
+            unmatched_local_status_row_count += 1
+    unmatched_local_config_row_count = sum(
+        status_by_id.get(storage_id) is None
+        or status_by_id[storage_id].get("type") != config.get("type")
+        for storage_id, config in local_lvm_config_rows
+    )
+    config_vg_mappings_complete = (
+        local_config_vg_join_incomplete_count == 0
+        and unmatched_local_status_row_count == 0
+        and unmatched_local_config_row_count == 0
     )
 
     candidates: list[tuple[Mapping, Mapping]] = []
-    for storage_id, config in configs.items():
+    visible_alias_suppressed_candidate_count = 0
+    for storage_id, config in local_configs.items():
         if config.get("type") != "lvm":
             continue
         status = status_by_id.get(storage_id)
-        if status is None:
+        if status is None or status.get("type") != "lvm":
             continue
-        _require(
-            status.get("type") == "lvm",
-            "Proxmox returned an incomplete thick-LVM storage linkage.",
-        )
         status_content = {
             part.strip() for part in status.get("content", "").split(",") if part.strip()
         }
@@ -585,15 +642,23 @@ def _thick_lvm_facts(
             "images" in config_content,
             "Proxmox returned an incomplete thick-LVM storage linkage.",
         )
-        # Missing or node-unmapped VG declarations are represented by the
-        # completeness fact and suppress every thick-LVM count.
-        if not config_vg_mappings_complete:
-            continue
         vg_name = config.get("vgname")
-        if any(
-            other_id != storage_id and other_config.get("vgname") == vg_name
-            for other_id, other_config in lvm_config_rows
+        if not (
+            isinstance(vg_name, str)
+            and VG_NAME.fullmatch(vg_name) is not None
+            and vg_name in groups
         ):
+            continue
+        if any(
+            other_id != storage_id
+            and other_config.get("vgname") == vg_name
+            for other_id, other_config in visible_lvm_configs.items()
+        ):
+            visible_alias_suppressed_candidate_count += 1
+            continue
+        # Any incomplete local mapping suppresses all candidate totals, even if
+        # this particular config/status pair is individually well formed.
+        if not config_vg_mappings_complete:
             continue
         group = groups[vg_name]
         total, used, available = (status.get(key) for key in ("total", "used", "avail"))
@@ -609,6 +674,11 @@ def _thick_lvm_facts(
     result: dict[str, object] = {
         "visible_thick_lvm_image_store_count": len(candidates),
         "thick_lvm_config_vg_mappings_complete": config_vg_mappings_complete,
+        "thick_lvm_foreign_lvm_config_row_count": foreign_lvm_config_row_count,
+        "thick_lvm_local_config_vg_join_incomplete_count": local_config_vg_join_incomplete_count,
+        "thick_lvm_unmatched_local_status_row_count": unmatched_local_status_row_count,
+        "thick_lvm_unmatched_local_config_row_count": unmatched_local_config_row_count,
+        "thick_lvm_visible_alias_suppressed_candidate_count": visible_alias_suppressed_candidate_count,
         "thick_lvm_reported_vg_headroom_candidate_count_256_gib": 0,
         "thick_lvm_reported_vg_headroom_candidate_count_512_gib": 0,
         "thick_lvm_reported_vg_headroom_candidate_count_1024_gib": 0,
@@ -631,6 +701,13 @@ def inspect(payload: object) -> dict[str, object]:
         isinstance(declared_storage_id, str)
         and STORAGE_ID.fullmatch(declared_storage_id) is not None,
         "The private VM image-storage declaration is missing or malformed.",
+    )
+    target_node = payload.get("target_node")
+    _require(
+        isinstance(target_node, str)
+        and NODE_NAME.fullmatch(target_node) is not None
+        and target_node not in {".", ".."},
+        "The private storage node declaration is missing or malformed.",
     )
     disk_rows = _api_data(payload.get("disks"), section="disk")
     lvm_data = _api_data(payload.get("lvm"), section="LVM", expected=Mapping)
@@ -655,7 +732,7 @@ def inspect(payload: object) -> dict[str, object]:
             payload.get("visible_volumes"),
             thin_rows,
         ),
-        **_thick_lvm_facts(storage_rows, storage_config_rows, lvm_data),
+        **_thick_lvm_facts(storage_rows, storage_config_rows, lvm_data, target_node),
         "device_selected": False,
         "device_safety_verified": False,
         "filesystem_readiness_verified": False,

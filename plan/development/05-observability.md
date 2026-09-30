@@ -1192,11 +1192,18 @@ selection, reservation, or allocation authorization are exposed. Config rows
 are validated for ID/type globally; optional `content` is required and parsed
 only for a matching active, explicitly non-shared LVM image candidate. Any
 other visible LVM or LVM-thin config row naming the same VG excludes the
-candidate even if that other row is inactive, shared, or lacks image content;
-incomplete or node-unmapped VG mappings, including any visible LVM/LVM-thin
-status row without a matching same-type cluster config row, suppress all thick-LVM counts. Invalid
-or duplicate IDs/types in this added cluster-config read can refuse the entire
-sanitized survey.
+candidate even if that other row is inactive, shared, lacks image content, or
+is foreign-node scoped;
+local mapping incompleteness includes a local-applicable LVM/LVM-thin config row
+without same-type target-node status (including disabled configs), a target-node
+status row without a matching same-type local-applicable config, or an invalid
+local config/VG join. These suppress only thick-LVM candidate and headroom counts;
+aggregate diagnostic counts remain available. An invalid or duplicate storage
+ID, or a missing/non-string type, in this added cluster-config read can refuse
+the entire sanitized survey; types may repeat. A matching foreign-scoped
+config/status row marked `enabled=0` is not an
+unmatched local row; local-applicable configs remain subject to the completeness
+check even when disabled.
 
 This preflight supersedes the *candidate direction* of the earlier thin-LVM
 proposal, but does not erase its evidence: the existing
@@ -1210,6 +1217,26 @@ status APIs filter rows by `Datastore.Audit` or `Datastore.AllocateSpace`.
 behind a SAN/LUN; physical backing, device safety, filesystem readiness, PBS
 readiness, and write authorization remain false. Raw API data stays under
 `no_log`. No disk is selected or initialized.
+
+The GET-only task 2011 run succeeded at reviewed SHA
+`4c1806652ed15cab8d1a4b50fd241bab52724646` and returned
+`thick_lvm_config_vg_mappings_complete=false` with zero thick-LVM candidate and
+headroom counts. That receipt did not distinguish foreign-node config rows,
+missing local VG joins, unmatched local status/config rows, or visible same-VG
+aliases including foreign-node configs;
+its root cause is unknown. The follow-on emits only aggregate counts for those
+conditions and does not treat task 2011 as evidence of a specific cause.
+
+Proxmox's storage config API encodes the optional `nodes` restriction as a
+comma-separated string; when omitted, the storage applies across nodes. The
+survey validates that field for LVM/LVM-thin rows and scopes VG joins and
+candidate selection to the declared online node. Alias exclusion compares each
+local candidate against all visible LVM/LVM-thin configs, including foreign-node
+rows, because backing identity is not established by node scope. Malformed LVM
+scopes refuse the sanitized inspection; unrelated storage types do not need
+the field. Both cluster config and node status endpoints filter rows
+by datastore permissions, so diagnostics describe only API-visible rows and
+cannot prove that hidden rows do not exist. See upstream [storage config API](https://github.com/proxmox/pve-storage/blob/master/src/PVE/API2/Storage/Config.pm), [storage plugin node encoding](https://github.com/proxmox/pve-storage/blob/master/src/PVE/Storage/Plugin.pm), [node-restriction check](https://github.com/proxmox/pve-storage/blob/master/src/PVE/Storage.pm), and [node storage status API](https://github.com/proxmox/pve-storage/blob/master/src/PVE/API2/Storage/Status.pm).
 
 <!-- ======================= source: O11Y-DEPLOYMENT.md ======================= -->
 
