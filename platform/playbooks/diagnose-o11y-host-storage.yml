@@ -136,3 +136,27 @@
           - _host_storage_diagnostic.rc == 0
           - _host_storage_diagnostic.stdout | length > 0
         fail_msg: "Receiver-host diagnostic did not return a successful sanitized readback."
+
+    - name: Resolve sudo password through OpenBao for the scoped root-LVM read
+      ansible.builtin.include_tasks: tasks/resolve-become-password.yml
+
+    - name: Collect privileged root LVM readback
+      ansible.builtin.command:
+        argv: [python3, -, root-lvm]
+        stdin: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/diagnose-o11y-host-storage.py') }}"
+      register: _privileged_root_lvm
+      become: true
+      changed_when: false
+      check_mode: false
+      failed_when: false
+
+    - name: Report sanitized privileged root LVM facts
+      ansible.builtin.debug:
+        msg: "{{ _privileged_root_lvm.stdout }}"
+
+    - name: Require exact root LV and VG readback
+      ansible.builtin.assert:
+        that:
+          - _privileged_root_lvm.rc == 0
+          - _privileged_root_lvm.stdout | length > 0
+        fail_msg: "Privileged root LVM correlation was unavailable or ambiguous."

@@ -234,6 +234,96 @@ def test_collect_reads_lvm_capacity_with_readonly_metadata_commands():
     assert all("--readonly" in argv for argv in lvm_commands)
 
 
+def test_privileged_root_only_survey_reports_exact_root_lv_and_vg_sizes_without_names():
+    payload = {
+        "root_mount": json.dumps({"filesystems": [{
+            "source": "/dev/mapper/vg-root", "fstype": "ext4", "maj:min": "253:0"
+        }]}),
+        "block_topology": json.dumps({"blockdevices": [{
+            "name": "/dev/mapper/vg-root", "type": "lvm", "size": 700,
+            "maj:min": "253:0", "children": []
+        }]}),
+        "lvs": json.dumps({"report": [{"lv": [{
+            "lv_path": "/dev/mapper/vg-root", "vg_name": "private-vg", "lv_size": "700"
+        }]}]}),
+        "vgs": json.dumps({"report": [{"vg": [{"vg_name": "private-vg", "vg_free": "300"}]}]}),
+        "root_capacity": {"total_bytes": 650, "available_bytes": 0},
+    }
+
+    report = DIAGNOSTIC.diagnose_root_lvm(payload, device_number_reader=_device_number)
+
+    assert report == {
+        "status": "observed",
+        "filesystem_type": "ext4",
+        "filesystem_total_bytes": 650,
+        "filesystem_available_bytes": 0,
+        "block_chain": [{"type": "lvm", "size_bytes": 700}],
+        "lvm": {
+            "status": "observed",
+            "logical_volume_size_bytes": 700,
+            "volume_group_free_bytes": 300,
+        },
+    }
+    serialized = json.dumps(report)
+    assert "private-vg" not in serialized
+    assert "/dev/" not in serialized
+
+
+def test_privileged_root_only_survey_refuses_ambiguous_root_lv_join():
+    payload = {
+        "root_mount": json.dumps({"filesystems": [{
+            "source": "/dev/mapper/vg-root", "fstype": "ext4", "maj:min": "253:0"
+        }]}),
+        "block_topology": json.dumps({"blockdevices": [{
+            "name": "/dev/mapper/vg-root", "type": "lvm", "size": 700,
+            "maj:min": "253:0", "children": []
+        }]}),
+        "lvs": json.dumps({"report": [{"lv": [
+            {"lv_path": "/dev/mapper/vg-root", "vg_name": "private-vg", "lv_size": "700"},
+            {"lv_path": "/dev/mapper/vg-root", "vg_name": "other-vg", "lv_size": "700"},
+        ]}]}),
+        "vgs": json.dumps({"report": [{"vg": [{"vg_name": "private-vg", "vg_free": "300"}]}]}),
+        "root_capacity": {"total_bytes": 650, "available_bytes": 0},
+    }
+
+    report = DIAGNOSTIC.diagnose_root_lvm(payload, device_number_reader=_device_number)
+
+    assert report == {"status": "unavailable", "reason": "root_logical_volume_unresolved"}
+
+
+def test_privileged_root_only_collector_runs_only_readonly_host_queries():
+    commands = []
+    readbacks = {
+        "findmnt": json.dumps({"filesystems": [{
+            "source": "/dev/mapper/vg-root", "fstype": "ext4", "maj:min": "253:0"
+        }]}),
+        "lsblk": json.dumps({"blockdevices": [{
+            "name": "/dev/mapper/vg-root", "type": "lvm", "size": 700,
+            "maj:min": "253:0", "children": []
+        }]}),
+        "lvs": json.dumps({"report": [{"lv": [{
+            "lv_path": "/dev/mapper/vg-root", "vg_name": "private-vg", "lv_size": "700"
+        }]}]}),
+        "vgs": json.dumps({"report": [{"vg": [{"vg_name": "private-vg", "vg_free": "300"}]}]}),
+    }
+
+    def read(argv):
+        commands.append(argv)
+        return readbacks[argv[0]]
+
+    with patch.object(DIAGNOSTIC, "_read", side_effect=read), \
+            patch.object(DIAGNOSTIC, "filesystem_capacity", return_value={
+                "total_bytes": 650, "available_bytes": 0, "device_id": 1
+            }):
+        report = DIAGNOSTIC.collect_root_lvm(device_number_reader=_device_number)
+
+    assert report["status"] == "observed"
+    assert {argv[0] for argv in commands} == {"findmnt", "lsblk", "lvs", "vgs"}
+    assert all("--readonly" in argv for argv in commands if argv[0] in {"lvs", "vgs"})
+    assert "podman" not in {argv[0] for argv in commands}
+    assert all(argv[0] not in {"lvcreate", "lvextend", "mkfs", "resize2fs"} for argv in commands)
+
+
 def test_dev_playbook_and_template_require_both_exact_revisions_and_only_read():
     plays = yaml.safe_load((ROOT / "platform/playbooks/diagnose-o11y-host-storage.yml").read_text())
     assert plays[0]["ansible.builtin.import_playbook"] == "preflight-target-group.yml"
@@ -249,10 +339,12 @@ def test_dev_playbook_and_template_require_both_exact_revisions_and_only_read():
                for task in receiver_tasks)
     assert not any(
         any(module in task for module in ("ansible.builtin.file", "ansible.builtin.copy",
-                                          "ansible.builtin.template", "ansible.builtin.uri",
-                                          "ansible.builtin.include_tasks"))
+                                          "ansible.builtin.template", "ansible.builtin.uri"))
         for task in controller_tasks + receiver_tasks
     )
+    resolver = next(task for task in receiver_tasks if task.get("name") ==
+                    "Resolve sudo password through OpenBao for the scoped root-LVM read")
+    assert resolver["ansible.builtin.include_tasks"] == "tasks/resolve-become-password.yml"
     report_task = next(task for task in receiver_tasks if task.get("name") ==
                        "Report sanitized receiver host storage diagnostics")
     assert report_task["ansible.builtin.debug"]["msg"] == "{{ _host_storage_diagnostic.stdout }}"
@@ -271,6 +363,19 @@ def test_dev_playbook_and_template_require_both_exact_revisions_and_only_read():
     assert [item["name"] for item in template["survey_vars"]] == [
         "expected_repository_sha", "expected_receiver_sha"
     ]
+
+    privileged = [task for task in receiver_tasks if task.get("become") is True]
+    assert len(privileged) == 1
+    assert privileged[0]["name"] == "Collect privileged root LVM readback"
+    assert privileged[0]["ansible.builtin.command"]["argv"] == ["python3", "-", "root-lvm"]
+    assert privileged[0]["changed_when"] is False
+    assert privileged[0]["failed_when"] is False
+    assert any("resolve-become-password.yml" in str(task) for task in receiver_tasks)
+    rootless = next(task for task in receiver_tasks if task.get("name") ==
+                    "Collect and normalize receiver host storage diagnostics")
+    assert rootless.get("become", False) is False
+    assert rootless["ansible.builtin.command"]["argv"] == ["python3", "-"]
+    assert rootless["ansible.builtin.command"]["stdin"].endswith("diagnose-o11y-host-storage.py') }}")
 
 
 def test_both_diagnostics_require_writable_tmpfs_before_using_remote_modules():
