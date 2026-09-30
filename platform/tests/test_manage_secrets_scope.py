@@ -12,7 +12,8 @@ import re
 
 import playbook_yaml
 
-READ = re.compile(r"\bsecrets\s*(?:\.|\[)")
+# `secrets.x`, `secrets[...]`, `secrets | filter` and a bare `{{ secrets }}` all read the name.
+READ = re.compile(r"\bsecrets\s*(?:\.|\[|\||\}\})")
 BARE = ("when", "failed_when", "changed_when", "until")
 TASK_LISTS = ("tasks", "pre_tasks", "post_tasks", "handlers", "block", "rescue", "always")
 
@@ -42,7 +43,10 @@ def reads_outside_binding(doc) -> list[str]:
     found = []
     for task in _tasks(doc):
         binds = isinstance(task.get("vars"), dict) and "secrets" in task["vars"]
-        body = {k: v for k, v in task.items() if k not in (*TASK_LISTS, "vars", "name")}
+        # A task's own `vars:` (include vars too) are read unless the task binds `secrets`;
+        # a play's `vars:` are scanned the same way, since a play binds nothing here.
+        skip = (*TASK_LISTS, "name") + (("vars",) if binds else ())
+        body = {k: v for k, v in task.items() if k not in skip}
         # Conditions take a bare Jinja expression (no braces); everything else is templated.
         bare = [s for k in BARE for s in _strings(body.get(k))]
         for mod in body.values():
@@ -74,11 +78,21 @@ def test_the_guard_catches_both_recorded_shapes_and_passes_the_binding_task():
         argv: [x]
         stdin: "{{ secrets[item.secret] }}"
     - name: template
-      ansible.builtin.template: {src: a, dest: b}
+      ansible.builtin.template: {src: a, dest: "{{ secrets.path }}"}
       vars:
         secrets: "{{ _resolved }}"
+    - name: include
+      ansible.builtin.include_tasks: x.yml
+      vars:
+        _data: "{{ {'k': secrets.x} }}"
+    - name: filter
+      ansible.builtin.debug:
+        msg: "{{ secrets | dict2items | length }}"
+    - name: bare
+      ansible.builtin.copy: {content: "{{ secrets }}", dest: /x}
     - name: fine
       ansible.builtin.debug:
         msg: "{{ _resolved.x }} secret/services/x secrets are managed"
 """)
-    assert reads_outside_binding(doc) == ["guard", "add"]
+    # The template task reads `secrets` inside its own binding, so it passes.
+    assert reads_outside_binding(doc) == ["guard", "add", "include", "filter", "bare"]

@@ -52,26 +52,29 @@ host. Push, pull requests and merges happen only when Joe authorizes each one.
       added or updated only on a difference; the CLI sequence was checked against a
       throwaway step-ca 0.30.2 container (add of an existing name fails, so the list
       decides). Tests: `platform/tests/test_step_ca_deploy.py`
-- [ ] 2.2 Production parameters flow through the existing `env.j2` variables (bind,
+- [x] 2.2 Production parameters flow through the existing `env.j2` variables (bind,
       name, DNS names, ACME switch); add a parameter only where one is missing. Confirm the
       ACME provisioner is absent after first boot with `stepca_init_acme: "false"`.
       2026-09-29: Phase 1 refuses a production run without `stepca_name`, `stepca_dns_names`,
       `stepca_init_acme: "false"` and a loopback bind; Phase 3 asserts no ACME provisioner and
       the loopback publish (the image's `entrypoint.sh:80` enables ACME only for the literal
-      `"true"`). The after-first-boot confirmation is task 2.6's first real run
+      `"true"`). Confirmed after first boot 2026-09-29: runs 1989 and 1990 passed the
+      no-ACME assertion on the production CA
 - [x] 2.3 `clean-deploy-step-ca.yml`: refuse unless `-e confirm_ca_reset=<inventory
       hostname>` names the target, following `destroy-vm.yml`'s `confirm_destroy`
       assertion; update `templates-local.yml`'s `Clean Deploy step-ca (Local)` and any
       make target that calls the playbook to pass it. Done 2026-09-29 (no make target calls
       it); the refusal is tested with no, a wrong and the right confirmation
-- [ ] 2.4 `platform/semaphore/templates.yml`: a `Deploy step-ca` template (production
+- [x] 2.4 `platform/semaphore/templates.yml`: a `Deploy step-ca` template (production
       inventory, `main`) and its generated `(Dev)` variant; no production clean-deploy
       template; run `setup-templates.yml`. Amended 2026-09-29 (Joe): a production
       `Clean Deploy step-ca` template is added too, guarded by a required `confirm_ca_reset`
       survey with no default, so the reset refusal is proven in production. Both are declared
       as dev-bound `(Dev)` templates (`repository: agent-cloud dev`) with no main-bound twin
-      until promotion, because main's playbooks lack the guards (review of #349). Publishing
-      them is the remaining step
+      until promotion, because main's playbooks lack the guards (review of #349). Published
+      2026-09-29 through the scoped Dev publisher: `Deploy step-ca (Dev)` (publisher tasks
+      1966 dry run, 1967) and `Clean Deploy step-ca (Dev)` (1968 dry run, 1969), bindings read
+      back
 - [ ] 2.4a `platform/semaphore/templates.yml`: a signing template for dgx-spark's vLLM
       request (decision 1 of 2026-09-28), with a Dev variant; it refuses a SAN that is not
       in the declared vLLM leaf and returns the certificate and bundle through the channel
@@ -80,9 +83,18 @@ host. Push, pull requests and merges happen only when Joe authorizes each one.
       reset refuses without confirmation, production inventory values render the loopback
       bind and ACME off. Done 2026-09-29 as pytest (`test_step_ca_deploy.py`, 17 cases,
       mutation-checked): the lifted tasks run against a stub host
-- [ ] 2.6 Run `Deploy step-ca (Dev)` twice; record the root fingerprint after each run
-- [ ] 2.7 Validation gate: scenarios "Deploy converges and keeps the root" and "Reset
-      without confirmation is refused"
+- [x] 2.6 Run `Deploy step-ca (Dev)` twice; record the root fingerprint after each run.
+      2026-09-29: dry run 1970 clean. Run 1971 created the root, raised the admin lifetime
+      and failed at the issuer add (docs/MISTAKES.md 10.17, occurrence 2; fixed in #352).
+      Run 1989 added both issuers, applied the pending reload and passed every production
+      assertion; run 1990 changed nothing (no add, no reload). The root fingerprint printed
+      by 1989 and 1990 is identical; its value is kept in site-config, not here. The three
+      secrets were backed up to site-config (task 1992)
+- [x] 2.7 Validation gate: scenarios "Deploy converges and keeps the root" and "Reset
+      without confirmation is refused". 2026-09-29: the first by runs 1989/1990 (same
+      fingerprint, second run a no-op); the second by `Clean Deploy step-ca (Dev)` dry run
+      1993 with a wrong hostname, which refused at its first task and never reached the
+      destroy play, so the root is unchanged, plus `test_step_ca_deploy.py`
 
 ## 3. Firewall
 - [ ] 3.1 site-config: `firewall_ssh_cidrs` and `firewall_controller_cidr` for the CA
