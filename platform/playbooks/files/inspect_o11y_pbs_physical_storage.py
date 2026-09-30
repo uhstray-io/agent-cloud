@@ -210,7 +210,7 @@ def _lvm_facts(data: object) -> dict[str, object]:
             pv_size, pv_free = child.get("size"), child.get("free")
             _require(
                 isinstance(child.get("name"), str)
-                and PATH.fullmatch(child["name"]) is not None
+                and bool(child["name"])
                 and child["name"] not in pv_names
                 and _integer(pv_size) and _integer(pv_free) and pv_free <= pv_size,
                 "Proxmox returned a malformed LVM inventory.",
@@ -717,34 +717,42 @@ def _thick_lvm_pv_lineage_facts(
         "partition_parent": 0,
         "missing": 0,
         "unverifiable": 0,
+        "unknown_used": 0,
     }
     top_level_paths = {
         path for path, row in devices.items() if "parent" not in row
     }
     for pv_path in candidate_pvs:
+        if PATH.fullmatch(pv_path) is None:
+            counts["unverifiable"] += 1
+            continue
         if pv_path not in devices:
             counts["missing"] += 1
             continue
         disk = devices[pv_path]
         reported_used = disk.get("used")
-        normalized_used = reported_used.strip().lower() if isinstance(reported_used, str) else None
-        if normalized_used is not None and normalized_used != "lvm":
+        if "used" in disk and reported_used != "LVM":
             counts["unverifiable"] += 1
             continue
         if "parent" not in disk:
             counts["direct"] += 1
+            if "used" not in disk:
+                counts["unknown_used"] += 1
             continue
         parent = disk["parent"]
         if parent not in devices or parent not in top_level_paths:
             counts["unverifiable"] += 1
             continue
         counts["partition_parent"] += 1
+        if "used" not in disk:
+            counts["unknown_used"] += 1
 
     return {
         "thick_lvm_candidate_vg_pv_inventory_incomplete_count": incomplete_vg_count,
         "thick_lvm_candidate_pv_count": len(candidate_pvs),
         "thick_lvm_pv_direct_disk_path_join_count": counts["direct"],
         "thick_lvm_pv_partition_parent_disk_path_join_count": counts["partition_parent"],
+        "thick_lvm_pv_path_join_unknown_used_count": counts["unknown_used"],
         "thick_lvm_pv_missing_disk_path_join_count": counts["missing"],
         "thick_lvm_pv_unverifiable_disk_path_join_count": counts["unverifiable"],
         "thick_lvm_backing_media_verified": False,

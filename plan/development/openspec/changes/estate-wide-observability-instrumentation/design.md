@@ -371,11 +371,12 @@ visible thick-LVM candidate with reported headroom and complete config/VG
 mappings; physical backing remained unverified. This completes the visible-store
 thick-LVM survey step only.
 
-At the same reviewed SHA, artifact/job tasks 2070, 2074, and 2075 found two
-non-PBS artifacts and one backup-job membership, while those task runs did not
-declare an exact job ID. Two artifacts prevent the single-artifact restore gate. No
-immutability or isolated restore was verified; membership is not restore
-evidence.
+Task 2070 ran at reviewed SHA
+`fc967ca1faf17e4fe31ce51dcce2e9227b625357`. Subsequent sanitized artifact/job
+survey receipts report two non-PBS artifacts and one backup-job membership;
+those inspect runs did not select an exact job ID. Multiple artifacts leave
+artifact selection unresolved. No immutability or isolated restore was
+verified; membership is not restore evidence.
 
 ## Candidate PV path lineage follow-on
 
@@ -383,11 +384,14 @@ The next code-only extension reuses the disk and LVM API responses already held
 by the survey. For eligible visible thick-LVM candidates, compare each PV path
 with the reported disk paths and, for a reported partition, its parent path.
 Report only aggregate candidate-PV totals and counts of exact direct path
-matches, exact partition-parent matches, missing paths, unverifiable relations,
-and candidate VGs whose PV child list is absent or empty. Malformed or duplicate
-disk/PV inventory refuses the sanitized receipt; ambiguity is not reported as a
-count because duplicate paths are malformed input. A known `used` class other
-than exact `LVM` on a PV path is unverifiable; absent `used` stays unknown. Exact path joins
+matches, exact partition-parent matches, exact path joins with absent `used`,
+missing paths, unverifiable relations, and candidate VGs whose PV child list is
+absent or empty. Malformed or duplicate disk/PV inventory refuses the sanitized
+receipt; ambiguity is not reported as a count because duplicate paths are
+malformed input. Candidate PV names that are not exact disk paths are
+unverifiable; unrelated VG PV names retain the broader LVM inventory
+validation. When `used` is present, only exact `LVM` is accepted; absent `used`
+stays unknown and is reported separately from path lineage. Exact path joins
 describe only the two API inventories. They cannot prove physical locality,
 underlying media identity, safe device use, or filesystem readiness. No new API
 request or write is added, and physical-backing, allocation, and write

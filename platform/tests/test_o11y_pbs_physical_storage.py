@@ -187,6 +187,7 @@ def test_report_is_allowlisted_and_has_no_private_topology_or_exact_capacity():
         "thick_lvm_candidate_pv_count": 1,
         "thick_lvm_pv_direct_disk_path_join_count": 0,
         "thick_lvm_pv_partition_parent_disk_path_join_count": 0,
+        "thick_lvm_pv_path_join_unknown_used_count": 0,
         "thick_lvm_pv_missing_disk_path_join_count": 1,
         "thick_lvm_pv_unverifiable_disk_path_join_count": 0,
         "thick_lvm_backing_media_verified": False,
@@ -237,6 +238,7 @@ def test_report_is_allowlisted_and_has_no_private_topology_or_exact_capacity():
         "thick_lvm_candidate_pv_count",
         "thick_lvm_pv_direct_disk_path_join_count",
         "thick_lvm_pv_partition_parent_disk_path_join_count",
+        "thick_lvm_pv_path_join_unknown_used_count",
         "thick_lvm_pv_missing_disk_path_join_count",
         "thick_lvm_pv_unverifiable_disk_path_join_count",
         "thick_lvm_backing_media_verified", "thick_lvm_allocation_authorized",
@@ -404,6 +406,19 @@ def test_non_lvm_reported_use_class_makes_exact_path_unverifiable():
     assert result["thick_lvm_pv_unverifiable_disk_path_join_count"] == 1
 
 
+@pytest.mark.parametrize("reported_used", ("lvm", " LVM ", "LVM\n"))
+def test_candidate_pv_use_class_must_be_exactly_reported_as_lvm(reported_used):
+    data = sample()
+    data["lvm"]["json"]["data"]["children"][0]["children"][0]["name"] = "/dev/private-disk-a"
+    data["disks"]["json"]["data"][0]["used"] = reported_used
+
+    result = inspect(data)
+
+    assert result["thick_lvm_pv_direct_disk_path_join_count"] == 0
+    assert result["thick_lvm_pv_unverifiable_disk_path_join_count"] == 1
+    assert result["thick_lvm_pv_path_join_unknown_used_count"] == 0
+
+
 def test_reported_partitions_class_is_not_treated_as_lvm_pv_use():
     data = sample()
     data["lvm"]["json"]["data"]["children"][0]["children"][0]["name"] = "/dev/private-disk-a1"
@@ -424,6 +439,7 @@ def test_missing_used_class_preserves_unknown_while_reporting_path_join():
 
     assert result["device_usage_unknown_count"] == 2
     assert result["thick_lvm_pv_direct_disk_path_join_count"] == 1
+    assert result["thick_lvm_pv_path_join_unknown_used_count"] == 1
     assert result["thick_lvm_backing_media_verified"] is False
 
 
@@ -466,12 +482,31 @@ def test_missing_candidate_vg_pv_list_is_incomplete_not_zero_pvs():
     assert result["thick_lvm_pv_missing_disk_path_join_count"] == 0
 
 
-def test_malformed_pv_and_duplicate_disk_paths_fail_closed():
+def test_non_path_pv_in_unrelated_vg_does_not_tighten_general_lvm_inventory():
+    data = sample()
+    data["lvm"]["json"]["data"]["children"].append({
+        "name": "unrelated-vg", "size": 100 * GIB, "free": 50 * GIB,
+        "children": [{"name": "pv-internal-name", "size": 100 * GIB, "free": 50 * GIB}],
+    })
+
+    result = inspect(data)
+
+    assert result["lvm_volume_group_count"] == 2
+    assert result["lvm_physical_volume_count"] == 2
+    assert result["thick_lvm_candidate_pv_count"] == 1
+
+
+def test_non_path_candidate_pv_is_unverifiable_without_failing_unrelated_inventory():
     data = sample()
     data["lvm"]["json"]["data"]["children"][0]["children"][0]["name"] = "private-pv-name"
-    with pytest.raises(ValueError, match="malformed LVM inventory"):
-        inspect(data)
 
+    result = inspect(data)
+
+    assert result["thick_lvm_candidate_pv_count"] == 1
+    assert result["thick_lvm_pv_unverifiable_disk_path_join_count"] == 1
+
+
+def test_duplicate_disk_paths_fail_closed():
     data = sample()
     data["disks"]["json"]["data"].append(data["disks"]["json"]["data"][0].copy())
     with pytest.raises(ValueError, match="malformed disk inventory"):
