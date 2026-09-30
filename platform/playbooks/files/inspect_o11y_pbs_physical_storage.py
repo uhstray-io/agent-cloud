@@ -517,6 +517,7 @@ def _thick_lvm_facts(
     )
     configs: dict[str, Mapping] = {}
     local_configs: dict[str, Mapping] = {}
+    visible_lvm_configs: dict[str, Mapping] = {}
     foreign_lvm_config_row_count = 0
     for row in config_rows:
         storage_id, kind = row.get("storage"), row.get("type")
@@ -526,8 +527,9 @@ def _thick_lvm_facts(
             "Proxmox returned a malformed cluster storage config inventory.",
         )
         configs[storage_id] = row
-        applies_locally = _storage_applies_to_node(row, target_node)
         if kind in {"lvm", "lvmthin"}:
+            visible_lvm_configs[storage_id] = row
+            applies_locally = _storage_applies_to_node(row, target_node)
             if applies_locally:
                 local_configs[storage_id] = row
             else:
@@ -547,11 +549,7 @@ def _thick_lvm_facts(
     # _lvm_facts already validates VG rows and rejects duplicate names. Keep this
     # join from tightening acceptance of unrelated LVM inventory rows.
     groups = {group["name"]: group for group in group_rows}
-    local_lvm_config_rows = [
-        (storage_id, config)
-        for storage_id, config in local_configs.items()
-        if config.get("type") in {"lvm", "lvmthin"}
-    ]
+    local_lvm_config_rows = list(local_configs.items())
     local_config_vg_join_incomplete_count = sum(
         not (
             isinstance(config.get("vgname"), str)
@@ -578,7 +576,7 @@ def _thick_lvm_facts(
     )
 
     candidates: list[tuple[Mapping, Mapping]] = []
-    local_alias_suppressed_candidate_count = 0
+    visible_alias_suppressed_candidate_count = 0
     for storage_id, config in local_configs.items():
         if config.get("type") != "lvm":
             continue
@@ -636,10 +634,11 @@ def _thick_lvm_facts(
         ):
             continue
         if any(
-            other_id != storage_id and other_config.get("vgname") == vg_name
-            for other_id, other_config in local_lvm_config_rows
+            other_id != storage_id
+            and other_config.get("vgname") == vg_name
+            for other_id, other_config in visible_lvm_configs.items()
         ):
-            local_alias_suppressed_candidate_count += 1
+            visible_alias_suppressed_candidate_count += 1
             continue
         # Any incomplete local mapping suppresses all candidate totals, even if
         # this particular config/status pair is individually well formed.
@@ -663,7 +662,7 @@ def _thick_lvm_facts(
         "thick_lvm_local_config_vg_join_incomplete_count": local_config_vg_join_incomplete_count,
         "thick_lvm_unmatched_local_status_row_count": unmatched_local_status_row_count,
         "thick_lvm_unmatched_local_config_row_count": unmatched_local_config_row_count,
-        "thick_lvm_local_alias_suppressed_candidate_count": local_alias_suppressed_candidate_count,
+        "thick_lvm_visible_alias_suppressed_candidate_count": visible_alias_suppressed_candidate_count,
         "thick_lvm_reported_vg_headroom_candidate_count_256_gib": 0,
         "thick_lvm_reported_vg_headroom_candidate_count_512_gib": 0,
         "thick_lvm_reported_vg_headroom_candidate_count_1024_gib": 0,

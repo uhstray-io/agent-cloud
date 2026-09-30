@@ -325,10 +325,14 @@ thick-LVM mappings and zero candidate/headroom counts but did not identify the
 cause. Do not infer that cause. Proxmox's `/storage` config API emits optional
 `nodes` as an encoded comma-separated string; omission means no node restriction,
 while an explicit list restricts applicability. The inspector validates this
-scope and builds local VG and alias joins only from configs applicable to the
-declared online node. It reports only aggregate counts for foreign LVM config
-rows, incomplete local VG joins, unmatched local status/config rows, and local
-alias-suppressed candidates. Malformed node scopes fail closed. These are
+scope only for LVM/LVM-thin configs and builds local VG joins and candidate
+selection from configs applicable to the declared online node. Alias exclusion
+checks each local candidate against every visible LVM/LVM-thin config, including
+foreign-node rows, because backing identity is not established by node scope. It
+reports only aggregate counts for foreign LVM config rows, incomplete local VG
+joins, unmatched local status/config rows, and visible alias-suppressed
+candidates. Malformed LVM node scopes fail closed; unrelated storage types do
+not need the field. These are
 permission-filtered visible facts; hidden config/status rows cannot be ruled out.
 Source behavior: [Config.pm](https://github.com/proxmox/pve-storage/blob/master/src/PVE/API2/Storage/Config.pm), [Plugin.pm](https://github.com/proxmox/pve-storage/blob/master/src/PVE/Storage/Plugin.pm), [Storage.pm](https://github.com/proxmox/pve-storage/blob/master/src/PVE/Storage.pm), [Status.pm](https://github.com/proxmox/pve-storage/blob/master/src/PVE/API2/Storage/Status.pm).
 

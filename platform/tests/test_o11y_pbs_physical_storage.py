@@ -179,7 +179,7 @@ def test_report_is_allowlisted_and_has_no_private_topology_or_exact_capacity():
         "thick_lvm_local_config_vg_join_incomplete_count": 0,
         "thick_lvm_unmatched_local_status_row_count": 0,
         "thick_lvm_unmatched_local_config_row_count": 0,
-        "thick_lvm_local_alias_suppressed_candidate_count": 0,
+        "thick_lvm_visible_alias_suppressed_candidate_count": 0,
         "thick_lvm_reported_vg_headroom_candidate_count_256_gib": 0,
         "thick_lvm_reported_vg_headroom_candidate_count_512_gib": 0,
         "thick_lvm_reported_vg_headroom_candidate_count_1024_gib": 0,
@@ -223,7 +223,7 @@ def test_report_is_allowlisted_and_has_no_private_topology_or_exact_capacity():
         "thick_lvm_local_config_vg_join_incomplete_count",
         "thick_lvm_unmatched_local_status_row_count",
         "thick_lvm_unmatched_local_config_row_count",
-        "thick_lvm_local_alias_suppressed_candidate_count",
+        "thick_lvm_visible_alias_suppressed_candidate_count",
         "thick_lvm_reported_vg_headroom_candidate_count_256_gib",
         "thick_lvm_reported_vg_headroom_candidate_count_512_gib",
         "thick_lvm_reported_vg_headroom_candidate_count_1024_gib",
@@ -379,7 +379,7 @@ def test_duplicate_candidate_vg_mapping_excludes_all_candidates():
     result = inspect(data)
 
     assert result["thick_lvm_config_vg_mappings_complete"] is True
-    assert result["thick_lvm_local_alias_suppressed_candidate_count"] == 2
+    assert result["thick_lvm_visible_alias_suppressed_candidate_count"] == 2
     assert result["visible_thick_lvm_image_store_count"] == 0
     assert result["thick_lvm_reported_vg_headroom_candidate_count_256_gib"] == 0
 
@@ -405,7 +405,7 @@ def test_any_other_lvm_config_for_the_same_vg_excludes_the_candidate(kind, conte
     result = inspect(data)
 
     assert result["visible_thick_lvm_image_store_count"] == 0
-    assert result["thick_lvm_local_alias_suppressed_candidate_count"] == 1
+    assert result["thick_lvm_visible_alias_suppressed_candidate_count"] == 1
     assert all(result[f"thick_lvm_reported_vg_headroom_candidate_count_{size}_gib"] == 0
                for size in (256, 512, 1024))
 
@@ -423,9 +423,73 @@ def test_foreign_node_config_rows_do_not_join_or_alias_local_storage():
     assert result["thick_lvm_local_config_vg_join_incomplete_count"] == 0
     assert result["thick_lvm_config_vg_mappings_complete"] is True
     assert result["visible_thick_lvm_image_store_count"] == 1
-    assert result["thick_lvm_local_alias_suppressed_candidate_count"] == 0
+    assert result["thick_lvm_visible_alias_suppressed_candidate_count"] == 0
     assert "private-foreign" not in str(result)
     assert "other-node" not in str(result)
+
+
+def test_foreign_node_same_vg_alias_suppresses_local_candidate():
+    data = sample()
+    data["storage_config_rows"]["json"]["data"].append({
+        "storage": "private-foreign-alias", "type": "lvmthin", "nodes": "other-node",
+        "vgname": "private-vg",
+    })
+
+    result = inspect(data)
+
+    assert result["thick_lvm_foreign_lvm_config_row_count"] == 1
+    assert result["thick_lvm_config_vg_mappings_complete"] is True
+    assert result["thick_lvm_visible_alias_suppressed_candidate_count"] == 1
+    assert result["visible_thick_lvm_image_store_count"] == 0
+
+
+def test_malformed_node_scope_on_unrelated_dir_does_not_refuse_survey():
+    data = sample()
+    data["storage_config_rows"]["json"]["data"][1]["nodes"] = None
+
+    result = inspect(data)
+
+    assert result["visible_thick_lvm_image_store_count"] == 1
+    assert result["thick_lvm_config_vg_mappings_complete"] is True
+
+
+def test_disabled_local_config_without_status_marks_mapping_incomplete():
+    data = sample()
+    data["storage_config_rows"]["json"]["data"].append({
+        "storage": "private-disabled", "type": "lvm", "content": "images",
+        "vgname": "private-vg", "disable": 1,
+    })
+
+    result = inspect(data)
+
+    assert result["thick_lvm_config_vg_mappings_complete"] is False
+    assert result["thick_lvm_unmatched_local_config_row_count"] == 1
+    assert result["visible_thick_lvm_image_store_count"] == 0
+
+
+def test_local_status_config_type_mismatch_marks_mapping_incomplete():
+    data = sample()
+    data["storage_config_rows"]["json"]["data"][0]["type"] = "lvmthin"
+
+    result = inspect(data)
+
+    assert result["thick_lvm_config_vg_mappings_complete"] is False
+    assert result["thick_lvm_unmatched_local_status_row_count"] == 1
+    assert result["thick_lvm_unmatched_local_config_row_count"] == 1
+    assert result["visible_thick_lvm_image_store_count"] == 0
+
+
+def test_foreign_scoped_lvm_config_with_node_status_is_unmatched_local_status():
+    data = sample()
+    data["storage_config_rows"]["json"]["data"][0]["nodes"] = "other-node"
+
+    result = inspect(data)
+
+    assert result["thick_lvm_foreign_lvm_config_row_count"] == 1
+    assert result["thick_lvm_config_vg_mappings_complete"] is False
+    assert result["thick_lvm_unmatched_local_status_row_count"] == 1
+    assert result["thick_lvm_unmatched_local_config_row_count"] == 0
+    assert result["visible_thick_lvm_image_store_count"] == 0
 
 
 def test_local_node_config_alias_is_counted_and_suppresses_candidate():
@@ -440,7 +504,7 @@ def test_local_node_config_alias_is_counted_and_suppresses_candidate():
     assert result["thick_lvm_foreign_lvm_config_row_count"] == 0
     assert result["thick_lvm_config_vg_mappings_complete"] is False
     assert result["thick_lvm_unmatched_local_config_row_count"] == 1
-    assert result["thick_lvm_local_alias_suppressed_candidate_count"] == 1
+    assert result["thick_lvm_visible_alias_suppressed_candidate_count"] == 1
     assert result["visible_thick_lvm_image_store_count"] == 0
 
 
