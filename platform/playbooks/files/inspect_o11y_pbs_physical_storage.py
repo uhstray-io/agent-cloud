@@ -10,6 +10,7 @@ from collections.abc import Mapping
 
 NODE_NAME = re.compile(r"[A-Za-z0-9._-]{1,64}")
 STORAGE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+VG_NAME = re.compile(r"[A-Za-z0-9+_.-]{1,127}")
 PATH = re.compile(r"/[A-Za-z0-9._/+:-]{1,255}")
 SIZE_BANDS = ((100 * 1024**3, "under-100-GiB"), (1024**4, "100-GiB-to-under-1-TiB"))
 PROPOSED_DISK_SIZES = (256, 512, 1024)
@@ -22,6 +23,7 @@ SAFE_REFUSALS = {
     "Proxmox returned an incomplete thin-pool inventory.",
     "Proxmox returned an incomplete directory inventory.",
     "Proxmox returned an incomplete storage status inventory.",
+    "Proxmox returned an incomplete cluster storage config inventory.",
     "Proxmox returned an incomplete declared storage config inventory.",
     "Proxmox returned an incomplete visible volume inventory.",
     "Proxmox returned an incomplete declared storage permissions inventory.",
@@ -33,6 +35,10 @@ SAFE_REFUSALS = {
     "Proxmox returned a malformed thin-pool inventory.",
     "Proxmox returned a malformed directory inventory.",
     "Proxmox returned a malformed storage status inventory.",
+    "Proxmox returned a malformed cluster storage config inventory.",
+    "Proxmox returned an incomplete thick-LVM storage linkage.",
+    "Proxmox returned inconsistent thick-LVM capacity.",
+    "Proxmox returned ambiguous thick-LVM volume-group linkage.",
 }
 FALLBACK_REFUSAL = "Physical-storage survey refused because Proxmox returned invalid data."
 
@@ -477,6 +483,135 @@ def _allocation_facts(
     return result
 
 
+def _thick_lvm_facts(
+    status_rows: list[object], config_response: object, lvm_data: Mapping,
+) -> dict[str, object]:
+    """Report visible non-shared thick-LVM image-store headroom only."""
+    config_rows = _api_data(config_response, section="cluster storage config")
+    _require(
+        all(isinstance(row, Mapping) for row in config_rows),
+        "Proxmox returned a malformed cluster storage config inventory.",
+    )
+    configs: dict[str, Mapping] = {}
+    for row in config_rows:
+        storage_id, kind = row.get("storage"), row.get("type")
+        _require(
+            isinstance(storage_id, str) and STORAGE_ID.fullmatch(storage_id) is not None
+            and storage_id not in configs and isinstance(kind, str) and bool(kind),
+            "Proxmox returned a malformed cluster storage config inventory.",
+        )
+        configs[storage_id] = row
+        if kind == "lvm" and "content" in row:
+            _require(isinstance(row["content"], str),
+                    "Proxmox returned a malformed cluster storage config inventory.")
+
+    status_by_id: dict[str, Mapping] = {}
+    for row in status_rows:
+        _require(isinstance(row, Mapping), "Proxmox returned a malformed storage status inventory.")
+        storage_id = row.get("storage")
+        _require(
+            isinstance(storage_id, str) and STORAGE_ID.fullmatch(storage_id) is not None
+            and storage_id not in status_by_id,
+            "Proxmox returned a malformed storage status inventory.",
+        )
+        status_by_id[storage_id] = row
+
+    group_rows = lvm_data.get("children")
+    _require(
+        isinstance(group_rows, list) and all(isinstance(group, Mapping) for group in group_rows),
+        "Proxmox returned a malformed LVM inventory.",
+    )
+    groups: dict[str, Mapping] = {}
+    for group in group_rows:
+        vg_name = group.get("name")
+        _require(
+            isinstance(vg_name, str) and VG_NAME.fullmatch(vg_name) is not None
+            and vg_name not in groups and _integer(group.get("size"), positive=True)
+            and _integer(group.get("free")) and group["free"] <= group["size"],
+            "Proxmox returned a malformed LVM inventory.",
+        )
+        groups[vg_name] = group
+
+    candidates: list[tuple[Mapping, Mapping]] = []
+    linked_vgs: set[str] = set()
+    for storage_id, config in configs.items():
+        if config.get("type") != "lvm":
+            continue
+        status = status_by_id.get(storage_id)
+        if status is None:
+            continue
+        _require(
+            status.get("type") == "lvm",
+            "Proxmox returned an incomplete thick-LVM storage linkage.",
+        )
+        status_content = {
+            part.strip() for part in status.get("content", "").split(",") if part.strip()
+        }
+        active = status.get("active") is True or (
+            type(status.get("active")) is int and status.get("active") == 1
+        )
+        unshared = status.get("shared") is False or (
+            type(status.get("shared")) is int and status.get("shared") == 0
+        )
+        if not active or not unshared or "images" not in status_content:
+            continue
+        status_parts = status.get("content", "").split(",")
+        _require(
+            all(part and part.strip() == part for part in status_parts)
+            and len(set(status_parts)) == len(status_parts),
+            "Proxmox returned an incomplete thick-LVM storage linkage.",
+        )
+        configured_content = config.get("content")
+        _require(
+            isinstance(configured_content, str),
+            "Proxmox returned an incomplete thick-LVM storage linkage.",
+        )
+        config_parts = configured_content.split(",")
+        _require(
+            all(part and part.strip() == part for part in config_parts)
+            and len(set(config_parts)) == len(config_parts),
+            "Proxmox returned a malformed cluster storage config inventory.",
+        )
+        config_content = set(config_parts)
+        _require(
+            "images" in config_content,
+            "Proxmox returned an incomplete thick-LVM storage linkage.",
+        )
+        vg_name = config.get("vgname")
+        _require(
+            isinstance(vg_name, str) and VG_NAME.fullmatch(vg_name) is not None
+            and vg_name in groups and vg_name not in linked_vgs,
+            "Proxmox returned ambiguous thick-LVM volume-group linkage.",
+        )
+        group = groups[vg_name]
+        total, used, available = (status.get(key) for key in ("total", "used", "avail"))
+        group_total, group_free = group["size"], group["free"]
+        _require(
+            _integer(total, positive=True) and _integer(used) and _integer(available)
+            and total == group_total and available == group_free
+            and used == group_total - group_free,
+            "Proxmox returned inconsistent thick-LVM capacity.",
+        )
+        linked_vgs.add(vg_name)
+        candidates.append((status, group))
+
+    result: dict[str, object] = {
+        "visible_thick_lvm_image_store_count": len(candidates),
+        "thick_lvm_reported_vg_headroom_candidate_count_256_gib": 0,
+        "thick_lvm_reported_vg_headroom_candidate_count_512_gib": 0,
+        "thick_lvm_reported_vg_headroom_candidate_count_1024_gib": 0,
+        "thick_lvm_backing_media_verified": False,
+        "thick_lvm_allocation_authorized": False,
+    }
+    for _, group in candidates:
+        total, free = group["size"], group["free"]
+        for size_gib in PROPOSED_DISK_SIZES:
+            remaining = free - size_gib * 1024**3
+            if remaining >= 0 and remaining * 10 >= total * 3:
+                result[f"thick_lvm_reported_vg_headroom_candidate_count_{size_gib}_gib"] += 1
+    return result
+
+
 def inspect(payload: object) -> dict[str, object]:
     _require(isinstance(payload, Mapping), "Proxmox returned an incomplete disk inventory.")
     declared_storage_id = payload.get("declared_storage_id")
@@ -490,6 +625,7 @@ def inspect(payload: object) -> dict[str, object]:
     thin_rows = _api_data(payload.get("thinpool"), section="thin-pool")
     directory_rows = _api_data(payload.get("directories"), section="directory")
     storage_rows = _api_data(payload.get("storage"), section="storage status")
+    storage_config_rows = payload.get("storage_config_rows")
     storage_facts, declared_storage = _storage_facts(storage_rows, declared_storage_id)
     report: dict[str, object] = {
         "survey": "read-only-physical-storage-inventory",
@@ -507,6 +643,7 @@ def inspect(payload: object) -> dict[str, object]:
             payload.get("visible_volumes"),
             thin_rows,
         ),
+        **_thick_lvm_facts(storage_rows, storage_config_rows, lvm_data),
         "device_selected": False,
         "device_safety_verified": False,
         "filesystem_readiness_verified": False,

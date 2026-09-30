@@ -295,6 +295,42 @@ guide](https://pve.proxmox.com/pve-docs/pvesm.1.html) and [LVM-thin status
 implementation](https://github.com/proxmox/pve-storage/blob/master/src/PVE/Storage/LvmThinPlugin.pm), [storage-content API](https://github.com/proxmox/pve-storage/blob/master/src/PVE/API2/Storage/Content.pm), [thin-pool API](https://github.com/proxmox/pve-storage/blob/master/src/PVE/API2/Disks/LVMThin.pm), and [effective-permissions API](https://github.com/proxmox/pve-access-control/blob/master/src/PVE/API2/AccessControl.pm).
 Live execution of the expanded virtual-disk preflight remains pending.
 
+## 2026-09-29 thick-LVM visible-store preflight
+
+Task 1998's sanitized result showed one directory, two LVM, one LVM-thin, and
+two other visible storage backends. The follow-on uses the existing Dev-bound
+physical-storage survey with one added protected `GET /storage`. It joins
+visible storage config/status rows to `/nodes/{node}/disks/lvm` by validated
+storage ID and `vgname`. Only active `lvm` rows with explicit `shared=0` and
+`images` content are candidates; each must map to exactly one unique volume
+group. Status total/used/available must exactly match that VG's size/free
+extents. Malformed or duplicate IDs/VG mappings and inconsistent values fail
+closed. Because configuration fields such as `content` can be optional, rows
+are validated for storage ID and type globally; `content` is required and
+validated only when a matching active, non-shared LVM status row advertises
+image content.
+
+The sanitized output contains aggregate visible-candidate counts and fixed
+256/512/1024-GiB headroom counts. A count includes only a candidate whose
+reported free extents after the hypothetical size retain at least 30% of
+reported VG size. It does not identify/select a store, reserve capacity, or
+authorize allocation. Proxmox's current [storage guide](https://pve.proxmox.com/pve-docs/pvesm.1.html)
+states regular LVM allocates blocks when a volume is created; the [LVM plugin](https://github.com/proxmox/pve-storage/blob/master/src/PVE/Storage/LVMPlugin.pm)
+reports status from VG size/free and checks free extents before allocation.
+The [storage config API](https://github.com/proxmox/pve-storage/blob/master/src/PVE/API2/Storage/Config.pm)
+and [node status API](https://github.com/proxmox/pve-storage/blob/master/src/PVE/API2/Storage/Status.pm)
+silently filter rows without per-store `Datastore.Audit` or
+`Datastore.AllocateSpace`, so counts are visible-store facts and may be
+incomplete. Explicit `shared=0` does not establish direct local physical media
+or rule out thin allocation behind a SAN/LUN.
+
+The existing private `proxmox_pbs_vm_storage_id` declaration still names the
+thin store until a separate site-config review. This public survey does not
+read or modify it. Physical backing, device safety, filesystem readiness, PBS
+readiness, and write authorization remain false; raw API data is protected by
+`no_log`. Live execution and review remain pending.
+
+
 The 90d/45d retention target remains blocked: keep the effective 15d
 Prometheus / 7d Loki / 168h Tempo settings and 0B Prometheus size cap until the
 representative seven-day forecast, nonzero cap, at least 30% backing-filesystem

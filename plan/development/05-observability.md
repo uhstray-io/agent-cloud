@@ -1175,6 +1175,33 @@ physical-disk writes are planned. Preserve current telemetry volumes and
 15d/7d/168h retention until isolated restore, cleanup, and seven-day capacity
 gates pass.
 
+## 2026-09-29 thick-LVM visible-store preflight design
+
+Task 1998's sanitized backend counts were one directory, two LVM, one
+LVM-thin, and two other visible stores. The next read-only extension reuses the
+Dev-bound physical survey and adds one protected `GET /storage`, joining
+visible config rows with existing node storage-status and LVM VG/PV results by
+storage ID and `vgname`. A candidate must be active, explicitly `shared=0`,
+type `lvm`, allow `images`, and map to exactly one unique VG. Status
+total/used/available must agree with linked VG size/free extents. Fixed
+256/512/1024-GiB counts require the hypothetical allocation to leave at least
+30% of reported VG size. No storage/VG IDs or names, exact capacities,
+selection, reservation, or allocation authorization are exposed. Config rows
+are validated for ID/type globally; optional `content` is required and parsed
+only for a matching active, explicitly non-shared LVM image candidate.
+
+This preflight supersedes the *candidate direction* of the earlier thin-LVM
+proposal, but does not erase its evidence: the existing
+`proxmox_pbs_vm_storage_id` declaration still points to the thin store until a
+separate private review changes it. The public survey does not read or change
+that declaration. Counts are visible-store facts because both config and node
+status APIs filter rows by `Datastore.Audit` or `Datastore.AllocateSpace`.
+`shared=0` does not prove local physical backing or exclude thin allocation
+behind a SAN/LUN; physical backing, device safety, filesystem readiness, PBS
+readiness, and write authorization remain false. Raw API data stays under
+`no_log`. No disk is selected or initialized, and current telemetry volumes
+and retention remain unchanged pending the isolated restore and capacity gates.
+
 <!-- ======================= source: O11Y-DEPLOYMENT.md ======================= -->
 
 # Observability (o11y) Stack Deployment Plan
