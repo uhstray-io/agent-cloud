@@ -29,9 +29,48 @@ tls-alpn-01 / dns-01) requires step-ca to reach or DNS-prove the requested name
 (containers use podman DNS by name; hickory's wildcard→127.0.0.1 is for the Mac
 host). So locally Caddy does **not** ACME against step-ca; instead the deploy
 **mints a wildcard `*.agent-cloud.test` leaf via a provisioner token** (`step ca
-certificate`, no challenge) and Caddy serves it. ACME-native issuance is the
-prod/future path, gated on dns-01 via hickory RFC 2136 (`DNS-SERVER-DEPLOYMENT.md`
-Phase 2).
+certificate`, no challenge) and Caddy serves it. Production does not use ACME
+either: its CA is initialised without the ACME provisioner (see below).
+
+## Production (own host) — deployed 2026-09-29
+
+The design and its decisions are the openspec change `production-internal-ca`
+(`plan/development/openspec/changes/production-internal-ca/`). The CA's name, its DNS
+names (including `ca.<site>.<zone>`) and its address are site values, declared in
+site-config only.
+
+- **Own VM, nothing else on it.** The intermediate key signs every internal identity, so
+  the host holding it runs only this container.
+- **API on the host loopback, no ACME.** Production declares `stepca_bind: 127.0.0.1`
+  and `stepca_init_acme: "false"`. After every deploy, Phase 3 asserts the port is
+  published on that bind only and that no ACME provisioner exists. Issuance will reach
+  the CA over SSH, by running `step` inside the container; no consumer contacts it.
+- **First-boot settings are refused unless declared.** First boot writes the name, the
+  DNS names, the ACME switch and the admin provisioner into the volume for good.
+  `tasks/assert-step-ca-first-boot.yml` refuses a production deploy, and a production
+  reset, when any of them is missing.
+- **Two issuing provisioners.** `issuer-server` and `issuer-client` are JWK
+  provisioners, one per leaf profile, each with its own password in
+  `secret/services/step-ca`. Their leaf lifetime comes from `stepca_leaf_dur`. The deploy
+  plans them from `ca.json` and adds or updates only on a difference, and it reloads the
+  CA whenever `ca.json` and the running CA disagree, so an interrupted run recovers.
+- **The root is kept.** Every run prints the root fingerprint; the recorded value lives
+  in site-config. Two consecutive production runs printed the same one, and the second
+  changed nothing.
+- **Reset is guarded.** `Clean Deploy step-ca (Dev)` destroys the root only when the
+  launch names the host in `confirm_ca_reset`, and checks the first-boot settings before
+  anything is destroyed.
+- **Templates are dev-bound until promotion.** `Deploy step-ca (Dev)` and
+  `Clean Deploy step-ca (Dev)` run from `dev`, because `main`'s playbooks lack these
+  guards.
+
+Still to come in the same change: the host firewall (task group 3), cross-host issuance
+with the key generated on the consumer and every name declared (4), the consumers' leaves
+(5), renewal and expiry alerting (6), and backup and restore of the CA material (7).
+
+Recorded risk: the step-ca 0.30.2 entrypoint keeps the key password in the volume beside
+the keys and prints it to the first boot's container log (the change's design,
+"Recorded risk 2026-09-29").
 
 ## Files
 

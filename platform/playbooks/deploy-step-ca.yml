@@ -16,7 +16,8 @@
 # volume for good, so outside local_mode Phase 1 refuses to run until inventory
 # declares them (openspec production-internal-ca, tasks 2.1-2.2).
 #
-# Plan: plan/development/INTERNAL-CA-DEPLOYMENT.md.
+# Plans: plan/archive/development/INTERNAL-CA-DEPLOYMENT.md (local-dev) and openspec
+# production-internal-ca (production).
 
 # ── Phase 1: Place repo + secrets + env ─────────────────────────────────────
 - name: "Phase 1: Place repo + manage step-ca secrets"

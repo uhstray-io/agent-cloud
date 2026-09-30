@@ -242,11 +242,15 @@ host. Push, pull requests and merges happen only when Joe authorizes each one.
 - [ ] 9.2 Stale pointers to `plan/development/INTERNAL-CA-DEPLOYMENT.md` in
       `platform/services/step-ca/deployment/compose.yml`, `deploy-step-ca.yml` and
       `tasks/mint-internal-cert.yml` point at `plan/archive/development/`; the task header
-      no longer says cross-host is out of scope
+      no longer says cross-host is out of scope. 2026-09-29: the three pointers now name
+      the archived plan and the change, and the task header no longer claims production
+      uses ACME; its cross-host sentence changes with task 4.1
 - [ ] 9.3 `platform/services/step-ca/context/architecture.md`: a production section (own
       host, loopback API, consumer-side keys, declared leaves, renewal, backup, reset
       guard); root `CLAUDE.md`: workflow rows for the new templates and the widened
-      `secret/services/step-ca` row
+      `secret/services/step-ca` row. 2026-09-29: the production section records what is
+      deployed and names the pending task groups; the root `CLAUDE.md` rows landed with
+      #349. Renewal and backup are added to the section when groups 6 and 7 land
 - [ ] 9.4 Validation gate: scenario "No deprecated directive remains"; `openspec validate
       production-internal-ca` passes; on archive, retain the outcome (worked / dead end /
       corrected) into bank `agent-cloud-750a33b9`
