@@ -38,7 +38,6 @@ SAFE_REFUSALS = {
     "Proxmox returned a malformed cluster storage config inventory.",
     "Proxmox returned an incomplete thick-LVM storage linkage.",
     "Proxmox returned inconsistent thick-LVM capacity.",
-    "Proxmox returned ambiguous thick-LVM volume-group linkage.",
 }
 FALLBACK_REFUSAL = "Physical-storage survey refused because Proxmox returned invalid data."
 
@@ -526,6 +525,10 @@ def _thick_lvm_facts(
         and VG_NAME.fullmatch(config["vgname"]) is not None
         and config["vgname"] in groups
         for _, config in lvm_config_rows
+    ) and all(
+        row["storage"] in configs and configs[row["storage"]].get("type") == row.get("type")
+        for row in status_rows
+        if row.get("type") in {"lvm", "lvmthin"}
     )
 
     candidates: list[tuple[Mapping, Mapping]] = []
@@ -587,12 +590,7 @@ def _thick_lvm_facts(
         if not config_vg_mappings_complete:
             continue
         vg_name = config.get("vgname")
-        _require(
-            isinstance(vg_name, str) and VG_NAME.fullmatch(vg_name) is not None
-            and vg_name in groups,
-            "Proxmox returned ambiguous thick-LVM volume-group linkage.",
-        )
-        if not config_vg_mappings_complete or any(
+        if any(
             other_id != storage_id and other_config.get("vgname") == vg_name
             for other_id, other_config in lvm_config_rows
         ):

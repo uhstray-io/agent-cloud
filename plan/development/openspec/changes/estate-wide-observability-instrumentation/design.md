@@ -311,7 +311,9 @@ validated only when a matching active, non-shared LVM status row advertises
 image content. A config row with `disable=1` is excluded even if node status
 reports it active. Any other visible `lvm` or `lvmthin` config row naming the same
 VG excludes that candidate, including shared, inactive, or non-image rows;
-incomplete or node-unmapped visible VG mappings suppress all candidate counts. Invalid or
+incomplete or node-unmapped visible VG mappings suppress all candidate counts.
+Any visible LVM/LVM-thin status row without a matching same-type cluster config
+row also makes the mapping incomplete and suppresses every thick-LVM count. Invalid or
 duplicate IDs/types in the new visible cluster-config response can refuse the
 entire sanitized survey. Only the candidate's linked capacity tuple is
 required to match exactly. Existing unrelated node-status and VG validation

@@ -1193,7 +1193,8 @@ are validated for ID/type globally; optional `content` is required and parsed
 only for a matching active, explicitly non-shared LVM image candidate. Any
 other visible LVM or LVM-thin config row naming the same VG excludes the
 candidate even if that other row is inactive, shared, or lacks image content;
-incomplete or node-unmapped VG mappings suppress all thick-LVM counts. Invalid
+incomplete or node-unmapped VG mappings, including any visible LVM/LVM-thin
+status row without a matching same-type cluster config row, suppress all thick-LVM counts. Invalid
 or duplicate IDs/types in this added cluster-config read can refuse the entire
 sanitized survey.
 

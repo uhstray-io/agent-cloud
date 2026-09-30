@@ -327,6 +327,26 @@ def test_non_candidate_config_rows_may_omit_optional_content():
     assert result["visible_thick_lvm_image_store_count"] == 1
 
 
+@pytest.mark.parametrize("kind", ("lvm", "lvmthin"))
+def test_unmatched_lvm_status_row_suppresses_thick_lvm_counts(kind):
+    data = sample()
+    add_candidate(data)
+    data["storage"]["json"]["data"].append({
+        "storage": "private-unmatched", "type": kind, "content": "images",
+        "active": 1, "shared": 0, "total": 2000 * GIB,
+        "used": 1200 * GIB, "avail": 800 * GIB,
+    })
+
+    result = inspect(data)
+
+    assert result["thick_lvm_config_vg_mappings_complete"] is False
+    assert result["visible_thick_lvm_image_store_count"] == 0
+    assert all(
+        result[f"thick_lvm_reported_vg_headroom_candidate_count_{size}_gib"] == 0
+        for size in (256, 512, 1024)
+    )
+
+
 def test_duplicate_candidate_vg_mapping_excludes_all_candidates():
     data = sample()
     data["storage_config_rows"]["json"]["data"].append({
