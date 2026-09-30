@@ -20,6 +20,7 @@
 #   _mint_ca_host    inventory host running the step-ca container (default: the play host)
 #   _mint_reissue    issue even when <dir>/current holds a certificate (default: false)
 #   _mint_ca_name    step-ca container name (default: step-ca)
+#   _mint_lock_wait  seconds to wait for another issuance of the same leaf (default: 120)
 #
 # The declaration (all-hosts site-config variable, design decision 4):
 #   internal_leaves:
@@ -40,7 +41,8 @@
       - _leaf_matches | length == 1
       - _leaf_matches[0].host == inventory_hostname
       - _leaf_matches[0].profile in ['server', 'client']
-      - _leaf_matches[0].dir is match('^/[^\\s]*$')
+      # A path the shell cannot misread: it is also quoted wherever it is used.
+      - _leaf_matches[0].dir is match('^/[A-Za-z0-9._/-]+$')
       - (_leaf_matches[0].sans | default([]) | length) > 0
       - (dns_site | default('') | length) > 0 and (dns_zone | default('') | length) > 0
       - _leaf_matches[0].sans | reject('match', '^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$') | list | length == 0
@@ -103,16 +105,21 @@
 
     # The key never leaves this directory: generated here, moved into the serial directory
     # below, never read by any task.
+    # A pending directory of its own per run, so two runs for one leaf cannot pair one
+    # run's certificate with the other's key (review of #363). Its path is the first line
+    # of the output, the request the rest.
     - name: "Generate the key and the certificate request on the consumer"
       ansible.builtin.shell: |
         set -eu
         umask 077
-        mkdir -p "{{ _leaf.dir }}/.pending"
+        mkdir -p {{ _leaf.dir | quote }}
+        pending=$(mktemp -d {{ (_leaf.dir ~ '/.pending.XXXXXX') | quote }})
         openssl req -new -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
-          -keyout "{{ _leaf.dir }}/.pending/key.pem" -out "{{ _leaf.dir }}/.pending/request.csr" \
-          -subj "/CN={{ _leaf.sans[0] }}" \
-          -addext "subjectAltName={{ _leaf.sans | map('regex_replace', '^', 'DNS:') | join(',') }}" 2>/dev/null
-        cat "{{ _leaf.dir }}/.pending/request.csr"
+          -keyout "$pending/key.pem" -out "$pending/request.csr" \
+          -subj {{ ('/CN=' ~ _leaf.sans[0]) | quote }} \
+          -addext {{ ('subjectAltName=' ~ (_leaf.sans | map('regex_replace', '^', 'DNS:') | join(','))) | quote }} 2>/dev/null
+        echo "$pending"
+        cat "$pending/request.csr"
       register: _leaf_csr
       changed_when: true
       when: not ansible_check_mode
@@ -137,7 +144,7 @@
             then cat /tmp/crt.$$; rc=0; else echo "SIGNERR: $(tail -1 /tmp/err.$$)"; rc=1; fi;
             rm -f /tmp/ipw.$$ /tmp/req.$$.csr /tmp/crt.$$ /tmp/err.$$; exit $rc
           - "issuer-{{ _leaf.profile }}"
-        stdin: "{{ _leaf_issuer_pw }}\n{{ _leaf_csr.stdout }}"
+        stdin: "{{ _leaf_issuer_pw }}\n{{ _leaf_csr.stdout_lines[1:] | join('\n') }}"
         stdin_add_newline: true
       delegate_to: "{{ _leaf_ca_host }}"
       register: _leaf_signed
@@ -145,6 +152,12 @@
       failed_when: false
       no_log: true
       when: not ansible_check_mode
+
+    - name: "Remove the unused key after a refused request"
+      ansible.builtin.file:
+        path: "{{ _leaf_csr.stdout_lines[0] }}"
+        state: absent
+      when: not ansible_check_mode and _leaf_signed.rc != 0
 
     - name: "Refuse a request the CA did not sign"
       ansible.builtin.assert:
@@ -161,17 +174,27 @@
     # never sees a new certificate beside an old key (design decision 7). The link is
     # relative, so it resolves inside a container that mounts the parent directory.
     - name: "Place the certificate and key under their serial, then swap current"
+      # One placement at a time per leaf directory (a portable mkdir lock), so a concurrent
+      # run cannot prune the serial another run just made current.
       ansible.builtin.shell: |
         set -eu
-        cd "{{ _leaf.dir }}"
+        cd {{ _leaf.dir | quote }}
         umask 077
-        cat > .pending/cert.pem
-        serial=$(openssl x509 -in .pending/cert.pem -noout -serial | cut -d= -f2)
+        pending={{ _leaf_csr.stdout_lines[0] | quote }}
+        waited=0
+        until mkdir .lock 2>/dev/null; do
+          [ "$waited" -lt {{ _mint_lock_wait | default(120) | int }} ] || { echo "another issuance holds {{ _leaf.dir }}/.lock" >&2; exit 1; }
+          sleep 1; waited=$((waited + 1))
+        done
+        trap 'rmdir .lock' EXIT
+        cat > "$pending/cert.pem"
+        serial=$(openssl x509 -in "$pending/cert.pem" -noout -serial)
+        serial=${serial#serial=}
         prev=$(readlink current 2>/dev/null || true)
         mkdir "$serial"
-        mv .pending/cert.pem .pending/key.pem "$serial/"
+        mv "$pending/cert.pem" "$pending/key.pem" "$serial/"
         chmod 0644 "$serial/cert.pem"
-        rm -f .pending/request.csr
+        rm -rf -- "$pending"
         ln -s "$serial" .current.new
         python3 -c 'import os; os.replace(".current.new", "current")'
         # Only serial directories are pruned (hex, as openssl prints a serial): `dir` may hold

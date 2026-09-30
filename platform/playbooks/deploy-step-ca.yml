@@ -311,8 +311,12 @@
     # API (findings 2026-09-30), so the file is rewritten and moved into place, then the CA
     # reloaded in the same task: an interrupted run cannot leave a written policy unloaded,
     # which no read of the running CA would reveal.
+    # Its digest is the write's precondition: a ca.json changed after this read is refused,
+    # not overwritten (review of #363). First line the digest, the rest the file.
     - name: "Re-read the CA configuration before writing its name policy"
-      ansible.builtin.command: "{{ _engine }} exec step-ca cat /home/step/config/ca.json"
+      ansible.builtin.command: >-
+        {{ _engine }} exec step-ca sh -c
+        'sha256sum /home/step/config/ca.json | cut -d" " -f1; cat /home/step/config/ca.json'
       register: _ca_json_now
       changed_when: false
       when: not ansible_check_mode and _ca_present.rc == 0 and (_prov_plan | default({})).get('set_policy', false)
@@ -321,12 +325,16 @@
       ansible.builtin.shell: |
         set -eu
         since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-        {{ _engine }} exec -i step-ca sh -c 'umask 077; cat > /home/step/config/ca.json.new && mv /home/step/config/ca.json.new /home/step/config/ca.json'
-        {{ _engine }} kill --signal HUP step-ca
+        {{ _engine }} exec -i step-ca sh -c 'set -eu; umask 077; f=/home/step/config/ca.json;
+          cat > "$f.new";
+          s=$(sha256sum "$f"); [ "${s%% *}" = "$0" ] || { rm -f "$f.new"; echo "ca.json changed since it was read; re-run" >&2; exit 3; };
+          mv "$f.new" "$f"' {{ _ca_json_now.stdout_lines[0] | quote }}
+        # `podman kill` prints the container name: the timestamp must be the only output.
+        {{ _engine }} kill --signal HUP step-ca >/dev/null
         echo "$since"
       args:
         stdin: >-
-          {%- set d = _ca_json_now.stdout | from_json -%}
+          {%- set d = _ca_json_now.stdout_lines[1:] | join('\n') | from_json -%}
           {%- set auth = d.authority | dict2items | rejectattr('key', 'equalto', 'policy') | items2dict -%}
           {%- if _policy -%}{%- set auth = auth | combine({'policy': _policy}) -%}{%- endif -%}
           {{ d | combine({'authority': auth}) | to_nice_json(indent=2) }}
@@ -337,7 +345,7 @@
     # A reload that cannot parse the policy leaves the CA serving its OLD configuration, so
     # health stays green; only its log says so. The next start would then fail.
     - name: "Refuse a reload that did not take the new configuration"
-      ansible.builtin.shell: "{{ _engine }} logs --since {{ _prov_policy.stdout | trim }} step-ca 2>&1"
+      ansible.builtin.shell: "{{ _engine }} logs --since {{ _prov_policy.stdout_lines | last | quote }} step-ca 2>&1"
       register: _reload_log
       changed_when: false
       retries: 10

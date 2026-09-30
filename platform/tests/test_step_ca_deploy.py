@@ -370,8 +370,12 @@ def _stub_engine(tmp_path: Path, log: str = "") -> Path:
         "#!/bin/sh\n"
         'case "$1" in\n'
         f'  exec) cat > "{tmp_path}/written.json" ;;\n'
-        f'  kill) echo "$@" >> "{tmp_path}/signals" ;;\n'
-        f"  logs) printf '%s\\n' {json.dumps(log)} ;;\n"
+        # Like podman, `kill` prints the container's name on stdout.
+        f'  kill) echo "$@" >> "{tmp_path}/signals"; echo step-ca ;;\n'
+        # Like podman, `logs --since` refuses anything but a timestamp (a stray line in the
+        # write's output once reached it, found against a real CA).
+        '  logs) echo "$3" | grep -qE "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z$" || exit 125;\n'
+        f"        printf '%s\\n' {json.dumps(log)} ;;\n"
         "esac\n"
     )
     stub.chmod(0o755)
@@ -384,11 +388,14 @@ def test_the_policy_write_keeps_the_rest_of_ca_json_and_reloads(tmp_path, hv, wa
     play = _play(DEPLOY, "Phase 2.5")
     current = {"authority": {"provisioners": CONVERGED, "policy": {"x509": {"allow": {"dns": ["old"]}}},
                              "claims": {"x": 1}}, "root": "/r"}
-    (tmp_path / "step-ca.ca.json").write_text(json.dumps(current))
-    stub = _stub_engine(tmp_path)
+    # The re-read's first line is the file's digest, the write's precondition.
+    (tmp_path / "step-ca.ca.json").write_text("0" * 64 + "\n" + json.dumps(current))
+    stub = _stub_engine(tmp_path, "Serving HTTPS on :9000 ...")
+    # The reload check runs on the write's real output, as in the play.
+    check = {**_task(play, "Refuse a reload that did not take the new configuration"), "retries": 1, "delay": 0}
     tasks = [*_registered_reads(tmp_path, {"_ca_json_now": "ca.json"}),
              {"name": "plan", "ansible.builtin.set_fact": {"_prov_plan": {"set_policy": True}}},
-             _task(play, "Write the name policy into ca.json and reload the CA")]
+             _task(play, "Write the name policy into ca.json and reload the CA"), check]
     host = {"_ca_present": {"rc": 0}, "container_engine": str(stub), **hv}
     r = _run(tmp_path, host, tasks, play_vars=_issuance_vars(play))
     assert r.returncode == 0, r.stdout + r.stderr
@@ -411,3 +418,11 @@ def test_a_reload_that_did_not_apply_fails_the_run(tmp_path, log, ok):
              "register": "_prov_policy", "changed_when": True}
     r = _run(tmp_path, {"container_engine": str(stub)}, [wrote, task], play_vars=play["vars"])
     assert (r.returncode == 0) is ok, r.stdout + r.stderr
+
+
+def test_the_policy_write_refuses_a_ca_json_changed_since_it_was_read():
+    # Review of #363: a provisioner update between the read and the write would be lost.
+    task = _task(_play(DEPLOY, "Phase 2.5"), "Write the name policy into ca.json and reload the CA")
+    script = task["ansible.builtin.shell"]
+    assert '[ "${s%% *}" = "$0" ] || {' in script and "_ca_json_now.stdout_lines[0] | quote" in script
+    assert script.index("sha256sum") < script.index('mv "$f.new" "$f"')

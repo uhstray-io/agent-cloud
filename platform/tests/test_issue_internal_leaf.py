@@ -80,11 +80,14 @@ def _consumer(tmp: Path, leaves: list, **over) -> dict:
     ({"host": "somewhere-else"}, False),                          # declared for another host
     ({"profile": "both"}, False),
     ({"dir": "relative/certs"}, False),
+    ({"dir": "/tmp/$(id)"}, False),                               # review of #363: shell injection
+    ({"dir": '/tmp/a"b'}, False),
     ({"sans": ["*.dc1.example.internal"]}, False),                 # a wildcard
     ({"sans": ["caddy.dc2.example.internal"]}, False),            # another site
     ({"sans": ["evildc1.example.internal"]}, False),              # a suffix, not a subdomain
     ({"sans": []}, False),
-], ids=["declared", "undeclared", "other-host", "bad-profile", "relative-dir", "wildcard", "other-site",
+], ids=["declared", "undeclared", "other-host", "bad-profile", "relative-dir", "shell-dir", "quote-dir", "wildcard",
+         "other-site",
         "suffix-only", "no-sans"])
 def test_only_a_leaf_declared_for_this_host_reaches_the_ca(tmp_path, over, ok):
     r = _run(tmp_path, {"consumer": _consumer(tmp_path, [_leaf(tmp_path, **over)])})
@@ -107,7 +110,7 @@ def test_the_key_stays_on_the_consumer_and_current_points_at_the_new_serial(tmp_
     sent = next(tmp_path.glob("stdin.*")).read_text()
     assert sent.startswith("test-issuer-pw\n-----BEGIN CERTIFICATE REQUEST-----")
     assert "PRIVATE KEY" not in sent
-    assert not (certs / ".pending" / "key.pem").exists()
+    assert not list(certs.glob(".pending*")) and not (certs / ".lock").exists()
 
 
 def test_a_second_run_keeps_the_certificate_and_a_reissue_keeps_one_previous(tmp_path):
@@ -128,7 +131,7 @@ def test_a_second_run_keeps_the_certificate_and_a_reissue_keeps_one_previous(tmp
     assert len(set(serials)) == 3
     kept = sorted(p.name for p in certs.iterdir() if p.is_dir() and not p.is_symlink())
     # The newest and the one before it; the first is pruned; unrelated entries stay.
-    assert kept == sorted([str(serials[1]), str(serials[2]), "not-a-serial", ".pending"])
+    assert kept == sorted([str(serials[1]), str(serials[2]), "not-a-serial"])
 
 
 def test_a_refused_request_fails_the_run_with_the_cas_reason(tmp_path):
@@ -137,6 +140,14 @@ def test_a_refused_request_fails_the_run_with_the_cas_reason(tmp_path):
     assert r.returncode != 0
     assert "does not match the policy" in r.stdout
     assert "test-issuer-pw" not in r.stdout + r.stderr
+    assert not (tmp_path / "certs" / "current").exists()
+    assert not list((tmp_path / "certs").glob(".pending*")), "the unused key was left behind"
+
+
+def test_a_held_lock_fails_the_placement_with_its_name(tmp_path):
+    (tmp_path / "certs" / ".lock").mkdir(parents=True)
+    r = _run(tmp_path, {"consumer": {**_consumer(tmp_path, [_leaf(tmp_path)]), "_mint_lock_wait": 1}})
+    assert r.returncode != 0 and "another issuance holds" in r.stdout + r.stderr
     assert not (tmp_path / "certs" / "current").exists()
 
 
