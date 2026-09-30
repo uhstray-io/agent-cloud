@@ -1244,8 +1244,20 @@ as lineage-only and increments a separate unknown-use count. These are exact
 API-reported inventory relationships only. They do not
 prove physical locality, media identity, device safety, or filesystem
 readiness. No request or write is added; backing, allocation, and write flags
-remain false. This code extension has not run in Dev; its live receipt and
-review remain pending.
+remain false. Dev-bound Semaphore task 2085 ran at merged, reviewed `dev` SHA
+`700de080ffd19d3eea1a8859bd1e8a73dbda2384` with a clean controller checkout.
+Its sanitized receipt found one candidate PV with one exact direct disk-path
+join and reported `LVM` use; partition-parent, missing, unverifiable, and
+unknown-use joins and incomplete candidate PV inventories were all zero. One
+visible thick-LVM store still met the 256/512/1024-GiB reported headroom
+checks. Physical backing, allocation, PBS readiness, and write authorization
+remained false. This closes the lineage survey, not the storage safety gate.
+Proxmox's [disk inventory API](https://github.com/proxmox/pve-storage/blob/master/src/PVE/API2/Disks.pm)
+returns paths and optional model/health data; its [device scan](https://github.com/proxmox/pve-storage/blob/master/src/PVE/Diskmanage.pm)
+includes several block-device classes while excluding iSCSI. An exact PV path
+join alone cannot distinguish directly attached media from every virtual or
+remote-backed block device. Require separate physical-origin evidence and a
+reviewed private store declaration before allocating a PBS VM disk.
 
 The GET-only task 2011 run succeeded at reviewed SHA
 `4c1806652ed15cab8d1a4b50fd241bab52724646` and returned
@@ -1266,6 +1278,17 @@ scopes refuse the sanitized inspection; unrelated storage types do not need
 the field. Both cluster config and node status endpoints filter rows
 by datastore permissions, so diagnostics describe only API-visible rows and
 cannot prove that hidden rows do not exist. See upstream [storage config API](https://github.com/proxmox/pve-storage/blob/master/src/PVE/API2/Storage/Config.pm), [storage plugin node encoding](https://github.com/proxmox/pve-storage/blob/master/src/PVE/Storage/Plugin.pm), [node-restriction check](https://github.com/proxmox/pve-storage/blob/master/src/PVE/Storage.pm), and [node storage status API](https://github.com/proxmox/pve-storage/blob/master/src/PVE/API2/Storage/Status.pm).
+
+The existing declared-store preflight now supports either its unchanged
+LVM-thin branch or a separately declared eligible thick-LVM candidate. The
+thick-LVM branch compares the private detail config with the visible config,
+status, and VG candidate before reporting an exact-match fact and fixed
+256/512/1024-GiB reported-headroom booleans. A missing, ineligible, or
+inconsistent candidate leaves these facts false. The current private
+`proxmox_pbs_vm_storage_id` declaration is not changed by this code. These
+point-in-time reported-capacity facts do not establish backing media, PBS
+readiness, reserve capacity, allocation authority, or write authority; those
+flags remain false. The GET request set is unchanged.
 
 <!-- ======================= source: O11Y-DEPLOYMENT.md ======================= -->
 

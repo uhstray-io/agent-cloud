@@ -92,6 +92,24 @@ def add_candidate(data, row=None, volumes=(), *, metadata_size=8 * GIB, metadata
     ])
 
 
+def declare_thick_candidate(data):
+    data["declared_storage_id"] = "private-lvm"
+    data["storage_config"] = api({
+        "type": "lvm", "content": "images,backup", "vgname": "private-vg",
+    })
+    data["storage_permissions"] = api({"/storage/private-lvm": {
+        "Datastore.Allocate": 1, "Datastore.Audit": 1,
+    }})
+
+
+def set_thick_capacity(data, total, free):
+    status = data["storage"]["json"]["data"][0]
+    status.update(total=total, used=total - free, avail=free)
+    group = data["lvm"]["json"]["data"]["children"][0]
+    group.update(size=total, free=free)
+    group["children"][0].update(size=total, free=free)
+
+
 def test_target_node_must_be_private_declared_unique_and_online():
     assert validate_node({"target_node": "private-node", "nodes": [
         {"node": "private-node", "status": "online"},
@@ -173,6 +191,10 @@ def test_report_is_allowlisted_and_has_no_private_topology_or_exact_capacity():
         "snapshot_unverified_visible_volume_preflight_passes_512_gib_disk": False,
         "snapshot_unverified_visible_volume_preflight_passes_1024_gib_disk": False,
         "storage_allocation_authorized": False,
+        "declared_thick_lvm_candidate_exact_match": False,
+        "declared_thick_lvm_reported_vg_headroom_passes_256_gib": False,
+        "declared_thick_lvm_reported_vg_headroom_passes_512_gib": False,
+        "declared_thick_lvm_reported_vg_headroom_passes_1024_gib": False,
         "visible_thick_lvm_image_store_count": 1,
         "thick_lvm_config_vg_mappings_complete": True,
         "thick_lvm_foreign_lvm_config_row_count": 0,
@@ -223,7 +245,10 @@ def test_report_is_allowlisted_and_has_no_private_topology_or_exact_capacity():
         "snapshot_unverified_visible_volume_preflight_passes_256_gib_disk",
         "snapshot_unverified_visible_volume_preflight_passes_512_gib_disk",
         "snapshot_unverified_visible_volume_preflight_passes_1024_gib_disk",
-        "storage_allocation_authorized", "device_selected",
+        "storage_allocation_authorized", "declared_thick_lvm_candidate_exact_match",
+        "declared_thick_lvm_reported_vg_headroom_passes_256_gib",
+        "declared_thick_lvm_reported_vg_headroom_passes_512_gib",
+        "declared_thick_lvm_reported_vg_headroom_passes_1024_gib", "device_selected",
         "visible_thick_lvm_image_store_count",
         "thick_lvm_config_vg_mappings_complete",
         "thick_lvm_foreign_lvm_config_row_count",
@@ -338,6 +363,116 @@ def test_thick_lvm_headroom_counts_require_allocation_plus_30_percent(size_gib):
     group["free"] -= 1
     group["children"][0]["free"] -= 1
     assert inspect(data)[f"thick_lvm_reported_vg_headroom_candidate_count_{size_gib}_gib"] == 0
+
+
+def test_declared_thick_lvm_store_matches_visible_candidate_and_reports_fixed_headroom():
+    data = sample()
+    declare_thick_candidate(data)
+    total = 5 * 1024 * GIB
+    set_thick_capacity(data, total, total // 2)
+
+    result = inspect(data)
+
+    assert result["declared_thick_lvm_candidate_exact_match"] is True
+    assert result["declared_thick_lvm_reported_vg_headroom_passes_256_gib"] is True
+    assert result["declared_thick_lvm_reported_vg_headroom_passes_512_gib"] is True
+    assert result["declared_thick_lvm_reported_vg_headroom_passes_1024_gib"] is True
+    assert result["storage_allocation_authorized"] is False
+    assert result["thick_lvm_allocation_authorized"] is False
+    assert result["thick_lvm_backing_media_verified"] is False
+    assert result["pbs_readiness_verified"] is False
+    assert result["write_authorized"] is False
+    rendered = json.dumps(result)
+    assert "private-lvm" not in rendered
+    assert "private-vg" not in rendered
+    assert "/dev/private-pv" not in rendered
+
+
+def test_unrelated_thick_lvm_headroom_cannot_pass_declared_store_gate():
+    data = sample()
+    declare_thick_candidate(data)
+    set_thick_capacity(data, 2 * 1024 * GIB, 256 * GIB)
+    data["storage_config_rows"]["json"]["data"].append({
+        "storage": "unrelated-lvm", "type": "lvm", "content": "images,backup",
+        "vgname": "unrelated-vg",
+    })
+    data["storage"]["json"]["data"].append({
+        "storage": "unrelated-lvm", "type": "lvm", "content": "images,backup",
+        "active": 1, "shared": 0, "total": 5 * 1024 * GIB,
+        "used": 2 * 1024 * GIB, "avail": 3 * 1024 * GIB,
+    })
+    data["lvm"]["json"]["data"]["children"].append({
+        "name": "unrelated-vg", "size": 5 * 1024 * GIB, "free": 3 * 1024 * GIB,
+        "children": [{"name": "/dev/unrelated-pv", "size": 5 * 1024 * GIB,
+                      "free": 3 * 1024 * GIB}],
+    })
+
+    result = inspect(data)
+
+    assert result["visible_thick_lvm_image_store_count"] == 2
+    assert result["thick_lvm_reported_vg_headroom_candidate_count_256_gib"] == 1
+    assert result["declared_thick_lvm_candidate_exact_match"] is True
+    assert all(
+        result[f"declared_thick_lvm_reported_vg_headroom_passes_{size}_gib"] is False
+        for size in (256, 512, 1024)
+    )
+
+
+@pytest.mark.parametrize(
+    "detail_override",
+    ({"vgname": "other-vg"}, {"content": "images"}),
+)
+def test_declared_thick_lvm_config_mismatch_never_sets_exact_or_headroom(detail_override):
+    data = sample()
+    declare_thick_candidate(data)
+    data["storage_config"]["json"]["data"].update(detail_override)
+    total = 5 * 1024 * GIB
+    set_thick_capacity(data, total, total // 2)
+
+    result = inspect(data)
+
+    assert result["visible_thick_lvm_image_store_count"] == 1
+    assert result["declared_thick_lvm_candidate_exact_match"] is False
+    assert all(
+        result[f"declared_thick_lvm_reported_vg_headroom_passes_{size}_gib"] is False
+        for size in (256, 512, 1024)
+    )
+    assert result["thick_lvm_allocation_authorized"] is False
+
+
+def test_declared_thick_lvm_status_config_mismatch_never_sets_exact_or_headroom():
+    data = sample()
+    declare_thick_candidate(data)
+    data["storage"]["json"]["data"][0]["content"] = "images"
+    total = 5 * 1024 * GIB
+    set_thick_capacity(data, total, total // 2)
+
+    result = inspect(data)
+
+    assert result["visible_thick_lvm_image_store_count"] == 1
+    assert result["declared_thick_lvm_candidate_exact_match"] is False
+    assert all(
+        result[f"declared_thick_lvm_reported_vg_headroom_passes_{size}_gib"] is False
+        for size in (256, 512, 1024)
+    )
+    assert result["thick_lvm_allocation_authorized"] is False
+
+
+def test_declared_thick_lvm_noneligible_shared_store_is_not_an_exact_candidate():
+    data = sample()
+    declare_thick_candidate(data)
+    data["storage"]["json"]["data"][0]["shared"] = 1
+    total = 5 * 1024 * GIB
+    set_thick_capacity(data, total, total // 2)
+
+    result = inspect(data)
+
+    assert result["visible_thick_lvm_image_store_count"] == 0
+    assert result["declared_thick_lvm_candidate_exact_match"] is False
+    assert all(
+        result[f"declared_thick_lvm_reported_vg_headroom_passes_{size}_gib"] is False
+        for size in (256, 512, 1024)
+    )
 
 
 def test_non_candidate_config_rows_may_omit_optional_content():
@@ -836,6 +971,10 @@ def test_declared_active_local_lvmthin_images_store_reports_only_fixed_size_bool
     assert result["snapshot_unverified_visible_volume_preflight_passes_512_gib_disk"] is True
     assert result["snapshot_unverified_visible_volume_preflight_passes_1024_gib_disk"] is True
     assert result["storage_allocation_authorized"] is False
+    assert result["declared_thick_lvm_candidate_exact_match"] is False
+    assert result["declared_thick_lvm_reported_vg_headroom_passes_256_gib"] is False
+    assert result["declared_thick_lvm_reported_vg_headroom_passes_512_gib"] is False
+    assert result["declared_thick_lvm_reported_vg_headroom_passes_1024_gib"] is False
     rendered = json.dumps(result)
     assert "private-candidate" not in rendered
     assert str(8192 * GIB) not in rendered

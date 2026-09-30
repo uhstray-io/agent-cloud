@@ -97,6 +97,13 @@ The platform SHALL use a reviewed, Dev-bound, GET-only survey before considering
 - **AND** these exact path relationships do not establish local physical media, backing-device safety, filesystem readiness, PBS suitability, allocation, or write authorization; all corresponding verification/authorization fields remain false
 - **AND** no PV, disk, partition, parent, or storage identifier, path, serial, or exact capacity is exposed, and no Proxmox request is added for this calculation
 
+#### Scenario: Private declared thick-LVM store reports fixed reported-headroom facts
+- **WHEN** the private declared PBS VM-image store is an LVM-thin store or an eligible thick-LVM store
+- **THEN** the existing LVM-thin snapshot-unverified path retains its current behavior, while the thick-LVM path requires an exact match between the private declared storage ID's detail config, its visible cluster config, its target-node status row, and the linked VG candidate facts
+- **AND** it reports only `declared_thick_lvm_candidate_exact_match` and fixed `declared_thick_lvm_reported_vg_headroom_passes_{256,512,1024}_gib` booleans for an eligible exact match; absent, non-eligible, or inconsistent declarations leave these facts false
+- **AND** fixed headroom booleans describe reported VG free extents after a hypothetical allocation retaining at least 30% of reported VG size; they do not reserve capacity or authorize allocation
+- **AND** `storage_allocation_authorized`, `thick_lvm_allocation_authorized`, `thick_lvm_backing_media_verified`, `pbs_readiness_verified`, and `write_authorized` remain false, and no store ID, VG name, path, or exact capacity is reported
+
 ### Requirement: Rollout and recovery are reproducible
 Instrumentation and receiver changes SHALL be declared as code, applied through reviewed `dev` and Semaphore, and verified per wave. A failed wave SHALL be reversible by an operator-driven reviewed declaration revert and redeploy without deleting existing telemetry volumes.
 
