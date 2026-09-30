@@ -425,4 +425,4 @@ def test_the_policy_write_refuses_a_ca_json_changed_since_it_was_read():
     task = _task(_play(DEPLOY, "Phase 2.5"), "Write the name policy into ca.json and reload the CA")
     script = task["ansible.builtin.shell"]
     assert '[ "${s%% *}" = "$0" ] || {' in script and "_ca_json_now.stdout_lines[0] | quote" in script
-    assert script.index("sha256sum") < script.index('mv "$f.new" "$f"')
+    assert script.index("sha256sum") < script.index('mv "$new" "$f"')

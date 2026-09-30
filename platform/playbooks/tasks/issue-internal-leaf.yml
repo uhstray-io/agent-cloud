@@ -106,8 +106,8 @@
     # The key never leaves this directory: generated here, moved into the serial directory
     # below, never read by any task.
     # A pending directory of its own per run, so two runs for one leaf cannot pair one
-    # run's certificate with the other's key (review of #363). Its path is the first line
-    # of the output, the request the rest.
+    # run's certificate with the other's key (review of #363). Its path is the line marked
+    # `PENDING `, the request the PEM block.
     - name: "Generate the key and the certificate request on the consumer"
       ansible.builtin.shell: |
         set -eu
@@ -118,7 +118,7 @@
           -keyout "$pending/key.pem" -out "$pending/request.csr" \
           -subj {{ ('/CN=' ~ _leaf.sans[0]) | quote }} \
           -addext {{ ('subjectAltName=' ~ (_leaf.sans | map('regex_replace', '^', 'DNS:') | join(','))) | quote }} 2>/dev/null
-        echo "$pending"
+        echo "PENDING $pending"
         cat "$pending/request.csr"
       register: _leaf_csr
       changed_when: true
@@ -127,6 +127,12 @@
     # Credential task: the password and the request share stdin (password first line).
     # The certificate (public) is the only output; step's own error, if any, goes to stdout
     # prefixed so a visible task below can report it without this result being printed.
+    - name: "Name the pending directory and the request"
+      ansible.builtin.set_fact:
+        _leaf_pending: "{{ _leaf_csr.stdout_lines | select('match', '^PENDING /') | first | regex_replace('^PENDING ', '') }}"
+        _leaf_request: "{{ _leaf_csr.stdout | regex_search('-----BEGIN CERTIFICATE REQUEST-----[\\s\\S]*-----END CERTIFICATE REQUEST-----') }}"
+      when: not ansible_check_mode
+
     - name: "Sign the request on the CA host with issuer-{{ _leaf.profile }}"
       ansible.builtin.command:
         argv:
@@ -144,7 +150,7 @@
             then cat /tmp/crt.$$; rc=0; else echo "SIGNERR: $(tail -1 /tmp/err.$$)"; rc=1; fi;
             rm -f /tmp/ipw.$$ /tmp/req.$$.csr /tmp/crt.$$ /tmp/err.$$; exit $rc
           - "issuer-{{ _leaf.profile }}"
-        stdin: "{{ _leaf_issuer_pw }}\n{{ _leaf_csr.stdout_lines[1:] | join('\n') }}"
+        stdin: "{{ _leaf_issuer_pw }}\n{{ _leaf_request }}"
         stdin_add_newline: true
       delegate_to: "{{ _leaf_ca_host }}"
       register: _leaf_signed
@@ -155,7 +161,7 @@
 
     - name: "Remove the unused key after a refused request"
       ansible.builtin.file:
-        path: "{{ _leaf_csr.stdout_lines[0] }}"
+        path: "{{ _leaf_pending }}"
         state: absent
       when: not ansible_check_mode and _leaf_signed.rc != 0
 
@@ -180,7 +186,10 @@
         set -eu
         cd {{ _leaf.dir | quote }}
         umask 077
-        pending={{ _leaf_csr.stdout_lines[0] | quote }}
+        pending={{ _leaf_pending | quote }}
+        # A lock older than ten minutes belongs to a run that was killed (placement takes
+        # seconds): it is removed rather than blocking every later run (review of #363).
+        find . -maxdepth 1 -name .lock -mmin +10 -exec rmdir {} \;
         waited=0
         until mkdir .lock 2>/dev/null; do
           [ "$waited" -lt {{ _mint_lock_wait | default(120) | int }} ] || { echo "another issuance holds {{ _leaf.dir }}/.lock" >&2; exit 1; }

@@ -144,6 +144,17 @@ def test_a_refused_request_fails_the_run_with_the_cas_reason(tmp_path):
     assert not list((tmp_path / "certs").glob(".pending*")), "the unused key was left behind"
 
 
+def test_a_lock_left_by_a_killed_run_is_taken_over(tmp_path):
+    import os
+    lock = tmp_path / "certs" / ".lock"
+    lock.mkdir(parents=True)
+    old = lock.stat().st_mtime - 3600
+    os.utime(lock, (old, old))
+    r = _run(tmp_path, {"consumer": {**_consumer(tmp_path, [_leaf(tmp_path)]), "_mint_lock_wait": 1}})
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert (tmp_path / "certs" / "current" / "cert.pem").exists() and not lock.exists()
+
+
 def test_a_held_lock_fails_the_placement_with_its_name(tmp_path):
     (tmp_path / "certs" / ".lock").mkdir(parents=True)
     r = _run(tmp_path, {"consumer": {**_consumer(tmp_path, [_leaf(tmp_path)]), "_mint_lock_wait": 1}})

@@ -325,10 +325,15 @@
       ansible.builtin.shell: |
         set -eu
         since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-        {{ _engine }} exec -i step-ca sh -c 'set -eu; umask 077; f=/home/step/config/ca.json;
-          cat > "$f.new";
-          s=$(sha256sum "$f"); [ "${s%% *}" = "$0" ] || { rm -f "$f.new"; echo "ca.json changed since it was read; re-run" >&2; exit 3; };
-          mv "$f.new" "$f"' {{ _ca_json_now.stdout_lines[0] | quote }}
+        # A temporary file of its own per run, the original mode kept, and the digest checked
+        # immediately before the rename. ponytail: the check and the rename are two commands,
+        # so an edit landing between them is still lost; nothing else writes ca.json on the CA
+        # host (the host runs only this container), and the step CLI honours no lock that could
+        # close it.
+        {{ _engine }} exec -i step-ca sh -c 'set -eu; f=/home/step/config/ca.json;
+          new=$(mktemp "$f.XXXXXX"); cat > "$new"; chmod "$(stat -c %a "$f")" "$new";
+          s=$(sha256sum "$f"); [ "${s%% *}" = "$0" ] || { rm -f "$new"; echo "ca.json changed since it was read; re-run" >&2; exit 3; };
+          mv "$new" "$f"' {{ _ca_json_now.stdout_lines[0] | quote }}
         # `podman kill` prints the container name: the timestamp must be the only output.
         {{ _engine }} kill --signal HUP step-ca >/dev/null
         echo "$since"
