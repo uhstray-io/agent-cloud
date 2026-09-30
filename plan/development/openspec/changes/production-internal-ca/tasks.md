@@ -113,21 +113,38 @@ host. Push, pull requests and merges happen only when Joe authorizes each one.
       CA host and signed there with `step ca sign` via `delegate_to`; certificate written
       back on the consumer into a new serial-named subdirectory and a `current` symlink
       swapped in one rename; the previous subdirectory kept until the next success. The
-      existing wildcard interface keeps working for `deploy-caddy.yml`
+      existing wildcard interface keeps working for `deploy-caddy.yml`. 2026-09-30: built as
+      `tasks/issue-internal-leaf.yml`, entered through `mint-internal-cert.yml` when `_mint_name`
+      is set (the wildcard path unchanged otherwise). `_mint_profile` and `_mint_sans` were not
+      added: both come from the leaf's declaration, so a caller cannot ask for more than it
+      declares. A leaf with a current certificate is kept unless `_mint_reissue` (renewal is
+      group 6). Proven end to end on a throwaway step-ca 0.30.2: client-only key usage, the
+      declared SANs, leaf plus intermediate, `openssl verify -purpose sslclient` OK and
+      `sslserver` refused, no key file left in the CA container. Open: 4.6, 4.7
 - [ ] 4.2 Declared-name guard: the task refuses any SAN not in the consumer's declared leaf
       (site-config list, decision 4) and any name outside `<site>.<zone>` (amendment
       2026-09-29), before
-      anything reaches the CA; the existing hostname-character assertion stays
+      anything reaches the CA; the existing hostname-character assertion stays. 2026-09-30:
+      the leaf is looked up by name in `internal_leaves` and must be declared once, for this
+      host, with a server or client profile, an absolute directory, and plain SANs under
+      `<dns_site>.<dns_zone>`; the same rule as the CA's name policy
 - [ ] 4.3 Evolve `tasks/distribute-ca-root.yml`: optional `_ca_host`; root and intermediate
       read from the CA container on that host, bundle written 0644 on the consumer into
       the mounted certificate directory
 - [ ] 4.4 Profiles: issue one server and one client test leaf in local-dev, inspect their
       extended key usage, and settle decision 5's mechanism (separate provisioners or
       x509 templates) and whether the CA can also enforce a name policy; record the result
-      in `design.md`
+      in `design.md`. 2026-09-30: measured on a throwaway step-ca 0.30.2 and recorded
+      (design, "Findings 2026-09-30"): a template per issuer, now set and planned by
+      `deploy-step-ca.yml` and asserted on the running CA in Phase 3; a CA-side name policy
+      at authority level from the exact declared SANs (decided by Joe 2026-09-30), written,
+      reload-checked and asserted by `deploy-step-ca.yml`. Open: the
+      local-dev server and client test leaves, which need task 4.1's issuance path
 - [ ] 4.5 BATS: no task step reads, copies or templates the consumer's key onto the CA host
       or the controller; the name guard is scoped to the issuance task; the symlink swap
-      is a single rename; each assertion mutated once to watch it go red
+      is a single rename; each assertion mutated once to watch it go red. 2026-09-30: as
+      pytest, `platform/tests/test_issue_internal_leaf.py`, against a stub engine that keeps
+      what the CA host receives (password line and request, never a key)
 - [ ] 4.6 Local-dev regression: `Deploy Caddy (Local)` and `make local-bootstrap` still serve
       the wildcard, and every local consumer of the bundle still verifies the IdP
 - [ ] 4.7 Production proof with a throwaway leaf declared on the gateway host: issue it

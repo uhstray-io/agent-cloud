@@ -22,6 +22,7 @@ FIRST_BOOT_TASKS = REPO / "platform/playbooks/tasks/assert-step-ca-first-boot.ym
 DEPLOY = REPO / "platform/playbooks/deploy-step-ca.yml"
 CLEAN = REPO / "platform/playbooks/clean-deploy-step-ca.yml"
 ENV_J2 = REPO / "platform/services/step-ca/deployment/templates/env.j2"
+ISSUERS = REPO / "platform/playbooks/vars/step-ca-issuance.yml"
 
 
 def _play(path: Path, name_prefix: str) -> dict:
@@ -43,6 +44,14 @@ def _run(tmp_path: Path, host_vars: dict, tasks: list, play_vars: dict | None = 
     return harness_sandbox.run(
         ["ansible-playbook", "-i", str(tmp_path / "inv.yml"), str(tmp_path / "play.yml"), *(extra or [])],
         tmp_path, cwd=REPO, env=harness_sandbox.env_for(tmp_path))
+
+
+def _registered_reads(tmp: Path, reads: dict) -> list:
+    """Fake each read the way production gets it: a command's registered stdout. The x509
+    template holds Go template braces, which Ansible would render as Jinja if the fake
+    arrived as a plain variable; a module's result is not rendered again."""
+    return [{"name": f"fake {var}", "ansible.builtin.command": f"cat {tmp}/{{{{ inventory_hostname }}}}.{suffix}",
+             "register": var, "changed_when": False} for var, suffix in reads.items()]
 
 
 def _failed(stdout: str) -> dict:
@@ -116,25 +125,42 @@ def test_a_production_ca_is_refused_without_its_first_boot_settings(first_boot_f
 
 # ── Provisioner plan (task 2.1) ────────────────────────────────────────────────
 
-def _jwk(name, dur=None):
+def _template(eku: str) -> str:
+    """The profile template as Phase 2.5 renders it: its '{{' pieces become literal braces."""
+    raw = _play(DEPLOY, "Phase 2.5")["vars"]["_x509_template"]
+    return raw.replace("{{ '{{' }}", "{{").replace("{{ '}}' }}", "}}").replace("__EKU__", eku)
+
+
+def _jwk(name, dur=None, eku=None):
     claims = {"maxTLSCertDuration": dur, "defaultTLSCertDuration": dur} if dur else {}
-    return {"type": "JWK", "name": name, "claims": claims}
+    prov = {"type": "JWK", "name": name, "claims": claims}
+    if eku:
+        prov["options"] = {"x509": {"template": _template(eku)}}
+    return prov
 
 
-CONVERGED = [_jwk("admin", "8760h0m0s"), _jwk("issuer-server", "720h0m0s"), _jwk("issuer-client", "720h0m0s")]
+SERVER = _jwk("issuer-server", "720h0m0s", "serverAuth")
+CLIENT = _jwk("issuer-client", "720h0m0s", "clientAuth")
+CONVERGED = [_jwk("admin", "8760h0m0s"), SERVER, CLIENT]
 # {case: (ca.json provisioners, the running CA's list or None for the same)}
 PLAN_CASES = {
     "fresh": ([_jwk("admin")], None),
     "converged": (CONVERGED, None),
-    "one-differs": ([_jwk("admin", "8760h0m0s"), _jwk("issuer-server", "24h0m0s"),
-                     _jwk("issuer-client", "720h0m0s")], None),
+    "one-differs": ([_jwk("admin", "8760h0m0s"), _jwk("issuer-server", "24h0m0s", "serverAuth"), CLIENT], None),
     "max-differs": ([_jwk("admin", "8760h0m0s"),
-                     {"type": "JWK", "name": "issuer-server",
-                      "claims": {"maxTLSCertDuration": "24h0m0s", "defaultTLSCertDuration": "720h0m0s"}},
-                     _jwk("issuer-client", "720h0m0s")], None),
+                     {**SERVER, "claims": {"maxTLSCertDuration": "24h0m0s", "defaultTLSCertDuration": "720h0m0s"}},
+                     CLIENT], None),
     # A run stopped between an add and the reload: ca.json has the issuers, the running CA
     # does not. Nothing is left to add, but the reload must still run.
     "never-reloaded": (CONVERGED, [_jwk("admin", "8760h0m0s")]),
+    # The issuers created on 2026-09-29, before profiles: no template, so both key usages.
+    "no-templates": ([_jwk("admin", "8760h0m0s"), _jwk("issuer-server", "720h0m0s"),
+                      _jwk("issuer-client", "720h0m0s")], None),
+    # A template of the wrong profile is replaced, not kept.
+    "wrong-profile": ([_jwk("admin", "8760h0m0s"), _jwk("issuer-server", "720h0m0s", "clientAuth"), CLIENT], None),
+    # A template written to ca.json but never reloaded.
+    "template-unreloaded": (CONVERGED, [_jwk("admin", "8760h0m0s"), _jwk("issuer-server", "720h0m0s"),
+                                        _jwk("issuer-client", "720h0m0s")]),
 }
 
 
@@ -144,34 +170,50 @@ def plans(tmp_path_factory) -> dict:
     it cannot read fails."""
     tmp = tmp_path_factory.mktemp("plans")
     play = _play(DEPLOY, "Phase 2.5")
-    hosts = {case: {"_ca_present": {"rc": 0},
-                    "_ca_json": {"stdout": json.dumps({"authority": {"provisioners": prov}})},
-                    "_prov_list": {"stdout": json.dumps(prov if running is None else running)}}
-             for case, (prov, running) in PLAN_CASES.items()}
+    for case, (prov, running) in PLAN_CASES.items():
+        (tmp / f"{case}.ca.json").write_text(json.dumps({"authority": {"provisioners": prov}}))
+        (tmp / f"{case}.list.json").write_text(json.dumps(prov if running is None else running))
+    hosts = {case: {"_ca_present": {"rc": 0}} for case in PLAN_CASES}
     dump = {"name": "dump", "ansible.builtin.copy": {
         "content": "{{ _prov_plan | to_json }}", "dest": str(tmp / "{{ inventory_hostname }}.json"), "mode": "0600"}}
     loops = {"name": "evaluate the loops", "ansible.builtin.debug": {"msg": [
         "{{ _task_add_loop }}", "{{ _task_set_loop }}"]}, "vars": {
         "_task_add_loop": _task(play, "Add each missing issuing provisioner")["loop"],
         "_task_set_loop": _task(play, "Set the issuing provisioners' leaf lifetime")["loop"]}}
-    tasks = [_task(play, "Plan the provisioner changes"), _task(play, "Report the provisioner plan"), loops, dump]
-    r = _run(tmp, {}, tasks, play_vars=play["vars"], hosts=hosts)
+    tasks = [*_registered_reads(tmp, {"_ca_json": "ca.json", "_prov_list": "list.json"}),
+             _task(play, "Plan the provisioner changes"), _task(play, "Report the provisioner plan"), loops, dump]
+    r = _run(tmp, {}, tasks, play_vars={**playbook_yaml.load(ISSUERS), **play["vars"]}, hosts=hosts)
     assert r.returncode == 0, r.stdout + r.stderr
     return {case: json.loads((tmp / f"{case}.json").read_text()) for case in PLAN_CASES}
 
 
-def test_a_fresh_ca_gets_both_issuers_and_every_lifetime(plans):
-    assert plans["fresh"] == {"raise_admin": True, "add": ["issuer-server", "issuer-client"],
-                              "set_lifetime": ["issuer-server", "issuer-client"], "reload_pending": False}
+BOTH = ["issuer-server", "issuer-client"]
+NOTHING = {"raise_admin": False, "add": [], "set_lifetime": [], "set_template": [], "set_policy": False,
+           "reload_pending": False}
+
+
+def test_a_fresh_ca_gets_both_issuers_every_lifetime_and_both_profiles(plans):
+    assert plans["fresh"] == {**NOTHING, "raise_admin": True, "add": BOTH, "set_lifetime": BOTH, "set_template": BOTH}
 
 
 def test_a_converged_ca_plans_nothing(plans):
-    assert plans["converged"] == {"raise_admin": False, "add": [], "set_lifetime": [], "reload_pending": False}
+    assert plans["converged"] == NOTHING
 
 
 def test_only_the_provisioner_whose_lifetime_differs_is_updated(plans):
-    assert plans["one-differs"] == {"raise_admin": False, "add": [], "set_lifetime": ["issuer-server"],
-                                    "reload_pending": False}
+    assert plans["one-differs"] == {**NOTHING, "set_lifetime": ["issuer-server"]}
+
+
+def test_issuers_without_a_profile_template_get_one(plans):
+    assert plans["no-templates"] == {**NOTHING, "set_template": BOTH}
+
+
+def test_a_template_of_the_wrong_profile_is_replaced(plans):
+    assert plans["wrong-profile"] == {**NOTHING, "set_template": ["issuer-server"]}
+
+
+def test_a_template_written_but_never_reloaded_is_reloaded(plans):
+    assert plans["template-unreloaded"] == {**NOTHING, "reload_pending": True}
 
 
 def test_a_differing_maximum_alone_triggers_the_update(plans):
@@ -179,7 +221,32 @@ def test_a_differing_maximum_alone_triggers_the_update(plans):
 
 
 def test_a_change_written_but_never_reloaded_is_reloaded(plans):
-    assert plans["never-reloaded"] == {"raise_admin": False, "add": [], "set_lifetime": [], "reload_pending": True}
+    assert plans["never-reloaded"] == {**NOTHING, "reload_pending": True}
+
+
+# ── Running profiles (findings 2026-09-30) ─────────────────────────────────────
+
+RUNNING_CASES = {
+    "profiles": ([SERVER, CLIENT], True),
+    "no-template": ([_jwk("issuer-server", "720h0m0s"), CLIENT], False),
+    "swapped": ([_jwk("issuer-server", "720h0m0s", "clientAuth"), _jwk("issuer-client", "720h0m0s", "serverAuth")],
+                False),
+}
+
+
+def test_phase_3_refuses_a_running_issuer_without_its_profile(tmp_path):
+    play = _play(DEPLOY, "Phase 3")
+    for case, (provs, _) in RUNNING_CASES.items():
+        (tmp_path / f"{case}.list.json").write_text(json.dumps(provs))
+    hosts = {case: {"_ca_up": {"rc": 0}} for case in RUNNING_CASES}
+    # `_ca_state` is a loop register in production: results[0] is the provisioner list.
+    fake = {"name": "fake the state reads", "ansible.builtin.command": "cat {{ item }}",
+            "loop": [f"{tmp_path}/{{{{ inventory_hostname }}}}.list.json"], "register": "_ca_state",
+            "changed_when": False}
+    task = _task(play, "Refuse an issuing provisioner without its profile's key usage")
+    r = _run(tmp_path, {}, [fake, task], play_vars={**playbook_yaml.load(ISSUERS), **play["vars"]}, hosts=hosts)
+    failed = _failed(r.stdout)
+    assert {c: failed.get(c) == 0 for c in RUNNING_CASES} == {c: ok for c, (_, ok) in RUNNING_CASES.items()}, r.stdout
 
 
 def test_the_list_is_read_before_any_provisioner_is_added_and_the_add_is_hidden():
@@ -226,4 +293,136 @@ def test_the_issuer_password_comes_from_the_fact_manage_secrets_sets():
     add = _task(_play(DEPLOY, "Phase 2.5"), "Add each missing issuing provisioner")
     assert re.match(r"\{\{\s*_resolved\[", add["ansible.builtin.command"]["stdin"])
     declared = {d["name"] for d in _play(DEPLOY, "Phase 1")["vars"]["_secret_definitions"]}
-    assert {i["secret"] for i in _play(DEPLOY, "Phase 2.5")["vars"]["_issuers"]} <= declared
+    assert {i["secret"] for i in playbook_yaml.load(ISSUERS)["_issuers"]} <= declared
+
+
+# ── Name policy (findings 2026-09-30; exact declared names, decided 2026-09-30) ──
+
+SITE = {"dns_site": "dc1", "dns_zone": "example.internal"}
+LEAVES = [
+    {"name": "caddy", "sans": ["vm01.caddy.dc1.example.internal", "caddy.dc1.example.internal"]},
+    {"name": "gateway", "sans": ["gateway.dc1.example.internal", "caddy.dc1.example.internal"]},
+]
+POLICY = {"x509": {"allow": {"dns": sorted({s for leaf in LEAVES for s in leaf["sans"]})}}}
+
+NAME_CASES = {
+    "declared": ({**SITE, "internal_leaves": LEAVES}, True),
+    "none-declared": ({}, True),
+    "wildcard": ({**SITE, "internal_leaves": [{"name": "w", "sans": ["*.dc1.example.internal"]}]}, False),
+    "other-site": ({**SITE, "internal_leaves": [{"name": "o", "sans": ["gateway.dc2.example.internal"]}]}, False),
+    "suffix-only": ({**SITE, "internal_leaves": [{"name": "s", "sans": ["evildc1.example.internal"]}]}, False),
+    "upper-case": ({**SITE, "internal_leaves": [{"name": "u", "sans": ["Gateway.dc1.example.internal"]}]}, False),
+    "no-site": ({"internal_leaves": LEAVES}, False),
+    "local-mode": ({"local_mode": True, "internal_leaves": [{"name": "w", "sans": ["*.agent-cloud.test"]}]}, True),
+}
+
+
+def _issuance_vars(play: dict) -> dict:
+    return {**playbook_yaml.load(ISSUERS), **play["vars"]}
+
+
+def test_a_name_the_policy_cannot_hold_is_refused_before_anything_is_read(tmp_path):
+    play = _play(DEPLOY, "Phase 2.5")
+    assert play["tasks"][0]["name"] == "Refuse a declared name the CA's name policy cannot hold"
+    hosts = {c: v for c, (v, _) in NAME_CASES.items()}
+    r = _run(tmp_path, {}, [play["tasks"][0]], play_vars=_issuance_vars(play), hosts=hosts)
+    failed = _failed(r.stdout)
+    assert {c: failed.get(c) == 0 for c in NAME_CASES} == {c: ok for c, (_, ok) in NAME_CASES.items()}, r.stdout
+
+
+# {case: (host vars, the policy ca.json holds or None, set_policy expected)}
+POLICY_CASES = {
+    "add": ({**SITE, "internal_leaves": LEAVES}, None, True),
+    "same": ({**SITE, "internal_leaves": LEAVES}, POLICY, False),
+    "narrowed": ({**SITE, "internal_leaves": LEAVES[:1]}, POLICY, True),
+    "removed": ({}, POLICY, True),
+    "never": ({}, None, False),
+}
+
+
+def test_the_policy_is_planned_from_the_declared_leaves(tmp_path):
+    play = _play(DEPLOY, "Phase 2.5")
+    for case, (_, current, _) in POLICY_CASES.items():
+        auth = {"provisioners": CONVERGED, **({"policy": current} if current else {})}
+        (tmp_path / f"{case}.ca.json").write_text(json.dumps({"authority": auth}))
+        (tmp_path / f"{case}.list.json").write_text(json.dumps(CONVERGED))
+    dump = {
+        "name": "dump",
+        "ansible.builtin.copy": {
+            "content": "{{ _prov_plan.set_policy | to_json }}",
+            "dest": str(tmp_path / "{{ inventory_hostname }}.out"),
+            "mode": "0600",
+        },
+    }
+    tasks = [*_registered_reads(tmp_path, {"_ca_json": "ca.json", "_prov_list": "list.json"}),
+             _task(play, "Plan the provisioner changes"), dump]
+    hosts = {case: {"_ca_present": {"rc": 0}, **hv} for case, (hv, _, _) in POLICY_CASES.items()}
+    r = _run(tmp_path, {}, tasks, play_vars=_issuance_vars(play), hosts=hosts)
+    assert r.returncode == 0, r.stdout + r.stderr
+    got = {case: json.loads((tmp_path / f"{case}.out").read_text()) for case in POLICY_CASES}
+    assert got == {case: want for case, (_, _, want) in POLICY_CASES.items()}
+
+
+def _stub_engine(tmp_path: Path, log: str = "") -> Path:
+    """A container engine that keeps what `exec -i` is given, records signals, and prints `log`."""
+    stub = tmp_path / "engine"
+    stub.write_text(
+        "#!/bin/sh\n"
+        'case "$1" in\n'
+        f'  exec) cat > "{tmp_path}/written.json" ;;\n'
+        # Like podman, `kill` prints the container's name on stdout.
+        f'  kill) echo "$@" >> "{tmp_path}/signals"; echo step-ca ;;\n'
+        # Like podman, `logs --since` refuses anything but a timestamp (a stray line in the
+        # write's output once reached it, found against a real CA).
+        '  logs) echo "$3" | grep -qE "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z$" || exit 125;\n'
+        f"        printf '%s\\n' {json.dumps(log)} ;;\n"
+        "esac\n"
+    )
+    stub.chmod(0o755)
+    return stub
+
+
+@pytest.mark.parametrize("hv,want", [({**SITE, "internal_leaves": LEAVES}, POLICY), ({}, None)],
+                         ids=["written", "removed"])
+def test_the_policy_write_keeps_the_rest_of_ca_json_and_reloads(tmp_path, hv, want):
+    play = _play(DEPLOY, "Phase 2.5")
+    current = {"authority": {"provisioners": CONVERGED, "policy": {"x509": {"allow": {"dns": ["old"]}}},
+                             "claims": {"x": 1}}, "root": "/r"}
+    # The re-read's first line is the file's digest, the write's precondition.
+    (tmp_path / "step-ca.ca.json").write_text("0" * 64 + "\n" + json.dumps(current))
+    stub = _stub_engine(tmp_path, "Serving HTTPS on :9000 ...")
+    # The reload check runs on the write's real output, as in the play.
+    check = {**_task(play, "Refuse a reload that did not take the new configuration"), "retries": 1, "delay": 0}
+    tasks = [*_registered_reads(tmp_path, {"_ca_json_now": "ca.json"}),
+             {"name": "plan", "ansible.builtin.set_fact": {"_prov_plan": {"set_policy": True}}},
+             _task(play, "Write the name policy into ca.json and reload the CA"), check]
+    host = {"_ca_present": {"rc": 0}, "container_engine": str(stub), **hv}
+    r = _run(tmp_path, host, tasks, play_vars=_issuance_vars(play))
+    assert r.returncode == 0, r.stdout + r.stderr
+    written = json.loads((tmp_path / "written.json").read_text())
+    assert written["authority"].get("policy") == want
+    assert written["authority"]["provisioners"] == CONVERGED and written["authority"]["claims"] == {"x": 1}
+    assert written["root"] == "/r"
+    assert "--signal HUP step-ca" in (tmp_path / "signals").read_text()
+
+
+@pytest.mark.parametrize("log,ok", [
+    ("reloading ...\nServing HTTPS on :9000 ...", True),
+    ("error reloading server: error reloading ca: cannot parse permitted domain constraint", False),
+], ids=["applied", "reload-error"])
+def test_a_reload_that_did_not_apply_fails_the_run(tmp_path, log, ok):
+    play = _play(DEPLOY, "Phase 2.5")
+    stub = _stub_engine(tmp_path, log)
+    task = {**_task(play, "Refuse a reload that did not take the new configuration"), "retries": 1, "delay": 0}
+    wrote = {"name": "the write ran", "ansible.builtin.command": "echo 2026-09-30T00:00:00Z",
+             "register": "_prov_policy", "changed_when": True}
+    r = _run(tmp_path, {"container_engine": str(stub)}, [wrote, task], play_vars=play["vars"])
+    assert (r.returncode == 0) is ok, r.stdout + r.stderr
+
+
+def test_the_policy_write_refuses_a_ca_json_changed_since_it_was_read():
+    # Review of #363: a provisioner update between the read and the write would be lost.
+    task = _task(_play(DEPLOY, "Phase 2.5"), "Write the name policy into ca.json and reload the CA")
+    script = task["ansible.builtin.shell"]
+    assert '[ "${s%% *}" = "$0" ] || {' in script and "_ca_json_now.stdout_lines[0] | quote" in script
+    assert script.index("sha256sum") < script.index('mv "$new" "$f"')

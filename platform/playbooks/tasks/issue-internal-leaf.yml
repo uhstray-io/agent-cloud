@@ -1,0 +1,263 @@
+---
+# issue-internal-leaf.yml — issue ONE declared leaf certificate from the internal CA, with
+# its private key generated on the consumer and never moved (openspec production-internal-ca
+# tasks 4.1 and 4.2; design decisions 3, 4 and 7).
+#
+#   consumer (the play host)            CA host (_mint_ca_host)
+#   ─────────────────────────           ───────────────────────
+#   key + request (openssl) ──request──▶ step ca sign, issuer-<profile>
+#   <dir>/<serial>/{cert,key}.pem ◀─cert─
+#   <dir>/current ─▶ <serial>   (one rename; the previous serial directory is kept)
+#
+# Only the request and the certificate cross hosts, and both are public. The issuing
+# provisioner's password is read from OpenBao on the controller and handed to the CA
+# container on stdin, in a hidden task. Included by mint-internal-cert.yml when `_mint_name`
+# is set; the wildcard path there is unchanged.
+#
+# Required vars:
+#   _mint_name       a leaf in site-config's `internal_leaves` whose `host` is this play host
+# Optional vars:
+#   _mint_ca_host    inventory host running the step-ca container (default: the play host)
+#   _mint_reissue    issue even when <dir>/current holds a certificate (default: false)
+#   _mint_ca_name    step-ca container name (default: step-ca)
+#   _mint_lock_wait  seconds to wait for another placement of the same leaf (default: 120)
+#
+# The declaration (all-hosts site-config variable, design decision 4):
+#   internal_leaves:
+#     - {name: caddy, host: <inventory host>, dir: <absolute directory>, profile: client,
+#        sans: [vm01.caddy.<site>.<zone>, caddy.<site>.<zone>], reload: <action>}
+# Every SAN must be a lowercase DNS name without a wildcard under `<dns_site>.<dns_zone>`;
+# the CA's own name policy (deploy-step-ca.yml) allows exactly the declared SANs as well.
+
+- name: "Find the declared leaf {{ _mint_name }}"
+  ansible.builtin.set_fact:
+    _leaf_matches: "{{ internal_leaves | default([]) | selectattr('name', 'equalto', _mint_name) | list }}"
+
+# Task 4.2: nothing reaches the CA for a name, a host or a directory the declaration does
+# not hold. The same name rule as the CA's policy, so the two cannot disagree.
+- name: "Refuse a leaf that is not declared for this host"
+  ansible.builtin.assert:
+    that:
+      - _leaf_matches | length == 1
+      - _leaf_matches[0].host == inventory_hostname
+      - _leaf_matches[0].profile in ['server', 'client']
+      # A path the shell cannot misread: it is also quoted wherever it is used.
+      - _leaf_matches[0].dir is match('^/[A-Za-z0-9._/-]+$')
+      - (_leaf_matches[0].sans | default([]) | length) > 0
+      - (dns_site | default('') | length) > 0 and (dns_zone | default('') | length) > 0
+      - _leaf_matches[0].sans | reject('match', '^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$') | list | length == 0
+      - _leaf_matches[0].sans | reject('search', '\\.' ~ ((dns_site | default('')) ~ '.' ~ (dns_zone | default(''))) | regex_escape ~ '$') | list | length == 0
+    fail_msg: >-
+      {{ inventory_hostname }}: `{{ _mint_name }}` must be declared exactly once in internal_leaves
+      for this host, with a server or client profile, an absolute dir, and SANs that are plain
+      lowercase names under {{ dns_site | default('<dns_site>') }}.{{ dns_zone | default('<dns_zone>') }}.
+      Found {{ _leaf_matches | length }} declaration(s).
+    quiet: true
+
+- name: "Name the leaf's parameters"
+  ansible.builtin.set_fact:
+    _leaf: "{{ _leaf_matches[0] }}"
+    _leaf_ca_host: "{{ _mint_ca_host | default(inventory_hostname) }}"
+    _leaf_ca_engine: "{{ hostvars[_mint_ca_host | default(inventory_hostname)].container_engine | default('podman') }}"
+
+- name: "Does the leaf already have a current certificate"
+  ansible.builtin.stat:
+    path: "{{ _leaf.dir }}/current/cert.pem"
+  register: _leaf_current
+
+- name: "Report the issuance decision"
+  ansible.builtin.debug:
+    msg: >-
+      {{ _mint_name }} ({{ _leaf.profile }}, {{ _leaf.sans | join(', ') }}):
+      {{ 'issuing a new certificate' if (not _leaf_current.stat.exists or (_mint_reissue | default(false) | bool))
+         else 'current certificate kept; pass _mint_reissue=true to replace it' }}
+      {{- ' (check mode: nothing is written)' if ansible_check_mode else '' }}
+
+- name: "Issue the leaf"
+  when: not _leaf_current.stat.exists or (_mint_reissue | default(false) | bool)
+  block:
+    - name: "Refuse a consumer without openssl (it is not installed from here)"
+      ansible.builtin.command: openssl version
+      changed_when: false
+      check_mode: false
+
+    - name: "Resolve the secret-store address"
+      ansible.builtin.set_fact:
+        _leaf_bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
+
+    - name: "Refuse a cleartext secret-store endpoint"
+      ansible.builtin.include_tasks: assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _leaf_bao_url }}"
+
+    # Credential task: the issuer's password, from the path deploy-step-ca.yml stores it at.
+    - name: "Read the issuing provisioner's password"
+      ansible.builtin.set_fact:
+        _leaf_issuer_pw: >-
+          {{ lookup('community.hashi_vault.hashi_vault',
+               'secret/data/services/step-ca:issuer_' ~ _leaf.profile ~ '_password',
+               url=_leaf_bao_url,
+               auth_method='approle',
+               role_id=(bao_role_id | default(lookup('env', 'BAO_ROLE_ID'), true)),
+               secret_id=(bao_secret_id | default(lookup('env', 'BAO_SECRET_ID'), true))) }}
+      no_log: true
+      when: not ansible_check_mode
+
+    # The key never leaves this directory: generated here, moved into the serial directory
+    # below, never read by any task.
+    # A pending directory of its own per run, so two runs for one leaf cannot pair one
+    # run's certificate with the other's key (review of #363). Its path is the line marked
+    # `PENDING `, the request the PEM block.
+    - name: "Generate the key and the certificate request on the consumer"
+      ansible.builtin.shell: |
+        set -eu
+        umask 077
+        mkdir -p {{ _leaf.dir | quote }}
+        pending=$(mktemp -d {{ (_leaf.dir ~ '/.pending.XXXXXX') | quote }})
+        openssl req -new -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
+          -keyout "$pending/key.pem" -out "$pending/request.csr" \
+          -subj {{ ('/CN=' ~ _leaf.sans[0]) | quote }} \
+          -addext {{ ('subjectAltName=' ~ (_leaf.sans | map('regex_replace', '^', 'DNS:') | join(','))) | quote }} 2>/dev/null
+        echo "PENDING $pending"
+        cat "$pending/request.csr"
+      register: _leaf_csr
+      changed_when: true
+      when: not ansible_check_mode
+
+    # Credential task: the password and the request share stdin (password first line).
+    # The certificate (public) is the only output; step's own error, if any, goes to stdout
+    # prefixed so a visible task below can report it without this result being printed.
+    - name: "Name the pending directory and the request"
+      ansible.builtin.set_fact:
+        _leaf_pending: "{{ _leaf_csr.stdout_lines | select('match', '^PENDING /') | first | regex_replace('^PENDING ', '') }}"
+        _leaf_request: "{{ _leaf_csr.stdout | regex_search('-----BEGIN CERTIFICATE REQUEST-----[\\s\\S]*-----END CERTIFICATE REQUEST-----') }}"
+      when: not ansible_check_mode
+
+    - name: "Refuse a request step that produced no request"
+      ansible.builtin.assert:
+        that:
+          - _leaf_pending | default('', true) | length > 0
+          - (_leaf_request | default('', true) | length) > 0
+        fail_msg: "{{ _mint_name }}: the key and request step printed no pending directory or no request."
+        quiet: true
+      when: not ansible_check_mode
+
+    - name: "Sign the request on the CA host with issuer-{{ _leaf.profile }}"
+      ansible.builtin.command:
+        argv:
+          - "{{ _leaf_ca_engine }}"
+          - exec
+          - -i
+          - "{{ _mint_ca_name | default('step-ca') }}"
+          - sh
+          - -c
+          - >-
+            umask 077; IFS= read -r pw; printf '%s' "$pw" > /tmp/ipw.$$; cat > /tmp/req.$$.csr;
+            if step ca sign /tmp/req.$$.csr /tmp/crt.$$ --provisioner "$0"
+            --provisioner-password-file /tmp/ipw.$$ --ca-url https://localhost:9000
+            --root /home/step/certs/root_ca.crt --force >/dev/null 2>/tmp/err.$$;
+            then cat /tmp/crt.$$; rc=0; else echo "SIGNERR: $(tail -1 /tmp/err.$$)"; rc=1; fi;
+            rm -f /tmp/ipw.$$ /tmp/req.$$.csr /tmp/crt.$$ /tmp/err.$$; exit $rc
+          - "issuer-{{ _leaf.profile }}"
+        stdin: "{{ _leaf_issuer_pw }}\n{{ _leaf_request }}"
+        stdin_add_newline: true
+      delegate_to: "{{ _leaf_ca_host }}"
+      register: _leaf_signed
+      changed_when: true
+      failed_when: false
+      no_log: true
+      when: not ansible_check_mode
+
+    - name: "Remove the unused key after a refused request"
+      ansible.builtin.file:
+        path: "{{ _leaf_pending }}"
+        state: absent
+      when: not ansible_check_mode and _leaf_signed.rc != 0
+
+    - name: "Refuse a request the CA did not sign"
+      ansible.builtin.assert:
+        that:
+          - _leaf_signed.rc == 0
+          - "'-----BEGIN CERTIFICATE-----' in _leaf_signed.stdout"
+        fail_msg: >-
+          {{ _mint_name }}: the CA refused the request:
+          {{ _leaf_signed.stdout_lines | select('match', '^SIGNERR: ') | first | default('no reason given') }}
+        quiet: true
+      when: not ansible_check_mode
+
+    # A fresh directory per certificate, then `current` replaced in one rename, so a reader
+    # never sees a new certificate beside an old key (design decision 7). The link is
+    # relative, so it resolves inside a container that mounts the parent directory.
+    # One placement at a time per leaf directory, under a kernel lock (flock on
+    # `.placement.lock`) the system
+    # releases when its holder exits for any reason, so a killed run leaves nothing stale and
+    # a slow one is never overtaken (reviews of #363). In Python so the lock, the swap and the
+    # prune share one process: the certificate arrives on stdin.
+    - name: "Place the certificate and key under their serial, then swap current"
+      ansible.builtin.command:
+        argv:
+          - python3
+          - -c
+          - "{{ _leaf_placer }}"
+          - "{{ _leaf.dir }}"
+          - "{{ _leaf_pending }}"
+          - "{{ _mint_lock_wait | default(120) | int }}"
+        stdin: "{{ _leaf_signed.stdout }}"
+      vars:
+        _leaf_placer: |
+          import fcntl, os, re, shutil, subprocess, sys, time
+          d, pending, wait = sys.argv[1], sys.argv[2], int(sys.argv[3])
+          os.chdir(d)
+          os.umask(0o077)
+          lock = open(".placement.lock", "a")
+          deadline = time.monotonic() + wait
+          while True:
+              try:
+                  fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                  break
+              except BlockingIOError:
+                  if time.monotonic() > deadline:
+                      shutil.rmtree(pending, ignore_errors=True)  # this run's key is never used
+                      sys.exit("another issuance holds " + d + "/.placement.lock")
+                  time.sleep(1)
+          # Pending directories older than an hour belong to runs killed before placement
+          # (signing takes seconds). One can vanish mid-sweep: its own run placed it.
+          for entry in os.listdir("."):
+              if entry.startswith(".pending.") and os.path.join(d, entry) != pending:
+                  try:
+                      stale = time.time() - os.lstat(entry).st_mtime > 3600
+                  except FileNotFoundError:
+                      continue
+                  if stale:
+                      shutil.rmtree(entry, ignore_errors=True)
+          cert = os.path.join(pending, "cert.pem")
+          with open(cert, "w") as out:
+              out.write(sys.stdin.read())
+          serial = subprocess.run(["openssl", "x509", "-in", cert, "-noout", "-serial"],
+                                  capture_output=True, text=True, check=True).stdout.strip().split("=", 1)[1]
+          prev = os.readlink("current") if os.path.islink("current") else None
+          os.mkdir(serial)
+          for name in ("cert.pem", "key.pem"):
+              os.rename(os.path.join(pending, name), os.path.join(serial, name))
+          os.chmod(os.path.join(serial, "cert.pem"), 0o644)
+          shutil.rmtree(pending)
+          # The link is relative, so it resolves inside a container that mounts the parent.
+          if os.path.lexists(".current.new"):
+              os.remove(".current.new")
+          os.symlink(serial, ".current.new")
+          os.replace(".current.new", "current")
+          # Only serial directories are pruned (hex, as openssl prints a serial): the
+          # directory may hold other files, and nothing but what this task made is removed.
+          for entry in os.listdir("."):
+              if (re.fullmatch("[0-9A-F]+", entry) and os.path.isdir(entry) and not os.path.islink(entry)
+                      and entry not in (serial, prev)):
+                  shutil.rmtree(entry)
+          print(serial)
+      register: _leaf_placed
+      changed_when: true
+      when: not ansible_check_mode
+
+    - name: "Report the issued leaf"
+      ansible.builtin.debug:
+        msg: "{{ _mint_name }}: serial {{ _leaf_placed.stdout | trim }} at {{ _leaf.dir }}/current"
+      when: not ansible_check_mode

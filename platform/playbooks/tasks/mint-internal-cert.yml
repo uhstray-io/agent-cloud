@@ -3,8 +3,8 @@
 # drop cert+key into a consuming service's deploy dir. Reusable by any service
 # whose deploy dir is **co-located with the step-ca container** (the local-dev
 # single-host case: every step here — `exec`/`cp` — runs on the play host with
-# no delegate_to). Cross-host reuse (CA on a different VM than the consumer)
-# would need the exec/cp steps delegated to the CA host — out of scope today.
+# no delegate_to). A declared leaf on any host, with its key generated on the consumer,
+# is issued by tasks/issue-internal-leaf.yml: pass `_mint_name` and this file hands over.
 #
 # This is the LOCAL token-mint path: step-ca signs `*.<zone>` (+ the apex) via
 # its admin provisioner with no ACME challenge, because `*.<zone>` is not
@@ -26,73 +26,80 @@
 #                    raised to match — deploy-step-ca.yml does this)
 #   _mint_ca_name    step-ca container name (default: step-ca)
 
-- name: "Assert required variables for cert minting"
-  ansible.builtin.assert:
-    that:
-      - _mint_zone is defined
-      - _mint_zone | length > 0
-      - _mint_dest_dir is defined
-      - _mint_dest_dir | length > 0
-    fail_msg: "mint-internal-cert.yml requires `_mint_zone` (internal zone) and `_mint_dest_dir` (consuming service's deploy dir)."
+- name: "Issue a declared leaf (key on the consumer, signed on the CA host)"
+  ansible.builtin.include_tasks: issue-internal-leaf.yml
+  when: _mint_name is defined
 
-# The SANs are templated into a `sh -c '...'` inside the CA container, so they are
-# restricted to hostname characters (plus the leading wildcard) before any use.
-- name: "Refuse an extra SAN outside hostname characters"
-  ansible.builtin.assert:
-    that:
-      - (_mint_extra_sans | default([]) | reject('match', '^(\*\.)?[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*$') | list) | length == 0
-    fail_msg: "Extra SANs must be DNS names (optionally *.-prefixed): {{ _mint_extra_sans | default([]) }}"
+- name: "Mint the local wildcard"
+  when: _mint_name is not defined
+  block:
+    - name: "Assert required variables for cert minting"
+      ansible.builtin.assert:
+        that:
+          - _mint_zone is defined
+          - _mint_zone | length > 0
+          - _mint_dest_dir is defined
+          - _mint_dest_dir | length > 0
+        fail_msg: "mint-internal-cert.yml requires `_mint_zone` (internal zone) and `_mint_dest_dir` (consuming service's deploy dir)."
 
-- name: "Assert the CA is reachable before minting"
-  ansible.builtin.command: "{{ _mint_engine | default('podman') }} container exists {{ _mint_ca_name | default('step-ca') }}"
-  register: _mint_ca_present
-  changed_when: false
-  failed_when: _mint_ca_present.rc != 0
-  # A clear failure beats a confusing exec error if step-ca isn't up yet.
-  check_mode: false
+    # The SANs are templated into a `sh -c '...'` inside the CA container, so they are
+    # restricted to hostname characters (plus the leading wildcard) before any use.
+    - name: "Refuse an extra SAN outside hostname characters"
+      ansible.builtin.assert:
+        that:
+          - (_mint_extra_sans | default([]) | reject('match', '^(\*\.)?[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*$') | list) | length == 0
+        fail_msg: "Extra SANs must be DNS names (optionally *.-prefixed): {{ _mint_extra_sans | default([]) }}"
 
-- name: "Mint the wildcard (+ apex) leaf from step-ca for zone {{ _mint_zone }}"
-  # Password comes from the CA container's own env — the key never leaves the
-  # CA host. /tmp/pw is removed in the same shell regardless of mint result.
-  # Literal block + inner-sh `\` continuation (a folded scalar keeps the
-  # more-indented flag lines' newlines, which `sh -c` mis-parses as commands).
-  ansible.builtin.shell: |
-    {{ _mint_engine | default('podman') }} exec {{ _mint_ca_name | default('step-ca') }} sh -c '
-      umask 077
-      printf "%s" "$DOCKER_STEPCA_INIT_PASSWORD" > /tmp/pw
-      step ca certificate "*.{{ _mint_zone }}" /tmp/mint.crt /tmp/mint.key \
-        --provisioner admin --provisioner-password-file /tmp/pw \
-        --san "*.{{ _mint_zone }}" --san {{ _mint_zone }} \
-        {% for san in _mint_extra_sans | default([]) %}--san "{{ san }}" {% endfor %}\
-        --not-after {{ _mint_dur | default("8760h") }} --force \
-        --ca-url https://localhost:9000 --root /home/step/certs/root_ca.crt
-      rc=$?; rm -f /tmp/pw; exit $rc
-    '
-  changed_when: true
-  when: not ansible_check_mode
+    - name: "Assert the CA is reachable before minting"
+      ansible.builtin.command: "{{ _mint_engine | default('podman') }} container exists {{ _mint_ca_name | default('step-ca') }}"
+      register: _mint_ca_present
+      changed_when: false
+      failed_when: _mint_ca_present.rc != 0
+      # A clear failure beats a confusing exec error if step-ca isn't up yet.
+      check_mode: false
 
-- name: "Ensure the consumer's certs dir exists"
-  ansible.builtin.file:
-    path: "{{ _mint_dest_dir }}/certs"
-    state: directory
-    mode: "0750"
+    - name: "Mint the wildcard (+ apex) leaf from step-ca for zone {{ _mint_zone }}"
+      # Password comes from the CA container's own env — the key never leaves the
+      # CA host. /tmp/pw is removed in the same shell regardless of mint result.
+      # Literal block + inner-sh `\` continuation (a folded scalar keeps the
+      # more-indented flag lines' newlines, which `sh -c` mis-parses as commands).
+      ansible.builtin.shell: |
+        {{ _mint_engine | default('podman') }} exec {{ _mint_ca_name | default('step-ca') }} sh -c '
+          umask 077
+          printf "%s" "$DOCKER_STEPCA_INIT_PASSWORD" > /tmp/pw
+          step ca certificate "*.{{ _mint_zone }}" /tmp/mint.crt /tmp/mint.key \
+            --provisioner admin --provisioner-password-file /tmp/pw \
+            --san "*.{{ _mint_zone }}" --san {{ _mint_zone }} \
+            {% for san in _mint_extra_sans | default([]) %}--san "{{ san }}" {% endfor %}\
+            --not-after {{ _mint_dur | default("8760h") }} --force \
+            --ca-url https://localhost:9000 --root /home/step/certs/root_ca.crt
+          rc=$?; rm -f /tmp/pw; exit $rc
+        '
+      changed_when: true
+      when: not ansible_check_mode
 
-- name: "Copy the leaf cert + key out of the CA into the certs dir under {{ _mint_dest_dir }}"
-  ansible.builtin.command: "{{ item }}"
-  loop:
-    - "{{ _mint_engine | default('podman') }} cp {{ _mint_ca_name | default('step-ca') }}:/tmp/mint.crt {{ _mint_dest_dir }}/certs/wildcard.crt"
-    - "{{ _mint_engine | default('podman') }} cp {{ _mint_ca_name | default('step-ca') }}:/tmp/mint.key {{ _mint_dest_dir }}/certs/wildcard.key"
-  changed_when: true
-  when: not ansible_check_mode
+    - name: "Ensure the consumer's certs dir exists"
+      ansible.builtin.file:
+        path: "{{ _mint_dest_dir }}/certs"
+        state: directory
+        mode: "0750"
 
-- name: "Lock down the leaf key perms"
-  ansible.builtin.file:
-    path: "{{ _mint_dest_dir }}/certs/wildcard.key"
-    mode: "0640"
+    - name: "Copy the leaf cert + key out of the CA into the certs dir under {{ _mint_dest_dir }}"
+      ansible.builtin.command: "{{ item }}"
+      loop:
+        - "{{ _mint_engine | default('podman') }} cp {{ _mint_ca_name | default('step-ca') }}:/tmp/mint.crt {{ _mint_dest_dir }}/certs/wildcard.crt"
+        - "{{ _mint_engine | default('podman') }} cp {{ _mint_ca_name | default('step-ca') }}:/tmp/mint.key {{ _mint_dest_dir }}/certs/wildcard.key"
+      changed_when: true
+      when: not ansible_check_mode
 
-- name: "Wipe the transient cert+key from the CA container"
-  ansible.builtin.command: >-
-    {{ _mint_engine | default('podman') }} exec {{ _mint_ca_name | default('step-ca') }}
-    rm -f /tmp/mint.crt /tmp/mint.key
-  changed_when: true
-  when: not ansible_check_mode
+    - name: "Lock down the leaf key perms"
+      ansible.builtin.file:
+        path: "{{ _mint_dest_dir }}/certs/wildcard.key"
+        mode: "0640"
+
+    - name: "Wipe the transient cert+key from the CA container"
+      ansible.builtin.command: >-
+        {{ _mint_engine | default('podman') }} exec {{ _mint_ca_name | default('step-ca') }}
+        rm -f /tmp/mint.crt /tmp/mint.key
+      changed_when: true
+      when: not ansible_check_mode
