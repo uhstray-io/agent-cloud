@@ -1259,6 +1259,18 @@ join alone cannot distinguish directly attached media from every virtual or
 remote-backed block device. Require separate physical-origin evidence and a
 reviewed private store declaration before allocating a PBS VM disk.
 
+PR #362 added a read-only exact-match check for a separately declared
+thick-LVM VM-image store while preserving the existing LVM-thin path. Dev-bound
+Semaphore task 2092 ran it at exact merged `dev` SHA
+`c2dd90ddfbed2987e1310052acc804c7baf7bd11` with a clean checkout. One
+thick-LVM candidate remained visible. The private declaration still selected
+LVM-thin, so the new declared thick-store match and fixed headroom booleans
+were false. The thin store remained eligible and linked, with a preliminary
+256-GiB visible-volume headroom result; snapshot completeness remained false.
+Physical backing, allocation, PBS readiness, and write authorization stayed
+false. A reviewed private store change and separate physical-origin evidence
+are required before any PBS VM disk allocation.
+
 The GET-only task 2011 run succeeded at reviewed SHA
 `4c1806652ed15cab8d1a4b50fd241bab52724646` and returned
 `thick_lvm_config_vg_mappings_complete=false` with zero thick-LVM candidate and

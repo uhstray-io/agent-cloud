@@ -354,6 +354,17 @@ declaration nor establish backing locality, complete visibility, PBS readiness,
 reservation, allocation authority, or write authority; all authorization and
 physical-backing flags remain false. No API request is added.
 
+PR #362 merged to `dev` after Claude review feedback was fixed and all
+applicable CI passed. Dev-bound GET-only task 2092 ran at exact merged SHA
+`c2dd90ddfbed2987e1310052acc804c7baf7bd11` with a clean controller checkout.
+It found one visible thick-LVM candidate, but the private declaration still
+selected LVM-thin, so the declared thick exact-match and fixed headroom booleans
+were false. The thin path remained eligible and linked with verified visible
+volume permissions, while snapshot completeness was false. Its preliminary
+256-GiB boolean was true; storage allocation, physical backing, PBS readiness,
+and write authorization remained false. This is a successful negative
+selection check, not evidence that the thick store is approved or selected.
+
 The sanitized output contains aggregate visible-candidate counts and fixed
 256/512/1024-GiB headroom counts. A count includes only a candidate whose
 reported free extents after the hypothetical size retain at least 30% of
