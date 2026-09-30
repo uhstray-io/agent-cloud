@@ -128,7 +128,7 @@ and why.
 | 11.3 | Committed without running the suite — third occurrence | Process | Convention |
 | 10.1 | Documented a config mechanism as complete when nothing consumed it | Unverified claim | Test |
 | 10.2 | Assumed a container runtime inherits the image CMD under an entrypoint override | Unverified claim | Test |
-| 10.3 | Wrote a probe whose own command was interpolated away, then read the empty result as a finding | Unverified claim | Convention |
+| 10.3 | Wrote a probe whose own command was interpolated away, then read the empty result as a finding — **x2** | Unverified claim | Convention |
 | 10.4 | Revert timer could not be re-armed; only the 2nd run fails, which is the retry-after-revert path | Safety mechanism broken when needed | Test (mutation-proven) |
 | 10.5 | Added a suite to `testpaths`, which CI overrides with an explicit path — 16 tests ran nowhere | Test not covered | CI (root-level pytest) |
 | 10.6 | Wrote a parser from one example file; the grammar showed four deviations it never exercised | Unverified claim | Test (6 grammar cases) |
@@ -3153,6 +3153,8 @@ pins the copied CMD.
 
 ### 10.3 A probe whose own command was interpolated away
 
+**Occurrences: 2** — (first undated), 2026-09-30
+
 **What happened.** To decide between two config-loading mechanisms, a throwaway
 compose file was written to print an environment variable containing `${HOME}`.
 Both values came back empty. The empty result was briefly read as "the variable
@@ -3170,6 +3172,19 @@ suspect the invocation before the subject — and it recurred within the hour, o
 test written specifically to avoid being fooled.
 
 **Enforced by.** Convention.
+
+**Occurrence 2 — 2026-09-30.** Proving the step-ca name policy (#363) against a throwaway
+CA, the end-to-end script's "an undeclared name is refused after the write" step signed
+with the admin provisioner and a password that was not the probe CA's, so it failed with
+or without a policy; "refused" was reported to the operator as evidence. Its "the write
+was refused" detector had the same flaw: it matched the refusal message inside the echoed
+command text, so it said "refused" when the task had run against the wrong container. Both
+were caught when a later run disagreed with itself, and the claim was re-established with a
+check that records the same name issued BEFORE the write and refused after it. Why the
+rule did not fire: it is worded for a probe that returns nothing, and these returned a
+confident result; the discipline that catches both is to run the check once on the state
+where its answer must be the opposite (before the change, or with the guard removed) and
+see it flip.
 
 ---
 
