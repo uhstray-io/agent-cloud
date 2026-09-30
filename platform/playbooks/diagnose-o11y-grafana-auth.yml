@@ -59,7 +59,6 @@
       - userinfo_rejected
       - token_exchange_failed
       - oauth_failure_unclassified
-      - no_matching_failure
   tasks:
     - name: Require the production rootless Podman receiver
       ansible.builtin.assert:
@@ -81,7 +80,7 @@
       ansible.builtin.set_fact:
         _oauth_category: >-
           {{ _oauth_diagnostic.stdout if _oauth_diagnostic.stdout in _allowed_categories
-                or _oauth_diagnostic.stdout == 'diagnostic_unavailable'
+                or _oauth_diagnostic.stdout in ['diagnostic_unavailable', 'no_oauth_failure_in_window']
              else 'diagnostic_unavailable' }}
 
     - name: Report sanitized OAuth category and reviewed revision

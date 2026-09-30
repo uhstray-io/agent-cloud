@@ -6,38 +6,57 @@ from __future__ import annotations
 import re
 import subprocess
 
-FAILURE = re.compile(
-    r"\b(?:fail(?:ed|ure)?|error|invalid|denied|reject(?:ed|ion)?|"
-    r"unauthori[sz]ed|forbidden|unable|cannot|could not|missing|"
-    r"no\s+groups|not\s+(?:a\s+)?member)\b",
+OAUTH_CONTEXT = re.compile(
+    r"(?:\blogger\s*=\s*[\"']?(?:auth|oauth)\.generic_oauth\b|"
+    r"\bclient\s*=\s*[\"']?auth\.client\.generic_oauth\b|"
+    r"\[auth\.oauth\.[a-z0-9_.-]+\]|"
+    r"[\"'](?:logger|client)[\"']\s*:\s*[\"'](?:auth|oauth)\.generic_oauth\b|"
+    r"[\"']client[\"']\s*:\s*[\"']auth\.client\.generic_oauth\b)",
     re.IGNORECASE,
 )
-OAUTH_CONTEXT = ("oauth", "generic_oauth", "oauth2")
-GROUP_CONTEXT = ("group", "groups", "claim")
-USERINFO_CONTEXT = ("userinfo", "user info", "user_info")
-TOKEN_CONTEXT = ("token", "exchange", "authorization code")
+ERROR_LEVEL = re.compile(
+    r"(?:\blevel\s*=\s*[\"']?(?:error|warn)\b|"
+    r"[\"']level[\"']\s*:\s*[\"'](?:error|warn)\b)",
+    re.IGNORECASE,
+)
+TOKEN_FAILURE = re.compile(
+    r"(?:\[auth\.oauth\.token\.exchange\]|"
+    r"failed\s+to\s+exchange\s+(?:the\s+)?(?:authorization\s+)?code\s+to\s+token|"
+    r"failed\s+to\s+get\s+token\s+from\s+provider|cannot\s+fetch\s+token)",
+    re.IGNORECASE,
+)
+USERINFO_FAILURE = re.compile(
+    r"(?:\[auth\.oauth\.userinfo\.[a-z0-9_.-]+\]|"
+    r"failed\s+to\s+get\s+user\s+info|error\s+getting\s+(?:user\s+)?(?:info|email)|"
+    r"required\s+attribute\s+email\s+was\s+not\s+provided)",
+    re.IGNORECASE,
+)
+GROUP_FAILURE = re.compile(
+    r"(?:user\s+(?:is\s+)?not\s+(?:a\s+)?member\s+of\s+(?:any\s+)?(?:allowed\s+|required\s+)?groups?|"
+    r"(?:no|missing|empty)\s+(?:allowed\s+|required\s+)?groups?\s+(?:claim|found|provided)|"
+    r"groups?\s+(?:claim|attribute)\s+(?:is\s+)?(?:missing|empty|not\s+found|rejected))",
+    re.IGNORECASE,
+)
+AUTH_FAILURE = re.compile(
+    r"(?:failed\s+to\s+authenticate\s+request|\[auth\.oauth\.[a-z0-9_.-]+\])",
+    re.IGNORECASE,
+)
 
 
 def classify_lines(lines: list[str]) -> str:
     """Return the newest recognized OAuth failure as one fixed category."""
     for line in reversed(lines):
-        normalized = line.lower()
-        group_failure = any(term in normalized for term in GROUP_CONTEXT)
-        userinfo_failure = any(term in normalized for term in USERINFO_CONTEXT)
-        token_failure = any(term in normalized for term in TOKEN_CONTEXT)
-        oauth_failure = any(term in normalized for term in OAUTH_CONTEXT)
-        if not FAILURE.search(normalized) or not (
-            group_failure or userinfo_failure or token_failure or oauth_failure
-        ):
+        if not OAUTH_CONTEXT.search(line) or not ERROR_LEVEL.search(line):
             continue
-        if group_failure:
+        if GROUP_FAILURE.search(line):
             return "group_claim_rejected"
-        if userinfo_failure:
+        if USERINFO_FAILURE.search(line):
             return "userinfo_rejected"
-        if token_failure:
+        if TOKEN_FAILURE.search(line):
             return "token_exchange_failed"
-        return "oauth_failure_unclassified"
-    return "no_matching_failure"
+        if AUTH_FAILURE.search(line):
+            return "oauth_failure_unclassified"
+    return "no_oauth_failure_in_window"
 
 
 def diagnose() -> str:
@@ -46,7 +65,8 @@ def diagnose() -> str:
         result = subprocess.run(
             ["podman", "logs", "--since", "15m", "--tail", "500", "o11y-grafana"],
             check=False,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
             text=True,
             encoding="utf-8",
             errors="replace",
@@ -57,8 +77,7 @@ def diagnose() -> str:
     if result.returncode != 0:
         return "diagnostic_unavailable"
     try:
-        captured_lines = result.stdout.splitlines() + result.stderr.splitlines()
-        return classify_lines(captured_lines)
+        return classify_lines(result.stdout.splitlines())
     except Exception:
         return "diagnostic_unavailable"
 
