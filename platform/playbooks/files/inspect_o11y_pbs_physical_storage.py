@@ -391,8 +391,7 @@ def _allocation_facts(
         candidate.get("type") == "lvmthin"
         and (candidate.get("active") is True or type(candidate.get("active")) is int and candidate.get("active") == 1)
         and (candidate.get("shared") is False or type(candidate.get("shared")) is int and candidate.get("shared") == 0)
-        and "images" in configured_content
-        and configured_content <= {"images", "rootdir"}
+        and configured_content == {"images", "rootdir"}
     )
     result["declared_storage_row_eligible"] = eligible
     if not eligible or not has_complete_visibility:

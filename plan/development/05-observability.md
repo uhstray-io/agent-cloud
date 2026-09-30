@@ -1138,7 +1138,8 @@ storage-status rows (5 active), 3 explicitly non-shared rows and 3 shared
 rows, and 5 positive-capacity rows with 1 unreported. All device-selection,
 physical-safety, filesystem-readiness, PBS-readiness, and write flags remained
 false. The next survey extension checks only the privately declared active,
-non-shared LVM-thin storage row with `images` support, reads its
+non-shared LVM-thin storage row configured for exactly `images` and `rootdir`,
+reads its
 `vgname`/`thinpool` mapping, and
 requires one exact match in the thin-pool inventory. Proxmox storage-status
 total/used/available values must agree with linked pool size/used values; the

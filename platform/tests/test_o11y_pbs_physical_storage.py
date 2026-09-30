@@ -395,6 +395,22 @@ def test_missing_candidate_eligibility_field_fails_capacity_checks_closed(missin
     ))
 
 
+def test_images_only_store_is_visible_but_ineligible_for_visible_volume_preflight():
+    data = sample()
+    row = candidate_row(content="images")
+    add_candidate(data, row)
+
+    result = inspect(data)
+
+    assert result["declared_storage_row_found"] is True
+    assert result["declared_storage_row_eligible"] is False
+    assert all(result[key] is False for key in (
+        "snapshot_unverified_visible_volume_preflight_passes_256_gib_disk",
+        "snapshot_unverified_visible_volume_preflight_passes_512_gib_disk",
+        "snapshot_unverified_visible_volume_preflight_passes_1024_gib_disk",
+    ))
+
+
 @pytest.mark.parametrize("missing_field", ("total", "used", "avail"))
 def test_missing_candidate_capacity_field_refuses_preflight(missing_field):
     data = sample()

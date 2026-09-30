@@ -256,7 +256,10 @@ supported `vm-` or `base-` owner/name form, a unique ID, an allowed content
 type, a raw format, and a positive size. IDs and capacities are never printed.
 However, this is only a visible-volume inventory: Proxmox's LVM-thin
 `list_images` excludes `snap_*` logical volumes, while its snapshot operations
-create those volumes. No snapshot-complete read is established in this survey.
+create those volumes. The preliminary calculation also requires the storage
+configuration to declare exactly both `images` and `rootdir`: an images-only
+configuration could omit preexisting rootdir volumes from the content API
+listing. No snapshot-complete read is established in this survey.
 Therefore `snapshot_inventory_complete_verified` is always false and the
 256/512/1024-GiB results are named
 `snapshot_unverified_visible_volume_preflight_passes_*`; they are preliminary
