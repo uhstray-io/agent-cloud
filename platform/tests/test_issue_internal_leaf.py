@@ -110,7 +110,7 @@ def test_the_key_stays_on_the_consumer_and_current_points_at_the_new_serial(tmp_
     sent = next(tmp_path.glob("stdin.*")).read_text()
     assert sent.startswith("test-issuer-pw\n-----BEGIN CERTIFICATE REQUEST-----")
     assert "PRIVATE KEY" not in sent
-    assert not list(certs.glob(".pending*")) and not (certs / ".lock").exists()
+    assert not list(certs.glob(".pending*"))
 
 
 def test_a_second_run_keeps_the_certificate_and_a_reissue_keeps_one_previous(tmp_path):
@@ -144,22 +144,43 @@ def test_a_refused_request_fails_the_run_with_the_cas_reason(tmp_path):
     assert not list((tmp_path / "certs").glob(".pending*")), "the unused key was left behind"
 
 
-def test_a_lock_left_by_a_killed_run_is_taken_over(tmp_path):
-    import os
-    lock = tmp_path / "certs" / ".lock"
-    lock.mkdir(parents=True)
-    old = lock.stat().st_mtime - 3600
-    os.utime(lock, (old, old))
+def test_a_lock_left_by_a_killed_run_does_not_block(tmp_path):
+    # The lock is a kernel flock, released when its holder dies: a leftover lock file from
+    # a killed run holds nothing.
+    (tmp_path / "certs").mkdir()
+    (tmp_path / "certs" / ".lock").write_text("")
     r = _run(tmp_path, {"consumer": {**_consumer(tmp_path, [_leaf(tmp_path)]), "_mint_lock_wait": 1}})
     assert r.returncode == 0, r.stdout + r.stderr
-    assert (tmp_path / "certs" / "current" / "cert.pem").exists() and not lock.exists()
+    assert (tmp_path / "certs" / "current" / "cert.pem").exists()
 
 
-def test_a_held_lock_fails_the_placement_with_its_name(tmp_path):
-    (tmp_path / "certs" / ".lock").mkdir(parents=True)
-    r = _run(tmp_path, {"consumer": {**_consumer(tmp_path, [_leaf(tmp_path)]), "_mint_lock_wait": 1}})
-    assert r.returncode != 0 and "another issuance holds" in r.stdout + r.stderr
-    assert not (tmp_path / "certs" / "current").exists()
+def test_a_pending_key_from_a_killed_run_is_swept_after_an_hour(tmp_path):
+    import os
+    old = tmp_path / "certs" / ".pending.killed"
+    old.mkdir(parents=True)
+    (old / "key.pem").write_text("left by a killed run")
+    past = old.stat().st_mtime - 7200
+    os.utime(old, (past, past))
+    fresh = tmp_path / "certs" / ".pending.running"
+    fresh.mkdir()
+    assert _run(tmp_path, {"consumer": _consumer(tmp_path, [_leaf(tmp_path)])}).returncode == 0
+    assert not old.exists() and fresh.exists()
+
+
+def test_a_live_holder_blocks_the_placement_until_the_wait_runs_out(tmp_path):
+    (tmp_path / "certs").mkdir()
+    holder = subprocess.Popen(
+        ["python3", "-c", "import fcntl, sys, time; f = open(sys.argv[1], 'a'); fcntl.flock(f, fcntl.LOCK_EX); "
+         "print('held', flush=True); time.sleep(60)", str(tmp_path / "certs" / ".lock")],
+        stdout=subprocess.PIPE, text=True)
+    try:
+        assert holder.stdout.readline().strip() == "held"
+        r = _run(tmp_path, {"consumer": {**_consumer(tmp_path, [_leaf(tmp_path)]), "_mint_lock_wait": 2}})
+        assert r.returncode != 0 and "another issuance holds" in r.stdout + r.stderr
+        assert not (tmp_path / "certs" / "current").exists()
+        assert not list((tmp_path / "certs").glob(".pending*")), "the unused key was left behind"
+    finally:
+        holder.kill()
 
 
 def test_check_mode_reads_and_reports_but_writes_nothing(tmp_path):

@@ -20,7 +20,7 @@
 #   _mint_ca_host    inventory host running the step-ca container (default: the play host)
 #   _mint_reissue    issue even when <dir>/current holds a certificate (default: false)
 #   _mint_ca_name    step-ca container name (default: step-ca)
-#   _mint_lock_wait  seconds to wait for another issuance of the same leaf (default: 120)
+#   _mint_lock_wait  seconds to wait for another placement of the same leaf (default: 120)
 #
 # The declaration (all-hosts site-config variable, design decision 4):
 #   internal_leaves:
@@ -133,6 +133,15 @@
         _leaf_request: "{{ _leaf_csr.stdout | regex_search('-----BEGIN CERTIFICATE REQUEST-----[\\s\\S]*-----END CERTIFICATE REQUEST-----') }}"
       when: not ansible_check_mode
 
+    - name: "Refuse a request step that produced no request"
+      ansible.builtin.assert:
+        that:
+          - _leaf_pending | default('', true) | length > 0
+          - (_leaf_request | default('', true) | length) > 0
+        fail_msg: "{{ _mint_name }}: the key and request step printed no pending directory or no request."
+        quiet: true
+      when: not ansible_check_mode
+
     - name: "Sign the request on the CA host with issuer-{{ _leaf.profile }}"
       ansible.builtin.command:
         argv:
@@ -179,43 +188,65 @@
     # A fresh directory per certificate, then `current` replaced in one rename, so a reader
     # never sees a new certificate beside an old key (design decision 7). The link is
     # relative, so it resolves inside a container that mounts the parent directory.
+    # One placement at a time per leaf directory, under a kernel lock (flock) the system
+    # releases when its holder exits for any reason, so a killed run leaves nothing stale and
+    # a slow one is never overtaken (reviews of #363). In Python so the lock, the swap and the
+    # prune share one process: the certificate arrives on stdin.
     - name: "Place the certificate and key under their serial, then swap current"
-      # One placement at a time per leaf directory (a portable mkdir lock), so a concurrent
-      # run cannot prune the serial another run just made current.
-      ansible.builtin.shell: |
-        set -eu
-        cd {{ _leaf.dir | quote }}
-        umask 077
-        pending={{ _leaf_pending | quote }}
-        # A lock older than ten minutes belongs to a run that was killed (placement takes
-        # seconds): it is removed rather than blocking every later run (review of #363).
-        find . -maxdepth 1 -name .lock -mmin +10 -exec rmdir {} \;
-        waited=0
-        until mkdir .lock 2>/dev/null; do
-          [ "$waited" -lt {{ _mint_lock_wait | default(120) | int }} ] || { echo "another issuance holds {{ _leaf.dir }}/.lock" >&2; exit 1; }
-          sleep 1; waited=$((waited + 1))
-        done
-        trap 'rmdir .lock' EXIT
-        cat > "$pending/cert.pem"
-        serial=$(openssl x509 -in "$pending/cert.pem" -noout -serial)
-        serial=${serial#serial=}
-        prev=$(readlink current 2>/dev/null || true)
-        mkdir "$serial"
-        mv "$pending/cert.pem" "$pending/key.pem" "$serial/"
-        chmod 0644 "$serial/cert.pem"
-        rm -rf -- "$pending"
-        ln -s "$serial" .current.new
-        python3 -c 'import os; os.replace(".current.new", "current")'
-        # Only serial directories are pruned (hex, as openssl prints a serial): `dir` may hold
-        # other files, and nothing but the serial directories made here may be removed.
-        for d in */; do
-          d=${d%/}
-          case "$d" in *[!0-9A-F]*) continue ;; esac
-          [ "$d" = "$serial" ] || [ "$d" = "$prev" ] || rm -rf -- "$d"
-        done
-        echo "$serial"
-      args:
+      ansible.builtin.command:
+        argv:
+          - python3
+          - -c
+          - "{{ _leaf_placer }}"
+          - "{{ _leaf.dir }}"
+          - "{{ _leaf_pending }}"
+          - "{{ _mint_lock_wait | default(120) | int }}"
         stdin: "{{ _leaf_signed.stdout }}"
+      vars:
+        _leaf_placer: |
+          import fcntl, os, re, shutil, subprocess, sys, time
+          d, pending, wait = sys.argv[1], sys.argv[2], int(sys.argv[3])
+          os.chdir(d)
+          os.umask(0o077)
+          lock = open(".lock", "a")
+          deadline = time.monotonic() + wait
+          while True:
+              try:
+                  fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                  break
+              except BlockingIOError:
+                  if time.monotonic() > deadline:
+                      shutil.rmtree(pending, ignore_errors=True)  # this run's key is never used
+                      sys.exit("another issuance holds " + d + "/.lock")
+                  time.sleep(1)
+          # Pending directories older than an hour belong to runs killed before placement.
+          for entry in os.listdir("."):
+              if (entry.startswith(".pending.") and os.path.join(d, entry) != pending
+                      and time.time() - os.lstat(entry).st_mtime > 3600):
+                  shutil.rmtree(entry, ignore_errors=True)
+          cert = os.path.join(pending, "cert.pem")
+          with open(cert, "w") as out:
+              out.write(sys.stdin.read())
+          serial = subprocess.run(["openssl", "x509", "-in", cert, "-noout", "-serial"],
+                                  capture_output=True, text=True, check=True).stdout.strip().split("=", 1)[1]
+          prev = os.readlink("current") if os.path.islink("current") else None
+          os.mkdir(serial)
+          for name in ("cert.pem", "key.pem"):
+              os.rename(os.path.join(pending, name), os.path.join(serial, name))
+          os.chmod(os.path.join(serial, "cert.pem"), 0o644)
+          shutil.rmtree(pending)
+          # The link is relative, so it resolves inside a container that mounts the parent.
+          if os.path.lexists(".current.new"):
+              os.remove(".current.new")
+          os.symlink(serial, ".current.new")
+          os.replace(".current.new", "current")
+          # Only serial directories are pruned (hex, as openssl prints a serial): the
+          # directory may hold other files, and nothing but what this task made is removed.
+          for entry in os.listdir("."):
+              if (re.fullmatch("[0-9A-F]+", entry) and os.path.isdir(entry) and not os.path.islink(entry)
+                      and entry not in (serial, prev)):
+                  shutil.rmtree(entry)
+          print(serial)
       register: _leaf_placed
       changed_when: true
       when: not ansible_check_mode
