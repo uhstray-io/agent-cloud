@@ -1174,6 +1174,7 @@ idempotent VM virtual-disk attachment and guest filesystem provisioning; no
 physical-disk writes are planned. Preserve current telemetry volumes and
 15d/7d/168h retention until isolated restore, cleanup, and seven-day capacity
 gates pass.
+Do not infer host-device safety from this read-only survey.
 
 ## 2026-09-29 thick-LVM visible-store preflight design
 
@@ -1188,19 +1189,25 @@ total/used/available must agree with linked VG size/free extents. Fixed
 30% of reported VG size. No storage/VG IDs or names, exact capacities,
 selection, reservation, or allocation authorization are exposed. Config rows
 are validated for ID/type globally; optional `content` is required and parsed
-only for a matching active, explicitly non-shared LVM image candidate.
+only for a matching active, explicitly non-shared LVM image candidate. Any
+other visible LVM or LVM-thin config row naming the same VG excludes the
+candidate even if that other row is inactive, shared, or lacks image content;
+incomplete VG mappings suppress all thick-LVM counts. Invalid or duplicate
+IDs/types in this added cluster-config read can refuse the entire sanitized
+survey.
 
 This preflight supersedes the *candidate direction* of the earlier thin-LVM
 proposal, but does not erase its evidence: the existing
 `proxmox_pbs_vm_storage_id` declaration still points to the thin store until a
-separate private review changes it. The public survey does not read or change
-that declaration. Counts are visible-store facts because both config and node
+separate private review changes it. Thick-LVM candidate counts do not use or
+change that declaration. If it still selects the thin store, the separate
+snapshot-complete allocation audit remains required before provisioning.
+Counts are visible-store facts because both config and node
 status APIs filter rows by `Datastore.Audit` or `Datastore.AllocateSpace`.
 `shared=0` does not prove local physical backing or exclude thin allocation
 behind a SAN/LUN; physical backing, device safety, filesystem readiness, PBS
 readiness, and write authorization remain false. Raw API data stays under
-`no_log`. No disk is selected or initialized, and current telemetry volumes
-and retention remain unchanged pending the isolated restore and capacity gates.
+`no_log`. No disk is selected or initialized.
 
 <!-- ======================= source: O11Y-DEPLOYMENT.md ======================= -->
 

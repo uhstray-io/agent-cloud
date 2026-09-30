@@ -167,6 +167,7 @@ def test_report_is_allowlisted_and_has_no_private_topology_or_exact_capacity():
         "snapshot_unverified_visible_volume_preflight_passes_1024_gib_disk": False,
         "storage_allocation_authorized": False,
         "visible_thick_lvm_image_store_count": 1,
+        "thick_lvm_config_vg_mappings_complete": True,
         "thick_lvm_reported_vg_headroom_candidate_count_256_gib": 0,
         "thick_lvm_reported_vg_headroom_candidate_count_512_gib": 0,
         "thick_lvm_reported_vg_headroom_candidate_count_1024_gib": 0,
@@ -205,6 +206,7 @@ def test_report_is_allowlisted_and_has_no_private_topology_or_exact_capacity():
         "snapshot_unverified_visible_volume_preflight_passes_1024_gib_disk",
         "storage_allocation_authorized", "device_selected",
         "visible_thick_lvm_image_store_count",
+        "thick_lvm_config_vg_mappings_complete",
         "thick_lvm_reported_vg_headroom_candidate_count_256_gib",
         "thick_lvm_reported_vg_headroom_candidate_count_512_gib",
         "thick_lvm_reported_vg_headroom_candidate_count_1024_gib",
@@ -307,8 +309,11 @@ def test_thick_lvm_headroom_counts_require_allocation_plus_30_percent(size_gib):
 
 def test_non_candidate_config_rows_may_omit_optional_content():
     data = sample()
+    data["lvm"]["json"]["data"]["children"].append({
+        "name": "secondary-vg", "size": 100 * GIB, "free": 50 * GIB, "children": [],
+    })
     data["storage_config_rows"]["json"]["data"].append({
-        "storage": "private-shared-lvm", "type": "lvm", "vgname": "private-vg",
+        "storage": "private-shared-lvm", "type": "lvm", "vgname": "secondary-vg",
     })
     data["storage"]["json"]["data"].append({
         "storage": "private-shared-lvm", "type": "lvm", "content": "images", "active": 1,
@@ -320,7 +325,7 @@ def test_non_candidate_config_rows_may_omit_optional_content():
     assert result["visible_thick_lvm_image_store_count"] == 1
 
 
-def test_duplicate_candidate_vg_mapping_fails_closed():
+def test_duplicate_candidate_vg_mapping_excludes_all_candidates():
     data = sample()
     data["storage_config_rows"]["json"]["data"].append({
         "storage": "private-lvm-copy", "type": "lvm", "content": "images", "vgname": "private-vg",
@@ -330,8 +335,72 @@ def test_duplicate_candidate_vg_mapping_fails_closed():
         "shared": 0, "total": 2000 * GIB, "used": 1200 * GIB, "avail": 800 * GIB,
     })
 
-    with pytest.raises(ValueError, match="ambiguous thick-LVM volume-group linkage"):
+    result = inspect(data)
+
+    assert result["thick_lvm_config_vg_mappings_complete"] is True
+    assert result["visible_thick_lvm_image_store_count"] == 0
+    assert result["thick_lvm_reported_vg_headroom_candidate_count_256_gib"] == 0
+
+
+@pytest.mark.parametrize(
+    ("kind", "content", "active", "shared"),
+    [
+        ("lvm", "images", 0, 0),
+        ("lvmthin", "images", 1, 1),
+        ("lvm", "backup", 1, 0),
+    ],
+)
+def test_any_other_lvm_config_for_the_same_vg_excludes_the_candidate(kind, content, active, shared):
+    data = sample()
+    data["storage_config_rows"]["json"]["data"].append({
+        "storage": "private-alias", "type": kind, "vgname": "private-vg", "content": content,
+    })
+    data["storage"]["json"]["data"].append({
+        "storage": "private-alias", "type": kind, "content": content,
+        "active": active, "shared": shared,
+    })
+
+    result = inspect(data)
+
+    assert result["visible_thick_lvm_image_store_count"] == 0
+    assert all(result[f"thick_lvm_reported_vg_headroom_candidate_count_{size}_gib"] == 0
+               for size in (256, 512, 1024))
+
+
+@pytest.mark.parametrize("mutation", ("invalid_id", "duplicate_id", "invalid_type"))
+def test_malformed_or_duplicate_config_rows_fail_closed(mutation):
+    data = sample()
+    row = {"storage": "private-extra", "type": "dir"}
+    if mutation == "invalid_id":
+        row["storage"] = "private/extra"
+    elif mutation == "invalid_type":
+        row["type"] = None
+    data["storage_config_rows"]["json"]["data"].append(row)
+    if mutation == "duplicate_id":
+        data["storage_config_rows"]["json"]["data"].append(row.copy())
+
+    with pytest.raises(ValueError, match="malformed cluster storage config inventory"):
         inspect(data)
+
+
+def test_missing_candidate_content_fails_closed():
+    data = sample()
+    data["storage_config_rows"]["json"]["data"][0].pop("content")
+
+    with pytest.raises(ValueError, match="incomplete thick-LVM storage linkage"):
+        inspect(data)
+
+
+def test_unrelated_incomplete_vg_mapping_suppresses_all_candidate_counts():
+    data = sample()
+    data["storage_config_rows"]["json"]["data"].append({
+        "storage": "private-unmapped-thin", "type": "lvmthin",
+    })
+
+    result = inspect(data)
+
+    assert result["thick_lvm_config_vg_mappings_complete"] is False
+    assert result["visible_thick_lvm_image_store_count"] == 0
 
 
 def test_inconsistent_thick_lvm_status_and_vg_capacity_fails_closed():

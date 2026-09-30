@@ -308,7 +308,13 @@ extents. Malformed or duplicate IDs/VG mappings and inconsistent values fail
 closed. Because configuration fields such as `content` can be optional, rows
 are validated for storage ID and type globally; `content` is required and
 validated only when a matching active, non-shared LVM status row advertises
-image content.
+image content. Any other visible `lvm` or `lvmthin` config row naming the same
+VG excludes that candidate, including shared, inactive, or non-image rows;
+incomplete visible VG mappings suppress all candidate counts. Invalid or
+duplicate IDs/types in the new visible cluster-config response can refuse the
+entire sanitized survey. Only the candidate's linked capacity tuple is
+required to match exactly. Existing unrelated node-status and VG validation
+remains governed by the original survey.
 
 The sanitized output contains aggregate visible-candidate counts and fixed
 256/512/1024-GiB headroom counts. A count includes only a candidate whose
@@ -325,8 +331,10 @@ incomplete. Explicit `shared=0` does not establish direct local physical media
 or rule out thin allocation behind a SAN/LUN.
 
 The existing private `proxmox_pbs_vm_storage_id` declaration still names the
-thin store until a separate site-config review. This public survey does not
-read or modify it. Physical backing, device safety, filesystem readiness, PBS
+thin store until a separate site-config review. Thick-LVM candidate counts do
+not use or modify that declaration; if it still selects the thin store, the
+separate snapshot-complete allocation audit remains required before
+provisioning. Physical backing, device safety, filesystem readiness, PBS
 readiness, and write authorization remain false; raw API data is protected by
 `no_log`. Live execution and review remain pending.
 

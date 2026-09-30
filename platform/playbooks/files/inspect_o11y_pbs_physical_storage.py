@@ -505,35 +505,29 @@ def _thick_lvm_facts(
             _require(isinstance(row["content"], str),
                     "Proxmox returned a malformed cluster storage config inventory.")
 
-    status_by_id: dict[str, Mapping] = {}
-    for row in status_rows:
-        _require(isinstance(row, Mapping), "Proxmox returned a malformed storage status inventory.")
-        storage_id = row.get("storage")
-        _require(
-            isinstance(storage_id, str) and STORAGE_ID.fullmatch(storage_id) is not None
-            and storage_id not in status_by_id,
-            "Proxmox returned a malformed storage status inventory.",
-        )
-        status_by_id[storage_id] = row
+    # _storage_facts already validates every visible status ID and rejects duplicates.
+    status_by_id = {row["storage"]: row for row in status_rows}
 
     group_rows = lvm_data.get("children")
     _require(
         isinstance(group_rows, list) and all(isinstance(group, Mapping) for group in group_rows),
         "Proxmox returned a malformed LVM inventory.",
     )
-    groups: dict[str, Mapping] = {}
-    for group in group_rows:
-        vg_name = group.get("name")
-        _require(
-            isinstance(vg_name, str) and VG_NAME.fullmatch(vg_name) is not None
-            and vg_name not in groups and _integer(group.get("size"), positive=True)
-            and _integer(group.get("free")) and group["free"] <= group["size"],
-            "Proxmox returned a malformed LVM inventory.",
-        )
-        groups[vg_name] = group
+    # _lvm_facts already validates VG rows and rejects duplicate names. Keep this
+    # join from tightening acceptance of unrelated LVM inventory rows.
+    groups = {group["name"]: group for group in group_rows}
+    lvm_config_rows = [
+        (storage_id, config)
+        for storage_id, config in configs.items()
+        if config.get("type") in {"lvm", "lvmthin"}
+    ]
+    config_vg_mappings_complete = all(
+        isinstance(config.get("vgname"), str)
+        and VG_NAME.fullmatch(config["vgname"]) is not None
+        for _, config in lvm_config_rows
+    )
 
     candidates: list[tuple[Mapping, Mapping]] = []
-    linked_vgs: set[str] = set()
     for storage_id, config in configs.items():
         if config.get("type") != "lvm":
             continue
@@ -580,9 +574,14 @@ def _thick_lvm_facts(
         vg_name = config.get("vgname")
         _require(
             isinstance(vg_name, str) and VG_NAME.fullmatch(vg_name) is not None
-            and vg_name in groups and vg_name not in linked_vgs,
+            and vg_name in groups,
             "Proxmox returned ambiguous thick-LVM volume-group linkage.",
         )
+        if not config_vg_mappings_complete or any(
+            other_id != storage_id and other_config.get("vgname") == vg_name
+            for other_id, other_config in lvm_config_rows
+        ):
+            continue
         group = groups[vg_name]
         total, used, available = (status.get(key) for key in ("total", "used", "avail"))
         group_total, group_free = group["size"], group["free"]
@@ -592,11 +591,11 @@ def _thick_lvm_facts(
             and used == group_total - group_free,
             "Proxmox returned inconsistent thick-LVM capacity.",
         )
-        linked_vgs.add(vg_name)
         candidates.append((status, group))
 
     result: dict[str, object] = {
         "visible_thick_lvm_image_store_count": len(candidates),
+        "thick_lvm_config_vg_mappings_complete": config_vg_mappings_complete,
         "thick_lvm_reported_vg_headroom_candidate_count_256_gib": 0,
         "thick_lvm_reported_vg_headroom_candidate_count_512_gib": 0,
         "thick_lvm_reported_vg_headroom_candidate_count_1024_gib": 0,
