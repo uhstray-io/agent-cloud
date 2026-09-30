@@ -524,6 +524,7 @@ def _thick_lvm_facts(
     config_vg_mappings_complete = all(
         isinstance(config.get("vgname"), str)
         and VG_NAME.fullmatch(config["vgname"]) is not None
+        and config["vgname"] in groups
         for _, config in lvm_config_rows
     )
 
@@ -549,6 +550,16 @@ def _thick_lvm_facts(
         )
         if not active or not unshared or "images" not in status_content:
             continue
+        if "disable" in config:
+            _require(
+                type(config["disable"]) in {bool, int} and config["disable"] in (0, 1),
+                "Proxmox returned a malformed cluster storage config inventory.",
+            )
+        disabled = config.get("disable") is True or (
+            type(config.get("disable")) is int and config.get("disable") == 1
+        )
+        if disabled:
+            continue
         status_parts = status.get("content", "").split(",")
         _require(
             all(part and part.strip() == part for part in status_parts)
@@ -571,6 +582,10 @@ def _thick_lvm_facts(
             "images" in config_content,
             "Proxmox returned an incomplete thick-LVM storage linkage.",
         )
+        # Missing or node-unmapped VG declarations are represented by the
+        # completeness fact and suppress every thick-LVM count.
+        if not config_vg_mappings_complete:
+            continue
         vg_name = config.get("vgname")
         _require(
             isinstance(vg_name, str) and VG_NAME.fullmatch(vg_name) is not None

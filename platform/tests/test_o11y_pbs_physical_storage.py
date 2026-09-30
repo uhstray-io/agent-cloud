@@ -42,7 +42,7 @@ def sample():
         ]),
         "lvm": api({"leaf": False, "children": [
             {"name": "private-vg", "size": 2000 * GIB, "free": 800 * GIB, "children": [
-                {"name": "private-pv", "size": 2 * 1024**4, "free": 500 * GIB}
+                {"name": "private-pv", "size": 2000 * GIB, "free": 800 * GIB}
             ]}
         ]}),
         "thinpool": api([{
@@ -293,6 +293,7 @@ def test_thick_lvm_headroom_counts_require_allocation_plus_30_percent(size_gib):
     status.update(total=total, used=total - free, avail=free)
     group = data["lvm"]["json"]["data"]["children"][0]
     group.update(size=total, free=free)
+    group["children"][0].update(size=total, free=free)
 
     result = inspect(data)
 
@@ -304,6 +305,7 @@ def test_thick_lvm_headroom_counts_require_allocation_plus_30_percent(size_gib):
     status["avail"] -= 1
     status["used"] += 1
     group["free"] -= 1
+    group["children"][0]["free"] -= 1
     assert inspect(data)[f"thick_lvm_reported_vg_headroom_candidate_count_{size_gib}_gib"] == 0
 
 
@@ -391,16 +393,33 @@ def test_missing_candidate_content_fails_closed():
         inspect(data)
 
 
-def test_unrelated_incomplete_vg_mapping_suppresses_all_candidate_counts():
+@pytest.mark.parametrize("mapping", ("candidate_missing", "candidate_unmapped", "unrelated_missing"))
+def test_incomplete_vg_mappings_suppress_all_candidate_counts(mapping):
     data = sample()
-    data["storage_config_rows"]["json"]["data"].append({
-        "storage": "private-unmapped-thin", "type": "lvmthin",
-    })
+    if mapping == "candidate_missing":
+        data["storage_config_rows"]["json"]["data"][0].pop("vgname")
+    elif mapping == "candidate_unmapped":
+        data["storage_config_rows"]["json"]["data"][0]["vgname"] = "unmapped-vg"
+    else:
+        data["storage_config_rows"]["json"]["data"].append({
+            "storage": "private-unmapped-thin", "type": "lvmthin",
+        })
 
     result = inspect(data)
 
     assert result["thick_lvm_config_vg_mappings_complete"] is False
     assert result["visible_thick_lvm_image_store_count"] == 0
+
+
+def test_disabled_thick_lvm_config_is_not_counted_even_if_node_status_is_active():
+    data = sample()
+    data["storage_config_rows"]["json"]["data"][0]["disable"] = 1
+
+    result = inspect(data)
+
+    assert result["visible_thick_lvm_image_store_count"] == 0
+    assert all(result[f"thick_lvm_reported_vg_headroom_candidate_count_{size}_gib"] == 0
+               for size in (256, 512, 1024))
 
 
 def test_inconsistent_thick_lvm_status_and_vg_capacity_fails_closed():

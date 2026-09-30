@@ -1182,8 +1182,9 @@ Task 1998's sanitized backend counts were one directory, two LVM, one
 LVM-thin, and two other visible stores. The next read-only extension reuses the
 Dev-bound physical survey and adds one protected `GET /storage`, joining
 visible config rows with existing node storage-status and LVM VG/PV results by
-storage ID and `vgname`. A candidate must be active, explicitly `shared=0`,
-type `lvm`, allow `images`, and map to exactly one unique VG. Status
+storage ID and `vgname`. A candidate must be enabled, active, explicitly
+`shared=0`, type `lvm`, allow `images`, and map to exactly one unique VG; a
+config row with `disable=1` is excluded even if status reports active. Status
 total/used/available must agree with linked VG size/free extents. Fixed
 256/512/1024-GiB counts require the hypothetical allocation to leave at least
 30% of reported VG size. No storage/VG IDs or names, exact capacities,
@@ -1192,9 +1193,9 @@ are validated for ID/type globally; optional `content` is required and parsed
 only for a matching active, explicitly non-shared LVM image candidate. Any
 other visible LVM or LVM-thin config row naming the same VG excludes the
 candidate even if that other row is inactive, shared, or lacks image content;
-incomplete VG mappings suppress all thick-LVM counts. Invalid or duplicate
-IDs/types in this added cluster-config read can refuse the entire sanitized
-survey.
+incomplete or node-unmapped VG mappings suppress all thick-LVM counts. Invalid
+or duplicate IDs/types in this added cluster-config read can refuse the entire
+sanitized survey.
 
 This preflight supersedes the *candidate direction* of the earlier thin-LVM
 proposal, but does not erase its evidence: the existing

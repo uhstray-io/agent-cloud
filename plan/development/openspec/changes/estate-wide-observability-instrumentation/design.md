@@ -308,9 +308,10 @@ extents. Malformed or duplicate IDs/VG mappings and inconsistent values fail
 closed. Because configuration fields such as `content` can be optional, rows
 are validated for storage ID and type globally; `content` is required and
 validated only when a matching active, non-shared LVM status row advertises
-image content. Any other visible `lvm` or `lvmthin` config row naming the same
+image content. A config row with `disable=1` is excluded even if node status
+reports it active. Any other visible `lvm` or `lvmthin` config row naming the same
 VG excludes that candidate, including shared, inactive, or non-image rows;
-incomplete visible VG mappings suppress all candidate counts. Invalid or
+incomplete or node-unmapped visible VG mappings suppress all candidate counts. Invalid or
 duplicate IDs/types in the new visible cluster-config response can refuse the
 entire sanitized survey. Only the candidate's linked capacity tuple is
 required to match exactly. Existing unrelated node-status and VG validation
