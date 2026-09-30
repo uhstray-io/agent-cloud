@@ -55,8 +55,29 @@
       ansible.builtin.assert:
         that:
           - _leaf_decl.host in ansible_play_hosts_all
-        fail_msg: "{{ leaf_name }} is declared for {{ _leaf_decl.host }}, which is not in {{ target_service }}."
+          # The issuance task's own directory rule, so removal matches the paths find returns.
+          - _leaf_decl.dir is match('^(/[A-Za-z0-9._-]+)+$')
+        fail_msg: >-
+          {{ leaf_name }} must be declared for a host in {{ target_service }} (it names
+          {{ _leaf_decl.host }}) with an absolute directory of plain names and no trailing slash.
         quiet: true
+
+    # find follows a symlinked starting directory, so removal would reach its target
+    # (review of #369). Issuance refuses one the same way.
+    - name: "Look at the leaf's directory"
+      ansible.builtin.stat:
+        path: "{{ _leaf_decl.dir }}"
+        follow: false
+      register: _leaf_dir_stat
+      when: inventory_hostname == _leaf_decl.host
+
+    - name: "Refuse a leaf directory that is a symbolic link"
+      ansible.builtin.assert:
+        that:
+          - not (_leaf_dir_stat.stat.islnk | default(false))
+        fail_msg: "{{ _leaf_decl.dir }} on {{ inventory_hostname }} is a symbolic link; declare the real directory."
+        quiet: true
+      when: inventory_hostname == _leaf_decl.host
 
     - name: "Issue the leaf"
       ansible.builtin.include_tasks: tasks/mint-internal-cert.yml
@@ -70,19 +91,19 @@
     - name: "List what issuance created in the leaf's directory"
       ansible.builtin.find:
         paths: "{{ _leaf_decl.dir }}"
-        patterns: ["current", ".placement.lock", ".pending.*", "[0-9A-F]*"]
+        patterns: ["current", ".current.new", ".placement.lock", ".pending.*", "[0-9A-F]*"]
         use_regex: false
         file_type: any
         hidden: true
       register: _leaf_created
-      when: _leaf_action == 'remove' and inventory_hostname == _leaf_decl.host
+      when: _leaf_action == 'remove' and inventory_hostname == _leaf_decl.host and _leaf_dir_stat.stat.exists
 
     # Only a name issuance makes: a hex serial directory, the link, the lock, pending work.
     - name: "Name the entries to remove"
       ansible.builtin.set_fact:
         _leaf_remove: >-
-          {{ _leaf_created.files | map(attribute='path')
-             | select('match', '^' ~ (_leaf_decl.dir | regex_escape) ~ '/(current|\.placement\.lock|\.pending\.[^/]+|[0-9A-F]+)$')
+          {{ (_leaf_created.files | default([])) | map(attribute='path')
+             | select('match', '^' ~ (_leaf_decl.dir | regex_escape) ~ '/(current|\.current\.new|\.placement\.lock|\.pending\.[^/]+|[0-9A-F]+)$')
              | list }}
       when: _leaf_action == 'remove' and inventory_hostname == _leaf_decl.host
 

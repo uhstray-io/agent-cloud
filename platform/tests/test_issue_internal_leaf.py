@@ -82,11 +82,13 @@ def _consumer(tmp: Path, leaves: list, **over) -> dict:
     ({"dir": "relative/certs"}, False),
     ({"dir": "/tmp/$(id)"}, False),                               # review of #363: shell injection
     ({"dir": '/tmp/a"b'}, False),
+    ({"dir": "/tmp/certs/"}, False),                              # review of #369: trailing slash
     ({"sans": ["*.dc1.example.internal"]}, False),                 # a wildcard
     ({"sans": ["caddy.dc2.example.internal"]}, False),            # another site
     ({"sans": ["evildc1.example.internal"]}, False),              # a suffix, not a subdomain
     ({"sans": []}, False),
-], ids=["declared", "undeclared", "other-host", "bad-profile", "relative-dir", "shell-dir", "quote-dir", "wildcard",
+], ids=["declared", "undeclared", "other-host", "bad-profile", "relative-dir", "shell-dir", "quote-dir", "slash-dir",
+         "wildcard",
          "other-site",
         "suffix-only", "no-sans"])
 def test_only_a_leaf_declared_for_this_host_reaches_the_ca(tmp_path, over, ok):
@@ -202,3 +204,13 @@ def test_the_signing_and_password_tasks_are_hidden_and_nothing_else_is():
     assert hidden == {"Read the issuing provisioner's password",
                       "Sign the request on the CA host with issuer-{{ _leaf.profile }}"}
     assert json.dumps(playbook_yaml.load(TASKS)).count("delegate_to") == 1
+
+
+def test_a_symlinked_leaf_directory_is_refused_before_anything_reaches_the_ca(tmp_path):
+    # Review of #369: the placement changes into this directory.
+    target = tmp_path / "elsewhere"
+    target.mkdir()
+    (tmp_path / "certs").symlink_to(target)
+    r = _run(tmp_path, {"consumer": _consumer(tmp_path, [_leaf(tmp_path)])})
+    assert r.returncode != 0 and "is a symbolic link" in r.stdout, r.stdout
+    assert not list(tmp_path.glob("stdin.*")) and not list(target.iterdir())

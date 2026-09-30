@@ -41,7 +41,7 @@ def _run(tmp: Path, extra: dict, leaves: list, ca_hosts: tuple = ("ca",), check:
     ({"leaf_name": "other"}, None, ("ca",), ("gw",), "Pass -e leaf_name"),
     ({"leaf_name": "probe", "leaf_action": "delete"}, None, ("ca",), ("gw",), "Pass -e leaf_name"),
     ({"leaf_name": "probe"}, None, ("ca", "ca2"), ("gw",), "exactly one step_ca_svc host"),
-    ({"leaf_name": "probe"}, None, ("ca",), ("elsewhere",), "which is not in gw_svc"),
+    ({"leaf_name": "probe"}, None, ("ca",), ("elsewhere",), "(it names gw)"),
     ({"target_service": "nothing_svc", "leaf_name": "probe"}, None, ("ca",), ("gw",), "matches no hosts"),
 ], ids=["no-name", "undeclared", "bad-action", "two-cas", "host-not-in-group", "empty-group"])
 def test_an_incomplete_or_unknown_request_is_refused(tmp_path, extra, leaves, ca_hosts, consumers, message):
@@ -65,6 +65,7 @@ def _issued(tmp: Path, extra_entry: str | None = None) -> Path:
     (leaf / "current").symlink_to("0A1B")
     (leaf / ".placement.lock").write_text("")
     (leaf / ".pending.xyz").mkdir()
+    (leaf / ".current.new").symlink_to("0C2D")  # an interrupted swap's link
     if extra_entry:
         (leaf / extra_entry).write_text("not issued here")
     return leaf
@@ -92,3 +93,25 @@ def test_a_dry_run_removal_lists_and_removes_nothing(tmp_path):
     assert r.returncode == 0, r.stdout + r.stderr
     assert "would remove" in r.stdout and "0A1B" in r.stdout
     assert sorted(p.name for p in leaf.iterdir()) == before
+
+
+def test_a_symlinked_leaf_directory_is_refused_and_its_target_left_alone(tmp_path):
+    # Review of #369: find follows a symlinked starting directory.
+    target = tmp_path / "elsewhere"
+    (target / "0A1B").mkdir(parents=True)
+    (tmp_path / "leaf").symlink_to(target)
+    r = _run(tmp_path, {"leaf_name": "probe", "leaf_action": "remove"}, [_leaf(tmp_path)])
+    assert r.returncode != 0 and "is a symbolic link" in r.stdout, r.stdout
+    assert (target / "0A1B").is_dir()
+
+
+def test_a_trailing_slash_in_the_declared_directory_is_refused(tmp_path):
+    leaf = _issued(tmp_path)
+    r = _run(tmp_path, {"leaf_name": "probe", "leaf_action": "remove"}, [_leaf(tmp_path, dir=str(leaf) + "/")])
+    assert r.returncode != 0 and "no trailing slash" in r.stdout, r.stdout
+    assert (leaf / "0A1B").is_dir()
+
+
+def test_removing_a_leaf_whose_directory_is_gone_does_nothing(tmp_path):
+    r = _run(tmp_path, {"leaf_name": "probe", "leaf_action": "remove"}, [_leaf(tmp_path)])
+    assert r.returncode == 0 and "nothing (no issued files)" in r.stdout, r.stdout

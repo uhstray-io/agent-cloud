@@ -42,7 +42,8 @@
       - _leaf_matches[0].host == inventory_hostname
       - _leaf_matches[0].profile in ['server', 'client']
       # A path the shell cannot misread: it is also quoted wherever it is used.
-      - _leaf_matches[0].dir is match('^/[A-Za-z0-9._/-]+$')
+      # Plain names, no trailing slash: removal matches the paths find returns (review of #369).
+      - _leaf_matches[0].dir is match('^(/[A-Za-z0-9._-]+)+$')
       - (_leaf_matches[0].sans | default([]) | length) > 0
       - (dns_site | default('') | length) > 0 and (dns_zone | default('') | length) > 0
       - _leaf_matches[0].sans | reject('match', '^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$') | list | length == 0
@@ -59,6 +60,20 @@
     _leaf: "{{ _leaf_matches[0] }}"
     _leaf_ca_host: "{{ _mint_ca_host | default(inventory_hostname) }}"
     _leaf_ca_engine: "{{ hostvars[_mint_ca_host | default(inventory_hostname)].container_engine | default('podman') }}"
+
+# The placement changes into this directory, so a symlink would put the key elsewhere.
+- name: "Look at the leaf's directory"
+  ansible.builtin.stat:
+    path: "{{ _leaf.dir }}"
+    follow: false
+  register: _leaf_dir_stat
+
+- name: "Refuse a leaf directory that is a symbolic link"
+  ansible.builtin.assert:
+    that:
+      - not (_leaf_dir_stat.stat.islnk | default(false))
+    fail_msg: "{{ _leaf.dir }} on {{ inventory_hostname }} is a symbolic link; declare the real directory."
+    quiet: true
 
 - name: "Does the leaf already have a current certificate"
   ansible.builtin.stat:
