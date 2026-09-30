@@ -12,7 +12,8 @@
 # volume) and prints it to the container log on first boot, so the volume and the
 # first-boot log are as sensitive as the password (production-internal-ca design,
 # "Recorded risk 2026-09-29").
-# Plan: plan/development/INTERNAL-CA-DEPLOYMENT.md.
+# Plans: plan/archive/development/INTERNAL-CA-DEPLOYMENT.md (local-dev) and openspec
+# production-internal-ca (production).
 
 name: step-ca
 

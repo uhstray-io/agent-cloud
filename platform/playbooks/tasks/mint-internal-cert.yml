@@ -9,7 +9,8 @@
 # This is the LOCAL token-mint path: step-ca signs `*.<zone>` (+ the apex) via
 # its admin provisioner with no ACME challenge, because `*.<zone>` is not
 # resolvable/validatable inside the podman network (see step-ca context +
-# INTERNAL-CA-DEPLOYMENT.md). Prod uses ACME (dns-01) instead. The cert is
+# plan/archive/development/INTERNAL-CA-DEPLOYMENT.md). Production does not use ACME: its
+# CA has no ACME provisioner (openspec production-internal-ca). The cert is
 # re-minted every run (cheap), so this task is idempotent in effect.
 #
 # Required vars:
