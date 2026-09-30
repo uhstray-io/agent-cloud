@@ -728,14 +728,11 @@ def _thick_lvm_pv_lineage_facts(
         disk = devices[pv_path]
         reported_used = disk.get("used")
         normalized_used = reported_used.strip().lower() if isinstance(reported_used, str) else None
-        if "parent" not in disk:
-            if normalized_used is not None and normalized_used != "lvm":
-                counts["unverifiable"] += 1
-                continue
-            counts["direct"] += 1
-            continue
-        if normalized_used is not None and normalized_used not in {"lvm", "partition"}:
+        if normalized_used is not None and normalized_used != "lvm":
             counts["unverifiable"] += 1
+            continue
+        if "parent" not in disk:
+            counts["direct"] += 1
             continue
         parent = disk["parent"]
         if parent not in devices or parent not in top_level_paths:

@@ -372,8 +372,8 @@ mappings; physical backing remained unverified. This completes the visible-store
 thick-LVM survey step only.
 
 At the same reviewed SHA, artifact/job tasks 2070, 2074, and 2075 found two
-non-PBS artifacts and one backup-job membership, while no exact job ID was
-declared. Two artifacts prevent the single-artifact restore gate. No
+non-PBS artifacts and one backup-job membership, while those task runs did not
+declare an exact job ID. Two artifacts prevent the single-artifact restore gate. No
 immutability or isolated restore was verified; membership is not restore
 evidence.
 
@@ -386,15 +386,14 @@ Report only aggregate candidate-PV totals and counts of exact direct path
 matches, exact partition-parent matches, missing paths, unverifiable relations,
 and candidate VGs whose PV child list is absent or empty. Malformed or duplicate
 disk/PV inventory refuses the sanitized receipt; ambiguity is not reported as a
-count because duplicate paths are malformed input. A known non-LVM `used` class
-on a direct PV path, or a known class other than `LVM`/`partition` on a
-partition path, is unverifiable; absent `used` stays unknown. Exact path joins
+count because duplicate paths are malformed input. A known `used` class other
+than exact `LVM` on a PV path is unverifiable; absent `used` stays unknown. Exact path joins
 describe only the two API inventories. They cannot prove physical locality,
 underlying media identity, safe device use, or filesystem readiness. No new API
 request or write is added, and physical-backing, allocation, and write
 authorization remain false. The implementation is present on
 `feature/o11y-pbs-backing-proof`; live Dev execution and review of the added
-facts remain pending. The path fields follow Proxmox's [disk-list API](https://github.com/proxmox/pve-storage/blob/master/src/PVE/API2/Disks.pm), where `parent` is supplied for partitions, and its [LVM inventory API](https://github.com/proxmox/pve-storage/blob/master/src/PVE/API2/Disks/LVM.pm), whose child rows represent underlying PVs. The [LVM plugin](https://github.com/proxmox/pve-storage/blob/master/src/PVE/Storage/LVMPlugin.pm) supplies those PV names and size facts. These API paths establish only reported inventory lineage.
+facts remain pending. The path fields follow Proxmox's [disk-list API](https://github.com/proxmox/pve-storage/blob/master/src/PVE/API2/Disks.pm), where `parent` is supplied for partitions, and its [LVM inventory API](https://github.com/proxmox/pve-storage/blob/master/src/PVE/API2/Disks/LVM.pm), whose child rows represent underlying PVs. The [LVM plugin](https://github.com/proxmox/pve-storage/blob/master/src/PVE/Storage/LVMPlugin.pm) supplies those PV names and size facts. The [disk usage classifier](https://github.com/proxmox/pve-storage/blob/master/src/PVE/Diskmanage.pm) reports exact `LVM` usage for paths recognized as PVs; this survey treats other known classes as unverifiable. These API paths establish only reported inventory lineage.
 
 
 The 90d/45d retention target remains blocked: keep the effective 15d

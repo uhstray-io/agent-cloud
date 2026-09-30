@@ -357,16 +357,19 @@ def test_non_candidate_config_rows_may_omit_optional_content():
 
 
 @pytest.mark.parametrize(
-    ("pv_path", "expected"),
+    ("pv_path", "expected", "used"),
     [
-        ("/dev/private-disk-a", "thick_lvm_pv_direct_disk_path_join_count"),
-        ("/dev/private-disk-a1", "thick_lvm_pv_partition_parent_disk_path_join_count"),
-        ("/dev/private-missing", "thick_lvm_pv_missing_disk_path_join_count"),
+        ("/dev/private-disk-a", "thick_lvm_pv_direct_disk_path_join_count", "LVM"),
+        ("/dev/private-disk-a1", "thick_lvm_pv_partition_parent_disk_path_join_count", "LVM"),
+        ("/dev/private-missing", "thick_lvm_pv_missing_disk_path_join_count", None),
     ],
 )
-def test_candidate_pv_reports_only_exact_disk_inventory_lineage(pv_path, expected):
+def test_candidate_pv_reports_only_exact_disk_inventory_lineage(pv_path, expected, used):
     data = sample()
     data["lvm"]["json"]["data"]["children"][0]["children"][0]["name"] = pv_path
+    if pv_path in {"/dev/private-disk-a", "/dev/private-disk-a1"}:
+        matching_disk = next(row for row in data["disks"]["json"]["data"] if row["devpath"] == pv_path)
+        matching_disk["used"] = used
 
     result = inspect(data)
 
@@ -380,6 +383,7 @@ def test_candidate_pv_reports_only_exact_disk_inventory_lineage(pv_path, expecte
 def test_partition_path_without_reported_parent_is_unverifiable():
     data = sample()
     data["lvm"]["json"]["data"]["children"][0]["children"][0]["name"] = "/dev/private-disk-a1"
+    data["disks"]["json"]["data"][1]["used"] = "LVM"
     data["disks"]["json"]["data"][1]["parent"] = "/dev/private-unlisted-parent"
 
     result = inspect(data)
@@ -397,6 +401,17 @@ def test_non_lvm_reported_use_class_makes_exact_path_unverifiable():
     result = inspect(data)
 
     assert result["thick_lvm_pv_direct_disk_path_join_count"] == 0
+    assert result["thick_lvm_pv_unverifiable_disk_path_join_count"] == 1
+
+
+def test_reported_partitions_class_is_not_treated_as_lvm_pv_use():
+    data = sample()
+    data["lvm"]["json"]["data"]["children"][0]["children"][0]["name"] = "/dev/private-disk-a1"
+    data["disks"]["json"]["data"][1]["used"] = "partitions"
+
+    result = inspect(data)
+
+    assert result["thick_lvm_pv_partition_parent_disk_path_join_count"] == 0
     assert result["thick_lvm_pv_unverifiable_disk_path_join_count"] == 1
 
 
@@ -428,6 +443,7 @@ def test_multiple_candidate_vgs_aggregate_each_unique_pv_lineage():
         "storage": "private-lvm-b", "type": "lvm", "content": "images", "active": 1,
         "shared": 0, "total": 1000 * GIB, "used": 500 * GIB, "avail": 500 * GIB,
     })
+    data["disks"]["json"]["data"][1]["used"] = "LVM"
 
     result = inspect(data)
 

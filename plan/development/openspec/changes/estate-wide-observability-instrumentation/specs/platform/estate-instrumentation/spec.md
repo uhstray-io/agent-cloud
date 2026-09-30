@@ -91,7 +91,7 @@ The platform SHALL use a reviewed, Dev-bound, GET-only survey before considering
 #### Scenario: Candidate thick-LVM PV path lineage reports inventory facts only
 - **WHEN** the survey has a non-empty set of eligible visible thick-LVM candidates
 - **THEN** it joins candidate VG PV `name` values against the already-fetched disk inventory by exact path and reports aggregate PV count, exact direct disk-path joins, exact partition-to-parent joins, missing paths, unverifiable joins, and candidate VGs with missing or empty PV-child inventories
-- **AND** a direct-device join with a reported `used` class counts only when that class is exactly `LVM`; a partition-path join may report `LVM` or `partition`; absent `used` remains unknown while the path join describes inventory lineage only
+- **AND** any PV-path join with a reported `used` class counts only when that class is exactly `LVM`; absent `used` remains unknown while the exact path join describes inventory lineage only
 - **AND** duplicate or malformed disk/PV rows fail closed instead of producing an ambiguous count; a partition whose parent is absent or is not a reported whole-device path is unverifiable
 - **AND** these exact path relationships do not establish local physical media, backing-device safety, filesystem readiness, PBS suitability, allocation, or write authorization; all corresponding verification/authorization fields remain false
 - **AND** no PV, disk, partition, parent, or storage identifier, path, serial, or exact capacity is exposed, and no Proxmox request is added for this calculation

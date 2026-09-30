@@ -1225,18 +1225,19 @@ mappings; physical backing remained unverified. This closes the visible-store
 headroom survey step only.
 
 At the same reviewed SHA, tasks 2070, 2074, and 2075 found two non-PBS backup
-artifacts and one backup-job membership, but no exact job ID was declared. Two
-artifacts prevent the single-artifact restore gate. Immutability and isolated
-restore remain unverified; job membership is not restore evidence.
+artifacts and one backup-job membership, but those task runs did not declare an
+exact job ID. Two artifacts prevent the single-artifact restore gate.
+Immutability and isolated restore remain unverified; job membership is not
+restore evidence.
 
 The candidate-PV lineage extension uses only the already-fetched disk and LVM
 inventories. It reports aggregate exact direct PV-to-device path joins,
 partition-to-parent path joins, missing paths, unverifiable relations, and
 candidate VGs with absent or empty PV child lists. Duplicate or malformed
-inventory refuses the receipt instead of emitting an ambiguity count. Known
-non-LVM use classes on direct PV paths, or known classes other than `LVM` or
-`partition` on partition paths, are unverifiable; absent `used` remains
-unknown. These are exact API-reported inventory relationships only. They do not
+inventory refuses the receipt instead of emitting an ambiguity count. Any
+reported `used` class other than exact `LVM` on a PV path is unverifiable;
+absent `used` remains unknown. These are exact API-reported inventory
+relationships only. They do not
 prove physical locality, media identity, device safety, or filesystem
 readiness. No request or write is added; backing, allocation, and write flags
 remain false. This code extension has not run in Dev; its live receipt and
