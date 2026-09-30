@@ -363,7 +363,41 @@ not use or modify that declaration; if it still selects the thin store, the
 separate snapshot-complete allocation audit remains required before
 provisioning. Physical backing, device safety, filesystem readiness, PBS
 readiness, and write authorization remain false; raw API data is protected by
-`no_log`. Live execution and review remain pending.
+`no_log`.
+
+Dev task 2024 succeeded at reviewed SHA
+`fc967ca1faf17e4fe31ce51dcce2e9227b625357`. Its sanitized receipt reported one
+visible thick-LVM candidate with reported headroom and complete config/VG
+mappings; physical backing remained unverified. This completes the visible-store
+thick-LVM survey step only.
+
+Task 2070 ran at reviewed SHA
+`fc967ca1faf17e4fe31ce51dcce2e9227b625357`. Subsequent sanitized artifact/job
+survey receipts report two non-PBS artifacts and one backup-job membership;
+those inspect runs did not select an exact job ID. Multiple artifacts leave
+artifact selection unresolved. No immutability or isolated restore was
+verified; membership is not restore evidence.
+
+## Candidate PV path lineage follow-on
+
+The next code-only extension reuses the disk and LVM API responses already held
+by the survey. For eligible visible thick-LVM candidates, compare each PV path
+with the reported disk paths and, for a reported partition, its parent path.
+Report only aggregate candidate-PV totals and counts of exact direct path
+matches, exact partition-parent matches, exact path joins with absent `used`,
+missing paths, unverifiable relations, and candidate VGs whose PV child list is
+absent or empty. Malformed or duplicate disk/PV inventory refuses the sanitized
+receipt; ambiguity is not reported as a count because duplicate paths are
+malformed input. Candidate PV names that are not exact disk paths are
+unverifiable; unrelated VG PV names retain the broader LVM inventory
+validation. When `used` is present, only exact `LVM` is accepted; absent `used`
+stays unknown and is reported separately from path lineage. Exact path joins
+describe only the two API inventories. They cannot prove physical locality,
+underlying media identity, safe device use, or filesystem readiness. No new API
+request or write is added, and physical-backing, allocation, and write
+authorization remain false. The implementation is present on
+`feature/o11y-pbs-backing-proof`; live Dev execution and review of the added
+facts remain pending. The path fields follow Proxmox's [disk-list API](https://github.com/proxmox/pve-storage/blob/master/src/PVE/API2/Disks.pm), where `parent` is supplied for partitions, and its [LVM inventory API](https://github.com/proxmox/pve-storage/blob/master/src/PVE/API2/Disks/LVM.pm), whose child rows represent underlying PVs. The [LVM plugin](https://github.com/proxmox/pve-storage/blob/master/src/PVE/Storage/LVMPlugin.pm) supplies those PV names and size facts. The [disk usage classifier](https://github.com/proxmox/pve-storage/blob/master/src/PVE/Diskmanage.pm) reports exact `LVM` usage for paths recognized as PVs; this survey treats other known classes as unverifiable. These API paths establish only reported inventory lineage.
 
 
 The 90d/45d retention target remains blocked: keep the effective 15d

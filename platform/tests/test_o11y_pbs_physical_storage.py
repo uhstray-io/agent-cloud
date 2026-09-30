@@ -43,7 +43,7 @@ def sample():
         ]),
         "lvm": api({"leaf": False, "children": [
             {"name": "private-vg", "size": 2000 * GIB, "free": 800 * GIB, "children": [
-                {"name": "private-pv", "size": 2000 * GIB, "free": 800 * GIB}
+                {"name": "/dev/private-pv", "size": 2000 * GIB, "free": 800 * GIB}
             ]}
         ]}),
         "thinpool": api([{
@@ -183,6 +183,13 @@ def test_report_is_allowlisted_and_has_no_private_topology_or_exact_capacity():
         "thick_lvm_reported_vg_headroom_candidate_count_256_gib": 0,
         "thick_lvm_reported_vg_headroom_candidate_count_512_gib": 0,
         "thick_lvm_reported_vg_headroom_candidate_count_1024_gib": 0,
+        "thick_lvm_candidate_vg_pv_inventory_incomplete_count": 0,
+        "thick_lvm_candidate_pv_count": 1,
+        "thick_lvm_pv_direct_disk_path_join_count": 0,
+        "thick_lvm_pv_partition_parent_disk_path_join_count": 0,
+        "thick_lvm_pv_path_join_unknown_used_count": 0,
+        "thick_lvm_pv_missing_disk_path_join_count": 1,
+        "thick_lvm_pv_unverifiable_disk_path_join_count": 0,
         "thick_lvm_backing_media_verified": False,
         "thick_lvm_allocation_authorized": False,
         "device_selected": False,
@@ -227,6 +234,13 @@ def test_report_is_allowlisted_and_has_no_private_topology_or_exact_capacity():
         "thick_lvm_reported_vg_headroom_candidate_count_256_gib",
         "thick_lvm_reported_vg_headroom_candidate_count_512_gib",
         "thick_lvm_reported_vg_headroom_candidate_count_1024_gib",
+        "thick_lvm_candidate_vg_pv_inventory_incomplete_count",
+        "thick_lvm_candidate_pv_count",
+        "thick_lvm_pv_direct_disk_path_join_count",
+        "thick_lvm_pv_partition_parent_disk_path_join_count",
+        "thick_lvm_pv_path_join_unknown_used_count",
+        "thick_lvm_pv_missing_disk_path_join_count",
+        "thick_lvm_pv_unverifiable_disk_path_join_count",
         "thick_lvm_backing_media_verified", "thick_lvm_allocation_authorized",
         "device_safety_verified", "filesystem_readiness_verified", "pbs_suitability_verified",
         "pbs_readiness_verified", "write_authorized",
@@ -342,6 +356,161 @@ def test_non_candidate_config_rows_may_omit_optional_content():
     result = inspect(data)
 
     assert result["visible_thick_lvm_image_store_count"] == 1
+
+
+@pytest.mark.parametrize(
+    ("pv_path", "expected", "used"),
+    [
+        ("/dev/private-disk-a", "thick_lvm_pv_direct_disk_path_join_count", "LVM"),
+        ("/dev/private-disk-a1", "thick_lvm_pv_partition_parent_disk_path_join_count", "LVM"),
+        ("/dev/private-missing", "thick_lvm_pv_missing_disk_path_join_count", None),
+    ],
+)
+def test_candidate_pv_reports_only_exact_disk_inventory_lineage(pv_path, expected, used):
+    data = sample()
+    data["lvm"]["json"]["data"]["children"][0]["children"][0]["name"] = pv_path
+    if pv_path in {"/dev/private-disk-a", "/dev/private-disk-a1"}:
+        matching_disk = next(row for row in data["disks"]["json"]["data"] if row["devpath"] == pv_path)
+        matching_disk["used"] = used
+
+    result = inspect(data)
+
+    assert result[expected] == 1
+    assert result["thick_lvm_candidate_pv_count"] == 1
+    assert result["thick_lvm_backing_media_verified"] is False
+    assert result["device_safety_verified"] is False
+    assert result["write_authorized"] is False
+
+
+def test_partition_path_without_reported_parent_is_unverifiable():
+    data = sample()
+    data["lvm"]["json"]["data"]["children"][0]["children"][0]["name"] = "/dev/private-disk-a1"
+    data["disks"]["json"]["data"][1]["used"] = "LVM"
+    data["disks"]["json"]["data"][1]["parent"] = "/dev/private-unlisted-parent"
+
+    result = inspect(data)
+
+    assert result["thick_lvm_pv_partition_parent_disk_path_join_count"] == 0
+    assert result["thick_lvm_pv_unverifiable_disk_path_join_count"] == 1
+    assert result["thick_lvm_backing_media_verified"] is False
+
+
+def test_non_lvm_reported_use_class_makes_exact_path_unverifiable():
+    data = sample()
+    data["lvm"]["json"]["data"]["children"][0]["children"][0]["name"] = "/dev/private-disk-a"
+    data["disks"]["json"]["data"][0]["used"] = "ext4"
+
+    result = inspect(data)
+
+    assert result["thick_lvm_pv_direct_disk_path_join_count"] == 0
+    assert result["thick_lvm_pv_unverifiable_disk_path_join_count"] == 1
+
+
+@pytest.mark.parametrize("reported_used", ("lvm", " LVM ", "LVM\n"))
+def test_candidate_pv_use_class_must_be_exactly_reported_as_lvm(reported_used):
+    data = sample()
+    data["lvm"]["json"]["data"]["children"][0]["children"][0]["name"] = "/dev/private-disk-a"
+    data["disks"]["json"]["data"][0]["used"] = reported_used
+
+    result = inspect(data)
+
+    assert result["thick_lvm_pv_direct_disk_path_join_count"] == 0
+    assert result["thick_lvm_pv_unverifiable_disk_path_join_count"] == 1
+    assert result["thick_lvm_pv_path_join_unknown_used_count"] == 0
+
+
+def test_reported_partitions_class_is_not_treated_as_lvm_pv_use():
+    data = sample()
+    data["lvm"]["json"]["data"]["children"][0]["children"][0]["name"] = "/dev/private-disk-a1"
+    data["disks"]["json"]["data"][1]["used"] = "partitions"
+
+    result = inspect(data)
+
+    assert result["thick_lvm_pv_partition_parent_disk_path_join_count"] == 0
+    assert result["thick_lvm_pv_unverifiable_disk_path_join_count"] == 1
+
+
+def test_missing_used_class_preserves_unknown_while_reporting_path_join():
+    data = sample()
+    data["lvm"]["json"]["data"]["children"][0]["children"][0]["name"] = "/dev/private-disk-a"
+    data["disks"]["json"]["data"][0].pop("used")
+
+    result = inspect(data)
+
+    assert result["device_usage_unknown_count"] == 2
+    assert result["thick_lvm_pv_direct_disk_path_join_count"] == 1
+    assert result["thick_lvm_pv_path_join_unknown_used_count"] == 1
+    assert result["thick_lvm_backing_media_verified"] is False
+
+
+def test_multiple_candidate_vgs_aggregate_each_unique_pv_lineage():
+    data = sample()
+    data["lvm"]["json"]["data"]["children"].append({
+        "name": "private-vg-b", "size": 1000 * GIB, "free": 500 * GIB,
+        "children": [
+            {"name": "/dev/private-disk-a", "size": 600 * GIB, "free": 300 * GIB},
+            {"name": "/dev/private-disk-a1", "size": 400 * GIB, "free": 200 * GIB},
+        ],
+    })
+    data["storage_config_rows"]["json"]["data"].append({
+        "storage": "private-lvm-b", "type": "lvm", "content": "images", "vgname": "private-vg-b",
+    })
+    data["storage"]["json"]["data"].append({
+        "storage": "private-lvm-b", "type": "lvm", "content": "images", "active": 1,
+        "shared": 0, "total": 1000 * GIB, "used": 500 * GIB, "avail": 500 * GIB,
+    })
+    data["disks"]["json"]["data"][1]["used"] = "LVM"
+
+    result = inspect(data)
+
+    assert result["visible_thick_lvm_image_store_count"] == 2
+    assert result["thick_lvm_candidate_pv_count"] == 3
+    assert result["thick_lvm_pv_direct_disk_path_join_count"] == 1
+    assert result["thick_lvm_pv_partition_parent_disk_path_join_count"] == 1
+    assert result["thick_lvm_pv_missing_disk_path_join_count"] == 1
+
+
+def test_missing_candidate_vg_pv_list_is_incomplete_not_zero_pvs():
+    data = sample()
+    data["lvm"]["json"]["data"]["children"][0]["children"] = []
+
+    result = inspect(data)
+
+    assert result["visible_thick_lvm_image_store_count"] == 1
+    assert result["thick_lvm_candidate_vg_pv_inventory_incomplete_count"] == 1
+    assert result["thick_lvm_candidate_pv_count"] == 0
+    assert result["thick_lvm_pv_missing_disk_path_join_count"] == 0
+
+
+def test_non_path_pv_in_unrelated_vg_does_not_tighten_general_lvm_inventory():
+    data = sample()
+    data["lvm"]["json"]["data"]["children"].append({
+        "name": "unrelated-vg", "size": 100 * GIB, "free": 50 * GIB,
+        "children": [{"name": "pv-internal-name", "size": 100 * GIB, "free": 50 * GIB}],
+    })
+
+    result = inspect(data)
+
+    assert result["lvm_volume_group_count"] == 2
+    assert result["lvm_physical_volume_count"] == 2
+    assert result["thick_lvm_candidate_pv_count"] == 1
+
+
+def test_non_path_candidate_pv_is_unverifiable_without_failing_unrelated_inventory():
+    data = sample()
+    data["lvm"]["json"]["data"]["children"][0]["children"][0]["name"] = "private-pv-name"
+
+    result = inspect(data)
+
+    assert result["thick_lvm_candidate_pv_count"] == 1
+    assert result["thick_lvm_pv_unverifiable_disk_path_join_count"] == 1
+
+
+def test_duplicate_disk_paths_fail_closed():
+    data = sample()
+    data["disks"]["json"]["data"].append(data["disks"]["json"]["data"][0].copy())
+    with pytest.raises(ValueError, match="malformed disk inventory"):
+        inspect(data)
 
 
 @pytest.mark.parametrize("kind", ("lvm", "lvmthin"))

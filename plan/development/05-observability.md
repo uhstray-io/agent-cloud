@@ -1218,6 +1218,35 @@ behind a SAN/LUN; physical backing, device safety, filesystem readiness, PBS
 readiness, and write authorization remain false. Raw API data stays under
 `no_log`. No disk is selected or initialized.
 
+Dev-bound task 2024 ran at reviewed SHA
+`fc967ca1faf17e4fe31ce51dcce2e9227b625357`. The sanitized receipt reported
+one visible thick-LVM candidate with reported headroom and complete config/VG
+mappings; physical backing remained unverified. This closes the visible-store
+headroom survey step only.
+
+Task 2070 ran at reviewed SHA
+`fc967ca1faf17e4fe31ce51dcce2e9227b625357`. Subsequent sanitized artifact/job
+survey receipts report two non-PBS backup artifacts and one backup-job
+membership; those inspect runs did not select an exact job ID. Multiple
+artifacts leave artifact selection unresolved. Immutability and isolated restore
+remain unverified; job membership is not restore evidence.
+
+The candidate-PV lineage extension uses only the already-fetched disk and LVM
+inventories. It reports aggregate exact direct PV-to-device path joins,
+partition-to-parent path joins, joins with absent `used` class, missing paths,
+unverifiable relations, and candidate VGs with absent or empty PV child lists.
+Duplicate or malformed inventory refuses the receipt instead of emitting an
+ambiguity count. A candidate PV name that is not an exact reported disk path is
+unverifiable; unrelated VG PV names retain the existing broader validation.
+When `used` is present, only the exact value `LVM` is accepted for a PV path;
+other values are unverifiable. An absent `used` class leaves an exact path join
+as lineage-only and increments a separate unknown-use count. These are exact
+API-reported inventory relationships only. They do not
+prove physical locality, media identity, device safety, or filesystem
+readiness. No request or write is added; backing, allocation, and write flags
+remain false. This code extension has not run in Dev; its live receipt and
+review remain pending.
+
 The GET-only task 2011 run succeeded at reviewed SHA
 `4c1806652ed15cab8d1a4b50fd241bab52724646` and returned
 `thick_lvm_config_vg_mappings_complete=false` with zero thick-LVM candidate and

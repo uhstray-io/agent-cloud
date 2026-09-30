@@ -209,7 +209,8 @@ def _lvm_facts(data: object) -> dict[str, object]:
         for child in children:
             pv_size, pv_free = child.get("size"), child.get("free")
             _require(
-                isinstance(child.get("name"), str) and bool(child["name"])
+                isinstance(child.get("name"), str)
+                and bool(child["name"])
                 and child["name"] not in pv_names
                 and _integer(pv_size) and _integer(pv_free) and pv_free <= pv_size,
                 "Proxmox returned a malformed LVM inventory.",
@@ -507,7 +508,8 @@ def _allocation_facts(
 
 
 def _thick_lvm_facts(
-    status_rows: list[object], config_response: object, lvm_data: Mapping, target_node: str,
+    status_rows: list[object], config_response: object, lvm_data: Mapping,
+    target_node: str, disk_rows: list[object],
 ) -> dict[str, object]:
     """Report visible non-shared thick-LVM image-store headroom only."""
     config_rows = _api_data(config_response, section="cluster storage config")
@@ -691,7 +693,70 @@ def _thick_lvm_facts(
             remaining = free - size_gib * 1024**3
             if remaining >= 0 and remaining * 10 >= total * 3:
                 result[f"thick_lvm_reported_vg_headroom_candidate_count_{size_gib}_gib"] += 1
-    return result
+    return result | _thick_lvm_pv_lineage_facts(candidates, disk_rows)
+
+
+def _thick_lvm_pv_lineage_facts(
+    candidates: list[tuple[Mapping, Mapping]], disk_rows: list[object],
+) -> dict[str, object]:
+    """Summarize exact reported PV-to-disk paths without inferring backing media."""
+    devices = {row["devpath"]: row for row in disk_rows}
+    candidate_pvs: list[str] = []
+    incomplete_vg_count = 0
+    for _, group in candidates:
+        children = group.get("children")
+        if not isinstance(children, list) or not children:
+            # Some API responses omit PV children. A candidate VG with no
+            # reported PVs cannot establish complete path lineage.
+            incomplete_vg_count += 1
+            continue
+        candidate_pvs.extend(child["name"] for child in children)
+
+    counts = {
+        "direct": 0,
+        "partition_parent": 0,
+        "missing": 0,
+        "unverifiable": 0,
+        "unknown_used": 0,
+    }
+    top_level_paths = {
+        path for path, row in devices.items() if "parent" not in row
+    }
+    for pv_path in candidate_pvs:
+        if PATH.fullmatch(pv_path) is None:
+            counts["unverifiable"] += 1
+            continue
+        if pv_path not in devices:
+            counts["missing"] += 1
+            continue
+        disk = devices[pv_path]
+        reported_used = disk.get("used")
+        if "used" in disk and reported_used != "LVM":
+            counts["unverifiable"] += 1
+            continue
+        if "parent" not in disk:
+            counts["direct"] += 1
+            if "used" not in disk:
+                counts["unknown_used"] += 1
+            continue
+        parent = disk["parent"]
+        if parent not in devices or parent not in top_level_paths:
+            counts["unverifiable"] += 1
+            continue
+        counts["partition_parent"] += 1
+        if "used" not in disk:
+            counts["unknown_used"] += 1
+
+    return {
+        "thick_lvm_candidate_vg_pv_inventory_incomplete_count": incomplete_vg_count,
+        "thick_lvm_candidate_pv_count": len(candidate_pvs),
+        "thick_lvm_pv_direct_disk_path_join_count": counts["direct"],
+        "thick_lvm_pv_partition_parent_disk_path_join_count": counts["partition_parent"],
+        "thick_lvm_pv_path_join_unknown_used_count": counts["unknown_used"],
+        "thick_lvm_pv_missing_disk_path_join_count": counts["missing"],
+        "thick_lvm_pv_unverifiable_disk_path_join_count": counts["unverifiable"],
+        "thick_lvm_backing_media_verified": False,
+    }
 
 
 def inspect(payload: object) -> dict[str, object]:
@@ -732,7 +797,7 @@ def inspect(payload: object) -> dict[str, object]:
             payload.get("visible_volumes"),
             thin_rows,
         ),
-        **_thick_lvm_facts(storage_rows, storage_config_rows, lvm_data, target_node),
+        **_thick_lvm_facts(storage_rows, storage_config_rows, lvm_data, target_node, disk_rows),
         "device_selected": False,
         "device_safety_verified": False,
         "filesystem_readiness_verified": False,
