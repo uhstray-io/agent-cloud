@@ -143,7 +143,7 @@ and why.
 | 10.15 | Reboot survival was asserted for podman containers and never exercised; the boot unit starts only `restart: always`, and its rootless half was never enabled — OpenBao sat down three days | Mechanism never exercised | Test (restart policy + boot unit, mutation-proven) |
 | 10.16 | The agentgateway deploy was proven only on ansible-core 2.16, which hid a list-concatenation failure on 2.19+ | Test that cannot fail | Test (real evaluation, current ansible-core) |
 | 10.17 | **x2** — A task read `secrets`, which exists only inside manage-secrets' template task: the agentgateway key guard (task 1177) and the step-ca issuer add (task 1971) | Mechanism never exercised | Test (`test_manage_secrets_scope.py`) |
-| 10.18 | Dry runs of five production playbooks could never pass; a register from a task check mode skips was read later, and nothing had ever run them | Mechanism never exercised | Test for #308/#313/#314/#319; class Convention (data-flow rule proposed) |
+| 10.18 | Dry runs of five production playbooks could never pass; a register from a task check mode skips was read later, and nothing had ever run them — **x2** | Mechanism never exercised | Test for #308/#313/#314/#319; class Convention (data-flow rule proposed) |
 | 10.19 | Harden SSH's password-rejection probe used BatchMode with public keys off, so it exited non-zero whatever the server allowed | Test that cannot fail | Test (`test_harden_password_probe.py`) |
 | 9.1 | A `for` loop with an unconditional `break`, making all but one member unreachable | Minor | Convention |
 | 9.2 | Typo'd duplicate key in a hand-assembled payload; call succeeded regardless | Minor | Convention |
@@ -3657,6 +3657,8 @@ as `secrets.x` and `secrets[...]`, so it now covers what the note above describe
 
 ### 10.18 Dry runs of five production playbooks could never pass; nothing had ever run them
 
+**Occurrences: 2** — 2026-09-28, 2026-09-30
+
 **What happened.** On 2026-09-28, onboarding the internal DNS and CA VMs, every step's dry run
 was run before its real run, and five playbooks failed their dry run or were found unable to
 pass one. Allocate NetBox IP with `reserve=true` (task 1729) failed on its post-reserve refusal,
@@ -3688,6 +3690,22 @@ from producers skipped under `--check`, with the skipped-module set taken from `
 **Update 2026-09-29.** #319 merged on 2026-09-28. The three key-handling playbooks now carry
 behavioural tests in `platform/tests/test_materialise_ssh_key.py`, run in both check and
 real mode. The data-flow rule is still unbuilt, so the class stays Convention.
+
+**Occurrence 2 — 2026-09-30.** #363 added Phase 3 assertions that the RUNNING CA carries each
+issuer's profile template and the declared name policy. Under `--check` Phase 2.5 plans the
+templates but does not set them, so the first dry run after the merge (task 2132, before
+any real run) failed exactly those assertions, and it would fail every dry run with a change
+pending. Its tests had run the assertions in real mode and against converged fixtures; the
+end-to-end proofs against throwaway CAs were real-mode runs. Why the rule did not fire: "a
+new or changed playbook's dry run is executed once before it is called safe" was read as
+satisfied by the real-mode proofs, and the dry run was left for the production step. The
+same fix shape as the original: under `--check` a post-change assertion is skipped exactly
+where Phase 2.5 plans that change (per issuer for templates; the policy; the issuer count
+when an add is planned), and a behavioural test runs the real assertions under `--check`
+with changes pending. This is a second recurrence of the class the proposed data-flow rule
+would catch only in part (the plan is read, not a skipped register), so the proposal gains
+a case: a post-change assertion in a later play must be conditioned on the plan under
+`--check`.
 
 ### 10.19 Harden SSH's "password auth is rejected" probe could not fail
 

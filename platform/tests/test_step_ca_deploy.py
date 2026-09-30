@@ -426,3 +426,43 @@ def test_the_policy_write_refuses_a_ca_json_changed_since_it_was_read():
     script = task["ansible.builtin.shell"]
     assert '[ "${s%% *}" = "$0" ] || {' in script and "_ca_json_now.stdout_lines[0] | quote" in script
     assert script.index("sha256sum") < script.index('mv "$new" "$f"')
+
+
+# ── A dry run with changes pending (MISTAKES 10.18, occurrence 2) ──────────────
+
+# {case: (check mode, set_template planned, set_policy planned, add planned) -> passes}
+DRY_CASES = {
+    "check-all-planned": (True, ["issuer-server", "issuer-client"], True, ["issuer-server"], True),
+    "check-one-planned": (True, ["issuer-client"], False, [], False),
+    "real-all-planned": (False, ["issuer-server", "issuer-client"], True, ["issuer-server"], False),
+}
+
+
+@pytest.mark.parametrize("case", DRY_CASES)
+def test_a_dry_run_asserts_only_what_phase_2_5_does_not_plan_to_change(tmp_path, case):
+    # Task 2132: the first dry run after #363 failed Phase 3 because the templates it plans
+    # are not on the running CA until the real run sets them.
+    check, set_tpl, set_policy, add, ok = DRY_CASES[case]
+    play = _play(DEPLOY, "Phase 3")
+    running = [_jwk("issuer-server", "720h0m0s"), _jwk("issuer-client", "720h0m0s")][: 1 if add else 2]
+    (tmp_path / "list.json").write_text(json.dumps(running))
+    (tmp_path / "port.txt").write_text("9000/tcp -> 127.0.0.1:9000\n")
+    (tmp_path / "ca.json").write_text(json.dumps({"authority": {"provisioners": running}}))
+    fakes = [
+        {"name": "fake the plan", "ansible.builtin.set_fact": {
+            "_prov_plan": {"set_template": set_tpl, "set_policy": set_policy, "add": add}}},
+        {"name": "fake the state reads", "ansible.builtin.command": "cat {{ item }}", "check_mode": False,
+         "loop": [str(tmp_path / "list.json"), str(tmp_path / "port.txt")], "register": "_ca_state",
+         "changed_when": False},
+        {"name": "fake the ca.json read", "ansible.builtin.command": f"cat {tmp_path / 'ca.json'}",
+         "check_mode": False, "register": "_ca_json_final", "changed_when": False},
+    ]
+    asserts = [_task(play, n) for n in ("Refuse a production CA with ACME on or its API off loopback",
+                                        "Refuse an issuing provisioner without its profile's key usage",
+                                        "Refuse a CA whose name policy is not the declared names")]
+    host = {"_ca_up": {"rc": 0}, **({"dns_site": "dc1", "dns_zone": "example.internal",
+                                     "internal_leaves": [{"name": "g", "sans": ["g.dc1.example.internal"]}]}
+                                    if set_policy else {})}
+    r = _run(tmp_path, host, [*fakes, *asserts], play_vars={**playbook_yaml.load(ISSUERS), **play["vars"]},
+             extra=["--check"] if check else [])
+    assert (r.returncode == 0) is ok, r.stdout + r.stderr

@@ -437,7 +437,10 @@
       ansible.builtin.assert:
         that:
           - (_ca_state.results[0].stdout | from_json | selectattr('type', 'equalto', 'ACME') | list | length) == 0
-          - (_ca_state.results[0].stdout | from_json | selectattr('name', 'in', _issuers | map(attribute='name') | list) | list | length) == (_issuers | length)
+          # A dry run with issuers still to add cannot see them yet (MISTAKES 10.18).
+          - >-
+            ((_ca_state.results[0].stdout | from_json | selectattr('name', 'in', _issuers | map(attribute='name') | list) | list | length) == (_issuers | length))
+            or (ansible_check_mode and ((_prov_plan | default({})).get('add', []) | length > 0))
           - _ca_state.results[1].stdout_lines | length > 0
           - _ca_state.results[1].stdout_lines | reject('search', '-> ' ~ (stepca_bind | default('127.0.0.1')) ~ ':') | list | length == 0
         fail_msg: >-
@@ -464,7 +467,11 @@
       loop: "{{ _issuers }}"
       loop_control:
         label: "{{ item.name }}: {{ item.eku }}"
-      when: (_ca_up.rc == 0 or not ansible_check_mode) and (not (local_mode | default(false) | bool))
+      when:
+        - (_ca_up.rc == 0 or not ansible_check_mode) and (not (local_mode | default(false) | bool))
+        # Under --check a template Phase 2.5 plans to set is not on the running CA yet, so
+        # only the issuers already converged are asserted (MISTAKES 10.18).
+        - not (ansible_check_mode and item.name in ((_prov_plan | default({})).get('set_template', [])))
 
     - name: "Read the CA configuration file"
       ansible.builtin.command: "{{ _engine }} exec step-ca cat /home/step/config/ca.json"
@@ -483,7 +490,10 @@
           internal_leaves ({{ _policy_dns | length }} names); ca.json holds
           {{ (_ca_json_final.stdout | from_json).authority.policy | default('no policy', true) }}.
         quiet: true
-      when: (_ca_up.rc == 0 or not ansible_check_mode) and (not (local_mode | default(false) | bool))
+      when:
+        - (_ca_up.rc == 0 or not ansible_check_mode) and (not (local_mode | default(false) | bool))
+        # Under --check a policy Phase 2.5 plans to write is not in ca.json yet (MISTAKES 10.18).
+        - not (ansible_check_mode and ((_prov_plan | default({})).get('set_policy', false)))
 
     - name: "Report"
       ansible.builtin.debug:
