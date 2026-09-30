@@ -172,6 +172,27 @@ def test_device_mapper_alias_uses_kernel_device_number_without_path_guessing():
     assert report["guest_root"]["block_chain"][0] == {"type": "lvm", "size_bytes": 700}
 
 
+def test_lvm_report_skips_unrelated_empty_or_relative_lv_paths():
+    payload = _readbacks()
+    reports = json.loads(payload["lvs"])
+    reports["report"][0]["lv"][:0] = [
+        {"lv_path": "", "lv_name": "unavailable-path"},
+        {"lv_path": "[pool_tdata]", "lv_name": "thin-data"},
+    ]
+    payload["lvs"] = json.dumps(reports)
+
+    report = DIAGNOSTIC.diagnose(
+        payload, capacity_reader=_capacity, device_number_reader=_device_number
+    )
+
+    assert report["status"] == "observed"
+    assert report["guest_root"]["lvm"] == {
+        "status": "observed",
+        "logical_volume_size_bytes": 700,
+        "volume_group_free_bytes": 300,
+    }
+
+
 def test_unavailable_lvm_report_does_not_hide_sanitized_root_filesystem_readback():
     payload = _readbacks()
     payload["lvs"] = "lvm: denied"
@@ -184,6 +205,22 @@ def test_unavailable_lvm_report_does_not_hide_sanitized_root_filesystem_readback
     assert report["guest_root"]["filesystem_available_bytes"] == 0
     assert report["guest_root"]["lvm"] == {"status": "unavailable", "reason": "lvm_report_invalid"}
     assert "private-vg" not in json.dumps(report)
+
+
+def test_missing_lvm_reports_have_a_distinct_unavailable_reason():
+    for key in ("lvs", "vgs"):
+        payload = _readbacks()
+        payload[key] = None
+
+        report = DIAGNOSTIC.diagnose(
+            payload, capacity_reader=_capacity, device_number_reader=_device_number
+        )
+
+        assert report["status"] == "observed"
+        assert report["guest_root"]["lvm"] == {
+            "status": "unavailable",
+            "reason": "lvm_unavailable",
+        }
 
 
 def test_collect_reads_lvm_capacity_with_readonly_metadata_commands():
@@ -240,6 +277,8 @@ def test_both_diagnostics_require_writable_tmpfs_before_using_remote_modules():
         plays = yaml.safe_load((ROOT / "platform/playbooks" / name).read_text())
         receiver = next(play for play in plays if play.get("hosts") == "o11y_svc")
         assert receiver["vars"]["ansible_remote_tmp"] == "/dev/shm/ansible-tmp"
+        assert receiver["environment"]["TMPDIR"] == "/dev/shm/ansible-tmp"
+        assert receiver["become"] is False
         raw = receiver["tasks"][0]
         assert "ansible.builtin.raw" in raw
         script = raw["ansible.builtin.raw"]
@@ -251,9 +290,14 @@ def test_both_diagnostics_require_writable_tmpfs_before_using_remote_modules():
             "findmnt -n -o FSTYPE --target /dev/shm 2>/dev/null"
         )
         assert "findmnt -n -o FSTYPE --target /dev/shm/ansible-tmp" in script
+        assert "current_uid=\"$(id -u 2>/dev/null)\"" in script
+        assert "stat -c '%u' /dev/shm/ansible-tmp" in script
+        assert "stat -c '%a' /dev/shm/ansible-tmp" in script
+        assert '"$path_mode" != 700' in script
         assert 'df -Pk "$tmpfs_path"' in script
         assert "printf 'remote_tmpfs_ready\\n'" in script
         assert raw["changed_when"] is False
+        assert raw["check_mode"] is False
         assert subprocess.run(["sh", "-n"], input=script, text=True, capture_output=True).returncode == 0
         assert receiver["tasks"][1]["ansible.builtin.assert"]["that"] == [
             "ansible_remote_tmp == '/dev/shm/ansible-tmp'",

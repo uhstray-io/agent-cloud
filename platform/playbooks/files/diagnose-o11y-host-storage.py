@@ -89,12 +89,16 @@ def root_lvm_capacity(
 ) -> dict[str, Any]:
     """Join the mounted root LV to read-only LVM reports, returning values only."""
     try:
+        if lvs_raw in (None, "") or vgs_raw in (None, ""):
+            raise Unavailable("lvm_unavailable")
         lvs = _lvm_rows(lvs_raw, "lv")
         vgs = _lvm_rows(vgs_raw, "vg")
         matches: list[dict[str, Any]] = []
         for row in lvs:
             path, vg_name = row.get("lv_path"), row.get("vg_name")
-            if not isinstance(path, str) or not path.startswith("/") or not isinstance(vg_name, str) or not vg_name:
+            if not isinstance(path, str) or not path.startswith("/"):
+                continue
+            if not isinstance(vg_name, str) or not vg_name:
                 raise Unavailable("lvm_report_invalid")
             size = _reported_bytes(row.get("lv_size"))
             if device_number_reader(path) == root_major_minor:
@@ -337,12 +341,12 @@ def collect() -> dict[str, Any]:
         "vgs": ["vgs", "--readonly", "--reportformat", "json", "--units", "b", "--nosuffix",
                 "--options", "vg_name,vg_free"],
     }
-    payload: dict[str, str] = {}
+    payload: dict[str, Any] = {}
     for key, command in commands.items():
         value = _read(command)
         if value is None:
             if key in {"lvs", "vgs"}:
-                payload[key] = ""
+                payload[key] = None
                 continue
             return {"status": "unavailable", "reason": f"{key}_unavailable"}
         payload[key] = value

@@ -49,6 +49,8 @@
   hosts: o11y_svc
   gather_facts: false
   become: false
+  environment:
+    TMPDIR: /dev/shm/ansible-tmp
   vars:
     _engine: "{{ container_engine | default('podman') }}"
     _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
@@ -63,6 +65,10 @@
           if [ ! -d /dev/shm/ansible-tmp ] || [ "$(findmnt -n -o FSTYPE --target /dev/shm/ansible-tmp 2>/dev/null)" != tmpfs ] || [ ! -w /dev/shm/ansible-tmp ]; then
             exit 1
           fi
+          current_uid="$(id -u 2>/dev/null)" || exit 1
+          path_uid="$(stat -c '%u' /dev/shm/ansible-tmp 2>/dev/null)" || exit 1
+          path_mode="$(stat -c '%a' /dev/shm/ansible-tmp 2>/dev/null)" || exit 1
+          if [ "$path_uid" != "$current_uid" ] || [ "$path_mode" != 700 ]; then exit 1; fi
           tmpfs_path=/dev/shm/ansible-tmp
         else
           if [ "$(findmnt -n -o FSTYPE --target /dev/shm 2>/dev/null)" != tmpfs ] || [ ! -w /dev/shm ]; then
