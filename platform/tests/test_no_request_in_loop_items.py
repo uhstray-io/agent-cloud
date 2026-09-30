@@ -30,21 +30,6 @@ import playbook_yaml
 ROOT = playbook_yaml.REPO
 URI = {"uri", "ansible.builtin.uri", "ansible.legacy.uri"}
 DEBUG = {"debug", "ansible.builtin.debug"}
-TASK_LISTS = ("tasks", "pre_tasks", "post_tasks", "handlers", "block", "rescue", "always")
-
-
-def _tasks(node):
-    """Every task in a play/task list, blocks included, in file order."""
-    if not isinstance(node, list):
-        return
-    for item in node:
-        if not isinstance(item, dict):
-            continue
-        yield item
-        for key in TASK_LISTS:
-            yield from _tasks(item.get(key))
-
-
 def _bearing(task: dict) -> bool:
     """A register worth protecting: the task hid itself (`no_log: true`), or it is a request
     that sent headers, which its registered `invocation` carries even when the task is visible."""
@@ -52,7 +37,7 @@ def _bearing(task: dict) -> bool:
 
 
 def loop_violations(doc) -> list[str]:
-    tasks = list(_tasks(doc))
+    tasks = list(playbook_yaml.tasks(doc))
     bearing = {t["register"] for t in tasks if t.get("register") and _bearing(t)}
     found = []
     for t in tasks:
@@ -128,20 +113,8 @@ def _visible(node, hidden: bool = False):
         inner = (item["no_log"] is True) if "no_log" in item else hidden
         if not inner:
             yield item
-        for key in TASK_LISTS:
+        for key in playbook_yaml.TASK_LISTS:
             yield from _visible(item.get(key), inner)
-
-
-def _strings(value):
-    if isinstance(value, str):
-        yield value
-    elif isinstance(value, dict):
-        for k, v in value.items():
-            yield from _strings(k)
-            yield from _strings(v)
-    elif isinstance(value, list):
-        for v in value:
-            yield from _strings(v)
 
 
 def _secret_lookup(text: str) -> bool:
@@ -194,7 +167,7 @@ def secret_exposures(doc) -> list[str]:
                 found.append(f"{name} runs {key} without no_log")
         passed_down = any(k in PASS_THROUGH for k in t)
         params = {k: v for k, v in t.items() if not (passed_down and k == "vars")}
-        if any(_secret_lookup(s) for s in _strings(params)):
+        if any(_secret_lookup(s) for s in playbook_yaml.strings(params, keys=True)):
             found.append(f"{name} calls a hashi_vault lookup without no_log")
     return found
 

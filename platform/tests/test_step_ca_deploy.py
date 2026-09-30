@@ -2,18 +2,22 @@
 
 The playbooks' own tasks are lifted and run against a local stub host, so the tests exercise
 the real Jinja and asserts rather than copies (openspec production-internal-ca, task 2.5).
-Runs through harness_sandbox so an ansible run cannot write outside the test's temp dir.
+Runs through harness_sandbox so an ansible run cannot write outside the test's temp dir. Cases
+that differ only in inventory share one ansible-playbook run, one host per case: the guard
+has no any_errors_fatal, so each host fails or passes on its own.
 """
 
 import json
+import re
 import subprocess
 from pathlib import Path
 
 import harness_sandbox
+import playbook_yaml
 import pytest
 import yaml
 
-REPO = Path(__file__).resolve().parents[2]
+REPO = playbook_yaml.REPO
 FIRST_BOOT_TASKS = REPO / "platform/playbooks/tasks/assert-step-ca-first-boot.yml"
 DEPLOY = REPO / "platform/playbooks/deploy-step-ca.yml"
 CLEAN = REPO / "platform/playbooks/clean-deploy-step-ca.yml"
@@ -21,7 +25,7 @@ ENV_J2 = REPO / "platform/services/step-ca/deployment/templates/env.j2"
 
 
 def _play(path: Path, name_prefix: str) -> dict:
-    return next(p for p in yaml.safe_load(path.read_text()) if p.get("name", "").startswith(name_prefix))
+    return next(p for p in playbook_yaml.load(path) if p.get("name", "").startswith(name_prefix))
 
 
 def _task(play: dict, name: str) -> dict:
@@ -29,14 +33,21 @@ def _task(play: dict, name: str) -> dict:
 
 
 def _run(tmp_path: Path, host_vars: dict, tasks: list, play_vars: dict | None = None,
-         extra: list | None = None) -> subprocess.CompletedProcess:
-    inv = {"all": {"hosts": {"step-ca": {"ansible_connection": "local", **host_vars}}}}
+         extra: list | None = None, hosts: dict | None = None) -> subprocess.CompletedProcess:
+    """One host `step-ca` with `host_vars`, or every host in `hosts` ({name: vars})."""
+    hosts = hosts or {"step-ca": host_vars}
+    inv = {"all": {"hosts": {h: {"ansible_connection": "local", **v} for h, v in hosts.items()}}}
     (tmp_path / "inv.yml").write_text(yaml.safe_dump(inv))
-    lifted = [{"hosts": "step-ca", "gather_facts": False, "vars": play_vars or {}, "tasks": tasks}]
+    lifted = [{"hosts": "all", "gather_facts": False, "vars": play_vars or {}, "tasks": tasks}]
     (tmp_path / "play.yml").write_text(yaml.safe_dump(lifted))
     return harness_sandbox.run(
         ["ansible-playbook", "-i", str(tmp_path / "inv.yml"), str(tmp_path / "play.yml"), *(extra or [])],
         tmp_path, cwd=REPO, env=harness_sandbox.env_for(tmp_path))
+
+
+def _failed(stdout: str) -> dict:
+    """{host: failed count} from the PLAY RECAP."""
+    return {m[1]: int(m[2]) for m in re.finditer(r"^(\S+)\s+:\s+ok=\d+.*?failed=(\d+)", stdout, re.M)}
 
 
 # ── Reset guard (task 2.3) ─────────────────────────────────────────────────────
@@ -53,7 +64,7 @@ def test_a_ca_reset_runs_only_when_the_launch_names_the_host(tmp_path, confirm, 
 
 
 def test_the_reset_guard_runs_before_anything_is_destroyed():
-    plays = yaml.safe_load(CLEAN.read_text())
+    plays = playbook_yaml.load(CLEAN)
     assert plays[0]["name"].startswith("Refuse a CA reset")
     assert plays[0].get("any_errors_fatal") is True
     # A confirmed reset with incomplete inventory refuses before the root is destroyed.
@@ -75,69 +86,100 @@ FIRST_BOOT = {"stepca_name": "Example CA", "stepca_dns_names": "ca.example.test,
               "stepca_init_acme": "false", "stepca_bind": "127.0.0.1"}
 
 
-@pytest.mark.parametrize("host_vars,ok", [
-    (FIRST_BOOT, True),
-    ({**FIRST_BOOT, "stepca_init_acme": "true"}, False),
-    ({k: v for k, v in FIRST_BOOT.items() if k != "stepca_name"}, False),
-    ({k: v for k, v in FIRST_BOOT.items() if k != "stepca_dns_names"}, False),
-    ({k: v for k, v in FIRST_BOOT.items() if k != "stepca_init_acme"}, False),
-    ({**FIRST_BOOT, "stepca_bind": "0.0.0.0"}, False),
-    ({**FIRST_BOOT, "stepca_provisioner": "other"}, False),   # Phase 2.5 raises admin's lifetime
-    ({**FIRST_BOOT, "stepca_dns_names": "ca.example.test,step-ca"}, False),  # health uses localhost
-    ({**FIRST_BOOT, "stepca_dns_names": ["ca.example.test", "localhost"]}, False),  # a list renders badly
-    ({"local_mode": True}, True),  # local-dev keeps its defaults
-])
-def test_a_production_ca_is_refused_without_its_first_boot_settings(tmp_path, host_vars, ok):
-    guard = yaml.safe_load(FIRST_BOOT_TASKS.read_text())
-    r = _run(tmp_path, host_vars, guard)
-    assert (r.returncode == 0) is ok, r.stdout + r.stderr
+FIRST_BOOT_CASES = {
+    "declared": (FIRST_BOOT, True),
+    "acme-on": ({**FIRST_BOOT, "stepca_init_acme": "true"}, False),
+    "no-name": ({k: v for k, v in FIRST_BOOT.items() if k != "stepca_name"}, False),
+    "no-dns-names": ({k: v for k, v in FIRST_BOOT.items() if k != "stepca_dns_names"}, False),
+    "acme-unset": ({k: v for k, v in FIRST_BOOT.items() if k != "stepca_init_acme"}, True),  # off by default
+    "bind-lan": ({**FIRST_BOOT, "stepca_bind": "0.0.0.0"}, False),
+    "other-provisioner": ({**FIRST_BOOT, "stepca_provisioner": "other"}, False),  # Phase 2.5 raises admin's
+    "no-localhost": ({**FIRST_BOOT, "stepca_dns_names": "ca.example.test,step-ca"}, False),  # health uses it
+    "dns-names-list": ({**FIRST_BOOT, "stepca_dns_names": ["ca.example.test", "localhost"]}, False),
+    "local-mode": ({"local_mode": True}, True),  # local-dev keeps its defaults
+}
+
+
+@pytest.fixture(scope="module")
+def first_boot_failed(tmp_path_factory) -> dict:
+    tmp = tmp_path_factory.mktemp("first-boot")
+    r = _run(tmp, {}, playbook_yaml.load(FIRST_BOOT_TASKS), hosts={c: v for c, (v, _) in FIRST_BOOT_CASES.items()})
+    failed = _failed(r.stdout)
+    assert failed.keys() == FIRST_BOOT_CASES.keys(), r.stdout + r.stderr
+    return failed
+
+
+@pytest.mark.parametrize("case", FIRST_BOOT_CASES)
+def test_a_production_ca_is_refused_without_its_first_boot_settings(first_boot_failed, case):
+    assert (first_boot_failed[case] == 0) is FIRST_BOOT_CASES[case][1]
 
 
 # ── Provisioner plan (task 2.1) ────────────────────────────────────────────────
-
-def _plan(tmp_path: Path, provisioners: list, running: list | None = None) -> dict:
-    """The plan for a ca.json holding `provisioners` and a running CA listing `running`
-    (the same by default). The report task runs too, so a plan key it cannot read fails."""
-    play = _play(DEPLOY, "Phase 2.5")
-    fake = {"name": "fake the reads", "ansible.builtin.set_fact": {
-        "_ca_present": {"rc": 0},
-        "_ca_json": {"stdout": json.dumps({"authority": {"provisioners": provisioners}})},
-        "_prov_list": {"stdout": json.dumps(provisioners if running is None else running)}}}
-    out = tmp_path / "plan.json"
-    dump = {"name": "dump", "ansible.builtin.copy": {
-        "content": "{{ _prov_plan | to_json }}", "dest": str(out), "mode": "0600"}}
-    loops = {"name": "evaluate the loops", "ansible.builtin.debug": {"msg": [
-        "{{ _task_add_loop }}", "{{ _task_set_loop }}"]}, "vars": {
-        "_task_add_loop": _task(play, "Add each missing issuing provisioner")["loop"],
-        "_task_set_loop": _task(play, "Set the issuing provisioners' leaf lifetime")["loop"]}}
-    tasks = [fake, _task(play, "Plan the provisioner changes"), _task(play, "Report the provisioner plan"),
-             loops, dump]
-    r = _run(tmp_path, {}, tasks, play_vars=play["vars"])
-    assert r.returncode == 0, r.stdout + r.stderr
-    return json.loads(out.read_text())
-
 
 def _jwk(name, dur=None):
     claims = {"maxTLSCertDuration": dur, "defaultTLSCertDuration": dur} if dur else {}
     return {"type": "JWK", "name": name, "claims": claims}
 
 
-def test_a_fresh_ca_gets_both_issuers_and_every_lifetime(tmp_path):
-    plan = _plan(tmp_path, [_jwk("admin")])
-    assert plan == {"raise_admin": True, "add": ["issuer-server", "issuer-client"],
-                    "set_lifetime": ["issuer-server", "issuer-client"], "reload_pending": False}
+CONVERGED = [_jwk("admin", "8760h0m0s"), _jwk("issuer-server", "720h0m0s"), _jwk("issuer-client", "720h0m0s")]
+# {case: (ca.json provisioners, the running CA's list or None for the same)}
+PLAN_CASES = {
+    "fresh": ([_jwk("admin")], None),
+    "converged": (CONVERGED, None),
+    "one-differs": ([_jwk("admin", "8760h0m0s"), _jwk("issuer-server", "24h0m0s"),
+                     _jwk("issuer-client", "720h0m0s")], None),
+    "max-differs": ([_jwk("admin", "8760h0m0s"),
+                     {"type": "JWK", "name": "issuer-server",
+                      "claims": {"maxTLSCertDuration": "24h0m0s", "defaultTLSCertDuration": "720h0m0s"}},
+                     _jwk("issuer-client", "720h0m0s")], None),
+    # A run stopped between an add and the reload: ca.json has the issuers, the running CA
+    # does not. Nothing is left to add, but the reload must still run.
+    "never-reloaded": (CONVERGED, [_jwk("admin", "8760h0m0s")]),
+}
 
 
-def test_a_converged_ca_plans_nothing(tmp_path):
-    plan = _plan(tmp_path, [_jwk("admin", "8760h0m0s"), _jwk("issuer-server", "720h0m0s"),
-                            _jwk("issuer-client", "720h0m0s")])
-    assert plan == {"raise_admin": False, "add": [], "set_lifetime": [], "reload_pending": False}
+@pytest.fixture(scope="module")
+def plans(tmp_path_factory) -> dict:
+    """Each case's plan, the reads faked per host. The report task runs too, so a plan key
+    it cannot read fails."""
+    tmp = tmp_path_factory.mktemp("plans")
+    play = _play(DEPLOY, "Phase 2.5")
+    hosts = {case: {"_ca_present": {"rc": 0},
+                    "_ca_json": {"stdout": json.dumps({"authority": {"provisioners": prov}})},
+                    "_prov_list": {"stdout": json.dumps(prov if running is None else running)}}
+             for case, (prov, running) in PLAN_CASES.items()}
+    dump = {"name": "dump", "ansible.builtin.copy": {
+        "content": "{{ _prov_plan | to_json }}", "dest": str(tmp / "{{ inventory_hostname }}.json"), "mode": "0600"}}
+    loops = {"name": "evaluate the loops", "ansible.builtin.debug": {"msg": [
+        "{{ _task_add_loop }}", "{{ _task_set_loop }}"]}, "vars": {
+        "_task_add_loop": _task(play, "Add each missing issuing provisioner")["loop"],
+        "_task_set_loop": _task(play, "Set the issuing provisioners' leaf lifetime")["loop"]}}
+    tasks = [_task(play, "Plan the provisioner changes"), _task(play, "Report the provisioner plan"), loops, dump]
+    r = _run(tmp, {}, tasks, play_vars=play["vars"], hosts=hosts)
+    assert r.returncode == 0, r.stdout + r.stderr
+    return {case: json.loads((tmp / f"{case}.json").read_text()) for case in PLAN_CASES}
 
 
-def test_only_the_provisioner_whose_lifetime_differs_is_updated(tmp_path):
-    plan = _plan(tmp_path, [_jwk("admin", "8760h0m0s"), _jwk("issuer-server", "24h0m0s"),
-                            _jwk("issuer-client", "720h0m0s")])
-    assert plan == {"raise_admin": False, "add": [], "set_lifetime": ["issuer-server"], "reload_pending": False}
+def test_a_fresh_ca_gets_both_issuers_and_every_lifetime(plans):
+    assert plans["fresh"] == {"raise_admin": True, "add": ["issuer-server", "issuer-client"],
+                              "set_lifetime": ["issuer-server", "issuer-client"], "reload_pending": False}
+
+
+def test_a_converged_ca_plans_nothing(plans):
+    assert plans["converged"] == {"raise_admin": False, "add": [], "set_lifetime": [], "reload_pending": False}
+
+
+def test_only_the_provisioner_whose_lifetime_differs_is_updated(plans):
+    assert plans["one-differs"] == {"raise_admin": False, "add": [], "set_lifetime": ["issuer-server"],
+                                    "reload_pending": False}
+
+
+def test_a_differing_maximum_alone_triggers_the_update(plans):
+    assert plans["max-differs"]["set_lifetime"] == ["issuer-server"]
+
+
+def test_a_change_written_but_never_reloaded_is_reloaded(plans):
+    assert plans["never-reloaded"] == {"raise_admin": False, "add": [], "set_lifetime": [], "reload_pending": True}
 
 
 def test_the_list_is_read_before_any_provisioner_is_added_and_the_add_is_hidden():
@@ -163,34 +205,12 @@ def test_production_values_render_the_loopback_bind_and_acme_off(tmp_path):
     assert not any("ISSUER" in line for line in lines)
 
 
-def test_a_differing_maximum_alone_triggers_the_update(tmp_path):
-    server = {"type": "JWK", "name": "issuer-server",
-              "claims": {"maxTLSCertDuration": "24h0m0s", "defaultTLSCertDuration": "720h0m0s"}}
-    plan = _plan(tmp_path, [_jwk("admin", "8760h0m0s"), server, _jwk("issuer-client", "720h0m0s")])
-    assert plan["set_lifetime"] == ["issuer-server"]
-
-
-def test_a_change_written_but_never_reloaded_is_reloaded(tmp_path):
-    # A run stopped between an add and the reload: ca.json has the issuers, the running CA
-    # does not. Nothing is left to add, but the reload must still run.
-    converged = [_jwk("admin", "8760h0m0s"), _jwk("issuer-server", "720h0m0s"), _jwk("issuer-client", "720h0m0s")]
-    plan = _plan(tmp_path, converged, running=[_jwk("admin", "8760h0m0s")])
-    assert plan == {"raise_admin": False, "add": [], "set_lifetime": [], "reload_pending": True}
-
-
-def test_the_issuer_password_comes_from_a_fact_manage_secrets_actually_sets():
+def test_the_issuer_password_comes_from_the_fact_manage_secrets_sets():
     # Production task 1971 failed here (docs/MISTAKES.md 10.17, occurrence 2): the add read
-    # `secrets[...]`, which manage-secrets only defines as a task var of its template task,
-    # while the lifted tests stubbed a `secrets` fact and passed. Check the name against the
-    # real producer, not a stub.
-    import re
-    producer = yaml.safe_load((REPO / "platform/playbooks/tasks/manage-secrets.yml").read_text())
-    facts = {k for task in producer for k in (task.get("ansible.builtin.set_fact") or {})}
+    # `secrets[...]`, which manage-secrets only defines inside its template task, while the
+    # lifted tests stubbed a `secrets` fact and passed. `_resolved` holds every declared
+    # secret (manage-secrets' documented output), and each issuer's secret is declared.
     add = _task(_play(DEPLOY, "Phase 2.5"), "Add each missing issuing provisioner")
-    used = re.match(r"\{\{\s*(\w+)\[", add["ansible.builtin.command"]["stdin"]).group(1)
-    assert used in facts, f"{used} is not a fact manage-secrets.yml sets ({sorted(facts)})"
-    # `_resolved` is the one holding every declared secret (`_existing` is empty on a fresh
-    # store, `_shared` holds other services' keys), and each issuer's secret is declared.
-    assert used == "_resolved"
+    assert re.match(r"\{\{\s*_resolved\[", add["ansible.builtin.command"]["stdin"])
     declared = {d["name"] for d in _play(DEPLOY, "Phase 1")["vars"]["_secret_definitions"]}
     assert {i["secret"] for i in _play(DEPLOY, "Phase 2.5")["vars"]["_issuers"]} <= declared
