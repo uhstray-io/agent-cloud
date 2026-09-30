@@ -88,9 +88,11 @@ def test_the_guard_catches_both_recorded_shapes_and_passes_the_binding_task():
     - name: filter
       ansible.builtin.debug:
         msg: "{{ secrets | dict2items | length }}"
+    - name: bare
+      ansible.builtin.copy: {content: "{{ secrets }}", dest: /x}
     - name: fine
       ansible.builtin.debug:
         msg: "{{ _resolved.x }} secret/services/x secrets are managed"
 """)
     # The template task reads `secrets` inside its own binding, so it passes.
-    assert reads_outside_binding(doc) == ["guard", "add", "include", "filter"]
+    assert reads_outside_binding(doc) == ["guard", "add", "include", "filter", "bare"]

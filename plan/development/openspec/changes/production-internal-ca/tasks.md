@@ -72,8 +72,9 @@ host. Push, pull requests and merges happen only when Joe authorizes each one.
       survey with no default, so the reset refusal is proven in production. Both are declared
       as dev-bound `(Dev)` templates (`repository: agent-cloud dev`) with no main-bound twin
       until promotion, because main's playbooks lack the guards (review of #349). Published
-      2026-09-29 through the scoped Dev publisher: `Deploy step-ca (Dev)` (tasks 1966 dry
-      run, 1967) and `Clean Deploy step-ca (Dev)` (1968, 1969), bindings read back
+      2026-09-29 through the scoped Dev publisher: `Deploy step-ca (Dev)` (publisher tasks
+      1966 dry run, 1967) and `Clean Deploy step-ca (Dev)` (1968 dry run, 1969), bindings read
+      back
 - [ ] 2.4a `platform/semaphore/templates.yml`: a signing template for dgx-spark's vLLM
       request (decision 1 of 2026-09-28), with a Dev variant; it refuses a SAN that is not
       in the declared vLLM leaf and returns the certificate and bundle through the channel
@@ -93,7 +94,7 @@ host. Push, pull requests and merges happen only when Joe authorizes each one.
       without confirmation is refused". 2026-09-29: the first by runs 1989/1990 (same
       fingerprint, second run a no-op); the second by `Clean Deploy step-ca (Dev)` dry run
       1993 with a wrong hostname, which refused at its first task and never reached the
-      destroy play, plus `test_step_ca_deploy.py`
+      destroy play, so the root is unchanged, plus `test_step_ca_deploy.py`
 
 ## 3. Firewall
 - [ ] 3.1 site-config: `firewall_ssh_cidrs` and `firewall_controller_cidr` for the CA

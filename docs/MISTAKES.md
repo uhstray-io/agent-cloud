@@ -3633,9 +3633,12 @@ it. Widened by the guard below: the check now runs on every task, not on recall.
 (`platform/tests/test_agentgateway_secret_defs.py`). Both occurrences are now caught by
 `test_no_task_reads_secrets_outside_the_task_that_binds_it` in
 `platform/tests/test_manage_secrets_scope.py`: no task under `platform/playbooks` or
-`platform/semaphore` may read `secrets` (as `secrets.x`, `secrets[...]`, a filter or a bare
-`{{ secrets }}`, in its body, its conditions or its own `vars:`) unless that task binds
-`secrets` in its own `vars:`; a play's `vars:` are scanned the same way.
+`platform/semaphore` may read `secrets.`/`secrets[` unless that task binds `secrets` in its
+own `vars:`.
+
+**Widened 2026-09-29 (#354).** The guard also reads a task's own `vars:` (unless the task binds
+`secrets`) and a play's `vars:`, and matches the filter form and a bare `{{ secrets }}` as well
+as `secrets.x` and `secrets[...]`, so it now covers what the note above describes.
 
 ### 10.18 Dry runs of five production playbooks could never pass; nothing had ever run them
 
