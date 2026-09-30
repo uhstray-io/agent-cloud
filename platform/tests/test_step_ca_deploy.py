@@ -192,6 +192,19 @@ def test_the_list_is_read_before_any_provisioner_is_added_and_the_add_is_hidden(
 
 # ── Production render (task 2.5) ───────────────────────────────────────────────
 
+@pytest.mark.parametrize("host_vars,acme", [
+    ({"local_mode": True}, "true"),                                   # an existing local inventory
+    ({"local_mode": True, "stepca_init_acme": "false"}, "false"),    # declared wins
+    ({"stepca_name": "x", "stepca_dns_names": "localhost"}, "false"),  # production, undeclared
+], ids=["local-default", "local-declared", "production-default"])
+def test_acme_is_on_only_in_local_mode_unless_declared(tmp_path, host_vars, acme):
+    out = tmp_path / "env"
+    task = {"name": "render", "ansible.builtin.template": {"src": str(ENV_J2), "dest": str(out), "mode": "0600"}}
+    r = _run(tmp_path, {**host_vars, "secrets": {"init_password": "x"}}, [task])
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert f"STEPCA_INIT_ACME={acme}" in out.read_text().splitlines()
+
+
 def test_production_values_render_the_loopback_bind_and_acme_off(tmp_path):
     out = tmp_path / "env"
     task = {"name": "render", "ansible.builtin.template": {"src": str(ENV_J2), "dest": str(out), "mode": "0600"}}

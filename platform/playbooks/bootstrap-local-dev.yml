@@ -1129,7 +1129,6 @@
           stepca_port=9000
           stepca_name=agent-cloud Internal CA (local)
           stepca_dns_names=step-ca,localhost,step-ca.{{ _dev_zone }}
-          stepca_init_acme=true
           local_monorepo_dir=/var/lib/agent-cloud-deploy/agent-cloud
           local_home_dir=/var/lib/agent-cloud-deploy
           local_workspace_dir=/workspace/agent-cloud

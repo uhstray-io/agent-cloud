@@ -12,7 +12,8 @@ marked as such.
 - `platform/services/step-ca/deployment/compose.yml`: image
   `docker.io/smallstep/step-ca:0.30.2` (line 17); first-run auto-init from
   `DOCKER_STEPCA_INIT_*` (lines 21-26), with the ACME provisioner on by default
-  (`STEPCA_INIT_ACME` default `true`, line 26); port published on
+  (`STEPCA_INIT_ACME` default `true`, line 26; since 2026-09-30 `env.j2` turns it on only
+  in local_mode unless inventory declares it, and the compose default is `false`); port published on
   `${STEPCA_BIND:-127.0.0.1}:${STEPCA_PORT:-9000}` (line 29); everything under
   `/home/step` in the `step-ca-data` volume (line 31); health check `step ca health`
   against the in-volume root (line 36).

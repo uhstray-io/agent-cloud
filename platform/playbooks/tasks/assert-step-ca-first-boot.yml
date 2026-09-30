@@ -4,8 +4,8 @@
 #
 # step-ca writes its name, DNS names, admin provisioner and ACME switch into the step-ca-data
 # volume on the first run and never reads them again, so a CA initialised from the local
-# defaults keeps the wrong name until a reset. ACME is off unless inventory turns it on
-# (local-dev does), so here it only has to not be on. Included by deploy-step-ca.yml
+# defaults keeps the wrong name until a reset. Outside local_mode ACME is off unless
+# inventory turns it on, so here it only has to not be on. Included by deploy-step-ca.yml
 # before anything is written, and by clean-deploy-step-ca.yml before the root is destroyed,
 # so a confirmed reset with incomplete inventory refuses instead of leaving no CA.
 # Skipped in local_mode, which keeps the local defaults.

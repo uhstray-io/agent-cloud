@@ -62,8 +62,6 @@ all:
           stepca_port: 9000
           stepca_name: "agent-cloud Internal CA (local)"
           stepca_dns_names: "step-ca,localhost,step-ca.agent-cloud.test"
-          # ACME is off by default (production); local-dev keeps its ACME provisioner.
-          stepca_init_acme: "true"
 
     # Local Caddy — internal-CA TLS on loopback high ports; reverse-proxies the
     # control-plane containers by their local-dev network name. Add routes for
