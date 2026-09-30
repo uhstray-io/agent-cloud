@@ -194,14 +194,14 @@
       no_log: true
       check_mode: false
 
-    - name: Read VM images on the private declared storage
+    - name: Read visible volumes on the private declared storage
       ansible.builtin.uri:
-        url: "{{ _pve_host }}/api2/json/nodes/{{ _validated_target_node | urlencode }}/storage/{{ _target_storage_id | urlencode }}/content?content=images"
+        url: "{{ _pve_host }}/api2/json/nodes/{{ _validated_target_node | urlencode }}/storage/{{ _target_storage_id | urlencode }}/content"
         method: GET
         status_code: 200
         headers:
           Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
-      register: _declared_image_content
+      register: _declared_visible_volumes
       no_log: true
       check_mode: false
 
@@ -217,7 +217,7 @@
               'storage': {'status': _storage_inventory.status, 'json': {'data': _storage_inventory.json.data}},
               'storage_config': {'status': _declared_storage_config.status, 'json': {'data': _declared_storage_config.json.data}},
               'storage_permissions': {'status': _declared_storage_permissions.status, 'json': {'data': _declared_storage_permissions.json.data}},
-              'image_content': {'status': _declared_image_content.status, 'json': {'data': _declared_image_content.json.data}}}
+              'visible_volumes': {'status': _declared_visible_volumes.status, 'json': {'data': _declared_visible_volumes.json.data}}}
              | to_json }}
       register: _physical_storage_inspection
       failed_when: false

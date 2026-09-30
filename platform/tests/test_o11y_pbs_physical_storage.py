@@ -29,7 +29,7 @@ def sample():
         "storage_permissions": api({"/storage/private-candidate": {
             "Datastore.Allocate": 1, "Datastore.Audit": 1,
         }}),
-        "image_content": api([]),
+        "visible_volumes": api([]),
         "disks": api([
             {"devpath": "/dev/private-disk-a", "size": 2 * 1024**4, "used": "LVM"},
             {"devpath": "/dev/private-disk-a1", "parent": "/dev/private-disk-a", "size": 1 * GIB,
@@ -70,16 +70,16 @@ def candidate_row(*, total=8192 * GIB, used=1024 * GIB, available=None, **overri
     }
 
 
-def add_candidate(data, row=None, images=(), *, metadata_size=8 * GIB, metadata_used=2 * GIB):
+def add_candidate(data, row=None, volumes=(), *, metadata_size=8 * GIB, metadata_used=2 * GIB):
     row = row or candidate_row()
     data["storage"]["json"]["data"].append(row)
     data["thinpool"]["json"]["data"].append({
         "lv": "private-pool", "vg": "private-vg", "lv_size": row["total"],
         "used": row["used"], "metadata_size": metadata_size, "metadata_used": metadata_used,
     })
-    data["image_content"] = api([
-        {"volid": f"private-candidate:{name}", "content": "images", "format": "raw", "size": size}
-        for name, size in images
+    data["visible_volumes"] = api([
+        {"volid": f"private-candidate:{name}", "content": kind, "format": "raw", "size": size}
+        for name, kind, size in volumes
     ])
 
 
@@ -150,12 +150,13 @@ def test_report_is_allowlisted_and_has_no_private_topology_or_exact_capacity():
         "declared_storage_row_found": False,
         "declared_storage_row_eligible": False,
         "declared_thinpool_linked": False,
-        "complete_storage_visibility_verified": False,
-        "declared_image_inventory_complete": False,
+        "visible_volume_permissions_verified": False,
+        "visible_volume_inventory_well_formed": False,
+        "snapshot_inventory_complete_verified": False,
         "declared_metadata_headroom_30_percent": False,
-        "reported_preflight_capacity_passes_256_gib_disk": False,
-        "reported_preflight_capacity_passes_512_gib_disk": False,
-        "reported_preflight_capacity_passes_1024_gib_disk": False,
+        "snapshot_unverified_visible_volume_preflight_passes_256_gib_disk": False,
+        "snapshot_unverified_visible_volume_preflight_passes_512_gib_disk": False,
+        "snapshot_unverified_visible_volume_preflight_passes_1024_gib_disk": False,
         "storage_allocation_authorized": False,
         "device_selected": False,
         "device_safety_verified": False,
@@ -182,11 +183,13 @@ def test_report_is_allowlisted_and_has_no_private_topology_or_exact_capacity():
         "storage_capacity_unreported_count", "storage_reported_total_capacity_band_counts",
         "storage_reported_available_capacity_band_counts", "storage_reported_headroom_band_counts",
         "declared_storage_row_found", "declared_storage_row_eligible", "declared_thinpool_linked",
-        "complete_storage_visibility_verified", "declared_image_inventory_complete",
+        "visible_volume_permissions_verified", "visible_volume_inventory_well_formed",
+        "snapshot_inventory_complete_verified",
         "declared_metadata_headroom_30_percent",
-        "reported_preflight_capacity_passes_256_gib_disk",
-        "reported_preflight_capacity_passes_512_gib_disk",
-        "reported_preflight_capacity_passes_1024_gib_disk", "storage_allocation_authorized", "device_selected",
+        "snapshot_unverified_visible_volume_preflight_passes_256_gib_disk",
+        "snapshot_unverified_visible_volume_preflight_passes_512_gib_disk",
+        "snapshot_unverified_visible_volume_preflight_passes_1024_gib_disk",
+        "storage_allocation_authorized", "device_selected",
         "device_safety_verified", "filesystem_readiness_verified", "pbs_suitability_verified",
         "pbs_readiness_verified", "write_authorized",
     }
@@ -269,20 +272,21 @@ def test_declared_active_local_lvmthin_images_store_reports_only_fixed_size_bool
     assert result["declared_storage_row_found"] is True
     assert result["declared_storage_row_eligible"] is True
     assert result["declared_thinpool_linked"] is True
-    assert result["complete_storage_visibility_verified"] is True
-    assert result["declared_image_inventory_complete"] is True
+    assert result["visible_volume_permissions_verified"] is True
+    assert result["visible_volume_inventory_well_formed"] is True
+    assert result["snapshot_inventory_complete_verified"] is False
     assert result["declared_metadata_headroom_30_percent"] is True
-    assert result["reported_preflight_capacity_passes_256_gib_disk"] is True
-    assert result["reported_preflight_capacity_passes_512_gib_disk"] is True
-    assert result["reported_preflight_capacity_passes_1024_gib_disk"] is True
+    assert result["snapshot_unverified_visible_volume_preflight_passes_256_gib_disk"] is True
+    assert result["snapshot_unverified_visible_volume_preflight_passes_512_gib_disk"] is True
+    assert result["snapshot_unverified_visible_volume_preflight_passes_1024_gib_disk"] is True
     assert result["storage_allocation_authorized"] is False
     rendered = json.dumps(result)
     assert "private-candidate" not in rendered
     assert str(8192 * GIB) not in rendered
     assert set(result).issuperset({
-        "reported_preflight_capacity_passes_256_gib_disk",
-        "reported_preflight_capacity_passes_512_gib_disk",
-        "reported_preflight_capacity_passes_1024_gib_disk",
+        "snapshot_unverified_visible_volume_preflight_passes_256_gib_disk",
+        "snapshot_unverified_visible_volume_preflight_passes_512_gib_disk",
+        "snapshot_unverified_visible_volume_preflight_passes_1024_gib_disk",
     })
 
 
@@ -296,12 +300,12 @@ def test_virtual_disk_capacity_requires_size_plus_30_percent_remaining(size_gib)
     add_candidate(data, candidate_row(
         total=total, used=total - threshold_available, available=threshold_available,
     ))
-    assert inspect(data)[f"reported_preflight_capacity_passes_{size_gib}_gib_disk"] is True
+    assert inspect(data)[f"snapshot_unverified_visible_volume_preflight_passes_{size_gib}_gib_disk"] is True
 
     data["storage"]["json"]["data"][-1]["used"] += 1
     data["storage"]["json"]["data"][-1]["avail"] -= 1
     data["thinpool"]["json"]["data"][-1]["used"] += 1
-    assert inspect(data)[f"reported_preflight_capacity_passes_{size_gib}_gib_disk"] is False
+    assert inspect(data)[f"snapshot_unverified_visible_volume_preflight_passes_{size_gib}_gib_disk"] is False
 
 
 @pytest.mark.parametrize(
@@ -315,14 +319,14 @@ def test_virtual_disk_capacity_requires_size_plus_30_percent_remaining(size_gib)
 )
 def test_partial_image_listing_rights_never_produce_capacity_pass(permissions):
     data = sample()
-    add_candidate(data, images=(("vm-123-disk-0", 64 * GIB),))
+    add_candidate(data, volumes=(("vm-123-disk-0", "images", 64 * GIB),))
     data["storage_permissions"] = api({"/storage/private-candidate": permissions})
 
     result = inspect(data)
 
-    assert result["complete_storage_visibility_verified"] is False
-    assert result["declared_image_inventory_complete"] is False
-    assert all(result[f"reported_preflight_capacity_passes_{size}_gib_disk"] is False
+    assert result["visible_volume_permissions_verified"] is False
+    assert result["visible_volume_inventory_well_formed"] is False
+    assert all(result[f"snapshot_unverified_visible_volume_preflight_passes_{size}_gib_disk"] is False
                for size in (256, 512, 1024))
 
 
@@ -335,8 +339,8 @@ def test_non_propagated_rights_still_apply_at_the_exact_storage_path():
 
     result = inspect(data)
 
-    assert result["complete_storage_visibility_verified"] is True
-    assert result["reported_preflight_capacity_passes_256_gib_disk"] is True
+    assert result["visible_volume_permissions_verified"] is True
+    assert result["snapshot_unverified_visible_volume_preflight_passes_256_gib_disk"] is True
 
 
 def test_storage_permissions_for_another_path_do_not_prove_complete_visibility():
@@ -348,8 +352,8 @@ def test_storage_permissions_for_another_path_do_not_prove_complete_visibility()
 
     result = inspect(data)
 
-    assert result["complete_storage_visibility_verified"] is False
-    assert result["reported_preflight_capacity_passes_256_gib_disk"] is False
+    assert result["visible_volume_permissions_verified"] is False
+    assert result["snapshot_unverified_visible_volume_preflight_passes_256_gib_disk"] is False
 
 
 @pytest.mark.parametrize(
@@ -369,9 +373,9 @@ def test_ineligible_or_incomplete_declared_storage_fails_capacity_checks_closed(
     result = inspect(data)
 
     assert all(result[key] is False for key in (
-        "reported_preflight_capacity_passes_256_gib_disk",
-        "reported_preflight_capacity_passes_512_gib_disk",
-        "reported_preflight_capacity_passes_1024_gib_disk",
+        "snapshot_unverified_visible_volume_preflight_passes_256_gib_disk",
+        "snapshot_unverified_visible_volume_preflight_passes_512_gib_disk",
+        "snapshot_unverified_visible_volume_preflight_passes_1024_gib_disk",
     ))
 
 
@@ -385,9 +389,9 @@ def test_missing_candidate_eligibility_field_fails_capacity_checks_closed(missin
     result = inspect(data)
 
     assert all(result[key] is False for key in (
-        "reported_preflight_capacity_passes_256_gib_disk",
-        "reported_preflight_capacity_passes_512_gib_disk",
-        "reported_preflight_capacity_passes_1024_gib_disk",
+        "snapshot_unverified_visible_volume_preflight_passes_256_gib_disk",
+        "snapshot_unverified_visible_volume_preflight_passes_512_gib_disk",
+        "snapshot_unverified_visible_volume_preflight_passes_1024_gib_disk",
     ))
 
 
@@ -414,21 +418,55 @@ def test_differently_named_eligible_storage_does_not_match_private_declaration()
 
     assert result["declared_storage_row_found"] is False
     assert result["declared_storage_row_eligible"] is False
-    assert result["reported_preflight_capacity_passes_256_gib_disk"] is False
-    assert result["reported_preflight_capacity_passes_512_gib_disk"] is False
-    assert result["reported_preflight_capacity_passes_1024_gib_disk"] is False
+    assert result["snapshot_unverified_visible_volume_preflight_passes_256_gib_disk"] is False
+    assert result["snapshot_unverified_visible_volume_preflight_passes_512_gib_disk"] is False
+    assert result["snapshot_unverified_visible_volume_preflight_passes_1024_gib_disk"] is False
 
 
 def test_virtual_overcommit_blocks_preflight_even_when_written_space_is_free():
     data = sample()
-    add_candidate(data, images=(("vm-123-disk-0", 7500 * GIB),))
+    add_candidate(data, volumes=(("vm-123-disk-0", "images", 7500 * GIB),))
 
     result = inspect(data)
 
-    assert result["declared_image_inventory_complete"] is True
-    assert result["reported_preflight_capacity_passes_256_gib_disk"] is False
-    assert result["reported_preflight_capacity_passes_512_gib_disk"] is False
-    assert result["reported_preflight_capacity_passes_1024_gib_disk"] is False
+    assert result["visible_volume_inventory_well_formed"] is True
+    assert result["snapshot_inventory_complete_verified"] is False
+    assert result["snapshot_unverified_visible_volume_preflight_passes_256_gib_disk"] is False
+    assert result["snapshot_unverified_visible_volume_preflight_passes_512_gib_disk"] is False
+    assert result["snapshot_unverified_visible_volume_preflight_passes_1024_gib_disk"] is False
+
+
+def test_unfiltered_inventory_sums_both_image_and_rootdir_volume_rows():
+    data = sample()
+    add_candidate(data, volumes=(
+        ("vm-123-disk-0", "images", 64 * GIB),
+        ("vm-456-disk-0", "rootdir", 32 * GIB),
+    ))
+
+    result = inspect(data)
+
+    assert result["visible_volume_inventory_well_formed"] is True
+    assert result["snapshot_inventory_complete_verified"] is False
+    assert result["snapshot_unverified_visible_volume_preflight_passes_256_gib_disk"] is True
+    assert result["storage_allocation_authorized"] is False
+
+
+@pytest.mark.parametrize(
+    ("volume_name", "content"),
+    [
+        ("snap_vm-123-disk-0_daily", "images"),
+        ("vm-0-disk-0", "images"),
+        ("vm-123-disk-0", "backup"),
+        ("vm-123-", "images"),
+        ("vm-123-disk-0:extra", "images"),
+    ],
+)
+def test_visible_volume_identifiers_and_content_are_strictly_parsed(volume_name, content):
+    data = sample()
+    add_candidate(data, volumes=((volume_name, content, GIB),))
+
+    with pytest.raises(ValueError, match="malformed visible volume inventory"):
+        inspect(data)
 
 
 def test_low_current_thinpool_metadata_headroom_blocks_preflight():
@@ -438,7 +476,7 @@ def test_low_current_thinpool_metadata_headroom_blocks_preflight():
     result = inspect(data)
 
     assert result["declared_metadata_headroom_30_percent"] is False
-    assert result["reported_preflight_capacity_passes_256_gib_disk"] is False
+    assert result["snapshot_unverified_visible_volume_preflight_passes_256_gib_disk"] is False
 
 
 def test_storage_pool_linkage_must_match_and_pool_status_capacity_must_agree():
@@ -454,19 +492,27 @@ def test_storage_pool_linkage_must_match_and_pool_status_capacity_must_agree():
     with pytest.raises(ValueError, match="inconsistent declared storage capacity"):
         inspect(data)
 
+    data = sample()
+    add_candidate(data)
+    data["thinpool"]["json"]["data"][-1]["used"] += 1
+    with pytest.raises(ValueError, match="inconsistent declared storage capacity"):
+        inspect(data)
+
 
 def test_image_listing_must_be_unique_complete_and_storage_scoped():
     data = sample()
-    add_candidate(data, images=(("vm-123-disk-0", GIB), ("vm-123-disk-0", GIB)))
-    with pytest.raises(ValueError, match="malformed declared image inventory"):
+    add_candidate(data, volumes=(
+        ("vm-123-disk-0", "images", GIB), ("vm-123-disk-0", "images", GIB),
+    ))
+    with pytest.raises(ValueError, match="malformed visible volume inventory"):
         inspect(data)
 
     data = sample()
     add_candidate(data)
-    data["image_content"]["json"]["data"].append({
+    data["visible_volumes"]["json"]["data"].append({
         "volid": "different-storage:vm-123-disk-0", "content": "images", "format": "raw", "size": GIB,
     })
-    with pytest.raises(ValueError, match="malformed declared image inventory"):
+    with pytest.raises(ValueError, match="malformed visible volume inventory"):
         inspect(data)
 
 
@@ -577,9 +623,10 @@ def test_playbook_is_dev_bound_get_only_and_keeps_raw_reads_private():
     assert any(task["ansible.builtin.uri"]["url"].endswith("/api2/json/nodes") for task in api_reads)
     for endpoint in (
         "disks/list?include-partitions=1", "disks/lvm", "disks/lvmthin", "disks/directory",
-        "/storage", "/api2/json/storage/", "/access/permissions?path=", "/content?content=images",
+        "/storage", "/api2/json/storage/", "/access/permissions?path=", "/content",
     ):
         assert any(endpoint in task["ansible.builtin.uri"]["url"] for task in api_reads)
+    assert not any("content?content=" in task["ansible.builtin.uri"]["url"] for task in api_reads)
     validation = next(
         task for task in tasks
         if task.get("name") == "Validate that the private target is uniquely online"

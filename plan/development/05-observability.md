@@ -1138,23 +1138,35 @@ storage-status rows (5 active), 3 explicitly non-shared rows and 3 shared
 rows, and 5 positive-capacity rows with 1 unreported. All device-selection,
 physical-safety, filesystem-readiness, PBS-readiness, and write flags remained
 false. The next survey extension checks only the privately declared active,
-non-shared LVM-thin `images` row, reads its `vgname`/`thinpool` mapping, and
+non-shared LVM-thin storage row with `images` support, reads its
+`vgname`/`thinpool` mapping, and
 requires one exact match in the thin-pool inventory. Proxmox storage-status
 total/used/available values must agree with linked pool size/used values; the
-declared image listing must be complete, well-formed, and unique. A fixed
-256/512/1024-GiB preflight boolean passes only when existing virtual image
-sizes plus the proposed disk leave at least 30% of pool size, a hypothetical
-full write leaves at least 30% of pool size in reported physical availability,
-and current metadata free space is at least 30% of metadata size. This is a
-point-in-time preflight only: metadata use from a future unwritten disk cannot
-be predicted, no capacity is reserved, and allocation, PBS, guest filesystem,
-physical safety, and restore readiness remain false. Proxmox may silently omit
-image rows unless the caller has `VM.Config.Disk` on each owner VM. The survey
-therefore checks effective `Datastore.Allocate` and `Datastore.Audit` rights on
-the exact declared store before treating the image listing as complete;
-without both, `complete_storage_visibility_verified` and all capacity-pass
-booleans remain false. The public change does not alter the API token ACL; any
-needed permission change requires separate review. PBS is planned as a VM with a new virtual data disk on
+visible-volume listing must be well-formed and unique. A fixed
+256/512/1024-GiB preliminary boolean passes only when visible virtual sizes
+plus the proposed disk leave at least 30% of pool size, a hypothetical full
+write leaves at least 30% of pool size in reported physical availability, and
+current metadata free space is at least 30% of metadata size. This is a
+point-in-time preliminary fact: metadata use from a future unwritten disk
+cannot be predicted, no capacity is reserved, and allocation, PBS, guest
+filesystem, physical safety, and restore readiness remain false. The
+unfiltered content request includes visible `images` and `rootdir` rows, but
+upstream LVM-thin listing excludes `snap_*` logical volumes. Therefore
+`snapshot_inventory_complete_verified` and `storage_allocation_authorized` are
+always false; `snapshot_unverified_visible_volume_preflight_passes_*` is not
+allocation guidance. A separate reviewed snapshot-complete audit gate is
+required before VM provisioning. Proxmox may silently omit per-VM-inaccessible
+rows, so the survey checks effective `Datastore.Allocate` and `Datastore.Audit`
+rights on the exact declared store before treating the visible-volume listing
+as permission-complete. Without both, `visible_volume_permissions_verified`
+and all preliminary booleans remain false. Missing or malformed private
+declarations and failed required API requests can stop the task before a
+sanitized receipt; API details, including permission denials, remain hidden by
+`no_log`. The public change does not alter the API token ACL; any needed
+permission change requires separate review. Exact pool/status `used` equality
+is checked across distinct GET requests. A concurrent write can make those
+values differ, in which case the survey refuses with no tolerance and must be
+rerun. PBS is planned as a VM with a new virtual data disk on
 that store; no host disk is selected or initialized. Live execution and review
 of the extended preflight remain pending. After separate review, task 4.6d is
 idempotent VM virtual-disk attachment and guest filesystem provisioning; no
