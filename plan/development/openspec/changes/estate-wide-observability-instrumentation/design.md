@@ -295,6 +295,53 @@ guide](https://pve.proxmox.com/pve-docs/pvesm.1.html) and [LVM-thin status
 implementation](https://github.com/proxmox/pve-storage/blob/master/src/PVE/Storage/LvmThinPlugin.pm), [storage-content API](https://github.com/proxmox/pve-storage/blob/master/src/PVE/API2/Storage/Content.pm), [thin-pool API](https://github.com/proxmox/pve-storage/blob/master/src/PVE/API2/Disks/LVMThin.pm), and [effective-permissions API](https://github.com/proxmox/pve-access-control/blob/master/src/PVE/API2/AccessControl.pm).
 Live execution of the expanded virtual-disk preflight remains pending.
 
+## 2026-09-29 thick-LVM visible-store preflight
+
+Task 1998's sanitized result showed one directory, two LVM, one LVM-thin, and
+two other visible storage backends. The follow-on uses the existing Dev-bound
+physical-storage survey with one added protected `GET /storage`. It joins
+visible storage config/status rows to `/nodes/{node}/disks/lvm` by validated
+storage ID and `vgname`. Only active `lvm` rows with explicit `shared=0` and
+`images` content are candidates; each must map to exactly one unique volume
+group. Status total/used/available must exactly match that VG's size/free
+extents. Malformed or duplicate IDs/VG mappings and inconsistent values fail
+closed. Because configuration fields such as `content` can be optional, rows
+are validated for storage ID and type globally; `content` is required and
+validated only when a matching active, non-shared LVM status row advertises
+image content. A config row with `disable=1` is excluded even if node status
+reports it active. Any other visible `lvm` or `lvmthin` config row naming the same
+VG excludes that candidate, including shared, inactive, or non-image rows;
+incomplete or node-unmapped visible VG mappings suppress all candidate counts.
+Any visible LVM/LVM-thin status row without a matching same-type cluster config
+row also makes the mapping incomplete and suppresses every thick-LVM count. Invalid or
+duplicate IDs/types in the new visible cluster-config response can refuse the
+entire sanitized survey. Only the candidate's linked capacity tuple is
+required to match exactly. Existing unrelated node-status and VG validation
+remains governed by the original survey.
+
+The sanitized output contains aggregate visible-candidate counts and fixed
+256/512/1024-GiB headroom counts. A count includes only a candidate whose
+reported free extents after the hypothetical size retain at least 30% of
+reported VG size. It does not identify/select a store, reserve capacity, or
+authorize allocation. Proxmox's current [storage guide](https://pve.proxmox.com/pve-docs/pvesm.1.html)
+states regular LVM allocates blocks when a volume is created; the [LVM plugin](https://github.com/proxmox/pve-storage/blob/master/src/PVE/Storage/LVMPlugin.pm)
+reports status from VG size/free and checks free extents before allocation.
+The [storage config API](https://github.com/proxmox/pve-storage/blob/master/src/PVE/API2/Storage/Config.pm)
+and [node status API](https://github.com/proxmox/pve-storage/blob/master/src/PVE/API2/Storage/Status.pm)
+silently filter rows without per-store `Datastore.Audit` or
+`Datastore.AllocateSpace`, so counts are visible-store facts and may be
+incomplete. Explicit `shared=0` does not establish direct local physical media
+or rule out thin allocation behind a SAN/LUN.
+
+The existing private `proxmox_pbs_vm_storage_id` declaration still names the
+thin store until a separate site-config review. Thick-LVM candidate counts do
+not use or modify that declaration; if it still selects the thin store, the
+separate snapshot-complete allocation audit remains required before
+provisioning. Physical backing, device safety, filesystem readiness, PBS
+readiness, and write authorization remain false; raw API data is protected by
+`no_log`. Live execution and review remain pending.
+
+
 The 90d/45d retention target remains blocked: keep the effective 15d
 Prometheus / 7d Loki / 168h Tempo settings and 0B Prometheus size cap until the
 representative seven-day forecast, nonzero cap, at least 30% backing-filesystem

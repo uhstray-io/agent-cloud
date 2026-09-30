@@ -70,6 +70,18 @@ The platform SHALL use a reviewed, Dev-bound, GET-only survey before considering
 - **AND** missing/malformed private declarations or failed required API requests may stop the task before a sanitized receipt; duplicate or malformed volume IDs, unsupported content, inactive/shared storage, inconsistent values, or incomplete visible rows fail closed; no storage ID, exact capacity, volume ID, or reservation is reported
 - **AND** exact pool/status `used` equality is enforced across separate GETs; if concurrent writes make them disagree, the survey refuses with no tolerance and must be rerun; API request details remain hidden by `no_log`
 
+#### Scenario: Visible thick-LVM image stores report VG headroom facts only
+- **WHEN** the reviewed survey reads the private, uniquely online storage node's status, storage configuration, and LVM volume-group inventory
+- **THEN** it joins visible status and config rows by validated storage ID, then maps only enabled active `lvm` rows with explicit `shared=0`, `images` content, and one unique `vgname` match; a config row with `disable=1` is excluded even if status reports active
+- **AND** malformed or duplicate config IDs fail closed; incomplete visible LVM/LVM-thin VG mappings suppress all thick-LVM candidate counts, and any other visible LVM/LVM-thin config row naming the same VG excludes that candidate, even if it is inactive, shared, or lacks image content
+- **AND** `thick_lvm_config_vg_mappings_complete=false` whenever a visible LVM/LVM-thin config row lacks a valid `vgname` or references a VG absent from the node inventory, or a visible LVM/LVM-thin status row lacks a matching same-type config row; all thick-LVM counts are suppressed
+- **AND** disagreement between a counted candidate's status total/used/available and linked VG size/free extents fails closed
+- **AND** optional config `content` is required and parsed only for matching active, explicitly non-shared LVM image candidates; absent content on unrelated rows does not invalidate the survey
+- **AND** it reports only aggregate visible-candidate counts and fixed 256/512/1024-GiB headroom counts; a size counts only when reported VG free extents after that hypothetical allocation retain at least 30% of reported VG size
+- **AND** `storage_allocation_authorized`, `thick_lvm_allocation_authorized`, `thick_lvm_backing_media_verified`, `device_safety_verified`, `filesystem_readiness_verified`, and `pbs_readiness_verified` remain false; results do not select a storage or reserve capacity
+- **AND** `/storage` and node storage status may silently omit rows without `Datastore.Audit` or `Datastore.AllocateSpace` on the store, so counts describe visible stores and may be incomplete; `shared=0` does not prove local physical backing or rule out thin allocation behind a SAN/LUN
+- **AND** no storage/VG name or ID, exact capacity, device path, serial, or private topology is reported; raw API responses remain hidden by `no_log`
+
 ### Requirement: Rollout and recovery are reproducible
 Instrumentation and receiver changes SHALL be declared as code, applied through reviewed `dev` and Semaphore, and verified per wave. A failed wave SHALL be reversible by an operator-driven reviewed declaration revert and redeploy without deleting existing telemetry volumes.
 
