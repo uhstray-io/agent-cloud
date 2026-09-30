@@ -106,8 +106,10 @@ compose() {
 # task output). It does not try to find where a value ends, because a value can hold a space, a
 # comma or a quote (PR 231 Codex review): after an Authorization header or a password, passwd,
 # secret, token, api-key or bare key label (the last is how agentgateway's local-dev config
-# carries a client key), the REST OF THE LINE is blanked. A URL's userinfo is blanked up to its
-# last `@`, and a Bearer token wherever it appears. Over-redaction is the accepted cost. It is
+# carries a client key), the REST OF THE LINE is blanked. Up to three words may sit between the
+# label and its `:` or `=`: step-ca 0.30.2 prints "Your CA administrative password is: <the key
+# password>" on first boot, which a label-then-colon rule let through. A URL's userinfo is
+# blanked up to its last `@`, and a Bearer token wherever it appears. Over-redaction is the accepted cost. It is
 # still a best-effort filter, not a guarantee: an unlabelled secret passes through, so logs are
 # dumped only on failure.
 redact_secrets() {
@@ -115,7 +117,7 @@ redact_secrets() {
     -e 's#(://[^:/@[:space:]]+:)[^[:space:]]*@#\1***@#g' \
     -e 's#([Bb][Ee][Aa][Rr][Ee][Rr][[:space:]]+)[^[:space:]]+#\1***#g' \
     -e 's#([Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn]["'"'"']?[[:space:]]*[:=]).*$#\1 ***#' \
-    -e 's#(^|[^[:alnum:]])(([Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]|[Pp][Aa][Ss][Ss][Ww][Dd]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Tt][Oo][Kk][Ee][Nn]|[Aa][Pp][Ii]_?[Kk][Ee][Yy]|[Kk][Ee][Yy])["'"'"']?[[:space:]]*[:=]).*$#\1\2 ***#'
+    -e 's#(^|[^[:alnum:]])(([Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]|[Pp][Aa][Ss][Ss][Ww][Dd]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Tt][Oo][Kk][Ee][Nn]|[Aa][Pp][Ii]_?[Kk][Ee][Yy]|[Kk][Ee][Yy])["'"'"']?([[:space:]]+[[:alpha:]]+){0,3}[[:space:]]*[:=]).*$#\1\2 ***#'
 }
 
 # dump_container_diagnostics <container_name> [lines]
