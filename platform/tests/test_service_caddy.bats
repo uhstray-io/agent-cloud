@@ -168,7 +168,9 @@ PY2
   assert_grep -qF -- '--san "{{ san }}"' "$mint"
   python3 - "$mint" "$BATS_TEST_TMPDIR/sancheck.yml" <<'PY2'
 import sys, yaml
-tasks = yaml.safe_load(open(sys.argv[1]))
+top = yaml.safe_load(open(sys.argv[1]))
+# The wildcard tasks sit in a block (a declared leaf goes to tasks/issue-internal-leaf.yml).
+tasks = top + [c for x in top for c in (x.get('block') or [])]
 t = [x for x in tasks if x.get('name') == 'Refuse an extra SAN outside hostname characters'][0]
 that = t['ansible.builtin.assert']['that']
 play = [{'hosts': 'localhost', 'connection': 'local', 'gather_facts': False,

@@ -274,6 +274,7 @@ All deployment automation is built from reusable Ansible tasks. See `plan/archit
 | `tasks/emit-step-result.yml` | Record ONE service-deployment-workflow step result with `set_stats` (printed as JSON under `CUSTOM STATS` by the repo `ansible.cfg`); runs in check mode too. Included last by every workflow executor and snapshot playbook |
 | `tasks/list-service-containers.yml` | The containers one service's compose project created, by the compose `working_dir` label — the one selector the workflow snapshots and the persistence checks share. A service still running from a directory outside the monorepo declares it as `compose_working_dir`; a rootful podman service (`podman_rootful: true`) is listed as root |
 | `tasks/netbox-api-headers.yml` | NetBox API headers for a stored token (`Bearer` for a v2 `nbt_` token, `Token` for v1) — every NetBox API caller builds them here |
+| `tasks/issue-internal-leaf.yml` | Issue ONE leaf declared in site-config's `internal_leaves` from the internal CA: key and request made on the consumer, signed on the CA host by the profile's issuer (password from OpenBao on stdin, hidden), placed under its serial with `current` swapped in one rename. Entered through `tasks/mint-internal-cert.yml` with `_mint_name` |
 | `tasks/wait-for-apt.yml` | Wait for cloud-init and the dpkg lock on a freshly provisioned host, so an install issued right after provisioning does not fail on a transient lock |
 
 `platform/playbooks/tasks/` contains the shared tasks; the table above is the curated set
