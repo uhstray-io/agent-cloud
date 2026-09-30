@@ -416,16 +416,40 @@ def test_foreign_node_config_rows_do_not_join_or_alias_local_storage():
         "storage": "private-foreign", "type": "lvmthin", "nodes": "other-node",
         "vgname": None,
     })
+    data["storage"]["json"]["data"].append({
+        "storage": "private-foreign", "type": "lvmthin", "enabled": 0,
+        "active": 0, "shared": 0, "content": "images",
+    })
 
     result = inspect(data)
 
     assert result["thick_lvm_foreign_lvm_config_row_count"] == 1
     assert result["thick_lvm_local_config_vg_join_incomplete_count"] == 0
+    assert result["thick_lvm_unmatched_local_status_row_count"] == 0
     assert result["thick_lvm_config_vg_mappings_complete"] is True
     assert result["visible_thick_lvm_image_store_count"] == 1
     assert result["thick_lvm_visible_alias_suppressed_candidate_count"] == 0
     assert "private-foreign" not in str(result)
     assert "other-node" not in str(result)
+
+
+def test_foreign_scoped_status_not_marked_disabled_is_unmatched_local_status():
+    data = sample()
+    data["storage_config_rows"]["json"]["data"].append({
+        "storage": "private-foreign", "type": "lvmthin", "nodes": "other-node",
+        "vgname": "foreign-vg",
+    })
+    data["storage"]["json"]["data"].append({
+        "storage": "private-foreign", "type": "lvmthin", "enabled": 1,
+        "active": 0, "shared": 0, "content": "images",
+    })
+
+    result = inspect(data)
+
+    assert result["thick_lvm_foreign_lvm_config_row_count"] == 1
+    assert result["thick_lvm_config_vg_mappings_complete"] is False
+    assert result["thick_lvm_unmatched_local_status_row_count"] == 1
+    assert result["visible_thick_lvm_image_store_count"] == 0
 
 
 def test_foreign_node_same_vg_alias_suppresses_local_candidate():

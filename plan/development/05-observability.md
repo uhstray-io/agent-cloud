@@ -1194,12 +1194,15 @@ only for a matching active, explicitly non-shared LVM image candidate. Any
 other visible LVM or LVM-thin config row naming the same VG excludes the
 candidate even if that other row is inactive, shared, lacks image content, or
 is foreign-node scoped;
-incomplete or node-unmapped VG mappings, including any visible LVM/LVM-thin
-status row without a matching same-type cluster config row, suppresses only
+incomplete or node-unmapped local-applicable VG mappings, including any
+target-node LVM/LVM-thin status row without a matching same-type local-applicable
+cluster config row, suppresses only
 thick-LVM candidate and headroom counts; aggregate diagnostic counts remain
 available. An invalid or duplicate storage ID, or a missing/non-string type, in
 this added cluster-config read can refuse the entire sanitized survey; types may
-repeat.
+repeat. A matching foreign-scoped config/status row marked `enabled=0` is not an
+unmatched local row; local-applicable configs remain subject to the completeness
+check even when disabled.
 
 This preflight supersedes the *candidate direction* of the earlier thin-LVM
 proposal, but does not erase its evidence: the existing
@@ -1228,8 +1231,8 @@ comma-separated string; when omitted, the storage applies across nodes. The
 survey validates that field for LVM/LVM-thin rows and scopes VG joins and
 candidate selection to the declared online node. Alias exclusion compares each
 local candidate against all visible LVM/LVM-thin configs, including foreign-node
-rows, because backing identity is not established by node scope. Malformed local
-LVM scopes refuse the sanitized inspection; unrelated storage types do not need
+rows, because backing identity is not established by node scope. Malformed LVM
+scopes refuse the sanitized inspection; unrelated storage types do not need
 the field. Both cluster config and node status endpoints filter rows
 by datastore permissions, so diagnostics describe only API-visible rows and
 cannot prove that hidden rows do not exist. See upstream [storage config API](https://github.com/proxmox/pve-storage/blob/master/src/PVE/API2/Storage/Config.pm), [storage plugin node encoding](https://github.com/proxmox/pve-storage/blob/master/src/PVE/Storage/Plugin.pm), [node-restriction check](https://github.com/proxmox/pve-storage/blob/master/src/PVE/Storage.pm), and [node storage status API](https://github.com/proxmox/pve-storage/blob/master/src/PVE/API2/Storage/Status.pm).

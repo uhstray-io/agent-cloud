@@ -518,6 +518,7 @@ def _thick_lvm_facts(
     configs: dict[str, Mapping] = {}
     local_configs: dict[str, Mapping] = {}
     visible_lvm_configs: dict[str, Mapping] = {}
+    foreign_lvm_config_ids: set[str] = set()
     foreign_lvm_config_row_count = 0
     for row in config_rows:
         storage_id, kind = row.get("storage"), row.get("type")
@@ -534,6 +535,7 @@ def _thick_lvm_facts(
                 local_configs[storage_id] = row
             else:
                 foreign_lvm_config_row_count += 1
+                foreign_lvm_config_ids.add(storage_id)
         if kind == "lvm" and "content" in row:
             _require(isinstance(row["content"], str),
                     "Proxmox returned a malformed cluster storage config inventory.")
@@ -558,12 +560,26 @@ def _thick_lvm_facts(
         )
         for _, config in local_lvm_config_rows
     )
-    unmatched_local_status_row_count = sum(
-        row["storage"] not in local_configs
-        or local_configs[row["storage"]].get("type") != row.get("type")
-        for row in status_rows
-        if row.get("type") in {"lvm", "lvmthin"}
-    )
+    unmatched_local_status_row_count = 0
+    for row in status_rows:
+        if row.get("type") not in {"lvm", "lvmthin"}:
+            continue
+        storage_id = row["storage"]
+        visible_config = visible_lvm_configs.get(storage_id)
+        enabled = row.get("enabled")
+        foreign_disabled_pair = (
+            storage_id in foreign_lvm_config_ids
+            and visible_config is not None
+            and visible_config.get("type") == row.get("type")
+            and (enabled is False or type(enabled) is int and enabled == 0)
+        )
+        if foreign_disabled_pair:
+            continue
+        if (
+            storage_id not in local_configs
+            or local_configs[storage_id].get("type") != row.get("type")
+        ):
+            unmatched_local_status_row_count += 1
     unmatched_local_config_row_count = sum(
         status_by_id.get(storage_id) is None
         or status_by_id[storage_id].get("type") != config.get("type")
