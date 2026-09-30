@@ -75,7 +75,8 @@
           current_uid="$(id -u 2>/dev/null)" || exit 1
           path_uid="$(stat -c '%u' /dev/shm/ansible-tmp 2>/dev/null)" || exit 1
           path_mode="$(stat -c '%a' /dev/shm/ansible-tmp 2>/dev/null)" || exit 1
-          if [ "$path_uid" != "$current_uid" ] || [ "$path_mode" != 700 ]; then exit 1; fi
+          case "$path_mode" in ''|*[!0-7]*) exit 1 ;; esac
+          if [ "$path_uid" != "$current_uid" ] || [ $((0$path_mode & 022)) -ne 0 ]; then exit 1; fi
           tmpfs_path=/dev/shm/ansible-tmp
         else
           if [ "$(findmnt -n -o FSTYPE --target /dev/shm 2>/dev/null)" != tmpfs ] || [ ! -w /dev/shm ]; then

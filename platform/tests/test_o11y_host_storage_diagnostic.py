@@ -2,6 +2,7 @@
 
 import importlib.util
 import json
+import os
 import subprocess
 from pathlib import Path
 from unittest.mock import patch
@@ -293,7 +294,9 @@ def test_both_diagnostics_require_writable_tmpfs_before_using_remote_modules():
         assert "current_uid=\"$(id -u 2>/dev/null)\"" in script
         assert "stat -c '%u' /dev/shm/ansible-tmp" in script
         assert "stat -c '%a' /dev/shm/ansible-tmp" in script
-        assert '"$path_mode" != 700' in script
+        assert '"$path_uid" != "$current_uid"' in script
+        assert "$((0$path_mode & 022))" in script
+        assert 'case "$path_mode" in' in script
         assert 'df -Pk "$tmpfs_path"' in script
         assert "printf 'remote_tmpfs_ready\\n'" in script
         assert raw["changed_when"] is False
@@ -304,3 +307,43 @@ def test_both_diagnostics_require_writable_tmpfs_before_using_remote_modules():
             "_remote_tmpfs_preflight.rc == 0",
             "_remote_tmpfs_preflight.stdout | trim == 'remote_tmpfs_ready'",
         ]
+
+
+def test_existing_remote_tmp_allows_ansible_755_reruns_but_rejects_untrusted_modes(tmp_path):
+    play = yaml.safe_load((ROOT / "platform/playbooks/diagnose-o11y-host-storage.yml").read_text())
+    receiver = next(play for play in play if play.get("hosts") == "o11y_svc")
+    script = receiver["tasks"][0]["ansible.builtin.raw"]
+    parent = tmp_path / "shm"
+    remote_tmp = parent / "ansible-tmp"
+    remote_tmp.mkdir(parents=True)
+    script = script.replace("/dev/shm/ansible-tmp", str(remote_tmp))
+    script = script.replace("/dev/shm", str(parent))
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    commands = {
+        "findmnt": "#!/bin/sh\nprintf 'tmpfs\\n'\n",
+        "id": "#!/bin/sh\nprintf '1001\\n'\n",
+        "stat": (
+            "#!/bin/sh\ncase \"$2\" in\n"
+            "  %u) printf '%s\\n' \"$FAKE_OWNER\" ;;\n"
+            "  %a) printf '%s\\n' \"$FAKE_MODE\" ;;\n"
+            "  *) exit 1 ;;\nesac\n"
+        ),
+        "df": "#!/bin/sh\nprintf 'fs blocks used available cap mount\\nfake 4096 0 4096 0%% /tmp\\n'\n",
+    }
+    for name, contents in commands.items():
+        command = bin_dir / name
+        command.write_text(contents)
+        command.chmod(0o755)
+
+    def run_preflight(owner, mode):
+        return subprocess.run(
+            ["sh", "-c", script], text=True, capture_output=True,
+            env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}",
+                 "FAKE_OWNER": owner, "FAKE_MODE": mode}, check=False,
+        )
+
+    assert run_preflight("1001", "755").stdout == "remote_tmpfs_ready\n"
+    assert run_preflight("1001", "777").returncode != 0
+    assert run_preflight("1002", "755").returncode != 0
