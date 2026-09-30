@@ -148,7 +148,7 @@ def test_a_lock_left_by_a_killed_run_does_not_block(tmp_path):
     # The lock is a kernel flock, released when its holder dies: a leftover lock file from
     # a killed run holds nothing.
     (tmp_path / "certs").mkdir()
-    (tmp_path / "certs" / ".lock").write_text("")
+    (tmp_path / "certs" / ".placement.lock").write_text("")
     r = _run(tmp_path, {"consumer": {**_consumer(tmp_path, [_leaf(tmp_path)]), "_mint_lock_wait": 1}})
     assert r.returncode == 0, r.stdout + r.stderr
     assert (tmp_path / "certs" / "current" / "cert.pem").exists()
@@ -171,7 +171,7 @@ def test_a_live_holder_blocks_the_placement_until_the_wait_runs_out(tmp_path):
     (tmp_path / "certs").mkdir()
     holder = subprocess.Popen(
         ["python3", "-c", "import fcntl, sys, time; f = open(sys.argv[1], 'a'); fcntl.flock(f, fcntl.LOCK_EX); "
-         "print('held', flush=True); time.sleep(60)", str(tmp_path / "certs" / ".lock")],
+         "print('held', flush=True); time.sleep(60)", str(tmp_path / "certs" / ".placement.lock")],
         stdout=subprocess.PIPE, text=True)
     try:
         assert holder.stdout.readline().strip() == "held"

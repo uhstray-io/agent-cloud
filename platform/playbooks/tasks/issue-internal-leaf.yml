@@ -188,7 +188,8 @@
     # A fresh directory per certificate, then `current` replaced in one rename, so a reader
     # never sees a new certificate beside an old key (design decision 7). The link is
     # relative, so it resolves inside a container that mounts the parent directory.
-    # One placement at a time per leaf directory, under a kernel lock (flock) the system
+    # One placement at a time per leaf directory, under a kernel lock (flock on
+    # `.placement.lock`) the system
     # releases when its holder exits for any reason, so a killed run leaves nothing stale and
     # a slow one is never overtaken (reviews of #363). In Python so the lock, the swap and the
     # prune share one process: the certificate arrives on stdin.
@@ -208,7 +209,7 @@
           d, pending, wait = sys.argv[1], sys.argv[2], int(sys.argv[3])
           os.chdir(d)
           os.umask(0o077)
-          lock = open(".lock", "a")
+          lock = open(".placement.lock", "a")
           deadline = time.monotonic() + wait
           while True:
               try:
@@ -217,13 +218,18 @@
               except BlockingIOError:
                   if time.monotonic() > deadline:
                       shutil.rmtree(pending, ignore_errors=True)  # this run's key is never used
-                      sys.exit("another issuance holds " + d + "/.lock")
+                      sys.exit("another issuance holds " + d + "/.placement.lock")
                   time.sleep(1)
-          # Pending directories older than an hour belong to runs killed before placement.
+          # Pending directories older than an hour belong to runs killed before placement
+          # (signing takes seconds). One can vanish mid-sweep: its own run placed it.
           for entry in os.listdir("."):
-              if (entry.startswith(".pending.") and os.path.join(d, entry) != pending
-                      and time.time() - os.lstat(entry).st_mtime > 3600):
-                  shutil.rmtree(entry, ignore_errors=True)
+              if entry.startswith(".pending.") and os.path.join(d, entry) != pending:
+                  try:
+                      stale = time.time() - os.lstat(entry).st_mtime > 3600
+                  except FileNotFoundError:
+                      continue
+                  if stale:
+                      shutil.rmtree(entry, ignore_errors=True)
           cert = os.path.join(pending, "cert.pem")
           with open(cert, "w") as out:
               out.write(sys.stdin.read())
