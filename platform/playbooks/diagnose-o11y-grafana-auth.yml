@@ -63,23 +63,28 @@
   tasks:
     - name: Check that Ansible remote temp is writable tmpfs before module transfer
       ansible.builtin.raw: |
-        if [ "$(findmnt -n -o FSTYPE --target /dev/shm 2>/dev/null)" != tmpfs ] || [ ! -w /dev/shm ]; then
+        if [ -L /dev/shm/ansible-tmp ]; then
           exit 1
         fi
-        if [ -L /dev/shm/ansible-tmp ] || { [ -e /dev/shm/ansible-tmp ] && [ ! -d /dev/shm/ansible-tmp ]; }; then
-          exit 1
+        if [ -e /dev/shm/ansible-tmp ]; then
+          if [ ! -d /dev/shm/ansible-tmp ] || [ "$(findmnt -n -o FSTYPE --target /dev/shm/ansible-tmp 2>/dev/null)" != tmpfs ] || [ ! -w /dev/shm/ansible-tmp ]; then
+            exit 1
+          fi
+          tmpfs_path=/dev/shm/ansible-tmp
+        else
+          if [ "$(findmnt -n -o FSTYPE --target /dev/shm 2>/dev/null)" != tmpfs ] || [ ! -w /dev/shm ]; then
+            exit 1
+          fi
+          tmpfs_path=/dev/shm
         fi
-        mkdir -p /dev/shm/ansible-tmp 2>/dev/null || exit 1
-        if [ "$(findmnt -n -o FSTYPE --target /dev/shm/ansible-tmp 2>/dev/null)" != tmpfs ] || [ ! -w /dev/shm/ansible-tmp ]; then
-          exit 1
-        fi
-        available_kib="$(df -Pk /dev/shm 2>/dev/null | awk 'NR == 2 { print $4 }')"
+        available_kib="$(df -Pk "$tmpfs_path" 2>/dev/null | awk 'NR == 2 { print $4 }')"
         case "$available_kib" in ''|*[!0-9]*) exit 1 ;; esac
         if [ "$available_kib" -lt 1024 ]; then exit 1; fi
         printf 'remote_tmpfs_ready\n'
       register: _remote_tmpfs_preflight
       changed_when: false
       failed_when: false
+      check_mode: false
 
     - name: Require the fixed tmpfs module-transfer path
       ansible.builtin.assert:

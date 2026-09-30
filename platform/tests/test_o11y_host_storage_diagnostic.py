@@ -244,12 +244,14 @@ def test_both_diagnostics_require_writable_tmpfs_before_using_remote_modules():
         assert "ansible.builtin.raw" in raw
         script = raw["ansible.builtin.raw"]
         assert "findmnt" in script
-        assert "df -Pk /dev/shm" in raw["ansible.builtin.raw"]
-        assert "mkdir -p /dev/shm/ansible-tmp" in raw["ansible.builtin.raw"]
-        assert script.index("findmnt -n -o FSTYPE --target /dev/shm") < script.index(
-            "mkdir -p /dev/shm/ansible-tmp"
+        assert "mkdir" not in script
+        assert "if [ -L /dev/shm/ansible-tmp ]" in script
+        assert "if [ -e /dev/shm/ansible-tmp ]" in script
+        assert script.index("if [ -e /dev/shm/ansible-tmp ]") < script.index(
+            "findmnt -n -o FSTYPE --target /dev/shm 2>/dev/null"
         )
         assert "findmnt -n -o FSTYPE --target /dev/shm/ansible-tmp" in script
+        assert 'df -Pk "$tmpfs_path"' in script
         assert "printf 'remote_tmpfs_ready\\n'" in script
         assert raw["changed_when"] is False
         assert subprocess.run(["sh", "-n"], input=script, text=True, capture_output=True).returncode == 0
