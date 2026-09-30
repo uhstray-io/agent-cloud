@@ -433,6 +433,28 @@ def test_foreign_node_config_rows_do_not_join_or_alias_local_storage():
     assert "other-node" not in str(result)
 
 
+def test_foreign_disabled_status_with_type_mismatch_is_unmatched_local_status():
+    data = sample()
+    data["storage_config_rows"]["json"]["data"].append({
+        "storage": "private-foreign", "type": "lvm", "nodes": "other-node",
+        "vgname": "foreign-vg",
+    })
+    data["storage"]["json"]["data"].append({
+        "storage": "private-foreign", "type": "lvmthin", "enabled": 0,
+        "active": 0, "shared": 0, "content": "images",
+    })
+
+    result = inspect(data)
+
+    assert result["thick_lvm_foreign_lvm_config_row_count"] == 1
+    assert result["thick_lvm_unmatched_local_status_row_count"] == 1
+    assert result["thick_lvm_unmatched_local_config_row_count"] == 0
+    assert result["thick_lvm_config_vg_mappings_complete"] is False
+    assert result["visible_thick_lvm_image_store_count"] == 0
+    assert "private-foreign" not in str(result)
+    assert "foreign-vg" not in str(result)
+
+
 def test_foreign_scoped_status_not_marked_disabled_is_unmatched_local_status():
     data = sample()
     data["storage_config_rows"]["json"]["data"].append({

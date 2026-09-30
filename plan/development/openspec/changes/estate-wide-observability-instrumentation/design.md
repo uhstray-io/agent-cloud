@@ -314,9 +314,10 @@ VG excludes that candidate, including shared, inactive, non-image, or
 foreign-node rows; incomplete or node-unmapped local VG mappings
 suppress only thick-LVM candidate and headroom counts, while aggregate
 diagnostic counts remain available.
-Any target-node LVM/LVM-thin status row without a matching same-type
-local-applicable cluster config row also makes the mapping incomplete and
-suppresses only thick-LVM candidate and headroom counts. A matching
+Either a local-applicable LVM/LVM-thin config row without same-type target-node
+status (including disabled configs), or a target-node status row without a
+matching same-type local-applicable config row, makes the mapping incomplete
+and suppresses only thick-LVM candidate and headroom counts. A matching
 foreign-scoped config/status pair marked `enabled=0` is excluded from local
 completeness; local-applicable configs remain checked even when disabled. An
 invalid or duplicate storage ID, or a missing/non-string

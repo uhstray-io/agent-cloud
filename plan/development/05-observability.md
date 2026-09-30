@@ -1194,13 +1194,14 @@ only for a matching active, explicitly non-shared LVM image candidate. Any
 other visible LVM or LVM-thin config row naming the same VG excludes the
 candidate even if that other row is inactive, shared, lacks image content, or
 is foreign-node scoped;
-incomplete or node-unmapped local-applicable VG mappings, including any
-target-node LVM/LVM-thin status row without a matching same-type local-applicable
-cluster config row, suppresses only
-thick-LVM candidate and headroom counts; aggregate diagnostic counts remain
-available. An invalid or duplicate storage ID, or a missing/non-string type, in
-this added cluster-config read can refuse the entire sanitized survey; types may
-repeat. A matching foreign-scoped config/status row marked `enabled=0` is not an
+local mapping incompleteness includes a local-applicable LVM/LVM-thin config row
+without same-type target-node status (including disabled configs), a target-node
+status row without a matching same-type local-applicable config, or an invalid
+local config/VG join. These suppress only thick-LVM candidate and headroom counts;
+aggregate diagnostic counts remain available. An invalid or duplicate storage
+ID, or a missing/non-string type, in this added cluster-config read can refuse
+the entire sanitized survey; types may repeat. A matching foreign-scoped
+config/status row marked `enabled=0` is not an
 unmatched local row; local-applicable configs remain subject to the completeness
 check even when disabled.
 
