@@ -212,5 +212,15 @@ def test_a_symlinked_leaf_directory_is_refused_before_anything_reaches_the_ca(tm
     target.mkdir()
     (tmp_path / "certs").symlink_to(target)
     r = _run(tmp_path, {"consumer": _consumer(tmp_path, [_leaf(tmp_path)])})
-    assert r.returncode != 0 and "is a symbolic link" in r.stdout, r.stdout
+    assert r.returncode != 0 and "resolves through a symbolic link" in r.stdout, r.stdout
     assert not list(tmp_path.glob("stdin.*")) and not list(target.iterdir())
+
+
+def test_a_symlinked_ancestor_of_the_leaf_directory_is_refused_before_anything_is_written(tmp_path):
+    real = tmp_path / "real"
+    real.mkdir()
+    (tmp_path / "via").symlink_to(real)
+    leaf = _leaf(tmp_path, dir=str(tmp_path / "via" / "certs"))
+    r = _run(tmp_path, {"consumer": _consumer(tmp_path, [leaf])})
+    assert r.returncode != 0 and "resolves through a symbolic link" in r.stdout, r.stdout
+    assert not list(tmp_path.glob("stdin.*")) and not list(real.iterdir())

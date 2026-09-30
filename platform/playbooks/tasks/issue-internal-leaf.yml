@@ -61,18 +61,20 @@
     _leaf_ca_host: "{{ _mint_ca_host | default(inventory_hostname) }}"
     _leaf_ca_engine: "{{ hostvars[_mint_ca_host | default(inventory_hostname)].container_engine | default('podman') }}"
 
-# The placement changes into this directory, so a symlink would put the key elsewhere.
-- name: "Look at the leaf's directory"
-  ansible.builtin.stat:
-    path: "{{ _leaf.dir }}"
-    follow: false
-  register: _leaf_dir_stat
+# The directory must resolve to itself: a symlink at it or at any ancestor would put the key
+# elsewhere (reviews of #369). The placement checks again under its lock.
+- name: "Resolve the leaf's directory"
+  ansible.builtin.command:
+    argv: [python3, -c, "import os, sys; print(os.path.realpath(sys.argv[1]))", "{{ _leaf.dir }}"]
+  register: _leaf_dir_real
+  changed_when: false
+  check_mode: false
 
-- name: "Refuse a leaf directory that is a symbolic link"
+- name: "Refuse a leaf directory reached through a symbolic link"
   ansible.builtin.assert:
     that:
-      - not (_leaf_dir_stat.stat.islnk | default(false))
-    fail_msg: "{{ _leaf.dir }} on {{ inventory_hostname }} is a symbolic link; declare the real directory."
+      - _leaf_dir_real.stdout == _leaf.dir
+    fail_msg: "{{ _leaf.dir }} on {{ inventory_hostname }} resolves through a symbolic link; declare the real directory."
     quiet: true
 
 - name: "Does the leaf already have a current certificate"
@@ -222,6 +224,9 @@
         _leaf_placer: |
           import fcntl, os, re, shutil, subprocess, sys, time
           d, pending, wait = sys.argv[1], sys.argv[2], int(sys.argv[3])
+          if os.path.realpath(d) != d:
+              shutil.rmtree(pending, ignore_errors=True)
+              sys.exit(d + " resolves through a symbolic link; declare the real directory")
           os.chdir(d)
           os.umask(0o077)
           lock = open(".placement.lock", "a")

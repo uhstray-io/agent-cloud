@@ -33,6 +33,47 @@
     # An extra var overrides this; the play above refuses a run without one.
     target_service: "ungrouped"
     _leaf_action: "{{ leaf_action | default('issue') }}"
+    _leaf_remover: |
+      import os, re, stat, sys
+      d, mode = sys.argv[1], sys.argv[2]
+      if os.path.realpath(d) != d:
+          sys.exit(d + " resolves through a symbolic link; declare the real directory")
+      try:
+          fd = os.open(d, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+      except FileNotFoundError:
+          print("nothing (no issued files)")
+          sys.exit(0)
+      def kind_at(parent, name):
+          return stat.S_IFMT(os.stat(name, dir_fd=parent, follow_symlinks=False).st_mode)
+      def ours(name):
+          k = kind_at(fd, name)
+          if name in ("current", ".current.new"):
+              return k == stat.S_IFLNK
+          if name == ".placement.lock":
+              return k == stat.S_IFREG
+          if name.startswith(".pending.") or re.fullmatch("[0-9A-F]+", name):
+              return k == stat.S_IFDIR
+          return False
+      def rm(parent, name):
+          if kind_at(parent, name) == stat.S_IFDIR:
+              sub = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+              try:
+                  for entry in os.listdir(sub):
+                      rm(sub, entry)
+              finally:
+                  os.close(sub)
+              os.rmdir(name, dir_fd=parent)
+          else:
+              os.unlink(name, dir_fd=parent)
+      targets = sorted(e for e in os.listdir(fd) if ours(e))
+      print(" ".join(targets) or "nothing (no issued files)")
+      if mode == "remove":
+          for entry in targets:
+              rm(fd, entry)
+          empty = not os.listdir(fd)
+          os.close(fd)
+          if empty:
+              os.rmdir(d)  # fails on anything but an empty directory, a link included
   tasks:
     - name: "Refuse an incomplete or unknown request"
       ansible.builtin.assert:
@@ -62,20 +103,23 @@
           {{ _leaf_decl.host }}) with an absolute directory of plain names and no trailing slash.
         quiet: true
 
-    # find follows a symlinked starting directory, so removal would reach its target
-    # (review of #369). Issuance refuses one the same way.
-    - name: "Look at the leaf's directory"
-      ansible.builtin.stat:
-        path: "{{ _leaf_decl.dir }}"
-        follow: false
-      register: _leaf_dir_stat
+    # The directory must resolve to itself: a symlink at the leaf OR at any ancestor would
+    # send issuance and removal into another tree (reviews of #369). The removal below also
+    # works through a descriptor opened without following links, so a link swapped in after
+    # this check cannot redirect it.
+    - name: "Resolve the leaf's directory"
+      ansible.builtin.command:
+        argv: [python3, -c, "import os, sys; print(os.path.realpath(sys.argv[1]))", "{{ _leaf_decl.dir }}"]
+      register: _leaf_dir_real
+      changed_when: false
+      check_mode: false
       when: inventory_hostname == _leaf_decl.host
 
-    - name: "Refuse a leaf directory that is a symbolic link"
+    - name: "Refuse a leaf directory reached through a symbolic link"
       ansible.builtin.assert:
         that:
-          - not (_leaf_dir_stat.stat.islnk | default(false))
-        fail_msg: "{{ _leaf_decl.dir }} on {{ inventory_hostname }} is a symbolic link; declare the real directory."
+          - _leaf_dir_real.stdout == _leaf_decl.dir
+        fail_msg: "{{ _leaf_decl.dir }} on {{ inventory_hostname }} resolves through a symbolic link; declare the real directory."
         quiet: true
       when: inventory_hostname == _leaf_decl.host
 
@@ -87,45 +131,26 @@
         _mint_reissue: "{{ leaf_reissue | default(false) | bool }}"
       when: _leaf_action == 'issue' and inventory_hostname == _leaf_decl.host
 
-    # Read first, so a dry run lists exactly what a real run removes.
+    # Only what issuance makes, each by its kind: serial and pending directories, the two
+    # links, the lock file. Everything goes through a descriptor opened with O_NOFOLLOW, and
+    # nothing is followed below it. `list` only reports; `remove` also deletes, then removes
+    # the directory if it is empty.
     - name: "List what issuance created in the leaf's directory"
-      ansible.builtin.find:
-        paths: "{{ _leaf_decl.dir }}"
-        patterns: ["current", ".current.new", ".placement.lock", ".pending.*", "[0-9A-F]*"]
-        use_regex: false
-        file_type: any
-        hidden: true
-      register: _leaf_created
-      when: _leaf_action == 'remove' and inventory_hostname == _leaf_decl.host and _leaf_dir_stat.stat.exists
-
-    # Only a name issuance makes: a hex serial directory, the link, the lock, pending work.
-    - name: "Name the entries to remove"
-      ansible.builtin.set_fact:
-        _leaf_remove: >-
-          {{ (_leaf_created.files | default([])) | map(attribute='path')
-             | select('match', '^' ~ (_leaf_decl.dir | regex_escape) ~ '/(current|\.current\.new|\.placement\.lock|\.pending\.[^/]+|[0-9A-F]+)$')
-             | list }}
+      ansible.builtin.command:
+        argv: [python3, -c, "{{ _leaf_remover }}", "{{ _leaf_decl.dir }}", list]
+      register: _leaf_listed
+      changed_when: false
+      check_mode: false
       when: _leaf_action == 'remove' and inventory_hostname == _leaf_decl.host
 
     - name: "Report what the removal takes away"
       ansible.builtin.debug:
-        msg: >-
-          {{ leaf_name }}: {{ 'would remove' if ansible_check_mode else 'removing' }}
-          {{ _leaf_remove | map('basename') | list or 'nothing (no issued files)' }} in {{ _leaf_decl.dir }}
+        msg: "{{ leaf_name }}: {{ 'would remove' if ansible_check_mode else 'removing' }} {{ _leaf_listed.stdout }} in {{ _leaf_decl.dir }}"
       when: _leaf_action == 'remove' and inventory_hostname == _leaf_decl.host
 
     - name: "Remove the leaf's issued files"
-      ansible.builtin.file:
-        path: "{{ item }}"
-        state: absent
-      loop: "{{ _leaf_remove }}"
-      when: _leaf_action == 'remove' and inventory_hostname == _leaf_decl.host
-
-    # rmdir fails on a non-empty directory, so anything issuance did not create keeps it.
-    - name: "Remove the leaf's directory if nothing else is in it"
       ansible.builtin.command:
-        argv: [rmdir, "{{ _leaf_decl.dir }}"]
-      register: _leaf_rmdir
-      changed_when: _leaf_rmdir.rc == 0
-      failed_when: false
+        argv: [python3, -c, "{{ _leaf_remover }}", "{{ _leaf_decl.dir }}", remove]
+      register: _leaf_removed
+      changed_when: "'nothing' not in _leaf_removed.stdout"
       when: not ansible_check_mode and _leaf_action == 'remove' and inventory_hostname == _leaf_decl.host

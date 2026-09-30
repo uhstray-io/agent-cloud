@@ -101,7 +101,7 @@ def test_a_symlinked_leaf_directory_is_refused_and_its_target_left_alone(tmp_pat
     (target / "0A1B").mkdir(parents=True)
     (tmp_path / "leaf").symlink_to(target)
     r = _run(tmp_path, {"leaf_name": "probe", "leaf_action": "remove"}, [_leaf(tmp_path)])
-    assert r.returncode != 0 and "is a symbolic link" in r.stdout, r.stdout
+    assert r.returncode != 0 and "resolves through a symbolic link" in r.stdout, r.stdout
     assert (target / "0A1B").is_dir()
 
 
@@ -115,3 +115,30 @@ def test_a_trailing_slash_in_the_declared_directory_is_refused(tmp_path):
 def test_removing_a_leaf_whose_directory_is_gone_does_nothing(tmp_path):
     r = _run(tmp_path, {"leaf_name": "probe", "leaf_action": "remove"}, [_leaf(tmp_path)])
     assert r.returncode == 0 and "nothing (no issued files)" in r.stdout, r.stdout
+
+
+def test_a_symlinked_ancestor_of_the_leaf_directory_is_refused(tmp_path):
+    # Review of #369: a link above the leaf directory redirects it as surely as one at it.
+    real = tmp_path / "real"
+    (real / "leaf" / "0A1B").mkdir(parents=True)
+    (tmp_path / "via").symlink_to(real)
+    leaf = {**_leaf(tmp_path), "dir": str(tmp_path / "via" / "leaf")}
+    r = _run(tmp_path, {"leaf_name": "probe", "leaf_action": "remove"}, [leaf])
+    assert r.returncode != 0 and "resolves through a symbolic link" in r.stdout, r.stdout
+    assert (real / "leaf" / "0A1B").is_dir()
+
+
+def test_a_dangling_symlink_at_the_leaf_directory_is_refused(tmp_path):
+    (tmp_path / "leaf").symlink_to(tmp_path / "missing")
+    r = _run(tmp_path, {"leaf_name": "probe", "leaf_action": "remove"}, [_leaf(tmp_path)])
+    assert r.returncode != 0 and "resolves through a symbolic link" in r.stdout, r.stdout
+
+
+def test_an_entry_of_the_wrong_kind_is_not_taken_for_one_issuance_made(tmp_path):
+    leaf = tmp_path / "leaf"
+    leaf.mkdir()
+    (leaf / "ABCD").write_text("a file named like a serial")
+    (leaf / "current").mkdir()  # a directory where issuance keeps a link
+    r = _run(tmp_path, {"leaf_name": "probe", "leaf_action": "remove"}, [_leaf(tmp_path)])
+    assert r.returncode == 0 and "nothing (no issued files)" in r.stdout, r.stdout
+    assert sorted(p.name for p in leaf.iterdir()) == ["ABCD", "current"]
