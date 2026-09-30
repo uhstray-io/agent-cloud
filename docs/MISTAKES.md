@@ -1543,7 +1543,6 @@ production podman version was unknown, then built on the workstation's anyway. W
 a capability of a production tool is established on the version production runs (its man
 page at that tag, or a read-only report from the host), never on the workstation's.
 
-
 ## 3. Acting on live state
 
 ### 3.1 Overwriting a real credential with a probe value
@@ -3634,8 +3633,9 @@ it. Widened by the guard below: the check now runs on every task, not on recall.
 (`platform/tests/test_agentgateway_secret_defs.py`). Both occurrences are now caught by
 `test_no_task_reads_secrets_outside_the_task_that_binds_it` in
 `platform/tests/test_manage_secrets_scope.py`: no task under `platform/playbooks` or
-`platform/semaphore` may read `secrets.`/`secrets[` unless that task binds `secrets` in its
-own `vars:`.
+`platform/semaphore` may read `secrets` (as `secrets.x`, `secrets[...]`, a filter or a bare
+`{{ secrets }}`, in its body, its conditions or its own `vars:`) unless that task binds
+`secrets` in its own `vars:`; a play's `vars:` are scanned the same way.
 
 ### 10.18 Dry runs of five production playbooks could never pass; nothing had ever run them
 
