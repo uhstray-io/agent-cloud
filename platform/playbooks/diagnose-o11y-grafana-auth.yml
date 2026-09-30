@@ -1,0 +1,93 @@
+---
+# Read-only, bounded diagnosis of Grafana's recent Authentik OAuth failures.
+- name: Pre-flight
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: o11y_svc
+    preflight_group_expected: o11y_svc
+
+- name: Verify the exact reviewed Dev checkout
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    _project_root: "{{ playbook_dir | dirname | dirname }}"
+  tasks:
+    - name: Require the reviewed revision and production receiver scope
+      ansible.builtin.assert:
+        that:
+          - expected_repository_sha | default('') is match('^[0-9a-f]{40}$')
+          - not ansible_check_mode
+          - not (local_mode | default(false) | bool)
+          - groups.get('o11y_svc', []) | length == 1
+        fail_msg: "This diagnostic requires an exact reviewed Dev revision and one production o11y receiver."
+
+    - name: Read controller revision
+      ansible.builtin.command:
+        argv: [git, rev-parse, HEAD]
+        chdir: "{{ _project_root }}"
+      register: _controller_revision
+      changed_when: false
+      check_mode: false
+
+    - name: Require exact reviewed revision
+      ansible.builtin.assert:
+        that: _controller_revision.stdout == expected_repository_sha
+        fail_msg: "Semaphore checked out a different reviewed revision."
+
+    - name: Read controller checkout changes
+      ansible.builtin.command:
+        argv: [git, status, --porcelain, --untracked-files=all]
+        chdir: "{{ _project_root }}"
+      register: _controller_changes
+      changed_when: false
+      check_mode: false
+
+    - name: Require a clean reviewed checkout
+      ansible.builtin.assert:
+        that: _controller_changes.stdout | length == 0
+        fail_msg: "Semaphore checkout contains uncommitted files."
+
+- name: Classify recent Grafana OAuth server logs without exposing them
+  hosts: o11y_svc
+  gather_facts: false
+  become: false
+  vars:
+    _engine: "{{ container_engine | default('podman') }}"
+    _allowed_categories:
+      - group_claim_rejected
+      - userinfo_rejected
+      - token_exchange_failed
+      - oauth_failure_unclassified
+  tasks:
+    - name: Require the production rootless Podman receiver
+      ansible.builtin.assert:
+        that:
+          - _engine == 'podman'
+          - not (local_mode | default(false) | bool)
+        fail_msg: "Grafana OAuth diagnosis is limited to the production rootless Podman receiver."
+
+    - name: Read and classify a bounded Grafana log tail in memory
+      ansible.builtin.command:
+        argv: [python3, -]
+        stdin: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/diagnose-grafana-oauth.py') }}"
+      register: _oauth_diagnostic
+      changed_when: false
+      check_mode: false
+      failed_when: false
+
+    - name: Keep only a fixed diagnostic category
+      ansible.builtin.set_fact:
+        _oauth_category: >-
+          {{ _oauth_diagnostic.stdout if _oauth_diagnostic.stdout in _allowed_categories
+                or _oauth_diagnostic.stdout in ['diagnostic_unavailable', 'no_oauth_failure_in_window']
+             else 'diagnostic_unavailable' }}
+
+    - name: Report sanitized OAuth category and reviewed revision
+      ansible.builtin.debug:
+        msg: "Grafana OAuth diagnostic category={{ _oauth_category }} revision={{ expected_repository_sha }}"
+
+    - name: Require an allowlisted diagnostic result
+      ansible.builtin.assert:
+        that: _oauth_category in _allowed_categories
+        fail_msg: "The diagnostic was unavailable or returned no recognized safe category."
