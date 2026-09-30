@@ -14,7 +14,7 @@ case "$1" in
   inspect) echo "state=exited exit=1 restarts=3 started=then error=" ;;
   # The scheme is assembled at run time: a literal connection string here trips the
   # repository's secret scanner, which is right to treat that shape as a credential.
-  logs) s=postgres; printf 'Error: failed to connect %s://agw:hunter2@db.invalid:5432/agw\nAuthorization: Bearer abc.def\n- key: sk-plaintext-client\n' "$s" ;;
+  logs) s=postgres; printf 'Error: failed to connect %s://agw:hunter2@db.invalid:5432/agw\nAuthorization: Bearer abc.def\n- key: sk-plaintext-client\nYour CA administrative password is: ca-key-pw\n' "$s" ;;
   *) exit 1 ;;
 esac
 STUB
@@ -40,6 +40,11 @@ redact() { bash -c "source '$COMMON'; redact_secrets" <<<"$1"; }
   # A bare key (agentgateway local-dev config), but not a word that merely ends in "key".
   [ "$(redact '      - key: sk-plaintext-client')" = '      - key: ***' ]
   [ "$(redact 'monkey: banana')" = 'monkey: banana' ]
+  # Words between the label and its colon: step-ca 0.30.2's first-boot banner carries the CA
+  # key password this way, and a failed first boot would dump it into Semaphore's task output.
+  [ "$(redact '2026-09-29T00:00:00Z 👉 Your CA administrative password is: Abc123XyzValue')" \
+    = '2026-09-29T00:00:00Z 👉 Your CA administrative password is: ***' ]
+  [ "$(redact 'secret value was = k1')" = 'secret value was = ***' ]
   [ "$(redact 'a harmless line')" = 'a harmless line' ]
 }
 
@@ -51,6 +56,7 @@ redact() { bash -c "source '$COMMON'; redact_secrets" <<<"$1"; }
   refute_contains "$output" "hunter2"
   refute_contains "$output" "abc.def"
   refute_contains "$output" "sk-plaintext-client"
+  refute_contains "$output" "ca-key-pw"
 }
 
 @test "dump_container_diagnostics: an engine that fails does not fail the caller" {
