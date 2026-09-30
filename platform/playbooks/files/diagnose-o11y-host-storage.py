@@ -5,8 +5,10 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 import subprocess
 from collections.abc import Callable
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 INSPECT_FORMAT = (
@@ -41,6 +43,87 @@ def filesystem_capacity(path: str) -> dict[str, int] | None:
     if total <= 0 or available < 0 or available > total:
         return None
     return {"total_bytes": total, "available_bytes": available, "device_id": device}
+
+
+def block_device_number(path: str) -> str | None:
+    """Resolve an LVM device path to its kernel device number without reading data."""
+    try:
+        metadata = os.stat(path)
+    except OSError:
+        return None
+    if not stat.S_ISBLK(metadata.st_mode):
+        return None
+    return f"{os.major(metadata.st_rdev)}:{os.minor(metadata.st_rdev)}"
+
+
+def _reported_bytes(value: Any) -> int:
+    if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+        raise Unavailable("lvm_capacity_invalid")
+    try:
+        amount = Decimal(str(value).strip())
+    except (InvalidOperation, ValueError):
+        raise Unavailable("lvm_capacity_invalid") from None
+    if not amount.is_finite() or amount < 0 or amount != amount.to_integral_value():
+        raise Unavailable("lvm_capacity_invalid")
+    return int(amount)
+
+
+def _lvm_rows(raw: Any, report_name: str) -> list[dict[str, Any]]:
+    report = _json_object(raw, "lvm_report_invalid").get("report")
+    if not isinstance(report, list) or len(report) != 1 or not isinstance(report[0], dict):
+        raise Unavailable("lvm_report_invalid")
+    rows = report[0].get(report_name)
+    if not isinstance(rows, list):
+        raise Unavailable("lvm_report_invalid")
+    if any(not isinstance(row, dict) for row in rows):
+        raise Unavailable("lvm_report_invalid")
+    return rows
+
+
+def root_lvm_capacity(
+    lvs_raw: Any,
+    vgs_raw: Any,
+    root_major_minor: str,
+    root_lv_size_bytes: int,
+    device_number_reader: Callable[[str], str | None] = block_device_number,
+) -> dict[str, Any]:
+    """Join the mounted root LV to read-only LVM reports, returning values only."""
+    try:
+        if lvs_raw in (None, "") or vgs_raw in (None, ""):
+            raise Unavailable("lvm_unavailable")
+        lvs = _lvm_rows(lvs_raw, "lv")
+        vgs = _lvm_rows(vgs_raw, "vg")
+        matches: list[dict[str, Any]] = []
+        for row in lvs:
+            path, vg_name = row.get("lv_path"), row.get("vg_name")
+            if not isinstance(path, str) or not path.startswith("/"):
+                continue
+            if not isinstance(vg_name, str) or not vg_name:
+                raise Unavailable("lvm_report_invalid")
+            size = _reported_bytes(row.get("lv_size"))
+            if device_number_reader(path) == root_major_minor:
+                matches.append({"vg_name": vg_name, "size_bytes": size})
+        if len(matches) != 1 or matches[0]["size_bytes"] != root_lv_size_bytes:
+            raise Unavailable("root_logical_volume_unresolved")
+
+        root_vg_name = matches[0]["vg_name"]
+        vg_matches: list[dict[str, Any]] = []
+        for row in vgs:
+            name = row.get("vg_name")
+            if not isinstance(name, str) or not name:
+                raise Unavailable("lvm_report_invalid")
+            free_bytes = _reported_bytes(row.get("vg_free"))
+            if name == root_vg_name:
+                vg_matches.append({"free_bytes": free_bytes})
+        if len(vg_matches) != 1:
+            raise Unavailable("root_volume_group_unresolved")
+        return {
+            "status": "observed",
+            "logical_volume_size_bytes": matches[0]["size_bytes"],
+            "volume_group_free_bytes": vg_matches[0]["free_bytes"],
+        }
+    except Unavailable as exc:
+        return {"status": "unavailable", "reason": str(exc)}
 
 
 def _root_block_chain(raw: Any, root_major_minor: str) -> list[dict[str, Any]]:
@@ -114,6 +197,7 @@ def _root_block_chain(raw: Any, root_major_minor: str) -> list[dict[str, Any]]:
 def diagnose(
     payload: dict[str, Any],
     capacity_reader: Callable[[str], dict[str, int] | None] = filesystem_capacity,
+    device_number_reader: Callable[[str], str | None] = block_device_number,
 ) -> dict[str, Any]:
     try:
         exporter = _json_object(payload.get("exporter_inspect"), "exporter_inspect_invalid")
@@ -183,6 +267,22 @@ def diagnose(
                 or not isinstance(major_minor, str) or not major_minor):
             raise Unavailable("root_mount_invalid")
         chain = _root_block_chain(payload.get("block_topology"), major_minor)
+        root_capacity = capacity_reader("/")
+        if not isinstance(root_capacity, dict):
+            raise Unavailable("root_filesystem_capacity_unavailable")
+        root_total, root_available = root_capacity.get("total_bytes"), root_capacity.get("available_bytes")
+        if (isinstance(root_total, bool) or not isinstance(root_total, int) or root_total <= 0
+                or isinstance(root_available, bool) or not isinstance(root_available, int)
+                or root_available < 0 or root_available > root_total):
+            raise Unavailable("root_filesystem_capacity_invalid")
+        root_lv = chain[0] if chain[0]["type"] == "lvm" else None
+        if root_lv is None:
+            lvm_report = {"status": "not_lvm"}
+        else:
+            lvm_report = root_lvm_capacity(
+                payload.get("lvs"), payload.get("vgs"), major_minor,
+                root_lv["size_bytes"], device_number_reader,
+            )
 
         def capacity_report(item: dict[str, int]) -> dict[str, int | float]:
             total, available = item["total_bytes"], item["available_bytes"]
@@ -201,7 +301,13 @@ def diagnose(
                 "network_count": len(networks),
                 "published_port_count": published_ports,
             },
-            "guest_root": {"source": source, "filesystem_type": fstype, "block_chain": chain},
+            "guest_root": {
+                "filesystem_type": fstype,
+                "filesystem_total_bytes": root_total,
+                "filesystem_available_bytes": root_available,
+                "block_chain": [{"type": item["type"], "size_bytes": item["size_bytes"]} for item in chain],
+                "lvm": lvm_report,
+            },
             "podman_storage": {
                 "volume_path_filesystem": capacity_report(volume_capacity),
                 "graph_root_filesystem": capacity_report(graph_capacity),
@@ -230,11 +336,18 @@ def collect() -> dict[str, Any]:
         "root_mount": ["findmnt", "--json", "--output", "SOURCE,FSTYPE,MAJ:MIN", "--target", "/"],
         "block_topology": ["lsblk", "--json", "--bytes", "--paths", "--output",
                            "NAME,TYPE,SIZE,PKNAME,MAJ:MIN"],
+        "lvs": ["lvs", "--readonly", "--reportformat", "json", "--units", "b", "--nosuffix",
+                "--options", "lv_path,vg_name,lv_size"],
+        "vgs": ["vgs", "--readonly", "--reportformat", "json", "--units", "b", "--nosuffix",
+                "--options", "vg_name,vg_free"],
     }
-    payload: dict[str, str] = {}
+    payload: dict[str, Any] = {}
     for key, command in commands.items():
         value = _read(command)
         if value is None:
+            if key in {"lvs", "vgs"}:
+                payload[key] = None
+                continue
             return {"status": "unavailable", "reason": f"{key}_unavailable"}
         payload[key] = value
     return diagnose(payload)
