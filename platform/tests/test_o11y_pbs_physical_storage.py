@@ -24,6 +24,12 @@ def api(data):
 
 def sample():
     return {
+        "declared_storage_id": "private-candidate",
+        "storage_config": api({"type": "lvmthin", "vgname": "private-vg", "thinpool": "private-pool"}),
+        "storage_permissions": api({"/storage/private-candidate": {
+            "Datastore.Allocate": 1, "Datastore.Audit": 1,
+        }}),
+        "visible_volumes": api([]),
         "disks": api([
             {"devpath": "/dev/private-disk-a", "size": 2 * 1024**4, "used": "LVM"},
             {"devpath": "/dev/private-disk-a1", "parent": "/dev/private-disk-a", "size": 1 * GIB,
@@ -36,7 +42,7 @@ def sample():
             ]}
         ]}),
         "thinpool": api([{
-            "lv": "private-pool", "vg": "private-vg", "lv_size": 1000 * GIB,
+            "lv": "other-pool", "vg": "other-vg", "lv_size": 1000 * GIB,
             "used": 600 * GIB, "metadata_size": 8 * GIB, "metadata_used": 2 * GIB,
         }]),
         "directories": api([{
@@ -52,6 +58,29 @@ def sample():
             {"storage": "private-dir", "type": "dir", "content": "backup", "active": 1, "shared": 0},
         ]),
     }
+
+
+def candidate_row(*, total=8192 * GIB, used=1024 * GIB, available=None, **overrides):
+    if available is None:
+        available = total - used if type(total) is int else 0
+    return {
+        "storage": "private-candidate", "type": "lvmthin", "content": "rootdir,images",
+        "active": 1, "shared": 0, "total": total, "used": used, "avail": available,
+        **overrides,
+    }
+
+
+def add_candidate(data, row=None, volumes=(), *, metadata_size=8 * GIB, metadata_used=2 * GIB):
+    row = row or candidate_row()
+    data["storage"]["json"]["data"].append(row)
+    data["thinpool"]["json"]["data"].append({
+        "lv": "private-pool", "vg": "private-vg", "lv_size": row["total"],
+        "used": row["used"], "metadata_size": metadata_size, "metadata_used": metadata_used,
+    })
+    data["visible_volumes"] = api([
+        {"volid": f"private-candidate:{name}", "content": kind, "format": "raw", "size": size}
+        for name, kind, size in volumes
+    ])
 
 
 def test_target_node_must_be_private_declared_unique_and_online():
@@ -118,6 +147,17 @@ def test_report_is_allowlisted_and_has_no_private_topology_or_exact_capacity():
             "under-30-percent": 0, "30-to-under-70-percent": 1,
             "at-least-70-percent": 0, "unknown": 0,
         },
+        "declared_storage_row_found": False,
+        "declared_storage_row_eligible": False,
+        "declared_thinpool_linked": False,
+        "visible_volume_permissions_verified": False,
+        "visible_volume_inventory_well_formed": False,
+        "snapshot_inventory_complete_verified": False,
+        "declared_metadata_headroom_30_percent": False,
+        "snapshot_unverified_visible_volume_preflight_passes_256_gib_disk": False,
+        "snapshot_unverified_visible_volume_preflight_passes_512_gib_disk": False,
+        "snapshot_unverified_visible_volume_preflight_passes_1024_gib_disk": False,
+        "storage_allocation_authorized": False,
         "device_selected": False,
         "device_safety_verified": False,
         "filesystem_readiness_verified": False,
@@ -127,6 +167,7 @@ def test_report_is_allowlisted_and_has_no_private_topology_or_exact_capacity():
     }
     rendered = json.dumps(result)
     for private_value in ("private-disk", "private-vg", "private-pv", "private-pool", "private-dir",
+                          "private-candidate",
                           "private-lvm", "private-node", "private-server", "/dev/", "/private/",
                           str(2 * 1024**4), str(500 * GIB), str(8 * GIB)):
         assert private_value not in rendered
@@ -140,7 +181,15 @@ def test_report_is_allowlisted_and_has_no_private_topology_or_exact_capacity():
         "active_storage_count", "storage_active_unknown_count", "storage_backend_counts", "storage_shared_true_count",
         "storage_shared_false_count", "storage_shared_unknown_count", "storage_capacity_known_count",
         "storage_capacity_unreported_count", "storage_reported_total_capacity_band_counts",
-        "storage_reported_available_capacity_band_counts", "storage_reported_headroom_band_counts", "device_selected",
+        "storage_reported_available_capacity_band_counts", "storage_reported_headroom_band_counts",
+        "declared_storage_row_found", "declared_storage_row_eligible", "declared_thinpool_linked",
+        "visible_volume_permissions_verified", "visible_volume_inventory_well_formed",
+        "snapshot_inventory_complete_verified",
+        "declared_metadata_headroom_30_percent",
+        "snapshot_unverified_visible_volume_preflight_passes_256_gib_disk",
+        "snapshot_unverified_visible_volume_preflight_passes_512_gib_disk",
+        "snapshot_unverified_visible_volume_preflight_passes_1024_gib_disk",
+        "storage_allocation_authorized", "device_selected",
         "device_safety_verified", "filesystem_readiness_verified", "pbs_suitability_verified",
         "pbs_readiness_verified", "write_authorized",
     }
@@ -214,6 +263,306 @@ def test_zero_capacity_is_unreported_and_not_classified_as_under_100_gib():
     assert result["storage_reported_headroom_band_counts"]["unknown"] == 0
 
 
+def test_declared_active_local_lvmthin_images_store_reports_only_fixed_size_bools():
+    data = sample()
+    add_candidate(data)
+
+    result = inspect(data)
+
+    assert result["declared_storage_row_found"] is True
+    assert result["declared_storage_row_eligible"] is True
+    assert result["declared_thinpool_linked"] is True
+    assert result["visible_volume_permissions_verified"] is True
+    assert result["visible_volume_inventory_well_formed"] is True
+    assert result["snapshot_inventory_complete_verified"] is False
+    assert result["declared_metadata_headroom_30_percent"] is True
+    assert result["snapshot_unverified_visible_volume_preflight_passes_256_gib_disk"] is True
+    assert result["snapshot_unverified_visible_volume_preflight_passes_512_gib_disk"] is True
+    assert result["snapshot_unverified_visible_volume_preflight_passes_1024_gib_disk"] is True
+    assert result["storage_allocation_authorized"] is False
+    rendered = json.dumps(result)
+    assert "private-candidate" not in rendered
+    assert str(8192 * GIB) not in rendered
+    assert set(result).issuperset({
+        "snapshot_unverified_visible_volume_preflight_passes_256_gib_disk",
+        "snapshot_unverified_visible_volume_preflight_passes_512_gib_disk",
+        "snapshot_unverified_visible_volume_preflight_passes_1024_gib_disk",
+    })
+
+
+@pytest.mark.parametrize("size_gib", (256, 512, 1024))
+def test_virtual_disk_capacity_requires_size_plus_30_percent_remaining(size_gib):
+    size = size_gib * GIB
+    total = size * 5
+    threshold_available = size + total * 3 // 10
+
+    data = sample()
+    add_candidate(data, candidate_row(
+        total=total, used=total - threshold_available, available=threshold_available,
+    ))
+    assert inspect(data)[f"snapshot_unverified_visible_volume_preflight_passes_{size_gib}_gib_disk"] is True
+
+    data["storage"]["json"]["data"][-1]["used"] += 1
+    data["storage"]["json"]["data"][-1]["avail"] -= 1
+    data["thinpool"]["json"]["data"][-1]["used"] += 1
+    assert inspect(data)[f"snapshot_unverified_visible_volume_preflight_passes_{size_gib}_gib_disk"] is False
+
+
+@pytest.mark.parametrize(
+    "permissions",
+    [
+        {},
+        {"Datastore.Audit": 1},
+        {"Datastore.Allocate": 1},
+        {"Datastore.Allocate": 1, "Datastore.Audit": "yes"},
+    ],
+)
+def test_partial_image_listing_rights_never_produce_capacity_pass(permissions):
+    data = sample()
+    add_candidate(data, volumes=(("vm-123-disk-0", "images", 64 * GIB),))
+    data["storage_permissions"] = api({"/storage/private-candidate": permissions})
+
+    result = inspect(data)
+
+    assert result["visible_volume_permissions_verified"] is False
+    assert result["visible_volume_inventory_well_formed"] is False
+    assert all(result[f"snapshot_unverified_visible_volume_preflight_passes_{size}_gib_disk"] is False
+               for size in (256, 512, 1024))
+
+
+def test_non_propagated_rights_still_apply_at_the_exact_storage_path():
+    data = sample()
+    add_candidate(data)
+    data["storage_permissions"] = api({"/storage/private-candidate": {
+        "Datastore.Allocate": 0, "Datastore.Audit": 0,
+    }})
+
+    result = inspect(data)
+
+    assert result["visible_volume_permissions_verified"] is True
+    assert result["snapshot_unverified_visible_volume_preflight_passes_256_gib_disk"] is True
+
+
+def test_storage_permissions_for_another_path_do_not_prove_complete_visibility():
+    data = sample()
+    add_candidate(data)
+    data["storage_permissions"] = api({"/storage/different": {
+        "Datastore.Allocate": 1, "Datastore.Audit": 1,
+    }})
+
+    result = inspect(data)
+
+    assert result["visible_volume_permissions_verified"] is False
+    assert result["snapshot_unverified_visible_volume_preflight_passes_256_gib_disk"] is False
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        candidate_row(active=0),
+        candidate_row(shared=1),
+        candidate_row(content="backup"),
+        candidate_row(type="dir"),
+        candidate_row(total=8192 * GIB, used=7168 * GIB, available=1024 * GIB),
+    ],
+)
+def test_ineligible_or_incomplete_declared_storage_fails_capacity_checks_closed(row):
+    data = sample()
+    add_candidate(data, row)
+
+    result = inspect(data)
+
+    assert all(result[key] is False for key in (
+        "snapshot_unverified_visible_volume_preflight_passes_256_gib_disk",
+        "snapshot_unverified_visible_volume_preflight_passes_512_gib_disk",
+        "snapshot_unverified_visible_volume_preflight_passes_1024_gib_disk",
+    ))
+
+
+@pytest.mark.parametrize("missing_field", ("active", "shared"))
+def test_missing_candidate_eligibility_field_fails_capacity_checks_closed(missing_field):
+    data = sample()
+    row = candidate_row()
+    row.pop(missing_field)
+    add_candidate(data, row)
+
+    result = inspect(data)
+
+    assert all(result[key] is False for key in (
+        "snapshot_unverified_visible_volume_preflight_passes_256_gib_disk",
+        "snapshot_unverified_visible_volume_preflight_passes_512_gib_disk",
+        "snapshot_unverified_visible_volume_preflight_passes_1024_gib_disk",
+    ))
+
+
+def test_images_only_store_is_visible_but_ineligible_for_visible_volume_preflight():
+    data = sample()
+    row = candidate_row(content="images")
+    add_candidate(data, row)
+
+    result = inspect(data)
+
+    assert result["declared_storage_row_found"] is True
+    assert result["declared_storage_row_eligible"] is False
+    assert all(result[key] is False for key in (
+        "snapshot_unverified_visible_volume_preflight_passes_256_gib_disk",
+        "snapshot_unverified_visible_volume_preflight_passes_512_gib_disk",
+        "snapshot_unverified_visible_volume_preflight_passes_1024_gib_disk",
+    ))
+
+
+@pytest.mark.parametrize("missing_field", ("total", "used", "avail"))
+def test_missing_candidate_capacity_field_refuses_preflight(missing_field):
+    data = sample()
+    row = candidate_row()
+    row.pop(missing_field)
+    data["storage"]["json"]["data"].append(row)
+    data["thinpool"]["json"]["data"].append({
+        "lv": "private-pool", "vg": "private-vg", "lv_size": 8192 * GIB,
+        "used": 1024 * GIB, "metadata_size": 8 * GIB, "metadata_used": 2 * GIB,
+    })
+
+    with pytest.raises(ValueError, match="inconsistent declared storage capacity"):
+        inspect(data)
+
+
+def test_differently_named_eligible_storage_does_not_match_private_declaration():
+    data = sample()
+    add_candidate(data, candidate_row(storage="different-name"))
+
+    result = inspect(data)
+
+    assert result["declared_storage_row_found"] is False
+    assert result["declared_storage_row_eligible"] is False
+    assert result["snapshot_unverified_visible_volume_preflight_passes_256_gib_disk"] is False
+    assert result["snapshot_unverified_visible_volume_preflight_passes_512_gib_disk"] is False
+    assert result["snapshot_unverified_visible_volume_preflight_passes_1024_gib_disk"] is False
+
+
+def test_virtual_overcommit_blocks_preflight_even_when_written_space_is_free():
+    data = sample()
+    add_candidate(data, volumes=(("vm-123-disk-0", "images", 7500 * GIB),))
+
+    result = inspect(data)
+
+    assert result["visible_volume_inventory_well_formed"] is True
+    assert result["snapshot_inventory_complete_verified"] is False
+    assert result["snapshot_unverified_visible_volume_preflight_passes_256_gib_disk"] is False
+    assert result["snapshot_unverified_visible_volume_preflight_passes_512_gib_disk"] is False
+    assert result["snapshot_unverified_visible_volume_preflight_passes_1024_gib_disk"] is False
+
+
+def test_unfiltered_inventory_sums_both_image_and_rootdir_volume_rows():
+    data = sample()
+    add_candidate(data, volumes=(
+        ("vm-123-disk-0", "images", 64 * GIB),
+        ("vm-456-disk-0", "rootdir", 32 * GIB),
+    ))
+
+    result = inspect(data)
+
+    assert result["visible_volume_inventory_well_formed"] is True
+    assert result["snapshot_inventory_complete_verified"] is False
+    assert result["snapshot_unverified_visible_volume_preflight_passes_256_gib_disk"] is True
+    assert result["storage_allocation_authorized"] is False
+
+
+@pytest.mark.parametrize(
+    ("volume_name", "content"),
+    [
+        ("snap_vm-123-disk-0_daily", "images"),
+        ("vm-0-disk-0", "images"),
+        ("vm-123-disk-0", "backup"),
+        ("vm-123-", "images"),
+        ("vm-123-disk-0:extra", "images"),
+    ],
+)
+def test_visible_volume_identifiers_and_content_are_strictly_parsed(volume_name, content):
+    data = sample()
+    add_candidate(data, volumes=((volume_name, content, GIB),))
+
+    with pytest.raises(ValueError, match="malformed visible volume inventory"):
+        inspect(data)
+
+
+def test_low_current_thinpool_metadata_headroom_blocks_preflight():
+    data = sample()
+    add_candidate(data, metadata_used=6 * GIB)
+
+    result = inspect(data)
+
+    assert result["declared_metadata_headroom_30_percent"] is False
+    assert result["snapshot_unverified_visible_volume_preflight_passes_256_gib_disk"] is False
+
+
+def test_storage_pool_linkage_must_match_and_pool_status_capacity_must_agree():
+    data = sample()
+    add_candidate(data)
+    data["storage_config"]["json"]["data"]["thinpool"] = "different-pool"
+    with pytest.raises(ValueError, match="incomplete declared storage linkage"):
+        inspect(data)
+
+    data = sample()
+    add_candidate(data)
+    data["thinpool"]["json"]["data"][-1]["lv_size"] -= GIB
+    with pytest.raises(ValueError, match="inconsistent declared storage capacity"):
+        inspect(data)
+
+    data = sample()
+    add_candidate(data)
+    data["thinpool"]["json"]["data"][-1]["used"] += 1
+    with pytest.raises(ValueError, match="inconsistent declared storage capacity"):
+        inspect(data)
+
+
+def test_image_listing_must_be_unique_complete_and_storage_scoped():
+    data = sample()
+    add_candidate(data, volumes=(
+        ("vm-123-disk-0", "images", GIB), ("vm-123-disk-0", "images", GIB),
+    ))
+    with pytest.raises(ValueError, match="malformed visible volume inventory"):
+        inspect(data)
+
+    data = sample()
+    add_candidate(data)
+    data["visible_volumes"]["json"]["data"].append({
+        "volid": "different-storage:vm-123-disk-0", "content": "images", "format": "raw", "size": GIB,
+    })
+    with pytest.raises(ValueError, match="malformed visible volume inventory"):
+        inspect(data)
+
+
+def test_declared_storage_identifier_is_required_safe_and_unique():
+    for invalid in (None, "", "../private", "storage/id", "contains spaces"):
+        data = sample()
+        data["declared_storage_id"] = invalid
+        with pytest.raises(ValueError, match="private VM image-storage declaration"):
+            inspect(data)
+
+    data = sample()
+    data["storage"]["json"]["data"].extend([candidate_row(), candidate_row()])
+    with pytest.raises(ValueError, match="malformed storage status inventory"):
+        inspect(data)
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"active": 2},
+        {"shared": "0"},
+        {"content": None},
+        {"type": None},
+        {"total": "8192 GiB"},
+    ],
+)
+def test_malformed_declared_storage_row_is_refused(overrides):
+    data = sample()
+    data["storage"]["json"]["data"].append(candidate_row(**overrides))
+
+    with pytest.raises(ValueError, match="malformed storage status inventory"):
+        inspect(data)
+
+
 @pytest.mark.parametrize(
     ("used", "filesystem_count", "other_count"),
     [("ext4", 1, 0), ("ext3 filesystem", 1, 0), ("extended", 0, 1)],
@@ -238,6 +587,19 @@ def test_cli_refusal_has_only_fixed_safe_text(monkeypatch, capsys):
     captured = capsys.readouterr()
     assert "private-" not in captured.out
     assert "/dev/" not in captured.out
+    assert captured.err == ""
+
+
+def test_cli_success_prints_no_candidate_id_or_exact_capacity(monkeypatch, capsys):
+    data = sample()
+    add_candidate(data)
+    monkeypatch.setattr(sys, "argv", ["inspect_o11y_pbs_physical_storage.py", "inspect"])
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(data)))
+
+    assert main() == 0
+    captured = capsys.readouterr()
+    assert "private-candidate" not in captured.out
+    assert str(8192 * GIB) not in captured.out
     assert captured.err == ""
 
 
@@ -270,13 +632,17 @@ def test_playbook_is_dev_bound_get_only_and_keeps_raw_reads_private():
     play = next(item for item in plays if item.get("name") == "Survey declared PBS-node storage without mutation")
     tasks = play["tasks"]
     api_reads = [task for task in tasks if "ansible.builtin.uri" in task]
-    assert len(api_reads) == 6
+    assert len(api_reads) == 9
     assert all(task["ansible.builtin.uri"]["method"] == "GET" for task in api_reads)
     assert all(task.get("no_log") is True and task.get("check_mode") is False for task in api_reads)
     assert all("Authorization" in task["ansible.builtin.uri"]["headers"] for task in api_reads)
     assert any(task["ansible.builtin.uri"]["url"].endswith("/api2/json/nodes") for task in api_reads)
-    for endpoint in ("disks/list?include-partitions=1", "disks/lvm", "disks/lvmthin", "disks/directory", "/storage"):
+    for endpoint in (
+        "disks/list?include-partitions=1", "disks/lvm", "disks/lvmthin", "disks/directory",
+        "/storage", "/api2/json/storage/", "/access/permissions?path=", "/content",
+    ):
         assert any(endpoint in task["ansible.builtin.uri"]["url"] for task in api_reads)
+    assert not any("content?content=" in task["ansible.builtin.uri"]["url"] for task in api_reads)
     validation = next(
         task for task in tasks
         if task.get("name") == "Validate that the private target is uniquely online"
@@ -289,6 +655,14 @@ def test_playbook_is_dev_bound_get_only_and_keeps_raw_reads_private():
     assert tasks.index(validation) < first_node_read
     assert validation.get("no_log") is True
     assert "proxmox_pbs_storage_node" in str(play.get("vars"))
+    assert "proxmox_pbs_vm_storage_id" in str(play.get("vars"))
+    assert "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$" in str(tasks[0])
+    inspection = next(
+        task for task in tasks
+        if task.get("name") == "Build fixed aggregate physical and virtual-disk capacity receipt"
+    )
+    assert "declared_storage_id" in str(inspection)
+    assert inspection.get("no_log") is True
     assert all("{{ _target_node" not in str(task) for task in api_reads)
 
 

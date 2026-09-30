@@ -229,6 +229,72 @@ reviewed idempotent disk/LVM/filesystem automation must match the private
 declared layout before any write; no unused device may be presumed safe or
 selected automatically. Live survey execution remains pending.
 
+The physical survey succeeded as Dev-bound Semaphore task 1981 at merged SHA
+`ab98eaa3489937a854431ad046ddc5cd19c5c196`; publisher tasks 1978 (check mode)
+and 1979 (apply) passed. Its sanitized receipt reported 7 physical devices,
+3 partitions, 3 disk-usage values unknown, 4 LVM volume groups containing 4
+physical volumes, 1 thin pool, 0 Proxmox-managed directories, 6 visible
+storage-status rows (5 active), 3 explicitly non-shared rows, 3 shared rows,
+and 5 rows with positive reported capacity while 1 capacity was unreported.
+Device selection/safety, filesystem readiness, PBS suitability/readiness, and
+write authorization remained false. A first invocation refused because the
+private VM-image storage declaration was absent; the existing code-managed
+inventory synchronization reconciled that private declaration before task
+1981 succeeded. Private identifiers and exact capacities remain outside this
+repository.
+
+The local-only PBS placement strategy is a VM with a new virtual data disk on
+the separately declared image store; this does not authorize initializing a
+physical host disk. The GET-only preflight requires the exact declared active,
+non-shared `lvmthin` `images` row, reads its storage configuration to resolve
+`vgname`/`thinpool`, and requires one matching thin-pool record. The node
+storage-status `total`/`used`/`avail` must agree with the linked thin-pool
+`lv_size`/`used`; any disagreement refuses the receipt. The content request
+has no `content=images` filter, so it can include every visible image and
+rootdir row. Each volume ID must have the exact declared storage prefix, a
+supported `vm-` or `base-` owner/name form, a unique ID, an allowed content
+type, a raw format, and a positive size. IDs and capacities are never printed.
+However, this is only a visible-volume inventory: Proxmox's LVM-thin
+`list_images` excludes `snap_*` logical volumes, while its snapshot operations
+create those volumes. The preliminary calculation also requires the storage
+configuration to declare exactly both `images` and `rootdir`: an images-only
+configuration could omit preexisting rootdir volumes from the content API
+listing. No snapshot-complete read is established in this survey.
+Therefore `snapshot_inventory_complete_verified` is always false and the
+256/512/1024-GiB results are named
+`snapshot_unverified_visible_volume_preflight_passes_*`; they are preliminary
+facts only, not safe-allocation guidance. VM/disk provisioning requires a
+separate reviewed snapshot-complete audit gate before any allocation.
+
+The preliminary visible-volume calculation passes only if the listed virtual
+sizes plus the proposed disk leave at least 30% of pool size, a hypothetical
+full write of the proposal leaves at least 30% of pool size in reported
+physical availability, and current thin-pool metadata free space is at least
+30% of metadata size. The metadata condition is a current threshold, not a
+forecast of metadata use caused by a new unwritten disk. These are
+point-in-time, non-reserving facts and never authorize allocation or establish
+PBS, guest filesystem, physical safety, or restore readiness. The Proxmox
+LVM-thin plugin reports volume `size` from `lv_size`, while its status reports
+pool size, used, and available; the thin-pool API exposes metadata size and
+used bytes. The storage-content API can silently filter rows using per-VM
+`VM.Config.Disk` permissions, so HTTP 200 alone does not prove the visible
+listing is permission-complete. Before interpreting it, the survey reads the
+caller's effective permissions for the exact declared storage and requires
+both `Datastore.Allocate` (which upstream `check_volume_access` uses to bypass
+per-VM filtering) and `Datastore.Audit` (required by the content endpoint).
+If either privilege is absent from a valid permissions response, the fixed
+`visible_volume_permissions_verified` fact and all preliminary size booleans
+remain false. If the private declaration is missing or malformed, or a
+required Proxmox API request fails (including permission-denied content
+listing), the task can stop before producing a sanitized receipt; raw request
+details remain hidden by `no_log`. No API-token ACL is changed here. Exact
+pool/status `used` equality is required across separate GET requests; concurrent
+writes can cause a fail-closed refusal, in which case rerun the survey after
+activity settles. No tolerance is applied. See the [Proxmox storage
+guide](https://pve.proxmox.com/pve-docs/pvesm.1.html) and [LVM-thin status
+implementation](https://github.com/proxmox/pve-storage/blob/master/src/PVE/Storage/LvmThinPlugin.pm), [storage-content API](https://github.com/proxmox/pve-storage/blob/master/src/PVE/API2/Storage/Content.pm), [thin-pool API](https://github.com/proxmox/pve-storage/blob/master/src/PVE/API2/Disks/LVMThin.pm), and [effective-permissions API](https://github.com/proxmox/pve-access-control/blob/master/src/PVE/API2/AccessControl.pm).
+Live execution of the expanded virtual-disk preflight remains pending.
+
 The 90d/45d retention target remains blocked: keep the effective 15d
 Prometheus / 7d Loki / 168h Tempo settings and 0B Prometheus size cap until the
 representative seven-day forecast, nonzero cap, at least 30% backing-filesystem

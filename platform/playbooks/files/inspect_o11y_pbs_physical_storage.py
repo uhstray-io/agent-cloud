@@ -9,16 +9,25 @@ import sys
 from collections.abc import Mapping
 
 NODE_NAME = re.compile(r"[A-Za-z0-9._-]{1,64}")
+STORAGE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 PATH = re.compile(r"/[A-Za-z0-9._/+:-]{1,255}")
 SIZE_BANDS = ((100 * 1024**3, "under-100-GiB"), (1024**4, "100-GiB-to-under-1-TiB"))
+PROPOSED_DISK_SIZES = (256, 512, 1024)
 SAFE_REFUSALS = {
     "The private storage node declaration is missing or malformed.",
+    "The private VM image-storage declaration is missing or malformed.",
     "The declared storage node is not uniquely online.",
     "Proxmox returned an incomplete disk inventory.",
     "Proxmox returned an incomplete LVM inventory.",
     "Proxmox returned an incomplete thin-pool inventory.",
     "Proxmox returned an incomplete directory inventory.",
     "Proxmox returned an incomplete storage status inventory.",
+    "Proxmox returned an incomplete declared storage config inventory.",
+    "Proxmox returned an incomplete visible volume inventory.",
+    "Proxmox returned an incomplete declared storage permissions inventory.",
+    "Proxmox returned incomplete declared storage linkage.",
+    "Proxmox returned inconsistent declared storage capacity.",
+    "Proxmox returned a malformed visible volume inventory.",
     "Proxmox returned a malformed disk inventory.",
     "Proxmox returned a malformed LVM inventory.",
     "Proxmox returned a malformed thin-pool inventory.",
@@ -256,7 +265,7 @@ def _directory_facts(rows: list[object]) -> dict[str, object]:
             "directory_locality_verified": False}
 
 
-def _storage_facts(rows: list[object]) -> dict[str, object]:
+def _storage_facts(rows: list[object], declared_storage_id: str) -> tuple[dict[str, object], Mapping | None]:
     _require(all(isinstance(row, Mapping) for row in rows), "Proxmox returned a malformed storage status inventory.")
     seen: set[str] = set()
     types: dict[str, int] = {"lvm": 0, "lvmthin": 0, "directory": 0, "other": 0}
@@ -265,6 +274,7 @@ def _storage_facts(rows: list[object]) -> dict[str, object]:
     active_count = active_unknown = 0
     total_bands, available_bands = _size_band_counts(), _size_band_counts()
     headroom_bands = _headroom_band_counts()
+    declared_rows: list[Mapping] = []
     for row in rows:
         name, kind, content = row.get("storage"), row.get("type"), row.get("content")
         active, shared = row.get("active"), row.get("shared")
@@ -276,6 +286,8 @@ def _storage_facts(rows: list[object]) -> dict[str, object]:
             "Proxmox returned a malformed storage status inventory.",
         )
         seen.add(name)
+        if name == declared_storage_id:
+            declared_rows.append(row)
         normalized_type = kind.lower()
         category = normalized_type if normalized_type in {"lvm", "lvmthin", "dir"} else "other"
         types["directory" if category == "dir" else category] += 1
@@ -307,6 +319,7 @@ def _storage_facts(rows: list[object]) -> dict[str, object]:
                 available_bands[_size_band(a)] += 1
                 headroom_bands[_headroom_band(t, a)] += 1
                 capacity_known += 1
+    candidate = declared_rows[0] if len(declared_rows) == 1 else None
     return {
         "visible_storage_count": len(rows),
         "active_storage_count": active_count,
@@ -320,16 +333,164 @@ def _storage_facts(rows: list[object]) -> dict[str, object]:
         "storage_reported_total_capacity_band_counts": total_bands,
         "storage_reported_available_capacity_band_counts": available_bands,
         "storage_reported_headroom_band_counts": headroom_bands,
+    }, candidate
+
+
+def _allocation_facts(
+    candidate: Mapping | None,
+    declared_storage_id: str,
+    config_response: object,
+    permissions_response: object,
+    volume_response: object,
+    thinpool_rows: list[object],
+) -> dict[str, object]:
+    result = {
+        "declared_storage_row_found": candidate is not None,
+        "declared_storage_row_eligible": False,
+        "declared_thinpool_linked": False,
+        "visible_volume_permissions_verified": False,
+        "visible_volume_inventory_well_formed": False,
+        "snapshot_inventory_complete_verified": False,
+        "declared_metadata_headroom_30_percent": False,
+        "snapshot_unverified_visible_volume_preflight_passes_256_gib_disk": False,
+        "snapshot_unverified_visible_volume_preflight_passes_512_gib_disk": False,
+        "snapshot_unverified_visible_volume_preflight_passes_1024_gib_disk": False,
+        "storage_allocation_authorized": False,
     }
+    if candidate is None:
+        return result
+
+    config = _api_data(config_response, section="declared storage config", expected=Mapping)
+    permissions = _api_data(
+        permissions_response, section="declared storage permissions", expected=Mapping
+    )
+    permission_path = f"/storage/{declared_storage_id}"
+    effective_privileges = permissions.get(permission_path)
+    _require(
+        effective_privileges is None or isinstance(effective_privileges, Mapping),
+        "Proxmox returned an incomplete declared storage permissions inventory.",
+    )
+    # Values are propagation flags; a present privilege applies at this exact path
+    # even when its flag is false.
+    has_complete_visibility = isinstance(effective_privileges, Mapping) and all(
+        privilege in effective_privileges
+        and type(effective_privileges[privilege]) in {bool, int}
+        and effective_privileges[privilege] in (False, True, 0, 1)
+        for privilege in ("Datastore.Allocate", "Datastore.Audit")
+    )
+    result["visible_volume_permissions_verified"] = has_complete_visibility
+    vg, pool_name = config.get("vgname"), config.get("thinpool")
+    _require(
+        config.get("type") == "lvmthin"
+        and isinstance(vg, str) and bool(vg)
+        and isinstance(pool_name, str) and bool(pool_name),
+        "Proxmox returned incomplete declared storage linkage.",
+    )
+    configured_content = {entry.strip() for entry in candidate.get("content", "").split(",")}
+    eligible = (
+        candidate.get("type") == "lvmthin"
+        and (candidate.get("active") is True or type(candidate.get("active")) is int and candidate.get("active") == 1)
+        and (candidate.get("shared") is False or type(candidate.get("shared")) is int and candidate.get("shared") == 0)
+        and configured_content == {"images", "rootdir"}
+    )
+    result["declared_storage_row_eligible"] = eligible
+    if not eligible or not has_complete_visibility:
+        return result
+
+    matching_pools = [
+        row for row in thinpool_rows
+        if isinstance(row, Mapping) and row.get("vg") == vg and row.get("lv") == pool_name
+    ]
+    _require(
+        len(matching_pools) == 1,
+        "Proxmox returned incomplete declared storage linkage.",
+    )
+    pool = matching_pools[0]
+    pool_size, pool_used = pool.get("lv_size"), pool.get("used")
+    metadata_size, metadata_used = pool.get("metadata_size"), pool.get("metadata_used")
+    status_size, status_used, status_avail = (
+        candidate.get(key) for key in ("total", "used", "avail")
+    )
+    _require(
+        _integer(pool_size, positive=True)
+        and _integer(pool_used)
+        and _integer(metadata_size, positive=True)
+        and _integer(metadata_used)
+        and metadata_used <= metadata_size
+        and _integer(status_size, positive=True)
+        and _integer(status_used)
+        and _integer(status_avail)
+        and status_size == pool_size
+        # These separate GETs have no common snapshot; concurrent writes can
+        # make the values differ. Refuse and require a fresh survey, no tolerance.
+        and status_used == pool_used
+        and status_used + status_avail == status_size,
+        "Proxmox returned inconsistent declared storage capacity.",
+    )
+    result["declared_thinpool_linked"] = True
+    result["declared_metadata_headroom_30_percent"] = (
+        (metadata_size - metadata_used) * 10 >= metadata_size * 3
+    )
+
+    # The content API returns image/rootdir volumes but the upstream LVM-thin
+    # list_images method omits snap_* LVs, so this inventory is never snapshot-complete.
+    volume_rows = _api_data(volume_response, section="visible volume", expected=list)
+    volume_ids: set[str] = set()
+    provisioned_virtual_bytes = 0
+    for volume in volume_rows:
+        _require(isinstance(volume, Mapping), "Proxmox returned a malformed visible volume inventory.")
+        volume_id, size = volume.get("volid"), volume.get("size")
+        prefix = f"{declared_storage_id}:"
+        volume_name = volume_id[len(prefix):] if isinstance(volume_id, str) and volume_id.startswith(prefix) else ""
+        name_match = re.fullmatch(r"(?:vm|base)-([0-9]{1,9})-([A-Za-z0-9][A-Za-z0-9_.+-]*)", volume_name)
+        valid_volume = (
+            isinstance(volume_id, str)
+            and volume_id.startswith(prefix)
+            and name_match is not None
+            and int(name_match.group(1)) > 0
+        )
+        _require(
+            valid_volume
+            and volume_id not in volume_ids
+            and volume.get("content") in {"images", "rootdir"}
+            and volume.get("format") == "raw"
+            and _integer(size, positive=True),
+            "Proxmox returned a malformed visible volume inventory.",
+        )
+        volume_ids.add(volume_id)
+        provisioned_virtual_bytes += size
+    result["visible_volume_inventory_well_formed"] = True
+
+    metadata_ok = result["declared_metadata_headroom_30_percent"]
+    for size_gib in PROPOSED_DISK_SIZES:
+        proposed_bytes = size_gib * 1024**3
+        logical_remaining = pool_size - provisioned_virtual_bytes - proposed_bytes
+        written_remaining = status_avail - proposed_bytes
+        passes = (
+            logical_remaining >= 0
+            and logical_remaining * 10 >= pool_size * 3
+            and written_remaining >= 0
+            and written_remaining * 10 >= pool_size * 3
+            and metadata_ok
+        )
+        result[f"snapshot_unverified_visible_volume_preflight_passes_{size_gib}_gib_disk"] = passes
+    return result
 
 
 def inspect(payload: object) -> dict[str, object]:
     _require(isinstance(payload, Mapping), "Proxmox returned an incomplete disk inventory.")
+    declared_storage_id = payload.get("declared_storage_id")
+    _require(
+        isinstance(declared_storage_id, str)
+        and STORAGE_ID.fullmatch(declared_storage_id) is not None,
+        "The private VM image-storage declaration is missing or malformed.",
+    )
     disk_rows = _api_data(payload.get("disks"), section="disk")
     lvm_data = _api_data(payload.get("lvm"), section="LVM", expected=Mapping)
     thin_rows = _api_data(payload.get("thinpool"), section="thin-pool")
     directory_rows = _api_data(payload.get("directories"), section="directory")
     storage_rows = _api_data(payload.get("storage"), section="storage status")
+    storage_facts, declared_storage = _storage_facts(storage_rows, declared_storage_id)
     report: dict[str, object] = {
         "survey": "read-only-physical-storage-inventory",
         "capacity_basis": "reported_capacity_only",
@@ -337,7 +498,15 @@ def inspect(payload: object) -> dict[str, object]:
         **_lvm_facts(lvm_data),
         **_thin_facts(thin_rows),
         **_directory_facts(directory_rows),
-        **_storage_facts(storage_rows),
+        **storage_facts,
+        **_allocation_facts(
+            declared_storage,
+            declared_storage_id,
+            payload.get("storage_config"),
+            payload.get("storage_permissions"),
+            payload.get("visible_volumes"),
+            thin_rows,
+        ),
         "device_selected": False,
         "device_safety_verified": False,
         "filesystem_readiness_verified": False,

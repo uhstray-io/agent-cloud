@@ -1129,11 +1129,51 @@ declared node's disk/partition, LVM, thin-pool, Proxmox-managed directory, and
 storage-status APIs. It emits only aggregate counts and coarse
 `reported_capacity_only` bands; missing disk usage remains unknown, directory
 locality is unverified, and device safety, filesystem readiness, PBS
-suitability, and write authorization are always false. Live task execution and
-review remain pending. Any later idempotent disk/LVM/filesystem automation
-must match the privately reviewed actual layout; no device is inferred safe to
-format. Preserve current telemetry volumes and 15d/7d/168h retention until
-isolated restore, cleanup, and seven-day capacity gates pass.
+suitability, and write authorization are always false. Dev-bound Semaphore
+task 1981 succeeded at merged SHA `ab98eaa3489937a854431ad046ddc5cd19c5c196`;
+publisher tasks 1978 (check mode) and 1979 (apply) passed. The sanitized
+receipt reported 7 physical devices, 3 partitions, 3 unknown disk-usage
+values, 4 LVM VGs with 4 PVs, 1 thin pool, no managed directories, 6 visible
+storage-status rows (5 active), 3 explicitly non-shared rows and 3 shared
+rows, and 5 positive-capacity rows with 1 unreported. All device-selection,
+physical-safety, filesystem-readiness, PBS-readiness, and write flags remained
+false. The next survey extension checks only the privately declared active,
+non-shared LVM-thin storage row configured for exactly `images` and `rootdir`,
+reads its
+`vgname`/`thinpool` mapping, and
+requires one exact match in the thin-pool inventory. Proxmox storage-status
+total/used/available values must agree with linked pool size/used values; the
+visible-volume listing must be well-formed and unique. A fixed
+256/512/1024-GiB preliminary boolean passes only when visible virtual sizes
+plus the proposed disk leave at least 30% of pool size, a hypothetical full
+write leaves at least 30% of pool size in reported physical availability, and
+current metadata free space is at least 30% of metadata size. This is a
+point-in-time preliminary fact: metadata use from a future unwritten disk
+cannot be predicted, no capacity is reserved, and allocation, PBS, guest
+filesystem, physical safety, and restore readiness remain false. The
+unfiltered content request includes visible `images` and `rootdir` rows, but
+upstream LVM-thin listing excludes `snap_*` logical volumes. Therefore
+`snapshot_inventory_complete_verified` and `storage_allocation_authorized` are
+always false; `snapshot_unverified_visible_volume_preflight_passes_*` is not
+allocation guidance. A separate reviewed snapshot-complete audit gate is
+required before VM provisioning. Proxmox may silently omit per-VM-inaccessible
+rows, so the survey checks effective `Datastore.Allocate` and `Datastore.Audit`
+rights on the exact declared store before treating the visible-volume listing
+as permission-complete. Without both, `visible_volume_permissions_verified`
+and all preliminary booleans remain false. Missing or malformed private
+declarations and failed required API requests can stop the task before a
+sanitized receipt; API details, including permission denials, remain hidden by
+`no_log`. The public change does not alter the API token ACL; any needed
+permission change requires separate review. Exact pool/status `used` equality
+is checked across distinct GET requests. A concurrent write can make those
+values differ, in which case the survey refuses with no tolerance and must be
+rerun. PBS is planned as a VM with a new virtual data disk on
+that store; no host disk is selected or initialized. Live execution and review
+of the extended preflight remain pending. After separate review, task 4.6d is
+idempotent VM virtual-disk attachment and guest filesystem provisioning; no
+physical-disk writes are planned. Preserve current telemetry volumes and
+15d/7d/168h retention until isolated restore, cleanup, and seven-day capacity
+gates pass.
 
 <!-- ======================= source: O11Y-DEPLOYMENT.md ======================= -->
 
