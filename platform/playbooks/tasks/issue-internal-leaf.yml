@@ -43,7 +43,8 @@
       - _leaf_matches[0].profile in ['server', 'client']
       # A path the shell cannot misread: it is also quoted wherever it is used.
       # Plain names, no trailing slash: removal matches the paths find returns (review of #369).
-      - _leaf_matches[0].dir is match('^(/[A-Za-z0-9._-]+)+$')
+      # No `.` or `..` component either (review of #369).
+      - _leaf_matches[0].dir is match('^(/(?!\\.\\.?(/|$))[A-Za-z0-9._-]+)+$')
       - (_leaf_matches[0].sans | default([]) | length) > 0
       - (dns_site | default('') | length) > 0 and (dns_zone | default('') | length) > 0
       - _leaf_matches[0].sans | reject('match', '^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$') | list | length == 0

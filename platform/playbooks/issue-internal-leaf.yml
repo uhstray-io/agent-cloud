@@ -109,7 +109,8 @@
         that:
           - _leaf_decl.host in ansible_play_hosts_all
           # The issuance task's own directory rule, so removal matches the paths find returns.
-          - _leaf_decl.dir is match('^(/[A-Za-z0-9._-]+)+$')
+          # No `.` or `..` component: the walk below would follow `..` out of the tree.
+          - _leaf_decl.dir is match('^(/(?!\\.\\.?(/|$))[A-Za-z0-9._-]+)+$')
         fail_msg: >-
           {{ leaf_name }} must be declared for a host in {{ target_service }} (it names
           {{ _leaf_decl.host }}) with an absolute directory of plain names and no trailing slash.
