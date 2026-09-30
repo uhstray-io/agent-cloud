@@ -24,44 +24,22 @@ OUTPUTS = {"_resolved", "_shared"}
 # `secrets.x`, `secrets[...]`, `secrets | filter` and a bare `{{ secrets }}` all read the name.
 READ = re.compile(r"\bsecrets\s*(?:\.|\[|\||\}\})")
 BARE = ("when", "failed_when", "changed_when", "until")
-TASK_LISTS = ("tasks", "pre_tasks", "post_tasks", "handlers", "block", "rescue", "always")
-
-
-def _tasks(node):
-    if not isinstance(node, list):
-        return
-    for item in node:
-        if isinstance(item, dict):
-            yield item
-            for key in TASK_LISTS:
-                yield from _tasks(item.get(key))
-
-
-def _strings(value):
-    if isinstance(value, str):
-        yield value
-    elif isinstance(value, dict):
-        for v in value.values():
-            yield from _strings(v)
-    elif isinstance(value, list):
-        for v in value:
-            yield from _strings(v)
 
 
 def reads_outside_binding(doc) -> list[str]:
     found = []
-    for task in _tasks(doc):
+    for task in playbook_yaml.tasks(doc):
         binds = isinstance(task.get("vars"), dict) and "secrets" in task["vars"]
         # A task's own `vars:` (include vars too) are read unless the task binds `secrets`;
         # a play's `vars:` are scanned the same way, since a play binds nothing here.
-        skip = (*TASK_LISTS, "name") + (("vars",) if binds else ())
+        skip = (*playbook_yaml.TASK_LISTS, "name") + (("vars",) if binds else ())
         body = {k: v for k, v in task.items() if k not in skip}
         # Conditions take a bare Jinja expression (no braces); everything else is templated.
-        bare = [s for k in BARE for s in _strings(body.get(k))]
+        bare = [s for k in BARE for s in playbook_yaml.strings(body.get(k))]
         for mod in body.values():
             if isinstance(mod, dict):
-                bare += list(_strings(mod.get("that")))
-        exprs = bare + [s for s in _strings(body) if "{{" in s or "{%" in s]
+                bare += list(playbook_yaml.strings(mod.get("that")))
+        exprs = bare + [s for s in playbook_yaml.strings(body) if "{{" in s or "{%" in s]
         if not binds and any(READ.search(s) for s in exprs):
             found.append(str(task.get("name", "<unnamed>")))
     return found
@@ -115,7 +93,7 @@ def test_every_task_that_sets_the_outputs_hides_its_result():
     # ("Add service URL" did, until this guard).
     shown = []
     for path in playbook_yaml.files():
-        for task in _tasks(playbook_yaml.load(path)):
+        for task in playbook_yaml.tasks(playbook_yaml.load(path)):
             fact = next((v for k, v in task.items() if k.endswith("set_fact")), None)
             if isinstance(fact, dict) and OUTPUTS & fact.keys() and task.get("no_log") is not True:
                 shown.append(f"{path.relative_to(playbook_yaml.REPO)}: {task.get('name', '<unnamed>')}")

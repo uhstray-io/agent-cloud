@@ -61,7 +61,7 @@ HOST_WRITE = re.compile(
     r"(?:^|[\s;&|(])(?:sudo\s+)?(?:mkdir|chmod|chown|chgrp|mv|ln|tee|touch|install|truncate)\s"
     r"|(?:^|[\s;&|(])(?:sudo\s+)?systemctl\s+(?:--user\s+)?(?:start|stop|restart|reload|enable|disable)\b"
 )
-TASK_LISTS = ("tasks", "pre_tasks", "post_tasks", "handlers", "block", "rescue", "always")
+TASK_LISTS = playbook_yaml.TASK_LISTS
 
 FILE_WRITES = {"copy", "file", "tempfile", "lineinfile", "template", "blockinfile", "replace",
                "assemble", "get_url", "unarchive"}

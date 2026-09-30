@@ -447,11 +447,11 @@
                rootful=_rootful | bool, bridges=_bridges.stdout_lines | default([]),
                deny_egress=_deny_egress) }}
 
-    - name: "Name the declared tags and the declared SSH allows"
+    - name: "Name the declared tags and specs"
       ansible.builtin.set_fact:
         _fw_declared: "{{ _fw_desired | map(attribute='tag') | list }}"
-        # each SSH allow's spec as `ufw show added` prints it (src/parser.py get_command)
-        _fw_ssh_specs: "{{ _fw_desired | selectattr('is_ssh') | map(attribute='spec') | list }}"
+        # each declared spec as `ufw show added` prints it (src/parser.py get_command)
+        _fw_declared_specs: "{{ _fw_desired | map(attribute='spec') | list }}"
 
     # Read BEFORE adding, so a converged host costs these two reads and adds only the rules
     # naming no address, which are re-asserted every run (header note "Convergence").
@@ -530,7 +530,7 @@
         # are the lockout case of the same rule (review of #348).
         _fw_stale: >-
           {{ _fw_current | selectattr('tag') | rejectattr('tag', 'in', _fw_declared)
-             | rejectattr('spec', 'in', _fw_desired | map(attribute='spec') | list) | list }}
+             | rejectattr('spec', 'in', _fw_declared_specs) | list }}
         _fw_untagged: "{{ _fw_current | rejectattr('tag') | map(attribute='spec') | list }}"
         _fw_missing: "{{ _fw_desired | ufw_absent(_fw_current) | map(attribute='tag') | list }}"
         _fw_masking: "{{ _fw_current | ufw_masking(_fw_desired) }}"

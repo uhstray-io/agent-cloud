@@ -18,10 +18,12 @@ REPO = Path(__file__).resolve().parents[2]
 SCANNED = (REPO / "platform/playbooks", REPO / "platform/semaphore")
 
 
-class Loader(yaml.SafeLoader):
+class Loader(getattr(yaml, "CSafeLoader", yaml.SafeLoader)):
     """Tolerates custom tags (for example `!unsafe`) the checkers do not need: a tagged value
     loads as None. On every file in the repository this parses identically to yaml.safe_load
-    (2026-09-29, 214 files), which raised on a tag instead."""
+    (2026-09-29, 214 files), which raised on a tag instead. libyaml's CSafeLoader when PyYAML
+    has it, the pure-Python SafeLoader otherwise: the same documents in about a tenth of the
+    time (0.067 s against 0.635 s for 217 files, 2026-09-29)."""
 
 
 Loader.add_multi_constructor("!", lambda loader, suffix, node: None)
@@ -47,3 +49,33 @@ def load(path: Path):
 def loads(text: str):
     """A document from text, with the same loader: for the guards' own synthetic cases."""
     return yaml.load(text, Loader=Loader)  # noqa: S506 - SafeLoader subclass
+
+
+# Where a play or task holds further tasks.
+TASK_LISTS = ("tasks", "pre_tasks", "post_tasks", "handlers", "block", "rescue", "always")
+
+
+def tasks(node):
+    """Every play, block and task in a document or task list, in file order. Nothing is
+    inherited: a guard that needs a block's or play's settings walks with its own context."""
+    if not isinstance(node, list):
+        return
+    for item in node:
+        if isinstance(item, dict):
+            yield item
+            for key in TASK_LISTS:
+                yield from tasks(item.get(key))
+
+
+def strings(value, keys: bool = False):
+    """Every string inside a value, and every dict key too when `keys`."""
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for k, v in value.items():
+            if keys:
+                yield from strings(k, keys)
+            yield from strings(v, keys)
+    elif isinstance(value, list):
+        for v in value:
+            yield from strings(v, keys)

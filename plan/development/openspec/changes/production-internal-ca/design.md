@@ -10,12 +10,13 @@ marked as such.
 **The service as it exists (agent-cloud).**
 
 - `platform/services/step-ca/deployment/compose.yml`: image
-  `docker.io/smallstep/step-ca:0.30.2` (line 17); first-run auto-init from
-  `DOCKER_STEPCA_INIT_*` (lines 21-26), with the ACME provisioner on by default
-  (`STEPCA_INIT_ACME` default `true`, line 26); port published on
-  `${STEPCA_BIND:-127.0.0.1}:${STEPCA_PORT:-9000}` (line 29); everything under
-  `/home/step` in the `step-ca-data` volume (line 31); health check `step ca health`
-  against the in-volume root (line 36).
+  `docker.io/smallstep/step-ca:0.30.2` (line 21); first-run auto-init from
+  `DOCKER_STEPCA_INIT_*` (lines 26-30), with the ACME switch falling back to `false`
+  (`STEPCA_INIT_ACME`, line 30) and `env.j2` turning it on only in local_mode unless
+  inventory declares it (until 2026-09-30 it was on by default); port published on
+  `${STEPCA_BIND:-127.0.0.1}:${STEPCA_PORT:-9000}` (line 33); everything under
+  `/home/step` in the `step-ca-data` volume (line 35); health check `step ca health`
+  against the in-volume root (line 40).
 - `templates/env.j2` renders the bind, port, name, DNS names, provisioner name and the
   ACME switch from inventory with defaults (lines 5-11) and `STEPCA_INIT_PASSWORD` from
   OpenBao (line 12). `context/architecture.md` lines 45-46: keys live encrypted in the
