@@ -31,6 +31,16 @@ templates:
     playbook: platform/playbooks/audit-o11y-containers.yml
     dev_variant: true
 
+  - name: Diagnose Grafana OAuth Failure (Dev)
+    playbook: platform/playbooks/diagnose-o11y-grafana-auth.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact Dev commit required on the Semaphore controller"
+        type: string
+        required: true
+
   # Production receiver rollout uses a reviewed dev checkout and clones that
   # exact revision onto the target before rendering secrets or starting containers.
   - name: Deploy o11y (Dev)
