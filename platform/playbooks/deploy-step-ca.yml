@@ -100,7 +100,7 @@
   gather_facts: false
   become: false
   vars_files:
-    - vars/step-ca-issuers.yml
+    - vars/step-ca-issuance.yml
   vars:
     _engine: "{{ container_engine | default('podman') }}"
     _max_dur: "{{ stepca_x509_max_dur | default('8760h') }}"
@@ -120,6 +120,22 @@
       }
 
   tasks:
+    # Before anything is read or written: an entry step-ca cannot parse would break its next
+    # start, and a name outside the site's domain is not one this CA may sign.
+    - name: "Refuse a declared name the CA's name policy cannot hold"
+      ansible.builtin.assert:
+        that:
+          - (dns_site | default('') | length) > 0 and (dns_zone | default('') | length) > 0
+          - _policy_dns | reject('match', '^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$') | list | length == 0
+          - _policy_dns | reject('search', '\\.' ~ (_site_domain | regex_escape) ~ '$') | list | length == 0
+        fail_msg: >-
+          {{ inventory_hostname }}: every SAN in internal_leaves must be a lowercase DNS name
+          without a wildcard, under {{ _site_domain }} (declare dns_site and dns_zone). Refused:
+          {{ (_policy_dns | reject('match', '^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$') | list
+             + (_policy_dns | reject('search', '\\.' ~ (_site_domain | regex_escape) ~ '$') | list)) | unique }}
+        quiet: true
+      when: _policy_dns | length > 0
+
     # `inspect --type container` works on podman and docker alike (docker has no
     # `container exists`).
     - name: "Is the CA container running"
@@ -193,7 +209,9 @@
           {%- endfor -%}
           {{ {'raise_admin': admin.get('maxTLSCertDuration') != _max_dur_stored
                               or admin.get('defaultTLSCertDuration') != _max_dur_stored,
-              'add': add, 'set_lifetime': upd, 'set_template': set_tpl, 'reload_pending': ns.pending} }}
+              'add': add, 'set_lifetime': upd, 'set_template': set_tpl,
+              'set_policy': ((_ca_json.stdout | from_json).authority.policy | default({}, true)) != _policy,
+              'reload_pending': ns.pending} }}
       when: _ca_present.rc == 0
 
     - name: "Report the provisioner plan"
@@ -205,6 +223,8 @@
           ~ '| add ' ~ (_prov_plan['add'] | join(', ') or 'none')
           ~ ' | set lifetime ' ~ _leaf_dur ~ ' on ' ~ (_prov_plan['set_lifetime'] | join(', ') or 'none')
           ~ ' | set profile template on ' ~ (_prov_plan['set_template'] | join(', ') or 'none')
+          ~ ' | name policy ' ~ (('to ' ~ (_policy_dns | length) ~ ' declared names' if _policy_dns else 'removed')
+                                 if _prov_plan['set_policy'] else 'unchanged')
           ~ (' | reload pending from an earlier run' if _prov_plan['reload_pending'] else '')) }}
 
     - name: "Raise the admin provisioner x509 cert duration"
@@ -286,6 +306,47 @@
       changed_when: true
       when: not ansible_check_mode and _ca_present.rc == 0
 
+    # The CLI updates above edit ca.json, so the policy is written into a fresh read of it,
+    # never the one planned from. There is no CLI for an authority policy without the Admin
+    # API (findings 2026-09-30), so the file is rewritten and moved into place, then the CA
+    # reloaded in the same task: an interrupted run cannot leave a written policy unloaded,
+    # which no read of the running CA would reveal.
+    - name: "Re-read the CA configuration before writing its name policy"
+      ansible.builtin.command: "{{ _engine }} exec step-ca cat /home/step/config/ca.json"
+      register: _ca_json_now
+      changed_when: false
+      when: not ansible_check_mode and _ca_present.rc == 0 and (_prov_plan | default({})).get('set_policy', false)
+
+    - name: "Write the name policy into ca.json and reload the CA"
+      ansible.builtin.shell: |
+        set -eu
+        since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+        {{ _engine }} exec -i step-ca sh -c 'umask 077; cat > /home/step/config/ca.json.new && mv /home/step/config/ca.json.new /home/step/config/ca.json'
+        {{ _engine }} kill --signal HUP step-ca
+        echo "$since"
+      args:
+        stdin: >-
+          {%- set d = _ca_json_now.stdout | from_json -%}
+          {%- set auth = d.authority | dict2items | rejectattr('key', 'equalto', 'policy') | items2dict -%}
+          {%- if _policy -%}{%- set auth = auth | combine({'policy': _policy}) -%}{%- endif -%}
+          {{ d | combine({'authority': auth}) | to_nice_json(indent=2) }}
+      register: _prov_policy
+      changed_when: true
+      when: not ansible_check_mode and _ca_present.rc == 0 and (_prov_plan | default({})).get('set_policy', false)
+
+    # A reload that cannot parse the policy leaves the CA serving its OLD configuration, so
+    # health stays green; only its log says so. The next start would then fail.
+    - name: "Refuse a reload that did not take the new configuration"
+      ansible.builtin.shell: "{{ _engine }} logs --since {{ _prov_policy.stdout | trim }} step-ca 2>&1"
+      register: _reload_log
+      changed_when: false
+      retries: 10
+      delay: 2
+      until: "'error reloading' in _reload_log.stdout or 'Serving HTTPS' in _reload_log.stdout"
+      failed_when: "'error reloading' in _reload_log.stdout or 'Serving HTTPS' not in _reload_log.stdout"
+      check_mode: false
+      when: not ansible_check_mode and (_prov_policy.changed | default(false))
+
     - name: "Reload step-ca to apply the policy (SIGHUP)"
       ansible.builtin.command: "{{ _engine }} kill --signal HUP step-ca"
       changed_when: true
@@ -302,7 +363,7 @@
   gather_facts: false
   become: false
   vars_files:
-    - vars/step-ca-issuers.yml
+    - vars/step-ca-issuance.yml
   vars:
     _engine: "{{ container_engine | default('podman') }}"
 
@@ -390,6 +451,25 @@
       loop: "{{ _issuers }}"
       loop_control:
         label: "{{ item.name }}: {{ item.eku }}"
+      when: (_ca_up.rc == 0 or not ansible_check_mode) and (not (local_mode | default(false) | bool))
+
+    - name: "Read the CA configuration file"
+      ansible.builtin.command: "{{ _engine }} exec step-ca cat /home/step/config/ca.json"
+      register: _ca_json_final
+      changed_when: false
+      check_mode: false
+      when: (_ca_up.rc == 0 or not ansible_check_mode) and (not (local_mode | default(false) | bool))
+
+    # Phase 2.5 refused a failed reload, so the file is what the CA runs.
+    - name: "Refuse a CA whose name policy is not the declared names"
+      ansible.builtin.assert:
+        that:
+          - ((_ca_json_final.stdout | from_json).authority.policy | default({}, true)) == _policy
+        fail_msg: >-
+          {{ inventory_hostname }}: the CA's name policy must allow exactly the SANs declared in
+          internal_leaves ({{ _policy_dns | length }} names); ca.json holds
+          {{ (_ca_json_final.stdout | from_json).authority.policy | default('no policy', true) }}.
+        quiet: true
       when: (_ca_up.rc == 0 or not ansible_check_mode) and (not (local_mode | default(false) | bool))
 
     - name: "Report"

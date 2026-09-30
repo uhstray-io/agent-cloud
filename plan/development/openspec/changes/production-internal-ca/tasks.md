@@ -127,7 +127,8 @@ host. Push, pull requests and merges happen only when Joe authorizes each one.
       in `design.md`. 2026-09-30: measured on a throwaway step-ca 0.30.2 and recorded
       (design, "Findings 2026-09-30"): a template per issuer, now set and planned by
       `deploy-step-ca.yml` and asserted on the running CA in Phase 3; a CA-side name policy
-      only at authority level, from exact declared names, pending Joe's decision. Open: the
+      at authority level from the exact declared SANs (decided by Joe 2026-09-30), written,
+      reload-checked and asserted by `deploy-step-ca.yml`. Open: the
       local-dev server and client test leaves, which need task 4.1's issuance path
 - [ ] 4.5 BATS: no task step reads, copies or templates the consumer's key onto the CA host
       or the controller; the name guard is scoped to the issuance task; the symlink swap

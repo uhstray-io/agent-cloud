@@ -479,12 +479,17 @@ removed afterwards):
    its previous configuration, and then prevents the CA from starting on its next
    restart.
 
-Recommended use of 4, pending Joe's decision: render the authority policy from the exact
+Decided by Joe 2026-09-30, as recommended: render the authority policy from the exact
 SANs of the declared leaves (decision 4's list), never a pattern, so the CA itself
 refuses any undeclared name even if task 4.2's guard were bypassed. The deploy would
 refuse an entry that is not a plain DNS name before writing `ca.json`, and would read the
 CA's log after the reload and fail on a reload error, because the running CA does not
-fail on one. Local-dev keeps no policy: its admin wildcard would be refused.
+fail on one. Local-dev keeps no policy: its admin wildcard would be refused. The leaves are
+declared once, as the all-hosts site-config list `internal_leaves` (decision 4's fields:
+`name`, `host`, `dir`, `profile`, `sans`, `reload`), and every SAN must sit under
+`<dns_site>.<dns_zone>` (the `internal-dns-naming` variables). While none is declared the CA
+carries no policy, and nothing is issued, because the issuance task refuses an undeclared
+leaf (task 4.2).
 
 ## Open Questions
 

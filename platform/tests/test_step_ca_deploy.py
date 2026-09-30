@@ -22,7 +22,7 @@ FIRST_BOOT_TASKS = REPO / "platform/playbooks/tasks/assert-step-ca-first-boot.ym
 DEPLOY = REPO / "platform/playbooks/deploy-step-ca.yml"
 CLEAN = REPO / "platform/playbooks/clean-deploy-step-ca.yml"
 ENV_J2 = REPO / "platform/services/step-ca/deployment/templates/env.j2"
-ISSUERS = REPO / "platform/playbooks/vars/step-ca-issuers.yml"
+ISSUERS = REPO / "platform/playbooks/vars/step-ca-issuance.yml"
 
 
 def _play(path: Path, name_prefix: str) -> dict:
@@ -188,12 +188,12 @@ def plans(tmp_path_factory) -> dict:
 
 
 BOTH = ["issuer-server", "issuer-client"]
-NOTHING = {"raise_admin": False, "add": [], "set_lifetime": [], "set_template": [], "reload_pending": False}
+NOTHING = {"raise_admin": False, "add": [], "set_lifetime": [], "set_template": [], "set_policy": False,
+           "reload_pending": False}
 
 
 def test_a_fresh_ca_gets_both_issuers_every_lifetime_and_both_profiles(plans):
-    assert plans["fresh"] == {"raise_admin": True, "add": BOTH, "set_lifetime": BOTH, "set_template": BOTH,
-                              "reload_pending": False}
+    assert plans["fresh"] == {**NOTHING, "raise_admin": True, "add": BOTH, "set_lifetime": BOTH, "set_template": BOTH}
 
 
 def test_a_converged_ca_plans_nothing(plans):
@@ -294,3 +294,120 @@ def test_the_issuer_password_comes_from_the_fact_manage_secrets_sets():
     assert re.match(r"\{\{\s*_resolved\[", add["ansible.builtin.command"]["stdin"])
     declared = {d["name"] for d in _play(DEPLOY, "Phase 1")["vars"]["_secret_definitions"]}
     assert {i["secret"] for i in playbook_yaml.load(ISSUERS)["_issuers"]} <= declared
+
+
+# ── Name policy (findings 2026-09-30; exact declared names, decided 2026-09-30) ──
+
+SITE = {"dns_site": "dc1", "dns_zone": "example.internal"}
+LEAVES = [
+    {"name": "caddy", "sans": ["vm01.caddy.dc1.example.internal", "caddy.dc1.example.internal"]},
+    {"name": "gateway", "sans": ["gateway.dc1.example.internal", "caddy.dc1.example.internal"]},
+]
+POLICY = {"x509": {"allow": {"dns": sorted({s for leaf in LEAVES for s in leaf["sans"]})}}}
+
+NAME_CASES = {
+    "declared": ({**SITE, "internal_leaves": LEAVES}, True),
+    "none-declared": ({}, True),
+    "wildcard": ({**SITE, "internal_leaves": [{"name": "w", "sans": ["*.dc1.example.internal"]}]}, False),
+    "other-site": ({**SITE, "internal_leaves": [{"name": "o", "sans": ["gateway.dc2.example.internal"]}]}, False),
+    "suffix-only": ({**SITE, "internal_leaves": [{"name": "s", "sans": ["evildc1.example.internal"]}]}, False),
+    "upper-case": ({**SITE, "internal_leaves": [{"name": "u", "sans": ["Gateway.dc1.example.internal"]}]}, False),
+    "no-site": ({"internal_leaves": LEAVES}, False),
+    "local-mode": ({"local_mode": True, "internal_leaves": [{"name": "w", "sans": ["*.agent-cloud.test"]}]}, True),
+}
+
+
+def _issuance_vars(play: dict) -> dict:
+    return {**playbook_yaml.load(ISSUERS), **play["vars"]}
+
+
+def test_a_name_the_policy_cannot_hold_is_refused_before_anything_is_read(tmp_path):
+    play = _play(DEPLOY, "Phase 2.5")
+    assert play["tasks"][0]["name"] == "Refuse a declared name the CA's name policy cannot hold"
+    hosts = {c: v for c, (v, _) in NAME_CASES.items()}
+    r = _run(tmp_path, {}, [play["tasks"][0]], play_vars=_issuance_vars(play), hosts=hosts)
+    failed = _failed(r.stdout)
+    assert {c: failed.get(c) == 0 for c in NAME_CASES} == {c: ok for c, (_, ok) in NAME_CASES.items()}, r.stdout
+
+
+# {case: (host vars, the policy ca.json holds or None, set_policy expected)}
+POLICY_CASES = {
+    "add": ({**SITE, "internal_leaves": LEAVES}, None, True),
+    "same": ({**SITE, "internal_leaves": LEAVES}, POLICY, False),
+    "narrowed": ({**SITE, "internal_leaves": LEAVES[:1]}, POLICY, True),
+    "removed": ({}, POLICY, True),
+    "never": ({}, None, False),
+}
+
+
+def test_the_policy_is_planned_from_the_declared_leaves(tmp_path):
+    play = _play(DEPLOY, "Phase 2.5")
+    for case, (_, current, _) in POLICY_CASES.items():
+        auth = {"provisioners": CONVERGED, **({"policy": current} if current else {})}
+        (tmp_path / f"{case}.ca.json").write_text(json.dumps({"authority": auth}))
+        (tmp_path / f"{case}.list.json").write_text(json.dumps(CONVERGED))
+    dump = {
+        "name": "dump",
+        "ansible.builtin.copy": {
+            "content": "{{ _prov_plan.set_policy | to_json }}",
+            "dest": str(tmp_path / "{{ inventory_hostname }}.out"),
+            "mode": "0600",
+        },
+    }
+    tasks = [*_registered_reads(tmp_path, {"_ca_json": "ca.json", "_prov_list": "list.json"}),
+             _task(play, "Plan the provisioner changes"), dump]
+    hosts = {case: {"_ca_present": {"rc": 0}, **hv} for case, (hv, _, _) in POLICY_CASES.items()}
+    r = _run(tmp_path, {}, tasks, play_vars=_issuance_vars(play), hosts=hosts)
+    assert r.returncode == 0, r.stdout + r.stderr
+    got = {case: json.loads((tmp_path / f"{case}.out").read_text()) for case in POLICY_CASES}
+    assert got == {case: want for case, (_, _, want) in POLICY_CASES.items()}
+
+
+def _stub_engine(tmp_path: Path, log: str = "") -> Path:
+    """A container engine that keeps what `exec -i` is given, records signals, and prints `log`."""
+    stub = tmp_path / "engine"
+    stub.write_text(
+        "#!/bin/sh\n"
+        'case "$1" in\n'
+        f'  exec) cat > "{tmp_path}/written.json" ;;\n'
+        f'  kill) echo "$@" >> "{tmp_path}/signals" ;;\n'
+        f"  logs) printf '%s\\n' {json.dumps(log)} ;;\n"
+        "esac\n"
+    )
+    stub.chmod(0o755)
+    return stub
+
+
+@pytest.mark.parametrize("hv,want", [({**SITE, "internal_leaves": LEAVES}, POLICY), ({}, None)],
+                         ids=["written", "removed"])
+def test_the_policy_write_keeps_the_rest_of_ca_json_and_reloads(tmp_path, hv, want):
+    play = _play(DEPLOY, "Phase 2.5")
+    current = {"authority": {"provisioners": CONVERGED, "policy": {"x509": {"allow": {"dns": ["old"]}}},
+                             "claims": {"x": 1}}, "root": "/r"}
+    (tmp_path / "step-ca.ca.json").write_text(json.dumps(current))
+    stub = _stub_engine(tmp_path)
+    tasks = [*_registered_reads(tmp_path, {"_ca_json_now": "ca.json"}),
+             {"name": "plan", "ansible.builtin.set_fact": {"_prov_plan": {"set_policy": True}}},
+             _task(play, "Write the name policy into ca.json and reload the CA")]
+    host = {"_ca_present": {"rc": 0}, "container_engine": str(stub), **hv}
+    r = _run(tmp_path, host, tasks, play_vars=_issuance_vars(play))
+    assert r.returncode == 0, r.stdout + r.stderr
+    written = json.loads((tmp_path / "written.json").read_text())
+    assert written["authority"].get("policy") == want
+    assert written["authority"]["provisioners"] == CONVERGED and written["authority"]["claims"] == {"x": 1}
+    assert written["root"] == "/r"
+    assert "--signal HUP step-ca" in (tmp_path / "signals").read_text()
+
+
+@pytest.mark.parametrize("log,ok", [
+    ("reloading ...\nServing HTTPS on :9000 ...", True),
+    ("error reloading server: error reloading ca: cannot parse permitted domain constraint", False),
+], ids=["applied", "reload-error"])
+def test_a_reload_that_did_not_apply_fails_the_run(tmp_path, log, ok):
+    play = _play(DEPLOY, "Phase 2.5")
+    stub = _stub_engine(tmp_path, log)
+    task = {**_task(play, "Refuse a reload that did not take the new configuration"), "retries": 1, "delay": 0}
+    wrote = {"name": "the write ran", "ansible.builtin.command": "echo 2026-09-30T00:00:00Z",
+             "register": "_prov_policy", "changed_when": True}
+    r = _run(tmp_path, {"container_engine": str(stub)}, [wrote, task], play_vars=play["vars"])
+    assert (r.returncode == 0) is ok, r.stdout + r.stderr
