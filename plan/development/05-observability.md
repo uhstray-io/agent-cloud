@@ -1192,11 +1192,14 @@ selection, reservation, or allocation authorization are exposed. Config rows
 are validated for ID/type globally; optional `content` is required and parsed
 only for a matching active, explicitly non-shared LVM image candidate. Any
 other visible LVM or LVM-thin config row naming the same VG excludes the
-candidate even if that other row is inactive, shared, or lacks image content;
+candidate even if that other row is inactive, shared, lacks image content, or
+is foreign-node scoped;
 incomplete or node-unmapped VG mappings, including any visible LVM/LVM-thin
-status row without a matching same-type cluster config row, suppress all thick-LVM counts. Invalid
-or duplicate IDs/types in this added cluster-config read can refuse the entire
-sanitized survey.
+status row without a matching same-type cluster config row, suppresses only
+thick-LVM candidate and headroom counts; aggregate diagnostic counts remain
+available. An invalid or duplicate storage ID, or a missing/non-string type, in
+this added cluster-config read can refuse the entire sanitized survey; types may
+repeat.
 
 This preflight supersedes the *candidate direction* of the earlier thin-LVM
 proposal, but does not erase its evidence: the existing
