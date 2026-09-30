@@ -2,7 +2,9 @@
 
 import importlib.util
 import json
+import subprocess
 from pathlib import Path
+from unittest.mock import patch
 
 import yaml
 
@@ -29,6 +31,13 @@ def _readbacks():
         ),
         "root_mount": json.dumps(
             {"filesystems": [{"source": "/dev/mapper/vg-root", "fstype": "ext4", "maj:min": "253:0"}]}
+        ),
+        "lvs": json.dumps(
+            {"report": [{"lv": [{"lv_path": "/dev/mapper/vg-root", "vg_name": "private-vg",
+                                  "lv_size": "700.00"}]}]}
+        ),
+        "vgs": json.dumps(
+            {"report": [{"vg": [{"vg_name": "private-vg", "vg_free": "300.00"}]}]}
         ),
         "block_topology": json.dumps(
             {
@@ -65,13 +74,20 @@ def _readbacks():
 
 def _capacity(path):
     return {
+        "/": {"total_bytes": 1200, "available_bytes": 0, "device_id": 4},
         "/tmp": {"total_bytes": 1000, "available_bytes": 400, "device_id": 7},
         "/var/tmp": {"total_bytes": 2000, "available_bytes": 600, "device_id": 7},
     }.get(path)
 
 
+def _device_number(path):
+    return "253:0" if path == "/dev/mapper/vg-root" else None
+
+
 def test_reports_runtime_assertion_and_storage_topology_without_network_addresses():
-    report = DIAGNOSTIC.diagnose(_readbacks(), capacity_reader=_capacity)
+    report = DIAGNOSTIC.diagnose(
+        _readbacks(), capacity_reader=_capacity, device_number_reader=_device_number
+    )
 
     assert report["status"] == "observed"
     assert report["node_exporter"] == {
@@ -83,19 +99,29 @@ def test_reports_runtime_assertion_and_storage_topology_without_network_addresse
         "published_port_count": 0,
     }
     assert report["guest_root"] == {
-        "source": "/dev/mapper/vg-root",
         "filesystem_type": "ext4",
+        "filesystem_total_bytes": 1200,
+        "filesystem_available_bytes": 0,
         "block_chain": [
-            {"path": "/dev/mapper/vg-root", "type": "lvm", "size_bytes": 700},
-            {"path": "/dev/nvme0n1p3", "type": "part", "size_bytes": 800},
-            {"path": "/dev/nvme0n1", "type": "disk", "size_bytes": 1000},
+            {"type": "lvm", "size_bytes": 700},
+            {"type": "part", "size_bytes": 800},
+            {"type": "disk", "size_bytes": 1000},
         ],
+        "lvm": {
+            "status": "observed",
+            "logical_volume_size_bytes": 700,
+            "volume_group_free_bytes": 300,
+        },
     }
     assert report["podman_storage"]["volume_path_filesystem"]["available_bytes"] == 400
     assert report["podman_storage"]["graph_root_filesystem"]["free_percent"] == 30
     assert report["podman_storage"]["volume_path_and_graph_root_share_filesystem"] is True
     assert "192.0.2.30" not in json.dumps(report)
-    assert "/tmp" not in json.dumps(report)
+    serialized = json.dumps(report)
+    assert "/tmp" not in serialized
+    assert "/dev/" not in serialized
+    assert "private-vg" not in serialized
+    assert "nvme0n1" not in serialized
 
 
 def test_reports_private_pid_and_writable_mount_without_treating_readback_as_malformed():
@@ -109,7 +135,7 @@ def test_reports_private_pid_and_writable_mount_without_treating_readback_as_mal
     )
     payload["exporter_inspect"] = json.dumps(inspect)
 
-    report = DIAGNOSTIC.diagnose(payload, capacity_reader=_capacity)
+    report = DIAGNOSTIC.diagnose(payload, capacity_reader=_capacity, device_number_reader=_device_number)
     assert report["status"] == "observed"
     assert report["node_exporter"]["pid_mode"] == "private"
     assert report["node_exporter"]["running"] is False
@@ -121,7 +147,7 @@ def test_reports_private_pid_and_writable_mount_without_treating_readback_as_mal
 def test_malformed_essential_readbacks_fail_closed_with_fixed_reasons():
     payload = _readbacks()
     payload["exporter_inspect"] = "private inspect error with address 192.0.2.44"
-    report = DIAGNOSTIC.diagnose(payload, capacity_reader=_capacity)
+    report = DIAGNOSTIC.diagnose(payload, capacity_reader=_capacity, device_number_reader=_device_number)
     assert report == {"status": "unavailable", "reason": "exporter_inspect_invalid"}
     assert "192.0.2.44" not in json.dumps(report)
 
@@ -129,7 +155,7 @@ def test_malformed_essential_readbacks_fail_closed_with_fixed_reasons():
     topology = json.loads(payload["block_topology"])
     topology["blockdevices"][0]["children"][0]["pkname"] = "/dev/missing"
     payload["block_topology"] = json.dumps(topology)
-    report = DIAGNOSTIC.diagnose(payload, capacity_reader=_capacity)
+    report = DIAGNOSTIC.diagnose(payload, capacity_reader=_capacity, device_number_reader=_device_number)
     assert report == {"status": "unavailable", "reason": "block_parent_unresolved"}
 
 
@@ -143,8 +169,31 @@ def test_device_mapper_alias_uses_kernel_device_number_without_path_guessing():
     report = DIAGNOSTIC.diagnose(payload, capacity_reader=_capacity)
 
     assert report["status"] == "observed"
-    assert report["guest_root"]["source"] == "/dev/mapper/vg-root"
-    assert report["guest_root"]["block_chain"][0]["path"] == "/dev/dm-0"
+    assert report["guest_root"]["block_chain"][0] == {"type": "lvm", "size_bytes": 700}
+
+
+def test_unavailable_lvm_report_does_not_hide_sanitized_root_filesystem_readback():
+    payload = _readbacks()
+    payload["lvs"] = "lvm: denied"
+
+    report = DIAGNOSTIC.diagnose(
+        payload, capacity_reader=_capacity, device_number_reader=_device_number
+    )
+
+    assert report["status"] == "observed"
+    assert report["guest_root"]["filesystem_available_bytes"] == 0
+    assert report["guest_root"]["lvm"] == {"status": "unavailable", "reason": "lvm_report_invalid"}
+    assert "private-vg" not in json.dumps(report)
+
+
+def test_collect_reads_lvm_capacity_with_readonly_metadata_commands():
+    commands = []
+    with patch.object(DIAGNOSTIC, "_read", side_effect=lambda argv: commands.append(argv) or "{}"):
+        DIAGNOSTIC.collect()
+
+    lvm_commands = [argv for argv in commands if argv[0] in {"lvs", "vgs"}]
+    assert {argv[0] for argv in lvm_commands} == {"lvs", "vgs"}
+    assert all("--readonly" in argv for argv in lvm_commands)
 
 
 def test_dev_playbook_and_template_require_both_exact_revisions_and_only_read():
@@ -184,3 +233,28 @@ def test_dev_playbook_and_template_require_both_exact_revisions_and_only_read():
     assert [item["name"] for item in template["survey_vars"]] == [
         "expected_repository_sha", "expected_receiver_sha"
     ]
+
+
+def test_both_diagnostics_require_writable_tmpfs_before_using_remote_modules():
+    for name in ("diagnose-o11y-host-storage.yml", "diagnose-o11y-grafana-auth.yml"):
+        plays = yaml.safe_load((ROOT / "platform/playbooks" / name).read_text())
+        receiver = next(play for play in plays if play.get("hosts") == "o11y_svc")
+        assert receiver["vars"]["ansible_remote_tmp"] == "/dev/shm/ansible-tmp"
+        raw = receiver["tasks"][0]
+        assert "ansible.builtin.raw" in raw
+        script = raw["ansible.builtin.raw"]
+        assert "findmnt" in script
+        assert "df -Pk /dev/shm" in raw["ansible.builtin.raw"]
+        assert "mkdir -p /dev/shm/ansible-tmp" in raw["ansible.builtin.raw"]
+        assert script.index("findmnt -n -o FSTYPE --target /dev/shm") < script.index(
+            "mkdir -p /dev/shm/ansible-tmp"
+        )
+        assert "findmnt -n -o FSTYPE --target /dev/shm/ansible-tmp" in script
+        assert "printf 'remote_tmpfs_ready\\n'" in script
+        assert raw["changed_when"] is False
+        assert subprocess.run(["sh", "-n"], input=script, text=True, capture_output=True).returncode == 0
+        assert receiver["tasks"][1]["ansible.builtin.assert"]["that"] == [
+            "ansible_remote_tmp == '/dev/shm/ansible-tmp'",
+            "_remote_tmpfs_preflight.rc == 0",
+            "_remote_tmpfs_preflight.stdout | trim == 'remote_tmpfs_ready'",
+        ]

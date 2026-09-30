@@ -54,12 +54,41 @@
   become: false
   vars:
     _engine: "{{ container_engine | default('podman') }}"
+    ansible_remote_tmp: /dev/shm/ansible-tmp
     _allowed_categories:
       - group_claim_rejected
       - userinfo_rejected
       - token_exchange_failed
       - oauth_failure_unclassified
   tasks:
+    - name: Check that Ansible remote temp is writable tmpfs before module transfer
+      ansible.builtin.raw: |
+        if [ "$(findmnt -n -o FSTYPE --target /dev/shm 2>/dev/null)" != tmpfs ] || [ ! -w /dev/shm ]; then
+          exit 1
+        fi
+        if [ -L /dev/shm/ansible-tmp ] || { [ -e /dev/shm/ansible-tmp ] && [ ! -d /dev/shm/ansible-tmp ]; }; then
+          exit 1
+        fi
+        mkdir -p /dev/shm/ansible-tmp 2>/dev/null || exit 1
+        if [ "$(findmnt -n -o FSTYPE --target /dev/shm/ansible-tmp 2>/dev/null)" != tmpfs ] || [ ! -w /dev/shm/ansible-tmp ]; then
+          exit 1
+        fi
+        available_kib="$(df -Pk /dev/shm 2>/dev/null | awk 'NR == 2 { print $4 }')"
+        case "$available_kib" in ''|*[!0-9]*) exit 1 ;; esac
+        if [ "$available_kib" -lt 1024 ]; then exit 1; fi
+        printf 'remote_tmpfs_ready\n'
+      register: _remote_tmpfs_preflight
+      changed_when: false
+      failed_when: false
+
+    - name: Require the fixed tmpfs module-transfer path
+      ansible.builtin.assert:
+        that:
+          - ansible_remote_tmp == '/dev/shm/ansible-tmp'
+          - _remote_tmpfs_preflight.rc == 0
+          - _remote_tmpfs_preflight.stdout | trim == 'remote_tmpfs_ready'
+        fail_msg: "Read-only diagnosis requires at least 1 MiB of writable tmpfs at /dev/shm."
+
     - name: Require the production rootless Podman receiver
       ansible.builtin.assert:
         that:
