@@ -142,3 +142,11 @@ def test_an_entry_of_the_wrong_kind_is_not_taken_for_one_issuance_made(tmp_path)
     r = _run(tmp_path, {"leaf_name": "probe", "leaf_action": "remove"}, [_leaf(tmp_path)])
     assert r.returncode == 0 and "nothing (no issued files)" in r.stdout, r.stdout
     assert sorted(p.name for p in leaf.iterdir()) == ["ABCD", "current"]
+
+
+def test_removing_an_emptied_directory_reports_the_change(tmp_path):
+    # Review of #369: an already-empty leaf directory is removed, and that is a change.
+    (tmp_path / "leaf").mkdir()
+    r = _run(tmp_path, {"leaf_name": "probe", "leaf_action": "remove"}, [_leaf(tmp_path)])
+    assert r.returncode == 0 and "changed=1" in r.stdout, r.stdout
+    assert not (tmp_path / "leaf").exists()

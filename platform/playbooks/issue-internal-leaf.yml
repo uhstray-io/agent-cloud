@@ -36,17 +36,27 @@
     _leaf_remover: |
       import os, re, stat, sys
       d, mode = sys.argv[1], sys.argv[2]
-      if os.path.realpath(d) != d:
-          sys.exit(d + " resolves through a symbolic link; declare the real directory")
-      try:
-          fd = os.open(d, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-      except FileNotFoundError:
-          print("nothing (no issued files)")
-          sys.exit(0)
-      def kind_at(parent, name):
-          return stat.S_IFMT(os.stat(name, dir_fd=parent, follow_symlinks=False).st_mode)
+      DIR = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+      # Walk from / one component at a time, each opened without following a link, so no
+      # link at the directory or any ancestor, swapped in at any moment, can redirect this
+      # (reviews of #369). Every later step is relative to these descriptors.
+      parent, fd = None, os.open("/", os.O_RDONLY | os.O_DIRECTORY)
+      for part in [p for p in d.split("/") if p]:
+          try:
+              nxt = os.open(part, DIR, dir_fd=fd)
+          except FileNotFoundError:
+              print("nothing (no issued files)")
+              sys.exit(0)
+          except OSError:
+              sys.exit(d + " resolves through a symbolic link; declare the real directory")
+          if parent is not None:
+              os.close(parent)
+          parent, fd = fd, nxt
+      leaf = os.path.basename(d)
+      def kind(at, name):
+          return stat.S_IFMT(os.stat(name, dir_fd=at, follow_symlinks=False).st_mode)
       def ours(name):
-          k = kind_at(fd, name)
+          k = kind(fd, name)
           if name in ("current", ".current.new"):
               return k == stat.S_IFLNK
           if name == ".placement.lock":
@@ -54,26 +64,28 @@
           if name.startswith(".pending.") or re.fullmatch("[0-9A-F]+", name):
               return k == stat.S_IFDIR
           return False
-      def rm(parent, name):
-          if kind_at(parent, name) == stat.S_IFDIR:
-              sub = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+      def rm(at, name):
+          if kind(at, name) == stat.S_IFDIR:
+              sub = os.open(name, DIR, dir_fd=at)
               try:
                   for entry in os.listdir(sub):
                       rm(sub, entry)
               finally:
                   os.close(sub)
-              os.rmdir(name, dir_fd=parent)
+              os.rmdir(name, dir_fd=at)
           else:
-              os.unlink(name, dir_fd=parent)
+              os.unlink(name, dir_fd=at)
       targets = sorted(e for e in os.listdir(fd) if ours(e))
       print(" ".join(targets) or "nothing (no issued files)")
       if mode == "remove":
           for entry in targets:
               rm(fd, entry)
           empty = not os.listdir(fd)
-          os.close(fd)
           if empty:
-              os.rmdir(d)  # fails on anything but an empty directory, a link included
+              # Relative to the parent's descriptor: never resolved by path again.
+              os.rmdir(leaf, dir_fd=parent)
+          if targets or empty:
+              print("CHANGED")
   tasks:
     - name: "Refuse an incomplete or unknown request"
       ansible.builtin.assert:
@@ -145,12 +157,12 @@
 
     - name: "Report what the removal takes away"
       ansible.builtin.debug:
-        msg: "{{ leaf_name }}: {{ 'would remove' if ansible_check_mode else 'removing' }} {{ _leaf_listed.stdout }} in {{ _leaf_decl.dir }}"
+        msg: "{{ leaf_name }}: {{ 'would remove' if ansible_check_mode else 'removing' }} {{ _leaf_listed.stdout_lines | first | default('nothing') }} in {{ _leaf_decl.dir }}"
       when: _leaf_action == 'remove' and inventory_hostname == _leaf_decl.host
 
     - name: "Remove the leaf's issued files"
       ansible.builtin.command:
         argv: [python3, -c, "{{ _leaf_remover }}", "{{ _leaf_decl.dir }}", remove]
       register: _leaf_removed
-      changed_when: "'nothing' not in _leaf_removed.stdout"
+      changed_when: "'CHANGED' in _leaf_removed.stdout_lines"
       when: not ansible_check_mode and _leaf_action == 'remove' and inventory_hostname == _leaf_decl.host
