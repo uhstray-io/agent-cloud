@@ -611,6 +611,41 @@ templates:
         required: false
         default_value: "dev"
 
+  # Issue (or remove) one leaf declared in site-config's internal_leaves, key generated on
+  # its consumer, signed on the step_ca_svc host. Dev-bound with the CA templates above.
+  - name: Issue Internal Leaf (Dev)
+    playbook: platform/playbooks/issue-internal-leaf.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: target_service
+        title: "Consumer group"
+        description: "Inventory group holding the leaf's host (e.g. agentgateway_svc)"
+        type: string
+        required: true
+      - name: leaf_name
+        title: "Leaf"
+        description: "A name declared once in internal_leaves"
+        type: string
+        required: true
+      - name: leaf_action
+        title: "Action"
+        description: "issue, or remove the leaf's issued files (before removing its declaration)"
+        type: enum
+        required: false
+        default_value: issue
+        values:
+          - { name: "issue", value: "issue" }
+          - { name: "remove", value: "remove" }
+      - name: leaf_reissue
+        title: "Reissue"
+        description: "true replaces a leaf that already has a current certificate"
+        type: enum
+        required: false
+        default_value: "false"
+        values:
+          - { name: "false", value: "false" }
+          - { name: "true", value: "true" }
+
   - name: Manage agentgateway Client Key
     playbook: platform/playbooks/manage-agentgateway-client-key.yml
     # Introduced on dev (PR #191); main has no agentgateway code until promotion, so

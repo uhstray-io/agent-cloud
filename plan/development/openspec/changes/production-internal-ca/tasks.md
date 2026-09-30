@@ -153,7 +153,14 @@ host. Push, pull requests and merges happen only when Joe authorizes each one.
       pytest, `platform/tests/test_issue_internal_leaf.py`, against a stub engine that keeps
       what the CA host receives (password line and request, never a key)
 - [ ] 4.6 Local-dev regression: `Deploy Caddy (Local)` and `make local-bootstrap` still serve
-      the wildcard, and every local consumer of the bundle still verifies the IdP
+      the wildcard, and every local consumer of the bundle still verifies the IdP. 2026-09-30, task level (decided
+      with Joe): from `dev` at a8644078, against the live local step-ca, the reworked
+      `mint-internal-cert.yml` wildcard path minted `*.agent-cloud.test`, the apex and
+      `*.inference.agent-cloud.test`, which verify against the bundle the reworked
+      `distribute-ca-root.yml` wrote; that bundle is byte-identical to the one postiz's local
+      deploy holds, and TLS to the local IdP verifies with it. The full run through local
+      Semaphore waits for the next local-dev refresh from `dev`, because local Semaphore runs
+      the main checkout, which another session holds on an older branch
 - [ ] 4.7 Production proof with a throwaway leaf declared on the gateway host: issue it
       through a Semaphore run, check where its key exists, then remove the declaration and
       the files

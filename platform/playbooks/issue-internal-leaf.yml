@@ -1,0 +1,110 @@
+---
+# issue-internal-leaf.yml — issue, or remove, ONE leaf certificate declared in site-config's
+# `internal_leaves`, on the consumer host the declaration names (openspec
+# production-internal-ca task 4.7; the issuance itself is tasks/issue-internal-leaf.yml).
+#
+#   -e target_service=<consumer group> -e leaf_name=<declared leaf> [-e leaf_action=issue|remove]
+#   [-e leaf_reissue=true]
+#
+# The CA is the one host of `step_ca_svc`; the key is generated on the consumer and never
+# leaves it. `issue` keeps a leaf that already has a current certificate unless
+# `leaf_reissue`. `remove` deletes only what issuance creates (the `current` link, the
+# serial directories, pending directories and the placement lock) and then the directory if
+# it is empty, and only for a leaf declared for that host: it is how a throwaway leaf is
+# taken away before its declaration is. Every step is safe under --check.
+
+# Without this a missing or empty group would match no hosts and the run would pass.
+- name: "Refuse a target group that matches no hosts"
+  hosts: localhost
+  gather_facts: false
+  become: false
+  tasks:
+    - name: "Require target_service to name a populated inventory group"
+      ansible.builtin.assert:
+        that: (groups.get(target_service | default(''), []) | length) > 0
+        fail_msg: "Pass -e target_service=<the inventory group holding the leaf's host>; '{{ target_service | default('') }}' matches no hosts."
+        quiet: true
+
+- name: "Issue or remove a declared internal leaf"
+  hosts: "{{ target_service }}"
+  gather_facts: false
+  become: false
+  vars:
+    # An extra var overrides this; the play above refuses a run without one.
+    target_service: "ungrouped"
+    _leaf_action: "{{ leaf_action | default('issue') }}"
+  tasks:
+    - name: "Refuse an incomplete or unknown request"
+      ansible.builtin.assert:
+        that:
+          - leaf_name | default('') | length > 0
+          - _leaf_action in ['issue', 'remove']
+          - (groups['step_ca_svc'] | default([]) | length) == 1
+          - (internal_leaves | default([]) | selectattr('name', 'equalto', leaf_name | default('')) | list | length) == 1
+        fail_msg: >-
+          Pass -e leaf_name=<a leaf declared once in internal_leaves> and leaf_action issue or
+          remove; the inventory must hold exactly one step_ca_svc host
+          (it holds {{ groups['step_ca_svc'] | default([]) | length }}).
+        quiet: true
+
+    - name: "Name the declared leaf"
+      ansible.builtin.set_fact:
+        _leaf_decl: "{{ internal_leaves | selectattr('name', 'equalto', leaf_name) | first }}"
+
+    - name: "Refuse a target group that does not hold the leaf's host"
+      ansible.builtin.assert:
+        that:
+          - _leaf_decl.host in ansible_play_hosts_all
+        fail_msg: "{{ leaf_name }} is declared for {{ _leaf_decl.host }}, which is not in {{ target_service }}."
+        quiet: true
+
+    - name: "Issue the leaf"
+      ansible.builtin.include_tasks: tasks/mint-internal-cert.yml
+      vars:
+        _mint_name: "{{ leaf_name }}"
+        _mint_ca_host: "{{ groups['step_ca_svc'] | first }}"
+        _mint_reissue: "{{ leaf_reissue | default(false) | bool }}"
+      when: _leaf_action == 'issue' and inventory_hostname == _leaf_decl.host
+
+    # Read first, so a dry run lists exactly what a real run removes.
+    - name: "List what issuance created in the leaf's directory"
+      ansible.builtin.find:
+        paths: "{{ _leaf_decl.dir }}"
+        patterns: ["current", ".placement.lock", ".pending.*", "[0-9A-F]*"]
+        use_regex: false
+        file_type: any
+        hidden: true
+      register: _leaf_created
+      when: _leaf_action == 'remove' and inventory_hostname == _leaf_decl.host
+
+    # Only a name issuance makes: a hex serial directory, the link, the lock, pending work.
+    - name: "Name the entries to remove"
+      ansible.builtin.set_fact:
+        _leaf_remove: >-
+          {{ _leaf_created.files | map(attribute='path')
+             | select('match', '^' ~ (_leaf_decl.dir | regex_escape) ~ '/(current|\.placement\.lock|\.pending\.[^/]+|[0-9A-F]+)$')
+             | list }}
+      when: _leaf_action == 'remove' and inventory_hostname == _leaf_decl.host
+
+    - name: "Report what the removal takes away"
+      ansible.builtin.debug:
+        msg: >-
+          {{ leaf_name }}: {{ 'would remove' if ansible_check_mode else 'removing' }}
+          {{ _leaf_remove | map('basename') | list or 'nothing (no issued files)' }} in {{ _leaf_decl.dir }}
+      when: _leaf_action == 'remove' and inventory_hostname == _leaf_decl.host
+
+    - name: "Remove the leaf's issued files"
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop: "{{ _leaf_remove }}"
+      when: _leaf_action == 'remove' and inventory_hostname == _leaf_decl.host
+
+    # rmdir fails on a non-empty directory, so anything issuance did not create keeps it.
+    - name: "Remove the leaf's directory if nothing else is in it"
+      ansible.builtin.command:
+        argv: [rmdir, "{{ _leaf_decl.dir }}"]
+      register: _leaf_rmdir
+      changed_when: _leaf_rmdir.rc == 0
+      failed_when: false
+      when: not ansible_check_mode and _leaf_action == 'remove' and inventory_hostname == _leaf_decl.host
