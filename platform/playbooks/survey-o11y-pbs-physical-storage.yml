@@ -220,7 +220,8 @@
       ansible.builtin.command:
         argv: [python3, "{{ _inspector }}", inspect]
         stdin: >-
-          {{ {'declared_storage_id': _target_storage_id,
+          {{ {'target_node': _validated_target_node,
+              'declared_storage_id': _target_storage_id,
               'disks': {'status': _physical_disks.status, 'json': {'data': _physical_disks.json.data}},
               'lvm': {'status': _lvm_inventory.status, 'json': {'data': _lvm_inventory.json.data}},
               'thinpool': {'status': _thinpool_inventory.status, 'json': {'data': _thinpool_inventory.json.data}},

@@ -1211,6 +1211,22 @@ behind a SAN/LUN; physical backing, device safety, filesystem readiness, PBS
 readiness, and write authorization remain false. Raw API data stays under
 `no_log`. No disk is selected or initialized.
 
+The GET-only task 2011 run succeeded at reviewed SHA
+`4c1806652ed15cab8d1a4b50fd241bab52724646` and returned
+`thick_lvm_config_vg_mappings_complete=false` with zero thick-LVM candidate and
+headroom counts. That receipt did not distinguish foreign-node config rows,
+missing local VG joins, unmatched local status/config rows, or local VG aliases;
+its root cause is unknown. The follow-on emits only aggregate counts for those
+conditions and does not treat task 2011 as evidence of a specific cause.
+
+Proxmox's storage config API encodes the optional `nodes` restriction as a
+comma-separated string; when omitted, the storage applies across nodes. The
+survey validates that field and scopes VG joins and alias checks to the declared
+online node before considering its node-status rows. Malformed scopes refuse the
+sanitized inspection. Both cluster config and node status endpoints filter rows
+by datastore permissions, so diagnostics describe only API-visible rows and
+cannot prove that hidden rows do not exist. See upstream [storage config API](https://github.com/proxmox/pve-storage/blob/master/src/PVE/API2/Storage/Config.pm), [storage plugin node encoding](https://github.com/proxmox/pve-storage/blob/master/src/PVE/Storage/Plugin.pm), [node-restriction check](https://github.com/proxmox/pve-storage/blob/master/src/PVE/Storage.pm), and [node storage status API](https://github.com/proxmox/pve-storage/blob/master/src/PVE/API2/Storage/Status.pm).
+
 <!-- ======================= source: O11Y-DEPLOYMENT.md ======================= -->
 
 # Observability (o11y) Stack Deployment Plan
