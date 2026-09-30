@@ -343,6 +343,17 @@ not need the field. These are
 permission-filtered visible facts; hidden config/status rows cannot be ruled out.
 Source behavior: [Config.pm](https://github.com/proxmox/pve-storage/blob/master/src/PVE/API2/Storage/Config.pm), [Plugin.pm](https://github.com/proxmox/pve-storage/blob/master/src/PVE/Storage/Plugin.pm), [Storage.pm](https://github.com/proxmox/pve-storage/blob/master/src/PVE/Storage.pm), [Status.pm](https://github.com/proxmox/pve-storage/blob/master/src/PVE/API2/Storage/Status.pm).
 
+The existing private declared-store detail/config/permissions/content reads now
+support either the existing LVM-thin path or a separately declared thick-LVM
+candidate. The thin path and its snapshot-unverified booleans are unchanged. For
+thick LVM, the inspector requires an exact candidate plus equality between the
+detail config and visible config/status facts, then emits only an exact-match
+boolean and fixed 256/512/1024-GiB reported-VG-headroom booleans. A mismatch or
+ineligible row leaves them false. These facts neither change the private store
+declaration nor establish backing locality, complete visibility, PBS readiness,
+reservation, allocation authority, or write authority; all authorization and
+physical-backing flags remain false. No API request is added.
+
 The sanitized output contains aggregate visible-candidate counts and fixed
 256/512/1024-GiB headroom counts. A count includes only a candidate whose
 reported free extents after the hypothetical size retain at least 30% of
@@ -396,8 +407,22 @@ describe only the two API inventories. They cannot prove physical locality,
 underlying media identity, safe device use, or filesystem readiness. No new API
 request or write is added, and physical-backing, allocation, and write
 authorization remain false. The implementation is present on
-`feature/o11y-pbs-backing-proof`; live Dev execution and review of the added
-facts remain pending. The path fields follow Proxmox's [disk-list API](https://github.com/proxmox/pve-storage/blob/master/src/PVE/API2/Disks.pm), where `parent` is supplied for partitions, and its [LVM inventory API](https://github.com/proxmox/pve-storage/blob/master/src/PVE/API2/Disks/LVM.pm), whose child rows represent underlying PVs. The [LVM plugin](https://github.com/proxmox/pve-storage/blob/master/src/PVE/Storage/LVMPlugin.pm) supplies those PV names and size facts. The [disk usage classifier](https://github.com/proxmox/pve-storage/blob/master/src/PVE/Diskmanage.pm) reports exact `LVM` usage for paths recognized as PVs; this survey treats other known classes as unverifiable. These API paths establish only reported inventory lineage.
+`dev` after PR #361. Dev-bound task 2085 ran at merged, reviewed SHA
+`700de080ffd19d3eea1a8859bd1e8a73dbda2384` and a clean controller checkout.
+It reported one candidate PV, one exact direct disk-path join with `LVM` use,
+no other join or incomplete-inventory count, and one visible thick-LVM store
+meeting each fixed reported-headroom check. Backing, allocation, PBS readiness,
+and write authorization remained false. The path fields follow Proxmox's
+[disk-list API](https://github.com/proxmox/pve-storage/blob/master/src/PVE/API2/Disks.pm),
+where `parent` is supplied for partitions, and its
+[LVM inventory API](https://github.com/proxmox/pve-storage/blob/master/src/PVE/API2/Disks/LVM.pm),
+whose child rows represent underlying PVs. The
+[disk usage classifier](https://github.com/proxmox/pve-storage/blob/master/src/PVE/Diskmanage.pm)
+reports exact `LVM` usage for paths recognized as PVs. Its disk scan admits
+several block-device classes while excluding iSCSI, so this API path join
+does not prove directly attached physical media. Separate physical-origin
+evidence and a reviewed private store declaration remain required before
+PBS VM disk allocation.
 
 
 The 90d/45d retention target remains blocked: keep the effective 15d

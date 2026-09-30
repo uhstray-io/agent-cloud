@@ -409,10 +409,18 @@ def _allocation_facts(
         for privilege in ("Datastore.Allocate", "Datastore.Audit")
     )
     result["visible_volume_permissions_verified"] = has_complete_visibility
+    storage_type = config.get("type")
+    _require(
+        isinstance(storage_type, str) and storage_type in {"lvmthin", "lvm"},
+        "Proxmox returned incomplete declared storage linkage.",
+    )
+    # Thick-LVM uses the candidate and VG/status facts below. Keep its preliminary
+    # booleans separate from the snapshot-unverified LVM-thin content calculation.
+    if storage_type != "lvmthin":
+        return result
     vg, pool_name = config.get("vgname"), config.get("thinpool")
     _require(
-        config.get("type") == "lvmthin"
-        and isinstance(vg, str) and bool(vg)
+        isinstance(vg, str) and bool(vg)
         and isinstance(pool_name, str) and bool(pool_name),
         "Proxmox returned incomplete declared storage linkage.",
     )
@@ -509,7 +517,8 @@ def _allocation_facts(
 
 def _thick_lvm_facts(
     status_rows: list[object], config_response: object, lvm_data: Mapping,
-    target_node: str, disk_rows: list[object],
+    target_node: str, disk_rows: list[object], declared_storage_id: str,
+    declared_config_response: object,
 ) -> dict[str, object]:
     """Report visible non-shared thick-LVM image-store headroom only."""
     config_rows = _api_data(config_response, section="cluster storage config")
@@ -594,6 +603,7 @@ def _thick_lvm_facts(
     )
 
     candidates: list[tuple[Mapping, Mapping]] = []
+    declared_candidate: tuple[Mapping, Mapping, Mapping] | None = None
     visible_alias_suppressed_candidate_count = 0
     for storage_id, config in local_configs.items():
         if config.get("type") != "lvm":
@@ -672,6 +682,37 @@ def _thick_lvm_facts(
             "Proxmox returned inconsistent thick-LVM capacity.",
         )
         candidates.append((status, group))
+        if storage_id == declared_storage_id:
+            declared_candidate = (config, status, group)
+
+    declared_config_detail = _api_data(
+        declared_config_response, section="declared storage config", expected=Mapping
+    )
+    declared_candidate_exact_match = False
+    if declared_candidate is not None:
+        candidate_config, candidate_status, _ = declared_candidate
+        required_config_fields_match = all(
+            declared_config_detail.get(field) == candidate_config.get(field)
+            for field in ("type", "content", "vgname")
+        )
+        optional_config_fields_match = all(
+            (field in declared_config_detail) == (field in candidate_config)
+            and declared_config_detail.get(field) == candidate_config.get(field)
+            for field in ("nodes", "disable")
+        )
+        configured_content = candidate_config.get("content")
+        status_content = candidate_status.get("content")
+        content_matches = (
+            isinstance(configured_content, str)
+            and isinstance(status_content, str)
+            and set(configured_content.split(",")) == set(status_content.split(","))
+        )
+        declared_candidate_exact_match = (
+            declared_config_detail.get("type") == "lvm"
+            and required_config_fields_match
+            and optional_config_fields_match
+            and content_matches
+        )
 
     result: dict[str, object] = {
         "visible_thick_lvm_image_store_count": len(candidates),
@@ -684,15 +725,25 @@ def _thick_lvm_facts(
         "thick_lvm_reported_vg_headroom_candidate_count_256_gib": 0,
         "thick_lvm_reported_vg_headroom_candidate_count_512_gib": 0,
         "thick_lvm_reported_vg_headroom_candidate_count_1024_gib": 0,
+        "declared_thick_lvm_candidate_exact_match": declared_candidate_exact_match,
+        "declared_thick_lvm_reported_vg_headroom_passes_256_gib": False,
+        "declared_thick_lvm_reported_vg_headroom_passes_512_gib": False,
+        "declared_thick_lvm_reported_vg_headroom_passes_1024_gib": False,
         "thick_lvm_backing_media_verified": False,
         "thick_lvm_allocation_authorized": False,
     }
-    for _, group in candidates:
+    for status, group in candidates:
         total, free = group["size"], group["free"]
         for size_gib in PROPOSED_DISK_SIZES:
             remaining = free - size_gib * 1024**3
             if remaining >= 0 and remaining * 10 >= total * 3:
                 result[f"thick_lvm_reported_vg_headroom_candidate_count_{size_gib}_gib"] += 1
+                if (
+                    declared_candidate_exact_match
+                    and declared_candidate is not None
+                    and status["storage"] == declared_storage_id
+                ):
+                    result[f"declared_thick_lvm_reported_vg_headroom_passes_{size_gib}_gib"] = True
     return result | _thick_lvm_pv_lineage_facts(candidates, disk_rows)
 
 
@@ -797,7 +848,10 @@ def inspect(payload: object) -> dict[str, object]:
             payload.get("visible_volumes"),
             thin_rows,
         ),
-        **_thick_lvm_facts(storage_rows, storage_config_rows, lvm_data, target_node, disk_rows),
+        **_thick_lvm_facts(
+            storage_rows, storage_config_rows, lvm_data, target_node, disk_rows,
+            declared_storage_id, payload.get("storage_config"),
+        ),
         "device_selected": False,
         "device_safety_verified": False,
         "filesystem_readiness_verified": False,
