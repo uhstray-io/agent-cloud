@@ -63,8 +63,10 @@ The platform SHALL use a reviewed, Dev-bound, GET-only survey before considering
 
 #### Scenario: Declared LVM-thin image storage is checked for virtual-disk headroom
 - **WHEN** the survey reads the private VM-image storage declaration and Proxmox reports its node storage status
-- **THEN** it reports only fixed booleans for 256, 512, and 1024-GiB proposed virtual data disks, requiring exactly one matching active row with `shared=0`, `images` content, `lvmthin` type, positive consistent reported capacity, and enough available space after the proposed disk to retain at least 30% of reported total
-- **AND** missing, duplicated, malformed, inactive, shared, unsupported, or capacity-incomplete candidates fail closed; no storage ID, exact capacity, volume, or reservation is reported, and physical safety, PBS readiness, and write authorization are not claimed
+- **THEN** it reports only fixed preflight booleans for 256, 512, and 1024-GiB proposed virtual data disks, requiring exactly one active row with `shared=0`, `images` content, and `lvmthin` type; exact storage-config linkage to one thin pool; matching pool and storage-status total and used bytes; and a complete image listing whose summed virtual sizes plus the proposed disk retain at least 30% of pool size
+- **AND** each passing preflight also requires current written-space availability after a hypothetical full write to retain at least 30% of pool size and current thin-pool metadata free space to retain at least 30% of metadata size
+- **AND** it verifies effective `Datastore.Allocate` and `Datastore.Audit` permissions on the exact declared storage before treating the image-content result as complete; absent rights leave `complete_storage_visibility_verified` and every capacity-pass boolean false
+- **AND** missing, duplicated, malformed, inactive, shared, unsupported, inconsistent, or incomplete candidates fail closed; a fixed boolean distinguishes a missing declared row from a present row that fails capacity checks; no storage ID, exact capacity, volume ID, or reservation is reported, and no allocation is authorized or PBS/restore readiness claimed
 
 ### Requirement: Rollout and recovery are reproducible
 Instrumentation and receiver changes SHALL be declared as code, applied through reviewed `dev` and Semaphore, and verified per wave. A failed wave SHALL be reversible by an operator-driven reviewed declaration revert and redeploy without deleting existing telemetry volumes.

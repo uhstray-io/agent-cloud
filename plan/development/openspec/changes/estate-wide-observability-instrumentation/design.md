@@ -245,23 +245,37 @@ repository.
 
 The local-only PBS placement strategy is a VM with a new virtual data disk on
 the separately declared image store; this does not authorize initializing a
-physical host disk. Extend the read-only survey to evaluate only the declared
-image-store row, requiring exactly one match, active state, explicit
-`shared=0`, `images` content, and `lvmthin` type. A `dir` row is not eligible
-because the existing survey does not establish whether a managed directory
-is local or mounted. For each proposed 256/512/1024-GiB disk, the fixed public
-boolean is true only when Proxmox-reported `avail` can cover that entire size
-and leaves `avail - size >= 30% of total`. The arithmetic is a conservative,
-point-in-time full-allocation scenario; it reserves no capacity and does not
-prove that creating the VM/disk is safe or that PBS is ready. Unknown,
-inconsistent, missing, or duplicate candidate facts yield false or a fixed
-refusal without exposing the declared ID or capacity. Proxmox documents that
-LVM-thin supports raw VM images and is local-only, and its upstream status
-implementation reports thin-pool size/used/available values; this justifies
-the bounded candidate type, not physical suitability. See the [Proxmox storage
+physical host disk. The GET-only preflight requires the exact declared active,
+non-shared `lvmthin` `images` row, reads its storage configuration to resolve
+`vgname`/`thinpool`, and requires one matching thin-pool record. The node
+storage-status `total`/`used`/`avail` must agree with the linked thin-pool
+`lv_size`/`used`; any disagreement refuses the receipt. The VM-image content
+listing must be well-formed and unique, and its virtual `size` values are
+summed without printing volume identifiers or capacities. A proposed
+256/512/1024-GiB preflight passes only if current provisioned virtual sizes
+plus the proposal leave at least 30% of pool size, a hypothetical full write
+of the proposal leaves at least 30% of pool size in reported physical
+availability, and current thin-pool metadata free space is at least 30% of
+metadata size. The metadata condition is a current threshold, not a forecast
+of metadata use caused by a new unwritten disk. These are point-in-time,
+non-reserving facts and never authorize allocation or establish PBS, guest
+filesystem, physical safety, or restore readiness. The Proxmox LVM-thin
+plugin reports VM volume `size` from `lv_size`, while its status reports pool
+size, used, and available; the thin-pool API exposes metadata size and used
+bytes. The storage-content API can silently filter inaccessible image rows
+using per-VM `VM.Config.Disk` permissions, so HTTP 200 alone does not prove
+the listing is complete. Before interpreting it, the survey reads the caller's
+effective permissions for the exact declared storage and requires both
+`Datastore.Allocate` (which upstream `check_volume_access` uses to bypass
+per-VM filtering) and `Datastore.Audit` (required by the content endpoint).
+If either privilege is absent or malformed, the fixed
+`complete_storage_visibility_verified` fact and every capacity-pass boolean
+remain false. The survey does not change the API token ACL; if the existing
+identity lacks these rights, a separately reviewed least-privilege solution
+is required. See the [Proxmox storage
 guide](https://pve.proxmox.com/pve-docs/pvesm.1.html) and [LVM-thin status
-implementation](https://github.com/proxmox/pve-storage/blob/master/src/PVE/Storage/LvmThinPlugin.pm).
-Live execution of the added virtual-disk capacity check remains pending.
+implementation](https://github.com/proxmox/pve-storage/blob/master/src/PVE/Storage/LvmThinPlugin.pm), [storage-content API](https://github.com/proxmox/pve-storage/blob/master/src/PVE/API2/Storage/Content.pm), [thin-pool API](https://github.com/proxmox/pve-storage/blob/master/src/PVE/API2/Disks/LVMThin.pm), and [effective-permissions API](https://github.com/proxmox/pve-access-control/blob/master/src/PVE/API2/AccessControl.pm).
+Live execution of the expanded virtual-disk preflight remains pending.
 
 The 90d/45d retention target remains blocked: keep the effective 15d
 Prometheus / 7d Loki / 168h Tempo settings and 0B Prometheus size cap until the
