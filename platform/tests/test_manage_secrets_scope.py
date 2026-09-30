@@ -6,11 +6,20 @@ task outside that template read `secrets` and failed in production: the agentgat
 (task 1177) and the step-ca issuer add (task 1971), the second hidden by no_log. Jinja
 templates are out of scope: they are rendered through manage-secrets' `_env_templates`, where
 `secrets` is bound.
+
+The same file's outputs, `_resolved` and `_shared`, are held here too: every task that sets
+them hides its result, and each include starts them empty.
 """
 
+import json
 import re
 
+import harness_sandbox
 import playbook_yaml
+import yaml
+
+MANAGE_SECRETS = playbook_yaml.REPO / "platform/playbooks/tasks/manage-secrets.yml"
+OUTPUTS = {"_resolved", "_shared"}
 
 # `secrets.x`, `secrets[...]`, `secrets | filter` and a bare `{{ secrets }}` all read the name.
 READ = re.compile(r"\bsecrets\s*(?:\.|\[|\||\}\})")
@@ -63,7 +72,10 @@ def test_no_task_reads_secrets_outside_the_task_that_binds_it():
     for path in playbook_yaml.files():
         rel = path.relative_to(playbook_yaml.REPO)
         found += [f"{rel}: {n}" for n in reads_outside_binding(playbook_yaml.load(path))]
-    assert not found, "read `_resolved` (the fact manage-secrets sets), not `secrets`:\n" + "\n".join(found)
+    assert not found, (
+        "read `_resolved` (the service's own secrets) or `_shared` (its shared "
+        "reads), not `secrets`:\n" + "\n".join(found)
+    )
 
 
 def test_the_guard_catches_both_recorded_shapes_and_passes_the_binding_task():
@@ -96,3 +108,64 @@ def test_the_guard_catches_both_recorded_shapes_and_passes_the_binding_task():
 """)
     # The template task reads `secrets` inside its own binding, so it passes.
     assert reads_outside_binding(doc) == ["guard", "add", "include", "filter", "bare"]
+
+
+def test_every_task_that_sets_the_outputs_hides_its_result():
+    # A set_fact result carries the new value: at -v an unhidden one prints every secret
+    # ("Add service URL" did, until this guard).
+    shown = []
+    for path in playbook_yaml.files():
+        for task in _tasks(playbook_yaml.load(path)):
+            fact = next((v for k, v in task.items() if k.endswith("set_fact")), None)
+            if isinstance(fact, dict) and OUTPUTS & fact.keys() and task.get("no_log") is not True:
+                shown.append(f"{path.relative_to(playbook_yaml.REPO)}: {task.get('name', '<unnamed>')}")
+    assert not shown, "set `no_log: true` on:\n" + "\n".join(shown)
+
+
+def test_a_second_include_does_not_carry_the_first_services_secrets(tmp_path):
+    # The store step writes all of `_resolved` to secret/services/<service_name>: a value
+    # left from an earlier include on the same host would be stored under this service.
+    tasks = {t["name"]: t for t in playbook_yaml.load(MANAGE_SECRETS)}
+    lifted = [tasks["Start from empty outputs"], tasks["Resolve secrets (reuse existing, generate missing)"]]
+    first = [
+        {
+            "name": "first service",
+            "ansible.builtin.set_fact": {
+                "_existing": {"a": "1"},
+                "_secret_definitions": [{"name": "a", "type": "random"}],
+            },
+        },
+        *lifted,
+    ]
+    second = [
+        {
+            "name": "second service",
+            "ansible.builtin.set_fact": {
+                "_existing": {"b": "2"},
+                "_secret_definitions": [{"name": "b", "type": "random"}],
+            },
+        },
+        *lifted,
+    ]
+    out = tmp_path / "resolved.json"
+    dump = {
+        "name": "dump",
+        "ansible.builtin.copy": {"content": "{{ _resolved | to_json }}", "dest": str(out), "mode": "0600"},
+    }
+    play = [{"hosts": "localhost", "gather_facts": False, "tasks": [*first, *second, dump]}]
+    (tmp_path / "play.yml").write_text(yaml.safe_dump(play))
+    r = harness_sandbox.run(
+        ["ansible-playbook", "-i", "localhost,", "-c", "local", str(tmp_path / "play.yml")],
+        tmp_path,
+        cwd=playbook_yaml.REPO,
+        env=harness_sandbox.env_for(tmp_path),
+    )
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert json.loads(out.read_text()) == {"b": "2"}
+
+
+def test_the_reset_is_the_first_task_and_unconditional():
+    first = playbook_yaml.load(MANAGE_SECRETS)[0]
+    assert first["name"] == "Start from empty outputs"
+    assert first["ansible.builtin.set_fact"] == {"_resolved": {}, "_shared": {}}
+    assert "when" not in first
