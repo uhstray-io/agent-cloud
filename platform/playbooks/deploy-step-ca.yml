@@ -90,12 +90,17 @@
 # serves directly (token-mint, no ACME auto-renew locally) would then expire
 # daily, so the admin provisioner's x509 duration is raised. The issuing
 # provisioners (one per leaf profile) sign the declared leaves; their lifetime is
-# stepca_leaf_dur. Everything here reads the provisioner list first and changes only
-# what differs: a second run adds nothing and does not reload the CA.
+# stepca_leaf_dur. Each issuer carries an x509 template fixing its extended key usage: a
+# JWK provisioner without one issues serverAuth AND clientAuth, so a server leaf would pass
+# as a client certificate (production-internal-ca design decision 5; findings 2026-09-30).
+# Everything here reads the provisioner list first and changes only what differs: a second
+# run adds nothing and does not reload the CA.
 - name: "Phase 2.5: Configure step-ca issuance policy"
   hosts: step_ca_svc
   gather_facts: false
   become: false
+  vars_files:
+    - vars/step-ca-issuers.yml
   vars:
     _engine: "{{ container_engine | default('podman') }}"
     _max_dur: "{{ stepca_x509_max_dur | default('8760h') }}"
@@ -104,9 +109,15 @@
     # ponytail: hour-only values (the only form used here); other spellings compare unequal.
     _max_dur_stored: "{{ (_max_dur ~ '0m0s') if (_max_dur is match('^[0-9]+h$')) else _max_dur }}"
     _leaf_dur_stored: "{{ (_leaf_dur ~ '0m0s') if (_leaf_dur is match('^[0-9]+h$')) else _leaf_dur }}"
-    _issuers:
-      - { name: issuer-server, secret: issuer_server_password }
-      - { name: issuer-client, secret: issuer_client_password }
+    # step-ca's Go template (NOT Jinja: each '{{' piece renders to a literal brace pair).
+    # The subject and SANs come from the request; the key usages are fixed by the profile.
+    _x509_template: |
+      {
+        "subject": {{ '{{' }} toJson .Subject {{ '}}' }},
+        "sans": {{ '{{' }} toJson .SANs {{ '}}' }},
+        "keyUsage": ["digitalSignature"],
+        "extKeyUsage": ["__EKU__"]
+      }
 
   tasks:
     # `inspect --type container` works on podman and docker alike (docker has no
@@ -145,17 +156,22 @@
         # Keys avoid dict method names: `_prov_plan.update` would be dict.update, not the key.
         _prov_plan: >-
           {%- set by_name = {} -%}
+          {%- set tpl = {} -%}
           {%- for p in ((_ca_json.stdout | from_json).authority.provisioners | default([])) -%}
             {%- set _ = by_name.update({p.name: (p.claims | default({}, true))}) -%}
+            {%- set _ = tpl.update({p.name: ((p.options | default({}, true)).x509 | default({}, true)).template | default('', true) | trim}) -%}
           {%- endfor -%}
           {%- set running = {} -%}
+          {%- set running_tpl = {} -%}
           {%- for p in (_prov_list.stdout | from_json) -%}
             {%- set _ = running.update({p.name: (p.claims | default({}, true))}) -%}
+            {%- set _ = running_tpl.update({p.name: ((p.options | default({}, true)).x509 | default({}, true)).template | default('', true) | trim}) -%}
           {%- endfor -%}
           {%- set ns = namespace(pending=(by_name.keys() | list | sort) != (running.keys() | list | sort)) -%}
           {%- for n, c in by_name.items() -%}
             {%- if c.get('maxTLSCertDuration') != running.get(n, {}).get('maxTLSCertDuration')
-                  or c.get('defaultTLSCertDuration') != running.get(n, {}).get('defaultTLSCertDuration') -%}
+                  or c.get('defaultTLSCertDuration') != running.get(n, {}).get('defaultTLSCertDuration')
+                  or tpl.get(n, '') != running_tpl.get(n, '') -%}
               {%- set ns.pending = true -%}
             {%- endif -%}
           {%- endfor -%}
@@ -169,9 +185,15 @@
               {%- set _ = upd.append(i.name) -%}
             {%- endif -%}
           {%- endfor -%}
+          {%- set set_tpl = [] -%}
+          {%- for i in _issuers -%}
+            {%- if tpl.get(i.name, '') != (_x509_template | replace('__EKU__', i.eku) | trim) -%}
+              {%- set _ = set_tpl.append(i.name) -%}
+            {%- endif -%}
+          {%- endfor -%}
           {{ {'raise_admin': admin.get('maxTLSCertDuration') != _max_dur_stored
                               or admin.get('defaultTLSCertDuration') != _max_dur_stored,
-              'add': add, 'set_lifetime': upd, 'reload_pending': ns.pending} }}
+              'add': add, 'set_lifetime': upd, 'set_template': set_tpl, 'reload_pending': ns.pending} }}
       when: _ca_present.rc == 0
 
     - name: "Report the provisioner plan"
@@ -182,6 +204,7 @@
           ('admin lifetime ' ~ ('to ' ~ _max_dur ~ ' ' if _prov_plan['raise_admin'] else 'unchanged ')
           ~ '| add ' ~ (_prov_plan['add'] | join(', ') or 'none')
           ~ ' | set lifetime ' ~ _leaf_dur ~ ' on ' ~ (_prov_plan['set_lifetime'] | join(', ') or 'none')
+          ~ ' | set profile template on ' ~ (_prov_plan['set_template'] | join(', ') or 'none')
           ~ (' | reload pending from an earlier run' if _prov_plan['reload_pending'] else '')) }}
 
     - name: "Raise the admin provisioner x509 cert duration"
@@ -239,13 +262,37 @@
       changed_when: true
       when: not ansible_check_mode and _ca_present.rc == 0
 
+    # The template is public (it holds no secret), so it goes over stdin into a temporary
+    # file; step-ca copies its text into ca.json and the file is removed.
+    - name: "Set each issuing provisioner's profile template"
+      ansible.builtin.command:
+        argv:
+          - "{{ _engine }}"
+          - exec
+          - -i
+          - step-ca
+          - sh
+          - -c
+          - >-
+            cat > /tmp/x509.tpl;
+            step ca provisioner update "$0" --x509-template /tmp/x509.tpl;
+            rc=$?; rm -f /tmp/x509.tpl; exit $rc
+          - "{{ item.name }}"
+        stdin: "{{ _x509_template | replace('__EKU__', item.eku) }}"
+      loop: "{{ _issuers | selectattr('name', 'in', (_prov_plan | default({}))['set_template'] | default([])) | list }}"
+      loop_control:
+        label: "{{ item.name }}: {{ item.eku }}"
+      register: _prov_tpl
+      changed_when: true
+      when: not ansible_check_mode and _ca_present.rc == 0
+
     - name: "Reload step-ca to apply the policy (SIGHUP)"
       ansible.builtin.command: "{{ _engine }} kill --signal HUP step-ca"
       changed_when: true
       when:
         - not ansible_check_mode
         - _ca_present.rc == 0
-        - _prov_admin is changed or _prov_add is changed or _prov_upd is changed or ((_prov_plan | default({})).get('reload_pending', false))
+        - _prov_admin is changed or _prov_add is changed or _prov_upd is changed or _prov_tpl is changed or ((_prov_plan | default({})).get('reload_pending', false))
       # No post-reload health wait here: Phase 3's retried `step ca health` is
       # the single gate, and it settles the reload (retries/until 'ok').
 
@@ -254,6 +301,8 @@
   hosts: step_ca_svc
   gather_facts: false
   become: false
+  vars_files:
+    - vars/step-ca-issuers.yml
   vars:
     _engine: "{{ container_engine | default('podman') }}"
 
@@ -314,7 +363,7 @@
       ansible.builtin.assert:
         that:
           - (_ca_state.results[0].stdout | from_json | selectattr('type', 'equalto', 'ACME') | list | length) == 0
-          - (_ca_state.results[0].stdout | from_json | selectattr('name', 'in', ['issuer-server', 'issuer-client']) | list | length) == 2
+          - (_ca_state.results[0].stdout | from_json | selectattr('name', 'in', _issuers | map(attribute='name') | list) | list | length) == (_issuers | length)
           - _ca_state.results[1].stdout_lines | length > 0
           - _ca_state.results[1].stdout_lines | reject('search', '-> ' ~ (stepca_bind | default('127.0.0.1')) ~ ':') | list | length == 0
         fail_msg: >-
@@ -322,6 +371,25 @@
           provisioners, and its API published on {{ stepca_bind | default('127.0.0.1') }} only.
           Published: {{ _ca_state.results[1].stdout_lines }}.
         quiet: true
+      when: (_ca_up.rc == 0 or not ansible_check_mode) and (not (local_mode | default(false) | bool))
+
+    # The RUNNING CA's list, so a template written to ca.json but never reloaded fails here.
+    - name: "Refuse an issuing provisioner without its profile's key usage"
+      ansible.builtin.assert:
+        that:
+          # A block scalar: the `": ` inside the literal would otherwise read as a YAML key.
+          - >-
+            ('"extKeyUsage": ["' ~ item.eku ~ '"]') in _running_template
+        fail_msg: >-
+          {{ inventory_hostname }}: {{ item.name }} must issue {{ item.eku }} only; its running
+          x509 template is {{ _running_template or 'absent' }}.
+        quiet: true
+      vars:
+        _running: "{{ _ca_state.results[0].stdout | from_json | selectattr('name', 'equalto', item.name) | first }}"
+        _running_template: "{{ ((_running.options | default({}, true)).x509 | default({}, true)).template | default('', true) }}"
+      loop: "{{ _issuers }}"
+      loop_control:
+        label: "{{ item.name }}: {{ item.eku }}"
       when: (_ca_up.rc == 0 or not ansible_check_mode) and (not (local_mode | default(false) | bool))
 
     - name: "Report"

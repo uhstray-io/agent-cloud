@@ -22,6 +22,7 @@ FIRST_BOOT_TASKS = REPO / "platform/playbooks/tasks/assert-step-ca-first-boot.ym
 DEPLOY = REPO / "platform/playbooks/deploy-step-ca.yml"
 CLEAN = REPO / "platform/playbooks/clean-deploy-step-ca.yml"
 ENV_J2 = REPO / "platform/services/step-ca/deployment/templates/env.j2"
+ISSUERS = REPO / "platform/playbooks/vars/step-ca-issuers.yml"
 
 
 def _play(path: Path, name_prefix: str) -> dict:
@@ -43,6 +44,14 @@ def _run(tmp_path: Path, host_vars: dict, tasks: list, play_vars: dict | None = 
     return harness_sandbox.run(
         ["ansible-playbook", "-i", str(tmp_path / "inv.yml"), str(tmp_path / "play.yml"), *(extra or [])],
         tmp_path, cwd=REPO, env=harness_sandbox.env_for(tmp_path))
+
+
+def _registered_reads(tmp: Path, reads: dict) -> list:
+    """Fake each read the way production gets it: a command's registered stdout. The x509
+    template holds Go template braces, which Ansible would render as Jinja if the fake
+    arrived as a plain variable; a module's result is not rendered again."""
+    return [{"name": f"fake {var}", "ansible.builtin.command": f"cat {tmp}/{{{{ inventory_hostname }}}}.{suffix}",
+             "register": var, "changed_when": False} for var, suffix in reads.items()]
 
 
 def _failed(stdout: str) -> dict:
@@ -116,25 +125,42 @@ def test_a_production_ca_is_refused_without_its_first_boot_settings(first_boot_f
 
 # ── Provisioner plan (task 2.1) ────────────────────────────────────────────────
 
-def _jwk(name, dur=None):
+def _template(eku: str) -> str:
+    """The profile template as Phase 2.5 renders it: its '{{' pieces become literal braces."""
+    raw = _play(DEPLOY, "Phase 2.5")["vars"]["_x509_template"]
+    return raw.replace("{{ '{{' }}", "{{").replace("{{ '}}' }}", "}}").replace("__EKU__", eku)
+
+
+def _jwk(name, dur=None, eku=None):
     claims = {"maxTLSCertDuration": dur, "defaultTLSCertDuration": dur} if dur else {}
-    return {"type": "JWK", "name": name, "claims": claims}
+    prov = {"type": "JWK", "name": name, "claims": claims}
+    if eku:
+        prov["options"] = {"x509": {"template": _template(eku)}}
+    return prov
 
 
-CONVERGED = [_jwk("admin", "8760h0m0s"), _jwk("issuer-server", "720h0m0s"), _jwk("issuer-client", "720h0m0s")]
+SERVER = _jwk("issuer-server", "720h0m0s", "serverAuth")
+CLIENT = _jwk("issuer-client", "720h0m0s", "clientAuth")
+CONVERGED = [_jwk("admin", "8760h0m0s"), SERVER, CLIENT]
 # {case: (ca.json provisioners, the running CA's list or None for the same)}
 PLAN_CASES = {
     "fresh": ([_jwk("admin")], None),
     "converged": (CONVERGED, None),
-    "one-differs": ([_jwk("admin", "8760h0m0s"), _jwk("issuer-server", "24h0m0s"),
-                     _jwk("issuer-client", "720h0m0s")], None),
+    "one-differs": ([_jwk("admin", "8760h0m0s"), _jwk("issuer-server", "24h0m0s", "serverAuth"), CLIENT], None),
     "max-differs": ([_jwk("admin", "8760h0m0s"),
-                     {"type": "JWK", "name": "issuer-server",
-                      "claims": {"maxTLSCertDuration": "24h0m0s", "defaultTLSCertDuration": "720h0m0s"}},
-                     _jwk("issuer-client", "720h0m0s")], None),
+                     {**SERVER, "claims": {"maxTLSCertDuration": "24h0m0s", "defaultTLSCertDuration": "720h0m0s"}},
+                     CLIENT], None),
     # A run stopped between an add and the reload: ca.json has the issuers, the running CA
     # does not. Nothing is left to add, but the reload must still run.
     "never-reloaded": (CONVERGED, [_jwk("admin", "8760h0m0s")]),
+    # The issuers created on 2026-09-29, before profiles: no template, so both key usages.
+    "no-templates": ([_jwk("admin", "8760h0m0s"), _jwk("issuer-server", "720h0m0s"),
+                      _jwk("issuer-client", "720h0m0s")], None),
+    # A template of the wrong profile is replaced, not kept.
+    "wrong-profile": ([_jwk("admin", "8760h0m0s"), _jwk("issuer-server", "720h0m0s", "clientAuth"), CLIENT], None),
+    # A template written to ca.json but never reloaded.
+    "template-unreloaded": (CONVERGED, [_jwk("admin", "8760h0m0s"), _jwk("issuer-server", "720h0m0s"),
+                                        _jwk("issuer-client", "720h0m0s")]),
 }
 
 
@@ -144,34 +170,50 @@ def plans(tmp_path_factory) -> dict:
     it cannot read fails."""
     tmp = tmp_path_factory.mktemp("plans")
     play = _play(DEPLOY, "Phase 2.5")
-    hosts = {case: {"_ca_present": {"rc": 0},
-                    "_ca_json": {"stdout": json.dumps({"authority": {"provisioners": prov}})},
-                    "_prov_list": {"stdout": json.dumps(prov if running is None else running)}}
-             for case, (prov, running) in PLAN_CASES.items()}
+    for case, (prov, running) in PLAN_CASES.items():
+        (tmp / f"{case}.ca.json").write_text(json.dumps({"authority": {"provisioners": prov}}))
+        (tmp / f"{case}.list.json").write_text(json.dumps(prov if running is None else running))
+    hosts = {case: {"_ca_present": {"rc": 0}} for case in PLAN_CASES}
     dump = {"name": "dump", "ansible.builtin.copy": {
         "content": "{{ _prov_plan | to_json }}", "dest": str(tmp / "{{ inventory_hostname }}.json"), "mode": "0600"}}
     loops = {"name": "evaluate the loops", "ansible.builtin.debug": {"msg": [
         "{{ _task_add_loop }}", "{{ _task_set_loop }}"]}, "vars": {
         "_task_add_loop": _task(play, "Add each missing issuing provisioner")["loop"],
         "_task_set_loop": _task(play, "Set the issuing provisioners' leaf lifetime")["loop"]}}
-    tasks = [_task(play, "Plan the provisioner changes"), _task(play, "Report the provisioner plan"), loops, dump]
-    r = _run(tmp, {}, tasks, play_vars=play["vars"], hosts=hosts)
+    tasks = [*_registered_reads(tmp, {"_ca_json": "ca.json", "_prov_list": "list.json"}),
+             _task(play, "Plan the provisioner changes"), _task(play, "Report the provisioner plan"), loops, dump]
+    r = _run(tmp, {}, tasks, play_vars={**playbook_yaml.load(ISSUERS), **play["vars"]}, hosts=hosts)
     assert r.returncode == 0, r.stdout + r.stderr
     return {case: json.loads((tmp / f"{case}.json").read_text()) for case in PLAN_CASES}
 
 
-def test_a_fresh_ca_gets_both_issuers_and_every_lifetime(plans):
-    assert plans["fresh"] == {"raise_admin": True, "add": ["issuer-server", "issuer-client"],
-                              "set_lifetime": ["issuer-server", "issuer-client"], "reload_pending": False}
+BOTH = ["issuer-server", "issuer-client"]
+NOTHING = {"raise_admin": False, "add": [], "set_lifetime": [], "set_template": [], "reload_pending": False}
+
+
+def test_a_fresh_ca_gets_both_issuers_every_lifetime_and_both_profiles(plans):
+    assert plans["fresh"] == {"raise_admin": True, "add": BOTH, "set_lifetime": BOTH, "set_template": BOTH,
+                              "reload_pending": False}
 
 
 def test_a_converged_ca_plans_nothing(plans):
-    assert plans["converged"] == {"raise_admin": False, "add": [], "set_lifetime": [], "reload_pending": False}
+    assert plans["converged"] == NOTHING
 
 
 def test_only_the_provisioner_whose_lifetime_differs_is_updated(plans):
-    assert plans["one-differs"] == {"raise_admin": False, "add": [], "set_lifetime": ["issuer-server"],
-                                    "reload_pending": False}
+    assert plans["one-differs"] == {**NOTHING, "set_lifetime": ["issuer-server"]}
+
+
+def test_issuers_without_a_profile_template_get_one(plans):
+    assert plans["no-templates"] == {**NOTHING, "set_template": BOTH}
+
+
+def test_a_template_of_the_wrong_profile_is_replaced(plans):
+    assert plans["wrong-profile"] == {**NOTHING, "set_template": ["issuer-server"]}
+
+
+def test_a_template_written_but_never_reloaded_is_reloaded(plans):
+    assert plans["template-unreloaded"] == {**NOTHING, "reload_pending": True}
 
 
 def test_a_differing_maximum_alone_triggers_the_update(plans):
@@ -179,7 +221,32 @@ def test_a_differing_maximum_alone_triggers_the_update(plans):
 
 
 def test_a_change_written_but_never_reloaded_is_reloaded(plans):
-    assert plans["never-reloaded"] == {"raise_admin": False, "add": [], "set_lifetime": [], "reload_pending": True}
+    assert plans["never-reloaded"] == {**NOTHING, "reload_pending": True}
+
+
+# ── Running profiles (findings 2026-09-30) ─────────────────────────────────────
+
+RUNNING_CASES = {
+    "profiles": ([SERVER, CLIENT], True),
+    "no-template": ([_jwk("issuer-server", "720h0m0s"), CLIENT], False),
+    "swapped": ([_jwk("issuer-server", "720h0m0s", "clientAuth"), _jwk("issuer-client", "720h0m0s", "serverAuth")],
+                False),
+}
+
+
+def test_phase_3_refuses_a_running_issuer_without_its_profile(tmp_path):
+    play = _play(DEPLOY, "Phase 3")
+    for case, (provs, _) in RUNNING_CASES.items():
+        (tmp_path / f"{case}.list.json").write_text(json.dumps(provs))
+    hosts = {case: {"_ca_up": {"rc": 0}} for case in RUNNING_CASES}
+    # `_ca_state` is a loop register in production: results[0] is the provisioner list.
+    fake = {"name": "fake the state reads", "ansible.builtin.command": "cat {{ item }}",
+            "loop": [f"{tmp_path}/{{{{ inventory_hostname }}}}.list.json"], "register": "_ca_state",
+            "changed_when": False}
+    task = _task(play, "Refuse an issuing provisioner without its profile's key usage")
+    r = _run(tmp_path, {}, [fake, task], play_vars={**playbook_yaml.load(ISSUERS), **play["vars"]}, hosts=hosts)
+    failed = _failed(r.stdout)
+    assert {c: failed.get(c) == 0 for c in RUNNING_CASES} == {c: ok for c, (_, ok) in RUNNING_CASES.items()}, r.stdout
 
 
 def test_the_list_is_read_before_any_provisioner_is_added_and_the_add_is_hidden():
@@ -226,4 +293,4 @@ def test_the_issuer_password_comes_from_the_fact_manage_secrets_sets():
     add = _task(_play(DEPLOY, "Phase 2.5"), "Add each missing issuing provisioner")
     assert re.match(r"\{\{\s*_resolved\[", add["ansible.builtin.command"]["stdin"])
     declared = {d["name"] for d in _play(DEPLOY, "Phase 1")["vars"]["_secret_definitions"]}
-    assert {i["secret"] for i in _play(DEPLOY, "Phase 2.5")["vars"]["_issuers"]} <= declared
+    assert {i["secret"] for i in playbook_yaml.load(ISSUERS)["_issuers"]} <= declared

@@ -450,6 +450,42 @@ Mitigations for a later change: a separate root key password through
 `DOCKER_STEPCA_INIT_KEY_PASSWORD_FILE`, which the entrypoint supports; removing the plaintext
 file after first boot; and rotating the first-boot container log.
 
+## Findings 2026-09-30: task 4.4, profiles and a CA-side name policy
+
+Measured on a throwaway step-ca 0.30.2 container (no published port, dummy password,
+removed afterwards):
+
+1. **A JWK provisioner without a template issues both key usages.** A leaf signed by a
+   freshly added JWK provisioner carries Extended Key Usage "Server Authentication, Client
+   Authentication". The production issuers were added this way on 2026-09-29, so until
+   they carry templates a server leaf is also a valid client certificate: exactly what
+   decision 5 forbids. Nothing has been issued from them yet.
+2. **An x509 template per provisioner enforces the profile.** `step ca provisioner update
+   <name> --x509-template <file>` followed by a SIGHUP made the next leaf carry
+   "Server Authentication" only. step-ca stores the template's text inline in `ca.json`
+   (`options.x509.template`), so the file is needed only for the update. Decision 5's
+   mechanism is therefore a template per issuing provisioner, not a provisioner per
+   template.
+3. **A provisioner-level name policy is not available without the Admin API.** The CLI
+   route (`step ca policy provisioner x509 allow dns`) needs admin credentials against a
+   CA with remote management enabled, which this CA does not have, and a provisioner
+   `policy` block written into `ca.json` was ignored even after a restart.
+4. **An authority-level name policy is enforced, with sharp edges.** `authority.policy.
+   x509.allow.dns` in `ca.json`, applied by SIGHUP, refused a name outside it. But a
+   wildcard entry matches exactly one label (`*.dc1.<zone>` refused
+   `vm01.gateway.dc1.<zone>`), wildcard leaves are refused too, and an entry step-ca
+   cannot parse (`.dc1.<zone>`, `*.*.dc1.<zone>`) makes the reload fail with "error
+   reloading ca: cannot parse permitted domain constraint" while the CA keeps serving
+   its previous configuration, and then prevents the CA from starting on its next
+   restart.
+
+Recommended use of 4, pending Joe's decision: render the authority policy from the exact
+SANs of the declared leaves (decision 4's list), never a pattern, so the CA itself
+refuses any undeclared name even if task 4.2's guard were bypassed. The deploy would
+refuse an entry that is not a plain DNS name before writing `ca.json`, and would read the
+CA's log after the reload and fail on a reload error, because the running CA does not
+fail on one. Local-dev keeps no policy: its admin wildcard would be refused.
+
 ## Open Questions
 
 All four questions below were answered on 2026-09-28; see "Decisions recorded
