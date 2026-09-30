@@ -217,7 +217,9 @@
             step ca provisioner add "$0" --type JWK --create --password-file /tmp/ipw;
             rc=$?; rm -f /tmp/ipw; exit $rc
           - "{{ item.name }}"
-        stdin: "{{ secrets[item.secret] }}"
+        # manage-secrets keeps the resolved values in the `_resolved` fact; `secrets` exists
+        # only inside its own template task (tasks/manage-secrets.yml, "Template env files").
+        stdin: "{{ _resolved[item.secret] }}"
         stdin_add_newline: false
       loop: "{{ _issuers | selectattr('name', 'in', (_prov_plan | default({}))['add'] | default([])) | list }}"
       loop_control:
