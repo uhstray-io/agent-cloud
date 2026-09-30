@@ -83,11 +83,14 @@ def _consumer(tmp: Path, leaves: list, **over) -> dict:
     ({"dir": "/tmp/$(id)"}, False),                               # review of #363: shell injection
     ({"dir": '/tmp/a"b'}, False),
     ({"dir": "/tmp/certs/"}, False),                              # review of #369: trailing slash
+    ({"dir": "/tmp/../etc"}, False),                               # a `..` component
+    ({"dir": "/tmp/./certs"}, False),                              # a `.` component
     ({"sans": ["*.dc1.example.internal"]}, False),                 # a wildcard
     ({"sans": ["caddy.dc2.example.internal"]}, False),            # another site
     ({"sans": ["evildc1.example.internal"]}, False),              # a suffix, not a subdomain
     ({"sans": []}, False),
 ], ids=["declared", "undeclared", "other-host", "bad-profile", "relative-dir", "shell-dir", "quote-dir", "slash-dir",
+         "dotdot-dir", "dot-dir",
          "wildcard",
          "other-site",
         "suffix-only", "no-sans"])

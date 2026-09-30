@@ -150,3 +150,9 @@ def test_removing_an_emptied_directory_reports_the_change(tmp_path):
     r = _run(tmp_path, {"leaf_name": "probe", "leaf_action": "remove"}, [_leaf(tmp_path)])
     assert r.returncode == 0 and "changed=1" in r.stdout, r.stdout
     assert not (tmp_path / "leaf").exists()
+
+
+@pytest.mark.parametrize("bad", ["/../etc", "/./leaf"])
+def test_a_dot_or_dotdot_component_is_refused(tmp_path, bad):
+    r = _run(tmp_path, {"leaf_name": "probe", "leaf_action": "remove"}, [_leaf(tmp_path, dir=str(tmp_path) + bad)])
+    assert r.returncode != 0 and "no trailing slash" in r.stdout, r.stdout
