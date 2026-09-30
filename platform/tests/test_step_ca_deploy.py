@@ -426,3 +426,64 @@ def test_the_policy_write_refuses_a_ca_json_changed_since_it_was_read():
     script = task["ansible.builtin.shell"]
     assert '[ "${s%% *}" = "$0" ] || {' in script and "_ca_json_now.stdout_lines[0] | quote" in script
     assert script.index("sha256sum") < script.index('mv "$new" "$f"')
+
+
+# ── A dry run with changes pending (MISTAKES 10.18, occurrence 2) ──────────────
+
+# One assertion per run, and only ONE thing wrong with the CA in each, so each case proves
+# its own gate (review of #368): the gate may skip only under --check, and only for the
+# change Phase 2.5 plans.
+# {case: (Phase 3 task, check mode, plan, passes)}
+GATE_CASES = {
+    "count-check-planned": ("Refuse a production CA with ACME on or its API off loopback", True,
+                            {"add": ["issuer-client"]}, True),
+    "count-check-unplanned": ("Refuse a production CA with ACME on or its API off loopback", True, {}, False),
+    "count-real-planned": ("Refuse a production CA with ACME on or its API off loopback", False,
+                           {"add": ["issuer-client"]}, False),
+    "template-check-planned": ("Refuse an issuing provisioner without its profile's key usage", True,
+                               {"set_template": ["issuer-client"]}, True),
+    "template-check-unplanned": ("Refuse an issuing provisioner without its profile's key usage", True,
+                                 {"set_template": []}, False),
+    "template-check-other-planned": ("Refuse an issuing provisioner without its profile's key usage", True,
+                                     {"set_template": ["issuer-server"]}, False),
+    "template-real-planned": ("Refuse an issuing provisioner without its profile's key usage", False,
+                              {"set_template": ["issuer-client"]}, False),
+    "policy-check-planned": ("Refuse a CA whose name policy is not the declared names", True,
+                             {"set_policy": True}, True),
+    "policy-check-unplanned": ("Refuse a CA whose name policy is not the declared names", True,
+                               {"set_policy": False}, False),
+    "policy-real-planned": ("Refuse a CA whose name policy is not the declared names", False,
+                            {"set_policy": True}, False),
+}
+
+
+@pytest.mark.parametrize("case", GATE_CASES)
+def test_a_dry_run_skips_an_assertion_only_where_phase_2_5_plans_that_change(tmp_path, case):
+    # Task 2132: the first dry run after #363 failed Phase 3 because the templates it plans
+    # are not on the running CA until the real run sets them.
+    name, check, plan, ok = GATE_CASES[case]
+    play = _play(DEPLOY, "Phase 3")
+    # Each case breaks only what its own assertion reads: the count case lacks issuer-client,
+    # the template case lacks issuer-client's template, the policy case lacks the policy.
+    if name.startswith("Refuse a production CA"):
+        running = [SERVER]
+    elif "profile" in name:
+        running = [SERVER, _jwk("issuer-client", "720h0m0s")]
+    else:
+        running = [SERVER, CLIENT]
+    (tmp_path / "list.json").write_text(json.dumps(running))
+    (tmp_path / "port.txt").write_text("9000/tcp -> 127.0.0.1:9000\n")
+    (tmp_path / "ca.json").write_text(json.dumps({"authority": {"provisioners": running}}))
+    fakes = [
+        {"name": "fake the plan", "ansible.builtin.set_fact": {"_prov_plan": plan}},
+        {"name": "fake the state reads", "ansible.builtin.command": "cat {{ item }}", "check_mode": False,
+         "loop": [str(tmp_path / "list.json"), str(tmp_path / "port.txt")], "register": "_ca_state",
+         "changed_when": False},
+        {"name": "fake the ca.json read", "ansible.builtin.command": f"cat {tmp_path / 'ca.json'}",
+         "check_mode": False, "register": "_ca_json_final", "changed_when": False},
+    ]
+    host = {"_ca_up": {"rc": 0}, "dns_site": "dc1", "dns_zone": "example.internal",
+            "internal_leaves": [{"name": "g", "sans": ["g.dc1.example.internal"]}] if "policy" in name else []}
+    r = _run(tmp_path, host, [*fakes, _task(play, name)], play_vars={**playbook_yaml.load(ISSUERS), **play["vars"]},
+             extra=["--check"] if check else [])
+    assert (r.returncode == 0) is ok, r.stdout + r.stderr
