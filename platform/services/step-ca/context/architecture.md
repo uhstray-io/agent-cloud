@@ -45,10 +45,12 @@ site-config only.
   and `stepca_init_acme: "false"`. After every deploy, Phase 3 asserts the port is
   published on that bind only and that no ACME provisioner exists. Issuance will reach
   the CA over SSH, by running `step` inside the container; no consumer contacts it.
-- **First-boot settings are refused unless declared.** First boot writes the name, the
-  DNS names, the ACME switch and the admin provisioner into the volume for good.
+- **First-boot settings are checked before anything is written.** First boot writes the
+  name, the DNS names, the ACME switch and the admin provisioner into the volume for good.
   `tasks/assert-step-ca-first-boot.yml` refuses a production deploy, and a production
-  reset, when any of them is missing.
+  reset, unless the name and the DNS names (including `localhost`) are declared, ACME is
+  not turned on, and the bind and the admin provisioner keep their loopback and `admin`
+  values, which have defaults.
 - **Two issuing provisioners.** `issuer-server` and `issuer-client` are JWK
   provisioners, one per leaf profile, each with its own password in
   `secret/services/step-ca`. Their leaf lifetime comes from `stepca_leaf_dur`. The deploy
@@ -64,7 +66,9 @@ site-config only.
   `Clean Deploy step-ca (Dev)` run from `dev`, because `main`'s playbooks lack these
   guards.
 
-Still to come in the same change: the host firewall (task group 3), cross-host issuance
+The host firewall is converged (default deny, SSH from the declared sources only; task
+group 3), with its reboot and LAN reachability checks still to run. Still to come in the
+same change: cross-host issuance
 with the key generated on the consumer and every name declared (4), the consumers' leaves
 (5), renewal and expiry alerting (6), and backup and restore of the CA material (7).
 
