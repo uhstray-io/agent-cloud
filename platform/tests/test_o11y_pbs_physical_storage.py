@@ -420,7 +420,12 @@ def test_unrelated_thick_lvm_headroom_cannot_pass_declared_store_gate():
 
 @pytest.mark.parametrize(
     "detail_override",
-    ({"vgname": "other-vg"}, {"content": "images"}),
+    (
+        {"vgname": "other-vg"},
+        {"content": "images"},
+        {"disable": 0},
+        {"nodes": "private-node"},
+    ),
 )
 def test_declared_thick_lvm_config_mismatch_never_sets_exact_or_headroom(detail_override):
     data = sample()
@@ -438,6 +443,15 @@ def test_declared_thick_lvm_config_mismatch_never_sets_exact_or_headroom(detail_
         for size in (256, 512, 1024)
     )
     assert result["thick_lvm_allocation_authorized"] is False
+
+
+def test_unsupported_declared_storage_detail_type_fails_closed():
+    data = sample()
+    add_candidate(data)
+    data["storage_config"]["json"]["data"]["type"] = "dir"
+
+    with pytest.raises(ValueError, match="incomplete declared storage linkage"):
+        inspect(data)
 
 
 def test_declared_thick_lvm_status_config_mismatch_never_sets_exact_or_headroom():

@@ -411,7 +411,7 @@ def _allocation_facts(
     result["visible_volume_permissions_verified"] = has_complete_visibility
     storage_type = config.get("type")
     _require(
-        isinstance(storage_type, str) and bool(storage_type),
+        isinstance(storage_type, str) and storage_type in {"lvmthin", "lvm"},
         "Proxmox returned incomplete declared storage linkage.",
     )
     # Thick-LVM uses the candidate and VG/status facts below. Keep its preliminary
@@ -732,7 +732,7 @@ def _thick_lvm_facts(
         "thick_lvm_backing_media_verified": False,
         "thick_lvm_allocation_authorized": False,
     }
-    for _, group in candidates:
+    for status, group in candidates:
         total, free = group["size"], group["free"]
         for size_gib in PROPOSED_DISK_SIZES:
             remaining = free - size_gib * 1024**3
@@ -741,7 +741,7 @@ def _thick_lvm_facts(
                 if (
                     declared_candidate_exact_match
                     and declared_candidate is not None
-                    and group is declared_candidate[2]
+                    and status["storage"] == declared_storage_id
                 ):
                     result[f"declared_thick_lvm_reported_vg_headroom_passes_{size_gib}_gib"] = True
     return result | _thick_lvm_pv_lineage_facts(candidates, disk_rows)
