@@ -130,7 +130,14 @@ host. Push, pull requests and merges happen only when Joe authorizes each one.
       `<dns_site>.<dns_zone>`; the same rule as the CA's name policy
 - [ ] 4.3 Evolve `tasks/distribute-ca-root.yml`: optional `_ca_host`; root and intermediate
       read from the CA container on that host, bundle written 0644 on the consumer into
-      the mounted certificate directory
+      the mounted certificate directory. 2026-09-30: one path for every case, the local
+      single host included: the root and intermediate are read with `exec cat` on `_ca_host`
+      (default the play host, through `delegate_to`, also under `--check`), refused unless two
+      certificates come back, and written by `copy` (0644, changed only when the bundle
+      differs; it was changed on every run before) to `<dir>/certs/step-ca-bundle.crt` or an
+      exact `_ca_bundle_dest`. `platform/tests/test_distribute_ca_root.py`; proven against a
+      throwaway step-ca 0.30.2: the bundle's root matches the CA's fingerprint and the
+      intermediate chains to it
 - [ ] 4.4 Profiles: issue one server and one client test leaf in local-dev, inspect their
       extended key usage, and settle decision 5's mechanism (separate provisioners or
       x509 templates) and whether the CA can also enforce a name policy; record the result
