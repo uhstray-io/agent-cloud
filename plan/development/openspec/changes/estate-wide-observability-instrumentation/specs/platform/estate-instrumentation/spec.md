@@ -88,6 +88,14 @@ The platform SHALL use a reviewed, Dev-bound, GET-only survey before considering
 - **AND** `/storage` and node storage status may silently omit rows without `Datastore.Audit` or `Datastore.AllocateSpace` on the store, so counts describe visible stores and may be incomplete; `shared=0` does not prove local physical backing or rule out thin allocation behind a SAN/LUN
 - **AND** no storage/VG name or ID, exact capacity, device path, serial, or private topology is reported; raw API responses remain hidden by `no_log`
 
+#### Scenario: Candidate thick-LVM PV path lineage reports inventory facts only
+- **WHEN** the survey has a non-empty set of eligible visible thick-LVM candidates
+- **THEN** it joins candidate VG PV `name` values against the already-fetched disk inventory by exact path and reports aggregate PV count, exact direct disk-path joins, exact partition-to-parent joins, missing paths, unverifiable joins, and candidate VGs with missing or empty PV-child inventories
+- **AND** a direct-device join with a reported `used` class counts only when that class is exactly `LVM`; a partition-path join may report `LVM` or `partition`; absent `used` remains unknown while the path join describes inventory lineage only
+- **AND** duplicate or malformed disk/PV rows fail closed instead of producing an ambiguous count; a partition whose parent is absent or is not a reported whole-device path is unverifiable
+- **AND** these exact path relationships do not establish local physical media, backing-device safety, filesystem readiness, PBS suitability, allocation, or write authorization; all corresponding verification/authorization fields remain false
+- **AND** no PV, disk, partition, parent, or storage identifier, path, serial, or exact capacity is exposed, and no Proxmox request is added for this calculation
+
 ### Requirement: Rollout and recovery are reproducible
 Instrumentation and receiver changes SHALL be declared as code, applied through reviewed `dev` and Semaphore, and verified per wave. A failed wave SHALL be reversible by an operator-driven reviewed declaration revert and redeploy without deleting existing telemetry volumes.
 

@@ -1218,6 +1218,30 @@ behind a SAN/LUN; physical backing, device safety, filesystem readiness, PBS
 readiness, and write authorization remain false. Raw API data stays under
 `no_log`. No disk is selected or initialized.
 
+Dev-bound task 2024 ran at reviewed SHA
+`fc967ca1faf17e4fe31ce51dcce2e9227b625357`. The sanitized receipt reported
+one visible thick-LVM candidate with reported headroom and complete config/VG
+mappings; physical backing remained unverified. This closes the visible-store
+headroom survey step only.
+
+At the same reviewed SHA, tasks 2070, 2074, and 2075 found two non-PBS backup
+artifacts and one backup-job membership, but no exact job ID was declared. Two
+artifacts prevent the single-artifact restore gate. Immutability and isolated
+restore remain unverified; job membership is not restore evidence.
+
+The candidate-PV lineage extension uses only the already-fetched disk and LVM
+inventories. It reports aggregate exact direct PV-to-device path joins,
+partition-to-parent path joins, missing paths, unverifiable relations, and
+candidate VGs with absent or empty PV child lists. Duplicate or malformed
+inventory refuses the receipt instead of emitting an ambiguity count. Known
+non-LVM use classes on direct PV paths, or known classes other than `LVM` or
+`partition` on partition paths, are unverifiable; absent `used` remains
+unknown. These are exact API-reported inventory relationships only. They do not
+prove physical locality, media identity, device safety, or filesystem
+readiness. No request or write is added; backing, allocation, and write flags
+remain false. This code extension has not run in Dev; its live receipt and
+review remain pending.
+
 The GET-only task 2011 run succeeded at reviewed SHA
 `4c1806652ed15cab8d1a4b50fd241bab52724646` and returned
 `thick_lvm_config_vg_mappings_complete=false` with zero thick-LVM candidate and
