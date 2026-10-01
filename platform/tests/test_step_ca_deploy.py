@@ -142,6 +142,9 @@ def _jwk(name, dur=None, eku=None):
 SERVER = _jwk("issuer-server", "720h0m0s", "serverAuth")
 CLIENT = _jwk("issuer-client", "720h0m0s", "clientAuth")
 CONVERGED = [_jwk("admin", "8760h0m0s"), SERVER, CLIENT]
+# No leaf declared: one reserved name only. An absent or empty policy issues ANY name on
+# step-ca 0.30.2 (measured 2026-10-01, review of site-config#57).
+CLOSED = {"x509": {"allow": {"dns": ["no-leaf-declared.invalid"]}}}
 # {case: (ca.json provisioners, the running CA's list or None for the same)}
 PLAN_CASES = {
     "fresh": ([_jwk("admin")], None),
@@ -171,7 +174,8 @@ def plans(tmp_path_factory) -> dict:
     tmp = tmp_path_factory.mktemp("plans")
     play = _play(DEPLOY, "Phase 2.5")
     for case, (prov, running) in PLAN_CASES.items():
-        (tmp / f"{case}.ca.json").write_text(json.dumps({"authority": {"provisioners": prov}}))
+        # No leaf is declared here, so a converged CA holds the closed policy.
+        (tmp / f"{case}.ca.json").write_text(json.dumps({"authority": {"provisioners": prov, "policy": CLOSED}}))
         (tmp / f"{case}.list.json").write_text(json.dumps(prov if running is None else running))
     hosts = {case: {"_ca_present": {"rc": 0}} for case in PLAN_CASES}
     dump = {"name": "dump", "ansible.builtin.copy": {
@@ -335,8 +339,12 @@ POLICY_CASES = {
     "add": ({**SITE, "internal_leaves": LEAVES}, None, True),
     "same": ({**SITE, "internal_leaves": LEAVES}, POLICY, False),
     "narrowed": ({**SITE, "internal_leaves": LEAVES[:1]}, POLICY, True),
-    "removed": ({}, POLICY, True),
-    "never": ({}, None, False),
+    "closed-from-names": ({}, POLICY, True),
+    "closed-from-none": ({}, None, True),
+    "closed-from-empty": ({}, {"x509": {"allow": {"dns": []}}}, True),
+    "closed-same": ({}, CLOSED, False),
+    "local-never": ({"local_mode": True}, None, False),
+    "local-removes": ({"local_mode": True}, POLICY, True),
 }
 
 
@@ -382,8 +390,9 @@ def _stub_engine(tmp_path: Path, log: str = "") -> Path:
     return stub
 
 
-@pytest.mark.parametrize("hv,want", [({**SITE, "internal_leaves": LEAVES}, POLICY), ({}, None)],
-                         ids=["written", "removed"])
+@pytest.mark.parametrize("hv,want", [({**SITE, "internal_leaves": LEAVES}, POLICY), ({}, CLOSED),
+                                     ({"local_mode": True}, None)],
+                         ids=["written", "closed", "local-removed"])
 def test_the_policy_write_keeps_the_rest_of_ca_json_and_reloads(tmp_path, hv, want):
     play = _play(DEPLOY, "Phase 2.5")
     current = {"authority": {"provisioners": CONVERGED, "policy": {"x509": {"allow": {"dns": ["old"]}}},
@@ -486,4 +495,20 @@ def test_a_dry_run_skips_an_assertion_only_where_phase_2_5_plans_that_change(tmp
             "internal_leaves": [{"name": "g", "sans": ["g.dc1.example.internal"]}] if "policy" in name else []}
     r = _run(tmp_path, host, [*fakes, _task(play, name)], play_vars={**playbook_yaml.load(ISSUERS), **play["vars"]},
              extra=["--check"] if check else [])
+    assert (r.returncode == 0) is ok, r.stdout + r.stderr
+
+
+@pytest.mark.parametrize("held,ok", [(None, False), ({"x509": {"allow": {"dns": []}}}, False), (CLOSED, True)],
+                         ids=["absent", "empty", "closed"])
+def test_a_ca_with_no_leaf_declared_must_hold_the_closed_policy(tmp_path, held, ok):
+    # Review of site-config#57: an absent or empty policy issues any name, so with nothing
+    # declared Phase 3 accepts only the closed one.
+    play = _play(DEPLOY, "Phase 3")
+    auth = {"provisioners": [], **({"policy": held} if held else {})}
+    (tmp_path / "ca.json").write_text(json.dumps({"authority": auth}))
+    read = {"name": "fake the ca.json read", "ansible.builtin.command": f"cat {tmp_path / 'ca.json'}",
+            "check_mode": False, "register": "_ca_json_final", "changed_when": False}
+    r = _run(tmp_path, {"_ca_up": {"rc": 0}, **SITE},
+             [read, _task(play, "Refuse a CA whose name policy is not the declared names")],
+             play_vars={**playbook_yaml.load(ISSUERS), **play["vars"]})
     assert (r.returncode == 0) is ok, r.stdout + r.stderr

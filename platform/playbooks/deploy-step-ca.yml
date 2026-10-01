@@ -223,7 +223,8 @@
           ~ '| add ' ~ (_prov_plan['add'] | join(', ') or 'none')
           ~ ' | set lifetime ' ~ _leaf_dur ~ ' on ' ~ (_prov_plan['set_lifetime'] | join(', ') or 'none')
           ~ ' | set profile template on ' ~ (_prov_plan['set_template'] | join(', ') or 'none')
-          ~ ' | name policy ' ~ (('to ' ~ (_policy_dns | length) ~ ' declared names' if _policy_dns else 'removed')
+          ~ ' | name policy ' ~ (('to ' ~ (_policy_dns | length) ~ ' declared names' if _policy_dns
+                                  else 'closed (no leaf declared: ' ~ _policy_closed ~ ' only)')
                                  if _prov_plan['set_policy'] else 'unchanged')
           ~ (' | reload pending from an earlier run' if _prov_plan['reload_pending'] else '')) }}
 
@@ -487,7 +488,8 @@
           - ((_ca_json_final.stdout | from_json).authority.policy | default({}, true)) == _policy
         fail_msg: >-
           {{ inventory_hostname }}: the CA's name policy must allow exactly the SANs declared in
-          internal_leaves ({{ _policy_dns | length }} names); ca.json holds
+          internal_leaves ({{ _policy_dns | length }} names; with none, only {{ _policy_closed }});
+          ca.json holds
           {{ (_ca_json_final.stdout | from_json).authority.policy | default('no policy', true) }}.
         quiet: true
       when:

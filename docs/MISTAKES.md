@@ -145,6 +145,7 @@ and why.
 | 10.17 | **x2** — A task read `secrets`, which exists only inside manage-secrets' template task: the agentgateway key guard (task 1177) and the step-ca issuer add (task 1971) | Mechanism never exercised | Test (`test_manage_secrets_scope.py`) |
 | 10.18 | Dry runs of five production playbooks could never pass; a register from a task check mode skips was read later, and nothing had ever run them — **x2** | Mechanism never exercised | Test for #308/#313/#314/#319; class Convention (data-flow rule proposed) |
 | 10.19 | Harden SSH's password-rejection probe used BatchMode with public keys off, so it exited non-zero whatever the server allowed | Test that cannot fail | Test (`test_harden_password_probe.py`) |
+| 10.20 | Recorded "no leaf declared, nothing is issued" for the CA; an empty or absent step-ca policy issues any name, and the probe retirement would have removed the only restriction | Assumed runtime semantics | Test (`test_step_ca_deploy.py`, mutation-checked) |
 | 9.1 | A `for` loop with an unconditional `break`, making all but one member unreachable | Minor | Convention |
 | 9.2 | Typo'd duplicate key in a hand-assembled payload; call succeeded regardless | Minor | Convention |
 | 12.1 | `gh` reported a valid token as invalid because a sandboxed `$HOME` hid the login keychain | Environment visibility | Convention |
@@ -3731,6 +3732,33 @@ host still offering `password`.
 (`ssh -v`) and `sshd -T` to show no password. Enforced by
 `platform/tests/test_harden_password_probe.py`, which fails on a host still offering
 `password`.
+
+### 10.20 Recorded "no leaf declared, nothing is issued" for the CA without measuring an empty policy
+
+**What happened.** The 2026-09-30 decision record (`production-internal-ca` design.md) said
+that while no leaf is declared "the CA carries no policy, and nothing is issued", and the
+deploy removed `authority.policy` when `internal_leaves` was empty. Task 4.7's retirement of
+the probe leaf (site-config#57) set the list to `[]`, which would have removed the
+production CA's only name restriction on the next Deploy step-ca. CodeRabbit flagged it on
+2026-10-01; a Codex review of the same head approved it. Measured on a throwaway step-ca
+0.30.2 the same morning: with no policy, and with `allow.dns: []`, the CA issued an in-zone
+name, an out-of-zone name and an IP address, after a SIGHUP and after a restart.
+
+**Root cause.** "Nothing is issued" was true only of this repository's issuance path, which
+refuses an undeclared leaf. It was written as a property of the CA. The probes behind the
+decision measured a populated allow list and never the empty case, so the step from "allow
+list" to "empty allow list denies everything" was an unmeasured inference about the
+engine's semantics.
+
+**The rule.** For an allow-list control, measure the empty and absent cases against the real
+engine before recording what they do, and never let the control disappear when its input is
+empty: render a deny-everything form instead. A guarantee that holds for one caller is not a
+property of the server.
+
+**Enforced by.** Test: `platform/tests/test_step_ca_deploy.py` plans and writes the
+one-name `no-leaf-declared.invalid` policy when no leaf is declared, and its Phase 3 case
+refuses a CA holding no policy or an empty list. Mutating the deploy back to removing the
+policy fails 11 cases.
 
 ## 11. The largest one
 
