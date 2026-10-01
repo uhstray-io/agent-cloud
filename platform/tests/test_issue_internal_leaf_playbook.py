@@ -156,3 +156,86 @@ def test_removing_an_emptied_directory_reports_the_change(tmp_path):
 def test_a_dot_or_dotdot_component_is_refused(tmp_path, bad):
     r = _run(tmp_path, {"leaf_name": "probe", "leaf_action": "remove"}, [_leaf(tmp_path, dir=str(tmp_path) + bad)])
     assert r.returncode != 0 and "no trailing slash" in r.stdout, r.stdout
+
+
+# ── leaf_action=inspect (production-internal-ca task 4.7's proof) ──────────────
+
+def _ossl(*args, cwd: Path) -> None:
+    subprocess.run(["openssl", *args], cwd=cwd, check=True, capture_output=True)
+
+
+def _chain(tmp: Path, eku: str) -> Path:
+    """A root CA and one leaf it signed, with the given extended key usage."""
+    ca = tmp / "pki"
+    ca.mkdir(exist_ok=True)
+    if not (ca / "root.pem").exists():
+        _ossl("req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes", "-days", "1",
+              "-subj", "/CN=test root", "-keyout", "root.key", "-out", "root.pem",
+              "-addext", "basicConstraints=critical,CA:true", "-addext", "keyUsage=critical,keyCertSign", cwd=ca)
+    (ca / f"{eku}.ext").write_text(
+        f"basicConstraints=CA:false\nkeyUsage=critical,digitalSignature\nextendedKeyUsage={eku}\n"
+        "subjectAltName=DNS:probe.gateway.dc1.example.internal\n")
+    _ossl("req", "-new", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes", "-subj", "/CN=probe",
+          "-keyout", f"{eku}.key", "-out", f"{eku}.csr", cwd=ca)
+    _ossl("x509", "-req", "-in", f"{eku}.csr", "-CA", "root.pem", "-CAkey", "root.key", "-CAcreateserial",
+          "-days", "1", "-extfile", f"{eku}.ext", "-out", f"{eku}.pem", cwd=ca)
+    return ca
+
+
+def _placed(tmp: Path, eku: str, key_mode: int = 0o600, other_key: bool = False) -> None:
+    ca = _chain(tmp, eku)
+    serial = tmp / "leaf" / "0A1B"
+    serial.mkdir(parents=True)
+    (serial / "cert.pem").write_text((ca / f"{eku}.pem").read_text())
+    key = (ca / ("root.key" if other_key else f"{eku}.key")).read_text()
+    (serial / "key.pem").write_text(key)
+    (serial / "key.pem").chmod(key_mode)
+    (tmp / "leaf" / "current").symlink_to("0A1B")
+
+
+def _ca_engine(tmp: Path, leftovers: int = 0) -> Path:
+    stub = tmp / "ca-engine"
+    stub.write_text(f'#!/bin/sh\ncat "{tmp}/pki/root.pem"; echo "LEFTOVERS={leftovers}"\n')
+    stub.chmod(0o755)
+    return stub
+
+
+def _inspect(tmp: Path, check: bool = False, leftovers: int = 0) -> subprocess.CompletedProcess:
+    if not (tmp / "pki").exists():
+        _chain(tmp, "clientAuth")
+    local = {"ansible_connection": "local"}
+    ca = {**local, "container_engine": str(_ca_engine(tmp, leftovers))}
+    inv = {"all": {"vars": {**SITE, "internal_leaves": [_leaf(tmp)]},
+                   "children": {"gw_svc": {"hosts": {"gw": local}}, "step_ca_svc": {"hosts": {"ca": ca}}}}}
+    (tmp / "inv.yml").write_text(yaml.safe_dump(inv))
+    cmd = ["ansible-playbook", "-i", str(tmp / "inv.yml"), str(PLAYBOOK), "-e", "target_service=gw_svc",
+           "-e", "leaf_name=probe", "-e", "leaf_action=inspect", *(["--check"] if check else [])]
+    return harness_sandbox.run(cmd, tmp, cwd=playbook_yaml.REPO, env=harness_sandbox.env_for(tmp))
+
+
+def test_inspect_proves_a_client_leaf_and_runs_under_check(tmp_path):
+    _placed(tmp_path, "clientAuth")
+    for check in (False, True):
+        r = _inspect(tmp_path, check=check)
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert '"verifies_sslclient": true' in r.stdout and '"verifies_sslserver": false' in r.stdout
+        assert '"key_matches": true' in r.stdout and '"ca_leftovers": 0' in r.stdout
+        assert "PRIVATE KEY" not in r.stdout + r.stderr
+
+
+@pytest.mark.parametrize("case", ["server-leaf", "both-usages", "open-key", "other-key", "ca-leftovers",
+                                  "no-current"])
+def test_inspect_refuses_a_leaf_that_is_not_its_declaration(tmp_path, case):
+    if case == "server-leaf":
+        _placed(tmp_path, "serverAuth")
+    elif case == "both-usages":
+        # What a JWK provisioner without a profile template issued (production, 2026-09-29).
+        _placed(tmp_path, "serverAuth,clientAuth")
+    elif case == "open-key":
+        _placed(tmp_path, "clientAuth", key_mode=0o644)
+    elif case == "other-key":
+        _placed(tmp_path, "clientAuth", other_key=True)
+    elif case != "no-current":
+        _placed(tmp_path, "clientAuth")
+    r = _inspect(tmp_path, leftovers=1 if case == "ca-leftovers" else 0)
+    assert r.returncode != 0 and "does not match its client declaration" in r.stdout, r.stdout

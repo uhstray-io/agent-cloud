@@ -3,7 +3,7 @@
 # `internal_leaves`, on the consumer host the declaration names (openspec
 # production-internal-ca task 4.7; the issuance itself is tasks/issue-internal-leaf.yml).
 #
-#   -e target_service=<consumer group> -e leaf_name=<declared leaf> [-e leaf_action=issue|remove]
+#   -e target_service=<consumer group> -e leaf_name=<declared leaf> [-e leaf_action=issue|remove|inspect]
 #   [-e leaf_reissue=true]
 #
 # The CA is the one host of `step_ca_svc`; the key is generated on the consumer and never
@@ -11,7 +11,11 @@
 # `leaf_reissue`. `remove` deletes only what issuance creates (the `current` link, the
 # serial directories, pending directories and the placement lock) and then the directory if
 # it is empty, and only for a leaf declared for that host: it is how a throwaway leaf is
-# taken away before its declaration is. Every step is safe under --check.
+# taken away before its declaration is. `inspect` changes nothing: it reports the current
+# certificate (serial, expiry, SANs, key usage), proves its key matches and that it verifies
+# for its profile and not the other one against the CA's root, checks the key is 0600, and
+# counts the issuance's temporary files left in the CA container (none expected). Every step
+# is safe under --check.
 
 # Without this a missing or empty group would match no hosts and the run would pass.
 - name: "Refuse a target group that matches no hosts"
@@ -33,6 +37,38 @@
     # An extra var overrides this; the play above refuses a run without one.
     target_service: "ungrouped"
     _leaf_action: "{{ leaf_action | default('issue') }}"
+    # Read-only. The root arrives on stdin; the key is read only by `openssl pkey -pubout`,
+    # whose output is the public half. Prints one JSON object.
+    _leaf_inspector: |
+      import json, os, stat, subprocess, sys, tempfile
+      d = sys.argv[1]
+      root = sys.stdin.read()
+      cur = os.path.join(d, "current")
+      out = {"current": os.path.islink(cur)}
+      if out["current"]:
+          cert, key = os.path.join(cur, "cert.pem"), os.path.join(cur, "key.pem")
+          def ossl(*args):
+              return subprocess.run(["openssl", *args], capture_output=True, text=True)
+          out["serial"] = ossl("x509", "-in", cert, "-noout", "-serial").stdout.strip().split("=", 1)[-1]
+          out["not_after"] = ossl("x509", "-in", cert, "-noout", "-enddate").stdout.strip().split("=", 1)[-1]
+          text = ossl("x509", "-in", cert, "-noout", "-text").stdout.splitlines()
+          def after(label):
+              for i, line in enumerate(text):
+                  if line.strip().startswith(label):
+                      return text[i + 1].strip()
+              return ""
+          out["san"] = after("X509v3 Subject Alternative Name")
+          out["eku"] = after("X509v3 Extended Key Usage")
+          out["key_mode"] = oct(stat.S_IMODE(os.stat(key).st_mode))
+          pub_key = ossl("pkey", "-in", key, "-pubout").stdout
+          out["key_matches"] = bool(pub_key) and pub_key == ossl("x509", "-in", cert, "-pubkey", "-noout").stdout
+          with tempfile.NamedTemporaryFile("w", suffix=".pem", delete=False) as f:
+              f.write(root)
+          for purpose in ("sslclient", "sslserver"):
+              r = ossl("verify", "-CAfile", f.name, "-untrusted", cert, "-purpose", purpose, cert)
+              out["verifies_" + purpose] = r.returncode == 0
+          os.unlink(f.name)
+      print(json.dumps(out))
     _leaf_remover: |
       import os, re, stat, sys
       d, mode = sys.argv[1], sys.argv[2]
@@ -91,12 +127,12 @@
       ansible.builtin.assert:
         that:
           - leaf_name | default('') | length > 0
-          - _leaf_action in ['issue', 'remove']
+          - _leaf_action in ['issue', 'remove', 'inspect']
           - (groups['step_ca_svc'] | default([]) | length) == 1
           - (internal_leaves | default([]) | selectattr('name', 'equalto', leaf_name | default('')) | list | length) == 1
         fail_msg: >-
-          Pass -e leaf_name=<a leaf declared once in internal_leaves> and leaf_action issue or
-          remove; the inventory must hold exactly one step_ca_svc host
+          Pass -e leaf_name=<a leaf declared once in internal_leaves> and leaf_action issue,
+          remove or inspect; the inventory must hold exactly one step_ca_svc host
           (it holds {{ groups['step_ca_svc'] | default([]) | length }}).
         quiet: true
 
@@ -143,6 +179,58 @@
         _mint_ca_host: "{{ groups['step_ca_svc'] | first }}"
         _mint_reissue: "{{ leaf_reissue | default(false) | bool }}"
       when: _leaf_action == 'issue' and inventory_hostname == _leaf_decl.host
+
+    # Read-only on the CA host: the root (public) for the verification, and how many of the
+    # issuance's own temporary names remain in the container's /tmp (it removes them).
+    - name: "Read the CA root and the issuance's leftovers on the CA host"
+      ansible.builtin.command:
+        argv:
+          - "{{ hostvars[groups['step_ca_svc'] | first].container_engine | default('podman') }}"
+          - exec
+          - step-ca
+          - sh
+          - -c
+          - >-
+            cat /home/step/certs/root_ca.crt;
+            echo "LEFTOVERS=$(ls -A /tmp | grep -cE '^(ipw|req|crt|err)[.]|^x509[.]tpl$' || true)"
+      delegate_to: "{{ groups['step_ca_svc'] | first }}"
+      register: _leaf_ca_read
+      changed_when: false
+      check_mode: false
+      when: _leaf_action == 'inspect' and inventory_hostname == _leaf_decl.host
+
+    - name: "Inspect the leaf on its host"
+      ansible.builtin.command:
+        argv: [python3, -c, "{{ _leaf_inspector }}", "{{ _leaf_decl.dir }}"]
+        stdin: "{{ _leaf_ca_read.stdout | regex_replace('\\nLEFTOVERS=[0-9]+\\s*$', '') }}"
+      register: _leaf_inspected
+      changed_when: false
+      check_mode: false
+      when: _leaf_action == 'inspect' and inventory_hostname == _leaf_decl.host
+
+    - name: "Report the leaf"
+      ansible.builtin.debug:
+        msg: "{{ {'leaf': leaf_name, 'profile': _leaf_decl.profile,
+                  'ca_leftovers': (_leaf_ca_read.stdout | regex_findall('LEFTOVERS=([0-9]+)') | first | int)}
+                 | combine(_leaf_inspected.stdout | from_json) }}"
+      when: _leaf_action == 'inspect' and inventory_hostname == _leaf_decl.host
+
+    # The proof: the key matches, is 0600, the certificate verifies for its profile and NOT
+    # for the other one, and nothing of the issuance is left on the CA host.
+    - name: "Refuse a leaf that is not what its declaration says"
+      ansible.builtin.assert:
+        that:
+          - _leaf_i.current
+          - _leaf_i.key_matches
+          - _leaf_i.key_mode == '0o600'
+          - _leaf_i.verifies_sslclient == (_leaf_decl.profile == 'client')
+          - _leaf_i.verifies_sslserver == (_leaf_decl.profile == 'server')
+          - (_leaf_ca_read.stdout | regex_findall('LEFTOVERS=([0-9]+)') | first | int) == 0
+        fail_msg: "{{ leaf_name }} does not match its {{ _leaf_decl.profile }} declaration: {{ _leaf_i }}"
+        quiet: true
+      vars:
+        _leaf_i: "{{ _leaf_inspected.stdout | from_json }}"
+      when: _leaf_action == 'inspect' and inventory_hostname == _leaf_decl.host
 
     # Only what issuance makes, each by its kind: serial and pending directories, the two
     # links, the lock file. Everything goes through a descriptor opened with O_NOFOLLOW, and
