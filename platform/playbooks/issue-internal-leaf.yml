@@ -40,13 +40,21 @@
     # Read-only. The root arrives on stdin; the key is read only by `openssl pkey -pubout`,
     # whose output is the public half. Prints one JSON object.
     _leaf_inspector: |
-      import json, os, stat, subprocess, sys, tempfile
+      import json, os, re, stat, subprocess, sys, tempfile
       d = sys.argv[1]
       root = sys.stdin.read()
       cur = os.path.join(d, "current")
-      out = {"current": os.path.islink(cur)}
+      # `current` must name one serial directory beside it (issuance writes a relative link
+      # to one), never a path elsewhere (review of #370).
+      target = os.readlink(cur) if os.path.islink(cur) else ""
+      serial_dir = os.path.join(d, target)
+      out = {"current": bool(re.fullmatch("[0-9A-F]+", target))
+                        and stat.S_ISDIR(os.lstat(serial_dir).st_mode if os.path.lexists(serial_dir) else 0)}
+      cert, key = os.path.join(serial_dir, "cert.pem"), os.path.join(serial_dir, "key.pem")
+      if out["current"] and not all(os.path.isfile(f) and not os.path.islink(f) for f in (cert, key)):
+          out["current"] = False
+          out["missing"] = "cert.pem or key.pem"
       if out["current"]:
-          cert, key = os.path.join(cur, "cert.pem"), os.path.join(cur, "key.pem")
           def ossl(*args):
               return subprocess.run(["openssl", *args], capture_output=True, text=True)
           out["serial"] = ossl("x509", "-in", cert, "-noout", "-serial").stdout.strip().split("=", 1)[-1]

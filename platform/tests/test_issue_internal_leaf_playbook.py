@@ -224,7 +224,7 @@ def test_inspect_proves_a_client_leaf_and_runs_under_check(tmp_path):
 
 
 @pytest.mark.parametrize("case", ["server-leaf", "both-usages", "open-key", "other-key", "ca-leftovers",
-                                  "no-current"])
+                                  "no-current", "current-escapes", "files-missing"])
 def test_inspect_refuses_a_leaf_that_is_not_its_declaration(tmp_path, case):
     if case == "server-leaf":
         _placed(tmp_path, "serverAuth")
@@ -235,6 +235,16 @@ def test_inspect_refuses_a_leaf_that_is_not_its_declaration(tmp_path, case):
         _placed(tmp_path, "clientAuth", key_mode=0o644)
     elif case == "other-key":
         _placed(tmp_path, "clientAuth", other_key=True)
+    elif case == "current-escapes":
+        # A valid leaf placed outside the declared directory, linked from `current`.
+        _placed(tmp_path, "clientAuth")
+        outside = tmp_path / "outside"
+        (tmp_path / "leaf" / "0A1B").rename(outside)
+        (tmp_path / "leaf" / "current").unlink()
+        (tmp_path / "leaf" / "current").symlink_to(outside)
+    elif case == "files-missing":
+        _placed(tmp_path, "clientAuth")
+        (tmp_path / "leaf" / "0A1B" / "key.pem").unlink()
     elif case != "no-current":
         _placed(tmp_path, "clientAuth")
     r = _inspect(tmp_path, leftovers=1 if case == "ca-leftovers" else 0)
@@ -254,3 +264,29 @@ def test_the_leftover_count_covers_every_temporary_name_the_ca_side_tasks_write(
     assert names, "no /tmp names found"
     missed = sorted(n for n in names if not re.search(pattern, n))
     assert not missed, f"leftover count misses {missed}"
+
+
+def test_inspect_verifies_a_leaf_issued_through_an_intermediate(tmp_path):
+    # step ca sign returns the leaf followed by the intermediate; the root alone is trusted.
+    ca = _chain(tmp_path, "clientAuth")  # makes the root
+    (ca / "inter.ext").write_text("basicConstraints=critical,CA:true,pathlen:0\nkeyUsage=critical,keyCertSign\n")
+    _ossl("req", "-new", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes", "-subj", "/CN=inter",
+          "-keyout", "inter.key", "-out", "inter.csr", cwd=ca)
+    _ossl("x509", "-req", "-in", "inter.csr", "-CA", "root.pem", "-CAkey", "root.key", "-CAcreateserial",
+          "-days", "1", "-extfile", "inter.ext", "-out", "inter.pem", cwd=ca)
+    _ossl("x509", "-req", "-in", "clientAuth.csr", "-CA", "inter.pem", "-CAkey", "inter.key", "-CAcreateserial",
+          "-days", "1", "-extfile", "clientAuth.ext", "-out", "leaf.pem", cwd=ca)
+    serial = tmp_path / "leaf" / "0A1B"
+    serial.mkdir(parents=True)
+    (serial / "cert.pem").write_text((ca / "leaf.pem").read_text() + (ca / "inter.pem").read_text())
+    (serial / "key.pem").write_text((ca / "clientAuth.key").read_text())
+    (serial / "key.pem").chmod(0o600)
+    (tmp_path / "leaf" / "current").symlink_to("0A1B")
+    r = _inspect(tmp_path)
+    assert r.returncode == 0 and '"verifies_sslclient": true' in r.stdout, r.stdout
+
+
+def test_a_dotted_directory_name_is_still_a_valid_leaf_directory(tmp_path):
+    leaf = {**_leaf(tmp_path), "dir": str(tmp_path / "leaf.d" / "certs.v1")}
+    r = _run(tmp_path, {"leaf_name": "probe", "leaf_action": "remove"}, [leaf])
+    assert r.returncode == 0 and "nothing (no issued files)" in r.stdout, r.stdout
