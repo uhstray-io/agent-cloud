@@ -161,9 +161,24 @@ host. Push, pull requests and merges happen only when Joe authorizes each one.
       deploy holds, and TLS to the local IdP verifies with it. The full run through local
       Semaphore waits for the next local-dev refresh from `dev`, because local Semaphore runs
       the main checkout, which another session holds on an older branch
-- [ ] 4.7 Production proof with a throwaway leaf declared on the gateway host: issue it
+- [x] 4.7 Production proof with a throwaway leaf declared on the gateway host: issue it
       through a Semaphore run, check where its key exists, then remove the declaration and
-      the files
+      the files. Done 2026-09-30 to 2026-10-01, every step through `Issue Internal Leaf (Dev)` or
+      `Deploy step-ca (Dev)`, with a dry run before each real one:
+      - **Declared:** site-config#56 declared the `probe` client leaf. Task 2150 installed the
+        CA name policy holding exactly its one SAN.
+      - **Issued:** task 2166. The task output holds no key and no issuer password.
+      - **Inspected:** tasks 2248 (dry run) and 2249 (real). Same serial as task 2166. The
+        certificate verifies as a client and not as a server. The key is mode 0600 on the
+        gateway host and matches the certificate. The issuance left nothing in the CA
+        container, so the key exists only on the consumer.
+      - **Files removed:** task 2251. Dry run 2252 then reported nothing left to remove.
+      - **Declaration removed:** site-config#57. Its review found that an empty
+        `internal_leaves` removed the CA's name policy, and step-ca 0.30.2 then issues any name
+        (MISTAKES 10.20). Fixed in #371: with no leaf declared, the CA allows only
+        `no-leaf-declared.invalid`.
+      - **Policy closed:** task 2268 applied it; the reload was checked, Phase 3 asserted it,
+        and the root fingerprint is unchanged. Dry run 2269 plans no further change.
 - [ ] 4.8 Validation gate: scenarios "The private key never leaves the consumer", "An
       undeclared name is refused", "Local-dev issuance is unchanged in effect", "A server
       leaf is refused as a client" and "Bundles match across consumers"
