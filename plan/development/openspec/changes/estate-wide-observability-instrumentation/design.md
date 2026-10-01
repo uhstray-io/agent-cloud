@@ -452,3 +452,66 @@ the existing ops contact, and matching Discord delivery was independently
 verified. This verifies the low-space warning and delivery path for this event.
 It does not establish a seven-day capacity forecast, backup/restore readiness,
 or delivery of other alert classes.
+
+## 2026-09-30 guest-growth proposal status (no authorization)
+
+Review provenance below was re-queried from GitHub on 2026-10-01.
+
+Decision 4 above still governs resizing and is not amended or superseded here.
+This section records only where the prepared, still-unreviewed growth proposal
+lives and what it does not yet resolve, so the 4.5a/4.6/4.6e chain and task 5.4
+of the signal-governance change read from one statement.
+
+Privileged read-only survey task 2170 closed the one readback gap that task 2115
+left open: the guest root filesystem joins to exactly one logical volume and one
+volume group, and Ansible reported `changed=0` across the playbook's reviewed
+read-only commands — a reported change count over that command set, not a
+statement about everything that has ever happened on the host. The run reported a
+full root filesystem, a root logical volume of about 10 GiB, roughly 8 GiB of
+reported free extents in that volume group, and a 100 GiB virtual disk. Free
+extents in a volume group are not an allocation target and not a forecast;
+whether they can be allocated as-is or need the partition and physical volume
+beneath them changed first is an open topology question that a fresh readback
+has to answer, not a prerequisite assumed here.
+
+The executed bytes match the separately approved survey branch (PR #366,
+`APPROVED`, merged `2026-10-01T00:08:25Z` as `629bde80`). The `dev` head it ran
+from is `4474c2b3`, the merge commit of PR #369, whose review and CI state was
+re-verified from GitHub on 2026-10-01 and is still `CHANGES_REQUESTED` with no
+approving review — and `4474c2b3` is still `dev`'s head. The whole-source review
+gate is therefore unresolved on verified evidence, so no further live run
+happens. GitHub lists only reviews posted to GitHub, so these records say nothing
+about any review that would not appear there.
+
+The proposal sequences the work as: reverify the review gate; declare an
+immutable artifact source; restore it into a stopped, isolated target; verify the
+restored filesystem and all five named telemetry volumes; clean up only the
+restore target; plan the growth stages from a fresh privileged readback; execute
+only the declared stages idempotently — how many stages that is follows from the
+refreshed topology and the declared size, and a stage the live layout makes
+unnecessary is not run; read back capacity, volumes, health, and the alert
+baseline. Cleanup runs even after a verification failure and overrides an
+otherwise successful run. Every mutating stage must preview in check mode
+without writing, re-read live state so a converged stage does nothing, and stop
+rather than roll back destructively on a failed stage. Growth is one-directional:
+a grown disk, logical volume, or filesystem is not shrunk back by these stages,
+so no growth stage is reversible or its own rollback.
+
+Nothing in the proposal is decided: the artifact selector and its acquisition
+channel, the immutability mechanism, the PBS versus existing non-PBS source path,
+the exact target node/storage/VMID/name and reservation process, the pre-boot
+isolation mechanism, the guest verification channel, the cleanup policy, receipt
+field ownership, and the desired guest size are all private declarations still to
+be made. No public document names them, and no implementation slice for growth is
+supported until they exist.
+
+Emergency filesystem recovery and retention expansion stay separate. Restoring
+availability on a receiver whose root filesystem is full is a bounded, explicitly
+authorized, non-destructive-of-telemetry operation and asserts no exception; any
+capacity growth performed under it cannot be shrunk back. Expanding the retention
+tuple additionally requires seven representative days of history, a nonzero
+Prometheus size cap, and the headroom forecast behind a referenced capacity
+receipt, with the effective 15d / 7d / 168h tuple unchanged until then. Growing
+the root filesystem satisfies neither gate on its own, and whether root fullness
+causes the Grafana OAuth failure — or whether capacity recovery is needed for
+sign-in at all — remains unverified.
