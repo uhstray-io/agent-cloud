@@ -43,39 +43,65 @@
       import json, os, re, stat, subprocess, sys, tempfile
       d = sys.argv[1]
       root = sys.stdin.read()
-      cur = os.path.join(d, "current")
-      # `current` must name one serial directory beside it (issuance writes a relative link
-      # to one), never a path elsewhere (review of #370).
-      target = os.readlink(cur) if os.path.islink(cur) else ""
-      serial_dir = os.path.join(d, target)
-      out = {"current": bool(re.fullmatch("[0-9A-F]+", target))
-                        and stat.S_ISDIR(os.lstat(serial_dir).st_mode if os.path.lexists(serial_dir) else 0)}
-      cert, key = os.path.join(serial_dir, "cert.pem"), os.path.join(serial_dir, "key.pem")
-      if out["current"] and not all(os.path.isfile(f) and not os.path.islink(f) for f in (cert, key)):
-          out["current"] = False
-          out["missing"] = "cert.pem or key.pem"
+      NOFOLLOW_DIR = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+      # Every file is read ONCE through descriptors opened without following links: from /
+      # down to the leaf directory, then the serial directory `current` names (one hex name
+      # beside it), then cert.pem and key.pem. openssl only ever sees those bytes, so nothing
+      # swapped in afterwards can change what is inspected (reviews of #370).
+      def walk(path):
+          fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
+          for part in [p for p in path.split("/") if p]:
+              nxt = os.open(part, NOFOLLOW_DIR, dir_fd=fd)
+              os.close(fd)
+              fd = nxt
+          return fd
+      def read(at, name):
+          f = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=at)
+          try:
+              if not stat.S_ISREG(os.fstat(f).st_mode):
+                  raise OSError(name + " is not a regular file")
+              return os.read(f, 1 << 20), stat.S_IMODE(os.fstat(f).st_mode)
+          finally:
+              os.close(f)
+      out = {"current": False}
+      try:
+          leaf = walk(d)
+          target = os.readlink("current", dir_fd=leaf)
+          if re.fullmatch("[0-9A-F]+", target):
+              serial = os.open(target, NOFOLLOW_DIR, dir_fd=leaf)
+              cert, _ = read(serial, "cert.pem")
+              key, key_mode = read(serial, "key.pem")
+              out["current"] = True
+      except OSError as e:
+          out["missing"] = str(e)
       if out["current"]:
-          def ossl(*args):
-              return subprocess.run(["openssl", *args], capture_output=True, text=True)
-          out["serial"] = ossl("x509", "-in", cert, "-noout", "-serial").stdout.strip().split("=", 1)[-1]
-          out["not_after"] = ossl("x509", "-in", cert, "-noout", "-enddate").stdout.strip().split("=", 1)[-1]
-          text = ossl("x509", "-in", cert, "-noout", "-text").stdout.splitlines()
-          def after(label):
-              for i, line in enumerate(text):
-                  if line.strip().startswith(label):
-                      return text[i + 1].strip()
-              return ""
-          out["san"] = after("X509v3 Subject Alternative Name")
-          out["eku"] = after("X509v3 Extended Key Usage")
-          out["key_mode"] = oct(stat.S_IMODE(os.stat(key).st_mode))
-          pub_key = ossl("pkey", "-in", key, "-pubout").stdout
-          out["key_matches"] = bool(pub_key) and pub_key == ossl("x509", "-in", cert, "-pubkey", "-noout").stdout
-          with tempfile.NamedTemporaryFile("w", suffix=".pem", delete=False) as f:
-              f.write(root)
-          for purpose in ("sslclient", "sslserver"):
-              r = ossl("verify", "-CAfile", f.name, "-untrusted", cert, "-purpose", purpose, cert)
-              out["verifies_" + purpose] = r.returncode == 0
-          os.unlink(f.name)
+          def ossl(*args, data=None):
+              return subprocess.run(["openssl", *args], input=data, capture_output=True)
+          with tempfile.TemporaryDirectory() as tmp:
+              cert_path, root_path = os.path.join(tmp, "cert.pem"), os.path.join(tmp, "root.pem")
+              with open(cert_path, "wb") as f:
+                  f.write(cert)
+              with open(root_path, "w") as f:
+                  f.write(root)
+              def x509(*args):
+                  return ossl("x509", "-in", cert_path, "-noout", *args).stdout.decode().strip()
+              out["serial"] = x509("-serial").split("=", 1)[-1]
+              out["not_after"] = x509("-enddate").split("=", 1)[-1]
+              text = x509("-text").splitlines()
+              def after(label):
+                  for i, line in enumerate(text):
+                      if line.strip().startswith(label):
+                          return text[i + 1].strip()
+                  return ""
+              out["san"] = after("X509v3 Subject Alternative Name")
+              out["eku"] = after("X509v3 Extended Key Usage")
+              out["key_mode"] = oct(key_mode)
+              # The key reaches openssl on stdin only; its output is the public half.
+              pub_key = ossl("pkey", "-pubout", data=key).stdout
+              out["key_matches"] = bool(pub_key) and pub_key == ossl("x509", "-in", cert_path, "-pubkey", "-noout").stdout
+              for purpose in ("sslclient", "sslserver"):
+                  r = ossl("verify", "-CAfile", root_path, "-untrusted", cert_path, "-purpose", purpose, cert_path)
+                  out["verifies_" + purpose] = r.returncode == 0
       print(json.dumps(out))
     _leaf_remover: |
       import os, re, stat, sys

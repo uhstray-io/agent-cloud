@@ -224,7 +224,8 @@ def test_inspect_proves_a_client_leaf_and_runs_under_check(tmp_path):
 
 
 @pytest.mark.parametrize("case", ["server-leaf", "both-usages", "open-key", "other-key", "ca-leftovers",
-                                  "no-current", "current-escapes", "files-missing"])
+                                  "no-current", "current-escapes", "files-missing", "serial-dir-link",
+                                  "cert-file-link"])
 def test_inspect_refuses_a_leaf_that_is_not_its_declaration(tmp_path, case):
     if case == "server-leaf":
         _placed(tmp_path, "serverAuth")
@@ -242,6 +243,18 @@ def test_inspect_refuses_a_leaf_that_is_not_its_declaration(tmp_path, case):
         (tmp_path / "leaf" / "0A1B").rename(outside)
         (tmp_path / "leaf" / "current").unlink()
         (tmp_path / "leaf" / "current").symlink_to(outside)
+    elif case == "serial-dir-link":
+        # `current` names a hex entry, but that entry is a link to a directory elsewhere.
+        _placed(tmp_path, "clientAuth")
+        outside = tmp_path / "outside"
+        (tmp_path / "leaf" / "0A1B").rename(outside)
+        (tmp_path / "leaf" / "0A1B").symlink_to(outside)
+    elif case == "cert-file-link":
+        _placed(tmp_path, "clientAuth")
+        cert = tmp_path / "leaf" / "0A1B" / "cert.pem"
+        (tmp_path / "elsewhere.pem").write_text(cert.read_text())
+        cert.unlink()
+        cert.symlink_to(tmp_path / "elsewhere.pem")
     elif case == "files-missing":
         _placed(tmp_path, "clientAuth")
         (tmp_path / "leaf" / "0A1B" / "key.pem").unlink()
