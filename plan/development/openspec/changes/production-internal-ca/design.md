@@ -491,6 +491,16 @@ declared once, as the all-hosts site-config list `internal_leaves` (decision 4's
 carries no policy, and nothing is issued, because the issuance task refuses an undeclared
 leaf (task 4.2).
 
+**Corrected 2026-10-01 (review of site-config#57).** "No policy" was not "nothing is
+issued": the issuance task's refusal covers only this repository's path, and anyone holding
+an issuer password could sign any name. Measured on a throwaway step-ca 0.30.2: an absent
+`authority.policy` and an empty `allow.dns` list both issue in-zone names, out-of-zone
+names and IP addresses, after a SIGHUP and after a restart. An allow list holding only
+`no-leaf-declared.invalid` (the RFC 2606 reserved TLD, which the deploy's own guard would
+refuse as a declared SAN) refused all three and survived both. So with no leaf declared
+the production CA now carries that one-name policy, and Phase 3 refuses a CA without it.
+Local-dev still carries none.
+
 ## Open Questions
 
 All four questions below were answered on 2026-09-28; see "Decisions recorded
