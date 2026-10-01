@@ -345,3 +345,31 @@ def test_the_inspector_writes_nothing_on_the_host(tmp_path):
     assert r.returncode == 0, r.stderr
     assert json.loads(r.stdout)["verifies_sslclient"] is True
     assert sorted(str(p) for p in tmp_path.rglob("*")) == before and not list(scratch.iterdir())
+
+
+def test_tags_verify_runs_the_inspection_and_changes_nothing(tmp_path):
+    # plan/architecture/08 standard 3: `--tags verify` proves the state without changing it,
+    # whatever the action (review of #370).
+    _placed(tmp_path, "clientAuth")
+    before = sorted(str(p) for p in (tmp_path / "leaf").rglob("*"))
+    local = {"ansible_connection": "local"}
+    ca = {**local, "container_engine": str(_ca_engine(tmp_path))}
+    inv = {"all": {"vars": {**SITE, "internal_leaves": [_leaf(tmp_path)]},
+                   "children": {"gw_svc": {"hosts": {"gw": local}}, "step_ca_svc": {"hosts": {"ca": ca}}}}}
+    (tmp_path / "inv.yml").write_text(yaml.safe_dump(inv))
+    cmd = ["ansible-playbook", "-i", str(tmp_path / "inv.yml"), str(PLAYBOOK), "--tags", "verify",
+           "-e", "target_service=gw_svc", "-e", "leaf_name=probe", "-e", "leaf_reissue=true"]
+    r = harness_sandbox.run(cmd, tmp_path, cwd=playbook_yaml.REPO, env=harness_sandbox.env_for(tmp_path))
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert '"verifies_sslclient": true' in r.stdout and "changed=0" in r.stdout
+    assert sorted(str(p) for p in (tmp_path / "leaf").rglob("*")) == before
+
+
+def test_an_input_larger_than_a_pipe_buffer_does_not_hang_the_inspection(tmp_path):
+    # Review of #370: a write before openssl starts would block on a full pipe. Text outside
+    # the PEM block is ignored by openssl, so 256 KiB of it in front of the root is harmless.
+    _placed(tmp_path, "clientAuth")
+    root = tmp_path / "pki" / "root.pem"
+    root.write_text("# padding\n" * 26000 + root.read_text())
+    r = _inspect(tmp_path)
+    assert r.returncode == 0 and '"verifies_sslclient": true' in r.stdout, r.stdout[-2000:]

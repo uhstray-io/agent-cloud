@@ -15,7 +15,8 @@
 # certificate (serial, expiry, SANs, key usage), proves its key matches and that it verifies
 # for its profile and not the other one against the CA's root, checks the key is 0600, and
 # counts the issuance's temporary files left in the CA container (none expected). Every step
-# is safe under --check.
+# is safe under --check. Verification is tagged `verify` (plan/architecture/08, standard 3):
+# `--tags verify` runs the inspection, whatever the action, and changes nothing.
 
 # Without this a missing or empty group would match no hosts and the run would pass.
 - name: "Refuse a target group that matches no hosts"
@@ -24,6 +25,7 @@
   become: false
   tasks:
     - name: "Require target_service to name a populated inventory group"
+      tags: [verify]
       ansible.builtin.assert:
         that: (groups.get(target_service | default(''), []) | length) > 0
         fail_msg: "Pass -e target_service=<the inventory group holding the leaf's host>; '{{ target_service | default('') }}' matches no hosts."
@@ -40,7 +42,7 @@
     # Read-only. The root arrives on stdin; the key is read only by `openssl pkey -pubout`,
     # whose output is the public half. Prints one JSON object.
     _leaf_inspector: |
-      import json, os, re, stat, subprocess, sys
+      import json, os, re, stat, subprocess, sys, threading
       d = sys.argv[1]
       root = sys.stdin.read()
       NOFOLLOW_DIR = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
@@ -76,24 +78,34 @@
           out["missing"] = str(e)
       if out["current"]:
           # Nothing is written on the host, not even under --check (review of #370): each
-          # input reaches openssl through a pipe named /dev/fd/N, or stdin for the key. The
-          # inputs are a few kilobytes, well inside a pipe's buffer, so each is written whole
-          # before openssl starts.
+          # input reaches openssl through a pipe named /dev/fd/N, or stdin for the key.
+          def feed(w, data):
+              try:
+                  with os.fdopen(w, "wb") as f:
+                      f.write(data)
+              except BrokenPipeError:
+                  pass  # openssl stopped reading; its exit status says why
           def ossl(*args, data=None, **files):
-              fds, argv = [], []
+              reads, writers, argv = [], [], []
               for a in args:
                   if isinstance(a, str) and a.startswith("@"):
                       r, w = os.pipe()
-                      os.write(w, files[a[1:]])
-                      os.close(w)
-                      fds.append(r)
+                      reads.append(r)
+                      writers.append(threading.Thread(target=feed, args=(w, files[a[1:]])))
                       a = "/dev/fd/%d" % r
                   argv.append(a)
-              try:
-                  return subprocess.run(["openssl", *argv], input=data, capture_output=True, pass_fds=fds)
-              finally:
-                  for r in fds:
-                      os.close(r)
+              proc = subprocess.Popen(["openssl", *argv], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                      stderr=subprocess.PIPE, pass_fds=reads)
+              for r in reads:
+                  os.close(r)
+              # Each input is written by its own thread once openssl exists, so one larger than
+              # the pipe's buffer cannot block before its reader starts (review of #370).
+              for t in writers:
+                  t.start()
+              out_b, _ = proc.communicate(data)
+              for t in writers:
+                  t.join()
+              return subprocess.CompletedProcess(proc.args, proc.returncode, out_b, b"")
           rootb = root.encode()
           def x509(*args):
               return ossl("x509", "-in", "@cert", "-noout", *args, cert=cert).stdout.decode().strip()
@@ -172,6 +184,7 @@
               print("CHANGED")
   tasks:
     - name: "Refuse an incomplete or unknown request"
+      tags: [verify]
       ansible.builtin.assert:
         that:
           - leaf_name | default('') | length > 0
@@ -187,10 +200,12 @@
         quiet: true
 
     - name: "Name the declared leaf"
+      tags: [verify]
       ansible.builtin.set_fact:
         _leaf_decl: "{{ internal_leaves | selectattr('name', 'equalto', leaf_name) | first }}"
 
     - name: "Refuse a target group that does not hold the leaf's host"
+      tags: [verify]
       ansible.builtin.assert:
         that:
           - _leaf_decl.host in ansible_play_hosts_all
@@ -207,6 +222,7 @@
     # works through a descriptor opened without following links, so a link swapped in after
     # this check cannot redirect it.
     - name: "Resolve the leaf's directory"
+      tags: [verify]
       ansible.builtin.command:
         argv: [python3, -c, "import os, sys; print(os.path.realpath(sys.argv[1]))", "{{ _leaf_decl.dir }}"]
       register: _leaf_dir_real
@@ -215,6 +231,7 @@
       when: inventory_hostname == _leaf_decl.host
 
     - name: "Refuse a leaf directory reached through a symbolic link"
+      tags: [verify]
       ansible.builtin.assert:
         that:
           - _leaf_dir_real.stdout == _leaf_decl.dir
@@ -235,6 +252,7 @@
     # own; `pw` and `ipw` would hold a password). platform/tests/test_issue_internal_leaf_playbook.py
     # holds this list to every /tmp name those tasks write.
     - name: "Read the CA root and the issuance's leftovers on the CA host"
+      tags: [verify]
       ansible.builtin.command:
         argv:
           - "{{ hostvars[groups['step_ca_svc'] | first].container_engine | default('podman') }}"
@@ -250,27 +268,30 @@
       register: _leaf_ca_read
       changed_when: false
       check_mode: false
-      when: _leaf_action == 'inspect' and inventory_hostname == _leaf_decl.host
+      when: (_leaf_action == 'inspect' or 'verify' in ansible_run_tags) and inventory_hostname == _leaf_decl.host
 
     - name: "Inspect the leaf on its host"
+      tags: [verify]
       ansible.builtin.command:
         argv: [python3, -c, "{{ _leaf_inspector }}", "{{ _leaf_decl.dir }}"]
         stdin: "{{ _leaf_ca_read.stdout | regex_replace('\\nLEFTOVERS=[0-9]+\\s*$', '') }}"
       register: _leaf_inspected
       changed_when: false
       check_mode: false
-      when: _leaf_action == 'inspect' and inventory_hostname == _leaf_decl.host
+      when: (_leaf_action == 'inspect' or 'verify' in ansible_run_tags) and inventory_hostname == _leaf_decl.host
 
     - name: "Report the leaf"
+      tags: [verify]
       ansible.builtin.debug:
         msg: "{{ {'leaf': leaf_name, 'profile': _leaf_decl.profile,
                   'ca_leftovers': (_leaf_ca_read.stdout | regex_findall('LEFTOVERS=([0-9]+)') | first | int)}
                  | combine(_leaf_inspected.stdout | from_json) }}"
-      when: _leaf_action == 'inspect' and inventory_hostname == _leaf_decl.host
+      when: (_leaf_action == 'inspect' or 'verify' in ansible_run_tags) and inventory_hostname == _leaf_decl.host
 
     # The proof: the key matches, is 0600, the certificate verifies for its profile and NOT
     # for the other one, and nothing of the issuance is left on the CA host.
     - name: "Refuse a leaf that is not what its declaration says"
+      tags: [verify]
       ansible.builtin.assert:
         that:
           - _leaf_i.current
@@ -283,7 +304,7 @@
         quiet: true
       vars:
         _leaf_i: "{{ _leaf_inspected.stdout | from_json }}"
-      when: _leaf_action == 'inspect' and inventory_hostname == _leaf_decl.host
+      when: (_leaf_action == 'inspect' or 'verify' in ansible_run_tags) and inventory_hostname == _leaf_decl.host
 
     # Only what issuance makes, each by its kind: serial and pending directories, the two
     # links, the lock file. Everything goes through a descriptor opened with O_NOFOLLOW, and
