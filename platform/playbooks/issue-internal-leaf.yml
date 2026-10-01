@@ -1,0 +1,168 @@
+---
+# issue-internal-leaf.yml — issue, or remove, ONE leaf certificate declared in site-config's
+# `internal_leaves`, on the consumer host the declaration names (openspec
+# production-internal-ca task 4.7; the issuance itself is tasks/issue-internal-leaf.yml).
+#
+#   -e target_service=<consumer group> -e leaf_name=<declared leaf> [-e leaf_action=issue|remove]
+#   [-e leaf_reissue=true]
+#
+# The CA is the one host of `step_ca_svc`; the key is generated on the consumer and never
+# leaves it. `issue` keeps a leaf that already has a current certificate unless
+# `leaf_reissue`. `remove` deletes only what issuance creates (the `current` link, the
+# serial directories, pending directories and the placement lock) and then the directory if
+# it is empty, and only for a leaf declared for that host: it is how a throwaway leaf is
+# taken away before its declaration is. Every step is safe under --check.
+
+# Without this a missing or empty group would match no hosts and the run would pass.
+- name: "Refuse a target group that matches no hosts"
+  hosts: localhost
+  gather_facts: false
+  become: false
+  tasks:
+    - name: "Require target_service to name a populated inventory group"
+      ansible.builtin.assert:
+        that: (groups.get(target_service | default(''), []) | length) > 0
+        fail_msg: "Pass -e target_service=<the inventory group holding the leaf's host>; '{{ target_service | default('') }}' matches no hosts."
+        quiet: true
+
+- name: "Issue or remove a declared internal leaf"
+  hosts: "{{ target_service }}"
+  gather_facts: false
+  become: false
+  vars:
+    # An extra var overrides this; the play above refuses a run without one.
+    target_service: "ungrouped"
+    _leaf_action: "{{ leaf_action | default('issue') }}"
+    _leaf_remover: |
+      import os, re, stat, sys
+      d, mode = sys.argv[1], sys.argv[2]
+      DIR = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+      # Walk from / one component at a time, each opened without following a link, so no
+      # link at the directory or any ancestor, swapped in at any moment, can redirect this
+      # (reviews of #369). Every later step is relative to these descriptors.
+      parent, fd = None, os.open("/", os.O_RDONLY | os.O_DIRECTORY)
+      for part in [p for p in d.split("/") if p]:
+          try:
+              nxt = os.open(part, DIR, dir_fd=fd)
+          except FileNotFoundError:
+              print("nothing (no issued files)")
+              sys.exit(0)
+          except OSError:
+              sys.exit(d + " resolves through a symbolic link; declare the real directory")
+          if parent is not None:
+              os.close(parent)
+          parent, fd = fd, nxt
+      leaf = os.path.basename(d)
+      def kind(at, name):
+          return stat.S_IFMT(os.stat(name, dir_fd=at, follow_symlinks=False).st_mode)
+      def ours(name):
+          k = kind(fd, name)
+          if name in ("current", ".current.new"):
+              return k == stat.S_IFLNK
+          if name == ".placement.lock":
+              return k == stat.S_IFREG
+          if name.startswith(".pending.") or re.fullmatch("[0-9A-F]+", name):
+              return k == stat.S_IFDIR
+          return False
+      def rm(at, name):
+          if kind(at, name) == stat.S_IFDIR:
+              sub = os.open(name, DIR, dir_fd=at)
+              try:
+                  for entry in os.listdir(sub):
+                      rm(sub, entry)
+              finally:
+                  os.close(sub)
+              os.rmdir(name, dir_fd=at)
+          else:
+              os.unlink(name, dir_fd=at)
+      targets = sorted(e for e in os.listdir(fd) if ours(e))
+      print(" ".join(targets) or "nothing (no issued files)")
+      if mode == "remove":
+          for entry in targets:
+              rm(fd, entry)
+          empty = not os.listdir(fd)
+          if empty:
+              # Relative to the parent's descriptor: never resolved by path again.
+              os.rmdir(leaf, dir_fd=parent)
+          if targets or empty:
+              print("CHANGED")
+  tasks:
+    - name: "Refuse an incomplete or unknown request"
+      ansible.builtin.assert:
+        that:
+          - leaf_name | default('') | length > 0
+          - _leaf_action in ['issue', 'remove']
+          - (groups['step_ca_svc'] | default([]) | length) == 1
+          - (internal_leaves | default([]) | selectattr('name', 'equalto', leaf_name | default('')) | list | length) == 1
+        fail_msg: >-
+          Pass -e leaf_name=<a leaf declared once in internal_leaves> and leaf_action issue or
+          remove; the inventory must hold exactly one step_ca_svc host
+          (it holds {{ groups['step_ca_svc'] | default([]) | length }}).
+        quiet: true
+
+    - name: "Name the declared leaf"
+      ansible.builtin.set_fact:
+        _leaf_decl: "{{ internal_leaves | selectattr('name', 'equalto', leaf_name) | first }}"
+
+    - name: "Refuse a target group that does not hold the leaf's host"
+      ansible.builtin.assert:
+        that:
+          - _leaf_decl.host in ansible_play_hosts_all
+          # The issuance task's own directory rule, so removal matches the paths find returns.
+          - _leaf_decl.dir is match('^(/[A-Za-z0-9._-]+)+$')
+        fail_msg: >-
+          {{ leaf_name }} must be declared for a host in {{ target_service }} (it names
+          {{ _leaf_decl.host }}) with an absolute directory of plain names and no trailing slash.
+        quiet: true
+
+    # The directory must resolve to itself: a symlink at the leaf OR at any ancestor would
+    # send issuance and removal into another tree (reviews of #369). The removal below also
+    # works through a descriptor opened without following links, so a link swapped in after
+    # this check cannot redirect it.
+    - name: "Resolve the leaf's directory"
+      ansible.builtin.command:
+        argv: [python3, -c, "import os, sys; print(os.path.realpath(sys.argv[1]))", "{{ _leaf_decl.dir }}"]
+      register: _leaf_dir_real
+      changed_when: false
+      check_mode: false
+      when: inventory_hostname == _leaf_decl.host
+
+    - name: "Refuse a leaf directory reached through a symbolic link"
+      ansible.builtin.assert:
+        that:
+          - _leaf_dir_real.stdout == _leaf_decl.dir
+        fail_msg: "{{ _leaf_decl.dir }} on {{ inventory_hostname }} resolves through a symbolic link; declare the real directory."
+        quiet: true
+      when: inventory_hostname == _leaf_decl.host
+
+    - name: "Issue the leaf"
+      ansible.builtin.include_tasks: tasks/mint-internal-cert.yml
+      vars:
+        _mint_name: "{{ leaf_name }}"
+        _mint_ca_host: "{{ groups['step_ca_svc'] | first }}"
+        _mint_reissue: "{{ leaf_reissue | default(false) | bool }}"
+      when: _leaf_action == 'issue' and inventory_hostname == _leaf_decl.host
+
+    # Only what issuance makes, each by its kind: serial and pending directories, the two
+    # links, the lock file. Everything goes through a descriptor opened with O_NOFOLLOW, and
+    # nothing is followed below it. `list` only reports; `remove` also deletes, then removes
+    # the directory if it is empty.
+    - name: "List what issuance created in the leaf's directory"
+      ansible.builtin.command:
+        argv: [python3, -c, "{{ _leaf_remover }}", "{{ _leaf_decl.dir }}", list]
+      register: _leaf_listed
+      changed_when: false
+      check_mode: false
+      when: _leaf_action == 'remove' and inventory_hostname == _leaf_decl.host
+
+    - name: "Report what the removal takes away"
+      ansible.builtin.debug:
+        msg: "{{ leaf_name }}: {{ 'would remove' if ansible_check_mode else 'removing' }} {{ _leaf_listed.stdout_lines | first | default('nothing') }} in {{ _leaf_decl.dir }}"
+      when: _leaf_action == 'remove' and inventory_hostname == _leaf_decl.host
+
+    - name: "Remove the leaf's issued files"
+      ansible.builtin.command:
+        argv: [python3, -c, "{{ _leaf_remover }}", "{{ _leaf_decl.dir }}", remove]
+      register: _leaf_removed
+      changed_when: "'CHANGED' in _leaf_removed.stdout_lines"
+      when: not ansible_check_mode and _leaf_action == 'remove' and inventory_hostname == _leaf_decl.host

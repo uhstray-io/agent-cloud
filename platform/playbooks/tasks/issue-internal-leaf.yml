@@ -42,7 +42,8 @@
       - _leaf_matches[0].host == inventory_hostname
       - _leaf_matches[0].profile in ['server', 'client']
       # A path the shell cannot misread: it is also quoted wherever it is used.
-      - _leaf_matches[0].dir is match('^/[A-Za-z0-9._/-]+$')
+      # Plain names, no trailing slash: removal matches the paths find returns (review of #369).
+      - _leaf_matches[0].dir is match('^(/[A-Za-z0-9._-]+)+$')
       - (_leaf_matches[0].sans | default([]) | length) > 0
       - (dns_site | default('') | length) > 0 and (dns_zone | default('') | length) > 0
       - _leaf_matches[0].sans | reject('match', '^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$') | list | length == 0
@@ -59,6 +60,22 @@
     _leaf: "{{ _leaf_matches[0] }}"
     _leaf_ca_host: "{{ _mint_ca_host | default(inventory_hostname) }}"
     _leaf_ca_engine: "{{ hostvars[_mint_ca_host | default(inventory_hostname)].container_engine | default('podman') }}"
+
+# The directory must resolve to itself: a symlink at it or at any ancestor would put the key
+# elsewhere (reviews of #369). The placement checks again under its lock.
+- name: "Resolve the leaf's directory"
+  ansible.builtin.command:
+    argv: [python3, -c, "import os, sys; print(os.path.realpath(sys.argv[1]))", "{{ _leaf.dir }}"]
+  register: _leaf_dir_real
+  changed_when: false
+  check_mode: false
+
+- name: "Refuse a leaf directory reached through a symbolic link"
+  ansible.builtin.assert:
+    that:
+      - _leaf_dir_real.stdout == _leaf.dir
+    fail_msg: "{{ _leaf.dir }} on {{ inventory_hostname }} resolves through a symbolic link; declare the real directory."
+    quiet: true
 
 - name: "Does the leaf already have a current certificate"
   ansible.builtin.stat:
@@ -207,6 +224,9 @@
         _leaf_placer: |
           import fcntl, os, re, shutil, subprocess, sys, time
           d, pending, wait = sys.argv[1], sys.argv[2], int(sys.argv[3])
+          if os.path.realpath(d) != d:
+              shutil.rmtree(pending, ignore_errors=True)
+              sys.exit(d + " resolves through a symbolic link; declare the real directory")
           os.chdir(d)
           os.umask(0o077)
           lock = open(".placement.lock", "a")
