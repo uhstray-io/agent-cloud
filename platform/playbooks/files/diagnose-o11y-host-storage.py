@@ -7,6 +7,7 @@ import json
 import os
 import stat
 import subprocess
+import sys
 from collections.abc import Callable
 from decimal import Decimal, InvalidOperation
 from typing import Any
@@ -320,6 +321,52 @@ def diagnose(
         return {"status": "unavailable", "reason": str(exc)}
 
 
+def diagnose_root_lvm(
+    payload: dict[str, Any],
+    capacity_reader: Callable[[str], dict[str, int] | None] = filesystem_capacity,
+    device_number_reader: Callable[[str], str | None] = block_device_number,
+) -> dict[str, Any]:
+    """Return sanitized root filesystem, exact root LV, and VG capacity facts."""
+    try:
+        root = _json_object(payload.get("root_mount"), "root_mount_invalid").get("filesystems")
+        if not isinstance(root, list) or len(root) != 1 or not isinstance(root[0], dict):
+            raise Unavailable("root_mount_invalid")
+        fstype, major_minor = root[0].get("fstype"), root[0].get("maj:min")
+        if not isinstance(fstype, str) or not fstype or not isinstance(major_minor, str) or not major_minor:
+            raise Unavailable("root_mount_invalid")
+
+        chain = _root_block_chain(payload.get("block_topology"), major_minor)
+        if chain[0]["type"] != "lvm":
+            raise Unavailable("root_is_not_lvm")
+        root_capacity = payload.get("root_capacity")
+        if not isinstance(root_capacity, dict):
+            root_capacity = capacity_reader("/")
+        if not isinstance(root_capacity, dict):
+            raise Unavailable("root_filesystem_capacity_unavailable")
+        total, available = root_capacity.get("total_bytes"), root_capacity.get("available_bytes")
+        if (isinstance(total, bool) or not isinstance(total, int) or total <= 0
+                or isinstance(available, bool) or not isinstance(available, int)
+                or available < 0 or available > total):
+            raise Unavailable("root_filesystem_capacity_invalid")
+
+        lvm = root_lvm_capacity(
+            payload.get("lvs"), payload.get("vgs"), major_minor,
+            chain[0]["size_bytes"], device_number_reader,
+        )
+        if lvm.get("status") != "observed":
+            raise Unavailable(lvm.get("reason", "root_logical_volume_unresolved"))
+        return {
+            "status": "observed",
+            "filesystem_type": fstype,
+            "filesystem_total_bytes": total,
+            "filesystem_available_bytes": available,
+            "block_chain": [{"type": item["type"], "size_bytes": item["size_bytes"]} for item in chain],
+            "lvm": lvm,
+        }
+    except Unavailable as exc:
+        return {"status": "unavailable", "reason": str(exc)}
+
+
 def _read(argv: list[str]) -> str | None:
     try:
         result = subprocess.run(argv, check=False, capture_output=True, text=True, timeout=30,
@@ -353,9 +400,33 @@ def collect() -> dict[str, Any]:
     return diagnose(payload)
 
 
+def collect_root_lvm(
+    device_number_reader: Callable[[str], str | None] = block_device_number,
+) -> dict[str, Any]:
+    """Collect only read-only root/LVM metadata; deliberately never queries Podman."""
+    commands = {
+        "root_mount": ["findmnt", "--json", "--output", "SOURCE,FSTYPE,MAJ:MIN", "--target", "/"],
+        "block_topology": ["lsblk", "--json", "--bytes", "--paths", "--output",
+                           "NAME,TYPE,SIZE,PKNAME,MAJ:MIN"],
+        "lvs": ["lvs", "--readonly", "--reportformat", "json", "--units", "b", "--nosuffix",
+                "--options", "lv_path,vg_name,lv_size"],
+        "vgs": ["vgs", "--readonly", "--reportformat", "json", "--units", "b", "--nosuffix",
+                "--options", "vg_name,vg_free"],
+    }
+    payload: dict[str, Any] = {}
+    for key, command in commands.items():
+        value = _read(command)
+        if value is None:
+            reason = "lvm_unavailable" if key in {"lvs", "vgs"} else f"{key}_unavailable"
+            return {"status": "unavailable", "reason": reason}
+        payload[key] = value
+    payload["root_capacity"] = filesystem_capacity("/")
+    return diagnose_root_lvm(payload, device_number_reader=device_number_reader)
+
+
 def main() -> int:
     try:
-        report = collect()
+        report = collect_root_lvm() if sys.argv[1:] == ["root-lvm"] else collect()
     except Exception:
         report = {"status": "unavailable", "reason": "diagnostic_internal_error"}
     print(json.dumps(report, sort_keys=True))
