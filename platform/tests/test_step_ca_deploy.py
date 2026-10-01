@@ -371,6 +371,32 @@ def test_the_policy_is_planned_from_the_declared_leaves(tmp_path):
     assert got == {case: want for case, (_, _, want) in POLICY_CASES.items()}
 
 
+REPORTS = {
+    "add": "name policy to 3 declared names",
+    "closed-from-names": "name policy closed (no leaf declared: no-leaf-declared.invalid only)",
+    "closed-same": "name policy unchanged",
+    "local-removes": "name policy removed (local mode)",
+}
+
+
+def test_the_plan_report_names_the_policy_change_the_write_makes(tmp_path):
+    # Review of #371: local mode removes the policy and must not be reported as closed.
+    play = _play(DEPLOY, "Phase 2.5")
+    for case in REPORTS:
+        _, current, _ = POLICY_CASES[case]
+        auth = {"provisioners": CONVERGED, **({"policy": current} if current else {})}
+        (tmp_path / f"{case}.ca.json").write_text(json.dumps({"authority": auth}))
+        (tmp_path / f"{case}.list.json").write_text(json.dumps(CONVERGED))
+    tasks = [*_registered_reads(tmp_path, {"_ca_json": "ca.json", "_prov_list": "list.json"}),
+             _task(play, "Plan the provisioner changes"), _task(play, "Report the provisioner plan")]
+    hosts = {case: {"_ca_present": {"rc": 0}, **POLICY_CASES[case][0]} for case in REPORTS}
+    r = _run(tmp_path, {}, tasks, play_vars=_issuance_vars(play), hosts=hosts)
+    assert r.returncode == 0, r.stdout + r.stderr
+    for case, want in REPORTS.items():
+        assert any(want in block for block in r.stdout.split("ok: [")
+                   if block.startswith(case + "]") and "name policy" in block), (case, r.stdout)
+
+
 def _stub_engine(tmp_path: Path, log: str = "") -> Path:
     """A container engine that keeps what `exec -i` is given, records signals, and prints `log`."""
     stub = tmp_path / "engine"
