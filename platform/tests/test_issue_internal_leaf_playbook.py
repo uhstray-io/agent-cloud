@@ -303,3 +303,45 @@ def test_a_dotted_directory_name_is_still_a_valid_leaf_directory(tmp_path):
     leaf = {**_leaf(tmp_path), "dir": str(tmp_path / "leaf.d" / "certs.v1")}
     r = _run(tmp_path, {"leaf_name": "probe", "leaf_action": "remove"}, [leaf])
     assert r.returncode == 0 and "nothing (no issued files)" in r.stdout, r.stdout
+
+
+def test_inspect_refuses_a_leaf_declared_with_an_unknown_profile(tmp_path):
+    # Review of #370: with neither profile, both purpose expectations would be false.
+    _placed(tmp_path, "clientAuth")
+    r = _run(tmp_path, {"leaf_name": "probe", "leaf_action": "inspect"}, [_leaf(tmp_path, profile="both")])
+    assert r.returncode != 0 and "Pass -e leaf_name" in r.stdout, r.stdout
+
+
+def test_an_unreadable_ca_tmp_fails_instead_of_counting_zero(tmp_path):
+    _placed(tmp_path, "clientAuth")
+    stub = tmp_path / "ca-engine"
+    stub.write_text(f'#!/bin/sh\ncat "{tmp_path}/pki/root.pem"; echo "cannot read /tmp" >&2; exit 1\n')
+    stub.chmod(0o755)
+    local = {"ansible_connection": "local"}
+    inv = {"all": {"vars": {**SITE, "internal_leaves": [_leaf(tmp_path)]},
+                   "children": {"gw_svc": {"hosts": {"gw": local}},
+                                "step_ca_svc": {"hosts": {"ca": {**local, "container_engine": str(stub)}}}}}}
+    (tmp_path / "inv.yml").write_text(yaml.safe_dump(inv))
+    cmd = ["ansible-playbook", "-i", str(tmp_path / "inv.yml"), str(PLAYBOOK), "-e", "target_service=gw_svc",
+           "-e", "leaf_name=probe", "-e", "leaf_action=inspect"]
+    r = harness_sandbox.run(cmd, tmp_path, cwd=playbook_yaml.REPO, env=harness_sandbox.env_for(tmp_path))
+    assert r.returncode != 0 and "ca_leftovers" not in r.stdout, r.stdout
+
+
+def test_the_inspector_writes_nothing_on_the_host(tmp_path):
+    # Review of #370: inspect runs under --check, where nothing may be written. Run the
+    # inspector itself with an empty TMPDIR and compare everything before and after.
+    import json
+    import os
+    _placed(tmp_path, "clientAuth")
+    inspector = next(p for p in playbook_yaml.load(PLAYBOOK) if p.get("hosts") != "localhost")["vars"][
+        "_leaf_inspector"]
+    scratch = tmp_path / "tmpdir"
+    scratch.mkdir()
+    before = sorted(str(p) for p in tmp_path.rglob("*"))
+    root = (tmp_path / "pki/root.pem").read_text()
+    r = subprocess.run(["python3", "-c", inspector, str(tmp_path / "leaf")], input=root, capture_output=True,
+                       text=True, env={**os.environ, "TMPDIR": str(scratch)})
+    assert r.returncode == 0, r.stderr
+    assert json.loads(r.stdout)["verifies_sslclient"] is True
+    assert sorted(str(p) for p in tmp_path.rglob("*")) == before and not list(scratch.iterdir())

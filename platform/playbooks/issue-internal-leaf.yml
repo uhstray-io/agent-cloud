@@ -40,7 +40,7 @@
     # Read-only. The root arrives on stdin; the key is read only by `openssl pkey -pubout`,
     # whose output is the public half. Prints one JSON object.
     _leaf_inspector: |
-      import json, os, re, stat, subprocess, sys, tempfile
+      import json, os, re, stat, subprocess, sys
       d = sys.argv[1]
       root = sys.stdin.read()
       NOFOLLOW_DIR = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
@@ -75,33 +75,47 @@
       except OSError as e:
           out["missing"] = str(e)
       if out["current"]:
-          def ossl(*args, data=None):
-              return subprocess.run(["openssl", *args], input=data, capture_output=True)
-          with tempfile.TemporaryDirectory() as tmp:
-              cert_path, root_path = os.path.join(tmp, "cert.pem"), os.path.join(tmp, "root.pem")
-              with open(cert_path, "wb") as f:
-                  f.write(cert)
-              with open(root_path, "w") as f:
-                  f.write(root)
-              def x509(*args):
-                  return ossl("x509", "-in", cert_path, "-noout", *args).stdout.decode().strip()
-              out["serial"] = x509("-serial").split("=", 1)[-1]
-              out["not_after"] = x509("-enddate").split("=", 1)[-1]
-              text = x509("-text").splitlines()
-              def after(label):
-                  for i, line in enumerate(text):
-                      if line.strip().startswith(label):
-                          return text[i + 1].strip()
-                  return ""
-              out["san"] = after("X509v3 Subject Alternative Name")
-              out["eku"] = after("X509v3 Extended Key Usage")
-              out["key_mode"] = oct(key_mode)
-              # The key reaches openssl on stdin only; its output is the public half.
-              pub_key = ossl("pkey", "-pubout", data=key).stdout
-              out["key_matches"] = bool(pub_key) and pub_key == ossl("x509", "-in", cert_path, "-pubkey", "-noout").stdout
-              for purpose in ("sslclient", "sslserver"):
-                  r = ossl("verify", "-CAfile", root_path, "-untrusted", cert_path, "-purpose", purpose, cert_path)
-                  out["verifies_" + purpose] = r.returncode == 0
+          # Nothing is written on the host, not even under --check (review of #370): each
+          # input reaches openssl through a pipe named /dev/fd/N, or stdin for the key. The
+          # inputs are a few kilobytes, well inside a pipe's buffer, so each is written whole
+          # before openssl starts.
+          def ossl(*args, data=None, **files):
+              fds, argv = [], []
+              for a in args:
+                  if isinstance(a, str) and a.startswith("@"):
+                      r, w = os.pipe()
+                      os.write(w, files[a[1:]])
+                      os.close(w)
+                      fds.append(r)
+                      a = "/dev/fd/%d" % r
+                  argv.append(a)
+              try:
+                  return subprocess.run(["openssl", *argv], input=data, capture_output=True, pass_fds=fds)
+              finally:
+                  for r in fds:
+                      os.close(r)
+          rootb = root.encode()
+          def x509(*args):
+              return ossl("x509", "-in", "@cert", "-noout", *args, cert=cert).stdout.decode().strip()
+          out["serial"] = x509("-serial").split("=", 1)[-1]
+          out["not_after"] = x509("-enddate").split("=", 1)[-1]
+          text = x509("-text").splitlines()
+          def after(label):
+              for i, line in enumerate(text):
+                  if line.strip().startswith(label):
+                      return text[i + 1].strip()
+              return ""
+          out["san"] = after("X509v3 Subject Alternative Name")
+          out["eku"] = after("X509v3 Extended Key Usage")
+          out["key_mode"] = oct(key_mode)
+          # The key reaches openssl on stdin only; its output is the public half.
+          pub_key = ossl("pkey", "-pubout", data=key).stdout
+          out["key_matches"] = bool(pub_key) and pub_key == ossl("x509", "-in", "@cert", "-pubkey", "-noout",
+                                                                 cert=cert).stdout
+          for purpose in ("sslclient", "sslserver"):
+              r = ossl("verify", "-CAfile", "@root", "-untrusted", "@chain", "-purpose", purpose, "@cert",
+                       root=rootb, chain=cert, cert=cert)
+              out["verifies_" + purpose] = r.returncode == 0
       print(json.dumps(out))
     _leaf_remover: |
       import os, re, stat, sys
@@ -164,6 +178,8 @@
           - _leaf_action in ['issue', 'remove', 'inspect']
           - (groups['step_ca_svc'] | default([]) | length) == 1
           - (internal_leaves | default([]) | selectattr('name', 'equalto', leaf_name | default('')) | list | length) == 1
+          # inspect compares against the profile, and issue/remove assume it (review of #370).
+          - (internal_leaves | default([]) | selectattr('name', 'equalto', leaf_name | default('')) | map(attribute='profile') | first | default('')) in ['client', 'server']
         fail_msg: >-
           Pass -e leaf_name=<a leaf declared once in internal_leaves> and leaf_action issue,
           remove or inspect; the inventory must hold exactly one step_ca_svc host
@@ -227,8 +243,9 @@
           - sh
           - -c
           - >-
-            cat /home/step/certs/root_ca.crt;
-            echo "LEFTOVERS=$(ls -A /tmp | grep -cE '^(pw|ipw|x509[.]tpl|mint[.](crt|key))$|^(ipw|req|crt|err)[.]' || true)"
+            set -e; cat /home/step/certs/root_ca.crt;
+            names=$(ls -A /tmp) || { echo "cannot read /tmp in the CA container" >&2; exit 1; };
+            echo "LEFTOVERS=$(printf '%s\n' "$names" | grep -cE '^(pw|ipw|x509[.]tpl|mint[.](crt|key))$|^(ipw|req|crt|err)[.]' || true)"
       delegate_to: "{{ groups['step_ca_svc'] | first }}"
       register: _leaf_ca_read
       changed_when: false
