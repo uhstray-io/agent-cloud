@@ -239,3 +239,18 @@ def test_inspect_refuses_a_leaf_that_is_not_its_declaration(tmp_path, case):
         _placed(tmp_path, "clientAuth")
     r = _inspect(tmp_path, leftovers=1 if case == "ca-leftovers" else 0)
     assert r.returncode != 0 and "does not match its client declaration" in r.stdout, r.stdout
+
+
+def test_the_leftover_count_covers_every_temporary_name_the_ca_side_tasks_write():
+    import re
+    script = next(t for t in playbook_yaml.tasks(playbook_yaml.load(PLAYBOOK))
+                  if t.get("name") == "Read the CA root and the issuance's leftovers on the CA host")
+    pattern = re.search(r"grep -cE '([^']+)'", script["ansible.builtin.command"]["argv"][-1]).group(1)
+    names = set()
+    for rel in ("platform/playbooks/deploy-step-ca.yml", "platform/playbooks/tasks/issue-internal-leaf.yml",
+                "platform/playbooks/tasks/mint-internal-cert.yml"):
+        names |= set(re.findall(r"/tmp/([A-Za-z0-9._$]+)", (playbook_yaml.REPO / rel).read_text()))
+    names = {n.replace("$$", "4242").rstrip(".;") for n in names}
+    assert names, "no /tmp names found"
+    missed = sorted(n for n in names if not re.search(pattern, n))
+    assert not missed, f"leftover count misses {missed}"

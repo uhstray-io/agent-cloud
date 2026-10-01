@@ -181,7 +181,9 @@
       when: _leaf_action == 'issue' and inventory_hostname == _leaf_decl.host
 
     # Read-only on the CA host: the root (public) for the verification, and how many of the
-    # issuance's own temporary names remain in the container's /tmp (it removes them).
+    # temporary names the CA-side tasks use remain in the container's /tmp (each removes its
+    # own; `pw` and `ipw` would hold a password). platform/tests/test_issue_internal_leaf_playbook.py
+    # holds this list to every /tmp name those tasks write.
     - name: "Read the CA root and the issuance's leftovers on the CA host"
       ansible.builtin.command:
         argv:
@@ -192,7 +194,7 @@
           - -c
           - >-
             cat /home/step/certs/root_ca.crt;
-            echo "LEFTOVERS=$(ls -A /tmp | grep -cE '^(ipw|req|crt|err)[.]|^x509[.]tpl$' || true)"
+            echo "LEFTOVERS=$(ls -A /tmp | grep -cE '^(pw|ipw|x509[.]tpl|mint[.](crt|key))$|^(ipw|req|crt|err)[.]' || true)"
       delegate_to: "{{ groups['step_ca_svc'] | first }}"
       register: _leaf_ca_read
       changed_when: false
