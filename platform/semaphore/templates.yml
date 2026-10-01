@@ -629,12 +629,13 @@ templates:
         required: true
       - name: leaf_action
         title: "Action"
-        description: "issue, or remove the leaf's issued files (before removing its declaration)"
+        description: "issue; inspect (read-only proof of the current certificate); or remove the leaf's issued files (before removing its declaration)"
         type: enum
         required: false
         default_value: issue
         values:
           - { name: "issue", value: "issue" }
+          - { name: "inspect", value: "inspect" }
           - { name: "remove", value: "remove" }
       - name: leaf_reissue
         title: "Reissue"
