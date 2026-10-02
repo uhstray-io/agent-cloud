@@ -6,6 +6,10 @@ host. Push, pull requests and merges happen only when Joe authorizes each one.
 
 ## 0. Branch and decisions
 - [ ] 0.1 Feature branch from `dev` (`feat/production-internal-ca`) in its own worktree
+      2026-10-02: PARTIAL — no branch of that name exists on origin; the change landed
+      through separate scoped branches per increment, each based on `dev` and merged by pull request
+      (#349, #352, #354, #359, #363, #367-#373, #376); remaining: amend this task to that
+      practice, or record why the single branch was not used
 - [x] 0.2 Confirm the open questions with Joe, or record that the design's defaults apply:
       the dgx-spark handoff channel (1), offline root (2), mutual TLS towards vLLM (3), the
       production internal zone name (4). Answered 2026-09-28: signed through a template,
@@ -23,6 +27,13 @@ host. Push, pull requests and merges happen only when Joe authorizes each one.
       platform/services/step-ca/deployment`, `container_engine: podman`,
       `stepca_bind: 127.0.0.1`, `stepca_init_acme: "false"`, a production `stepca_name`,
       and the firewall variables of task 3.1. Sync the Semaphore inventory record
+      2026-10-02: PARTIAL — site-config#40 declared the VM in `proxmox/vm-specs.yml` and
+      `inventory/production.yml` at the template sizing (two cores, 2 GB, 20G), vmid 221 as
+      the first free id in the live cluster's listing (Semaphore task 1732); #49 added the
+      first-boot settings (loopback bind, ACME off, production `stepca_name`) and #42 the
+      firewall variables. Semaphore's inventory carries them: Deploy step-ca (Dev) 1989 and
+      1990 passed the production assertions that refuse a run without them. Remaining: the
+      vmid check against the ledger is not recorded
 - [x] 1.2 Workflow steps `lookup-inventory` and `validate-address` (the address reserved
       in NetBox before provisioning, or the reason it could not be recorded as the
       agentgateway change did). 2026-09-28: address reserved in NetBox (Semaphore task
@@ -97,14 +108,28 @@ host. Push, pull requests and merges happen only when Joe authorizes each one.
       destroy play, so the root is unchanged, plus `test_step_ca_deploy.py`
 
 ## 3. Firewall
-- [ ] 3.1 site-config: `firewall_ssh_cidrs` and `firewall_controller_cidr` for the CA
+- [x] 3.1 site-config: `firewall_ssh_cidrs` and `firewall_controller_cidr` for the CA
       host, no `firewall_allow_rules`, and `firewall_detect_ports: false` (the API publishes
       on loopback only). Declared 2026-09-28 (site-config #42)
+      2026-10-02: done — site-config#42 (merged 2026-09-29) gives the CA host
+      `firewall_detect_ports: false`, `firewall_controller_cidr` and an empty
+      `firewall_allow_rules`; `firewall_ssh_cidrs` is inherited from the `agent_cloud` group
+      variables, as on every host. Applied by Apply Firewall (Dev) 1814, 1817, 1819, 2069 and
+      2071
 - [ ] 3.2 Workflow steps `fw-assess` (Snapshot Firewall) and `fw-harden` (Apply Firewall)
+      2026-10-02: PARTIAL — `fw-harden` ran on the CA host: Apply Firewall (Dev) 1814, 1817
+      and 1819 (2026-09-29), 2069 and 2071 (2026-09-30); remaining: `fw-assess`, because
+      Snapshot Firewall has not run on the CA host
 - [ ] 3.3 Workflow step `systemd-enablement` (Verify Service Persistence) and a reboot of the
       CA host through the supported path, then `service-validate`
+      2026-10-02: PARTIAL — `systemd-enablement` ran on the CA host: Verify Service
+      Persistence (Dev) 2073; remaining: the reboot and `service-validate`. The supported
+      reboot path (Reboot Host (Dev), Probe Reachability (Dev)) is being built on branch
+      `feat/reboot-and-reach-probe` and is not on `dev`
 - [ ] 3.4 Validation gate: scenarios "A LAN host cannot reach the CA API" and "Only the
       declared sources reach SSH", checked from a LAN host that is not the controller
+      2026-10-02: not started — the firewall these scenarios test is applied (task 3.2), but
+      no check from a LAN host other than the controller is recorded
 
 ## 4. Cross-host issuance and root distribution
 - [ ] 4.1 Evolve `tasks/mint-internal-cert.yml`: new optional `_mint_ca_host` (default:
@@ -120,15 +145,27 @@ host. Push, pull requests and merges happen only when Joe authorizes each one.
       declares. A leaf with a current certificate is kept unless `_mint_reissue` (renewal is
       group 6). Proven end to end on a throwaway step-ca 0.30.2: client-only key usage, the
       declared SANs, leaf plus intermediate, `openssl verify -purpose sslclient` OK and
-      `sslserver` refused, no key file left in the CA container. Open: 4.6, 4.7
-- [ ] 4.2 Declared-name guard: the task refuses any SAN not in the consumer's declared leaf
+      `sslserver` refused, no key file left in the CA container. Open: 4.6
+      2026-10-02: PARTIAL — the cross-host path is proven in production: task 4.7 (issue
+      2166, inspect 2249) and the edge leaves of task 5.2 (Issue Internal Leaf (Dev) 2431,
+      2433, 2435), each key made on its consumer and nothing left in the CA container;
+      remaining: the wildcard path through `deploy-caddy.yml` itself (task 4.6 proved it at
+      task level only), and a dated design amendment for dropping `_mint_profile` and
+      `_mint_sans`
+- [x] 4.2 Declared-name guard: the task refuses any SAN not in the consumer's declared leaf
       (site-config list, decision 4) and any name outside `<site>.<zone>` (amendment
       2026-09-29), before
       anything reaches the CA; the existing hostname-character assertion stays. 2026-09-30:
       the leaf is looked up by name in `internal_leaves` and must be declared once, for this
       host, with a server or client profile, an absolute directory, and plain SANs under
       `<dns_site>.<dns_zone>`; the same rule as the CA's name policy
-- [ ] 4.3 Evolve `tasks/distribute-ca-root.yml`: optional `_ca_host`; root and intermediate
+      2026-10-02: done — on `dev`, `tasks/issue-internal-leaf.yml` asserts the declaration
+      before its first step that reaches the CA, and the SANs come only from the declaration,
+      so a caller cannot add one; the wildcard path keeps its hostname-character assertion
+      (`mint-internal-cert.yml`, "Refuse an extra SAN outside hostname characters").
+      `test_issue_internal_leaf.py` covers 13 refused declarations, each with nothing sent
+      to the CA
+- [x] 4.3 Evolve `tasks/distribute-ca-root.yml`: optional `_ca_host`; root and intermediate
       read from the CA container on that host, bundle written 0644 on the consumer into
       the mounted certificate directory. 2026-09-30: one path for every case, the local
       single host included: the root and intermediate are read with `exec cat` on `_ca_host`
@@ -138,6 +175,10 @@ host. Push, pull requests and merges happen only when Joe authorizes each one.
       exact `_ca_bundle_dest`. `platform/tests/test_distribute_ca_root.py`; proven against a
       throwaway step-ca 0.30.2: the bundle's root matches the CA's fingerprint and the
       intermediate chains to it
+      2026-10-02: done — on `dev` (#367); one correction to the note above: since b5aa6184
+      the bundle is rewritten in place (`cat >`, then `chmod 0644`), not by `copy`, and still
+      only when it differs. Its production consumers are the gateway (#376) and Caddy (#377,
+      open), recorded under task 5.2
 - [ ] 4.4 Profiles: issue one server and one client test leaf in local-dev, inspect their
       extended key usage, and settle decision 5's mechanism (separate provisioners or
       x509 templates) and whether the CA can also enforce a name policy; record the result
@@ -147,11 +188,21 @@ host. Push, pull requests and merges happen only when Joe authorizes each one.
       at authority level from the exact declared SANs (decided by Joe 2026-09-30), written,
       reload-checked and asserted by `deploy-step-ca.yml`. Open: the
       local-dev server and client test leaves, which need task 4.1's issuance path
+      2026-10-02: PARTIAL — in production, Issue Internal Leaf (Dev) issued a server leaf
+      (`agw-server`, 2431) and two client leaves (`agw-verifier` 2433, `caddy` 2435), and the
+      inspections 2432, 2434 and 2436 found the extended key usage of each profile; remaining:
+      the local-dev server and client test leaves this task names
 - [ ] 4.5 BATS: no task step reads, copies or templates the consumer's key onto the CA host
       or the controller; the name guard is scoped to the issuance task; the symlink swap
       is a single rename; each assertion mutated once to watch it go red. 2026-09-30: as
       pytest, `platform/tests/test_issue_internal_leaf.py`, against a stub engine that keeps
       what the CA host receives (password line and request, never a key)
+      2026-10-02: PARTIAL — on `dev`, the tests prove the CA host receives no key (the stub
+      keeps what crossed: password line and request) and that exactly one step is delegated;
+      remaining: an assertion that no step fetches the key to the controller, one that the
+      name guard lives only in the issuance task, one that the `current` swap is a single
+      rename, and a record of each assertion's mutation (#363 states this only for the
+      change as a whole)
 - [ ] 4.6 Local-dev regression: `Deploy Caddy (Local)` and `make local-bootstrap` still serve
       the wildcard, and every local consumer of the bundle still verifies the IdP. 2026-09-30, task level (decided
       with Joe): from `dev` at a8644078, against the live local step-ca, the reworked
@@ -184,9 +235,14 @@ host. Push, pull requests and merges happen only when Joe authorizes each one.
       leaf is refused as a client" and "Bundles match across consumers"
 
 ## 5. Consumers
-- [ ] 5.1 Establish which compose file production Caddy runs from (`caddy_compose_dir` in
+- [x] 5.1 Establish which compose file production Caddy runs from (`caddy_compose_dir` in
       inventory versus the monorepo's `compose.yml`) and add a read-only certificate
       directory mount to that file as code; redeploy Caddy through Semaphore
+      2026-10-02: done — `Mount Caddy Certs (Dev)` (#373): its dry run 2414 read the running
+      container's compose labels and established that production Caddy runs from the
+      `compose.yml` of its flat compose project in `caddy_compose_dir`, not the monorepo's
+      file; run 2415 added the read-only `/etc/caddy/certs` directory mount to that file and
+      recreated Caddy through Semaphore; run 2416 changed nothing
 - [ ] 5.2 Declare and issue the gateway server leaf and the three allowlisted client
       leaves of design decision 4 (`caddy` on the Caddy host, `agw-verifier` on the
       gateway host, `bench` on the benchmark VM once that host exists), each key generated
@@ -194,6 +250,17 @@ host. Push, pull requests and merges happen only when Joe authorizes each one.
       consumer. The gateway's certificate directory is mounted as a directory in
       production and in the local overlay (replacing the single-file bundle mount), and
       its key is readable by the container's non-root user
+      2026-10-02: PARTIAL — site-config#58 declared `agw-server` (server) and the
+      `agw-verifier` and `caddy` client leaves; Deploy step-ca (Dev) 2427 set the CA's name
+      policy to their six SANs (closed with none declared since 2268, #371). Issue Internal
+      Leaf (Dev) issued each with its key made on its own host, and the inspections found the
+      profile's key usage, the key 0600 and matching, and nothing left in the CA container:
+      `agw-server` 2431/2432, `agw-verifier` 2433/2434, `caddy` 2435/2436. #376 (merged)
+      mounts the gateway's whole `./certs` directory in the production TLS overlay and the
+      local overlay, and makes the 0600 key readable by the image's non-root user (rootless
+      `userns keep-id`; local-dev's `user:`). Remaining: `bench` (its VM does not exist), the
+      bundle on the gateway (distributed by the deploy once `agw_listener_tls` is on; not
+      run yet) and on Caddy (#377, open)
 - [ ] 5.3 Hand the issued files to the companion change and nothing more: its task 6.1
       owns the gateway listeners' TLS, the client allowlist rule and its render guard, and
       its task 6.2 owns Caddy's transport. Here, confirm each consumer's leaf and key sit
@@ -202,6 +269,13 @@ host. Push, pull requests and merges happen only when Joe authorizes each one.
       declaration: none for `agw-verifier` and `bench` (their users open the files per
       call), `caddy reload --force` for `caddy` if task 5.1 found a directory mount and the
       container restart otherwise, and the gateway server leaf's action from task 6.3
+      2026-10-02: PARTIAL — site-config#58 records each declared leaf's reload action: none
+      for `agw-verifier`, `caddy reload --force` for `caddy` (task 5.1 found a directory
+      mount), and restart for `agw-server` until task 6.3 measures the file watch; the
+      `caddy` leaf directory sits under the directory run 2415 mounted. Remaining: confirm on
+      each running container that `current/` is visible and its key readable by the
+      container's user (the gateway mounts its directory only once listener TLS is
+      deployed), and `bench`
 - [ ] 5.4 dgx-spark handoff, per open question 1's answer: the vLLM server leaf and the
       bundle delivered through the agreed channel, with the SAN the gateway's model
       `tls.hostname` will use and the flags dgx-spark owns (`--ssl-certfile`,
