@@ -1,0 +1,90 @@
+---
+# probe-reachability.yml — check, FROM a LAN host that is not the controller, which ports of a
+# target answer, against what is declared (production-internal-ca task 3.4; any host-firewall
+# gate of the same shape).
+#
+#   -e probe_from=<group of the probing host> -e probe_to=<target inventory host>
+#   -e 'probe_ports_json=[{"port": 9000, "expect": "closed"}, {"port": 22, "expect": "closed"}]'
+#
+# Each port gets one TCP connect from the probing host to the target's inventory address
+# (ansible_host), bounded by probe_timeout (default 5 s). `open` means the connection was
+# accepted; `closed` means it was refused or timed out, which is what a default-deny firewall
+# or a loopback-only bind looks like from the LAN. The run fails, naming every port whose
+# result differs from its declaration. Read-only: it sends a TCP handshake and nothing else,
+# and runs the same under --check.
+
+- name: "Refuse an incomplete probe"
+  hosts: localhost
+  gather_facts: false
+  become: false
+  tasks:
+    - name: "Require a populated probing group, a declared target and declared ports"
+      ansible.builtin.assert:
+        that:
+          - (groups.get(probe_from | default(''), []) | length) > 0
+          - (probe_to | default('')) in hostvars
+          - _ports | length > 0
+          - _ports | rejectattr('expect', 'in', ['open', 'closed']) | list | length == 0
+          - (probe_to | default('')) not in groups.get(probe_from | default(''), [])
+        fail_msg: >-
+          Pass -e probe_from=<group of the probing host>, -e probe_to=<a different inventory host>
+          and probe_ports_json, a list of {port, expect: open|closed}.
+        quiet: true
+      vars:
+        _ports: "{{ probe_ports_json | default('[]') | from_json }}"
+
+- name: "Probe the target's ports from this host"
+  hosts: "{{ probe_from }}"
+  gather_facts: false
+  become: false
+  vars:
+    # An extra var overrides this; the play above refuses a run without one.
+    probe_from: "ungrouped"
+    _ports: "{{ probe_ports_json | from_json }}"
+    _target: "{{ hostvars[probe_to].ansible_host | default(probe_to) }}"
+  tasks:
+    # One TCP connect per port, its result read from the exit code (0 accepted, otherwise
+    # refused or timed out). A registered `wait_for` cannot say which: `failed_when: false`
+    # resets the very flag that would.
+    - name: "Connect to each declared port"
+      ansible.builtin.command:
+        argv:
+          - python3
+          - -c
+          - "import socket, sys; s = socket.socket(); s.settimeout(float(sys.argv[3])); sys.exit(0 if s.connect_ex((sys.argv[1], int(sys.argv[2]))) == 0 else 1)"
+          - "{{ _target }}"
+          - "{{ item.port }}"
+          - "{{ probe_timeout | default(5) }}"
+      loop: "{{ _ports }}"
+      loop_control:
+        label: "{{ probe_to }}:{{ item.port }} (expect {{ item.expect }})"
+      register: _probe
+      failed_when: false
+      changed_when: false
+      check_mode: false
+
+    - name: "Name what each port did"
+      ansible.builtin.set_fact:
+        _probe_results: >-
+          {{ _probe_results | default([]) + [{'port': item.port, 'expect': item.expect, 'got': _got,
+             'ok': _got == item.expect}] }}
+      vars:
+        _got: "{{ 'open' if _probe.results[idx].rc == 0 else 'closed' }}"
+      loop: "{{ _ports }}"
+      loop_control:
+        index_var: idx
+        label: "{{ item.port }}"
+
+    - name: "Report the probe"
+      ansible.builtin.debug:
+        msg: >-
+          {{ inventory_hostname }} -> {{ probe_to }}:
+          {% for r in _probe_results %}{{ r.port }} {{ r.got }} (expected {{ r.expect }}){{ '; ' if not loop.last }}{% endfor %}
+
+    - name: "Refuse a port that does not match its declaration"
+      ansible.builtin.assert:
+        that: _probe_results | rejectattr('ok') | list | length == 0
+        fail_msg: >-
+          From {{ inventory_hostname }} to {{ probe_to }}, these ports did not match:
+          {% for r in _probe_results | rejectattr('ok') %}{{ r.port }} was {{ r.got }}, expected {{ r.expect }}{{ '; ' if not loop.last }}{% endfor %}.
+        quiet: true
