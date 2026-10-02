@@ -325,6 +325,19 @@ host. Push, pull requests and merges happen only when Joe authorizes each one.
       `renew-internal-certs` at thirty-six hours. Each listed job pushes one result line per
       run under the bounded `job` label through `tasks/push-loki-lines.yml`. Deploy o11y
       through Semaphore
+      2026-10-02: rules CODE-COMPLETE, deploy pending. Groups `scheduled-jobs`
+      (`o11y_scheduled_job_silent`, one rule over every job in `o11y_scheduled_jobs`, entries
+      `job` + `max_silence_hours`, template default `renew-internal-certs` at 36) and
+      `internal-ca` (`o11y_internal_ca_leaf_expiring` < 7 d,
+      `o11y_internal_ca_intermediate_expiring` < 90 d). The line schema task 6.1 must push
+      is the o11y README's "Scheduled jobs and internal CA expiry": run line labels
+      `job`/`kind=run`/`status`; expiry line labels `job=renew-internal-certs`/`kind=cert`/
+      `role=leaf|intermediate`/`host`/`leaf`, body `not_after` + `remaining_seconds`. Only a
+      `status=success` run line resets the silence (a failing renewal stops its expiry
+      lines, which read as OK). The rendered queries were run against a throwaway Loki
+      3.3.2 (the pinned image) with fixture lines: each fired for exactly the fixture
+      series meant to fire. Not yet proven: Grafana 11.4 provisioning and evaluation of
+      the Loki instant queries (the o11y deploy readback)
 - [ ] 6.5 Alert drill: a canary leaf declared with a lifetime under seven days fires the
       expiry alert; pausing the schedule past the window fires the silent-job alert (or the
       rule's `for` window shortened for the drill and restored); both reach the contact
