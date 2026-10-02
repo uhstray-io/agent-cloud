@@ -1,0 +1,7 @@
+# Test citations in docs/MISTAKES.md that no longer resolve because the test was deleted or
+# renamed after the entry was written (the ledger is append-only, so the citation stays).
+# Read by test_ledger_test_citations.py. Format: <citation exactly as the checker reports it> # <reason>
+# The list may only shrink: an entry that resolves again, or is no longer cited, fails the test
+# until its line is deleted. A new unresolved citation is fixed in the ledger, not added here,
+# unless it is historical in the same sense.
+test_the_clean_environment_rule_checks_the_endpoint # renamed to test_the_clean_environment_rule_refuses_any_address_pin in platform/tests/test_semaphore_seed_input.py by 03888eee (2026-09-25)
