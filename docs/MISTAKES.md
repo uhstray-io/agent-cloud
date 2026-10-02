@@ -3893,11 +3893,19 @@ convention-to-gate conversion available here.
 
 **Status 2026-10-02.** The pre-push hook this entry proposes exists: `.githooks/pre-push`, added
 2026-08-24 (`89078460`) and activated per clone by `make git-setup`
-(`core.hooksPath=.githooks`). It runs `bats platform/tests/` and, when the Python suite
-collects, `python3 -m pytest -q`, and refuses the push when either fails. It fails open when
-`bats` is missing, when pytest cannot collect, and under `SKIP_TESTS=1` (§5.6 records why). It
-gates the push, not the commit: a red commit can still be made locally, and CI still blocks the
-merge. The Index cell now reads `Pre-push hook`; the paragraph above is left as written.
+(`core.hooksPath=.githooks`). As of `f131a583` it runs `bats platform/tests/` (lines 80-93) and,
+when `pytest --collect-only` succeeds, the Python suite (lines 124-147), and refuses the push
+when either fails (lines 164-177). It skips without blocking in three cases only: under
+`SKIP_TESTS=1` (lines 72-75), when `bats` is not installed (lines 86-92), and when Python
+collection fails with `ModuleNotFoundError`, `No module named` or `ImportError: cannot import
+name` (lines 148-154). Any other collection failure, such as a syntax error or invalid config,
+sets `failed=1` and blocks the push (lines 155-161). It gates the push, not the commit: a red
+commit can still be made locally. Merge gating is not mechanical either.
+`.github/rulesets/protect-main.json` declares `Static Analysis`, `Security Scan` and `Unit
+Tests` as required checks, but only for the default branch (`main`), and the live ruleset read
+through the GitHub API on 2026-10-02 is in `evaluate` mode, not enforcing. `dev` has no branch
+protection and no ruleset. The Index cell now reads `Pre-push hook`; the paragraph above is left
+as written.
 
 
 ---
