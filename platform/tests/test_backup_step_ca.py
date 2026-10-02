@@ -24,7 +24,6 @@ import yaml
 PLAYBOOK = playbook_yaml.REPO / "platform/playbooks/backup-step-ca-to-site-config.yml"
 TEMPLATES = playbook_yaml.REPO / "platform/semaphore/templates.yml"
 DEPLOY_KEY = "synthetic-deploy-key-material"
-KEY_BODY = "SYNTHETIC-ENCRYPTED-ROOT-KEY-BODY"
 PASSWORD = "synthetic-ca-key-password"
 CA_JSON = '{"authority": {"marker": "synthetic-ca-json-marker"}}\n'
 
@@ -36,20 +35,33 @@ def _pem(label: str, body: str) -> str:
     return f"{edge}BEGIN {label}{edge}\n{body}\n{edge}END {label}{edge}\n"
 
 
-EC_KEY, PKCS8_ENCRYPTED = "EC " + "PRIVATE" + " KEY", "ENCRYPTED " + "PRIVATE" + " KEY"
+def _body(seed: str) -> str:
+    """Base64 lines as step-ca writes them: 64 characters, then the remainder."""
+    b64 = base64.b64encode(seed.encode() * 3).decode()
+    return "\n".join(b64[i:i + 64] for i in range(0, len(b64), 64))
+
+
+EC_KEY, RSA_KEY = "EC " + "PRIVATE" + " KEY", "RSA " + "PRIVATE" + " KEY"
+PKCS8_ENCRYPTED, PKCS8_PLAIN = "ENCRYPTED " + "PRIVATE" + " KEY", "PRIVATE" + " KEY"
+KEY_BODY, INT_KEY_BODY, PLAIN_BODY = _body("synthetic-root"), _body("synthetic-int"), _body("synthetic-plain")
+# The headers step-ca 0.30.2 writes, measured from a throwaway `step ca init` in that image.
+LEGACY_HEADERS = "Proc-Type: 4,ENCRYPTED\nDEK-Info: AES-256-CBC,0123456789abcdef0123456789ABCDEF\n\n"
+LEGACY_ENCRYPTED = _pem(EC_KEY, LEGACY_HEADERS + KEY_BODY)
+PLAINTEXT = _pem(EC_KEY, PLAIN_BODY)
 VOLUME = {
     "certs/root_ca.crt": _pem("CERTIFICATE", "SYNTHETIC-ROOT"),
     "certs/intermediate_ca.crt": _pem("CERTIFICATE", "SYNTHETIC-INT"),
     "config/ca.json": CA_JSON,
     "config/defaults.json": '{"ca-url": "https://localhost:9000"}\n',
     # step-ca 0.30.2 writes its keys as encrypted PEM; PKCS#8's encrypted form is accepted too.
-    "secrets/root_ca_key": _pem(EC_KEY, f"Proc-Type: 4,ENCRYPTED\nDEK-Info: AES-256-CBC,00\n\n{KEY_BODY}"),
-    "secrets/intermediate_ca_key": _pem(PKCS8_ENCRYPTED, "SYNTHETIC-INT-KEY-BODY"),
+    "secrets/root_ca_key": LEGACY_ENCRYPTED,
+    "secrets/intermediate_ca_key": _pem(PKCS8_ENCRYPTED, INT_KEY_BODY),
     "secrets/password": PASSWORD + "\n",
     "db/000000.vlog": "synthetic-db",
 }
 BACKED_UP = sorted(k for k in VOLUME if not k.startswith("db/") and k != "secrets/password")
-NEVER_PRINTED = (DEPLOY_KEY, KEY_BODY, PASSWORD, "synthetic-ca-json-marker", "SYNTHETIC-INT-KEY-BODY",
+NEVER_PRINTED = (DEPLOY_KEY, KEY_BODY[:64], PASSWORD, "synthetic-ca-json-marker", INT_KEY_BODY[:64],
+                 PLAIN_BODY[:64], "SYNTHETIC-ROOT",
                  base64.b64encode(VOLUME["secrets/root_ca_key"].encode()).decode()[:24])
 
 # The engine: `inspect` succeeds when the volume exists, `exec step-ca find|base64` reads it.
@@ -124,7 +136,7 @@ def _volume(tmp: Path, files: dict) -> Path:
     return vol
 
 
-def _run(tmp: Path, *, files=None, handler=Bao, ca_hosts=("ca",), check=False):
+def _run(tmp: Path, *, files=None, handler=Bao, ca_hosts=("ca",), check=False, diff=False):
     vol = _volume(tmp, VOLUME if files is None else files) if files != {} else tmp / "volume"
     engine, log = tmp / "fake-engine", tmp / "engine.log"
     engine.write_text(FAKE_ENGINE.format(python=sys.executable, vol=str(vol), log=str(log)))
@@ -138,7 +150,7 @@ def _run(tmp: Path, *, files=None, handler=Bao, ca_hosts=("ca",), check=False):
         (tmp / "inv.yml").write_text(yaml.safe_dump(inv))
         extra = {**seed_harness.ROLE, "site_config_repo": f"file://{bare}"}
         cmd = ["ansible-playbook", "-v", "-i", str(tmp / "inv.yml"), str(PLAYBOOK), "-e", json.dumps(extra),
-               *(["--check"] if check else [])]
+               *(["--check"] if check else []), *(["--diff"] if diff else [])]
         env = harness_sandbox.env_for(tmp, {k: v for k, v in os.environ.items() if not k.startswith("GIT_")})
         # Stock output, stricter than production's redact_requests callback (MISTAKES 4.6).
         env.update(ANSIBLE_STDOUT_CALLBACK="default")
@@ -184,8 +196,7 @@ def test_the_plaintext_password_file_is_never_read(tmp_path):
 
 
 @pytest.mark.parametrize("files,message", [
-    ({**VOLUME, "secrets/root_ca_key": _pem(EC_KEY, "PLAIN")},
-     "secrets/root_ca_key is not an encrypted key"),
+    ({**VOLUME, "secrets/root_ca_key": PLAINTEXT}, "secrets/root_ca_key is not one encrypted PEM"),
     ({k: v for k, v in VOLUME.items() if k != "config/ca.json"}, "missing: ['config/ca.json']"),
     ({k: v for k, v in VOLUME.items() if k != "secrets/intermediate_ca_key"},
      "missing: ['secrets/intermediate_ca_key']"),
@@ -196,6 +207,63 @@ def test_a_ca_that_cannot_be_backed_up_whole_is_refused_and_nothing_is_pushed(tm
     rc, out, bare, _calls = _run(tmp_path, files=files)
     assert rc != 0 and message in out, out
     assert _backup_branches(bare) == []
+
+
+# Each is a plaintext key that a "marker anywhere in the file" test would have passed, or a
+# file that is more than one encrypted key. The whole file is one encrypted key, or refused.
+REFUSED_KEYS = {
+    "plaintext-then-proc-type-line": PLAINTEXT + "Proc-Type: 4,ENCRYPTED\n",
+    "plaintext-then-encrypted-block": PLAINTEXT + _pem(PKCS8_ENCRYPTED, INT_KEY_BODY),
+    "encrypted-then-plaintext-block": LEGACY_ENCRYPTED + PLAINTEXT,
+    "two-encrypted-blocks": LEGACY_ENCRYPTED + LEGACY_ENCRYPTED,
+    "plaintext-pkcs8": _pem(PKCS8_PLAIN, PLAIN_BODY),
+    "plaintext-rsa": _pem(RSA_KEY, PLAIN_BODY),
+    "proc-type-inside-the-body": _pem(EC_KEY, PLAIN_BODY + "\nProc-Type: 4,ENCRYPTED"),
+    "text-before-the-block": "note\n" + LEGACY_ENCRYPTED,
+    "text-after-the-block": LEGACY_ENCRYPTED + "note\n",
+    "dek-info-missing": _pem(EC_KEY, "Proc-Type: 4,ENCRYPTED\n\n" + PLAIN_BODY),
+    "mismatched-end-label": LEGACY_ENCRYPTED.replace("END EC", "END RSA"),
+}
+
+
+@pytest.mark.parametrize("key", REFUSED_KEYS.values(), ids=REFUSED_KEYS.keys())
+def test_a_key_file_that_is_not_wholly_one_encrypted_key_is_refused(tmp_path, key):
+    rc, out, bare, _calls = _run(tmp_path, files={**VOLUME, "secrets/intermediate_ca_key": key})
+    assert rc != 0 and "secrets/intermediate_ca_key is not one encrypted PEM" in out, out
+    assert _backup_branches(bare) == []
+
+
+ACCEPTED_KEYS = {
+    "legacy-ec": LEGACY_ENCRYPTED,
+    "legacy-rsa": _pem(RSA_KEY, LEGACY_HEADERS + INT_KEY_BODY),
+    "pkcs8-encrypted": _pem(PKCS8_ENCRYPTED, INT_KEY_BODY),
+    "no-trailing-newline": LEGACY_ENCRYPTED.rstrip("\n"),
+}
+
+
+@pytest.mark.parametrize("key", ACCEPTED_KEYS.values(), ids=ACCEPTED_KEYS.keys())
+def test_every_encrypted_key_form_is_backed_up_byte_for_byte(tmp_path, key):
+    rc, out, bare, _calls = _run(tmp_path, files={**VOLUME, "secrets/intermediate_ca_key": key})
+    assert rc == 0, out
+    [branch] = _backup_branches(bare)
+    assert _read(bare, branch, "secrets/step-ca/volume/secrets/intermediate_ca_key") == key
+
+
+def test_a_diff_run_prints_no_file_content(tmp_path):
+    # _run already refuses every NEVER_PRINTED value; this run asks Ansible for diffs.
+    rc, out, bare, _calls = _run(tmp_path, diff=True)
+    assert rc == 0, out
+    assert "+++ after" in out, "diff mode never took effect, so this run proved nothing"
+    assert _backup_branches(bare)
+
+
+def test_every_content_write_disables_diff():
+    # ansible-core 2.21 already drops the diff of a no_log task, so the run above stays clean
+    # without this; `diff: false` is the standard (08-ansible-automation-standards.md) and does
+    # not depend on that release's callback behaviour.
+    writes = [t for t in playbook_yaml.tasks(playbook_yaml.load(PLAYBOOK))
+              if {"ansible.builtin.copy", "ansible.builtin.template"} & t.keys()]
+    assert writes and all(t.get("diff") is False for t in writes), [t.get("name") for t in writes]
 
 
 @pytest.mark.parametrize("kwargs,message", [

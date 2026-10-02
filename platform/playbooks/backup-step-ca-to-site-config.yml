@@ -26,8 +26,8 @@
 # store or the site-config deploy key is unusable (checked BEFORE the CA is read, so a run
 # that cannot push never pulls key material into memory); the container is absent; a
 # volume file name cannot be a plain path; the root or intermediate certificate or key, or
-# ca.json, is missing; or a key file is not encrypted (the site-config copy of a plaintext
-# key would be the CA itself).
+# ca.json, is missing; or a key file is anything but one encrypted PEM key and nothing else
+# (the site-config copy of a plaintext key would be the CA itself).
 #
 # HOW IT REACHES SITE-CONFIG — exactly as backup-credentials-to-site-config.yml:
 # tasks/site-config-clone.yml + tasks/site-config-push.yml, the deploy key read from
@@ -127,6 +127,21 @@
       - config/ca.json
       - secrets/intermediate_ca_key
       - secrets/root_ca_key
+    # A key file is backed up only when the WHOLE file is one encrypted PEM key and nothing
+    # else — a marker found anywhere proves nothing, because a plaintext key with an
+    # encrypted-looking line or block appended would pass a substring test. Accepted:
+    #   - legacy encrypted PEM, what step-ca 0.30.2 writes: an EC or RSA key block whose
+    #     first headers are `Proc-Type: 4,ENCRYPTED` and `DEK-Info: <cipher>,<hex iv>`;
+    #   - PKCS#8 encrypted, whose label itself says so.
+    # Then base64 lines, the matching END line, at most one trailing newline. Anything
+    # else — a plaintext key of any label, a second block, text around the block — fails.
+    # Joined from parts so no complete key header sits in this file (the commit hooks
+    # refuse one). YAML single quotes, not Jinja string literals, so every backslash
+    # reaches the regex engine as written.
+    _ca_encrypted_key_parts:
+      - '\A-----BEGIN (?:(EC|RSA) PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\n'
+      - 'DEK-Info: [A-Z0-9-]+,[0-9A-Fa-f]+\n\n|(ENCRYPTED) PRIVATE KEY-----\n)'
+      - '(?:[A-Za-z0-9+/]+={0,2}\n)+-----END (?:\1|\2) PRIVATE KEY-----\n?\Z'
 
   tasks:
     # `inspect --type container` works on podman and docker alike.
@@ -216,14 +231,15 @@
       no_log: true
 
     - name: "Find any key that is not encrypted"
-      # step-ca writes its keys as encrypted PEM (`Proc-Type: 4,ENCRYPTED`); PKCS#8's
-      # encrypted form is accepted too. Only the NAMES of offenders leave this task.
+      # The whole decoded file must match _ca_encrypted_key_parts (vars, above). Only the
+      # NAMES of offenders leave this task.
       ansible.builtin.set_fact:
         _ca_plain_keys: >-
           {%- set bad = [] -%}
+          {%- set form = _ca_encrypted_key_parts | join -%}
           {%- for r in _ca_reads.results if r.item is match('^secrets/') -%}
             {%- set t = r.stdout | b64decode -%}
-            {%- if 'Proc-Type: 4,ENCRYPTED' not in t and 'ENCRYPTED PRIVATE KEY-----' not in t -%}
+            {%- if t is not match(form) -%}
               {%- set _ = bad.append(r.item) -%}
             {%- endif -%}
           {%- endfor -%}
@@ -234,8 +250,9 @@
       ansible.builtin.assert:
         that: _ca_plain_keys | length == 0
         fail_msg: >-
-          {{ inventory_hostname }}: {{ _ca_plain_keys | join(', ') }} is not an encrypted key;
-          a copy of it in site-config would be the CA itself. Nothing was written.
+          {{ inventory_hostname }}: {{ _ca_plain_keys | join(', ') }} is not one encrypted PEM
+          key and nothing else; a plaintext key in site-config would be the CA itself. Nothing
+          was written.
         quiet: true
 
 - name: "Write the CA material into site-config on a new branch"
@@ -289,6 +306,8 @@
           loop_control:
             index_var: _i
           no_log: true
+          # --diff would print the content no_log hides (08-ansible-automation-standards.md).
+          diff: false
 
         - name: "Commit and push"
           ansible.builtin.include_tasks: tasks/site-config-push.yml
