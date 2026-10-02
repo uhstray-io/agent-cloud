@@ -212,15 +212,10 @@ jobs:
 
       - name: Install test dependencies
         run: |
-          # pyyaml: the Caddy playbook-structure suite asserts against the PARSED
-          # playbook rather than its text, so it needs a yaml parser. It was absent
-          # here and present in the author's virtualenv, which is exactly how an
-          # undeclared dependency passes locally and fails on a clean runner.
-          # ansible-core: execute the Tududi provisioning safety suite against
-          # disposable HTTP fixtures; a skipped runner cannot prove rollback.
-          # pytest-xdist: runs the suite across the runner's cores (see the run step).
-          # Pinned because `--dist worksteal` is its interface, not pytest's.
-          pip install pytest pyyaml netboxlabs-diode-sdk proxmoxer requests ansible-core pytest-xdist==3.8.0
+          # The one declaration of the suites' dependencies, each with its reason,
+          # including the pytest-xdist pin the run step's flags rely on. The pre-push
+          # hook reads the same file, so CI and a local push agree on the version.
+          pip install -r platform/requirements-test.txt
           # cryptography: the BATS suite signs a real App assertion with a throwaway key
           # and verifies it, which is the only check that the credential chain's signing
           # is correct rather than merely well-formed. Declared for the orchestrator in
@@ -256,7 +251,7 @@ jobs:
 
       - name: Install test dependencies
         run: |
-          pip install pytest pyyaml netboxlabs-diode-sdk proxmoxer requests ansible-core
+          pip install -r platform/requirements-test.txt
           pip install -r platform/requirements-controller.txt
 
       - name: Run NetBox Python tests
@@ -276,7 +271,7 @@ jobs:
 
       - name: Install test dependencies
         run: |
-          pip install pytest pyyaml netboxlabs-diode-sdk proxmoxer requests ansible-core
+          pip install -r platform/requirements-test.txt
           pip install -r platform/requirements-controller.txt
 
       - name: Install BATS

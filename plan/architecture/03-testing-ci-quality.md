@@ -694,7 +694,8 @@ graph TD
 #### Python core runs in parallel (2026-10-02)
 
 The `Python core` job runs pytest with `-n auto --dist worksteal` (pytest-xdist, pinned
-in the job's install step). Serially, the suite had grown to 12–20 minutes on CI, against
+in `platform/requirements-test.txt`, the one test-dependency manifest every CI test job
+installs). Serially, the suite had grown to 12–20 minutes on CI, against
 a 20-minute job cap. Green runs reached 19.9 minutes, and run 37048305528 was cancelled
 at 20m5s. Most of that time is ansible-playbook subprocesses, which are independent, so
 spreading them across cores fixes the cause. Raising the cap only would have moved the
@@ -713,7 +714,14 @@ body before replying.
 
 The pre-push hook adds the same flags only when pytest-xdist is importable, and runs
 serially otherwise. That keeps it fail-open, and the test selection is unchanged either
-way.
+way. When it runs serially, the hook names the manifest to install. It warns when the
+installed version differs from the pin, which it reads from the manifest.
+
+The parallel run also exposed a reserve-then-close port race in the OpenBao policy test.
+It picked a free port, closed it, and only then started `bao` on it. The dev server
+cannot bind port 0 usefully: it then reports its address as `:0`, and it also binds
+port+1 for its cluster listener. So the helper retries on a fresh port when the server
+exits before answering.
 
 ### 5b. Recommended Additions
 
@@ -1070,7 +1078,7 @@ Tests use `@pytest.mark.parametrize` for composability — each function covers 
 | `test_proxmox_helpers.py` | `_int`, `_mb_to_gb`, `_bytes_to_gb`, `_should_skip_iface`, `_iface_type`, `_prefix_len`, `_sanitize_description`, `_pick_primary_ipv4` | 66 |
 | `test_pfsense_helpers.py` | `_is_valid_ip` | 13 |
 
-**Requires:** Python 3.11+ and `pip install netboxlabs-diode-sdk proxmoxer requests pytest`.
+**Requires:** Python 3.11+ and `pip install -r platform/requirements-test.txt`.
 
 The `conftest.py` stubs the orb-agent runtime modules (`worker.backend`, `worker.models`) that aren't pip-installable. The real Diode SDK is installed for entity constructor validation.
 
