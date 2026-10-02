@@ -18,9 +18,12 @@
 # HEURISTIC — what counts as a window, on an executable line (comment lines are
 # skipped, so explaining the hazard is never punished — 2.8):
 #   grep with -A/-B/-C N (any spelling: -A3, -A 3, -nA3, --after-context=3)
-#   sed -n with a numeric range 'N,Mp', a relative range ',+N' / ',~N',
-#     or a single numeric line 'Np' other than line 1
-#   head / tail with a line count N > 1 (-n N, -N, --lines=N)
+#   sed in quiet mode (-n, -En, -n -E, --quiet) with a numeric range 'N,Mp'
+#     (spaces allowed: '3,9 p'), a relative range ',+N' / ',~N', or a single
+#     numeric line 'Np' other than line 1
+#   head / tail with a line count N > 1 (-n N, -N, --lines=N, --lines N)
+# A backslash-continued command is joined before scanning and reported by its
+# first physical line, so `grep -F x \` + `-A3 f` on the next line is still seen.
 # Not windows, and deliberately exempt:
 #   head/tail -1 (and -n 1): the first or last line/match is a position, not a width
 #     (shebang checks, `grep -n X | head -1 | cut -d: -f1` ordering checks)
@@ -29,7 +32,10 @@
 #   tail -n +N: "everything after line N" has no fixed width
 #   sed ranges whose bounds are not both literal numbers ("1,${stop_line}p",
 #     '/start/,/end/p'): they are located by an anchor, which is the fix shape
-#   any line whose output goes to stderr (>&2): a diagnostic, not an assertion subject
+#   a window whose OWN pipeline stage goes to stderr (`grep -A3 x f >&2`): a
+#     diagnostic, not an assertion subject. Commands are split on ; && || and
+#     stages on |, quote-aware, so `grep -A3 x f | grep -q y || echo no >&2` is
+#     still flagged — that `>&2` belongs to a different command.
 # Every other use counts as an assertion subject: a test file's executable lines
 # exist to assert, and a window captured into a variable or a pipe is asserted on.
 #
@@ -57,45 +63,105 @@ import collections, glob, os, re, sys
 
 mode, root, ratchet, self_name = sys.argv[1:5]
 
+# grep -A/-B/-C N in any spelling: -A3, -A 3, -nA3, --after-context=3, --context 3.
 CTX_GREP = re.compile(
-    r'\bgrep\b[^|;]*?(?:\s-[a-zA-Z]*[ABC]\s*\d|\s--(?:after-|before-)?context[= ]\s*\d)')
-SED_RANGE = re.compile(r'\bsed\b[^|;]*?\s-n\s*[\'"]?(?:\d+,\d+p|[^|;\'"]*,[+~]\d+)')
-SED_SINGLE = re.compile(r'\bsed\b[^|;]*?\s-n\s*[\'"]?(\d+)p')
-COUNT = re.compile(r'(?:^|[\s($])(?:head|tail)\s+(?:-n\s*|--lines=|-)(\d+)\b')
+    r'\bgrep\b.*?(?:\s-[a-zA-Z]*[ABC]\s*\d|\s--(?:after-|before-)?context(?:=|\s+)\d)')
+# sed in quiet mode (-n, -En, -nE, -n -E, --quiet, --silent), then the address,
+# allowing other option tokens (-e, -E) before it and spaces inside it.
+_SED_Q = (r'\bsed\b.*?\s(?:-[a-zA-Z]*n[a-zA-Z]*|--quiet|--silent)'
+          r'(?:\s+-[a-zA-Z-]+)*\s*[\'"]?')
+SED_RANGE = re.compile(_SED_Q + r'(?:\d+\s*,\s*\d+\s*p|[^\'"]*?,\s*[+~]\s*\d+)')
+SED_SINGLE = re.compile(_SED_Q + r'(\d+)\s*p')
+# head/tail with a line count: -n N, -nN, -N, --lines=N, --lines N (other flags first ok).
+# `+N` (tail -n +2) never matches: no digit follows the flag directly.
+COUNT = re.compile(r'(?:^|[\s($])(?:head|tail)(?:\s+-[a-mo-zA-Z]+)*\s+'
+                   r'(?:-n\s*|--lines(?:=|\s+)|-)(\d+)\b')
 MATCH_GREP = re.compile(r'(?:^|[\s($])grep\s')
-PIPE = re.compile(r'(?<!\|)\|(?!\|)')
+
+
+def split_commands(s):
+    """Quote-aware split into commands (on ;, &&, ||) of pipe stages (on |).
+    A quoted string is opaque, so `run bash -c "a | b"` is one stage."""
+    cmds, stages, cur, q, i = [], [], [], None, 0
+    while i < len(s):
+        c = s[i]
+        if q:
+            cur.append(c)
+            if c == '\\' and q == '"' and i + 1 < len(s):
+                cur.append(s[i + 1]); i += 1
+            elif c == q:
+                q = None
+        elif c == '\\' and i + 1 < len(s):
+            cur.append(c); cur.append(s[i + 1]); i += 1
+        elif c in '\'"':
+            q = c; cur.append(c)
+        elif s.startswith('||', i) or s.startswith('&&', i) or c == ';':
+            stages.append(''.join(cur)); cmds.append(stages); stages, cur = [], []
+            i += 1 if c == ';' else 2
+            continue
+        elif c == '|':
+            stages.append(''.join(cur)); cur = []
+        else:
+            cur.append(c)
+        i += 1
+    stages.append(''.join(cur)); cmds.append(stages)
+    return cmds
+
+
+def stage_is_window(stages, i):
+    st = stages[i]
+    if CTX_GREP.search(st) or SED_RANGE.search(st):
+        return True
+    m = SED_SINGLE.search(st)
+    if m and int(m.group(1)) > 1:
+        return True
+    m = COUNT.search(st)
+    if m and int(m.group(1)) > 1:
+        reads_pipe = i > 0 and re.match(r'\s*(?:head|tail)\s', st)
+        prev = stages[i - 1] if i > 0 else ''
+        if reads_pipe and MATCH_GREP.search(prev) and not CTX_GREP.search(prev):
+            return False  # first/last N matches, not N lines of a file
+        return True
+    return False
 
 
 def is_window(line):
-    if '>&2' in line:
-        return False
-    if CTX_GREP.search(line) or SED_RANGE.search(line):
-        return True
-    m = SED_SINGLE.search(line)
-    if m and int(m.group(1)) > 1:
-        return True
-    segs = PIPE.split(line)
-    for i, seg in enumerate(segs):
-        m = COUNT.search(seg)
-        if not m or int(m.group(1)) <= 1:
-            continue
-        reads_pipe = i > 0 and re.match(r'\s*(?:head|tail)\s', seg)
-        if reads_pipe and MATCH_GREP.search(segs[i - 1]) and not CTX_GREP.search(segs[i - 1]):
-            continue  # first/last N matches, not N lines of a file
-        return True
+    for stages in split_commands(line):
+        for i, st in enumerate(stages):
+            # Exempt only when the WINDOW'S OWN stage writes to stderr: a
+            # `>&2` elsewhere on the line (`... || echo failed >&2`) is not it.
+            if stage_is_window(stages, i) and '>&2' not in st:
+                return True
     return False
+
+
+def logical_lines(path):
+    """Yield (first physical line, joined text). A backslash-continued command
+    is scanned as one, and reported by its first line so ratchet keys are stable."""
+    with open(path, encoding='utf-8') as fh:
+        lines = fh.read().split('\n')
+    i = 0
+    while i < len(lines):
+        first = lines[i].strip()
+        text = first
+        if not first.startswith('#'):
+            while text.endswith('\\') and (len(text) - len(text.rstrip('\\'))) % 2 == 1 \
+                    and i + 1 < len(lines):
+                i += 1
+                text = text[:-1] + ' ' + lines[i].strip()
+        i += 1
+        yield first, text
 
 
 found = []
 files = sorted(glob.glob(os.path.join(root, '*.bats')) + glob.glob(os.path.join(root, '*.bash')))
 files = [f for f in files if os.path.basename(f) != self_name]
 for f in files:
-    for raw in open(f, encoding='utf-8'):
-        line = raw.strip()
-        if not line or line.startswith('#'):
+    for first, text in logical_lines(f):
+        if not first or first.startswith('#'):
             continue
-        if is_window(line):
-            found.append(f'{os.path.basename(f)}: {line}')
+        if is_window(text):
+            found.append(f'{os.path.basename(f)}: {first}')
 found.sort()
 
 if mode == 'list':
@@ -155,12 +221,21 @@ _fixture_dir() {
     "  head -n 5 \"\$f\" | grep -q y" \
     "  head -20 \"\$f\" | grep -q y" \
     "  sed -n '/a/,/b/p' f | head -5 | grep -q y" \
-    "  tail -3 log | grep -q y")
+    "  tail -3 log | grep -q y" \
+    "  sed -En '3,9p' \"\$f\" | grep -q y" \
+    "  sed -n '3,9 p' \"\$f\" | grep -q y" \
+    "  sed -n -E '/x/,+4p' \"\$f\" | grep -q y" \
+    "  head --lines 5 \"\$f\" | grep -q y" \
+    "  head --lines=5 \"\$f\" | grep -q y" \
+    "  tail --lines 4 log | grep -q y" \
+    "  grep -A3 x f | grep -q y || echo failed >&2" \
+    "  grep -F 'x' \"\$f\" \\" \
+    "    -A3 | grep -q y")
   run _line_windows list "$d"
   [ "$status" -eq 0 ]
   local n
   n=$(printf '%s\n' "$output" | grep -c '^test_fixture.bats: ')
-  [ "$n" -eq 13 ] || { printf '%s\n' "$output" >&2; return 1; }
+  [ "$n" -eq 21 ] || { printf '%s\n' "$output" >&2; return 1; }
 }
 
 @test "the scanner leaves positions, anchored ranges, comments and diagnostics alone" {
@@ -178,7 +253,10 @@ _fixture_dir() {
     "  tail -n +2 \"\$f\" | grep -q y" \
     "  grep -A3 'x' \"\$f\" >&2" \
     "  head -c 2 \"\$f\"" \
-    "  grep -qE 'a|b' \"\$f\"")
+    "  grep -qE 'a|b' \"\$f\"" \
+    "  grep -n 'x' \"\$f\" \\" \
+    "    | head -1 | cut -d: -f1" \
+    "  run bash -c \"grep -n x '\$f' | head -1\"")
   run _line_windows list "$d"
   [ "$status" -eq 0 ]
   refute_contains "$output" 'test_fixture.bats: '
