@@ -170,14 +170,25 @@ def test_the_file_the_container_was_created_from_is_the_one_edited_and_recreated
     assert f"compose -f {cdir}/docker-compose.yml up" in (tmp_path / "calls").read_text()
 
 
+
+@pytest.mark.parametrize("label", ["compose.yml", "./compose.yml"])
+def test_a_relative_compose_file_label_is_resolved_against_the_working_directory(tmp_path, label):
+    # Review of b1ee8d50: Python podman-compose keeps the -f argument as given.
+    cdir = _setup(tmp_path, config_files=label)
+    r = _run(tmp_path)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "/etc/caddy/certs:ro" in (cdir / "compose.yml").read_text()
+    assert f"compose -f {cdir}/compose.yml up" in (tmp_path / "calls").read_text()
+
 def test_without_a_compose_file_label_compose_yml_is_assumed_and_said(tmp_path):
     _setup(tmp_path, config_files="")
     r = _run(tmp_path, check=True)
     assert r.returncode == 0 and "(no compose file label; assumed)" in r.stdout, r.stdout
 
 
-@pytest.mark.parametrize("files", ["/opt/other/compose.yml", "{d}/compose.yml,{d}/override.yml"],
-                         ids=["elsewhere", "two-files"])
+@pytest.mark.parametrize("files", ["/opt/other/compose.yml", "{d}/compose.yml,{d}/override.yml",
+                                   "../other/compose.yml"],
+                         ids=["elsewhere", "two-files", "relative-elsewhere"])
 def test_a_container_from_another_or_more_than_one_file_is_refused(tmp_path, files):
     cdir = _setup(tmp_path)
     s = json.loads((tmp_path / "state.json").read_text())

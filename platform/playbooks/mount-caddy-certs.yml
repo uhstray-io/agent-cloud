@@ -31,7 +31,12 @@
     _container: "{{ caddy_container | default('caddy') }}"
     _compose_dir: "{{ caddy_compose_dir }}"
     # The file the running container was created from (its compose label), else compose.yml.
-    _compose_file: "{{ _live.config_files if (_live.config_files | length > 0) else (_compose_dir ~ '/compose.yml') }}"
+    # Python podman-compose records the -f argument as given, so a relative label is resolved
+    # against the container's working directory (platform/lib/common.sh passes -f compose.yml).
+    _label_file: "{{ _live.config_files | regex_replace('^\\./', '') }}"
+    _compose_file: >-
+      {{ (_compose_dir ~ '/compose.yml') if (_label_file | length == 0)
+         else (_label_file if (_label_file is match('^/')) else (_live.working_dir ~ '/' ~ _label_file)) }}
     _up: "{{ _engine }} compose -f {{ _compose_file | quote }} up -d --force-recreate"
     _certs_src: "{{ caddy_certs_dir | default(_compose_dir ~ '/certs') }}"
     _certs_dst: /etc/caddy/certs
@@ -76,7 +81,8 @@
           # One file, in the declared directory: an override file or a file elsewhere is
           # not something this play can edit safely.
           - "',' not in _live.config_files"
-          - (_live.config_files | length == 0) or (_live.config_files | dirname) == _compose_dir
+          - (_compose_file | dirname) == _compose_dir
+          - "'/../' not in _compose_file and '/./' not in _compose_file"
         fail_msg: >-
           {{ inventory_hostname }}: container {{ _container }} was started from
           '{{ _live.working_dir }}' (service '{{ _live.service }}', files
@@ -125,7 +131,9 @@
       register: _compose_stat
 
     # Write, recreate and both checks share one rollback: a check failing after the recreate
-    # restores the previous file too. Nothing is restored or recreated unless this run wrote.
+    # restores the previous file too. Whether to restore is decided by the file's bytes, not by
+    # which task got as far as registering: the copy module can replace the file and then fail
+    # on its attributes (review of b1ee8d50). Caddy is recreated only if it ran the new file.
     - name: "Apply and verify the mount"
       block:
         - name: "Write the compose file, keeping a backup"
@@ -181,13 +189,18 @@
           # Under --check a mount this run would add is not on the container yet (MISTAKES 10.18).
           when: not (ansible_check_mode and _plan.changed)
       rescue:
-        - name: "Restore the previous compose file"
+        - name: "Read the compose file as it is now"
+          ansible.builtin.slurp:
+            src: "{{ _compose_file }}"
+          register: _compose_now
+          failed_when: false
+
+        - name: "Put back the compose file's original bytes"
           ansible.builtin.copy:
-            src: "{{ _written.backup_file }}"
             dest: "{{ _compose_file }}"
-            remote_src: true
+            content: "{{ _compose_raw.content | b64decode }}"
             mode: "{{ _compose_stat.stat.mode }}"
-          when: _wrote | default(false) | bool and _written.backup_file is defined
+          when: not ansible_check_mode and (_compose_now.content | default('')) != _compose_raw.content
 
         - name: "Recreate Caddy from the previous compose file"
           ansible.builtin.command: "{{ _up }}"
@@ -201,4 +214,7 @@
             msg: >-
               '{{ ansible_failed_task.name }}' failed.
               {{ 'The previous compose file is restored and Caddy recreated from it.'
-                 if (_wrote | default(false) | bool) else 'Nothing was changed by this run.' }}
+                 if (_wrote | default(false) | bool)
+                 else ('The previous compose file is restored.'
+                       if ((_compose_now.content | default('')) != _compose_raw.content)
+                       else 'Nothing was changed by this run.') }}
