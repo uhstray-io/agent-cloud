@@ -5,10 +5,12 @@
 # streams alone.
 #
 # deploy.sh runs for real against a stub container engine and a stub compose provider. The
-# stubs keep one container's state in files (exists, running, its inputs label, its image)
-# and the compose stub plays `up -d --force-recreate`: it records the label carried by the
-# generated overlay, the way a real recreate starts a container with it, and the recreated
-# stub container answers readiness.
+# stubs keep the gateway's state in files (exists, running, its inputs label, its image) and
+# the db's image, and list both containers only for the project's working-directory label.
+# The compose stub plays `up -d --force-recreate`: it records the label carried by the
+# generated overlay, the way a real recreate starts a container with it, moves BOTH
+# containers to the image their tag names now, and the recreated stub container answers
+# readiness.
 # Run: bats platform/tests/test_agw_change_aware_deploy.bats
 
 load assert_helpers
@@ -30,17 +32,33 @@ setup() {
   printf '#!/usr/bin/env bash\necho 192.0.2.7\n' > "$D/gateway-addr.sh"
   chmod +x "$D/gateway-addr.sh" "$D/deploy.sh"
   echo img-1 > "$S/image_now"
+  echo db-1 > "$S/db_image_now"; echo db-1 > "$S/db_image_run"
   echo 0 > "$S/recreates"
 
   cat > "$T/bin/engine" <<'STUB'
 #!/usr/bin/env bash
 S="$STUB_STATE"
-if [ "$1" = image ] && [ "$2" = inspect ]; then cat "$S/image_now"; exit 0; fi
+if [ "$1" = image ] && [ "$2" = inspect ]; then
+  case "${!#}" in *postgres*) cat "$S/db_image_now" ;; *) cat "$S/image_now" ;; esac; exit 0
+fi
 if [ "$1" = exec ]; then [ -f "$S/not_ready" ] && exit 1; exit 0; fi
+if [ "$1" = ps ]; then
+  # Only the project's own selector lists anything.
+  [ "$*" = "ps -a --filter label=com.docker.compose.project.working_dir=$STUB_DIR --format {{.Names}}" ] || exit 0
+  [ -f "$S/exists" ] && echo agentgateway
+  echo agentgateway-db; exit 0
+fi
 if [ "$1" = inspect ]; then
   # Both spellings: deploy.sh passes `--format FMT`, common.sh `--format=FMT`.
   if [ "$2" = --format ]; then fmt="$3" name="$4"; else fmt="${2#--format=}" name="$3"; fi
-  if [ "$name" = agentgateway-db ]; then echo healthy; exit 0; fi
+  if [ "$name" = agentgateway-db ]; then
+    case "$fmt" in
+      *Config.Image*) echo docker.example/library/postgres:16-alpine ;;
+      *'.Image}}'*) cat "$S/db_image_run" ;;
+      *) echo healthy ;;
+    esac
+    exit 0
+  fi
   [ -f "$S/exists" ] || exit 1
   case "$fmt" in
     *State.Running*) cat "$S/running" ;;
@@ -67,14 +85,14 @@ done
 case " $* " in *" --force-recreate "*) ;; *) exit 0 ;; esac
 [ -n "$overlay" ] || { echo "recreate without the label overlay" >&2; exit 1; }
 sed -n 's/^ *io\.agent-cloud\.inputs-sha256: "\(.*\)"$/\1/p' "$overlay" > "$S/label"
-touch "$S/exists"; echo true > "$S/running"; cp "$S/image_now" "$S/image_run"; rm -f "$S/not_ready"
+touch "$S/exists"; echo true > "$S/running"; cp "$S/image_now" "$S/image_run"; cp "$S/db_image_now" "$S/db_image_run"; rm -f "$S/not_ready"
 echo $(( $(cat "$S/recreates") + 1 )) > "$S/recreates"
 STUB
   chmod +x "$T/bin/engine" "$T/bin/compose"
 }
 
 deploy() {
-  run env STUB_STATE="$S" CONTAINER_ENGINE="$T/bin/engine" COMPOSE_CMD="$T/bin/compose" \
+  run env STUB_STATE="$S" STUB_DIR="${STUB_DIR:-$D}" CONTAINER_ENGINE="$T/bin/engine" COMPOSE_CMD="$T/bin/compose" \
     LOCAL_MODE="" COMPOSE_OVERLAYS="${OVERLAYS:-}" "$D/deploy.sh" --no-pull
 }
 
@@ -138,13 +156,34 @@ last() { printf '%s' "${lines[${#lines[@]}-1]}"; }
 @test "agw change-aware: a re-pulled image, a stopped container, or no readiness recreates" {
   deploy; [ "$status" -eq 0 ]
   echo img-2 > "$S/image_now"
-  deploy; [ "$(last)" = "deploy-result: recreated (image changed)" ]
+  deploy; [ "$(last)" = "deploy-result: recreated (image changed: agentgateway)" ]
   echo false > "$S/running"
   deploy; [ "$(last)" = "deploy-result: recreated (gateway container not running)" ]
   # A gateway left by a recreate that never became ready: same label, still not converged.
   touch "$S/not_ready"
   deploy; [ "$(last)" = "deploy-result: recreated (readiness not answering)" ]
   [ "$(recreates)" -eq 4 ]
+}
+
+@test "agw change-aware: a moved db image tag recreates, naming the db container" {
+  deploy; [ "$status" -eq 0 ]
+  # postgres:16-alpine is a mutable tag: a pull can move it while every input file is the same.
+  echo db-2 > "$S/db_image_now"
+  deploy
+  [ "$status" -eq 0 ]
+  [ "$(last)" = "deploy-result: recreated (image changed: agentgateway-db)" ]
+  [ "$(recreates)" -eq 2 ]
+  [ "$(cat "$S/db_image_run")" = db-2 ]
+  deploy
+  [ "$(last)" = "deploy-result: unchanged" ]
+}
+
+@test "agw change-aware: a container listing that misses the gateway recreates instead of matching" {
+  deploy; [ "$status" -eq 0 ]
+  # The stub lists nothing for any other selector; an empty comparison must not pass.
+  STUB_DIR=/elsewhere deploy
+  [ "$status" -eq 0 ]
+  [ "$(last)" = "deploy-result: recreated (project containers not listed)" ]
 }
 
 @test "agw change-aware: a container from before this change (no label) recreates once" {
@@ -179,6 +218,30 @@ last() { printf '%s' "${lines[${#lines[@]}-1]}"; }
   [ "$status" -ne 0 ]
   assert_contains "$output" "Cannot read .env"
   [ "$(recreates)" -eq 0 ]
+}
+
+@test "agw change-aware: an unreadable certificate fails the deploy naming it" {
+  [ "$(id -u)" -ne 0 ] || skip "root reads a 0000 file"
+  deploy; [ "$status" -eq 0 ]
+  chmod 000 "$D/certs/agw-server/serial-1/cert.pem"
+  deploy
+  chmod 644 "$D/certs/agw-server/serial-1/cert.pem"
+  [ "$status" -ne 0 ]
+  assert_contains "$output" "Cannot read certs/agw-server/"
+  assert_contains "$output" "cert.pem to hash"
+  [ "$(recreates)" -eq 1 ]
+}
+
+@test "agw change-aware: a certs listing that fails fails the deploy instead of hashing part of it" {
+  [ "$(id -u)" -ne 0 ] || skip "root lists a 0000 directory"
+  deploy; [ "$status" -eq 0 ]
+  # find cannot enter the leaf directory, so it lists nothing under it and exits non-zero.
+  chmod 000 "$D/certs/agw-server/serial-1"
+  deploy
+  chmod 755 "$D/certs/agw-server/serial-1"
+  [ "$status" -ne 0 ]
+  assert_contains "$output" "Cannot read certs: listing its files failed"
+  [ "$(recreates)" -eq 1 ]
 }
 
 @test "agw change-aware: the deploy task's changed status comes from deploy.sh's result line" {

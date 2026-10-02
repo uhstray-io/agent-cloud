@@ -19,8 +19,10 @@ base, `compose.local.yml` in local-dev, every `COMPOSE_OVERLAYS` entry such as
 `compose.tls.yml`) and every file under `./certs`, and compares that digest with the
 `io.agent-cloud.inputs-sha256` label the running container was started with. It recreates
 both containers (`up -d --force-recreate`) when the digest differs, when no gateway
-container exists or it is stopped, when the image tag now names a different image than the
-one running, or when readiness does not answer; otherwise it runs no `compose up` at all.
+container exists or it is stopped, when any of the project's containers (the gateway and its
+Postgres, both on tags a pull can move) runs a different image than its tag now names, or when
+readiness does not answer; otherwise it runs no `compose up` at all. An input it cannot list
+or read fails the deploy by name rather than hashing what happened to be readable.
 The label, not this run's render, is the record, so a run that fails after rendering is
 converged by the next one. The last output line is `deploy-result: recreated (<reason>)` or
 `deploy-result: unchanged`, and the playbook reports a change only for the first.

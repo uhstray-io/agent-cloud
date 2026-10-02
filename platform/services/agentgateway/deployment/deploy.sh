@@ -19,8 +19,8 @@
 # stream, and scheduled or imported runs call this deploy, so the gateway is recreated only
 # when what it runs on differs from what it started with. The running container carries a
 # label with the sha256 of its inputs (config.yaml, .env, the compose files in use, ./certs);
-# a run whose inputs hash to the same value, on the image the container already runs, with
-# readiness answering, leaves both containers alone. The label, not this run's render, is
+# a run whose inputs hash to the same value, with every project container on the image its tag
+# names now, with readiness answering, leaves both containers alone. The label, not this run's render, is
 # the record: a run that fails after rendering leaves the old label, so the next run still
 # sees the difference and recreates.
 #
@@ -80,22 +80,37 @@ _compose_files() {
 # inputs_digest: one sha256 over every file the gateway's container is built from or reads.
 # ./certs is mounted as a directory and a renewal swaps `current/` (a symlink), so every
 # file reachable under it is hashed by path. Only digests are combined; no content is printed.
+# Every listing and every per-file digest is checked: a failure inside a process substitution
+# or a command substitution passed as an argument is invisible to `set -e`/pipefail, and a
+# digest over the files that happened to be readable is a guess, not a comparison.
 inputs_digest() {
-  local f files=()
+  local f listing digest combined="" files=()
   files+=(.env config.yaml)
   while IFS= read -r f; do files+=("$f"); done < <(_compose_files)
   if [ -d certs ]; then
-    while IFS= read -r f; do files+=("$f"); done < <(find -L certs -type f | LC_ALL=C sort)
+    listing=$(find -L certs -type f) \
+      || error "Cannot read certs: listing its files failed; refusing to guess whether the gateway's inputs changed."
+    listing=$(printf '%s\n' "$listing" | LC_ALL=C sort)
+    while IFS= read -r f; do if [ -n "$f" ]; then files+=("$f"); fi; done <<< "$listing"
   fi
   for f in "${files[@]}"; do
-    [ -r "$f" ] || error "Cannot read ${f} to hash the gateway's inputs; refusing to guess whether it changed."
+    if ! digest=$(_sha256 < "$f") || [ -z "$digest" ]; then
+      error "Cannot read ${f} to hash the gateway's inputs; refusing to guess whether it changed."
+    fi
+    combined+="${digest}  ${f}"$'\n'
   done
-  for f in "${files[@]}"; do
-    printf '%s  %s\n' "$(_sha256 < "$f")" "$f"
-  done | _sha256
+  printf '%s' "$combined" | _sha256
 }
 
 _inspect() { $CONTAINER_ENGINE inspect --format "$1" agentgateway 2>/dev/null; }
+
+# Every container this compose project created (stopped ones too), by the compose working-
+# directory label: the same selector tasks/list-service-containers.yml uses, so the list is
+# derived from the project rather than written down here.
+_project_containers() {
+  $CONTAINER_ENGINE ps -a --filter "label=com.docker.compose.project.working_dir=${SCRIPT_DIR}" \
+    --format '{{.Names}}' 2>/dev/null
+}
 
 # One readiness probe, the same one step_wait_ready repeats.
 _ready_once() {
@@ -110,17 +125,31 @@ step_decide() {
   info "Step 3: Comparing the rendered inputs with the running gateway..."
   WANT_DIGEST=$(inputs_digest)
   RECREATE_REASON=""
-  local running have ref image_now image_run
+  local running have names name ref image_now image_run
   running=$(_inspect '{{.State.Running}}') || running=""
   if [ -z "$running" ]; then RECREATE_REASON="no gateway container"; return 0; fi
   if [ "$running" != "true" ]; then RECREATE_REASON="gateway container not running"; return 0; fi
   have=$(_inspect "{{ index .Config.Labels \"${INPUTS_LABEL}\" }}") || have=""
   if [ "$have" != "$WANT_DIGEST" ]; then RECREATE_REASON="inputs changed"; return 0; fi
-  # A re-pulled tag moves to a new image without changing any input file.
-  ref=$(_inspect '{{.Config.Image}}') || ref=""
-  image_run=$(_inspect '{{.Image}}') || image_run=""
-  image_now=$($CONTAINER_ENGINE image inspect --format '{{.Id}}' "$ref" 2>/dev/null) || image_now=""
-  if [ -z "$image_now" ] || [ "$image_now" != "$image_run" ]; then RECREATE_REASON="image changed"; return 0; fi
+  # A re-pulled tag moves to a new image without changing any input file, for EVERY service:
+  # agentgateway-db runs a mutable tag too, so comparing only the gateway would leave the db on
+  # the old image and report unchanged. `up -d --force-recreate` recreates the whole project.
+  names=$(_project_containers) || names=""
+  # The gateway is known to exist and run by now; a listing without it means the selector
+  # did not match, and an empty comparison is not a match.
+  case $'\n'"${names}"$'\n' in
+    *$'\n'agentgateway$'\n'*) ;;
+    *) RECREATE_REASON="project containers not listed"; return 0 ;;
+  esac
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    ref=$($CONTAINER_ENGINE inspect --format '{{.Config.Image}}' "$name" 2>/dev/null) || ref=""
+    image_run=$($CONTAINER_ENGINE inspect --format '{{.Image}}' "$name" 2>/dev/null) || image_run=""
+    image_now=$($CONTAINER_ENGINE image inspect --format '{{.Id}}' "$ref" 2>/dev/null) || image_now=""
+    if [ -z "$image_now" ] || [ "$image_now" != "$image_run" ]; then
+      RECREATE_REASON="image changed: ${name}"; return 0
+    fi
+  done <<< "$names"
   # Matching inputs on a gateway that does not answer readiness is not converged: a run whose
   # recreate never became ready left the new label behind.
   if ! _ready_once; then RECREATE_REASON="readiness not answering"; return 0; fi
