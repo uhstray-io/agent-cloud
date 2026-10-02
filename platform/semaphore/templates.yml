@@ -683,6 +683,14 @@ templates:
         required: false
         default_value: "main"
 
+  # Conformance against direct vLLM (change inference-gateway-agentgateway, tasks 2.1/2.2):
+  # the same cases to the gateway and to vLLM from the gateway VM, then the comparison. Keys are
+  # read from OpenBao by the runner and placed as 0600 files for the run only; no survey, because
+  # every input is inventory. Introduced on dev, so the (Dev) variant runs before promotion.
+  - name: Run agentgateway Conformance
+    playbook: platform/playbooks/run-agw-conformance.yml
+    dev_variant: true
+
   - name: Deploy honcho
     playbook: platform/playbooks/deploy-honcho.yml
     dev_variant: true

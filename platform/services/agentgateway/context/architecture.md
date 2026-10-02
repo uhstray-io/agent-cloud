@@ -78,6 +78,36 @@ per-client layer. Everything is inventory-driven code (design §10):
 | local-dev | `http://host.containers.internal:1234/v1` (LM Studio on the Mac) | LM Studio's API token, seeded as `vllm_api_key` with `seed-openbao-key.yml` (2026-09-17); before that, none — `params.apiKey` omitted |
 | prod | `http://<spark-1>:8000/v1` (site-config) | `secret/services/agentgateway:vllm_api_key`, seeded by a separate playbook |
 
+## Conformance against direct vLLM (tasks 2.1, 2.2)
+
+**Results pending.** The first production run has not happened yet. The first-token and gap
+deltas, and every difference the comparison reports, are recorded here once it has.
+
+How the comparison is made: the Semaphore template `Run agentgateway Conformance`
+(`platform/playbooks/run-agw-conformance.yml`) runs `deployment/tests/conformance.sh` on the gateway
+VM. The script sends each case twice: once to the gateway, presenting the `agw-verifier` leaf
+when listener TLS is on, and once straight to `agw_upstream_base_url`, sending the same request
+body to both. The cases are the models list, thinking off
+(`chat_template_kwargs.enable_thinking: false`), one request per `reasoning_effort` value (`none`,
+`minimal`, `low`, `medium`, `high`, `xhigh`, `max`, the seven values dgx-spark's endpoint
+contract lists), a `chat_template_kwargs` override (`reasoning_effort: low`), a tool call, a
+streamed `xhigh` request and one Responses API request.
+
+A case **matches** when both targets answered, with the same status, the same body shape (every
+leaf path and its JSON type) and the same semantic fields: model, finish reason, whether content,
+reasoning and tool calls came back, and whether reasoning tokens were zero. The normalised-body
+hash removes ids and timestamps and sorts keys. It is reported as `exact_body_match`, but it does
+not decide the verdict, because two generations can differ even at temperature 0 with a fixed
+seed. Timing deltas are the gateway's value minus the direct value. The run fails when any case
+does not match.
+
+| Measure | Gateway | Direct | Delta | Run |
+|---|---|---|---|---|
+| Stream time to first token (s) | pending | pending | pending | — |
+| Stream inter-chunk gap p95 (s) | pending | pending | pending | — |
+| Stream inter-chunk gap max (s) | pending | pending | pending | — |
+| Cases matched | pending | | | — |
+
 ## Verification log
 
 - 2026-09-17 — structural: BATS `platform/tests/test_service_agentgateway.bats` 17/17;

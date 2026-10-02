@@ -194,8 +194,24 @@
       the seven values; `chat_template_kwargs` override; tool call; streamed request with
       `xhigh` and timing of first token and inter-chunk gaps; one Responses API request;
       each sent to the gateway and to vLLM directly from the gateway VM
+      2026-10-02: code landed, not yet run in production. The playbook is
+      `run-agw-conformance.yml` (Semaphore `Run agentgateway Conformance`). The runner reads
+      the keys from OpenBao and places them as 0600 files in a 0700 directory on the VM,
+      removed in an `always:`. curl gets each key through a pipe, never argv. Under listener
+      TLS the gateway is reached by its SAN with `--resolve` and the `agw-verifier` leaf.
+      Output is one JSON line per case and target: status, a normalised-body sha256, a shape
+      sha256, semantic fields, and timings, including first token and gap statistics for the
+      stream. Thinking off is `chat_template_kwargs.enable_thinking: false`; the override is
+      `chat_template_kwargs.reasoning_effort: low`. The seven efforts are dgx-spark's
+      (`plans/development/openspec/specs/inference-endpoint/spec.md`, `vllm/public_probe.py`).
+      `platform/tests/test_agw_conformance.py` runs it against stub servers.
 - [ ] 2.2 Diff bodies (ignoring ids and timestamps); record first-token and gap deltas
       in `context/architecture.md`
+      2026-10-02: `conformance.sh diff` is the comparison, and the playbook runs it. A case
+      matches on status, shape and semantic fields. The exact-body hash is reported but does
+      not decide the verdict. The playbook fails on any case that does not match. Recording
+      in `architecture.md` waits for the first production run; the section is in place and
+      says the results are pending.
 - [ ] 2.3 Confirm SSE keep-alive comment lines from vLLM pass through unchanged and
       unbuffered (needs dgx-spark `inference-endpoint-reliability` deployed)
 - [ ] 2.3a Streams and the budget: confirm whether a streamed completion is charged to the
