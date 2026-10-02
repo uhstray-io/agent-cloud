@@ -1,4 +1,11 @@
 ---
+# =============================================================================
+# TEMPLATE for the local-dev inventory, not production. Production is
+# site-config/inventory/production.yml. Local dev runs from the gitignored copy
+# `make local-init` writes (platform/inventory/local-dev.yml), which can carry
+# local overrides; nothing here says what production is configured with
+# (docs/MISTAKES.md 1.14).
+# =============================================================================
 # Local-dev inventory TEMPLATE — committed, localhost-only by construction.
 # `make local-init` copies this to platform/inventory/local-dev.yml (gitignored)
 # and substitutes __REPO_DIR__ / __GENESIS_DIR__. No real IPs, domains, or
