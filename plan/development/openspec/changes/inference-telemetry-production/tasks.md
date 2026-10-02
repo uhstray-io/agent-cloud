@@ -9,11 +9,14 @@
       `grafanapodman` retired by the operator 2026-09-26 (site-config#33). `nemoclaw`,
       `nocodb`, `openhands` were never reached; rerun `Audit o11y Containers (Dev)` or close
       as superseded now that the dedicated receiver runs.
-- [x] 0.3 Allocate the o11y VM in site-config `proxmox/vm-specs.yml` (Auxiliary tier,
+- [ ] 0.3 Allocate the o11y VM in site-config `proxmox/vm-specs.yml` (Auxiliary tier,
       Podman) and provision it through the onboarding checklist phases 1 to 2
-      2026-10-02 rescope: done under `observability-estate` — DHCP refusal task 1342, address
-      reservation 1347, VM provisioned by task 1353 (05-observability.md "Production receiver
-      receipt, 2026-09-26"); declared in site-config#24.
+      2026-10-02 rescope: PARTIAL — the VM is reserved and provisioned under
+      `observability-estate` (DHCP refusal task 1342, reservation 1347, provisioned by 1353,
+      05-observability.md "Production receiver receipt, 2026-09-26"; declared in
+      site-config#24). Remaining: onboarding phases 1 to 2 also back up and harden the
+      per-service SSH key and add a service `CLAUDE.md`; site-config has no `secrets/ssh/o11y`
+      entry and the deployment directory has no such document (review of #375).
 - [x] 0.4 Validation gate: `openspec validate inference-telemetry-production --store
       agent-cloud` passes; the VM answers SSH via the distributed key; proves nothing in
       the spec yet and unblocks section 1
@@ -28,13 +31,15 @@
       (site-config#24); production runs the Dev-bound `Deploy o11y (Dev)` template (template
       224, task 1156). Remaining: a main-bound Deploy and a Clean Deploy o11y template, or a
       decision recording that production stays Dev-bound.
-- [x] 1.2 `templates/env.j2`: `O11Y_PROM_RETENTION` default `15d`, `O11Y_LOKI_RETENTION`
+- [ ] 1.2 `templates/env.j2`: `O11Y_PROM_RETENTION` default `15d`, `O11Y_LOKI_RETENTION`
       default `7d`, binds loopback for Prometheus and Alloy, Loki and Grafana bound to the
       VM address; compose reads the retention vars
-      2026-10-02 rescope: retention defaults from 884e565b (PR #198), read by compose and Loki
-      config; Grafana and Loki VM binds declared in site-config#24 and #36. Alloy's OTLP
-      listener was later LAN-bound on purpose for gateway traces, firewall-scoped
-      (site-config#37).
+      2026-10-02 rescope: PARTIAL — the retention defaults are 15d/7d from 884e565b (PR #198),
+      read by compose and the Loki config, and the Grafana and Loki VM binds are declared in
+      site-config#24 and #36. Not as written: Alloy's OTLP listener (4317/4318,
+      `O11Y_OTLP_BIND`) was later bound to the VM interface on purpose for gateway traces,
+      firewall-scoped (site-config#37), so "Alloy on loopback" no longer holds; the
+      requirement needs restating as superseded (review of #375).
 - [ ] 1.3 Caddy route `o11y.uhstray.io` to the Grafana port in site-config
       `caddy_managed_sites`, `forward_auth` to Authentik per the existing route shape,
       with two paths exempted from `forward_auth`: `/api/health` (unauthenticated liveness,
@@ -100,9 +105,7 @@
       a push to the Loki port from the controller Mac is refused, proving scenario
       "Unlisted source cannot push"
       2026-10-02 rescope: PARTIAL — "All node targets up" and "Boot journal is queryable" are
-      proven by the 2.4 evidence. Still missing: the DGX exporter drill (2.5) and a refused
-      Loki push from the controller Mac (the rule exists in site-config#36, but no refusal
-      receipt).
+      proven by the 2.4 evidence. Still missing: the DGX exporter drill (2.5). The controller Mac's refused push is recorded: dgx-spark `node-telemetry-and-placement-benchmark` task 3.1 notes its push timed out while both Sparks' pushes returned 204.
 
 ## 3. Dashboards, alerts, synthetic probe
 - [ ] 3.1 Import the metric-name list from dgx-spark `results/vllm-metric-names-*.txt`
@@ -177,6 +180,9 @@
       (2026-09-22) that no production receiver exists; append a dated correction.
 - [ ] 4.3 `plan/architecture/` record: static node scrape jobs and a dedicated o11y VM,
       with the rejected alternatives from the design
+      2026-10-02 rescope: OPEN — no `plan/architecture` record of the production telemetry
+      decisions exists yet.
 - [ ] 4.4 Validation gate: both plan documents carry the dated lines and `git diff` shows
       only appended text, proving scenario "Status is dated and append-only"; on archive,
       retain the outcome (worked / dead end / corrected) into bank `agent-cloud-750a33b9`
+      2026-10-02 rescope: OPEN — waits on 4.2, 4.3 and the archive.
