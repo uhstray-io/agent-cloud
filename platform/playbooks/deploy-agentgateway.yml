@@ -7,7 +7,9 @@
 #          per-client key per inventory identity, generated once into OpenBao
 #          and reused, rotated only by an explicit run) + render .env and
 #          config.yaml (identities as sha256 hashes, no plaintext key).
-# Phase 2: deploy.sh — container lifecycle (pull, up: db healthy then gateway ready).
+# Phase 2: deploy.sh — container lifecycle (pull, then recreate ONLY when config.yaml,
+#          .env, the compose files in use, ./certs or the image changed since the running
+#          gateway started — otherwise in-flight streams are left alone; db healthy, ready).
 # Phase 3: Verify — readiness answers and an unenrolled request is 401 at the
 #          gateway. The keyed round-trip is not done here (a key on an exec argv is
 #          a token on a command line); it belongs to the conformance run (task 2).
@@ -303,7 +305,10 @@
           {{ 'compose.tls.yml' if ((agw_listener_tls | default(false) | bool)
              and not (local_mode | default(false) | bool)) else '' }}
       register: _deploy
-      changed_when: true
+      # Change-aware (task 1.12): deploy.sh recreates only when the rendered inputs or the
+      # image differ from what the running gateway started with, and says which on its last
+      # line. A run that left the gateway alone is not a change.
+      changed_when: "_deploy.stdout_lines | select('match', '^deploy-result: recreated') | list | length > 0"
       when: not ansible_check_mode
 
     - name: "Show deploy.sh output"
