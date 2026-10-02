@@ -329,6 +329,35 @@ production start failed (see the last item).
     status the gateway returns when a `require` rule fails, and whether the rule is
     evaluated before or after API-key authentication; task 6.1 records both.
 
+## Findings 2026-10-02: listener mutual TLS on v1.5.0 (task 6.1)
+
+Measured on throwaway containers of `cr.agentgateway.dev/agentgateway:v1.5.0` with a
+two-tier test CA (root, then intermediate, then leaves), mirroring the production chain:
+
+1. **The rule renders beside the `llm` shortcut and the gateway starts with it.** Each
+   gateway takes `tls: {cert, key, root}` and `authorization.rules: [{require: ...}]`. The
+   client certificate's SANs reach CEL as `source.subjectAltNames` (the v1.5.0 `schema/cel.md`,
+   exercised by `crates/agentgateway/src/cel/tests.rs`).
+2. **A failed rule is 403, and it runs before API-key authentication.** No client
+   certificate fails the TLS handshake. A certificate from the CA but outside the SAN list
+   is 403, with or without a valid key. An allowlisted certificate then needs its key: 401
+   without one or with a wrong one, 200 with an enrolled one. So the decision 12 fallback (a
+   dedicated client-issuing hierarchy) is not needed.
+3. **The key must be readable by the image's non-root user (uid 65532).** Under rootless
+   podman, run through podman-compose 1.0.6 (the version Ubuntu's apt installs), uid 65532
+   cannot read the deploy account's 0600 key ("Permission denied (os error 13)"). With
+   `userns_mode: keep-id:uid=65532,gid=65532` it can, and mutual TLS answers 200 (decided by
+   Joe 2026-10-02 over running the container as root or chowning keys at issuance). Local-dev
+   runs the gateway on a rootful socket, so its overlay runs the container as the key's owner
+   instead.
+
+The production deploy therefore renders listener TLS behind `agw_listener_tls` (default off)
+and adds `compose.tls.yml` (the `./certs` directory mount and keep-id) only outside local-dev.
+Before any render or restart it refuses an allowlist entry that names no declared client
+leaf, a server leaf not declared under `<deploy>/certs/`, a verifier outside the allowlist,
+and leaves not yet issued. Not yet run end to end in local-dev: the local Semaphore runs the
+main checkout, which another session holds.
+
 ## Risks / Trade-offs
 
 - [Gateway strips or rewrites fields vLLM needs] → task 2.3 sends `reasoning_effort`,
