@@ -13,6 +13,7 @@ import threading
 from pathlib import Path
 
 import pytest
+from fake_http import DrainingHandler
 
 REPO = Path(__file__).resolve().parents[2]
 PLAYBOOK = REPO / "platform/playbooks/verify-service-health.yml"
@@ -21,7 +22,7 @@ pytestmark = pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason
 
 
 def _serve(status: int):
-    class Handler(http.server.BaseHTTPRequestHandler):
+    class Handler(DrainingHandler):
         def do_GET(self):  # noqa: N802 - the stdlib's name
             self.send_response(status)
             self.end_headers()

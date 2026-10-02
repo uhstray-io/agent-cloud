@@ -10,11 +10,12 @@ import os
 import shutil
 import subprocess
 import threading
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
 import yaml
+from fake_http import DrainingHandler
 
 ROOT = Path(__file__).resolve().parents[2]
 PLAYBOOK = ROOT / "platform/playbooks/manage-semaphore-access.yml"
@@ -23,7 +24,7 @@ TOKEN = "synthetic-semaphore-token"
 pytestmark = pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="needs ansible-playbook")
 
 
-class Fake(BaseHTTPRequestHandler):
+class Fake(DrainingHandler):
     state: dict = {}
     writes: list = []
     ignore_put = False
