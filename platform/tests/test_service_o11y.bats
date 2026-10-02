@@ -2084,3 +2084,34 @@ local = yaml.safe_load(template.render(local_mode=True))['groups']
 assert [group['name'] for group in local] == ['service-telemetry']
 PY
 }
+
+@test "o11y: turning the DGX scrape off withdraws every inference alert rule" {
+  python3 - "$DEPLOY_DIR/templates/alerts.yml.j2" <<'PY'
+import json
+import sys
+
+import yaml
+from jinja2 import Environment, StrictUndefined
+
+# Grafana 11.4 provisioning keeps a rule whose group leaves the file, so the
+# disabled render must delete each inference rule the enabled render creates.
+env = Environment(undefined=StrictUndefined, trim_blocks=True)
+env.filters['bool'] = bool
+env.filters['to_json'] = json.dumps
+template = env.from_string(open(sys.argv[1], encoding='utf-8').read())
+base = dict(local_mode=False, o11y_alerts_enabled=True, o11y_expected_metrics_targets=[])
+
+enabled = yaml.safe_load(template.render(**base, dgx_spark_scrape_enabled=True))
+created = [rule['uid'] for group in enabled['groups'] for rule in group['rules']
+           if rule['uid'].startswith('inference_')]
+assert created, 'enabled render carries no inference rules'
+assert 'deleteRules' not in enabled, enabled.get('deleteRules')
+
+for values in (dict(base, dgx_spark_scrape_enabled=False), dict(base), dict(local_mode=True)):
+    disabled = yaml.safe_load(template.render(**values))
+    assert [group['name'] for group in disabled['groups']] == ['service-telemetry'], values
+    assert all(not rule['uid'].startswith('inference_')
+               for group in disabled['groups'] for rule in group['rules']), values
+    assert disabled['deleteRules'] == [{'orgId': 1, 'uid': uid} for uid in created], disabled['deleteRules']
+PY
+}

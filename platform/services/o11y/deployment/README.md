@@ -93,7 +93,10 @@ enforces both. When dgx-spark re-pins the vLLM image and records a new list, rep
 fixture and fix any panel that names a metric the new list no longer has.
 
 The alert template adds three groups only when `dgx_spark_scrape_enabled` is true, so
-local renders never carry rules without a producer:
+local renders never carry rules without a producer. When it is false the template lists
+every inference rule under `deleteRules` instead: Grafana keeps a provisioned rule whose
+group leaves the file, so turning the scrape off would otherwise leave the rules live and
+routed.
 
 - `inference-failing`: requests are waiting while vLLM has generated no tokens for five
   minutes. Health can still answer while this fires.

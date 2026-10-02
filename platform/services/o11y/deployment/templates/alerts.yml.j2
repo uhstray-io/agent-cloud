@@ -177,7 +177,12 @@ groups:
    reuses the agent-cloud-ops Discord contact point above (OpenBao
    secret/services/o11y:alert_discord_webhook_url); no second channel exists.
    Thermal rules are deferred: no thermal series is scraped until the dgx-spark
-   GPU exporter passes its compatibility gate. #}
+   GPU exporter passes its compatibility gate.
+   Grafana 11.4 provisioning keeps a rule whose group leaves the file, so turning
+   the scrape off must name every inference rule in deleteRules (the
+   deleteContactPoints pattern in alert-contact.yml.j2); keep this list in step
+   with the rules below. #}
+{% set _inference_uids = ['inference_queue_stalled', 'inference_node_memavailable_low', 'inference_node_memfree_low', 'inference_benchmark_gate_placeholder'] %}
 {% if dgx_spark_scrape_enabled | default(false) | bool %}
 {% set _inference_active = o11y_alerts_enabled | default(false) | bool and o11y_alert_canary_service is not defined %}
 {% set _runbook = 'https://github.com/uhstray-io/dgx-spark/blob/main/docs/VLLM-BRINGUP.md' %}
@@ -277,4 +282,10 @@ groups:
      'Placeholder for the benchmark gate; disabled.',
      'Replace this rule when the dgx-spark benchmark manifest writer publishes a metric.',
      '/d/inference-placement-comparison', paused=true) }}
+{% else %}
+deleteRules:
+{% for uid in _inference_uids %}
+  - orgId: 1
+    uid: {{ uid }}
+{% endfor %}
 {% endif %}
