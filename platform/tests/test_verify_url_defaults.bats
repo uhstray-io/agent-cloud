@@ -15,7 +15,8 @@
 #     X == Y or X starts with "<Y>-" (verify-tududi-github-sync pairs with
 #     provision-tududi-github-sync AND deploy-tududi; verify-o11y-service with deploy-o11y).
 #     A verify playbook with no counterpart is not checked.
-#   - Subject: each `<name>_url | default('<literal>')` in the verify playbook's text, where
+#   - Subject: each `<name>_url | default('<literal>')` in any string of the verify playbook
+#     (whitespace and newlines anywhere around `|`, `default` and the paren), where
 #     <name> is an inventory-style variable (no leading underscore, not an attribute) and
 #     the literal is non-empty. An empty default means "unset" and carries no fact.
 #   - Pass: at least one counterpart defaults the SAME name with a literal, and every
@@ -41,21 +42,29 @@ setup() {
 #   <verify playbook>:<variable>\t<reason>
 # then `checked <n>` (variables compared) and `matched <list>` (the pairs that agree).
 _offenders() {
-  python3 - "$1" <<'PY'
+  PYTHONPATH="$REPO_ROOT/platform/tests" python3 - "$1" <<'PY'
 import re
 import sys
 from pathlib import Path
 
+import playbook_yaml
+
+# Whitespace-tolerant everywhere Jinja is: `x_url|default('v')`, `x_url | default ('v')`,
+# and a newline before the filter, the paren or the literal all match. Applied to each
+# string VALUE of the parsed YAML, not the raw text, so YAML quoting and escapes are
+# already resolved and a commented-out default does not count.
 DEFAULT = re.compile(
-    r"(?<![\w.\]])([a-z][a-z0-9_]*_url)\s*\|\s*default\(\s*(['\"])(.*?)\2\s*[,)]"
+    r"(?<![\w.\]])([a-z][a-z0-9_]*_url)\s*\|\s*default\s*\(\s*(['\"])(.*?)\2\s*[,)]"
 )
 
 
 def url_defaults(path):
     out = {}
-    for name, _q, literal in DEFAULT.findall(path.read_text()):
-        if literal:
-            out.setdefault(name, set()).add(literal)
+    doc = playbook_yaml.loads(path.read_text())
+    for text in playbook_yaml.strings(doc, keys=True):
+        for name, _q, literal in DEFAULT.findall(text):
+            if literal:
+                out.setdefault(name, set()).add(literal)
     return out
 
 
@@ -217,4 +226,34 @@ YML
   : > "$r"
   run _compare "$out" "$r" "$FX"
   [ "$status" -eq 0 ]
+}
+
+@test "checker: spacing and line breaks around the filter do not hide a default" {
+  # `default (`, a newline before the paren, before the `|`, and a no-space `|default(`
+  # are all valid Jinja; each carries the 6.4 mismatch and must be reported.
+  _fixture
+  cat > "$FX/verify-thing.yml" <<'YML'
+- hosts: thing_svc
+  vars:
+    _a: "{{ thing_api_url | default ('http://127.0.0.1:1') }}"
+    _b: |-
+      {{ thing_b_url | default
+         ('http://wrong-b') }}
+    _c: |-
+      {{ thing_c_url
+         | default('http://wrong-c') }}
+    _d: "{{ thing_d_url|default( \"http://wrong-d\" , true) }}"
+YML
+  cat >> "$FX/provision-thing.yml" <<'YML'
+    _b: "{{ thing_b_url | default('http://b') }}"
+    _c: "{{ thing_c_url | default('http://c') }}"
+    _d: "{{ thing_d_url | default('http://d') }}"
+YML
+  run _offenders "$FX"
+  [ "$status" -eq 0 ]
+  assert_contains "$output" $'verify-thing.yml:thing_api_url\tdefaults'
+  assert_contains "$output" $'verify-thing.yml:thing_b_url\tdefaults'
+  assert_contains "$output" $'verify-thing.yml:thing_c_url\tdefaults'
+  assert_contains "$output" $'verify-thing.yml:thing_d_url\tdefaults'
+  assert_contains "$output" "checked 4"
 }

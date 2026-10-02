@@ -15,9 +15,11 @@
 #      `preflight_group_expected` both set, non-empty and equal (deploy-postiz.yml,
 #      deploy-agentgateway.yml, deploy-o11y.yml). It covers that exact group; a
 #      `hosts: a:b` union needs both a and b covered.
-#   2. An inline localhost play whose assert measures the length of the target's
-#      `groups` entry (check-secrets.yml, verify-service-health.yml). It covers a
-#      target whose literal group, or whose first Jinja variable, the assert names.
+#   2. An inline localhost play with an assert condition that reads `groups`, names the
+#      target (its literal group, or the first Jinja variable of a templated target),
+#      and is ONE comparison of the `length` that only a populated group passes: `> 0`,
+#      `!= 0`, or `>=`/`==` a positive integer, with no `and`/`or`/`not`/`if`
+#      (check-secrets.yml, verify-service-health.yml).
 # An `import_playbook` of anything else is followed, so a thin wrapper over
 # deploy-service.yml is judged by the plays it actually runs.
 #
@@ -67,17 +69,36 @@ def plays(path, seen):
             yield play
 
 
-def inline_guard_text(play):
-    """The assert text of a localhost play that measures a group's membership, else ''."""
+# A condition counts only if it is ONE comparison of a membership count that a populated
+# group alone satisfies: `> 0`, `!= 0`, or `>=`/`==` a positive integer, written right
+# after `length` (closing parens allowed). So `length >= 0`, `> -1`, a reversed operand
+# order, a second comparison, or any `and`/`or`/`not`/`if` (which can neutralise or
+# displace the comparison: `... | length > 0 or true`) is not recognised and fails safe.
+POSITIVE = re.compile(r"\blength\b\s*\)*\s*(?:>\s*0(?![\d.])|!=\s*0(?![\d.])|(?:>=|==)\s*[1-9]\d*(?![\d.]))")
+COMPARATOR = re.compile(r"[<>!=]=|[<>]")
+NEUTRALISER = re.compile(r"\b(?:and|or|not|if|else)\b")
+
+
+def inline_guard_items(play):
+    """Each assert condition in a localhost play that requires a group to be populated."""
     out = []
     for task in playbook_yaml.tasks(play.get("tasks")):
         for key in ASSERT_KEYS:
             body = task.get(key)
-            if isinstance(body, dict):
-                that = " ".join(playbook_yaml.strings(body.get("that")))
-                if "groups" in that and "length" in that:
-                    out.append(that)
-    return " ".join(out)
+            if not isinstance(body, dict):
+                continue
+            that = body.get("that")
+            for item in that if isinstance(that, list) else [that]:
+                if not isinstance(item, str):
+                    continue
+                if (
+                    "groups" in item
+                    and len(COMPARATOR.findall(item)) == 1
+                    and POSITIVE.search(item)
+                    and not NEUTRALISER.search(item)
+                ):
+                    out.append(item)
+    return out
 
 
 def parts(hosts):
@@ -113,9 +134,7 @@ for path in sorted(Path(sys.argv[1]).glob("deploy-*.yml")):
             continue
         hosts = ",".join(hosts) if isinstance(hosts, list) else str(hosts)
         if hosts.strip() in LOCAL:
-            text = inline_guard_text(play)
-            if text:
-                inline.append(text)
+            inline.extend(inline_guard_items(play))
             continue
         targets = True
         for subject in parts(hosts):
@@ -326,4 +345,62 @@ YML
   printf 'deploy-bare.yml\n' > "$r"
   run _compare "$out" "$r" "$FX"
   [ "$status" -eq 0 ]
+}
+
+# _inline_fixture <file> <condition> — a deploy whose only guard is one inline assert.
+_inline_fixture() {
+  cat > "$FX/$1" <<YML
+- name: "Inline guard"
+  hosts: localhost
+  tasks:
+    - name: "Require a populated group"
+      ansible.builtin.assert:
+        that: $2
+- name: "Work"
+  hosts: "{{ target_service }}"
+  tasks: []
+YML
+}
+
+@test "checker: the repository's own inline guards are recognised" {
+  # The real form, not a fixture's idea of it: copied under deploy-* names.
+  _fixture
+  cp "$PB/check-secrets.yml" "$FX/deploy-check-secrets.yml"
+  cp "$PB/verify-service-health.yml" "$FX/deploy-verify-service-health.yml"
+  run _offenders "$FX"
+  [ "$status" -eq 0 ]
+  refute_contains "$output" "deploy-check-secrets.yml"
+  refute_contains "$output" "deploy-verify-service-health.yml"
+  assert_contains "$output" "checked 2"
+}
+
+@test "checker: an inline assert that an EMPTY group also passes does not count" {
+  _fixture
+  _inline_fixture deploy-ge0.yml "\"(groups.get(target_service, []) | length) >= 0\""
+  _inline_fixture deploy-gtneg.yml "\"(groups.get(target_service, []) | length) > -1\""
+  _inline_fixture deploy-or.yml "\"(groups.get(target_service, []) | length) > 0 or true\""
+  _inline_fixture deploy-and.yml "\"(groups.get(target_service, []) | length) >= 0 and ([1] | length) > 0\""
+  _inline_fixture deploy-twocmp.yml "\"((groups.get(target_service, []) | length) >= 0) == (([1] | length) > 0)\""
+  _inline_fixture deploy-not.yml "\"not (groups.get(target_service, []) | length) > 0\""
+  _inline_fixture deploy-reversed.yml "\"0 < (groups.get(target_service, []) | length)\""
+  _inline_fixture deploy-nolen.yml "\"groups.get(target_service) is defined\""
+  _inline_fixture deploy-othergroup.yml "\"(groups.get(other_var, []) | length) > 0\""
+  run _offenders "$FX"
+  [ "$status" -eq 0 ]
+  local f
+  for f in ge0 gtneg or and twocmp not reversed nolen othergroup; do
+    assert_contains "$output" "deploy-$f.yml"
+  done
+}
+
+@test "checker: each accepted positive comparison counts" {
+  _fixture
+  _inline_fixture deploy-gt0.yml "\"(groups.get(target_service, []) | length) > 0\""
+  _inline_fixture deploy-ge1.yml "\"groups[target_service] | length >= 1\""
+  _inline_fixture deploy-eq1.yml "\"groups[target_service] | length == 1\""
+  _inline_fixture deploy-ne0.yml "\"(groups.get(target_service, []) | length) != 0\""
+  run _offenders "$FX"
+  [ "$status" -eq 0 ]
+  refute_contains "$output" $'.yml\t'
+  assert_contains "$output" "checked 4"
 }
