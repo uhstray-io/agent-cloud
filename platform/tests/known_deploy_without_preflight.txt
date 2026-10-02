@@ -1,0 +1,44 @@
+# Deploy playbooks that target an inventory group and do NOT yet run the zero-hosts
+# pre-flight (preflight-target-group.yml, or the inline group-membership assert) before
+# their first play against that group.
+#
+# A RATCHET, not an allow-list. platform/tests/test_deploy_playbooks_preflight.bats
+# derives the offenders from the playbooks themselves and then requires:
+#   - every offender is named here           (a NEW gap cannot appear silently)
+#   - every name here is still an offender   (a fix cannot leave its exception behind)
+# So this file only ever shrinks, and shrinking it is the work.
+#
+# Why it exists: docs/MISTAKES.md 2.21. A play over no hosts exits 0, so a deploy against
+# a group missing from the inventory is recorded as a success with nothing deployed. That
+# happened to two deploys written by copying a playbook without the guard. When this file
+# landed (2026-10-02), 23 of 26 deploy-*.yml playbooks were unguarded. Adding the imports
+# changes live-service deploys and is tracked as its own work.
+#
+# The wrappers over deploy-service.yml (nemoclaw, nocodb, openbao, semaphore) are judged
+# by the plays they import, so guarding deploy-service.yml clears them too, provided its
+# pre-flight covers the expression its play targets.
+#
+# One filename per line. Remove a line in the same commit that adds the pre-flight.
+deploy-all.yml
+deploy-authentik.yml
+deploy-caddy.yml
+deploy-dns.yml
+deploy-erpnext.yml
+deploy-github-runner.yml
+deploy-honcho.yml
+deploy-inference-comfyui.yml
+deploy-inference-hunyuan3d.yml
+deploy-n8n.yml
+deploy-nemoclaw.yml
+deploy-netbox.yml
+deploy-nocodb.yml
+deploy-opa.yml
+deploy-openbao.yml
+deploy-openhands.yml
+deploy-orb-agent.yml
+deploy-semaphore.yml
+deploy-service.yml
+deploy-step-ca.yml
+deploy-tududi.yml
+deploy-uhhcraft.yml
+deploy-wisbot.yml
