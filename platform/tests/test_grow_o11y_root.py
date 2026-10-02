@@ -136,26 +136,65 @@ def test_a_missing_growpart_is_refused(monkeypatch):
 PLAYS = yaml.safe_load(PLAYBOOK.read_text())
 
 
-def test_the_preflight_guards_the_literal_receiver_group():
+MAIN = PLAYS[2]
+
+
+def test_the_preflight_guards_the_literal_receiver_group_under_every_tag():
     pre = PLAYS[0]
     assert pre["ansible.builtin.import_playbook"] == "preflight-target-group.yml"
     assert pre["vars"] == {"preflight_group": "o11y_svc", "preflight_group_expected": "o11y_svc"}
-    assert PLAYS[1]["hosts"] == "o11y_svc"
+    assert pre["tags"] == ["always"]
+    assert MAIN["hosts"] == "o11y_svc"
+
+
+def test_the_run_is_bound_to_the_reviewed_commit():
+    # Review of 99666377: a Dev template's moving checkout could run unreviewed code.
+    assert PLAYS[1]["ansible.builtin.import_playbook"] == "require-reviewed-checkout.yml"
+    tpl = next(t for t in yaml.safe_load((ROOT / "platform/semaphore/templates.yml").read_text())["templates"]
+               if t["name"] == "Grow o11y Root (Dev)")
+    sha = next(v for v in tpl["survey_vars"] if v["name"] == "expected_repository_sha")
+    assert sha["required"] is True
 
 
 def test_remote_temp_is_tmpfs_and_proven_before_any_module_runs():
-    play = PLAYS[1]
+    play = MAIN
     assert play["vars"]["ansible_remote_tmp"] == "/dev/shm/ansible-tmp"
     assert play["environment"]["TMPDIR"] == "/dev/shm/ansible-tmp"
     assert play["tasks"][0]["ansible.builtin.import_tasks"] == "tasks/require-tmpfs-remote-tmp.yml"
 
 
-def test_only_the_two_helper_tasks_escalate_and_the_apply_is_check_mode_guarded():
-    play = PLAYS[1]
+def test_only_the_helper_tasks_escalate_and_the_apply_is_check_mode_guarded():
+    play = MAIN
     assert play["become"] is False
     escalated = [t["name"] for t in play["tasks"] if t.get("become")]
-    assert escalated == ["Plan the grow (reads only)", "Grow partition, PV and root LV with its filesystem"]
+    assert escalated == ["Plan the grow (reads only)", "Grow partition, PV and root LV with its filesystem",
+                         "Re-read the chain"]
     apply = next(t for t in play["tasks"] if t["name"].startswith("Grow partition"))
     assert apply["when"].startswith("not ansible_check_mode")
     plan = next(t for t in play["tasks"] if t["name"].startswith("Plan the grow"))
     assert plan["ansible.builtin.command"]["argv"] == ["python3", "-", "plan"] and plan["check_mode"] is False
+
+
+def test_a_verify_run_reads_and_checks_but_never_applies():
+    # Standard 3 (08-ansible-automation-standards.md): --tags verify makes no change.
+    tagged = {t["name"]: "verify" in t.get("tags", []) for t in MAIN["tasks"]}
+    assert tagged["Grow partition, PV and root LV with its filesystem"] is False
+    assert all(tagged[n] for n in ["Require writable tmpfs for Ansible's remote temp",
+                                   "Resolve the sudo password through OpenBao", "Plan the grow (reads only)",
+                                   "Re-read the chain", "Refuse a root that still has room to grow"])
+    # Static, so the tag reaches the tasks inside (a dynamic include's tags stop at the include).
+    sudo = next(t for t in MAIN["tasks"] if t["name"] == "Resolve the sudo password through OpenBao")
+    assert "ansible.builtin.import_tasks" in sudo
+
+
+def test_an_lv_grown_without_its_filesystem_is_finished_by_resize2fs(monkeypatch):
+    # Review of 99666377: lvextend --resizefs can grow the LV and then fail on ext4; the VG
+    # then has no free extents, and only the size comparison sees the lag.
+    lagging = _state(part=100 * GiB, pv_size=100 * GiB, vg_free=0)
+    lagging["lvs"][0]["lv_size"] = str(99 * GiB)
+    mod, calls = _helper(monkeypatch, lagging, growpart_rc=1, growpart_out="NOCHANGE")
+    assert mod.main("plan")["steps"] == ["resize2fs"]
+    mod, calls = _helper(monkeypatch, lagging, growpart_rc=1, growpart_out="NOCHANGE")
+    mod.main("apply")
+    real = [c for c in calls if "-N" not in c]
+    assert ["resize2fs", "/dev/vg/root"] in real and not any(c[0] in ("lvextend", "pvresize") for c in real)

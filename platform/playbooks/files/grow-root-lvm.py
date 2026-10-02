@@ -2,7 +2,9 @@
 """Grow an LVM-backed ext4 root filesystem into the free space of its virtual disk, online.
 
     grow-root-lvm.py plan    report the chain and the steps a grow would take (writes nothing)
-    grow-root-lvm.py apply   take them: growpart -> pvresize -> lvextend -r (online resize2fs)
+    grow-root-lvm.py apply   take them: growpart -> pvresize -> lvextend -r (online resize2fs),
+                             or resize2fs alone when an earlier run grew the LV but not its
+                             filesystem
 
 Run as root. Prints one JSON object with sizes and step names only: no device paths, LV
 paths or VG names (the o11y diagnostics' convention). Refuses, before any change, anything
@@ -133,15 +135,25 @@ def main(mode: str) -> dict[str, Any]:
         steps.append("pvresize")
     if steps or before["vg_free_bytes"] > 0:
         steps.append("lvextend")
+    # lvextend --resizefs can grow the LV and then fail on the filesystem; on a re-run the VG
+    # has no free extents, so only this comparison sees it (review of 99666377). ext4's own
+    # metadata takes a few percent, a lagging filesystem a whole grow's worth.
+    elif before["root_fs_bytes"] < 0.9 * before["lv_bytes"]:
+        steps.append("resize2fs")
     result: dict[str, Any] = {"mode": mode, "before": before, "steps": steps}
     if mode == "apply" and steps:
+        # Exactly the planned steps, in order.
         if "growpart" in steps:
             growpart(c, dry=False)
-        run(["pvresize", c["pv"]["pv_name"]])
-        vg_free = int(_lvm_report(["vgs", "--readonly", "--reportformat", "json", "--units", "b", "--nosuffix",
-                                   "-o", "vg_name,vg_free", c["vg"]["vg_name"]], "vg")[0]["vg_free"])
-        if vg_free > 0:
-            run(["lvextend", "--resizefs", "--extents", "+100%FREE", c["lv"]["lv_path"]])
+        if "pvresize" in steps:
+            run(["pvresize", c["pv"]["pv_name"]])
+        if "lvextend" in steps:
+            vg_free = int(_lvm_report(["vgs", "--readonly", "--reportformat", "json", "--units", "b", "--nosuffix",
+                                       "-o", "vg_name,vg_free", c["vg"]["vg_name"]], "vg")[0]["vg_free"])
+            if vg_free > 0:
+                run(["lvextend", "--resizefs", "--extents", "+100%FREE", c["lv"]["lv_path"]])
+        if "resize2fs" in steps:
+            run(["resize2fs", c["lv"]["lv_path"]])
         after_state = collect()
         result["after"] = sizes(after_state, chain(after_state))
     return result
