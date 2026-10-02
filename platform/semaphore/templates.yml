@@ -98,6 +98,23 @@ templates:
         required: false
         default_value: "false"
 
+  # External liveness watcher (inference-telemetry-production 3.6): probes Grafana and,
+  # through Grafana's datasource health API, Prometheus via the public front door every
+  # 10 minutes; one Discord message per failing run, never Loki. Dev-bound like the
+  # conformance collector: a schedule on the main-bound base would run `main`, which has
+  # no watcher until promotion.
+  - name: Check o11y Liveness (Dev)
+    playbook: platform/playbooks/check-o11y-liveness.yml
+    repository: agent-cloud dev
+    schedule:
+      cron: "*/10 * * * *"
+
+  # Mints the watcher's read-only Grafana service-account token into
+  # secret/services/o11y:watcher_token; reuses a stored token Grafana still accepts.
+  - name: Provision o11y Watcher Token
+    playbook: platform/playbooks/provision-o11y-watcher-token.yml
+    dev_variant: true
+
   - name: Verify o11y Metrics Target (Dev)
     playbook: platform/playbooks/verify-o11y-metrics-target.yml
     repository: agent-cloud dev

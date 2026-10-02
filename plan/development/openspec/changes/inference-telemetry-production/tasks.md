@@ -165,6 +165,9 @@
       Discord message arrived from the watcher, and restarts Grafana in an `always:` block
       2026-10-02 rescope: OPEN — no watcher playbook or schedule. Grafana uses native OIDC, so
       `/api/health` through Caddy needs no `forward_auth` exemption.
+      2026-10-02: CODE — `check-o11y-liveness.yml` (Dev-bound `Check o11y Liveness (Dev)`,
+      `*/10` schedule) and `provision-o11y-watcher-token.yml` mint path landed with fake
+      Grafana/Discord tests. Still OPEN: mint run, first scheduled run and the drill.
 
 ## 4. Retention, thresholds, records
 - [ ] 4.1 After seven days: read Prometheus TSDB size and Loki ingestion per day; set

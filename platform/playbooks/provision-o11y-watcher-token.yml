@@ -1,0 +1,201 @@
+---
+# provision-o11y-watcher-token.yml — mint the liveness watcher's read-only Grafana
+# token as code and store it at secret/services/o11y:watcher_token
+# (inference-telemetry-production task 3.6).
+#
+# Runs against the o11y host and talks to Grafana on its loopback inside the
+# container, authenticated by the admin password Grafana already holds in its own
+# environment, so no admin credential crosses the network or a process argument.
+#
+# Idempotent: a stored token that Grafana still accepts for the Prometheus
+# datasource health check is reused and nothing is written. Otherwise it finds or
+# creates the `o11y-watcher` service account (role Viewer), mints one new token,
+# merges it into OpenBao (siblings preserved) and proves it. Old tokens on the
+# account are left alone; revoking them is a Grafana UI-free follow-up, not needed
+# for correctness because an invalid token is what triggers a re-mint.
+#
+# Check mode reports whether a mint would happen and changes nothing.
+
+- name: Pre-flight
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: o11y_svc
+    preflight_group_expected: o11y_svc
+
+- name: Provision the o11y watcher token
+  hosts: o11y_svc
+  gather_facts: false
+  become: false
+  vars:
+    _engine: "{{ container_engine | default('podman') }}"
+    _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    _prom_uid: "{{ o11y_watch_prometheus_uid | default('prometheus') }}"
+    _sa_name: o11y-watcher
+    # Admin basic auth from the container's own environment, written to curl's stdin
+    # config; the password never appears in argv.
+    _admin_curl: >-
+      printf 'user = "admin:%s"\n' "$GF_SECURITY_ADMIN_PASSWORD" |
+      curl -fsS --config - -H 'Content-Type: application/json'
+  tasks:
+    - name: Require a plain datasource uid
+      ansible.builtin.assert:
+        that: _prom_uid is match('^[A-Za-z0-9_-]+$')
+        fail_msg: "o11y_watch_prometheus_uid must be a plain datasource uid."
+
+    - name: Refuse a cleartext OpenBao endpoint
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
+    - name: Authenticate to OpenBao (AppRole)
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/auth/approle/login"
+        method: POST
+        body_format: json
+        body:
+          role_id: "{{ _bao_role_id }}"
+          secret_id: "{{ _bao_secret_id }}"
+        status_code: [200]
+      register: _bao_auth
+      delegate_to: localhost
+      no_log: true
+      check_mode: false
+
+    - name: Read the stored watcher token
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/secret/data/services/o11y"
+        follow_redirects: none
+        headers:
+          X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
+        status_code: [200]
+      register: _o11y_secret
+      delegate_to: localhost
+      no_log: true
+      check_mode: false
+
+    - name: Test the stored token against the Prometheus datasource health
+      ansible.builtin.command:
+        argv:
+          - "{{ _engine }}"
+          - exec
+          - -i
+          - o11y-grafana
+          - sh
+          - -c
+          - >-
+            read -r t; printf 'header = "Authorization: Bearer %s"\n' "$t" |
+            curl -sS -o /dev/null -w '%{http_code}' --config -
+            "http://127.0.0.1:3000/api/datasources/uid/$1/health"
+          - token-check
+          - "{{ _prom_uid }}"
+        stdin: "{{ _o11y_secret.json.data.data.watcher_token | default('') }}"
+      register: _stored_check
+      changed_when: false
+      failed_when: false
+      when: (_o11y_secret.json.data.data.watcher_token | default('')) | length > 0
+      no_log: true
+      check_mode: false
+
+    - name: Decide whether a mint is needed
+      ansible.builtin.set_fact:
+        _need_mint: "{{ (_stored_check.stdout | default('')) != '200' }}"
+
+    - name: Report the stored token's state
+      ansible.builtin.debug:
+        msg: "{{ 'stored watcher token is valid; reusing it' if not _need_mint else 'no valid watcher token stored; a new one will be minted' }}"
+
+    - name: Mint and store a new token
+      when: _need_mint | bool and not ansible_check_mode
+      block:
+        - name: Find the watcher service account
+          ansible.builtin.command:
+            argv:
+              - "{{ _engine }}"
+              - exec
+              - o11y-grafana
+              - sh
+              - -c
+              - '{{ _admin_curl }} "http://127.0.0.1:3000/api/serviceaccounts/search?query=$1"'
+              - sa-search
+              - "{{ _sa_name }}"
+          register: _sa_search
+          changed_when: false
+
+        - name: Select the exact-named account
+          ansible.builtin.set_fact:
+            _sa_id: "{{ ((_sa_search.stdout | from_json).serviceAccounts | default([])
+                         | selectattr('name', 'equalto', _sa_name) | map(attribute='id') | list
+                         | first) | default('') }}"
+
+        - name: Create the watcher service account (Viewer)
+          ansible.builtin.command:
+            argv:
+              - "{{ _engine }}"
+              - exec
+              - o11y-grafana
+              - sh
+              - -c
+              - >-
+                {{ _admin_curl }} -X POST
+                -d "{\"name\":\"$1\",\"role\":\"Viewer\",\"isDisabled\":false}"
+                http://127.0.0.1:3000/api/serviceaccounts
+              - sa-create
+              - "{{ _sa_name }}"
+          register: _sa_create
+          changed_when: true
+          when: _sa_id | string | length == 0
+
+        - name: Record the account id
+          ansible.builtin.set_fact:
+            _sa_id: "{{ (_sa_create.stdout | from_json).id if _sa_create is changed else _sa_id }}"
+
+        - name: Mint one watcher token
+          ansible.builtin.command:
+            argv:
+              - "{{ _engine }}"
+              - exec
+              - o11y-grafana
+              - sh
+              - -c
+              - >-
+                {{ _admin_curl }} -X POST -d "{\"name\":\"watcher-$(date -u +%Y%m%dT%H%M%SZ)\"}"
+                "http://127.0.0.1:3000/api/serviceaccounts/$1/tokens"
+              - sa-token
+              - "{{ _sa_id }}"
+          register: _sa_token
+          changed_when: true
+          no_log: true
+
+        - name: Merge the token into secret/services/o11y
+          ansible.builtin.include_tasks: tasks/bao-merge-keys.yml
+          vars:
+            _bm_url: "{{ _bao_url }}"
+            _bm_token: "{{ _bao_auth.json.auth.client_token }}"
+            _bm_path: services/o11y
+            _bm_data:
+              watcher_token: "{{ (_sa_token.stdout | from_json).key }}"
+            _bm_on_missing: fail
+            _bm_missing_msg: "secret/services/o11y does not exist; deploy o11y first."
+
+        - name: Prove the new token reads Prometheus datasource health
+          ansible.builtin.command:
+            argv:
+              - "{{ _engine }}"
+              - exec
+              - -i
+              - o11y-grafana
+              - sh
+              - -c
+              - >-
+                read -r t; printf 'header = "Authorization: Bearer %s"\n' "$t" |
+                curl -sS -o /dev/null -w '%{http_code}' --config -
+                "http://127.0.0.1:3000/api/datasources/uid/$1/health"
+              - token-check
+              - "{{ _prom_uid }}"
+            stdin: "{{ (_sa_token.stdout | from_json).key }}"
+          register: _new_check
+          changed_when: false
+          failed_when: _new_check.stdout != '200'
+          no_log: true
