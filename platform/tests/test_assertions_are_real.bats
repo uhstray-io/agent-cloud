@@ -34,8 +34,13 @@
 #     `podman rm -f x || true` there is cleanup, not a claim;
 #   - comments, quoted strings (so `run bash -c "... || true"` and `"command -v x"`)
 #     and heredoc bodies are masked before matching;
+#   - a body ends at the `}` matching its own opening brace (brace-depth aware), not
+#     at the first column-zero `}` — a brace group or heredoc line cannot end it;
 #   - `|| true` counts only at statement level, on a statement whose command words
-#     include grep / egrep / fgrep / [ / [[ / test / diff / cmp / assert_* / refute_*.
+#     include grep / egrep / fgrep / [ / [[ / test / diff / cmp / assert_* / refute_*,
+#     after skipping assignment prefixes (`LC_ALL=C`), wrappers (`command`, `builtin`,
+#     `env`, `exec`) and paths (`/usr/bin/grep`). A `{ ...; }` or `( ... )` group
+#     directly before `|| true` counts with the verbs inside it.
 #     A capture (`n=$(grep -c . f || true)`, `local x=...`, a multi-line `v=$( ... )`),
 #     `run ...`, and a non-assertion command (`kill "$pid" || true`) are not flagged.
 # Known limitation: code inside a quoted string handed to `bash -c` is not parsed.
@@ -69,15 +74,30 @@ src_dir, ratchet = sys.argv[1], sys.argv[2]
 VERBS = {'grep', 'egrep', 'fgrep', '[', '[[', 'test', 'diff', 'cmp'}
 GREP_CMDS = {'grep', 'egrep', 'fgrep', 'assert_grep', 'refute_grep'}
 KEYWORDS = {'if', 'then', 'elif', 'else', 'do', 'while', 'until', '{', '(', '!', 'time'}
+WRAPPERS = {'command', 'builtin', 'env', 'exec'}
+ASSIGN = re.compile(r'[A-Za-z_][A-Za-z0-9_]*(\[[^]]*\])?\+?=')
+
+
+def brace_word(s, i):
+    """True when s[i] ('{' or '}') is the reserved word, not part of ${x} or a{b}."""
+    before = i == 0 or s[i - 1] in ' \t\n;&|('
+    after = i + 1 == len(s) or s[i + 1] in ' \t\n;&|)<>'
+    return before and after
 
 
 def mask(body):
-    """Return (code, depth): `code` is `body` with quoted text, comments and
+    """Mask one @test body. `body` starts just after the test's opening brace and
+    may run to the end of the file; scanning stops at the `}` that closes that
+    brace — brace-depth aware, with quotes and heredocs masked, so an inner
+    column-zero `}` (a brace group, a heredoc line) does not end the body early.
+
+    Return (code, depth, end): `code` is body[:end] with quoted text, comments and
     heredoc bodies replaced by '_' (newlines kept, so offsets and line numbers
     survive); depth[i] is how many $( ) / <( ) substitutions enclose char i."""
     out, depth = list(body), [0] * len(body)
     stack = []                 # 'sub', 'par', 'dq', 'sq'
     pending_heredocs = []      # (delimiter, strip_tabs)
+    braces = 0
     i, n = 0, len(body)
 
     def subs():
@@ -146,36 +166,72 @@ def mask(body):
             stack.append('par'); i += 1; continue
         if c == ')' and top in ('sub', 'par'):
             stack.pop(); i += 1; continue
+        if c == '{' and brace_word(body, i):
+            braces += 1
+        elif c == '}' and brace_word(body, i):
+            if braces == 0 and not stack:
+                return ''.join(out[:i]), depth[:i], i
+            braces -= 1
         m = re.match(r'<<(-?)\s*([\'"]?)([A-Za-z_][A-Za-z0-9_]*)\2', body[i:])
         if m and not body.startswith('<<<', i):
             pending_heredocs.append((m.group(3), m.group(1) == '-'))
             i += m.end()
             continue
         i += 1
-    return ''.join(out), depth
+    return ''.join(out), depth, n
 
 
 def test_bodies(text):
-    lines = text.split('\n')
-    cur = None
-    for i, l in enumerate(lines):
-        if l.startswith('@test '):
-            cur = i
-        elif l == '}' and cur is not None:
-            yield cur + 1, '\n'.join(lines[cur + 1:i])
-            cur = None
+    """Yield (first body line index, body, code, depth) for each @test."""
+    pos = 0
+    while True:
+        m = re.compile(r'^@test .*$', re.M).search(text, pos)
+        if not m:
+            return
+        off = m.end() + 1
+        code, depth, end = mask(text[off:])
+        yield text.count('\n', 0, off), text[off:off + end], code, depth
+        pos = off + end
+
+
+def group_open(code, p):
+    """Index of the opener matching the `}` or `)` at code[p], else p."""
+    close = code[p]
+    opn = '{' if close == '}' else '('
+    d = 0
+    for q in range(p, -1, -1):
+        ch = code[q]
+        if close == '}' and ch in '{}' and not brace_word(code, q):
+            continue
+        if ch == close:
+            d += 1
+        elif ch == opn:
+            d -= 1
+            if d == 0:
+                return q
+    return p
 
 
 def first_words(stmt):
     """Command words of a depth-0 statement: the first word of each pipeline
-    element / list element, keywords skipped."""
+    element / list element, with keywords, leading assignments (`LC_ALL=C`) and
+    wrappers (`command`, `builtin`, `env [-opts] [X=1]`, `exec`) skipped, and a
+    path reduced to its basename (`/usr/bin/grep` -> grep)."""
     words = []
-    for piece in re.split(r'\|\|?|&&|;', stmt):
+    for piece in re.split(r'\|\|?|&&|;|\n', stmt):
         toks = piece.split()
-        while toks and toks[0] in KEYWORDS:
-            toks = toks[1:]
+        while toks:
+            if toks[0] in KEYWORDS or ASSIGN.match(toks[0]):
+                toks = toks[1:]
+            elif toks[0] in WRAPPERS:
+                toks = toks[1:]
+                while toks and toks[0].startswith('-'):
+                    takes_arg = toks[0] in ('-u', '-C', '-S')
+                    toks = toks[2:] if takes_arg else toks[1:]
+            else:
+                break
         if toks:
-            words.append(toks[0])
+            words.append(os.path.basename(toks[0]) or toks[0])
     return words
 
 
@@ -183,9 +239,8 @@ found = {}    # key -> 'file:line'
 n_tests = 0
 for f in sorted(glob.glob(os.path.join(src_dir, '*.bats'))):
     base = os.path.basename(f)
-    for start, body in test_bodies(open(f).read()):
+    for start, body, code, depth in test_bodies(open(f).read()):
         n_tests += 1
-        code, depth = mask(body)
         src_lines = body.split('\n')
 
         def where(pos):
@@ -194,7 +249,7 @@ for f in sorted(glob.glob(os.path.join(src_dir, '*.bats'))):
 
         # (a) grep -v ... -q: exit status answers "is there ANY line without the
         # pattern", which is true for almost every file containing the pattern.
-        for m in re.finditer(r'(?<![\w./-])(e?grep|fgrep|assert_grep|refute_grep)(?![\w-])', code):
+        for m in re.finditer(r'(?<![\w.-])(e?grep|fgrep|assert_grep|refute_grep)(?![\w-])', code):
             seg = re.split(r'[|;&()<>\n]', code[m.end():], maxsplit=1)[0]
             flags, longs = set(), set()
             for t in seg.split():
@@ -217,7 +272,14 @@ for f in sorted(glob.glob(os.path.join(src_dir, '*.bats'))):
         for m in re.finditer(r'\|\|\s*true(?![\w-])', code):
             if depth[m.start()] != 0:
                 continue
-            s = max(code.rfind('\n', 0, m.start()), code.rfind(';', 0, m.start())) + 1
+            # A group closing just before `|| true` — `{ grep -q x f; }` or
+            # `( grep -q x f )`, one line or several — is part of the statement:
+            # start from before its opener, so its inner verbs are seen.
+            head = m.start()
+            prev = len(code[:head].rstrip()) - 1
+            if prev >= 0 and code[prev] in '})':
+                head = group_open(code, prev)
+            s = max(code.rfind('\n', 0, head), code.rfind(';', 0, head)) + 1
             e = m.end()
             stmt = ''.join(ch if depth[p] == 0 else ' ' for p, ch in enumerate(code[s:e], s))
             words = first_words(stmt)
@@ -305,12 +367,14 @@ for o in offenders[:8]:
     '  grep --invert-match --quiet x f' \
     '  refute_grep -vq x f' \
     '  [ "$(grep -vq x f && echo y)" = y ]' \
+    '  /usr/bin/grep -vq x f' \
+    '  command grep -qv x f' \
     '  true' '}' > "$d/bad.bats"
   : > "$d/ratchet.txt"
   run _scan_inert "$d" "$d/ratchet.txt"
   echo "$output"
   [ "$status" -ne 0 ]
-  [ "$(printf '%s\n' "$output" | grep -c '^NEW .*grep-v-q')" -eq 6 ]
+  [ "$(printf '%s\n' "$output" | grep -c '^NEW .*grep-v-q')" -eq 8 ]
 }
 
 @test "inert-assertion scan: flags || true on an assertion" {
@@ -323,12 +387,19 @@ for o in offenders[:8]:
     '  if grep -q x f || true; then :; fi' \
     '  grep -E a f \' \
     '    | grep -q b || true' \
+    '  LC_ALL=C grep -q c f || true' \
+    '  command grep -q d f || true' \
+    '  env -u X Y=1 grep -q e f || true' \
+    '  /usr/bin/grep -q g f || true' \
+    '  { grep -q h f; } || true' \
+    '  ( grep -q i f ) || true' \
+    '  {' '    echo k' '    grep -q k f' '  } || true' \
     '  true' '}' > "$d/bad.bats"
   : > "$d/ratchet.txt"
   run _scan_inert "$d" "$d/ratchet.txt"
   echo "$output"
   [ "$status" -ne 0 ]
-  [ "$(printf '%s\n' "$output" | grep -c '^NEW .*or-true')" -eq 5 ]
+  [ "$(printf '%s\n' "$output" | grep -c '^NEW .*or-true')" -eq 12 ]
 }
 
 @test "inert-assertion scan: leaves cleanup, captures, comments and strings alone" {
@@ -350,6 +421,10 @@ for o in offenders[:8]:
     '  refute_contains "$(printf x | grep -v R || true)" diff-filter' \
     '  cat > f <<EOF' 'grep -vq x f || true' '[ -f x ] || true' 'EOF' \
     '  kill "$pid" || true' \
+    '  { kill "$pid"; } || true' \
+    '  x=$(grep -q x f) || true' \
+    '  LC_ALL=C sort f || true' \
+    '  echo "${HOME}" || true' \
     '  true' '}' > "$d/good.bats"
   : > "$d/ratchet.txt"
   run _scan_inert "$d" "$d/ratchet.txt"
@@ -357,6 +432,28 @@ for o in offenders[:8]:
   [ "$status" -eq 0 ]
   # The body was scanned, not skipped: one test found, nothing flagged.
   [ "$(printf '%s\n' "$output" | grep -c '^SCANNED 1 tests, 0 inert')" -eq 1 ]
+}
+
+@test "inert-assertion scan: a column-zero inner brace does not end the body" {
+  # The body ends at the brace matching the test's own `{`. A brace group closed at
+  # column zero, or a heredoc line holding `}`, must not hide what follows it.
+  local d="$BATS_TEST_TMPDIR/fx"
+  mkdir -p "$d"
+  printf '%s\n' '@test "x" {' \
+    '  {' '    echo a' '}' \
+    '  grep -vq x f' \
+    '  cat > f <<EOF' '}' 'EOF' \
+    '  grep -q y f || true' \
+    '  true' '}' \
+    '@test "y" {' '  true' '}' > "$d/bad.bats"
+  : > "$d/ratchet.txt"
+  run _scan_inert "$d" "$d/ratchet.txt"
+  echo "$output"
+  [ "$status" -ne 0 ]
+  [ "$(printf '%s\n' "$output" | grep -c '^NEW .*grep-v-q')" -eq 1 ]
+  [ "$(printf '%s\n' "$output" | grep -c '^NEW .*or-true')" -eq 1 ]
+  # Both tests found: the second @test is not swallowed into the first.
+  [ "$(printf '%s\n' "$output" | grep -c '^SCANNED 2 tests')" -eq 1 ]
 }
 
 @test "inert-assertion scan: a listed offender passes, a stale entry fails" {
