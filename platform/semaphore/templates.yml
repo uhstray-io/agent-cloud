@@ -959,6 +959,46 @@ templates:
         type: string
         required: true
 
+  # Reboot ONE host and wait for it (production-internal-ca task 3.3; the workflow's optional
+  # reboot test). Refuses unless the group holds exactly one host and confirm_reboot names it.
+  # Run Verify Service Persistence before and Verify Service Health after.
+  - name: Reboot Host (Dev)
+    playbook: platform/playbooks/reboot-host.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: target_service
+        title: Target group
+        description: Inventory group holding exactly the one host to reboot (e.g. step_ca_svc)
+        type: string
+        required: true
+      - name: confirm_reboot
+        title: Confirm host
+        description: The inventory name of that host; anything else is refused
+        type: string
+        required: true
+
+  # Reachability FROM a LAN host that is not the controller (production-internal-ca task 3.4):
+  # one TCP connect per declared port, each expected open or closed. Read-only.
+  - name: Probe Reachability (Dev)
+    playbook: platform/playbooks/probe-reachability.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: probe_from
+        title: Probing group
+        description: Inventory group of the host the probe runs on (not the target)
+        type: string
+        required: true
+      - name: probe_to
+        title: Target host
+        description: Inventory host whose address is probed
+        type: string
+        required: true
+      - name: probe_ports_json
+        title: Ports
+        description: 'JSON list of {"port": N, "expect": "open"|"closed"}'
+        type: string
+        required: true
+
   # The setup half of systemd-enablement: linger + podman's user boot unit (rootless), the
   # system podman-restart.service (rootful) or docker.service (Docker). Boot settings only;
   # restarts nothing, so it is safe on a running service. Verify Service Persistence checks it.
