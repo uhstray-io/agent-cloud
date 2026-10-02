@@ -63,44 +63,8 @@
       - token_exchange_failed
       - oauth_failure_unclassified
   tasks:
-    - name: Check that Ansible remote temp is writable tmpfs before module transfer
-      ansible.builtin.raw: |
-        if [ -L /dev/shm/ansible-tmp ]; then
-          exit 1
-        fi
-        if [ -e /dev/shm/ansible-tmp ]; then
-          if [ ! -d /dev/shm/ansible-tmp ] || [ "$(findmnt -n -o FSTYPE --target /dev/shm/ansible-tmp 2>/dev/null)" != tmpfs ] || [ ! -w /dev/shm/ansible-tmp ]; then
-            exit 1
-          fi
-          current_uid="$(id -u 2>/dev/null)" || exit 1
-          path_uid="$(stat -c '%u' /dev/shm/ansible-tmp 2>/dev/null)" || exit 1
-          path_mode="$(stat -c '%a' /dev/shm/ansible-tmp 2>/dev/null)" || exit 1
-          case "$path_mode" in ''|*[!0-7]*) exit 1 ;; esac
-          if [ "$path_uid" != "$current_uid" ] || [ $((0$path_mode & 022)) -ne 0 ]; then exit 1; fi
-          tmpfs_path=/dev/shm/ansible-tmp
-        else
-          if [ "$(findmnt -n -o FSTYPE --target /dev/shm 2>/dev/null)" != tmpfs ] || [ ! -w /dev/shm ]; then
-            exit 1
-          fi
-          tmpfs_path=/dev/shm
-        fi
-        available_kib="$(df -Pk "$tmpfs_path" 2>/dev/null | awk 'NR == 2 { print $4 }')"
-        case "$available_kib" in ''|*[!0-9]*) exit 1 ;; esac
-        if [ "$available_kib" -lt 1024 ]; then exit 1; fi
-        printf 'remote_tmpfs_ready\n'
-      register: _remote_tmpfs_preflight
-      changed_when: false
-      failed_when: false
-      check_mode: false
-
-    - name: Require the fixed tmpfs module-transfer path
-      ansible.builtin.assert:
-        that:
-          - ansible_remote_tmp == '/dev/shm/ansible-tmp'
-          - _remote_tmpfs_preflight.rc == 0
-          - _remote_tmpfs_preflight.stdout | trim == 'remote_tmpfs_ready'
-        fail_msg: "Read-only diagnosis requires at least 1 MiB of writable tmpfs at /dev/shm."
-
+    - name: "Require writable tmpfs for Ansible's remote temp"
+      ansible.builtin.import_tasks: tasks/require-tmpfs-remote-tmp.yml
     - name: Require the production rootless Podman receiver
       ansible.builtin.assert:
         that:

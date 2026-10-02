@@ -314,6 +314,12 @@ for storage content semantics. Do not grow the guest or change retention until
 an immutable backup artifact has been restored and validated on a declared
 isolated target, with cleanup recorded.
 
+**Override, 2026-10-02 (Joe).** The guest root is grown ahead of that gate, because
+the full 10 GiB root blocked every o11y deploy. `Grow o11y Root (Dev)`
+(`grow-o11y-root.yml`) grows the partition, PV and root LV with its ext4 filesystem
+online into the 100 GiB disk the VM already has. Retention stays as above. The
+backup and isolated-restore gate still governs any retention change.
+
 Production o11y deploy task 1822 succeeded non-destructively on reviewed
 `dev` SHA `c0f65d9b4dca84a3c5b2e33f7e876e72ccac8b25` and passed the
 host-versus-guest root metric check. Read-only budget task 1823 resolved all

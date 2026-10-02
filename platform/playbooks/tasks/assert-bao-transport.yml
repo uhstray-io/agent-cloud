@@ -60,6 +60,9 @@
   # touches the target, it would inherit that escalation and fail there. One line
   # makes the precondition explicit for every caller at once.
   become: false
+  # A security guard must not be skippable by tag selection: a `--tags verify` run reaches it
+  # through dynamic includes, whose tags stop at the include (review of grow-o11y-root.yml).
+  tags: [always]
   vars:
     # Named vars so neither regex line breaks the 200-char limit — a folded
     # scalar would join with spaces INSERTED INTO the pattern. The behavioural
