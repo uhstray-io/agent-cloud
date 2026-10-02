@@ -51,8 +51,13 @@ deny_reasons contains "blocked by destructive template policy" if {
 _unapproved_run_task if {
 	input.service == "semaphore"
 	input.action == "run_task"
-	not input.human_approved
+	not _human_approved
 }
+
+# Approval is the boolean `true` and nothing else. A bare `not input.human_approved` treats
+# any defined non-false value as approval, so `"false"` or `"no"` from a caller that
+# serialised the flag as a string would bypass every gate below (docs/MISTAKES.md 8.4).
+_human_approved if input.human_approved == true
 
 _valid_template_name if {
 	t := object.get(input, "template_name", "")
@@ -240,6 +245,81 @@ _within_tier_bounds if {
 		input.proposal.vm_spec[dim] <= input.context.tier_bounds[dim]
 	}
 }
+
+# --- Ledger rules (docs/MISTAKES.md section 7) ------------------------------------------
+
+# Branch (MISTAKES 1.9). A task-level `git_branch` replaces the repository record's branch,
+# and on Semaphore v2.18.12 the API applies it whatever the template's override flag says, so
+# for an agent this rule is the only branch control. Every agent launch runs from `main` or
+# `dev` (catalog.semaphore.launch_branches). A missing `git_branch` means main, as above; one
+# that is present must be one of those exact strings, so null, blank, padded and non-string
+# values are denied rather than read as "not main" by `_runs_from_main`. No approval bypass:
+# the spec says the branch is chosen from main or dev, for every launch.
+deny_reasons contains "an agent task may run only from main or dev" if {
+	input.service == "semaphore"
+	input.action == "run_task"
+	not _launch_branch_allowed
+}
+
+# Negated as a helper, not inline: Rego evaluates a call inside `not` BEFORE the negation, so a
+# call that fails (object.get on missing catalog data) fails the whole rule and the deny never
+# fires. See _declared_as_code, where the inline form failed open.
+_launch_branch_allowed if object.get(input, "git_branch", "main") in data.agentcloud.catalog.semaphore.launch_branches
+
+# no-probe-writes (MISTAKES 3.1). A write to a secret store must not carry placeholder data.
+# The caller never sends the values: it sends `payload_markers`, the catalog placeholder
+# markers its own scan matched in the payload ([] when none matched). So the field is
+# required: "no markers" and "never scanned" are indistinguishable from here, and an absent,
+# null or non-array field is denied. An entry that is not a non-blank string, or not a
+# marker the catalog lists, is denied too: it means the caller scanned against a different
+# list. Matching is case- and whitespace-insensitive.
+_unapproved_secret_write if {
+	input.action == "write_secret"
+	not _human_approved
+}
+
+deny_reasons contains "a secret write must declare its payload markers" if {
+	_unapproved_secret_write
+	not is_array(object.get(input, "payload_markers", null))
+}
+
+deny_reasons contains "a secret write declares a malformed payload marker" if {
+	_unapproved_secret_write
+	some m in object.get(input, "payload_markers", [])
+	not _known_marker(m)
+}
+
+deny_reasons contains "a secret write carries a placeholder payload" if {
+	_unapproved_secret_write
+	some m in object.get(input, "payload_markers", [])
+	_known_marker(m)
+}
+
+_known_marker(m) if {
+	is_string(m)
+	lower(trim_space(m)) in data.agentcloud.catalog.placeholder_markers
+}
+
+# no-undeclared-shared-mutation (MISTAKES 3.2). A shared orchestrator object (a key-store
+# entry, an inventory record, a repository record) changed directly leaves no record in the
+# repo and changes behaviour for every other consumer. Without human approval it may be
+# mutated only when the repo declares it as code: catalog.semaphore.declared_objects, one
+# exact-name list per kind. `target` is the object's record name; a missing, blank or
+# non-string target is in no list and is denied (the bare `input.target` form failed open,
+# MISTAKES 8.4).
+_mutation_kind := {"update_key": "key", "update_inventory": "inventory", "update_repository": "repository"}
+
+deny_reasons contains "a shared orchestrator object not declared as code needs human approval" if {
+	input.service == "semaphore"
+	kind := _mutation_kind[input.action]
+	not _human_approved
+	not _declared_as_code(kind)
+}
+
+# A helper for the reason given at _launch_branch_allowed: written inline, a missing
+# declared_objects made object.get fail and the mutation was ALLOWED (found by
+# test_mutation_missing_declarations_fail_closed, OPA 1.0.0, 2026-10-02).
+_declared_as_code(kind) if object.get(input, "target", "") in data.agentcloud.catalog.semaphore.declared_objects[kind]
 
 # --- Allow ------------------------------------------------------------------------------
 
