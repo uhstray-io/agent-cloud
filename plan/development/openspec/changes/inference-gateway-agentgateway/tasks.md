@@ -212,6 +212,13 @@
       — read on the running container 2026-09-17); Alloy
       `otelcol.receiver.otlp` on the o11y host forwarding spans as structured log lines to
       Loki (Tempo deferred); inference dashboard gains the client-view row
+      2026-10-02 code state: the scrape job (`scrape-agentgateway.yml.j2`, rendered only
+      when inventory declares the stats endpoint) and the OTLP receiver already existed,
+      with spans going to Tempo rather than being deferred. Added: inventory-gated
+      `o11y_gateway_span_logs_enabled` (default off) span-to-Loki lines via
+      `otelcol.connector.spanlogs`, the model request-duration series on the client view,
+      and a link to it from the inference latency dashboard. Open until the private
+      inventory declares the endpoint and 3.3 proves it on live traffic
 - [x] 3.2 Check whether `localRateLimit` has a log-only mode in the v1.5.0 schema; record
       the answer in `design.md` and set the first-week policy accordingly. 2026-09-17: no
       such mode (`RateLimitSpec` has only `maxTokens`, `tokensPerFill`, `fillInterval`,

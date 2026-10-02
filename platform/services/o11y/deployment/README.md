@@ -54,6 +54,15 @@ Gateway tasks 4.2/4.3 must capture a real OTLP record and verify the exported
 line shape and reason field before a reason-grouped panel can be implemented or
 claimed complete.
 
+Gateway spans always go to Tempo. Setting `o11y_gateway_span_logs_enabled: true`
+in private inventory (default off) also writes one structured Loki line per span
+under `{service="agentgateway", signal="span"}`: span name, status, duration and
+trace id only, with no span attributes copied. It reuses the gateway OTLP/gRPC
+receiver, so it needs no new port and the same receiver-inbound rule from the
+gateway host to `o11y_otlp_bind:4317`. The client-view dashboard plots HTTP and
+model (`agentgateway_gen_ai_server_request_duration`) p95 side by side, and the
+inference latency dashboard links to it.
+
 The production Semaphore inventory is a static copy of private site-config. After
 a private inventory change is reviewed and merged, run the code-managed
 operator-side `platform/semaphore/sync-inventory.yml` check and apply from the

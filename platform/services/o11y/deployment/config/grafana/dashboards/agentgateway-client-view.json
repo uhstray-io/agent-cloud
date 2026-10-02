@@ -45,11 +45,14 @@
     },
     {
       "id": 3,
-      "title": "Request duration p95",
+      "title": "Request duration p95 (HTTP and model)",
       "type": "timeseries",
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
-      "targets": [{"refId": "A", "expr": "histogram_quantile(0.95, sum by (le) (rate(agentgateway_request_duration_seconds_bucket{job=\"agentgateway\", identity=~\"$identity\"}[5m])))"}],
+      "targets": [
+        {"refId": "A", "expr": "histogram_quantile(0.95, sum by (le) (rate(agentgateway_request_duration_seconds_bucket{job=\"agentgateway\", identity=~\"$identity\"}[5m])))", "legendFormat": "HTTP request"},
+        {"refId": "B", "expr": "histogram_quantile(0.95, sum by (le) (rate(agentgateway_gen_ai_server_request_duration_bucket{job=\"agentgateway\", identity=~\"$identity\"}[5m])))", "legendFormat": "model request"}
+      ],
       "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []}
     },
     {
