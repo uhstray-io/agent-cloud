@@ -1719,6 +1719,13 @@ templates:
         required: false
         default_value: "caddy_svc"
 
+  # Read-only certificate directory for the central Caddy (production-internal-ca task 5.1):
+  # establishes which compose project Caddy runs from, adds the mount to it as code and
+  # recreates Caddy only when the file changed. Dev-bound with the internal-CA templates.
+  - name: Mount Caddy Certs (Dev)
+    playbook: platform/playbooks/mount-caddy-certs.yml
+    repository: agent-cloud dev
+
   # Converge the Cloudflare DNS records public services need (A/CNAME), declared
   # per group as the `cloudflare_records` inventory var — encodes 05's manual
   # "Allocate DNS Record" step. Token: OpenBao secret/services/caddy.

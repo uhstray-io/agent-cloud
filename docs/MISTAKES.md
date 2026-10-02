@@ -70,10 +70,11 @@ and why.
 | 2.18 | A coverage test asserting "every play" over a hand-typed list of four — 40 of 52 were unguarded — **x2** (check-mode guard rooted in one directory) | Vacuous coverage | Test (derived population + ratchet) |
 | 2.19 | The app healthcheck probed the path nginx serves from the FRONTEND — green across a backend that never bound | False green | Test (probe path pinned) |
 | 2.20 | Idempotency proven on the wrong steady state: the route retire tool refused the adopted-into-managed case, and a `changed_when` parse hid its message | False-green test | Test (adopted-state case + rc-guarded parse) |
-| 2.21 | A new deploy playbook shipped without the zero-hosts pre-flight; the orchestrator recorded success with nothing deployed | Wrong-reason pass | Test (this playbook); fleet-wide test proposed |
+| 2.21 | A new deploy playbook shipped without the zero-hosts pre-flight; the orchestrator recorded success with nothing deployed — **x2** | Wrong-reason pass | Test (two playbooks); fleet-wide test proposed (see 2.25) |
 | 2.22 | The controller fixture returned `secrets: []` where live Semaphore omits an empty secret list | False-green fixture | Shared filter test + playbook fixture |
 | 2.23 | Tightened the check under test and left its fixtures alone; three negative cases passed whatever the filters did | Vacuous test | Convention (this instance: mutation-checked) |
 | 2.24 | A local run proved a playbook the production controller or host could not run — **x2** | Wrong-reason pass | Convention |
+| 2.25 | The zero-hosts pre-flight rule named deploy playbooks only; 60 other group-targeting playbooks lack it (widens 2.21) | Wrong-reason pass | Test (`mount-caddy-certs.yml`); fleet-wide allow-list proposed |
 | 3.1 | Wrote a probe value over a real credential in a live secret store | Live-state damage | **OPA (proposed)** |
 | 3.2 | Attempted to mutate a shared orchestrator credential without asking | Live-state damage | Sandbox + **OPA (proposed)** |
 | 3.3 | Treated failed workstation login as a controller access prerequisite | Wrong executor boundary | Test + convention |
@@ -1437,7 +1438,7 @@ begins with the rc guard (mutation-proven: dropping the guard fails it).
 
 ### 2.21 A new deploy playbook shipped without the zero-hosts pre-flight, and its first run was a green no-op
 
-**Occurrences: 1** — 2026-09-17
+**Occurrences: 2** — 2026-09-17, 2026-10-01
 
 **What happened.** `deploy-agentgateway.yml` was written by mirroring `deploy-tududi.yml`,
 which has no pre-flight. Its first run through the local Semaphore (task 592) printed
@@ -1464,6 +1465,13 @@ import and both vars. Fleet-wide, still `Convention` — the mechanical guard th
 proposes is one BATS test over every `platform/playbooks/deploy-*.yml` whose plays target
 a `*_svc` group, asserting the import; it has to land with the 24 missing imports or as an
 allow-list that only shrinks.
+
+**Occurrence 2 — 2026-10-01.** `mount-caddy-certs.yml` (production-internal-ca task 5.1)
+targeted `{{ target_service | default('caddy_svc') }}` with no pre-flight; a Codex review
+caught it before any run. The rule did not fire because it names *deploy* playbooks and
+this one is not; the pattern was copied from `issue-internal-leaf.yml`, whose inline assert
+over a survey-driven group is the form `preflight-target-group.yml`'s header rules out.
+Widened in 2.25.
 
 ### 2.22 Fixture hid Semaphore's empty secret projection
 
@@ -1543,6 +1551,28 @@ was worded about templating, while this was a host capability; the PR even said 
 production podman version was unknown, then built on the workstation's anyway. Widened here:
 a capability of a production tool is established on the version production runs (its man
 page at that tag, or a read-only report from the host), never on the workstation's.
+
+### 2.25 The zero-hosts pre-flight rule covered deploy playbooks only (widens 2.21)
+
+**What happened.** See 2.21, occurrence 2: a new mutating playbook that was not a
+`deploy-*.yml` shipped without the pre-flight, because 2.21's rule named deploy playbooks.
+Counted on 2026-10-01 from each playbook's first `hosts:` line: 60 playbooks under
+`platform/playbooks/` target a group other than localhost and do not import
+`preflight-target-group.yml`; 16 do.
+
+**Root cause.** The failure (a play over no hosts exits 0) belongs to every play that targets
+a group, not to deploys. Scoping the rule by file name left every other playbook outside it.
+
+**The rule.** Supersedes 2.21's scope. Every playbook whose plays target an inventory group
+imports `preflight-target-group.yml` first, with a literal group passed as both
+`preflight_group` and `preflight_group_expected`. A playbook that must take its group from
+an operator is the exception the pre-flight's header describes and needs its own guard
+that the operator cannot redirect.
+
+**Enforced by.** Test for `mount-caddy-certs.yml` only
+(`test_mount_caddy_certs.py::test_a_caddy_group_that_matches_no_hosts_fails`, mutation-checked).
+Fleet-wide: Convention, with 2.21's proposed test widened to every playbook, landing as an
+allow-list of the 60 that only shrinks.
 
 ## 3. Acting on live state
 
