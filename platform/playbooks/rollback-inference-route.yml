@@ -1,0 +1,716 @@
+---
+# rollback-inference-route.yml — take the inference gateway out of the public path, or put
+# it back, as code (change inference-gateway-agentgateway, task 4.6; proposal "Rollback Plan").
+#
+# WHY A PLAYBOOK. During the shared key's grace period a rollback is one inventory value:
+# the route's mode goes back to `direct` and Caddy is redeployed, and clients keep the shared
+# key vLLM still accepts. After the shared key is retired, clients hold gateway keys that vLLM
+# has never seen, so pointing Caddy at vLLM alone would answer every client 401. The direct
+# path then also needs a key the clients can present, and the way back needs that key
+# rotated away. This playbook encodes both, so neither is a manual step.
+#
+# Modes (-e mode=..., default gateway-config):
+#   gateway-config  The gateway stays in the path. The rendered config that was live before
+#                   the last change (`config.yaml.previous` in the deploy directory) goes back
+#                   into place and the gateway is recreated on it. Caddy is not touched.
+#   direct          Publish the CURRENT vLLM key into each enrolled client's field in the
+#                   gateway's OpenBao path (`direct_<name>` beside `client_<name>`, handed out
+#                   through the same channel: backup-credentials-to-site-config.yml), THEN
+#                   point the route at the head node and redeploy Caddy through
+#                   manage-caddy-sites.yml. Copies for names no longer in agw_clients are
+#                   removed in the same write.
+#   restore         Point the route back at the gateway and redeploy Caddy, then retire the
+#                   published copies. A copy is removed only once the vLLM key it holds is no
+#                   longer the live one, and the gateway holds the live one, both in its
+#                   rendered environment and in the RUNNING container's: until then the run
+#                   stops with the steps still owed, AFTER the route is already back on the
+#                   gateway (the safe state).
+#
+# Idempotent. Every write is a convergence: the OpenBao merge writes only keys that differ
+# (a re-run of `direct` publishes nothing new), and the publication is guarded on the vLLM
+# key and the KV version it was read at, so a concurrent rotation fails the run instead of
+# publishing a stale key; manage-caddy-sites rewrites only a changed
+# block and restarts only on change, the config copy happens only when the files differ, and
+# `restore` with the route on the gateway and no copy left changes nothing.
+#
+# WHAT THIS DOES NOT DO: rotate the key AT vLLM. vLLM reads its key from the dgx-spark
+# repository (`secrets/vllm_api_key`, applied by that repository's deploy, two ranks); nothing
+# in this repository can change it. `restore` therefore enforces the rotation instead of
+# performing it: the copies are the marker that it is still owed.
+#
+# THE ROUTE CONTRACT (site-config, on the caddy host). The inference block inside
+# caddy_managed_sites selects its upstream on `inference_route_mode` ('gateway' or 'direct'),
+# because the two shapes differ in more than an address (the gateway hop gains its own
+# transport block, task 6.2). This playbook sets that one value for its own run and nothing
+# else; the inventory's value is what every ordinary Manage Caddy Sites run renders, so a
+# rollback that must outlast the next Caddy run is also written into inventory.
+#   inference_route_address           the inference site's address, e.g. inference.<zone>
+#   inference_route_mode              the inventory default ('gateway' after the switch)
+#   inference_route_gateway_upstream  optional; host:port Caddy dials for the gateway
+#                                     (default: the gateway host's agw_bind:agw_port)
+#   inference_route_direct_upstream   optional; host:port Caddy dials for vLLM
+#                                     (default: the host:port of the gateway's
+#                                     agw_upstream_base_url, the head node)
+# The read-back after the Caddy run compares every upstream of that one site block with the
+# mode's expected host:port, in the file AND in Caddy's running config (its admin API), so a
+# declaration that ignores the mode, or a process that did not load the file, fails the run
+# instead of reporting a rollback that did not happen.
+#
+# Check mode: reads run, every write is simulated or skipped. Verification is tagged
+# `verify` (plan/architecture/08, standard 3): `--tags verify` reads the route and the
+# published copies and changes nothing.
+#
+# Usage (Semaphore template "Rollback Inference Route"):
+#   -e mode=gateway-config | -e mode=direct | -e mode=restore
+
+- name: "Refuse an unknown rollback mode"
+  hosts: localhost
+  gather_facts: false
+  become: false
+  connection: local
+  any_errors_fatal: true
+  tasks:
+    - name: "Require mode to be gateway-config, direct or restore"
+      tags: [verify]
+      ansible.builtin.assert:
+        that: (mode | default('gateway-config')) in ['gateway-config', 'direct', 'restore']
+        fail_msg: >-
+          -e mode= takes gateway-config (default), direct or restore; got '{{ mode | default('') }}'.
+        quiet: true
+
+# Ansible treats a play over no hosts as a no-op and exits 0 (MISTAKES 2.21, 2.25). Both
+# groups are required in every mode: the read-back reports the live route even when the
+# mode does not change it.
+- name: "Pre-flight: Caddy"
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: caddy_svc
+    preflight_group_expected: caddy_svc
+
+- name: "Pre-flight: agentgateway"
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: agentgateway_svc
+    preflight_group_expected: agentgateway_svc
+
+# ── The route: what it is now, and what the mode will make it ───────────────
+- name: "Read the inference route and refuse a declaration that ignores the mode"
+  hosts: caddy_svc
+  gather_facts: false
+  become: false
+  any_errors_fatal: true
+  vars:
+    _rb_mode: "{{ mode | default('gateway-config') }}"
+    # The same value the Caddy run below is given, so the rendered declaration is the one
+    # it will write.
+    inference_route_mode: "{{ 'direct' if (mode | default('gateway-config')) == 'direct' else 'gateway' }}"
+    _engine: "{{ container_engine | default('podman') }}"
+    _container: "{{ caddy_container | default('caddy') }}"
+    _gw: "{{ groups['agentgateway_svc'][0] }}"
+    # The upstreams Caddy is DIALLING, from its running config (admin API inside the
+    # container, as manage-caddy-sites.yml reads it): the file can be right while the process
+    # still serves the old route. Every `dial` under the routes matching the inference host;
+    # for `reverse_proxy https://h:p` Caddy dials `h:p` (caddy adapt, v2.11.4).
+    _rb_dial_pat: '"dial":\s*"([^"]+)"'
+    _rb_running_dials: >-
+      {%- set out = [] -%}
+      {%- set cfg = (_rb_running.stdout | default('null', true) | from_json) or {} -%}
+      {%- for srv in ((cfg.get('apps') or {}).get('http') or {}).get('servers', {}).values() -%}
+      {%- for r in srv.routes | default([]) -%}
+      {%- for m in r.match | default([]) -%}
+      {%- if inference_route_address in (m.host | default([])) -%}
+      {%- for d in (r | to_json | regex_findall(_rb_dial_pat)) -%}{%- if out.append(d) -%}{%- endif -%}{%- endfor -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {%- endfor -%}
+      {%- endfor -%}
+      {{ out | unique | list }}
+  tasks:
+    - name: "Require the inference route's address"
+      tags: [verify]
+      ansible.builtin.assert:
+        that:
+          - groups['caddy_svc'] | length == 1
+          - inference_route_address | default('') | length > 0
+        fail_msg: "caddy_svc must hold exactly one host, and it must declare inference_route_address (the inference site's address)."
+
+    - name: "Name the upstream each mode dials"
+      tags: [verify]
+      ansible.builtin.set_fact:
+        _rb_direct_upstream: >-
+          {{ inference_route_direct_upstream
+             | default(hostvars[_gw].agw_upstream_base_url | default('') | urlsplit('netloc')) }}
+        _rb_gateway_upstream: >-
+          {{ inference_route_gateway_upstream
+             | default((hostvars[_gw].agw_bind | default('127.0.0.1')) ~ ':' ~ (hostvars[_gw].agw_port | default('4000'))) }}
+
+    - name: "Require two distinct upstreams"
+      tags: [verify]
+      ansible.builtin.assert:
+        that:
+          - _rb_direct_upstream | length > 0
+          - _rb_direct_upstream != _rb_gateway_upstream
+        fail_msg: >-
+          The direct upstream ('{{ _rb_direct_upstream }}', from the gateway's agw_upstream_base_url or
+          inference_route_direct_upstream) must be set and differ from the gateway upstream
+          ('{{ _rb_gateway_upstream }}'), or the read-back could not tell the modes apart.
+
+    - name: "Read Caddy's running config"
+      tags: [verify]
+      ansible.builtin.command: "{{ _engine }} exec {{ _container }} wget -qO- http://127.0.0.1:2019/config/"
+      register: _rb_running
+      changed_when: false
+      check_mode: false
+
+    - name: "Report the live inference route"
+      tags: [verify]
+      ansible.builtin.debug:
+        msg: >-
+          {{ inference_route_address }} is dialling {{ _rb_running_dials | join(', ') | default('(no upstream)', true) }}:
+          {% if _rb_running_dials == [_rb_direct_upstream] %}direct to vLLM{% elif _rb_running_dials == [_rb_gateway_upstream] %}through
+          the gateway{% else %}NEITHER the gateway ({{ _rb_gateway_upstream }}) nor vLLM ({{ _rb_direct_upstream }}){% endif %}.
+          {% if _rb_mode != 'gateway-config' %}Mode {{ _rb_mode }} routes it {{ inference_route_mode }}.{% endif %}
+
+    - name: "Refuse a route declaration that does not follow inference_route_mode"
+      ansible.builtin.assert:
+        that: >-
+          (_rb_direct_upstream if inference_route_mode == 'direct' else _rb_gateway_upstream)
+          in caddy_managed_sites | default('')
+        fail_msg: >-
+          caddy_managed_sites rendered with inference_route_mode={{ inference_route_mode }} does not
+          contain {{ _rb_direct_upstream if inference_route_mode == 'direct' else _rb_gateway_upstream }}.
+          The inference block must select its upstream on inference_route_mode; nothing was changed.
+      when: _rb_mode in ['direct', 'restore']
+
+# ── Published copies: read; in `direct`, publish ─────────────────────────────
+- name: "Read the published direct-path copies; publish them in direct mode"
+  hosts: agentgateway_svc
+  gather_facts: false
+  become: false
+  any_errors_fatal: true
+  vars:
+    _rb_mode: "{{ mode | default('gateway-config') }}"
+    _bao_url: "{{ openbao_addr | default('') }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    _declared: "{{ agw_clients | default([]) }}"
+  tasks:
+    - name: "Require one gateway host and safe identity names"
+      tags: [verify]
+      ansible.builtin.assert:
+        that:
+          - groups['agentgateway_svc'] | length == 1
+          - (_declared | reject('match', '^[a-z0-9][a-z0-9-]*$') | list) | length == 0
+        fail_msg: >-
+          agentgateway_svc must hold exactly one host, and agw_clients entries must match
+          ^[a-z0-9][a-z0-9-]*$ (offending: {{ _declared | reject('match', '^[a-z0-9][a-z0-9-]*$') | list }}).
+
+    - name: "Refuse a cleartext OpenBao endpoint"
+      tags: [verify]
+      # The guard's own task is tagged `always`, so `--tags verify` reaches it through this include.
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
+    - name: "Authenticate to OpenBao"
+      tags: [verify]
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/auth/approle/login"
+        method: POST
+        body_format: json
+        body: { role_id: "{{ _bao_role_id }}", secret_id: "{{ _bao_secret_id }}" }
+        status_code: [200]
+      register: _bao_auth
+      delegate_to: localhost
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: "Read the gateway's secret path"
+      tags: [verify]
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/secret/data/services/{{ service_name }}"
+        method: GET
+        follow_redirects: none
+        unredirected_headers: [X-Vault-Token]
+        headers:
+          X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
+        status_code: [200]
+      register: _rb_secret
+      delegate_to: localhost
+      check_mode: false
+      no_log: true
+
+    # Names and booleans only leave this task; every value stays inside no_log facts.
+    - name: "Work out which copies exist and whether they hold the live key"
+      tags: [verify]
+      ansible.builtin.set_fact:
+        _rb_store: "{{ _rb_secret.json.data.data }}"
+        _rb_key_present: "{{ (_rb_secret.json.data.data.vllm_api_key | default('')) | length > 0 }}"
+        _rb_copies: "{{ _rb_secret.json.data.data.keys() | select('match', '^direct_') | list | sort }}"
+        _rb_copies_live: >-
+          {{ _rb_secret.json.data.data | dict2items | selectattr('key', 'match', '^direct_')
+             | selectattr('value', 'equalto', _rb_secret.json.data.data.vllm_api_key | default(''))
+             | map(attribute='key') | list | sort }}
+      no_log: true
+
+    - name: "Report the published copies (names only)"
+      tags: [verify]
+      ansible.builtin.debug:
+        msg: >-
+          mode {{ _rb_mode }}; vLLM key in secret/services/{{ service_name }}:
+          {{ 'present' if _rb_key_present else 'ABSENT' }}; published direct-path copies:
+          {{ _rb_copies | join(', ') | default('none', true) }}
+          ({{ _rb_copies_live | length }} of {{ _rb_copies | length }} hold the live key).
+
+    # An empty key would publish empty copies and route clients to a vLLM that refuses them.
+    # An upstream declared to take no key (local LM Studio) needs nothing published.
+    - name: "Direct: refuse to publish without the vLLM key"
+      ansible.builtin.assert:
+        that: _rb_key_present or not (agw_upstream_requires_key | default(true) | bool)
+        fail_msg: >-
+          secret/services/{{ service_name }}:vllm_api_key is empty, so the direct path has no
+          key to give the clients. Seed it (Seed OpenBao Key) before rolling back.
+      when: _rb_mode == 'direct'
+
+    - name: "Direct: refuse a gateway with no enrolled client"
+      ansible.builtin.assert:
+        that: _declared | length > 0
+        fail_msg: "agw_clients is empty: there is no enrolled client to publish the direct-path key to."
+      when:
+        - _rb_mode == 'direct'
+        - _rb_key_present
+
+    - name: "Direct: build the copies (one per enrolled client, all the live vLLM key)"
+      ansible.builtin.set_fact:
+        _rb_publish: >-
+          {{ dict(_declared | map('regex_replace', '^', 'direct_')
+                  | zip([_rb_store.vllm_api_key] * (_declared | length))) }}
+        _rb_withdraw: "{{ _rb_copies | difference(_declared | map('regex_replace', '^', 'direct_') | list) }}"
+      no_log: true
+      when:
+        - _rb_mode == 'direct'
+        - _rb_key_present
+
+    # Guarded on the key itself: the shared task refuses if vllm_api_key no longer holds the
+    # value read above, and writes at the KV version it fetched (check-and-set), so a rotation
+    # landing between the read and the write fails the run instead of publishing a stale key
+    # to every client. The guard covers set-only merges, so withdrawal is a second write.
+    - name: "Direct: publish the copies (shared merge task, guarded on the vLLM key and its KV version)"
+      ansible.builtin.include_tasks: tasks/bao-merge-keys.yml
+      vars:
+        _bm_url: "{{ _bao_url }}"
+        _bm_token: "{{ _bao_auth.json.auth.client_token }}"
+        _bm_path: "services/{{ service_name }}"
+        _bm_data: "{{ _rb_publish }}"
+        _bm_guard_key: vllm_api_key
+        _bm_guard_value: "{{ _rb_store.vllm_api_key }}"
+        _bm_on_missing: fail
+        _bm_missing_msg: "secret/services/{{ service_name }} does not exist; the gateway was never deployed."
+      when:
+        - _rb_mode == 'direct'
+        - _rb_key_present
+
+    - name: "Direct: record whether the publication wrote"
+      ansible.builtin.set_fact:
+        _rb_published: "{{ _bm_changed | default(false) | bool }}"
+      when:
+        - _rb_mode == 'direct'
+        - _rb_key_present
+
+    - name: "Direct: withdraw copies held for names no longer enrolled"
+      ansible.builtin.include_tasks: tasks/bao-merge-keys.yml
+      vars:
+        _bm_url: "{{ _bao_url }}"
+        _bm_token: "{{ _bao_auth.json.auth.client_token }}"
+        _bm_path: "services/{{ service_name }}"
+        _bm_remove: "{{ _rb_withdraw }}"
+        _bm_on_missing: fail
+      when:
+        - _rb_mode == 'direct'
+        - _rb_key_present
+        - _rb_withdraw | length > 0
+
+    - name: "Direct: report the publication (names only)"
+      vars:
+        _withdrawn: "{{ ('; withdrawn for retired names: ' ~ (_rb_withdraw | join(', '))) if _rb_withdraw | length > 0 else '' }}"
+      ansible.builtin.debug:
+        msg: >-
+          Direct-path key {{ 'published' if _rb_published else 'already published' }}
+          as {{ _declared | map('regex_replace', '^', 'direct_') | join(', ') }}{{ _withdrawn }}.
+          Hand each out with backup-credentials-to-site-config.yml -e credential_service={{ service_name }}
+          -e credential_fields=direct_<name>.
+      when:
+        - _rb_mode == 'direct'
+        - _rb_key_present
+
+# ── gateway-config: the previous rendered config back into place ────────────
+- name: "Put the previous rendered gateway config back (gateway-config mode)"
+  hosts: agentgateway_svc
+  gather_facts: false
+  become: false
+  any_errors_fatal: true
+  vars:
+    _rb_mode: "{{ mode | default('gateway-config') }}"
+    _engine: "{{ container_engine | default('podman') }}"
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+    _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
+    _probe: "{{ _engine }} exec agentgateway-db wget -q -O - -T 5"
+  tasks:
+    - name: "Read the live and the previous rendered config"
+      ansible.builtin.stat:
+        path: "{{ _deploy_dir }}/{{ item }}"
+        get_checksum: true
+      loop: [config.yaml, config.yaml.previous]
+      register: _rb_cfg
+      when: _rb_mode == 'gateway-config'
+
+    - name: "Require a previous rendered config to go back to"
+      ansible.builtin.assert:
+        that: _rb_cfg.results[1].stat.exists
+        fail_msg: >-
+          {{ _deploy_dir }}/config.yaml.previous does not exist: no earlier rendered config was
+          kept, so there is nothing to go back to. The deploy keeps the config it replaces
+          there; until a deploy has replaced one, roll back in direct mode or fix forward.
+      when: _rb_mode == 'gateway-config'
+
+    - name: "Put the previous config in place (only when it differs)"
+      # 0644 as the deploy renders it: the gateway runs as a non-root user, and the file
+      # holds hashes and names only (deploy-agentgateway.yml, _env_templates).
+      ansible.builtin.copy:
+        src: "{{ _deploy_dir }}/config.yaml.previous"
+        dest: "{{ _deploy_dir }}/config.yaml"
+        remote_src: true
+        mode: "0644"
+      register: _rb_cfg_copy
+      when:
+        - _rb_mode == 'gateway-config'
+        - _rb_cfg.results[0].stat.checksum | default('') != _rb_cfg.results[1].stat.checksum
+
+    # A run whose copy landed but whose recreate failed leaves the files equal and the gateway
+    # down; probing first makes the re-run recreate it rather than report "nothing to do".
+    - name: "Is the gateway ready now?"
+      ansible.builtin.shell: |
+        set -o pipefail
+        addr=$(CONTAINER_ENGINE="{{ _engine }}" "{{ _deploy_dir }}/gateway-addr.sh") || exit 1
+        {{ _probe }} "http://${addr}:19001/healthz/ready" >/dev/null
+      args:
+        executable: /bin/bash
+      register: _rb_ready_before
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      when: _rb_mode == 'gateway-config'
+
+    - name: "Recreate the gateway on the restored config (deploy.sh, container lifecycle only)"
+      ansible.builtin.shell: |
+        cd "{{ _deploy_dir }}"
+        bash deploy.sh --no-pull
+      environment:
+        CONTAINER_ENGINE: "{{ _engine }}"
+        LOCAL_MODE: "{{ 'true' if (local_mode | default(false) | bool) else '' }}"
+        COMPOSE_CMD: "{{ local_compose_cmd | default('') }}"
+      register: _rb_redeploy
+      changed_when: true
+      when:
+        - not ansible_check_mode
+        - _rb_mode == 'gateway-config'
+        - (_rb_cfg_copy is changed) or (_rb_ready_before.rc != 0)
+
+    - name: "Show deploy.sh output"
+      ansible.builtin.debug:
+        var: _rb_redeploy.stdout_lines
+      when: _rb_redeploy is not skipped
+
+    - name: "The gateway answers readiness on the restored config"
+      tags: [verify]
+      ansible.builtin.shell: |
+        set -o pipefail
+        addr=$(CONTAINER_ENGINE="{{ _engine }}" "{{ _deploy_dir }}/gateway-addr.sh") || exit 1
+        {{ _probe }} "http://${addr}:19001/healthz/ready" >/dev/null
+      args:
+        executable: /bin/bash
+      changed_when: false
+      check_mode: false
+      when:
+        - not ansible_check_mode
+        - _rb_mode == 'gateway-config'
+
+    - name: "Report"
+      ansible.builtin.debug:
+        msg: >-
+          {% if ansible_check_mode %}check mode: the previous config
+          {{ 'would be put back and the gateway recreated' if (_rb_cfg_copy is changed)
+             else 'is already in place' }}.
+          {% else %}gateway-config: the previous rendered config is
+          {{ 'back in place' if (_rb_cfg_copy is changed) else 'already in place' }};
+          gateway {{ 'recreated' if (_rb_redeploy is changed) else 'not restarted' }} and ready.
+          The next Deploy agentgateway renders from code again: fix forward there.{% endif %}
+      when: _rb_mode == 'gateway-config'
+
+- name: "Route the inference hostname for the mode (manage-caddy-sites: validate, roll back on failure)"
+  ansible.builtin.import_playbook: manage-caddy-sites.yml
+  vars:
+    # gateway-config leaves Caddy alone: a pattern that matches no host skips this play.
+    target_service: "{{ 'caddy_svc' if (mode | default('gateway-config')) in ['direct', 'restore'] else 'caddy_svc:!caddy_svc' }}"
+    inference_route_mode: "{{ 'direct' if (mode | default('gateway-config')) == 'direct' else 'gateway' }}"
+
+- name: "Read the inference route back"
+  hosts: caddy_svc
+  gather_facts: false
+  become: false
+  any_errors_fatal: true
+  vars:
+    _rb_mode: "{{ mode | default('gateway-config') }}"
+    _rb_expected: "{{ _rb_direct_upstream if _rb_mode == 'direct' else _rb_gateway_upstream }}"
+    _caddyfile: "{{ caddy_caddyfile_path | default('/home/' ~ (ansible_user | default('uhstray')) ~ '/caddy/Caddyfile') }}"
+    _sites_tool: "{{ playbook_dir }}/../services/caddy/deployment/lib/caddyfile_sites.py"
+    _engine: "{{ container_engine | default('podman') }}"
+    _container: "{{ caddy_container | default('caddy') }}"
+    # The upstreams Caddy is DIALLING, from its running config (admin API inside the
+    # container, as manage-caddy-sites.yml reads it): the file can be right while the process
+    # still serves the old route. Every `dial` under the routes matching the inference host;
+    # for `reverse_proxy https://h:p` Caddy dials `h:p` (caddy adapt, v2.11.4).
+    _rb_dial_pat: '"dial":\s*"([^"]+)"'
+    _rb_running_dials: >-
+      {%- set out = [] -%}
+      {%- set cfg = (_rb_running.stdout | default('null', true) | from_json) or {} -%}
+      {%- for srv in ((cfg.get('apps') or {}).get('http') or {}).get('servers', {}).values() -%}
+      {%- for r in srv.routes | default([]) -%}
+      {%- for m in r.match | default([]) -%}
+      {%- if inference_route_address in (m.host | default([])) -%}
+      {%- for d in (r | to_json | regex_findall(_rb_dial_pat)) -%}{%- if out.append(d) -%}{%- endif -%}{%- endfor -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {%- endfor -%}
+      {%- endfor -%}
+      {{ out | unique | list }}
+  tasks:
+    - name: "Read the site blocks after the Caddy run"
+      tags: [verify]
+      ansible.builtin.script:
+        cmd: "{{ _sites_tool }} {{ _caddyfile }} list"
+        executable: python3
+      register: _rb_sites_after
+      changed_when: false
+      check_mode: false
+
+    - name: "Require the inference route to dial the mode's upstream, from the managed region"
+      tags: [verify]
+      vars:
+        _site: "{{ _rb_sites_after.stdout | from_json | selectattr('addresses', 'contains', inference_route_address) | first | default({}) }}"
+        _netlocs: "{{ (_site.upstreams | default([])) | map('regex_replace', '^[A-Za-z][A-Za-z0-9+.-]*://', '') | map('regex_replace', '/.*$', '') | unique | list }}"
+      ansible.builtin.assert:
+        that:
+          - _site | length > 0
+          - _site.managed | default(false)
+          - _netlocs == [_rb_expected]
+        fail_msg: >-
+          {{ inference_route_address }} after the Caddy run:
+          {{ 'no site block' if _site | length == 0 else ('outside the managed region' if not _site.managed
+             else 'dials ' ~ (_netlocs | join(', ') | default('(no upstream)', true))) }};
+          mode {{ _rb_mode }} expects every upstream to be {{ _rb_expected }}.
+        success_msg: "{{ inference_route_address }} is declared to dial {{ _rb_expected }} only."
+      # A dry run changed nothing, so the file can only show the old route.
+      when:
+        - not ansible_check_mode
+        - _rb_mode in ['direct', 'restore']
+
+    - name: "Read Caddy's running config after the Caddy run"
+      tags: [verify]
+      ansible.builtin.command: "{{ _engine }} exec {{ _container }} wget -qO- http://127.0.0.1:2019/config/"
+      register: _rb_running
+      changed_when: false
+      check_mode: false
+
+    - name: "Require the RUNNING Caddy to dial the mode's upstream for the inference host"
+      tags: [verify]
+      ansible.builtin.assert:
+        that: _rb_running_dials == [_rb_expected]
+        fail_msg: >-
+          Caddy's running config has {{ inference_route_address }} dialling
+          {{ _rb_running_dials | join(', ') | default('nothing', true) }}; mode {{ _rb_mode }} expects
+          {{ _rb_expected }} only. The file and the process disagree, or the route was not loaded.
+        success_msg: "{{ inference_route_address }} dials {{ _rb_expected }} only (running config)."
+      when:
+        - not ansible_check_mode
+        - _rb_mode in ['direct', 'restore']
+
+# ── restore: retire the published copies once the key they hold is dead ─────
+- name: "Retire the published copies (restore mode)"
+  hosts: agentgateway_svc
+  gather_facts: false
+  become: false
+  any_errors_fatal: true
+  vars:
+    _rb_mode: "{{ mode | default('gateway-config') }}"
+    _bao_url: "{{ openbao_addr | default('') }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+    _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
+    _engine: "{{ container_engine | default('podman') }}"
+  tasks:
+    - name: "Refuse a cleartext OpenBao endpoint"
+      tags: [verify]
+      # The guard's own task is tagged `always`, so `--tags verify` reaches it through this include.
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+      when: _rb_mode == 'restore'
+
+    # A fresh read: the route switch above takes as long as Caddy's restart, and an operator
+    # finishing the rotation in between must be seen.
+    - name: "Authenticate to OpenBao"
+      tags: [verify]
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/auth/approle/login"
+        method: POST
+        body_format: json
+        body: { role_id: "{{ _bao_role_id }}", secret_id: "{{ _bao_secret_id }}" }
+        status_code: [200]
+      register: _bao_auth
+      delegate_to: localhost
+      changed_when: false
+      check_mode: false
+      no_log: true
+      when: _rb_mode == 'restore'
+
+    - name: "Read the gateway's secret path"
+      tags: [verify]
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/secret/data/services/{{ service_name }}"
+        method: GET
+        follow_redirects: none
+        unredirected_headers: [X-Vault-Token]
+        headers:
+          X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
+        status_code: [200]
+      register: _rb_secret
+      delegate_to: localhost
+      check_mode: false
+      no_log: true
+      when: _rb_mode == 'restore'
+
+    - name: "Work out which copies exist and whether they hold the live key (names only)"
+      tags: [verify]
+      vars:
+        _store: "{{ _rb_secret.json.data.data }}"
+      ansible.builtin.set_fact:
+        _rb_copies: "{{ _store.keys() | select('match', '^direct_') | list | sort }}"
+        _rb_copies_live: >-
+          {{ _store | dict2items | selectattr('key', 'match', '^direct_')
+             | selectattr('value', 'equalto', _store.vllm_api_key | default('')) | map(attribute='key') | list | sort }}
+      no_log: true
+      when: _rb_mode == 'restore'
+
+    # The gateway's upstream key as the last deploy rendered it. deploy.sh force-recreates
+    # on every run, so the file is what the running gateway was started with.
+    - name: "Read the gateway's rendered environment"
+      tags: [verify]
+      ansible.builtin.slurp:
+        src: "{{ _deploy_dir }}/.env"
+      register: _rb_env
+      no_log: true
+      when:
+        - _rb_mode == 'restore'
+        - _rb_copies | length > 0
+
+    # The process, not just the file: the image has no shell, so the environment the running
+    # container was started with is read through the engine. Its output carries the key, so
+    # the task is no_log and only a boolean leaves it.
+    - name: "Read the running gateway's environment"
+      tags: [verify]
+      ansible.builtin.command:
+        argv: ["{{ _engine }}", inspect, "--format", "{{ '{{json .Config.Env}}' }}", agentgateway]
+      register: _rb_gw_env
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+      when:
+        - _rb_mode == 'restore'
+        - _rb_copies | length > 0
+
+    - name: "Does the gateway hold the live key? (booleans only)"
+      tags: [verify]
+      vars:
+        _live: "{{ _rb_secret.json.data.data.vllm_api_key | default('') }}"
+        _env_key: "{{ _rb_env.content | b64decode | regex_findall('(?m)^VLLM_API_KEY=(.*)$') | first | default('') }}"
+      ansible.builtin.set_fact:
+        _rb_gateway_current: "{{ _env_key == _live }}"
+        _rb_gateway_running_current: >-
+          {{ _rb_gw_env.rc == 0 and ('VLLM_API_KEY=' ~ _live) in (_rb_gw_env.stdout | from_json | default([], true)) }}
+      no_log: true
+      when:
+        - _rb_mode == 'restore'
+        - _rb_copies | length > 0
+
+    - name: "Restore: nothing published, nothing to retire"
+      tags: [verify]
+      ansible.builtin.debug:
+        msg: "The route is on the gateway and no direct-path copy exists: restore is complete."
+      when:
+        - _rb_mode == 'restore'
+        - _rb_copies | length == 0
+
+    - name: "Restore: refuse to retire copies that still hold the live vLLM key"
+      tags: [verify]
+      ansible.builtin.assert:
+        that: _rb_copies_live | length == 0
+        fail_msg: >-
+          The route is back on the gateway, but {{ _rb_copies_live | join(', ') }} still hold the
+          LIVE vLLM key, which every client was handed for the direct path. Rotate it, then run
+          this again: (1) a new key at vLLM, dgx-spark secrets/vllm_api_key and that repository's
+          deploy; (2) the same value into secret/services/{{ service_name }}:vllm_api_key with
+          Seed OpenBao Key; (3) Deploy agentgateway; (4) Rollback Inference Route, mode=restore,
+          which then removes the copies. Nothing was removed.
+      when:
+        - _rb_mode == 'restore'
+        - _rb_copies | length > 0
+
+    - name: "Restore: refuse while the gateway runs on the old key"
+      tags: [verify]
+      ansible.builtin.assert:
+        that: _rb_gateway_current | bool
+        fail_msg: >-
+          The vLLM key in OpenBao has been rotated, but the gateway's rendered environment still
+          holds the previous one, so every request through the gateway fails upstream. Run Deploy
+          agentgateway, then this again. Nothing was removed.
+      when:
+        - _rb_mode == 'restore'
+        - _rb_copies | length > 0
+
+    - name: "Restore: refuse while the RUNNING gateway is on the old key"
+      tags: [verify]
+      ansible.builtin.assert:
+        that: _rb_gateway_running_current | bool
+        fail_msg: >-
+          The rendered environment holds the rotated vLLM key, but the running agentgateway
+          container does not (it was not recreated, or it is not running), so requests through the
+          gateway fail upstream. Run Deploy agentgateway, then this again. Nothing was removed.
+      when:
+        - _rb_mode == 'restore'
+        - _rb_copies | length > 0
+
+    - name: "Restore: remove every published copy (merge-patch null, absence verified)"
+      ansible.builtin.include_tasks: tasks/bao-merge-keys.yml
+      vars:
+        _bm_url: "{{ _bao_url }}"
+        _bm_token: "{{ _bao_auth.json.auth.client_token }}"
+        _bm_path: "services/{{ service_name }}"
+        _bm_remove: "{{ _rb_copies }}"
+        _bm_on_missing: fail
+      when:
+        - _rb_mode == 'restore'
+        - _rb_copies | length > 0
+
+    - name: "Restore: report (names only)"
+      ansible.builtin.debug:
+        msg: >-
+          {{ 'check mode: would remove' if ansible_check_mode else 'Removed' }} the direct-path
+          copies {{ _rb_copies | join(', ') }}; the route is on the gateway and the key they held
+          is no longer the live one.
+      when:
+        - _rb_mode == 'restore'
+        - _rb_copies | length > 0

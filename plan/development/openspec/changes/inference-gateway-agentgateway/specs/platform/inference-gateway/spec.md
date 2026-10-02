@@ -167,7 +167,16 @@ only at the gateway.
 - WHEN, after the shared key is retired, `rollback-inference-route.yml` runs in `direct`
   mode and then in `restore` mode
 - THEN clients are served directly by vLLM with the key it publishes, and after `restore`
-  the gateway is back in the path, the vLLM key is rotated and no published copy remains
+  following the vLLM key's rotation the gateway is back in the path and no published copy
+  remains
+
+#### Scenario: Restore refuses while the published key is still live
+- WHEN `rollback-inference-route.yml` runs in `restore` mode and the vLLM key held by the
+  published copies is still the live key in OpenBao, or the running gateway does not hold
+  the live key
+- THEN the route is back on the gateway, no published copy is removed, and the run fails
+  naming the rotation and redeploy still owed (the vLLM key itself is rotated by the
+  dgx-spark repository, which reads it from OpenBao once that dependency lands)
 
 ### Requirement: Gateway telemetry lands in the platform stack
 The gateway SHALL export request metrics to Prometheus (with the client identity as a

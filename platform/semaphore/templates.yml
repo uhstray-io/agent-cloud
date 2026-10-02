@@ -1761,6 +1761,26 @@ templates:
         required: false
         default_value: "caddy_svc"
 
+  # The inference route's rollback as code (change inference-gateway-agentgateway, task
+  # 4.6). Its Caddy step IS Manage Caddy Sites, imported with the route mode set for the
+  # run, so it inherits that playbook's validation and rollback. No group survey: both
+  # groups are fixed and checked by the pre-flight. Introduced on dev, so the (Dev)
+  # variant is the one that can run before promotion.
+  - name: Rollback Inference Route
+    playbook: platform/playbooks/rollback-inference-route.yml
+    dev_variant: true
+    survey_vars:
+      - name: mode
+        title: "Mode"
+        description: "gateway-config = previous gateway config, gateway stays; direct = publish the vLLM key per client, route to vLLM; restore = route to the gateway, retire the copies once rotated"
+        type: enum
+        required: false
+        default_value: gateway-config
+        values:
+          - { name: "gateway-config", value: "gateway-config" }
+          - { name: "direct", value: "direct" }
+          - { name: "restore", value: "restore" }
+
   - name: Wire Caddy Cloudflare Token
     playbook: platform/playbooks/wire-caddy-cloudflare-token.yml
     survey_vars:
