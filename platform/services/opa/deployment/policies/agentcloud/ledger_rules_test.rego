@@ -97,6 +97,20 @@ test_branch_approval_does_not_unlock_a_feature_branch if {
 	_branch_denied(object.union(_with_branch("feat/x"), {"human_approved": true}))
 }
 
+# The gate trusts catalog.semaphore.launch_branches, so this pin IS the guard: a third branch
+# added to data.json fails here instead of silently authorising agent launches from it
+# (PR 389 Codex review).
+test_branch_launch_list_is_exactly_main_and_dev if {
+	data.agentcloud.catalog.semaphore.launch_branches == ["main", "dev"]
+}
+
+# The gate reads the list rather than hardcoding it: a branch is allowed only while listed.
+test_branch_gate_reads_the_catalog if {
+	_branch_denied(_with_branch("staging"))
+	agentcloud.allow with input as _with_branch("staging")
+		with data.agentcloud.catalog.semaphore.launch_branches as ["main", "dev", "staging"]
+}
+
 test_branch_missing_catalog_fails_closed if {
 	d := agentcloud.decision with input as _dev_run
 		with data.agentcloud.catalog.semaphore.launch_branches as null
@@ -288,6 +302,16 @@ test_mutation_undeclared_allowed_with_approval if {
 test_mutation_wrong_type_approval_denied if {
 	every a in ["true", 1, {"by": "operator"}] {
 		_mut_denied(object.union(_mut_with("staging"), {"action": "update_inventory", "human_approved": a}))
+	}
+}
+
+# Every declared object lets an agent change it without a human, so the exact set is pinned:
+# a new declaration fails here until this test is updated with it (PR 389 Codex review).
+test_mutation_declared_objects_are_exactly_these if {
+	data.agentcloud.catalog.semaphore.declared_objects == {
+		"repository": ["agent-cloud", "agent-cloud dev"],
+		"key": [],
+		"inventory": ["production"],
 	}
 }
 
