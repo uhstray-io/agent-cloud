@@ -38,6 +38,9 @@
 # test names on every push is noise people learn to scroll past, and `python3 -m pytest`
 # rather than bare `pytest` so it uses this interpreter's pytest instead of whatever is
 # first on PATH. And pytest may be skipped here entirely when collection fails.
+# Parallelism follows CI (`-n auto --dist worksteal`) only when pytest-xdist is
+# importable; without it the suite runs serially rather than refusing the push. Neither
+# way changes which tests run.
 #
 # So a green push means the suites passed ON THIS MACHINE, or were skipped. It is not
 # evidence they pass in CI, and CI remains the authority. `bats platform/tests/` is the
@@ -120,8 +123,15 @@ if [ -f pyproject.toml ]; then
   collect_out=$(PYTHONPATH="$py_pp" python3 -m pytest -q --collect-only 2>&1)
   collect_rc=$?
   if [ "$collect_rc" -eq 0 ]; then
-    printf 'pre-push: running Python suite...\n' >&2
-    if ! ( PYTHONPATH="$py_pp" python3 -m pytest -q ); then
+    # Parallel when available, as CI runs it (.github/workflows/lint-and-test.yml).
+    # Optional, so a missing pytest-xdist is not a new reason to block a push.
+    py_par=""
+    if python3 -c 'import xdist' >/dev/null 2>&1; then
+      py_par="-n auto --dist worksteal"
+    fi
+    printf 'pre-push: running Python suite%s...\n' "${py_par:+ in parallel}" >&2
+    # shellcheck disable=SC2086 # py_par is deliberately word-split into flags.
+    if ! ( PYTHONPATH="$py_pp" python3 -m pytest -q $py_par ); then
       failed=1
     fi
   elif printf '%s' "$collect_out" | grep -qE 'ModuleNotFoundError|No module named|ImportError: cannot import name'; then

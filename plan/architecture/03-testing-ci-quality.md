@@ -691,6 +691,30 @@ graph TD
     end
 ```
 
+#### Python core runs in parallel (2026-10-02)
+
+The `Python core` job runs pytest with `-n auto --dist worksteal` (pytest-xdist, pinned
+in the job's install step). Serially, the suite had grown to 12–20 minutes on CI, against
+a 20-minute job cap. Green runs reached 19.9 minutes, and run 37048305528 was cancelled
+at 20m5s. Most of that time is ansible-playbook subprocesses, which are independent, so
+spreading them across cores fixes the cause. Raising the cap only would have moved the
+cliff. The cap is now 30 minutes, as a backstop.
+
+Locally (18 cores, Python 3.11) the run went from 12m20s serially to about 2m30s in
+parallel. Both runs passed the same 1332 tests and 29 subtests.
+
+**The contract this puts on every test:** state lives in the test's own `tmp_path`, and
+a fixture server binds an ephemeral port (`("127.0.0.1", 0)`). No fixed paths, no fixed
+ports, no shared files under the repository. A fixture that flakes under load fails in
+parallel first. The first parallel runs found one: the scoped-publication fixture server
+replied to the AppRole-login POST without reading its body. The kernel then reset the
+connection, and a different test failed on each run. A handler reads its whole request
+body before replying.
+
+The pre-push hook adds the same flags only when pytest-xdist is importable, and runs
+serially otherwise. That keeps it fail-open, and the test selection is unchanged either
+way.
+
 ### 5b. Recommended Additions
 
 #### Compose File Dry-Run Validation

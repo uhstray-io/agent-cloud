@@ -78,21 +78,27 @@ class ScopedPublicationTests(unittest.TestCase):
                 return self.reply({}, 404)
 
             def do_POST(self):  # noqa: N802
+                # Read the body BEFORE any reply, on every path. Replying and closing with
+                # the request body still unread makes the kernel answer with a TCP reset,
+                # and the client sees "Connection reset by peer" — a race that loses more
+                # often on a loaded machine. The AppRole login used to reply unread, and
+                # under a parallel run it failed a different test every time.
+                body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
                 cls.requests.append(("POST", self.path))
                 if self.path == "/v1/auth/approle/login":
                     return self.reply({"auth": {"client_token": cls.login_value}})
                 cls.writes.append(("POST", self.path))
                 if self.path == "/api/project/1/environment":
-                    value = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                    value = json.loads(body)
                     value["id"] = 500 + len(cls.environments)
                     cls.environments.append(value)
                     return self.reply(value, 201)
                 if self.path == "/api/project/1/schedules":
-                    value = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                    value = json.loads(body)
                     cls.schedules.append(value | {"id": 400})
                     return self.reply({}, 201)
                 if self.path == "/api/project/1/templates":
-                    value = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                    value = json.loads(body)
                     value["id"] = 300
                     cls.records.append(value)
                     return self.reply({}, 201)
@@ -140,9 +146,9 @@ class ScopedPublicationTests(unittest.TestCase):
                 return self.reply({})
 
         # socketserver's default listen backlog is 5. A playbook issues requests in quick
-        # bursts, and on a loaded machine the sixth queued connect was reset ("Connection
-        # reset by peer"), failing a different test each run. A fixture must not be the
-        # flaky part of the test.
+        # bursts, and on a loaded machine a queued connect can be reset. The larger queue
+        # alone did not end the "Connection reset by peer" flake: the unread login body in
+        # do_POST was the rest of it. A fixture must not be the flaky part of the test.
         class Server(ThreadingHTTPServer):
             request_queue_size = 128
             daemon_threads = True

@@ -199,7 +199,10 @@ jobs:
   python-core:
     name: Python core
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # Backstop, not the capacity fix. The suite runs in parallel (below), which is what
+    # keeps it well under this. 20 minutes was a serial-era cap that green runs reached
+    # 19.9 minutes against before one was cancelled at 20m5s (run 37048305528).
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
 
@@ -215,7 +218,9 @@ jobs:
           # undeclared dependency passes locally and fails on a clean runner.
           # ansible-core: execute the Tududi provisioning safety suite against
           # disposable HTTP fixtures; a skipped runner cannot prove rollback.
-          pip install pytest pyyaml netboxlabs-diode-sdk proxmoxer requests ansible-core
+          # pytest-xdist: runs the suite across the runner's cores (see the run step).
+          # Pinned because `--dist worksteal` is its interface, not pytest's.
+          pip install pytest pyyaml netboxlabs-diode-sdk proxmoxer requests ansible-core pytest-xdist==3.8.0
           # cryptography: the BATS suite signs a real App assertion with a throwaway key
           # and verifies it, which is the only check that the credential chain's signing
           # is correct rather than merely well-formed. Declared for the orchestrator in
@@ -225,10 +230,19 @@ jobs:
       # Keep pytest's configured root testpaths active so newly registered suites
       # remain covered. Deselect only NetBox's node IDs; --ignore does not remove a
       # directory listed directly in testpaths. NetBox has its own parallel job below.
+      #
+      # `-n auto`, one worker per core: the slow tests are independent ansible-playbook
+      # subprocesses, so they spread across cores instead of queueing behind each other.
+      # That is safe only because every test keeps its state in its own tmp_path and its
+      # own ephemeral-port fixture server — a new test must do the same. A fixture that
+      # flakes only under load fails here first: the scoped-publication server replied
+      # to a POST with its body unread, and the reset that caused failed a different
+      # test each parallel run until it was fixed. `worksteal` rebalances when one worker
+      # draws the 50-second tests; `-x` still stops at the first failure.
       - name: Run Python core tests
         env:
           PYTHONPATH: platform/services/netbox/deployment/workers/proxmox_discovery:platform/services/netbox/deployment/workers/pfsense_sync
-        run: pytest -v -x --durations=20 --deselect=platform/services/netbox/deployment/tests/
+        run: pytest -v -x -n auto --dist worksteal --durations=20 --deselect=platform/services/netbox/deployment/tests/
 
   python-netbox:
     name: Python NetBox
