@@ -611,6 +611,15 @@ templates:
         required: false
         default_value: "dev"
 
+  # Copy the CA's certificates, encrypted keys and configuration out of the step-ca container
+  # into site-config's secrets/step-ca/volume/ on a new branch per run; the task output
+  # carries file names, counts and the branch only. The key password is NOT copied here:
+  # follow with Back Up Credentials to site-config, credential_service=step-ca (openspec
+  # production-internal-ca task 7.2). Dev-bound with the CA templates above.
+  - name: Back Up step-ca to site-config (Dev)
+    playbook: platform/playbooks/backup-step-ca-to-site-config.yml
+    repository: agent-cloud dev
+
   # Issue (or remove) one leaf declared in site-config's internal_leaves, key generated on
   # its consumer, signed on the step_ca_svc host. Dev-bound with the CA templates above.
   - name: Issue Internal Leaf (Dev)
