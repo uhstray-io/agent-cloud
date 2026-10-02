@@ -1,0 +1,21 @@
+{# Rendered to /etc/systemd/system/inference-probe.service by deploy-o11y.yml when
+   o11y_inference_probe_enabled is true. Change inference-telemetry-production, task 3.3.
+   The key arrives through EnvironmentFile (0600, owned by the deploy user), never
+   through ExecStart, so it is not in any process argument list. #}
+# Managed by deploy-o11y.yml. Do not edit on the host.
+[Unit]
+Description=Synthetic inference probe (one chat completion through the public hostname)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User={{ _probe_user }}
+EnvironmentFile={{ _probe_env_file }}
+ExecStart=/bin/bash {{ _probe_script }}
+TimeoutStartSec={{ (o11y_inference_probe_timeout_seconds | default(30) | int) + 30 }}
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths={{ _probe_textfile_dir }}

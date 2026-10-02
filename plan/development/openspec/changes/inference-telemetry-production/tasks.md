@@ -135,6 +135,16 @@
       2026-10-02 rescope: OPEN — no probe or timer. A receiver-host node-exporter container
       exists (receipts 1802-1804) without a textfile collector; extend it instead of
       `install-node-exporter.yml`.
+      2026-10-02 implementation: CODE LANDED, RUNTIME UNPROVEN — `probe/inference-probe.sh`,
+      the `inference-probe` service and five-minute timer, and the `probe/compose.textfile.yml`
+      overlay that adds the textfile collector to the existing receiver-host exporter
+      (scraped by the existing `receiver-host` job; no `install-node-exporter.yml`). Wired
+      into `deploy-o11y.yml` behind `o11y_inference_probe_enabled` (default false; off
+      renders the pre-probe secrets, env files and exporter command). The key is a
+      `_shared_reads` field (default service `agentgateway`) rendered to the gitignored
+      0600 `probe/inference-probe.env`, not `.env`, which Grafana loads. Tested by
+      `platform/tests/test_inference_probe.py`. Still open: the site-config values, an
+      enabled deploy whose readback shows both series, and the alert rule (3.2).
 - [ ] 3.4 `platform/tests/test_service_o11y.bats`: dashboards and alerting files are
       valid JSON/YAML, every `vllm:` name in a dashboard appears in the imported list,
       probe script `shellcheck` clean and contains no literal key

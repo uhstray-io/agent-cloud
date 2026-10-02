@@ -78,12 +78,27 @@
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
     _auth_edge_hosts: "{{ groups['caddy_svc'] | default([]) }}"
     _auth_edge_ip: "{{ hostvars[_auth_edge_hosts[0]].ansible_host | default('') if _auth_edge_hosts | length == 1 else '' }}"
+    # Synthetic inference probe (change inference-telemetry-production, task 3.3).
+    # Off unless inventory enables it; off renders exactly the pre-probe secrets
+    # and env files (platform/tests/test_inference_probe.py).
+    _probe_enabled: "{{ o11y_inference_probe_enabled | default(false) | bool }}"
+    _probe_textfile_dir: /var/lib/node_exporter/textfile
+    _probe_user: "{{ ansible_user | default('deploy') }}"
     # OIDC client secret is owned by authentik (the IdP); read it here so
-    # Grafana's generic_oauth secret matches the provider blueprint.
-    _shared_reads:
-      - { from_service: authentik, read_keys: [grafana_oidc_client_secret] }
-    _env_templates:
-      - { src: env.j2, dest: .env, mode: "0600" }
+    # Grafana's generic_oauth secret matches the provider blueprint. The probe's
+    # API key is read the same way from the service that owns it (an agentgateway
+    # client identity by default), never copied into secret/services/o11y.
+    _shared_reads: >-
+      {{ [{'from_service': 'authentik', 'read_keys': ['grafana_oidc_client_secret']}] +
+         ([{'from_service': o11y_inference_probe_key_service | default('agentgateway'),
+            'read_keys': [o11y_inference_probe_key_field | default('')]}]
+          if _probe_enabled | bool else []) }}
+    # The probe key goes to its own 0600 file, not .env: Grafana loads .env as its
+    # env_file and must not hold the inference key.
+    _env_templates: >-
+      {{ [{'src': 'env.j2', 'dest': '.env', 'mode': '0600'}] +
+         ([{'src': '../probe/inference-probe.env.j2', 'dest': 'probe/inference-probe.env', 'mode': '0600'}]
+          if _probe_enabled | bool else []) }}
 
   tasks:
     - name: "Require a capacity receipt and nonzero Prometheus cap for retention expansion"
@@ -282,6 +297,22 @@
         fail_msg: "Profiling remains disabled until private inventory records successful config, privacy, and resource-gate receipt IDs."
       when: o11y_alloy_profile_pilot_enabled | default(false) | bool
 
+    - name: "Require complete synthetic inference probe settings when the probe is enabled"
+      ansible.builtin.assert:
+        that:
+          - o11y_inference_probe_url | default('') is match('^https://[A-Za-z0-9.-]+(:[0-9]+)?/v1$')
+          - o11y_inference_probe_model | default('') is match('^[A-Za-z0-9._:/@-]+$')
+          - o11y_inference_probe_key_service | default('agentgateway') is match('^[a-z0-9-]+$')
+          - o11y_inference_probe_key_field | default('') is match('^[A-Za-z0-9_-]+$')
+          - o11y_inference_probe_timeout_seconds | default(30) | int >= 1
+          - o11y_inference_probe_timeout_seconds | default(30) | int <= 120
+        fail_msg: >-
+          The inference probe needs o11y_inference_probe_url (https://<host>/v1),
+          o11y_inference_probe_model, and o11y_inference_probe_key_field naming the
+          OpenBao field that holds its key under secret/services/<o11y_inference_probe_key_service>
+          (default agentgateway); the latency budget o11y_inference_probe_timeout_seconds is 1-120.
+      when: _probe_enabled | bool
+
     - name: "Place the monorepo + ensure podman/compose"
       ansible.builtin.include_tasks: tasks/place-monorepo.yml
 
@@ -352,6 +383,82 @@
       register: _agentgateway_scrape_absent
       when: agentgateway_metrics_address is not defined
 
+    # Synthetic inference probe. Its environment file (key from OpenBao) was rendered
+    # by manage-secrets above; the units and the textfile directory are host config.
+    - name: "Install the synthetic inference probe"
+      when: _probe_enabled | bool
+      become: true
+      vars:
+        _probe_script: "{{ _deploy_dir }}/probe/inference-probe.sh"
+        _probe_env_file: "{{ _deploy_dir }}/probe/inference-probe.env"
+      block:
+        - name: "Create node_exporter's textfile directory, writable only by the probe user"
+          ansible.builtin.file:
+            path: "{{ _probe_textfile_dir }}"
+            state: directory
+            owner: "{{ _probe_user }}"
+            mode: "0755"
+
+        - name: "Render the probe service unit"
+          ansible.builtin.template:
+            src: "{{ playbook_dir }}/../services/o11y/deployment/probe/inference-probe.service.j2"
+            dest: /etc/systemd/system/inference-probe.service
+            mode: "0644"
+          register: _probe_service_unit
+
+        - name: "Install the five-minute probe timer"
+          ansible.builtin.copy:
+            src: "{{ playbook_dir }}/../services/o11y/deployment/probe/inference-probe.timer"
+            dest: /etc/systemd/system/inference-probe.timer
+            mode: "0644"
+          register: _probe_timer_unit
+
+        - name: "Enable and start the probe timer"
+          ansible.builtin.systemd_service:
+            name: inference-probe.timer
+            enabled: true
+            state: started
+            daemon_reload: "{{ _probe_service_unit.changed or _probe_timer_unit.changed }}"
+
+    - name: "Look for a previously installed probe timer while the probe is disabled"
+      ansible.builtin.stat:
+        path: /etc/systemd/system/inference-probe.timer
+      register: _probe_timer_present
+      when: not (_probe_enabled | bool)
+
+    # Only a host that once ran the probe reaches the privileged steps, so a deploy with
+    # the probe never enabled changes nothing and needs no sudo for it.
+    - name: "Remove the synthetic inference probe after it is disabled"
+      when:
+        - not (_probe_enabled | bool)
+        - _probe_timer_present.stat.exists | default(false)
+      become: true
+      block:
+        - name: "Stop and disable the probe timer"
+          ansible.builtin.systemd_service:
+            name: inference-probe.timer
+            enabled: false
+            state: stopped
+
+        - name: "Remove the probe units and its last metrics file"
+          ansible.builtin.file:
+            path: "{{ item }}"
+            state: absent
+          loop:
+            - /etc/systemd/system/inference-probe.timer
+            - /etc/systemd/system/inference-probe.service
+            - "{{ _probe_textfile_dir }}/inference_probe.prom"
+
+        - name: "Reload systemd after removing the probe units"
+          ansible.builtin.systemd_service:
+            daemon_reload: true
+
+    - name: "Remove the probe key file while the probe is disabled"
+      ansible.builtin.file:
+        path: "{{ _deploy_dir }}/probe/inference-probe.env"
+        state: absent
+      when: not (_probe_enabled | bool)
+
 # ── Phase 2: Container lifecycle ────────────────────────────────────────────
 - name: "Phase 2: Start o11y"
   hosts: o11y_svc
@@ -369,6 +476,9 @@
       environment:
         CONTAINER_ENGINE: "{{ container_engine | default('podman') }}"
         LOCAL_MODE: "{{ 'true' if (local_mode | default(false) | bool) else '' }}"
+        # The inference probe's overlay adds node_exporter's textfile collector.
+        # Empty when the probe is off, which is the pre-probe command line.
+        COMPOSE_OVERLAYS: "{{ 'probe/compose.textfile.yml' if (o11y_inference_probe_enabled | default(false) | bool) else '' }}"
       register: _deploy
       changed_when: true
       when: not ansible_check_mode
@@ -503,6 +613,50 @@
       when:
         - not ansible_check_mode
         - not (local_mode | default(false) | bool)
+
+    # The deploy proves the probe is installed and its metrics reach Prometheus. It does
+    # NOT fail on a failed inference: that is what the metric and its alert are for.
+    - name: Verify the synthetic inference probe after a real deploy
+      when:
+        - o11y_inference_probe_enabled | default(false) | bool
+        - not ansible_check_mode
+      block:
+        - name: Require the probe timer to be enabled and active
+          ansible.builtin.command:
+            argv: [systemctl, is-active, inference-probe.timer]
+          register: _probe_timer_active
+          changed_when: false
+          failed_when: _probe_timer_active.stdout | trim != 'active'
+
+        - name: Take one probe sample now instead of waiting for the timer
+          ansible.builtin.command:
+            argv: [systemctl, start, inference-probe.service]
+          become: true
+          changed_when: false
+
+        - name: Read the probe metrics from the private Prometheus API
+          ansible.builtin.command:
+            argv:
+              - "{{ _engine }}"
+              - exec
+              - o11y-prometheus
+              - wget
+              - -qO-
+              - >-
+                http://127.0.0.1:9090/api/v1/query?query=%7Bjob%3D%22receiver-host%22%2C__name__%3D~%22inference_probe_success%7Cinference_probe_latency_seconds%22%7D
+          register: _probe_metrics
+          changed_when: false
+          retries: 12
+          delay: 5
+          until: >-
+            _probe_metrics.rc == 0 and
+            (_probe_metrics.stdout | from_json).data.result
+            | map(attribute='metric.__name__') | unique | list | length == 2
+
+        - name: Report the first probe sample
+          ansible.builtin.debug:
+            msg: >-
+              {% for r in (_probe_metrics.stdout | from_json).data.result %}{{ r.metric.__name__ }}{model_name={{ r.metric.model_name | default('') }}}={{ r.value[1] }} {% endfor %}
 
     - name: "Tempo ready (/ready) through the private compose network"
       ansible.builtin.command: "{{ _engine }} exec o11y-grafana wget -q -O /dev/null http://tempo:3200/ready"
