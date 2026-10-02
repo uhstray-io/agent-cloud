@@ -30,7 +30,7 @@
    its `current/` directory (swapped by renewal, so the directory is mounted, not the files).
    Do NOT edit by hand — re-run the playbook. #}
 {% set _cert = caddy_tls_cert | default('') %}
-{% macro upstream(r, tabs) -%}
+{%- macro upstream(r, tabs) -%}
 {%- if r.upstream_tls is defined -%}
 https://{{ r.upstream }} {
 {{ tabs }}	transport http {

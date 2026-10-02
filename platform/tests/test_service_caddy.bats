@@ -137,6 +137,9 @@ YML
 @test "caddy: a route without upstream_tls renders exactly as before (plain proxy)" {
   _render_caddy '[{host: p.test, upstream: "x:1"}]'
   local c="$BATS_TEST_TMPDIR/Caddyfile"
+  # The upstream() macro adds no output of its own: the file still opens on the global block
+  # (review of 53b00ad8). head -n 1, not head -c 2: $(...) drops the trailing newline.
+  [ "$(head -n 1 "$c")" = "{" ]
   assert_grep -qE $'^\treverse_proxy x:1$' "$c"
   refute_grep -qE 'tls_client_auth|tls_trust_pool|https://x' "$c"
 }

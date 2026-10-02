@@ -259,3 +259,30 @@ def test_items_at_the_same_indent_as_their_key_end_at_the_next_key():
     text = "services:\n  caddy:\n    volumes:\n    - ./a:/a\n    ports:\n    - \"80:80\"\n"
     out = json.loads(_edit(text).stdout)
     assert out["text"] == text.replace("    - ./a:/a\n", "    - ./a:/a\n    - /c:/etc/caddy/certs:ro\n")
+
+
+
+def _reloads(tmp: Path) -> int:
+    calls = tmp / "calls"
+    lines = calls.read_text().splitlines() if calls.exists() else []
+    return sum(line.startswith("exec caddy caddy reload") for line in lines)
+
+
+def test_a_changed_bundle_under_a_declared_mount_reloads_caddy_without_a_recreate(tmp_path):
+    # Review of 53b00ad8: Caddy loads its trust pool at provisioning, so a rewritten bundle
+    # must be reloaded; the mount is already declared, so nothing is recreated.
+    cdir = _setup(tmp_path)
+    first = _run(tmp_path)
+    assert first.returncode == 0, first.stdout + first.stderr
+    (cdir / "certs" / "step-ca-bundle.crt").write_text("an older bundle\n")
+    r = _run(tmp_path)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert _reloads(tmp_path) == 1 and _ups(tmp_path) == 1
+    assert (cdir / "certs" / "step-ca-bundle.crt").read_text().count("BEGIN CERTIFICATE") == 2
+
+
+def test_an_unchanged_bundle_reloads_nothing(tmp_path):
+    _setup(tmp_path)
+    assert _run(tmp_path).returncode == 0
+    r = _run(tmp_path)
+    assert r.returncode == 0 and _reloads(tmp_path) == 0 and _ups(tmp_path) == 1, r.stdout
