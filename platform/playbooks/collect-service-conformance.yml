@@ -289,17 +289,13 @@
       when: not ansible_check_mode
 
     # Local-dev retains the loopback direct-Loki path; production uses the private OTLP receiver.
+    # The shared push task; an unreachable Loki never fails the collector (it reports instead).
     - name: "Local Loki: one line per step result"
-      ansible.builtin.uri:
-        url: "{{ collector_loki_url }}/loki/api/v1/push"
-        method: POST
-        body_format: json
-        body:
-          streams: "{{ _agg.loki_streams }}"
-        status_code: [204]
-      register: _loki
-      changed_when: true
-      failed_when: false
+      ansible.builtin.include_tasks: tasks/push-loki-lines.yml
+      vars:
+        push_loki_url: "{{ collector_loki_url }}"
+        push_loki_streams: "{{ _agg.loki_streams }}"
+        push_loki_must_succeed: false
       when:
         - not ansible_check_mode
         - local_mode | default(false) | bool
@@ -339,7 +335,7 @@
           # Templates whose history filled the read window: their older runs were not read.
           history_window_full: "{{ (_pick.stdout | from_json).window_full }}"
           netbox_unreachable: "{{ _vm_unreachable }}"
-          loki: "{{ 'pushed' if (_loki.status | default(0)) == 204 else ('skipped' if _loki is skipped or _loki is not defined else 'failed') }}"
+          loki: "{{ 'pushed' if (push_loki_result.status | default(0)) == 204 else ('skipped' if push_loki_result is not defined or push_loki_result is skipped else 'failed') }}"
           otlp: "{{ 'check mode' if ansible_check_mode else ('no records' if _agg.otlp_payload.resourceLogs | length == 0 else ('skipped' if local_mode | default(false) | bool else ('delivered' if _otlp_delivery_ok | default(false) | bool else 'failed'))) }}"
 
     - name: "Fail after reporting unsuccessful production OTLP delivery"
