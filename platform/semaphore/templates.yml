@@ -1475,6 +1475,12 @@ templates:
     # Read-only exporter isolation and storage layout diagnostics. No secrets,
     # configuration writes, image pulls, or deployment tasks are involved.
 
+  # Grow the o11y receiver's full root filesystem into its 100 GiB disk, online
+  # (partition -> PV -> root LV + ext4). Dev-bound; dry run shows the chain and steps.
+  - name: Grow o11y Root (Dev)
+    playbook: platform/playbooks/grow-o11y-root.yml
+    repository: agent-cloud dev
+
   - name: Survey o11y Backup Readiness (Dev)
     playbook: platform/playbooks/survey-o11y-backup-readiness.yml
     repository: agent-cloud dev

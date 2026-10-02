@@ -378,6 +378,9 @@ def test_dev_playbook_and_template_require_both_exact_revisions_and_only_read():
     assert rootless["ansible.builtin.command"]["stdin"].endswith("diagnose-o11y-host-storage.py') }}")
 
 
+# The shared remote-temp guard both diagnostics (and grow-o11y-root.yml) import first.
+TMPFS_TASKS = yaml.safe_load((ROOT / "platform/playbooks/tasks/require-tmpfs-remote-tmp.yml").read_text())
+
 def test_both_diagnostics_require_writable_tmpfs_before_using_remote_modules():
     for name in ("diagnose-o11y-host-storage.yml", "diagnose-o11y-grafana-auth.yml"):
         plays = yaml.safe_load((ROOT / "platform/playbooks" / name).read_text())
@@ -385,7 +388,8 @@ def test_both_diagnostics_require_writable_tmpfs_before_using_remote_modules():
         assert receiver["vars"]["ansible_remote_tmp"] == "/dev/shm/ansible-tmp"
         assert receiver["environment"]["TMPDIR"] == "/dev/shm/ansible-tmp"
         assert receiver["become"] is False
-        raw = receiver["tasks"][0]
+        assert receiver["tasks"][0]["ansible.builtin.import_tasks"] == "tasks/require-tmpfs-remote-tmp.yml"
+        raw = TMPFS_TASKS[0]
         assert "ansible.builtin.raw" in raw
         script = raw["ansible.builtin.raw"]
         assert "findmnt" in script
@@ -407,7 +411,7 @@ def test_both_diagnostics_require_writable_tmpfs_before_using_remote_modules():
         assert raw["changed_when"] is False
         assert raw["check_mode"] is False
         assert subprocess.run(["sh", "-n"], input=script, text=True, capture_output=True).returncode == 0
-        assert receiver["tasks"][1]["ansible.builtin.assert"]["that"] == [
+        assert TMPFS_TASKS[1]["ansible.builtin.assert"]["that"] == [
             "ansible_remote_tmp == '/dev/shm/ansible-tmp'",
             "_remote_tmpfs_preflight.rc == 0",
             "_remote_tmpfs_preflight.stdout | trim == 'remote_tmpfs_ready'",
@@ -417,7 +421,8 @@ def test_both_diagnostics_require_writable_tmpfs_before_using_remote_modules():
 def test_existing_remote_tmp_allows_ansible_755_reruns_but_rejects_untrusted_modes(tmp_path):
     play = yaml.safe_load((ROOT / "platform/playbooks/diagnose-o11y-host-storage.yml").read_text())
     receiver = next(play for play in play if play.get("hosts") == "o11y_svc")
-    script = receiver["tasks"][0]["ansible.builtin.raw"]
+    assert receiver["tasks"][0]["ansible.builtin.import_tasks"] == "tasks/require-tmpfs-remote-tmp.yml"
+    script = TMPFS_TASKS[0]["ansible.builtin.raw"]
     parent = tmp_path / "shm"
     remote_tmp = parent / "ansible-tmp"
     remote_tmp.mkdir(parents=True)
