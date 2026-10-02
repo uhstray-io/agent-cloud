@@ -18,8 +18,24 @@ import yaml
 
 
 def target(volume: str) -> str:
-    # short syntax: source:target[:mode]
-    return volume.split(":")[1] if ":" in volume else volume
+    """The container path of a short-syntax volume, source:target[:mode]. A colon inside a
+    compose interpolation (`${CERTS:-./certs}`) is part of the source, not a separator."""
+    parts, cur, depth, i = [], "", 0, 0
+    while i < len(volume):
+        if volume.startswith("${", i):
+            depth, cur, i = depth + 1, cur + "${", i + 2
+            continue
+        c = volume[i]
+        if c == "}" and depth:
+            depth -= 1
+        if c == ":" and not depth:
+            parts.append(cur)
+            cur = ""
+        else:
+            cur += c
+        i += 1
+    parts.append(cur)
+    return parts[1] if len(parts) > 1 else parts[0]
 
 
 def add(text: str, service: str, volume: str) -> tuple[bool, str]:

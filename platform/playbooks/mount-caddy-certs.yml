@@ -18,8 +18,9 @@
 # A directory, not single files: a single-file bind mount pins the original inode, so a
 # certificate swapped by renewal would be invisible to the running container (see
 # manage-caddy-sites.yml). Inventory on the Caddy host: caddy_compose_dir, caddy_container,
-# caddy_probe_host, optional caddy_certs_dir and caddy_compose_file. Safe under --check,
-# which reports the plan and writes nothing.
+# caddy_probe_host, optional caddy_certs_dir. The file edited and recreated from is the one
+# the running container's compose labels name, never a guess. Safe under --check, which
+# reports the plan and writes nothing.
 
 - name: "Mount a read-only certificate directory into Caddy"
   hosts: "{{ target_service | default('caddy_svc') }}"
@@ -29,7 +30,9 @@
     _engine: "{{ container_engine | default('podman') }}"
     _container: "{{ caddy_container | default('caddy') }}"
     _compose_dir: "{{ caddy_compose_dir }}"
-    _compose_file: "{{ _compose_dir ~ '/' ~ (caddy_compose_file | default('compose.yml')) }}"
+    # The file the running container was created from (its compose label), else compose.yml.
+    _compose_file: "{{ _live.config_files if (_live.config_files | length > 0) else (_compose_dir ~ '/compose.yml') }}"
+    _up: "{{ _engine }} compose -f {{ _compose_file | quote }} up -d --force-recreate"
     _certs_src: "{{ caddy_certs_dir | default(_compose_dir ~ '/certs') }}"
     _certs_dst: /etc/caddy/certs
     _volume: "{{ _certs_src }}:{{ _certs_dst }}:ro"
@@ -53,6 +56,7 @@
           - >-
             {% raw %}{"working_dir": {{ json (index .Config.Labels "com.docker.compose.project.working_dir") }},
             "service": {{ json (index .Config.Labels "com.docker.compose.service") }},
+            "config_files": {{ json (index .Config.Labels "com.docker.compose.project.config_files") }},
             "mounts": [{{ range $i, $m := .Mounts }}{{ if $i }},{{ end }}{"source": {{ json $m.Source }},
             "destination": {{ json $m.Destination }}, "rw": {{ $m.RW }}}{{ end }}]}{% endraw %}
           - "{{ _container }}"
@@ -69,9 +73,14 @@
         that:
           - _live.working_dir == _compose_dir
           - _live.service | length > 0
+          # One file, in the declared directory: an override file or a file elsewhere is
+          # not something this play can edit safely.
+          - "',' not in _live.config_files"
+          - (_live.config_files | length == 0) or (_live.config_files | dirname) == _compose_dir
         fail_msg: >-
           {{ inventory_hostname }}: container {{ _container }} was started from
-          '{{ _live.working_dir }}' (service '{{ _live.service }}'), not caddy_compose_dir
+          '{{ _live.working_dir }}' (service '{{ _live.service }}', files
+          '{{ _live.config_files }}'), not one compose file in caddy_compose_dir
           '{{ _compose_dir }}'. Correct the declaration before changing a compose file.
         quiet: true
 
@@ -98,7 +107,8 @@
     - name: "Report what Caddy mounts and what changes"
       ansible.builtin.debug:
         msg: >-
-          {{ _container }} runs service '{{ _live.service }}' from {{ _live.working_dir }};
+          {{ _container }} runs service '{{ _live.service }}' from {{ _compose_file }}
+          {{- '' if _live.config_files else ' (no compose file label; assumed)' }};
           live mounts: {{ _live.mounts | map(attribute='destination') | join(', ') }};
           {{ _volume }}: {{ ('would be added; Caddy would be recreated' if ansible_check_mode
                              else 'adding; recreating Caddy') if _plan.changed else 'already declared' }}.
@@ -114,8 +124,9 @@
         path: "{{ _compose_file }}"
       register: _compose_stat
 
-    - name: "Write the compose file and recreate Caddy"
-      when: _plan.changed and not ansible_check_mode
+    # Write, recreate and both checks share one rollback: a check failing after the recreate
+    # restores the previous file too. Nothing is restored or recreated unless this run wrote.
+    - name: "Apply and verify the mount"
       block:
         - name: "Write the compose file, keeping a backup"
           ansible.builtin.copy:
@@ -124,12 +135,51 @@
             mode: "{{ _compose_stat.stat.mode }}"
             backup: true
           register: _written
+          when: _plan.changed and not ansible_check_mode
+
+        # A plain fact, not a handler: the recreate must run before the checks below it.
+        - name: "Note whether this run wrote the compose file"
+          ansible.builtin.set_fact:
+            _wrote: "{{ _written is changed }}"
 
         - name: "Recreate Caddy from the compose file"
-          ansible.builtin.command:
-            cmd: "{{ _engine }} compose up -d --force-recreate"
+          ansible.builtin.command: "{{ _up }}"
+          args:
             chdir: "{{ _compose_dir }}"
           changed_when: true
+          when: not ansible_check_mode and _wrote | bool
+
+        - name: "Wait for the admin API and a known route"
+          ansible.builtin.command: "{{ _engine }} exec {{ _container }} wget -qO- http://127.0.0.1:2019/config/"
+          register: _served
+          changed_when: false
+          retries: "{{ caddy_verify_retries | default(15) }}"
+          delay: "{{ caddy_verify_delay | default(4) }}"
+          until: _served.rc == 0 and (_probe in _served.stdout)
+          check_mode: false
+
+        - name: "Read the live mounts again"
+          ansible.builtin.command:
+            argv:
+              - "{{ _engine }}"
+              - inspect
+              - --format
+              - "{% raw %}{{ range .Mounts }}{{ .Destination }}|{{ .RW }}|{{ .Source }}{{ println }}{{ end }}{% endraw %}"
+              - "{{ _container }}"
+          register: _mounts_after
+          changed_when: false
+          check_mode: false
+
+        - name: "Refuse a Caddy without the read-only certificate mount"
+          ansible.builtin.assert:
+            that:
+              - (_certs_dst ~ '|false|' ~ _certs_src) in _mounts_after.stdout_lines
+            fail_msg: >-
+              {{ _container }} does not mount {{ _certs_src }} read-only at {{ _certs_dst }};
+              live: {{ _mounts_after.stdout_lines }}
+            quiet: true
+          # Under --check a mount this run would add is not on the container yet (MISTAKES 10.18).
+          when: not (ansible_check_mode and _plan.changed)
       rescue:
         - name: "Restore the previous compose file"
           ansible.builtin.copy:
@@ -137,46 +187,18 @@
             dest: "{{ _compose_file }}"
             remote_src: true
             mode: "{{ _compose_stat.stat.mode }}"
-          when: _written.backup_file is defined
+          when: _wrote | default(false) | bool and _written.backup_file is defined
 
-        - name: "Bring Caddy back up on the previous compose file"
-          ansible.builtin.command:
-            cmd: "{{ _engine }} compose up -d --force-recreate"
+        - name: "Recreate Caddy from the previous compose file"
+          ansible.builtin.command: "{{ _up }}"
+          args:
             chdir: "{{ _compose_dir }}"
           changed_when: true
+          when: not ansible_check_mode and _wrote | default(false) | bool
 
-        - name: "Fail after restoring"
+        - name: "Fail after rolling back"
           ansible.builtin.fail:
-            msg: "The recreate with {{ _volume }} failed; the previous compose file is restored and Caddy recreated from it."
-
-    - name: "Wait for the admin API and a known route"
-      ansible.builtin.command: "{{ _engine }} exec {{ _container }} wget -qO- http://127.0.0.1:2019/config/"
-      register: _served
-      changed_when: false
-      retries: 15
-      delay: 4
-      until: _served.rc == 0 and (_probe in _served.stdout)
-      check_mode: false
-
-    - name: "Read the live mounts again"
-      ansible.builtin.command:
-        argv:
-          - "{{ _engine }}"
-          - inspect
-          - --format
-          - "{% raw %}{{ range .Mounts }}{{ .Destination }}|{{ .RW }}|{{ .Source }}{{ println }}{{ end }}{% endraw %}"
-          - "{{ _container }}"
-      register: _mounts_after
-      changed_when: false
-      check_mode: false
-
-    - name: "Refuse a Caddy without the read-only certificate mount"
-      ansible.builtin.assert:
-        that:
-          - (_certs_dst ~ '|false|' ~ _certs_src) in _mounts_after.stdout_lines
-        fail_msg: >-
-          {{ _container }} does not mount {{ _certs_src }} read-only at {{ _certs_dst }};
-          live: {{ _mounts_after.stdout_lines }}
-        quiet: true
-      # Under --check a mount this run would add is not on the container yet (MISTAKES 10.18).
-      when: not (ansible_check_mode and _plan.changed)
+            msg: >-
+              '{{ ansible_failed_task.name }}' failed.
+              {{ 'The previous compose file is restored and Caddy recreated from it.'
+                 if (_wrote | default(false) | bool) else 'Nothing was changed by this run.' }}
