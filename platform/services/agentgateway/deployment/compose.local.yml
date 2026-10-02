@@ -45,10 +45,15 @@ services:
     # the step-ca chain. The bundle is distributed into ./certs by
     # tasks/distribute-ca-root.yml; rustls-native-certs reads SSL_CERT_FILE.
     # Local-only (prod's IdP chain is publicly trusted).
+    # The whole ./certs DIRECTORY, not the one file (production-internal-ca task 5.2): with
+    # listener TLS it also holds the server leaf, whose `current/` renewal swaps.
     volumes:
-      - ./certs/step-ca-bundle.crt:/etc/ssl/certs/step-ca-bundle.crt:ro
+      - ./certs:/certs:ro
     environment:
-      SSL_CERT_FILE: /etc/ssl/certs/step-ca-bundle.crt
+      SSL_CERT_FILE: /certs/step-ca-bundle.crt
+    # Rootful here, so userns keep-id does not apply: with listener TLS the deploy renders
+    # AGW_RUN_AS (the 0600 key's owner); otherwise the image's own non-root user.
+    user: "${AGW_RUN_AS:-65532:65532}"
   agentgateway-db:
     mem_limit: 256m
     security_opt:

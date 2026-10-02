@@ -53,6 +53,10 @@
     _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
     _branch: "{{ service_branch | default('main') }}"
     _bao_url: "{{ openbao_addr | default('') }}"
+    _tls: "{{ agw_listener_tls | default(false) | bool }}"
+    _server_leaf: "{{ agw_server_leaf | default('agw-server') }}"
+    _verifier_leaf: "{{ agw_verifier_leaf | default('agw-verifier') }}"
+    _allowlist: "{{ agw_client_cert_allowlist | default(['caddy']) }}"
     _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
     # The UI's OIDC client secret is owned by authentik (the IdP). Read-only, so the
@@ -99,6 +103,93 @@
       ansible.builtin.assert:
         that: not (agw_plaintext_keys | default(false) | bool) or (local_mode | default(false) | bool)
         fail_msg: "agw_plaintext_keys renders raw client keys into config.yaml; it is only allowed with local_mode: true."
+
+    # Listener TLS (production-internal-ca task 5.2, gateway task 6.1). Every check here runs
+    # before any file is rendered or any container restarted, so a bad declaration cannot take
+    # the gateway down. The SAN rule is rendered from these declarations (config.yaml.j2).
+    - name: "Refuse a client-certificate allowlist entry that names no declared client leaf"
+      ansible.builtin.assert:
+        that: _undeclared | length == 0
+        fail_msg: >-
+          agw_client_cert_allowlist names {{ _undeclared | join(', ') }}, which no internal_leaves
+          entry declares as a client-profile leaf; declare it in site-config or drop it from the list.
+        quiet: true
+      vars:
+        _undeclared: >-
+          {{ _allowlist | difference(internal_leaves | default([]) | selectattr('profile', 'equalto', 'client')
+             | map(attribute='name') | list) }}
+      when: _tls
+
+    - name: "Refuse listener TLS without the server leaf and the verifier declared for this host"
+      ansible.builtin.assert:
+        that:
+          - _srv | length == 1
+          - _srv[0].profile == 'server' and _srv[0].host == inventory_hostname
+          # The container mounts <deploy>/certs at /certs, so the leaf must live directly under it.
+          - _srv[0].dir == _deploy_dir ~ '/certs/' ~ _server_leaf
+          - _ver | length == 1
+          - _ver[0].profile == 'client' and _ver[0].host == inventory_hostname
+          # The deploy's own probes present the verifier: outside the allowlist they would be 403.
+          - _verifier_leaf in _allowlist
+          # The probes and Caddy verify the gateway by this name, so the leaf must carry it.
+          - (agw_tls_server_name | default('gateway.' ~ (dns_site | default('')) ~ '.' ~ (dns_zone | default('')))) in _srv[0].sans
+        fail_msg: >-
+          With agw_listener_tls, internal_leaves must declare `{{ _server_leaf }}` (server, host
+          {{ inventory_hostname }}, dir {{ _deploy_dir }}/certs/{{ _server_leaf }}) and `{{ _verifier_leaf }}`
+          (client, host {{ inventory_hostname }}), and agw_client_cert_allowlist must include {{ _verifier_leaf }}.
+        quiet: true
+      vars:
+        _srv: "{{ internal_leaves | default([]) | selectattr('name', 'equalto', _server_leaf) | list }}"
+        _ver: "{{ internal_leaves | default([]) | selectattr('name', 'equalto', _verifier_leaf) | list }}"
+      when: _tls
+
+    - name: "Read the issued server and verifier leaves"
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - "{{ _deploy_dir }}/certs/{{ _server_leaf }}/current/cert.pem"
+        - "{{ _deploy_dir }}/certs/{{ _server_leaf }}/current/key.pem"
+        - "{{ (internal_leaves | default([]) | selectattr('name', 'equalto', _verifier_leaf) | first).dir }}/current/cert.pem"
+      register: _leaf_files
+      when: _tls
+
+    - name: "Refuse listener TLS before its leaves are issued"
+      ansible.builtin.assert:
+        that: _leaf_files.results | rejectattr('stat.exists') | list | length == 0
+        fail_msg: >-
+          Issue the leaves first (Issue Internal Leaf (Dev), leaf_name={{ _server_leaf }} and
+          {{ _verifier_leaf }}); missing: {{ _leaf_files.results | rejectattr('stat.exists') | map(attribute='item') | join(', ') }}.
+        quiet: true
+      when: _tls
+
+    # Rootless production runs the gateway with userns keep-id (compose.tls.yml), so its
+    # non-root user (65532) owns the deploy account's files and can read the 0600 key
+    # (measured 2026-10-02 with podman-compose 1.0.6: without it, "Permission denied").
+    # `keep-id:uid=,gid=` needs podman 4.3 or later.
+    - name: "Read the podman version for keep-id"
+      ansible.builtin.command:
+        argv: ["{{ container_engine | default('podman') }}", version, --format, "{{ '{{.Client.Version}}' }}"]
+      register: _podman_version
+      changed_when: false
+      check_mode: false
+      when: _tls and not (local_mode | default(false) | bool)
+
+    - name: "Refuse keep-id on a podman older than 4.3"
+      ansible.builtin.assert:
+        that: _podman_version.stdout is version('4.3', '>=')
+        fail_msg: "Listener TLS needs podman 4.3 or later for userns keep-id; this host has {{ _podman_version.stdout }}."
+        quiet: true
+      when: _tls and not (local_mode | default(false) | bool)
+
+    # Local-dev runs the gateway on a rootful socket, where keep-id does not apply: the local
+    # overlay runs the container as the key owner instead (AGW_RUN_AS in .env).
+    - name: "Read the deploy account's uid:gid for the local key owner"
+      ansible.builtin.command:
+        argv: [sh, -c, 'printf "%s:%s" "$(id -u)" "$(id -g)"']
+      register: _key_owner
+      changed_when: false
+      check_mode: false
+      when: _tls and (local_mode | default(false) | bool)
 
     - name: "Require a declared o11y receiver for agentgateway tracing"
       ansible.builtin.assert:
@@ -174,12 +265,15 @@
     # The gateway's OIDC discovery/token calls reach the IdP at https://auth.<zone>:8443
     # (step-ca-minted leaf) — distribute the trust bundle into ./certs; compose.local.yml
     # mounts it and sets SSL_CERT_FILE. Local-only (prod IdP uses a public chain).
-    - name: "Distribute the step-ca root for OIDC TLS trust (local)"
+    # Local: the OIDC trust bundle. With listener TLS (any environment): the same bundle is the
+    # gateway's `tls.root` and the probes' `ca_path`, so production needs it too.
+    - name: "Distribute the step-ca trust bundle into ./certs"
       ansible.builtin.include_tasks: tasks/distribute-ca-root.yml
       vars:
         _ca_root_dest_dir: "{{ _deploy_dir }}"
-        _ca_engine: "{{ container_engine | default('podman') }}"
-      when: local_mode | default(false) | bool
+        _ca_host: "{{ inventory_hostname if (local_mode | default(false) | bool) else (groups['step_ca_svc'] | first) }}"
+        _ca_engine: "{{ container_engine | default('podman') if (local_mode | default(false) | bool) else omit }}"
+      when: (local_mode | default(false) | bool) or _tls
 
 # ── Phase 2: Container lifecycle ────────────────────────────────────────────
 - name: "Phase 2: Start agentgateway"
@@ -202,6 +296,11 @@
         # Semaphore path (detect_runtime derives it). NOT default(omit) — omit
         # leaks its placeholder into environment (rc 127).
         COMPOSE_CMD: "{{ local_compose_cmd | default('') }}"
+        # Listener TLS outside local-dev: mount ./certs and run under userns keep-id
+        # (compose.tls.yml). Local-dev's overlay already mounts ./certs.
+        COMPOSE_OVERLAYS: >-
+          {{ 'compose.tls.yml' if ((agw_listener_tls | default(false) | bool)
+             and not (local_mode | default(false) | bool)) else '' }}
       register: _deploy
       changed_when: true
       when: not ansible_check_mode
@@ -225,6 +324,15 @@
   vars:
     _engine: "{{ container_engine | default('podman') }}"
     _probe: "{{ _engine }} exec agentgateway-db wget -q -O - -T 5"
+    _tls: "{{ agw_listener_tls | default(false) | bool }}"
+    # The name the probes use with listener TLS: one of the server leaf's SANs, and the name
+    # Caddy verifies too (production-internal-ca amendment 2026-09-29).
+    _agw_server_name: "{{ agw_tls_server_name | default('gateway.' ~ (dns_site | default('')) ~ '.' ~ (dns_zone | default(''))) }}"
+    _agw_probe_ip: "{{ '127.0.0.1' if (agw_bind | default('127.0.0.1')) in ['0.0.0.0', '::', ''] else agw_bind | default('127.0.0.1') }}"
+    # The plain probe URL: the published port (an unspecified bind is reached on loopback);
+    # local-dev, where the target is the Semaphore container, declares agw_verify_base_url.
+    _plain_url: >-
+      {{ agw_verify_base_url | default('http://' ~ _agw_probe_ip ~ ':' ~ (agw_port | default('4000'))) }}
     _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
     _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
 
@@ -315,15 +423,47 @@
         - not ansible_check_mode
         - agw_otlp_host | default('') | length > 0
 
+    # All three probes below go through the one gateway probe path (tasks/agw-probe.yml, task
+    # 6.1a): a `uri` call from this host to the published port. With listener TLS it presents
+    # the verifier's client leaf and names the server leaf's SAN, which the interim hosts line
+    # maps to the published bind (task 7.2 removes it once internal DNS serves the name).
+    - name: "Probe path: the base URL, the presented leaf and the trust bundle"
+      ansible.builtin.set_fact:
+        _agwp_base: >-
+          {{ ('https://' ~ _agw_server_name ~ ':' ~ (agw_port | default('4000'))) if _tls else _plain_url }}
+        _agwp_leaf_dir: >-
+          {{ (internal_leaves | default([]) | selectattr('name', 'equalto', agw_verifier_leaf | default('agw-verifier'))
+             | map(attribute='dir') | first | default('')) if _tls else '' }}
+        _agwp_ca: "{{ _deploy_dir }}/certs/step-ca-bundle.crt"
+
+    - name: "Probe path: resolve the sudo password for the hosts line"
+      ansible.builtin.include_tasks: tasks/resolve-become-password.yml
+      when: _tls and not ansible_check_mode
+
+    - name: "Probe path: map the server leaf's name to the published bind (interim, task 7.2)"
+      ansible.builtin.lineinfile:
+        path: /etc/hosts
+        regexp: '# agent-cloud-managed: agw-probe \(interim, task 7\.2\)$'
+        line: "{{ _agw_probe_ip }} {{ _agw_server_name }} # agent-cloud-managed: agw-probe (interim, task 7.2)"
+      become: true
+      when: _tls and not ansible_check_mode
+
     - name: "An unenrolled request is refused at the gateway (401, never reaches the upstream)"
-      # No Authorization header: apiKey mode `strict` must refuse it. busybox wget
-      # exits 1 on an HTTP error and prints the status on stderr.
-      ansible.builtin.command: "{{ _probe }} -S http://{{ _gw_addr.stdout }}:4000/v1/models"
-      register: _noauth
-      changed_when: false
-      check_mode: false
+      ansible.builtin.include_tasks: tasks/agw-probe.yml
+      vars:
+        _agwp_path: /v1/models
+        _agwp_status: [401]
       when: not ansible_check_mode
-      failed_when: "'401' not in _noauth.stderr"
+
+    - name: "Require the keyless refusal"
+      ansible.builtin.assert:
+        that: (_agwp_out.status | int) == 401
+        fail_msg: >-
+          Keyless /v1/models at {{ _agwp_base }} answered {{ _agwp_out.status }} {{ _agwp_out.msg }};
+          strict API keys must refuse it with 401{{ ' (403 means the presented leaf is not on the
+          SAN allowlist)' if _tls else '' }}.
+        quiet: true
+      when: not ansible_check_mode
 
     # The keyed round-trip: one enrolled identity lists the served models and completes one
     # chat request, which the gateway can only answer by reaching agw_upstream_base_url. The
@@ -346,10 +486,7 @@
               | default({})).allowed_models
              | default(agw_models | map(attribute='name') | list)
              | intersect(agw_models | map(attribute='name') | list) }}
-        _verify_url: >-
-          {{ agw_verify_base_url | default('http://'
-             ~ ('127.0.0.1' if (agw_bind | default('127.0.0.1')) in ['0.0.0.0', '::', ''] else agw_bind | default('127.0.0.1'))
-             ~ ':' ~ (agw_port | default('4000'))) }}
+        _verify_url: "{{ _agwp_base }}"
 
     - name: "Keyed probes: the identity may use at least one declared model"
       ansible.builtin.assert:
@@ -360,16 +497,18 @@
         - _verify_client | length > 0
 
     - name: "An enrolled identity lists the served models"
-      ansible.builtin.uri:
-        url: "{{ _verify_url }}/v1/models"
-        headers:
-          Authorization: "Bearer {{ _resolved['client_' ~ _verify_client] }}"
-        timeout: 10
-        status_code: [200]
-        return_content: true
-      register: _keyed_models
-      failed_when: false
-      no_log: true
+      ansible.builtin.include_tasks: tasks/agw-probe.yml
+      vars:
+        _agwp_path: /v1/models
+        _agwp_status: [200]
+        _agwp_key: "{{ _resolved['client_' ~ _verify_client] }}"
+      when:
+        - not ansible_check_mode
+        - _verify_client | length > 0
+
+    - name: "Keyed probes: keep the listing's response"
+      ansible.builtin.set_fact:
+        _keyed_models: "{{ _agwp_out }}"
       when:
         - not ansible_check_mode
         - _verify_client | length > 0
@@ -384,7 +523,7 @@
     - name: "Keyed probes: note a policy refusal"
       ansible.builtin.set_fact:
         _verify_refused: >-
-          {{ (_keyed_models.status | default(-1)) == 429
+          {{ (_keyed_models.status | default(-1) | int) == 429
              and (_keyed_models.content | default('') | trim) == 'rate limit exceeded' }}
       when:
         - not ansible_check_mode
@@ -393,12 +532,12 @@
     - name: "Require every model this identity may use in the keyed listing"
       ansible.builtin.assert:
         that:
-          - _keyed_models.status == 200
+          - (_keyed_models.status | int) == 200
           - _verify_models is subset(_keyed_models.json.data | map(attribute='id') | list)
         fail_msg: >-
           Keyed /v1/models as {{ _verify_client }} at {{ _verify_url }}: expected
           {{ _verify_models | join(', ') }};
-          {% if _keyed_models.status == 200 %}listed
+          {% if (_keyed_models.status | int) == 200 %}listed
           {{ _keyed_models.json.data | map(attribute='id') | join(', ') }}{% else %}HTTP
           {{ _keyed_models.status }} {{ _keyed_models.msg | default('') }}{% endif %}
       when:
@@ -407,22 +546,25 @@
         - not (_verify_refused | bool)
 
     - name: "An enrolled identity completes one chat request through the upstream"
-      ansible.builtin.uri:
-        url: "{{ _verify_url }}/v1/chat/completions"
-        method: POST
-        headers:
-          Authorization: "Bearer {{ _resolved['client_' ~ _verify_client] }}"
-        body_format: json
-        body:
+      ansible.builtin.include_tasks: tasks/agw-probe.yml
+      vars:
+        _agwp_path: /v1/chat/completions
+        _agwp_method: POST
+        _agwp_status: [200]
+        _agwp_timeout: 120
+        _agwp_key: "{{ _resolved['client_' ~ _verify_client] }}"
+        _agwp_body:
           model: "{{ _verify_models[0] }}"
           max_tokens: 64
           messages: [{role: user, content: "Reply with one word: pong"}]
-        timeout: 120
-        status_code: [200]
-        return_content: true
-      register: _keyed_chat
-      failed_when: false
-      no_log: true
+      when:
+        - not ansible_check_mode
+        - _verify_client | length > 0
+        - not (_verify_refused | bool)
+
+    - name: "Keyed probes: keep the completion's response"
+      ansible.builtin.set_fact:
+        _keyed_chat: "{{ _agwp_out }}"
       when:
         - not ansible_check_mode
         - _verify_client | length > 0
@@ -431,12 +573,12 @@
     - name: "Keyed probes: note a policy refusal of the completion"
       ansible.builtin.set_fact:
         _verify_refused: >-
-          {{ (_keyed_chat.status | default(-1)) == 429
+          {{ (_keyed_chat.status | default(-1) | int) == 429
              and (_keyed_chat.content | default('') | trim) == 'rate limit exceeded' }}
       when:
         - not ansible_check_mode
         - _verify_client | length > 0
-        - _keyed_chat is not skipped
+        - _keyed_chat is defined
 
     - name: "Refuse to report success when the round-trip was not proven"
       ansible.builtin.assert:
@@ -455,7 +597,7 @@
       # upstream's own served name (local-dev: openai/gpt-oss-20b), and usage is its count.
       ansible.builtin.assert:
         that:
-          - _keyed_chat.status == 200
+          - (_keyed_chat.status | int) == 200
           - _keyed_chat.json.object == 'chat.completion'
           - _keyed_chat.json.choices | length > 0
           - (_keyed_chat.json.usage.completion_tokens | default(0) | int) > 0

@@ -24,6 +24,29 @@
    admin listener still carries its own unauthenticated UI copy on the container
    loopback, which is never published. #}
 {% set _ui = agw_ui_enabled | default(true) | bool %}
+{# agw_listener_tls (default false; production-internal-ca task 5.2, gateway task 6.1): both
+   listeners serve HTTPS from the step-ca-issued server leaf in the mounted /certs directory
+   (`current/` is swapped by renewal; the image has no shell) and require a client certificate
+   from the internal CA (`root`). `root` alone admits any leaf the CA signs, so each gateway also
+   carries a `require` rule over the client certificate's SANs: the client-profile leaves named in
+   agw_client_cert_allowlist (default caddy alone), resolved to their declared SANs in site-config
+   `internal_leaves`. Measured on v1.5.0 (2026-10-02): no client certificate fails the handshake; a
+   certificate outside the list is 403 even with a valid API key, because the rule runs before key
+   authentication; an allowlisted one then needs its key (401 without). deploy-agentgateway.yml
+   refuses an allowlist entry that names no declared client leaf, before any restart. #}
+{% set _tls = agw_listener_tls | default(false) | bool %}
+{% set _allow_sans = internal_leaves | default([]) | selectattr('profile', 'equalto', 'client')
+     | selectattr('name', 'in', agw_client_cert_allowlist | default(['caddy']))
+     | map(attribute='sans') | flatten | unique | sort %}
+{% macro listener_tls() %}
+    tls:
+      cert: /certs/{{ agw_server_leaf | default('agw-server') }}/current/cert.pem
+      key: /certs/{{ agw_server_leaf | default('agw-server') }}/current/key.pem
+      root: /certs/step-ca-bundle.crt
+    authorization:
+      rules:
+        - require: 'source.subjectAltNames.exists(n, n in {{ _allow_sans | to_json | replace("'", "") }})'
+{% endmacro %}
 # yaml-language-server: $schema=https://agentgateway.dev/schema/config
 config:
   # Bind on all container interfaces; compose publishes them on the host binds
@@ -56,9 +79,15 @@ config:
 gateways:
   default:
     port: 4000
+{% if _tls %}
+{{ listener_tls() }}
+{%- endif %}
 {% if _ui %}
   ui:
     port: 4001
+{% if _tls %}
+{{ listener_tls() }}
+{%- endif %}
 
 ui:
   gateways: ui
