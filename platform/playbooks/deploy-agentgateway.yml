@@ -279,7 +279,6 @@
       register: _cfg_left_raw
       changed_when: false
       failed_when: false
-      no_log: true  # reads a file that may hold client keys; -q prints nothing, rc is the answer
       when:
         - _keep_previous and not ansible_check_mode
         - _cfg_before.results[1].stat.exists
@@ -330,7 +329,6 @@
       register: _cfg_staged_raw
       changed_when: false
       failed_when: false
-      no_log: true  # reads a file that may hold client keys; -q prints nothing, rc is the answer
       when:
         - _keep_previous and not ansible_check_mode
         - _cfg_after.results[1].stat.exists
