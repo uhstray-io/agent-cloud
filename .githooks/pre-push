@@ -52,7 +52,7 @@
 # (docs/MISTAKES.md §5.11). The lock is a hard-linked file under the shared git dir, so
 # every worktree of the repository sees it; different branches never block each other.
 # A lock whose owner process is gone is reclaimed automatically. If the lock itself
-# cannot be taken (unwritable git dir), the hook warns and proceeds without it — the
+# cannot be taken (unwritable git dir, no hard links), the hook warns and proceeds — the
 # same fail-open contract as above, but loud: the warning says a concurrent push of the
 # branch would not be refused.
 
@@ -112,6 +112,12 @@ trap 'pp_release_locks; exit 129' HUP
 trap 'pp_release_locks; exit 130' INT
 trap 'pp_release_locks; exit 143' TERM
 
+# Print $1 as ONE single-quoted shell word ('\'' for each embedded quote), so a printed
+# recovery command stays correct for a path with spaces or quotes. POSIX sh has no %q.
+pp_shquote() {
+  printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
+}
+
 pp_refuse() {  # $1 ref, $2 lock path, $3 reason
   printf '\n' >&2
   printf 'PUSH REFUSED: %s\n' "$3" >&2
@@ -125,12 +131,12 @@ pp_refuse() {  # $1 ref, $2 lock path, $3 reason
   printf '\n' >&2
   printf '  This is docs/MISTAKES.md §5.11. Wait for that push to EXIT — check its exit\n' >&2
   printf '  status or the process table, never how its output looks — then push again.\n' >&2
-  printf '  If no such push is running, remove the lock:  rm -rf %s\n' "$2" >&2
+  printf '  If no such push is running, remove the lock:  rm -rf %s\n' "$(pp_shquote "$2")" >&2
   printf '\n' >&2
 }
 
 # Returns 0 when held, 1 when another live push holds it (refusal printed), 2 when the
-# lock could not be attempted at all.
+# lock could not be taken for a reason other than another push holding it.
 pp_acquire() {  # $1 lock name, $2 ref
   _lock="$lock_dir/$1.lock"
   _tmp="$lock_dir/$1.$$.tmp"
@@ -138,6 +144,16 @@ pp_acquire() {  # $1 lock name, $2 ref
       "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$_tmp"; } 2>/dev/null || { rm -f "$_tmp"; return 2; }
   if ln "$_tmp" "$_lock" 2>/dev/null; then
     rm -f "$_tmp"; held_locks="$held_locks $1"; return 0
+  fi
+  # ln failed. Only an EXISTING lock means another push: with no lock there, either the
+  # holder released it a moment ago, or linking itself fails (no hard links on this
+  # filesystem, a permission problem). One retry tells the two apart; a link that still
+  # fails with no lock present is a lock-infrastructure failure, not contention.
+  if [ ! -e "$_lock" ]; then
+    if ln "$_tmp" "$_lock" 2>/dev/null; then
+      rm -f "$_tmp"; held_locks="$held_locks $1"; return 0
+    fi
+    if [ ! -e "$_lock" ]; then rm -f "$_tmp"; return 2; fi
   fi
   _owner=$(sed -n 1p "$_lock" 2>/dev/null)
   # Two refs of this push that sanitize to one name: already ours.
@@ -177,8 +193,10 @@ if [ -n "$_gcd" ] && _gcd=$(cd "$_gcd" 2>/dev/null && pwd -P) \
   lock_dir="$_gcd/pre-push-locks"
 fi
 for _ref in $push_refs; do
-  # Ref names cannot contain spaces or glob characters; the name keeps a safe subset.
-  _name=$(printf '%s' "$_ref" | sed 's#^refs/heads/##; s/[^A-Za-z0-9._-]/_/g')
+  # Ref names cannot contain spaces or glob characters; the readable part keeps a safe
+  # subset, which is lossy (feature/a and feature_a both become feature_a), so the name
+  # also carries a checksum of the EXACT ref and distinct branches never share a lock.
+  _name=$(printf '%s' "$_ref" | sed 's#^refs/heads/##; s/[^A-Za-z0-9._-]/_/g')-$(printf '%s' "$_ref" | cksum | awk '{print $1}')
   _rc=2
   [ -n "$lock_dir" ] && { pp_acquire "$_name" "$_ref"; _rc=$?; }
   case "$_rc" in

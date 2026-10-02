@@ -21,9 +21,7 @@ setup() {
   HOOK_SH=${HOOK_SH:-sh}
   T="$BATS_TEST_TMPDIR"
   mkdir -p "$T/fakebin"
-  git init -q "$T/repo"
-  mkdir -p "$T/repo/platform/tests"   # so the hook reaches its BATS step
-  LOCKS="$T/repo/.git/pre-push-locks"
+  use_repo "$T/repo"
   # Fake bats: records that the suite started, then, when FAKE_BATS_HOLD names a file,
   # stays "running" until that file exists (bounded, so a broken test cannot hang CI).
   cat > "$T/fakebin/bats" <<'SH'
@@ -44,6 +42,21 @@ teardown() {
   [ -n "$BG_PID" ] && wait "$BG_PID" 2>/dev/null || true
 }
 
+# Point the helpers at a fresh scratch repository at path $1.
+use_repo() {
+  REPO=$1
+  git init -q "$REPO"
+  mkdir -p "$REPO/platform/tests"   # so the hook reaches its BATS step
+  LOCKS="$REPO/.git/pre-push-locks"
+}
+
+# The lock file the hook uses for branch $1: readable name plus a checksum of the ref.
+lockfile() {
+  local ref="refs/heads/$1"
+  printf '%s/%s-%s.lock' "$LOCKS" "$(printf '%s' "${1}" | sed 's/[^A-Za-z0-9._-]/_/g')" \
+    "$(printf '%s' "$ref" | cksum | awk '{print $1}')"
+}
+
 # One push line per ref, as git writes them on the hook's stdin.
 refline() { echo "refs/heads/$1 1111111111111111111111111111111111111111 refs/heads/$1 0000000000000000000000000000000000000000"; }
 
@@ -53,13 +66,13 @@ push() {
   local envs=() b
   while [ $# -gt 0 ] && [[ "$1" == *=* ]]; do envs+=("$1"); shift; done
   for b in "$@"; do refline "$b"; done \
-    | (cd "$T/repo" && env ${envs[@]+"${envs[@]}"} PATH="$T/fakebin:$PATH" \
+    | (cd "$REPO" && env ${envs[@]+"${envs[@]}"} PATH="$T/fakebin:$PATH" \
         "$HOOK_SH" "$HOOK" origin https://example.invalid/repo.git)
 }
 
 # Start a push of branch $1 that stays inside its suite until $T/release exists.
 start_holding_push() {
-  ( refline "$1" | (cd "$T/repo" && FAKE_BATS_STARTED="$T/started" FAKE_BATS_HOLD="$T/release" \
+  ( refline "$1" | (cd "$REPO" && FAKE_BATS_STARTED="$T/started" FAKE_BATS_HOLD="$T/release" \
       PATH="$T/fakebin:$PATH" exec "$HOOK_SH" "$HOOK" origin https://example.invalid/repo.git) \
       > "$T/first.out" 2>&1 ) &
   BG_PID=$!
@@ -82,7 +95,7 @@ assert_no_locks() {
   assert_contains "$output" 'PUSH REFUSED'
   assert_contains "$output" 'refs/heads/feat'
   # The refusal names the push that holds the branch.
-  holder=$(sed -n 1p "$LOCKS/feat.lock")
+  holder=$(sed -n 1p "$(lockfile feat)")
   assert_contains "$output" "pid $holder"
   : > "$T/release"
   wait "$BG_PID"; rc=$?; BG_PID=""
@@ -96,16 +109,16 @@ assert_no_locks() {
   [ "$status" -eq 0 ] || { echo "other branch blocked: $output"; false; }
   refute_contains "$output" 'PUSH REFUSED'
   # The first push's lock is untouched, and the second left none of its own.
-  [ -f "$LOCKS/feat.lock" ]
-  [ ! -e "$LOCKS/other.lock" ]
+  [ -f "$(lockfile feat)" ]
+  [ ! -e "$(lockfile other)" ]
 }
 
 @test "pre-push lock: a refused multi-branch push releases the locks it already took" {
   start_holding_push feat
   run push aaa feat
   [ "$status" -ne 0 ] || { echo "push holding feat was allowed: $output"; false; }
-  [ ! -e "$LOCKS/aaa.lock" ] || { echo "aaa lock leaked by a refused push"; false; }
-  [ -f "$LOCKS/feat.lock" ]
+  [ ! -e "$(lockfile aaa)" ] || { echo "aaa lock leaked by a refused push"; false; }
+  [ -f "$(lockfile feat)" ]
 }
 
 @test "pre-push lock: a stale lock whose pid is gone is reclaimed" {
@@ -113,7 +126,7 @@ assert_no_locks() {
   sh -c 'exit 0' & dead=$!
   wait "$dead" || true
   kill -0 "$dead" 2>/dev/null && skip "pid $dead was reused immediately"
-  printf '%s\nref=refs/heads/feat remote=origin started=then\n' "$dead" > "$LOCKS/feat.lock"
+  printf '%s\nref=refs/heads/feat remote=origin started=then\n' "$dead" > "$(lockfile feat)"
   run push feat
   [ "$status" -eq 0 ] || { echo "stale lock not reclaimed: $output"; false; }
   assert_contains "$output" 'reclaimed a stale lock'
@@ -147,9 +160,40 @@ assert_no_locks() {
 
 @test "pre-push lock: released when the push is interrupted (TERM)" {
   start_holding_push feat
-  hook_pid=$(sed -n 1p "$LOCKS/feat.lock")
+  hook_pid=$(sed -n 1p "$(lockfile feat)")
   kill -TERM "$hook_pid"
   : > "$T/release"   # let the foreground suite end so the shell runs its trap
   wait "$BG_PID" || true; BG_PID=""
+  assert_no_locks
+}
+
+@test "pre-push lock: branches whose names sanitize alike do not share a lock" {
+  start_holding_push feature/a
+  run push feature_a
+  [ "$status" -eq 0 ] || { echo "feature_a blocked by feature/a: $output"; false; }
+  refute_contains "$output" 'PUSH REFUSED'
+  [ -f "$(lockfile feature/a)" ]
+}
+
+@test "pre-push lock: the printed recovery command works for a path with spaces and quotes" {
+  use_repo "$T/it's my repo"
+  start_holding_push feat
+  run push feat
+  [ "$status" -ne 0 ] || { echo "second push was allowed: $output"; false; }
+  cmd=$(printf '%s\n' "$output" | sed -n 's/.*remove the lock:  //p')
+  [ -n "$cmd" ] || { echo "no recovery command printed: $output"; false; }
+  # Run exactly what the operator would paste; it must remove that one lock.
+  sh -c "$cmd"
+  [ ! -e "$(lockfile feat)" ] || { echo "printed command did not remove the lock: $cmd"; false; }
+}
+
+@test "pre-push lock: a link failure with no lock present warns and proceeds" {
+  # An ln that always fails, without any lock existing: no hard links on this filesystem.
+  printf '#!/usr/bin/env sh\nexit 1\n' > "$T/fakebin/ln"
+  chmod +x "$T/fakebin/ln"
+  run push feat
+  [ "$status" -eq 0 ] || { echo "infrastructure failure refused the push: $output"; false; }
+  assert_contains "$output" 'Continuing WITHOUT it'
+  refute_contains "$output" 'PUSH REFUSED'
   assert_no_locks
 }
