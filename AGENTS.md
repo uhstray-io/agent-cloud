@@ -501,14 +501,20 @@ environment before operations; a checked-in deploy path is not proof it is runni
 
 ### Branch Workflow
 
-> **NEVER push, open a pull request, or merge one unless the user explicitly authorizes that
-> specific action — every push, every PR, every merge, every time.**
-> Agents may create a branch and commit locally, but **push, `gh pr create`, and `gh pr merge`
-> are each user-gated actions**: stop and ask ("branch ready — push it? open the PR?"). An
-> approval covers exactly the actions it names, on the branch/PR it names — a previously
-> approved sibling cycle authorizes nothing (`docs/MISTAKES.md` §5.7). This applies to
-> feature→`dev` PRs and `dev`→`main` promotion PRs alike, and to pushing follow-up commits
-> to a PR already under review.
+> **Pushing a feature branch needs no approval. Force-pushing is forbidden.**
+> Agents may push their own feature branches (`git push -u origin <type>/<description>`),
+> and follow-up commits to them, without asking (operator decision, 2026-10-02). Never
+> force-push: no `--force`, `--force-with-lease`, `-f` or `+<refspec>`. The operator's agent
+> settings deny those commands, and `protect-main` refuses force pushes to `main` on the
+> server. Never push directly to `main` or `dev`.
+>
+> **Opening a pull request (`gh pr create`) and merging one (`gh pr merge`) still need the
+> user's authorization.** Authorization is either per action ("open the PR", "merge 370") or
+> a standing grant the user states for the session that names the action and its conditions
+> ("PRs can be merged if all green after 1 review cycle from CodeRabbit"). A grant covers only
+> what it names. A direction to do the work authorizes neither, and an earlier approved cycle
+> authorizes nothing (`docs/MISTAKES.md` §5.7). This applies to feature→`dev` PRs and
+> `dev`→`main` promotion PRs alike.
 
 **Promotion cycle: `<feature-branch>` → `dev` → `main` (production). All changes go through pull requests — never push directly to `main` or `dev`.**
 
