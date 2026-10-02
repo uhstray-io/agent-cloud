@@ -18,7 +18,9 @@
 #
 # A directory, not single files: a single-file bind mount pins the original inode, so a
 # certificate swapped by renewal would be invisible to the running container (see
-# manage-caddy-sites.yml). Inventory on the Caddy host: caddy_compose_dir, caddy_container,
+# manage-caddy-sites.yml). It also places the internal CA's trust bundle there
+# (step-ca-bundle.crt), which Caddy verifies the gateway's server leaf against.
+# Inventory on the Caddy host: caddy_compose_dir, caddy_container,
 # caddy_probe_host, optional caddy_certs_dir. The file edited and recreated from is the one
 # the running container's compose labels name, never a guess. Safe under --check, which
 # reports the plan and writes nothing.
@@ -133,6 +135,21 @@
         path: "{{ _certs_src }}"
         state: directory
         mode: "0755"
+
+    # The bundle Caddy verifies the gateway's server leaf against (gateway task 6.2:
+    # `tls_trust_pool file /etc/caddy/certs/step-ca-bundle.crt`). Read from the CA and
+    # rewritten in place only when it differs (tasks/distribute-ca-root.yml); safe under --check.
+    - name: "Require exactly one internal CA host"
+      ansible.builtin.assert:
+        that: (groups['step_ca_svc'] | default([]) | length) == 1
+        fail_msg: "The inventory must hold exactly one step_ca_svc host to source Caddy's trust bundle."
+        quiet: true
+
+    - name: "Place the internal CA's trust bundle in the certificate directory"
+      ansible.builtin.include_tasks: tasks/distribute-ca-root.yml
+      vars:
+        _ca_bundle_dest: "{{ _certs_src }}/step-ca-bundle.crt"
+        _ca_host: "{{ groups['step_ca_svc'] | first }}"
 
     - name: "Read the compose file's mode"
       ansible.builtin.stat:

@@ -51,6 +51,10 @@ elif a[0] == "compose":
                        "destination": dst, "rw": mode != ["ro"]})
     s["mounts"] = mounts
     state.write_text(json.dumps(s))
+elif a[0] == "exec" and a[1] == "step-ca":
+    # The CA's root and intermediate, as tasks/distribute-ca-root.yml reads them.
+    print("-----BEGIN CERTIFICATE-----\nROOT\n-----END CERTIFICATE-----")
+    print("-----BEGIN CERTIFICATE-----\nINTERMEDIATE\n-----END CERTIFICATE-----")
 elif a[0] == "exec":
     if s.get("fail_exec_with") and any(m["destination"] == s["fail_exec_with"] for m in s["mounts"]):
         sys.exit("admin API down")
@@ -80,7 +84,10 @@ def _run(tmp: Path, check: bool = False, groups: dict | None = None, **hostvars)
             "container_engine": str(tmp / "engine"), "caddy_compose_dir": str(tmp / "caddy"),
             "caddy_container": "caddy", "caddy_probe_host": "auth.example.test",
             "caddy_verify_retries": 1, "caddy_verify_delay": 0, **hostvars}
-    children = {"caddy_svc": {"hosts": {"c": host}}} if groups is None else groups
+    ca = {"ansible_connection": "local", "ansible_python_interpreter": sys.executable,
+          "container_engine": str(tmp / "engine")}
+    children = ({"caddy_svc": {"hosts": {"c": host}}, "step_ca_svc": {"hosts": {"ca": ca}}}
+                if groups is None else groups)
     (tmp / "inv.yml").write_text(yaml.safe_dump({"all": {"children": children}}))
     env = {**harness_sandbox.env_for(tmp), "STUB_STATE": str(tmp / "state.json")}
     cmd = ["ansible-playbook", "-i", str(tmp / "inv.yml"), str(PLAYBOOK), *(["--check"] if check else [])]
@@ -103,6 +110,8 @@ def test_the_mount_is_added_once_and_caddy_recreated_once(tmp_path):
     assert text.replace(f"      - {cdir}/certs:/etc/caddy/certs:ro\n", "") == COMPOSE
     assert oct((cdir / "compose.yml").stat().st_mode & 0o777) == "0o640"
     assert (cdir / "certs").is_dir() and _ups(tmp_path) == 1
+    # The trust bundle Caddy verifies the gateway against: the CA's root and intermediate.
+    assert (cdir / "certs" / "step-ca-bundle.crt").read_text().count("BEGIN CERTIFICATE") == 2
 
     again = _run(tmp_path)
     assert again.returncode == 0 and "changed=0" in again.stdout, again.stdout
@@ -116,6 +125,7 @@ def test_a_dry_run_reports_the_plan_and_changes_nothing(tmp_path):
     assert "would be added; Caddy would be recreated" in r.stdout
     assert (cdir / "compose.yml").read_text() == COMPOSE
     assert not (cdir / "certs").exists() and _ups(tmp_path) == 0
+    assert "step-ca-bundle.crt would be rewritten with the CA's current root and intermediate" in r.stdout
 
 
 def test_a_caddy_started_from_another_directory_is_refused(tmp_path):

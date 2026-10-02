@@ -99,9 +99,46 @@ setup() {
   # Token streaming and the prompt-size cap.
   assert_grep -qE '^[[:space:]]*flush_interval -1$' "$b"
   assert_grep -qE '^[[:space:]]*max_size 16MB$' "$b"
-  # The upstream comes from the route, never a literal.
-  assert_grep -qF 'reverse_proxy {{ r.upstream }}' "$b"
+  # The upstream comes from the route, never a literal (directly, or through the
+  # upstream() macro that adds mutual TLS for an `upstream_tls` route).
+  assert_grep -qE "reverse_proxy (\{\{ 'https://' if r\.upstream_tls is defined else '' \}\})?\{\{ r\.upstream \}\}" "$b"
+  assert_grep -qF 'reverse_proxy {{ upstream(r,' "$b"
   refute_grep -qE 'reverse_proxy [0-9]' "$b"
+}
+
+_render_caddy() {  # renders $DEPLOY_DIR/templates/Caddyfile.local.j2 with the given routes YAML
+  command -v ansible-playbook >/dev/null || skip "ansible-playbook not installed"
+  cat >"$BATS_TEST_TMPDIR/render.yml" <<YML
+- hosts: localhost
+  gather_facts: false
+  vars:
+    caddy_tls_cert: /etc/caddy/certs/wildcard.crt
+    caddy_tls_key: /etc/caddy/certs/wildcard.key
+    caddy_routes: $1
+  tasks:
+    - ansible.builtin.template: {src: "$DEPLOY_DIR/templates/Caddyfile.local.j2", dest: "$BATS_TEST_TMPDIR/Caddyfile", mode: "0644"}
+YML
+  ansible-playbook -i localhost, -c local "$BATS_TEST_TMPDIR/render.yml" >/dev/null
+}
+
+@test "caddy: an upstream_tls route proxies over mutual TLS with the mounted client leaf (task 6.2)" {
+  _render_caddy '[{host: a.test, upstream: "gw:4001", upstream_tls: {server_name: gateway.dc1.example.internal, client_leaf: caddy}}, {host: i.test, upstream: "gw:4000", inference_api: true, upstream_tls: {server_name: gateway.dc1.example.internal, client_leaf: caddy}}]'
+  local c="$BATS_TEST_TMPDIR/Caddyfile"
+  # Every upstream to the gateway is https, never a plain dial (the /v1 handle, /health, the UI).
+  [ "$(grep -c 'reverse_proxy https://gw:400' "$c")" -eq 3 ]
+  refute_grep -qE 'reverse_proxy gw:' "$c"
+  [ "$(grep -c 'tls_server_name gateway.dc1.example.internal$' "$c")" -eq 3 ]
+  [ "$(grep -c 'tls_trust_pool file /etc/caddy/certs/step-ca-bundle.crt$' "$c")" -eq 3 ]
+  [ "$(grep -c 'tls_client_auth /etc/caddy/certs/caddy/current/cert.pem /etc/caddy/certs/caddy/current/key.pem$' "$c")" -eq 3 ]
+  # The /v1 route keeps its streaming transport settings beside the TLS ones.
+  assert_grep -qE '^[[:space:]]*dial_timeout 5s$' "$c"
+}
+
+@test "caddy: a route without upstream_tls renders exactly as before (plain proxy)" {
+  _render_caddy '[{host: p.test, upstream: "x:1"}]'
+  local c="$BATS_TEST_TMPDIR/Caddyfile"
+  assert_grep -qE $'^\treverse_proxy x:1$' "$c"
+  refute_grep -qE 'tls_client_auth|tls_trust_pool|https://x' "$c"
 }
 
 @test "caddy: env template prod defaults match the compose defaults" {
