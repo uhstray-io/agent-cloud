@@ -73,6 +73,43 @@ series to exist in Prometheus. A different failed instance does not mask this
 target's result; a service-wide check without an instance still requires every
 scrape to be healthy. Keep the separate Loki log receipt for log shippers.
 
+## Inference dashboards and alerts
+
+Three provisioned dashboards cover the DGX Spark pair: `inference-latency-capacity`
+(first-token, end-to-end, inter-token, queue, prefill and decode latency; running and
+waiting requests; KV-cache use; preemptions; token throughput), `inference-fleet-health`
+(scrape health, memory headroom against the memory guard's thresholds, CPU, load, root
+filesystem and the vLLM journal from Loki), and `inference-placement-comparison`
+(the same signals against an earlier window, with a link to the dgx-spark `results/`
+run manifests). Each has a `model_alias` variable. vLLM labels its series with
+`model_name`, which carries the served model name, so the variable filters on that
+label; Loki streams carry the same value as `model_alias`.
+
+Every `vllm:` name the dashboards and alert rules use must appear in
+`platform/tests/fixtures/vllm-metric-names-506e66caa3ef.txt`, a vendored copy of the
+list dgx-spark recorded from the running image. Every `node_` name must appear in
+`platform/tests/fixtures/node-exporter-metric-names-v1.12.1.txt`. The o11y BATS suite
+enforces both. When dgx-spark re-pins the vLLM image and records a new list, replace the
+fixture and fix any panel that names a metric the new list no longer has.
+
+The alert template adds three groups only when `dgx_spark_scrape_enabled` is true, so
+local renders never carry rules without a producer:
+
+- `inference-failing`: requests are waiting while vLLM has generated no tokens for five
+  minutes. Health can still answer while this fires.
+- `memory-thermal`: a node's `MemAvailable` stays under the memory guard's stall line
+  (512 MiB) or its `MemFree` stays under the guard's floor (1 GiB) for five minutes. The
+  guard kills the serving container well inside that time, so the alert means the guard
+  did not recover the node. Override the lines with `o11y_dgx_spark_memavailable_stall_bytes`
+  and `o11y_dgx_spark_memfree_floor_bytes` if dgx-spark changes them. Thermal rules wait for
+  the GPU exporter, which is not scraped yet.
+- `benchmark-gate`: one placeholder rule that evaluates a constant and stays paused until
+  the dgx-spark benchmark manifest writer publishes a metric.
+
+Every rule holds for at least five minutes and routes to the existing `agent-cloud-ops`
+Discord contact point. Their uids start with `inference_`, so the deploy readback and the
+drills, which check only the `o11y_` rules, do not cover them yet.
+
 ## Local alert-delivery canary
 
 After `Seed o11y Alert Webhook (Dev)` stores the approved webhook in OpenBao,

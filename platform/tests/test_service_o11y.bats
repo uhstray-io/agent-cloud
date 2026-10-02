@@ -1939,3 +1939,148 @@ assert not all(condition(**expanded) for condition in clean_conditions)
 assert clean_tasks[1]['name'] == 'Destroy existing deployment'
 PY
 }
+
+@test "o11y: inference dashboards use only recorded vLLM and node-exporter metric names" {
+  python3 - "$DEPLOY_DIR/config/grafana/dashboards" "$REPO_ROOT/platform/tests/fixtures" <<'PY'
+import json
+import pathlib
+import re
+import sys
+
+dashboards = pathlib.Path(sys.argv[1])
+fixtures = pathlib.Path(sys.argv[2])
+
+
+def names(path):
+    return {line.strip() for line in path.read_text().splitlines() if line.strip() and not line.startswith('#')}
+
+
+vllm_names = names(fixtures / 'vllm-metric-names-506e66caa3ef.txt')
+node_names = names(fixtures / 'node-exporter-metric-names-v1.12.1.txt')
+assert len(vllm_names) == 110 and all(name.startswith('vllm:') for name in vllm_names)
+assert 'node_memory_MemAvailable_bytes' in node_names
+
+expected = {'inference-latency-capacity', 'inference-fleet-health', 'inference-placement-comparison'}
+files = {path.stem: path for path in dashboards.glob('inference-*.json')}
+assert set(files) == expected, sorted(files)
+used_vllm = set()
+for uid, path in files.items():
+    dashboard = json.loads(path.read_text())
+    assert dashboard['uid'] == uid
+    variables = {variable['name']: variable for variable in dashboard['templating']['list']}
+    assert 'model_alias' in variables, uid
+    assert variables['model_alias']['query']['query'].startswith('label_values(vllm:num_requests_running{job="dgx-spark-vllm"')
+    assert variables['model_alias']['query']['query'].endswith(', model_name)')
+    assert any(link['url'] == 'https://github.com/uhstray-io/dgx-spark/tree/main/results' for link in dashboard['links'])
+    ids = [panel['id'] for panel in dashboard['panels']]
+    assert len(ids) == len(set(ids)), uid
+    exprs = [variables['model_alias']['query']['query']]
+    for panel in dashboard['panels']:
+        if panel['type'] == 'text':
+            continue
+        assert panel['datasource']['uid'] in {'prometheus', 'loki'}, (uid, panel['title'])
+        assert panel['targets'], (uid, panel['title'])
+        for target in panel['targets']:
+            if panel['datasource']['uid'] == 'loki':
+                assert target['expr'].startswith('{cluster="dgx-spark", service="vllm"}'), target['expr']
+                continue
+            exprs.append(target['expr'])
+            assert 'job="dgx-spark-' in target['expr'], (uid, panel['title'])
+            if 'vllm:' in target['expr']:
+                assert 'model_name=~"$model_alias"' in target['expr'], (uid, panel['title'])
+    for expr in exprs:
+        for name in re.findall(r'vllm:[A-Za-z0-9_:]+', expr):
+            assert name in vllm_names, (uid, name)
+            used_vllm.add(name)
+        for name in re.findall(r'\bnode_[A-Za-z0-9_]+', expr):
+            assert name in node_names, (uid, name)
+for family in ('vllm:time_to_first_token_seconds_bucket', 'vllm:e2e_request_latency_seconds_bucket',
+               'vllm:num_requests_running', 'vllm:num_requests_waiting', 'vllm:kv_cache_usage_perc',
+               'vllm:num_preemptions_total', 'vllm:request_time_per_output_token_seconds_bucket'):
+    assert family in used_vllm, family
+placement = json.loads(files['inference-placement-comparison'].read_text())
+assert any('offset $compare_offset' in target['expr'] for panel in placement['panels'] for target in panel.get('targets', []))
+PY
+}
+
+@test "o11y: inference alert groups render only with the DGX scrape and hold for at least 5m" {
+  python3 - "$DEPLOY_DIR/templates/alerts.yml.j2" "$REPO_ROOT/platform/tests/fixtures" <<'PY'
+import json
+import pathlib
+import re
+import sys
+
+import yaml
+from jinja2 import Environment, StrictUndefined
+
+env = Environment(undefined=StrictUndefined, trim_blocks=True)
+env.filters['bool'] = bool
+env.filters['to_json'] = json.dumps
+template = env.from_string(open(sys.argv[1], encoding='utf-8').read())
+fixtures = pathlib.Path(sys.argv[2])
+known = set()
+for name in ('vllm-metric-names-506e66caa3ef.txt', 'node-exporter-metric-names-v1.12.1.txt'):
+    known |= {line.strip() for line in (fixtures / name).read_text().splitlines() if line.strip() and not line.startswith('#')}
+
+
+def seconds(value):
+    return int(value[:-1]) * {'s': 1, 'm': 60, 'h': 3600}[value[-1]]
+
+
+for scrape in (False, True):
+    groups = yaml.safe_load(template.render(local_mode=False, o11y_alerts_enabled=True,
+                                            o11y_expected_metrics_targets=[],
+                                            dgx_spark_scrape_enabled=scrape))['groups']
+    names = [group['name'] for group in groups]
+    if not scrape:
+        assert names == ['service-telemetry'], names
+assert names == ['service-telemetry', 'inference-failing', 'memory-thermal', 'benchmark-gate'], names
+
+placeholder = 'inference_benchmark_gate_placeholder'
+for enabled in (False, True):
+    for canary in (None, 'o11y-fault-probe-' + 'b' * 12):
+        values = dict(local_mode=False, o11y_alerts_enabled=enabled, o11y_expected_metrics_targets=[],
+                      dgx_spark_scrape_enabled=True)
+        if canary:
+            values['o11y_alert_canary_service'] = canary
+        groups = yaml.safe_load(template.render(**values))['groups']
+        rules = {group['name']: group['rules'] for group in groups[1:]}
+        assert [rule['uid'] for rule in rules['inference-failing']] == ['inference_queue_stalled']
+        assert [rule['uid'] for rule in rules['memory-thermal']] == ['inference_node_memavailable_low', 'inference_node_memfree_low']
+        assert [rule['uid'] for rule in rules['benchmark-gate']] == [placeholder]
+        active = enabled and canary is None
+        for rule in (rule for group in rules.values() for rule in group):
+            assert rule['uid'].startswith('inference_') and not rule['uid'].startswith('o11y_')
+            assert seconds(rule['for']) >= 300, (rule['uid'], rule['for'])
+            assert rule['labels']['cluster'] == 'dgx-spark' and rule['labels']['environment'] == 'prod'
+            assert rule['labels']['owner'] == 'platform-operations'
+            assert rule['annotations']['runbook_url'] == 'https://github.com/uhstray-io/dgx-spark/blob/main/docs/VLLM-BRINGUP.md'
+            assert rule['annotations']['dashboard_url'].startswith('/d/inference-')
+            expr = rule['data'][0]['model']['expr']
+            for name in re.findall(r'(?:vllm:|\bnode_)[A-Za-z0-9_:]+', expr):
+                assert name in known, (rule['uid'], name)
+            if rule['uid'] == placeholder:
+                assert expr == 'vector(0)'
+                assert rule['isPaused'] is True and 'notification_settings' not in rule
+                continue
+            assert rule['isPaused'] is (not active), rule['uid']
+            assert ('notification_settings' in rule) is active, rule['uid']
+            if active:
+                assert rule['notification_settings']['receiver'] == 'agent-cloud-ops'
+                assert rule['notification_settings']['group_by'] == ['service', 'environment', 'cluster', 'alertname']
+
+memory = {rule['uid']: rule for rule in rules['memory-thermal']}
+assert memory['inference_node_memavailable_low']['data'][0]['model']['expr'] == 'node_memory_MemAvailable_bytes{job="dgx-spark-node",cluster="dgx-spark"}'
+assert memory['inference_node_memavailable_low']['data'][1]['model']['conditions'][0]['evaluator'] == {'type': 'lt', 'params': [536870912]}
+assert memory['inference_node_memfree_low']['data'][1]['model']['conditions'][0]['evaluator'] == {'type': 'lt', 'params': [1073741824]}
+stalled = rules['inference-failing'][0]['data'][0]['model']['expr']
+assert 'vllm:num_requests_waiting{job="dgx-spark-vllm",cluster="dgx-spark"}' in stalled
+assert 'rate(vllm:generation_tokens_total{job="dgx-spark-vllm",cluster="dgx-spark"}[5m])) == 0' in stalled
+tuned = yaml.safe_load(template.render(local_mode=False, o11y_alerts_enabled=True, o11y_expected_metrics_targets=[],
+                                       dgx_spark_scrape_enabled=True,
+                                       o11y_dgx_spark_memfree_floor_bytes=2147483648))['groups'][2]['rules']
+assert tuned[1]['data'][1]['model']['conditions'][0]['evaluator'] == {'type': 'lt', 'params': [2147483648]}
+local = yaml.safe_load(template.render(local_mode=True))['groups']
+assert [group['name'] for group in local] == ['service-telemetry']
+PY
+}
