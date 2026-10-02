@@ -20,13 +20,17 @@ DEPLOY = REPO / "platform/playbooks/deploy-agentgateway.yml"
 DEPLOY_DIR = REPO / "platform/services/agentgateway/deployment"
 CONFIG = DEPLOY_DIR / "templates/config.yaml.j2"
 RENDER = "Manage secrets and render env + config"
-FIRST = "Clear a staged copy an interrupted run left behind"
-LAST = "Drop the staged copy (still there only when the render left config.yaml unchanged)"
+FIRST = "Read the current config.yaml and any copy an interrupted run staged"
+LAST = "Drop the staged copy (still there when the render changed nothing, or it held a raw key)"
 
 PHASE1 = next(p for p in yaml.safe_load(DEPLOY.read_text()) if p.get("name", "").startswith("Phase 1"))
 NAMES = [t["name"] for t in PHASE1["tasks"]]
 KEY_A = "plain-client-key-AAAA-1111"
 KEY_B = "plain-client-key-BBBB-2222"
+KEY_C = "plain-client-key-CCCC-3333"
+KEY_D = "plain-client-key-DDDD-4444"
+PLAIN = {"local_mode": True, "agw_plaintext_keys": True}
+HASHED_LOCAL = {"local_mode": True, "agw_plaintext_keys": False}
 
 
 def _hosts(key: str, **hv) -> dict:
@@ -116,12 +120,74 @@ def test_raw_local_dev_keys_are_never_kept(tmp_path):
     assert sorted(p.name for p in d.iterdir()) == ["config.yaml"]
 
 
-def test_a_copy_staged_by_an_interrupted_run_is_not_kept_as_previous(tmp_path):
+def _rendered(tmp: Path, key: str, **hv) -> bytes:
+    """What the deploy renders for `key`, produced in a directory of its own."""
+    own = tmp / f"render-{key}"
+    own.mkdir()
+    _ok(_deploy(own, key, **hv))
+    return (own / "d" / "config.yaml").read_bytes()
+
+
+def _interrupted(tmp: Path, staged: bytes, live: bytes) -> Path:
+    """The deploy dir a run left when it stopped after staging `staged`, with `live` in place."""
+    d = tmp / "d"
+    d.mkdir()
+    for name, data in (("config.yaml", live), ("config.yaml.replaced", staged)):
+        (d / name).write_bytes(data)
+        (d / name).chmod(0o644)
+    return d
+
+
+def test_a_run_interrupted_after_the_render_keeps_its_staged_copy_as_previous(tmp_path):
+    old, new = _rendered(tmp_path, KEY_A), _rendered(tmp_path, KEY_B)
+    d = _interrupted(tmp_path, staged=old, live=new)
+    _ok(_deploy(tmp_path, KEY_B))  # the same render again: nothing new to keep
+    assert (d / "config.yaml.previous").read_bytes() == old
+    assert _mode(d / "config.yaml.previous") == 0o644
+    assert not (d / "config.yaml.replaced").exists()
+
+
+def test_a_run_interrupted_before_the_render_keeps_nothing(tmp_path):
+    cur = _rendered(tmp_path, KEY_A)
+    d = _interrupted(tmp_path, staged=cur, live=cur)
+    _ok(_deploy(tmp_path, KEY_A))
+    assert sorted(p.name for p in d.iterdir()) == ["config.yaml"]
+
+
+def test_an_interrupted_runs_raw_key_copy_is_discarded(tmp_path):
+    raw, new = _rendered(tmp_path, KEY_C, **PLAIN), _rendered(tmp_path, KEY_D, **HASHED_LOCAL)
+    assert KEY_C.encode() in raw
+    d = _interrupted(tmp_path, staged=raw, live=new)
+    _ok(_deploy(tmp_path, KEY_D, **HASHED_LOCAL))
+    assert sorted(p.name for p in d.iterdir()) == ["config.yaml"]
+
+
+def test_a_staged_copy_no_config_backs_is_not_kept_as_previous(tmp_path):
     d = tmp_path / "d"
     d.mkdir()
     (d / "config.yaml.replaced").write_text("stale: staged by a run that never finished\n")
     _ok(_deploy(tmp_path, KEY_A))
     assert not (d / "config.yaml.previous").exists()
+    assert not (d / "config.yaml.replaced").exists()
+
+
+def test_turning_plaintext_keys_off_never_keeps_the_raw_key_config(tmp_path):
+    d = tmp_path / "d"
+    _ok(_deploy(tmp_path, KEY_C, **PLAIN))
+    assert KEY_C in (d / "config.yaml").read_text()
+    _ok(_deploy(tmp_path, KEY_D, **HASHED_LOCAL))
+    assert sorted(p.name for p in d.iterdir()) == ["config.yaml"]
+    assert KEY_D not in (d / "config.yaml").read_text()
+
+
+def test_turning_plaintext_keys_off_leaves_the_last_hashed_copy(tmp_path):
+    d = tmp_path / "d"
+    _ok(_deploy(tmp_path, KEY_A, **HASHED_LOCAL))
+    _ok(_deploy(tmp_path, KEY_B, **HASHED_LOCAL))
+    hashed = (d / "config.yaml.previous").read_bytes()
+    _ok(_deploy(tmp_path, KEY_C, **PLAIN))
+    _ok(_deploy(tmp_path, KEY_D, **HASHED_LOCAL))
+    assert (d / "config.yaml.previous").read_bytes() == hashed
     assert not (d / "config.yaml.replaced").exists()
 
 
