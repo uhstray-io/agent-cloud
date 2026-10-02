@@ -39,6 +39,8 @@ if a[0] == "inspect":
             print(f'{m["destination"]}|{str(m["rw"]).lower()}|{m["source"]}')
 elif a[0] == "compose":
     assert a[1] == "-f", a  # the play always names the file it edited
+    # ...and recreates only Caddy's own service, never the whole project
+    assert a[-1] == s["service"] and "--no-deps" in a, a
     vols = yaml.safe_load(Path(a[2]).read_text())["services"][s["service"]]["volumes"]
     if s.get("fail_up_with") and any(s["fail_up_with"] in v for v in vols):
         sys.exit("up failed")

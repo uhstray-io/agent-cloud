@@ -1558,7 +1558,7 @@ page at that tag, or a read-only report from the host), never on the workstation
 `deploy-*.yml` shipped without the pre-flight, because 2.21's rule named deploy playbooks.
 Counted on 2026-10-01 from each playbook's first `hosts:` line: 60 playbooks under
 `platform/playbooks/` target a group other than localhost and do not import
-`preflight-target-group.yml`; 36 do.
+`preflight-target-group.yml`; 16 do.
 
 **Root cause.** The failure (a play over no hosts exits 0) belongs to every play that targets
 a group, not to deploys. Scoping the rule by file name left every other playbook outside it.

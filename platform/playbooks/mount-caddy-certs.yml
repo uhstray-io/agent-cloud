@@ -44,7 +44,9 @@
     _compose_file: >-
       {{ (_compose_dir ~ '/compose.yml') if (_label_file | length == 0)
          else (_label_file if (_label_file is match('^/')) else (_live.working_dir ~ '/' ~ _label_file)) }}
-    _up: "{{ _engine }} compose -f {{ _compose_file | quote }} up -d --force-recreate"
+    # Only Caddy's own service, and not its dependencies: without a service name
+    # --force-recreate recreates every container in the project (review of 57072928).
+    _up: "{{ _engine }} compose -f {{ _compose_file | quote }} up -d --no-deps --force-recreate {{ _live.service | quote }}"
     _certs_src: "{{ caddy_certs_dir | default(_compose_dir ~ '/certs') }}"
     _certs_dst: /etc/caddy/certs
     _volume: "{{ _certs_src }}:{{ _certs_dst }}:ro"
