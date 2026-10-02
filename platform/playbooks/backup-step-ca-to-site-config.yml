@@ -1,0 +1,310 @@
+---
+# backup-step-ca-to-site-config.yml — copy the internal CA's certificates, encrypted keys
+# and configuration out of the step-ca container into the private site-config repo, on a
+# NEW BRANCH per run, printing file names and counts only (openspec production-internal-ca,
+# design decision 11, task 7.1).
+#
+#   step-ca container (/home/step, the step-ca-data volume)
+#     certs/*            root + intermediate certificates          -> backed up
+#     config/*           ca.json (provisioners, name policy), defaults.json -> backed up
+#     secrets/*_key      root + intermediate keys, ENCRYPTED       -> backed up
+#     secrets/password   the key password in plaintext             -> NOT copied (below)
+#     db/, templates/    issuance database, empty template dir     -> NOT copied
+#
+# Lands in site-config as secrets/step-ca/volume/<the same relative path>, so a restore
+# copies that directory back to /home/step unchanged. The directory is replaced whole on
+# every run: a backup is one point-in-time record, never a merge with an older one.
+#
+# THE PASSWORD TRAVELS SEPARATELY. The image's entrypoint keeps the key password in
+# secrets/password, mode 0644 (design, "Recorded risk 2026-09-29"). It is the same value
+# OpenBao holds as secret/services/step-ca:init_password, and the existing credential
+# backup copies it (`Back Up Credentials to site-config`, credential_service=step-ca), so
+# this play never reads that file. A restore writes it back from init_password with a
+# trailing newline, as the entrypoint's `echo` did; the CA's start command reads it.
+#
+# REFUSES before anything is written when: step_ca_svc does not hold exactly one host; the
+# store or the site-config deploy key is unusable (checked BEFORE the CA is read, so a run
+# that cannot push never pulls key material into memory); the container is absent; a
+# volume file name cannot be a plain path; the root or intermediate certificate or key, or
+# ca.json, is missing; or a key file is not encrypted (the site-config copy of a plaintext
+# key would be the CA itself).
+#
+# HOW IT REACHES SITE-CONFIG — exactly as backup-credentials-to-site-config.yml:
+# tasks/site-config-clone.yml + tasks/site-config-push.yml, the deploy key read from
+# secret/services/ssh/site-config with the AppRole token, 0600 inside a scratch dir the
+# `always:` wipes. Only the reads and writes of the material and the credentials carry
+# `no_log`; listing, refusals and the report stay visible.
+#
+# Dry run (--check): the store, the deploy key and the CA are all read and every refusal
+# runs; the play ends before the clone, because pushing is its whole effect
+# (plan/architecture/08-ansible-automation-standards.md).
+#
+# Read-only against the CA and OpenBao. Restore is the separate drill (task 7.3).
+
+# Ansible exits 0 on "no hosts matched" — the false green preflight-target-group.yml stops.
+- name: "Pre-flight: target group is real"
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: step_ca_svc
+    preflight_group_expected: step_ca_svc
+
+- name: "Check the store and the site-config deploy key before reading the CA"
+  hosts: localhost
+  gather_facts: false
+  become: false
+  connection: local
+  vars:
+    _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID'), true) | default('', true) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID'), true) | default('', true) }}"
+    _key_path: "secret/data/services/ssh/site-config"
+
+  tasks:
+    - name: "Refuse anything but exactly one CA host"
+      # Two CAs would write two volumes into one directory, the second silently replacing
+      # the first. The production CA is the one host of step_ca_svc.
+      ansible.builtin.assert:
+        that:
+          - groups['step_ca_svc'] | length == 1
+          - _bao_url | length > 0
+        fail_msg: >-
+          Back up exactly one step_ca_svc host ({{ groups['step_ca_svc'] | length }} declared),
+          with openbao_addr or OPENBAO_ADDR set.
+        quiet: true
+
+    - name: "Refuse a cleartext secret-store endpoint"
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
+    - name: "Authenticate to OpenBao (AppRole)"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/auth/approle/login"
+        method: POST
+        body_format: json
+        body:
+          role_id: "{{ _bao_role_id }}"
+          secret_id: "{{ _bao_secret_id }}"
+      register: _bao_auth
+      no_log: true
+      changed_when: false
+      check_mode: false
+
+    - name: "Fetch the site-config deploy key"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/{{ _key_path }}"
+        method: GET
+        headers:
+          X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
+        status_code: [200, 403, 404]
+      register: _key
+      no_log: true
+      check_mode: false
+
+    - name: "Say plainly when the deploy key is missing"
+      ansible.builtin.assert:
+        that:
+          - _key.status == 200
+          - (_key.json.data.data.private_key | default('')) | length > 0
+        fail_msg: >-
+          No deploy key at {{ _key_path }} (HTTP {{ _key.status }}). Seed it from the
+          operator's copy with the Seed OpenBao Key template — bao_path
+          services/ssh/site-config, bao_key private_key, value as the BAO_VALUE
+          environment secret — and register its PUBLIC half on the site-config
+          GitHub repo as a deploy key WITH WRITE ACCESS.
+
+- name: "Read the CA's certificates, encrypted keys and configuration"
+  hosts: step_ca_svc
+  gather_facts: false
+  become: false
+  vars:
+    _engine: "{{ container_engine | default('podman') }}"
+    # The step-ca-data volume's mount point (platform/services/step-ca/deployment/compose.yml).
+    _stepca_home: /home/step
+    _ca_required:
+      - certs/root_ca.crt
+      - certs/intermediate_ca.crt
+      - config/ca.json
+      - secrets/intermediate_ca_key
+      - secrets/root_ca_key
+
+  tasks:
+    # `inspect --type container` works on podman and docker alike.
+    - name: "Is the CA container there"
+      ansible.builtin.command: "{{ _engine }} inspect --type container --format '{{ '{{' }}.Id{{ '}}' }}' step-ca"
+      register: _ca_present
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: "Refuse a host without the CA container"
+      ansible.builtin.assert:
+        that: _ca_present.rc == 0
+        fail_msg: "{{ inventory_hostname }}: no step-ca container; nothing to back up. Deploy step-ca first."
+        quiet: true
+
+    - name: "List the files in the backed-up directories"
+      # Names only: `find` prints paths, never contents.
+      ansible.builtin.command:
+        argv:
+          - "{{ _engine }}"
+          - exec
+          - step-ca
+          - find
+          - "{{ _stepca_home }}/certs"
+          - "{{ _stepca_home }}/config"
+          - "{{ _stepca_home }}/secrets"
+          - -maxdepth
+          - "1"
+          - -type
+          - f
+      register: _ca_list
+      changed_when: false
+      check_mode: false
+
+    - name: "Choose the files to copy"
+      # Every certificate and configuration file; from secrets/, only the keys. The
+      # plaintext password file is the credential backup's to carry (header).
+      ansible.builtin.set_fact:
+        _ca_listed: >-
+          {{ _ca_list.stdout_lines | map('regex_replace', '^' ~ (_stepca_home | regex_escape) ~ '/', '') | sort }}
+
+    - name: "Split the listing into copied and left behind"
+      ansible.builtin.set_fact:
+        _ca_files: "{{ _ca_listed | select('match', '^(certs/|config/|secrets/.+_key$)') | list }}"
+        _ca_left: "{{ _ca_listed | reject('match', '^(certs/|config/|secrets/.+_key$)') | list }}"
+
+    - name: "Refuse a file name that cannot be a plain path, or a backup missing a CA file"
+      # Each name becomes a path in the clone; a separator, dot-segment or line break would
+      # write elsewhere. A backup without the root, the intermediate or ca.json would look
+      # green and restore nothing usable.
+      ansible.builtin.assert:
+        that:
+          - _ca_listed | reject('match', '^(certs|config|secrets)/[A-Za-z0-9][A-Za-z0-9._-]*$') | list | length == 0
+          - _ca_listed | select('search', '\.\.') | list | length == 0
+          - _ca_required | difference(_ca_files) | length == 0
+        fail_msg: >-
+          {{ inventory_hostname }}: refused. Unsafe names:
+          {{ (_ca_listed | reject('match', '^(certs|config|secrets)/[A-Za-z0-9][A-Za-z0-9._-]*$') | list)
+             + (_ca_listed | select('search', '\.\.') | list) or 'none' }};
+          missing: {{ _ca_required | difference(_ca_files) or 'none' }}.
+        quiet: true
+
+    - name: "Report what will be copied (names only)"
+      ansible.builtin.debug:
+        msg: >-
+          {{ _ca_files | length }} file(s) to back up: {{ _ca_files | join(', ') }}.
+          Left behind: {{ _ca_left | join(', ') or 'none' }}.
+
+    # Credential task: the keys and ca.json's encrypted provisioner keys pass through here.
+    # base64 keeps every byte, including the final newline a plain stdout capture strips.
+    # The loop is over the clean name list; the results are indexed, never printed.
+    - name: "Read each file"
+      ansible.builtin.command:
+        argv:
+          - "{{ _engine }}"
+          - exec
+          - step-ca
+          - base64
+          - -w
+          - "0"
+          - "{{ _stepca_home }}/{{ item }}"
+      loop: "{{ _ca_files }}"
+      register: _ca_reads
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: "Find any key that is not encrypted"
+      # step-ca writes its keys as encrypted PEM (`Proc-Type: 4,ENCRYPTED`); PKCS#8's
+      # encrypted form is accepted too. Only the NAMES of offenders leave this task.
+      ansible.builtin.set_fact:
+        _ca_plain_keys: >-
+          {%- set bad = [] -%}
+          {%- for r in _ca_reads.results if r.item is match('^secrets/') -%}
+            {%- set t = r.stdout | b64decode -%}
+            {%- if 'Proc-Type: 4,ENCRYPTED' not in t and 'ENCRYPTED PRIVATE KEY-----' not in t -%}
+              {%- set _ = bad.append(r.item) -%}
+            {%- endif -%}
+          {%- endfor -%}
+          {{ bad }}
+      no_log: true
+
+    - name: "Refuse a key that is not encrypted"
+      ansible.builtin.assert:
+        that: _ca_plain_keys | length == 0
+        fail_msg: >-
+          {{ inventory_hostname }}: {{ _ca_plain_keys | join(', ') }} is not an encrypted key;
+          a copy of it in site-config would be the CA itself. Nothing was written.
+        quiet: true
+
+- name: "Write the CA material into site-config on a new branch"
+  hosts: localhost
+  gather_facts: false
+  become: false
+  connection: local
+  vars:
+    _ca_host: "{{ groups['step_ca_svc'] | first }}"
+    _ca_files: "{{ hostvars[_ca_host]['_ca_files'] }}"
+    _dest: "secrets/step-ca/volume"
+
+  tasks:
+    - name: "Dry run ends here: a real run would clone site-config and push a new branch"
+      # Every read and refusal above ran. The clone needs a real scratch dir, which the
+      # tempfile module cannot simulate, and pushing is the whole effect of this playbook.
+      ansible.builtin.meta: end_play
+      when: ansible_check_mode
+
+    - name: "Everything below runs inside a block so the scratch dir is always wiped"
+      # The clone holds the CA's keys AND the deploy key; the wipe is an `always`.
+      block:
+        - name: "Clone site-config on a fresh branch"
+          ansible.builtin.include_tasks: tasks/site-config-clone.yml
+          vars:
+            _sc_deploy_key: "{{ _key.json.data.data.private_key }}"
+            _sc_branch_prefix: "backup/step-ca"
+            _sc_repo_url: "{{ site_config_repo | default('', true) }}"
+            _sc_known_hosts: "{{ git_known_hosts_file | default('', true) }}"
+
+        - name: "Remove the previous backup, so this one is a single point in time"
+          ansible.builtin.file:
+            path: "{{ _sc_clone }}/{{ _dest }}"
+            state: absent
+
+        - name: "Create the backup directories"
+          ansible.builtin.file:
+            path: "{{ _sc_clone }}/{{ _dest }}/{{ item }}"
+            state: directory
+            mode: "0700"
+          loop: "{{ _ca_files | map('dirname') | unique | sort }}"
+
+        - name: "Write each file"
+          # Credential task: the content is the CA's keys and configuration. 0600, like
+          # the volume's own keys and certificates.
+          ansible.builtin.copy:
+            content: "{{ hostvars[_ca_host]['_ca_reads'].results[_i].stdout | b64decode }}"
+            dest: "{{ _sc_clone }}/{{ _dest }}/{{ item }}"
+            mode: "0600"
+          loop: "{{ _ca_files }}"
+          loop_control:
+            index_var: _i
+          no_log: true
+
+        - name: "Commit and push"
+          ansible.builtin.include_tasks: tasks/site-config-push.yml
+          vars:
+            _sc_add_path: "{{ _dest }}"
+            _sc_commit_subject: "secrets(step-ca): back up the CA's certificates, encrypted keys and configuration"
+            _sc_commit_body: >-
+              Written by backup-step-ca-to-site-config.yml from the step-ca container on
+              {{ _ca_host }}: {{ _ca_files | join(', ') }}. The key password is not here; it
+              is backed up by Back Up Credentials to site-config (credential_service=step-ca).
+              Contents never passed through the job output.
+            _sc_report_what: "{{ _ca_files | length }} CA file(s) under {{ _dest }}/"
+
+      always:
+        - name: "Wipe the scratch dir"
+          ansible.builtin.file:
+            path: "{{ _sc_wd }}"
+            state: absent
+          when: _sc_wd is defined
