@@ -250,25 +250,51 @@
     # Rollback (rollback-inference-route.yml, gateway-config mode; gateway task 4.6) puts back
     # the config.yaml the last change replaced, kept here as config.yaml.previous. The render is
     # the shared manage-secrets step, which reports no per-file change, so the current file is
-    # staged first and compared by checksum afterwards: .previous is written only when the
-    # render changed config.yaml. A first deploy has nothing to keep, and an unchanged render
-    # leaves .previous alone, so a re-run never replaces the last-good copy with the current
-    # one. Both names are gitignored, which is also what keeps local-dev's rsync --delete off
-    # them. Never under the local-dev agw_plaintext_keys flag: there config.yaml carries raw
-    # client keys, and a kept copy would outlive their rotation or revocation.
-    - name: "Clear a staged copy an interrupted run left behind"
-      ansible.builtin.file:
-        path: "{{ _deploy_dir }}/config.yaml.replaced"
-        state: absent
-      changed_when: false
-      when: _keep_previous and not ansible_check_mode
-
-    - name: "Read the config.yaml this render may replace"
+    # staged as config.yaml.replaced first and compared by checksum afterwards: .previous is
+    # written only when the render changed config.yaml. A first deploy has nothing to keep, and
+    # an unchanged render leaves .previous alone, so a re-run never replaces the last-good copy
+    # with the current one. Both names are gitignored, which is also what keeps local-dev's
+    # rsync --delete off them.
+    #
+    # Raw keys are never kept. Under the local-dev agw_plaintext_keys flag nothing is staged,
+    # and a staged copy is promoted only when it carries no `- key:` entry (config.yaml.j2 writes
+    # that shape only under the flag; hashed entries are `- keyHash:`), so a config rendered
+    # with the flag and replaced after it was turned off is discarded, not kept past its keys'
+    # rotation. With that, .previous only ever holds hashes and names, like config.yaml, and
+    # keeps its 0644 mode (the gateway's non-root user reads it once rollback puts it back).
+    - name: "Read the current config.yaml and any copy an interrupted run staged"
       ansible.builtin.stat:
-        path: "{{ _deploy_dir }}/config.yaml"
-        get_checksum: false
+        path: "{{ _deploy_dir }}/{{ item }}"
+        get_checksum: true
+      loop: [config.yaml, config.yaml.replaced]
       register: _cfg_before
       when: _keep_previous and not ansible_check_mode
+
+    # A run interrupted after the render but before the promotion leaves the config that was
+    # live before it staged, and a config.yaml that differs from it: that copy is the last-good
+    # one, so it is kept now rather than lost to the restage below.
+    - name: "Does the interrupted run's staged copy carry a raw client key?"
+      ansible.builtin.command:
+        argv: [grep, -qE, '^[[:space:]]*- key:', "{{ _deploy_dir }}/config.yaml.replaced"]
+      register: _cfg_left_raw
+      changed_when: false
+      failed_when: false
+      no_log: true  # reads a file that may hold client keys; -q prints nothing, rc is the answer
+      when:
+        - _keep_previous and not ansible_check_mode
+        - _cfg_before.results[1].stat.exists
+
+    - name: "Keep the interrupted run's staged copy as config.yaml.previous"
+      ansible.builtin.command:
+        argv: [mv, -f, "{{ _deploy_dir }}/config.yaml.replaced", "{{ _deploy_dir }}/config.yaml.previous"]
+      changed_when: true
+      when:
+        - _keep_previous and not ansible_check_mode
+        - _cfg_before.results[1].stat.exists
+        - _cfg_before.results[0].stat.exists
+        - _cfg_before.results[0].stat.checksum != _cfg_before.results[1].stat.checksum
+        # rc 1 is "no match"; a read error (rc 2) is treated as a raw key and discarded.
+        - _cfg_left_raw.rc == 1
 
     - name: "Stage the config.yaml this render may replace"
       ansible.builtin.copy:
@@ -278,7 +304,14 @@
         mode: preserve
       # Scratch: on an unchanged render it is dropped again, so the run changed nothing.
       changed_when: false
-      when: _keep_previous and not ansible_check_mode and _cfg_before.stat.exists
+      when: _keep_previous and not ansible_check_mode and _cfg_before.results[0].stat.exists
+
+    - name: "Drop a staged copy no config.yaml backs (nothing to keep)"
+      ansible.builtin.file:
+        path: "{{ _deploy_dir }}/config.yaml.replaced"
+        state: absent
+      changed_when: false
+      when: _keep_previous and not ansible_check_mode and not _cfg_before.results[0].stat.exists
 
     - name: "Manage secrets and render env + config"
       ansible.builtin.include_tasks: tasks/manage-secrets.yml
@@ -291,6 +324,17 @@
       register: _cfg_after
       when: _keep_previous and not ansible_check_mode
 
+    - name: "Does the staged copy carry a raw client key?"
+      ansible.builtin.command:
+        argv: [grep, -qE, '^[[:space:]]*- key:', "{{ _deploy_dir }}/config.yaml.replaced"]
+      register: _cfg_staged_raw
+      changed_when: false
+      failed_when: false
+      no_log: true  # reads a file that may hold client keys; -q prints nothing, rc is the answer
+      when:
+        - _keep_previous and not ansible_check_mode
+        - _cfg_after.results[1].stat.exists
+
     - name: "Keep the replaced config as config.yaml.previous (only when the render changed it)"
       ansible.builtin.command:
         argv: [mv, -f, "{{ _deploy_dir }}/config.yaml.replaced", "{{ _deploy_dir }}/config.yaml.previous"]
@@ -299,8 +343,9 @@
         - _keep_previous and not ansible_check_mode
         - _cfg_after.results[1].stat.exists
         - _cfg_after.results[0].stat.checksum != _cfg_after.results[1].stat.checksum
+        - _cfg_staged_raw.rc == 1
 
-    - name: "Drop the staged copy (still there only when the render left config.yaml unchanged)"
+    - name: "Drop the staged copy (still there when the render changed nothing, or it held a raw key)"
       ansible.builtin.file:
         path: "{{ _deploy_dir }}/config.yaml.replaced"
         state: absent
