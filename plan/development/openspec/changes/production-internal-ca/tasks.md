@@ -7,7 +7,7 @@ host. Push, pull requests and merges happen only when Joe authorizes each one.
 ## 0. Branch and decisions
 - [ ] 0.1 Feature branch from `dev` (`feat/production-internal-ca`) in its own worktree
       2026-10-02: PARTIAL — no branch of that name exists on origin; the change landed
-      through one feature branch per step, each based on `dev` and merged by pull request
+      through separate scoped branches per increment, each based on `dev` and merged by pull request
       (#349, #352, #354, #359, #363, #367-#373, #376); remaining: amend this task to that
       practice, or record why the single branch was not used
 - [x] 0.2 Confirm the open questions with Joe, or record that the design's defaults apply:
@@ -145,7 +145,7 @@ host. Push, pull requests and merges happen only when Joe authorizes each one.
       declares. A leaf with a current certificate is kept unless `_mint_reissue` (renewal is
       group 6). Proven end to end on a throwaway step-ca 0.30.2: client-only key usage, the
       declared SANs, leaf plus intermediate, `openssl verify -purpose sslclient` OK and
-      `sslserver` refused, no key file left in the CA container. Open: 4.6, 4.7
+      `sslserver` refused, no key file left in the CA container. Open: 4.6
       2026-10-02: PARTIAL — the cross-host path is proven in production: task 4.7 (issue
       2166, inspect 2249) and the edge leaves of task 5.2 (Issue Internal Leaf (Dev) 2431,
       2433, 2435), each key made on its consumer and nothing left in the CA container;
