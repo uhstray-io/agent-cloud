@@ -2,7 +2,8 @@
 # mount-caddy-certs.yml — give the central Caddy a read-only certificate directory, as code
 # (openspec production-internal-ca task 5.1).
 #
-#   -e target_service=caddy_svc
+# Targets caddy_svc, the one central Caddy. The group is a literal so the zero-hosts
+# pre-flight below can guard it (MISTAKES 2.21; review of fa34c265).
 #
 # Production Caddy is a hand-maintained flat compose project (`caddy_compose_dir`), not the
 # monorepo's compose file. This play first ESTABLISHES that: it reads the running
@@ -22,8 +23,14 @@
 # the running container's compose labels name, never a guess. Safe under --check, which
 # reports the plan and writes nothing.
 
+- name: "Pre-flight"
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: caddy_svc
+    preflight_group_expected: caddy_svc
+
 - name: "Mount a read-only certificate directory into Caddy"
-  hosts: "{{ target_service | default('caddy_svc') }}"
+  hosts: caddy_svc
   gather_facts: false
   become: false
   vars:

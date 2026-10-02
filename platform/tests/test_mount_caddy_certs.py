@@ -73,12 +73,13 @@ def _setup(tmp: Path, compose: str = COMPOSE, working_dir: str | None = None, na
     return cdir
 
 
-def _run(tmp: Path, check: bool = False, **hostvars) -> subprocess.CompletedProcess:
+def _run(tmp: Path, check: bool = False, groups: dict | None = None, **hostvars) -> subprocess.CompletedProcess:
     host = {"ansible_connection": "local", "ansible_python_interpreter": sys.executable,
             "container_engine": str(tmp / "engine"), "caddy_compose_dir": str(tmp / "caddy"),
             "caddy_container": "caddy", "caddy_probe_host": "auth.example.test",
             "caddy_verify_retries": 1, "caddy_verify_delay": 0, **hostvars}
-    (tmp / "inv.yml").write_text(yaml.safe_dump({"all": {"children": {"caddy_svc": {"hosts": {"c": host}}}}}))
+    children = {"caddy_svc": {"hosts": {"c": host}}} if groups is None else groups
+    (tmp / "inv.yml").write_text(yaml.safe_dump({"all": {"children": children}}))
     env = {**harness_sandbox.env_for(tmp), "STUB_STATE": str(tmp / "state.json")}
     cmd = ["ansible-playbook", "-i", str(tmp / "inv.yml"), str(PLAYBOOK), *(["--check"] if check else [])]
     return harness_sandbox.run(cmd, tmp, cwd=playbook_yaml.REPO, env=env)
@@ -150,6 +151,15 @@ def test_a_recreate_that_does_not_show_the_mount_fails(tmp_path):
     r = _run(tmp_path)
     assert r.returncode != 0 and "does not mount" in r.stdout, r.stdout
 
+
+
+@pytest.mark.parametrize("groups", [{}, {"caddy_svc": {"hosts": {}}}], ids=["absent", "empty"])
+def test_a_caddy_group_that_matches_no_hosts_fails(tmp_path, groups):
+    # Review of fa34c265 (MISTAKES 2.21): a play over no hosts exits 0 and changes nothing.
+    _setup(tmp_path)
+    r = _run(tmp_path, groups=groups)
+    assert r.returncode != 0 and "caddy_svc" in r.stdout, r.stdout
+    assert _ups(tmp_path) == 0
 
 
 def test_a_check_failing_after_the_recreate_rolls_back_too(tmp_path):
