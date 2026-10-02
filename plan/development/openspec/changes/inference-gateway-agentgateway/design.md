@@ -368,6 +368,13 @@ main checkout, which another session holds.
   a blocker.
 - [A new hop in the request path fails] → Caddy's upstream is one inventory value;
   rollback is a Caddy redeploy. Health and the synthetic probe surface it.
+- [A rollback to the direct path leaves the vLLM key in every client's hands] → the
+  `direct` mode publishes it per client, so the way back must rotate it. The key is owned by
+  the dgx-spark repository, not this one (amended 2026-10-02, task 4.6): `restore` enforces
+  the rotation instead of performing it, keeping the published copies until the key they
+  hold is no longer live in OpenBao and the running gateway (read through the engine, not
+  only the rendered file) holds the new one. Performing the rotation in one step needs
+  dgx-spark to read its key from OpenBao, tracked in the dgx-spark handoff.
 - [Per-key limits trip a legitimate agent] → the global request bucket and the per-key
   token budget are derived from the measured ceiling; no log-only mode exists in v1.5.0
   (task 3.2, answered), so the first week runs with loose figures tightened from the

@@ -257,6 +257,14 @@
       rotated); BATS asserts the three modes exist and that `direct` never prints a key;
       drill `direct` then `restore` against the live route in a window Joe names, proving
       scenario "Rollback after retirement is the playbook"
+      2026-10-02: code landed (PR #385); the drill is still owed. `restore` does not rotate
+      the vLLM key (dgx-spark owns it); it refuses to retire the copies until the key is
+      rotated and the running gateway holds the new one, proving scenario "Restore refuses
+      while the published key is still live". One-step rotation needs dgx-spark to read the
+      key from OpenBao (cross-repository, dgx-spark handoff). The tests are pytest, not
+      BATS, because only a real run proves that no key is printed and that re-runs converge.
+      `gateway-config` needs the deploy to keep the config it replaces as
+      `config.yaml.previous`; until it does, that mode refuses
 
 - [ ] 4.7 `legacy_shared_expires` = the route-switch date + 14 days (operator decision
       2026-09-27), set in site-config in the same change that switches the route

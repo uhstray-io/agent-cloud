@@ -169,8 +169,16 @@ see no change of base URL.
   gateway stays in the path); `-e mode=direct` publishes the current vLLM key into each
   enrolled client's OpenBao secret path (the same channel the client keys use), sets the
   Caddy upstream to the head node and redeploys Caddy; `-e mode=restore` sets the upstream
-  back to the gateway, redeploys Caddy, rotates the vLLM key at vLLM and in OpenBao, and
-  removes the published copies. Each mode converges when re-run; none is a manual step.
+  back to the gateway, redeploys Caddy, and removes the published copies once the vLLM key
+  has been rotated. Each mode converges when re-run.
+  *Amended 2026-10-02 (task 4.6):* `restore` does not rotate the vLLM key itself. That key
+  is owned by the dgx-spark repository (its `secrets/vllm_api_key`, applied by that
+  repository's deploy), which this repository does not reach into. `restore` refuses to
+  remove the published copies while the key they hold is still the live one in OpenBao or
+  while the running gateway holds an older key, and it names the steps still owed; the copies
+  are the record that the rotation is outstanding. Rotating the upstream key as one step
+  needs dgx-spark to read it from OpenBao, a cross-repository dependency tracked in the
+  dgx-spark handoff. Until then the rotation is the one step outside this playbook.
 - Stop the gateway: Semaphore stop template; nothing on the nodes changes.
 - Remove: `clean-deploy-agentgateway.yml` (destroys both containers and the budget
   volume — the only state lost is every identity's current budget window); OpenBao client

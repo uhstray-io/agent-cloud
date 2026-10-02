@@ -10,7 +10,10 @@ directory. All values are synthetic.
 """
 
 import json
+import os
+import subprocess
 import sys
+from pathlib import Path
 
 import harness_sandbox
 import playbook_yaml
@@ -19,6 +22,7 @@ import seed_harness
 import yaml
 
 PLAYBOOK = playbook_yaml.REPO / "platform/playbooks/rollback-inference-route.yml"
+SITES_LIB = str(playbook_yaml.REPO / "platform/services/caddy/deployment/lib")
 LIVE = "synthetic-vllm-live-key-1"
 ROTATED = "synthetic-vllm-rotated-key-2"
 GATEWAY = "gw.example.test:4000"
@@ -58,66 +62,138 @@ SITES = """\
 }
 """
 
-ENGINE = r'''#!/usr/bin/env python3
-import json, os, shutil, sys
+# The stub keeps Caddy's RUNNING config apart from the file: `restart` loads the file into
+# live.json (shaped as `caddy adapt` v2.11.4 renders a reverse_proxy route: the host match,
+# then each upstream as a `dial` of host:port), and the admin API serves live.json. With
+# `restart_noop` the process keeps its old routes, so the file and the process can diverge.
+ENGINE = r"""#!/usr/bin/env python3
+import json, os, re, shutil, sys
 from pathlib import Path
 tmp = Path(os.environ["STUB_DIR"])
+sys.path.insert(0, os.environ["STUB_SITES_LIB"])
+import caddyfile_sites
 state = json.loads((tmp / "stub.json").read_text())
 a = sys.argv[1:]
 with (tmp / "calls").open("a") as f:
     f.write(" ".join(a) + "\n")
-if a[0] == "cp":
+
+def load():
+    routes = []
+    for site in caddyfile_sites.parse_sites((tmp / "caddy" / "Caddyfile").read_text()):
+        dials = [re.sub(r"/.*$", "", re.sub(r"^[A-Za-z][A-Za-z0-9+.-]*://", "", u)) for u in site["upstreams"]]
+        routes.append({"match": [{"host": site["addresses"]}], "handle": [{"handler": "subroute", "routes": [
+            {"handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": d}]}]} for d in dials]}]})
+    (tmp / "live.json").write_text(json.dumps({"apps": {"http": {"servers": {"srv0": {"routes": routes}}}}}))
+
+if a[0] == "load":
+    load()
+elif a[0] == "cp":
     shutil.copy(a[1], tmp / "validate.caddyfile")
 elif a[0] == "restart":
-    pass
+    if not state.get("restart_noop"):
+        load()
 elif a[:2] == ["exec", "caddy"] and "validate" in a:
     sys.exit(1 if state.get("caddy_invalid") else 0)
 elif a[:2] == ["exec", "caddy"]:
-    print((tmp / "caddy" / "Caddyfile").read_text())
+    print((tmp / "live.json").read_text())
 elif a[:2] == ["exec", "agentgateway-db"]:
     sys.exit(0 if state.get("gateway_ready") else 1)
+elif a[0] == "inspect" and a[-1] == "agentgateway":
+    if not state.get("gateway_key"):
+        sys.exit("no such container")
+    print(json.dumps(["PATH=/usr/bin", "VLLM_API_KEY=" + state["gateway_key"]]))
 else:
     sys.exit("unexpected engine call: " + " ".join(a))
-'''
+"""
 
+# deploy.sh recreates the gateway: its running environment becomes the rendered one.
 DEPLOY = """#!/usr/bin/env bash
 echo deploy >> "$STUB_DIR/calls"
 python3 - <<'PY'
-import json, os
+import json, os, re
 from pathlib import Path
-p = Path(os.environ["STUB_DIR"]) / "stub.json"
-s = json.loads(p.read_text()); s["gateway_ready"] = True; p.write_text(json.dumps(s))
+d = Path(os.environ["STUB_DIR"])
+s = json.loads((d / "stub.json").read_text())
+s["gateway_ready"] = True
+s["gateway_key"] = re.search(r"(?m)^VLLM_API_KEY=(.*)$", (d / "gw" / ".env").read_text()).group(1)
+(d / "stub.json").write_text(json.dumps(s))
 PY
 """
 
 
 class Bao(seed_harness.FakeBao):
+    """KV-v2 for one path: versioned, check-and-set honoured, every write logged to the
+    shared event file so its order against the Caddy calls can be asserted. `rotate_on_get`
+    rotates the key just before the Nth read (a rotation landing between two reads);
+    `bump_before_cas` makes another writer win the race before a check-and-set write."""
+
     store: dict = {}
+    version = 1
+    events: Path | None = None
+    rotate_on_get = 0
+    bump_before_cas = False
+    gets = 0
+
+    def event(self, text):
+        with type(self).events.open("a") as f:
+            f.write(text + "\n")
 
     def do_POST(self):
         self.record("POST")
+        cls = type(self)
         if self.path == "/v1/auth/approle/login":
             return self.reply({"auth": {"client_token": seed_harness.LOGIN}})
+        if self.path == "/v1/secret/data/services/agentgateway":
+            body = self.body()
+            if cls.bump_before_cas:
+                cls.version += 1
+            if body.get("options", {}).get("cas") != cls.version:
+                return self.reply({"errors": ["check-and-set parameter did not match"]}, 400)
+            cls.store = dict(body["data"])
+            cls.version += 1
+            self.event("bao write")
+            return self.reply({"data": {"version": cls.version}})
         self.reply({}, 404)
 
     def do_GET(self):
         self.record("GET")
+        cls = type(self)
         if self.path == "/v1/secret/data/services/agentgateway":
-            return self.reply({"data": {"data": type(self).store, "metadata": {"version": 1}}})
+            cls.gets += 1
+            if cls.gets == cls.rotate_on_get:
+                cls.store["vllm_api_key"] = ROTATED
+                cls.version += 1
+            return self.reply({"data": {"data": cls.store, "metadata": {"version": cls.version}}})
         self.reply({}, 404)
 
     def do_PATCH(self):
         self.record("PATCH")
+        cls = type(self)
         for key, value in self.body()["data"].items():
             if value is None:
-                type(self).store.pop(key, None)
+                cls.store.pop(key, None)
             else:
-                type(self).store[key] = value
+                cls.store[key] = value
+        cls.version += 1
+        self.event("bao write")
         self.reply({"data": {}})
 
 
 def _patches():
-    return [r for r in Bao.requests if r[0] == "PATCH"]
+    """Every request that wrote the store (a merge-patch, or a check-and-set POST)."""
+    return [r for r in Bao.requests if r[0] == "PATCH" or (r[0] == "POST" and r[1].startswith("/v1/secret/"))]
+
+
+def _load_live(tmp):
+    """Make Caddy's running config the current file, as a start would (logged nowhere)."""
+    subprocess.run([str(tmp / "engine"), "load"], env={**os.environ, "STUB_DIR": str(tmp), "STUB_SITES_LIB": SITES_LIB},
+                   check=True)
+    (tmp / "calls").unlink()
+
+
+def _state(tmp, **changes):
+    path = tmp / "stub.json"
+    path.write_text(json.dumps({**json.loads(path.read_text()), **changes}))
 
 
 def _caddyfile(mode: str) -> str:
@@ -157,8 +233,10 @@ def env(tmp_path):
     stub = tmp_path / "engine"
     stub.write_text(f"#!{sys.executable}\n" + ENGINE.split("\n", 1)[1])
     stub.chmod(0o755)
-    (tmp_path / "stub.json").write_text(json.dumps({"gateway_ready": True}))
-    Bao.requests = []
+    (tmp_path / "stub.json").write_text(json.dumps({"gateway_ready": True, "gateway_key": LIVE}))
+    _load_live(tmp_path)
+    Bao.requests, Bao.version, Bao.events, Bao.gets = [], 1, tmp_path / "calls", 0
+    Bao.rotate_on_get, Bao.bump_before_cas = 0, False
     Bao.store = {"vllm_api_key": LIVE, "client_stray": "synthetic-client-stray", "client_pi": "synthetic-client-pi",
                  "agw_db_password": "synthetic-db"}
     with seed_harness.serve(Bao) as address:
@@ -187,7 +265,8 @@ def _run(env, mode=None, check=False, tags=None, caddy=None, gateway=None, group
     # -v prints every task result that no_log does not censor, so a value that escapes it shows.
     cmd = ["ansible-playbook", "-v", "-i", str(tmp / "inv.yml"), str(PLAYBOOK), "-e", json.dumps(extra),
            *(["--check"] if check else []), *(["--tags", tags] if tags else [])]
-    run_env = {**harness_sandbox.env_for(tmp), "STUB_DIR": str(tmp), "ANSIBLE_STDOUT_CALLBACK": "default"}
+    run_env = {**harness_sandbox.env_for(tmp), "STUB_DIR": str(tmp), "STUB_SITES_LIB": SITES_LIB,
+               "ANSIBLE_STDOUT_CALLBACK": "default"}
     r = harness_sandbox.run(cmd, tmp, cwd=playbook_yaml.REPO, env=run_env)
     out = r.stdout + r.stderr
     for value in (LIVE, ROTATED, *seed_harness.NEVER_PRINTED, "synthetic-client-stray", "synthetic-db"):
@@ -230,7 +309,7 @@ def test_direct_publishes_the_live_key_then_routes_to_vllm_and_never_prints_it(e
     route = _route(tmp)
     assert HEAD in route and GATEWAY not in route
     assert len(_calls(tmp, "restart caddy")) == 1
-    assert f"{ADDRESS} dials {HEAD} only." in out
+    assert f"{ADDRESS} dials {HEAD} only (running config)." in out
 
     # Re-run: nothing published twice, nothing restarted.
     before = len(_patches())
@@ -258,11 +337,22 @@ def test_restore_after_rotation_waits_for_the_gateway_to_hold_the_new_key(env):
     assert "direct_stray" in Bao.store and "direct_pi" in Bao.store
 
 
+def test_restore_waits_for_the_running_gateway_not_just_the_rendered_file(env):
+    tmp, _ = env
+    assert _run(env, mode="direct")[0] == 0
+    Bao.store["vllm_api_key"] = ROTATED
+    (tmp / "gw" / ".env").write_text(f"VLLM_API_KEY={ROTATED}\n")  # rendered, container not recreated
+    rc, out = _run(env, mode="restore")
+    assert rc != 0 and "the running agentgateway" in out and "container does not" in out, out
+    assert "direct_stray" in Bao.store and "direct_pi" in Bao.store
+
+
 def test_restore_after_rotation_and_redeploy_removes_every_copy_then_is_a_no_op(env):
     tmp, _ = env
     assert _run(env, mode="direct")[0] == 0
     Bao.store["vllm_api_key"] = ROTATED
     (tmp / "gw" / ".env").write_text(f"AGW_X=1\nVLLM_API_KEY={ROTATED}\n")
+    _state(tmp, gateway_key=ROTATED)  # the gateway was redeployed on the rotated key
     rc, out = _run(env, mode="restore")
     assert rc == 0, out
     assert not [k for k in Bao.store if k.startswith("direct_")]
@@ -274,12 +364,46 @@ def test_restore_after_rotation_and_redeploy_removes_every_copy_then_is_a_no_op(
     assert len(_patches()) == before and len(_calls(tmp, "restart caddy")) == restarts and _unchanged(out), out
 
 
+def test_direct_writes_the_store_before_caddy_is_touched(env):
+    tmp, _ = env
+    assert _run(env, mode="direct")[0] == 0
+    events = (tmp / "calls").read_text().splitlines()
+    first_caddy = next(i for i, e in enumerate(events) if e.startswith(("cp ", "restart caddy")))
+    writes = [i for i, e in enumerate(events) if e == "bao write"]
+    assert writes and max(writes) < first_caddy, events
+
+
+def test_a_running_caddy_that_keeps_the_old_route_fails_the_run(env):
+    tmp, _ = env
+    _state(tmp, restart_noop=True)  # the file changes; the process does not load it
+    rc, out = _run(env, mode="direct")
+    assert rc != 0 and "The file and the process disagree" in out, out
+    assert HEAD in _route(tmp)  # the file read-back alone would have passed
+
+
+def test_a_rotation_between_the_read_and_the_publication_publishes_nothing(env):
+    tmp, _ = env
+    Bao.rotate_on_get = 2  # the merge's own fetch sees a key other than the one read
+    rc, out = _run(env, mode="direct")
+    assert rc != 0 and "guarded OpenBao key changed" in out, out
+    assert _patches() == [] and not [k for k in Bao.store if k.startswith("direct_")]
+    assert not _calls(tmp, "restart") and GATEWAY in _route(tmp)
+
+
+def test_a_write_racing_the_publication_publishes_nothing(env):
+    tmp, _ = env
+    Bao.bump_before_cas = True  # another writer lands between the fetch and the write
+    rc, out = _run(env, mode="direct")
+    assert rc != 0 and "version-guarded update" in out, out
+    assert not [k for k in Bao.store if k.startswith("direct_")] and not _calls(tmp, "restart")
+
+
 def test_a_caddy_failure_in_restore_retires_no_copy(env):
     tmp, _ = env
     assert _run(env, mode="direct")[0] == 0
     Bao.store["vllm_api_key"] = ROTATED
     (tmp / "gw" / ".env").write_text(f"VLLM_API_KEY={ROTATED}\n")
-    (tmp / "stub.json").write_text(json.dumps({"gateway_ready": True, "caddy_invalid": True}))
+    _state(tmp, gateway_key=ROTATED, caddy_invalid=True)
     rc, out = _run(env, mode="restore")
     assert rc != 0 and "rolled back" in out, out
     assert HEAD in _route(tmp) and "direct_stray" in Bao.store and "direct_pi" in Bao.store
@@ -336,7 +460,7 @@ def test_gateway_config_puts_the_previous_config_back_and_leaves_caddy_alone(env
 def test_gateway_config_recreates_a_gateway_left_down_by_an_interrupted_run(env):
     tmp, _ = env
     (tmp / "gw" / "config.yaml.previous").write_text("config: current\n")  # already copied
-    (tmp / "stub.json").write_text(json.dumps({"gateway_ready": False}))
+    _state(tmp, gateway_ready=False)
     rc, out = _run(env, mode="gateway-config")
     assert rc == 0 and len(_calls(tmp, "deploy")) == 1, out
 
@@ -363,6 +487,7 @@ def test_the_gateway_upstream_defaults_to_the_gateway_bind_and_port(env):
     sites = SITES.replace("gw.example.test:4000", "gw-bind.example.test:4100")
     (tmp / "caddy" / "Caddyfile").write_text(_caddyfile("gateway").replace("gw.example.test:4000",
                                                                             "gw-bind.example.test:4100"))
+    _load_live(tmp)
     rc, out = _run(env, mode="restore", caddy={"caddy_managed_sites": sites, "inference_route_gateway_upstream": None},
                    gateway={"agw_bind": "gw-bind.example.test", "agw_port": "4100"})
-    assert rc == 0 and f"{ADDRESS} dials gw-bind.example.test:4100 only." in out, out
+    assert rc == 0 and f"{ADDRESS} dials gw-bind.example.test:4100 only (running config)." in out, out
