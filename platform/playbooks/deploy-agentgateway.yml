@@ -59,6 +59,8 @@
     _server_leaf: "{{ agw_server_leaf | default('agw-server') }}"
     _verifier_leaf: "{{ agw_verifier_leaf | default('agw-verifier') }}"
     _allowlist: "{{ agw_client_cert_allowlist | default(['caddy']) }}"
+    # config.yaml.previous (rollback) is kept only when the rendered config holds no raw key.
+    _keep_previous: "{{ not ((agw_plaintext_keys | default(false) | bool) and (local_mode | default(false) | bool)) }}"
     _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
     # The UI's OIDC client secret is owned by authentik (the IdP). Read-only, so the
@@ -245,8 +247,65 @@
       ansible.builtin.include_tasks: tasks/place-monorepo.yml
 
 
+    # Rollback (rollback-inference-route.yml, gateway-config mode; gateway task 4.6) puts back
+    # the config.yaml the last change replaced, kept here as config.yaml.previous. The render is
+    # the shared manage-secrets step, which reports no per-file change, so the current file is
+    # staged first and compared by checksum afterwards: .previous is written only when the
+    # render changed config.yaml. A first deploy has nothing to keep, and an unchanged render
+    # leaves .previous alone, so a re-run never replaces the last-good copy with the current
+    # one. Both names are gitignored, which is also what keeps local-dev's rsync --delete off
+    # them. Never under the local-dev agw_plaintext_keys flag: there config.yaml carries raw
+    # client keys, and a kept copy would outlive their rotation or revocation.
+    - name: "Clear a staged copy an interrupted run left behind"
+      ansible.builtin.file:
+        path: "{{ _deploy_dir }}/config.yaml.replaced"
+        state: absent
+      changed_when: false
+      when: _keep_previous and not ansible_check_mode
+
+    - name: "Read the config.yaml this render may replace"
+      ansible.builtin.stat:
+        path: "{{ _deploy_dir }}/config.yaml"
+        get_checksum: false
+      register: _cfg_before
+      when: _keep_previous and not ansible_check_mode
+
+    - name: "Stage the config.yaml this render may replace"
+      ansible.builtin.copy:
+        src: "{{ _deploy_dir }}/config.yaml"
+        dest: "{{ _deploy_dir }}/config.yaml.replaced"
+        remote_src: true
+        mode: preserve
+      # Scratch: on an unchanged render it is dropped again, so the run changed nothing.
+      changed_when: false
+      when: _keep_previous and not ansible_check_mode and _cfg_before.stat.exists
+
     - name: "Manage secrets and render env + config"
       ansible.builtin.include_tasks: tasks/manage-secrets.yml
+
+    - name: "Read the rendered config.yaml and the staged one"
+      ansible.builtin.stat:
+        path: "{{ _deploy_dir }}/{{ item }}"
+        get_checksum: true
+      loop: [config.yaml, config.yaml.replaced]
+      register: _cfg_after
+      when: _keep_previous and not ansible_check_mode
+
+    - name: "Keep the replaced config as config.yaml.previous (only when the render changed it)"
+      ansible.builtin.command:
+        argv: [mv, -f, "{{ _deploy_dir }}/config.yaml.replaced", "{{ _deploy_dir }}/config.yaml.previous"]
+      changed_when: true
+      when:
+        - _keep_previous and not ansible_check_mode
+        - _cfg_after.results[1].stat.exists
+        - _cfg_after.results[0].stat.checksum != _cfg_after.results[1].stat.checksum
+
+    - name: "Drop the staged copy (still there only when the render left config.yaml unchanged)"
+      ansible.builtin.file:
+        path: "{{ _deploy_dir }}/config.yaml.replaced"
+        state: absent
+      changed_when: false
+      when: _keep_previous and not ansible_check_mode
 
     # vllm_api_key is `existing`: manage-secrets renders it empty when the store has
     # none, and an empty key starts a gateway that is ready but answers every client
