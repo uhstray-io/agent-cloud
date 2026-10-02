@@ -277,6 +277,13 @@
       `VLLM_API_KEY` at vLLM (dgx-spark `secrets/vllm_api_key` and a two-rank restart) and in
       OpenBao; record the retirement date in `context/architecture.md`; hand dgx-spark the
       gateway address for narrowing `vllm_api_allowed_cidr`
+      2026-10-02: the deploy half landed (`config.yaml.j2` renders `legacy-shared` only before
+      `legacy_shared_expires`; `tasks/agw-legacy-key-check.yml` records the shared key's sha256
+      fingerprint once at `legacy_shared_key_sha256` during the grace period and, on or after the
+      date, fails the deploy while `vllm_api_key` still matches it; tests
+      `platform/tests/test_agw_legacy_retirement.py`). Left: the rotation at vLLM and in OpenBao
+      and the `vllm_api_allowed_cidr` narrowing are dgx-spark's and wait on the dgx-spark handoff;
+      the retirement date is recorded in `context/architecture.md` once 4.7 sets it
 - [ ] 5.2 Accept the architecture record; append a dated pointer line to
       `plan/development/06-inference-skynet.md`; `platform/services/inference/` stub
       gains a README pointing at the gateway service and the dgx-spark roadmap record

@@ -1,0 +1,65 @@
+---
+# agw-legacy-key-check.yml — shared-key retirement for agentgateway (gateway task 5.1).
+#
+# The credential half of the retirement, isolated so deploy-agentgateway.yml stays free of
+# no_log. Included after manage-secrets, so `_resolved` holds vllm_api_key and the declared
+# legacy_shared_key_sha256 (empty until first recorded).
+#
+# How "the pre-rotation value" is known: during the grace period the deploy records the shared
+# vLLM key's sha256 fingerprint ONCE into secret/services/<service>:legacy_shared_key_sha256 and
+# never overwrites it, so a later rotation of vllm_api_key leaves the fingerprint of the old key
+# behind. On or after legacy_shared_expires the deploy refuses while the current key still has
+# that fingerprint, or when no fingerprint was ever recorded (nothing to prove the rotation
+# against). Only two booleans leave the no_log steps; no value or hash is ever printed.
+#
+# Rotating the key at vLLM and in OpenBao is dgx-spark's (it owns VLLM_API_KEY); this file only
+# refuses to call the retirement done until that has happened.
+#
+# Caller provides: _resolved (manage-secrets), _legacy_shared_active, _legacy_shared_retired,
+# _bao_url, _bao_auth, service_name.
+
+- name: "Compare the vLLM key with the recorded shared-key fingerprint"
+  ansible.builtin.set_fact:
+    _legacy_fp_live: "{{ (_resolved.vllm_api_key | default('') | hash('sha256')) if (_resolved.vllm_api_key | default('') | length > 0) else '' }}"
+    _legacy_fp_stored: "{{ _resolved.legacy_shared_key_sha256 | default('') }}"
+  no_log: true
+
+- name: "Reduce the comparison to booleans"
+  ansible.builtin.set_fact:
+    _legacy_fp_missing: "{{ _legacy_fp_stored | length == 0 }}"
+    _legacy_key_unrotated: "{{ _legacy_fp_stored | length > 0 and _legacy_fp_stored == _legacy_fp_live }}"
+  no_log: true
+
+# Recorded once, while the shared key is still the vLLM key. Skipped in check mode (a write).
+- name: "Record the shared key's fingerprint (once, during the grace period)"
+  ansible.builtin.include_tasks: bao-merge-keys.yml
+  vars:
+    _bm_url: "{{ _bao_url }}"
+    _bm_token: "{{ _bao_auth.json.auth.client_token }}"
+    _bm_path: "services/{{ service_name }}"
+    _bm_data: "{{ {'legacy_shared_key_sha256': _legacy_fp_live} }}"
+  when:
+    - _legacy_shared_active | bool
+    - _legacy_fp_missing | bool
+    - _legacy_fp_live | length > 0
+    - not ansible_check_mode
+
+- name: "Refuse retirement with no recorded pre-rotation fingerprint"
+  ansible.builtin.assert:
+    that: not (_legacy_fp_missing | bool)
+    fail_msg: >-
+      legacy_shared_expires has passed but secret/services/{{ service_name }} holds no
+      legacy_shared_key_sha256, so the deploy cannot prove the shared vLLM key was rotated. Record
+      it by deploying before the expiry date, or seed the fingerprint of the pre-rotation key.
+  when: _legacy_shared_retired | bool
+
+- name: "Refuse retirement while the vLLM key is still the shared key"
+  ansible.builtin.assert:
+    that: not (_legacy_key_unrotated | bool)
+    fail_msg: >-
+      legacy_shared_expires has passed and legacy-shared is no longer enrolled, but
+      secret/services/{{ service_name }}:vllm_api_key still matches the pre-rotation shared key,
+      which therefore still works directly at vLLM. Rotate VLLM_API_KEY at vLLM and in OpenBao
+      (dgx-spark), then re-run the deploy.
+    success_msg: "The vLLM key differs from the retired shared key."
+  when: _legacy_shared_retired | bool

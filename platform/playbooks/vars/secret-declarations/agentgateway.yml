@@ -19,6 +19,9 @@ _client_defs: >-
     {%- if out.append({'name': 'client_' ~ c, 'type': 'random', 'length': 48}) -%}{%- endif -%}
   {%- endfor -%}
   {{ out }}
+# legacy_shared_key_sha256: the shared vLLM key's sha256 fingerprint, recorded by the deploy once
+# during the grace period (tasks/agw-legacy-key-check.yml) and pinned as the `legacy-shared`
+# identity's keyHash; declared only while legacy_shared_expires is set. A hash, never the key.
 # agw_db_password: the gateway's own Postgres (budget usage only) — generated
 # once, reused; a new value would orphan the existing data directory.
 # agw_oidc_cookie_seed: random seed the env template hashes into the 64-hex
@@ -26,7 +29,9 @@ _client_defs: >-
 _secret_definitions: >-
   {{ [{'name': 'vllm_api_key', 'type': 'existing'},
       {'name': 'agw_db_password', 'type': 'random', 'length': 32},
-      {'name': 'agw_oidc_cookie_seed', 'type': 'random', 'length': 48}] + _client_defs }}
+      {'name': 'agw_oidc_cookie_seed', 'type': 'random', 'length': 48}] + _client_defs
+     + ([{'name': 'legacy_shared_key_sha256', 'type': 'existing'}]
+        if (legacy_shared_expires | default('', true) | string | length > 0) else []) }}
 # The upstream key must be present unless the inventory declares an upstream that takes none
 # (agw_upstream_requires_key: false, LM Studio without authentication). manage-secrets enforces
 # this list at deploy time and check-secrets reads it, so both agree with the deploy's own assert.
