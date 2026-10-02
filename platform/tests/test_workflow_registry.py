@@ -171,13 +171,20 @@ def test_opa_allowlists_match_registry_ownership():
 def test_only_the_collector_writes_workflow_status():
     # Spec scenario "Only the collector writes status": the NetBox status fields and the Loki
     # conformance stream have exactly one writer.
+    # The raw Loki push lives in ONE shared task (production-internal-ca task 6.0), so the
+    # conformance stream's writer is whoever hands that task the aggregate's streams.
     playbooks = REPO / "platform/playbooks"
-    writers = sorted(
-        str(p.relative_to(REPO))
-        for p in playbooks.rglob("*.yml")
-        if "ac_workflow_status" in p.read_text() or "/loki/api/v1/push" in p.read_text()
-    )
-    assert writers == ["platform/playbooks/collect-service-conformance.yml"]
+    files = {str(p.relative_to(REPO)): p.read_text() for p in playbooks.rglob("*.yml")}
+    collector = "platform/playbooks/collect-service-conformance.yml"
+    assert sorted(f for f, text in files.items() if "ac_workflow_status" in text) == [collector]
+    assert sorted(f for f, text in files.items() if "/loki/api/v1/push" in text) == [
+        "platform/playbooks/tasks/push-loki-lines.yml"
+    ]
+    # Code, not comments: the shared task's header shows the collector's call as its example.
+    code = {f: "\n".join(ln for ln in text.splitlines() if not ln.lstrip().startswith("#"))
+            for f, text in files.items()}
+    assert sorted(f for f, text in code.items() if "_agg.loki_streams" in text) == [collector]
+    assert not [f for f, text in files.items() if "agent-cloud-conformance" in text]
 
 
 def test_production_conformance_uses_the_exact_private_otlp_receiver():
@@ -292,7 +299,7 @@ def test_otlp_delivery_is_reported_before_a_generic_failure(tmp_path, response, 
             "_vm_ambiguous": [],
             "_vm_unreachable": [],
             "_pick": {"stdout": json.dumps({"window_full": []})},
-            "_loki": {"status": 204},
+            "push_loki_result": {"status": 204},
         },
         "tasks": selected,
     }]

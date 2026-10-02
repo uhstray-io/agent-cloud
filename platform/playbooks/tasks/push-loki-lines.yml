@@ -1,0 +1,63 @@
+---
+# push-loki-lines.yml — push log lines to one Loki instance's push API.
+#
+# The one place a playbook sends lines straight to Loki (POST <url>/loki/api/v1/push, JSON
+# body {"streams": [...]}, success is HTTP 204). It was the conformance collector's inline
+# push; it is shared so every direct-Loki writer (the collector today; the internal-CA
+# renewal run, the personal-key reconcile and the benchmark results next) sends the same
+# request and reports the same way. Change production-internal-ca task 6.0.
+#
+# Caller passes:
+#   push_loki_url            Loki base URL, no path (the task appends /loki/api/v1/push)
+#   push_loki_streams        list of Loki streams: {"stream": {<labels>}, "values": [[ns, line]]}
+#   push_loki_must_succeed   bool, REQUIRED, no default: whether a push that does not answer
+#                            204 fails the run. The CALLER decides — the conformance collector
+#                            passes false, because an unreachable Loki must never block its
+#                            NetBox writes or its report.
+# Sets:
+#   push_loki_result         the uri result (status 204 = pushed); registered as skipped
+#                            under --check. A caller that also gates the include with `when`
+#                            leaves it undefined when the include is skipped — treat
+#                            "undefined or skipped" as not pushed.
+#
+# Check mode: a POST cannot simulate (uri check-mode support is `none`), so the push is
+# skipped under --check (plan/architecture/08-ansible-automation-standards.md, class
+# "write that cannot simulate"). The push carries no credential and is not no_log'd, so its
+# result is visible in the task output: never put a credential or a secret value in a stream.
+#
+#   - name: "Push the lines"
+#     ansible.builtin.include_tasks: tasks/push-loki-lines.yml
+#     vars:
+#       push_loki_url: "{{ collector_loki_url }}"
+#       push_loki_streams: "{{ _agg.loki_streams }}"
+#       push_loki_must_succeed: false
+
+- name: "Loki push: require the caller's inputs"
+  ansible.builtin.assert:
+    that:
+      - push_loki_url is defined
+      - push_loki_url is string
+      - push_loki_url | length > 0
+      - push_loki_streams is defined
+      - push_loki_streams is sequence
+      - push_loki_streams is not string
+      - push_loki_must_succeed is defined
+      - push_loki_must_succeed is boolean
+    fail_msg: >-
+      push-loki-lines.yml needs push_loki_url (base URL), push_loki_streams (a list) and
+      push_loki_must_succeed (true or false — the caller decides whether a failed push fails
+      the run).
+    quiet: true
+
+- name: "Loki push: POST the streams"
+  ansible.builtin.uri:
+    url: "{{ push_loki_url }}/loki/api/v1/push"
+    method: POST
+    body_format: json
+    body:
+      streams: "{{ push_loki_streams }}"
+    status_code: [204]
+  register: push_loki_result
+  changed_when: true
+  failed_when: push_loki_must_succeed and (push_loki_result.status | default(-1) | int) != 204
+  when: not ansible_check_mode

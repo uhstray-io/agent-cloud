@@ -38,6 +38,10 @@
 # test names on every push is noise people learn to scroll past, and `python3 -m pytest`
 # rather than bare `pytest` so it uses this interpreter's pytest instead of whatever is
 # first on PATH. And pytest may be skipped here entirely when collection fails.
+# Parallelism follows CI (`-n auto --dist worksteal`) only when pytest-xdist is
+# importable; without it the suite runs serially rather than refusing the push, and the
+# hook names platform/requirements-test.txt to install. An installed version other than
+# that file's pin is run anyway, with a warning. Neither way changes which tests run.
 #
 # So a green push means the suites passed ON THIS MACHINE, or were skipped. It is not
 # evidence they pass in CI, and CI remains the authority. `bats platform/tests/` is the
@@ -93,7 +97,7 @@ fi
 # CI does. Passing an explicit path overrides testpaths, so a suite added to that
 # list ran nowhere — and running nowhere is indistinguishable from passing.
 #
-# Its dependencies (pytest, pyyaml, netboxlabs-diode-sdk, proxmoxer, requests) are
+# Its dependencies (declared once, in platform/requirements-test.txt) are
 # frequently absent locally, so a MISSING DEPENDENCY is a warning rather than a
 # failure: refusing the push because a library is not installed would contradict
 # the fail-open contract above, and the import error would read as a broken test.
@@ -120,16 +124,34 @@ if [ -f pyproject.toml ]; then
   collect_out=$(PYTHONPATH="$py_pp" python3 -m pytest -q --collect-only 2>&1)
   collect_rc=$?
   if [ "$collect_rc" -eq 0 ]; then
-    printf 'pre-push: running Python suite...\n' >&2
-    if ! ( PYTHONPATH="$py_pp" python3 -m pytest -q ); then
+    # Parallel when available, as CI runs it (.github/workflows/lint-and-test.yml).
+    # Optional, so a missing pytest-xdist is not a new reason to block a push. The pin
+    # comes from the manifest CI installs, so the two cannot name different versions.
+    py_par=""
+    xdist_pin=$(sed -n 's/^pytest-xdist==\([^[:space:]#]*\).*/\1/p' platform/requirements-test.txt 2>/dev/null)
+    xdist_have=$(python3 -c 'import importlib.metadata as m; print(m.version("pytest-xdist"))' 2>/dev/null)
+    if [ -n "$xdist_have" ] && python3 -c 'import xdist' >/dev/null 2>&1; then
+      py_par="-n auto --dist worksteal"
+      if [ -n "$xdist_pin" ] && [ "$xdist_have" != "$xdist_pin" ]; then
+        printf 'pre-push WARNING: pytest-xdist %s is installed; CI pins %s.\n' "$xdist_have" "$xdist_pin" >&2
+        printf '  Running anyway. To match CI:  python3 -m pip install -r platform/requirements-test.txt\n' >&2
+      fi
+    else
+      printf 'pre-push: pytest-xdist is not installed, so the Python suite runs serially (slower).\n' >&2
+      printf '  To run it in parallel as CI does:  python3 -m pip install -r platform/requirements-test.txt\n' >&2
+    fi
+    printf 'pre-push: running Python suite%s...\n' "${py_par:+ in parallel}" >&2
+    # shellcheck disable=SC2086 # py_par is deliberately word-split into flags.
+    if ! ( PYTHONPATH="$py_pp" python3 -m pytest -q $py_par ); then
       failed=1
     fi
   elif printf '%s' "$collect_out" | grep -qE 'ModuleNotFoundError|No module named|ImportError: cannot import name'; then
     printf 'pre-push: Python suite not collectable here — a dependency is missing:\n' >&2
     printf '%s\n' "$collect_out" | grep -E 'ModuleNotFoundError|No module named|ImportError' | sed 's/^/          /' >&2
     printf '          Skipped. CI installs the dependencies and runs it.\n' >&2
-    printf '          If this names a module the tests legitimately need, DECLARE it in\n' >&2
-    printf '          .github/workflows/lint-and-test.yml before pushing.\n' >&2
+    printf '          Install the declared set:  python3 -m pip install -r platform/requirements-test.txt\n' >&2
+    printf '          If this names a module the tests legitimately need and it is not\n' >&2
+    printf '          there, DECLARE it in platform/requirements-test.txt before pushing.\n' >&2
   else
     printf 'pre-push: Python collection FAILED for a reason that is not a missing\n' >&2
     printf '          dependency — a syntax error, a bad import, or invalid config.\n' >&2
