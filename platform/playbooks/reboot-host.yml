@@ -11,6 +11,14 @@
 # Refuses unless the group holds exactly one host and the launch names that host in
 # confirm_reboot (no default), so a mistyped or multi-host group can never reboot anything.
 # Under --check it reports what it would reboot and changes nothing.
+#
+# The refusal is made TWICE, and the second one is the one that binds. The localhost play
+# reads the whole inventory, but `--limit <host>` leaves localhost out, so Ansible skips that
+# play entirely and goes straight to the reboot. The reboot play therefore repeats the guard
+# as its first task, on every targeted host, before the sudo password is resolved: the group
+# must hold one host, that host must be the one named, and the play must be running on one
+# host. Limiting a two-host group to one member is still a two-host group, and is refused.
+# any_errors_fatal stops every host the moment one is refused.
 
 - name: "Refuse a reboot that is not of exactly one named host"
   hosts: localhost
@@ -34,10 +42,28 @@
   hosts: "{{ target_service }}"
   gather_facts: false
   become: false
+  any_errors_fatal: true
   vars:
-    # An extra var overrides this; the play above refuses a run without one.
+    # An extra var overrides this; both guards refuse a run without one.
     target_service: "ungrouped"
   tasks:
+    # First, before anything can escalate: the play above does not run under --limit.
+    - name: "Refuse, on the host itself, a reboot that is not of exactly one named host"
+      ansible.builtin.assert:
+        that:
+          - _hosts | length == 1
+          - inventory_hostname == (confirm_reboot | default('') | string)
+          - ansible_play_hosts_all | length == 1
+        fail_msg: >-
+          Refusing on {{ inventory_hostname }}: target_service '{{ target_service }}' holds
+          {{ _hosts | length }} host(s) ({{ _hosts | join(', ') }}), this play targets
+          {{ ansible_play_hosts_all | length }} ({{ ansible_play_hosts_all | join(', ') }}) and
+          confirm_reboot is '{{ confirm_reboot | default('') }}'; a reboot needs exactly one host,
+          named with -e confirm_reboot=<that host>.
+        quiet: true
+      vars:
+        _hosts: "{{ groups.get(target_service, []) }}"
+
     - name: "Resolve the sudo password through OpenBao"
       ansible.builtin.include_tasks: tasks/resolve-become-password.yml
 
