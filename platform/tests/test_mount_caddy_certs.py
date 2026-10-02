@@ -241,3 +241,11 @@ def test_a_colon_inside_an_interpolated_source_is_not_a_separator():
     text = "services:\n  caddy:\n    volumes:\n      - ${CERTS:-./certs}:/etc/caddy/certs:ro\n"
     r = _edit(text)
     assert r.returncode != 0 and "already mounts" in r.stderr, r.stderr
+
+
+def test_items_at_the_same_indent_as_their_key_end_at_the_next_key():
+    # Review of 57072928 asked whether the scan runs on into the next list here: it stops at
+    # `ports:`, which sits at the same indent as `volumes:` (any deeper key is a long-syntax item).
+    text = "services:\n  caddy:\n    volumes:\n    - ./a:/a\n    ports:\n    - \"80:80\"\n"
+    out = json.loads(_edit(text).stdout)
+    assert out["text"] == text.replace("    - ./a:/a\n", "    - ./a:/a\n    - /c:/etc/caddy/certs:ro\n")
