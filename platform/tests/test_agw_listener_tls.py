@@ -153,3 +153,38 @@ def test_local_overlay_mounts_the_directory_not_the_single_bundle_file():
     assert svc["volumes"] == ["./certs:/certs:ro"]
     assert svc["environment"]["SSL_CERT_FILE"] == "/certs/step-ca-bundle.crt"
     assert svc["user"] == "${AGW_RUN_AS:-65532:65532}"
+
+
+# ── The probe path's target (review of af16a670) ─────────────────────────────
+
+PHASE3 = next(p for p in yaml.safe_load(DEPLOY.read_text()) if p.get("name", "").startswith("Phase 3"))
+
+
+@pytest.mark.parametrize("hv,want", [
+    ({"agw_listener_tls": True}, f"https://gateway.{ZONE}:4000"),
+    ({"agw_listener_tls": True, "agw_verify_base_url": f"https://gateway.{ZONE}:4000"},
+     f"https://gateway.{ZONE}:4000"),
+    ({"agw_listener_tls": True, "agw_verify_base_url": "https://agw.local.test:4000"}, "https://agw.local.test:4000"),
+    ({}, "http://127.0.0.1:4000"),
+    ({"agw_verify_base_url": "http://agentgateway:4000"}, "http://agentgateway:4000"),
+], ids=["tls-prod", "tls-declared", "tls-local-other-name", "plain", "plain-local"])
+def test_a_declared_verify_url_wins_and_production_names_the_server_san(tmp_path, hv, want):
+    name = "Probe path: the base URL, the presented leaf and the trust bundle"
+    task = next(t for t in PHASE3["tasks"] if t["name"] == name)
+    dump = {"ansible.builtin.copy": {"content": "{{ _agwp_base | trim }}", "dest": str(tmp_path / "base"),
+                                     "mode": "0600"}}
+    pv = {k: PHASE3["vars"][k] for k in ("_tls", "_agw_server_name", "_agw_probe_ip", "_plain_url")}
+    r = _ansible(tmp_path, {"dns_site": "dc1", "dns_zone": "example.internal", "internal_leaves": LEAVES, **hv},
+                 [task, dump], play_vars={**pv, "_deploy_dir": D})
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert (tmp_path / "base").read_text() == want
+
+
+def test_the_hosts_line_is_written_only_when_no_verify_url_is_declared():
+    hosts = next(t for t in PHASE3["tasks"] if t["name"].startswith("Probe path: map the server leaf"))
+    assert "agw_verify_base_url is not defined" in hosts["when"]
+
+
+def test_the_bundle_step_lets_the_shared_task_pick_the_ca_hosts_engine():
+    step = next(t for t in PHASE1["tasks"] if t["name"] == "Distribute the step-ca trust bundle into ./certs")
+    assert "_ca_engine" not in step["vars"]

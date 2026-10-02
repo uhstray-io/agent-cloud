@@ -271,8 +271,9 @@
       ansible.builtin.include_tasks: tasks/distribute-ca-root.yml
       vars:
         _ca_root_dest_dir: "{{ _deploy_dir }}"
+        # The task resolves the CA host's own container_engine (review of af16a670: `omit` is a
+        # module-argument placeholder, not a way to leave a task variable unset).
         _ca_host: "{{ inventory_hostname if (local_mode | default(false) | bool) else (groups['step_ca_svc'] | first) }}"
-        _ca_engine: "{{ container_engine | default('podman') if (local_mode | default(false) | bool) else omit }}"
       when: (local_mode | default(false) | bool) or _tls
 
 # ── Phase 2: Container lifecycle ────────────────────────────────────────────
@@ -429,8 +430,13 @@
     # maps to the published bind (task 7.2 removes it once internal DNS serves the name).
     - name: "Probe path: the base URL, the presented leaf and the trust bundle"
       ansible.builtin.set_fact:
+        # A declared agw_verify_base_url wins in both modes: local-dev runs this play inside the
+        # Semaphore container, where the published loopback is not the gateway (review of
+        # af16a670); with listener TLS it is declared in the SAN form. Without it (production)
+        # the probes name the server leaf's SAN, mapped by the hosts line below.
         _agwp_base: >-
-          {{ ('https://' ~ _agw_server_name ~ ':' ~ (agw_port | default('4000'))) if _tls else _plain_url }}
+          {{ agw_verify_base_url if (agw_verify_base_url is defined)
+             else (('https://' ~ _agw_server_name ~ ':' ~ (agw_port | default('4000'))) if _tls else _plain_url) }}
         _agwp_leaf_dir: >-
           {{ (internal_leaves | default([]) | selectattr('name', 'equalto', agw_verifier_leaf | default('agw-verifier'))
              | map(attribute='dir') | first | default('')) if _tls else '' }}
@@ -438,7 +444,7 @@
 
     - name: "Probe path: resolve the sudo password for the hosts line"
       ansible.builtin.include_tasks: tasks/resolve-become-password.yml
-      when: _tls and not ansible_check_mode
+      when: _tls and not ansible_check_mode and agw_verify_base_url is not defined
 
     - name: "Probe path: map the server leaf's name to the published bind (interim, task 7.2)"
       ansible.builtin.lineinfile:
@@ -446,7 +452,7 @@
         regexp: '# agent-cloud-managed: agw-probe \(interim, task 7\.2\)$'
         line: "{{ _agw_probe_ip }} {{ _agw_server_name }} # agent-cloud-managed: agw-probe (interim, task 7.2)"
       become: true
-      when: _tls and not ansible_check_mode
+      when: _tls and not ansible_check_mode and agw_verify_base_url is not defined
 
     - name: "An unenrolled request is refused at the gateway (401, never reaches the upstream)"
       ansible.builtin.include_tasks: tasks/agw-probe.yml
