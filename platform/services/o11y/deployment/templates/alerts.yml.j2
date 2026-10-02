@@ -168,3 +168,124 @@ groups:
           repeat_interval: 4h
 {% endif %}
 {% endfor %}
+{# Inference groups (change inference-telemetry-production, task 3.2). They render
+   only with the DGX Spark scrape jobs, so every selector below has a producer.
+   Every metric name is in the recorded vLLM list or the pinned node-exporter
+   list (platform/tests/fixtures/). Rule uids use the inference_ prefix: the
+   deploy verify, the canary and the active drill own the o11y_ rules, and the
+   benchmark placeholder must stay paused without failing their checks. Routing
+   reuses the agent-cloud-ops Discord contact point above (OpenBao
+   secret/services/o11y:alert_discord_webhook_url); no second channel exists.
+   Thermal rules are deferred: no thermal series is scraped until the dgx-spark
+   GPU exporter passes its compatibility gate.
+   Grafana 11.4 provisioning keeps a rule whose group leaves the file, so turning
+   the scrape off must name every inference rule in deleteRules (the
+   deleteContactPoints pattern in alert-contact.yml.j2); keep this list in step
+   with the rules below. #}
+{% set _inference_uids = ['inference_queue_stalled', 'inference_node_memavailable_low', 'inference_node_memfree_low', 'inference_benchmark_gate_placeholder'] %}
+{% if dgx_spark_scrape_enabled | default(false) | bool %}
+{% set _inference_active = o11y_alerts_enabled | default(false) | bool and o11y_alert_canary_service is not defined %}
+{% set _runbook = 'https://github.com/uhstray-io/dgx-spark/blob/main/docs/VLLM-BRINGUP.md' %}
+{% macro inference_rule(uid, title, expr, evaluator, threshold, for_, severity, service, summary, description, dashboard, from_=600, no_data='OK', paused=none) %}
+      - uid: {{ uid }}
+        title: {{ title | to_json }}
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: { from: {{ from_ }}, to: 0 }
+            datasourceUid: prometheus
+            model:
+              editorMode: code
+              expr: {{ expr | to_json }}
+              instant: true
+              range: false
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              expression: A
+              type: threshold
+              conditions:
+                - evaluator: { type: {{ evaluator }}, params: [{{ threshold }}] }
+                  operator: { type: and }
+                  query: { params: [B] }
+                  reducer: { type: last, params: [] }
+                  type: query
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: B
+        noDataState: {{ no_data }}
+        executionErrorState: Alerting
+        for: {{ for_ }}
+        annotations:
+          summary: {{ summary | to_json }}
+          description: {{ description | to_json }}
+          dashboard_url: {{ dashboard }}
+          runbook_url: {{ _runbook }}
+        labels:
+          severity: {{ severity }}
+          service: {{ service | to_json }}
+          owner: platform-operations
+          environment: "prod"
+          cluster: "dgx-spark"
+{% set _active = _inference_active if paused is none else not paused %}
+        isPaused: {{ 'false' if _active else 'true' }}
+{% if _active %}
+        notification_settings:
+          receiver: agent-cloud-ops
+          group_by: [service, environment, cluster, alertname]
+          group_wait: 30s
+          group_interval: 5m
+          repeat_interval: 4h
+{% endif %}
+{% endmacro %}
+  - orgId: 1
+    name: inference-failing
+    folder: agent-cloud
+    interval: 60s
+    rules:
+{{ inference_rule('inference_queue_stalled', 'vLLM requests waiting while no tokens are generated',
+     'sum by (model_name, node) (vllm:num_requests_waiting{job="dgx-spark-vllm",cluster="dgx-spark"}) and on (model_name, node) (sum by (model_name, node) (rate(vllm:generation_tokens_total{job="dgx-spark-vllm",cluster="dgx-spark"}[5m])) == 0)',
+     'gt', 0, '5m', 'critical', 'vllm',
+     'vLLM has queued requests and has generated no tokens for five minutes.',
+     'Health can still answer while inference is stuck. Check the head and worker ranks and the lifecycle state before restarting anything.',
+     '/d/inference-latency-capacity') }}
+  - orgId: 1
+    name: memory-thermal
+    folder: agent-cloud
+    interval: 60s
+    rules:
+{{ inference_rule('inference_node_memavailable_low', 'DGX Spark node available memory below the memory guard stall line',
+     'node_memory_MemAvailable_bytes{job="dgx-spark-node",cluster="dgx-spark"}',
+     'lt', o11y_dgx_spark_memavailable_stall_bytes | default(536870912) | int, '5m', 'critical', 'dgx-spark',
+     'A DGX Spark node has stayed below the memory guard stall line for five minutes.',
+     'The memory guard kills the serving container after 120 seconds below this line, so five minutes means the guard has not recovered the node. Check the node journal for guard lines.',
+     '/d/inference-fleet-health') }}
+{{ inference_rule('inference_node_memfree_low', 'DGX Spark node free memory below the memory guard floor',
+     'node_memory_MemFree_bytes{job="dgx-spark-node",cluster="dgx-spark"}',
+     'lt', o11y_dgx_spark_memfree_floor_bytes | default(1073741824) | int, '5m', 'critical', 'dgx-spark',
+     'A DGX Spark node has stayed below the memory guard free-page floor for five minutes.',
+     'The memory guard kills the serving container after four seconds below this floor; the GPU allocates from host memory and the node can livelock. Check the node before restarting serving.',
+     '/d/inference-fleet-health') }}
+  - orgId: 1
+    name: benchmark-gate
+    folder: agent-cloud
+    interval: 60s
+    rules:
+{# Placeholder until the benchmark manifest writer exports a metric; it stays
+   paused and evaluates a constant, so it can never fire or name a metric that
+   does not exist. #}
+{{ inference_rule('inference_benchmark_gate_placeholder', 'Benchmark gate placeholder (disabled until the manifest metric exists)',
+     'vector(0)', 'gt', 0, '5m', 'warning', 'vllm',
+     'Placeholder for the benchmark gate; disabled.',
+     'Replace this rule when the dgx-spark benchmark manifest writer publishes a metric.',
+     '/d/inference-placement-comparison', paused=true) }}
+{% else %}
+deleteRules:
+{% for uid in _inference_uids %}
+  - orgId: 1
+    uid: {{ uid }}
+{% endfor %}
+{% endif %}

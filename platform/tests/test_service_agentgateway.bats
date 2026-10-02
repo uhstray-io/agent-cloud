@@ -221,10 +221,12 @@ setup() {
   refute_grep -qE 'community\.general\.[a-z_]+' "$PLAYBOOK"
 }
 
-@test "agentgateway: playbook verifies over the compose network, asserts the 401, puts no key on an argv" {
-  # The client key is a `uri` header in exactly two no_log tasks, and no command or shell task
-  # ever sees it: a shell probe put it on wget's argv (PR 221 Codex review).
-  python3 - "$PLAYBOOK" <<'PY'
+@test "agentgateway: playbook verifies through the one probe path, asserts the 401, puts no key on an argv" {
+  # Every gateway probe outside Caddy is tasks/agw-probe.yml (task 6.1a). The client key reaches
+  # exactly two tasks, both includes of that file, and inside it only a no_log `uri` header: no
+  # command or shell task ever sees it (a shell probe put it on wget's argv, PR 221 Codex review).
+  PROBE="$REPO_ROOT/platform/playbooks/tasks/agw-probe.yml"
+  python3 - "$PLAYBOOK" "$PROBE" <<'PY'
 import sys, yaml
 def walk(tasks):
     for t in tasks or []:
@@ -239,18 +241,25 @@ for play in yaml.safe_load(open(sys.argv[1])):
             keyed.append(t)
 assert len(keyed) == 2, [t.get("name") for t in keyed]
 for t in keyed:
-    assert "ansible.builtin.uri" in t and t.get("no_log") is True, t.get("name")
-    assert "_resolved['client_" in t["ansible.builtin.uri"]["headers"]["Authorization"], t.get("name")
-    assert "_resolved['client_" not in str({k: v for k, v in t["ansible.builtin.uri"].items() if k != "headers"})
+    assert t.get("ansible.builtin.include_tasks") == "tasks/agw-probe.yml", t.get("name")
+    assert "_resolved['client_" in t["vars"]["_agwp_key"], t.get("name")
+probe = yaml.safe_load(open(sys.argv[2]))
+assert not any(k in t for t in probe for k in ("ansible.builtin.command", "ansible.builtin.shell"))
+call = next(t for t in probe if "ansible.builtin.uri" in t)
+assert call.get("no_log") is True and "_agwp_key" in call["ansible.builtin.uri"]["headers"]
+assert "_agwp_key" not in str({k: v for k, v in call["ansible.builtin.uri"].items() if k != "headers"})
+# The raw result carries the request, so only a no_log copy of response fields leaves the file.
+keep = next(t for t in probe if "ansible.builtin.set_fact" in t)
+assert keep.get("no_log") is True and set(keep["ansible.builtin.set_fact"]["_agwp_out"]) == {"status", "content", "json", "msg"}
 PY
-  [ "$(grep -c 'no_log: true' "$PLAYBOOK")" -eq 2 ]
+  refute_grep -qF 'no_log: true' "$PLAYBOOK"
   refute_grep -qE "secrets\['client_" "$PLAYBOOK"
   refute_grep -qF 'read -r k' "$PLAYBOOK"
   # The identity is checked against, and asks for, only the models it may use; a 429 from the
   # gateway's own policy is reported as unproven, not failed as a routing fault.
   assert_grep -qF '.allowed_models' "$PLAYBOOK"
   assert_grep -qF 'model: "{{ _verify_models[0] }}"' "$PLAYBOOK"
-  assert_grep -qF '(_keyed_models.status | default(-1)) == 429' "$PLAYBOOK"
+  assert_grep -qF '(_keyed_models.status | default(-1) | int) == 429' "$PLAYBOOK"
   # Only the gateway's own refusal body counts; a 429 relayed from the upstream fails.
   [ "$(grep -cF "| trim) == 'rate limit exceeded'" "$PLAYBOOK")" -eq 2 ]
   assert_grep -qF 'round-trip was NOT proven on this run' "$PLAYBOOK"
@@ -260,11 +269,12 @@ PY
   assert_precedes "$PLAYBOOK" 'Refuse to report success when the round-trip was not proven' 'Require a completion the upstream produced'
   # Local-dev's verify runs in the Semaphore container, on the gateway's network.
   assert_grep -qF 'agw_verify_base_url=http://agentgateway:4000' "$REPO_ROOT/platform/playbooks/bootstrap-local-dev.yml"
+  # Readiness stays on its own plain listener, probed from the sibling db container.
   assert_grep -q 'exec agentgateway-db wget' "$PLAYBOOK"
   assert_grep -qF 'http://{{ _gw_addr.stdout }}:19001/healthz/ready' "$PLAYBOOK"
-  assert_grep -qF 'http://{{ _gw_addr.stdout }}:4000/v1/models' "$PLAYBOOK"
   refute_grep -qF 'http://agentgateway:' "$PLAYBOOK"
-  assert_grep -qF "'401' not in _noauth.stderr" "$PLAYBOOK"
+  # The keyless refusal is the shared probe with no key, expecting 401.
+  assert_grep -qF '(_agwp_out.status | int) == 401' "$PLAYBOOK"
   assert_grep -qE 'mode: "0644"' "$PLAYBOOK"
 }
 
