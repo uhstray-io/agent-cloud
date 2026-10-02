@@ -109,7 +109,9 @@ brew install shellcheck bats-core hadolint
 
 # Python 3.11 (required for tests)
 brew install python@3.11
-pip3.11 install pytest netboxlabs-diode-sdk proxmoxer requests
+# The test suites' dependencies, declared once and installed by CI from the same file.
+# It includes pytest-xdist, which the pre-push hook uses to run the suite in parallel.
+pip3.11 install -r platform/requirements-test.txt
 
 # Controller packages — cryptography is needed by the BATS suite, which signs a real
 # GitHub App assertion with a throwaway key and verifies it. Without it those tests SKIP

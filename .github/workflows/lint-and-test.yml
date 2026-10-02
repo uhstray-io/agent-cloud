@@ -199,7 +199,10 @@ jobs:
   python-core:
     name: Python core
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # Backstop, not the capacity fix. The suite runs in parallel (below), which is what
+    # keeps it well under this. 20 minutes was a serial-era cap that green runs reached
+    # 19.9 minutes against before one was cancelled at 20m5s (run 37048305528).
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
 
@@ -209,13 +212,10 @@ jobs:
 
       - name: Install test dependencies
         run: |
-          # pyyaml: the Caddy playbook-structure suite asserts against the PARSED
-          # playbook rather than its text, so it needs a yaml parser. It was absent
-          # here and present in the author's virtualenv, which is exactly how an
-          # undeclared dependency passes locally and fails on a clean runner.
-          # ansible-core: execute the Tududi provisioning safety suite against
-          # disposable HTTP fixtures; a skipped runner cannot prove rollback.
-          pip install pytest pyyaml netboxlabs-diode-sdk proxmoxer requests ansible-core
+          # The one declaration of the suites' dependencies, each with its reason,
+          # including the pytest-xdist pin the run step's flags rely on. The pre-push
+          # hook reads the same file, so CI and a local push agree on the version.
+          pip install -r platform/requirements-test.txt
           # cryptography: the BATS suite signs a real App assertion with a throwaway key
           # and verifies it, which is the only check that the credential chain's signing
           # is correct rather than merely well-formed. Declared for the orchestrator in
@@ -225,10 +225,19 @@ jobs:
       # Keep pytest's configured root testpaths active so newly registered suites
       # remain covered. Deselect only NetBox's node IDs; --ignore does not remove a
       # directory listed directly in testpaths. NetBox has its own parallel job below.
+      #
+      # `-n auto`, one worker per core: the slow tests are independent ansible-playbook
+      # subprocesses, so they spread across cores instead of queueing behind each other.
+      # That is safe only because every test keeps its state in its own tmp_path and its
+      # own ephemeral-port fixture server — a new test must do the same. A fixture that
+      # flakes only under load fails here first: the scoped-publication server replied
+      # to a POST with its body unread, and the reset that caused failed a different
+      # test each parallel run until it was fixed. `worksteal` rebalances when one worker
+      # draws the 50-second tests; `-x` still stops at the first failure.
       - name: Run Python core tests
         env:
           PYTHONPATH: platform/services/netbox/deployment/workers/proxmox_discovery:platform/services/netbox/deployment/workers/pfsense_sync
-        run: pytest -v -x --durations=20 --deselect=platform/services/netbox/deployment/tests/
+        run: pytest -v -x -n auto --dist worksteal --durations=20 --deselect=platform/services/netbox/deployment/tests/
 
   python-netbox:
     name: Python NetBox
@@ -242,7 +251,7 @@ jobs:
 
       - name: Install test dependencies
         run: |
-          pip install pytest pyyaml netboxlabs-diode-sdk proxmoxer requests ansible-core
+          pip install -r platform/requirements-test.txt
           pip install -r platform/requirements-controller.txt
 
       - name: Run NetBox Python tests
@@ -262,7 +271,7 @@ jobs:
 
       - name: Install test dependencies
         run: |
-          pip install pytest pyyaml netboxlabs-diode-sdk proxmoxer requests ansible-core
+          pip install -r platform/requirements-test.txt
           pip install -r platform/requirements-controller.txt
 
       - name: Install BATS
