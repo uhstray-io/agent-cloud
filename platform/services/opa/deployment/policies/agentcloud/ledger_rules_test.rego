@@ -259,19 +259,35 @@ test_mutation_kind_is_part_of_the_declaration if {
 	_mut_denied(object.union(_mut, {"action": "update_key", "target": "agent-cloud"}))
 }
 
-# The repo declares no key-store entry or inventory record today.
-test_mutation_of_a_key_or_inventory_denied if {
+# The repo declares no key-store entry today, and only the "production" inventory record.
+test_mutation_of_an_undeclared_key_or_inventory_denied if {
 	_mut_denied(object.union(_mut, {"action": "update_key", "target": "none"}))
-	_mut_denied(object.union(_mut, {"action": "update_inventory", "target": "production"}))
+	_mut_denied(object.union(_mut, {"action": "update_inventory", "target": "staging"}))
+}
+
+# The production inventory is declared as code (synced from site-config by sync-inventory.yml).
+test_mutation_of_the_declared_production_inventory_allowed if {
+	_mut_decision(object.union(_mut, {"action": "update_inventory", "target": "production"})).allowed
+}
+
+test_mutation_production_inventory_near_miss_denied if {
+	every t in ["Production", " production", "prod"] {
+		_mut_denied(object.union(_mut, {"action": "update_inventory", "target": t}))
+	}
+}
+
+# Declarations are per kind: the production inventory does not declare a repository of that name.
+test_mutation_production_is_declared_only_as_an_inventory if {
+	_mut_denied(_mut_with("production"))
 }
 
 test_mutation_undeclared_allowed_with_approval if {
-	_mut_decision(object.union(_mut_with("production"), {"action": "update_inventory", "human_approved": true})).allowed
+	_mut_decision(object.union(_mut_with("staging"), {"action": "update_inventory", "human_approved": true})).allowed
 }
 
 test_mutation_wrong_type_approval_denied if {
 	every a in ["true", 1, {"by": "operator"}] {
-		_mut_denied(object.union(_mut_with("production"), {"action": "update_inventory", "human_approved": a}))
+		_mut_denied(object.union(_mut_with("staging"), {"action": "update_inventory", "human_approved": a}))
 	}
 }
 

@@ -173,7 +173,9 @@
           "agent-cloud dev"
         ],
         "key": [],
-        "inventory": []
+        "inventory": [
+          "production"
+        ]
       }
     },
     "workflow_steps": {

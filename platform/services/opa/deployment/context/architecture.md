@@ -82,8 +82,10 @@ value: the credential does not leave the runner. The rule catches carelessness, 
 probe value that looks like a real credential.
 
 `declared_objects` lists what the repo declares: the two repository records in
-`platform/semaphore/repositories.yml`. No key-store entry or inventory record is declared,
-so mutating one needs a human. Nothing yet checks that list against `repositories.yml`.
+`platform/semaphore/repositories.yml`, and the `production` inventory record, whose content
+`platform/semaphore/sync-inventory.yml` pushes from the committed inventory. No key-store
+entry is declared, so mutating one needs a human. Nothing yet checks the repository list
+against `repositories.yml`.
 
 `human_approved` counts as approval only when it is the boolean `true`. A string such as
 `"true"` or `"false"`, or a number, is not approval. This applies to the destructive-template
