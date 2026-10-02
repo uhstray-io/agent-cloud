@@ -8,7 +8,9 @@ every identity's current token-budget window.
 
 `deploy.sh` is container lifecycle only. Both files the container reads (`.env`,
 `config.yaml`) are rendered by `deploy-agentgateway.yml` from OpenBao + inventory and
-are gitignored. Operational reference: `../context/architecture.md`.
+are gitignored. Operational reference: `../context/architecture.md`. When a deploy's render changes `config.yaml`, the file it replaced is kept
+beside it as `config.yaml.previous` (an unchanged render leaves that copy alone; never under
+local-dev's `agw_plaintext_keys`), which `rollback-inference-route.yml` gateway-config mode puts back.
 
 ## A deploy recreates the gateway only when its inputs changed
 
