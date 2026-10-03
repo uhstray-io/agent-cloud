@@ -523,18 +523,8 @@
             - _provable | selectattr('class', 'equalto', 'probe-client') | list | length > 0
 
         # The probe URL names the server leaf's SAN; resolve it through the one resolution
-        # step (tasks/agw-probe-resolution.yml), the same one Deploy agentgateway uses.
-        - name: "Probe path: resolve the sudo password for the hosts line"
-          tags: [verify]
-          ansible.builtin.include_tasks:
-            file: tasks/resolve-become-password.yml
-            apply:
-              tags: [verify]
-          when:
-            - _renew_prove | bool and not ansible_check_mode
-            - agw_verify_base_url is not defined
-            - _provable | selectattr('class', 'equalto', 'probe-client') | list | length > 0
-
+        # step (tasks/agw-probe-resolution.yml) in its read-only mode: Deploy agentgateway is
+        # the one writer, so the daily renewal needs no sudo and no OpenBao read for it.
         - name: "Probe path: resolve the server leaf's name (task 7.2)"
           tags: [verify]
           ansible.builtin.include_tasks:
@@ -542,6 +532,7 @@
             apply:
               tags: [verify]
           vars:
+            _agwr_check_only: true
             _agwr_name: "{{ _agw_server_name }}"
             _agwr_ip: >-
               {{ '127.0.0.1' if (hostvars[_gw].agw_bind | default('127.0.0.1')) in ['0.0.0.0', '::', '']

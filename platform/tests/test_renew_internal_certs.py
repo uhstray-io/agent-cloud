@@ -53,6 +53,8 @@ ISSUER_PW = {"server": "synthetic-issuer-server-pw", "client": "synthetic-issuer
 NOW = datetime.datetime.now(datetime.UTC)
 DAY = datetime.timedelta(days=1)
 HIDDEN_MARKER = "synthetic_hidden_failure_marker"
+# The interim line Deploy agentgateway places (tasks/agw-probe-resolution.yml); renewal only reads it.
+HOSTS_LINE = f"127.0.0.1 gateway.{ZONE} # agent-cloud-managed: agw-probe (interim, task 7.2)\n"
 FRESH = (NOW - DAY, NOW + 29 * DAY)      # 29 of 30 days left: outside the window
 DUE = (NOW - 25 * DAY, NOW + 5 * DAY)    # 5 of 30 days left: inside the last third
 
@@ -75,9 +77,6 @@ def _copy_playbook(tmp: Path, password_fails: bool = False) -> Path:
                 swapped += 1
     assert swapped == 1, "the issuer-password task was not found to swap"
     issue.write_text(yaml.safe_dump(tasks, sort_keys=False))
-    # The sudo-password read reaches OpenBao (its own tests own it); escalation is off here
-    # (ansible_become: false on the gateway host) and the hosts file is a scratch copy.
-    (dest / "tasks/resolve-become-password.yml").write_text("[]\n")
     return dest / PLAYBOOK.name
 
 
@@ -370,8 +369,7 @@ class World:
             loki = stack.enter_context(_thread(_loki(self.pushes)))
             hosts = {
                 "step_ca_svc": {"ca": dict(host)},
-                "agentgateway_svc": {"gw": {**host, "ansible_become": False,
-                                            "_agwr_hosts_file": str(self.tmp / "hosts"),
+                "agentgateway_svc": {"gw": {**host, "_agwr_hosts_file": str(self.tmp / "hosts"),
                                             "agw_listener_tls": True, "agw_bind": "127.0.0.1",
                                             "agw_port": str(gw.server_port), "agw_ui_enabled": False}},
                 "caddy_svc": {"caddy": {**host, "inference_route_address": ROUTE,
@@ -395,7 +393,7 @@ class World:
             (self.tmp / "inv.yml").write_text(yaml.safe_dump(inv))
             hosts_file = self.tmp / "hosts"
             if not hosts_file.exists():
-                hosts_file.write_text("")
+                hosts_file.write_text(HOSTS_LINE)
             args = {**seed_harness.ROLE, "renew_proof_retries": 2, "renew_proof_delay": 1, **(extra or {})}
             cmd = ["ansible-playbook", "-i", str(self.tmp / "inv.yml"), str(self.playbook), "-e", json.dumps(args),
                    *(["--check"] if check else []), *(["--tags", tags] if tags else [])]
@@ -497,15 +495,38 @@ def test_a_leaf_in_use_is_proven_with_its_new_serial(world):
     assert sorted(body["renewed"]) == ["agw-server", "agw-verifier"]
 
 
-MARKER = "# agent-cloud-managed: agw-probe (interim, task 7.2)"
+def test_renewal_never_escalates_nor_reads_the_sudo_password():
+    # Ratchet: the daily renewal must not gain sudo or OpenBao dependencies; Deploy agentgateway
+    # is the one hosts-line writer, renewal only reads (tasks/agw-probe-resolution.yml check-only).
+    text = PLAYBOOK.read_text()
+    assert "resolve-become-password" not in text
+    assert "become: true" not in text
+    inc = next(t for p in yaml.safe_load(text) for t in _walk(p.get("tasks", []))
+               if "agw-probe-resolution" in str(t.get("ansible.builtin.include_tasks", "")))
+    assert inc["vars"]["_agwr_check_only"] is True
 
 
-def test_the_proof_resolves_the_server_name_through_the_shared_step(world):
-    # The interim line the shared resolution task writes, byte-for-byte what the deploy writes.
+def _walk(tasks):
+    for t in tasks:
+        yield t
+        for key in ("block", "rescue", "always"):
+            yield from _walk(t.get(key, []))
+
+
+def test_the_proof_reads_the_hosts_line_and_writes_nothing(world):
     world.place(agw_server=DUE)
     rc, out = world.run()
     assert rc == 0, out
-    assert (world.tmp / "hosts").read_text() == f"127.0.0.1 gateway.{ZONE} {MARKER}\n"
+    assert (world.tmp / "hosts").read_text() == HOSTS_LINE
+
+
+def test_a_missing_hosts_line_fails_the_proof_and_names_the_deploy(world):
+    (world.tmp / "hosts").write_text("127.0.0.1 localhost\n")
+    world.place(agw_server=DUE)
+    rc, out = world.run()
+    assert rc != 0
+    assert "Run Deploy agentgateway" in out
+    assert (world.tmp / "hosts").read_text() == "127.0.0.1 localhost\n"
 
 
 # ── Proof failures fail the run, and still report ──────────────────────────────
