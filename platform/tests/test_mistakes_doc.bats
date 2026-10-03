@@ -52,12 +52,25 @@ print('OK' if not problems else '; '.join(problems))
 @test "mistakes doc: every index row names where the rule is enforced" {
   # A row with a blank enforcement column is the failure this doc is about —
   # a rule recorded but not placed anywhere it can fire.
+  # The column is found by its header name, not by position: when a Count
+  # column was inserted before it, a positional regex silently began checking
+  # Count instead and passed with an Enforced-by cell blanked.
   run python3 -c "
 import re
 doc = open('$DOC').read()
-rows = re.findall(r'^\| (\d+\.\d+) \| [^|]+ \| [^|]+ \| ([^|]*) \|', doc, re.M)
-assert rows, 'no index rows parsed'
-blank = [n for n, enf in rows if not enf.strip()]
+idx_tbl = doc.split('## Index')[1].split(chr(10) + '---')[0]
+lines = [l for l in idx_tbl.splitlines() if l.startswith('|')]
+assert len(lines) > 2, 'no index table parsed'
+# Split on unescaped pipes only; a cell may carry an escaped one.
+cells = lambda l: [c.strip() for c in re.split(r'(?<!\\\\)\\|', l)[1:-1]]
+header = cells(lines[0])
+missing = [h for h in ('Count', 'Enforced by') if h not in header]
+assert not missing, f'index header lacks {missing}: {header}'
+col = header.index('Enforced by')
+rows = [cells(l) for l in lines[2:]]
+ragged = [r[0] for r in rows if len(r) != len(header)]
+assert not ragged, f'rows whose cell count differs from the header: {ragged}'
+blank = [r[0] for r in rows if not r[col]]
 print('OK' if not blank else f'rows with no enforcement: {blank}')
 "
   [ "$output" = "OK" ]

@@ -1,0 +1,19 @@
+# Assertions in platform/tests/*.bats @test bodies that cannot fail, of two shapes:
+#   grep-v-q  grep with both -v and -q (passes when the pattern IS present)
+#   or-true   an assertion statement ending in `|| true` (its status is discarded)
+#
+# A RATCHET, not an allow-list. platform/tests/test_assertions_are_real.bats derives
+# the offenders from the test files themselves and then requires:
+#   - every offender is named here           (a NEW one cannot appear silently)
+#   - every entry here still matches one     (a fix cannot leave its entry behind)
+# So this file only ever shrinks, and shrinking it is the work.
+#
+# Why it exists: docs/MISTAKES.md 2.10 — `grep -vqF ... || true` was written as an
+# absence check while fixing the assertions of 2.9 that could not fail, and the count
+# ratchet in the same test did not catch it, because it is not a bang-inverted command.
+#
+# Format: <shape><TAB><test file basename><TAB><the source line, stripped>.
+# Keyed on the text, not the line number. Remove a line in the same commit that
+# converts the assertion (refute_grep / assert_grep / run + [ ]).
+#
+# Empty when the check landed (2026-10-02): no @test body used either shape.
