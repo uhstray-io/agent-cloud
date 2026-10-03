@@ -78,11 +78,13 @@
     # A record nobody can reach is worse than none: it moves the failure from the deploy to
     # the first probe. A loopback target (a gateway bound to 127.0.0.1) only serves its own
     # host; a non-IPv4 value (an inventory name, an IPv6 bind) cannot be an A record; a name
-    # dns_records already declares would give one name two answers.
+    # dns_records already declares would give one name two answers. Each octet is 0-255
+    # with no leading zero: dig prints the canonical form, so 01.2.3.4 could never pass
+    # the Phase 3 string comparison.
     - name: "Refuse a gateway record the zone cannot serve"
       ansible.builtin.assert:
         that:
-          - _dns_agw_records | rejectattr('value', 'match', '^[0-9]{1,3}(\\.[0-9]{1,3}){3}$') | list | length == 0
+          - _dns_agw_records | rejectattr('value', 'match', '^(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])(\\.(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])){3}$') | list | length == 0
           - (local_mode | default(false) | bool)
             or (_dns_agw_records | selectattr('value', 'match', '^127\\.') | list | length == 0)
           - _dns_agw_records | map(attribute='name')
@@ -182,6 +184,9 @@
       changed_when: false
       check_mode: false
       failed_when: (_dig_agw.stdout | trim) != item.value
+      # Under --check the zone is not re-rendered or reloaded, so live DNS still serves
+      # the previous records; comparing them to the new declaration would fail falsely.
+      when: not ansible_check_mode
 
     - name: "Verify forwarding of an external name"
       ansible.builtin.command: >-

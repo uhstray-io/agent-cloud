@@ -98,8 +98,11 @@ def test_a_gateway_without_listener_tls_publishes_nothing(tmp_path):
         (_gateway(bind="127.0.0.1"), None),
         (_gateway(host="gw1.example"), None),
         (_gateway(), {"dns_records": [{"name": "gateway.lab", "value": "192.0.2.99"}]}),
+        (_gateway(host="256.1.1.1"), None),
+        (_gateway(host="1.2.3.999"), None),
+        (_gateway(host="01.2.3.4"), None),
     ],
-    ids=["loopback", "not-ipv4", "collides-with-dns_records"],
+    ids=["loopback", "not-ipv4", "collides-with-dns_records", "octet-over-255", "octet-999", "leading-zero"],
 )
 def test_a_record_the_zone_cannot_serve_is_refused(tmp_path, gw, dns_vars):
     r, zone = _render(tmp_path, {"gw1": gw}, dns_vars)
@@ -114,6 +117,30 @@ def test_dns_verify_digs_every_gateway_record():
     assert task["loop"] == "{{ _dns_agw_records | default([]) }}"
     assert "item.fqdn" in task["ansible.builtin.command"]
     assert task["failed_when"] == "(_dig_agw.stdout | trim) != item.value"
+
+
+def test_a_valid_ipv4_address_is_accepted(tmp_path):
+    r, zone = _render(tmp_path, {"gw1": _gateway(host="198.51.100.1")})
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "198.51.100.1" in zone
+
+
+def test_check_mode_skips_the_gateway_record_dig(tmp_path):
+    # --check skips render and deploy, so live DNS still holds the old records; the dig
+    # must not run (or it fails comparing stale answers). The engine is `false`, so a
+    # run that did execute fails loudly.
+    phase3 = next(p for p in yaml.safe_load(DEPLOY_DNS.read_text()) if p["name"].startswith("Phase 3"))
+    task = next(t for t in phase3["tasks"] if t["name"] == "Resolve each gateway server leaf record")
+    extra = {
+        "ansible_python_interpreter": "python3",
+        "_engine": "false",
+        "_dns_agw_records": [{"fqdn": f"gateway.lab.{ZONE}", "value": "192.0.2.10"}],
+    }
+    r = _run(tmp_path, [task], _inventory({}), extra, check=True)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "skipping" in r.stdout
+    r = _run(tmp_path, [task], _inventory({}), extra)
+    assert r.returncode != 0, "a real run must still dig and fail on a wrong answer"
 
 
 KEEP = "127.0.0.1 localhost\n192.0.2.9 keep.me # agent-cloud-managed: other\n"
