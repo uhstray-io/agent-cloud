@@ -11,13 +11,17 @@
 # inventory already used for a different fact, failed on every run, and the failure was
 # censored because the step carried a bearer header.
 #
-# verify-tududi-github-sync.yml:n8n_url (found 2026-10-02): the gate reads the n8n API
-# from `n8n_verify_base_url | default(n8n_url | default(...))`. Its provisioner, and every
-# other playbook that calls the n8n API (deploy-n8n, store-n8n-api-key, restore-n8n-db,
-# refresh-tududi-sync-github-token, provision-n8n-postiz-credential), reads
-# `n8n_base_url`. The defaults agree today, so it is latent: an inventory that sets
-# n8n_base_url sends the provisioner to that n8n and leaves the gate on the default. Fixing it
-# is a change to the playbook and is tracked as its own work.
+# verify-tududi-github-sync.yml:n8n_url (found 2026-10-02; KEPT, by design): the gate's
+# play runs on tududi_svc and calls the n8n API FROM the tududi host (its uri tasks are not
+# delegated). Every playbook that reads `n8n_base_url` (provision-tududi-github-sync,
+# refresh-tududi-sync-github-token, deploy-n8n, store-n8n-api-key, restore-n8n-db,
+# provision-n8n-postiz-credential) runs on n8n_svc, where that name is set host-scoped to
+# n8n's loopback address. The tududi host must reach n8n over the network, which is the
+# group-wide `n8n_url`. Renaming the gate to `n8n_base_url` would make it fall through to
+# the container-name default, which the tududi host cannot resolve, and break the gate in
+# prod. The names differ because the hosts differ; `n8n_verify_base_url` still overrides.
+# Resolving this for real needs one name for "n8n as reached from another host", which is a
+# site-config inventory change, not this playbook.
 #
 # Remove a line in the same commit that fixes the playbook.
 verify-tududi-github-sync.yml:n8n_url
