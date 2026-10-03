@@ -192,10 +192,10 @@ PY2
   # if _needs_restart is removed from the restart gate and only survives in a
   # report line.
   grep -qE 'Decide whether the guest needs a restart to pick up its config' "$PB"
-  run bash -c "awk '/Restart the guest so cores\/memory take effect/{f=1} f&&/^      block:/{exit} f' '$PB' | grep -c '_needs_restart | bool'"
+  run bash -c "awk '/Restart the guest so cores\/memory take effect/{f=1} f&&/^ +block:/{exit} f' '$PB' | grep -c '_needs_restart | bool'"
   [ "$output" = "1" ]
   # ...and that gate must NOT be the this-run-diff condition.
-  run bash -c "awk '/Restart the guest so cores\/memory take effect/{f=1} f&&/^      block:/{exit} f' '$PB' | grep -c '_cfg_changes'"
+  run bash -c "awk '/Restart the guest so cores\/memory take effect/{f=1} f&&/^ +block:/{exit} f' '$PB' | grep -c '_cfg_changes'"
   [ "$output" = "0" ]
 }
 

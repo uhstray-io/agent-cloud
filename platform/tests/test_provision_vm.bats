@@ -185,10 +185,12 @@ setup() {
   # Extract the REAL guard and run it against a small inventory, both ways.
   command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
   local pb="$REPO_ROOT/platform/playbooks/provision-vm.yml"
-  python3 - "$pb" "$BATS_TEST_TMPDIR/claim.yml" <<'PY2'
+  python3 - "$pb" "$BATS_TEST_TMPDIR/claim.yml" "$BATS_TEST_DIRNAME" <<'PY2'
 import sys, yaml
+sys.path.insert(0, sys.argv[3])
+import playbook_yaml
 plays = yaml.safe_load(open(sys.argv[1]))
-task = [t for p in plays for t in (p.get('tasks') or [])
+task = [t for t in playbook_yaml.tasks(plays)
         if t.get('name') == 'Refuse a declared address claimed by another inventory host'][0]
 yaml.safe_dump([{'hosts': 'localhost', 'connection': 'local', 'gather_facts': False,
                  'tasks': [task]}], open(sys.argv[2], 'w'))

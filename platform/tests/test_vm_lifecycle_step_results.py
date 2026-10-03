@@ -7,15 +7,19 @@ read the recorded result from Ansible's custom stats, so the verdict logic is ex
 just its text. Needs ansible-playbook.
 """
 
+import copy
 import json
-import os
 import re
 import shutil
-import subprocess
+import threading
+from http.server import ThreadingHTTPServer
 from pathlib import Path
 
+import harness_sandbox
+import playbook_yaml
 import pytest
 import yaml
+from fake_http import DrainingHandler
 
 ROOT = Path(__file__).resolve().parents[2]
 PLAYBOOKS = ROOT / "platform/playbooks"
@@ -30,7 +34,7 @@ def _plays(name):
 
 
 def _tasks(play, names):
-    by_name = {t.get("name"): t for t in play["tasks"]}
+    by_name = {t.get("name"): t for t in playbook_yaml.tasks(play["tasks"])}
     missing = [n for n in names if n not in by_name]
     assert not missing, missing
     out = []
@@ -42,17 +46,61 @@ def _tasks(play, names):
     return out
 
 
-def _run(tmp_path, harness, check=False):
+def _emit_absolute(node):
+    """The harness runs from a scratch directory, so the shared task is named by its path."""
+    for task in playbook_yaml.tasks(node):
+        if "ansible.builtin.include_tasks" in task:
+            task["ansible.builtin.include_tasks"] = EMIT
+    return node
+
+
+def _run(tmp_path, harness, check=False, inventory=None, extra=()):
     play_file = tmp_path / "play.yml"
-    play_file.write_text(yaml.safe_dump(harness, sort_keys=False))
-    done = subprocess.run(
-        ["ansible-playbook", "-i", "localhost,", "-c", "local", str(play_file), *(["--check"] if check else [])],
-        capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=120,
-        env={"ANSIBLE_NOCOLOR": "1", "PATH": os.environ["PATH"], "ANSIBLE_LOCAL_TEMP": str(tmp_path),
-             "ANSIBLE_SHOW_CUSTOM_STATS": "1"})
+    play_file.write_text(yaml.safe_dump(_emit_absolute(copy.deepcopy(harness)), sort_keys=False))
+    inv = tmp_path / "inv.yml"
+    inv.write_text(yaml.safe_dump(inventory or {"all": {"hosts": {"localhost": {"ansible_connection": "local"}}}}))
+    env = {**harness_sandbox.env_for(tmp_path), "ANSIBLE_NOCOLOR": "1", "ANSIBLE_SHOW_CUSTOM_STATS": "1"}
+    done = harness_sandbox.run(
+        ["ansible-playbook", "-i", str(inv), str(play_file), *(["--check"] if check else []), *extra],
+        tmp_path, cwd=ROOT, env=env)
     results = [json.loads(m.group(1))["step_result"] for m in map(RUN.match, done.stdout.splitlines()) if m]
     assert len(results) == 1, done.stdout + done.stderr
     return results[0], done.returncode
+
+
+class FakeProxmox:
+    """A Proxmox API stand-in: `routes` maps (method, path) to (status, data); every request
+    is logged, so a test can say which writes a run made."""
+
+    def __init__(self, routes):
+        self.routes, self.seen = routes, []
+        fake = self
+
+        class Handler(DrainingHandler):
+            def _reply(self):
+                fake.seen.append((self.command, self.path))
+                status, data = fake.routes.get((self.command, self.path), (404, None))
+                body = json.dumps({"data": data}).encode()
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            do_GET = do_POST = do_PUT = _reply
+
+            def log_message(self, *args):
+                pass
+
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.url = f"http://127.0.0.1:{self.server.server_port}"
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def writes(self):
+        return [r for r in self.seen if r[0] != "GET"]
+
+    def close(self):
+        self.server.shutdown()
 
 
 # ── vm-template ──────────────────────────────────────────────────────────────
@@ -191,3 +239,128 @@ def test_the_result_is_recorded_after_every_change_the_play_makes(playbook, step
         assert all("ansible.builtin.fail" in t for t in tasks[idx[0] + 1:]), playbook
         return
     pytest.fail(f"{playbook} records no step result")
+
+
+# ── Whole plays against a fake Proxmox: guards, skipped writes, hard failures ──
+TEMPLATE_CFG = "/api2/json/nodes/alphacentauri/qemu/9000/config"
+
+
+def _template_play(tmp_path, cfg, check=False):
+    play = next(p for p in _plays("provision-template.yml") if p.get("tasks"))
+    fake = FakeProxmox({("GET", TEMPLATE_CFG): (200, cfg)})
+    try:
+        result, rc = _run(tmp_path, [play], check=check,
+                          extra=["-e", json.dumps({"pve_host": fake.url, "pve_token_secret": "x"})])
+    finally:
+        fake.close()
+    return result, rc, fake
+
+
+def test_an_existing_template_is_adopted_without_a_write_and_proven(tmp_path):
+    result, rc, fake = _template_play(tmp_path, {"template": 1, "ide2": "vm-lvms:vm-9000-cloudinit,media=cdrom"})
+    assert (result["status"], rc) == ("pass", 0)
+    assert fake.writes() == []  # the create block was skipped
+    assert fake.seen.count(("GET", TEMPLATE_CFG)) == 2  # the guard's read, then the read-back
+
+
+def test_cloudinit_named_anywhere_but_the_drive_does_not_pass(tmp_path):
+    result, rc, _ = _template_play(tmp_path, {"template": 1, "description": "cloudinit ready",
+                                              "tags": "cloudinit", "ide2": "none,media=cdrom"})
+    assert (result["status"], rc != 0) == ("fail", True)
+    assert "no cloud-init drive on ide2" in result["error"]
+
+
+def test_a_vmid_held_by_a_non_template_is_recorded_as_a_failure(tmp_path):
+    result, rc, fake = _template_play(tmp_path, {"template": 0})
+    assert (result["status"], rc != 0) == ("fail", True)
+    assert result["error"].startswith("Fail if VMID taken by non-template: VMID 9000 exists but is not a template.")
+    assert fake.writes() == []
+
+
+PV = "/api2/json/nodes/n1/qemu/220"
+PV_INVENTORY = {"all": {"hosts": {"localhost": {"ansible_connection": "local"}},
+                        "children": {"dns_svc": {"hosts": {"dns1": {
+                            "vm_vmid": 220, "vm_node": "n1", "vm_cores": 2, "vm_memory": 4096, "vm_disk": "32G",
+                            "vm_ip": "127.0.0.1", "vm_gateway": "192.0.2.1", "vm_nameserver": "192.0.2.1",
+                            "vm_disk_storage": "s"}}}}}}
+
+
+def _provision_play(tmp_path, cfg, name="dns"):
+    fake = FakeProxmox({
+        ("GET", "/api2/json/nodes/alphacentauri/qemu/9000/config"): (200, {"template": 1}),
+        ("GET", "/api2/json/cluster/resources?type=vm"): (200, [{"vmid": 220, "name": name, "node": "n1"}]),
+        ("GET", PV + "/status/current"): (200, {"status": "running"}),
+        ("PUT", PV + "/config"): (200, None),
+        ("PUT", PV + "/resize"): (500, None),  # the resize the play tolerates
+        ("GET", PV + "/config"): (200, cfg),
+        ("POST", PV + "/agent/ping"): (200, {}),
+    })
+    plays = _plays("provision-vm.yml")
+    prov = copy.deepcopy(next(p for p in plays if p.get("name") == "Provision VM from template"))
+    for task in playbook_yaml.tasks(prov["tasks"]):
+        if task.get("name") == "Wait for SSH":  # the fake's port stands in for sshd
+            task["ansible.builtin.wait_for"].update(port=fake.server.server_port, timeout=10)
+    record = next(p for p in plays if p.get("name") == "Record the provision-vm step result")
+    verdict = next(p for p in plays if str(p.get("name", "")).startswith("Verdict:"))
+    try:
+        result, rc = _run(tmp_path, [prov, record, verdict], inventory=PV_INVENTORY, extra=["-e", json.dumps({
+            "_pve_host": fake.url, "_pve_secret": "x", "_pve_token_id": "t", "_ssh_pub": "ssh-ed25519 AAAA",
+            "target_service": "dns", "ci_user": "u"})])
+    finally:
+        fake.close()
+    return result, rc, fake
+
+
+def test_a_failed_disk_resize_fails_the_run_at_the_verdict(tmp_path):
+    result, rc, fake = _provision_play(tmp_path, {**GOOD_VM, "scsi0": "s:vm-220-disk-0,size=20G"})
+    assert ("PUT", PV + "/resize") in fake.seen
+    assert (result["status"], rc != 0) == ("fail", True)
+    assert "disk scsi0 is not 32G" in result["error"]
+
+
+def test_a_matching_vm_passes_the_whole_play(tmp_path):
+    result, rc, _ = _provision_play(tmp_path, GOOD_VM)
+    assert (result["status"], rc) == ("pass", 0)
+
+
+def test_a_hard_failure_in_the_provisioning_play_is_still_recorded(tmp_path):
+    # A different VM at the declared vmid: refused before any write, and recorded.
+    result, rc, fake = _provision_play(tmp_path, GOOD_VM, name="gh-runner-01")
+    assert (result["status"], rc != 0) == ("fail", True)
+    assert result["error"].startswith("Refuse to adopt a DIFFERENT VM that already holds the declared vmid:")
+    assert fake.writes() == []
+
+
+def test_a_hard_failure_in_resize_is_still_recorded(tmp_path):
+    play = _plays("resize-vm.yml")[0]
+    result, rc = _run(tmp_path, [play], extra=["-e", json.dumps({
+        "_pve_host": "http://pve.invalid", "target_vmid": 1, "target_node": "n", "openbao_addr": "x"})])
+    assert (result["step"], result["status"], rc != 0) == ("vm-rightsize", "fail", True)
+    assert result["error"].startswith("Require HTTPS for the Proxmox API:")
+    assert result["evidence"] == {"cores": None, "memory_mb": None, "disk_gb": None}
+
+
+@pytest.mark.parametrize("playbook,fact", [("provision-template.yml", "_tmpl_hard_error"),
+                                           ("resize-vm.yml", "_rs_hard_error"),
+                                           ("provision-vm.yml", "_pv_step")])
+@pytest.mark.parametrize("no_log", [True, False])
+def test_the_rescue_names_the_failed_task_and_withholds_a_no_log_message(tmp_path, playbook, fact, no_log):
+    # The playbook's REAL rescue, behind a block whose one task fails with a secret message.
+    rescue = next(t for t in playbook_yaml.tasks(_plays(playbook))
+                  if "block" in t and t.get("rescue") and str(t.get("name", "")).split()[0]
+                  in ("Create", "Converge", "Provision"))["rescue"]
+    play = [{"hosts": "localhost", "gather_facts": False, "tasks": [
+        {"name": "wrapped", "block": [{"name": "Boom", "no_log": no_log,
+                                       "ansible.builtin.fail": {"msg": "SECRET-VALUE"}}],
+         "rescue": rescue},
+        {"ansible.builtin.copy": {"content": "{{ " + fact + " | to_json }}", "dest": str(tmp_path / "out"),
+                                  "mode": "0600"}}]}]
+    (tmp_path / "play.yml").write_text(yaml.safe_dump(play))
+    done = harness_sandbox.run(["ansible-playbook", "-i", "localhost,", "-c", "local", str(tmp_path / "play.yml"),
+                                "-e", "target_service=dns"], tmp_path, cwd=ROOT,
+                               env=harness_sandbox.env_for(tmp_path))
+    assert done.returncode == 0, done.stdout + done.stderr
+    recorded = (tmp_path / "out").read_text()
+    assert "Boom:" in recorded
+    assert ("SECRET-VALUE" in recorded) is not no_log
+    assert ("details hidden" in recorded) is no_log
