@@ -172,6 +172,9 @@
           probe.{{ dns_zone }} resolved to '{{ _dig_wild.stdout | trim }}',
           expected '{{ dns_wildcard_target | default('127.0.0.1') }}'
         success_msg: "*.{{ dns_zone }} -> {{ _dig_wild.stdout | trim }}"
+      # Under --check the zone is not re-rendered or reloaded, so live DNS still serves the
+      # previous wildcard; comparing it to a changed dns_wildcard_target would fail falsely.
+      when: not ansible_check_mode
 
     - name: "Resolve each gateway server leaf record"
       ansible.builtin.command: >-

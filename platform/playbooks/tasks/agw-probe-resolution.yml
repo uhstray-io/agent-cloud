@@ -27,6 +27,11 @@
 #   _agwr_ip      the address the interim line maps it to (interim mode only)
 #   _agwr_expect  optional: the address the internal zone must answer (authoritative mode)
 #   _agwr_hosts_file  default /etc/hosts; the tests point it at a scratch copy
+#   _agwr_check_only  default false. true = read-only: no write, no become. Interim mode
+#                     requires the exact marker line for _agwr_name -> _agwr_ip to be present;
+#                     authoritative mode requires no marker line and the resolver check. A
+#                     miss fails and names Deploy agentgateway, the one writer. Used by the
+#                     daily renewal, which must not gain sudo or OpenBao dependencies.
 
 - name: "Probe resolution: refuse an empty server name"
   ansible.builtin.assert:
@@ -44,7 +49,9 @@
     regexp: '# agent-cloud-managed: agw-probe \(interim, task 7\.2\)$'
     line: "{{ _agwr_ip }} {{ _agwr_name }} # agent-cloud-managed: agw-probe (interim, task 7.2)"
   become: true
-  when: not (agw_internal_dns_authoritative | default(false) | bool)
+  when:
+    - not (agw_internal_dns_authoritative | default(false) | bool)
+    - not (_agwr_check_only | default(false) | bool)
 
 # state=absent with a regexp removes EVERY matching line, so a host that collected more than
 # one marker line (a renamed SAN, a changed bind) is cleaned in one pass.
@@ -54,7 +61,34 @@
     regexp: '# agent-cloud-managed: agw-probe \(interim, task 7\.2\)$'
     state: absent
   become: true
-  when: agw_internal_dns_authoritative | default(false) | bool
+  when:
+    - agw_internal_dns_authoritative | default(false) | bool
+    - not (_agwr_check_only | default(false) | bool)
+
+# Read-only mode: the hosts file is world-readable, so no escalation.
+- name: "Probe resolution: read the hosts file (check only)"
+  ansible.builtin.slurp:
+    src: "{{ _agwr_hosts_file | default('/etc/hosts') }}"
+  register: _agwr_hosts
+  become: false
+  when: _agwr_check_only | default(false) | bool
+
+- name: "Probe resolution: refuse a hosts file Deploy agentgateway has not converged (check only)"
+  vars:
+    _agwr_marker: "# agent-cloud-managed: agw-probe (interim, task 7.2)"
+    _agwr_lines: "{{ (_agwr_hosts.content | b64decode).splitlines() }}"
+    _agwr_marked: "{{ _agwr_lines | select('search', '# agent-cloud-managed: agw-probe [(]interim, task 7[.]2[)]$') | list }}"
+  ansible.builtin.assert:
+    that: >-
+      (_agwr_marked | length == 0) if (agw_internal_dns_authoritative | default(false) | bool)
+      else (_agwr_marked == [_agwr_ip ~ ' ' ~ _agwr_name ~ ' ' ~ _agwr_marker])
+    fail_msg: >-
+      {{ _agwr_hosts_file | default('/etc/hosts') }} carries {{ _agwr_marked | length }} agw-probe marker
+      line(s){{ '' if (agw_internal_dns_authoritative | default(false) | bool)
+      else (', expected exactly "' ~ _agwr_ip ~ ' ' ~ _agwr_name ~ '"') }}.
+      Run Deploy agentgateway to converge the probe name's resolution; this check writes nothing.
+    quiet: true
+  when: _agwr_check_only | default(false) | bool
 
 - name: "Probe resolution: the name resolves through the host resolver"
   ansible.builtin.command:

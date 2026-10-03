@@ -143,6 +143,44 @@ def test_check_mode_skips_the_gateway_record_dig(tmp_path):
     assert r.returncode != 0, "a real run must still dig and fail on a wrong answer"
 
 
+def test_check_mode_skips_the_wildcard_compare(tmp_path):
+    # --check skips render and reload, so live DNS still serves the previous wildcard; a
+    # changed dns_wildcard_target must not fail against it. A real run still compares.
+    phase3 = next(p for p in yaml.safe_load(DEPLOY_DNS.read_text()) if p["name"].startswith("Phase 3"))
+    task = next(t for t in phase3["tasks"] if t["name"] == "Assert the wildcard resolves to the configured target")
+    extra = {
+        "ansible_python_interpreter": "python3",
+        "dns_wildcard_target": "192.0.2.50",
+        "_dig_wild": {"stdout": "192.0.2.1"},
+    }
+    r = _run(tmp_path, [task], _inventory({}), extra, check=True)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "skipping" in r.stdout
+    r = _run(tmp_path, [task], _inventory({}), extra)
+    assert r.returncode != 0, "a real run must still fail on a wrong wildcard answer"
+
+
+def test_only_the_shared_resolution_task_writes_the_marker_line():
+    """Ratchet: the interim agw-probe hosts line has exactly one writer.
+
+    Rule: under platform/ and scripts/, any file except Markdown docs that carries the marker
+    text `agent-cloud-managed: agw-probe` must be tasks/agw-probe-resolution.yml or a test
+    under platform/tests/. Any other file carrying it (a lineinfile, copy, template, shell or
+    script) is a second writer and fails here.
+    """
+    allowed = {str(RESOLUTION.relative_to(REPO))}
+    carriers = sorted(
+        rel
+        for root in ("platform", "scripts")
+        for p in (REPO / root).rglob("*")
+        if p.is_file() and p.suffix != ".md" and "/.git/" not in str(p)
+        and (rel := str(p.relative_to(REPO))) not in allowed
+        and not (rel.startswith("platform/tests/") and p.name.startswith("test_"))
+        and b"agent-cloud-managed: agw-probe" in p.read_bytes()
+    )
+    assert carriers == []
+
+
 KEEP = "127.0.0.1 localhost\n192.0.2.9 keep.me # agent-cloud-managed: other\n"
 HOSTS = KEEP + f"192.0.2.1 old.name {MARKER}\n192.0.2.2 older.name {MARKER}\n"
 
@@ -190,3 +228,28 @@ def test_authoritative_mode_refuses_the_wrong_answer(tmp_path):
     )
     assert r.returncode != 0
     assert "expected 192.0.2.77" in r.stdout
+
+
+LINE = f"127.0.0.1 gateway.lab.x {MARKER}\n"
+
+
+@pytest.mark.parametrize(
+    "authoritative,hosts,ok",
+    [
+        (False, "127.0.0.1 localhost\n" + LINE, True),
+        (False, "127.0.0.1 localhost\n", False),
+        (False, f"127.0.0.9 gateway.lab.x {MARKER}\n", False),
+        (False, LINE + f"192.0.2.1 old.name {MARKER}\n", False),
+        (True, "127.0.0.1 localhost\n", True),
+        (True, "127.0.0.1 localhost\n" + LINE, False),
+    ],
+    ids=["interim-exact", "interim-missing", "interim-different", "interim-extra", "auth-clean", "auth-leftover"],
+)
+def test_check_only_reads_and_never_writes(tmp_path, authoritative, hosts, ok):
+    extra = {"_agwr_check_only": True, "_agwr_name": "localhost" if authoritative else "gateway.lab.x",
+             "_agwr_ip": "127.0.0.1", "agw_internal_dns_authoritative": authoritative}
+    r, text = _resolve(tmp_path, extra, hosts=hosts)
+    assert text == hosts, "check-only must never write"
+    assert (r.returncode == 0) is ok, r.stdout + r.stderr
+    if not ok:
+        assert "Run Deploy agentgateway" in r.stdout
