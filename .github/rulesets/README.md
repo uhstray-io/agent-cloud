@@ -79,3 +79,35 @@ To (re)apply after editing:
 See [`plan/development/03-guardrails-governance.md`](../../plan/development/03-guardrails-governance.md)
 for the full design, decisions, and follow-up phases (release-tag protection,
 CodeQL as a required check, signed commits, `site-config` protection).
+
+## Drift check (live vs JSON)
+
+Applying is by hand, so a file can say one thing while GitHub enforces another —
+`docs/MISTAKES.md` 10.21 records `protect-main.json` declaring `active` while the live
+ruleset sat in `evaluate` with an extra rule, leaving `main` unprotected.
+[`check-drift.sh`](./check-drift.sh) is the read-back half of `apply.sh`: it matches each
+`*.json` here to the live ruleset by name, fetches it, and [`compare.py`](./compare.py)
+fails naming every difference in the updatable fields `name`, `target`, `enforcement`, `conditions`,
+`bypass_actors` and the rules (by type, with their parameters). The comparison runs both
+ways: a declared key must match, and a key set only live is drift unless its value is an
+empty default (`false`, `0`, `""`, `null`, `[]`, `{}`). Read-only response fields (ids,
+links, timestamps) are ignored, list order does not count, a duplicated rule type is drift,
+and a ruleset missing live is drift. Exit codes: `0` match, `1` drift, `2` API/auth/usage
+error (never reported as drift).
+
+```bash
+.github/rulesets/check-drift.sh            # read-only; exit 1 on any drift
+```
+
+[`ruleset-drift.yml`](../workflows/ruleset-drift.yml) runs it daily and on
+`workflow_dispatch`. Token: GitHub's fine-grained permission table lists reading
+repository rulesets under the **Metadata** (read) permission
+([docs](https://docs.github.com/en/rest/authentication/permissions-required-for-fine-grained-personal-access-tokens#repository-permissions-for-metadata)),
+and the workflow uses `GITHUB_TOKEN` unless the optional `RULESET_READ_TOKEN` secret is
+set. The API returns `bypass_actors` only to a caller with write access to the ruleset
+([docs](https://docs.github.com/en/rest/repos/rules#get-a-repository-ruleset)), so with
+`GITHUB_TOKEN` that field is reported as a warning (not compared). To compare it too,
+store a fine-grained token scoped to this repository with the Administration permission
+as `RULESET_READ_TOKEN`. Not yet verified: that `GITHUB_TOKEN` can read the endpoint at
+all — if the first run fails with 403/404, add the secret. The token is passed only via
+`GH_TOKEN` and is never printed. Tests: `platform/tests/test_ruleset_drift_compare.py`.
