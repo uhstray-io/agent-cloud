@@ -434,9 +434,10 @@
       non-IPv4 or `dns_records`-colliding record, and digs each one in its verify phase.
       `tasks/agw-probe-resolution.yml` is the one resolution step: interim hosts line while
       `agw_internal_dns_authoritative` is false (the default), and with it true removes every
-      marker line (only those) and refuses a name the host resolver does not answer. Open:
-      `deploy-agentgateway.yml` and `renew-internal-certs.yml` still carry or rely on the inline
-      `lineinfile` and must include the new task instead; the flag stays false until production
+      marker line (only those) and refuses a name the host resolver does not answer.
+      Done (2026-10-03): `deploy-agentgateway.yml` and `renew-internal-certs.yml` include that
+      task instead of an inline `lineinfile` (same interim line with the flag false), and a
+      test refuses any other file carrying the marker. Open: the flag stays false until production
       hickory-dns runs and the probing hosts resolve through it (`internal-dns-naming` 6.1,
       6.1a, 6.2 — no production DNS template exists in `platform/semaphore/templates.yml`)
 - [ ] 7.3 Validation gate: with the Cloudflare skip rule temporarily disabled in a declared

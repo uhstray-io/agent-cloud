@@ -181,8 +181,35 @@ def test_a_declared_verify_url_wins_and_production_names_the_server_san(tmp_path
 
 
 def test_the_hosts_line_is_written_only_when_no_verify_url_is_declared():
-    hosts = next(t for t in PHASE3["tasks"] if t["name"].startswith("Probe path: map the server leaf"))
+    hosts = next(t for t in PHASE3["tasks"] if t["name"].startswith("Probe path: resolve the server leaf"))
     assert "agw_verify_base_url is not defined" in hosts["when"]
+
+
+MARKER = "# agent-cloud-managed: agw-probe (interim, task 7.2)"
+
+
+@pytest.mark.parametrize("check", [False, True], ids=["run", "check"])
+def test_the_deploy_resolves_the_probe_name_through_the_shared_step(tmp_path, check):
+    # The deploy's own task, run for real: with the flag unset it writes the interim line
+    # (same bytes as before the shared step), and under --check it writes nothing.
+    task = dict(next(t for t in PHASE3["tasks"] if t["name"].startswith("Probe path: resolve the server leaf")))
+    assert task["ansible.builtin.include_tasks"] == "tasks/agw-probe-resolution.yml"
+    task["ansible.builtin.include_tasks"] = str(REPO / "platform/playbooks" / task["ansible.builtin.include_tasks"])
+    hf = tmp_path / "hosts"
+    hf.write_text("127.0.0.1 localhost\n")
+    pv = {k: PHASE3["vars"][k] for k in ("_tls", "_agw_server_name", "_agw_probe_ip")}
+    hv = {"agw_listener_tls": True, "agw_bind": "0.0.0.0", "dns_site": "dc1", "dns_zone": "example.internal",
+          "ansible_become": False, "_agwr_hosts_file": str(hf)}
+    inv = {"all": {"hosts": {"gw": {"ansible_connection": "local", **hv}}}}
+    (tmp_path / "inv.yml").write_text(yaml.safe_dump(inv))
+    (tmp_path / "play.yml").write_text(yaml.safe_dump(
+        [{"hosts": "all", "gather_facts": False, "vars": pv, "tasks": [task]}]))
+    cmd = ["ansible-playbook", "-i", str(tmp_path / "inv.yml"), str(tmp_path / "play.yml"),
+           *(["--check"] if check else [])]
+    r = harness_sandbox.run(cmd, tmp_path, cwd=REPO, env=harness_sandbox.env_for(tmp_path))
+    assert r.returncode == 0, r.stdout + r.stderr
+    want = "127.0.0.1 localhost\n" + ("" if check else f"127.0.0.1 gateway.{ZONE} {MARKER}\n")
+    assert hf.read_text() == want
 
 
 def test_the_bundle_step_lets_the_shared_task_pick_the_ca_hosts_engine():

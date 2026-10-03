@@ -75,6 +75,9 @@ def _copy_playbook(tmp: Path, password_fails: bool = False) -> Path:
                 swapped += 1
     assert swapped == 1, "the issuer-password task was not found to swap"
     issue.write_text(yaml.safe_dump(tasks, sort_keys=False))
+    # The sudo-password read reaches OpenBao (its own tests own it); escalation is off here
+    # (ansible_become: false on the gateway host) and the hosts file is a scratch copy.
+    (dest / "tasks/resolve-become-password.yml").write_text("[]\n")
     return dest / PLAYBOOK.name
 
 
@@ -367,7 +370,9 @@ class World:
             loki = stack.enter_context(_thread(_loki(self.pushes)))
             hosts = {
                 "step_ca_svc": {"ca": dict(host)},
-                "agentgateway_svc": {"gw": {**host, "agw_listener_tls": True, "agw_bind": "127.0.0.1",
+                "agentgateway_svc": {"gw": {**host, "ansible_become": False,
+                                            "_agwr_hosts_file": str(self.tmp / "hosts"),
+                                            "agw_listener_tls": True, "agw_bind": "127.0.0.1",
                                             "agw_port": str(gw.server_port), "agw_ui_enabled": False}},
                 "caddy_svc": {"caddy": {**host, "inference_route_address": ROUTE,
                                         "caddy_https_port": str(caddy.server_port)}},
@@ -388,6 +393,9 @@ class World:
             inv = {"all": {"children": {"agent_cloud": {
                 "vars": group_vars, "children": {g: {"hosts": h} for g, h in hosts.items()}}}}}
             (self.tmp / "inv.yml").write_text(yaml.safe_dump(inv))
+            hosts_file = self.tmp / "hosts"
+            if not hosts_file.exists():
+                hosts_file.write_text("")
             args = {**seed_harness.ROLE, "renew_proof_retries": 2, "renew_proof_delay": 1, **(extra or {})}
             cmd = ["ansible-playbook", "-i", str(self.tmp / "inv.yml"), str(self.playbook), "-e", json.dumps(args),
                    *(["--check"] if check else []), *(["--tags", tags] if tags else [])]
@@ -487,6 +495,17 @@ def test_a_leaf_in_use_is_proven_with_its_new_serial(world):
     [run] = [s for s in world.streams() if s["stream"]["kind"] == "run"]
     body = json.loads(run["values"][0][1])
     assert sorted(body["renewed"]) == ["agw-server", "agw-verifier"]
+
+
+MARKER = "# agent-cloud-managed: agw-probe (interim, task 7.2)"
+
+
+def test_the_proof_resolves_the_server_name_through_the_shared_step(world):
+    # The interim line the shared resolution task writes, byte-for-byte what the deploy writes.
+    world.place(agw_server=DUE)
+    rc, out = world.run()
+    assert rc == 0, out
+    assert (world.tmp / "hosts").read_text() == f"127.0.0.1 gateway.{ZONE} {MARKER}\n"
 
 
 # ── Proof failures fail the run, and still report ──────────────────────────────

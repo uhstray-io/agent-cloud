@@ -143,6 +143,34 @@ def test_check_mode_skips_the_gateway_record_dig(tmp_path):
     assert r.returncode != 0, "a real run must still dig and fail on a wrong answer"
 
 
+def test_check_mode_skips_the_wildcard_compare(tmp_path):
+    # --check skips render and reload, so live DNS still serves the previous wildcard; a
+    # changed dns_wildcard_target must not fail against it. A real run still compares.
+    phase3 = next(p for p in yaml.safe_load(DEPLOY_DNS.read_text()) if p["name"].startswith("Phase 3"))
+    task = next(t for t in phase3["tasks"] if t["name"] == "Assert the wildcard resolves to the configured target")
+    extra = {
+        "ansible_python_interpreter": "python3",
+        "dns_wildcard_target": "192.0.2.50",
+        "_dig_wild": {"stdout": "192.0.2.1"},
+    }
+    r = _run(tmp_path, [task], _inventory({}), extra, check=True)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "skipping" in r.stdout
+    r = _run(tmp_path, [task], _inventory({}), extra)
+    assert r.returncode != 0, "a real run must still fail on a wrong wildcard answer"
+
+
+def test_only_the_shared_resolution_task_writes_the_marker_line():
+    # Ratchet: the interim agw-probe hosts line has exactly one writer.
+    writers = sorted(
+        str(p.relative_to(REPO))
+        for p in (REPO / "platform").rglob("*.yml")
+        if "agw-probe \\(interim" in p.read_text(errors="ignore")
+        or "agw-probe (interim" in p.read_text(errors="ignore")
+    )
+    assert writers == [str(RESOLUTION.relative_to(REPO))]
+
+
 KEEP = "127.0.0.1 localhost\n192.0.2.9 keep.me # agent-cloud-managed: other\n"
 HOSTS = KEEP + f"192.0.2.1 old.name {MARKER}\n192.0.2.2 older.name {MARKER}\n"
 

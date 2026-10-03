@@ -522,6 +522,35 @@
             - _renew_prove | bool and not ansible_check_mode
             - _provable | selectattr('class', 'equalto', 'probe-client') | list | length > 0
 
+        # The probe URL names the server leaf's SAN; resolve it through the one resolution
+        # step (tasks/agw-probe-resolution.yml), the same one Deploy agentgateway uses.
+        - name: "Probe path: resolve the sudo password for the hosts line"
+          tags: [verify]
+          ansible.builtin.include_tasks:
+            file: tasks/resolve-become-password.yml
+            apply:
+              tags: [verify]
+          when:
+            - _renew_prove | bool and not ansible_check_mode
+            - agw_verify_base_url is not defined
+            - _provable | selectattr('class', 'equalto', 'probe-client') | list | length > 0
+
+        - name: "Probe path: resolve the server leaf's name (task 7.2)"
+          tags: [verify]
+          ansible.builtin.include_tasks:
+            file: tasks/agw-probe-resolution.yml
+            apply:
+              tags: [verify]
+          vars:
+            _agwr_name: "{{ _agw_server_name }}"
+            _agwr_ip: >-
+              {{ '127.0.0.1' if (hostvars[_gw].agw_bind | default('127.0.0.1')) in ['0.0.0.0', '::', '']
+                 else hostvars[_gw].agw_bind | default('127.0.0.1') }}
+          when:
+            - _renew_prove | bool and not ansible_check_mode
+            - agw_verify_base_url is not defined
+            - _provable | selectattr('class', 'equalto', 'probe-client') | list | length > 0
+
         # Keyless: the 401 is the gateway's key check, which runs only after the handshake
         # verified the presented leaf and the SAN rule admitted it (config.yaml.j2 header).
         - name: "Prove the per-call client leaf through the gateway probe path"
@@ -545,8 +574,7 @@
             fail_msg: >-
               Keyless /v1/models at {{ _agwp_base }} with the {{ _agwp_leaf_dir | basename }} leaf answered
               {{ _agwp_out.status }} {{ _agwp_out.msg }}; 401 proves the leaf was admitted (403: not on the SAN
-              allowlist; -1: no handshake, or the name does not resolve - Deploy agentgateway places the interim
-              hosts line).
+              allowlist; -1: no handshake, or the name does not resolve - see tasks/agw-probe-resolution.yml).
             quiet: true
           when:
             - _renew_prove | bool and not ansible_check_mode
