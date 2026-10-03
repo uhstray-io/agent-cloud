@@ -118,8 +118,9 @@ PY_VARS
   # caller can wrap it.
   local pb blk
   for pb in "$PB" "$SSHPB"; do
-    assert_grep -qE '^      always:' "$pb"
-    blk=$(awk '/^      always:/ { f = 1; next } f { print }' "$pb")
+    # Indentation-agnostic: the work sits inside the block that records the step result.
+    assert_grep -qE '^[[:space:]]+always:' "$pb"
+    blk=$(awk '/^[[:space:]]+always:/ { f = 1; next } f { print }' "$pb")
     [ -n "$blk" ]
     assert_grep -q 'state: absent' <<<"$blk"
     assert_grep -q '_sc_wd' <<<"$blk"
@@ -132,7 +133,7 @@ PY_VARS
   # paths — never an indexed read of the secret payload, which is what a value is.
   local leaks
   leaks=$(awk '/ansible\.builtin\.debug:/ { d = 1 } d && /_secret\.json\.data\.data\[/ { print NR": "$0 }
-               /^    - name:/ { d = 0 }' "$PB")
+               /^[[:space:]]+- name:/ { d = 0 }' "$PB")
   if [ -n "$leaks" ]; then
     echo "a debug task indexes the secret payload — that prints a value:" >&2
     printf '%s\n' "$leaks" >&2

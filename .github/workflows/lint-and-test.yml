@@ -221,6 +221,10 @@ jobs:
           # is correct rather than merely well-formed. Declared for the orchestrator in
           # platform/requirements-controller.txt.
           pip install -r platform/requirements-controller.txt
+          # The playbooks' collections. Tests that run a whole playbook need its modules
+          # to resolve: an unresolved module (ansible.posix.authorized_key) aborts the run
+          # at parse time with empty stdout, before any play or step result is printed.
+          ansible-galaxy collection install -r collections/requirements.yml
 
       # Keep pytest's configured root testpaths active so newly registered suites
       # remain covered. Deselect only NetBox's node IDs; --ignore does not remove a

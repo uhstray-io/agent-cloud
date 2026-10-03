@@ -49,162 +49,191 @@
     _force: "{{ force_overwrite | default(false) | bool }}"
 
   tasks:
-    - name: "Validate inputs"
-      ansible.builtin.assert:
-        that:
-          - service_name is defined
-          - service_name | length > 0
-          - service_name is match('^[a-z0-9][a-z0-9_-]*$')
-          - _bao_url | length > 0
-        fail_msg: >-
-          Pass -e service_name=<name> and set openbao_addr or OPENBAO_ADDR.
-          service_name is used to build a filesystem path, so it is restricted to
-          lowercase, digits, dash and underscore.
-
-    - name: "Refuse a cleartext secret-store endpoint"
-      # The token and the private key both cross this connection. Same shared
-      # guard every other play that reaches OpenBao includes — one definition of
-      # the rule, never a re-worded copy.
-      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
-      vars:
-        _assert_bao_url: "{{ _bao_url }}"
-
-    - name: "Require one usable credential"
-      ansible.builtin.assert:
-        that:
-          - (_bao_token | length > 0) or (_bao_role_id | length > 0 and _bao_secret_id | length > 0)
-        fail_msg: >-
-          No OpenBao credential. Set BAO_TOKEN, or BAO_ROLE_ID and BAO_SECRET_ID.
-
-    - name: "Exchange the AppRole for a token"
-      ansible.builtin.uri:
-        url: "{{ _bao_url }}/v1/auth/approle/login"
-        method: POST
-        body_format: json
-        body:
-          role_id: "{{ _bao_role_id }}"
-          secret_id: "{{ _bao_secret_id }}"
-      register: _bao_auth
-      when: _bao_token | length == 0
-      no_log: true
-      changed_when: false
-      check_mode: false
-
-    - name: "Settle on the token to use"
-      ansible.builtin.set_fact:
-        _token: "{{ _bao_token if (_bao_token | length > 0) else _bao_auth.json.auth.client_token }}"
-      no_log: true
-
-    - name: "Read the keypair"
-      ansible.builtin.uri:
-        url: "{{ _bao_url }}/v1/{{ _bao_ssh_path }}"
-        method: GET
-        headers:
-          X-Vault-Token: "{{ _token }}"
-        status_code: [200, 403, 404]
-      register: _secret
-      no_log: true
-      check_mode: false
-
-    - name: "Report what the store answered (never the material)"
-      # Deliberately NOT no_log'd. A credential task that hides its own failure is
-      # how a run becomes undiagnosable; the status code and the field NAMES carry
-      # no secret. Only values do.
-      ansible.builtin.debug:
-        msg: >-
-          {{ _bao_ssh_path }} -> HTTP {{ _secret.status }},
-          fields: {{ (_secret.json.data.data | default({}) | dict2items | map(attribute='key') | sort)
-                     if _secret.status == 200 else '(none)' }}
-
-    - name: "Fail with the reason, not a template error"
-      ansible.builtin.assert:
-        that:
-          - _secret.status == 200
-          - (_secret.json.data.data.private_key | default('')) | length > 0
-          - (_secret.json.data.data.public_key | default('')) | length > 0
-        fail_msg: >-
-          {{ 'Denied (403) — this credential cannot read ' ~ _bao_ssh_path
-             if _secret.status == 403
-             else ('Not found (404) at ' ~ _bao_ssh_path ~ ' — generate it first with generate-service-ssh-key.yml'
-                   if _secret.status == 404
-                   else 'Read ' ~ _bao_ssh_path ~ ' but it carries no public_key/private_key pair') }}
-
-    - name: "Fetch the site-config deploy key"
-      ansible.builtin.uri:
-        url: "{{ _bao_url }}/v1/{{ _key_path }}"
-        method: GET
-        headers:
-          X-Vault-Token: "{{ _token }}"
-        status_code: [200, 403, 404]
-      register: _key
-      no_log: true
-      check_mode: false
-
-    - name: "Say plainly when the deploy key is missing"
-      ansible.builtin.assert:
-        that:
-          - _key.status == 200
-          - (_key.json.data.data.private_key | default('')) | length > 0
-        fail_msg: >-
-          No deploy key at {{ _key_path }} (HTTP {{ _key.status }}). Seed it from the
-          operator's copy with the Seed OpenBao Key template — bao_path
-          services/ssh/site-config, bao_key private_key, value as the BAO_VALUE
-          environment secret — and register its PUBLIC half on the site-config
-          GitHub repo as a deploy key WITH WRITE ACCESS.
-
-    # ── Clone, write, push ───────────────────────────────────────────────────
-    - name: "Dry run ends here: a real run would clone site-config and push a new branch"
-      # Under --check every read above ran (the store answered, the keypair exist, the deploy key
-      # is present). The clone needs a real scratch dir, which the tempfile module cannot
-      # simulate, and pushing is the whole effect of this playbook, so a dry run stops
-      # before either (plan/architecture/08-ansible-automation-standards.md).
-      ansible.builtin.meta: end_play
-      when: ansible_check_mode
-
-    - name: "Everything below runs inside a block so the scratch dir is always wiped"
-      # The clone holds two live private keys — the one being backed up and the
-      # deploy key. The wipe is an `always`, not a final task, so a failure cannot
-      # leave either on the runner.
+    # Everything runs in one block so a failure is RECORDED as this step's result before the
+    # play fails (service deployment workflow). The rescue keeps the failed task's name, and
+    # its message only when the task is not no_log: Ansible hands a no_log task's raw failure
+    # to the rescue, so a secret-bearing task's message is withheld here, never recorded.
+    - name: "Back up, recording any failure"
       block:
-        - name: "Clone site-config on a fresh branch"
-          ansible.builtin.include_tasks: tasks/site-config-clone.yml
+        - name: "Validate inputs"
+          ansible.builtin.assert:
+            that:
+              - service_name is defined
+              - service_name | length > 0
+              - service_name is match('^[a-z0-9][a-z0-9_-]*$')
+              - _bao_url | length > 0
+            fail_msg: >-
+              Pass -e service_name=<name> and set openbao_addr or OPENBAO_ADDR.
+              service_name is used to build a filesystem path, so it is restricted to
+              lowercase, digits, dash and underscore.
+
+        - name: "Refuse a cleartext secret-store endpoint"
+          # The token and the private key both cross this connection. Same shared
+          # guard every other play that reaches OpenBao includes — one definition of
+          # the rule, never a re-worded copy.
+          ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
           vars:
-            _sc_deploy_key: "{{ _key.json.data.data.private_key }}"
-            _sc_branch_prefix: "backup/ssh-{{ service_name }}"
-            _sc_repo_url: "{{ site_config_repo | default('', true) }}"
-            _sc_known_hosts: "{{ git_known_hosts_file | default('', true) }}"
+            _assert_bao_url: "{{ _bao_url }}"
 
-        - name: "Create the key directory in the clone"
-          ansible.builtin.file:
-            path: "{{ _sc_clone }}/secrets/ssh/{{ service_name }}"
-            state: directory
-            mode: "0700"
+        - name: "Require one usable credential"
+          ansible.builtin.assert:
+            that:
+              - (_bao_token | length > 0) or (_bao_role_id | length > 0 and _bao_secret_id | length > 0)
+            fail_msg: >-
+              No OpenBao credential. Set BAO_TOKEN, or BAO_ROLE_ID and BAO_SECRET_ID.
 
-        - name: "Write the pair into the clone"
-          # The shared task, not a second copy of it — the generator writes through
-          # the same file, so "how a keypair lands on disk" has exactly one
-          # definition: derive-and-compare, 0600/0644, refuse a differing file.
-          ansible.builtin.include_tasks: tasks/backup-ssh-key-to-site-config.yml
-          vars:
-            _bk_private_key: "{{ _secret.json.data.data.private_key }}"
-            _bk_public_key: "{{ _secret.json.data.data.public_key }}"
-            _bk_dest_dir: "{{ _sc_clone }}/secrets/ssh/{{ service_name }}"
-            _bk_force: "{{ _force }}"
+        - name: "Exchange the AppRole for a token"
+          ansible.builtin.uri:
+            url: "{{ _bao_url }}/v1/auth/approle/login"
+            method: POST
+            body_format: json
+            body:
+              role_id: "{{ _bao_role_id }}"
+              secret_id: "{{ _bao_secret_id }}"
+          register: _bao_auth
+          when: _bao_token | length == 0
+          no_log: true
+          changed_when: false
+          check_mode: false
 
-        - name: "Commit and push"
-          ansible.builtin.include_tasks: tasks/site-config-push.yml
-          vars:
-            _sc_add_path: "secrets/ssh/{{ service_name }}"
-            _sc_commit_subject: "secrets(ssh/{{ service_name }}): back up the keypair from OpenBao"
-            _sc_commit_body: >-
-              Written by backup-service-ssh-key.yml from {{ _bao_ssh_path }}
-              (id_ed25519 0600, id_ed25519.pub 0644). The key never passed through
-              the job output.
-            _sc_report_what: "the keypair under secrets/ssh/{{ service_name }}/"
+        - name: "Settle on the token to use"
+          ansible.builtin.set_fact:
+            _token: "{{ _bao_token if (_bao_token | length > 0) else _bao_auth.json.auth.client_token }}"
+          no_log: true
 
-      always:
-        - name: "Wipe the scratch dir"
-          ansible.builtin.file:
-            path: "{{ _sc_wd }}"
-            state: absent
-          when: _sc_wd is defined
+        - name: "Read the keypair"
+          ansible.builtin.uri:
+            url: "{{ _bao_url }}/v1/{{ _bao_ssh_path }}"
+            method: GET
+            headers:
+              X-Vault-Token: "{{ _token }}"
+            status_code: [200, 403, 404]
+          register: _secret
+          no_log: true
+          check_mode: false
+
+        - name: "Report what the store answered (never the material)"
+          # Deliberately NOT no_log'd. A credential task that hides its own failure is
+          # how a run becomes undiagnosable; the status code and the field NAMES carry
+          # no secret. Only values do.
+          ansible.builtin.debug:
+            msg: >-
+              {{ _bao_ssh_path }} -> HTTP {{ _secret.status }},
+              fields: {{ (_secret.json.data.data | default({}) | dict2items | map(attribute='key') | sort)
+                         if _secret.status == 200 else '(none)' }}
+
+        - name: "Fail with the reason, not a template error"
+          ansible.builtin.assert:
+            that:
+              - _secret.status == 200
+              - (_secret.json.data.data.private_key | default('')) | length > 0
+              - (_secret.json.data.data.public_key | default('')) | length > 0
+            fail_msg: >-
+              {{ 'Denied (403) — this credential cannot read ' ~ _bao_ssh_path
+                 if _secret.status == 403
+                 else ('Not found (404) at ' ~ _bao_ssh_path ~ ' — generate it first with generate-service-ssh-key.yml'
+                       if _secret.status == 404
+                       else 'Read ' ~ _bao_ssh_path ~ ' but it carries no public_key/private_key pair') }}
+
+        - name: "Fetch the site-config deploy key"
+          ansible.builtin.uri:
+            url: "{{ _bao_url }}/v1/{{ _key_path }}"
+            method: GET
+            headers:
+              X-Vault-Token: "{{ _token }}"
+            status_code: [200, 403, 404]
+          register: _key
+          no_log: true
+          check_mode: false
+
+        - name: "Say plainly when the deploy key is missing"
+          ansible.builtin.assert:
+            that:
+              - _key.status == 200
+              - (_key.json.data.data.private_key | default('')) | length > 0
+            fail_msg: >-
+              No deploy key at {{ _key_path }} (HTTP {{ _key.status }}). Seed it from the
+              operator's copy with the Seed OpenBao Key template — bao_path
+              services/ssh/site-config, bao_key private_key, value as the BAO_VALUE
+              environment secret — and register its PUBLIC half on the site-config
+              GitHub repo as a deploy key WITH WRITE ACCESS.
+
+        # ── Clone, write, push ───────────────────────────────────────────────────
+        - name: "Everything below runs inside a block so the scratch dir is always wiped"
+          # Skipped under --check, after every read above has run (the store answered, the keypair exists,
+          # the deploy key is present). The clone needs a real scratch dir, which the tempfile
+          # module cannot simulate, and pushing is the whole effect of this playbook, so a dry run
+          # stops before either (plan/architecture/08-ansible-automation-standards.md). A `when`
+          # rather than meta end_play, so the dry run still reaches the step result below.
+          when: not ansible_check_mode
+          # The clone holds two live private keys — the one being backed up and the
+          # deploy key. The wipe is an `always`, not a final task, so a failure cannot
+          # leave either on the runner.
+          block:
+            - name: "Clone site-config on a fresh branch"
+              ansible.builtin.include_tasks: tasks/site-config-clone.yml
+              vars:
+                _sc_deploy_key: "{{ _key.json.data.data.private_key }}"
+                _sc_branch_prefix: "backup/ssh-{{ service_name }}"
+                _sc_repo_url: "{{ site_config_repo | default('', true) }}"
+                _sc_known_hosts: "{{ git_known_hosts_file | default('', true) }}"
+
+            - name: "Create the key directory in the clone"
+              ansible.builtin.file:
+                path: "{{ _sc_clone }}/secrets/ssh/{{ service_name }}"
+                state: directory
+                mode: "0700"
+
+            - name: "Write the pair into the clone"
+              # The shared task, not a second copy of it — the generator writes through
+              # the same file, so "how a keypair lands on disk" has exactly one
+              # definition: derive-and-compare, 0600/0644, refuse a differing file.
+              ansible.builtin.include_tasks: tasks/backup-ssh-key-to-site-config.yml
+              vars:
+                _bk_private_key: "{{ _secret.json.data.data.private_key }}"
+                _bk_public_key: "{{ _secret.json.data.data.public_key }}"
+                _bk_dest_dir: "{{ _sc_clone }}/secrets/ssh/{{ service_name }}"
+                _bk_force: "{{ _force }}"
+
+            - name: "Commit and push"
+              ansible.builtin.include_tasks: tasks/site-config-push.yml
+              vars:
+                _sc_add_path: "secrets/ssh/{{ service_name }}"
+                _sc_commit_subject: "secrets(ssh/{{ service_name }}): back up the keypair from OpenBao"
+                _sc_commit_body: >-
+                  Written by backup-service-ssh-key.yml from {{ _bao_ssh_path }}
+                  (id_ed25519 0600, id_ed25519.pub 0644). The key never passed through
+                  the job output.
+                _sc_report_what: "the keypair under secrets/ssh/{{ service_name }}/"
+
+          always:
+            - name: "Wipe the scratch dir"
+              ansible.builtin.file:
+                path: "{{ _sc_wd }}"
+                state: absent
+              when: _sc_wd is defined
+
+      rescue:
+        - name: "Remember why the backup failed"
+          ansible.builtin.set_fact:
+            _backup_error: >-
+              {{ ansible_failed_task.name | default('a task') }}:
+              {{ '(details hidden: the task is no_log)' if (ansible_failed_task.no_log | default(false) | bool)
+                 else (ansible_failed_result.msg | default('failed')) }}
+
+    # Evidence `branch` is the branch this run pushed, or empty when it pushed none: a dry
+    # run, or site-config already holding exactly this pair (site-config-push commits and
+    # pushes only a staged change). A re-run with nothing new therefore pushes nothing.
+    - name: "Record the step result"
+      ansible.builtin.include_tasks: tasks/emit-step-result.yml
+      vars:
+        step_result_status: "{{ 'fail' if _backup_error is defined else 'pass' }}"
+        step_result_step: ssh-key-backup
+        step_result_evidence:
+          branch: "{{ _sc_branch if (_backup_error is not defined and (_sc_staged.rc | default(0)) != 0) else '' }}"
+        step_result_error: "{{ _backup_error | default('') }}"
+
+    - name: "Fail when the backup did not pass"
+      ansible.builtin.fail:
+        msg: "{{ _backup_error }}"
+      when: _backup_error is defined
