@@ -337,18 +337,33 @@ host. Push, pull requests and merges happen only when Joe authorizes each one.
       302 (the gateway's OIDC redirect to the IdP). Remaining: those values (or
       `inference_route_address`) in site-config on the Caddy host, without which the run
       refuses the `caddy` leaf, and a real run
+      2026-10-02/03 production: playbook merged in PR #398; PR #403 reads the leaf declaration
+      from the CA host and refuses an empty one. Renew Internal Certs (Dev) task 2511 (dry run)
+      found 0 leaves (the bug #403 fixed); task 2520 (dry run) found 3 leaves (`agw-server`,
+      `agw-verifier`, `caddy`; 29 and 30 days left); task 2521 (real run): nothing due, the expiry
+      lines and the run's success line pushed to Loki (o11y changed=2). The `caddy` proof uses the
+      gateway UI route from site-config #60 (`admin.inference`, `/`, 302) until gateway task 4.3.
+      Still open: no leaf has been re-issued and proven in use by a real renewal (6.3 drives one)
 - [ ] 6.2 `templates.yml`: `Renew Internal Certs` with a daily `schedule:` declared as
       code; run `setup-templates.yml`
       2026-10-02: PARTIAL — declared as `Renew Internal Certs (Dev)` (Dev-bound like the
       other CA templates), daily at 04:17 (`17 4 * * *`), one optional survey field
       `renew_threshold`. Remaining: run `setup-templates.yml`
+      2026-10-02/03 production: template `Renew Internal Certs (Dev)` (id 298) created through the
+      scoped publisher, tasks 2509 (dry run) and 2510; its schedule published by tasks 2524 (dry run)
+      and 2525, cron `17 4 * * *` as declared in `templates.yml` on `origin/dev`. Left open only
+      because publication went through the scoped publisher rather than `setup-templates.yml`, which
+      the task text names; the declared template and schedule exist in Semaphore
 - [ ] 6.3 Rotation drill in production: temporarily set the renewal threshold so every leaf
       is inside its window, run the template, and confirm the gateway's serving listeners
       present the new server serial (recording whether the gateway's file watch picked up
       the swap with no restart, which fixes its reload action), each client leaf passes its
       proof in 6.1, and no request fails on the public path during the run (a paced
       request loop through the public hostname)
-- [ ] 6.4 o11y `alerts.yml.j2`: leaf under seven days, intermediate under ninety, and the
+      2026-10-03: NOT RUN. Remaining: a run with `renew_threshold=1` in a window Joe names, the
+      served-serial check on both gateway listeners, the file-watch observation and the paced
+      public-path loop
+- [x] 6.4 o11y `alerts.yml.j2`: leaf under seven days, intermediate under ninety, and the
       shared "Scheduled job silent" rule (design decision 10) over a declared list of
       scheduled jobs and the longest silence each may keep; this change declares
       `renew-internal-certs` at thirty-six hours. Each listed job pushes one result line per
@@ -367,10 +382,15 @@ host. Push, pull requests and merges happen only when Joe authorizes each one.
       3.3.2 (the pinned image) with fixture lines: each fired for exactly the fixture
       series meant to fire. Not yet proven: Grafana 11.4 provisioning and evaluation of
       the Loki instant queries (the o11y deploy readback)
+      2026-10-03 production: rules merged in PR #396; Deploy o11y (Dev) tasks 2522 (dry run) and
+      2523 at `dev` `0f4b9966`: the rules rendered, the exact-set readback passed and the contact
+      point is active. The renewal job's first lines arrived from task 2521 (6.1)
 - [ ] 6.5 Alert drill: a canary leaf declared with a lifetime under seven days fires the
       expiry alert; pausing the schedule past the window fires the silent-job alert (or the
       rule's `for` window shortened for the drill and restored); both reach the contact
       point, then the canary is removed
+      2026-10-03: NOT RUN. Remaining: the canary leaf under seven days, the paused-schedule (or
+      shortened `for`) silent-job fire, both seen at the contact point, then the canary removed
 - [ ] 6.6 Validation gate: scenarios "A server leaf inside its window is renewed and
       served", "Caddy's client leaf is renewed and loaded", "A per-call client leaf is
       renewed and proven through the probe path", "A fresh leaf is left alone", "A leaf

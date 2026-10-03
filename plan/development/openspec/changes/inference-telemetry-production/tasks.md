@@ -146,6 +146,7 @@
       `platform/tests/test_inference_probe.py`. Still open: the site-config values, an
       enabled deploy whose readback shows a fresh sample for the configured model, and the
       alert rule (3.2).
+      2026-10-03: the code is PR #402 (merged). Runtime pending: inventory values and an enabled Deploy o11y
 - [ ] 3.4 `platform/tests/test_service_o11y.bats`: dashboards and alerting files are
       valid JSON/YAML, every `vllm:` name in a dashboard appears in the imported list,
       probe script `shellcheck` clean and contains no literal key
@@ -179,6 +180,7 @@
       2026-10-02: CODE — `check-o11y-liveness.yml` (Dev-bound `Check o11y Liveness (Dev)`,
       `*/10` schedule) and `provision-o11y-watcher-token.yml` mint path landed with fake
       Grafana/Discord tests. Still OPEN: mint run, first scheduled run and the drill.
+      2026-10-03: the code is PR #410 (merged). Runtime pending: inventory values, the watcher-token provisioning run and the first scheduled run
 
 ## 4. Retention, thresholds, records
 - [ ] 4.1 After seven days: read Prometheus TSDB size and Loki ingestion per day; set

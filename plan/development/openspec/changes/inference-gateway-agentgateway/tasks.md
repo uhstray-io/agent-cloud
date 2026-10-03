@@ -184,6 +184,9 @@
       converged by the next plain deploy, because the label still names the old hash;
       with the container removed, a plain deploy brings it back. Together these prove
       scenario "An unchanged deploy does not restart the gateway"
+      2026-10-02: change-aware deploy merged in PR #382. The live drill (unchanged deploy keeps
+      the start time; rotated key served; failed deploy converged; removed container restored) is
+      not run
 
 ## 2. Conformance against direct vLLM
       Added 2026-09-22 (security review): the gateway's `platform-admins in jwt.groups` rule
@@ -237,6 +240,8 @@
       `otelcol.connector.spanlogs`, the model request-duration series on the client view,
       and a link to it from the inference latency dashboard. Open until the private
       inventory declares the endpoint and 3.3 proves it on live traffic
+      2026-10-03: PR #399 merged (span-log flag, default off). A deploy with the flag set waits on
+      the private inventory
 - [x] 3.2 Check whether `localRateLimit` has a log-only mode in the v1.5.0 schema; record
       the answer in `design.md` and set the first-week policy accordingly. 2026-09-17: no
       such mode (`RateLimitSpec` has only `maxTokens`, `tokensPerFill`, `fillInterval`,
@@ -290,6 +295,8 @@
       BATS, because only a real run proves that no key is printed and that re-runs converge.
       `gateway-config` needs the deploy to keep the config it replaces as
       `config.yaml.previous`; until it does, that mode refuses
+      2026-10-02: PRs #385 (playbook) and #386 (the deploy keeps `config.yaml.previous`, so
+      `gateway-config` no longer refuses) merged. The live `direct`/`restore` drill is not run
 
 - [ ] 4.7 `legacy_shared_expires` = the route-switch date + 14 days (operator decision
       2026-09-27), set in site-config in the same change that switches the route
@@ -310,6 +317,8 @@
       `platform/tests/test_agw_legacy_retirement.py`). Left: the rotation at vLLM and in OpenBao
       and the `vllm_api_allowed_cidr` narrowing are dgx-spark's and wait on the dgx-spark handoff;
       the retirement date is recorded in `context/architecture.md` once 4.7 sets it
+      2026-10-03: the deploy half is PR #400 (merged). The vLLM rotation waits on the dgx-spark
+      handoff, which has not been sent
 - [ ] 5.2 Accept the architecture record; append a dated pointer line to
       `plan/development/06-inference-skynet.md`; `platform/services/inference/` stub
       gains a README pointing at the gateway service and the dgx-spark roadmap record
@@ -336,6 +345,10 @@
       `root` set to it alone, and record why as an amendment to decision 12. BATS asserts
       both listeners render `tls` with `root` and the rule, that the default list is
       `caddy` alone, and that an undeclared entry is refused
+      2026-10-02 production: listener TLS enabled by site-config #59; Deploy agentgateway (Dev)
+      tasks 2460 (dry run) and 2462: keyless request 401, keyed models list and one completion
+      through mutual TLS. Left open: this note does not re-verify the local-dev records, the
+      allowlist refusal or the BATS assertions the task names
 - [ ] 6.1a The one gateway probe path. Every check that sends a request to the gateway
       from outside Caddy uses it: this deploy's own verify, the personal-key 401 gates
       (`inference-personal-keys`), the renewal proof for the client leaves that are probed
@@ -371,6 +384,11 @@
       tls_client_auth <cert> <key> }` (Caddy 2.11.4), the leaf files read from the Caddy
       host's mounted `current/` directory. The architecture document's deprecated
       directive is corrected by `production-internal-ca` task 9.1, not here
+      2026-10-02 production: the `admin.inference` block proxies over mutual TLS. Manage Caddy
+      Sites (Dev) tasks 2463 (dry run; only that block changed) and 2464; verified at the Caddy
+      origin: 302 to the Authentik authorize endpoint with `client_id=agentgateway` (the public
+      URL sits behind the Cloudflare challenge). Open: the `inference` block still dials vLLM
+      directly until task 4.3
 - [ ] 6.3 The model's `tls: {root, hostname, cert, key}` (the `agw-upstream` client leaf,
       production-internal-ca task 5.4a; mutual TLS decided 2026-09-28) and an `https://`
       base URL, once dgx-spark
