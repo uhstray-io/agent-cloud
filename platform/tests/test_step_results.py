@@ -109,6 +109,28 @@ def test_aggregate_lets_the_newest_real_result_win():
     assert _agg(newer_fail, older_pass)["status_by_service"]["tududi"]["secrets-approle"] == "fail"
 
 
+def _dual_line(result: dict) -> str:
+    """Output written since emit-step-result appends to the aggregated list: both keys."""
+    return "\tRUN: " + json.dumps({"step_result": result, "step_results": [result]})
+
+
+def test_newest_wins_across_legacy_and_list_output_in_either_order():
+    # History mixes tasks recorded before the list existed with tasks recorded after it.
+    def res(status):
+        return {"service": "tududi", "step": "secrets-approle", "status": status}
+
+    # Each newer task SUCCEEDED, so a result the parser failed to read could not be stood in
+    # for by the collector's synthesized failure.
+    legacy_old = _task(10, "error", 1, _run_line(res("fail")))
+    list_new = _task(12, "success", 1, _dual_line(res("pass")))
+    rec = _agg(list_new, legacy_old)["services"]["tududi"]["secrets-approle"]
+    assert (rec["status"], rec["task_id"]) == ("pass", 12)
+    list_old = _task(10, "error", 1, _dual_line(res("fail")))
+    legacy_new = _task(12, "success", 1, _run_line(res("pass")))
+    rec = _agg(legacy_new, list_old)["services"]["tududi"]["secrets-approle"]
+    assert (rec["status"], rec["task_id"]) == ("pass", 12)
+
+
 def test_service_comes_from_inventory_not_string_surgery():
     # step_ca_svc's hosts are service_name step-ca: the name its own step results carry.
     deploy = {"id": 1, "status": "error", "template_id": 6, "tpl_playbook": "platform/playbooks/deploy-step-ca.yml"}
