@@ -219,7 +219,9 @@ class _TLSServer(ThreadingHTTPServer):
             raise
 
 
-def _gateway(ca, server_leaf, allowed, scratch: Path, frozen=False):
+def _gateway(ca, server_leaf, allowed, scratch: Path, frozen=False, cert_optional=False, handshakes=None):
+    """`cert_optional`: a listener that does not demand a client certificate and answers a
+    request without one 401, the shape a probe proof must not accept."""
     d = Path(server_leaf["dir"])
     held = {}
     def load():
@@ -228,6 +230,8 @@ def _gateway(ca, server_leaf, allowed, scratch: Path, frozen=False):
     if frozen:
         load()  # the leaf it started with, whatever is swapped in later
     def context():
+        if handshakes is not None:
+            handshakes.append(1)
         if not frozen:
             load()
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
@@ -235,7 +239,7 @@ def _gateway(ca, server_leaf, allowed, scratch: Path, frozen=False):
         cert_f.write_bytes(held["files"][0])
         key_f.write_bytes(held["files"][1])
         ctx.load_cert_chain(cert_f, key_f)
-        ctx.verify_mode = ssl.CERT_REQUIRED
+        ctx.verify_mode = ssl.CERT_OPTIONAL if cert_optional else ssl.CERT_REQUIRED
         ctx.load_verify_locations(cadata=ca["bundle"])
         return ctx
 
@@ -244,8 +248,9 @@ def _gateway(ca, server_leaf, allowed, scratch: Path, frozen=False):
             pass
 
         def do_GET(self):  # noqa: N802
-            sans = [v for k, v in self.connection.getpeercert().get("subjectAltName", ()) if k == "DNS"]
-            status = 401 if set(sans) & set(allowed) else 403
+            peer = self.connection.getpeercert()
+            sans = [v for k, v in (peer or {}).get("subjectAltName", ()) if k == "DNS"]
+            status = 401 if (set(sans) & set(allowed) or not peer) else 403
             self.send_response(status)
             self.send_header("Content-Length", "0")
             self.end_headers()
@@ -338,6 +343,7 @@ class World:
         self.pushes: list = []
         self.caddy_status = {ROUTE: 401, ADMIN: 302}
         self.caddy_asked: list = []
+        self.gw_handshakes: list = []
         self.allowed = [f"verifier.gateway.{ZONE}", f"caddy.{ZONE}"]
         self.playbook = _copy_playbook(tmp, password_fails)
 
@@ -349,12 +355,13 @@ class World:
     def calls(self) -> list:
         return [json.loads(line) for line in self.log.read_text().splitlines()] if self.log.exists() else []
 
-    def run(self, *, check=False, extra=None, frozen=False, host_over=None, leaves=None):
+    def run(self, *, check=False, extra=None, frozen=False, host_over=None, leaves=None, tags=None,
+            cert_optional=False):
         host = {"ansible_connection": "local", "ansible_python_interpreter": sys.executable,
                 "container_engine": str(self.engine)}
         with ExitStack() as stack:
             gw = stack.enter_context(_thread(_gateway(self.ca, self.leaves["agw-server"], self.allowed,
-                                                      self.tmp, frozen)))
+                                                      self.tmp, frozen, cert_optional, self.gw_handshakes)))
             caddy = stack.enter_context(_thread(_caddy(self.ca, self.tmp, self.caddy_status, self.caddy_asked)))
             loki = stack.enter_context(_thread(_loki(self.pushes)))
             hosts = {
@@ -379,7 +386,7 @@ class World:
             (self.tmp / "inv.yml").write_text(yaml.safe_dump(inv))
             args = {**seed_harness.ROLE, "renew_proof_retries": 2, "renew_proof_delay": 1, **(extra or {})}
             cmd = ["ansible-playbook", "-i", str(self.tmp / "inv.yml"), str(self.playbook), "-e", json.dumps(args),
-                   *(["--check"] if check else [])]
+                   *(["--check"] if check else []), *(["--tags", tags] if tags else [])]
             env = harness_sandbox.env_for(self.tmp)
             env.update(ANSIBLE_STDOUT_CALLBACK="default", PYTHONPATH=str(self.tmp / "site"))
             r = harness_sandbox.run(cmd, self.tmp, cwd=playbook_yaml.REPO, env=env, timeout=300)
@@ -533,12 +540,71 @@ def test_a_caddy_proof_route_answering_another_status_fails_the_run(world):
     assert "Prove one request through a Caddy route that presents the leaf" in out
 
 
-def test_with_listener_tls_off_the_gateway_leaves_are_renewed_but_not_restarted(world):
-    world.place(agw_server=DUE)
+def test_with_listener_tls_off_the_gateway_leaves_are_left_alone_and_never_counted(world):
+    # Nothing presents or verifies the gateway leaves without listener TLS, so their use could
+    # not be proven: they are not re-issued even inside their window, and the run is not a
+    # renewal of them. Caddy's leaf, provable, still renews.
+    world.place(agw_server=DUE, agw_verifier=DUE, caddy=DUE)
+    before = world.serials()
     rc, out = world.run(host_over={"agentgateway_svc": {"gw": {"agw_listener_tls": False}}})
     assert rc == 0, out
-    assert len(world.signed()) == 2 and world.reloads() == []
-    assert "not in use: gateway listener TLS off" in out
+    after = world.serials()
+    assert after["agw-server"] == before["agw-server"] and after["agw-verifier"] == before["agw-verifier"]
+    assert after["caddy"] != before["caddy"]
+    assert [c["sans"] for c in world.signed()] == [[f"caddy.{ZONE}"]]
+    assert [r[0] for r in world.reloads()] == ["exec"], "the gateway was restarted"
+    assert out.count("not in use: gateway listener TLS off, left alone") >= 2
+    [run] = [s for s in world.streams() if s["stream"]["kind"] == "run"]
+    assert run["stream"]["status"] == "success"
+    assert json.loads(run["values"][0][1])["renewed"] == ["caddy"]
+
+
+def test_with_listener_tls_on_the_same_gateway_leaves_are_renewed(world):
+    world.place(agw_server=DUE, agw_verifier=DUE)
+    rc, out = world.run()
+    assert rc == 0, out
+    assert sorted(c["sign"] for c in world.signed()) == ["client", "server"]
+    [run] = [s for s in world.streams() if s["stream"]["kind"] == "run"]
+    assert sorted(json.loads(run["values"][0][1])["renewed"]) == ["agw-server", "agw-verifier"]
+
+
+def test_a_probe_listener_that_does_not_demand_a_client_certificate_fails_the_proof(world):
+    world.place(agw_verifier=DUE)
+    rc, out = world.run(cert_optional=True)
+    assert rc != 0
+    assert "Prove the probe listener refuses a request without a client certificate" in out
+    assert "SERVED 401" in out
+
+
+def test_a_plain_probe_url_is_refused_with_listener_tls_on(world):
+    world.place(agw_verifier=DUE)
+    rc, out = world.run(host_over={"agentgateway_svc": {"gw": {"agw_verify_base_url": "http://127.0.0.1:4000"}}})
+    _refused(world, out, rc, "must be https:// with the gateway's listener TLS on")
+
+
+# ── --tags verify: prove what is in place, change nothing ──────────────────────
+
+def test_a_verify_run_proves_every_leaf_in_use_and_issues_nothing(world):
+    world.place(agw_server=DUE, agw_verifier=DUE, caddy=DUE)
+    before = world.serials()
+    rc, out = world.run(tags="verify")
+    assert rc == 0, out
+    assert world.serials() == before
+    assert world.signed() == [] and world.reloads() == [] and world.pushes == []
+    # The served-serial proof, the probe and the no-certificate request each reached the gateway.
+    assert len(world.gw_handshakes) >= 3
+    assert world.caddy_asked == [(ROUTE, "/v1/models")]
+    assert out.count("verified in use") >= 3
+    assert '"status": "success"' in out
+
+
+def test_a_verify_run_fails_on_a_leaf_not_in_use(world):
+    world.allowed = [f"caddy.{ZONE}"]
+    world.place()
+    rc, out = world.run(tags="verify")
+    assert rc != 0
+    assert "Refuse a per-call client leaf the gateway did not admit" in out
+    assert world.signed() == [] and world.pushes == []
 
 
 def test_a_hidden_task_failure_is_reported_by_name_only(tmp_path):

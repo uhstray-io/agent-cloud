@@ -319,8 +319,10 @@ host. Push, pull requests and merges happen only when Joe authorizes each one.
       `agw_verify_base_url`), the `caddy` leaf (reload `caddy reload --force`, on `caddy_svc`
       with `inference_route_address`). The per-call proof is a keyless 401 through the probe
       path, so no API key is read. The bundle a proof verifies against is the one beside the
-      leaf's directory. With `agw_listener_tls` off, gateway leaves are renewed but not
-      restarted and reported not in use. Lines follow the o11y alert contract of task 6.4
+      leaf's directory. With `agw_listener_tls` off, gateway leaves cannot be proven in use,
+      so they are left alone (not re-issued, never counted renewed); a per-call proof URL must
+      be https:// and the same URL without a client certificate must be refused; `--tags
+      verify` proves the leaves in place and issues nothing (review of #398). Lines follow the o11y alert contract of task 6.4
       (`kind=cert` per leaf and the intermediate, then `kind=run` last, a refused or failed
       run included). The run's result is recorded with `set_stats` under `renewal`, not with
       `emit-step-result.yml`: that task's step ids must exist in the service-onboarding

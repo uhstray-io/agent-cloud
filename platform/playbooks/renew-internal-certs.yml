@@ -23,7 +23,10 @@
 #                        the gateway probe path (tasks/agw-probe.yml, gateway task 6.1a) from
 #                        the leaf's host with the new files must answer 401: the handshake
 #                        and the SAN allowlist passed (403 would be the allowlist, a failed
-#                        handshake the leaf), and no API key is ever needed or held.
+#                        handshake the leaf), and no API key is ever needed or held. The same
+#                        URL WITHOUT a client certificate (server still verified) must then be
+#                        refused, or the 401 proved nothing about the leaf; the URL must be
+#                        https:// (a plain agw_verify_base_url is refused up front).
 #   caddy client leaf    reload `caddy reload --force` in the Caddy container (a plain reload
 #                        is skipped: the Caddyfile did not change); then the serial in
 #                        `current/` must still equal the issued one, and one request through
@@ -47,8 +50,9 @@
 # leaf other than the gateway's own, a client leaf whose reload is not one of the above, a
 # caddy leaf off caddy_svc or without a proof route, a per-call leaf off the
 # gateway host without agw_verify_base_url, more than one per-call leaf on one host.
-# The gateway proofs need the gateway's listener TLS: with agw_listener_tls off nothing uses
-# the gateway leaves, so they are renewed, not restarted, and reported "not in use".
+# A leaf whose use cannot be proven is not renewed: with the gateway's agw_listener_tls off
+# nothing presents or verifies the gateway leaves, so they take no part (not in the host's
+# window, not re-issued, never counted renewed) and are reported "not in use", left alone.
 #
 # The trust bundle a proof verifies against is `step-ca-bundle.crt` beside the leaf's own
 # directory: where deploy-agentgateway.yml (<deploy>/certs/) and mount-caddy-certs.yml
@@ -83,12 +87,17 @@
 #
 # Check mode (--check): every certificate is read, every decision and refusal is made and
 # reported, and nothing is issued, reloaded, restarted or pushed.
+# Verify (--tags verify, plan/architecture/08 standard 3): every certificate is read and every
+# leaf in use is proven as it is now (served serial, probe and no-certificate refusal, Caddy
+# route); nothing is issued, reloaded or pushed, and `renewal` is still recorded.
 
 - name: "Refuse a renewal run that could not prove what it renews"
   hosts: localhost
   gather_facts: false
   become: false
   connection: local
+  # Read-only planning, which a verify run needs too.
+  tags: [verify]
   vars:
     _leaves: "{{ internal_leaves | default([]) }}"
     _threshold_in: "{{ renew_threshold | default('', true) | string | trim }}"
@@ -125,7 +134,10 @@
             {%- set _ = errs.append(n ~ ': a caddy-reloaded leaf must be on the one caddy_svc host, which must declare inference_route_address (or renew_caddy_proof_host), with renew_caddy_proof_status an HTTP status and renew_caddy_proof_path an absolute path') -%}
           {%- endif -%}
         {%- elif l.profile | default('') == 'client' and r == 'none' -%}
-          {%- if _gw | length > 0 and (h == _gw or hostvars[h].agw_verify_base_url is defined) -%}
+          {%- if _gw | length > 0 and (hostvars[_gw].agw_listener_tls | default(false) | bool)
+                 and hostvars[h].agw_verify_base_url is defined and not (hostvars[h].agw_verify_base_url is match('^https://')) -%}
+            {%- set _ = errs.append(n ~ ': agw_verify_base_url on ' ~ h ~ ' must be https:// with the gateway\'s listener TLS on; a plain URL never presents the client leaf') -%}
+          {%- elif _gw | length > 0 and (h == _gw or hostvars[h].agw_verify_base_url is defined) -%}
             {%- set cls.v = 'probe-client' -%}
           {%- else -%}
             {%- set _ = errs.append(n ~ ': a per-call client leaf is proven through the gateway probe path: it needs one agentgateway_svc host, and off that host agw_verify_base_url on ' ~ h) -%}
@@ -209,7 +221,14 @@
     _ca_host: "{{ groups['step_ca_svc'] | first }}"
     _gw: "{{ (groups.get('agentgateway_svc', []) | first) if (groups.get('agentgateway_svc', []) | length == 1) else '' }}"
     _gw_tls: "{{ (hostvars[_gw].agw_listener_tls | default(false) | bool) if (_gw | length > 0) else false }}"
-    _reloads: "{{ _mine | map(attribute='reload') | reject('equalto', 'none') | unique | list }}"
+    # The leaves whose use this run can prove: Caddy's always; the gateway's only with its
+    # listener TLS on (otherwise nothing presents or verifies them).
+    _provable: >-
+      {{ (_mine | selectattr('class', 'equalto', 'caddy-client') | list)
+         + ((_mine | rejectattr('class', 'equalto', 'caddy-client') | list) if (_gw_tls | bool) else []) }}
+    _reloads: "{{ _provable | map(attribute='reload') | reject('equalto', 'none') | unique | list }}"
+    # `--tags verify`: prove the leaves in place, issue nothing.
+    _verify_only: "{{ 'verify' in ansible_run_tags and 'all' not in ansible_run_tags }}"
     _retries: "{{ renew_proof_retries | default(15) | int }}"
     _delay: "{{ renew_proof_delay | default(4) | int }}"
     # The name the gateway's server leaf is verified by (deploy-agentgateway.yml's default).
@@ -280,10 +299,43 @@
       except (OSError, ssl.SSLError, http.client.HTTPException) as e:
           print("ERROR " + type(e).__name__ + ": " + str(e))
           sys.exit(1)
+    # The probe URL again, presenting NO client certificate while still verifying the server
+    # against the bundle. Prints REFUSED when the listener rejects it (the handshake, or the
+    # first read after it under TLS 1.3), SERVED <status> when it answers. A server that fails
+    # verification, or a port that does not answer, is an error, never a refusal.
+    _renew_nocert_prover: |
+      import http.client, socket, ssl, sys, urllib.parse
+      u = urllib.parse.urlsplit(sys.argv[1])
+      if u.scheme != "https":
+          print("ERROR not an https URL")
+          sys.exit(1)
+      try:
+          raw = socket.create_connection((u.hostname, u.port or 443), timeout=10)
+      except OSError as e:
+          print("ERROR no connection: " + str(e))
+          sys.exit(1)
+      try:
+          tls = ssl.create_default_context(cafile=sys.argv[2]).wrap_socket(raw, server_hostname=u.hostname)
+      except ssl.SSLCertVerificationError as e:
+          print("ERROR server not verified: " + str(e))
+          sys.exit(1)
+      except (OSError, ssl.SSLError) as e:
+          print("REFUSED " + type(e).__name__)
+          sys.exit(0)
+      try:
+          conn = http.client.HTTPConnection(u.hostname, u.port or 443, timeout=10)
+          conn.sock = tls
+          conn.request("GET", "/v1/models")
+          print("SERVED %d" % conn.getresponse().status)
+      except (OSError, ssl.SSLError, http.client.HTTPException) as e:
+          print("REFUSED " + type(e).__name__)
   tasks:
+    # Tagged `verify` (plan/architecture/08, standard 3): `--tags verify` reads every leaf and
+    # proves the ones in use as they are now, and issues, reloads and pushes nothing.
     - name: "Renew and prove this host's leaves"
       block:
         - name: "Read each declared leaf's current certificate"
+          tags: [verify]
           ansible.builtin.command:
             argv: "{{ ['python3', '-c', _renew_reader, _threshold | string] + (_mine | map(attribute='dir') | list) }}"
           register: _renew_before_raw
@@ -295,6 +347,7 @@
         # issuance already requires openssl. Per host, not run_once: a run_once failure inside
         # this block would fail every host while only the first ran its rescue.
         - name: "Read the CA's intermediate certificate"
+          tags: [verify]
           ansible.builtin.command:
             argv:
               - "{{ hostvars[_ca_host].container_engine | default('podman') }}"
@@ -308,6 +361,7 @@
           check_mode: false
 
         - name: "Date the intermediate"
+          tags: [verify]
           ansible.builtin.command:
             argv: ["python3", "-c", "{{ _renew_reader }}", "{{ _threshold }}", "-"]
             stdin: "{{ _renew_int_pem.stdout }}"
@@ -315,26 +369,34 @@
           changed_when: false
           check_mode: false
 
+        # Only a leaf whose use this run can prove takes part: with the gateway's listener TLS
+        # off nothing uses the gateway leaves, so they are neither renewed nor counted.
         - name: "Decide whether this host renews"
+          tags: [verify]
           ansible.builtin.set_fact:
             _renew_before: "{{ _renew_before_raw.stdout | from_json }}"
             _renew_intermediate: "{{ _renew_int_raw.stdout | from_json }}"
-            _renew_due: "{{ (_renew_before_raw.stdout | from_json).values() | selectattr('due') | list | length > 0 }}"
+            _renew_due: >-
+              {{ _provable | map(attribute='dir') | map('extract', _renew_before_raw.stdout | from_json)
+                 | selectattr('due') | list | length > 0 }}
 
         - name: "Report each leaf"
+          tags: [verify]
           ansible.builtin.debug:
             msg: >-
               {% set b = _renew_before[item.dir] %}{{ item.name }} ({{ item.class }}):
               {{ ('serial ' ~ b.serial ~ ', ' ~ (b.remaining // 86400) ~ ' of ' ~ (b.lifetime // 86400) ~ ' days left')
                  if b.current else ('no current certificate (' ~ b.missing ~ ')') }};
-              {{ 'inside its window' if b.due else 'outside its window' }} -
-              {{ ('host renews' ~ (' (check mode: nothing is issued)' if ansible_check_mode else ''))
-                 if (_renew_due | bool) else 'left alone' }}
+              {% if item.name not in (_provable | map(attribute='name')) %}not in use: gateway listener TLS off, left alone
+              {%- else %}{{ 'inside its window' if b.due else 'outside its window' }} -
+              {{ ('host renews' ~ (' (check mode: nothing is issued)' if ansible_check_mode else '')
+                  ~ (' (verify: nothing is issued)' if _verify_only else ''))
+                 if (_renew_due | bool) else 'left alone' }}{% endif %}
           loop: "{{ _mine }}"
           loop_control:
             label: "{{ item.name }}"
 
-        # Every declared leaf on the host, so it sees one swap and one reload per run
+        # Every provable leaf on the host, so it sees one swap and one reload per run
         # (decision 8). The issuance task re-checks each declaration before the CA is reached.
         - name: "Re-issue every declared leaf on this host"
           ansible.builtin.include_tasks: tasks/mint-internal-cert.yml
@@ -342,7 +404,7 @@
             _mint_name: "{{ _renew_leaf.name }}"
             _mint_ca_host: "{{ _ca_host }}"
             _mint_reissue: true
-          loop: "{{ _mine }}"
+          loop: "{{ _provable }}"
           loop_control:
             loop_var: _renew_leaf
             label: "{{ _renew_leaf.name }}"
@@ -359,6 +421,7 @@
         - name: "Name the issued serials"
           ansible.builtin.set_fact:
             _renew_after: "{{ _renew_after_raw.stdout | from_json }}"
+            _renew_issued: true
           when: (_renew_due | bool) and not ansible_check_mode
 
         - name: "Refuse a leaf that was not replaced"
@@ -368,27 +431,36 @@
               - not _renew_before[item.dir].current or _renew_after[item.dir].serial != _renew_before[item.dir].serial
             fail_msg: "{{ item.name }}: {{ item.dir }}/current does not hold a new certificate after issuance."
             quiet: true
-          loop: "{{ _mine }}"
+          loop: "{{ _provable }}"
           loop_control:
             label: "{{ item.name }}"
           when: (_renew_due | bool) and not ansible_check_mode
+
+        # What the proofs compare against: the serials this run issued, or, when it issued
+        # nothing (a verify run), the ones in place.
+        - name: "Name the serials to prove"
+          tags: [verify]
+          ansible.builtin.set_fact:
+            _renew_expect: "{{ _renew_after if (_renew_issued | default(false) | bool) else _renew_before }}"
+            _renew_prove: "{{ not ansible_check_mode and ((_renew_issued | default(false) | bool) or _verify_only) }}"
 
         # ── Reload: each action once per host ────────────────────────────────
         - name: "Restart the gateway on its new server leaf"
           ansible.builtin.command:
             argv: ["{{ _engine }}", restart, agentgateway]
           changed_when: true
-          when: (_renew_due | bool) and not ansible_check_mode and 'restart' in _reloads and (_gw_tls | bool)
+          when: (_renew_issued | default(false) | bool) and not ansible_check_mode and 'restart' in _reloads
 
         - name: "Reload Caddy so its transport loads the new client leaf"
           ansible.builtin.command:
             argv: ["{{ _engine }}", exec, "{{ caddy_container | default('caddy') }}", caddy, reload,
                    --config, /etc/caddy/Caddyfile, --force]
           changed_when: true
-          when: (_renew_due | bool) and not ansible_check_mode and 'caddy reload --force' in _reloads
+          when: (_renew_issued | default(false) | bool) and not ansible_check_mode and 'caddy reload --force' in _reloads
 
         # ── Proof ────────────────────────────────────────────────────────────
         - name: "Prove the gateway serves the new server leaf"
+          tags: [verify]
           ansible.builtin.command:
             argv:
               - python3
@@ -401,7 +473,7 @@
               - "{{ _ver.dir }}/current/cert.pem"
               - "{{ _ver.dir }}/current/key.pem"
           vars:
-            _srv: "{{ _mine | selectattr('class', 'equalto', 'gateway-server') | first }}"
+            _srv: "{{ _provable | selectattr('class', 'equalto', 'gateway-server') | first }}"
             _ver: >-
               {{ hostvars['localhost']._renew_check.plan | selectattr('host', 'equalto', inventory_hostname)
                  | selectattr('name', 'equalto', agw_verifier_leaf | default('agw-verifier')) | first }}
@@ -416,68 +488,90 @@
           delay: "{{ _delay }}"
           until: >-
             _renew_served.rc == 0
-            and (_renew_served.stdout | trim | int(-1, 16)) == (_renew_after[_srv.dir].serial | int(-2, 16))
+            and (_renew_served.stdout | trim | int(-1, 16)) == (_renew_expect[_srv.dir].serial | default('') | int(-2, 16))
           when:
-            - (_renew_due | bool) and not ansible_check_mode and (_gw_tls | bool)
-            - _mine | selectattr('class', 'equalto', 'gateway-server') | list | length > 0
+            - _renew_prove | bool and not ansible_check_mode
+            - _provable | selectattr('class', 'equalto', 'gateway-server') | list | length > 0
 
         - name: "Probe path: the base URL and the presented leaf"
+          tags: [verify]
           ansible.builtin.set_fact:
             _agwp_base: >-
               {{ agw_verify_base_url if (agw_verify_base_url is defined)
                  else ('https://' ~ _agw_server_name ~ ':' ~ (hostvars[_gw].agw_port | default('4000'))) }}
-            _agwp_leaf_dir: "{{ (_mine | selectattr('class', 'equalto', 'probe-client') | first).dir }}"
-            _agwp_ca: "{{ (_mine | selectattr('class', 'equalto', 'probe-client') | first).dir | dirname }}/step-ca-bundle.crt"
+            _agwp_leaf_dir: "{{ (_provable | selectattr('class', 'equalto', 'probe-client') | first).dir }}"
+            _agwp_ca: "{{ (_provable | selectattr('class', 'equalto', 'probe-client') | first).dir | dirname }}/step-ca-bundle.crt"
           when:
-            - (_renew_due | bool) and not ansible_check_mode and (_gw_tls | bool)
-            - _mine | selectattr('class', 'equalto', 'probe-client') | list | length > 0
+            - _renew_prove | bool and not ansible_check_mode
+            - _provable | selectattr('class', 'equalto', 'probe-client') | list | length > 0
 
         # Keyless: the 401 is the gateway's key check, which runs only after the handshake
         # verified the presented leaf and the SAN rule admitted it (config.yaml.j2 header).
         - name: "Prove the per-call client leaf through the gateway probe path"
-          ansible.builtin.include_tasks: tasks/agw-probe.yml
+          tags: [verify]
+          ansible.builtin.include_tasks:
+            file: tasks/agw-probe.yml
+            apply:
+              tags: [verify]
           vars:
             _agwp_path: /v1/models
             _agwp_status: [401]
             agw_listener_tls: true
           when:
-            - (_renew_due | bool) and not ansible_check_mode and (_gw_tls | bool)
-            - _mine | selectattr('class', 'equalto', 'probe-client') | list | length > 0
+            - _renew_prove | bool and not ansible_check_mode
+            - _provable | selectattr('class', 'equalto', 'probe-client') | list | length > 0
 
         - name: "Refuse a per-call client leaf the gateway did not admit"
+          tags: [verify]
           ansible.builtin.assert:
             that: (_agwp_out.status | int) == 401
             fail_msg: >-
-              Keyless /v1/models at {{ _agwp_base }} with the new {{ _agwp_leaf_dir | basename }} leaf answered
+              Keyless /v1/models at {{ _agwp_base }} with the {{ _agwp_leaf_dir | basename }} leaf answered
               {{ _agwp_out.status }} {{ _agwp_out.msg }}; 401 proves the leaf was admitted (403: not on the SAN
               allowlist; -1: no handshake, or the name does not resolve - Deploy agentgateway places the interim
               hosts line).
             quiet: true
           when:
-            - (_renew_due | bool) and not ansible_check_mode and (_gw_tls | bool)
-            - _mine | selectattr('class', 'equalto', 'probe-client') | list | length > 0
+            - _renew_prove | bool and not ansible_check_mode
+            - _provable | selectattr('class', 'equalto', 'probe-client') | list | length > 0
+
+        # The 401 above proves the leaf only if the listener demands one: the same request
+        # WITHOUT a client certificate, the server still verified, must be refused.
+        - name: "Prove the probe listener refuses a request without a client certificate"
+          tags: [verify]
+          ansible.builtin.command:
+            argv: ["python3", "-c", "{{ _renew_nocert_prover }}", "{{ _agwp_base }}", "{{ _agwp_ca }}"]
+          register: _renew_nocert
+          changed_when: false
+          failed_when: _renew_nocert.rc != 0 or not (_renew_nocert.stdout | trim) is match('^REFUSED')
+          when:
+            - _renew_prove | bool and not ansible_check_mode
+            - _provable | selectattr('class', 'equalto', 'probe-client') | list | length > 0
 
         - name: "Read Caddy's client leaf after the reload"
+          tags: [verify]
           ansible.builtin.command:
-            argv: "{{ ['python3', '-c', _renew_reader, _threshold | string] + (_mine | selectattr('class', 'equalto', 'caddy-client') | map(attribute='dir') | list) }}"
+            argv: "{{ ['python3', '-c', _renew_reader, _threshold | string] + (_provable | selectattr('class', 'equalto', 'caddy-client') | map(attribute='dir') | list) }}"
           register: _renew_caddy_raw
           changed_when: false
           check_mode: false
           when:
-            - (_renew_due | bool) and not ansible_check_mode
-            - _mine | selectattr('class', 'equalto', 'caddy-client') | list | length > 0
+            - _renew_prove | bool and not ansible_check_mode
+            - _provable | selectattr('class', 'equalto', 'caddy-client') | list | length > 0
 
         - name: "Refuse a Caddy leaf swapped again since issuance"
+          tags: [verify]
           ansible.builtin.assert:
-            that: ((_renew_caddy_raw.stdout | from_json)[item.dir].serial | default('')) == _renew_after[item.dir].serial
-            fail_msg: "{{ item.name }}: current/ no longer holds the serial just issued ({{ _renew_after[item.dir].serial }})."
+            that: ((_renew_caddy_raw.stdout | from_json)[item.dir].serial | default('')) == _renew_expect[item.dir].serial
+            fail_msg: "{{ item.name }}: current/ no longer holds the serial expected ({{ _renew_expect[item.dir].serial }})."
             quiet: true
-          loop: "{{ _mine | selectattr('class', 'equalto', 'caddy-client') | list }}"
+          loop: "{{ _provable | selectattr('class', 'equalto', 'caddy-client') | list }}"
           loop_control:
             label: "{{ item.name }}"
-          when: (_renew_due | bool) and not ansible_check_mode
+          when: _renew_prove | bool and not ansible_check_mode
 
         - name: "Prove one request through a Caddy route that presents the leaf"
+          tags: [verify]
           ansible.builtin.command:
             argv:
               - python3
@@ -486,7 +580,7 @@
               - "{{ renew_caddy_proof_host | default(inference_route_address | default(''), true) }}"
               - 127.0.0.1
               - "{{ caddy_https_port | default('443') }}"
-              - "{{ (_mine | selectattr('class', 'equalto', 'caddy-client') | first).dir | dirname }}/step-ca-bundle.crt"
+              - "{{ (_provable | selectattr('class', 'equalto', 'caddy-client') | first).dir | dirname }}/step-ca-bundle.crt"
               - "{{ renew_caddy_proof_path | default('/v1/models') }}"
           register: _renew_routed
           changed_when: false
@@ -494,22 +588,26 @@
           delay: "{{ _delay }}"
           until: _renew_routed.rc == 0 and (_renew_routed.stdout | trim) == (renew_caddy_proof_status | default(401) | string)
           when:
-            - (_renew_due | bool) and not ansible_check_mode
-            - _mine | selectattr('class', 'equalto', 'caddy-client') | list | length > 0
+            - _renew_prove | bool and not ansible_check_mode
+            - _provable | selectattr('class', 'equalto', 'caddy-client') | list | length > 0
 
         - name: "Record this host's leaves"
+          tags: [verify]
           ansible.builtin.set_fact:
             _renew_done: true
             _renew_leaves: >-
               {%- set out = [] -%}
-              {%- set renewed = (_renew_due | bool) and not ansible_check_mode -%}
+              {%- set issued = _renew_issued | default(false) | bool -%}
+              {%- set provable = _provable | map(attribute='name') | list -%}
               {%- for l in _mine -%}
+                {%- set renewed = issued and l.name in provable -%}
                 {%- set c = (_renew_after if renewed else _renew_before)[l.dir] -%}
-                {%- if not renewed -%}{%- set proof = 'check mode' if (_renew_due | bool) else 'left alone' -%}
-                {%- elif l.class == 'caddy-client' -%}{%- set proof = 'caddy reloaded, serial in current, ' ~ (renew_caddy_proof_host | default(inference_route_address, true)) ~ ' answered ' ~ (renew_caddy_proof_status | default(401)) -%}
-                {%- elif not (_gw_tls | bool) -%}{%- set proof = 'not in use: gateway listener TLS off' -%}
-                {%- elif l.class == 'gateway-server' -%}{%- set proof = 'served on every listener' -%}
-                {%- else -%}{%- set proof = 'probe path answered 401' -%}{%- endif -%}
+                {%- set how = ('verified in use: ' if _verify_only else '') -%}
+                {%- if l.name not in provable -%}{%- set proof = 'not in use: gateway listener TLS off, left alone' -%}
+                {%- elif not (_renew_prove | bool) -%}{%- set proof = 'check mode' if (_renew_due | bool) else 'left alone' -%}
+                {%- elif l.class == 'caddy-client' -%}{%- set proof = how ~ 'caddy serial in current, ' ~ (renew_caddy_proof_host | default(inference_route_address, true)) ~ ' answered ' ~ (renew_caddy_proof_status | default(401)) -%}
+                {%- elif l.class == 'gateway-server' -%}{%- set proof = how ~ 'served on every listener' -%}
+                {%- else -%}{%- set proof = how ~ 'probe path answered 401, refused without a client certificate' -%}{%- endif -%}
                 {%- set _ = out.append({'leaf': l.name, 'host': inventory_hostname, 'profile': l.profile,
                                         'serial': c.serial | default(''), 'not_after': c.not_after | default(0),
                                         'remaining_seconds': c.remaining | default(0), 'renewed': renewed,
@@ -520,6 +618,7 @@
         # A hidden (no_log) task's message is never carried: a failure raised while its
         # arguments were being templated reaches here uncensored (measured, ansible-core 2.21).
         - name: "Record why this host did not finish"
+          tags: [verify]
           ansible.builtin.set_fact:
             _renew_error: >-
               {{ inventory_hostname }}: '{{ ansible_failed_task.name }}' failed
@@ -590,6 +689,7 @@
           {{ out }}
 
     - name: "Record the run's result"
+      tags: [verify]
       ansible.builtin.set_stats:
         data:
           renewal:
@@ -624,6 +724,7 @@
         push_loki_must_succeed: true
 
     - name: "Fail the run for every host that did not finish"
+      tags: [verify]
       ansible.builtin.fail:
         msg: "{{ _errors | join('; ') }}"
       when: _errors | length > 0
