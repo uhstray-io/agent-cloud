@@ -379,10 +379,13 @@ class World:
                         hosts[group].pop(name, None)
                     else:
                         hosts[group][name] = {**hosts[group].get(name, host), **value}
-            inv = {"all": {"vars": {"openbao_addr": "https://openbao.example.test", "dns_site": "dc1",
-                                    "dns_zone": "example.internal",
-                                    "internal_leaves": list(self.leaves.values()) if leaves is None else leaves},
-                           "children": {g: {"hosts": h} for g, h in hosts.items()}}}
+            # site-config's shape: the declaration is a var of the group holding every host, NOT
+            # of `all`, so the implicit localhost the planning play runs on cannot see it.
+            group_vars = {"openbao_addr": "https://openbao.example.test", "dns_site": "dc1",
+                          "dns_zone": "example.internal",
+                          "internal_leaves": list(self.leaves.values()) if leaves is None else leaves}
+            inv = {"all": {"children": {"agent_cloud": {
+                "vars": group_vars, "children": {g: {"hosts": h} for g, h in hosts.items()}}}}}
             (self.tmp / "inv.yml").write_text(yaml.safe_dump(inv))
             args = {**seed_harness.ROLE, "renew_proof_retries": 2, "renew_proof_delay": 1, **(extra or {})}
             cmd = ["ansible-playbook", "-i", str(self.tmp / "inv.yml"), str(self.playbook), "-e", json.dumps(args),
@@ -655,6 +658,21 @@ def test_a_leaf_with_no_proof_path_is_refused_before_any_issuance(world, change,
     change(leaves)
     rc, out = world.run(leaves=list(leaves.values()))
     _refused(world, out, rc, text)
+
+
+def test_the_declaration_is_read_from_the_ca_host_not_the_planning_host(world):
+    # A group var of the hosts' parent group, as in production: dry run 2511 read none of it
+    # from localhost, reported "0 declared leaf/leaves" and passed.
+    world.place()
+    rc, out = world.run()
+    assert rc == 0, out
+    assert "3 declared leaf/leaves on gw, caddy" in out
+
+
+def test_an_empty_declaration_is_refused_not_passed(world):
+    world.place()
+    rc, out = world.run(leaves=[])
+    _refused(world, out, rc, "declares no leaf: there is nothing")
 
 
 def test_two_per_call_leaves_on_one_host_are_refused(world):
