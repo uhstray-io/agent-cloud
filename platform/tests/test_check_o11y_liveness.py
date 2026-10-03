@@ -25,10 +25,13 @@ def make_handler(grafana="up", datasource="ok", token=TOKEN):
 
         def do_POST(self):
             self.record("POST")
+            # Drain the body first: replying with it unread lets the server close on
+            # pending data, and the client sees a connection reset under load.
+            body = self.body()
             if self.path == "/v1/auth/approle/login":
                 return self.reply({"auth": {"client_token": "synthetic-login-value"}})
             if self.path.startswith("/api/webhooks/"):
-                type(self).posts.append(self.body())
+                type(self).posts.append(body)
                 self.send_response(204)
                 self.end_headers()
                 return None
