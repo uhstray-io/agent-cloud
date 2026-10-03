@@ -197,8 +197,8 @@ setup() {
 }
 
 @test "inventory example: caddy_routes auth entry exposes internal_https_port 8443" {
-  grep -qE 'auth\.agent-cloud\.test.*internal_https_port' "$INVENTORY" ||
-    grep -A2 'auth.agent-cloud.test' "$INVENTORY" | grep -q 'internal_https_port'
+  # The route is one flow mapping; scope to that entry, not to the lines after it.
+  grep -qE '\{[^}]*host: "auth\.agent-cloud\.test"[^}]*internal_https_port: 8443[^}]*\}' "$INVENTORY"
 }
 
 @test "inventory example: caddy_routes inference entry opts into the inference_api edge, same list as the bootstrap INI" {

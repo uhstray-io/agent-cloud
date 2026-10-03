@@ -25,7 +25,9 @@
 #   evidence_keys    keys the executor's step result carries in `evidence`; for a reasoning
 #                    step, its snapshot's (the verdict has its own schema). Pinned to the
 #                    emitting playbook by test_workflow_registry.py
-#   reviewed         date the step review passed (tasks 7.1), or null
+#   reviewed         date the step review passed (tasks 7.1), or null. Stamping it also
+#                    flips catalog.workflow_steps.<id>.reviewed in OPA data.json
+#   review_gap       why the D10 review did not pass (tasks 7.1); absent once reviewed
 steps:
   - id: vm-template
     order: 1
@@ -39,6 +41,7 @@ steps:
       - a cloud-init drive is attached to the template
     evidence_keys: [template_vmid, node]
     reviewed: null
+    review_gap: "no step result: provision-template.yml does not include emit-step-result (D10 review 2026-10-02)"
 
   - id: lookup-inventory
     order: 2
@@ -53,6 +56,7 @@ steps:
       - no other VM claims the declared address
     evidence_keys: [vm_spec, address_status]
     reviewed: null
+    review_gap: "none in the executor: passed all D10 checks 2026-10-02; the stamp waits on the matching OPA data.json workflow_steps change"
 
   - id: validate-address
     order: 3
@@ -66,6 +70,7 @@ steps:
       - a NetBox VM object exists for the service after the step
     evidence_keys: [arp_present, netbox_vm_id]
     reviewed: null
+    review_gap: "none in the executor: passed all D10 checks 2026-10-02; the stamp waits on the matching OPA data.json workflow_steps change"
 
   - id: provision-vm
     order: 4
@@ -79,6 +84,7 @@ steps:
       - onboot is 1
     evidence_keys: [vmid, node, onboot]
     reviewed: null
+    review_gap: "no step result: provision-vm.yml does not include emit-step-result (D10 review 2026-10-02)"
 
   - id: cloud-init
     order: 5
@@ -92,6 +98,7 @@ steps:
       - SSH answers on the declared address with the bootstrap identity
     evidence_keys: [cloud_init_done, ssh_reachable]
     reviewed: null
+    review_gap: "no step result: provision-vm.yml does not include emit-step-result (D10 review 2026-10-02)"
 
   - id: ssh-keys
     order: 6
@@ -106,6 +113,7 @@ steps:
       - key login is proven
     evidence_keys: [key_present, key_login]
     reviewed: null
+    review_gap: "no step result: distribute-ssh-keys.yml does not include emit-step-result (D10 review 2026-10-02)"
 
   - id: ssh-key-backup
     order: 7
@@ -120,6 +128,7 @@ steps:
       - the output carries names only
     evidence_keys: [branch]
     reviewed: null
+    review_gap: "no step result: backup-service-ssh-key.yml does not include emit-step-result; each run pushes a new branch (D10 review 2026-10-02)"
 
   - id: access-harden
     order: 8
@@ -134,6 +143,7 @@ steps:
       - sudo is passwordless for the management user
     evidence_keys: [key_only_proven, password_rejected]
     reviewed: null
+    review_gap: "no step result: harden-ssh.yml does not include emit-step-result (D10 review 2026-10-02)"
 
   - id: service-assess
     order: 9
@@ -162,6 +172,7 @@ steps:
       - live cores, memory and disk equal the declared spec
     evidence_keys: [cores, memory_mb, disk_gb]
     reviewed: null
+    review_gap: "no step result: resize-vm.yml does not include emit-step-result (D10 review 2026-10-02)"
 
   - id: secrets-approle
     order: 11
@@ -177,6 +188,7 @@ steps:
         (a committed OpenBao policy file named for the service)
     evidence_keys: [path_found, key_count, missing, empty, approle]
     reviewed: null
+    review_gap: "none in the executor: passed all D10 checks 2026-10-02; the stamp waits on the matching OPA data.json workflow_steps change"
 
   - id: instrument-host
     order: 12
@@ -203,6 +215,7 @@ steps:
       - a second run reports no change
     evidence_keys: [verified, changed_on_rerun]
     reviewed: null
+    review_gap: "no step result: no per-service deploy playbook includes emit-step-result; second-run no-change is not proven (D10 review 2026-10-02)"
 
   - id: service-validate
     order: 14
@@ -215,6 +228,7 @@ steps:
       - the service health URI answers 200 through its declared path
     evidence_keys: [health_status]
     reviewed: null
+    review_gap: "none in the executor: passed all D10 checks 2026-10-02; the stamp waits on the matching OPA data.json workflow_steps change"
 
   - id: edge-route
     order: 15
@@ -230,6 +244,7 @@ steps:
       - the Cloudflare plan is zero-diff
     evidence_keys: [resolves, route_status]
     reviewed: null
+    review_gap: "no step result: manage-caddy-sites.yml does not include emit-step-result (D10 review 2026-10-02)"
 
   - id: fw-assess
     order: 16
@@ -261,6 +276,7 @@ steps:
       - SSH answers after apply
     evidence_keys: [ufw_active, allows]
     reviewed: null
+    review_gap: "no step result: apply-firewall.yml does not include emit-step-result (D10 review 2026-10-02)"
 
   - id: instrument-service
     order: 18
@@ -288,6 +304,12 @@ steps:
       - every container has restart policy always, or "no" as a declared one-shot that exited 0, or is started by the service's enabled agent-cloud-boot-<service>.service
     evidence_keys: [linger, restart_policies, boot_unit]
     reviewed: null
+    review_gap: >-
+      no populated-group preflight: hosts is the target group directly
+      (verify-service-persistence.yml:22-23), so an absent group exits 0 with no step result;
+      errors are per host (:151-167) but the emitter is run_once
+      (tasks/emit-step-result.yml:35,52), so a multi-host run records only the first host's
+      verdict (D10 review 2026-10-02)
 
   - id: access-assess
     order: 20
@@ -318,6 +340,7 @@ steps:
       - the provider redirect URI is verified
     evidence_keys: [blueprint_status, redirect_verified]
     reviewed: null
+    review_gap: "no step result: deploy-authentik.yml does not include emit-step-result (D10 review 2026-10-02)"
 
   - id: credential-backup
     order: 22
@@ -331,3 +354,4 @@ steps:
       - the named fields are present in site-config on a pushed branch
     evidence_keys: [branch, field_count]
     reviewed: null
+    review_gap: "no step result: backup-credentials-to-site-config.yml does not include emit-step-result; each run pushes a new branch (D10 review 2026-10-02)"

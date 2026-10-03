@@ -437,8 +437,10 @@ PYTHON
   local f="$REPO_ROOT/platform/playbooks/validate-secrets.yml"
   # A `| head` pipeline returns HEAD's status, so a FAILED psql would report
   # VALID — defeating the only thing this check exists to detect.
-  run bash -c "grep -A 20 'Validate postiz Postgres password' '$f' | grep -c 'head -3'"
-  [ "$output" = "0" ]
+  local task
+  task=$(task_block "$f" 'Validate postiz Postgres password')
+  [ -n "$task" ]
+  refute_contains "$task" 'head -3'
   grep -qE 'ansible\.builtin\.command:' "$f"
 }
 

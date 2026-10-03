@@ -1,0 +1,18 @@
+# Bash scripts that do NOT yet set pipefail before their first pipeline.
+#
+# A RATCHET, not an allow-list. platform/tests/test_scripts_set_pipefail.bats derives
+# the set of Bash scripts tracked under platform/ and .githooks/ from the repository
+# itself and then requires:
+#   - every script without pipefail is named here   (a NEW gap cannot appear silently)
+#   - every script named here still lacks it         (a fix cannot leave its exception behind)
+# So this file only ever shrinks, and shrinking it is the work.
+#
+# Why it exists: a pipeline's exit status is its LAST command's, so `cmd | tail` reports
+# tail's 0 when cmd failed. docs/MISTAKES.md 1.3 and 8.1 record that masking reporting
+# failures as success, enforced only by convention. These three start or initialise a
+# service (Caddy's legacy start script, the Semaphore runner entrypoint, n8n's Postgres
+# init script); adding pipefail changes how each starts, so it is its own change, not
+# folded into the one that found them.
+#
+# One repository-relative path per line. Remove a line in the same commit that adds the
+# `set -o pipefail` (or `set -euo pipefail`) to that script.

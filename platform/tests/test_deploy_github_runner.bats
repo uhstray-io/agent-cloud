@@ -19,8 +19,8 @@ setup() {
   # The runner host is DENIED OpenBao by its firewall declaration, so it could not fetch
   # its own secret even holding a credential — which is the point. Minting therefore
   # happens on the controller and the token is handed over in memory.
-  grep -A14 'Authenticate to OpenBao' "$PLAYBOOK" | grep -q 'delegate_to: localhost'
-  grep -A14 'Read the App private key' "$PLAYBOOK" | grep -q 'delegate_to: localhost'
+  assert_grep -q 'delegate_to: localhost' <<<"$(task_block "$PLAYBOOK" 'Authenticate to OpenBao')"
+  assert_grep -q 'delegate_to: localhost' <<<"$(task_block "$PLAYBOOK" 'Read the App private key')"
   # Window sized to the task, not to a guessed line count: read from the task name to
   # the next task boundary, so adding a line inside the task cannot fail this for the
   # wrong reason (docs/MISTAKES.md §2 — a test that fails for its own reasons teaches

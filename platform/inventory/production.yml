@@ -1,4 +1,10 @@
 ---
+# =============================================================================
+# TEMPLATE, not production. Production is site-config/inventory/production.yml
+# (the private repo Semaphore syncs). Group layout, variable placement and values
+# differ between the two: check a production fact there, never here
+# (docs/MISTAKES.md 1.14).
+# =============================================================================
 # Production inventory template — replace placeholders with actual values
 # Real IPs managed in private site-config repo (site-config/inventory/production.yml)
 # This file is committed to a PUBLIC repo — do not add real IPs or credentials

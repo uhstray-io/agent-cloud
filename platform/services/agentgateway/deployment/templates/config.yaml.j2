@@ -192,6 +192,27 @@ llm:
             rolling: 1h
           onBudgetExceeded: Block
 {% endfor %}
+{% if _legacy_shared_active | default(false) | bool %}
+{% set _lp = (agw_client_policies | default({}))['legacy-shared'] | default({}) %}
+      # Shared-key grace period (gateway task 5.1): the key every client used before the
+      # gateway, enrolled as ONE identity until inventory legacy_shared_expires. Its hash is the
+      # fingerprint recorded in OpenBao (pinned to the pre-rotation key), or, before the first
+      # recording, the current vLLM key's. On or after the date this block is not rendered.
+      - keyHash: sha256:{{ _legacy_fp_recorded | default('', true) or (secrets.vllm_api_key | hash('sha256')) }}
+        metadata:
+          name: legacy-shared
+{% if _lp.allowed_models is defined %}
+        allowedModels: {{ _lp.allowed_models | to_json }}
+{% endif %}
+        budgets:
+        - name: hourly-tokens
+          limit:
+            unit: Tokens
+            amount: {{ _lp.tokens_per_hour | default(agw_rate_tokens_per_hour | default(2000000)) }}
+          window:
+            rolling: 1h
+          onBudgetExceeded: Block
+{% endif %}
     # Request-rate ceiling for the gateway as a whole. v1.5.0 has no per-identity
     # REQUEST bucket under the `llm` shortcut, verified against the binary
     # 2026-09-17: localRateLimit `key` is on main only (unreleased; the published

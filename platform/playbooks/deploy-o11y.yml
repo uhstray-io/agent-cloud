@@ -78,12 +78,36 @@
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
     _auth_edge_hosts: "{{ groups['caddy_svc'] | default([]) }}"
     _auth_edge_ip: "{{ hostvars[_auth_edge_hosts[0]].ansible_host | default('') if _auth_edge_hosts | length == 1 else '' }}"
+    # Synthetic inference probe (change inference-telemetry-production, task 3.3).
+    # Off unless inventory enables it; off renders exactly the pre-probe secrets
+    # and env files (platform/tests/test_inference_probe.py).
+    _probe_enabled: "{{ o11y_inference_probe_enabled | default(false) | bool }}"
+    _probe_textfile_dir: /var/lib/node_exporter/textfile
+    _probe_user: "{{ ansible_user | default('deploy') }}"
+    _probe_unit_dir: /etc/systemd/system
+    # Host files an enable creates; a disabled deploy removes whichever of them exist.
+    _probe_host_artefacts:
+      - "{{ _probe_unit_dir }}/inference-probe.timer"
+      - "{{ _probe_unit_dir }}/inference-probe.service"
+      - "{{ _probe_textfile_dir }}/inference_probe.prom"
+    _probe_present: >-
+      {{ _probe_leftovers.results | default([]) | selectattr('stat', 'defined')
+         | selectattr('stat.exists') | map(attribute='item') | list }}
     # OIDC client secret is owned by authentik (the IdP); read it here so
-    # Grafana's generic_oauth secret matches the provider blueprint.
-    _shared_reads:
-      - { from_service: authentik, read_keys: [grafana_oidc_client_secret] }
-    _env_templates:
-      - { src: env.j2, dest: .env, mode: "0600" }
+    # Grafana's generic_oauth secret matches the provider blueprint. The probe's
+    # API key is read the same way from the service that owns it (an agentgateway
+    # client identity by default), never copied into secret/services/o11y.
+    _shared_reads: >-
+      {{ [{'from_service': 'authentik', 'read_keys': ['grafana_oidc_client_secret']}] +
+         ([{'from_service': o11y_inference_probe_key_service | default('agentgateway'),
+            'read_keys': [o11y_inference_probe_key_field | default('')]}]
+          if _probe_enabled | bool else []) }}
+    # The probe key goes to its own 0600 file, not .env: Grafana loads .env as its
+    # env_file and must not hold the inference key.
+    _env_templates: >-
+      {{ [{'src': 'env.j2', 'dest': '.env', 'mode': '0600'}] +
+         ([{'src': '../probe/inference-probe.env.j2', 'dest': 'probe/inference-probe.env', 'mode': '0600'}]
+          if _probe_enabled | bool else []) }}
 
   tasks:
     - name: "Require a capacity receipt and nonzero Prometheus cap for retention expansion"
@@ -282,6 +306,22 @@
         fail_msg: "Profiling remains disabled until private inventory records successful config, privacy, and resource-gate receipt IDs."
       when: o11y_alloy_profile_pilot_enabled | default(false) | bool
 
+    - name: "Require complete synthetic inference probe settings when the probe is enabled"
+      ansible.builtin.assert:
+        that:
+          - o11y_inference_probe_url | default('') is match('^https://[A-Za-z0-9.-]+(:[0-9]+)?/v1$')
+          - o11y_inference_probe_model | default('') is match('^[A-Za-z0-9._:/@-]+$')
+          - o11y_inference_probe_key_service | default('agentgateway') is match('^[a-z0-9-]+$')
+          - o11y_inference_probe_key_field | default('') is match('^[A-Za-z0-9_-]+$')
+          - o11y_inference_probe_timeout_seconds | default(30) | int >= 1
+          - o11y_inference_probe_timeout_seconds | default(30) | int <= 120
+        fail_msg: >-
+          The inference probe needs o11y_inference_probe_url (https://<host>/v1),
+          o11y_inference_probe_model, and o11y_inference_probe_key_field naming the
+          OpenBao field that holds its key under secret/services/<o11y_inference_probe_key_service>
+          (default agentgateway); the latency budget o11y_inference_probe_timeout_seconds is 1-120.
+      when: _probe_enabled | bool
+
     - name: "Place the monorepo + ensure podman/compose"
       ansible.builtin.include_tasks: tasks/place-monorepo.yml
 
@@ -352,6 +392,89 @@
       register: _agentgateway_scrape_absent
       when: agentgateway_metrics_address is not defined
 
+    # Synthetic inference probe. Its environment file (key from OpenBao) was rendered
+    # by manage-secrets above; the units and the textfile directory are host config.
+    - name: "Install the synthetic inference probe"
+      when: _probe_enabled | bool
+      become: true
+      vars:
+        _probe_script: "{{ _deploy_dir }}/probe/inference-probe.sh"
+        _probe_env_file: "{{ _deploy_dir }}/probe/inference-probe.env"
+      block:
+        - name: "Create node_exporter's textfile directory, writable only by the probe user"
+          ansible.builtin.file:
+            path: "{{ _probe_textfile_dir }}"
+            state: directory
+            owner: "{{ _probe_user }}"
+            mode: "0755"
+
+        - name: "Render the probe service unit"
+          ansible.builtin.template:
+            src: "{{ playbook_dir }}/../services/o11y/deployment/probe/inference-probe.service.j2"
+            dest: "{{ _probe_unit_dir }}/inference-probe.service"
+            mode: "0644"
+          register: _probe_service_unit
+
+        - name: "Install the five-minute probe timer"
+          ansible.builtin.copy:
+            src: "{{ playbook_dir }}/../services/o11y/deployment/probe/inference-probe.timer"
+            dest: "{{ _probe_unit_dir }}/inference-probe.timer"
+            mode: "0644"
+          register: _probe_timer_unit
+
+        # Under --check the two unit files above are only simulated, so on a first enable
+        # systemd has no timer to start; activation is a real-run step.
+        - name: "Enable and start the probe timer"
+          ansible.builtin.systemd_service:
+            name: inference-probe.timer
+            enabled: true
+            state: started
+            daemon_reload: "{{ _probe_service_unit.changed or _probe_timer_unit.changed }}"
+          when: not ansible_check_mode
+
+    # Disabled: remove every artefact an earlier enable may have left, each on its own,
+    # so an interrupted install or removal (a service unit without its timer, a last
+    # metrics sample) is still cleaned up. Each privileged step runs only for an artefact
+    # that exists, so a host that never ran the probe changes nothing and needs no sudo.
+    - name: "Look for probe artefacts an earlier enable left on the host"
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop: "{{ _probe_host_artefacts }}"
+      register: _probe_leftovers
+      when: not (_probe_enabled | bool)
+
+    - name: "Stop and disable a leftover probe timer"
+      ansible.builtin.systemd_service:
+        name: inference-probe.timer
+        enabled: false
+        state: stopped
+      become: true
+      when:
+        - not (_probe_enabled | bool)
+        - (_probe_unit_dir ~ '/inference-probe.timer') in _probe_present
+
+    - name: "Remove each leftover probe artefact"
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      become: true
+      loop: "{{ _probe_present }}"
+      when: not (_probe_enabled | bool)
+
+    - name: "Reload systemd after removing a probe unit"
+      ansible.builtin.systemd_service:
+        daemon_reload: true
+      become: true
+      when:
+        - not (_probe_enabled | bool)
+        - _probe_present | select('search', '/inference-probe\\.(service|timer)$') | list | length > 0
+
+    - name: "Remove the probe key file while the probe is disabled"
+      ansible.builtin.file:
+        path: "{{ _deploy_dir }}/probe/inference-probe.env"
+        state: absent
+      when: not (_probe_enabled | bool)
+
 # ── Phase 2: Container lifecycle ────────────────────────────────────────────
 - name: "Phase 2: Start o11y"
   hosts: o11y_svc
@@ -369,6 +492,9 @@
       environment:
         CONTAINER_ENGINE: "{{ container_engine | default('podman') }}"
         LOCAL_MODE: "{{ 'true' if (local_mode | default(false) | bool) else '' }}"
+        # The inference probe's overlay adds node_exporter's textfile collector.
+        # Empty when the probe is off, which is the pre-probe command line.
+        COMPOSE_OVERLAYS: "{{ 'probe/compose.textfile.yml' if (o11y_inference_probe_enabled | default(false) | bool) else '' }}"
       register: _deploy
       changed_when: true
       when: not ansible_check_mode
@@ -503,6 +629,72 @@
       when:
         - not ansible_check_mode
         - not (local_mode | default(false) | bool)
+
+    # The deploy proves the probe is installed and that a sample THIS run forced reached
+    # Prometheus for the configured model. It does NOT fail on a failed inference: that is
+    # what the metric is for (its alert rule is task 3.2, still open).
+    - name: Verify the synthetic inference probe after a real deploy
+      when:
+        - o11y_inference_probe_enabled | default(false) | bool
+        - not ansible_check_mode
+      vars:
+        _probe_names: [inference_probe_success, inference_probe_latency_seconds, inference_probe_last_run_timestamp_seconds]
+        _probe_query: >-
+          {job="receiver-host",model_name="{{ o11y_inference_probe_model }}",__name__=~"{{ _probe_names | join('|') }}"}
+      block:
+        - name: Require the probe timer to be enabled and active
+          ansible.builtin.command:
+            argv: [systemctl, is-active, inference-probe.timer]
+          register: _probe_timer_active
+          changed_when: false
+          failed_when: _probe_timer_active.stdout | trim != 'active'
+
+        # Read on the host, whose clock also stamps the sample, before the forced run.
+        - name: Record the host time before the forced probe sample
+          ansible.builtin.command:
+            argv: [date, +%s]
+          register: _probe_started
+          changed_when: false
+
+        - name: Take one probe sample now instead of waiting for the timer
+          ansible.builtin.command:
+            argv: [systemctl, start, inference-probe.service]
+          become: true
+          changed_when: false
+
+        # A series from an earlier run, or for another model, does not count: every probe
+        # series must carry the configured model_name, and its last-run timestamp must be
+        # no older than the forced sample's start.
+        - name: Read the forced probe sample from the private Prometheus API
+          ansible.builtin.command:
+            argv:
+              - "{{ _engine }}"
+              - exec
+              - o11y-prometheus
+              - wget
+              - -qO-
+              - "http://127.0.0.1:9090/api/v1/query?query={{ _probe_query | urlencode }}"
+          register: _probe_metrics
+          changed_when: false
+          retries: 12
+          delay: 5
+          until: >-
+            _probe_metrics.rc == 0 and
+            ((_probe_metrics.stdout | from_json).data.result
+             | selectattr('metric.model_name', 'defined')
+             | selectattr('metric.model_name', 'equalto', o11y_inference_probe_model)
+             | map(attribute='metric.__name__') | unique | sort | list) == (_probe_names | sort | list) and
+            ((_probe_metrics.stdout | from_json).data.result
+             | selectattr('metric.model_name', 'defined')
+             | selectattr('metric.model_name', 'equalto', o11y_inference_probe_model)
+             | selectattr('metric.__name__', 'equalto', 'inference_probe_last_run_timestamp_seconds')
+             | map(attribute='value') | map('last') | map('float')
+             | select('ge', _probe_started.stdout | trim | float) | list | length) > 0
+
+        - name: Report the forced probe sample
+          ansible.builtin.debug:
+            msg: >-
+              {% for r in (_probe_metrics.stdout | from_json).data.result %}{{ r.metric.__name__ }}{model_name={{ r.metric.model_name | default('') }}}={{ r.value[1] }} {% endfor %}
 
     - name: "Tempo ready (/ready) through the private compose network"
       ansible.builtin.command: "{{ _engine }} exec o11y-grafana wget -q -O /dev/null http://tempo:3200/ready"
@@ -880,11 +1072,21 @@
           delay: 5
           until: _active_rules.rc == 0
 
+        # The expected o11y_ rules are the ones in the file Grafana provisioned from (Phase 1
+        # rendered it into the placed checkout), so a rule added to the template is checked
+        # without editing this list, and a rule the file withdraws must be gone.
+        - name: Read the provisioned alert rules file
+          ansible.builtin.slurp:
+            src: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}/{{ monorepo_deploy_path }}/config/grafana/provisioning/alerting/observability.yml"
+          register: _provisioned_rules_file
+
         - name: Require expected o11y rules and active routed rules
           ansible.builtin.assert:
             that:
               - _o11y_rules | selectattr('uid', 'equalto', 'o11y_service_down') | list | length == 1
               - _o11y_rules | selectattr('uid', 'equalto', 'o11y_receiver_root_disk_low') | list | length == 1
+              - _o11y_rules | map(attribute='uid') | sort == _o11y_expected_uids
+              - _active_rules.stdout | from_json | map(attribute='uid') | select('in', _o11y_withdrawn_uids) | list | length == 0
               - _o11y_rules_for_active_routing | selectattr('isPaused', 'defined') | selectattr('isPaused', 'equalto', false) | list | length == _o11y_rules_for_active_routing | length
               - _o11y_rules_for_active_routing | selectattr('notification_settings', 'defined') | list | length == _o11y_rules_for_active_routing | length
               - _o11y_rules_for_active_routing | rejectattr('notification_settings.group_by', 'equalto', ['service', 'environment', 'cluster', 'alertname']) | list | length == 0
@@ -894,6 +1096,11 @@
             fail_msg: "Grafana has missing or paused o11y rules after alert enablement."
           vars:
             _o11y_rules: "{{ _active_rules.stdout | from_json | selectattr('uid', 'match', '^o11y_') | list }}"
+            _o11y_provisioned: "{{ _provisioned_rules_file.content | b64decode | from_yaml }}"
+            _o11y_expected_uids: >-
+              {{ _o11y_provisioned.groups | map(attribute='rules') | flatten
+                 | map(attribute='uid') | select('match', '^o11y_') | sort }}
+            _o11y_withdrawn_uids: "{{ _o11y_provisioned.deleteRules | default([]) | map(attribute='uid') | list }}"
             _o11y_rules_for_active_routing: >-
               {{ (_o11y_rules
                   | rejectattr('uid', 'equalto', 'o11y_receiver_root_disk_low')

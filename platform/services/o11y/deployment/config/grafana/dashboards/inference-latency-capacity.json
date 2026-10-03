@@ -23,6 +23,14 @@
       "targetBlank": true,
       "icon": "doc",
       "tooltip": "Benchmark run manifests (placement, profile, image) in the dgx-spark repository"
+    },
+    {
+      "title": "Agentgateway client view",
+      "type": "link",
+      "url": "/d/agentgateway-client-view",
+      "targetBlank": false,
+      "icon": "dashboard",
+      "tooltip": "The same requests as clients see them through the gateway: first-token latency, HTTP and model request duration, per-identity rates"
     }
   ],
   "templating": {

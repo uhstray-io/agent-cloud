@@ -24,6 +24,10 @@
 #   agw_clients            [names] one API-key identity each -> secret field client_<name>
 #   agw_client_policies    (optional) {name: {allowed_models: [...], tokens_per_hour: N}}
 #                          rotate/revoke: manage-agentgateway-client-key.yml
+#   legacy_shared_expires  (optional) ISO date ending the shared-key grace period: before it the
+#                          shared vLLM key is enrolled as identity `legacy-shared` (budget from
+#                          agw_client_policies.legacy-shared); on/after it the identity is dropped
+#                          and the deploy fails until vllm_api_key is rotated. Absent = no identity
 #   agw_rate_requests_per_minute_total  (optional) one global request bucket
 #   agw_rate_tokens_per_hour             (optional) per-identity token budget (needs the db)
 #   agw_upstream_requires_key            (default true) refuse a deploy with an empty vllm_api_key;
@@ -59,6 +63,21 @@
     _server_leaf: "{{ agw_server_leaf | default('agw-server') }}"
     _verifier_leaf: "{{ agw_verifier_leaf | default('agw-verifier') }}"
     _allowlist: "{{ agw_client_cert_allowlist | default(['caddy']) }}"
+    # config.yaml.previous (rollback) is kept only when the rendered config holds no raw key.
+    _keep_previous: "{{ not ((agw_plaintext_keys | default(false) | bool) and (local_mode | default(false) | bool)) }}"
+    # Shared-key grace period (gateway tasks 4.7, 5.1). legacy_shared_expires is an ISO date
+    # (YYYY-MM-DD) in inventory; absent means no grace period is declared and no `legacy-shared`
+    # identity is rendered. Today is the controller's UTC date; agw_today overrides it for tests
+    # only. ISO dates compare correctly as strings.
+    _legacy_expires: "{{ legacy_shared_expires | default('', true) | string }}"
+    _agw_today: "{{ agw_today | default(now(utc=true).strftime('%Y-%m-%d')) | string }}"
+    _legacy_shared_active: "{{ (_legacy_expires | length > 0) and (_agw_today < _legacy_expires) }}"
+    _legacy_shared_retired: "{{ (_legacy_expires | length > 0) and (_agw_today >= _legacy_expires) }}"
+    # The recorded fingerprint, from the store read manage-secrets already made (`_existing`). It is
+    # deliberately NOT declared in _secret_definitions: manage-secrets writes every declared field
+    # back, so an absent one would be stored as '' and an overlapping deploy could erase a recorded
+    # fingerprint. Only tasks/agw-legacy-key-check.yml writes it.
+    _legacy_fp_recorded: "{{ (_existing | default({})).legacy_shared_key_sha256 | default('', true) }}"
     _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
     # The UI's OIDC client secret is owned by authentik (the IdP). Read-only, so the
@@ -97,6 +116,27 @@
         fail_msg: >-
           agw_clients entries and agw_ui_admin_group must match ^[a-z0-9][a-z0-9-]*$
           (offending clients: {{ agw_clients | default([]) | reject('match', '^[a-z0-9][a-z0-9-]*$') | list }}).
+
+    # `legacy-shared` is rendered from the vLLM key's fingerprint, never minted as a client key,
+    # and its expiry must be a real calendar date in ISO form, or the string comparison above
+    # means nothing. The parse rejects a non-date (2026-13-01, 2026-02-30), the round trip rejects
+    # an unpadded form the parse accepts (2026-1-5), and the rescue names the reason.
+    - name: "Refuse a malformed shared-key expiry or legacy-shared declared as a client"
+      block:
+        - name: "Parse legacy_shared_expires as a calendar date"
+          ansible.builtin.assert:
+            that:
+              - _legacy_expires | length == 0
+                or (_legacy_expires | to_datetime('%Y-%m-%d')).strftime('%Y-%m-%d') == _legacy_expires
+              - "'legacy-shared' not in (agw_clients | default([]))"
+            quiet: true
+      rescue:
+        - name: "Report the malformed expiry or reserved client name"
+          ansible.builtin.fail:
+            msg: >-
+              legacy_shared_expires must be a real calendar date (YYYY-MM-DD), and legacy-shared is
+              not an agw_clients entry: the deploy enrols it from the shared vLLM key while the
+              grace period runs.
 
     # Plaintext keys in the rendered config are a LOCAL-DEV convenience only; the
     # template ignores the flag outside local_mode, and this makes a prod
@@ -245,8 +285,108 @@
       ansible.builtin.include_tasks: tasks/place-monorepo.yml
 
 
+    # Rollback (rollback-inference-route.yml, gateway-config mode; gateway task 4.6) puts back
+    # the config.yaml the last change replaced, kept here as config.yaml.previous. The render is
+    # the shared manage-secrets step, which reports no per-file change, so the current file is
+    # staged as config.yaml.replaced first and compared by checksum afterwards: .previous is
+    # written only when the render changed config.yaml. A first deploy has nothing to keep, and
+    # an unchanged render leaves .previous alone, so a re-run never replaces the last-good copy
+    # with the current one. Both names are gitignored, which is also what keeps local-dev's
+    # rsync --delete off them.
+    #
+    # Raw keys are never kept. Under the local-dev agw_plaintext_keys flag nothing is staged,
+    # and a staged copy is promoted only when it carries no `- key:` entry (config.yaml.j2 writes
+    # that shape only under the flag; hashed entries are `- keyHash:`), so a config rendered
+    # with the flag and replaced after it was turned off is discarded, not kept past its keys'
+    # rotation. With that, .previous only ever holds hashes and names, like config.yaml, and
+    # keeps its 0644 mode (the gateway's non-root user reads it once rollback puts it back).
+    - name: "Read the current config.yaml and any copy an interrupted run staged"
+      ansible.builtin.stat:
+        path: "{{ _deploy_dir }}/{{ item }}"
+        get_checksum: true
+      loop: [config.yaml, config.yaml.replaced]
+      register: _cfg_before
+      when: _keep_previous and not ansible_check_mode
+
+    # A run interrupted after the render but before the promotion leaves the config that was
+    # live before it staged, and a config.yaml that differs from it: that copy is the last-good
+    # one, so it is kept now rather than lost to the restage below.
+    - name: "Does the interrupted run's staged copy carry a raw client key?"
+      ansible.builtin.command:
+        argv: [grep, -qE, '^[[:space:]]*- key:', "{{ _deploy_dir }}/config.yaml.replaced"]
+      register: _cfg_left_raw
+      changed_when: false
+      failed_when: false
+      when:
+        - _keep_previous and not ansible_check_mode
+        - _cfg_before.results[1].stat.exists
+
+    - name: "Keep the interrupted run's staged copy as config.yaml.previous"
+      ansible.builtin.command:
+        argv: [mv, -f, "{{ _deploy_dir }}/config.yaml.replaced", "{{ _deploy_dir }}/config.yaml.previous"]
+      changed_when: true
+      when:
+        - _keep_previous and not ansible_check_mode
+        - _cfg_before.results[1].stat.exists
+        - _cfg_before.results[0].stat.exists
+        - _cfg_before.results[0].stat.checksum != _cfg_before.results[1].stat.checksum
+        # rc 1 is "no match"; a read error (rc 2) is treated as a raw key and discarded.
+        - _cfg_left_raw.rc == 1
+
+    - name: "Stage the config.yaml this render may replace"
+      ansible.builtin.copy:
+        src: "{{ _deploy_dir }}/config.yaml"
+        dest: "{{ _deploy_dir }}/config.yaml.replaced"
+        remote_src: true
+        mode: preserve
+      # Scratch: on an unchanged render it is dropped again, so the run changed nothing.
+      changed_when: false
+      when: _keep_previous and not ansible_check_mode and _cfg_before.results[0].stat.exists
+
+    - name: "Drop a staged copy no config.yaml backs (nothing to keep)"
+      ansible.builtin.file:
+        path: "{{ _deploy_dir }}/config.yaml.replaced"
+        state: absent
+      changed_when: false
+      when: _keep_previous and not ansible_check_mode and not _cfg_before.results[0].stat.exists
+
     - name: "Manage secrets and render env + config"
       ansible.builtin.include_tasks: tasks/manage-secrets.yml
+
+    - name: "Read the rendered config.yaml and the staged one"
+      ansible.builtin.stat:
+        path: "{{ _deploy_dir }}/{{ item }}"
+        get_checksum: true
+      loop: [config.yaml, config.yaml.replaced]
+      register: _cfg_after
+      when: _keep_previous and not ansible_check_mode
+
+    - name: "Does the staged copy carry a raw client key?"
+      ansible.builtin.command:
+        argv: [grep, -qE, '^[[:space:]]*- key:', "{{ _deploy_dir }}/config.yaml.replaced"]
+      register: _cfg_staged_raw
+      changed_when: false
+      failed_when: false
+      when:
+        - _keep_previous and not ansible_check_mode
+        - _cfg_after.results[1].stat.exists
+
+    - name: "Keep the replaced config as config.yaml.previous (only when the render changed it)"
+      ansible.builtin.command:
+        argv: [mv, -f, "{{ _deploy_dir }}/config.yaml.replaced", "{{ _deploy_dir }}/config.yaml.previous"]
+      changed_when: true
+      when:
+        - _keep_previous and not ansible_check_mode
+        - _cfg_after.results[1].stat.exists
+        - _cfg_after.results[0].stat.checksum != _cfg_after.results[1].stat.checksum
+        - _cfg_staged_raw.rc == 1
+
+    - name: "Drop the staged copy (still there when the render changed nothing, or it held a raw key)"
+      ansible.builtin.file:
+        path: "{{ _deploy_dir }}/config.yaml.replaced"
+        state: absent
+      changed_when: false
+      when: _keep_previous and not ansible_check_mode
 
     # vllm_api_key is `existing`: manage-secrets renders it empty when the store has
     # none, and an empty key starts a gateway that is ready but answers every client
@@ -263,6 +403,15 @@
           value staged by scripts/semaphore-seed-input.py) before deploying, or set
           agw_upstream_requires_key: false for an upstream that takes no key.
         success_msg: "Upstream key present (or not required by this upstream)."
+
+    # Shared-key retirement (gateway task 5.1): while the grace period runs, record the shared
+    # key's sha256 fingerprint once; on or after legacy_shared_expires the render above has
+    # already dropped `legacy-shared`. The comparison lives in its own credential task file and
+    # yields booleans only; the verdict play at the END fails the deploy on them, AFTER Phase 2
+    # has rolled out the config without the identity, so the expired key stops working first.
+    - name: "Shared-key retirement: record the fingerprint, compare the vLLM key with it"
+      ansible.builtin.include_tasks: tasks/agw-legacy-key-check.yml
+      when: _legacy_expires | length > 0
 
     # The gateway's OIDC discovery/token calls reach the IdP at https://auth.<zone>:8443
     # (step-ca-minted leaf) — distribute the trust bundle into ./certs; compose.local.yml
@@ -637,3 +786,32 @@
           ({{ _keyed_chat.json.usage.completion_tokens }} completion tokens).
           {% else %}No enrolled identity (agw_clients is empty): the keyed round-trip was not
           run.{% endif %}
+
+# ── Phase 4: Shared-key retirement verdict (gateway task 5.1) ──────────────
+# Last on purpose: a failure here must not stop Phase 2 from removing the expired identity from
+# the running gateway. Reads only the booleans Phase 1's credential task set.
+- name: "Phase 4: Shared-key retirement verdict"
+  hosts: agentgateway_svc
+  gather_facts: false
+  become: false
+  tasks:
+    - name: "Refuse retirement with no recorded pre-rotation fingerprint"
+      ansible.builtin.assert:
+        that: not (_legacy_fp_missing | bool)
+        fail_msg: >-
+          legacy_shared_expires has passed and legacy-shared is no longer enrolled, but
+          secret/services/{{ service_name }} holds no legacy_shared_key_sha256, so the deploy cannot
+          prove the shared vLLM key was rotated. Record it by deploying before the expiry date, or
+          seed the fingerprint of the pre-rotation key.
+      when: _legacy_shared_retired_now | default(false) | bool
+
+    - name: "Refuse retirement while the vLLM key is still the shared key"
+      ansible.builtin.assert:
+        that: not (_legacy_key_unrotated | bool)
+        fail_msg: >-
+          legacy_shared_expires has passed and legacy-shared is no longer enrolled at the gateway, but
+          secret/services/{{ service_name }}:vllm_api_key still matches the pre-rotation shared key,
+          which therefore still works directly at vLLM. Rotate VLLM_API_KEY at vLLM and in OpenBao
+          (dgx-spark), then re-run the deploy.
+        success_msg: "The vLLM key differs from the retired shared key."
+      when: _legacy_shared_retired_now | default(false) | bool

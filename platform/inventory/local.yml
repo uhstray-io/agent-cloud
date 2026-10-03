@@ -1,4 +1,10 @@
 ---
+# =============================================================================
+# TEMPLATE, not production and not the local-dev instance's inventory.
+# Production is site-config/inventory/production.yml; local dev runs from
+# platform/inventory/local-dev.yml (`make local-init`, from local-dev.yml.example).
+# Nothing here says what production is configured with (docs/MISTAKES.md 1.14).
+# =============================================================================
 # Local development inventory — all services on localhost via podman
 # Each service gets a unique alias to prevent Ansible variable merging.
 all:

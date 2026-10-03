@@ -38,7 +38,7 @@ setup() {
 @test "runner-group: convergence REPLACES the access list, so a stray grant is removed" {
   # An access list that only ever grows cannot enforce an exclusion, which is the whole
   # purpose. PUT replaces wholesale; that removal is the point.
-  grep -A6 "Replace the group's repository access list" "$PLAYBOOK" | grep -qF 'method: PUT'
+  assert_grep -qF 'method: PUT' <<<"$(task_block "$PLAYBOOK" "Replace the group's repository access list")"
 }
 
 @test "runner-group: dry run is the DEFAULT" {
@@ -104,7 +104,10 @@ PYSCRIPT
   n=$(grep -c 'no_log: true' "$PLAYBOOK")
   [ "$n" -eq 5 ]
   # The convergence report must stay visible — it is the audit record of what changed.
-  ! grep -A6 'Report the converged access list' "$PLAYBOOK" | grep -q 'no_log: true'
+  local report
+  report=$(task_block "$PLAYBOOK" 'Report the converged access list')
+  [ -n "$report" ]
+  refute_contains "$report" 'no_log: true'
 }
 
 @test "runner-group: the client secret is never referenced" {

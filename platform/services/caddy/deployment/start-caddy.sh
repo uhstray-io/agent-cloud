@@ -1,6 +1,6 @@
 #!/bin/bash
 
-set -e
+set -eo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -108,22 +108,22 @@ fi
 validate_config() {
     local config="$1"
     local app_name="$2"
-    
+
     if [ -n "$config" ]; then
         IFS=':' read -r ip domain port <<< "$config"
-        
+
         if [ -z "$ip" ] || [ -z "$domain" ]; then
             echo "Error: Invalid $app_name configuration: $config"
             echo "Expected format: ip:domain[:port]"
             exit 1
         fi
-        
+
         # Validate IP format (basic check)
         if ! [[ $ip =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
             echo "Error: Invalid IP address format for $app_name: $ip"
             exit 1
         fi
-        
+
         # Validate domain format (basic check)
         if ! [[ $domain =~ ^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*$ ]]; then
             echo "Error: Invalid domain format for $app_name: $domain"
@@ -151,21 +151,21 @@ set_app_env() {
     local config="$1"
     local app_prefix="$2"
     local default_port="$3"
-    
+
     if [ -n "$config" ]; then
         IFS=':' read -r ip domain port <<< "$config"
-        
+
         # Use default port if not provided, or use custom port if specified
         if [ -z "$port" ]; then
             port="$default_port"
         fi
-        
+
         echo "Setting environment variables for ${app_prefix}: $domain -> $ip:$port"
-        
+
         export "${app_prefix}_IP=$ip"
         export "${app_prefix}_DOMAIN=$domain"
         export "${app_prefix}_PORT=$port"
-        
+
         # Special handling for Cloud app with multiple ports
         if [ "$app_prefix" = "CLOUD" ]; then
             # For Cloud app, if custom port provided, use it for main port, otherwise use defaults
@@ -208,7 +208,7 @@ show_config() {
     local config="$1"
     local app_name="$2"
     local default_port="$3"
-    
+
     if [ -n "$config" ]; then
         IFS=':' read -r ip domain port <<< "$config"
         if [ -z "$port" ]; then

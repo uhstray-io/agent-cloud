@@ -2,7 +2,7 @@
 # runner-entrypoint.sh — Install hvac and hashi_vault collection on Semaphore runner boot.
 # Mount this script into the runner container and set as entrypoint.
 # Adds ~10-30s to container startup but survives image updates.
-set -e
+set -eo pipefail
 
 echo "[runner-entrypoint] Installing hvac..."
 pip install --quiet --no-cache-dir 'hvac>=2.0.0' 2>/dev/null

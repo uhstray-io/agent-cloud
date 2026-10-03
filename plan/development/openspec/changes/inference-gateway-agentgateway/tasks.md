@@ -212,6 +212,13 @@
       — read on the running container 2026-09-17); Alloy
       `otelcol.receiver.otlp` on the o11y host forwarding spans as structured log lines to
       Loki (Tempo deferred); inference dashboard gains the client-view row
+      2026-10-02 code state: the scrape job (`scrape-agentgateway.yml.j2`, rendered only
+      when inventory declares the stats endpoint) and the OTLP receiver already existed,
+      with spans going to Tempo rather than being deferred. Added: inventory-gated
+      `o11y_gateway_span_logs_enabled` (default off) span-to-Loki lines via
+      `otelcol.connector.spanlogs`, the model request-duration series on the client view,
+      and a link to it from the inference latency dashboard. Open until the private
+      inventory declares the endpoint and 3.3 proves it on live traffic
 - [x] 3.2 Check whether `localRateLimit` has a log-only mode in the v1.5.0 schema; record
       the answer in `design.md` and set the first-week policy accordingly. 2026-09-17: no
       such mode (`RateLimitSpec` has only `maxTokens`, `tokensPerFill`, `fillInterval`,
@@ -277,6 +284,14 @@
       `VLLM_API_KEY` at vLLM (dgx-spark `secrets/vllm_api_key` and a two-rank restart) and in
       OpenBao; record the retirement date in `context/architecture.md`; hand dgx-spark the
       gateway address for narrowing `vllm_api_allowed_cidr`
+      2026-10-02: the deploy half landed (`config.yaml.j2` renders `legacy-shared` only before
+      `legacy_shared_expires`; `tasks/agw-legacy-key-check.yml` records the shared key's sha256
+      fingerprint once at `legacy_shared_key_sha256` during the grace period and, on or after the
+      date, fails the deploy in its last play, after the gateway is recreated without the
+      identity, while `vllm_api_key` still matches it; tests
+      `platform/tests/test_agw_legacy_retirement.py`). Left: the rotation at vLLM and in OpenBao
+      and the `vllm_api_allowed_cidr` narrowing are dgx-spark's and wait on the dgx-spark handoff;
+      the retirement date is recorded in `context/architecture.md` once 4.7 sets it
 - [ ] 5.2 Accept the architecture record; append a dated pointer line to
       `plan/development/06-inference-skynet.md`; `platform/services/inference/` stub
       gains a README pointing at the gateway service and the dgx-spark roadmap record
