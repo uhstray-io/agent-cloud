@@ -101,8 +101,8 @@ Retirement date: _not yet set_ — `legacy_shared_expires` is the route-switch d
 
 ## Conformance against direct vLLM (tasks 2.1, 2.2)
 
-**Results pending.** The first production run (Semaphore task 2592, identity `stray`, model
-`qwen3.8-flash-next`, as reported by the operator) matched 0 of 13 cases. Every case returned
+**Results pending.** The first production run (Semaphore task 2592, sent as an enrolled identity for
+the served model, as reported by the operator) matched 0 of 13 cases. Every case returned
 200 on both sides with the same semantic fields, but a different body shape. That run's report
 carried only a hash of each shape, so it could not say which fields differed, and no decision
 could be made from it. The comparison now names the differing key paths (`shape_diff`, below). The
@@ -143,7 +143,9 @@ names only, never a value. The playbook prints it per case as "shape differences
 
 The allowlist `deployment/tests/conformance-shape-allow.json` holds the differences the gateway
 is accepted to introduce: `gateway_may_add`, `gateway_may_drop` and `gateway_may_retype`, each a
-list of paths written exactly as `shape_diff` prints them. An allowlisted difference is still
+list of paths written exactly as `shape_diff` prints them. All three lists must be present, though
+each may be empty. A file that lacks one, carries any other key, or has a non-string `_comment` is
+refused. An allowlisted difference is still
 reported, under `shape_allowed`. Only the rest (`shape_unaccepted`) fails a case. The committed
 list is empty. Adding a path is the operator's decision after reading a run's diff; record it and
 its reason in this section when making it.

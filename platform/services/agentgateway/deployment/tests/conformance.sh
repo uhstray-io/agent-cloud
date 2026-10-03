@@ -377,12 +377,16 @@ cmd_diff() {
 	fi
 	if [ -n "${3:-}" ]; then
 		[ -r "$3" ] || die "shape allowlist $3 is not readable"
-		# A misspelt key would silently allow nothing, so only the three lists (and a comment) pass.
-		jq -e 'type == "object"
-			and ((keys - ["_comment", "gateway_may_add", "gateway_may_drop", "gateway_may_retype"]) | length == 0)
-			and all(to_entries[] | select(.key != "_comment") | .value;
-				type == "array" and all(.[]; type == "string"))' "$3" >/dev/null ||
-			die "shape allowlist $3 must be an object of gateway_may_add, gateway_may_drop and gateway_may_retype string lists"
+		# A misspelt or missing key would silently allow nothing, so the file must carry exactly the
+		# three lists (each may be empty), plus at most a string `_comment`, and nothing else.
+		jq -e '["gateway_may_add", "gateway_may_drop", "gateway_may_retype"] as $lists
+			| type == "object"
+			and (. as $o
+				| ((keys - $lists - ["_comment"]) | length == 0)
+				# Each list must be an array; a missing one reads as null and fails here.
+				and all($lists[]; . as $k | $o[$k] | type == "array" and all(.[]; type == "string"))
+				and (($o | has("_comment") | not) or ($o._comment | type == "string")))' "$3" >/dev/null ||
+			die "shape allowlist $3 must hold exactly gateway_may_add, gateway_may_drop and gateway_may_retype (string lists, may be empty) and optionally a string _comment"
 		allow=$(jq -c . "$3")
 	fi
 	jq -s -c --argjson map "$map" --argjson allow "$allow" "$JQ_LIB"'

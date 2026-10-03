@@ -545,7 +545,8 @@ def _retypes_prompt_tokens(body):
 def _diff_allow(tmp: Path, allow: dict | None):
     args = ["bash", str(SCRIPT), "diff", str(tmp / "out" / "results.jsonl"), ""]
     if allow is not None:
-        (tmp / "allow.json").write_text(json.dumps(allow))
+        # A complete file: the lists the test does not name are present and empty.
+        (tmp / "allow.json").write_text(json.dumps({**FULL_ALLOW, **allow}))
         args.append(str(tmp / "allow.json"))
     r = subprocess.run(args, capture_output=True, text=True, timeout=60)
     assert r.returncode == 0, r.stderr
@@ -603,10 +604,18 @@ def test_a_type_change_is_named_and_only_its_own_allowlist_entry_accepts_it(tmp_
     assert _case(retype_ok, "effort-low")["verdict"] == "match"
 
 
+FULL_ALLOW = {"gateway_may_add": [], "gateway_may_drop": [], "gateway_may_retype": []}
+
+
 @pytest.mark.parametrize("allow", [
-    {"gateway_may_ad": ["x"]},          # a misspelt key would silently allow nothing
-    {"gateway_may_add": "x_route"},     # not a list
-    ["x_route.trace"],                  # not an object
+    {**FULL_ALLOW, "gateway_may_ad": ["x"]},           # a misspelt extra key
+    {**FULL_ALLOW, "gateway_may_add": "x_route"},      # not a list
+    {**FULL_ALLOW, "gateway_may_drop": [1]},           # not a list of strings
+    ["x_route.trace"],                                 # not an object
+    {},                                                # empty: every list missing
+    {"_comment": "only a comment"},                    # comment only
+    {"gateway_may_add": ["x"], "gateway_may_drop": []},  # partial: gateway_may_retype missing
+    {**FULL_ALLOW, "_comment": ["not", "a", "string"]},  # comment not a string
 ])
 def test_a_malformed_shape_allowlist_is_refused(tmp_path, allow):
     out = tmp_path / "out"
@@ -618,10 +627,20 @@ def test_a_malformed_shape_allowlist_is_refused(tmp_path, allow):
     assert r.returncode == 2 and "shape allowlist" in r.stderr, r.stderr
 
 
+def test_a_complete_empty_allowlist_with_a_comment_is_accepted(tmp_path):
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "results.jsonl").write_text("")
+    (tmp_path / "allow.json").write_text(json.dumps({**FULL_ALLOW, "_comment": "why"}))
+    r = subprocess.run(["bash", str(SCRIPT), "diff", str(out / "results.jsonl"), "", str(tmp_path / "allow.json")],
+                       capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, r.stderr
+
+
 def test_the_committed_shape_allowlist_is_empty():
     # Accepting a difference is the operator's decision after reading a run's shape_diff.
     allow = json.loads(ALLOW.read_text())
-    assert allow["gateway_may_add"] == allow["gateway_may_drop"] == allow["gateway_may_retype"] == []
+    assert {k: v for k, v in allow.items() if k != "_comment"} == FULL_ALLOW
 
 
 # ── listener TLS options and input checks ─────────────────────────────────────
