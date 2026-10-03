@@ -415,6 +415,12 @@ import sys, yaml
 plays = yaml.safe_load(open(sys.argv[1]))
 post = next(p for p in plays if p.get("hosts") == "_provisioned_vm")
 verdict = next(p for p in plays if str(p.get("name", "")).startswith("Verdict:"))
+# The chain runs from a scratch dir, so the verdict's cloud-init step-result include is
+# named by its absolute path.
+for task in verdict["tasks"]:
+    inc = task.get("ansible.builtin.include_tasks")
+    if inc:
+        task["ansible.builtin.include_tasks"] = sys.argv[1].rsplit("/", 1)[0] + "/" + inc
 marker = {"hosts": "localhost", "gather_facts": False,
           "tasks": [{"name": "stand-in for post-validate", "ansible.builtin.debug": {"msg": "POST-VALIDATE RAN"}}]}
 yaml.safe_dump([post, marker, verdict], open(sys.argv[2], "w"))

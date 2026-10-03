@@ -682,8 +682,8 @@
 # Its own play so it runs after the dry-run `end_host` stops above, which end the provisioning
 # play but not the playbook. A hard failure in that play stops the playbook before this; the
 # conformance collector then records the step as failed with the task's last output lines.
-# One run records ONE result (emit-step-result is a non-aggregating set_stats), so the
-# cloud-init step, which this playbook also executes, is not recorded here (D10 review).
+# The cloud-init step, which this playbook also executes, is recorded by the verdict play,
+# once the post-boot checks it is judged from have run.
 - name: "Record the provision-vm step result"
   hosts: localhost
   connection: local
@@ -866,7 +866,31 @@
   vars:
     _pv_host: "{{ groups['_provisioned_vm'] | default([]) | first | default('') }}"
     _pv: "{{ hostvars[_pv_host] if (_pv_host | length) > 0 else {} }}"
+    # The cloud-init step, judged from the post-boot play's own classification: SSH login over
+    # the orchestrator's connection, then `cloud-init status --wait`. Neither attempted (a dry
+    # run, or no VM reached post-boot) is a skip, never a pass.
+    _ci_login: "{{ _pv._pv_login | default('not checked') }}"
+    _ci_state: "{{ _pv._pv_cloudinit | default('not checked') }}"
+    _ci_skip: "{{ _ci_login == 'not checked' and _ci_state == 'not checked' }}"
+    _ci_done: "{{ _ci_state is match('done') }}"
+    _ci_ssh: "{{ _ci_login == 'ok' }}"
   tasks:
+    - name: "Record the cloud-init step result"
+      ansible.builtin.include_tasks: tasks/emit-step-result.yml
+      vars:
+        step_result_service: "{{ _pv_step.service | default(target_service | default('')) }}"
+        step_result_step: cloud-init
+        step_result_status: >-
+          {{ 'skip' if (_ci_skip | bool)
+             else ('pass' if (_ci_done | bool) and (_ci_ssh | bool) else 'fail') }}
+        step_result_evidence:
+          cloud_init_done: "{{ none if (_ci_skip | bool) else (_ci_done | bool) }}"
+          ssh_reachable: "{{ none if (_ci_skip | bool) else (_ci_ssh | bool) }}"
+        step_result_error: >-
+          {{ '' if (_ci_skip | bool) or ((_ci_done | bool) and (_ci_ssh | bool))
+             else ('SSH login: ' ~ _ci_login ~ '; cloud-init: ' ~ _ci_state) }}
+        step_result_undo: Destroy VM
+
     - name: "Fail loudly when a post-boot check failed"
       ansible.builtin.assert:
         that:

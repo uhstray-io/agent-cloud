@@ -56,7 +56,12 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
       step-result fields; `ANSIBLE_SHOW_CUSTOM_STATS=true` in both controllers' environment.
       2026-09-22: done as a repo-root `ansible.cfg` (`show_custom_stats = True`) instead of an
       env var per controller, since Semaphore runs from the clone root; proven by
-      `platform/tests/test_emit_step_result.py` in normal and check mode (mutated once: red)
+      `platform/tests/test_emit_step_result.py` in normal and check mode (mutated once: red).
+      2026-10-03: a second, aggregating `set_stats` appends each result to a `step_results`
+      list so one run can record several steps (Provision VM now records `cloud-init` from its
+      post-boot checks); the collector reads the list and falls back to the single
+      `step_result` older task output carries. Proven by `test_emit_step_result.py` and
+      `test_vm_lifecycle_step_results.py` (parser and cloud-init skip mutations: red)
 - [x] 1.4 pytest check-mode guard: flags state-changing `command`/`shell`/non-GET `uri`
       without `when: not ansible_check_mode` or `check_mode`, and read-only `uri` GET without
       `check_mode: false`; seeded with an allowlist of every current violation so it passes

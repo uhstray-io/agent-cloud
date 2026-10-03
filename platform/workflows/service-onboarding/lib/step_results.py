@@ -6,7 +6,9 @@ one structured result", "A failure with no result is still recorded", "Per-servi
 conformance is tracked and reported".
 
 A step result is recorded by tasks/emit-step-result.yml with set_stats; the repository
-ansible.cfg makes Ansible print it as one line `RUN: {...json...}` after `CUSTOM STATS:`.
+ansible.cfg makes Ansible print the run's stats as one line `RUN: {...json...}` after
+`CUSTOM STATS:`. A run that executes several steps records each in that line's
+`step_results` list; output from before the list carries one `step_result`.
 A task that FAILED without recording one is still a result: the registry maps its template
 to a step, and it is recorded as `fail` with the last twenty output lines as the error.
 
@@ -74,7 +76,9 @@ RETAINED_ERROR = "last run is older than the collector's history window; status 
 
 
 def results_in(lines: list[str]) -> list[dict]:
-    """Every step_result recorded in one task's output (normally one)."""
+    """Every step result recorded in one task's output. emit-step-result.yml writes each one
+    to the aggregated `step_results` list (one entry per step the run recorded) and the last
+    one to `step_result`; output older than the list carries `step_result` alone."""
     found = []
     for line in lines:
         match = RUN.match(line)
@@ -84,7 +88,10 @@ def results_in(lines: list[str]) -> list[dict]:
             stats = json.loads(match.group(1))
         except ValueError:
             continue
-        if isinstance(stats.get("step_result"), dict):
+        listed = stats.get("step_results")
+        if isinstance(listed, list) and listed:
+            found.extend(r for r in listed if isinstance(r, dict))
+        elif isinstance(stats.get("step_result"), dict):
             found.append(stats["step_result"])
     return found
 

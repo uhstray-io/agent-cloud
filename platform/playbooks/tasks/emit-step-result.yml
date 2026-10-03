@@ -1,5 +1,7 @@
 ---
-# emit-step-result.yml — record ONE service-deployment-workflow step result.
+# emit-step-result.yml — record one service-deployment-workflow step result. A run that
+# executes several workflow steps includes it once per step (provision-vm.yml records
+# provision-vm and cloud-init).
 #
 # The result is written with ansible.builtin.set_stats, which runs in check mode as well
 # as a normal run, and is printed as JSON under "CUSTOM STATS" because the repository's
@@ -16,6 +18,14 @@
 #       step_result_status: pass                   # pass | fail | skip
 #       step_result_evidence: { ufw_active: true } # the registry's evidence keys
 #       step_result_error: null                    # string when status is fail
+#
+# Two keys carry the result. `step_results` is a list set with aggregate: true, which
+# ansible-core concatenates across set_stats calls in one run (executor/stats.py
+# update_custom_stats: same-type non-mapping values are joined with +), so every include
+# in the run lands in it. `step_result` is the single result, non-aggregating, so the last
+# include wins: kept because every task output already in Semaphore history carries only
+# that key, and the collector (lib/step_results.py results_in) reads `step_results` when
+# present and falls back to `step_result`.
 #
 # Optional: step_result_service (default: service_name), step_result_undo (default: none),
 # workflow_id (extra var set by the orchestrator; empty for a human-launched run).
@@ -37,16 +47,27 @@
 - name: "Step result: record the result for {{ step_result_step }}"
   ansible.builtin.set_stats:
     data:
-      step_result:
-        schema: agentcloud/step-result/v1
-        workflow_id: "{{ workflow_id | default('') }}"
-        service: "{{ step_result_service | default(service_name | default('')) }}"
-        step: "{{ step_result_step }}"
-        status: "{{ step_result_status }}"
-        check_mode: "{{ ansible_check_mode | bool }}"
-        evidence: "{{ step_result_evidence | default({}) }}"
-        error: "{{ step_result_error | default(none) }}"
-        undo: "{{ step_result_undo | default('none') }}"
+      step_result: "{{ _step_result_record }}"
     per_host: false
     aggregate: false
   run_once: true
+  vars: &step_result_vars
+    _step_result_record:
+      schema: agentcloud/step-result/v1
+      workflow_id: "{{ workflow_id | default('') }}"
+      service: "{{ step_result_service | default(service_name | default('')) }}"
+      step: "{{ step_result_step }}"
+      status: "{{ step_result_status }}"
+      check_mode: "{{ ansible_check_mode | bool }}"
+      evidence: "{{ step_result_evidence | default({}) }}"
+      error: "{{ step_result_error | default(none) }}"
+      undo: "{{ step_result_undo | default('none') }}"
+
+- name: "Step result: append to this run's list the result for {{ step_result_step }}"
+  ansible.builtin.set_stats:
+    data:
+      step_results: ["{{ _step_result_record }}"]
+    per_host: false
+    aggregate: true
+  run_once: true
+  vars: *step_result_vars

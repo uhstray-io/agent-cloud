@@ -92,3 +92,37 @@ def test_unknown_status_is_refused(tmp_path):
     play = _play(tmp_path, step_result_step="fw-harden", step_result_status="green")
     proc = _run(play)
     assert proc.returncode != 0
+
+
+def test_two_includes_in_one_run_record_both_results(tmp_path):
+    play = [{"name": "emit twice", "hosts": "localhost", "connection": "local", "gather_facts": False,
+             "vars": {"service_name": "dns"},
+             "tasks": [{"name": "first", "ansible.builtin.include_tasks": str(TASK),
+                        "vars": {"step_result_step": "provision-vm", "step_result_status": "pass"}},
+                       {"name": "second", "ansible.builtin.include_tasks": str(TASK),
+                        "vars": {"step_result_step": "cloud-init", "step_result_status": "fail",
+                                 "step_result_error": "cloud-init: FAILED"}}]}]
+    path = tmp_path / "play.yml"
+    path.write_text(json.dumps(play))
+    proc = _run(path)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    found = step_results.results_in(proc.stdout.splitlines())
+    assert [(r["step"], r["status"]) for r in found] == [("provision-vm", "pass"), ("cloud-init", "fail")]
+    # The single key every older reader knows still carries a complete result: the last one.
+    line = next(x for x in proc.stdout.splitlines() if step_results.RUN.match(x))
+    assert json.loads(step_results.RUN.match(line).group(1))["step_result"]["step"] == "cloud-init"
+
+
+# The parser against literal output lines: history written before the list existed, and after.
+def _line(stats: dict) -> str:
+    return "\tRUN: " + json.dumps(stats)
+
+
+def test_parser_reads_output_recorded_before_the_list_existed():
+    old = {"step": "fw-harden", "status": "pass"}
+    assert step_results.results_in(["CUSTOM STATS: ****", _line({"step_result": old})]) == [old]
+
+
+def test_parser_reads_every_result_in_the_list_and_ignores_the_duplicate_single_key():
+    a, b = {"step": "provision-vm", "status": "pass"}, {"step": "cloud-init", "status": "skip"}
+    assert step_results.results_in([_line({"step_result": b, "step_results": [a, b]})]) == [a, b]
