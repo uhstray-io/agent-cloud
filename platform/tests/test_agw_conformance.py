@@ -61,15 +61,19 @@ class Stub:
     first_delay / gap  stream timing: seconds to the first token, seconds between chunks
     models          the ids its models list returns (default ["m"])
     cut_stream      end the stream cleanly right after the first token: no finish, no [DONE]
+    mutate          a function applied to every 2xx JSON body and every stream chunk before it is
+                    sent (a gateway adding, dropping or retyping fields)
     """
 
     def __init__(self, key=None, drop_reasoning=False, buffer_stream=False, responses_404=False,
-                 reorder=False, first_delay=0.4, gap=0.1, models=("m",), cut_stream=False):
+                 reorder=False, first_delay=0.4, gap=0.1, models=("m",), cut_stream=False,
+                 mutate=None):
         self.key, self.drop_reasoning, self.buffer_stream = key, drop_reasoning, buffer_stream
         self.responses_404, self.reorder = responses_404, reorder
         self.first_delay, self.gap = first_delay, gap
         self.models = list(models)
         self.cut_stream = cut_stream
+        self.mutate = mutate
         self.seen = []
         stub = self
 
@@ -102,6 +106,8 @@ class Stub:
 
     # ── responses ──
     def send(self, h, status, body):
+        if self.mutate and 200 <= status < 300:
+            body = self.mutate(body)
         data = json.dumps(_reorder(body) if self.reorder else body).encode()
         h.send_response(status)
         h.send_header("Content-Type", "application/json")
@@ -152,10 +158,9 @@ class Stub:
 
     def stream(self, h, body, rid, now, thinking):
         def chunk(delta, finish=None):
-            return ("data: " + json.dumps({"id": "chatcmpl-" + rid, "object": "chat.completion.chunk",
-                                           "created": now, "model": body["model"], "choices": [
-                                               {"index": 0, "delta": delta, "finish_reason": finish}]})
-                    + "\n\n").encode()
+            event = {"id": "chatcmpl-" + rid, "object": "chat.completion.chunk", "created": now,
+                     "model": body["model"], "choices": [{"index": 0, "delta": delta, "finish_reason": finish}]}
+            return ("data: " + json.dumps(self.mutate(event) if self.mutate else event) + "\n\n").encode()
 
         parts = [(0.0, chunk({"role": "assistant", "content": ""})), (0.0, b": keep-alive\n\n")]
         tokens = [{"reasoning": "think"}] * 3 if thinking else []
@@ -513,6 +518,112 @@ def test_unreachable_targets_are_an_error_even_when_both_fail_alike(tmp_path, st
     assert {c["failure"] for c in report["cases"]} == {"gateway curl exit 7, direct curl exit 7"}
 
 
+# ── shape differences named, allowlist ────────────────────────────────────────
+# Values the stubs put in fields: none of them may appear in any output, only the key paths.
+SECRET = "SYNTHETIC-SECRET-CONTENT-5d1e"
+ALLOW = REPO / "platform/services/agentgateway/deployment/tests/conformance-shape-allow.json"
+
+
+def _adds_route(body):
+    """The gateway adds one object to every body and chunk; its value is a secret-looking string."""
+    return {**body, "x_route": {"trace": SECRET}}
+
+
+def _drops_prompt_tokens(body):
+    """The gateway drops usage.prompt_tokens from completions (no semantic field reads it)."""
+    if "usage" in body:
+        body = {**body, "usage": {k: v for k, v in body["usage"].items() if k != "prompt_tokens"}}
+    return body
+
+
+def _retypes_prompt_tokens(body):
+    if "usage" in body:
+        body = {**body, "usage": {**body["usage"], "prompt_tokens": str(body["usage"]["prompt_tokens"])}}
+    return body
+
+
+def _diff_allow(tmp: Path, allow: dict | None):
+    args = ["bash", str(SCRIPT), "diff", str(tmp / "out" / "results.jsonl"), ""]
+    if allow is not None:
+        (tmp / "allow.json").write_text(json.dumps(allow))
+        args.append(str(tmp / "allow.json"))
+    r = subprocess.run(args, capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, r.stderr
+    assert SECRET not in r.stdout
+    return json.loads(r.stdout)
+
+
+def test_a_shape_only_difference_is_named_by_path_and_no_value_is_printed(tmp_path, stubs):
+    gw, direct = stubs(key=GW_KEY, mutate=_adds_route), stubs(key=UP_KEY)
+    r, lines = _run(tmp_path, gw, direct)
+    assert r.returncode == 0, r.stderr
+    assert SECRET not in (tmp_path / "out" / "results.jsonl").read_text() + r.stdout + r.stderr
+    report = _diff_allow(tmp_path, None)
+    assert report["verdict"] == "fail" and report["matched"] == 0
+    for c in report["cases"]:
+        assert c["status_match"] and c["semantic_match"] and not c["shape_match"], c
+        assert c["shape_diff"] == {"only_gateway": ["x_route.trace"], "only_direct": [], "type_changed": []}, c
+        assert c["shape_unaccepted"] == c["shape_diff"] and c["verdict"] == "differ"
+    assert set(report["shape_differences"]) == set(CASES)
+    # Each result line carries the shape as paths and types, and nothing else of the body.
+    g = next(x for x in lines if x["case"] == "effort-low" and x["target"] == "gateway")
+    assert "x_route.trace:string" in g["shape"] and "choices.[].message.content:string" in g["shape"]
+    assert all(":" in e for e in g["shape"])
+
+
+def test_an_allowlisted_addition_passes_and_is_reported_as_allowed(tmp_path, stubs):
+    gw, direct = stubs(key=GW_KEY, mutate=_adds_route), stubs(key=UP_KEY)
+    _run(tmp_path, gw, direct)
+    report = _diff_allow(tmp_path, {"gateway_may_add": ["x_route.trace"]})
+    assert report["verdict"] == "pass", report
+    c = _case(report, "stream-xhigh")
+    assert not c["shape_match"] and c["shape_accepted"] and c["shape_allowed"]["only_gateway"] == ["x_route.trace"]
+
+
+def test_an_allowlisted_addition_does_not_excuse_an_unlisted_drop(tmp_path, stubs):
+    gw = stubs(key=GW_KEY, mutate=lambda b: _drops_prompt_tokens(_adds_route(b)))
+    direct = stubs(key=UP_KEY)
+    _run(tmp_path, gw, direct)
+    report = _diff_allow(tmp_path, {"gateway_may_add": ["x_route.trace"]})
+    assert report["verdict"] == "fail"
+    c = _case(report, "effort-low")
+    assert c["shape_unaccepted"] == {"only_gateway": [], "only_direct": ["usage.prompt_tokens"], "type_changed": []}
+    assert c["verdict"] == "differ" and _case(report, "models")["verdict"] == "match"
+    assert sorted(report["not_matched"]) == sorted(c for c in CASES if c.startswith(("effort-", "chat-", "tool-")))
+
+
+def test_a_type_change_is_named_and_only_its_own_allowlist_entry_accepts_it(tmp_path, stubs):
+    gw, direct = stubs(key=GW_KEY, mutate=_retypes_prompt_tokens), stubs(key=UP_KEY)
+    _run(tmp_path, gw, direct)
+    c = _case(_diff_allow(tmp_path, {"gateway_may_add": ["usage.prompt_tokens"]}), "effort-low")
+    assert c["shape_diff"]["type_changed"] == [{"path": "usage.prompt_tokens", "gateway": ["string"],
+                                                "direct": ["number"]}]
+    assert c["verdict"] == "differ"
+    retype_ok = _diff_allow(tmp_path, {"gateway_may_retype": ["usage.prompt_tokens"]})
+    assert _case(retype_ok, "effort-low")["verdict"] == "match"
+
+
+@pytest.mark.parametrize("allow", [
+    {"gateway_may_ad": ["x"]},          # a misspelt key would silently allow nothing
+    {"gateway_may_add": "x_route"},     # not a list
+    ["x_route.trace"],                  # not an object
+])
+def test_a_malformed_shape_allowlist_is_refused(tmp_path, allow):
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "results.jsonl").write_text("")
+    (tmp_path / "allow.json").write_text(json.dumps(allow))
+    r = subprocess.run(["bash", str(SCRIPT), "diff", str(out / "results.jsonl"), "", str(tmp_path / "allow.json")],
+                       capture_output=True, text=True, timeout=60)
+    assert r.returncode == 2 and "shape allowlist" in r.stderr, r.stderr
+
+
+def test_the_committed_shape_allowlist_is_empty():
+    # Accepting a difference is the operator's decision after reading a run's shape_diff.
+    allow = json.loads(ALLOW.read_text())
+    assert allow["gateway_may_add"] == allow["gateway_may_drop"] == allow["gateway_may_retype"] == []
+
+
 # ── listener TLS options and input checks ─────────────────────────────────────
 
 def test_listener_tls_options_go_to_the_gateway_only(tmp_path, stubs):
@@ -663,6 +774,14 @@ def test_an_extra_var_cannot_redirect_the_key_files_or_the_delete(tmp_path, stub
     assert rc != 0 and "Do not pass _agwc_tmpdir as an extra var" in out, out
     assert sorted(p.name for p in target.iterdir()) == ["canary"]
     assert gw.seen == [] and direct.seen == []
+
+
+def test_the_playbook_prints_the_shape_differences_by_path_only(tmp_path, stubs):
+    gw, direct = stubs(key=GW_KEY, mutate=_adds_route), stubs(key=UP_KEY)
+    rc, out, made = _playbook(tmp_path, gw, direct)
+    assert rc != 0 and "shape differences (paths only)" in out, out
+    assert '"x_route.trace"' in out and SECRET not in out
+    assert made and not _left_behind(made)
 
 
 def test_a_dry_run_sends_nothing(tmp_path, stubs):

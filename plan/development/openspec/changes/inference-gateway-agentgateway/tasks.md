@@ -214,6 +214,12 @@
       not decide the verdict. The playbook fails on any case that does not match. Recording
       in `architecture.md` waits for the first production run; the section is in place and
       says the results are pending.
+      2026-10-03: first production run, Semaphore task 2592, as reported by the operator. It
+      matched 0/13: every case was 200/200 with the same semantics and a different shape, but the
+      report carried only a hash of each shape. The diff now names the differing key paths per
+      case (`shape_diff`; paths and types only) and accepts only what
+      `deployment/tests/conformance-shape-allow.json` lists. That list is committed empty; the
+      operator fills it after reading the next run. Then this task is recorded.
 - [ ] 2.3 Confirm SSE keep-alive comment lines from vLLM pass through unchanged and
       unbuffered (needs dgx-spark `inference-endpoint-reliability` deployed)
 - [ ] 2.3a Streams and the budget: confirm whether a streamed completion is charged to the
