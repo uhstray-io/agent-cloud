@@ -1,0 +1,33 @@
+name: Ruleset Drift
+
+# Read-only daily check that every live repository ruleset matches the JSON in
+# .github/rulesets/ (docs/MISTAKES.md 10.21: protect-main.json said `active` while
+# the live ruleset was `evaluate`, and nothing read the live object back).
+#
+# Token: GitHub's fine-grained token table lists GET /repos/{owner}/{repo}/rulesets
+# and /rulesets/{ruleset_id} under the "Metadata" repository permission (read). The
+# workflow uses GITHUB_TOKEN unless RULESET_READ_TOKEN is set. Whether GITHUB_TOKEN
+# carries Metadata read is not stated on the workflow-permissions page; if the first
+# run fails with 403/404, set RULESET_READ_TOKEN (a fine-grained token scoped to this
+# repository). The API returns bypass_actors only to a caller with write access to
+# the ruleset (Administration), so without such a token the check warns that
+# bypass_actors was not compared instead of failing on it.
+
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  drift:
+    name: Live rulesets match JSON
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Compare live rulesets with .github/rulesets/*.json
+        env:
+          GH_TOKEN: ${{ secrets.RULESET_READ_TOKEN || github.token }}
+        run: .github/rulesets/check-drift.sh "$GITHUB_REPOSITORY"
