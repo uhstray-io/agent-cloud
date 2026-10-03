@@ -46,6 +46,8 @@
 #                        host, renew_caddy_proof_host to the UI route (admin.inference.<zone>)
 #                        and renew_caddy_proof_status to 302, the gateway's OIDC redirect to
 #                        the IdP, which only a request that crossed the mutual-TLS hop gets.
+# The declaration is read on the one step_ca_svc host (where deploy-step-ca.yml reads it), and
+# an empty one is REFUSED: a run that renews nothing must not pass.
 # A leaf the declaration gives no proof path is REFUSED before anything is issued: a server
 # leaf other than the gateway's own, a client leaf whose reload is not one of the above, a
 # caddy leaf off caddy_svc or without a proof route, a per-call leaf off the
@@ -99,7 +101,12 @@
   # Read-only planning, which a verify run needs too.
   tags: [verify]
   vars:
-    _leaves: "{{ internal_leaves | default([]) }}"
+    # The declaration is read where deploy-step-ca.yml reads it for the CA's name policy: on the
+    # one step_ca_svc host. This play runs on the implicit localhost, which belongs to no
+    # inventory group, so a group var such as site-config's (declared on the group that holds
+    # the hosts) is invisible here: production dry run 2511 read [] and passed.
+    _ca_host: "{{ (groups.get('step_ca_svc', []) | first) if (groups.get('step_ca_svc', []) | length == 1) else '' }}"
+    _leaves: "{{ (hostvars[_ca_host].internal_leaves | default([])) if (_ca_host | length > 0) else [] }}"
     _threshold_in: "{{ renew_threshold | default('', true) | string | trim }}"
     _gw: "{{ (groups.get('agentgateway_svc', []) | first) if (groups.get('agentgateway_svc', []) | length == 1) else '' }}"
     _caddy: "{{ groups.get('caddy_svc', []) }}"
@@ -177,6 +184,16 @@
           ansible.builtin.assert:
             that: groups.get('step_ca_svc', []) | length == 1
             fail_msg: "The inventory must hold exactly one step_ca_svc host (it holds {{ groups.get('step_ca_svc', []) | length }})."
+            quiet: true
+
+        # A run over no leaf would report success while renewing nothing (MISTAKES 2.21).
+        - name: "Refuse an empty leaf declaration"
+          ansible.builtin.assert:
+            that: _leaves | length > 0
+            fail_msg: >-
+              internal_leaves, read on the CA host {{ _ca_host }}, declares no leaf: there is nothing
+              to renew, and a run that renews nothing must not pass. Declare the leaves in site-config,
+              or do not schedule this template.
             quiet: true
 
         - name: "Classify every declared leaf"
