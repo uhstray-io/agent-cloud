@@ -304,7 +304,12 @@ steps:
       - every container has restart policy always, or "no" as a declared one-shot that exited 0, or is started by the service's enabled agent-cloud-boot-<service>.service
     evidence_keys: [linger, restart_policies, boot_unit]
     reviewed: null
-    review_gap: "none in the executor: passed all D10 checks 2026-10-02; the stamp waits on the matching OPA data.json workflow_steps change"
+    review_gap: >-
+      no populated-group preflight: hosts is the target group directly
+      (verify-service-persistence.yml:22-23), so an absent group exits 0 with no step result;
+      errors are per host (:151-167) but the emitter is run_once
+      (tasks/emit-step-result.yml:35,52), so a multi-host run records only the first host's
+      verdict (D10 review 2026-10-02)
 
   - id: access-assess
     order: 20

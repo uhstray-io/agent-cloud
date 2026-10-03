@@ -435,6 +435,10 @@ def test_templates_targeting_a_group_ask_for_it():
 # whose undo is named; an unreviewed executor step says why in `review_gap`.
 @pytest.mark.parametrize("step", [s for s in STEPS if not s.get("schema")], ids=lambda s: s["id"])
 def test_review_stamp_requires_a_recorded_result_and_a_named_undo(step):
+    passed = str(step.get("review_gap", "")).startswith("none in the executor")
+    if passed:
+        assert step["id"] in _emitted_evidence(), \
+            f"{step['id']} claims a passed review but no playbook emits its result"
     if not step.get("reviewed"):
         if step.get("executor"):
             assert step.get("review_gap"), f"{step['id']} is unreviewed without a recorded review_gap"

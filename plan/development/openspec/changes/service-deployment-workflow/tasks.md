@@ -188,10 +188,11 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
 
 - [ ] 7.1 D10 review of each existing executor against its registry criteria: idempotent
       rerun, result emitted, undo named; stamp `reviewed`
-      - 2026-10-02: reviewed (`d10-review.md`). Five pass every check (lookup-inventory,
-        validate-address, secrets-approle, service-validate, systemd-enablement); twelve fail
-        because their playbooks record no step result. Each entry carries `review_gap`. The
-        five passing stamps wait on the matching OPA `data.json` workflow_steps change.
+      - 2026-10-02: reviewed (`d10-review.md`). Four pass every check (lookup-inventory,
+        validate-address, secrets-approle, service-validate); twelve fail because their
+        playbooks record no step result, and systemd-enablement fails on a missing group
+        preflight and a run_once emitter fed per-host errors. Each entry carries `review_gap`. The
+        four passing stamps wait on the matching OPA `data.json` workflow_steps change.
 - [x] 7.2 `provision-vm.yml` sets `onboot`; restart-policy check beside `enable-linger`.
       2026-09-22: onboot with per-host opt-out; `verify-service-persistence.yml` (step
       systemd-enablement) passes on local tududi, normal and check mode (tasks 977, 978)
