@@ -2150,6 +2150,46 @@ for values in (dict(base, dgx_spark_scrape_enabled=False), dict(base), dict(loca
 PY
 }
 
+@test "o11y: gateway span-to-Loki lines render only when inventory enables them" {
+  python3 - "$DEPLOY_DIR" <<'PY'
+import json
+import pathlib
+import sys
+
+from jinja2 import Environment, StrictUndefined
+
+deploy = pathlib.Path(sys.argv[1])
+env = Environment(undefined=StrictUndefined)
+env.filters['to_json'] = json.dumps
+env.filters['bool'] = bool
+template = env.from_string((deploy / 'templates/config.alloy.j2').read_text())
+base = dict(o11y_cluster='test-cluster', _o11y_forbidden_metric_label_names_regex='(?i)(request)')
+
+for values in (base, dict(base, o11y_gateway_span_logs_enabled=False)):
+    off = template.render(**values)
+    assert 'spanlogs' not in off and 'gateway_span_logs' not in off
+    assert 'traces = [otelcol.processor.batch.traces.input]\n' in off
+
+on = template.render(**base, o11y_gateway_span_logs_enabled=True)
+assert 'traces = [otelcol.processor.batch.traces.input, otelcol.connector.spanlogs.gateway.input]' in on
+block = on.split('otelcol.connector.spanlogs "gateway" {', 1)[1].split('\n}\n', 1)[0]
+assert 'spans = true' in block
+# Span attributes would copy request detail into an unindexed-but-retained log line.
+assert 'span_attributes' not in block and 'process_attributes' not in block
+assert 'logs = [otelcol.processor.attributes.gateway_span_logs.input]' in block
+spans = on.split('otelcol.processor.attributes "gateway_span_logs" {', 1)[1].split('\n}\n', 1)[0]
+assert 'value  = "span"' in spans and 'value  = "service,signal"' in spans
+assert 'logs = [otelcol.exporter.loki.gateway.input]' in spans
+assert 'endpoint = "tempo:4317"' in on
+
+client = json.loads((deploy / 'config/grafana/dashboards/agentgateway-client-view.json').read_text())
+queries = [t['expr'] for p in client['panels'] for t in p['targets']]
+assert any('agentgateway_gen_ai_server_request_duration_bucket{job="agentgateway", identity=~"$identity"}' in q for q in queries)
+latency = json.loads((deploy / 'config/grafana/dashboards/inference-latency-capacity.json').read_text())
+assert any(link['url'] == '/d/agentgateway-client-view' for link in latency['links'])
+PY
+}
+
 @test "o11y: scheduled-job silent and internal-CA expiry rules render for every rollout state" {
   python3 - "$DEPLOY_DIR/templates/alerts.yml.j2" <<'PY'
 import json
