@@ -69,6 +69,7 @@ def test_a_failing_second_host_fails_the_recorded_result(tmp_path, check):
     assert result["check_mode"] is check
     assert "beta: no containers carry the compose working_dir label" in result["error"]
     assert "alpha:" not in result["error"]
+    assert result["evidence"]["restart_policies"] == {"alpha": {"app-1": "always"}, "beta": {}}
 
 
 def test_every_host_passing_records_a_pass(tmp_path):
@@ -77,6 +78,7 @@ def test_every_host_passing_records_a_pass(tmp_path):
     result = _result(proc.stdout)
     assert result["status"] == "pass" and result["error"] in (None, "")
     assert set(result["evidence"]) == {"linger", "restart_policies", "boot_unit"}
+    assert result["evidence"]["linger"] == {"alpha": "not-applicable", "beta": "not-applicable"}
 
 
 def test_an_absent_target_group_is_refused_not_a_silent_pass(tmp_path):

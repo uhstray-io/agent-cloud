@@ -486,6 +486,20 @@
       {%- endfor -%}
       {{ out | unique | list }}
   tasks:
+    # manage-caddy-sites.yml RECORDS its edge-route verdict (the probe of the route a client
+    # takes) without failing, so the importer decides: a rollback whose route does not resolve or
+    # does not answer is not a rollback. A dry run loaded nothing, so it judges the old route.
+    - name: "Require the edge route to resolve and answer after the Caddy run"
+      ansible.builtin.assert:
+        that: _edge_group_errors is defined and _edge_group_errors | length == 0
+        fail_msg: >-
+          The inference route failed its edge check after the Caddy run:
+          {{ (_edge_group_errors | default(['no edge-route verdict was recorded'])) | join('; ') }}
+        success_msg: "{{ inference_route_address }} resolves and answers through Caddy."
+      when:
+        - not ansible_check_mode
+        - _rb_mode in ['direct', 'restore']
+
     - name: "Read the site blocks after the Caddy run"
       tags: [verify]
       ansible.builtin.script:

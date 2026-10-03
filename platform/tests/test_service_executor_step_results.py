@@ -130,13 +130,15 @@ def _run_slice(tmp_path, playbook, first_task, hostvars: dict, *extra, play_vars
         names = [t.get("name") for t in play.get("tasks") or []]
         if first_task in names:
             tasks = json.loads(json.dumps(play["tasks"][names.index(first_task):]))
+            source_vars = {k: v for k, v in (play.get("vars") or {}).items() if k.startswith("_edge")}
             break
     else:
         raise AssertionError(f"{first_task!r} not in {playbook}")
     for task in _emits(tasks):
         task["ansible.builtin.include_tasks"] = str(EMIT)
     tasks = list(prepend) + tasks
-    play = {"name": "slice", "hosts": "svc", "gather_facts": False, "vars": play_vars or {}, "tasks": tasks}
+    play = {"name": "slice", "hosts": "svc", "gather_facts": False,
+            "vars": {**source_vars, **(play_vars or {})}, "tasks": tasks}
     (tmp_path / "play.yml").write_text(json.dumps([play]))
     hosts = {h: {"ansible_connection": "local", "ansible_python_interpreter": "auto_silent", **v}
              for h, v in hostvars.items()}
@@ -159,11 +161,12 @@ EDGE_FIRST = "Edge route: does the probe host resolve?"
 def test_edge_route_unresolvable_probe_host_is_a_recorded_failure(tmp_path, check):
     proc, found = _run_slice(tmp_path, "manage-caddy-sites.yml", EDGE_FIRST,
                              {"caddy": {"caddy_probe_host": "no-such-host.invalid"}}, *(["--check"] if check else []))
-    # recorded, not fatal: Rollback Inference Route imports this playbook and judges the route itself
+    # Recorded, not fatal: the importer decides. Rollback Inference Route fails on the
+    # _edge_group_errors fact this sets (test_rollback_inference_route.py proves that side).
     assert proc.returncode == 0, proc.stdout[-3000:]
     (res,) = found
     assert (res["step"], res["status"], res["check_mode"]) == ("edge-route", "fail", check)
-    assert res["evidence"] == {"resolves": False, "route_status": None}
+    assert res["evidence"] == {"resolves": {"caddy": False}, "route_status": {"caddy": None}}
     assert "caddy: no-such-host.invalid does not resolve" in res["error"]
 
 
@@ -180,7 +183,7 @@ def test_edge_route_no_answer_is_a_failure_on_any_host(tmp_path):
     proc, (res,) = _run_slice(tmp_path, "manage-caddy-sites.yml", EDGE_FIRST,
                               {"a": {"caddy_probe_host": "localhost"}, "b": {"caddy_probe_host": "localhost"}})
     assert proc.returncode == 0 and res["status"] == "fail"
-    assert res["evidence"]["resolves"] is True
+    assert res["evidence"]["resolves"] == {"a": True, "b": True}
     assert "a: https://localhost/ answered" in res["error"] and "b: https://localhost/ answered" in res["error"]
 
 
@@ -210,7 +213,7 @@ def test_oidc_failed_redirect_check_records_fail_and_stops(tmp_path, check):
     assert proc.returncode != 0
     (res,) = found
     assert (res["step"], res["status"], res["check_mode"]) == ("oidc-config", "fail", check)
-    assert res["evidence"] == {"blueprint_status": "successful", "redirect_verified": False}
+    assert res["evidence"] == {"blueprint_status": {"ak": "successful"}, "redirect_verified": {"ak": False}}
     assert "ak: live OIDC redirect_uris do not match intent" in res["error"]
 
 
@@ -220,6 +223,7 @@ def test_oidc_a_failing_second_host_fails_the_group(tmp_path):
                               {"a": _oidc_host(), "b": _oidc_host(users_rc=2)})
     assert proc.returncode != 0 and res["status"] == "fail"
     assert res["error"].startswith("b: custom blueprints not all applied")
+    assert res["evidence"]["blueprint_status"] == {"a": "successful", "b": "failed"}
 
 
 @needs_ansible
@@ -249,3 +253,13 @@ def test_oidc_final_result_is_skip_when_the_redirect_check_did_not_run(tmp_path,
             "_oidc_redirect_verified": True if verified else "not-checked"}
     proc, (res,) = _run_slice(tmp_path, "deploy-authentik.yml", "Record the step result", {"ak": host})
     assert proc.returncode == 0 and res["status"] == status
+
+
+def test_the_rollback_fails_on_the_edge_verdict_manage_caddy_sites_records():
+    # The edge check is record-only in manage-caddy-sites.yml; the importer must consume it.
+    plays = yaml.safe_load((PLAYBOOKS / "rollback-inference-route.yml").read_text())
+    i = next(n for n, p in enumerate(plays) if p.get("ansible.builtin.import_playbook") == "manage-caddy-sites.yml")
+    gate = plays[i + 1]["tasks"][0]
+    assert "_edge_group_errors" in gate["ansible.builtin.assert"]["that"]
+    edge = _plays("manage-caddy-sites.yml")[0]["tasks"]
+    assert any("_edge_group_errors" in (t.get("ansible.builtin.set_fact") or {}) for t in edge)

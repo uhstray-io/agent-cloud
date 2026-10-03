@@ -42,17 +42,16 @@
 # be just as invisible.
 #
 # STEP RESULT. Records workflow step edge-route (platform/workflows/service-onboarding/
-# registry.yml) last, in check mode too. From the executor it resolves caddy_probe_host and
-# requests https://<caddy_probe_host>/, so the route is judged by the path a client takes:
+# registry.yml) last, in check mode too. From the executor it resolves the probe URL's host and
+# requests the URL — caddy_probe_url, default https://<caddy_probe_host>/ — so the route is judged by the path a client takes:
 # pass needs the name to resolve and an HTTP answer below 500 (a 5xx is Caddy answering for an
 # upstream that is down). No caddy_probe_host declared fails: the route cannot be checked. The
 # registry's third criterion, a zero-diff Cloudflare plan, is Apply Cloudflare Tofu's to prove,
 # not this playbook's. A dry run probes the live route, so a route not yet loaded records a fail
 # there: the criterion is not met yet. A host that fails before its verdict counts as failed.
-# The verdict is RECORDED, not fatal: rollback-inference-route.yml imports this playbook as its
-# Caddy step and judges the route itself, so a probe here must not change that run's outcome.
-# The collector reads the recorded `fail`; the Semaphore task stays green on a route edit that
-# succeeded.
+# The verdict is RECORDED here, not fatal, so the edit's own outcome stays its own: an importer
+# decides. rollback-inference-route.yml imports this playbook and FAILS on _edge_group_errors
+# (set on every host), so a broken route cannot leave a rollback green. Evidence is per host.
 #
 # Usage (via Semaphore): -e target_service=caddy_svc
 
@@ -63,6 +62,7 @@
   vars:
     _engine: "{{ container_engine | default('podman') }}"
     _container: "{{ caddy_container | default('caddy') }}"
+    _edge_url: "{{ caddy_probe_url | default('https://' ~ caddy_probe_host | default('') ~ '/') }}"
     _caddyfile: "{{ caddy_caddyfile_path | default('/home/' ~ (ansible_user | default('uhstray')) ~ '/caddy/Caddyfile') }}"
     _sites_tool: "{{ playbook_dir }}/../services/caddy/deployment/lib/caddyfile_sites.py"
 
@@ -245,7 +245,7 @@
     # ── Step result (edge-route): judged from the executor, the side a client is on.
     - name: "Edge route: does the probe host resolve?"
       ansible.builtin.command:
-        argv: [python3, -c, "import socket, sys; socket.getaddrinfo(sys.argv[1], 443)", "{{ caddy_probe_host }}"]
+        argv: [python3, -c, "import socket, sys; socket.getaddrinfo(sys.argv[1], 443)", "{{ _edge_url | urlsplit('hostname') }}"]
       delegate_to: localhost
       register: _edge_dns
       changed_when: false
@@ -255,7 +255,7 @@
 
     - name: "Edge route: does the route answer?"
       ansible.builtin.uri:
-        url: "https://{{ caddy_probe_host }}/"
+        url: "{{ _edge_url }}"
         method: GET
         follow_redirects: none
         # internal-CA (local-dev) and edge-proxied hosts alike: the criterion is an answer
@@ -275,9 +275,9 @@
         _edge_errors: >-
           {{ (['caddy_probe_host is not declared: the route cannot be checked']
               if (caddy_probe_host | default('') | length == 0) else [])
-             + ([caddy_probe_host ~ ' does not resolve from the executor']
+             + ([(_edge_url | urlsplit('hostname')) ~ ' does not resolve from the executor']
                 if (caddy_probe_host | default('') | length > 0 and (_edge_dns.rc | default(1)) != 0) else [])
-             + (['https://' ~ caddy_probe_host ~ '/ answered ' ~ (_edge_http.status | default('no response'))
+             + ([_edge_url ~ ' answered ' ~ (_edge_http.status | default('no response'))
                  ~ ', expected an HTTP status below 500']
                 if ((_edge_dns.rc | default(1)) == 0
                     and not (0 < (_edge_http.status | default(-1) | int) < 500)) else []) }}
@@ -300,6 +300,7 @@
         step_result_step: edge-route
         step_result_status: "{{ 'pass' if (_edge_group_errors | length == 0) else 'fail' }}"
         step_result_evidence:
-          resolves: "{{ _edge_resolves }}"
-          route_status: "{{ _edge_status }}"
+          # per host: one result covers the group
+          resolves: "{%- set out = {} -%}{%- for h in ansible_play_hosts_all -%}{%- set _ = out.update({h: hostvars[h]._edge_resolves | default(none)}) -%}{%- endfor -%}{{ out }}"
+          route_status: "{%- set out = {} -%}{%- for h in ansible_play_hosts_all -%}{%- set _ = out.update({h: hostvars[h]._edge_status | default(none)}) -%}{%- endfor -%}{{ out }}"
         step_result_error: "{{ _edge_group_errors | join('; ') }}"

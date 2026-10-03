@@ -13,8 +13,11 @@ import json
 import os
 import subprocess
 import sys
+import threading
+from http.server import ThreadingHTTPServer
 from pathlib import Path
 
+import fake_http
 import harness_sandbox
 import playbook_yaml
 import pytest
@@ -219,8 +222,36 @@ def _caddyfile(mode: str) -> str:
             f"{MARK.format('BEGIN')}\n{body}\n{MARK.format('END')}\n")
 
 
+class Route(fake_http.DrainingHandler):
+    """The inference route as a client reaches it: manage-caddy-sites probes it after the edit
+    (caddy_probe_url), and the rollback fails unless it answers below 500."""
+
+    status = 200
+
+    def do_GET(self):
+        self.send_response(type(self).status)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def log_message(self, *args):
+        pass
+
+
 @pytest.fixture
-def env(tmp_path):
+def route():
+    Route.status = 200
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Route)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}/"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+@pytest.fixture
+def env(tmp_path, route):
     (tmp_path / "caddy").mkdir()
     (tmp_path / "caddy" / "Caddyfile").write_text(_caddyfile("gateway"))
     gw = tmp_path / "gw"
@@ -240,15 +271,16 @@ def env(tmp_path):
     Bao.store = {"vllm_api_key": LIVE, "client_stray": "synthetic-client-stray", "client_pi": "synthetic-client-pi",
                  "agw_db_password": "synthetic-db"}
     with seed_harness.serve(Bao) as address:
-        yield tmp_path, address
+        yield tmp_path, address, route
 
 
-def _children(tmp, caddy=None, gateway=None) -> dict:
+def _children(tmp, caddy=None, gateway=None, probe_url=None) -> dict:
     """The inventory groups; an override of None removes that variable."""
     common = {"ansible_connection": "local", "ansible_python_interpreter": sys.executable,
               "container_engine": str(tmp / "engine")}
     caddy_host = {**common, "caddy_caddyfile_path": str(tmp / "caddy" / "Caddyfile"), "caddy_container": "caddy",
-                  "caddy_managed_sites": SITES, "caddy_probe_host": ADDRESS, "inference_route_address": ADDRESS,
+                  "caddy_managed_sites": SITES, "caddy_probe_host": ADDRESS, "caddy_probe_url": probe_url,
+                  "inference_route_address": ADDRESS,
                   "inference_route_gateway_upstream": GATEWAY, **(caddy or {})}
     gw_host = {**common, "service_name": "agentgateway", "local_monorepo_dir": str(tmp), "monorepo_deploy_path": "gw",
                "agw_clients": ["stray", "pi"], "agw_upstream_base_url": f"http://{HEAD}/v1", **(gateway or {})}
@@ -257,8 +289,8 @@ def _children(tmp, caddy=None, gateway=None) -> dict:
 
 
 def _run(env, mode=None, check=False, tags=None, caddy=None, gateway=None, groups=None):
-    tmp, address = env
-    children = groups if groups is not None else _children(tmp, caddy, gateway)
+    tmp, address, probe_url = env
+    children = groups if groups is not None else _children(tmp, caddy, gateway, probe_url)
     inventory = {"all": {"vars": {"openbao_addr": address}, "children": children}}
     (tmp / "inv.yml").write_text(yaml.safe_dump(inventory, allow_unicode=True))
     extra = {**seed_harness.ROLE, **({"mode": mode} if mode else {})}
@@ -291,7 +323,7 @@ def _unchanged(out):
 
 
 def test_the_three_modes_exist_and_anything_else_is_refused(env):
-    tmp, _ = env
+    tmp = env[0]
     plays = playbook_yaml.load(PLAYBOOK)
     assert "['gateway-config', 'direct', 'restore']" in plays[0]["tasks"][0]["ansible.builtin.assert"]["that"]
     rc, out = _run(env, mode="sideways")
@@ -300,7 +332,7 @@ def test_the_three_modes_exist_and_anything_else_is_refused(env):
 
 
 def test_direct_publishes_the_live_key_then_routes_to_vllm_and_never_prints_it(env):
-    tmp, _ = env
+    tmp = env[0]
     Bao.store["direct_retired"] = LIVE  # a copy for a name no longer in agw_clients
     rc, out = _run(env, mode="direct")
     assert rc == 0, out
@@ -319,7 +351,7 @@ def test_direct_publishes_the_live_key_then_routes_to_vllm_and_never_prints_it(e
 
 
 def test_restore_routes_back_but_keeps_copies_that_still_hold_the_live_key(env):
-    tmp, _ = env
+    tmp = env[0]
     assert _run(env, mode="direct")[0] == 0
     rc, out = _run(env, mode="restore")
     assert rc != 0 and "still hold the" in out and "LIVE vLLM key" in out, out
@@ -329,7 +361,6 @@ def test_restore_routes_back_but_keeps_copies_that_still_hold_the_live_key(env):
 
 
 def test_restore_after_rotation_waits_for_the_gateway_to_hold_the_new_key(env):
-    tmp, _ = env
     assert _run(env, mode="direct")[0] == 0
     Bao.store["vllm_api_key"] = ROTATED  # rotated at vLLM and in OpenBao; gateway not redeployed
     rc, out = _run(env, mode="restore")
@@ -338,7 +369,7 @@ def test_restore_after_rotation_waits_for_the_gateway_to_hold_the_new_key(env):
 
 
 def test_restore_waits_for_the_running_gateway_not_just_the_rendered_file(env):
-    tmp, _ = env
+    tmp = env[0]
     assert _run(env, mode="direct")[0] == 0
     Bao.store["vllm_api_key"] = ROTATED
     (tmp / "gw" / ".env").write_text(f"VLLM_API_KEY={ROTATED}\n")  # rendered, container not recreated
@@ -348,7 +379,7 @@ def test_restore_waits_for_the_running_gateway_not_just_the_rendered_file(env):
 
 
 def test_restore_after_rotation_and_redeploy_removes_every_copy_then_is_a_no_op(env):
-    tmp, _ = env
+    tmp = env[0]
     assert _run(env, mode="direct")[0] == 0
     Bao.store["vllm_api_key"] = ROTATED
     (tmp / "gw" / ".env").write_text(f"AGW_X=1\nVLLM_API_KEY={ROTATED}\n")
@@ -365,7 +396,7 @@ def test_restore_after_rotation_and_redeploy_removes_every_copy_then_is_a_no_op(
 
 
 def test_direct_writes_the_store_before_caddy_is_touched(env):
-    tmp, _ = env
+    tmp = env[0]
     assert _run(env, mode="direct")[0] == 0
     events = (tmp / "calls").read_text().splitlines()
     first_caddy = next(i for i, e in enumerate(events) if e.startswith(("cp ", "restart caddy")))
@@ -373,8 +404,25 @@ def test_direct_writes_the_store_before_caddy_is_touched(env):
     assert writes and max(writes) < first_caddy, events
 
 
+@pytest.mark.parametrize("probe", ["status", "dns"])
+def test_a_route_that_does_not_answer_fails_the_rollback(env, probe):
+    # PR 417 review: manage-caddy-sites only RECORDS its edge verdict, so the rollback must
+    # consume it, or a route that answers 502 (or does not resolve) leaves the rollback green.
+    tmp = env[0]
+    if probe == "status":
+        Route.status = 502
+        rc, out = _run(env, mode="direct")
+        assert rc != 0 and "answered 502" in out, out[-3000:]
+    else:
+        rc, out = _run(env, mode="direct", caddy={"caddy_probe_url": "https://no-such-host.invalid/"})
+        assert rc != 0 and "no-such-host.invalid does not resolve" in out, out[-3000:]
+    assert "The inference route failed its edge check" in out
+    # the store was written before Caddy, as in any direct run; no copy is retired by a failed route
+    assert HEAD in _route(tmp)
+
+
 def test_a_running_caddy_that_keeps_the_old_route_fails_the_run(env):
-    tmp, _ = env
+    tmp = env[0]
     _state(tmp, restart_noop=True)  # the file changes; the process does not load it
     rc, out = _run(env, mode="direct")
     assert rc != 0 and "The file and the process disagree" in out, out
@@ -382,7 +430,7 @@ def test_a_running_caddy_that_keeps_the_old_route_fails_the_run(env):
 
 
 def test_a_rotation_between_the_read_and_the_publication_publishes_nothing(env):
-    tmp, _ = env
+    tmp = env[0]
     Bao.rotate_on_get = 2  # the merge's own fetch sees a key other than the one read
     rc, out = _run(env, mode="direct")
     assert rc != 0 and "guarded OpenBao key changed" in out, out
@@ -391,7 +439,7 @@ def test_a_rotation_between_the_read_and_the_publication_publishes_nothing(env):
 
 
 def test_a_write_racing_the_publication_publishes_nothing(env):
-    tmp, _ = env
+    tmp = env[0]
     Bao.bump_before_cas = True  # another writer lands between the fetch and the write
     rc, out = _run(env, mode="direct")
     assert rc != 0 and "version-guarded update" in out, out
@@ -399,7 +447,7 @@ def test_a_write_racing_the_publication_publishes_nothing(env):
 
 
 def test_a_caddy_failure_in_restore_retires_no_copy(env):
-    tmp, _ = env
+    tmp = env[0]
     assert _run(env, mode="direct")[0] == 0
     Bao.store["vllm_api_key"] = ROTATED
     (tmp / "gw" / ".env").write_text(f"VLLM_API_KEY={ROTATED}\n")
@@ -410,7 +458,7 @@ def test_a_caddy_failure_in_restore_retires_no_copy(env):
 
 
 def test_a_route_declaration_that_ignores_the_mode_is_refused_before_any_write(env):
-    tmp, _ = env
+    tmp = env[0]
     hardcoded = SITES.replace("inference_route_mode | default('gateway') == 'direct'", "false")
     before = _route(tmp)
     rc, out = _run(env, mode="direct", caddy={"caddy_managed_sites": hardcoded})
@@ -419,7 +467,7 @@ def test_a_route_declaration_that_ignores_the_mode_is_refused_before_any_write(e
 
 
 def test_a_dry_run_of_direct_writes_nothing(env):
-    tmp, _ = env
+    tmp = env[0]
     before = (tmp / "caddy" / "Caddyfile").read_text()
     rc, out = _run(env, mode="direct", check=True)
     assert rc == 0, out
@@ -429,7 +477,7 @@ def test_a_dry_run_of_direct_writes_nothing(env):
 
 
 def test_verify_reads_the_state_and_changes_nothing(env):
-    tmp, _ = env
+    tmp = env[0]
     rc, out = _run(env, mode="direct", tags="verify")
     assert rc != 0 and f"expects every upstream to be {HEAD}" in out, out  # not rolled back yet
     assert _patches() == [] and not _calls(tmp, "restart")
@@ -441,7 +489,7 @@ def test_verify_reads_the_state_and_changes_nothing(env):
 
 
 def test_gateway_config_puts_the_previous_config_back_and_leaves_caddy_alone(env):
-    tmp, _ = env
+    tmp = env[0]
     (tmp / "gw" / "config.yaml.previous").write_text("config: previous\n")
     # A route on the direct path stays there: this mode never touches Caddy.
     (tmp / "caddy" / "Caddyfile").write_text(_caddyfile("direct"))
@@ -458,7 +506,7 @@ def test_gateway_config_puts_the_previous_config_back_and_leaves_caddy_alone(env
 
 
 def test_gateway_config_recreates_a_gateway_left_down_by_an_interrupted_run(env):
-    tmp, _ = env
+    tmp = env[0]
     (tmp / "gw" / "config.yaml.previous").write_text("config: current\n")  # already copied
     _state(tmp, gateway_ready=False)
     rc, out = _run(env, mode="gateway-config")
@@ -466,7 +514,7 @@ def test_gateway_config_recreates_a_gateway_left_down_by_an_interrupted_run(env)
 
 
 def test_gateway_config_without_a_previous_config_is_refused(env):
-    tmp, _ = env
+    tmp = env[0]
     rc, out = _run(env, mode="gateway-config")
     assert rc != 0 and "config.yaml.previous does not exist" in out, out
     assert (tmp / "gw" / "config.yaml").read_text() == "config: current\n" and not _calls(tmp, "deploy")
@@ -474,7 +522,7 @@ def test_gateway_config_without_a_previous_config_is_refused(env):
 
 @pytest.mark.parametrize("group", ["caddy_svc", "agentgateway_svc"])
 def test_a_group_that_matches_no_hosts_fails(env, group):
-    tmp, _ = env
+    tmp = env[0]
     children = _children(tmp)
     children[group] = {"hosts": {}}
     rc, out = _run(env, mode="direct", groups=children)
@@ -483,7 +531,7 @@ def test_a_group_that_matches_no_hosts_fails(env, group):
 
 
 def test_the_gateway_upstream_defaults_to_the_gateway_bind_and_port(env):
-    tmp, _ = env
+    tmp = env[0]
     sites = SITES.replace("gw.example.test:4000", "gw-bind.example.test:4100")
     (tmp / "caddy" / "Caddyfile").write_text(_caddyfile("gateway").replace("gw.example.test:4000",
                                                                             "gw-bind.example.test:4100"))

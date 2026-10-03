@@ -216,9 +216,10 @@
         step_result_step: systemd-enablement
         step_result_status: "{{ 'pass' if (_group_errors | length == 0) else 'fail' }}"
         step_result_evidence:
-          linger: "{{ _linger_state }}"
-          boot_unit: "{{ _boot_unit_state }}"
-          restart_policies: "{{ _restart_policies }}"
+          # per host: one result covers the group (null for a host that failed before its verdict)
+          linger: "{%- set out = {} -%}{%- for h in ansible_play_hosts_all -%}{%- set _ = out.update({h: hostvars[h]._linger_state | default(none)}) -%}{%- endfor -%}{{ out }}"
+          boot_unit: "{%- set out = {} -%}{%- for h in ansible_play_hosts_all -%}{%- set _ = out.update({h: hostvars[h]._boot_unit_state | default(none)}) -%}{%- endfor -%}{{ out }}"
+          restart_policies: "{%- set out = {} -%}{%- for h in ansible_play_hosts_all -%}{%- set _ = out.update({h: hostvars[h]._restart_policies | default(none)}) -%}{%- endfor -%}{{ out }}"
         step_result_error: "{{ _group_errors | join('; ') }}"
 
     - name: "Fail when the service would not survive a reboot"

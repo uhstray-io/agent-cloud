@@ -447,8 +447,9 @@
         step_result_step: oidc-config
         step_result_status: fail
         step_result_evidence:
-          blueprint_status: "{{ _oidc_blueprint_status }}"
-          redirect_verified: "{{ _oidc_redirect_verified }}"
+          # per host: one result covers the group
+          blueprint_status: "{%- set out = {} -%}{%- for h in ansible_play_hosts_all -%}{%- set _ = out.update({h: hostvars[h]._oidc_blueprint_status | default(none)}) -%}{%- endfor -%}{{ out }}"
+          redirect_verified: "{%- set out = {} -%}{%- for h in ansible_play_hosts_all -%}{%- set _ = out.update({h: hostvars[h]._oidc_redirect_verified | default(none)}) -%}{%- endfor -%}{{ out }}"
         step_result_error: "{{ _oidc_group_errors | join('; ') }}"
       when: _oidc_group_errors | length > 0
 
@@ -513,5 +514,6 @@
           {{ 'skip' if (ansible_play_hosts_all | map('extract', hostvars, '_oidc_redirect_verified')
                         | select('equalto', 'not-checked') | list | length > 0) else 'pass' }}
         step_result_evidence:
-          blueprint_status: "{{ _oidc_blueprint_status }}"
-          redirect_verified: "{{ _oidc_redirect_verified }}"
+          # per host: one result covers the group
+          blueprint_status: "{%- set out = {} -%}{%- for h in ansible_play_hosts_all -%}{%- set _ = out.update({h: hostvars[h]._oidc_blueprint_status | default(none)}) -%}{%- endfor -%}{{ out }}"
+          redirect_verified: "{%- set out = {} -%}{%- for h in ansible_play_hosts_all -%}{%- set _ = out.update({h: hostvars[h]._oidc_redirect_verified | default(none)}) -%}{%- endfor -%}{{ out }}"
