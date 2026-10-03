@@ -204,6 +204,12 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
         four passing stamps wait on the matching OPA `data.json` workflow_steps change.
       - 2026-10-03: review merged in PR #397: 4 pass, 13 fail (twelve with no step result, plus
         systemd-enablement). Stamps wait on the OPA `data.json` change and a decision on the `main` run
+      - 2026-10-03: re-review after the executors began recording results (PRs #413, #416,
+        #417; `d10-review.md`). Nine more pass (vm-template, provision-vm, ssh-keys,
+        ssh-key-backup, access-harden, vm-rightsize, fw-harden, systemd-enablement,
+        credential-backup). edge-route lacks a populated-group preflight; oidc-config recreates
+        every container on each run. cloud-init and service-deploy were not re-reviewed. Stamps
+        still wait on the OPA `data.json` change.
 - [x] 7.2 `provision-vm.yml` sets `onboot`; restart-policy check beside `enable-linger`.
       2026-09-22: onboot with per-host opt-out; `verify-service-persistence.yml` (step
       systemd-enablement) passes on local tududi, normal and check mode (tasks 977, 978)
