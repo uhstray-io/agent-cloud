@@ -30,4 +30,11 @@ jobs:
       - name: Compare live rulesets with .github/rulesets/*.json
         env:
           GH_TOKEN: ${{ secrets.RULESET_READ_TOKEN || github.token }}
-        run: .github/rulesets/check-drift.sh "$GITHUB_REPOSITORY"
+        run: |
+          rc=0
+          .github/rulesets/check-drift.sh "$GITHUB_REPOSITORY" || rc=$?
+          case "$rc" in
+            0) ;;
+            1) echo "::error title=Ruleset drift::A live ruleset differs from .github/rulesets/*.json (see DRIFT lines above)"; exit 1 ;;
+            *) echo "::error title=Ruleset check could not run::GitHub API, auth or usage error (exit $rc) - not drift; check the token"; exit 2 ;;
+          esac

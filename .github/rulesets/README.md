@@ -87,10 +87,13 @@ Applying is by hand, so a file can say one thing while GitHub enforces another â
 ruleset sat in `evaluate` with an extra rule, leaving `main` unprotected.
 [`check-drift.sh`](./check-drift.sh) is the read-back half of `apply.sh`: it matches each
 `*.json` here to the live ruleset by name, fetches it, and [`compare.py`](./compare.py)
-fails naming every difference in `name`, `target`, `enforcement`, `conditions`,
-`bypass_actors` and the rules (by type, with their parameters). Every declared key must
-match; keys the API adds itself (ids, links, default parameters) are ignored, and list
-order does not count. A ruleset missing live is drift.
+fails naming every difference in the updatable fields `name`, `target`, `enforcement`, `conditions`,
+`bypass_actors` and the rules (by type, with their parameters). The comparison runs both
+ways: a declared key must match, and a key set only live is drift unless its value is an
+empty default (`false`, `0`, `""`, `null`, `[]`, `{}`). Read-only response fields (ids,
+links, timestamps) are ignored, list order does not count, a duplicated rule type is drift,
+and a ruleset missing live is drift. Exit codes: `0` match, `1` drift, `2` API/auth/usage
+error (never reported as drift).
 
 ```bash
 .github/rulesets/check-drift.sh            # read-only; exit 1 on any drift
