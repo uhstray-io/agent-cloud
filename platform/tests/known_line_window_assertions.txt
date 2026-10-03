@@ -14,5 +14,3 @@
 #
 # One entry per line: `<file>: <the offending line, leading/trailing whitespace stripped>`.
 # Keyed on content, not line number. Comment and blank lines are ignored.
-test_service_agentgateway.bats: grep -A6 '^  agentgateway:$' "$cat" | grep -q 'tier: admin'
-test_service_agentgateway.bats: grep -A6 '^  agentgateway:$' "$cat" | grep -q 'type: oidc'

@@ -17,7 +17,28 @@
 # The service's containers come from tasks/list-service-containers.yml (the compose
 # working_dir label, which says why).
 #
+# One result for the whole target group: a populated-group guard runs first (an absent group
+# would exit 0 with no result), and every host's errors are folded into the one run_once
+# result, so a multi-host run cannot record only the first host's verdict (D10 review).
+#
 # Usage (Semaphore): -e target_service=tududi_svc
+
+- name: "Refuse a target group that matches no hosts"
+  # A play whose hosts: matches nothing exits 0 with no step result, which reads as a pass.
+  # preflight-target-group.yml refuses survey-driven groups because its subject could be
+  # redirected away from the work; here the guard and the work read the SAME target_service, so
+  # one override moves both, and the guard only proves the group is populated (as in
+  # check-secrets.yml and verify-service-health.yml).
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  # Tagged so a verify-only run (--tags verify) keeps the guard.
+  tags: [verify]
+  tasks:
+    - name: "Require target_service to name a populated inventory group"
+      ansible.builtin.assert:
+        that: (groups.get(target_service | default(''), []) | length) > 0
+        fail_msg: "target_service '{{ target_service | default('') }}' matches no hosts in this inventory: nothing would be checked."
 
 - name: "Verify the service survives a reboot: {{ target_service | default('(unset)') }}"
   hosts: "{{ target_service | default('ungrouped') }}"
@@ -175,16 +196,30 @@
           container_units: "{{ _unit_started }}"
           errors: "{{ _persistence_errors }}"
 
+    # emit-step-result records ONE result per play (run_once), so the recorded verdict covers the
+    # whole target group: every host's errors, prefixed with the host, and a host that failed
+    # before its verdict counts as a failure rather than vanishing from ansible_play_hosts.
+    - name: "Collect the verdict across the target group"
+      ansible.builtin.set_fact:
+        _group_errors: >-
+          {%- set out = [] -%}
+          {%- for h in ansible_play_hosts_all -%}
+            {%- for e in hostvars[h]._persistence_errors | default(['no persistence verdict (the host failed before it)']) -%}
+              {%- if out.append(h ~ ': ' ~ e) -%}{%- endif -%}
+            {%- endfor -%}
+          {%- endfor -%}
+          {{ out }}
+
     - name: "Record the step result"
       ansible.builtin.include_tasks: tasks/emit-step-result.yml
       vars:
         step_result_step: systemd-enablement
-        step_result_status: "{{ 'pass' if (_persistence_errors | length == 0) else 'fail' }}"
+        step_result_status: "{{ 'pass' if (_group_errors | length == 0) else 'fail' }}"
         step_result_evidence:
           linger: "{{ _linger_state }}"
           boot_unit: "{{ _boot_unit_state }}"
           restart_policies: "{{ _restart_policies }}"
-        step_result_error: "{{ _persistence_errors | join('; ') }}"
+        step_result_error: "{{ _group_errors | join('; ') }}"
 
     - name: "Fail when the service would not survive a reboot"
       ansible.builtin.fail:
