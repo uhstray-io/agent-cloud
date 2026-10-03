@@ -169,7 +169,7 @@ YML
   python3 - "$pb" <<'PY'
 import sys, yaml
 plays = yaml.safe_load(open(sys.argv[1]))
-tasks = {task['name']: task for play in plays for task in play['tasks']}
+tasks = {task['name']: task for play in plays for task in play.get('tasks') or []}
 for name in ('Read the placed revision when a candidate SHA is required',
              'Refuse a receiver checkout that differs from the reviewed candidate'):
     assert 'expected_repository_sha is defined' in tasks[name]['when']
