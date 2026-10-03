@@ -190,9 +190,11 @@ host time, takes one sample immediately, and requires all three series in Promet
 with the configured `model_name` and a last-run timestamp no older than that sample's
 start, so a stale series or another model's series does not pass. Under `--check` the
 unit files are only simulated, so activation and this check are skipped. The deploy does
-not fail when inference itself is failing. **No alert rule on `inference_probe_success`
-exists yet**: that is task 3.2, still open, so a failing probe is visible only on a
-graph until it lands.
+not fail when inference itself is failing. That case is alerted by
+`inference_probe_failing` (success 0 for five minutes) and `inference_probe_stale` (no
+sample for fifteen minutes), both rendered only when `o11y_inference_probe_enabled` is
+true (see "Inference dashboards and alerts"). Neither is proven at runtime until the
+task 3.5 probe drill.
 
 Setting the flag back to false removes each artefact an earlier enable left, checked one
 by one: the timer (stopped and disabled first), the service unit, the last metrics file
