@@ -168,6 +168,108 @@ groups:
           repeat_interval: 4h
 {% endif %}
 {% endfor %}
+{# Loki-backed platform rules (change production-internal-ca, task 6.4, design
+   decision 10). Their producers push through tasks/push-loki-lines.yml; the line
+   schema they match is in the o11y README ("Scheduled jobs and internal CA expiry").
+   Each is ONE rule over every series, so a declaration change rewrites an expression
+   and never strands a provisioned rule. #}
+{% set _loki_active = o11y_alerts_enabled | default(false) | bool and o11y_alert_canary_service is not defined %}
+{% set _scheduled_jobs = o11y_scheduled_jobs | default([{'job': 'renew-internal-certs', 'max_silence_hours': 36}]) %}
+{% macro loki_rule(uid, title, expr, evaluator, threshold, from_, for_, severity, service, summary, description) %}
+      - uid: {{ uid }}
+        title: {{ title | to_json }}
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: { from: {{ from_ }}, to: 0 }
+            datasourceUid: loki
+            model:
+              editorMode: code
+              expr: {{ expr | to_json }}
+              queryType: instant
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              expression: A
+              type: threshold
+              conditions:
+                - evaluator: { type: {{ evaluator }}, params: [{{ threshold }}] }
+                  operator: { type: and }
+                  query: { params: [B] }
+                  reducer: { type: last, params: [] }
+                  type: query
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: B
+        noDataState: OK
+        executionErrorState: Alerting
+        for: {{ for_ }}
+        annotations:
+          summary: {{ summary | to_json }}
+          description: {{ description | to_json }}
+        labels:
+          severity: {{ severity }}
+          service: {{ service | to_json }}
+          owner: platform-operations
+          environment: {{ o11y_environment | default('local' if local_mode | default(false) | bool else 'prod') | to_json }}
+          cluster: {{ o11y_cluster | default('agent-cloud-local') | to_json }}
+        isPaused: {{ 'false' if _loki_active else 'true' }}
+{% if _loki_active %}
+        notification_settings:
+          receiver: agent-cloud-ops
+          group_by: [service, environment, cluster, alertname]
+          group_wait: 30s
+          group_interval: 5m
+          repeat_interval: 4h
+{% endif %}
+{% endmacro %}
+{# "Scheduled job silent": one absent_over_time per declared job, joined with `or`;
+   each series carries its own job label, and the rule's service label is that job.
+   Grafana interpolates environment variables in rule LABELS (not annotations or
+   query models), so the label template escapes its variable as $$labels; Grafana
+   stores it as $labels (v11.4.0 pkg/services/provisioning/values, interpolateValue).
+   Only a status="success" result line counts: a job that keeps failing stops
+   publishing what it measures (the renewal run's expiry lines), and a series that
+   stops reads as OK to the expiry rules below. An empty declaration drops the group
+   and deletes the rule (deleteRules at the end of this file). #}
+{% if _scheduled_jobs | length > 0 %}
+{% set _silent = namespace(parts=[], longest=0) %}
+{% for declared in _scheduled_jobs %}
+{% set _silent.parts = _silent.parts + ['absent_over_time({job="' ~ declared.job ~ '", kind="run", status="success"}[' ~ (declared.max_silence_hours | int) ~ 'h])'] %}
+{% set _silent.longest = [_silent.longest, declared.max_silence_hours | int] | max %}
+{% endfor %}
+  - orgId: 1
+    name: scheduled-jobs
+    folder: agent-cloud
+    interval: 5m
+    rules:
+{{ loki_rule('o11y_scheduled_job_silent', 'Scheduled job silent', _silent.parts | join(' or '),
+     'gt', 0.5, _silent.longest * 3600, '5m', 'warning', '{{ $$labels.job }}',
+     'A declared scheduled job has not pushed a successful result line within its declared silence.',
+     'Check the job Semaphore schedule and its newest runs; a failing run does not reset this alert. The declared jobs and their silences are o11y_scheduled_jobs.') }}
+{% endif %}
+{# Internal CA expiry: the newest remaining_seconds each leaf or intermediate stream
+   reported. It is the renewal run's snapshot, so it can be one run interval stale;
+   the 2d window outlasts the renewal job's 36h silence, so a stopped run raises the
+   silent alert before these series vanish. #}
+  - orgId: 1
+    name: internal-ca
+    folder: agent-cloud
+    interval: 5m
+    rules:
+{{ loki_rule('o11y_internal_ca_leaf_expiring', 'Internal CA leaf certificate expires within seven days',
+     'last_over_time({job="renew-internal-certs", kind="cert", role="leaf"} | json remaining_seconds="remaining_seconds" | unwrap remaining_seconds | __error__="" [2d])',
+     'lt', 604800, 172800, '5m', 'critical', 'step-ca',
+     'An internal CA leaf certificate has fewer than seven days left.',
+     'The leaf and its consumer host are the alert labels. Run Renew Internal Certs and read its per-leaf proof; a thirty-day leaf is normally renewed with ten days left.') }}
+{{ loki_rule('o11y_internal_ca_intermediate_expiring', 'Internal CA intermediate certificate expires within ninety days',
+     'last_over_time({job="renew-internal-certs", kind="cert", role="intermediate"} | json remaining_seconds="remaining_seconds" | unwrap remaining_seconds | __error__="" [2d])',
+     'lt', 7776000, 172800, '5m', 'warning', 'step-ca',
+     'The internal CA intermediate certificate has fewer than ninety days left.',
+     'Every leaf chains to the intermediate. Plan its re-issue from the root on the CA host before it lapses.') }}
 {# Inference groups (change inference-telemetry-production, task 3.2). They render
    only with the DGX Spark scrape jobs, so every selector below has a producer.
    Every metric name is in the recorded vLLM list or the pinned node-exporter
@@ -282,9 +384,14 @@ groups:
      'Placeholder for the benchmark gate; disabled.',
      'Replace this rule when the dgx-spark benchmark manifest writer publishes a metric.',
      '/d/inference-placement-comparison', paused=true) }}
-{% else %}
+{% endif %}
+{# One deleteRules key for every withdrawn rule: the inference rules when the scrape
+   is off, the silent-job rule when no scheduled job is declared. #}
+{% set _deleted_uids = ([] if dgx_spark_scrape_enabled | default(false) | bool else _inference_uids)
+     + ([] if _scheduled_jobs | length > 0 else ['o11y_scheduled_job_silent']) %}
+{% if _deleted_uids %}
 deleteRules:
-{% for uid in _inference_uids %}
+{% for uid in _deleted_uids %}
   - orgId: 1
     uid: {{ uid }}
 {% endfor %}

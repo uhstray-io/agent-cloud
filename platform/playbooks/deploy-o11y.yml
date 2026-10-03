@@ -880,11 +880,21 @@
           delay: 5
           until: _active_rules.rc == 0
 
+        # The expected o11y_ rules are the ones in the file Grafana provisioned from (Phase 1
+        # rendered it into the placed checkout), so a rule added to the template is checked
+        # without editing this list, and a rule the file withdraws must be gone.
+        - name: Read the provisioned alert rules file
+          ansible.builtin.slurp:
+            src: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}/{{ monorepo_deploy_path }}/config/grafana/provisioning/alerting/observability.yml"
+          register: _provisioned_rules_file
+
         - name: Require expected o11y rules and active routed rules
           ansible.builtin.assert:
             that:
               - _o11y_rules | selectattr('uid', 'equalto', 'o11y_service_down') | list | length == 1
               - _o11y_rules | selectattr('uid', 'equalto', 'o11y_receiver_root_disk_low') | list | length == 1
+              - _o11y_rules | map(attribute='uid') | sort == _o11y_expected_uids
+              - _active_rules.stdout | from_json | map(attribute='uid') | select('in', _o11y_withdrawn_uids) | list | length == 0
               - _o11y_rules_for_active_routing | selectattr('isPaused', 'defined') | selectattr('isPaused', 'equalto', false) | list | length == _o11y_rules_for_active_routing | length
               - _o11y_rules_for_active_routing | selectattr('notification_settings', 'defined') | list | length == _o11y_rules_for_active_routing | length
               - _o11y_rules_for_active_routing | rejectattr('notification_settings.group_by', 'equalto', ['service', 'environment', 'cluster', 'alertname']) | list | length == 0
@@ -894,6 +904,11 @@
             fail_msg: "Grafana has missing or paused o11y rules after alert enablement."
           vars:
             _o11y_rules: "{{ _active_rules.stdout | from_json | selectattr('uid', 'match', '^o11y_') | list }}"
+            _o11y_provisioned: "{{ _provisioned_rules_file.content | b64decode | from_yaml }}"
+            _o11y_expected_uids: >-
+              {{ _o11y_provisioned.groups | map(attribute='rules') | flatten
+                 | map(attribute='uid') | select('match', '^o11y_') | sort }}
+            _o11y_withdrawn_uids: "{{ _o11y_provisioned.deleteRules | default([]) | map(attribute='uid') | list }}"
             _o11y_rules_for_active_routing: >-
               {{ (_o11y_rules
                   | rejectattr('uid', 'equalto', 'o11y_receiver_root_disk_low')
