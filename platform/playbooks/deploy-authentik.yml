@@ -8,6 +8,15 @@
 #          worker, wait healthy; first boot migrates + applies blueprints).
 # Phase 3: Verify the server is healthy + the API answers.
 #
+# Step result: workflow step oidc-config (platform/workflows/service-onboarding/registry.yml),
+# in check mode too. Phase 3 decides it from the two live checks — every custom blueprint
+# applied successfully (verify-users) and every enabled OIDC provider's redirect URIs match
+# intent (verify-oidc). A failed check records `fail` at the end of Phase 3 and stops the run;
+# otherwise the result is recorded LAST, at the end of Phase 4, so a failed Caddy distribution
+# leaves no result (the collector then records the failure from the task output) rather than a
+# pass. Where the redirect check does not run with OIDC apps enabled (local-dev, unless
+# authentik_verify_oidc=true) the step records `skip`: that criterion was not evaluated.
+#
 # Plan: plan/development/AUTH-SSO-DEPLOYMENT.md.
 
 # A play over no hosts exits 0 and records a deploy that did nothing as a success
@@ -372,7 +381,8 @@
       ansible.builtin.shell: "{{ _engine }} exec -i authentik-server python - < /tmp/verify-oidc.py"
       register: _oidc_verify
       changed_when: false
-      failed_when: _oidc_verify.rc != 0
+      # Judged below with the blueprint check, so the step result records the failure.
+      failed_when: false
       when: _do_oidc_verify | bool
       check_mode: false
 
@@ -399,12 +409,54 @@
       ansible.builtin.shell: "{{ _engine }} exec -i authentik-server python - < /tmp/verify-users.py"
       register: _users_verify
       changed_when: false
-      failed_when: _users_verify.rc != 0
+      # Judged below with the OIDC check, so the step result records the failure.
+      failed_when: false
       check_mode: false
 
     - name: "Blueprint verify: result"
       ansible.builtin.debug:
         var: _users_verify.stdout_lines
+
+    - name: "OIDC configuration: decide this host's verdict"
+      ansible.builtin.set_fact:
+        _oidc_blueprint_status: "{{ 'successful' if _users_verify.rc == 0 else 'failed' }}"
+        _oidc_redirect_verified: >-
+          {{ (_oidc_verify.rc == 0) if (_do_oidc_verify | bool)
+             else ('not-applicable' if (_verify_apps | default([]) | length == 0) else 'not-checked') }}
+        _oidc_errors: >-
+          {{ (['custom blueprints not all applied, or declared accounts not as declared (verify-users exit '
+               ~ _users_verify.rc ~ ')'] if _users_verify.rc != 0 else [])
+             + (['live OIDC redirect_uris do not match intent (verify-oidc exit ' ~ _oidc_verify.rc ~ ')']
+                if ((_do_oidc_verify | bool) and _oidc_verify.rc != 0) else []) }}
+
+    # emit-step-result records ONE result per play (run_once), so the verdict covers every host.
+    - name: "OIDC configuration: collect the verdict across the target group"
+      ansible.builtin.set_fact:
+        _oidc_group_errors: >-
+          {%- set out = [] -%}
+          {%- for h in ansible_play_hosts_all -%}
+            {%- for e in hostvars[h]._oidc_errors | default(['no oidc-config verdict (the host failed before it)']) -%}
+              {%- set _ = out.append(h ~ ': ' ~ e) -%}
+            {%- endfor -%}
+          {%- endfor -%}
+          {{ out }}
+
+    - name: "Record the step result (verify failed)"
+      ansible.builtin.include_tasks: tasks/emit-step-result.yml
+      vars:
+        step_result_step: oidc-config
+        step_result_status: fail
+        step_result_evidence:
+          # per host: one result covers the group
+          blueprint_status: "{%- set out = {} -%}{%- for h in ansible_play_hosts_all -%}{%- set _ = out.update({h: hostvars[h]._oidc_blueprint_status | default(none)}) -%}{%- endfor -%}{{ out }}"
+          redirect_verified: "{%- set out = {} -%}{%- for h in ansible_play_hosts_all -%}{%- set _ = out.update({h: hostvars[h]._oidc_redirect_verified | default(none)}) -%}{%- endfor -%}{{ out }}"
+        step_result_error: "{{ _oidc_group_errors | join('; ') }}"
+      when: _oidc_group_errors | length > 0
+
+    - name: "Fail when the OIDC configuration did not verify"
+      ansible.builtin.fail:
+        msg: "{{ _oidc_errors | join('; ') if _oidc_errors else 'another authentik host failed its verify' }}"
+      when: _oidc_group_errors | length > 0
 
     - name: "Report"
       ansible.builtin.debug:
@@ -452,3 +504,16 @@
       ansible.builtin.debug:
         msg: "No caddy_svc host in inventory (or local_mode) — skipping central-Caddy fragment distribution."
       when: not (_has_caddy | bool)
+
+    # Last: Phase 3 passed on every host (a failure recorded its result and stopped there).
+    - name: "Record the step result"
+      ansible.builtin.include_tasks: tasks/emit-step-result.yml
+      vars:
+        step_result_step: oidc-config
+        step_result_status: >-
+          {{ 'skip' if (ansible_play_hosts_all | map('extract', hostvars, '_oidc_redirect_verified')
+                        | select('equalto', 'not-checked') | list | length > 0) else 'pass' }}
+        step_result_evidence:
+          # per host: one result covers the group
+          blueprint_status: "{%- set out = {} -%}{%- for h in ansible_play_hosts_all -%}{%- set _ = out.update({h: hostvars[h]._oidc_blueprint_status | default(none)}) -%}{%- endfor -%}{{ out }}"
+          redirect_verified: "{%- set out = {} -%}{%- for h in ansible_play_hosts_all -%}{%- set _ = out.update({h: hostvars[h]._oidc_redirect_verified | default(none)}) -%}{%- endfor -%}{{ out }}"

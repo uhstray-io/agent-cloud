@@ -263,6 +263,15 @@
       # play at "Gathering Facts" — which is exactly what happened before this.
       ansible.builtin.setup:
 
+    # Recorded before end_host, so the step result's play can tell a host that does not apply
+    # from one that failed before its verdict.
+    - name: "Record that UFW does not apply to a non-Linux / local-connection host"
+      ansible.builtin.set_fact:
+        _fw_verdict: {skipped: true, active: false, allows: [], errors: []}
+      when: >-
+        (ansible_system | default('')) != 'Linux'
+        or (ansible_connection | default('ssh')) == 'local'
+
     - name: "Skip non-Linux / local-connection hosts (UFW targets real Linux VMs)"
       # local-dev runs services as containers via ansible_connection=local on
       # macOS — there is no per-service Linux host to firewall there.
@@ -308,6 +317,13 @@
         msg: >-
           check mode: ufw is not installed on {{ inventory_hostname }} and would be installed; the
           rules, default policies and enable need it, so the dry run stops here.
+      when:
+        - ansible_check_mode
+        - _ufw_pkg is changed
+
+    - name: "Dry run, ufw not installed: record the verdict"
+      ansible.builtin.set_fact:
+        _fw_verdict: {skipped: false, active: false, allows: [], errors: ["ufw is not installed (a real run installs it)"]}
       when:
         - ansible_check_mode
         - _ufw_pkg is changed
@@ -735,3 +751,71 @@
     - name: "Report"
       ansible.builtin.debug:
         msg: "{{ inventory_hostname }} firewall: {{ _status.stdout_lines | default(_fw_state.stdout_lines) }}"
+
+    # The host's verdict against the step's criteria (registry step fw-harden): active with
+    # default deny inbound, and the allow set equal to the declaration. A real run reaching
+    # here has proven the declared rules held (drift guard), stale tagged rules gone (post-prune
+    # assert) and SSH answering after enable (the fresh-handshake verify); what is left to
+    # check is the final state and any stale rule HELD back. A dry run judges the live state:
+    # every rule it would add, retag or delete is a criterion not yet met. Untagged rules are
+    # not this playbook's (header note "Convergence") and are reported above, not counted.
+    - name: "Decide this host's firewall verdict"
+      ansible.builtin.set_fact:
+        _fw_verdict:
+          skipped: false
+          active: "{{ 'Status: active' in _fw_final }}"
+          allows: "{{ _fw_declared }}"
+          errors: >-
+            {{ (['ufw is not active'] if 'Status: active' not in _fw_final else [])
+               + (['default incoming policy is not deny'] if 'deny (incoming)' not in _fw_final else [])
+               + (['declared rules not held: ' ~ (_fw_missing | join(', '))] if _fw_missing else [])
+               + (['stale tagged rules present: ' ~ (_fw_prune | map(attribute='tag') | join(', '))]
+                  if (ansible_check_mode and _fw_prune) else [])
+               + (['stale rules held back (detection found no ports): ' ~ (_fw_held | map(attribute='tag') | join(', '))]
+                  if _fw_held else []) }}
+      vars:
+        _fw_final: "{{ _status.stdout if (_status is not skipped) else _fw_state.stdout }}"
+
+# One step result for the whole target group, from a play that runs even when every target
+# host was ended early (end_host) or failed: a failed host has no verdict and counts as a
+# failure. A group matching no hosts is refused here rather than exiting 0 with no result.
+# Same --limit caveat as preflight-target-group.yml: a limit excluding localhost skips it.
+- name: "Record the fw-harden step result for {{ target_service | default('(unset)') }}"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    target_service: "ungrouped"
+    _fw_hosts: "{{ groups.get(target_service, []) }}"
+    _fw_verdicts: >-
+      {%- set out = {} -%}
+      {%- for h in _fw_hosts -%}
+        {%- set _ = out.update({h: hostvars[h]._fw_verdict | default(
+              {'skipped': false, 'active': false, 'allows': [], 'errors': ['no firewall verdict (the host failed before it)']})}) -%}
+      {%- endfor -%}
+      {{ out }}
+    _fw_group_errors: >-
+      {%- set out = [] if _fw_hosts else ["target_service '" ~ target_service ~ "' matches no hosts in this inventory"] -%}
+      {%- for h, v in _fw_verdicts.items() -%}
+        {%- for e in v.errors -%}{%- set _ = out.append(h ~ ': ' ~ e) -%}{%- endfor -%}
+      {%- endfor -%}
+      {{ out }}
+    _fw_all_skipped: "{{ _fw_hosts | length > 0 and (_fw_verdicts.values() | rejectattr('skipped') | list | length == 0) }}"
+  tasks:
+    - name: "Record the step result"
+      ansible.builtin.include_tasks: tasks/emit-step-result.yml
+      vars:
+        step_result_step: fw-harden
+        step_result_service: "{{ hostvars[_fw_hosts | first].service_name | default('') if _fw_hosts else '' }}"
+        step_result_status: >-
+          {{ 'fail' if _fw_group_errors else ('skip' if (_fw_all_skipped | bool) else 'pass') }}
+        step_result_evidence:
+          # per host: one result covers the group
+          ufw_active: "{{ dict(_fw_verdicts.keys() | zip(_fw_verdicts.values() | map(attribute='active'))) }}"
+          allows: "{{ dict(_fw_verdicts.keys() | zip(_fw_verdicts.values() | map(attribute='allows'))) }}"
+        step_result_error: "{{ _fw_group_errors | join('; ') }}"
+
+    - name: "Fail when the firewall step did not pass"
+      ansible.builtin.fail:
+        msg: "{{ _fw_group_errors | join('; ') }}"
+      when: _fw_group_errors | length > 0

@@ -358,8 +358,14 @@ PY_ORDER
              f { print }' "$dep")
   [ -n "$blk" ]
   refute_grep -qE '^      when:' <<<"$blk"
-  # A non-zero exit fails the deploy; it is not advisory.
-  assert_grep -q 'failed_when: _users_verify.rc != 0' <<<"$blk"
+  # A non-zero exit fails the deploy; it is not advisory. It is judged after the run (so the
+  # oidc-config step result records it first), then the fail task stops the deploy.
+  local fail_blk
+  fail_blk=$(awk '/^    - name: "OIDC configuration: decide this host.s verdict"/ { f = 1 }
+                  f && /^    - name: "Report"/ { exit }
+                  f { print }' "$dep")
+  assert_grep -q "if _users_verify.rc != 0 else" <<<"$fail_blk"
+  assert_grep -q 'name: "Fail when the OIDC configuration did not verify"' <<<"$fail_blk"
   # The checker consumes the SAME resolved lists the collision guard compared, so
   # the create/delete intent and the verified state cannot drift apart.
   assert_grep -q '_active_usernames' "$ver"

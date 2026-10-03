@@ -22,7 +22,8 @@ REPO = Path(__file__).resolve().parents[2]
 PLAYBOOK = REPO / "platform/playbooks/apply-firewall.yml"
 STUB = Path(__file__).with_name("ufw_stub.py")
 FIRST = "Refuse to proceed without SSH allow CIDRs (anti-lockout)"
-SKIPPED = {"Install ufw", "Dry run, ufw not installed: report", "Dry run, ufw not installed: stop this host"}
+SKIPPED = {"Install ufw", "Dry run, ufw not installed: report", "Dry run, ufw not installed: record the verdict",
+           "Dry run, ufw not installed: stop this host"}
 SSH = "192.0.2.0/24"
 CONTROLLER = {"firewall_controller_cidr": SSH}
 MUTATING = re.compile(r'^\["ufw", "(?!show|status)')
@@ -41,7 +42,7 @@ def _run_many(tmp_path: Path, hosts: dict, groups: dict | None = None, *, check:
     cases that differ only in their inputs share one ansible-playbook spawn. A host that fails
     an assert stops alone; the others run on.
     """
-    play, = yaml.safe_load(PLAYBOOK.read_text())
+    play = yaml.safe_load(PLAYBOOK.read_text())[0]  # the record play follows it
     names = [t.get("name") for t in play["tasks"]]
     tasks = [dict(t) for t in play["tasks"][names.index(FIRST):] if t.get("name") not in SKIPPED]
     for task in tasks:
