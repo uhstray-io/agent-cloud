@@ -59,7 +59,7 @@ and why.
 | 2.7 | A test's own quoting terminated its pattern; the subject was correct | False-green test | 1 | Convention |
 | 2.8 | Repeated 2.6 twice more — assertions forbidding the comment that documents the hazard | False-green test | 3 | Test (`test_no_line_window_assertions.bats` + ratchet) |
 | 2.9 | Fifteen negative assertions that could never fail, cited as verification | False-green test | 1 | Test (`test_assertions_are_real.bats` + `known_inert_assertions.txt`) |
-| 2.10 | Repeated 2.9 — a `grep -v … \|\| true` assertion that cannot fail, written while fixing that class | Test (`test_assertions_are_real.bats` + `known_inert_assertions.txt`) | 1 | Test (mutation-verified) |
+| 2.10 | Repeated 2.9 — a `grep -v … \|\| true` assertion that cannot fail, written while fixing that class | False-green test | 1 | Test (`test_assertions_are_real.bats` + `known_inert_assertions.txt`) |
 | 2.11 | Asserted a property of one random draw; ~0.5% of runs failed on unrelated PRs | Flaky test | 1 | Test (deterministic) |
 | 2.12 | Refuted forbidden verbs, then forbidden modules, instead of asserting a closed set — **x2** | False green on a safety check | 2 | Test (closed allow-list) |
 | 2.13 | Tested that an ordering fix was present, on a config where fact gathering ran before it | False green on a fix | 1 | Test (mutation-proven) |
@@ -70,12 +70,13 @@ and why.
 | 2.18 | A coverage test asserting "every play" over a hand-typed list of four — 40 of 52 were unguarded — **x2** (check-mode guard rooted in one directory) | Vacuous coverage | 2 | Test (derived population + ratchet) |
 | 2.19 | The app healthcheck probed the path nginx serves from the FRONTEND — green across a backend that never bound | False green | 1 | Test (probe path pinned) |
 | 2.20 | Idempotency proven on the wrong steady state: the route retire tool refused the adopted-into-managed case, and a `changed_when` parse hid its message | False-green test | 1 | Test (adopted-state case + rc-guarded parse) |
-| 2.21 | A new deploy playbook shipped without the zero-hosts pre-flight; the orchestrator recorded success with nothing deployed — **x3** | Wrong-reason pass | 3 | Test (`test_deploy_playbooks_preflight.bats` + ratchet) |
+| 2.21 | A new deploy playbook shipped without the zero-hosts pre-flight; the orchestrator recorded success with nothing deployed — **x2** | Wrong-reason pass | 2 | Test (`test_deploy_playbooks_preflight.bats` + ratchet) |
 | 2.22 | The controller fixture returned `secrets: []` where live Semaphore omits an empty secret list | False-green fixture | 1 | Shared filter test + playbook fixture |
 | 2.23 | Tightened the check under test and left its fixtures alone; three negative cases passed whatever the filters did | Vacuous test | 1 | Convention (this instance: mutation-checked) |
 | 2.24 | A local run proved a playbook the production controller or host could not run — **x2** | Wrong-reason pass | 2 | Convention |
 | 2.25 | The zero-hosts pre-flight rule named deploy playbooks only; 60 other group-targeting playbooks lack it (widens 2.21) | Wrong-reason pass | 1 | Test (`mount-caddy-certs.yml`); fleet-wide allow-list proposed |
 | 2.26 | A fixture placed an inventory variable where production does not; the planning play saw it in tests and nothing in prod (widens 2.22) | False-green fixture | 1 | Test (one playbook); class Convention |
+| 2.27 | A run that matched its hosts, found nothing to do, and reported success (widens 2.21) | Wrong-reason pass | 1 | Test (one playbook); class Convention, lint proposed |
 | 3.1 | Wrote a probe value over a real credential in a live secret store | Live-state damage | 1 | OPA (`agent_actions.rego`; inert until callers send fields) |
 | 3.2 | Attempted to mutate a shared orchestrator credential without asking | Live-state damage | 1 | Sandbox + OPA (`agent_actions.rego`; inert until callers send grants) |
 | 3.3 | Treated failed workstation login as a controller access prerequisite | Wrong executor boundary | 1 | Test + convention |
@@ -1454,7 +1455,7 @@ begins with the rc guard (mutation-proven: dropping the guard fails it).
 
 ### 2.21 A new deploy playbook shipped without the zero-hosts pre-flight, and its first run was a green no-op
 
-**Occurrences: 3** — 2026-09-17, 2026-10-01, 2026-10-02
+**Occurrences: 2** — 2026-09-17, 2026-10-01
 
 **What happened.** `deploy-agentgateway.yml` was written by mirroring `deploy-tududi.yml`,
 which has no pre-flight. Its first run through the local Semaphore (task 592) printed
@@ -1490,8 +1491,6 @@ over a survey-driven group is the form `preflight-target-group.yml`'s header rul
 Widened in 2.25.
 
 **Status 2026-10-02.** The fleet-wide guard this entry proposes merged: `platform/tests/test_deploy_playbooks_preflight.bats`, with the playbooks still missing the import in the shrink-only `platform/tests/known_deploy_without_preflight.txt` (PR #387).
-
-**Occurrence 3 — 2026-10-02.** `renew-internal-certs.yml` (PR #398) passed its tests, and its first production dry run (Semaphore task 2511) found zero leaves and reported success. `internal_leaves` is a group var of `agent_cloud` in the production inventory, invisible to the implicit-localhost planning play, so the plan was empty and nothing refused it. The rule did not fire because it names the zero-hosts case: here the hosts matched and the work list was empty. The fix (branch `fix/renew-leaves-from-ca-host`) reads the list from the `step_ca_svc` host and refuses an empty one. The fixture half is 2.26.
 
 ### 2.22 Fixture hid Semaphore's empty secret projection
 
@@ -1614,6 +1613,26 @@ that group. 2.22's rule (mirror the provider's response shape) extends to invent
 **Enforced by.** Test, for this playbook: the fix (branch `fix/renew-leaves-from-ca-host`)
 reads from the `step_ca_svc` host, refuses an empty list, and its fixture mirrors the
 production groups. Class-wide, Convention.
+
+### 2.27 A run that found nothing to do reported success (widens 2.21)
+
+**What happened.** `renew-internal-certs.yml` (PR #398) passed its tests, and its first
+production dry run (Semaphore task 2511) found zero leaves and reported success. Its hosts
+matched; its work list was empty. `internal_leaves` is a group var of `agent_cloud` in the
+production inventory, invisible to the implicit-localhost planning play.
+
+**Root cause.** 2.21's rule and its pre-flight guard cover a play that matches no hosts.
+Nothing covered a play that matched its hosts and then computed an empty set of things to
+change, so an empty plan and a finished plan looked the same.
+
+**The rule.** A state-changing playbook whose work is a computed list refuses an empty list
+unless emptiness is declared legitimate. "Nothing to do" is a result to prove, not a default.
+The fixture half of this incident is 2.26.
+
+**Enforced by.** Test, for this playbook: the empty-declaration refusal test in
+`platform/tests/test_renew_internal_certs.py`, added by PR #403 (on `dev`, newer than this
+branch's base, so it is named here without its identifier). Class-wide, Convention. Proposed:
+a lint requiring state-changing playbooks to assert a non-empty work set.
 
 ## 3. Acting on live state
 
