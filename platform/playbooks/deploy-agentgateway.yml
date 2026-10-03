@@ -10,9 +10,11 @@
 # Phase 2: deploy.sh — container lifecycle (pull, then recreate ONLY when config.yaml,
 #          .env, the compose files in use, ./certs or the image changed since the running
 #          gateway started — otherwise in-flight streams are left alone; db healthy, ready).
-# Phase 3: Verify — readiness answers and an unenrolled request is 401 at the
-#          gateway. The keyed round-trip is not done here (a key on an exec argv is
-#          a token on a command line); it belongs to the conformance run (task 2).
+# Phase 3: Verify — readiness answers, an unenrolled request is 401 at the gateway,
+#          then the keyed round-trip as one enrolled identity: /v1/models lists every
+#          model it may use and one chat completion comes back from the upstream. The
+#          key travels as a `uri` header from the target, never on any process's argv.
+#          Skipped under --check (nothing new to prove).
 #
 # Change: plan/development/openspec/changes/inference-gateway-agentgateway
 # Design: identities/limits §4, no retry/timeouts §3, telemetry §6.

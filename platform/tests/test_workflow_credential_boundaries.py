@@ -163,7 +163,7 @@ def test_persistence_accepts_only_what_boots(tmp_path):
     # exited 0, never from a running one (PR review, Codex). Rootful podman once kept accepting
     # unless-stopped (PR 195 grounding review).
     path = PLAYBOOKS / "verify-service-persistence.yml"
-    play = yaml.safe_load(path.read_text())[0]
+    play = yaml.safe_load(path.read_text())[1]  # [0] is the populated-group guard
     tasks = [_named(path, "Decide the result"), _named(path, "Decide the failures")]
     inspected = {"a": "always running 0 ", "b": "no exited 0 true", "c": "unless-stopped running 0 ",
                  "d": "on-failure running 0 ", "e": "no running 0 true", "f": "no exited 1 true",
@@ -189,7 +189,7 @@ def test_persistence_accepts_a_rootful_container_named_by_the_enabled_service_un
     # still required for the containers on always.
     import base64
     path = PLAYBOOKS / "verify-service-persistence.yml"
-    play = yaml.safe_load(path.read_text())[0]
+    play = yaml.safe_load(path.read_text())[1]  # [0] is the populated-group guard
     tasks = [_named(path, "Decide the result"), _named(path, "Decide the failures")]
     # worker: long-running on "no", which Ensure puts in the unit (PR 284 re-review).
     inspected = {"app": "unless-stopped running 0 ", "db": " running 0 ", "run": "always running 0 ",

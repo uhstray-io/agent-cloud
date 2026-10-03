@@ -63,8 +63,12 @@ setup() {
   refute_grep -q 'AGW_UI_PORT' "$DEPLOY_DIR/compose.local.yml"
   # Admin-tier OIDC app in the Authentik catalog; the Caddy route is a PLAIN proxy.
   local cat="$REPO_ROOT/platform/services/authentik/deployment/app-catalog.yml"
-  grep -A6 '^  agentgateway:$' "$cat" | grep -q 'type: oidc'
-  grep -A6 '^  agentgateway:$' "$cat" | grep -q 'tier: admin'
+  # Scoped to the catalog entry itself (its parsed mapping), not a line window after its key.
+  command -v python3 >/dev/null || skip "python3 not installed"
+  python3 -c 'import yaml' 2>/dev/null || skip "PyYAML not installed"
+  run python3 -c 'import sys, yaml; a = yaml.safe_load(open(sys.argv[1]))["authentik_app_catalog"]["agentgateway"]; print(a["type"], a["tier"])' "$cat"
+  [ "$status" -eq 0 ]
+  [ "$output" = "oidc admin" ]
   local bp="$REPO_ROOT/platform/services/authentik/deployment/blueprints/agentgateway-oidc.yaml"
   [ -f "$bp" ]
   assert_grep -q 'client_secret: !Env AGENTGATEWAY_OIDC_CLIENT_SECRET' "$bp"

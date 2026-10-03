@@ -19,7 +19,7 @@ REFUSAL = "Refuse a group rule that names an unknown group or a member without a
 
 
 def _render(tmp_path: Path, host_vars: dict, groups: dict) -> subprocess.CompletedProcess:
-    play, = yaml.safe_load(PLAYBOOK.read_text())
+    play = yaml.safe_load(PLAYBOOK.read_text())[0]  # the record play follows it
     refusal, = (t for t in play["tasks"] if t.get("name") == REFUSAL)
     inventory = {"all": {"hosts": {"target": {"ansible_connection": "local", **host_vars}},
                          "children": {g: {"hosts": {h: {"ansible_host": a} for h, a in m.items()}}
