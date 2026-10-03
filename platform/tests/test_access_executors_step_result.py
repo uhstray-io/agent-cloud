@@ -92,9 +92,9 @@ def _run(name: str, tmp_path: Path, *extra: str, hosts: str = "", check: bool = 
 @pytest.mark.parametrize("name,step", EXECUTORS.items())
 def test_a_failed_run_records_a_failed_step_and_still_fails(name, step, tmp_path):
     proc = _run(name, tmp_path)
-    assert proc.returncode != 0, proc.stdout
+    assert proc.returncode != 0, proc.stdout + proc.stderr
     found = step_results.results_in(proc.stdout.splitlines())
-    assert len(found) == 1, f"expected one step result\n{proc.stdout}"
+    assert len(found) == 1, f"expected one step result\n{proc.stdout}\nstderr:\n{proc.stderr}"
     result = found[0]
     assert result["step"] == step
     assert result["status"] == "fail"
@@ -131,10 +131,10 @@ def test_an_unreachable_host_is_named_by_the_one_result(name, step, tmp_path):
     proc = _run(name, tmp_path, "--start-at-task", START_AT[name],
                 "-e", f"_sshd_config_path={tmp_path / 'sshd_config'}",
                 "-e", f"_sshd_config_dir={tmp_path}", "-e", "ansible_become=false", hosts=UNREACHABLE)
-    assert proc.returncode != 0, proc.stdout
-    assert "UNREACHABLE" in proc.stdout, proc.stdout
+    assert proc.returncode != 0, proc.stdout + proc.stderr
+    assert "UNREACHABLE" in proc.stdout, proc.stdout + proc.stderr
     found = step_results.results_in(proc.stdout.splitlines())
-    assert len(found) == 1, f"expected one step result\n{proc.stdout}"
+    assert len(found) == 1, f"expected one step result\n{proc.stdout}\nstderr:\n{proc.stderr}"
     assert found[0]["step"] == step and found[0]["status"] == "fail"
     assert "h2: no verdict" in found[0]["error"], found[0]["error"]
 
