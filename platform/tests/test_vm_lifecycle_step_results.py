@@ -1,0 +1,366 @@
+"""The VM lifecycle executors record their workflow step result (D10 review 2026-10-02).
+
+Create VM Template (vm-template), Provision VM (provision-vm) and Resize VM (vm-rightsize)
+each judge their step from a Proxmox read-back and record it through emit-step-result.yml.
+These tests run each playbook's REAL decide + record tasks against synthetic read-backs and
+read the recorded result from Ansible's custom stats, so the verdict logic is exercised, not
+just its text. Needs ansible-playbook.
+"""
+
+import copy
+import json
+import re
+import shutil
+import threading
+from http.server import ThreadingHTTPServer
+from pathlib import Path
+
+import harness_sandbox
+import playbook_yaml
+import pytest
+import yaml
+from fake_http import DrainingHandler
+
+ROOT = Path(__file__).resolve().parents[2]
+PLAYBOOKS = ROOT / "platform/playbooks"
+EMIT = str(PLAYBOOKS / "tasks/emit-step-result.yml")
+RUN = re.compile(r"^\s*RUN:\s*(\{.*\})\s*$")
+
+pytestmark = pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="needs ansible-playbook")
+
+
+def _plays(name):
+    return yaml.safe_load((PLAYBOOKS / name).read_text())
+
+
+def _tasks(play, names):
+    by_name = {t.get("name"): t for t in playbook_yaml.tasks(play["tasks"])}
+    missing = [n for n in names if n not in by_name]
+    assert not missing, missing
+    out = []
+    for n in names:
+        task = dict(by_name[n])
+        if "ansible.builtin.include_tasks" in task:
+            task["ansible.builtin.include_tasks"] = EMIT
+        out.append(task)
+    return out
+
+
+def _emit_absolute(node):
+    """The harness runs from a scratch directory, so the shared task is named by its path."""
+    for task in playbook_yaml.tasks(node):
+        if "ansible.builtin.include_tasks" in task:
+            task["ansible.builtin.include_tasks"] = EMIT
+    return node
+
+
+def _run(tmp_path, harness, check=False, inventory=None, extra=()):
+    play_file = tmp_path / "play.yml"
+    play_file.write_text(yaml.safe_dump(_emit_absolute(copy.deepcopy(harness)), sort_keys=False))
+    inv = tmp_path / "inv.yml"
+    inv.write_text(yaml.safe_dump(inventory or {"all": {"hosts": {"localhost": {"ansible_connection": "local"}}}}))
+    env = {**harness_sandbox.env_for(tmp_path), "ANSIBLE_NOCOLOR": "1", "ANSIBLE_SHOW_CUSTOM_STATS": "1"}
+    done = harness_sandbox.run(
+        ["ansible-playbook", "-i", str(inv), str(play_file), *(["--check"] if check else []), *extra],
+        tmp_path, cwd=ROOT, env=env)
+    results = [json.loads(m.group(1))["step_result"] for m in map(RUN.match, done.stdout.splitlines()) if m]
+    assert len(results) == 1, done.stdout + done.stderr
+    return results[0], done.returncode
+
+
+class FakeProxmox:
+    """A Proxmox API stand-in: `routes` maps (method, path) to (status, data); every request
+    is logged, so a test can say which writes a run made."""
+
+    def __init__(self, routes):
+        self.routes, self.seen = routes, []
+        fake = self
+
+        class Handler(DrainingHandler):
+            def _reply(self):
+                fake.seen.append((self.command, self.path))
+                status, data = fake.routes.get((self.command, self.path), (404, None))
+                body = json.dumps({"data": data}).encode()
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            do_GET = do_POST = do_PUT = _reply
+
+            def log_message(self, *args):
+                pass
+
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.url = f"http://127.0.0.1:{self.server.server_port}"
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def writes(self):
+        return [r for r in self.seen if r[0] != "GET"]
+
+    def close(self):
+        self.server.shutdown()
+
+
+# ── vm-template ──────────────────────────────────────────────────────────────
+TEMPLATE_TASKS = ("Decide the template step", "Record the step result", "Fail when the template step did not pass")
+
+
+def _template(tmp_path, data, status=200, present=True, check=False):
+    play = next(p for p in _plays("provision-template.yml") if p.get("tasks"))
+    harness = [{"hosts": "localhost", "gather_facts": False,
+                "vars": {"_vmid": "9000", "_node": "n1", "_tmpl_present": present,
+                         "_tmpl_after": {"status": status, "json": {"data": data}}},
+                "tasks": _tasks(play, TEMPLATE_TASKS)}]
+    return _run(tmp_path, harness, check)
+
+
+def test_template_with_a_cloud_init_drive_passes(tmp_path):
+    result, rc = _template(tmp_path, {"template": 1, "ide2": "vm-lvms:vm-9000-cloudinit,media=cdrom"})
+    assert (result["step"], result["status"], rc) == ("vm-template", "pass", 0)
+    assert result["evidence"] == {"template_vmid": 9000, "node": "n1"}
+
+
+def test_template_without_a_cloud_init_drive_fails_and_says_why(tmp_path):
+    result, rc = _template(tmp_path, {"template": 1, "ide2": "none,media=cdrom"})
+    assert (result["status"], rc != 0) == ("fail", True)
+    assert "no cloud-init drive" in result["error"]
+
+
+def test_a_vm_that_is_not_a_template_fails(tmp_path):
+    result, rc = _template(tmp_path, {}, status=500)
+    assert (result["status"], rc != 0) == ("fail", True)
+
+
+def test_a_dry_run_with_no_template_yet_records_a_skip(tmp_path):
+    result, rc = _template(tmp_path, {}, status=500, present=False, check=True)
+    assert (result["status"], result["check_mode"], rc) == ("skip", True, 0)
+
+
+# ── vm-rightsize ─────────────────────────────────────────────────────────────
+RESIZE_TASKS = ("Decide the rightsize step", "Record the step result",
+                "Fail when the VM does not match its declared spec")
+
+
+def _resize(tmp_path, cfg, needs_restart=False, allow_reboot=False):
+    play = _plays("resize-vm.yml")[0]
+    harness = [{"hosts": "localhost", "gather_facts": False,
+                "vars": {"_want_cores": "4", "_want_memory": "8192", "_want_disk_gb": "32",
+                         "_disk_device": "scsi0", "_needs_restart": needs_restart,
+                         "_allow_reboot": allow_reboot, "_cfg_after": {"json": {"data": cfg}}},
+                "tasks": _tasks(play, RESIZE_TASKS)}]
+    return _run(tmp_path, harness)
+
+
+CONVERGED = {"cores": 4, "memory": 8192, "scsi0": "vm-lvms:vm-215-disk-0,size=32G"}
+
+
+def test_rightsize_converged_passes_with_the_read_back_values(tmp_path):
+    result, rc = _resize(tmp_path, CONVERGED)
+    assert (result["step"], result["status"], rc) == ("vm-rightsize", "pass", 0)
+    assert result["evidence"] == {"cores": 4, "memory_mb": 8192, "disk_gb": 32}
+
+
+def test_rightsize_with_a_restart_pending_is_not_live_yet(tmp_path):
+    result, rc = _resize(tmp_path, CONVERGED, needs_restart=True)
+    assert (result["status"], rc != 0) == ("fail", True)
+    assert "restart is pending" in result["error"]
+
+
+def test_rightsize_drift_fails_per_dimension(tmp_path):
+    result, _ = _resize(tmp_path, {"cores": 2, "memory": 8192, "scsi0": "x,size=320G"})
+    assert result["status"] == "fail"
+    assert "cores 2" in result["error"] and "is not 32G" in result["error"]
+
+
+# ── provision-vm ─────────────────────────────────────────────────────────────
+def _provision(tmp_path, cfg, status=200, vm_exists=True, do_migrate=False, provisioned=False, check=False):
+    plays = _plays("provision-vm.yml")
+    prov = next(p for p in plays if p.get("name") == "Provision VM from template")
+    record = next(p for p in plays if p.get("name") == "Record the provision-vm step result")
+    decide = _tasks(prov, ["Decide the provision-vm step"])
+    rec = dict(record, tasks=_tasks(record, [t["name"] for t in record["tasks"]]))
+    harness = [{"hosts": "localhost", "gather_facts": False,
+                "vars": {"target_service": "dns", "_vmid": "220", "_node": "n1", "_cores": 2, "_mem": 4096,
+                         "_disk": "32G", "_onboot": "1", "vm_exists": vm_exists, "_do_migrate": do_migrate,
+                         "_pv_cfg": {"status": status, "json": {"data": cfg}}},
+                "tasks": decide}]
+    if provisioned:
+        harness[0]["tasks"].append({"ansible.builtin.add_host": {"name": "vm1", "groups": "_provisioned_vm"}})
+    return _run(tmp_path, harness + [rec], check)
+
+
+GOOD_VM = {"cores": 2, "memory": 4096, "onboot": 1, "scsi0": "vm-lvms:vm-220-disk-0,size=32G"}
+
+
+def test_provision_vm_matching_the_declaration_passes(tmp_path):
+    result, rc = _provision(tmp_path, GOOD_VM)
+    assert (result["step"], result["status"], rc) == ("provision-vm", "pass", 0)
+    assert result["evidence"] == {"vmid": 220, "node": "n1", "onboot": 1}
+    assert result["undo"] == "Destroy VM"
+
+
+def test_provision_vm_without_onboot_fails(tmp_path):
+    result, rc = _provision(tmp_path, {**GOOD_VM, "onboot": 0})
+    assert (result["status"], rc != 0) == ("fail", True)
+    assert "onboot 0" in result["error"]
+
+
+def test_provision_vm_failure_waits_for_the_verdict_when_post_boot_follows(tmp_path):
+    # The record play must not stop the run before the post-boot checks; the verdict fails it.
+    result, rc = _provision(tmp_path, {**GOOD_VM, "scsi0": "x,size=20G"}, provisioned=True)
+    assert (result["status"], rc) == ("fail", 0)
+
+
+def test_provision_vm_dry_run_of_an_absent_vm_records_a_skip(tmp_path):
+    result, rc = _provision(tmp_path, {}, status=404, vm_exists=False, check=True)
+    assert (result["status"], result["check_mode"], rc) == ("skip", True, 0)
+
+
+def test_provision_vm_verdict_fails_on_a_recorded_mismatch():
+    verdict = next(p for p in _plays("provision-vm.yml") if str(p.get("name", "")).startswith("Verdict:"))
+    that = verdict["tasks"][0]["ansible.builtin.assert"]["that"]
+    assert any("_pv_step.errors" in c for c in that)
+
+
+@pytest.mark.parametrize("playbook,step", [("provision-template.yml", "vm-template"),
+                                           ("resize-vm.yml", "vm-rightsize"),
+                                           ("provision-vm.yml", "provision-vm")])
+def test_the_result_is_recorded_after_every_change_the_play_makes(playbook, step):
+    # "Emitted last": nothing after the record but the failure that reports it.
+    for play in _plays(playbook):
+        tasks = play.get("tasks") or []
+        idx = [i for i, t in enumerate(tasks)
+               if str(t.get("ansible.builtin.include_tasks", "")).endswith("emit-step-result.yml")]
+        if not idx:
+            continue
+        assert tasks[idx[0]]["vars"]["step_result_step"] == step
+        assert all("ansible.builtin.fail" in t for t in tasks[idx[0] + 1:]), playbook
+        return
+    pytest.fail(f"{playbook} records no step result")
+
+
+# ── Whole plays against a fake Proxmox: guards, skipped writes, hard failures ──
+TEMPLATE_CFG = "/api2/json/nodes/alphacentauri/qemu/9000/config"
+
+
+def _template_play(tmp_path, cfg, check=False):
+    play = next(p for p in _plays("provision-template.yml") if p.get("tasks"))
+    fake = FakeProxmox({("GET", TEMPLATE_CFG): (200, cfg)})
+    try:
+        result, rc = _run(tmp_path, [play], check=check,
+                          extra=["-e", json.dumps({"pve_host": fake.url, "pve_token_secret": "x"})])
+    finally:
+        fake.close()
+    return result, rc, fake
+
+
+def test_an_existing_template_is_adopted_without_a_write_and_proven(tmp_path):
+    result, rc, fake = _template_play(tmp_path, {"template": 1, "ide2": "vm-lvms:vm-9000-cloudinit,media=cdrom"})
+    assert (result["status"], rc) == ("pass", 0)
+    assert fake.writes() == []  # the create block was skipped
+    assert fake.seen.count(("GET", TEMPLATE_CFG)) == 2  # the guard's read, then the read-back
+
+
+def test_cloudinit_named_anywhere_but_the_drive_does_not_pass(tmp_path):
+    result, rc, _ = _template_play(tmp_path, {"template": 1, "description": "cloudinit ready",
+                                              "tags": "cloudinit", "ide2": "none,media=cdrom"})
+    assert (result["status"], rc != 0) == ("fail", True)
+    assert "no cloud-init drive on ide2" in result["error"]
+
+
+def test_a_vmid_held_by_a_non_template_is_recorded_as_a_failure(tmp_path):
+    result, rc, fake = _template_play(tmp_path, {"template": 0})
+    assert (result["status"], rc != 0) == ("fail", True)
+    assert result["error"].startswith("Fail if VMID taken by non-template: VMID 9000 exists but is not a template.")
+    assert fake.writes() == []
+
+
+PV = "/api2/json/nodes/n1/qemu/220"
+PV_INVENTORY = {"all": {"hosts": {"localhost": {"ansible_connection": "local"}},
+                        "children": {"dns_svc": {"hosts": {"dns1": {
+                            "vm_vmid": 220, "vm_node": "n1", "vm_cores": 2, "vm_memory": 4096, "vm_disk": "32G",
+                            "vm_ip": "127.0.0.1", "vm_gateway": "192.0.2.1", "vm_nameserver": "192.0.2.1",
+                            "vm_disk_storage": "s"}}}}}}
+
+
+def _provision_play(tmp_path, cfg, name="dns"):
+    fake = FakeProxmox({
+        ("GET", "/api2/json/nodes/alphacentauri/qemu/9000/config"): (200, {"template": 1}),
+        ("GET", "/api2/json/cluster/resources?type=vm"): (200, [{"vmid": 220, "name": name, "node": "n1"}]),
+        ("GET", PV + "/status/current"): (200, {"status": "running"}),
+        ("PUT", PV + "/config"): (200, None),
+        ("PUT", PV + "/resize"): (500, None),  # the resize the play tolerates
+        ("GET", PV + "/config"): (200, cfg),
+        ("POST", PV + "/agent/ping"): (200, {}),
+    })
+    plays = _plays("provision-vm.yml")
+    prov = copy.deepcopy(next(p for p in plays if p.get("name") == "Provision VM from template"))
+    for task in playbook_yaml.tasks(prov["tasks"]):
+        if task.get("name") == "Wait for SSH":  # the fake's port stands in for sshd
+            task["ansible.builtin.wait_for"].update(port=fake.server.server_port, timeout=10)
+    record = next(p for p in plays if p.get("name") == "Record the provision-vm step result")
+    verdict = next(p for p in plays if str(p.get("name", "")).startswith("Verdict:"))
+    try:
+        result, rc = _run(tmp_path, [prov, record, verdict], inventory=PV_INVENTORY, extra=["-e", json.dumps({
+            "_pve_host": fake.url, "_pve_secret": "x", "_pve_token_id": "t", "_ssh_pub": "ssh-ed25519 AAAA",
+            "target_service": "dns", "ci_user": "u"})])
+    finally:
+        fake.close()
+    return result, rc, fake
+
+
+def test_a_failed_disk_resize_fails_the_run_at_the_verdict(tmp_path):
+    result, rc, fake = _provision_play(tmp_path, {**GOOD_VM, "scsi0": "s:vm-220-disk-0,size=20G"})
+    assert ("PUT", PV + "/resize") in fake.seen
+    assert (result["status"], rc != 0) == ("fail", True)
+    assert "disk scsi0 is not 32G" in result["error"]
+
+
+def test_a_matching_vm_passes_the_whole_play(tmp_path):
+    result, rc, _ = _provision_play(tmp_path, GOOD_VM)
+    assert (result["status"], rc) == ("pass", 0)
+
+
+def test_a_hard_failure_in_the_provisioning_play_is_still_recorded(tmp_path):
+    # A different VM at the declared vmid: refused before any write, and recorded.
+    result, rc, fake = _provision_play(tmp_path, GOOD_VM, name="gh-runner-01")
+    assert (result["status"], rc != 0) == ("fail", True)
+    assert result["error"].startswith("Refuse to adopt a DIFFERENT VM that already holds the declared vmid:")
+    assert fake.writes() == []
+
+
+def test_a_hard_failure_in_resize_is_still_recorded(tmp_path):
+    play = _plays("resize-vm.yml")[0]
+    result, rc = _run(tmp_path, [play], extra=["-e", json.dumps({
+        "_pve_host": "http://pve.invalid", "target_vmid": 1, "target_node": "n", "openbao_addr": "x"})])
+    assert (result["step"], result["status"], rc != 0) == ("vm-rightsize", "fail", True)
+    assert result["error"].startswith("Require HTTPS for the Proxmox API:")
+    assert result["evidence"] == {"cores": None, "memory_mb": None, "disk_gb": None}
+
+
+@pytest.mark.parametrize("playbook,fact", [("provision-template.yml", "_tmpl_hard_error"),
+                                           ("resize-vm.yml", "_rs_hard_error"),
+                                           ("provision-vm.yml", "_pv_step")])
+@pytest.mark.parametrize("no_log", [True, False])
+def test_the_rescue_names_the_failed_task_and_withholds_a_no_log_message(tmp_path, playbook, fact, no_log):
+    # The playbook's REAL rescue, behind a block whose one task fails with a secret message.
+    rescue = next(t for t in playbook_yaml.tasks(_plays(playbook))
+                  if "block" in t and t.get("rescue") and str(t.get("name", "")).split()[0]
+                  in ("Create", "Converge", "Provision"))["rescue"]
+    play = [{"hosts": "localhost", "gather_facts": False, "tasks": [
+        {"name": "wrapped", "block": [{"name": "Boom", "no_log": no_log,
+                                       "ansible.builtin.fail": {"msg": "SECRET-VALUE"}}],
+         "rescue": rescue},
+        {"ansible.builtin.copy": {"content": "{{ " + fact + " | to_json }}", "dest": str(tmp_path / "out"),
+                                  "mode": "0600"}}]}]
+    (tmp_path / "play.yml").write_text(yaml.safe_dump(play))
+    done = harness_sandbox.run(["ansible-playbook", "-i", "localhost,", "-c", "local", str(tmp_path / "play.yml"),
+                                "-e", "target_service=dns"], tmp_path, cwd=ROOT,
+                               env=harness_sandbox.env_for(tmp_path))
+    assert done.returncode == 0, done.stdout + done.stderr
+    recorded = (tmp_path / "out").read_text()
+    assert "Boom:" in recorded
+    assert ("SECRET-VALUE" in recorded) is not no_log
+    assert ("details hidden" in recorded) is no_log

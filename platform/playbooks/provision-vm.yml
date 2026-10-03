@@ -102,525 +102,620 @@
     _tags: "{{ _decl.vm_tags | default(_svc.tags | default(_defaults.base_tags | default('ubuntu;24.04'))) }}"
 
   tasks:
-    - name: "Require an explicit target_host when the service declares more than one"
-      # Refusing beats guessing. With several declarations in the group, `first` is an
-      # accident of file order — provisioning the wrong host is a rebuild of a live VM.
-      ansible.builtin.assert:
-        that:
-          - (_group_hosts | length) <= 1 or (target_host | default('') | length > 0)
-          - _decl_host | length == 0 or _decl_host in _group_hosts
-        fail_msg: >-
-          {{ target_service }}_svc declares {{ _group_hosts | length }} hosts
-          ({{ _group_hosts | join(', ') }}). Pass -e target_host=<name> to say which one
-          to provision{{ ", and it must be one of those names" if (_decl_host | length > 0
-          and _decl_host not in _group_hosts) else "" }}.
-        success_msg: "Provisioning declaration '{{ _decl_host }}'."
+    # Every hard failure below (a refused declaration, the clone, migrate, configure, start,
+    # the SSH wait) is caught, so the step result is still recorded: this play's only host
+    # failing would end the playbook before the record play (D10 review, PR 416).
+    - name: "Provision or adopt the VM"
+      block:
+        - name: "Require an explicit target_host when the service declares more than one"
+          # Refusing beats guessing. With several declarations in the group, `first` is an
+          # accident of file order — provisioning the wrong host is a rebuild of a live VM.
+          ansible.builtin.assert:
+            that:
+              - (_group_hosts | length) <= 1 or (target_host | default('') | length > 0)
+              - _decl_host | length == 0 or _decl_host in _group_hosts
+            fail_msg: >-
+              {{ target_service }}_svc declares {{ _group_hosts | length }} hosts
+              ({{ _group_hosts | join(', ') }}). Pass -e target_host=<name> to say which one
+              to provision{{ ", and it must be one of those names" if (_decl_host | length > 0
+              and _decl_host not in _group_hosts) else "" }}.
+            success_msg: "Provisioning declaration '{{ _decl_host }}'."
 
-    - name: "Validate target_service is provided"
-      ansible.builtin.fail:
-        msg: "target_service must be specified (e.g., -e target_service=openbao)"
-      when: target_service is not defined
+        - name: "Validate target_service is provided"
+          ansible.builtin.fail:
+            msg: "target_service must be specified (e.g., -e target_service=openbao)"
+          when: target_service is not defined
 
-    # Every field above now defaults to '' so a missing vm-specs file does not
-    # raise. That is deliberate — absent is normal on the runner — but it also
-    # turns a hard failure into a soft one, so the previously-implicit contract
-    # has to become an explicit gate. Without this, a host with no declaration
-    # would send a clone request with an empty vmid/node/ip and fail somewhere
-    # deep in the Proxmox API, or worse, half-create something.
-    - name: "Require a complete VM declaration before touching Proxmox"
-      ansible.builtin.assert:
-        that:
-          - (_vmid | string | length) > 0
-          - (_node | string | length) > 0
-          - (_cores | string | length) > 0
-          - (_mem | string | length) > 0
-          - (_disk | string | length) > 0
-          - (_ip | string | length) > 0
-          - (_gw | string | length) > 0
-          - (_dns | string | length) > 0
-          - (_storage | string | length) > 0
-        fail_msg: >-
-          Incomplete VM declaration for '{{ target_service }}'. Resolved:
-          vmid={{ _vmid | default('') }} node={{ _node | default('') }}
-          cores={{ _cores | default('') }} memory={{ _mem | default('') }}
-          disk={{ _disk | default('') }} ip={{ _ip | default('') }}
-          gw={{ _gw | default('') }} dns={{ _dns | default('') }}
-          storage={{ _storage | default('') }}.
-          Declare the missing values as vm_* vars on the host in the
-          '{{ target_service }}_svc' inventory group — that is the
-          Semaphore-runnable path, since the vm-specs.yml ledger lives in the
-          private site-config repo the runner never checks out. From a
-          workstation you may instead pass -e project_root=<site-config path>.
-        success_msg: "VM declaration for '{{ target_service }}' is complete."
+        # Every field above now defaults to '' so a missing vm-specs file does not
+        # raise. That is deliberate — absent is normal on the runner — but it also
+        # turns a hard failure into a soft one, so the previously-implicit contract
+        # has to become an explicit gate. Without this, a host with no declaration
+        # would send a clone request with an empty vmid/node/ip and fail somewhere
+        # deep in the Proxmox API, or worse, half-create something.
+        - name: "Require a complete VM declaration before touching Proxmox"
+          ansible.builtin.assert:
+            that:
+              - (_vmid | string | length) > 0
+              - (_node | string | length) > 0
+              - (_cores | string | length) > 0
+              - (_mem | string | length) > 0
+              - (_disk | string | length) > 0
+              - (_ip | string | length) > 0
+              - (_gw | string | length) > 0
+              - (_dns | string | length) > 0
+              - (_storage | string | length) > 0
+            fail_msg: >-
+              Incomplete VM declaration for '{{ target_service }}'. Resolved:
+              vmid={{ _vmid | default('') }} node={{ _node | default('') }}
+              cores={{ _cores | default('') }} memory={{ _mem | default('') }}
+              disk={{ _disk | default('') }} ip={{ _ip | default('') }}
+              gw={{ _gw | default('') }} dns={{ _dns | default('') }}
+              storage={{ _storage | default('') }}.
+              Declare the missing values as vm_* vars on the host in the
+              '{{ target_service }}_svc' inventory group — that is the
+              Semaphore-runnable path, since the vm-specs.yml ledger lives in the
+              private site-config repo the runner never checks out. From a
+              workstation you may instead pass -e project_root=<site-config path>.
+            success_msg: "VM declaration for '{{ target_service }}' is complete."
 
-    - name: "Show provisioning plan"
-      ansible.builtin.debug:
-        msg: |
-          Provisioning {{ target_service }}:
-            VMID: {{ _vmid }}, Name: {{ _name }}, Node: {{ _node }}
-            CPU: {{ _cores }} cores, Memory: {{ _mem }}MB, Disk: {{ _disk }}
-            IP: {{ _ip }}/{{ _netmask }}, GW: {{ _gw }}, DNS: {{ _dns }}
+        - name: "Show provisioning plan"
+          ansible.builtin.debug:
+            msg: |
+              Provisioning {{ target_service }}:
+                VMID: {{ _vmid }}, Name: {{ _name }}, Node: {{ _node }}
+                CPU: {{ _cores }} cores, Memory: {{ _mem }}MB, Disk: {{ _disk }}
+                IP: {{ _ip }}/{{ _netmask }}, GW: {{ _gw }}, DNS: {{ _dns }}
 
-    - name: "Verify template exists"
-      ansible.builtin.uri:
-        url: "{{ _pve_host }}/api2/json/nodes/{{ _tmpl_node }}/qemu/{{ _tmpl_vmid }}/config"
-        method: GET
-      register: tmpl_check
-      ignore_errors: true
-      check_mode: false
+        - name: "Verify template exists"
+          ansible.builtin.uri:
+            url: "{{ _pve_host }}/api2/json/nodes/{{ _tmpl_node }}/qemu/{{ _tmpl_vmid }}/config"
+            method: GET
+          register: tmpl_check
+          ignore_errors: true
+          check_mode: false
 
-    - name: "Fail if template not found"
-      ansible.builtin.fail:
-        msg: "Template VM {{ _tmpl_vmid }} not found. Run provision-template.yml first."
-      when: tmpl_check is failed or (tmpl_check.json.data.template | default(0) | int != 1)
+        - name: "Fail if template not found"
+          ansible.builtin.fail:
+            msg: "Template VM {{ _tmpl_vmid }} not found. Run provision-template.yml first."
+          when: tmpl_check is failed or (tmpl_check.json.data.template | default(0) | int != 1)
 
-    # The inventory records what was DECLARED, not what exists: an undeclared host
-    # held the address this playbook applied to a fresh VM (docs/MISTAKES.md 3.6).
-    # With the IPAM unavailable the network itself is the authority, and the
-    # controller is a second vantage point: anything answering the declared
-    # address is a refusal before a single Proxmox write.
-    - name: "Check if VMID already in use"
-      ansible.builtin.uri:
-        url: "{{ _pve_host }}/api2/json/cluster/resources?type=vm"
-        method: GET
-      register: all_vms
-      check_mode: false
+        # The inventory records what was DECLARED, not what exists: an undeclared host
+        # held the address this playbook applied to a fresh VM (docs/MISTAKES.md 3.6).
+        # With the IPAM unavailable the network itself is the authority, and the
+        # controller is a second vantage point: anything answering the declared
+        # address is a refusal before a single Proxmox write.
+        - name: "Check if VMID already in use"
+          ansible.builtin.uri:
+            url: "{{ _pve_host }}/api2/json/cluster/resources?type=vm"
+            method: GET
+          register: all_vms
+          check_mode: false
 
-    - name: "Check for existing VM"
-      ansible.builtin.set_fact:
-        vm_exists: "{{ all_vms.json.data | selectattr('vmid', 'equalto', _vmid | int) | list | length > 0 }}"
-        _existing: "{{ all_vms.json.data | selectattr('vmid', 'equalto', _vmid | int) | list | first | default({}) }}"
+        - name: "Check for existing VM"
+          ansible.builtin.set_fact:
+            vm_exists: "{{ all_vms.json.data | selectattr('vmid', 'equalto', _vmid | int) | list | length > 0 }}"
+            _existing: "{{ all_vms.json.data | selectattr('vmid', 'equalto', _vmid | int) | list | first | default({}) }}"
 
-    # "Exists" is only a reason to skip the clone when it is OUR VM. A different
-    # VM at the declared vmid is a collision, and the steps below would have
-    # applied THIS declaration's cores/memory/cloud-init to it. Measured 2026-09-18:
-    # vmid 216 was declared for agentgateway on apollo while Proxmox already ran
-    # gh-runner-01 as 216 on alphacentauri; the clone was skipped and the configure
-    # call only failed because the node differed (docs/MISTAKES.md 3.5). Refuse on
-    # a name or node mismatch instead of continuing.
-    # An INTERRUPTED cross-node run leaves our VM (declared name) on the template's
-    # node, not yet migrated. That is ours to resume, not a foreign VM to refuse.
-    - name: "Classify an existing VM: ours-in-place, ours-awaiting-migration, or foreign"
-      ansible.builtin.set_fact:
-        _ours_in_place: "{{ vm_exists | bool and (_existing.name | default('')) == _name and (_existing.node | default('')) == _node }}"
-        _ours_pending_migrate: "{{ vm_exists | bool and (_existing.name | default('')) == _name and (_existing.node | default('')) == _tmpl_node and _node != _tmpl_node }}"
+        # "Exists" is only a reason to skip the clone when it is OUR VM. A different
+        # VM at the declared vmid is a collision, and the steps below would have
+        # applied THIS declaration's cores/memory/cloud-init to it. Measured 2026-09-18:
+        # vmid 216 was declared for agentgateway on apollo while Proxmox already ran
+        # gh-runner-01 as 216 on alphacentauri; the clone was skipped and the configure
+        # call only failed because the node differed (docs/MISTAKES.md 3.5). Refuse on
+        # a name or node mismatch instead of continuing.
+        # An INTERRUPTED cross-node run leaves our VM (declared name) on the template's
+        # node, not yet migrated. That is ours to resume, not a foreign VM to refuse.
+        - name: "Classify an existing VM: ours-in-place, ours-awaiting-migration, or foreign"
+          ansible.builtin.set_fact:
+            _ours_in_place: "{{ vm_exists | bool and (_existing.name | default('')) == _name and (_existing.node | default('')) == _node }}"
+            _ours_pending_migrate: "{{ vm_exists | bool and (_existing.name | default('')) == _name and (_existing.node | default('')) == _tmpl_node and _node != _tmpl_node }}"
 
-    - name: "Refuse to adopt a DIFFERENT VM that already holds the declared vmid"
-      ansible.builtin.assert:
-        that:
-          - (_ours_in_place | bool) or (_ours_pending_migrate | bool)
-        fail_msg: >-
-          vmid {{ _vmid }} is already '{{ _existing.name | default('?') }}' on
-          '{{ _existing.node | default('?') }}', but this run declares '{{ _name }}' on
-          '{{ _node }}'. Refusing: continuing would reconfigure that VM with this
-          declaration. Pick a free vmid (and record the existing one in the ledger).
-      when: vm_exists | bool
+        - name: "Refuse to adopt a DIFFERENT VM that already holds the declared vmid"
+          ansible.builtin.assert:
+            that:
+              - (_ours_in_place | bool) or (_ours_pending_migrate | bool)
+            fail_msg: >-
+              vmid {{ _vmid }} is already '{{ _existing.name | default('?') }}' on
+              '{{ _existing.node | default('?') }}', but this run declares '{{ _name }}' on
+              '{{ _node }}'. Refusing: continuing would reconfigure that VM with this
+              declaration. Pick a free vmid (and record the existing one in the ledger).
+          when: vm_exists | bool
 
-    # The inventory can contradict itself: an edit that rewrote every matching
-    # address line left a runner declared at the gateway's address (site-config
-    # PR 15 review, docs/MISTAKES.md 4.7). Refuse a declared address that ANY other
-    # inventory host claims as its ansible_host or vm_ip, on every run — before the
-    # network probe, which cannot see a host that is powered off.
-    - name: "Refuse a declared address claimed by another inventory host"
+        # The inventory can contradict itself: an edit that rewrote every matching
+        # address line left a runner declared at the gateway's address (site-config
+        # PR 15 review, docs/MISTAKES.md 4.7). Refuse a declared address that ANY other
+        # inventory host claims as its ansible_host or vm_ip, on every run — before the
+        # network probe, which cannot see a host that is powered off.
+        - name: "Refuse a declared address claimed by another inventory host"
+          vars:
+            _claimants: >-
+              {{ hostvars | dict2items
+                 | rejectattr('key', 'equalto', _decl_host)
+                 | selectattr('value.ansible_host', 'defined')
+                 | selectattr('value.ansible_host', 'equalto', _ip)
+                 | map(attribute='key') | list
+               + (hostvars | dict2items
+                 | rejectattr('key', 'equalto', _decl_host)
+                 | selectattr('value.vm_ip', 'defined')
+                 | selectattr('value.vm_ip', 'equalto', _ip)
+                 | map(attribute='key') | list) }}
+          ansible.builtin.assert:
+            that: _claimants | length == 0
+            fail_msg: >-
+              {{ _ip }} is declared for '{{ _decl_host }}' but also claimed by
+              {{ _claimants | unique | join(', ') }} in the inventory. Refusing: two
+              declarations for one address is a conflict waiting for a provisioning run.
+
+        - name: "Probe the declared address from the controller (ICMP)"
+          ansible.builtin.command:
+            argv: [ping, -c, "2", -W, "2", "{{ _ip }}"]
+          register: _addr_probe
+          changed_when: false
+          failed_when: false
+          when: not (vm_exists | bool)
+          check_mode: false
+
+        # Evidence, not proof: an answer is a certain refusal; silence is only as good
+        # as ICMP on that network, and a missing `ping` binary is no evidence at all.
+        # So: rc 0 -> refuse; probe could not run -> refuse (fail closed) unless the
+        # launch carries the audited override; rc 1 -> proceed. The authoritative
+        # check is the IPAM (02-service-onboarding Known Gaps).
+        - name: "Stop when something answered at the declared address, or when the probe could not run"
+          ansible.builtin.assert:
+            that:
+              - _addr_probe.rc != 0
+              - (_addr_probe.rc in [1, 2]) or (allow_unverified_address | default(false) | bool)
+            fail_msg: >-
+              {% if _addr_probe.rc == 0 %}{{ _ip }} answers to ping from the controller, so a live
+              host already holds the address declared for '{{ _name }}'. Refusing to provision
+              onto it: find the responder (ledger, inventory, and if needed a login) and declare a
+              free address.{% else %}The controller could not run the address probe
+              (rc {{ _addr_probe.rc }}: {{ _addr_probe.msg | default(_addr_probe.stderr | default('')) | truncate(120) }}).
+              Refusing to provision onto an unverified address; pass
+              -e allow_unverified_address=true only for an approved exception.{% endif %}
+          when: not (vm_exists | bool)
+
+        - name: "Skip clone if VM already exists"
+          ansible.builtin.debug:
+            msg: "VM {{ _vmid }} ({{ _name }}) already exists — skipping clone."
+          when: vm_exists | bool
+
+        # ── Clone template ────────────────────────────────────────────────────
+        # Proxmox: "--target: Target node. Only allowed if the original VM is on shared
+        # storage" (qm(1)). Template 9000's disk is on alphacentauri's LOCAL vm-lvms, so a
+        # cross-node clone is refused with "can't clone to non-shared storage" (Semaphore
+        # task 1064, 2026-09-18). The clone therefore always lands on the TEMPLATE's node,
+        # and when the declaration names another node the new VM is migrated there
+        # offline (a stopped VM with local disks moves with `targetstorage`) before it is
+        # configured. Same-node declarations behave exactly as before.
+        - name: "Clone template to new VM (on the template's node)"
+          ansible.builtin.uri:
+            url: "{{ _pve_host }}/api2/json/nodes/{{ _tmpl_node }}/qemu/{{ _tmpl_vmid }}/clone"
+            method: POST
+            body_format: form-urlencoded
+            body:
+              newid: "{{ _vmid }}"
+              name: "{{ _name }}"
+              full: "1"
+              # Storage on the TEMPLATE's node for the interim copy; the migrate below
+              # maps it onto the declared storage on the declared node.
+              storage: "{{ vm_clone_storage | default(_storage) }}"
+            status_code: [200]
+          register: clone_result
+          # uri never reports changed on a POST by itself; the returned UPID is the
+          # evidence the clone was started, and every step below gates on it.
+          changed_when: clone_result.json.data is defined
+          when:
+            - not ansible_check_mode
+            - not (vm_exists | bool)
+
+        - name: "Wait for clone task"
+          ansible.builtin.uri:
+            url: "{{ _pve_host }}/api2/json/nodes/{{ _tmpl_node }}/tasks/{{ clone_result.json.data }}/status"
+            method: GET
+          register: clone_task
+          until: clone_task.json.data.status == "stopped"
+          retries: 60
+          delay: 10
+          when:
+            - not ansible_check_mode
+            - clone_result.json.data is defined
+
+        - name: "Verify clone succeeded"
+          ansible.builtin.fail:
+            msg: "Clone failed: {{ clone_task.json.data.exitstatus | default('unknown') }}"
+          when: clone_result.json.data is defined and clone_task is defined and clone_task.json.data.exitstatus | default('OK') != 'OK'
+
+        - name: "Decide whether a migration is needed (fresh clone or resumed run)"
+          ansible.builtin.set_fact:
+            _do_migrate: "{{ _node != _tmpl_node and (clone_result.json.data is defined or (_ours_pending_migrate | default(false) | bool)) }}"
+
+        # ── Move to the declared node when it differs from the template's ─────
+        # Cluster-wide view, not a node-bound one: a rerun may land while a PREVIOUS
+        # run's migration is still moving the VM, and once it leaves the template's
+        # node a status request there stops answering. cluster/resources always lists
+        # the VM with its current node and lock, so wait there until it is unlocked,
+        # then decide from where it actually is.
+        - name: "Wait until the VM is unlocked and note which node it is on now"
+          ansible.builtin.uri:
+            url: "{{ _pve_host }}/api2/json/cluster/resources?type=vm"
+            method: GET
+          register: _placed
+          until: >-
+            (_placed is succeeded) and
+            ((_placed.json.data | selectattr('vmid', 'equalto', _vmid | int) | list | length) == 1) and
+            ((_placed.json.data | selectattr('vmid', 'equalto', _vmid | int) | map(attribute='lock', default='') | first) == '')
+          retries: 90
+          delay: 10
+          changed_when: false
+          # A read, and the identity check and node choice below consume it, so it runs under
+          # --check too (PR 203 Codex review: skipping it left them dereferencing nothing).
+          check_mode: false
+          when: _do_migrate | bool
+
+        - name: "Re-validate the VM's identity after the wait (vmid reuse during the poll)"
+          # The wait selects by vmid alone. If our VM vanished and the vmid was reused
+          # meanwhile, every later task would configure the replacement — so the record
+          # must still carry our name and sit on one of the two nodes we own here.
+          ansible.builtin.assert:
+            that:
+              - (_placed.json.data | selectattr('vmid', 'equalto', _vmid | int) | map(attribute='name') | first) == _name
+              - (_placed.json.data | selectattr('vmid', 'equalto', _vmid | int) | map(attribute='node') | first) in [_tmpl_node, _node]
+            fail_msg: >-
+              vmid {{ _vmid }} is no longer '{{ _name }}' on '{{ _tmpl_node }}' or '{{ _node }}'
+              after the wait; refusing to continue against a VM this run did not create.
+          when: _do_migrate | bool
+
+        - name: "Skip the migrate POST when the VM already sits on the declared node"
+          ansible.builtin.set_fact:
+            _vm_now_node: "{{ _placed.json.data | selectattr('vmid', 'equalto', _vmid | int) | map(attribute='node') | first }}"
+            _do_migrate: "{{ (_placed.json.data | selectattr('vmid', 'equalto', _vmid | int) | map(attribute='node') | first) == _tmpl_node }}"
+          when: _do_migrate | bool
+
+        - name: "Migrate the new VM offline to the declared node (local disks onto the declared storage)"
+          ansible.builtin.uri:
+            url: "{{ _pve_host }}/api2/json/nodes/{{ _tmpl_node }}/qemu/{{ _vmid }}/migrate"
+            method: POST
+            body_format: form-urlencoded
+            body:
+              target: "{{ _node }}"
+              targetstorage: "{{ _storage }}"
+            status_code: [200]
+          register: migrate_result
+          changed_when: migrate_result.json.data is defined
+          when:
+            - not ansible_check_mode
+            - _do_migrate | bool
+
+        - name: "Wait for migrate task"
+          ansible.builtin.uri:
+            url: "{{ _pve_host }}/api2/json/nodes/{{ _tmpl_node }}/tasks/{{ migrate_result.json.data }}/status"
+            method: GET
+          register: migrate_task
+          until: migrate_task.json.data.status == "stopped"
+          retries: 90
+          delay: 10
+          when:
+            - not ansible_check_mode
+            - migrate_result.json.data is defined
+
+        - name: "Verify migrate succeeded"
+          ansible.builtin.fail:
+            msg: "Migrate to {{ _node }} failed: {{ migrate_task.json.data.exitstatus | default('unknown') }}"
+          when: migrate_result.json.data is defined and migrate_task is defined and migrate_task.json.data.exitstatus | default('OK') != 'OK'
+
+        # A dry run does not migrate, so the VM is still on the template node and every probe
+        # below, addressed to the declared node, would fail (PR 203 Codex review).
+        - name: "Dry run, migration pending: report"
+          ansible.builtin.debug:
+            msg: >-
+              check mode: VM {{ _vmid }} ({{ _name }}) sits on {{ _tmpl_node }} and would be migrated
+              offline to {{ _node }} (storage {{ _storage }}); its configure, start, SSH and runner
+              checks address {{ _node }}, so the dry run stops here.
+          when:
+            - ansible_check_mode
+            - _do_migrate | bool
+
+        - name: "Dry run, migration pending: stop this host"
+          ansible.builtin.meta: end_host
+          when:
+            - ansible_check_mode
+            - _do_migrate | bool
+
+        # ── Configure VM (single PUT with all settings) ───────────────────────
+        - name: "Wait for the clone lock to clear before configuring"
+          # Proxmox reports the clone TASK complete while it still holds the VM's config
+          # lock, so the very next config write fails with
+          #   can't lock file '/var/lock/qemu-server/lock-<vmid>.conf'
+          # Waiting on the task is therefore necessary but NOT sufficient: the thing that
+          # must be true is that the VM is unlocked, so that is what is waited on. Polling
+          # the VM's own state also means a slow disk copy simply takes longer rather than
+          # failing, and a VM that never unlocks fails with a diagnosis instead of a lock
+          # error five tasks later.
+          ansible.builtin.uri:
+            url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/status/current"
+            method: GET
+          register: _vm_lock
+          # `is succeeded` first: without it a FAILED request has no json.data.lock, the
+          # default makes the expression '' == '' true, and the wait exits declaring the VM
+          # unlocked on the strength of a request that never answered.
+          until: (_vm_lock is succeeded) and ((_vm_lock.json.data.lock | default('')) == '')
+          retries: 60
+          delay: 10
+          changed_when: false
+          failed_when:
+            - (_vm_lock.json.data.lock | default('')) != ''
+            - _vm_lock.attempts | default(0) >= 60
+          when: not ansible_check_mode
+
+        - name: "Configure VM resources and cloud-init"
+          ansible.builtin.uri:
+            url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/config"
+            method: PUT
+            body_format: form-urlencoded
+            body:
+              cores: "{{ _cores }}"
+              memory: "{{ _mem }}"
+              agent: "{{ _agent }}"
+              # Start with the node (Proxmox `onboot`, default 0 per qm(1)); a VM that does not
+              # come back after a hypervisor reboot silently takes its service down. Workflow
+              # step provision-vm requires it (registry criteria). Per-host opt-out: vm_onboot.
+              onboot: "{{ _onboot }}"
+              net0: "virtio,bridge={{ _bridge }},firewall=0"
+              ciuser: "{{ ci_user | default(ansible_user) }}"
+              sshkeys: "{{ _ssh_pub | urlencode }}"
+              ipconfig0: "ip={{ _ip }}/{{ _netmask }},gw={{ _gw }}"
+              nameserver: "{{ _dns }}"
+            status_code: [200]
+          when: not ansible_check_mode
+
+        - name: "Set Proxmox tags"
+          ansible.builtin.uri:
+            url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/config"
+            method: PUT
+            body_format: form-urlencoded
+            body:
+              tags: "{{ _tags }}"
+            status_code: [200]
+          when: not ansible_check_mode
+
+        - name: "Resize disk to size — {{ _disk }}"
+          ansible.builtin.uri:
+            url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/resize"
+            method: PUT
+            body_format: form-urlencoded
+            body:
+              disk: "scsi0"
+              size: "{{ _disk }}"
+            status_code: [200]
+          register: resize_result
+          ignore_errors: true
+          when: not ansible_check_mode
+
+        - name: "Warn if disk resize failed"
+          ansible.builtin.debug:
+            msg: "Disk resize to {{ _disk }} failed (may already be correct size): {{ resize_result.msg | default('unknown') }}"
+          when: resize_result is failed
+
+        # ── Step result evidence (registry step provision-vm) ─────────────────
+        # Read back before any dry-run stop below, so a check-mode run of an existing VM is judged
+        # on the real config. Judged on Proxmox's answer, never on what this run meant to write:
+        # the disk resize above tolerates its own failure, the read-back does not.
+        - name: "Read back the VM's config for the step result"
+          ansible.builtin.uri:
+            url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/config"
+            method: GET
+          register: _pv_cfg
+          failed_when: false
+          changed_when: false
+          check_mode: false
+          when: vm_exists | bool or not ansible_check_mode
+
+        - name: "Decide the provision-vm step"
+          vars:
+            _cfg: "{{ _pv_cfg.json.data | default({}) }}"
+            _want_disk: "{{ (_disk | string) ~ ('G' if (_disk | string) is match('^[0-9]+$') else '') }}"
+          ansible.builtin.set_fact:
+            _pv_step:
+              service: "{{ target_service }}"
+              vmid: "{{ _vmid | int }}"
+              node: "{{ _node }}"
+              onboot: "{{ _cfg.onboot | default(none) }}"
+              # A dry run of a VM that is not cloned yet, or still awaits its migration, has
+              # nothing on the declared node to prove.
+              skip: "{{ ansible_check_mode and (not (vm_exists | bool) or (_do_migrate | bool)) }}"
+              errors: >-
+                {{ (['vmid ' ~ _vmid ~ ' has no config on ' ~ _node ~ ' (HTTP '
+                     ~ (_pv_cfg.status | default('none')) ~ ')'] if (_pv_cfg.status | default(-1)) != 200 else [])
+                   + (['cores ' ~ (_cfg.cores | default('?')) ~ ', declared ' ~ _cores]
+                      if (_cfg.cores | default(0) | int) != (_cores | int) else [])
+                   + (['memory ' ~ (_cfg.memory | default('?')) ~ 'MB, declared ' ~ _mem ~ 'MB']
+                      if (_cfg.memory | default(0) | int) != (_mem | int) else [])
+                   + (['disk scsi0 is not ' ~ _want_disk]
+                      if not ((_cfg.scsi0 | default('')) is search('size=' ~ _want_disk ~ '([^0-9]|$)')) else [])
+                   + (['onboot ' ~ (_cfg.onboot | default('unset')) ~ ', declared ' ~ _onboot]
+                      if (_cfg.onboot | default('0') | string) != _onboot else []) }}
+
+        # ── Start VM ──────────────────────────────────────────────────────────
+        # A dry run of a VM that does not exist yet skipped the clone, so every check below would
+        # ask Proxmox about a vmid it does not have (404; PR 203 review). Say what a real run would
+        # do and stop this host here; the cluster post-validate play still runs.
+        - name: "Dry run, VM not cloned yet: report what a real run would create"
+          ansible.builtin.debug:
+            msg: >-
+              check mode: VM {{ _vmid }} ({{ _name }}) would be cloned from template {{ _tmpl_vmid }}
+              and configured on {{ _node }} ({{ _cores }} cores, {{ _mem }} MB, disk {{ _disk }},
+              {{ _ip }}); its start, SSH and runner checks need the VM, so the dry run stops here.
+          when:
+            - ansible_check_mode
+            - not (vm_exists | bool)
+
+        - name: "Dry run, VM not cloned yet: stop this host"
+          ansible.builtin.meta: end_host
+          when:
+            - ansible_check_mode
+            - not (vm_exists | bool)
+
+        - name: "Check VM status"
+          ansible.builtin.uri:
+            url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/status/current"
+            method: GET
+          register: pre_start
+          check_mode: false
+
+        # A dry run does not start a stopped VM, so the SSH and runner checks below would wait for
+        # a state it never created (PR 203 Codex review).
+        - name: "Dry run, VM stopped: report"
+          ansible.builtin.debug:
+            msg: >-
+              check mode: VM {{ _vmid }} ({{ _name }}) on {{ _node }} is {{ pre_start.json.data.status }}
+              and would be started; its SSH and runner checks need it running, so the dry run stops here.
+          when:
+            - ansible_check_mode
+            - pre_start.json.data.status != "running"
+
+        - name: "Dry run, VM stopped: stop this host"
+          ansible.builtin.meta: end_host
+          when:
+            - ansible_check_mode
+            - pre_start.json.data.status != "running"
+
+        - name: "Start VM"
+          ansible.builtin.uri:
+            url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/status/start"
+            method: POST
+            status_code: [200]
+          when:
+            - not ansible_check_mode
+            - pre_start.json.data.status != "running"
+
+        - name: "Wait for VM running"
+          ansible.builtin.uri:
+            url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/status/current"
+            method: GET
+          register: vm_running
+          until: vm_running.json.data.status == "running"
+          retries: 30
+          delay: 5
+          when: not ansible_check_mode
+
+        - name: "Wait for QEMU guest agent"
+          ansible.builtin.uri:
+            url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/agent/ping"
+            method: POST
+            status_code: [200, 500]
+          register: agent_ping
+          until: agent_ping.status == 200
+          retries: 60
+          delay: 10
+          ignore_errors: true
+          when: not ansible_check_mode
+
+        - name: "Wait for SSH"
+          ansible.builtin.wait_for:
+            host: "{{ _ip }}"
+            port: 22
+            timeout: 300
+            state: started
+          register: ssh_ready
+
+
+        # ── Hand the VM to Ansible's own connection ───────────────────────────
+        # The post-boot checks used to shell out to `ssh -i <key-path variable>`. Nothing
+        # in the repo set that variable, so every Semaphore run passed `-i ""` and
+        # the login failed (tasks 1753/1755), and the runner step put its token in the argv
+        # of two processes and, on any failure, into the durable task log. Ansible already
+        # owns a connection to every inventory host: the orchestrator supplies its SSH
+        # credential through the inventory record, the same path every deploy uses
+        # (configure-host-network.yml, verify-host-access.yml). The next play logs in over
+        # that connection instead.
+        #
+        # A freshly cloned VM has freshly generated host keys, so any entry the controller
+        # holds for this address belongs to a previous occupant (a destroyed VM, or the
+        # squatter in docs/MISTAKES.md 3.6) and would refuse the login as a changed key.
+        # Only a clone made by THIS run is known to be new; an adopted VM keeps its entry.
+        - name: "Forget the controller's stale host key for a freshly cloned VM's address"
+          ansible.builtin.known_hosts:
+            name: "{{ item }}"
+            state: absent
+          changed_when: false
+          loop: >-
+            {{ [_ip] if (_decl.ansible_port | default(22) | int) == 22
+               else [_ip, '[' ~ _ip ~ ']:' ~ (_decl.ansible_port | int)] }}
+          loop_control:
+            label: "{{ item }}"
+          when: clone_result.json.data is defined
+
+        # Named after the DECLARED inventory host, so the login uses exactly the transport
+        # settings (port, key file, interpreter) a later deploy to that host will use —
+        # add_host on an existing host merges into it rather than starting from nothing.
+        # A ledger-only workstation run has no declaration and falls back to the VM name.
+        # Only non-secret metadata travels here: add_host's result is printed under -v.
+        - name: "Hand the new VM to the post-boot play"
+          ansible.builtin.add_host:
+            name: "{{ _decl_host | default(_name, true) }}"
+            groups: _provisioned_vm
+            ansible_host: "{{ _ip }}"
+            ansible_user: "{{ ci_user | default(ansible_user) }}"
+            _pv_service: "{{ target_service }}"
+            _pv_vmid: "{{ _vmid }}"
+            _pv_name: "{{ _name }}"
+            _pv_node: "{{ _node }}"
+            _pv_status: "{{ vm_running.json.data.status | default(pre_start.json.data.status | default('unknown')) }}"
+            _pv_agent_ok: "{{ agent_ping is defined and agent_ping is not skipped and (agent_ping.status | default(0)) == 200 }}"
+            _pv_port_open: "{{ ssh_ready is defined and ssh_ready is not skipped and ssh_ready is succeeded }}"
+          changed_when: false
+      rescue:
+        - name: "Remember why the provision-vm step failed"
+          ansible.builtin.set_fact:
+            _pv_step: >-
+              {{ (_pv_step | default({'service': target_service | default(''), 'vmid': none,
+                                      'node': none, 'onboot': none, 'errors': []}))
+                 | combine({'skip': false, 'errors': (_pv_step.errors | default([])) + [_pv_failure]}) }}
+          vars:
+            _pv_failure: >-
+              {{ ansible_failed_task.name | default('a task') }}:
+              {{ '(details hidden: the task is no_log)' if (ansible_failed_task.no_log | default(false) | bool)
+                 else (ansible_failed_result.msg | default('failed')) }}
+
+# ── Step result: provision-vm ────────────────────────────────────────────────
+# Its own play so it runs after the dry-run `end_host` stops above, which end the provisioning
+# play but not the playbook. A hard failure in that play stops the playbook before this; the
+# conformance collector then records the step as failed with the task's last output lines.
+# One run records ONE result (emit-step-result is a non-aggregating set_stats), so the
+# cloud-init step, which this playbook also executes, is not recorded here (D10 review).
+- name: "Record the provision-vm step result"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    # Undefined only when a dry run stopped before the read-back: a VM awaiting its migration.
+    _pv_s: "{{ _pv_step | default({'skip': true, 'errors': [], 'vmid': none, 'node': none, 'onboot': none}) }}"
+  tasks:
+    - name: "Record the step result"
+      ansible.builtin.include_tasks: tasks/emit-step-result.yml
       vars:
-        _claimants: >-
-          {{ hostvars | dict2items
-             | rejectattr('key', 'equalto', _decl_host)
-             | selectattr('value.ansible_host', 'defined')
-             | selectattr('value.ansible_host', 'equalto', _ip)
-             | map(attribute='key') | list
-           + (hostvars | dict2items
-             | rejectattr('key', 'equalto', _decl_host)
-             | selectattr('value.vm_ip', 'defined')
-             | selectattr('value.vm_ip', 'equalto', _ip)
-             | map(attribute='key') | list) }}
-      ansible.builtin.assert:
-        that: _claimants | length == 0
-        fail_msg: >-
-          {{ _ip }} is declared for '{{ _decl_host }}' but also claimed by
-          {{ _claimants | unique | join(', ') }} in the inventory. Refusing: two
-          declarations for one address is a conflict waiting for a provisioning run.
+        step_result_service: "{{ _pv_s.service | default(target_service | default('')) }}"
+        step_result_step: provision-vm
+        step_result_status: >-
+          {{ 'skip' if (_pv_s.skip | bool)
+             else ('pass' if (_pv_s.errors | length == 0) else 'fail') }}
+        step_result_evidence:
+          vmid: "{{ _pv_s.vmid }}"
+          node: "{{ _pv_s.node }}"
+          onboot: "{{ _pv_s.onboot }}"
+        step_result_error: "{{ _pv_s.errors | join('; ') }}"
+        step_result_undo: Destroy VM
 
-    - name: "Probe the declared address from the controller (ICMP)"
-      ansible.builtin.command:
-        argv: [ping, -c, "2", -W, "2", "{{ _ip }}"]
-      register: _addr_probe
-      changed_when: false
-      failed_when: false
-      when: not (vm_exists | bool)
-      check_mode: false
-
-    # Evidence, not proof: an answer is a certain refusal; silence is only as good
-    # as ICMP on that network, and a missing `ping` binary is no evidence at all.
-    # So: rc 0 -> refuse; probe could not run -> refuse (fail closed) unless the
-    # launch carries the audited override; rc 1 -> proceed. The authoritative
-    # check is the IPAM (02-service-onboarding Known Gaps).
-    - name: "Stop when something answered at the declared address, or when the probe could not run"
-      ansible.builtin.assert:
-        that:
-          - _addr_probe.rc != 0
-          - (_addr_probe.rc in [1, 2]) or (allow_unverified_address | default(false) | bool)
-        fail_msg: >-
-          {% if _addr_probe.rc == 0 %}{{ _ip }} answers to ping from the controller, so a live
-          host already holds the address declared for '{{ _name }}'. Refusing to provision
-          onto it: find the responder (ledger, inventory, and if needed a login) and declare a
-          free address.{% else %}The controller could not run the address probe
-          (rc {{ _addr_probe.rc }}: {{ _addr_probe.msg | default(_addr_probe.stderr | default('')) | truncate(120) }}).
-          Refusing to provision onto an unverified address; pass
-          -e allow_unverified_address=true only for an approved exception.{% endif %}
-      when: not (vm_exists | bool)
-
-    - name: "Skip clone if VM already exists"
-      ansible.builtin.debug:
-        msg: "VM {{ _vmid }} ({{ _name }}) already exists — skipping clone."
-      when: vm_exists | bool
-
-    # ── Clone template ────────────────────────────────────────────────────
-    # Proxmox: "--target: Target node. Only allowed if the original VM is on shared
-    # storage" (qm(1)). Template 9000's disk is on alphacentauri's LOCAL vm-lvms, so a
-    # cross-node clone is refused with "can't clone to non-shared storage" (Semaphore
-    # task 1064, 2026-09-18). The clone therefore always lands on the TEMPLATE's node,
-    # and when the declaration names another node the new VM is migrated there
-    # offline (a stopped VM with local disks moves with `targetstorage`) before it is
-    # configured. Same-node declarations behave exactly as before.
-    - name: "Clone template to new VM (on the template's node)"
-      ansible.builtin.uri:
-        url: "{{ _pve_host }}/api2/json/nodes/{{ _tmpl_node }}/qemu/{{ _tmpl_vmid }}/clone"
-        method: POST
-        body_format: form-urlencoded
-        body:
-          newid: "{{ _vmid }}"
-          name: "{{ _name }}"
-          full: "1"
-          # Storage on the TEMPLATE's node for the interim copy; the migrate below
-          # maps it onto the declared storage on the declared node.
-          storage: "{{ vm_clone_storage | default(_storage) }}"
-        status_code: [200]
-      register: clone_result
-      # uri never reports changed on a POST by itself; the returned UPID is the
-      # evidence the clone was started, and every step below gates on it.
-      changed_when: clone_result.json.data is defined
-      when:
-        - not ansible_check_mode
-        - not (vm_exists | bool)
-
-    - name: "Wait for clone task"
-      ansible.builtin.uri:
-        url: "{{ _pve_host }}/api2/json/nodes/{{ _tmpl_node }}/tasks/{{ clone_result.json.data }}/status"
-        method: GET
-      register: clone_task
-      until: clone_task.json.data.status == "stopped"
-      retries: 60
-      delay: 10
-      when:
-        - not ansible_check_mode
-        - clone_result.json.data is defined
-
-    - name: "Verify clone succeeded"
+    # When a VM went on to the post-boot play, the verdict play fails the run after those
+    # checks; otherwise (a dry run that stopped early) nothing later would.
+    - name: "Fail when the VM does not match its declaration and no verdict follows"
       ansible.builtin.fail:
-        msg: "Clone failed: {{ clone_task.json.data.exitstatus | default('unknown') }}"
-      when: clone_result.json.data is defined and clone_task is defined and clone_task.json.data.exitstatus | default('OK') != 'OK'
-
-    - name: "Decide whether a migration is needed (fresh clone or resumed run)"
-      ansible.builtin.set_fact:
-        _do_migrate: "{{ _node != _tmpl_node and (clone_result.json.data is defined or (_ours_pending_migrate | default(false) | bool)) }}"
-
-    # ── Move to the declared node when it differs from the template's ─────
-    # Cluster-wide view, not a node-bound one: a rerun may land while a PREVIOUS
-    # run's migration is still moving the VM, and once it leaves the template's
-    # node a status request there stops answering. cluster/resources always lists
-    # the VM with its current node and lock, so wait there until it is unlocked,
-    # then decide from where it actually is.
-    - name: "Wait until the VM is unlocked and note which node it is on now"
-      ansible.builtin.uri:
-        url: "{{ _pve_host }}/api2/json/cluster/resources?type=vm"
-        method: GET
-      register: _placed
-      until: >-
-        (_placed is succeeded) and
-        ((_placed.json.data | selectattr('vmid', 'equalto', _vmid | int) | list | length) == 1) and
-        ((_placed.json.data | selectattr('vmid', 'equalto', _vmid | int) | map(attribute='lock', default='') | first) == '')
-      retries: 90
-      delay: 10
-      changed_when: false
-      # A read, and the identity check and node choice below consume it, so it runs under
-      # --check too (PR 203 Codex review: skipping it left them dereferencing nothing).
-      check_mode: false
-      when: _do_migrate | bool
-
-    - name: "Re-validate the VM's identity after the wait (vmid reuse during the poll)"
-      # The wait selects by vmid alone. If our VM vanished and the vmid was reused
-      # meanwhile, every later task would configure the replacement — so the record
-      # must still carry our name and sit on one of the two nodes we own here.
-      ansible.builtin.assert:
-        that:
-          - (_placed.json.data | selectattr('vmid', 'equalto', _vmid | int) | map(attribute='name') | first) == _name
-          - (_placed.json.data | selectattr('vmid', 'equalto', _vmid | int) | map(attribute='node') | first) in [_tmpl_node, _node]
-        fail_msg: >-
-          vmid {{ _vmid }} is no longer '{{ _name }}' on '{{ _tmpl_node }}' or '{{ _node }}'
-          after the wait; refusing to continue against a VM this run did not create.
-      when: _do_migrate | bool
-
-    - name: "Skip the migrate POST when the VM already sits on the declared node"
-      ansible.builtin.set_fact:
-        _vm_now_node: "{{ _placed.json.data | selectattr('vmid', 'equalto', _vmid | int) | map(attribute='node') | first }}"
-        _do_migrate: "{{ (_placed.json.data | selectattr('vmid', 'equalto', _vmid | int) | map(attribute='node') | first) == _tmpl_node }}"
-      when: _do_migrate | bool
-
-    - name: "Migrate the new VM offline to the declared node (local disks onto the declared storage)"
-      ansible.builtin.uri:
-        url: "{{ _pve_host }}/api2/json/nodes/{{ _tmpl_node }}/qemu/{{ _vmid }}/migrate"
-        method: POST
-        body_format: form-urlencoded
-        body:
-          target: "{{ _node }}"
-          targetstorage: "{{ _storage }}"
-        status_code: [200]
-      register: migrate_result
-      changed_when: migrate_result.json.data is defined
+        msg: "{{ _pv_s.errors | join('; ') }}"
       when:
-        - not ansible_check_mode
-        - _do_migrate | bool
-
-    - name: "Wait for migrate task"
-      ansible.builtin.uri:
-        url: "{{ _pve_host }}/api2/json/nodes/{{ _tmpl_node }}/tasks/{{ migrate_result.json.data }}/status"
-        method: GET
-      register: migrate_task
-      until: migrate_task.json.data.status == "stopped"
-      retries: 90
-      delay: 10
-      when:
-        - not ansible_check_mode
-        - migrate_result.json.data is defined
-
-    - name: "Verify migrate succeeded"
-      ansible.builtin.fail:
-        msg: "Migrate to {{ _node }} failed: {{ migrate_task.json.data.exitstatus | default('unknown') }}"
-      when: migrate_result.json.data is defined and migrate_task is defined and migrate_task.json.data.exitstatus | default('OK') != 'OK'
-
-    # A dry run does not migrate, so the VM is still on the template node and every probe
-    # below, addressed to the declared node, would fail (PR 203 Codex review).
-    - name: "Dry run, migration pending: report"
-      ansible.builtin.debug:
-        msg: >-
-          check mode: VM {{ _vmid }} ({{ _name }}) sits on {{ _tmpl_node }} and would be migrated
-          offline to {{ _node }} (storage {{ _storage }}); its configure, start, SSH and runner
-          checks address {{ _node }}, so the dry run stops here.
-      when:
-        - ansible_check_mode
-        - _do_migrate | bool
-
-    - name: "Dry run, migration pending: stop this host"
-      ansible.builtin.meta: end_host
-      when:
-        - ansible_check_mode
-        - _do_migrate | bool
-
-    # ── Configure VM (single PUT with all settings) ───────────────────────
-    - name: "Wait for the clone lock to clear before configuring"
-      # Proxmox reports the clone TASK complete while it still holds the VM's config
-      # lock, so the very next config write fails with
-      #   can't lock file '/var/lock/qemu-server/lock-<vmid>.conf'
-      # Waiting on the task is therefore necessary but NOT sufficient: the thing that
-      # must be true is that the VM is unlocked, so that is what is waited on. Polling
-      # the VM's own state also means a slow disk copy simply takes longer rather than
-      # failing, and a VM that never unlocks fails with a diagnosis instead of a lock
-      # error five tasks later.
-      ansible.builtin.uri:
-        url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/status/current"
-        method: GET
-      register: _vm_lock
-      # `is succeeded` first: without it a FAILED request has no json.data.lock, the
-      # default makes the expression '' == '' true, and the wait exits declaring the VM
-      # unlocked on the strength of a request that never answered.
-      until: (_vm_lock is succeeded) and ((_vm_lock.json.data.lock | default('')) == '')
-      retries: 60
-      delay: 10
-      changed_when: false
-      failed_when:
-        - (_vm_lock.json.data.lock | default('')) != ''
-        - _vm_lock.attempts | default(0) >= 60
-      when: not ansible_check_mode
-
-    - name: "Configure VM resources and cloud-init"
-      ansible.builtin.uri:
-        url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/config"
-        method: PUT
-        body_format: form-urlencoded
-        body:
-          cores: "{{ _cores }}"
-          memory: "{{ _mem }}"
-          agent: "{{ _agent }}"
-          # Start with the node (Proxmox `onboot`, default 0 per qm(1)); a VM that does not
-          # come back after a hypervisor reboot silently takes its service down. Workflow
-          # step provision-vm requires it (registry criteria). Per-host opt-out: vm_onboot.
-          onboot: "{{ _onboot }}"
-          net0: "virtio,bridge={{ _bridge }},firewall=0"
-          ciuser: "{{ ci_user | default(ansible_user) }}"
-          sshkeys: "{{ _ssh_pub | urlencode }}"
-          ipconfig0: "ip={{ _ip }}/{{ _netmask }},gw={{ _gw }}"
-          nameserver: "{{ _dns }}"
-        status_code: [200]
-      when: not ansible_check_mode
-
-    - name: "Set Proxmox tags"
-      ansible.builtin.uri:
-        url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/config"
-        method: PUT
-        body_format: form-urlencoded
-        body:
-          tags: "{{ _tags }}"
-        status_code: [200]
-      when: not ansible_check_mode
-
-    - name: "Resize disk to size — {{ _disk }}"
-      ansible.builtin.uri:
-        url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/resize"
-        method: PUT
-        body_format: form-urlencoded
-        body:
-          disk: "scsi0"
-          size: "{{ _disk }}"
-        status_code: [200]
-      register: resize_result
-      ignore_errors: true
-      when: not ansible_check_mode
-
-    - name: "Warn if disk resize failed"
-      ansible.builtin.debug:
-        msg: "Disk resize to {{ _disk }} failed (may already be correct size): {{ resize_result.msg | default('unknown') }}"
-      when: resize_result is failed
-
-    # ── Start VM ──────────────────────────────────────────────────────────
-    # A dry run of a VM that does not exist yet skipped the clone, so every check below would
-    # ask Proxmox about a vmid it does not have (404; PR 203 review). Say what a real run would
-    # do and stop this host here; the cluster post-validate play still runs.
-    - name: "Dry run, VM not cloned yet: report what a real run would create"
-      ansible.builtin.debug:
-        msg: >-
-          check mode: VM {{ _vmid }} ({{ _name }}) would be cloned from template {{ _tmpl_vmid }}
-          and configured on {{ _node }} ({{ _cores }} cores, {{ _mem }} MB, disk {{ _disk }},
-          {{ _ip }}); its start, SSH and runner checks need the VM, so the dry run stops here.
-      when:
-        - ansible_check_mode
-        - not (vm_exists | bool)
-
-    - name: "Dry run, VM not cloned yet: stop this host"
-      ansible.builtin.meta: end_host
-      when:
-        - ansible_check_mode
-        - not (vm_exists | bool)
-
-    - name: "Check VM status"
-      ansible.builtin.uri:
-        url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/status/current"
-        method: GET
-      register: pre_start
-      check_mode: false
-
-    # A dry run does not start a stopped VM, so the SSH and runner checks below would wait for
-    # a state it never created (PR 203 Codex review).
-    - name: "Dry run, VM stopped: report"
-      ansible.builtin.debug:
-        msg: >-
-          check mode: VM {{ _vmid }} ({{ _name }}) on {{ _node }} is {{ pre_start.json.data.status }}
-          and would be started; its SSH and runner checks need it running, so the dry run stops here.
-      when:
-        - ansible_check_mode
-        - pre_start.json.data.status != "running"
-
-    - name: "Dry run, VM stopped: stop this host"
-      ansible.builtin.meta: end_host
-      when:
-        - ansible_check_mode
-        - pre_start.json.data.status != "running"
-
-    - name: "Start VM"
-      ansible.builtin.uri:
-        url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/status/start"
-        method: POST
-        status_code: [200]
-      when:
-        - not ansible_check_mode
-        - pre_start.json.data.status != "running"
-
-    - name: "Wait for VM running"
-      ansible.builtin.uri:
-        url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/status/current"
-        method: GET
-      register: vm_running
-      until: vm_running.json.data.status == "running"
-      retries: 30
-      delay: 5
-      when: not ansible_check_mode
-
-    - name: "Wait for QEMU guest agent"
-      ansible.builtin.uri:
-        url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/agent/ping"
-        method: POST
-        status_code: [200, 500]
-      register: agent_ping
-      until: agent_ping.status == 200
-      retries: 60
-      delay: 10
-      ignore_errors: true
-      when: not ansible_check_mode
-
-    - name: "Wait for SSH"
-      ansible.builtin.wait_for:
-        host: "{{ _ip }}"
-        port: 22
-        timeout: 300
-        state: started
-      register: ssh_ready
-
-
-    # ── Hand the VM to Ansible's own connection ───────────────────────────
-    # The post-boot checks used to shell out to `ssh -i <key-path variable>`. Nothing
-    # in the repo set that variable, so every Semaphore run passed `-i ""` and
-    # the login failed (tasks 1753/1755), and the runner step put its token in the argv
-    # of two processes and, on any failure, into the durable task log. Ansible already
-    # owns a connection to every inventory host: the orchestrator supplies its SSH
-    # credential through the inventory record, the same path every deploy uses
-    # (configure-host-network.yml, verify-host-access.yml). The next play logs in over
-    # that connection instead.
-    #
-    # A freshly cloned VM has freshly generated host keys, so any entry the controller
-    # holds for this address belongs to a previous occupant (a destroyed VM, or the
-    # squatter in docs/MISTAKES.md 3.6) and would refuse the login as a changed key.
-    # Only a clone made by THIS run is known to be new; an adopted VM keeps its entry.
-    - name: "Forget the controller's stale host key for a freshly cloned VM's address"
-      ansible.builtin.known_hosts:
-        name: "{{ item }}"
-        state: absent
-      changed_when: false
-      loop: >-
-        {{ [_ip] if (_decl.ansible_port | default(22) | int) == 22
-           else [_ip, '[' ~ _ip ~ ']:' ~ (_decl.ansible_port | int)] }}
-      loop_control:
-        label: "{{ item }}"
-      when: clone_result.json.data is defined
-
-    # Named after the DECLARED inventory host, so the login uses exactly the transport
-    # settings (port, key file, interpreter) a later deploy to that host will use —
-    # add_host on an existing host merges into it rather than starting from nothing.
-    # A ledger-only workstation run has no declaration and falls back to the VM name.
-    # Only non-secret metadata travels here: add_host's result is printed under -v.
-    - name: "Hand the new VM to the post-boot play"
-      ansible.builtin.add_host:
-        name: "{{ _decl_host | default(_name, true) }}"
-        groups: _provisioned_vm
-        ansible_host: "{{ _ip }}"
-        ansible_user: "{{ ci_user | default(ansible_user) }}"
-        _pv_service: "{{ target_service }}"
-        _pv_vmid: "{{ _vmid }}"
-        _pv_name: "{{ _name }}"
-        _pv_node: "{{ _node }}"
-        _pv_status: "{{ vm_running.json.data.status | default(pre_start.json.data.status | default('unknown')) }}"
-        _pv_agent_ok: "{{ agent_ping is defined and agent_ping is not skipped and (agent_ping.status | default(0)) == 200 }}"
-        _pv_port_open: "{{ ssh_ready is defined and ssh_ready is not skipped and ssh_ready is succeeded }}"
-      changed_when: false
+        - not (_pv_s.skip | bool)
+        - _pv_s.errors | length > 0
+        - groups['_provisioned_vm'] | default([]) | length == 0
 
 # ── Post-boot: log in, wait for cloud-init, configure the runner ─────────────
 # Every connection-bound step tolerates its failure and records it, and the verdict
@@ -778,8 +873,13 @@
           - (_pv._pv_login | default('')) != 'FAILED'
           - not ((_pv._pv_cloudinit | default('')) is match('FAILED'))
           - not ((_pv._pv_runner | default('')) is match('FAILED'))
+          # The recorded provision-vm verdict (cores, memory, disk, onboot read back from
+          # Proxmox). Failed last so the post-boot steps still ran against the VM.
+          - (_pv_step.errors | default([]) | length == 0) or (_pv_step.skip | default(false) | bool)
         fail_msg: >-
-          {% if (_pv._pv_login | default('')) == 'FAILED' %}The orchestrator could not log in to
+          {% if not ((_pv_step.errors | default([]) | length == 0)
+          or (_pv_step.skip | default(false) | bool)) %}VM {{ _pv_step.vmid }} does not match its
+          declaration: {{ _pv_step.errors | join('; ') }}.{% elif (_pv._pv_login | default('')) == 'FAILED' %}The orchestrator could not log in to
           {{ _pv.ansible_user | default('?') }}@{{ _pv.ansible_host | default('?') }}
           ({{ _pv._pv_login_error | default('') }}). cloud-init installed the public half of
           OpenBao secret/services/ssh:public_key for that user; check that the SSH credential
