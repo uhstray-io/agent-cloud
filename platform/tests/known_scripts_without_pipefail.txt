@@ -16,6 +16,3 @@
 #
 # One repository-relative path per line. Remove a line in the same commit that adds the
 # `set -o pipefail` (or `set -euo pipefail`) to that script.
-platform/services/caddy/deployment/start-caddy.sh
-platform/services/n8n/deployment/config/n8n-init-data.sh
-platform/services/semaphore/deployment/runner-entrypoint.sh
