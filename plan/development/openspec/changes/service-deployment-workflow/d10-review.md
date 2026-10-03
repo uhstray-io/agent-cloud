@@ -101,3 +101,24 @@ says the stamp waits on the matching OPA `data.json` workflow_steps change.
 
 Remaining gaps after this pass: edge-route (group preflight), oidc-config (second-run
 no-change), and cloud-init and service-deploy (not re-reviewed).
+
+### edge-route follow-up — 2026-10-03
+
+The gap recorded in the table above (no populated-group preflight) is closed. The table row
+stays as it was written.
+
+- manage-caddy-sites.yml:63-87 adds a first play on `localhost`. It refuses a bare
+  `target_service` group with no hosts. It records the refusal as a failed edge-route result
+  (:73) and then fails the run (:84-87). Normal and check mode behave the same way.
+- A compound pattern is not refused. rollback-inference-route.yml:455 passes
+  `caddy_svc:!caddy_svc` on purpose in gateway-config mode so that the Caddy play is skipped.
+  That importer already requires `caddy_svc` to have hosts (:85-89).
+- Guard: `platform/tests/test_edge_route_group_preflight.py`. An absent group gives a non-zero
+  exit code and exactly one edge-route `fail`, in normal and check mode. A populated group and
+  the compound pattern pass the guard with no result. To mutation-check it, the group-size term
+  was replaced with `false`: the two absent-group tests went red, and the file was restored
+  byte-exact.
+
+Verdict: edge-route **passes** all D10 checks. Its `review_gap` now records the pass. The
+remaining gaps are oidc-config (second-run no-change, an operator decision), cloud-init and
+service-deploy.

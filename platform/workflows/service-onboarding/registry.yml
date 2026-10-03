@@ -244,10 +244,7 @@ steps:
       - the Cloudflare plan is zero-diff
     evidence_keys: [resolves, route_status]
     reviewed: null
-    review_gap: >-
-      no populated-group preflight: hosts is the target group directly
-      (manage-caddy-sites.yml:59), so an absent group exits 0 with no step result (D10 review
-      2026-10-03)
+    review_gap: "none in the executor: passed all D10 checks 2026-10-03; the stamp waits on the matching OPA data.json workflow_steps change"
 
   - id: fw-assess
     order: 16

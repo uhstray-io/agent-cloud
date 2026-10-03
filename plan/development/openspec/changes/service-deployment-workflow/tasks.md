@@ -210,6 +210,8 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
         credential-backup). edge-route lacks a populated-group preflight; oidc-config recreates
         every container on each run. cloud-init and service-deploy were not re-reviewed. Stamps
         still wait on the OPA `data.json` change.
+        Same day, edge-route passes after `manage-caddy-sites.yml` gained a populated-group
+        preflight that records a failed edge-route result.
 - [x] 7.2 `provision-vm.yml` sets `onboot`; restart-policy check beside `enable-linger`.
       2026-09-22: onboot with per-host opt-out; `verify-service-persistence.yml` (step
       systemd-enablement) passes on local tududi, normal and check mode (tasks 977, 978)
