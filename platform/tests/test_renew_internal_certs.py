@@ -30,7 +30,7 @@ import ssl
 import sys
 import threading
 from contextlib import ExitStack, contextmanager
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 import harness_sandbox
@@ -42,6 +42,7 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
+from fake_http import DrainingHandler
 
 PLAYBOOK = playbook_yaml.REPO / "platform/playbooks/renew-internal-certs.yml"
 TEMPLATES = playbook_yaml.REPO / "platform/semaphore/templates.yml"
@@ -243,7 +244,7 @@ def _gateway(ca, server_leaf, allowed, scratch: Path, frozen=False, cert_optiona
         ctx.load_verify_locations(cadata=ca["bundle"])
         return ctx
 
-    class Handler(BaseHTTPRequestHandler):
+    class Handler(DrainingHandler):
         def log_message(self, *_a):
             pass
 
@@ -270,7 +271,7 @@ def _caddy(ca, tmp: Path, status: dict, asked: list):
         ctx.load_cert_chain(cert_f, key_f)
         return ctx
 
-    class Handler(BaseHTTPRequestHandler):
+    class Handler(DrainingHandler):
         def log_message(self, *_a):
             pass
 
@@ -286,7 +287,7 @@ def _caddy(ca, tmp: Path, status: dict, asked: list):
 
 
 def _loki(pushes: list):
-    class Handler(BaseHTTPRequestHandler):
+    class Handler(DrainingHandler):
         def log_message(self, *_a):
             pass
 
