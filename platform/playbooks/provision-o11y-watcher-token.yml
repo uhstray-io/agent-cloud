@@ -59,6 +59,7 @@
           secret_id: "{{ _bao_secret_id }}"
         status_code: [200]
       register: _bao_auth
+      changed_when: false
       delegate_to: localhost
       no_log: true
       check_mode: false

@@ -70,6 +70,7 @@
           secret_id: "{{ _bao_secret_id }}"
         status_code: [200]
       register: _bao_auth
+      changed_when: false
       no_log: true
       check_mode: false
 
@@ -152,7 +153,7 @@
         msg: "o11y liveness {{ 'OK' if _watch_failures | length == 0 else 'FAIL: ' ~ (_watch_failures | join('; ')) }}"
 
     # The webhook URL is the credential: no_log on this one request only. Check mode
-    # skips it (uri honours check mode), so a dry run never posts.
+    # skips it explicitly, so a dry run never posts.
     - name: Post the failure to Discord
       ansible.builtin.uri:
         url: "{{ _watch_webhook }}"
@@ -164,8 +165,13 @@
           allowed_mentions:
             parse: []
         status_code: [200, 204]
-      when: _watch_failures | length > 0
+      when: _watch_failures | length > 0 and not ansible_check_mode
       no_log: true
+
+    - name: Report the post a real run would make
+      ansible.builtin.debug:
+        msg: "check mode: would post one Discord message for {{ _watch_failures | length }} failure(s)"
+      when: _watch_failures | length > 0 and ansible_check_mode
 
     - name: Fail the scheduled run when the receiver is not live
       ansible.builtin.fail:
