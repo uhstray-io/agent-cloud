@@ -37,233 +37,291 @@
       - { regexp: '^#?\s*PermitRootLogin', line: 'PermitRootLogin no' }
 
   tasks:
-    # Source the sudo password from OpenBao (stored by store-ssh-password.yml) so
-    # the first become — writing the NOPASSWD drop-in — works on a host that still
-    # requires a sudo password. become:false here so this fetch itself needs no
-    # sudo. On an already-NOPASSWD host the value is simply unused. Empty/missing
-    # become_password => become fails loudly (correct: run store-ssh-password.yml).
-    - name: "Fetch sudo (become) password from OpenBao"
-      ansible.builtin.set_fact:
-        ansible_become_password: "{{ lookup('community.hashi_vault.hashi_vault',
-          'secret/data/services/ssh:become_password',
-          url=_bao_url, auth_method='approle',
-          role_id=_bao_role_id, secret_id=_bao_secret_id) }}"
-      become: false
-      no_log: true
-
-    - name: "Configure NOPASSWD sudo for user — {{ ansible_user }}"
-      ansible.builtin.copy:
-        content: "{{ ansible_user }} ALL=(ALL) NOPASSWD:ALL\n"
-        dest: "/etc/sudoers.d/{{ ansible_user }}"
-        mode: "0440"
-        validate: "visudo -cf %s"
-
-    - name: "Harden /etc/ssh/sshd_config"
-      ansible.builtin.lineinfile:
-        path: /etc/ssh/sshd_config
-        regexp: "{{ item.regexp }}"
-        line: "{{ item.line }}"
-        backup: true
-      loop: "{{ _sshd_settings }}"
-      loop_control:
-        label: "{{ item.line }}"
-      notify: Restart sshd
-
-    - name: "Find all sshd_config.d override files"
-      ansible.builtin.find:
-        paths: /etc/ssh/sshd_config.d
-        patterns: "*.conf"
-      register: _sshd_overrides
-
-    - name: "Harden each sshd_config.d override file"
-      ansible.builtin.lineinfile:
-        path: "{{ item.0.path }}"
-        regexp: "{{ item.1.regexp }}"
-        line: "{{ item.1.line }}"
-      loop: "{{ _sshd_overrides.files | product(_sshd_settings) | list }}"
-      loop_control:
-        label: "{{ item.0.path | basename }}: {{ item.1.line }}"
-      when: _sshd_overrides.files | length > 0
-      notify: Restart sshd
-
-    - name: "Flush handlers to restart sshd now"
-      ansible.builtin.meta: flush_handlers
-
-    # ── Post-lockdown verification (runs from Semaphore runner, no become) ────
-
-    - name: "Fetch management private key from OpenBao"
-      ansible.builtin.set_fact:
-        _mgmt_priv_key: "{{ lookup('community.hashi_vault.hashi_vault',
-          'secret/data/services/ssh:private_key',
-          url=_bao_url, auth_method='approle',
-          role_id=_bao_role_id, secret_id=_bao_secret_id) }}"
-      become: false
-      no_log: true
-
-    # The key goes on disk only for the probes, via the shared task, and is wiped in
-    # `always` — on a failed probe too, which the hand-rolled version did not do. Under
-    # --check this still runs: the scratch is runner-local
-    # (tasks/materialise-ssh-key.yml explains why that is allowed), and the key-auth
-    # probe then answers the question a dry run exists for — would the key still get in.
-    # Key auth is checked FIRST: if it fails, the host is one step from a lockout and
-    # that is the failure the operator needs to see. The password probe runs in this
-    # block too, only so both ssh calls share the scratch known_hosts holding the
-    # pinned host key (never the runner's ~/.ssh/known_hosts); it reads no key and
-    # decides nothing — the decision is after the block.
-    - name: "Verify the lockdown with a runner-local copy of the management key"
-      become: false
+    # The whole hardening runs in one block so a failure anywhere is RECORDED as this step's
+    # result before the play fails (service deployment workflow, step access-harden). The
+    # rescue keeps the failed task's name, and its message only when the task is not no_log:
+    # Ansible hands a no_log task's raw failure to the rescue, so it is withheld here.
+    - name: "Harden and verify, recording any failure"
       block:
-        - name: "Materialise the verification key (runner-local, 0600)"
-          ansible.builtin.include_tasks: tasks/materialise-ssh-key.yml
-          vars:
-            ssh_key_content: "{{ _mgmt_priv_key }}"
-            ssh_key_result_var: _verify_key
-
-        # StrictHostKeyChecking=yes against the host's own key, read over the Ansible
-        # connection this run already has (tasks/pin-ssh-host-key.yml says what that proves).
-        - name: "Pin the target's SSH host key read over the existing connection"
-          ansible.builtin.include_tasks: tasks/pin-ssh-host-key.yml
-          vars:
-            ssh_key_result_var: _verify_key
-            ssh_host_key_result_var: _verify_pin
-            ssh_host_key_addr: "{{ hostvars[inventory_hostname].ansible_host | default(inventory_hostname, true) }}"
-            ssh_host_key_port: "{{ hostvars[inventory_hostname].ansible_port | default(22, true) }}"
-
-        - name: "Refuse an unpinned probe"
-          ansible.builtin.assert:
-            that: _verify_pin.pinned | bool
-            fail_msg: >-
-              Could not read {{ inventory_hostname }}'s SSH host key over the Ansible
-              connection, so the ssh probe would have to trust whatever answers. Refusing.
-            quiet: true
-
-        - name: "Verify key auth still works"
-          ansible.builtin.command:
-            cmd: >
-              ssh -i {{ _verify_key.key }}
-                  -o BatchMode=yes -o ConnectTimeout=10
-                  -o StrictHostKeyChecking=yes
-                  -o UserKnownHostsFile={{ _verify_key.known_hosts }}
-                  -o PasswordAuthentication=no -o PubkeyAuthentication=yes
-                  -p {{ _verify_pin.port }}
-                  {{ ansible_user }}@{{ _verify_pin.addr }}
-                  echo KEY_AUTH_OK
-          delegate_to: localhost
+        # Source the sudo password from OpenBao (stored by store-ssh-password.yml) so
+        # the first become — writing the NOPASSWD drop-in — works on a host that still
+        # requires a sudo password. become:false here so this fetch itself needs no
+        # sudo. On an already-NOPASSWD host the value is simply unused. Empty/missing
+        # become_password => become fails loudly (correct: run store-ssh-password.yml).
+        - name: "Fetch sudo (become) password from OpenBao"
+          ansible.builtin.set_fact:
+            ansible_become_password: "{{ lookup('community.hashi_vault.hashi_vault',
+              'secret/data/services/ssh:become_password',
+              url=_bao_url, auth_method='approle',
+              role_id=_bao_role_id, secret_id=_bao_secret_id) }}"
           become: false
-          register: _key_test
-          failed_when: "'KEY_AUTH_OK' not in _key_test.stdout"
-          changed_when: false
-          check_mode: false
+          no_log: true
 
-        - name: "Probe password auth from the runner (what the server offers)"
-          ansible.builtin.command:
-            argv:
-              - ssh
-              - -v
-              - -o
-              - BatchMode=yes
-              - -o
-              - ConnectTimeout=10
-              - -o
-              - StrictHostKeyChecking=yes
-              - -o
-              - PubkeyAuthentication=no
-              - -o
-              - PreferredAuthentications=password,keyboard-interactive
-              - -o
-              - "UserKnownHostsFile={{ _verify_key.known_hosts }}"
-              - -p
-              - "{{ _verify_pin.port }}"
-              - "{{ ansible_user }}@{{ _verify_pin.addr }}"
-              - echo SHOULD_NOT_REACH
-          delegate_to: localhost
+        - name: "Configure NOPASSWD sudo for user — {{ ansible_user }}"
+          ansible.builtin.copy:
+            content: "{{ ansible_user }} ALL=(ALL) NOPASSWD:ALL\n"
+            dest: "/etc/sudoers.d/{{ ansible_user }}"
+            mode: "0440"
+            validate: "visudo -cf %s"
+
+        - name: "Harden /etc/ssh/sshd_config"
+          ansible.builtin.lineinfile:
+            path: /etc/ssh/sshd_config
+            regexp: "{{ item.regexp }}"
+            line: "{{ item.line }}"
+            backup: true
+          loop: "{{ _sshd_settings }}"
+          loop_control:
+            label: "{{ item.line }}"
+          notify: Restart sshd
+
+        - name: "Find all sshd_config.d override files"
+          ansible.builtin.find:
+            paths: /etc/ssh/sshd_config.d
+            patterns: "*.conf"
+          register: _sshd_overrides
+
+        - name: "Harden each sshd_config.d override file"
+          ansible.builtin.lineinfile:
+            path: "{{ item.0.path }}"
+            regexp: "{{ item.1.regexp }}"
+            line: "{{ item.1.line }}"
+          loop: "{{ _sshd_overrides.files | product(_sshd_settings) | list }}"
+          loop_control:
+            label: "{{ item.0.path | basename }}: {{ item.1.line }}"
+          when: _sshd_overrides.files | length > 0
+          notify: Restart sshd
+
+        - name: "Flush handlers to restart sshd now"
+          ansible.builtin.meta: flush_handlers
+
+        # ── Post-lockdown verification (runs from Semaphore runner, no become) ────
+
+        - name: "Fetch management private key from OpenBao"
+          ansible.builtin.set_fact:
+            _mgmt_priv_key: "{{ lookup('community.hashi_vault.hashi_vault',
+              'secret/data/services/ssh:private_key',
+              url=_bao_url, auth_method='approle',
+              role_id=_bao_role_id, secret_id=_bao_secret_id) }}"
           become: false
-          register: _pw_probe
+          no_log: true
+
+        # The key goes on disk only for the probes, via the shared task, and is wiped in
+        # `always` — on a failed probe too, which the hand-rolled version did not do. Under
+        # --check this still runs: the scratch is runner-local
+        # (tasks/materialise-ssh-key.yml explains why that is allowed), and the key-auth
+        # probe then answers the question a dry run exists for — would the key still get in.
+        # Key auth is checked FIRST: if it fails, the host is one step from a lockout and
+        # that is the failure the operator needs to see. The password probe runs in this
+        # block too, only so both ssh calls share the scratch known_hosts holding the
+        # pinned host key (never the runner's ~/.ssh/known_hosts); it reads no key and
+        # decides nothing — the decision is after the block.
+        - name: "Verify the lockdown with a runner-local copy of the management key"
+          become: false
+          block:
+            - name: "Materialise the verification key (runner-local, 0600)"
+              ansible.builtin.include_tasks: tasks/materialise-ssh-key.yml
+              vars:
+                ssh_key_content: "{{ _mgmt_priv_key }}"
+                ssh_key_result_var: _verify_key
+
+            # StrictHostKeyChecking=yes against the host's own key, read over the Ansible
+            # connection this run already has (tasks/pin-ssh-host-key.yml says what that proves).
+            - name: "Pin the target's SSH host key read over the existing connection"
+              ansible.builtin.include_tasks: tasks/pin-ssh-host-key.yml
+              vars:
+                ssh_key_result_var: _verify_key
+                ssh_host_key_result_var: _verify_pin
+                ssh_host_key_addr: "{{ hostvars[inventory_hostname].ansible_host | default(inventory_hostname, true) }}"
+                ssh_host_key_port: "{{ hostvars[inventory_hostname].ansible_port | default(22, true) }}"
+
+            - name: "Refuse an unpinned probe"
+              ansible.builtin.assert:
+                that: _verify_pin.pinned | bool
+                fail_msg: >-
+                  Could not read {{ inventory_hostname }}'s SSH host key over the Ansible
+                  connection, so the ssh probe would have to trust whatever answers. Refusing.
+                quiet: true
+
+            - name: "Verify key auth still works"
+              ansible.builtin.command:
+                cmd: >
+                  ssh -i {{ _verify_key.key }}
+                      -o BatchMode=yes -o ConnectTimeout=10
+                      -o StrictHostKeyChecking=yes
+                      -o UserKnownHostsFile={{ _verify_key.known_hosts }}
+                      -o PasswordAuthentication=no -o PubkeyAuthentication=yes
+                      -p {{ _verify_pin.port }}
+                      {{ ansible_user }}@{{ _verify_pin.addr }}
+                      echo KEY_AUTH_OK
+              delegate_to: localhost
+              become: false
+              register: _key_test
+              failed_when: "'KEY_AUTH_OK' not in _key_test.stdout"
+              changed_when: false
+              check_mode: false
+
+            - name: "Probe password auth from the runner (what the server offers)"
+              ansible.builtin.command:
+                argv:
+                  - ssh
+                  - -v
+                  - -o
+                  - BatchMode=yes
+                  - -o
+                  - ConnectTimeout=10
+                  - -o
+                  - StrictHostKeyChecking=yes
+                  - -o
+                  - PubkeyAuthentication=no
+                  - -o
+                  - PreferredAuthentications=password,keyboard-interactive
+                  - -o
+                  - "UserKnownHostsFile={{ _verify_key.known_hosts }}"
+                  - -p
+                  - "{{ _verify_pin.port }}"
+                  - "{{ ansible_user }}@{{ _verify_pin.addr }}"
+                  - echo SHOULD_NOT_REACH
+              delegate_to: localhost
+              become: false
+              register: _pw_probe
+              changed_when: false
+              failed_when: false
+              check_mode: false
+
+          always:
+            - name: "Remove the runner-local verification key"
+              ansible.builtin.include_tasks: tasks/remove-ssh-key.yml
+              vars:
+                ssh_key_result_var: _verify_key
+
+        # ── Is password auth REALLY off? Two independent views, both must agree ──
+        # The old probe ran `ssh -o BatchMode=yes -o PubkeyAuthentication=no` and passed
+        # on a non-zero exit. BatchMode disables password prompts (man ssh_config), so that
+        # ssh could never log in with a password and exited non-zero on EVERY host: the
+        # check could not fail. What decides a lockout is what the server OFFERS, so:
+        #   1. from the runner, the methods the server advertises after the `none`
+        #      request (`ssh -v` logs "Authentications that can continue: ..."), which is
+        #      the view an attacker or a locked-out operator has;
+        #   2. on the host, sshd's EFFECTIVE config (`sshd -T`), which covers drop-ins
+        #      the lineinfile edits above may have missed. Without `-C` it does not
+        #      evaluate Match blocks, which is why view 1 is not optional.
+        # Anything short of proof is a failure: an unreachable server, an unreadable
+        # config or a missing setting cannot pass. Both probes only read; the decision
+        # below is the one place that fails the host.
+        - name: "Read sshd's effective authentication settings"
+          ansible.builtin.command:
+            argv: [sshd, -T]
+          become: true
+          register: _sshd_eff
           changed_when: false
           failed_when: false
           check_mode: false
 
-      always:
-        - name: "Remove the runner-local verification key"
-          ansible.builtin.include_tasks: tasks/remove-ssh-key.yml
+        - name: "Decide whether password auth is really off"
+          ansible.builtin.set_fact:
+            _pw_problems: >-
+              {{ (['the runner never reached the authentication stage, so what the server
+                    offers is unproven: ' ~ (_pw_probe.stderr_lines | default([]) | last | default('no output'))]
+                  if (_pw_lines | length) == 0 else [])
+                 + (['a login succeeded with public-key auth disabled'] if (_pw_probe.rc | default(1)) == 0 else [])
+                 + (['the server still offers ' ~ (_pw_open | join(', ')) ~ ' to the runner']
+                  if (_pw_open | length) > 0 else [])
+                 + (['sshd -T could not be read (rc ' ~ (_sshd_eff.rc | default('?')) ~ ')']
+                  if (_sshd_eff.rc | default(1)) != 0 else
+                    ((['effective passwordauthentication is ' ~ (_eff_pw or 'absent')] if _eff_pw != 'no' else [])
+                     + (['effective kbdinteractiveauthentication is ' ~ (_eff_kbd or 'absent')] if _eff_kbd != 'no' else []))) }}
           vars:
-            ssh_key_result_var: _verify_key
+            _pw_lines: "{{ _pw_probe.stderr | default('') | regex_findall('Authentications that can continue: (\\S+)') }}"
+            _pw_methods: "{{ _pw_lines | join(',') | split(',') | reject('equalto', '') | unique | list }}"
+            _pw_open: "{{ _pw_methods | select('in', ['password', 'keyboard-interactive']) | list }}"
+            _eff_pw: >-
+              {{ _sshd_eff.stdout | default('')
+                 | regex_findall('(?im)^passwordauthentication\s+(\S+)\s*$') | first | default('') | lower }}
+            # OpenSSH before 8.7 reports the older name for the same setting.
+            _eff_kbd: >-
+              {{ _sshd_eff.stdout | default('')
+                 | regex_findall('(?im)^(?:kbdinteractive|challengeresponse)authentication\s+(\S+)\s*$')
+                 | first | default('') | lower }}
 
-    # ── Is password auth REALLY off? Two independent views, both must agree ──
-    # The old probe ran `ssh -o BatchMode=yes -o PubkeyAuthentication=no` and passed
-    # on a non-zero exit. BatchMode disables password prompts (man ssh_config), so that
-    # ssh could never log in with a password and exited non-zero on EVERY host: the
-    # check could not fail. What decides a lockout is what the server OFFERS, so:
-    #   1. from the runner, the methods the server advertises after the `none`
-    #      request (`ssh -v` logs "Authentications that can continue: ..."), which is
-    #      the view an attacker or a locked-out operator has;
-    #   2. on the host, sshd's EFFECTIVE config (`sshd -T`), which covers drop-ins
-    #      the lineinfile edits above may have missed. Without `-C` it does not
-    #      evaluate Match blocks, which is why view 1 is not optional.
-    # Anything short of proof is a failure: an unreachable server, an unreadable
-    # config or a missing setting cannot pass. Both probes only read; the decision
-    # below is the one place that fails the host.
-    - name: "Read sshd's effective authentication settings"
-      ansible.builtin.command:
-        argv: [sshd, -T]
-      become: true
-      register: _sshd_eff
-      changed_when: false
-      failed_when: false
-      check_mode: false
+        # Post-lockdown verification: a host that still takes passwords after hardening
+        # is a FAILED hardening, so this stops the play. No ignore_errors anywhere on the
+        # path to it: a failure that is recorded and then ignored is how the old check
+        # went green. Under --check the sshd edits were only simulated, so the probes
+        # read the host as it is NOW; the report below says so instead of failing the
+        # dry run over a change it did not make (plan/architecture/08, "Platform
+        # conventions" 2).
+        - name: "Confirm password auth disabled"
+          ansible.builtin.assert:
+            that: _pw_problems | length == 0
+            fail_msg: >-
+              Password auth is NOT proven off on {{ service_name | default(inventory_hostname) }}:
+              {{ _pw_problems | join('; ') }}.
+            success_msg: >-
+              {{ service_name | default(inventory_hostname) }}: password auth REJECTED — the server
+              offers no password or keyboard-interactive method and sshd's effective config agrees
+          when: not ansible_check_mode
 
-    - name: "Decide whether password auth is really off"
+        - name: "Lockdown complete"
+          ansible.builtin.debug:
+            msg: >-
+              {{ 'DRY RUN (sshd and sudoers changes simulated; the probes read the host as it is NOW) — '
+                 if ansible_check_mode else '' }}{{ service_name | default(inventory_hostname) }}:
+              password {{ 'REJECTED' if (_pw_problems | length) == 0
+                          else 'NOT YET REJECTED (' ~ (_pw_problems | join('; ')) ~ ')' }},
+              key auth CONFIRMED, NOPASSWD sudo configured, root login disabled
+
+      rescue:
+        - name: "Remember why hardening failed"
+          ansible.builtin.set_fact:
+            _harden_error: >-
+              {{ ansible_failed_task.name | default('a task') }}:
+              {{ '(details hidden: the task is no_log)' if (ansible_failed_task.no_log | default(false) | bool)
+                 else (ansible_failed_result.msg | default('failed')) }}
+
+    # One result per play (run_once), so it covers the whole group: a host that failed or
+    # never reached a verdict counts as not proven.
+    - name: "Collect the verdict across the target group"
       ansible.builtin.set_fact:
-        _pw_problems: >-
-          {{ (['the runner never reached the authentication stage, so what the server
-                offers is unproven: ' ~ (_pw_probe.stderr_lines | default([]) | last | default('no output'))]
-              if (_pw_lines | length) == 0 else [])
-             + (['a login succeeded with public-key auth disabled'] if (_pw_probe.rc | default(1)) == 0 else [])
-             + (['the server still offers ' ~ (_pw_open | join(', ')) ~ ' to the runner']
-              if (_pw_open | length) > 0 else [])
-             + (['sshd -T could not be read (rc ' ~ (_sshd_eff.rc | default('?')) ~ ')']
-              if (_sshd_eff.rc | default(1)) != 0 else
-                ((['effective passwordauthentication is ' ~ (_eff_pw or 'absent')] if _eff_pw != 'no' else [])
-                 + (['effective kbdinteractiveauthentication is ' ~ (_eff_kbd or 'absent')] if _eff_kbd != 'no' else []))) }}
+        _group_errors: >-
+          {%- set out = [] -%}
+          {%- for h in ansible_play_hosts_all -%}
+            {%- set hv = hostvars[h] -%}
+            {%- if hv._harden_error is defined -%}
+              {%- if out.append(h ~ ': ' ~ hv._harden_error) -%}{%- endif -%}
+            {%- elif hv._pw_problems is not defined -%}
+              {%- if out.append(h ~ ': no hardening verdict') -%}{%- endif -%}
+            {%- elif (hv._pw_problems | length) > 0 and not ansible_check_mode -%}
+              {%- if out.append(h ~ ': ' ~ (hv._pw_problems | join('; '))) -%}{%- endif -%}
+            {%- endif -%}
+          {%- endfor -%}
+          {{ out }}
+        # Key login is proven by the post-lockdown probe, which disables password auth on the
+        # client side, so a pass means the key alone gets in.
+        _key_only_proven: >-
+          {{ ansible_play_hosts_all | map('extract', hostvars) | map(attribute='_key_test', default={})
+             | map(attribute='stdout', default='') | select('search', 'KEY_AUTH_OK') | list | length
+             == ansible_play_hosts_all | length }}
+        _password_rejected: >-
+          {{ ansible_play_hosts_all | map('extract', hostvars) | map(attribute='_pw_problems', default=['unproven'])
+             | map('length') | select('equalto', 0) | list | length
+             == ansible_play_hosts_all | length }}
+
+    - name: "Record the step result"
+      ansible.builtin.include_tasks: tasks/emit-step-result.yml
       vars:
-        _pw_lines: "{{ _pw_probe.stderr | default('') | regex_findall('Authentications that can continue: (\\S+)') }}"
-        _pw_methods: "{{ _pw_lines | join(',') | split(',') | reject('equalto', '') | unique | list }}"
-        _pw_open: "{{ _pw_methods | select('in', ['password', 'keyboard-interactive']) | list }}"
-        _eff_pw: >-
-          {{ _sshd_eff.stdout | default('')
-             | regex_findall('(?im)^passwordauthentication\s+(\S+)\s*$') | first | default('') | lower }}
-        # OpenSSH before 8.7 reports the older name for the same setting.
-        _eff_kbd: >-
-          {{ _sshd_eff.stdout | default('')
-             | regex_findall('(?im)^(?:kbdinteractive|challengeresponse)authentication\s+(\S+)\s*$')
-             | first | default('') | lower }}
+        step_result_step: access-harden
+        step_result_status: "{{ 'pass' if (_group_errors | length == 0) else 'fail' }}"
+        step_result_evidence:
+          key_only_proven: "{{ _key_only_proven | bool }}"
+          password_rejected: "{{ _password_rejected | bool }}"
+        step_result_error: "{{ _group_errors | join('; ') }}"
 
-    # Post-lockdown verification: a host that still takes passwords after hardening
-    # is a FAILED hardening, so this stops the play. No ignore_errors anywhere on the
-    # path to it: a failure that is recorded and then ignored is how the old check
-    # went green. Under --check the sshd edits were only simulated, so the probes
-    # read the host as it is NOW; the report below says so instead of failing the
-    # dry run over a change it did not make (plan/architecture/08, "Platform
-    # conventions" 2).
-    - name: "Confirm password auth disabled"
-      ansible.builtin.assert:
-        that: _pw_problems | length == 0
-        fail_msg: >-
-          Password auth is NOT proven off on {{ service_name | default(inventory_hostname) }}:
-          {{ _pw_problems | join('; ') }}.
-        success_msg: >-
-          {{ service_name | default(inventory_hostname) }}: password auth REJECTED — the server
-          offers no password or keyboard-interactive method and sshd's effective config agrees
-      when: not ansible_check_mode
+    - name: "Fail when hardening did not pass"
+      ansible.builtin.fail:
+        msg: "{{ _harden_error }}"
+      when: _harden_error is defined
 
-    - name: "Lockdown complete"
-      ansible.builtin.debug:
-        msg: >-
-          {{ 'DRY RUN (sshd and sudoers changes simulated; the probes read the host as it is NOW) — '
-             if ansible_check_mode else '' }}{{ service_name | default(inventory_hostname) }}:
-          password {{ 'REJECTED' if (_pw_problems | length) == 0
-                      else 'NOT YET REJECTED (' ~ (_pw_problems | join('; ')) ~ ')' }},
-          key auth CONFIRMED, NOPASSWD sudo configured, root login disabled
 
   handlers:
     - name: Restart sshd
