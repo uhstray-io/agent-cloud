@@ -35,6 +35,9 @@
       - { regexp: '^#?\s*ChallengeResponseAuthentication', line: 'ChallengeResponseAuthentication no' }
       - { regexp: '^#?\s*KbdInteractiveAuthentication', line: 'KbdInteractiveAuthentication no' }
       - { regexp: '^#?\s*PermitRootLogin', line: 'PermitRootLogin no' }
+    # The host's sshd config locations; variables only so a test can point them at a scratch dir.
+    _sshd_config_path: /etc/ssh/sshd_config
+    _sshd_config_dir: /etc/ssh/sshd_config.d
 
   tasks:
     # The whole hardening runs in one block so a failure anywhere is RECORDED as this step's
@@ -66,7 +69,7 @@
 
         - name: "Harden /etc/ssh/sshd_config"
           ansible.builtin.lineinfile:
-            path: /etc/ssh/sshd_config
+            path: "{{ _sshd_config_path }}"
             regexp: "{{ item.regexp }}"
             line: "{{ item.line }}"
             backup: true
@@ -77,7 +80,7 @@
 
         - name: "Find all sshd_config.d override files"
           ansible.builtin.find:
-            paths: /etc/ssh/sshd_config.d
+            paths: "{{ _sshd_config_dir }}"
             patterns: "*.conf"
           register: _sshd_overrides
 
@@ -279,52 +282,80 @@
               {{ '(details hidden: the task is no_log)' if (ansible_failed_task.no_log | default(false) | bool)
                  else (ansible_failed_result.msg | default('failed')) }}
 
-    # One result per play (run_once), so it covers the whole group: a host that failed or
-    # never reached a verdict counts as not proven.
-    - name: "Collect the verdict across the target group"
+    # Reached on success AND after a rescued failure; an unreachable host never gets here.
+    - name: "Mark this host's verdict as reached"
       ansible.builtin.set_fact:
-        _group_errors: >-
-          {%- set out = [] -%}
-          {%- for h in ansible_play_hosts_all -%}
-            {%- set hv = hostvars[h] -%}
-            {%- if hv._harden_error is defined -%}
-              {%- if out.append(h ~ ': ' ~ hv._harden_error) -%}{%- endif -%}
-            {%- elif hv._pw_problems is not defined -%}
-              {%- if out.append(h ~ ': no hardening verdict') -%}{%- endif -%}
-            {%- elif (hv._pw_problems | length) > 0 and not ansible_check_mode -%}
-              {%- if out.append(h ~ ': ' ~ (hv._pw_problems | join('; '))) -%}{%- endif -%}
-            {%- endif -%}
-          {%- endfor -%}
-          {{ out }}
-        # Key login is proven by the post-lockdown probe, which disables password auth on the
-        # client side, so a pass means the key alone gets in.
-        _key_only_proven: >-
-          {{ ansible_play_hosts_all | map('extract', hostvars) | map(attribute='_key_test', default={})
-             | map(attribute='stdout', default='') | select('search', 'KEY_AUTH_OK') | list | length
-             == ansible_play_hosts_all | length }}
-        _password_rejected: >-
-          {{ ansible_play_hosts_all | map('extract', hostvars) | map(attribute='_pw_problems', default=['unproven'])
-             | map('length') | select('equalto', 0) | list | length
-             == ansible_play_hosts_all | length }}
-
-    - name: "Record the step result"
-      ansible.builtin.include_tasks: tasks/emit-step-result.yml
-      vars:
-        step_result_step: access-harden
-        step_result_status: "{{ 'pass' if (_group_errors | length == 0) else 'fail' }}"
-        step_result_evidence:
-          key_only_proven: "{{ _key_only_proven | bool }}"
-          password_rejected: "{{ _password_rejected | bool }}"
-        step_result_error: "{{ _group_errors | join('; ') }}"
-
-    - name: "Fail when hardening did not pass"
-      ansible.builtin.fail:
-        msg: "{{ _harden_error }}"
-      when: _harden_error is defined
-
+        _harden_verdict: true
 
   handlers:
+    # Not after a rescued failure. Before the step result was recorded, a failure failed the
+    # host and Ansible skipped its notified handlers; the rescue would now let them run at play
+    # end, restarting sshd onto a half-applied config that was never verified. A failed
+    # hardening leaves the running sshd exactly as it was.
     - name: Restart sshd
       ansible.builtin.service:
         name: ssh
         state: restarted
+      when: _harden_error is not defined
+
+# ── Record the step result on the controller ─────────────────────────────────
+# A block/rescue does not catch an UNREACHABLE host: Ansible drops it from the play, so a
+# result recorded inside the host play could not name it. This controller play folds every
+# targeted host's verdict into ONE result; a host with no verdict (unreachable, or failed
+# outside the rescued block) is a failure. Limit: when EVERY targeted host is unreachable,
+# Ansible ends the run before this play (no hosts left) and no result is recorded here; the
+# conformance collector then records the run as a failure from its task output tail.
+- name: "Record the access-harden step result"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  vars:
+    target_service: "ungrouped"
+    _targets: "{{ groups.get(target_service, []) }}"
+    _verdicts: "{{ _targets | map('extract', hostvars) | list }}"
+  tasks:
+    # Key login is proven by the post-lockdown probe, which disables password auth client-side.
+    - name: "Collect the verdict across the target group"
+      ansible.builtin.set_fact:
+        _group_errors: >-
+          {%- set out = [] -%}
+          {%- for h in _targets -%}
+            {%- set hv = hostvars[h] -%}
+            {%- if not (hv._harden_verdict | default(false)) -%}
+              {%- if out.append(h ~ ': no verdict (unreachable, or failed before it)') -%}{%- endif -%}
+            {%- else -%}
+              {%- if hv._harden_error is defined -%}{%- if out.append(h ~ ': ' ~ hv._harden_error) -%}{%- endif -%}{%- endif -%}
+              {%- if hv._harden_error is not defined and (hv._pw_problems | default(['unproven']) | length) > 0 and not ansible_check_mode -%}
+                {%- if out.append(h ~ ': ' ~ (hv._pw_problems | default(['unproven']) | join('; '))) -%}{%- endif -%}{%- endif -%}
+            {%- endif -%}
+          {%- endfor -%}
+          {{ out }}
+
+    - name: "Record the step result"
+      ansible.builtin.include_tasks: tasks/emit-step-result.yml
+      vars:
+        step_result_service: "{{ hostvars[_targets[0]].service_name | default(target_service) if _targets else target_service }}"
+        step_result_step: access-harden
+        step_result_status: "{{ 'pass' if (_group_errors | length == 0) and (_targets | length > 0) else 'fail' }}"
+        step_result_evidence:
+          key_only_proven: >-
+            {{ _verdicts
+               | map(attribute='_key_test', default={})
+               | map(attribute='stdout', default='')
+               | select('search', 'KEY_AUTH_OK')
+               | list | length
+               == (_targets | length) and (_targets | length) > 0 }}
+          password_rejected: >-
+            {{ _verdicts
+               | map(attribute='_pw_problems', default=['unproven'])
+               | map('length')
+               | select('equalto', 0)
+               | list | length
+               == (_targets | length) and (_targets | length) > 0 }}
+        step_result_error: "{{ (_group_errors | join('; ')) if _targets else 'no hosts in ' ~ target_service }}"
+
+    - name: "Fail when the step did not pass"
+      ansible.builtin.fail:
+        msg: "{{ _group_errors | join('; ') }}"
+      when: (_group_errors | length > 0) or (_targets | length == 0)

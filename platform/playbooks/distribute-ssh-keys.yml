@@ -296,41 +296,63 @@
               {{ '(details hidden: the task is no_log)' if (ansible_failed_task.no_log | default(false) | bool)
                  else (ansible_failed_result.msg | default('failed')) }}
 
-    # One result per play (run_once), so it covers the whole group. Under --check the key
-    # writes were simulated, so an unauthorized key or a failed login is reported as evidence,
-    # not as a failure (the probe above tolerates it the same way).
+    # Reached on success AND after a rescued failure; an unreachable host never gets here.
+    - name: "Mark this host's verdict as reached"
+      ansible.builtin.set_fact:
+        _ssh_keys_verdict: true
+
+# ── Record the step result on the controller ─────────────────────────────────
+# A block/rescue does not catch an UNREACHABLE host: Ansible drops it from the play, so a
+# result recorded inside the host play could not name it. This controller play folds every
+# targeted host's verdict into ONE result; a host with no verdict (unreachable, or failed
+# outside the rescued block) is a failure. Limit: when EVERY targeted host is unreachable,
+# Ansible ends the run before this play (no hosts left) and no result is recorded here; the
+# conformance collector then records the run as a failure from its task output tail.
+- name: "Record the ssh-keys step result"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  vars:
+    target_service: "ungrouped"
+    _targets: "{{ groups.get(target_service, []) }}"
+    _verdicts: "{{ _targets | map('extract', hostvars) | list }}"
+  tasks:
+    # Under --check the key writes were simulated: an unauthorized key or failed login is evidence, not failure.
     - name: "Collect the verdict across the target group"
       ansible.builtin.set_fact:
         _group_errors: >-
           {%- set out = [] -%}
-          {%- for h in ansible_play_hosts_all -%}
-            {%- for e in [hostvars[h]._distribute_error | default(''), hostvars[h]._verify_error | default('')] -%}
-              {%- if e -%}{%- if out.append(h ~ ': ' ~ e) -%}{%- endif -%}{%- endif -%}
-            {%- endfor -%}
-            {%- if not ansible_check_mode and not (hostvars[h]._key_present | default(false) | bool) -%}
-              {%- if out.append(h ~ ': the public halves are not both authorized') -%}{%- endif -%}
+          {%- for h in _targets -%}
+            {%- set hv = hostvars[h] -%}
+            {%- if not (hv._ssh_keys_verdict | default(false)) -%}
+              {%- if out.append(h ~ ': no verdict (unreachable, or failed before it)') -%}{%- endif -%}
+            {%- else -%}
+              {%- if hv._distribute_error is defined -%}{%- if out.append(h ~ ': ' ~ hv._distribute_error) -%}{%- endif -%}{%- endif -%}
+              {%- if hv._verify_error is defined -%}{%- if out.append(h ~ ': ' ~ hv._verify_error) -%}{%- endif -%}{%- endif -%}
+              {%- if not ansible_check_mode and not (hv._key_present | default(false) | bool) -%}{%- if out.append(h ~ ': the public halves are not both authorized') -%}{%- endif -%}{%- endif -%}
             {%- endif -%}
           {%- endfor -%}
           {{ out }}
-        _all_key_present: >-
-          {{ ansible_play_hosts_all | map('extract', hostvars) | map(attribute='_key_present', default=false)
-             | map('bool') | select | list | length == ansible_play_hosts_all | length }}
-        _all_key_login: >-
-          {{ ansible_play_hosts_all | map('extract', hostvars) | map(attribute='_key_test', default={})
-             | map(attribute='stdout', default='') | select('search', 'KEY_AUTH_OK') | list | length
-             == ansible_play_hosts_all | length }}
 
     - name: "Record the step result"
       ansible.builtin.include_tasks: tasks/emit-step-result.yml
       vars:
+        step_result_service: "{{ hostvars[_targets[0]].service_name | default(target_service) if _targets else target_service }}"
         step_result_step: ssh-keys
-        step_result_status: "{{ 'pass' if (_group_errors | length == 0) else 'fail' }}"
+        step_result_status: "{{ 'pass' if (_group_errors | length == 0) and (_targets | length > 0) else 'fail' }}"
         step_result_evidence:
-          key_present: "{{ _all_key_present | bool }}"
-          key_login: "{{ _all_key_login | bool }}"
-        step_result_error: "{{ _group_errors | join('; ') }}"
+          key_present: "{{ _verdicts | map(attribute='_key_present', default=false) | map('bool') | select | list | length == (_targets | length) and _targets | length > 0 }}"
+          key_login: >-
+            {{ _verdicts
+               | map(attribute='_key_test', default={})
+               | map(attribute='stdout', default='')
+               | select('search', 'KEY_AUTH_OK')
+               | list | length
+               == (_targets | length) and (_targets | length) > 0 }}
+        step_result_error: "{{ (_group_errors | join('; ')) if _targets else 'no hosts in ' ~ target_service }}"
 
-    - name: "Fail when distribution or the key login did not pass"
+    - name: "Fail when the step did not pass"
       ansible.builtin.fail:
-        msg: "{{ [_distribute_error | default(''), _verify_error | default('')] | select | join('; ') }}"
-      when: _distribute_error is defined or _verify_error is defined
+        msg: "{{ _group_errors | join('; ') }}"
+      when: (_group_errors | length > 0) or (_targets | length == 0)
