@@ -8,8 +8,8 @@ just its text. Needs ansible-playbook.
 """
 
 import copy
+import importlib.util
 import json
-import re
 import shutil
 import threading
 from http.server import ThreadingHTTPServer
@@ -24,7 +24,10 @@ from fake_http import DrainingHandler
 ROOT = Path(__file__).resolve().parents[2]
 PLAYBOOKS = ROOT / "platform/playbooks"
 EMIT = str(PLAYBOOKS / "tasks/emit-step-result.yml")
-RUN = re.compile(r"^\s*RUN:\s*(\{.*\})\s*$")
+_spec = importlib.util.spec_from_file_location(
+    "step_results", ROOT / "platform/workflows/service-onboarding/lib/step_results.py")
+step_results = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(step_results)
 
 pytestmark = pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="needs ansible-playbook")
 
@@ -54,7 +57,16 @@ def _emit_absolute(node):
     return node
 
 
-def _run(tmp_path, harness, check=False, inventory=None, extra=()):
+def _run(tmp_path, harness, check=False, inventory=None, extra=(), step=None):
+    """The one result the run recorded, or with `step`, the result for that step."""
+    results, rc = _run_all(tmp_path, harness, check, inventory, extra)
+    if step is not None:
+        results = [r for r in results if r["step"] == step]
+    assert len(results) == 1, results
+    return results[0], rc
+
+
+def _run_all(tmp_path, harness, check=False, inventory=None, extra=()):
     play_file = tmp_path / "play.yml"
     play_file.write_text(yaml.safe_dump(_emit_absolute(copy.deepcopy(harness)), sort_keys=False))
     inv = tmp_path / "inv.yml"
@@ -63,9 +75,10 @@ def _run(tmp_path, harness, check=False, inventory=None, extra=()):
     done = harness_sandbox.run(
         ["ansible-playbook", "-i", str(inv), str(play_file), *(["--check"] if check else []), *extra],
         tmp_path, cwd=ROOT, env=env)
-    results = [json.loads(m.group(1))["step_result"] for m in map(RUN.match, done.stdout.splitlines()) if m]
-    assert len(results) == 1, done.stdout + done.stderr
-    return results[0], done.returncode
+    # The collector's own parser: the aggregated list when present, else the single result.
+    results = step_results.results_in(done.stdout.splitlines())
+    assert results, done.stdout + done.stderr
+    return results, done.returncode
 
 
 class FakeProxmox:
@@ -220,7 +233,7 @@ def test_provision_vm_dry_run_of_an_absent_vm_records_a_skip(tmp_path):
 
 def test_provision_vm_verdict_fails_on_a_recorded_mismatch():
     verdict = next(p for p in _plays("provision-vm.yml") if str(p.get("name", "")).startswith("Verdict:"))
-    that = verdict["tasks"][0]["ansible.builtin.assert"]["that"]
+    that = next(t for t in verdict["tasks"] if "ansible.builtin.assert" in t)["ansible.builtin.assert"]["that"]
     assert any("_pv_step.errors" in c for c in that)
 
 
@@ -303,12 +316,16 @@ def _provision_play(tmp_path, cfg, name="dns"):
     record = next(p for p in plays if p.get("name") == "Record the provision-vm step result")
     verdict = next(p for p in plays if str(p.get("name", "")).startswith("Verdict:"))
     try:
-        result, rc = _run(tmp_path, [prov, record, verdict], inventory=PV_INVENTORY, extra=["-e", json.dumps({
+        results, rc = _run_all(tmp_path, [prov, record, verdict], inventory=PV_INVENTORY, extra=["-e", json.dumps({
             "_pve_host": fake.url, "_pve_secret": "x", "_pve_token_id": "t", "_ssh_pub": "ssh-ed25519 AAAA",
             "target_service": "dns", "ci_user": "u"})])
     finally:
         fake.close()
-    return result, rc, fake
+    fake.results = results
+    by_step = {r["step"]: r for r in results}
+    # cloud-init is recorded only when the run reaches the verdict play; a hard failure stops it.
+    assert "provision-vm" in by_step and set(by_step) <= {"provision-vm", "cloud-init"}, results
+    return by_step["provision-vm"], rc, fake
 
 
 def test_a_failed_disk_resize_fails_the_run_at_the_verdict(tmp_path):
@@ -364,3 +381,51 @@ def test_the_rescue_names_the_failed_task_and_withholds_a_no_log_message(tmp_pat
     assert "Boom:" in recorded
     assert ("SECRET-VALUE" in recorded) is not no_log
     assert ("details hidden" in recorded) is no_log
+
+
+# ── provision-vm records cloud-init too: one run, two step results ──────────────
+def _cloud_init(tmp_path, login=None, cloudinit=None, check=False):
+    """The verdict play judged from post-boot classifications planted on the VM host (both None:
+    no VM reached post-boot, as in a dry run that stopped early)."""
+    verdict = next(p for p in _plays("provision-vm.yml") if str(p.get("name", "")).startswith("Verdict:"))
+    seed = {"hosts": "localhost", "gather_facts": False, "vars": {"target_service": "dns"}, "tasks": []}
+    if login is not None:
+        seed["tasks"].append({"ansible.builtin.add_host": {
+            "name": "vm1", "groups": "_provisioned_vm", "_pv_login": login, "_pv_cloudinit": cloudinit}})
+    results, rc = _run_all(tmp_path, [seed, verdict], check=check, extra=["-e", "target_service=dns"])
+    assert [r["step"] for r in results] == ["cloud-init"], results
+    return results[0], rc
+
+
+def test_cloud_init_done_and_ssh_ok_passes(tmp_path):
+    result, rc = _cloud_init(tmp_path, "ok", "done")
+    assert (result["status"], rc, result["service"]) == ("pass", 0, "dns")
+    assert result["evidence"] == {"cloud_init_done": True, "ssh_reachable": True}
+    assert result["undo"] == "Destroy VM"
+
+
+def test_cloud_init_with_recoverable_errors_still_finished(tmp_path):
+    result, _ = _cloud_init(tmp_path, "ok", "done with recoverable errors")
+    assert result["status"] == "pass"
+
+
+@pytest.mark.parametrize("login,cloudinit,done,ssh", [("ok", "FAILED", False, True),
+                                                       ("FAILED", "not checked", False, False)])
+def test_cloud_init_failure_is_recorded_with_its_evidence(tmp_path, login, cloudinit, done, ssh):
+    result, rc = _cloud_init(tmp_path, login, cloudinit)
+    assert (result["status"], rc != 0) == ("fail", True)
+    assert result["evidence"] == {"cloud_init_done": done, "ssh_reachable": ssh}
+    assert result["error"] == f"SSH login: {login}; cloud-init: {cloudinit}"
+
+
+def test_cloud_init_never_attempted_is_a_skip_not_a_pass(tmp_path):
+    result, rc = _cloud_init(tmp_path, check=True)
+    assert (result["status"], result["check_mode"], rc) == ("skip", True, 0)
+    assert result["evidence"] == {"cloud_init_done": None, "ssh_reachable": None}
+
+
+def test_a_provision_run_records_both_steps(tmp_path):
+    # The whole provision -> record -> verdict chain records both steps, in order.
+    result, rc, fake = _provision_play(tmp_path, GOOD_VM)
+    assert (result["status"], rc) == ("pass", 0)
+    assert [r["step"] for r in fake.results] == ["provision-vm", "cloud-init"]
