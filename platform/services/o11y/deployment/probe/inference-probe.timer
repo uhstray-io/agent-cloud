@@ -1,0 +1,12 @@
+# Installed to /etc/systemd/system by deploy-o11y.yml when o11y_inference_probe_enabled
+# is true; removed when it is false. Change inference-telemetry-production, task 3.3.
+[Unit]
+Description=Run the synthetic inference probe every five minutes
+
+[Timer]
+OnCalendar=*:0/5
+AccuracySec=15s
+Unit=inference-probe.service
+
+[Install]
+WantedBy=timers.target

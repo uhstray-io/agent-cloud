@@ -122,6 +122,87 @@ Every rule holds for at least five minutes and routes to the existing `agent-clo
 Discord contact point. Their uids start with `inference_`, so the deploy readback and the
 drills, which check only the `o11y_` rules, do not cover them yet.
 
+## Synthetic inference probe
+
+`/health` answering means the host is reachable. It does not mean the model is serving.
+The probe sends one short chat completion through the public inference hostname every
+five minutes and records the result as metrics. It sets `reasoning_effort: none` and
+`max_tokens: 16`. Because it uses the public hostname, it goes through Cloudflare, Caddy
+and the gateway, the same path a client uses. This is task 3.3 of
+`inference-telemetry-production`.
+
+The probe is off unless private inventory sets `o11y_inference_probe_enabled: true`.
+With the flag off, `Deploy o11y` reads the same secrets and renders the same files and
+node_exporter command it did before the probe existed. It also needs no sudo for the
+probe. `platform/tests/test_inference_probe.py` checks both.
+
+To enable it, set these on the o11y host in site-config:
+
+- `o11y_inference_probe_url`: the public base URL, `https://<host>/v1`. The hostname is
+  site-specific, so it is never committed here.
+- `o11y_inference_probe_model`: a model name the endpoint serves.
+- `o11y_inference_probe_key_field`: the OpenBao field that holds the probe's API key,
+  under `secret/services/<o11y_inference_probe_key_service>`. The service defaults to
+  `agentgateway`. Give the probe its own gateway identity: add a name to `agw_clients`
+  on the gateway host, deploy agentgateway (it mints `client_<name>` once), then set this
+  field to `client_<name>`. The probe's traffic can then be identified on the gateway
+  dashboards and revoked on its own. The key is read through `_shared_reads`; it is never
+  copied into `secret/services/o11y`.
+- `o11y_inference_probe_timeout_seconds` (optional): the latency budget, 1 to 120,
+  default 30. A request that takes longer than this counts as a failure.
+
+What an enabled deploy installs:
+
+- **Key file.** `probe/inference-probe.env`, mode 0600 and gitignored, holding the URL,
+  model, key and budget. It is a separate file from `.env` because Grafana loads `.env` as
+  its `env_file`, and the inference key does not belong in Grafana's environment.
+- **Units.** `/etc/systemd/system/inference-probe.service` is a oneshot that runs as the
+  deploy user. It has `ProtectSystem=strict` and can write only
+  `/var/lib/node_exporter/textfile`. `inference-probe.timer` runs it at `OnCalendar=*:0/5`.
+  The key reaches curl as a config line on stdin, so it never appears in an argument list
+  or the journal.
+- **node_exporter overlay.** `probe/compose.textfile.yml` adds `--collector.textfile` to
+  the existing receiver-host node_exporter. The host directory is already visible through
+  the read-only `/:/host` mount. The existing `receiver-host` scrape job collects the
+  metrics, so no new scrape job or published port is needed.
+- **Metrics.** Three gauges, each labelled `model_name`:
+  - `inference_probe_success`: 1 only for HTTP 200 carrying a completion within the
+    budget, otherwise 0.
+  - `inference_probe_latency_seconds`: curl's total request time.
+  - `inference_probe_last_run_timestamp_seconds`
+
+  The script writes a temporary file in the same directory and renames it into place, so
+  node_exporter never reads a partial file. A failed inference is recorded as a sample;
+  it is not a failed unit.
+
+The deploy then checks the result. The timer must be active. The deploy records the
+host time, takes one sample immediately, and requires all three series in Prometheus
+with the configured `model_name` and a last-run timestamp no older than that sample's
+start, so a stale series or another model's series does not pass. Under `--check` the
+unit files are only simulated, so activation and this check are skipped. The deploy does
+not fail when inference itself is failing. **No alert rule on `inference_probe_success`
+exists yet**: that is task 3.2, still open, so a failing probe is visible only on a
+graph until it lands.
+
+Setting the flag back to false removes each artefact an earlier enable left, checked one
+by one: the timer (stopped and disabled first), the service unit, the last metrics file
+and the key file. An interrupted install or removal is therefore still cleaned up.
+Privileged steps run only for an artefact that exists, so a host that never ran the
+probe needs no sudo.
+
+Caveats:
+
+- **Rollback.** During a `direct`-mode rollback (`rollback-inference-route.yml`), vLLM
+  does not accept gateway keys, so the probe records failures. To keep it green, point
+  `o11y_inference_probe_key_field` at the published `direct_<name>` field until the route
+  is restored.
+- **Local canary.** The local-only `Drill o11y Alert Canary` restarts the stack through
+  `deploy.sh` without this overlay. On that host the textfile collector stays off until
+  the next deploy.
+- **Not yet verified.** The o11y host's egress to the public hostname, and whether the
+  served model accepts `reasoning_effort: none`, are not verified until the first enabled
+  deploy.
+
 ## Scheduled jobs and internal CA expiry
 
 Two Loki-backed groups render in every environment (change `production-internal-ca`,
