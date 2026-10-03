@@ -208,7 +208,9 @@
 - [ ] 2.2 Diff bodies (ignoring ids and timestamps); record first-token and gap deltas
       in `context/architecture.md`
       2026-10-02: `conformance.sh diff` is the comparison, and the playbook runs it. A case
-      matches on status, shape and semantic fields. The exact-body hash is reported but does
+      matches only when both sides succeeded (curl exit 0, 2xx) and agree on status, shape and
+      semantic fields; any failure is an error naming each side's status (PR 409 review).
+      Model names go through the inventory's name-to-`upstream_model` map, passed as a file. The exact-body hash is reported but does
       not decide the verdict. The playbook fails on any case that does not match. Recording
       in `architecture.md` waits for the first production run; the section is in place and
       says the results are pending.

@@ -7,7 +7,8 @@
 # temporary directory, runs it, reads the results and removes the directory.
 #
 #   conformance.sh run                 send every case to both targets; write results.jsonl
-#   conformance.sh diff <results.jsonl> compare the two targets case by case; print one JSON report
+#   conformance.sh diff <results.jsonl> [<model-map.json>]
+#                                      compare the two targets case by case; print one JSON report
 #
 # Cases (spec "Client-visible contract is unchanged through the gateway"):
 #   models              GET /models
@@ -324,47 +325,75 @@ cmd_run() {
 }
 
 # ── 2.2: the comparison ────────────────────────────────────────────────────────
-# A case matches when both targets answered (no connection failure), with the same status, the
-# same body shape and the same semantic fields. The normalised-body hash is reported as
+# A case MATCHES only when both targets succeeded (curl exit 0 and a 2xx status) and gave the same
+# status, the same body shape and the same semantic fields. Either side failing is an "error"
+# whose `failure` names the status (or the curl exit) on each side: two identical 401s are a
+# failed run, not a conforming one (PR 409 review). The normalised-body hash is reported as
 # exact_body_match but is not part of the verdict: generation is not guaranteed bit-identical
 # between two requests even at temperature 0 with a seed. Timing deltas are gateway minus direct.
+#
+# Model names. The gateway serves each agw_models `name`, and the inventory's `upstream_model`
+# may remap it to a different id at vLLM (local-dev: gpt-oss-20b -> openai/gpt-oss-20b). The
+# optional second argument is that mapping as a JSON object, {"<gateway name>": "<upstream id>"},
+# written by the playbook from inventory. Before comparing, a model name the gateway reports is
+# translated through it, and the direct models list is narrowed to the declared upstream ids (vLLM
+# may serve ids the gateway deliberately does not expose). Without a mapping, names compare as-is.
 cmd_diff() {
-	[ -r "${1:-}" ] || die "usage: conformance.sh diff <results.jsonl>"
-	jq -s -c "$JQ_LIB"'
+	[ -r "${1:-}" ] || die "usage: conformance.sh diff <results.jsonl> [<model-map.json>]"
+	local map='{}'
+	if [ -n "${2:-}" ]; then
+		[ -r "$2" ] || die "model map $2 is not readable"
+		jq -e 'type == "object" and all(.[]; type == "string")' "$2" >/dev/null ||
+			die "model map $2 must be a JSON object of strings"
+		map=$(jq -c . "$2")
+	fi
+	jq -s -c --argjson map "$map" "$JQ_LIB"'
 		def d($a; $b): if $a == null or $b == null then null else ($a - $b | r3) end;
+		def up: . as $v | if ($v | type) == "string" and ($map | has($v)) then $map[$v] else $v end;
+		($map | [.[]] | unique) as $declared
+		| def gw_norm: if has("ids") then .ids |= (map(up) | sort) else . end
+			| if has("model") then .model |= up else . end;
+		def direct_norm: if has("ids") and ($declared | length) > 0
+			then .ids |= map(select(. as $i | $declared | index($i))) else . end;
+		def ok: .curl_exit == 0 and .status >= 200 and .status < 300;
+		def how: if .curl_exit != 0 then "curl exit \(.curl_exit)" else "HTTP \(.status)" end;
 		group_by(.case)
 		| map(
 			(map(select(.target == "gateway")) | first) as $g
 			| (map(select(.target == "direct")) | first) as $d
 			| {case: .[0].case}
 			+ if $g == null or $d == null then {verdict: "incomplete"}
-			  else {
+			  else ($g.semantic | gw_norm) as $gs | ($d.semantic | direct_norm) as $ds
+			  | {
 				status: {gateway: $g.status, direct: $d.status},
 				status_match: ($g.status == $d.status),
 				shape_match: ($g.shape_sha256 == $d.shape_sha256),
-				semantic_match: ($g.semantic == $d.semantic),
+				semantic_match: ($gs == $ds),
 				exact_body_match: ($g.body_sha256 == $d.body_sha256),
-				semantic_diff: [($g.semantic + $d.semantic) | keys[] as $k
-					| select($g.semantic[$k] != $d.semantic[$k])
-					| {key: $k, gateway: $g.semantic[$k], direct: $d.semantic[$k]}],
+				semantic_diff: [($gs + $ds) | keys[] as $k
+					| select($gs[$k] != $ds[$k])
+					| {key: $k, gateway: $gs[$k], direct: $ds[$k]}],
 				timing_delta: {
 					total_s: d($g.timing.total_s; $d.timing.total_s),
 					ttft_s: d($g.timing.ttft_s; $d.timing.ttft_s),
 					gap_p95_s: d($g.timing.gaps.p95_s; $d.timing.gaps.p95_s),
 					gap_max_s: d($g.timing.gaps.max_s; $d.timing.gaps.max_s)}}
-				| .verdict = (if $g.status == 0 or $d.status == 0 then "error"
-					elif .status_match and .shape_match and .semantic_match then "match"
-					else "differ" end)
+				| if ($g | ok) and ($d | ok) then
+					.verdict = (if .status_match and .shape_match and .semantic_match then "match" else "differ" end)
+				  else
+					.verdict = "error" | .failure = "gateway \($g | how), direct \($d | how)"
+				  end
 			  end)
 		| {verdict: (if length > 0 and all(.[]; .verdict == "match") then "pass" else "fail" end),
 		   matched: ([.[] | select(.verdict == "match")] | length),
 		   total: length,
 		   not_matched: [.[] | select(.verdict != "match") | .case],
+		   failures: [.[] | select(.failure != null) | "\(.case): \(.failure)"],
 		   cases: .}' "$1"
 }
 
 case "${1:-}" in
 run) cmd_run ;;
-diff) cmd_diff "${2:-}" ;;
-*) die "usage: conformance.sh run | conformance.sh diff <results.jsonl>" ;;
+diff) cmd_diff "${2:-}" "${3:-}" ;;
+*) die "usage: conformance.sh run | conformance.sh diff <results.jsonl> [<model-map.json>]" ;;
 esac

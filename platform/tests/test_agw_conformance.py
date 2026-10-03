@@ -58,13 +58,15 @@ class Stub:
     responses_404   no route for the Responses API
     reorder         reverse JSON key order
     first_delay / gap  stream timing: seconds to the first token, seconds between chunks
+    models          the ids its models list returns (default ["m"])
     """
 
     def __init__(self, key=None, drop_reasoning=False, buffer_stream=False, responses_404=False,
-                 reorder=False, first_delay=0.4, gap=0.1):
+                 reorder=False, first_delay=0.4, gap=0.1, models=("m",)):
         self.key, self.drop_reasoning, self.buffer_stream = key, drop_reasoning, buffer_stream
         self.responses_404, self.reorder = responses_404, reorder
         self.first_delay, self.gap = first_delay, gap
+        self.models = list(models)
         self.seen = []
         stub = self
 
@@ -114,7 +116,7 @@ class Stub:
         now = int(time.time()) + random.randrange(1000)
         if method == "GET" and h.path == "/v1/models":
             return self.send(h, 200, {"object": "list", "data": [
-                {"id": "m", "object": "model", "created": now, "owned_by": "vllm", "root": "m"}]})
+                {"id": i, "object": "model", "created": now, "owned_by": "vllm", "root": i} for i in self.models]})
         if method == "POST" and h.path == "/v1/responses":
             if self.responses_404:
                 return self.send(h, 404, {"detail": "Not Found"})
@@ -230,8 +232,12 @@ def _run(tmp: Path, gw: Stub, direct: Stub, *, direct_key=True, env=None, shim_e
     return r, lines
 
 
-def _diff(tmp: Path) -> dict:
-    r = subprocess.run(["bash", str(SCRIPT), "diff", str(tmp / "out" / "results.jsonl")],
+def _diff(tmp: Path, model_map: dict | None = None) -> dict:
+    extra = []
+    if model_map is not None:
+        (tmp / "model-map.json").write_text(json.dumps(model_map))
+        extra = [str(tmp / "model-map.json")]
+    r = subprocess.run(["bash", str(SCRIPT), "diff", str(tmp / "out" / "results.jsonl"), *extra],
                        capture_output=True, text=True, timeout=60)
     assert r.returncode == 0, r.stderr
     return json.loads(r.stdout)
@@ -359,8 +365,82 @@ def test_a_gateway_without_the_responses_route_fails_on_status(tmp_path, stubs):
     assert r.returncode == 0, r.stderr
     report = _diff(tmp_path)
     c = _case(report, "responses")
-    assert c["status"] == {"gateway": 404, "direct": 200} and c["verdict"] == "differ"
+    assert c["status"] == {"gateway": 404, "direct": 200} and c["verdict"] == "error"
+    assert c["failure"] == "gateway HTTP 404, direct HTTP 200"
     assert report["not_matched"] == ["responses"]
+    assert report["failures"] == ["responses: gateway HTTP 404, direct HTTP 200"]
+
+
+def test_identical_http_failures_on_both_sides_fail(tmp_path, stubs):
+    # Both targets refuse the key alike: the bodies match, the run must not (PR 409 review).
+    gw, direct = stubs(key="some-other-key"), stubs(key="some-other-key")
+    r, lines = _run(tmp_path, gw, direct)
+    assert r.returncode == 0, r.stderr
+    assert {x["status"] for x in lines} == {401}
+    report = _diff(tmp_path)
+    assert report["verdict"] == "fail" and report["matched"] == 0
+    for c in report["cases"]:
+        assert c["status_match"] and c["semantic_match"] and c["verdict"] == "error", c
+        assert c["failure"] == "gateway HTTP 401, direct HTTP 401"
+
+
+def test_a_failure_on_one_side_only_is_an_error(tmp_path):
+    out = tmp_path / "out"
+    out.mkdir()
+    base = {"case": "x", "status": 200, "curl_exit": 0, "body_sha256": "a", "shape_sha256": "s",
+            "semantic": {}, "timing": {}}
+    (out / "results.jsonl").write_text(
+        json.dumps({**base, "target": "gateway", "status": 0, "curl_exit": 28}) + "\n"
+        + json.dumps({**base, "target": "direct"}) + "\n")
+    c = _case(_diff(tmp_path), "x")
+    assert c["verdict"] == "error" and c["failure"] == "gateway curl exit 28, direct HTTP 200"
+
+
+REMAP = {"gpt-oss-20b": "openai/gpt-oss-20b"}
+
+
+def _remap_run(tmp_path, stubs, gateway_models):
+    # The gateway serves its declared name; vLLM serves the upstream id and one more model the
+    # gateway does not expose. Each stub echoes the model it was asked for, as both do.
+    gw = stubs(key=GW_KEY, models=gateway_models)
+    direct = stubs(key=UP_KEY, models=["openai/gpt-oss-20b", "undeclared-extra"])
+    r, _ = _run(tmp_path, gw, direct,
+                env={"AGW_CONF_MODEL": "gpt-oss-20b", "AGW_CONF_DIRECT_MODEL": "openai/gpt-oss-20b"})
+    assert r.returncode == 0, r.stderr
+
+
+def test_a_declared_model_remap_is_not_a_difference(tmp_path, stubs):
+    _remap_run(tmp_path, stubs, ["gpt-oss-20b"])
+    report = _diff(tmp_path, REMAP)
+    assert report["verdict"] == "pass", report
+
+
+def test_without_the_mapping_the_remap_shows_as_a_difference(tmp_path, stubs):
+    _remap_run(tmp_path, stubs, ["gpt-oss-20b"])
+    report = _diff(tmp_path)
+    assert report["verdict"] == "fail"
+    assert {"key": "model", "gateway": "gpt-oss-20b", "direct": "openai/gpt-oss-20b"} in \
+        _case(report, "effort-low")["semantic_diff"]
+
+
+@pytest.mark.parametrize("gateway_models, mapping", [
+    (["gpt-oss-20b", "not-declared"], REMAP),            # the gateway exposes an undeclared model
+    (["gpt-oss-20b"], {"gpt-oss-20b": "openai/other"}),  # the declared upstream is not what vLLM serves
+])
+def test_a_real_model_mismatch_still_fails(tmp_path, stubs, gateway_models, mapping):
+    _remap_run(tmp_path, stubs, gateway_models)
+    report = _diff(tmp_path, mapping)
+    assert report["verdict"] == "fail" and "models" in report["not_matched"], report
+
+
+def test_a_malformed_model_map_is_refused(tmp_path):
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "results.jsonl").write_text("")
+    (tmp_path / "bad.json").write_text('["not", "an", "object"]')
+    r = subprocess.run(["bash", str(SCRIPT), "diff", str(out / "results.jsonl"), str(tmp_path / "bad.json")],
+                       capture_output=True, text=True, timeout=60)
+    assert r.returncode == 2 and "must be a JSON object of strings" in r.stderr
 
 
 def test_a_shape_difference_alone_fails_the_case(tmp_path):
@@ -394,6 +474,7 @@ def test_unreachable_targets_are_an_error_even_when_both_fail_alike(tmp_path, st
     assert lines and all(x["status"] == 0 and x["curl_exit"] == 7 for x in lines)
     report = _diff(tmp_path)
     assert report["verdict"] == "fail" and {c["verdict"] for c in report["cases"]} == {"error"}
+    assert {c["failure"] for c in report["cases"]} == {"gateway curl exit 7, direct curl exit 7"}
 
 
 # ── listener TLS options and input checks ─────────────────────────────────────
@@ -472,13 +553,14 @@ class Bao(seed_harness.FakeBao):
         self.reply({}, 404)
 
 
-def _playbook(tmp: Path, gw: Stub, direct: Stub, extra=None, check=False):
+def _playbook(tmp: Path, gw: Stub, direct: Stub, extra=None, check=False, host_vars=None):
     Bao.requests = []
     Bao.store = {"client_stray": GW_KEY, "vllm_api_key": UP_KEY, "agw_db_password": "synthetic-db"}
     with seed_harness.serve(Bao) as address:
         host = {"ansible_connection": "local", "ansible_python_interpreter": sys.executable,
                 "service_name": "agentgateway", "agw_clients": ["stray"], "agw_models": [{"name": "m"}],
-                "agw_upstream_base_url": direct.url, "agw_bind": "127.0.0.1", "agw_port": gw.port}
+                "agw_upstream_base_url": direct.url, "agw_bind": "127.0.0.1", "agw_port": gw.port,
+                **(host_vars or {})}
         inv = {"all": {"vars": {"openbao_addr": address},
                        "children": {"agentgateway_svc": {"hosts": {"gw": host}}}}}
         (tmp / "inv.yml").write_text(yaml.safe_dump(inv))
@@ -522,6 +604,31 @@ def test_a_difference_fails_the_playbook_with_the_case_named(tmp_path, stubs):
     assert made and not _left_behind(made)
 
 
+def test_the_playbook_hands_the_declared_model_remap_to_the_comparison(tmp_path, stubs):
+    gw = stubs(key=GW_KEY, models=["gpt-oss-20b"])
+    direct = stubs(key=UP_KEY, models=["openai/gpt-oss-20b", "undeclared-extra"])
+    rc, out, made = _playbook(tmp_path, gw, direct, host_vars={
+        "agw_models": [{"name": "gpt-oss-20b", "upstream_model": "openai/gpt-oss-20b"}]})
+    assert rc == 0 and f"PASS, {len(CASES)}/{len(CASES)} cases match" in out, out
+    assert {x["body"]["model"] for x in direct.seen if x["method"] == "POST"} == {"openai/gpt-oss-20b"}
+    assert made and not _left_behind(made)
+
+
+@pytest.mark.parametrize("name", ["victim", "agw-conformance.evil"])
+def test_an_extra_var_cannot_redirect_the_key_files_or_the_delete(tmp_path, stubs, name):
+    # An extra var outranks the registered tempfile result. Aim it at a directory holding a canary:
+    # nothing is written into it and it is not deleted, whether or not its name has the prefix
+    # (the second is not directly under the temp root).
+    target = tmp_path / name
+    target.mkdir()
+    (target / "canary").write_text("keep")
+    gw, direct = stubs(key=GW_KEY), stubs(key=UP_KEY)
+    rc, out, _ = _playbook(tmp_path, gw, direct, extra={"_agwc_tmpdir": {"path": str(target)}})
+    assert rc != 0 and "Do not pass _agwc_tmpdir as an extra var" in out, out
+    assert sorted(p.name for p in target.iterdir()) == ["canary"]
+    assert gw.seen == [] and direct.seen == []
+
+
 def test_a_dry_run_sends_nothing(tmp_path, stubs):
     gw, direct = stubs(key=GW_KEY), stubs(key=UP_KEY)
     rc, out, _ = _playbook(tmp_path, gw, direct, check=True)
@@ -532,8 +639,8 @@ def test_a_dry_run_sends_nothing(tmp_path, stubs):
 def test_the_key_files_are_0600_in_a_private_directory():
     plays = playbook_yaml.load(PLAYBOOK)
     tasks = json.dumps(plays[1]["tasks"])
-    assert '"dest": "{{ _conf_dir.path }}/gateway.key", "mode": "0600"' in tasks
-    assert '"dest": "{{ _conf_dir.path }}/direct.key", "mode": "0600"' in tasks
+    assert '"dest": "{{ _agwc_tmpdir.path }}/gateway.key", "mode": "0600"' in tasks
+    assert '"dest": "{{ _agwc_tmpdir.path }}/direct.key", "mode": "0600"' in tasks
 
 
 # ── wiring ────────────────────────────────────────────────────────────────────

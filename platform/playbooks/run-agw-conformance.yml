@@ -200,25 +200,59 @@
               ansible.builtin.tempfile:
                 state: directory
                 prefix: agw-conformance.
-              register: _conf_dir
+              register: _agwc_tmpdir
+
+            # Every write and the delete below take their path from this registered result, and an
+            # extra var outranks a registered one: `-e _agwc_tmpdir=...` would aim the key files and
+            # `state: absent` anywhere. So the path is checked before anything is written into it, and
+            # again as the delete's condition: an `agw-conformance.<suffix>` directory directly under
+            # /tmp or the runner's TMPDIR (the roots tempfile uses with no `path:`), with no `..`.
+            # The expression is inline in both places on purpose: a variable holding it, or its
+            # verdict, could be overridden the same way (PR 409 review).
+            - name: "Refuse a working directory that is not this run's tempfile"
+              ansible.builtin.assert:
+                that: >-
+                  (_agwc_tmpdir | default({})).path is defined
+                  and (_agwc_tmpdir.path is string)
+                  and (_agwc_tmpdir.path is match('^/'))
+                  and ('/../' not in (_agwc_tmpdir.path ~ '/'))
+                  and ((_agwc_tmpdir.path | basename) is match('^agw-conformance\\.[A-Za-z0-9_]+$'))
+                  and ((_agwc_tmpdir.path | dirname | realpath) in (['/tmp', lookup('ansible.builtin.env', 'TMPDIR') | default('/tmp', true)] | map('realpath') | list))
+                fail_msg: >-
+                  The working directory is not an agw-conformance.* directory directly under the temp
+                  root, so nothing is written or deleted. Do not pass _agwc_tmpdir as an extra var.
+                quiet: true
 
             - name: "Place the conformance script"
               ansible.builtin.copy:
                 src: "{{ playbook_dir }}/../services/agentgateway/deployment/tests/conformance.sh"
-                dest: "{{ _conf_dir.path }}/conformance.sh"
+                dest: "{{ _agwc_tmpdir.path }}/conformance.sh"
                 mode: "0700"
+
+            # Not a secret: each served name and the upstream id it reaches (upstream_model, or the
+            # name itself), so the comparison can translate model names the gateway reports.
+            - name: "Place the gateway-to-upstream model map"
+              ansible.builtin.copy:
+                content: >-
+                  {%- set out = {} -%}
+                  {%- for m in agw_models -%}
+                    {%- set _ = out.update({m.name: (m.upstream_model | default('', true)) or m.name}) -%}
+                  {%- endfor -%}
+                  {{ out | to_json }}
+                dest: "{{ _agwc_tmpdir.path }}/model-map.json"
+                mode: "0600"
 
             - name: "Place the client key (0600)"
               ansible.builtin.copy:
                 content: "{{ _conf_client_key }}"
-                dest: "{{ _conf_dir.path }}/gateway.key"
+                dest: "{{ _agwc_tmpdir.path }}/gateway.key"
                 mode: "0600"
               no_log: true
 
             - name: "Place the upstream key (0600)"
               ansible.builtin.copy:
                 content: "{{ _conf_upstream_key }}"
-                dest: "{{ _conf_dir.path }}/direct.key"
+                dest: "{{ _agwc_tmpdir.path }}/direct.key"
                 mode: "0600"
               no_log: true
               when: _conf_have_upstream | bool
@@ -227,17 +261,17 @@
             # "<case> <target> <status>" line per request, which is what diagnoses a failure.
             - name: "Send every case to the gateway and to vLLM"
               ansible.builtin.command:
-                argv: [bash, "{{ _conf_dir.path }}/conformance.sh", run]
+                argv: [bash, "{{ _agwc_tmpdir.path }}/conformance.sh", run]
               environment:
-                AGW_CONF_OUT: "{{ _conf_dir.path }}"
+                AGW_CONF_OUT: "{{ _agwc_tmpdir.path }}"
                 AGW_CONF_GATEWAY_URL: "{{ _gateway_url }}"
-                AGW_CONF_GATEWAY_KEY_FILE: "{{ _conf_dir.path }}/gateway.key"
+                AGW_CONF_GATEWAY_KEY_FILE: "{{ _agwc_tmpdir.path }}/gateway.key"
                 AGW_CONF_GATEWAY_RESOLVE: "{{ _gateway_resolve }}"
                 AGW_CONF_GATEWAY_CERT: "{{ (_leaf_dir ~ '/current/cert.pem') if _tls else '' }}"
                 AGW_CONF_GATEWAY_CERT_KEY: "{{ (_leaf_dir ~ '/current/key.pem') if _tls else '' }}"
                 AGW_CONF_GATEWAY_CA: "{{ _ca if _tls else '' }}"
                 AGW_CONF_DIRECT_URL: "{{ agw_upstream_base_url }}"
-                AGW_CONF_DIRECT_KEY_FILE: "{{ (_conf_dir.path ~ '/direct.key') if (_conf_have_upstream | bool) else '' }}"
+                AGW_CONF_DIRECT_KEY_FILE: "{{ (_agwc_tmpdir.path ~ '/direct.key') if (_conf_have_upstream | bool) else '' }}"
                 AGW_CONF_MODEL: "{{ _model }}"
                 AGW_CONF_DIRECT_MODEL: "{{ _direct_model }}"
                 AGW_CONF_TIMEOUT: "{{ agw_conformance_timeout | default(600) }}"
@@ -247,21 +281,33 @@
 
             - name: "Compare the gateway with direct vLLM (task 2.2)"
               ansible.builtin.command:
-                argv: [bash, "{{ _conf_dir.path }}/conformance.sh", diff, "{{ _conf_dir.path }}/results.jsonl"]
+                argv:
+                  - bash
+                  - "{{ _agwc_tmpdir.path }}/conformance.sh"
+                  - diff
+                  - "{{ _agwc_tmpdir.path }}/results.jsonl"
+                  - "{{ _agwc_tmpdir.path }}/model-map.json"
               register: _conf_diff
               changed_when: false
 
             - name: "Read the per-request results"
               ansible.builtin.slurp:
-                src: "{{ _conf_dir.path }}/results.jsonl"
+                src: "{{ _agwc_tmpdir.path }}/results.jsonl"
               register: _conf_results
 
           always:
             - name: "Remove the working directory, keys included"
               ansible.builtin.file:
-                path: "{{ _conf_dir.path }}"
+                path: "{{ _agwc_tmpdir.path }}"
                 state: absent
-              when: (_conf_dir | default({})).path is defined
+              # The same inline check as before the writes (see there): never delete another path.
+              when: >-
+                (_agwc_tmpdir | default({})).path is defined
+                and (_agwc_tmpdir.path is string)
+                and (_agwc_tmpdir.path is match('^/'))
+                and ('/../' not in (_agwc_tmpdir.path ~ '/'))
+                and ((_agwc_tmpdir.path | basename) is match('^agw-conformance\\.[A-Za-z0-9_]+$'))
+                and ((_agwc_tmpdir.path | dirname | realpath) in (['/tmp', lookup('ansible.builtin.env', 'TMPDIR') | default('/tmp', true)] | map('realpath') | list))
 
         - name: "Keep the report"
           ansible.builtin.set_fact:
@@ -296,6 +342,7 @@
             that: _conf_report.verdict == 'pass'
             fail_msg: >-
               The gateway did not match direct vLLM on: {{ _conf_report.not_matched | join(', ') }}.
+              {{ ('Failed requests: ' ~ (_conf_report.failures | join('; ')) ~ '.') if (_conf_report.failures | length > 0) else '' }}
               The report above names each difference; record it under task 2.2 in
               platform/services/agentgateway/context/architecture.md.
             quiet: true
