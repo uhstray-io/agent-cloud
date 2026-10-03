@@ -23,6 +23,22 @@
 #   never a survey var — Semaphore persists survey values, and one authoritative channel
 #   for a private key is the point of having a secret store.
 
+# A play over no hosts exits 0 and records a deploy that did nothing as a success
+# (docs/MISTAKES.md 2.21). preflight-target-group.yml refuses a survey-driven group, so
+# the guard is inline: it reads the SAME target_service as the work, so one override
+# moves both, and it only proves that group is populated (check-secrets.yml form).
+- name: "Pre-flight: target group is real"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  tags: [always]
+  tasks:
+    - name: "Require target_service to name a populated inventory group"
+      ansible.builtin.assert:
+        that: (groups.get(target_service | default('github_runner_svc'), []) | length) > 0
+        fail_msg: "target_service '{{ target_service | default('github_runner_svc') }}' matches no hosts in this inventory: nothing would be deployed."
+
 - name: "Deploy GitHub Actions self-hosted runner"
   hosts: "{{ target_service | default('github_runner_svc') }}"
   gather_facts: true

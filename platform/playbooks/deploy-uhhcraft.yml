@@ -10,6 +10,15 @@
 #
 # Source of truth: plan/development/WEBSMITH-INTEGRATION-PLAN.md (Phases 4-5).
 
+# A play over no hosts exits 0 and records a deploy that did nothing as a success
+# (docs/MISTAKES.md 2.21), so refuse an absent or empty group first.
+- name: "Pre-flight: uhhcraft_svc is real"
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: uhhcraft_svc
+    # Paired so one `-e preflight_group=` cannot redirect the guard (MISTAKES 2.21).
+    preflight_group_expected: uhhcraft_svc
+
 # ── Phase 1: Clone + Secrets + Env Files ────────────────────────────────────
 - name: "Phase 1: Clone repo + manage secrets + template env"
   hosts: uhhcraft_svc

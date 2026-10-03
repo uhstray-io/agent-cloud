@@ -46,6 +46,15 @@
         fail_msg: "Candidate checkout has uncommitted files; Caddy was not deployed."
       when: expected_repository_sha is defined
 
+# A play over no hosts exits 0 and records a deploy that did nothing as a success
+# (docs/MISTAKES.md 2.21), so refuse an absent or empty group first.
+- name: "Pre-flight: caddy_svc is real"
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: caddy_svc
+    # Paired so one `-e preflight_group=` cannot redirect the guard (MISTAKES 2.21).
+    preflight_group_expected: caddy_svc
+
 # ── Phase 1: Place repo + render config ─────────────────────────────────────
 - name: "Phase 1: Place repo + render Caddy config"
   hosts: caddy_svc

@@ -11,6 +11,15 @@
 # Source of truth: plan/development/DNS-SERVER-DEPLOYMENT.md
 # (local half: plan/development/LOCAL-DEV-DEPLOYMENT.md §5.1).
 
+# A play over no hosts exits 0 and records a deploy that did nothing as a success
+# (docs/MISTAKES.md 2.21), so refuse an absent or empty group first.
+- name: "Pre-flight: dns_svc is real"
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: dns_svc
+    # Paired so one `-e preflight_group=` cannot redirect the guard (MISTAKES 2.21).
+    preflight_group_expected: dns_svc
+
 # ── Phase 1: Place repo + render config ─────────────────────────────────────
 - name: "Phase 1: Place repo + render DNS config"
   hosts: dns_svc
