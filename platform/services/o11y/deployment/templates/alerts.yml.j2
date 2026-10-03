@@ -42,7 +42,7 @@ groups:
               maxDataPoints: 43200
               refId: B
         noDataState: OK
-        executionErrorState: Alerting
+        execErrState: Alerting
         for: 2m
         annotations:
           summary: A declared service metrics endpoint is unreachable.
@@ -92,7 +92,7 @@ groups:
               maxDataPoints: 43200
               refId: B
         noDataState: Alerting
-        executionErrorState: Alerting
+        execErrState: Alerting
         for: 15m
         annotations:
           summary: The o11y receiver host root filesystem has less than 10% free space.
@@ -146,7 +146,7 @@ groups:
               maxDataPoints: 43200
               refId: B
         noDataState: OK
-        executionErrorState: Alerting
+        execErrState: Alerting
         for: 2m
         annotations:
           summary: Expected metrics have disappeared for {{ target.service }}.
@@ -205,7 +205,7 @@ groups:
               maxDataPoints: 43200
               refId: B
         noDataState: OK
-        executionErrorState: Alerting
+        execErrState: Alerting
         for: {{ for_ }}
         annotations:
           summary: {{ summary | to_json }}
@@ -324,7 +324,7 @@ groups:
               maxDataPoints: 43200
               refId: B
         noDataState: {{ no_data }}
-        executionErrorState: Alerting
+        execErrState: Alerting
         for: {{ for_ }}
         annotations:
           summary: {{ summary | to_json }}

@@ -2252,7 +2252,7 @@ for rule in rules.values():
     query = rule['data'][0]
     assert query['datasourceUid'] == 'loki' and query['model']['queryType'] == 'instant'
     assert rule['condition'] == 'B' and rule['data'][1]['datasourceUid'] == '__expr__'
-    assert rule['noDataState'] == 'OK' and rule['executionErrorState'] == 'Alerting'
+    assert rule['noDataState'] == 'OK' and rule['execErrState'] == 'Alerting'
     assert rule['for'] == '5m' and rule['labels']['owner'] == 'platform-operations'
 
 # Active and routed exactly when alerts are enabled and no canary is running, in local
@@ -2432,4 +2432,45 @@ PY
   run grep -c 'def test_the_script_holds_no_literal_key_and_passes_shellcheck' "$REPO_ROOT/platform/tests/test_inference_probe.py"
   [ "$status" -eq 0 ]
   [ "$output" = "1" ]
+}
+
+@test "o11y: every rendered alert key is one Grafana's rule provisioning reads" {
+  python3 - "$DEPLOY_DIR/templates/alerts.yml.j2" <<'PY'
+import json
+import sys
+
+import yaml
+from jinja2 import Environment, StrictUndefined
+
+# Grafana v11.4.0 pkg/services/provisioning/alerting/rules_types.go: AlertRuleGroupV1
+# (lines 27-33), AlertRuleV1 (64-80), QueryV1 (162-168), NotificationSettingsV1 (199-206).
+# The YAML decoder drops an unknown key silently: the error-state key is execErrState
+# (line 73); executionErrorState is ignored and the rule falls back to the default.
+GROUP = {'orgId', 'name', 'folder', 'interval', 'rules'}
+RULE = {'uid', 'title', 'condition', 'data', 'dasboardUid', 'dashboardUid', 'panelId', 'noDataState',
+        'execErrState', 'for', 'annotations', 'labels', 'isPaused', 'notification_settings', 'record'}
+QUERY = {'refId', 'queryType', 'relativeTimeRange', 'datasourceUid', 'model'}
+NOTIFY = {'receiver', 'group_by', 'group_wait', 'group_interval', 'repeat_interval', 'mute_time_intervals'}
+
+env = Environment(undefined=StrictUndefined, trim_blocks=True)
+env.filters['bool'] = bool
+env.filters['to_json'] = json.dumps
+template = env.from_string(open(sys.argv[1], encoding='utf-8').read())
+seen = 0
+for values in (dict(local_mode=True), dict(local_mode=True, o11y_alerts_enabled=True),
+               dict(local_mode=False, o11y_alerts_enabled=True, dgx_spark_scrape_enabled=True,
+                    o11y_inference_probe_enabled=True,
+                    o11y_expected_metrics_targets=[{'uid': 'o11y_missing_x', 'service': 'x/y', 'instance': 'x:1'}])):
+    for group in yaml.safe_load(template.render(**values))['groups']:
+        assert set(group) <= GROUP, (group['name'], set(group) - GROUP)
+        for rule in group['rules']:
+            seen += 1
+            assert set(rule) <= RULE, (rule['uid'], set(rule) - RULE)
+            assert rule['execErrState'] == 'Alerting' and 'executionErrorState' not in rule, rule['uid']
+            assert rule['noDataState'] in ('OK', 'Alerting', 'NoData'), rule['uid']
+            for query in rule['data']:
+                assert set(query) <= QUERY, (rule['uid'], set(query) - QUERY)
+            assert set(rule.get('notification_settings', {})) <= NOTIFY, rule['uid']
+assert seen > 10, seen
+PY
 }
