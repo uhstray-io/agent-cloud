@@ -41,157 +41,206 @@
       failed_when: existing_tmpl.status | default(-1) not in [200, 404, 500]
       check_mode: false
 
-    - name: "Skip if template already exists"
-      ansible.builtin.meta: end_play
-      when: existing_tmpl.status == 200 and (existing_tmpl.json.data.template | default(0) | int == 1)
+    # An existing template is not a reason to end the play: the step result below still has to
+    # be recorded, and the template still has to be proven (D10 review 2026-10-02).
+    - name: "Note whether the template already exists"
+      ansible.builtin.set_fact:
+        _tmpl_present: "{{ existing_tmpl.status == 200 and (existing_tmpl.json.data.template | default(0) | int == 1) }}"
 
     - name: "Fail if VMID taken by non-template"
       ansible.builtin.fail:
         msg: "VMID {{ _vmid }} exists but is not a template."
       when: existing_tmpl.status == 200 and (existing_tmpl.json.data.template | default(0) | int != 1)
 
-    - name: "Build autoinstall seed ISO"
-      ansible.builtin.command:
-        cmd: "bash {{ _project_root }}/proxmox/cloud-init/build-seed-iso.sh {{ _seed_path }}"
-        creates: "{{ _seed_path }}"
-      register: seed_build
-      notify: "Show seed ISO build output"
-
-    - name: "Check if seed ISO already uploaded"
-      ansible.builtin.uri:
-        url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/storage/local/content"
-        method: GET
-      register: local_content
-      check_mode: false
-
-    - name: "Upload seed ISO via uri module"
-      when: local_content.json.data | selectattr('volid', 'equalto', _seed_volid) | list | length == 0
+    - name: "Create the template when it does not exist yet"
+      when: not (_tmpl_present | bool)
       block:
-        - name: "Attempt upload via uri module"
-          ansible.builtin.uri:
-            url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/storage/local/upload"
-            method: POST
-            body_format: form-multipart
-            body:
-              content:
-                content: "iso"
-              filename:
-                content: "{{ lookup('file', _seed_path) }}"
-                filename: "autoinstall-seed.iso"
-                mime_type: "application/octet-stream"
-          register: upload_result
-          when: not ansible_check_mode
-      rescue:
-        - name: "Upload seed ISO via curl (fallback)"
+        - name: "Build autoinstall seed ISO"
           ansible.builtin.command:
-            cmd: >
-              curl -s -k -X POST
-              "{{ _pve_host }}/api2/json/nodes/{{ _node }}/storage/local/upload"
-              -H "Authorization: PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
-              -F "content=iso"
-              -F "filename=@{{ _seed_path }}"
-          register: upload_fallback
-          changed_when: true
-          no_log: true
+            cmd: "bash {{ _project_root }}/proxmox/cloud-init/build-seed-iso.sh {{ _seed_path }}"
+            creates: "{{ _seed_path }}"
+          register: seed_build
+          notify: "Show seed ISO build output"
+
+        - name: "Check if seed ISO already uploaded"
+          ansible.builtin.uri:
+            url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/storage/local/content"
+            method: GET
+          register: local_content
+          check_mode: false
+
+        - name: "Upload seed ISO via uri module"
+          when: local_content.json.data | selectattr('volid', 'equalto', _seed_volid) | list | length == 0
+          block:
+            - name: "Attempt upload via uri module"
+              ansible.builtin.uri:
+                url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/storage/local/upload"
+                method: POST
+                body_format: form-multipart
+                body:
+                  content:
+                    content: "iso"
+                  filename:
+                    content: "{{ lookup('file', _seed_path) }}"
+                    filename: "autoinstall-seed.iso"
+                    mime_type: "application/octet-stream"
+              register: upload_result
+              when: not ansible_check_mode
+          rescue:
+            - name: "Upload seed ISO via curl (fallback)"
+              ansible.builtin.command:
+                cmd: >
+                  curl -s -k -X POST
+                  "{{ _pve_host }}/api2/json/nodes/{{ _node }}/storage/local/upload"
+                  -H "Authorization: PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+                  -F "content=iso"
+                  -F "filename=@{{ _seed_path }}"
+              register: upload_fallback
+              changed_when: true
+              no_log: true
+              when: not ansible_check_mode
+
+        - name: "Create template VM"
+          ansible.builtin.uri:
+            url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu"
+            method: POST
+            body_format: form-urlencoded
+            body:
+              vmid: "{{ _vmid }}"
+              name: "{{ _name }}"
+              ostype: "l26"
+              cores: "{{ _cores }}"
+              memory: "{{ _mem }}"
+              scsihw: "virtio-scsi-pci"
+              scsi0: "{{ _storage }}:{{ _disk | regex_replace('G', '') }}"
+              ide0: "{{ _ubuntu_iso }},media=cdrom"
+              ide1: "{{ _seed_volid }},media=cdrom"
+              net0: "virtio,bridge=vmbr0,firewall=0"
+              boot: "order=ide0;scsi0"
+              agent: "1"
+              serial0: "socket"
+              vga: "serial0"
+            status_code: [200]
+          register: create_result
           when: not ansible_check_mode
 
-    - name: "Create template VM"
-      ansible.builtin.uri:
-        url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu"
-        method: POST
-        body_format: form-urlencoded
-        body:
-          vmid: "{{ _vmid }}"
-          name: "{{ _name }}"
-          ostype: "l26"
-          cores: "{{ _cores }}"
-          memory: "{{ _mem }}"
-          scsihw: "virtio-scsi-pci"
-          scsi0: "{{ _storage }}:{{ _disk | regex_replace('G', '') }}"
-          ide0: "{{ _ubuntu_iso }},media=cdrom"
-          ide1: "{{ _seed_volid }},media=cdrom"
-          net0: "virtio,bridge=vmbr0,firewall=0"
-          boot: "order=ide0;scsi0"
-          agent: "1"
-          serial0: "socket"
-          vga: "serial0"
-        status_code: [200]
-      register: create_result
-      when: not ansible_check_mode
+        - name: "Wait for VM creation task"
+          ansible.builtin.uri:
+            url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/tasks/{{ create_result.json.data }}/status"
+            method: GET
+          register: task_status
+          until: task_status.json.data.status == "stopped"
+          retries: 30
+          delay: 5
+          when:
+            - not ansible_check_mode
+            - create_result.json.data is defined and create_result.json.data is string
 
-    - name: "Wait for VM creation task"
-      ansible.builtin.uri:
-        url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/tasks/{{ create_result.json.data }}/status"
-        method: GET
-      register: task_status
-      until: task_status.json.data.status == "stopped"
-      retries: 30
-      delay: 5
-      when:
-        - not ansible_check_mode
-        - create_result.json.data is defined and create_result.json.data is string
+        - name: "Start VM for autoinstall"
+          ansible.builtin.uri:
+            url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/status/start"
+            method: POST
+            status_code: [200]
+          when: not ansible_check_mode
 
-    - name: "Start VM for autoinstall"
-      ansible.builtin.uri:
-        url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/status/start"
-        method: POST
-        status_code: [200]
-      when: not ansible_check_mode
+        - name: "Autoinstall in progress"
+          ansible.builtin.debug:
+            msg: "VM {{ _vmid }} started on {{ _node }}. Autoinstall running (5-15 min)..."
 
-    - name: "Autoinstall in progress"
-      ansible.builtin.debug:
-        msg: "VM {{ _vmid }} started on {{ _node }}. Autoinstall running (5-15 min)..."
+        - name: "Wait for VM to be running"
+          ansible.builtin.uri:
+            url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/status/current"
+            method: GET
+          register: vm_status
+          until: vm_status.json.data.status == "running"
+          retries: 12
+          delay: 10
+          when: not ansible_check_mode
 
-    - name: "Wait for VM to be running"
-      ansible.builtin.uri:
-        url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/status/current"
-        method: GET
-      register: vm_status
-      until: vm_status.json.data.status == "running"
-      retries: 12
-      delay: 10
-      when: not ansible_check_mode
+        - name: "Wait for autoinstall to complete (VM stops when done)"
+          ansible.builtin.uri:
+            url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/status/current"
+            method: GET
+          register: vm_status
+          until: vm_status.json.data.status == "stopped"
+          retries: 60
+          delay: 15
+          when: not ansible_check_mode
 
-    - name: "Wait for autoinstall to complete (VM stops when done)"
-      ansible.builtin.uri:
-        url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/status/current"
-        method: GET
-      register: vm_status
-      until: vm_status.json.data.status == "stopped"
-      retries: 60
-      delay: 15
-      when: not ansible_check_mode
+        - name: "Post-install: remove CDs, add cloud-init, set defaults"
+          ansible.builtin.uri:
+            url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/config"
+            method: PUT
+            body_format: form-urlencoded
+            body:
+              ide0: "none,media=cdrom"
+              ide1: "none,media=cdrom"
+              ide2: "{{ _storage }}:cloudinit"
+              boot: "order=scsi0"
+              ciuser: "{{ ci_user | default(ansible_user) }}"
+              sshkeys: "{{ _ssh_pub | urlencode }}"
+              ipconfig0: "ip=dhcp"
+              nameserver: "{{ nameserver | default(gateway | default('')) }}"
+            status_code: [200]
+          when: not ansible_check_mode
 
-    - name: "Post-install: remove CDs, add cloud-init, set defaults"
+        - name: "Convert VM to template"
+          ansible.builtin.uri:
+            url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/template"
+            method: POST
+            status_code: [200]
+          when: not ansible_check_mode
+
+        - name: "Template creation complete"
+          ansible.builtin.debug:
+            msg: |
+              Template {{ _vmid }} ({{ _name }}) created on {{ _node }}.
+              Storage: {{ _storage }}, Disk: {{ _disk }}
+              Cloud-init enabled. Ready for cloning.
+
+    # Read back, never assume: the step's criteria are a template at the declared vmid on the
+    # declared node, carrying a cloud-init drive (registry step vm-template).
+    - name: "Read back the template for the step result"
       ansible.builtin.uri:
         url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/config"
-        method: PUT
-        body_format: form-urlencoded
-        body:
-          ide0: "none,media=cdrom"
-          ide1: "none,media=cdrom"
-          ide2: "{{ _storage }}:cloudinit"
-          boot: "order=scsi0"
-          ciuser: "{{ ci_user | default(ansible_user) }}"
-          sshkeys: "{{ _ssh_pub | urlencode }}"
-          ipconfig0: "ip=dhcp"
-          nameserver: "{{ nameserver | default(gateway | default('')) }}"
-        status_code: [200]
-      when: not ansible_check_mode
+        method: GET
+      register: _tmpl_after
+      failed_when: false
+      changed_when: false
+      check_mode: false
 
-    - name: "Convert VM to template"
-      ansible.builtin.uri:
-        url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/template"
-        method: POST
-        status_code: [200]
-      when: not ansible_check_mode
+    - name: "Decide the template step"
+      ansible.builtin.set_fact:
+        _tmpl_errors: >-
+          {{ ([] if (_tmpl_after.status | default(-1)) == 200
+                 and (_tmpl_after.json.data.template | default(0) | int == 1)
+              else ['vmid ' ~ _vmid ~ ' on ' ~ _node ~ ' is not a template (HTTP '
+                    ~ (_tmpl_after.status | default('none')) ~ ')'])
+             + ([] if (_tmpl_after.json.data | default({}) | dict2items | map(attribute='value')
+                       | map('string') | select('search', 'cloudinit') | list | length > 0)
+                else ['template ' ~ _vmid ~ ' has no cloud-init drive attached']) }}
+        # A dry run against a node with no template yet would create one; nothing to prove.
+        _tmpl_dry_absent: "{{ ansible_check_mode and not (_tmpl_present | bool) }}"
 
-    - name: "Template creation complete"
-      ansible.builtin.debug:
-        msg: |
-          Template {{ _vmid }} ({{ _name }}) created on {{ _node }}.
-          Storage: {{ _storage }}, Disk: {{ _disk }}
-          Cloud-init enabled. Ready for cloning.
+    - name: "Record the step result"
+      ansible.builtin.include_tasks: tasks/emit-step-result.yml
+      vars:
+        step_result_service: "{{ target_service | default('') }}"
+        step_result_step: vm-template
+        step_result_status: >-
+          {{ 'skip' if (_tmpl_dry_absent | bool)
+             else ('pass' if (_tmpl_errors | length == 0) else 'fail') }}
+        step_result_evidence:
+          template_vmid: "{{ _vmid | int }}"
+          node: "{{ _node }}"
+        step_result_error: "{{ _tmpl_errors | join('; ') }}"
+
+    - name: "Fail when the template step did not pass"
+      ansible.builtin.fail:
+        msg: "{{ _tmpl_errors | join('; ') }}"
+      when:
+        - not (_tmpl_dry_absent | bool)
+        - _tmpl_errors | length > 0
 
   handlers:
     - name: "Show seed ISO build output"

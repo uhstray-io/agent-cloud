@@ -31,6 +31,9 @@
 #     pending change instead of restarting a live service under you.
 #   * Read-only first. It reports the current-vs-desired diff before any write,
 #     so a run with allow_reboot unset is a safe way to see what would change.
+#   * Records the workflow step result (vm-rightsize) last, from the re-read
+#     config. A run that leaves a restart pending records, and ends as, a
+#     failure: the declared spec is not yet live.
 #
 # Requires the Proxmox API token in OpenBao at secret/services/proxmox
 # (url, token_id, api_token) — same source provision-vm.yml uses.
@@ -510,3 +513,44 @@
             {{ 'A grown disk still needs the FILESYSTEM extended inside the guest
                 (e.g. growpart + resize2fs / lvextend) — Proxmox only grew the
                 block device.' if (_disk_put is not skipped) else '' }}
+
+    # ── Step result (registry step vm-rightsize) ────────────────────────────
+    # Judged on the re-read config, never on what this run meant to write, and "live": a guest
+    # still running its old allocation because no reboot was allowed has not converged.
+    - name: "Decide the rightsize step"
+      ansible.builtin.set_fact:
+        _rs_have_disk_gb: >-
+          {{ ((_cfg_after.json.data[_disk_device | trim] | default(''))
+              | regex_search('size=[0-9]+G') | regex_replace('[^0-9]', '') | int)
+             if ((_cfg_after.json.data[_disk_device | trim] | default('')) is search('size=[0-9]+G'))
+             else none }}
+        _rs_errors: >-
+          {{ (['cores ' ~ (_cfg_after.json.data.cores | default('?')) ~ ', declared ' ~ _want_cores]
+              if (_want_cores | string | length > 0)
+                 and ((_cfg_after.json.data.cores | default(0) | int) != (_want_cores | int)) else [])
+             + (['memory ' ~ (_cfg_after.json.data.memory | default('?')) ~ 'MB, declared ' ~ _want_memory ~ 'MB']
+                if (_want_memory | string | length > 0)
+                   and ((_cfg_after.json.data.memory | default(0) | int) != (_want_memory | int)) else [])
+             + (['disk ' ~ (_disk_device | trim) ~ ' is not ' ~ _want_disk_gb ~ 'G']
+                if (_want_disk_gb | string | length > 0)
+                   and not ((_cfg_after.json.data[_disk_device | trim] | default(''))
+                            is search('size=' ~ (_want_disk_gb | int) ~ 'G([^0-9]|$)')) else [])
+             + (['the guest still runs its old allocation: a restart is pending (allow_reboot not set)']
+                if (_needs_restart | bool) and not (_allow_reboot | bool) else []) }}
+
+    - name: "Record the step result"
+      ansible.builtin.include_tasks: tasks/emit-step-result.yml
+      vars:
+        step_result_service: "{{ target_service | default('') }}"
+        step_result_step: vm-rightsize
+        step_result_status: "{{ 'pass' if (_rs_errors | length == 0) else 'fail' }}"
+        step_result_evidence:
+          cores: "{{ _cfg_after.json.data.cores | default(none) }}"
+          memory_mb: "{{ _cfg_after.json.data.memory | default(none) }}"
+          disk_gb: "{{ _rs_have_disk_gb }}"
+        step_result_error: "{{ _rs_errors | join('; ') }}"
+
+    - name: "Fail when the VM does not match its declared spec"
+      ansible.builtin.fail:
+        msg: "{{ _rs_errors | join('; ') }}"
+      when: _rs_errors | length > 0
