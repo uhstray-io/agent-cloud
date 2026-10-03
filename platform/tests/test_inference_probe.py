@@ -535,10 +535,12 @@ def test_verification_accepts_only_a_fresh_sample_for_the_configured_model(tmp_p
     assert "{{ _probe_query | urlencode }}" in read["ansible.builtin.command"]["argv"][-1]
 
 
-def test_the_readme_does_not_claim_a_probe_alert_that_does_not_exist_yet():
+def test_the_readme_names_the_probe_alert_rules_that_exist():
     readme = (DEPLOY / "README.md").read_text()
     section = readme.split("## Synthetic inference probe", 1)[1].split("\n## ", 1)[0]
-    # The alert rule is task 3.2, still open; the README must say so, not imply coverage.
-    assert "No alert rule on `inference_probe_success`" in section
-    assert "task 3.2, still open" in section
-    assert not re.search(r"inference_probe_success`? is a rule in", section)
+    alerts = (DEPLOY / "templates" / "alerts.yml.j2").read_text()
+    assert "No alert rule on `inference_probe_success`" not in section
+    for uid in ("inference_probe_failing", "inference_probe_stale"):
+        assert f"`{uid}`" in section, uid
+        assert f"'{uid}'" in alerts, uid
+    assert "o11y_inference_probe_enabled" in section

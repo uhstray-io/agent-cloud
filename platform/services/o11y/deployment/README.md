@@ -101,14 +101,24 @@ list dgx-spark recorded from the running image. Every `node_` name must appear i
 enforces both. When dgx-spark re-pins the vLLM image and records a new list, replace the
 fixture and fix any panel that names a metric the new list no longer has.
 
-The alert template adds three groups only when `dgx_spark_scrape_enabled` is true, so
-local renders never carry rules without a producer. When it is false the template lists
-every inference rule under `deleteRules` instead: Grafana keeps a provisioned rule whose
-group leaves the file, so turning the scrape off would otherwise leave the rules live and
-routed.
+The alert template adds the DGX rules only when `dgx_spark_scrape_enabled` is true, and
+the synthetic probe rules only when `o11y_inference_probe_enabled` is true, so local
+renders never carry rules without a producer. For each flag that is false the template
+lists its rules under `deleteRules` instead: Grafana keeps a provisioned rule whose group
+leaves the file, so turning a flag off would otherwise leave the rules live and routed.
 
 - `inference-failing`: requests are waiting while vLLM has generated no tokens for five
-  minutes. Health can still answer while this fires.
+  minutes (`inference_queue_stalled`, DGX scrape). Health can still answer while this
+  fires. With the probe on, two more rules read the probe's samples from the
+  `receiver-host` job, per `model_name`: `inference_probe_failing` when
+  `inference_probe_success` stays 0 for five minutes, and `inference_probe_stale` when the
+  newest `inference_probe_last_run_timestamp_seconds` is more than 15 minutes old, or no
+  sample exists at all. The second rule matters because a stopped timer leaves the last
+  success value in place, and the first rule alone would read that as healthy.
+- `telemetry-missing`: any DGX Spark scrape target (`up{cluster="dgx-spark"}`) is down,
+  or `vllm:num_requests_running` has been absent from the vLLM job, for five minutes
+  (`inference_target_down`, `inference_vllm_metrics_absent`). Without these, a quiet
+  inference board can mean no data rather than no problem.
 - `memory-thermal`: a node's `MemAvailable` stays under the memory guard's stall line
   (512 MiB) or its `MemFree` stays under the guard's floor (1 GiB) for five minutes. The
   guard kills the serving container well inside that time, so the alert means the guard
@@ -180,9 +190,11 @@ host time, takes one sample immediately, and requires all three series in Promet
 with the configured `model_name` and a last-run timestamp no older than that sample's
 start, so a stale series or another model's series does not pass. Under `--check` the
 unit files are only simulated, so activation and this check are skipped. The deploy does
-not fail when inference itself is failing. **No alert rule on `inference_probe_success`
-exists yet**: that is task 3.2, still open, so a failing probe is visible only on a
-graph until it lands.
+not fail when inference itself is failing. That case is alerted by
+`inference_probe_failing` (success 0 for five minutes) and `inference_probe_stale` (no
+sample for fifteen minutes), both rendered only when `o11y_inference_probe_enabled` is
+true (see "Inference dashboards and alerts"). Neither is proven at runtime until the
+task 3.5 probe drill.
 
 Setting the flag back to false removes each artefact an earlier enable left, checked one
 by one: the timer (stopped and disabled first), the service unit, the last metrics file
