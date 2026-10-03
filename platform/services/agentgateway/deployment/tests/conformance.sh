@@ -7,7 +7,7 @@
 # temporary directory, runs it, reads the results and removes the directory.
 #
 #   conformance.sh run                 send every case to both targets; write results.jsonl
-#   conformance.sh diff <results.jsonl> [<model-map.json>]
+#   conformance.sh diff <results.jsonl> [<model-map.json>|''] [<shape-allow.json>]
 #                                      compare the two targets case by case; print one JSON report
 #
 # Cases (spec "Client-visible contract is unchanged through the gateway"):
@@ -24,8 +24,9 @@
 #
 # Each case goes to the gateway, then straight to vLLM, from the same host, so the two differ only
 # by the gateway hop. A result line records the status, a sha256 of the body with identifiers and
-# timestamps removed and keys sorted, a sha256 of its shape (every leaf path and its JSON type), a
-# few semantic fields (model, finish reason, whether content/reasoning/tool calls came back) and
+# timestamps removed and keys sorted, its shape (every leaf key path of that normalised body with
+# its JSON type, e.g. `choices.[].message.content:string`; key names and types only, never a
+# value) and the shape's sha256, a few semantic fields (model, finish reason, whether content/reasoning/tool calls came back) and
 # timings. It never records a body, a header or a key.
 #
 # Keys never reach a command line. They are read from files into this shell, and each curl call
@@ -102,8 +103,8 @@ def semantic_for($kind):
   end;
 def summarise_body($kind; $status):
   . as $raw | (try fromjson catch null) as $j
-  | if $j == null then {norm: $raw, shape: ["nonjson"], semantic: {json: false}}
-    else {norm: ($j | canon | tojson), shape: ($j | shape),
+  | if $j == null then {norm: $raw, shape: ["<body>:nonjson"], semantic: {json: false}}
+    else {norm: ($j | canon | tojson), shape: ($j | canon | shape),
       semantic: (if $status >= 200 and $status < 300 then ($j | semantic_for($kind))
                  else ($j | err_semantic) end)}
     end;
@@ -178,7 +179,7 @@ emit() {
 		--argjson status "$5" --argjson curl_exit "$6" --arg body "$norm_sha" --arg shape "$shape_sha" \
 		--argjson timing "$8" \
 		'{case: $case, target: $target, method: $method, path: $path, status: $status,
-		  curl_exit: $curl_exit, body_sha256: $body, shape_sha256: $shape,
+		  curl_exit: $curl_exit, body_sha256: $body, shape_sha256: $shape, shape: .shape,
 		  semantic: .semantic, timing: $timing}' "$7" >>"$RESULTS"
 	printf '%-22s %-8s %s\n' "$1" "$2" "$5"
 }
@@ -258,7 +259,7 @@ run_stream() { # case target
 			| (if $ft == null then [] else [$ev[] | select(.t >= $ft) | .t] end) as $ts
 			| {summary: {
 				norm: (([$ev[].e | canon]) + (if $done then ["[DONE]"] else [] end) | tojson),
-				shape: ([$ev[].e | shape] | add // [] | unique),
+				shape: ([$ev[].e | canon | shape] | add // [] | unique),
 				semantic: {
 					finish_reason: ([$ev[].e.choices[]?.finish_reason | select(. != null)] | last),
 					has_content: any($ev[].e.choices[]?; .delta.content | nonempty),
@@ -354,16 +355,41 @@ cmd_run() {
 # written by the playbook from inventory. Before comparing, a model name the gateway reports is
 # translated through it, and the direct models list is narrowed to the declared upstream ids (vLLM
 # may serve ids the gateway deliberately does not expose). Without a mapping, names compare as-is.
+# Pass '' for the mapping to give a shape allowlist without one.
+#
+# Shape. `shape_diff` names, per case, the key paths found only in the gateway's body
+# (`only_gateway`), only in vLLM's (`only_direct`), and those whose JSON type differs
+# (`type_changed`), from the normalised bodies (ids and timestamps already removed); a stream's
+# shape is the union over its chunks. Paths and type names only, never a value. The optional third
+# argument is the shape allowlist (conformance-shape-allow.json beside this script): paths the
+# gateway is accepted to add (`gateway_may_add`), drop (`gateway_may_drop`) or retype
+# (`gateway_may_retype`). An allowlisted difference is still listed in shape_diff, and also under
+# `shape_allowed`; only `shape_unaccepted` decides the verdict. The committed allowlist is empty:
+# accepting a difference is the operator's decision after reading the diff, made by adding the path.
 cmd_diff() {
-	[ -r "${1:-}" ] || die "usage: conformance.sh diff <results.jsonl> [<model-map.json>]"
-	local map='{}'
+	[ -r "${1:-}" ] || die "usage: conformance.sh diff <results.jsonl> [<model-map.json>|''] [<shape-allow.json>]"
+	local map='{}' allow='{}'
 	if [ -n "${2:-}" ]; then
 		[ -r "$2" ] || die "model map $2 is not readable"
 		jq -e 'type == "object" and all(.[]; type == "string")' "$2" >/dev/null ||
 			die "model map $2 must be a JSON object of strings"
 		map=$(jq -c . "$2")
 	fi
-	jq -s -c --argjson map "$map" "$JQ_LIB"'
+	if [ -n "${3:-}" ]; then
+		[ -r "$3" ] || die "shape allowlist $3 is not readable"
+		# A misspelt or missing key would silently allow nothing, so the file must carry exactly the
+		# three lists (each may be empty), plus at most a string `_comment`, and nothing else.
+		jq -e '["gateway_may_add", "gateway_may_drop", "gateway_may_retype"] as $lists
+			| type == "object"
+			and (. as $o
+				| ((keys - $lists - ["_comment"]) | length == 0)
+				# Each list must be an array; a missing one reads as null and fails here.
+				and all($lists[]; . as $k | $o[$k] | type == "array" and all(.[]; type == "string"))
+				and (($o | has("_comment") | not) or ($o._comment | type == "string")))' "$3" >/dev/null ||
+			die "shape allowlist $3 must hold exactly gateway_may_add, gateway_may_drop and gateway_may_retype (string lists, may be empty) and optionally a string _comment"
+		allow=$(jq -c . "$3")
+	fi
+	jq -s -c --argjson map "$map" --argjson allow "$allow" "$JQ_LIB"'
 		def d($a; $b): if $a == null or $b == null then null else ($a - $b | r3) end;
 		def up: . as $v | if ($v | type) == "string" and ($map | has($v)) then $map[$v] else $v end;
 		($map | [.[]] | unique) as $declared
@@ -375,6 +401,24 @@ cmd_diff() {
 		# closed early but cleanly leaves curl at exit 0 and the status at 200.
 		def ok: .curl_exit == 0 and .status >= 200 and .status < 300
 			and .semantic.done != false and .semantic.error_event != true;
+		# "path:type" entries -> {path: [types]}; the type follows the LAST colon.
+		def tmap: map(. as $s | ($s | rindex(":")) as $i
+				| if $i == null then {p: $s, t: ""} else {p: $s[:$i], t: $s[$i + 1:]} end)
+			| group_by(.p) | map({key: .[0].p, value: (map(.t) | unique)}) | from_entries;
+		def shape_diff($gs; $ds): ($gs // [] | tmap) as $gt | ($ds // [] | tmap) as $dt
+			| {only_gateway: [$gt | keys[] | . as $k | select($dt | has($k) | not)],
+			   only_direct: [$dt | keys[] | . as $k | select($gt | has($k) | not)],
+			   type_changed: [$gt | keys[] | . as $k | select(($dt | has($k)) and $dt[$k] != $gt[$k])
+				| {path: $k, gateway: $gt[$k], direct: $dt[$k]}]};
+		def not_in($l): map(. as $x | select(($l // []) | index($x) | not));
+		def only_in($l): map(. as $x | select(($l // []) | index($x)));
+		def unaccepted: {only_gateway: (.only_gateway | not_in($allow.gateway_may_add)),
+			only_direct: (.only_direct | not_in($allow.gateway_may_drop)),
+			type_changed: [.type_changed[] | .path as $p | select(($allow.gateway_may_retype // []) | index($p) | not)]};
+		def allowed: {only_gateway: (.only_gateway | only_in($allow.gateway_may_add)),
+			only_direct: (.only_direct | only_in($allow.gateway_may_drop)),
+			type_changed: [.type_changed[] | .path as $p | select(($allow.gateway_may_retype // []) | index($p))]};
+		def empty_diff: .only_gateway == [] and .only_direct == [] and .type_changed == [];
 		def how: if .curl_exit != 0 then "curl exit \(.curl_exit)"
 			elif .status < 200 or .status >= 300 then "HTTP \(.status)"
 			elif .semantic.done == false then "HTTP \(.status), stream ended without [DONE]"
@@ -391,6 +435,7 @@ cmd_diff() {
 				status: {gateway: $g.status, direct: $d.status},
 				status_match: ($g.status == $d.status),
 				shape_match: ($g.shape_sha256 == $d.shape_sha256),
+				shape_diff: shape_diff($g.shape; $d.shape),
 				semantic_match: ($gs == $ds),
 				exact_body_match: ($g.body_sha256 == $d.body_sha256),
 				semantic_diff: [($gs + $ds) | keys[] as $k
@@ -401,8 +446,13 @@ cmd_diff() {
 					ttft_s: d($g.timing.ttft_s; $d.timing.ttft_s),
 					gap_p95_s: d($g.timing.gaps.p95_s; $d.timing.gaps.p95_s),
 					gap_max_s: d($g.timing.gaps.max_s; $d.timing.gaps.max_s)}}
+				| .shape_allowed = (.shape_diff | allowed)
+				| .shape_unaccepted = (.shape_diff | unaccepted)
+				# A result line without the shape list (an older run) cannot be judged path by path.
+				| .shape_accepted = (.shape_match
+					or ($g.shape != null and $d.shape != null and (.shape_unaccepted | empty_diff)))
 				| if ($g | ok) and ($d | ok) then
-					.verdict = (if .status_match and .shape_match and .semantic_match then "match" else "differ" end)
+					.verdict = (if .status_match and .shape_accepted and .semantic_match then "match" else "differ" end)
 				  else
 					.verdict = "error" | .failure = "gateway \($g | how), direct \($d | how)"
 				  end
@@ -412,11 +462,13 @@ cmd_diff() {
 		   total: length,
 		   not_matched: [.[] | select(.verdict != "match") | .case],
 		   failures: [.[] | select(.failure != null) | "\(.case): \(.failure)"],
+		   shape_differences: ([.[] | select(.shape_diff != null and (.shape_diff | empty_diff | not))
+			| {key: .case, value: {diff: .shape_diff, unaccepted: .shape_unaccepted}}] | from_entries),
 		   cases: .}' "$1"
 }
 
 case "${1:-}" in
 run) cmd_run ;;
-diff) cmd_diff "${2:-}" "${3:-}" ;;
-*) die "usage: conformance.sh run | conformance.sh diff <results.jsonl> [<model-map.json>]" ;;
+diff) cmd_diff "${2:-}" "${3:-}" "${4:-}" ;;
+*) die "usage: conformance.sh run | conformance.sh diff <results.jsonl> [<model-map.json>|''] [<shape-allow.json>]" ;;
 esac

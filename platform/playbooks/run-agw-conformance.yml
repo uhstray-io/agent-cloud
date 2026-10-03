@@ -242,6 +242,14 @@
                 dest: "{{ _agwc_tmpdir.path }}/model-map.json"
                 mode: "0600"
 
+            # The reviewed list of shape differences the gateway is accepted to introduce (empty
+            # until an operator adds a path after reading a run's shape_diff); from this checkout.
+            - name: "Place the shape allowlist"
+              ansible.builtin.copy:
+                src: "{{ playbook_dir }}/../services/agentgateway/deployment/tests/conformance-shape-allow.json"
+                dest: "{{ _agwc_tmpdir.path }}/shape-allow.json"
+                mode: "0600"
+
             - name: "Place the client key (0600)"
               ansible.builtin.copy:
                 content: "{{ _conf_client_key }}"
@@ -287,6 +295,7 @@
                   - diff
                   - "{{ _agwc_tmpdir.path }}/results.jsonl"
                   - "{{ _agwc_tmpdir.path }}/model-map.json"
+                  - "{{ _agwc_tmpdir.path }}/shape-allow.json"
               register: _conf_diff
               changed_when: false
 
@@ -330,6 +339,12 @@
               Conformance as {{ _client }} for {{ _model }}: {{ _conf_report.verdict | upper }},
               {{ _conf_report.matched }}/{{ _conf_report.total }} cases match{{ ('; not matched: '
               ~ (_conf_report.not_matched | join(', '))) if (_conf_report.not_matched | length > 0) else '' }}.
+
+        # Key paths and JSON types only, never a value: per case, what only the gateway's body has,
+        # what only vLLM's has, and what changed type, with the part the allowlist does not accept.
+        - name: "Report gateway against direct vLLM: shape differences (paths only)"
+          ansible.builtin.debug:
+            var: _conf_report.shape_differences
 
         # The whole report: per case the two statuses, which comparisons matched, each semantic
         # difference and the timing deltas (gateway minus direct). No body and no key is in it.

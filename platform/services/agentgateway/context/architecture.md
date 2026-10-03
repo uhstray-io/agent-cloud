@@ -101,8 +101,12 @@ Retirement date: _not yet set_ — `legacy_shared_expires` is the route-switch d
 
 ## Conformance against direct vLLM (tasks 2.1, 2.2)
 
-**Results pending.** The first production run has not happened yet. The first-token and gap
-deltas, and every difference the comparison reports, are recorded here once it has.
+**Results pending.** The first production run (Semaphore task 2592, sent as an enrolled identity for
+the served model, as reported by the operator) matched 0 of 13 cases. Every case returned
+200 on both sides with the same semantic fields, but a different body shape. That run's report
+carried only a hash of each shape, so it could not say which fields differed, and no decision
+could be made from it. The comparison now names the differing key paths (`shape_diff`, below). The
+deltas and the accepted differences are recorded here after the next run.
 
 How the comparison is made: the Semaphore template `Run agentgateway Conformance`
 (`platform/playbooks/run-agw-conformance.yml`) runs `deployment/tests/conformance.sh` on the gateway
@@ -127,6 +131,24 @@ hash removes ids and timestamps and sorts keys. It is reported as `exact_body_ma
 not decide the verdict, because two generations can differ even at temperature 0 with a fixed
 seed. Timing deltas are the gateway's value minus the direct value. The run fails when any case
 does not match.
+
+**Shape differences.** For each case, `shape_diff` lists three things, all taken from the
+normalised bodies (ids and timestamps removed):
+- the key paths only the gateway's body has (`only_gateway`)
+- the key paths only vLLM's body has (`only_direct`)
+- the paths whose JSON type differs (`type_changed`)
+
+For a stream, the shape is the union over all of its chunks. The diff carries key paths and type
+names only, never a value. The playbook prints it per case as "shape differences (paths only)".
+
+The allowlist `deployment/tests/conformance-shape-allow.json` holds the differences the gateway
+is accepted to introduce: `gateway_may_add`, `gateway_may_drop` and `gateway_may_retype`, each a
+list of paths written exactly as `shape_diff` prints them. All three lists must be present, though
+each may be empty. A file that lacks one, carries any other key, or has a non-string `_comment` is
+refused. An allowlisted difference is still
+reported, under `shape_allowed`. Only the rest (`shape_unaccepted`) fails a case. The committed
+list is empty. Adding a path is the operator's decision after reading a run's diff; record it and
+its reason in this section when making it.
 
 | Measure | Gateway | Direct | Delta | Run |
 |---|---|---|---|---|
