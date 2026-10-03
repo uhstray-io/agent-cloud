@@ -9,8 +9,10 @@
 # With listener TLS (agw_listener_tls), the call presents a client leaf from the internal CA
 # (default the `agw-verifier` leaf, which the gateway's SAN allowlist must hold) and verifies the
 # gateway's server leaf against the internal bundle; `validate_certs: false` is never used. The
-# URL names the server leaf's SAN, because `uri` has no server-name override; the caller maps that
-# name to the published bind (the interim hosts line, task 7.2). Without TLS it is a plain call.
+# URL names the server leaf's SAN, because `uri` has no server-name override; the caller resolves
+# that name through tasks/agw-probe-resolution.yml first: the interim hosts line, or, once
+# `agw_internal_dns_authoritative` is declared, the internal zone's record for the leaf (task 7.2),
+# with every interim marker line removed. Without TLS it is a plain call.
 #
 # Inputs:
 #   _agwp_base      base URL (https://<server SAN>:<port> with TLS, else the plain verify URL)

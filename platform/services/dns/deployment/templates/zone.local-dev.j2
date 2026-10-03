@@ -16,3 +16,8 @@ ns  IN  A   {{ dns_ns_target | default('127.0.0.1') }}
 {% for rec in dns_records | default([]) %}
 {{ "%-20s"|format(rec.name) }} IN  {{ "%-5s"|format(rec.type | default('A')) }} {{ rec.value }}
 {% endfor %}
+{# The gateway server leaf's SANs (inference-gateway-agentgateway task 7.2), derived in
+   deploy-dns.yml from each agentgateway_svc host's internal_leaves and bind address. #}
+{% for rec in _dns_agw_records | default([]) %}
+{{ "%-20s"|format(rec.name) }} IN  {{ "%-5s"|format(rec.type) }} {{ rec.value }}
+{% endfor %}

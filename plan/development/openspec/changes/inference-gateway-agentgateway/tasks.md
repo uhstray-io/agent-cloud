@@ -428,6 +428,17 @@
 - [ ] 7.2 Replace 6.1a's interim `lineinfile` entries with records in the internal zone
       for the gateway server leaf's SAN, and remove every line carrying the
       `agent-cloud-managed: agw-probe` marker through the same task
+      Progress (2026-10-03): the code half is in place, gated. `deploy-dns.yml` derives one
+      A record per SAN of each listener-TLS gateway's server leaf inside `dns_zone` (target:
+      `agw_bind`, or `ansible_host` for an every-interface bind), refuses a loopback,
+      non-IPv4 or `dns_records`-colliding record, and digs each one in its verify phase.
+      `tasks/agw-probe-resolution.yml` is the one resolution step: interim hosts line while
+      `agw_internal_dns_authoritative` is false (the default), and with it true removes every
+      marker line (only those) and refuses a name the host resolver does not answer. Open:
+      `deploy-agentgateway.yml` and `renew-internal-certs.yml` still carry or rely on the inline
+      `lineinfile` and must include the new task instead; the flag stays false until production
+      hickory-dns runs and the probing hosts resolve through it (`internal-dns-naming` 6.1,
+      6.1a, 6.2 — no production DNS template exists in `platform/semaphore/templates.yml`)
 - [ ] 7.3 Validation gate: with the Cloudflare skip rule temporarily disabled in a declared
       window, a gateway restart loads Authentik's discovery document and serves `/v1`; no
       probing host carries the interim marker line
