@@ -32,18 +32,18 @@ and why.
 |---|---------|-------|-------|-------------|
 | 1.1 | Claimed a value was copied verbatim when it had been retyped through a string literal | Unverified claim | 1 | Convention + test |
 | 1.2 | Asserted a config gap that did not exist, without reading the file — **x4** | Unverified claim | 4 | Convention + loader test; hook proposed (count ≥ 3) |
-| 1.3 | Reported a background job as successful when its exit code had been masked by a pipe — **x5** | Unverified claim | 5 | Convention (hook proposed) |
+| 1.3 | Reported a background job as successful when its exit code had been masked by a pipe — **x5** | Unverified claim | 5 | Test for committed scripts (`test_scripts_set_pipefail.bats` + ratchet); agent side Convention (operator PreToolUse hook outside repo) |
 | 1.4 | Guessed a resource id instead of reading the one the create call returned | Unverified claim | 1 | Convention |
 | 1.5 | Claimed per-job containerisation as an enforced control; a job that asked for nothing ran on the host | Unverified claim | 1 | Test |
 | 1.6 | Called a host addressless from one ARP sweep; it was up and answering, the sweep lost the race — **x2** (widened by 1.19) | Unverified claim | 2 | Convention |
 | 1.7 | Recorded a memory as retained on a `completed` status whose result list was empty; no retrievable memory or fact was stored | Unverified claim | 1 | Convention |
 | 1.8 | Documented an INI encoding as "verified" from a sample with no booleans; the first `true` made the value a string | Unverified claim | 1 | Test |
-| 1.9 | Documented that a feature branch is invisible to Semaphore; true in the UI only, the API runs any pushed branch | Unverified claim | 1 | Convention (OPA branch rule pending) |
+| 1.9 | Documented that a feature branch is invisible to Semaphore; true in the UI only, the API runs any pushed branch | Unverified claim | 1 | OPA branch rule (`agent_actions.rego`; inert until callers send fields) |
 | 1.10 | Reported a CodeRabbit review as started from a keyword match; every request had been refused | Unverified claim | 1 | Convention |
 | 1.11 | Wrote into a gate's own comment that OpenBao returns 404 only to a token allowed to read, without checking; a denied AppRole would have passed the seed access check  | Unverified claim  | 1 | Test (synthetic OpenBao, mutation-proven)  |
 | 1.12 | **x2** — Reported a 30-minute deploy hang from a check-in timer, not the clock; the task was two minutes in | Unverified claim | 2 | Convention |
 | 1.13 | Rejected Semaphore's matching single-environment list projection as if it were a second binding | Unverified claim | 1 | Test |
-| 1.14 | **x2** — Told the user the approved OpenBao address is the inventory's `all.vars`, from the public template; production declares it under a group `localhost` is not in | Unverified claim | 2 | Convention |
+| 1.14 | **x2** — Told the user the approved OpenBao address is the inventory's `all.vars`, from the public template; production declares it under a group `localhost` is not in | Unverified claim | 2 | Test (`test_inventory_template_banner.py` + banners); reading habit Convention |
 | 1.15 | **x2** — Said a run-time check closed extra-var overrides; a templated extra var bypasses it, and any launcher may set extra vars | Unverified claim | 2 | Convention |
 | 1.16 | Wrote "44 files log in to OpenBao" into a merged plan without running a count; the count is 43 | Unverified claim | 1 | Convention |
 | 1.17 | Explained a 401 as the token's scope; the service's database had just gone down, and those were the outage's first 401s | Unverified claim | 1 | Convention |
@@ -55,11 +55,11 @@ and why.
 | 2.3 | Negative assertion aborted under `set -e` because a no-match grep exits 1 | False-green test | 1 | Convention |
 | 2.4 | Test asserted state that lived on a different branch | False-green test | 1 | CI |
 | 2.5 | Safety guard specified without ever being evaluated against the declarations it judges | False-green test | 1 | Test |
-| 2.6 | Test windows sized by line count, breaking when a line was added inside the construct | False-green test | 1 | Convention |
+| 2.6 | Test windows sized by line count, breaking when a line was added inside the construct | False-green test | 1 | Test (`test_no_line_window_assertions.bats` + ratchet) |
 | 2.7 | A test's own quoting terminated its pattern; the subject was correct | False-green test | 1 | Convention |
-| 2.8 | Repeated 2.6 twice more — assertions forbidding the comment that documents the hazard | False-green test | 3 | Convention |
-| 2.9 | Fifteen negative assertions that could never fail, cited as verification | False-green test | 1 | Test (ratchet) |
-| 2.10 | Repeated 2.9 — a `grep -v … \|\| true` assertion that cannot fail, written while fixing that class | False-green test | 1 | Test (mutation-verified) |
+| 2.8 | Repeated 2.6 twice more — assertions forbidding the comment that documents the hazard | False-green test | 3 | Test (`test_no_line_window_assertions.bats` + ratchet) |
+| 2.9 | Fifteen negative assertions that could never fail, cited as verification | False-green test | 1 | Test (`test_assertions_are_real.bats` + `known_inert_assertions.txt`) |
+| 2.10 | Repeated 2.9 — a `grep -v … \|\| true` assertion that cannot fail, written while fixing that class | Test (`test_assertions_are_real.bats` + `known_inert_assertions.txt`) | 1 | Test (mutation-verified) |
 | 2.11 | Asserted a property of one random draw; ~0.5% of runs failed on unrelated PRs | Flaky test | 1 | Test (deterministic) |
 | 2.12 | Refuted forbidden verbs, then forbidden modules, instead of asserting a closed set — **x2** | False green on a safety check | 2 | Test (closed allow-list) |
 | 2.13 | Tested that an ordering fix was present, on a config where fact gathering ran before it | False green on a fix | 1 | Test (mutation-proven) |
@@ -70,13 +70,14 @@ and why.
 | 2.18 | A coverage test asserting "every play" over a hand-typed list of four — 40 of 52 were unguarded — **x2** (check-mode guard rooted in one directory) | Vacuous coverage | 2 | Test (derived population + ratchet) |
 | 2.19 | The app healthcheck probed the path nginx serves from the FRONTEND — green across a backend that never bound | False green | 1 | Test (probe path pinned) |
 | 2.20 | Idempotency proven on the wrong steady state: the route retire tool refused the adopted-into-managed case, and a `changed_when` parse hid its message | False-green test | 1 | Test (adopted-state case + rc-guarded parse) |
-| 2.21 | A new deploy playbook shipped without the zero-hosts pre-flight; the orchestrator recorded success with nothing deployed — **x2** | Wrong-reason pass | 2 | Test (two playbooks); fleet-wide test proposed (see 2.25) |
+| 2.21 | A new deploy playbook shipped without the zero-hosts pre-flight; the orchestrator recorded success with nothing deployed — **x3** | Wrong-reason pass | 3 | Test (`test_deploy_playbooks_preflight.bats` + ratchet) |
 | 2.22 | The controller fixture returned `secrets: []` where live Semaphore omits an empty secret list | False-green fixture | 1 | Shared filter test + playbook fixture |
 | 2.23 | Tightened the check under test and left its fixtures alone; three negative cases passed whatever the filters did | Vacuous test | 1 | Convention (this instance: mutation-checked) |
 | 2.24 | A local run proved a playbook the production controller or host could not run — **x2** | Wrong-reason pass | 2 | Convention |
 | 2.25 | The zero-hosts pre-flight rule named deploy playbooks only; 60 other group-targeting playbooks lack it (widens 2.21) | Wrong-reason pass | 1 | Test (`mount-caddy-certs.yml`); fleet-wide allow-list proposed |
-| 3.1 | Wrote a probe value over a real credential in a live secret store | Live-state damage | 1 | **OPA (proposed)** |
-| 3.2 | Attempted to mutate a shared orchestrator credential without asking | Live-state damage | 1 | Sandbox + **OPA (proposed)** |
+| 2.26 | A fixture placed an inventory variable where production does not; the planning play saw it in tests and nothing in prod (widens 2.22) | False-green fixture | 1 | Test (one playbook); class Convention |
+| 3.1 | Wrote a probe value over a real credential in a live secret store | Live-state damage | 1 | OPA (`agent_actions.rego`; inert until callers send fields) |
+| 3.2 | Attempted to mutate a shared orchestrator credential without asking | Live-state damage | 1 | Sandbox + OPA (`agent_actions.rego`; inert until callers send grants) |
 | 3.3 | Treated failed workstation login as a controller access prerequisite | Wrong executor boundary | 1 | Test + convention |
 | 3.4 | A validation step's cleanup deleted a committed provider lock file | Working-tree damage | 1 | Convention |
 | 3.5 | Allocated a vmid from an incomplete ledger; provisioning treated the collision as "already exists" and went on to configure the foreign VM | Live state | 1 | Test (provision-vm guard) |
@@ -105,7 +106,7 @@ and why.
 | 5.8 | A required CI gate installed whatever upstream published last | Reproducibility | 1 | Pinned binary and SHA256 in CI |
 | 5.9 | **x2** — Added AI attribution to commits against the repo rule (six commits, one pushed); then to a PR body, which no hook reads (widened by 5.15) | Process | 2 | commit-msg hook |
 | 5.10 | **x2** — Switched branches inside a checkout another task was using; the rule is one worktree per work item (widened by 5.14) | Process | 2 | Convention (hook proposed) |
-| 5.11 | Started a second push of a branch whose first push was still running, from buffered output read as finished | Process | 1 | Convention |
+| 5.11 | Started a second push of a branch whose first push was still running, from buffered output read as finished | Process | 1 | Pre-push branch lock + test (`test_pre_push_branch_lock.bats`) |
 | 5.12 | A bulk check-mode retrofit trusted `changed_when: false`; a dry run stopped and removed the local orb agent | Process | 1 | Test |
 | 5.13 | A broad stage commits whatever a tool generated in the tree (widens 6.6; 3 occurrences) | Process | 3 | Convention (pre-commit hook proposed) |
 | 5.14 | Wrote a file into a checkout another task owns with a path checkout; widens 5.10 past branch switches | Process | 1 | Convention (hook proposed) |
@@ -113,15 +114,15 @@ and why.
 | 6.1 | Built an edit from an assumed file structure instead of a read one | Process | 1 | Convention |
 | 6.2 | Built an interface the consumer never calls, without reading how it invokes | Process | 1 | Test |
 | 6.3 | Repeated 6.2 — assumed openssl and jq exist on the orchestrator image; neither does | Process | 2 | Convention -> **Test + declared dep** |
-| 6.4 | Reused an inventory variable name for a different fact; the gate read the app's public edge URL and failed, censored | Process | 1 | Convention |
+| 6.4 | Reused an inventory variable name for a different fact; the gate read the app's public edge URL and failed, censored | Process | 1 | Test (`test_verify_url_defaults.bats` + ratchet) |
 | 6.5 | Deleted an Authentik blueprint file to retire its object; the object stayed and the replacement matched it by name | Assumption about files | 1 | Convention; the deploy's prod-only redirect VERIFY would have caught it |
 | 6.6 | **x3** — The graph tool's auto-index rewrote the committed graph metadata under a path-derived project name while the graph file was deleted, and it sat uncommitted in a shared checkout | Assumption about files | 3 | Pre-commit gate + test |
 | 6.7 | A task variable shadowed a lazily evaluated play variable and stopped seed-environment provisioning | Assumption about files | 1 | Main-variant provisioner integration test |
 | 6.8 | Took the volume separator for the container separator; the production NetBox deploy would have waited on a container that does not exist | Assumed runtime semantics | 1 | Test (stub engine, mutation-checked) |
 | 6.9 | Scoped a restart-policy fix to rootless podman, the runtime a review named; the repo's own test says rootful's boot unit is the same | Assumed runtime semantics | 1 | Test (rootful case) |
 | 6.10 | Acted on a merged plan as current state while a peer session was building the same scope; the handoff was called checked | Assumption about files | 1 | Convention |
-| 8.1 | Repeated 1.3 — masked an exit code with a pipe, minutes after writing the rule against it | Unverified claim | 1 | Convention |
-| 8.2 | Referenced tests by identifiers that did not exist — **x2** (a PR number in a commit message) | Unverified claim | 2 | Test |
+| 8.1 | Repeated 1.3 — masked an exit code with a pipe, minutes after writing the rule against it | Unverified claim | 1 | Test for committed scripts (`test_scripts_set_pipefail.bats` + ratchet); agent side Convention |
+| 8.2 | Referenced tests by identifiers that did not exist — **x2** (a PR number in a commit message) | Unverified claim | 2 | Test (`test_ledger_test_citations.py` + ratchet) |
 | 8.3 | Took two tool-invocation errors as findings before establishing a baseline | Unverified claim | 1 | Convention |
 | 8.4 | Proposed a deny rule that failed OPEN on a missing field | Live-state damage | 1 | Test + evaluation |
 | 9.1 | A `for` loop with an unconditional `break`, making all but one member unreachable | Minor | 1 | Convention |
@@ -146,7 +147,8 @@ and why.
 | 10.18 | Dry runs of five production playbooks could never pass; a register from a task check mode skips was read later, and nothing had ever run them — **x2** | Mechanism never exercised | 2 | Test for #308/#313/#314/#319; class Convention (data-flow rule proposed) |
 | 10.19 | Harden SSH's password-rejection probe used BatchMode with public keys off, so it exited non-zero whatever the server allowed | Test that cannot fail | 1 | Test (`test_harden_password_probe.py`) |
 | 10.20 | Recorded "no leaf declared, nothing is issued" for the CA; an empty or absent step-ca policy issues any name, and the probe retirement would have removed the only restriction | Assumed runtime semantics | 1 | Test (`test_step_ca_deploy.py`, mutation-checked) |
-| 11.1 | 76 assertions across the suite could never fail — `!` and `[[ ]]` are exempt from `set -e` | False-green test | 1 | **Ratchet test** |
+| 10.21 | Checked-in ruleset declared `active`; the live one was `evaluate` and `main` was unprotected | Config drift | 1 | Convention (scheduled live-vs-JSON check proposed) |
+| 11.1 | 76 assertions across the suite could never fail — `!` and `[[ ]]` are exempt from `set -e` | False-green test | 1 | **Ratchet test** (`test_assertions_are_real.bats` + `known_inert_assertions.txt`) |
 | 11.2 | Sourced a config file instead of reading it, turning every credential into shell code | Live-state damage | 1 | Test |
 | 11.3 | Committed without running the suite — third occurrence | Process | 1 | Pre-push hook (status note 2026-10-02) |
 | 12.1 | `gh` reported a valid token as invalid because a sandboxed `$HOME` hid the login keychain | Environment visibility | 1 | Convention |
@@ -294,6 +296,8 @@ the PR's independent reviewer flagged the same line, and it was fixed (2d78f01c)
 Why the rule did not fire: the pipe was added to shorten a lint run, and a linter's output
 was not treated as a status. Occurrence 4's proposal covers it once `ruff` is added to the
 command list; until then, `ruff check .; echo rc=$?` is the form.
+
+**Status 2026-10-02.** Repository side: `platform/tests/test_scripts_set_pipefail.bats` requires `pipefail` in committed scripts, with legacy ones in the shrink-only `platform/tests/known_scripts_without_pipefail.txt` (PR #391). Agent side: a user-level PreToolUse Bash hook (`bash-guards-text`, registered in the operator's Claude Code settings) refuses a status-bearing command piped onward unless the command mentions `pipefail` or `PIPESTATUS`; by its own header it cannot see pipes inside command substitution, `eval`, aliases or script files. That hook lives outside this repository, so the Index still reads Convention for agent sessions.
 
 
 ### 1.4 Guessed a resource id rather than reading the one just returned
@@ -508,6 +512,8 @@ v2.19.11, to which production was pinned the same day, applies a task's branch o
 template allows it (`services/tasks/local_executor.go:938`), so the server does enforce the
 flag there. The rule stands unchanged: the original claim still named no server-side
 control, and on v2.18.12 there was none.
+
+**Status 2026-10-02.** OPA branch rule landed (an agent task may run only from `main` or `dev`): `platform/services/opa/deployment/policies/agentcloud/agent_actions.rego` (ledger rules block) with cases in `ledger_rules_test.rego` (PR #389). Inert until callers send the fields and grants the rules read; the shared objects are declared in the same package's `data.json`.
 ### 1.11 A gate justified by a status-code claim nobody checked
 
 **What happened.** On 2026-09-23 I added a read-only access check to `seed-openbao-key.yml`
@@ -641,6 +647,8 @@ the rule did not fire: it names site-config, and this was Semaphore. Its intent 
 a claim about what production is configured with, or what exists there, is read from the
 system of record (site-config for inventory, the Semaphore API for templates and
 environments) before it is stated.
+
+**Status 2026-10-02.** `platform/tests/test_inventory_template_banner.py` requires the public inventory templates to carry a banner saying they are not the production layout (PR #388). It guards the template, not the reading habit.
 
 ### 1.15 A security check's guarantee stated past what its tests exercised
 
@@ -902,6 +910,8 @@ within it. If a window must be fixed-width, the assertion is probably in the wro
 **Enforced by.** Convention. Every window added in this change is construct-scoped, so
 the pattern is present in the repository as the worked example.
 
+**Status 2026-10-02.** Mechanical guard merged to `dev`: `platform/tests/test_no_line_window_assertions.bats` refuses a new line-count window, with the existing ones held in the shrink-only ratchet `platform/tests/known_line_window_assertions.txt` (PR #390). The Index cell now names it; the paragraphs above are left as written.
+
 ### 2.7 A test whose own quoting was the failure
 
 **What happened.** A test grepped for a playbook fragment containing `default('')`, with
@@ -934,6 +944,8 @@ the hazard trains people to delete the documentation.
 
 **Enforced by.** Convention, and this is the third instance — the honest status is that
 nothing mechanical catches it.
+
+**Status 2026-10-02.** Covered by the same guard as 2.6: `platform/tests/test_no_line_window_assertions.bats` + `known_line_window_assertions.txt` (PR #390).
 
 
 ### 2.9 Fifteen negative assertions that could never fail, reported as verified
@@ -970,6 +982,8 @@ of assertions that cannot fail; it may go down and may not go up. That ratchet i
 surfaced this, on a branch whose author believed the suite had verified these very
 properties.
 
+**Status 2026-10-02.** `platform/tests/test_assertions_are_real.bats` now also scans for `grep -v -q` and `|| true` assertions, with known instances in the shrink-only `platform/tests/known_inert_assertions.txt` (PR #392).
+
 
 ### 2.10 §2.9 repeated — a no-op negative assertion, written while fixing that class
 
@@ -1003,6 +1017,8 @@ assertion that has never been observed failing is indistinguishable from a comme
 restoring the stale variable in the report fails the test, removing it passes. The
 `platform/tests/test_assertions_are_real.bats` ratchet does not catch this shape, since
 `grep -v` is not a bang-inverted command; that gap is worth closing.
+
+**Status 2026-10-02.** The `grep -v … || true` form this entry records is now refused by the scan in `platform/tests/test_assertions_are_real.bats`, ratcheted by `known_inert_assertions.txt` (PR #392).
 
 ### 2.11 A test that asserted a property of one random draw
 
@@ -1438,7 +1454,7 @@ begins with the rc guard (mutation-proven: dropping the guard fails it).
 
 ### 2.21 A new deploy playbook shipped without the zero-hosts pre-flight, and its first run was a green no-op
 
-**Occurrences: 2** — 2026-09-17, 2026-10-01
+**Occurrences: 3** — 2026-09-17, 2026-10-01, 2026-10-02
 
 **What happened.** `deploy-agentgateway.yml` was written by mirroring `deploy-tududi.yml`,
 which has no pre-flight. Its first run through the local Semaphore (task 592) printed
@@ -1473,6 +1489,10 @@ this one is not; the pattern was copied from `issue-internal-leaf.yml`, whose in
 over a survey-driven group is the form `preflight-target-group.yml`'s header rules out.
 Widened in 2.25.
 
+**Status 2026-10-02.** The fleet-wide guard this entry proposes merged: `platform/tests/test_deploy_playbooks_preflight.bats`, with the playbooks still missing the import in the shrink-only `platform/tests/known_deploy_without_preflight.txt` (PR #387).
+
+**Occurrence 3 — 2026-10-02.** `renew-internal-certs.yml` (PR #398) passed its tests, and its first production dry run (Semaphore task 2511) found zero leaves and reported success. `internal_leaves` is a group var of `agent_cloud` in the production inventory, invisible to the implicit-localhost planning play, so the plan was empty and nothing refused it. The rule did not fire because it names the zero-hosts case: here the hosts matched and the work list was empty. The fix (branch `fix/renew-leaves-from-ca-host`) reads the list from the `step_ca_svc` host and refuses an empty one. The fixture half is 2.26.
+
 ### 2.22 Fixture hid Semaphore's empty secret projection
 
 **What happened.** Local Semaphore task 1709 ran the reviewed seed-environment
@@ -1494,6 +1514,8 @@ loaded list; continue to refuse explicit null or malformed secret metadata.
 **Enforced by.** `test_the_clean_environment_rule_checks_the_endpoint` and
 `test_provisioner_isolates_the_openbao_key_seed`, whose GET fixture now omits
 empty secret lists.
+
+**Status 2026-10-02.** The first test named under Enforced by was renamed to `test_the_clean_environment_rule_refuses_any_address_pin` in `platform/tests/test_semaphore_seed_input.py` by `03888eee`; the old name stays above as written and is listed in `platform/tests/ledger_citation_ratchet.txt`. Fixture shape widened in 2.26.
 
 ### 2.23 Tightened the check under test, left the fixtures, and three negative cases went vacuous
 
@@ -1574,6 +1596,25 @@ that the operator cannot redirect.
 Fleet-wide: Convention, with 2.21's proposed test widened to every playbook, landing as an
 allow-list of the 60 that only shrinks.
 
+### 2.26 A fixture placed a variable where the production inventory does not (widens 2.22)
+
+**What happened.** `renew-internal-certs.yml` (PR #398) passed its tests. Its first production
+dry run (Semaphore task 2511) found zero leaves and reported success. The test fixture put
+`internal_leaves` where the implicit-localhost planning play could read it; production
+declares it as a group var of `agent_cloud`, which `localhost` is not in.
+
+**Root cause.** The fixture modelled where the variable seemed to belong, not where the
+production inventory puts it. Variable visibility depends on group membership, so a fixture
+with a different shape tests a different program. 1.14 is the same fact misread in prose.
+
+**The rule.** A fixture that supplies inventory variables mirrors the production inventory's
+group layout: the same variable on the same group, and the play reading it from a host in
+that group. 2.22's rule (mirror the provider's response shape) extends to inventory shape.
+
+**Enforced by.** Test, for this playbook: the fix (branch `fix/renew-leaves-from-ca-host`)
+reads from the `step_ca_svc` host, refuses an empty list, and its fixture mirrors the
+production groups. Class-wide, Convention.
+
 ## 3. Acting on live state
 
 ### 3.1 Overwriting a real credential with a probe value
@@ -1603,6 +1644,8 @@ and must be planned as one.
 
 **Enforced by.** Convention today. **OPA-shaped — see §7, rule `no-probe-writes`.**
 
+**Status 2026-10-02.** OPA rule no-probe-writes landed: `platform/services/opa/deployment/policies/agentcloud/agent_actions.rego` (ledger rules block) with cases in `ledger_rules_test.rego` (PR #389). Inert until callers send the fields and grants the rules read; the shared objects are declared in the same package's `data.json`.
+
 ### 3.2 Mutating a shared orchestrator credential without asking
 
 **What happened.** Attempted to overwrite a shared login credential in the
@@ -1621,6 +1664,8 @@ it config-as-code, or ask.
 
 **Enforced by.** Sandbox classifier (fired correctly).
 **OPA-shaped — see §7, rule `no-undeclared-shared-mutation`.**
+
+**Status 2026-10-02.** OPA rule no-undeclared-shared-mutation landed: `platform/services/opa/deployment/policies/agentcloud/agent_actions.rego` (ledger rules block) with cases in `ledger_rules_test.rego` (PR #389). Inert until callers send the fields and grants the rules read; the shared objects are declared in the same package's `data.json`.
 
 ---
 
@@ -2405,6 +2450,8 @@ never from how its output looks.
 lock (`flock` on a file under `$(git rev-parse --git-common-dir)`) and refuses a second
 push of the same branch while one holds it.
 
+**Status 2026-10-02.** `.githooks/pre-push` now takes a per-branch lock under the shared git dir and refuses a second push of the same branch while the first holds it; a lock whose owner process is gone is reclaimed. Tested by `platform/tests/test_pre_push_branch_lock.bats` (PR #394).
+
 ---
 
 ### 5.9 AI attribution trailers added to commits against the repo rule
@@ -2696,6 +2743,8 @@ stays censored (the pattern `provision-tududi-github-sync.yml` already used).
 `*_url` default in a `verify-*` playbook matches the default in the playbook that
 provisions the thing it verifies.
 
+**Status 2026-10-02.** `platform/tests/test_verify_url_defaults.bats` compares verify-URL defaults against the variable they claim to mirror, with known mismatches in the shrink-only `platform/tests/known_verify_url_mismatches.txt` (PR #387).
+
 ---
 
 ### 6.5 Deleted a blueprint file to retire its object, and the replacement blueprint took it over by name
@@ -2980,6 +3029,8 @@ Putting a code-shape rule into OPA would mean the policy engine is consulted at
 runtime about something that was decidable at commit time. That is slower, later,
 and harder to reason about than a test.
 
+**Status 2026-10-02.** Rules for 1.9, 3.1 and 3.2 are now in `platform/services/opa/deployment/policies/agentcloud/agent_actions.rego` (ledger rules block) with cases in `ledger_rules_test.rego` (PR #389). Inert until callers send the fields and grants the rules read; the shared objects are declared in the same package's `data.json`.
+
 ---
 
 ## 8. Mistakes made while writing this file
@@ -3008,6 +3059,8 @@ then reads the file.
 This is the strongest argument in this document for moving rules out of prose and
 into tooling: the same person who wrote the rule broke it while the ink was wet.
 
+**Status 2026-10-02.** Same guards as 1.3: `platform/tests/test_scripts_set_pipefail.bats` + `known_scripts_without_pipefail.txt` for committed scripts (PR #391); the operator's PreToolUse hook for agent commands, outside this repository.
+
 ### 8.2 Invented identifiers for tests that did not have them
 
 **Occurrences: 2** — original (undated), 2026-09-23
@@ -3032,6 +3085,8 @@ the shape of the recent PR sequence, never looked up, and checked only after the
 the message cannot be corrected without a force push. The rule was not recalled because a
 commit message did not register as "a reference to an artifact"; it is one. Look the
 number up (`git log --merges`, `gh pr list --search <sha>`) before writing it.
+
+**Status 2026-10-02.** `platform/tests/test_ledger_test_citations.py` checks every test identifier this file cites against the suite, with historical citations that no longer resolve listed in `platform/tests/ledger_citation_ratchet.txt` (PR #388).
 
 ### 8.3 Two invocation errors reported as findings before being checked
 
@@ -3799,6 +3854,24 @@ one-name `no-leaf-declared.invalid` policy when no leaf is declared, and its Pha
 refuses a CA holding no policy or an empty list. Mutating the deploy back to removing the
 policy fails 11 cases.
 
+### 10.21 The checked-in branch ruleset said `active`; the live one was `evaluate`
+
+**What happened.** On 2026-10-02 a read of the live `protect-main` ruleset (id 17752539)
+found it in `evaluate` mode with an extra `required_linear_history` rule, while
+`.github/rulesets/protect-main.json` declares `active` and the repository instructions
+described `main` as mechanically enforced. `main` was unprotected. It was re-applied with
+`.github/rulesets/apply.sh`; the live ruleset now reads `active` with four rules.
+
+**Root cause.** Config-as-code that is applied by hand and never compared with the live
+object. Nothing read the live state back, so the file and the instructions described
+protection that did not exist.
+
+**The rule.** A declared configuration is enforced only once the live object has been read
+back and matches it. A claim of enforcement cites that read, not the file.
+
+**Enforced by.** Convention. Proposed: a scheduled CI job that reads the live ruleset with a
+read-only token (`gh api`) and fails when it differs from `protect-main.json`.
+
 ## 11. The largest one
 
 ### 11.1 Seventy-six assertions that could not fail
@@ -3846,6 +3919,8 @@ provides `refute_grep` / `assert_contains` / `refute_contains`, which work becau
 a function call is a simple command. 20 assertions were converted in the file
 where the class was found; the ratchet holds the rest at a visible number rather
 than pretending the debt is gone.
+
+**Status 2026-10-02.** The ratchet named above was extended by PR #392: `platform/tests/test_assertions_are_real.bats` adds the `grep -v -q` and `|| true` scans, held in `platform/tests/known_inert_assertions.txt`.
 
 ### 11.2 Sourcing a config file instead of reading it
 
