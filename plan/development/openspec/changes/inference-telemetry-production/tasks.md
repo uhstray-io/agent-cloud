@@ -123,6 +123,13 @@
       contact is rendered from OpenBao `secret/services/o11y:alert_discord_webhook_url`;
       delivery proven by task 1395, readback by 1403. Remaining: the inference-failing,
       memory-thermal and benchmark-gate groups; rules at `for: 5m` or longer.
+      2026-10-03: CODE LANDED, RUNTIME UNPROVEN — `alerts.yml.j2` now renders the
+      inference-failing (vLLM queue stall; with `o11y_inference_probe_enabled`, the probe's
+      success==0 and staleness rules), telemetry-missing (`up` on any DGX Spark target,
+      `absent()` on the vLLM request family), memory-thermal (thermal deferred until the GPU
+      exporter is scraped) and benchmark-gate (paused placeholder) groups, every rule
+      `for: 5m`, routed to `agent-cloud-ops`. Each flag that is off lists its rules under
+      `deleteRules`. Pending: an enabled Deploy o11y and the task 3.5 drill.
 - [ ] 3.3 Synthetic probe: `platform/services/o11y/deployment/probe/inference-probe.sh`
       (curl, one short chat completion, effort `none`, through
       `https://inference.uhstray.io/v1`, key from OpenBao at deploy into the gitignored
@@ -147,12 +154,17 @@
       enabled deploy whose readback shows a fresh sample for the configured model, and the
       alert rule (3.2).
       2026-10-03: the code is PR #402 (merged). Runtime pending: inventory values and an enabled Deploy o11y
-- [ ] 3.4 `platform/tests/test_service_o11y.bats`: dashboards and alerting files are
+- [x] 3.4 `platform/tests/test_service_o11y.bats`: dashboards and alerting files are
       valid JSON/YAML, every `vllm:` name in a dashboard appears in the imported list,
       probe script `shellcheck` clean and contains no literal key
       2026-10-02 rescope: PARTIAL — `test_service_o11y.bats` already checks dashboard JSON
       validity and alert rendering. The vllm-name list check and the probe
       shellcheck/no-literal-key check wait on 3.1 and 3.3.
+      2026-10-03: DONE in code — the dashboard name check against the vendored
+      `platform/tests/fixtures/vllm-metric-names-506e66caa3ef.txt` landed with 3.1; alert
+      rules are checked against the same list; the probe's shellcheck and no-literal-key
+      check is `test_inference_probe.py`, which the o11y BATS suite pins rather than
+      duplicates.
 - [ ] 3.5 Validation gate: wipe and redeploy o11y; the three dashboards render, proving
       scenario "Dashboards render from provisioning alone"; `o11y-fault-drill.yml -e
       drill=probe` points the probe at a model name the server does not serve, starts

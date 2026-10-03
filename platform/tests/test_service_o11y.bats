@@ -2067,7 +2067,7 @@ for scrape in (False, True):
     names = [group['name'] for group in groups]
     if not scrape:
         assert names == ['service-telemetry'], names
-assert names == ['service-telemetry', 'inference-failing', 'memory-thermal', 'benchmark-gate'], names
+assert names == ['service-telemetry', 'inference-failing', 'telemetry-missing', 'memory-thermal', 'benchmark-gate'], names
 
 placeholder = 'inference_benchmark_gate_placeholder'
 for enabled in (False, True):
@@ -2079,6 +2079,7 @@ for enabled in (False, True):
         groups = own(yaml.safe_load(template.render(**values))['groups'])
         rules = {group['name']: group['rules'] for group in groups[1:]}
         assert [rule['uid'] for rule in rules['inference-failing']] == ['inference_queue_stalled']
+        assert [rule['uid'] for rule in rules['telemetry-missing']] == ['inference_target_down', 'inference_vllm_metrics_absent']
         assert [rule['uid'] for rule in rules['memory-thermal']] == ['inference_node_memavailable_low', 'inference_node_memfree_low']
         assert [rule['uid'] for rule in rules['benchmark-gate']] == [placeholder]
         active = enabled and canary is None
@@ -2111,7 +2112,7 @@ assert 'vllm:num_requests_waiting{job="dgx-spark-vllm",cluster="dgx-spark"}' in 
 assert 'rate(vllm:generation_tokens_total{job="dgx-spark-vllm",cluster="dgx-spark"}[5m])) == 0' in stalled
 tuned = own(yaml.safe_load(template.render(local_mode=False, o11y_alerts_enabled=True, o11y_expected_metrics_targets=[],
                                            dgx_spark_scrape_enabled=True,
-                                           o11y_dgx_spark_memfree_floor_bytes=2147483648))['groups'])[2]['rules']
+                                           o11y_dgx_spark_memfree_floor_bytes=2147483648))['groups'])[3]['rules']
 assert tuned[1]['data'][1]['model']['conditions'][0]['evaluator'] == {'type': 'lt', 'params': [2147483648]}
 local = own(yaml.safe_load(template.render(local_mode=True))['groups'])
 assert [group['name'] for group in local] == ['service-telemetry']
@@ -2134,7 +2135,7 @@ env.filters['to_json'] = json.dumps
 template = env.from_string(open(sys.argv[1], encoding='utf-8').read())
 base = dict(local_mode=False, o11y_alerts_enabled=True, o11y_expected_metrics_targets=[])
 
-enabled = yaml.safe_load(template.render(**base, dgx_spark_scrape_enabled=True))
+enabled = yaml.safe_load(template.render(**base, dgx_spark_scrape_enabled=True, o11y_inference_probe_enabled=True))
 created = [rule['uid'] for group in enabled['groups'] for rule in group['rules']
            if rule['uid'].startswith('inference_')]
 assert created, 'enabled render carries no inference rules'
@@ -2146,7 +2147,8 @@ for values in (dict(base, dgx_spark_scrape_enabled=False), dict(base), dict(loca
             if group['name'] not in ('scheduled-jobs', 'internal-ca')] == ['service-telemetry'], values
     assert all(not rule['uid'].startswith('inference_')
                for group in disabled['groups'] for rule in group['rules']), values
-    assert disabled['deleteRules'] == [{'orgId': 1, 'uid': uid} for uid in created], disabled['deleteRules']
+    assert sorted(entry['uid'] for entry in disabled['deleteRules']) == sorted(created), disabled['deleteRules']
+    assert all(entry['orgId'] == 1 for entry in disabled['deleteRules'])
 PY
 }
 
@@ -2224,7 +2226,8 @@ assert all(group['interval'] == '5m' for group in default['groups'] if group['na
 rules = loki_rules(default)
 assert list(rules) == ['o11y_scheduled_job_silent', 'o11y_internal_ca_leaf_expiring',
                        'o11y_internal_ca_intermediate_expiring']
-assert 'deleteRules' not in render(local_mode=False, o11y_expected_metrics_targets=[], dgx_spark_scrape_enabled=True)
+assert 'deleteRules' not in render(local_mode=False, o11y_expected_metrics_targets=[], dgx_spark_scrape_enabled=True,
+                                  o11y_inference_probe_enabled=True)
 
 silent = rules['o11y_scheduled_job_silent']
 assert silent['title'] == 'Scheduled job silent'
@@ -2249,7 +2252,7 @@ for rule in rules.values():
     query = rule['data'][0]
     assert query['datasourceUid'] == 'loki' and query['model']['queryType'] == 'instant'
     assert rule['condition'] == 'B' and rule['data'][1]['datasourceUid'] == '__expr__'
-    assert rule['noDataState'] == 'OK' and rule['executionErrorState'] == 'Alerting'
+    assert rule['noDataState'] == 'OK' and rule['execErrState'] == 'Alerting'
     assert rule['for'] == '5m' and rule['labels']['owner'] == 'platform-operations'
 
 # Active and routed exactly when alerts are enabled and no canary is running, in local
@@ -2285,10 +2288,12 @@ assert listed['o11y_scheduled_job_silent']['data'][0]['relativeTimeRange'] == {'
 
 # An empty declaration withdraws the rule through the file's single deleteRules key,
 # alongside the inference rules when the scrape is off.
-inference = ['inference_queue_stalled', 'inference_node_memavailable_low', 'inference_node_memfree_low',
+inference = ['inference_queue_stalled', 'inference_target_down', 'inference_vllm_metrics_absent',
+             'inference_node_memavailable_low', 'inference_node_memfree_low',
              'inference_benchmark_gate_placeholder']
-for scrape, deleted in ((True, ['o11y_scheduled_job_silent']),
-                        (False, inference + ['o11y_scheduled_job_silent'])):
+probe = ['inference_probe_failing', 'inference_probe_stale']
+for scrape, deleted in ((True, probe + ['o11y_scheduled_job_silent']),
+                        (False, inference + probe + ['o11y_scheduled_job_silent'])):
     empty = render(local_mode=False, o11y_scheduled_jobs=[], o11y_expected_metrics_targets=[],
                    dgx_spark_scrape_enabled=scrape)
     assert 'scheduled-jobs' not in [group['name'] for group in empty['groups']]
@@ -2354,5 +2359,118 @@ for values in (dict(local_mode=False, o11y_alerts_enabled=True, dgx_spark_scrape
 silent = next(rule for group in yaml.safe_load(template.render(local_mode=False))['groups']
               for rule in group['rules'] if rule['uid'] == 'o11y_scheduled_job_silent')
 assert grafana_interpolate(silent['labels']['service']) == '{{ $labels.job }}'
+PY
+}
+
+@test "o11y: synthetic probe alert rules follow the probe flag and read what the probe writes" {
+  python3 - "$DEPLOY_DIR/templates/alerts.yml.j2" "$DEPLOY_DIR/probe/inference-probe.sh" "$REPO_ROOT/platform/tests/fixtures" <<'PY'
+import json
+import pathlib
+import re
+import sys
+
+import yaml
+from jinja2 import Environment, StrictUndefined
+
+env = Environment(undefined=StrictUndefined, trim_blocks=True)
+env.filters['bool'] = bool
+env.filters['to_json'] = json.dumps
+template = env.from_string(open(sys.argv[1], encoding='utf-8').read())
+written = set(re.findall(r'^#\s+(inference_probe_[a-z_]+)\{model_name\}', open(sys.argv[2], encoding='utf-8').read(), re.M))
+assert written == {'inference_probe_success', 'inference_probe_latency_seconds',
+                   'inference_probe_last_run_timestamp_seconds'}, written
+vllm = {line.strip() for line in (pathlib.Path(sys.argv[3]) / 'vllm-metric-names-506e66caa3ef.txt').read_text().splitlines()
+        if line.strip() and not line.startswith('#')}
+probe = ['inference_probe_failing', 'inference_probe_stale']
+
+
+def rules(**values):
+    doc = yaml.safe_load(template.render(local_mode=False, o11y_expected_metrics_targets=[], **values))
+    return doc, {rule['uid']: (group['name'], rule) for group in doc['groups'] for rule in group['rules']}
+
+
+for scrape in (False, True):
+    for enabled in (False, True):
+        doc, found = rules(o11y_alerts_enabled=enabled, dgx_spark_scrape_enabled=scrape, o11y_inference_probe_enabled=True)
+        assert [uid for uid in found if uid in probe] == probe, found.keys()
+        assert not any(entry['uid'] in probe for entry in doc.get('deleteRules', []))
+        for uid in probe:
+            group, rule = found[uid]
+            assert group == 'inference-failing', (uid, group)
+            assert int(rule['for'][:-1]) >= 5 and rule['for'].endswith('m'), rule['for']
+            expr = rule['data'][0]['model']['expr']
+            assert '{job="receiver-host"}' in expr and 'by (model_name)' in expr, expr
+            assert set(re.findall(r'inference_probe_[a-z_]+', expr)) <= written, expr
+            assert rule['isPaused'] is (not enabled)
+            assert ('notification_settings' in rule) is enabled
+            if enabled:
+                assert rule['notification_settings']['receiver'] == 'agent-cloud-ops'
+        failing, stale = found['inference_probe_failing'][1], found['inference_probe_stale'][1]
+        assert failing['data'][1]['model']['conditions'][0]['evaluator'] == {'type': 'lt', 'params': [0.5]}
+        assert stale['data'][0]['model']['expr'].startswith('time() - ')
+        assert stale['data'][1]['model']['conditions'][0]['evaluator'] == {'type': 'gt', 'params': [900]}
+        # A stopped timer leaves the last success value standing; only no-data alerting sees it.
+        assert stale['noDataState'] == 'Alerting' and failing['noDataState'] == 'OK'
+
+    doc, found = rules(o11y_alerts_enabled=True, dgx_spark_scrape_enabled=scrape)
+    assert not any(uid in probe for uid in found)
+    assert [entry['uid'] for entry in doc['deleteRules'] if entry['uid'] in probe] == probe
+
+# Every vllm: name any rendered rule selects is in the recorded metric list.
+_, found = rules(o11y_alerts_enabled=True, dgx_spark_scrape_enabled=True, o11y_inference_probe_enabled=True)
+missing = found['inference_vllm_metrics_absent'][1]
+assert missing['data'][0]['model']['expr'] == 'absent(vllm:num_requests_running{job="dgx-spark-vllm",cluster="dgx-spark"})'
+assert found['inference_target_down'][1]['data'][0]['model']['expr'] == 'up{cluster="dgx-spark"}'
+for uid, (_, rule) in found.items():
+    for name in re.findall(r'vllm:[A-Za-z0-9_:]+', rule['data'][0]['model']['expr']):
+        assert name in vllm, (uid, name)
+PY
+}
+
+@test "o11y: the probe script's shellcheck and no-literal-key check lives in the probe suite" {
+  # Task 3.4's probe-script check is not duplicated here; this pins that it still exists.
+  run grep -c 'def test_the_script_holds_no_literal_key_and_passes_shellcheck' "$REPO_ROOT/platform/tests/test_inference_probe.py"
+  [ "$status" -eq 0 ]
+  [ "$output" = "1" ]
+}
+
+@test "o11y: every rendered alert key is one Grafana's rule provisioning reads" {
+  python3 - "$DEPLOY_DIR/templates/alerts.yml.j2" <<'PY'
+import json
+import sys
+
+import yaml
+from jinja2 import Environment, StrictUndefined
+
+# Grafana v11.4.0 pkg/services/provisioning/alerting/rules_types.go: AlertRuleGroupV1
+# (lines 27-33), AlertRuleV1 (64-80), QueryV1 (162-168), NotificationSettingsV1 (199-206).
+# The YAML decoder drops an unknown key silently: the error-state key is execErrState
+# (line 73); executionErrorState is ignored and the rule falls back to the default.
+GROUP = {'orgId', 'name', 'folder', 'interval', 'rules'}
+RULE = {'uid', 'title', 'condition', 'data', 'dasboardUid', 'dashboardUid', 'panelId', 'noDataState',
+        'execErrState', 'for', 'annotations', 'labels', 'isPaused', 'notification_settings', 'record'}
+QUERY = {'refId', 'queryType', 'relativeTimeRange', 'datasourceUid', 'model'}
+NOTIFY = {'receiver', 'group_by', 'group_wait', 'group_interval', 'repeat_interval', 'mute_time_intervals'}
+
+env = Environment(undefined=StrictUndefined, trim_blocks=True)
+env.filters['bool'] = bool
+env.filters['to_json'] = json.dumps
+template = env.from_string(open(sys.argv[1], encoding='utf-8').read())
+seen = 0
+for values in (dict(local_mode=True), dict(local_mode=True, o11y_alerts_enabled=True),
+               dict(local_mode=False, o11y_alerts_enabled=True, dgx_spark_scrape_enabled=True,
+                    o11y_inference_probe_enabled=True,
+                    o11y_expected_metrics_targets=[{'uid': 'o11y_missing_x', 'service': 'x/y', 'instance': 'x:1'}])):
+    for group in yaml.safe_load(template.render(**values))['groups']:
+        assert set(group) <= GROUP, (group['name'], set(group) - GROUP)
+        for rule in group['rules']:
+            seen += 1
+            assert set(rule) <= RULE, (rule['uid'], set(rule) - RULE)
+            assert rule['execErrState'] == 'Alerting' and 'executionErrorState' not in rule, rule['uid']
+            assert rule['noDataState'] in ('OK', 'Alerting', 'NoData'), rule['uid']
+            for query in rule['data']:
+                assert set(query) <= QUERY, (rule['uid'], set(query) - QUERY)
+            assert set(rule.get('notification_settings', {})) <= NOTIFY, rule['uid']
+assert seen > 10, seen
 PY
 }

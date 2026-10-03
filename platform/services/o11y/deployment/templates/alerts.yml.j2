@@ -42,7 +42,7 @@ groups:
               maxDataPoints: 43200
               refId: B
         noDataState: OK
-        executionErrorState: Alerting
+        execErrState: Alerting
         for: 2m
         annotations:
           summary: A declared service metrics endpoint is unreachable.
@@ -92,7 +92,7 @@ groups:
               maxDataPoints: 43200
               refId: B
         noDataState: Alerting
-        executionErrorState: Alerting
+        execErrState: Alerting
         for: 15m
         annotations:
           summary: The o11y receiver host root filesystem has less than 10% free space.
@@ -146,7 +146,7 @@ groups:
               maxDataPoints: 43200
               refId: B
         noDataState: OK
-        executionErrorState: Alerting
+        execErrState: Alerting
         for: 2m
         annotations:
           summary: Expected metrics have disappeared for {{ target.service }}.
@@ -205,7 +205,7 @@ groups:
               maxDataPoints: 43200
               refId: B
         noDataState: OK
-        executionErrorState: Alerting
+        execErrState: Alerting
         for: {{ for_ }}
         annotations:
           summary: {{ summary | to_json }}
@@ -284,8 +284,13 @@ groups:
    the scrape off must name every inference rule in deleteRules (the
    deleteContactPoints pattern in alert-contact.yml.j2); keep this list in step
    with the rules below. #}
-{% set _inference_uids = ['inference_queue_stalled', 'inference_node_memavailable_low', 'inference_node_memfree_low', 'inference_benchmark_gate_placeholder'] %}
-{% if dgx_spark_scrape_enabled | default(false) | bool %}
+{# The synthetic probe rules read the probe's textfile samples, scraped by the
+   receiver-host job, so they follow o11y_inference_probe_enabled instead of the
+   DGX scrape; turning the probe off deletes them the same way. #}
+{% set _inference_uids = ['inference_queue_stalled', 'inference_target_down', 'inference_vllm_metrics_absent', 'inference_node_memavailable_low', 'inference_node_memfree_low', 'inference_benchmark_gate_placeholder'] %}
+{% set _probe_uids = ['inference_probe_failing', 'inference_probe_stale'] %}
+{% set _dgx_on = dgx_spark_scrape_enabled | default(false) | bool %}
+{% set _probe_on = o11y_inference_probe_enabled | default(false) | bool %}
 {% set _inference_active = o11y_alerts_enabled | default(false) | bool and o11y_alert_canary_service is not defined %}
 {% set _runbook = 'https://github.com/uhstray-io/dgx-spark/blob/main/docs/VLLM-BRINGUP.md' %}
 {% macro inference_rule(uid, title, expr, evaluator, threshold, for_, severity, service, summary, description, dashboard, from_=600, no_data='OK', paused=none) %}
@@ -319,7 +324,7 @@ groups:
               maxDataPoints: 43200
               refId: B
         noDataState: {{ no_data }}
-        executionErrorState: Alerting
+        execErrState: Alerting
         for: {{ for_ }}
         annotations:
           summary: {{ summary | to_json }}
@@ -343,16 +348,57 @@ groups:
           repeat_interval: 4h
 {% endif %}
 {% endmacro %}
+{% if _dgx_on or _probe_on %}
   - orgId: 1
     name: inference-failing
     folder: agent-cloud
     interval: 60s
     rules:
+{% if _dgx_on %}
 {{ inference_rule('inference_queue_stalled', 'vLLM requests waiting while no tokens are generated',
      'sum by (model_name, node) (vllm:num_requests_waiting{job="dgx-spark-vllm",cluster="dgx-spark"}) and on (model_name, node) (sum by (model_name, node) (rate(vllm:generation_tokens_total{job="dgx-spark-vllm",cluster="dgx-spark"}[5m])) == 0)',
      'gt', 0, '5m', 'critical', 'vllm',
      'vLLM has queued requests and has generated no tokens for five minutes.',
      'Health can still answer while inference is stuck. Check the head and worker ranks and the lifecycle state before restarting anything.',
+     '/d/inference-latency-capacity') }}
+{% endif %}
+{% if _probe_on %}
+{# The probe samples every five minutes and rewrites the same gauge, so 5m of
+   success==0 is at least one failed completion that the next run did not clear.
+   Staleness alerts on a sample older than three timer periods, and on no sample
+   at all (noDataState Alerting): a stopped timer leaves the last success value
+   standing, which the failing rule alone would read as healthy. #}
+{{ inference_rule('inference_probe_failing', 'Synthetic inference probe failing',
+     'max by (model_name) (inference_probe_success{job="receiver-host"})',
+     'lt', 0.5, '5m', 'critical', 'vllm',
+     'The synthetic chat completion through the public inference hostname has failed for five minutes.',
+     'Health can answer while completions fail. Check the gateway route, the upstream key and the served model name against the probe target.',
+     '/d/inference-latency-capacity') }}
+{{ inference_rule('inference_probe_stale', 'Synthetic inference probe has not reported',
+     'time() - max by (model_name) (inference_probe_last_run_timestamp_seconds{job="receiver-host"})',
+     'gt', 900, '5m', 'warning', 'o11y/receiver-host',
+     'The synthetic inference probe has not written a sample in fifteen minutes.',
+     'Check the inference-probe timer and service on the o11y host and the textfile collector on the receiver-host exporter.',
+     '/d/inference-latency-capacity', no_data='Alerting') }}
+{% endif %}
+{% endif %}
+{% if _dgx_on %}
+  - orgId: 1
+    name: telemetry-missing
+    folder: agent-cloud
+    interval: 60s
+    rules:
+{{ inference_rule('inference_target_down', 'DGX Spark scrape target down',
+     'up{cluster="dgx-spark"}',
+     'lt', 0.5, '5m', 'critical', 'dgx-spark',
+     'A DGX Spark node, GPU or vLLM scrape target has been unreachable for five minutes.',
+     'The job and node labels name the target. Without it the inference alerts above cannot fire; check the host and its exporter before trusting a quiet board.',
+     '/d/inference-fleet-health') }}
+{{ inference_rule('inference_vllm_metrics_absent', 'vLLM metric families absent',
+     'absent(vllm:num_requests_running{job="dgx-spark-vllm",cluster="dgx-spark"})',
+     'gt', 0.5, '5m', 'critical', 'vllm',
+     'The vLLM scrape has returned no request metrics for five minutes.',
+     'The endpoint can answer while serving is down or the metric names changed after an image bump. Compare the scrape against the recorded vLLM metric list.',
      '/d/inference-latency-capacity') }}
   - orgId: 1
     name: memory-thermal
@@ -387,7 +433,8 @@ groups:
 {% endif %}
 {# One deleteRules key for every withdrawn rule: the inference rules when the scrape
    is off, the silent-job rule when no scheduled job is declared. #}
-{% set _deleted_uids = ([] if dgx_spark_scrape_enabled | default(false) | bool else _inference_uids)
+{% set _deleted_uids = ([] if _dgx_on else _inference_uids)
+     + ([] if _probe_on else _probe_uids)
      + ([] if _scheduled_jobs | length > 0 else ['o11y_scheduled_job_silent']) %}
 {% if _deleted_uids %}
 deleteRules:
