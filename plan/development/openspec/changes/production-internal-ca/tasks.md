@@ -382,7 +382,7 @@ host. Push, pull requests and merges happen only when Joe authorizes each one.
       3.3.2 (the pinned image) with fixture lines: each fired for exactly the fixture
       series meant to fire. Not yet proven: Grafana 11.4 provisioning and evaluation of
       the Loki instant queries (the o11y deploy readback)
-      2026-10-02/03 production: rules merged in PR #396; Deploy o11y (Dev) tasks 2522 (dry run) and
+      2026-10-03 production: rules merged in PR #396; Deploy o11y (Dev) tasks 2522 (dry run) and
       2523 at `dev` `0f4b9966`: the rules rendered, the exact-set readback passed and the contact
       point is active. The renewal job's first lines arrived from task 2521 (6.1)
 - [ ] 6.5 Alert drill: a canary leaf declared with a lifetime under seven days fires the

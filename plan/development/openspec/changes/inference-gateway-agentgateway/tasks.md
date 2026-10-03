@@ -240,7 +240,7 @@
       `otelcol.connector.spanlogs`, the model request-duration series on the client view,
       and a link to it from the inference latency dashboard. Open until the private
       inventory declares the endpoint and 3.3 proves it on live traffic
-      2026-10-02: PR #399 merged (span-log flag, default off). A deploy with the flag set waits on
+      2026-10-03: PR #399 merged (span-log flag, default off). A deploy with the flag set waits on
       the private inventory
 - [x] 3.2 Check whether `localRateLimit` has a log-only mode in the v1.5.0 schema; record
       the answer in `design.md` and set the first-week policy accordingly. 2026-09-17: no
@@ -317,7 +317,7 @@
       `platform/tests/test_agw_legacy_retirement.py`). Left: the rotation at vLLM and in OpenBao
       and the `vllm_api_allowed_cidr` narrowing are dgx-spark's and wait on the dgx-spark handoff;
       the retirement date is recorded in `context/architecture.md` once 4.7 sets it
-      2026-10-02: the deploy half is PR #400 (merged). The vLLM rotation waits on the dgx-spark
+      2026-10-03: the deploy half is PR #400 (merged). The vLLM rotation waits on the dgx-spark
       handoff, which has not been sent
 - [ ] 5.2 Accept the architecture record; append a dated pointer line to
       `plan/development/06-inference-skynet.md`; `platform/services/inference/` stub

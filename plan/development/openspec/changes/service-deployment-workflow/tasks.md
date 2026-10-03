@@ -102,7 +102,7 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
       - The rebase half does not apply as written: this change has no long-lived branch. Each
         increment is its own branch cut from `origin/dev` and merged by pull request, so every
         later section-3 branch starts from a `dev` that already carries the gateway.
-      - 2026-10-02: recorded by PR #395 (merged)
+      - 2026-10-03: recorded by PR #395 (merged)
 - [ ] 3.1 Prove the DGX API is reachable from inside the local controller's container (not
       only the host); record the result; if unreachable, record the degraded path in design
 - [ ] 3.2 Local inventory: agentgateway upstream set to the DGX API in `local-dev.yml` only;
@@ -202,7 +202,7 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
         playbooks record no step result, and systemd-enablement fails on a missing group
         preflight and a run_once emitter fed per-host errors. Each entry carries `review_gap`. The
         four passing stamps wait on the matching OPA `data.json` workflow_steps change.
-      - 2026-10-02: review merged in PR #397: 4 pass, 13 fail (twelve with no step result, plus
+      - 2026-10-03: review merged in PR #397: 4 pass, 13 fail (twelve with no step result, plus
         systemd-enablement). Stamps wait on the OPA `data.json` change and a decision on the `main` run
 - [x] 7.2 `provision-vm.yml` sets `onboot`; restart-policy check beside `enable-linger`.
       2026-09-22: onboot with per-host opt-out; `verify-service-persistence.yml` (step
@@ -322,7 +322,7 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
         Phase 3), templates, what OPA lets each role launch, secrets boundary, undo path and
         known quirks, each citing its source file. Open for review: the access schema takes one
         `auth_mode` while the service has two surfaces (`api_key` on `/v1`, `oidc` on the UI).
-      - 2026-10-02: landed in PR #395 (merged)
+      - 2026-10-03: landed in PR #395 (merged)
 - [ ] 7.8 Validation gate: spec scenarios "Passing step records its evidence", "A failure with
       no result is still recorded", "Invalid proposal never executes", "Assessment sees
       earlier steps", "Failure appears within one interval", "NetBox outage does not block
