@@ -280,7 +280,8 @@
       2026-10-02: the deploy half landed (`config.yaml.j2` renders `legacy-shared` only before
       `legacy_shared_expires`; `tasks/agw-legacy-key-check.yml` records the shared key's sha256
       fingerprint once at `legacy_shared_key_sha256` during the grace period and, on or after the
-      date, fails the deploy while `vllm_api_key` still matches it; tests
+      date, fails the deploy in its last play, after the gateway is recreated without the
+      identity, while `vllm_api_key` still matches it; tests
       `platform/tests/test_agw_legacy_retirement.py`). Left: the rotation at vLLM and in OpenBao
       and the `vllm_api_allowed_cidr` narrowing are dgx-spark's and wait on the dgx-spark handoff;
       the retirement date is recorded in `context/architecture.md` once 4.7 sets it

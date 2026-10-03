@@ -77,9 +77,10 @@ one at a time; then it is retired. The deploy enforces the date rather than anyo
 |---|---|
 | `legacy_shared_expires` absent | No grace period declared: no `legacy-shared` identity, no check |
 | today (controller UTC) before `legacy_shared_expires` | `legacy-shared` is enrolled (budget from `agw_client_policies.legacy-shared`); the deploy records the shared key's sha256 fingerprint ONCE into `secret/services/agentgateway:legacy_shared_key_sha256` and pins the identity to it |
-| on or after `legacy_shared_expires` | `legacy-shared` is not rendered, and the deploy fails while `vllm_api_key` still has the recorded fingerprint (or no fingerprint was ever recorded) |
+| on or after `legacy_shared_expires` | `legacy-shared` is not rendered and Phase 2 rolls that config out; then the last play (Phase 4) fails while `vllm_api_key` still has the recorded fingerprint (or no fingerprint was ever recorded) |
 
-Only booleans leave the credential task (`tasks/agw-legacy-key-check.yml`, `no_log`); neither
+The fingerprint is written by a compare-and-swap on the field's absence and is not declared
+through manage-secrets, which writes declared fields back. Only booleans leave the credential task (`tasks/agw-legacy-key-check.yml`, `no_log`); neither
 the key nor its hash is printed. `legacy-shared` may not appear in `agw_clients`. Rotating
 `VLLM_API_KEY` at vLLM and in OpenBao belongs to dgx-spark, which owns the key; the rollback
 `restore` mode does not rotate it either.

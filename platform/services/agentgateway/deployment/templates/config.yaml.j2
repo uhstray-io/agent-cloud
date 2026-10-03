@@ -198,7 +198,7 @@ llm:
       # gateway, enrolled as ONE identity until inventory legacy_shared_expires. Its hash is the
       # fingerprint recorded in OpenBao (pinned to the pre-rotation key), or, before the first
       # recording, the current vLLM key's. On or after the date this block is not rendered.
-      - keyHash: sha256:{{ secrets.legacy_shared_key_sha256 | default('', true) or (secrets.vllm_api_key | hash('sha256')) }}
+      - keyHash: sha256:{{ _legacy_fp_recorded | default('', true) or (secrets.vllm_api_key | hash('sha256')) }}
         metadata:
           name: legacy-shared
 {% if _lp.allowed_models is defined %}
