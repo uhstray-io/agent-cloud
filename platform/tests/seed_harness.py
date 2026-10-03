@@ -11,8 +11,10 @@ import os
 import subprocess
 import threading
 from contextlib import contextmanager
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import ThreadingHTTPServer
 from pathlib import Path
+
+from fake_http import DrainingHandler
 
 ROOT = Path(__file__).resolve().parents[2]
 ROLE = {"bao_role_id": "synthetic-role", "bao_secret_id": "synthetic-role-secret"}
@@ -20,7 +22,7 @@ LOGIN = "synthetic-login-value"
 NEVER_PRINTED = ("synthetic-role", "synthetic-role-secret", LOGIN, "synthetic-leftover-value")
 
 
-class FakeBao(BaseHTTPRequestHandler):
+class FakeBao(DrainingHandler):
     """Subclass per test and define do_GET / do_POST / do_PATCH; call record() in each."""
 
     requests: list = []

@@ -13,11 +13,12 @@ import os
 import shutil
 import subprocess
 import threading
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import HTTPServer
 from pathlib import Path
 
 import pytest
 import yaml
+from fake_http import DrainingHandler
 
 REPO = Path(__file__).resolve().parents[2]
 TASK = REPO / "platform/playbooks/tasks/push-loki-lines.yml"
@@ -75,7 +76,7 @@ def test_task_is_the_one_place_a_playbook_pushes_to_loki():
     assert post["status_code"] == [204]
 
 
-class _Loki(BaseHTTPRequestHandler):
+class _Loki(DrainingHandler):
     status = 204
     requests: list = []
 

@@ -13,6 +13,7 @@ import threading
 from pathlib import Path
 
 import pytest
+from fake_http import DrainingHandler
 
 ROOT = Path(__file__).resolve().parents[2]
 TOKEN = "SYNTHETIC-HEADER-VALUE-4f1c"
@@ -44,7 +45,7 @@ PLAY = """
 
 @pytest.fixture(scope="module")
 def server():
-    class Handler(http.server.BaseHTTPRequestHandler):
+    class Handler(DrainingHandler):
         def do_GET(self):
             self.send_response(200)
             self.send_header("Content-Length", "2")

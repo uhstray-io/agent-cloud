@@ -4,20 +4,24 @@ import copy
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import threading
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 import yaml
 
 ROOT = Path(__file__).resolve().parents[5]
+sys.path.insert(0, str(ROOT / "platform/tests"))
+from fake_http import DrainingHandler  # noqa: E402 - the shared fake-server base
+
 PLAYBOOKS = ROOT / "platform/playbooks"
 PROVISION = yaml.safe_load((PLAYBOOKS / "provision-tududi-github-sync.yml").read_text())[-1]
 TOKEN = yaml.safe_load((PLAYBOOKS / "store-tududi-api-token.yml").read_text())[-1]
 
 
-class Engine(BaseHTTPRequestHandler):
+class Engine(DrainingHandler):
     def log_message(self, *_):
         pass
 

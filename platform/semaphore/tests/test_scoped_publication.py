@@ -4,15 +4,19 @@ import copy
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import threading
 import unittest
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 import yaml
 
 ROOT = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(ROOT / "platform/tests"))
+from fake_http import DrainingHandler  # noqa: E402 - the shared fake-server base
+
 NAME = "Store tududi API Token (Dev)"
 CONFORMANCE_NAME = "Collect Service Conformance (Dev)"
 TEMPLATE = {
@@ -38,7 +42,7 @@ class ScopedPublicationTests(unittest.TestCase):
         cls.access_value = "fixture-" + "access-value"
         cls.login_value = "fixture-" + "login-value"
 
-        class Handler(BaseHTTPRequestHandler):
+        class Handler(DrainingHandler):
             def log_message(self, *_args):
                 pass
 
