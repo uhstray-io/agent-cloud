@@ -14,6 +14,7 @@ import shutil
 import stat
 import subprocess
 from pathlib import Path
+from urllib.parse import unquote
 
 import pytest
 import yaml
@@ -140,6 +141,8 @@ def test_a_failed_completion_records_failure_with_its_latency(probe, http, rc, b
 def test_the_request_is_one_short_chat_completion_at_effort_none(probe):
     probe()
     argv = (probe.stub / "argv").read_text().splitlines()
+    # curl honours --disable (skip ~/.curlrc) only as its FIRST argument (curl(1), -q).
+    assert argv[0] == "--disable"
     assert argv[-1] == f"{URL}/chat/completions"
     payload = json.loads(argv[argv.index("--data-binary") + 1])
     assert payload["model"] == MODEL
@@ -148,6 +151,30 @@ def test_the_request_is_one_short_chat_completion_at_effort_none(probe):
     assert payload["max_tokens"] <= 16
     assert argv[argv.index("--max-time") + 1] == "30"
     assert argv[argv.index("--proto") + 1] == "=https"
+
+
+HAS_JQ = shutil.which("jq") is not None
+# The script reads the body with jq when the host has it, else python3; run both.
+PARSERS = [
+    pytest.param("jq", marks=pytest.mark.skipif(not HAS_JQ, reason="jq not installed")),
+    pytest.param("no-such-jq-binary", id="python3"),
+]
+
+
+@pytest.mark.parametrize("parser", PARSERS)
+@pytest.mark.parametrize("body,expect,why", [
+    (GOOD_BODY, "1", "a choice with content"),
+    ('{"choices":[{"message":{"content":""},"finish_reason":"length"}]}', "1", "a finish_reason alone"),
+    ('{"choices":[]}', "0", "empty choices"),
+    ('{"choices":[{"message":{"content":""},"finish_reason":null}]}', "0", "a choice that produced nothing"),
+    ('{"choices":[{}]}', "0", "an empty choice object"),
+    ('{"choices":"pong"}', "0", "choices that is not a list"),
+    ('<html>"choices" "finish_reason"</html>', "0", "a non-JSON page naming the fields"),
+])
+def test_a_200_succeeds_only_with_a_choice_that_produced_output(probe, parser, body, expect, why):
+    done, text = probe(body=body, env={"INFERENCE_PROBE_JQ": parser})
+    assert done.returncode == 0, why
+    assert _samples(text)["inference_probe_success"][1] == expect, why
 
 
 @pytest.mark.parametrize("env,why", [
@@ -300,17 +327,18 @@ def _phase(prefix):
 def test_every_probe_task_is_gated_on_the_inventory_flag():
     p1 = _phase("Phase 1")
     probe_tasks = [t for t in p1["tasks"] if "probe" in t.get("name", "").lower()]
-    assert len(probe_tasks) == 5
+    assert len(probe_tasks) == 7
     for t in probe_tasks:
         assert "_probe_enabled" in json.dumps(t.get("when")), t["name"]
     install = next(t for t in probe_tasks if t["name"] == "Install the synthetic inference probe")
     assert install["when"] == "_probe_enabled | bool"
-    removal = next(t for t in probe_tasks if t["name"] == "Remove the synthetic inference probe after it is disabled")
-    # Privileged removal only on a host that once had the probe: a never-enabled deploy needs no sudo.
-    assert "_probe_timer_present.stat.exists | default(false)" in removal["when"]
+    # Under --check the unit files are only simulated: a first enable has no timer to start.
+    start, = (t for t in install["block"] if "ansible.builtin.systemd_service" in t)
+    assert start["when"] == "not ansible_check_mode"
     p3 = _phase("Phase 3")
     verify = next(t for t in p3["tasks"] if t.get("name") == "Verify the synthetic inference probe after a real deploy")
     assert "o11y_inference_probe_enabled | default(false) | bool" in verify["when"]
+    assert "not ansible_check_mode" in verify["when"]
     assert p1["vars"]["_probe_textfile_dir"] == TEXTFILE_DIR
 
 
@@ -364,3 +392,153 @@ def test_probe_on_reads_its_key_from_the_owning_service_into_a_separate_file(tmp
     assert w["overlays"] == "probe/compose.textfile.yml"
     assert (DEPLOY / "templates" / w["env"][1]["src"]).resolve() == PROBE_DIR / "inference-probe.env.j2"
     assert (DEPLOY / w["overlays"]).is_file()
+
+
+# ── disabled cleanup: each artefact on its own, sudo only for one that exists ─
+
+CLEANUP_FIRST = "Look for probe artefacts an earlier enable left on the host"
+CLEANUP_LAST = "Remove the probe key file while the probe is disabled"
+
+
+def _cleanup(tmp_path, present, *, forbid_become):
+    """Run the deploy's own disabled-path tasks against temporary unit/textfile/deploy dirs.
+
+    systemd calls become debug markers (no systemd here). With forbid_become the become
+    executable does not exist, so any privileged step that runs fails the play: proof that a
+    host with nothing to clean is never escalated. Otherwise `become` is stripped so the real
+    file removals run unprivileged in the temporary tree.
+    """
+    p1 = _phase("Phase 1")
+    names = [t.get("name") for t in p1["tasks"]]
+    tasks = p1["tasks"][names.index(CLEANUP_FIRST):names.index(CLEANUP_LAST) + 1]
+    harness_tasks = []
+    for t in tasks:
+        t = dict(t)
+        if "ansible.builtin.systemd_service" in t:
+            t.pop("ansible.builtin.systemd_service")
+            t["ansible.builtin.debug"] = {"msg": f"SYSTEMD {t['name']}"}
+        if not forbid_become:
+            t.pop("become", None)
+        harness_tasks.append(t)
+    units, textfile, deploy = tmp_path / "units", tmp_path / "textfile", tmp_path / "deploy"
+    for d in (units, textfile, deploy / "probe"):
+        d.mkdir(parents=True)
+    paths = {
+        "timer": units / "inference-probe.timer",
+        "service": units / "inference-probe.service",
+        "metric": textfile / "inference_probe.prom",
+        "key": deploy / "probe" / "inference-probe.env",
+    }
+    for name in present:
+        paths[name].write_text("x\n")
+    pv = {k: p1["vars"][k] for k in ("_probe_host_artefacts", "_probe_present")}
+    pv.update({"_probe_enabled": False, "_probe_unit_dir": str(units), "_probe_textfile_dir": str(textfile),
+               "_deploy_dir": str(deploy)})
+    if forbid_become:
+        pv["ansible_become_exe"] = str(tmp_path / "no-such-sudo")
+    harness = [{"hosts": "localhost", "connection": "local", "gather_facts": False, "vars": pv,
+                "tasks": harness_tasks}]
+    path = tmp_path / "harness.yml"
+    path.write_text(yaml.safe_dump(harness))
+    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
+    env["ANSIBLE_NOCOLOR"] = "1"
+    done = subprocess.run(["ansible-playbook", "-i", "localhost,", str(path)], cwd=REPO, env=env, text=True,
+                          capture_output=True, stdin=subprocess.DEVNULL)
+    return done, {k: p.exists() for k, p in paths.items()}
+
+
+@needs_ansible
+def test_a_host_that_never_ran_the_probe_is_never_escalated(tmp_path):
+    done, left = _cleanup(tmp_path, [], forbid_become=True)
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert "SYSTEMD" not in done.stdout
+    assert "changed=0" in done.stdout
+
+
+@needs_ansible
+@pytest.mark.parametrize("present,stops,reloads", [
+    (["timer", "service", "metric", "key"], True, True),
+    (["service", "metric"], False, True),       # install interrupted before the timer landed
+    (["metric"], False, False),                 # removal interrupted after the units went
+    (["timer"], True, True),
+    (["key"], False, False),
+])
+def test_every_leftover_artefact_is_removed_on_its_own(tmp_path, present, stops, reloads):
+    done, left = _cleanup(tmp_path, present, forbid_become=False)
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert not any(left.values()), left
+    assert ("SYSTEMD Stop and disable a leftover probe timer" in done.stdout) is stops
+    assert ("SYSTEMD Reload systemd after removing a probe unit" in done.stdout) is reloads
+
+
+# ── deploy verification: only a fresh sample for the configured model passes ─
+
+def _verify_task():
+    p3 = _phase("Phase 3")
+    block = next(t for t in p3["tasks"] if t.get("name") == "Verify the synthetic inference probe after a real deploy")
+    read_name = "Read the forced probe sample from the private Prometheus API"
+    read = next(t for t in block["block"] if t["name"] == read_name)
+    return block, read
+
+
+def _row(name, model, value):
+    return {"metric": {"__name__": name, "job": "receiver-host", "model_name": model}, "value": [1790000000.0, value]}
+
+
+STARTED = "1790978600"
+
+
+def _fresh(model="served-model-a", ts="1790978605"):
+    return [_row("inference_probe_success", model, "1"), _row("inference_probe_latency_seconds", model, "0.4"),
+            _row("inference_probe_last_run_timestamp_seconds", model, ts)]
+
+
+def _no_latency():
+    return [r for r in _fresh() if r["metric"]["__name__"] != "inference_probe_latency_seconds"]
+
+
+@needs_ansible
+@pytest.mark.parametrize("rows,expect,why", [
+    (_fresh(), True, "fresh sample for the configured model"),
+    (_fresh(ts=STARTED), True, "sample stamped in the second the forced run started"),
+    (_fresh(ts="1790978000"), False, "stale sample from an earlier run"),
+    (_fresh(model="other-model"), False, "fresh sample for another model"),
+    (_fresh()[:2], False, "last-run timestamp series missing"),
+    (_no_latency(), False, "latency missing"),
+    (_fresh(ts="1790978000") + _fresh(model="other-model"), False, "stale here, fresh only elsewhere"),
+    (_no_latency() + _fresh(model="other-model"), False, "latency only from another model"),
+    (_fresh() + _fresh(model="other-model", ts="1"), True, "extra series for another model are ignored"),
+])
+def test_verification_accepts_only_a_fresh_sample_for_the_configured_model(tmp_path, rows, expect, why):
+    block, read = _verify_task()
+    stdout = json.dumps({"status": "success", "data": {"resultType": "vector", "result": rows}})
+    harness = [{
+        "hosts": "localhost", "connection": "local", "gather_facts": False,
+        "vars": {**block["vars"], "o11y_inference_probe_model": MODEL,
+                 "_probe_metrics": {"rc": 0, "stdout": stdout}, "_probe_started": {"stdout": STARTED + "\n"}},
+        "tasks": [{"ansible.builtin.debug": {"msg": "UNTIL {{ (" + read["until"] + ") | to_json }}"}},
+                  {"ansible.builtin.debug": {"msg": "QUERY {{ _probe_query | urlencode }}"}}],
+    }]
+    path = tmp_path / "harness.yml"
+    path.write_text(yaml.safe_dump(harness))
+    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
+    env["ANSIBLE_NOCOLOR"] = "1"
+    done = subprocess.run(["ansible-playbook", "-i", "localhost,", str(path)], cwd=REPO, env=env, text=True,
+                          capture_output=True, check=True, stdin=subprocess.DEVNULL)
+    until = next(ln for ln in done.stdout.splitlines() if "UNTIL " in ln)
+    assert until.rstrip().endswith(f'UNTIL {str(expect).lower()}"'), (why, until)
+    query = unquote(next(ln for ln in done.stdout.splitlines() if "QUERY " in ln).split("QUERY ", 1)[1])
+    assert f'model_name="{MODEL}"' in query
+    for name in ("inference_probe_success", "inference_probe_latency_seconds",
+                 "inference_probe_last_run_timestamp_seconds"):
+        assert name in query
+    assert "{{ _probe_query | urlencode }}" in read["ansible.builtin.command"]["argv"][-1]
+
+
+def test_the_readme_does_not_claim_a_probe_alert_that_does_not_exist_yet():
+    readme = (DEPLOY / "README.md").read_text()
+    section = readme.split("## Synthetic inference probe", 1)[1].split("\n## ", 1)[0]
+    # The alert rule is task 3.2, still open; the README must say so, not imply coverage.
+    assert "No alert rule on `inference_probe_success`" in section
+    assert "task 3.2, still open" in section
+    assert not re.search(r"inference_probe_success`? is a rule in", section)

@@ -36,8 +36,40 @@ TEXTFILE_DIR="${INFERENCE_PROBE_TEXTFILE_DIR:-/var/lib/node_exporter/textfile}"
 METRICS_FILE="${TEXTFILE_DIR}/inference_probe.prom"
 TIMEOUT="${INFERENCE_PROBE_TIMEOUT_SECONDS:-30}"
 CURL_BIN="${INFERENCE_PROBE_CURL:-curl}"
+JQ_BIN="${INFERENCE_PROBE_JQ:-jq}"
 
 log() { printf 'inference-probe: %s\n' "$*" >&2; }
+
+# A completion is at least one choice that produced something: non-empty message
+# content or a finish_reason. `"choices": []`, an error object or a non-JSON page is
+# not. jq when the host has it, else python3; neither present is a failed sample.
+has_completion() {
+  if command -v "$JQ_BIN" >/dev/null 2>&1; then
+    "$JQ_BIN" -e 'any((.choices // [])[]?;
+        ((.message.content // "") | tostring | length > 0) or
+        ((.finish_reason // "") | tostring | length > 0))' "$1" >/dev/null 2>&1
+  elif command -v python3 >/dev/null 2>&1; then
+    python3 - "$1" <<'PY' 2>/dev/null
+import json, sys
+def produced(choice):
+    if not isinstance(choice, dict):
+        return False
+    message = choice.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    return bool(content) or bool(choice.get("finish_reason"))
+try:
+    with open(sys.argv[1], encoding="utf-8") as f:
+        doc = json.load(f)
+except (OSError, ValueError):
+    sys.exit(1)
+choices = doc.get("choices") if isinstance(doc, dict) else None
+sys.exit(0 if isinstance(choices, list) and any(map(produced, choices)) else 1)
+PY
+  else
+    log "neither jq nor python3 is available to read the response"
+    return 1
+  fi
+}
 
 # Label values are escaped per the Prometheus text exposition format.
 label_escape() {
@@ -112,9 +144,11 @@ trap 'rm -f "$body_file"' EXIT
 payload=$(printf '{"model":"%s","messages":[{"role":"user","content":"Reply with one word: pong"}],"max_tokens":16,"reasoning_effort":"none","stream":false}' \
   "$INFERENCE_PROBE_MODEL")
 
-# printf is a shell builtin, so the key is never a process argument.
+# printf is a shell builtin, so the key is never a process argument. --disable must be
+# curl's FIRST argument to take effect: it stops curl reading the user's ~/.curlrc, so
+# nothing on the host can add options (a proxy, another header) to this request.
 write_out=$(printf 'header = "Authorization: Bearer %s"\n' "$INFERENCE_PROBE_KEY" |
-  "$CURL_BIN" --config - \
+  "$CURL_BIN" --disable --config - \
     --silent --show-error \
     --proto '=https' \
     --max-time "$TIMEOUT" \
@@ -129,8 +163,9 @@ http_code="${write_out%% *}"
 latency="${write_out##* }"
 [[ "$latency" =~ ^[0-9]+(\.[0-9]+)?$ ]] || latency=0
 
-# A 200 that carries no completion (an error object, a challenge page) is a failure.
-if [ "$curl_rc" -eq 0 ] && [ "$http_code" = "200" ] && grep -q '"choices"' "$body_file"; then
+# A 200 that carries no completion (an error object, empty choices, a challenge page)
+# is a failure.
+if [ "$curl_rc" -eq 0 ] && [ "$http_code" = "200" ] && has_completion "$body_file"; then
   record 1 "$latency"
 fi
 

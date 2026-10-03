@@ -144,7 +144,8 @@
       `_shared_reads` field (default service `agentgateway`) rendered to the gitignored
       0600 `probe/inference-probe.env`, not `.env`, which Grafana loads. Tested by
       `platform/tests/test_inference_probe.py`. Still open: the site-config values, an
-      enabled deploy whose readback shows both series, and the alert rule (3.2).
+      enabled deploy whose readback shows a fresh sample for the configured model, and the
+      alert rule (3.2).
 - [ ] 3.4 `platform/tests/test_service_o11y.bats`: dashboards and alerting files are
       valid JSON/YAML, every `vllm:` name in a dashboard appears in the imported list,
       probe script `shellcheck` clean and contains no literal key

@@ -166,12 +166,20 @@ What an enabled deploy installs:
   node_exporter never reads a partial file. A failed inference is recorded as a sample;
   it is not a failed unit.
 
-The deploy then checks the result. The timer must be active. The deploy takes one sample
-immediately, and both series must appear in Prometheus. The deploy does not fail when
-inference itself is failing; alerting on `inference_probe_success` is a rule in
-`alerts.yml.j2` (task 3.2). Setting the flag back to false removes the units, the last
-metrics file and the key file. The privileged removal runs only on a host where the timer
-was installed.
+The deploy then checks the result. The timer must be active. The deploy records the
+host time, takes one sample immediately, and requires all three series in Prometheus
+with the configured `model_name` and a last-run timestamp no older than that sample's
+start, so a stale series or another model's series does not pass. Under `--check` the
+unit files are only simulated, so activation and this check are skipped. The deploy does
+not fail when inference itself is failing. **No alert rule on `inference_probe_success`
+exists yet**: that is task 3.2, still open, so a failing probe is visible only on a
+graph until it lands.
+
+Setting the flag back to false removes each artefact an earlier enable left, checked one
+by one: the timer (stopped and disabled first), the service unit, the last metrics file
+and the key file. An interrupted install or removal is therefore still cleaned up.
+Privileged steps run only for an artefact that exists, so a host that never ran the
+probe needs no sudo.
 
 Caveats:
 
