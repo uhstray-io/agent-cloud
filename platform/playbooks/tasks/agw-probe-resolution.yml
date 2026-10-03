@@ -1,0 +1,88 @@
+---
+# agw-probe-resolution.yml — how the probing host resolves the gateway server leaf's SAN
+# (inference-gateway-agentgateway tasks 6.1a and 7.2).
+#
+# The probe path (tasks/agw-probe.yml) names the server leaf's SAN in its URL, because `uri`
+# has no server-name override. Something on the probing host must turn that name into an
+# address. Two modes, selected by ONE declared flag:
+#
+#   agw_internal_dns_authoritative: false (default)
+#       The interim mapping from task 6.1a: one /etc/hosts line carrying the trailing marker
+#       below, found and updated by a regexp on that marker.
+#   agw_internal_dns_authoritative: true
+#       The internal zone answers for the name (deploy-dns.yml renders the record from the
+#       gateway's server leaf, task 7.2). Every /etc/hosts line carrying the marker is removed
+#       — only marker lines, anything else in the file is untouched — and the name must then
+#       resolve through the host's resolver, or the run fails here instead of at the probe.
+#
+# The flag stays false until production hickory-dns is deployed and the probing host's
+# resolver points at it (internal-dns-naming tasks 6.1, 6.1a, 6.2). Setting it earlier would
+# leave the probe with no way to resolve the name, which the resolution check below refuses.
+#
+# Check mode: lineinfile reports what it would add or remove and writes nothing; the
+# resolution check reads only and is skipped, because nothing was removed.
+#
+# Inputs:
+#   _agwr_name    the server leaf's SAN the probe URL names
+#   _agwr_ip      the address the interim line maps it to (interim mode only)
+#   _agwr_expect  optional: the address the internal zone must answer (authoritative mode)
+#   _agwr_hosts_file  default /etc/hosts; the tests point it at a scratch copy
+
+- name: "Probe resolution: refuse an empty server name"
+  ansible.builtin.assert:
+    that:
+      - _agwr_name | default('') | length > 0
+      - (agw_internal_dns_authoritative | default(false) | bool) or (_agwr_ip | default('') | length > 0)
+    fail_msg: >-
+      agw-probe-resolution needs _agwr_name (the server leaf SAN){{ '' if (agw_internal_dns_authoritative
+      | default(false) | bool) else ' and _agwr_ip (the published bind)' }}.
+    quiet: true
+
+- name: "Probe resolution: map the server leaf's name to the published bind (interim, task 7.2)"
+  ansible.builtin.lineinfile:
+    path: "{{ _agwr_hosts_file | default('/etc/hosts') }}"
+    regexp: '# agent-cloud-managed: agw-probe \(interim, task 7\.2\)$'
+    line: "{{ _agwr_ip }} {{ _agwr_name }} # agent-cloud-managed: agw-probe (interim, task 7.2)"
+  become: true
+  when: not (agw_internal_dns_authoritative | default(false) | bool)
+
+# state=absent with a regexp removes EVERY matching line, so a host that collected more than
+# one marker line (a renamed SAN, a changed bind) is cleaned in one pass.
+- name: "Probe resolution: remove every interim agw-probe hosts line (internal DNS is authoritative)"
+  ansible.builtin.lineinfile:
+    path: "{{ _agwr_hosts_file | default('/etc/hosts') }}"
+    regexp: '# agent-cloud-managed: agw-probe \(interim, task 7\.2\)$'
+    state: absent
+  become: true
+  when: agw_internal_dns_authoritative | default(false) | bool
+
+- name: "Probe resolution: the name resolves through the host resolver"
+  ansible.builtin.command:
+    # The host's own resolver (nsswitch: files, then DNS), IPv4 answers one per line.
+    argv:
+      - python3
+      - "-c"
+      - "import socket,sys;print('\\n'.join(sorted({a[4][0] for a in socket.getaddrinfo(sys.argv[1],None,socket.AF_INET)})))"
+      - "{{ _agwr_name }}"
+  register: _agwr_getent
+  changed_when: false
+  failed_when: false
+  when:
+    - agw_internal_dns_authoritative | default(false) | bool
+    - not ansible_check_mode
+
+- name: "Probe resolution: refuse a name the internal zone does not answer"
+  ansible.builtin.assert:
+    that:
+      - _agwr_getent.rc == 0
+      - (_agwr_expect | default('') | length == 0)
+        or (_agwr_expect in _agwr_getent.stdout_lines)
+    fail_msg: >-
+      agw_internal_dns_authoritative is true, but {{ _agwr_name }} resolves to
+      '{{ _agwr_getent.stdout_lines | default([]) | join(', ') }}'
+      (rc {{ _agwr_getent.rc }}){{ (', expected ' ~ _agwr_expect) if (_agwr_expect | default('') | length > 0) else '' }}.
+      Deploy the internal DNS with the gateway record (deploy-dns.yml) and point this host's resolver
+      at it, or set the flag back to false.
+  when:
+    - agw_internal_dns_authoritative | default(false) | bool
+    - not ansible_check_mode
