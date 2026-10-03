@@ -29,7 +29,7 @@
     _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
     _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
-    _n8n_base: "{{ n8n_verify_base_url | default(n8n_url | default('http://workflow-n8n:5678')) }}"
+    _n8n_base: "{{ n8n_verify_base_url | default(n8n_base_url | default('http://workflow-n8n:5678')) }}"
     _workflow_name: "tududi-github-sync: cycle"
     # The SAME transport the cycle workflow uses (provision-tududi-github-sync
     # reads this name) — not tududi_base_url, which is the app's PUBLIC

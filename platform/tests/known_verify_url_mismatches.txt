@@ -11,13 +11,4 @@
 # inventory already used for a different fact, failed on every run, and the failure was
 # censored because the step carried a bearer header.
 #
-# verify-tududi-github-sync.yml:n8n_url (found 2026-10-02): the gate reads the n8n API
-# from `n8n_verify_base_url | default(n8n_url | default(...))`. Its provisioner, and every
-# other playbook that calls the n8n API (deploy-n8n, store-n8n-api-key, restore-n8n-db,
-# refresh-tududi-sync-github-token, provision-n8n-postiz-credential), reads
-# `n8n_base_url`. The defaults agree today, so it is latent: an inventory that sets
-# n8n_base_url sends the provisioner to that n8n and leaves the gate on the default. Fixing it
-# is a change to the playbook and is tracked as its own work.
-#
 # Remove a line in the same commit that fixes the playbook.
-verify-tududi-github-sync.yml:n8n_url
