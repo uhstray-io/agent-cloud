@@ -228,6 +228,9 @@ groups:
 {% endmacro %}
 {# "Scheduled job silent": one absent_over_time per declared job, joined with `or`;
    each series carries its own job label, and the rule's service label is that job.
+   Grafana interpolates environment variables in rule LABELS (not annotations or
+   query models), so the label template escapes its variable as $$labels; Grafana
+   stores it as $labels (v11.4.0 pkg/services/provisioning/values, interpolateValue).
    Only a status="success" result line counts: a job that keeps failing stops
    publishing what it measures (the renewal run's expiry lines), and a series that
    stops reads as OK to the expiry rules below. An empty declaration drops the group
@@ -244,7 +247,7 @@ groups:
     interval: 5m
     rules:
 {{ loki_rule('o11y_scheduled_job_silent', 'Scheduled job silent', _silent.parts | join(' or '),
-     'gt', 0.5, _silent.longest * 3600, '5m', 'warning', '{{ $labels.job }}',
+     'gt', 0.5, _silent.longest * 3600, '5m', 'warning', '{{ $$labels.job }}',
      'A declared scheduled job has not pushed a successful result line within its declared silence.',
      'Check the job Semaphore schedule and its newest runs; a failing run does not reset this alert. The declared jobs and their silences are o11y_scheduled_jobs.') }}
 {% endif %}
