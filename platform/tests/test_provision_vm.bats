@@ -385,7 +385,9 @@ YAML
   local t
   for t in "Log in over Ansible's connection" "Wait for cloud-init to finish" \
            "Write the Semaphore runner environment" "Enable and start the Semaphore runner"; do
-    grep -A1 -F "TASK [$t]" "$BATS_TEST_TMPDIR/log" | grep -q '^skipping' \
+    # The task's own section of the log: its TASK header up to the next header.
+    awk -v h="TASK [$t]" 'f && /^(TASK|PLAY|RUNNING HANDLER) \[/ {exit} f {print} index($0, h) == 1 {f = 1}' \
+      "$BATS_TEST_TMPDIR/log" | grep -q '^skipping' \
       || { echo "not skipped under --check: $t"; cat "$BATS_TEST_TMPDIR/log"; return 1; }
   done
   refute_grep -qF "fake-token" "$BATS_TEST_TMPDIR/log"

@@ -14,32 +14,5 @@
 #
 # One entry per line: `<file>: <the offending line, leading/trailing whitespace stripped>`.
 # Keyed on content, not line number. Comment and blank lines are ignored.
-test_deploy_github_runner.bats: grep -A14 'Authenticate to OpenBao' "$PLAYBOOK" | grep -q 'delegate_to: localhost'
-test_deploy_github_runner.bats: grep -A14 'Read the App private key' "$PLAYBOOK" | grep -q 'delegate_to: localhost'
-test_destroy_vm.bats: ! grep -A22 '^  - name: Destroy VM$' "$t" | grep -A4 'name: confirm_destroy' | grep -q 'default_value'
-test_destroy_vm.bats: grep -A22 '^  - name: Destroy VM$' "$t" | grep -q 'name: confirm_destroy'
-test_local_dev_inventory.bats: grep -A2 'auth.agent-cloud.test' "$INVENTORY" | grep -q 'internal_https_port'
-test_makefile.bats: grep -A2 '^local-bootstrap:' "$MF" | grep -qE '\$\(LOCAL_DEV\)[[:space:]]+bootstrap'
-test_makefile.bats: grep -A2 '^local-clean:'     "$MF" | grep -qE '\$\(LOCAL_DEV\)[[:space:]]+clean'
-test_makefile.bats: grep -A2 '^local-deploy-%:'  "$MF" | grep -qE '\$\(LOCAL_DEV\)[[:space:]]+deploy'
-test_makefile.bats: grep -A2 '^promote:'         "$MF" | grep -qE '\$\(LOCAL_DEV\)[[:space:]]+promote'
-test_makefile.bats: run grep -A10 '^local-up:' "$MF"
-test_makefile.bats: run grep -A15 '^local-up:' "$MF"
-test_manage_github_runner_group.bats: ! grep -A6 'Report the converged access list' "$PLAYBOOK" | grep -q 'no_log: true'
-test_manage_github_runner_group.bats: grep -A6 "Replace the group's repository access list" "$PLAYBOOK" | grep -qF 'method: PUT'
-test_netbox_allocate_ip.bats: block=$(grep -A2 -F 'name: Provision NetBox Automation Token' "$templates")
-test_netbox_runtime_audit.bats: grep -A2 -F 'name: Audit NetBox Runtime' "$templates" | grep -qF 'dev_variant: true'
-test_provision_vm.bats: grep -A1 -F "TASK [$t]" "$BATS_TEST_TMPDIR/log" | grep -q '^skipping' \
-test_resize_vm.bats: run bash -c "awk '/^  - name: Resize VM\$/,/^  - name: [^R]/' '$TPL' | grep -A 5 'name: allow_reboot' | grep -c 'default_value: \"false\"'"
-test_resize_vm.bats: run bash -c "grep -A 20 'Refuse a requested disk change' '$PB' | grep -c 'when: (_want_disk_gb | string | length) > 0'"
-test_resize_vm.bats: run bash -c "grep -A 6 'Refuse a requested disk change' '$PB' | grep -cE '_disk_device \| trim \| length\) > 0|_disk_parsed'"
-test_semaphore_repositories.bats: run bash -c "grep -A 30 'Correct records that drifted' '$BOOT' | grep -c 'status_code: \\[200, 201, 204\\]'"
 test_service_agentgateway.bats: grep -A6 '^  agentgateway:$' "$cat" | grep -q 'tier: admin'
 test_service_agentgateway.bats: grep -A6 '^  agentgateway:$' "$cat" | grep -q 'type: oidc'
-test_service_authentik.bats: grep -A3 'name: platform-admins' "$f" | grep -q 'is_superuser: true'
-test_service_authentik.bats: grep -A3 'netbox:' "$c" | grep -q 'type: forward_auth'
-test_service_authentik.bats: grep -A3 'semaphore:' "$c" | grep -q 'type: oidc'
-test_service_authentik.bats: grep -A4 'openbao-oidc:' "$c" | grep -q 'tier: admin'
-test_service_erpnext.bats: grep -A6 '^\s\+frontend:' "$f" | grep -q 'local-dev'
-test_service_github_runner.bats: grep -A4 'digest mismatch' "$SH" | grep -q 'error' || grep -B4 'digest mismatch' "$SH" | grep -q 'rm -f'
-test_service_postiz.bats: run bash -c "grep -A 20 'Validate postiz Postgres password' '$f' | grep -c 'head -3'"

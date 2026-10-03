@@ -8,6 +8,8 @@
 #
 # Run: bats platform/tests/test_service_erpnext.bats
 
+load assert_helpers
+
 setup() {
   REPO_ROOT=$(git rev-parse --show-toplevel)
   DEPLOY_DIR="$REPO_ROOT/platform/services/erpnext/deployment"
@@ -117,10 +119,13 @@ setup() {
 }
 
 @test "erpnext: local overlay puts the frontend on local-dev so Caddy reaches it by name" {
-  # the frontend service block must list local-dev under its networks (grep -A
-  # over the block — portable, no PyYAML).
   local f="$DEPLOY_DIR/compose.local.yml"
-  grep -A6 '^\s\+frontend:' "$f" | grep -q 'local-dev'
+  # The frontend service's own block: from `  frontend:` to the next key at the
+  # same-or-shallower indent — scoped by construct, not a line window.
+  local svc
+  svc=$(awk 'f && /^(  ?)?[^ #]/ {exit} f {print} /^  frontend:$/ {f = 1}' "$f")
+  [ -n "$svc" ]
+  assert_grep -qE '^ +- local-dev$' <<<"$svc"
 }
 
 @test "erpnext: deploy playbook is composable (place-monorepo + manage-secrets), not legacy" {

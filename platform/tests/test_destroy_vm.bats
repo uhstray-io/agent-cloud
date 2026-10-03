@@ -22,8 +22,13 @@ setup() {
 @test "destroy-vm: the launch must name the vmid (confirm_destroy), with no default" {
   assert_grep -qF "(confirm_destroy | default('') | string) == (_vmid | string)" "$PB"
   local t="$REPO_ROOT/platform/semaphore/templates.yml"
-  grep -A22 '^  - name: Destroy VM$' "$t" | grep -q 'name: confirm_destroy'
-  ! grep -A22 '^  - name: Destroy VM$' "$t" | grep -A4 'name: confirm_destroy' | grep -q 'default_value'
+  # Scoped to the template and its survey var by YAML structure, not a line window.
+  python3 - "$t" <<'PY2'
+import sys, yaml
+tpl, = (t for t in yaml.safe_load(open(sys.argv[1], encoding="utf-8"))["templates"] if t["name"] == "Destroy VM")
+var, = (v for v in tpl.get("survey_vars", []) if v["name"] == "confirm_destroy")
+assert "default_value" not in var, var
+PY2
 }
 
 @test "destroy-vm: stops, deletes with purge, sweeps active image storages for leftovers, verifies task and absence" {
