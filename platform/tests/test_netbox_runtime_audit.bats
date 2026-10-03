@@ -18,7 +18,12 @@ load assert_helpers
   grep -qF 'netbox-redis-cache-1' "$audit"
   grep -qF "/login/" "$audit"
   refute_grep -Eq 'ansible.builtin.(shell|script)|method: (POST|PUT|PATCH|DELETE)|docker, (start|stop|restart|run)' "$audit"
-  grep -A2 -F 'name: Audit NetBox Runtime' "$templates" | grep -qF 'dev_variant: true'
+  python3 - "$templates" <<'PY2'
+import sys, yaml
+tpl, = (t for t in yaml.safe_load(open(sys.argv[1], encoding="utf-8"))["templates"]
+        if t["name"] == "Audit NetBox Runtime")
+assert tpl.get("dev_variant") is True, tpl
+PY2
 }
 
 @test "NetBox token bootstrap preserves the Docker error when no output exists" {

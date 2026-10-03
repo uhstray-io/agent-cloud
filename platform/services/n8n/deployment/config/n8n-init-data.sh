@@ -1,5 +1,5 @@
 #!/bin/bash
-set -e;
+set -eo pipefail
 
 
 if [ -n "${POSTGRES_NON_ROOT_USER:-}" ] && [ -n "${POSTGRES_NON_ROOT_PASSWORD:-}" ]; then

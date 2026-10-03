@@ -1,0 +1,27 @@
+# Overlay applied by deploy-o11y.yml (COMPOSE_OVERLAYS) only when
+# o11y_inference_probe_enabled is true. It adds node_exporter's textfile collector so
+# the synthetic inference probe's metrics reach Prometheus through the existing
+# receiver-host scrape job. Compose replaces `command` wholesale, so the base flags
+# are repeated here; platform/tests/test_inference_probe.py requires this list to be
+# exactly the base command plus the two textfile flags, so the two cannot drift.
+#
+# The host directory /var/lib/node_exporter/textfile is already visible inside the
+# container through the base read-only `/:/host` mount; no new mount is added.
+# Change inference-telemetry-production, task 3.3.
+services:
+  node-exporter:
+    # Repeats the base policy: this overlay lives in its own directory, and the restart-policy
+    # guard (test_restart_policy.bats) reads each directory's compose files on their own.
+    restart: always
+    command:
+      - --path.rootfs=/host
+      - --path.procfs=/host/proc
+      - --path.sysfs=/host/sys
+      - --collector.disable-defaults
+      - --collector.cpu
+      - --collector.meminfo
+      - --collector.filesystem
+      - --collector.filesystem.mount-points-include=^/$
+      - --collector.loadavg
+      - --collector.textfile
+      - --collector.textfile.directory=/host/var/lib/node_exporter/textfile

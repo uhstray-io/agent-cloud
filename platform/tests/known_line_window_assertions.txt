@@ -1,0 +1,18 @@
+# Test lines in platform/tests/ that still use a line-count window as an assertion subject.
+#
+# A RATCHET, not an allow-list. platform/tests/test_no_line_window_assertions.bats scans
+# every *.bats and *.bash file here and requires:
+#   - every window it finds is named here        (a NEW one cannot appear silently)
+#   - every line named here still occurs         (a fix cannot leave its entry behind)
+# So this file only ever shrinks, and shrinking it is the work.
+#
+# Why it exists: a window sized by a guessed line count (`grep -A14 '<anchor>'`) breaks the
+# first time a line is added inside the construct it covers — four times, each on correct
+# code (docs/MISTAKES.md 2.6, 2.8). Fix an entry by scoping the assertion to the construct
+# (`task_block` in assert_helpers.bash, or `sed -n '/<start>/,/<boundary>/p'`), and delete
+# its line in the same commit. Rewriting these is its own change, not folded into the guard.
+#
+# One entry per line: `<file>: <the offending line, leading/trailing whitespace stripped>`.
+# Keyed on content, not line number. Comment and blank lines are ignored.
+test_service_agentgateway.bats: grep -A6 '^  agentgateway:$' "$cat" | grep -q 'tier: admin'
+test_service_agentgateway.bats: grep -A6 '^  agentgateway:$' "$cat" | grep -q 'type: oidc'

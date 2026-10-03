@@ -53,7 +53,10 @@ setup() {
   grep -qF 'verify_digest' "$SH"
   # A mismatch must delete the artefact and abort, not warn and continue.
   grep -qF 'digest mismatch' "$SH"
-  grep -A4 'digest mismatch' "$SH" | grep -q 'error' || grep -B4 'digest mismatch' "$SH" | grep -q 'rm -f'
+  local fn
+  fn=$(sed -n '/^verify_digest() {$/,/^}$/p' "$SH")
+  assert_contains "$fn" 'rm -f "$file"'
+  assert_contains "$fn" 'error "digest mismatch'
   # An absent digest is a refusal, not a skip — "no digest" and "unverified" are the
   # same state from here.
   grep -qF 'refusing to run an unverified artefact' "$SH"

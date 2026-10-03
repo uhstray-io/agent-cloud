@@ -127,8 +127,7 @@ print('\n'.join(bad) if bad else 'OK')
 @test "repositories: PUT accepts 200 as success" {
   # Semaphore answers 200 on this endpoint in some versions; treating a
   # successful update as a failure is worse than accepting both.
-  run bash -c "grep -A 30 'Correct records that drifted' '$BOOT' | grep -c 'status_code: \\[200, 201, 204\\]'"
-  [ "$output" = "1" ]
+  [ "$(task_block "$BOOT" 'Correct records that drifted' | grep -c 'status_code: \[200, 201, 204\]')" = "1" ]
 }
 
 @test "repositories: ssh_key_id drift triggers an update" {

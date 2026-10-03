@@ -67,6 +67,27 @@ per-client layer. Everything is inventory-driven code (design §10):
 | Saved keys in the playground | Local-dev only: `agw_plaintext_keys: true` renders values instead of hashes so the UI can offer them. Prod stays on hashes |
 | Upstream key | `vllm_api_key` (`existing`, seeded separately) → `params.apiKey: $VLLM_API_KEY`; omitted when the upstream takes no key (LM Studio locally); rotated on vLLM's schedule (task 5.1) |
 
+## Shared-key retirement (gateway task 5.1)
+
+Before the gateway, every client sent vLLM's one `--api-key`. During a dated grace period the
+gateway accepts that key as one more identity, `legacy-shared`, so clients move to their own keys
+one at a time; then it is retired. The deploy enforces the date rather than anyone remembering it:
+
+| Inventory | Effect |
+|---|---|
+| `legacy_shared_expires` absent | No grace period declared: no `legacy-shared` identity, no check |
+| today (controller UTC) before `legacy_shared_expires` | `legacy-shared` is enrolled (budget from `agw_client_policies.legacy-shared`); the deploy records the shared key's sha256 fingerprint ONCE into `secret/services/agentgateway:legacy_shared_key_sha256` and pins the identity to it |
+| on or after `legacy_shared_expires` | `legacy-shared` is not rendered and Phase 2 rolls that config out; then the last play (Phase 4) fails while `vllm_api_key` still has the recorded fingerprint (or no fingerprint was ever recorded) |
+
+The fingerprint is written by a compare-and-swap on the field's absence and is not declared
+through manage-secrets, which writes declared fields back. Only booleans leave the credential task (`tasks/agw-legacy-key-check.yml`, `no_log`); neither
+the key nor its hash is printed. `legacy-shared` may not appear in `agw_clients`. Rotating
+`VLLM_API_KEY` at vLLM and in OpenBao belongs to dgx-spark, which owns the key; the rollback
+`restore` mode does not rotate it either.
+
+Retirement date: _not yet set_ — `legacy_shared_expires` is the route-switch date + 14 days
+(task 4.7), recorded here when the route switches.
+
 ## Upstream
 
 `custom` provider, `formats: [{type: completions}]`, `params.baseUrl` from inventory

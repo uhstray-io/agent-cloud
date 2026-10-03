@@ -139,10 +139,48 @@ otelcol.receiver.otlp "traces" {
   }
   output {
     logs   = [otelcol.processor.attributes.gateway_logs.input]
+{% if o11y_gateway_span_logs_enabled | default(false) | bool %}
+    traces = [otelcol.processor.batch.traces.input, otelcol.connector.spanlogs.gateway.input]
+{% else %}
     traces = [otelcol.processor.batch.traces.input]
+{% endif %}
   }
 }
 
+{% if o11y_gateway_span_logs_enabled | default(false) | bool %}
+// Inventory-gated (o11y_gateway_span_logs_enabled, default off): one structured
+// Loki line per received span, so span timing is searchable beside the access
+// records while Tempo remains the trace store. Only span name, status, duration
+// and trace id are written; no span attributes are copied into the line.
+otelcol.connector.spanlogs "gateway" {
+  spans = true
+  output {
+    logs = [otelcol.processor.attributes.gateway_span_logs.input]
+  }
+}
+
+otelcol.processor.attributes "gateway_span_logs" {
+  action {
+    key    = "service"
+    action = "upsert"
+    value  = "agentgateway"
+  }
+  action {
+    key    = "signal"
+    action = "upsert"
+    value  = "span"
+  }
+  action {
+    key    = "loki.attribute.labels"
+    action = "upsert"
+    value  = "service,signal"
+  }
+  output {
+    logs = [otelcol.exporter.loki.gateway.input]
+  }
+}
+
+{% endif %}
 otelcol.processor.attributes "gateway_logs" {
   action {
     key    = "loki.attribute.labels"

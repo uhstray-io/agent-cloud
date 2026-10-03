@@ -19,6 +19,15 @@
 # Plans: plan/archive/development/INTERNAL-CA-DEPLOYMENT.md (local-dev) and openspec
 # production-internal-ca (production).
 
+# A play over no hosts exits 0 and records a deploy that did nothing as a success
+# (docs/MISTAKES.md 2.21), so refuse an absent or empty group first.
+- name: "Pre-flight: step_ca_svc is real"
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: step_ca_svc
+    # Paired so one `-e preflight_group=` cannot redirect the guard (MISTAKES 2.21).
+    preflight_group_expected: step_ca_svc
+
 # ── Phase 1: Place repo + secrets + env ─────────────────────────────────────
 - name: "Phase 1: Place repo + manage step-ca secrets"
   hosts: step_ca_svc

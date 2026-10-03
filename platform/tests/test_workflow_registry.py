@@ -429,3 +429,20 @@ def test_templates_targeting_a_group_ask_for_it():
         if any("target_service" in h for h in hosts) and "target_service" not in fields:
             missing.append(tpl["name"])
     assert not missing, f"templates whose playbook targets target_service without the field: {missing}"
+
+
+# D10 (tasks 7.1): `reviewed` is stamped only for a step whose executor records its result and
+# whose undo is named; an unreviewed executor step says why in `review_gap`.
+@pytest.mark.parametrize("step", [s for s in STEPS if not s.get("schema")], ids=lambda s: s["id"])
+def test_review_stamp_requires_a_recorded_result_and_a_named_undo(step):
+    passed = str(step.get("review_gap", "")).startswith("none in the executor")
+    if passed:
+        assert step["id"] in _emitted_evidence(), \
+            f"{step['id']} claims a passed review but no playbook emits its result"
+    if not step.get("reviewed"):
+        if step.get("executor"):
+            assert step.get("review_gap"), f"{step['id']} is unreviewed without a recorded review_gap"
+        return
+    assert "review_gap" not in step, f"{step['id']} is reviewed but still carries a review_gap"
+    assert step["id"] in _emitted_evidence(), f"{step['id']} is reviewed but no playbook emits its result"
+    assert step["undo"] == "none" or step["undo"] in _template_names(), step["id"]

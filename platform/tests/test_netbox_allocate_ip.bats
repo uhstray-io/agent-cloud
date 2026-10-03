@@ -77,9 +77,12 @@ PY
 
 @test "netbox-allocate: token bootstrap has a dev-bound Semaphore template" {
   local templates="$BATS_TEST_DIRNAME/../semaphore/templates.yml"
-  local block
-  block=$(grep -A2 -F 'name: Provision NetBox Automation Token' "$templates")
-  assert_contains "$block" 'dev_variant: true'
+  python3 - "$templates" <<'PY2'
+import sys, yaml
+tpl, = (t for t in yaml.safe_load(open(sys.argv[1], encoding="utf-8"))["templates"]
+        if t["name"] == "Provision NetBox Automation Token")
+assert tpl.get("dev_variant") is True, tpl
+PY2
 }
 
 @test "NetBox API consumers share version-aware credential headers" {

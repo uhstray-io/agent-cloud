@@ -311,8 +311,37 @@ host. Push, pull requests and merges happen only when Joe authorizes each one.
       listening port is never checked for its client leaf. Push through
       `tasks/push-loki-lines.yml` one line per leaf and one for the intermediate, plus the
       run's scheduled-job result line (task 6.4). Emit the step result
+      2026-10-02: PARTIAL — `renew-internal-certs.yml` written (branch
+      `feat/ca-renew-internal-certs`), not yet run against any environment. Threshold
+      `renew_threshold` (default a third; 1 for the 6.3 drill). A declared leaf without a
+      proof path is refused before issuance: the gateway's own server leaf (reload `restart` or
+      `none`), per-call client leaves (reload `none`; on the gateway host, or off it with
+      `agw_verify_base_url`), the `caddy` leaf (reload `caddy reload --force`, on `caddy_svc`
+      with `inference_route_address`). The per-call proof is a keyless 401 through the probe
+      path, so no API key is read. The bundle a proof verifies against is the one beside the
+      leaf's directory. With `agw_listener_tls` off, gateway leaves cannot be proven in use,
+      so they are left alone (not re-issued, never counted renewed); a per-call proof URL must
+      be https:// and the same URL without a client certificate must be refused; `--tags
+      verify` proves the leaves in place and issues nothing (review of #398). Lines follow the o11y alert contract of task 6.4
+      (`kind=cert` per leaf and the intermediate, then `kind=run` last, a refused or failed
+      run included). The run's result is recorded with `set_stats` under `renewal`, not with
+      `emit-step-result.yml`: that task's step ids must exist in the service-onboarding
+      registry (`test_workflow_registry.py`), and renewal is not a workflow step (the
+      conformance collector does the same). `platform/tests/test_renew_internal_certs.py` runs
+      the playbook against a stub CA engine, a TLS gateway and Caddy, and a Loki. The Caddy
+      proof's route, path and expected status are inventory values (`renew_caddy_proof_host`,
+      `_path`, `_status`; default `inference_route_address`, `/v1/models`, 401), because a
+      route whose transport does not present the leaf would pass without proving it: until the
+      gateway route switch (gateway task 4.3) the inference route dials vLLM directly and only
+      the gateway UI route carries `tls_client_auth`, so production declares the UI host and
+      302 (the gateway's OIDC redirect to the IdP). Remaining: those values (or
+      `inference_route_address`) in site-config on the Caddy host, without which the run
+      refuses the `caddy` leaf, and a real run
 - [ ] 6.2 `templates.yml`: `Renew Internal Certs` with a daily `schedule:` declared as
       code; run `setup-templates.yml`
+      2026-10-02: PARTIAL — declared as `Renew Internal Certs (Dev)` (Dev-bound like the
+      other CA templates), daily at 04:17 (`17 4 * * *`), one optional survey field
+      `renew_threshold`. Remaining: run `setup-templates.yml`
 - [ ] 6.3 Rotation drill in production: temporarily set the renewal threshold so every leaf
       is inside its window, run the template, and confirm the gateway's serving listeners
       present the new server serial (recording whether the gateway's file watch picked up
@@ -325,6 +354,19 @@ host. Push, pull requests and merges happen only when Joe authorizes each one.
       `renew-internal-certs` at thirty-six hours. Each listed job pushes one result line per
       run under the bounded `job` label through `tasks/push-loki-lines.yml`. Deploy o11y
       through Semaphore
+      2026-10-02: rules CODE-COMPLETE, deploy pending. Groups `scheduled-jobs`
+      (`o11y_scheduled_job_silent`, one rule over every job in `o11y_scheduled_jobs`, entries
+      `job` + `max_silence_hours`, template default `renew-internal-certs` at 36) and
+      `internal-ca` (`o11y_internal_ca_leaf_expiring` < 7 d,
+      `o11y_internal_ca_intermediate_expiring` < 90 d). The line schema task 6.1 must push
+      is the o11y README's "Scheduled jobs and internal CA expiry": run line labels
+      `job`/`kind=run`/`status`; expiry line labels `job=renew-internal-certs`/`kind=cert`/
+      `role=leaf|intermediate`/`host`/`leaf`, body `not_after` + `remaining_seconds`. Only a
+      `status=success` run line resets the silence (a failing renewal stops its expiry
+      lines, which read as OK). The rendered queries were run against a throwaway Loki
+      3.3.2 (the pinned image) with fixture lines: each fired for exactly the fixture
+      series meant to fire. Not yet proven: Grafana 11.4 provisioning and evaluation of
+      the Loki instant queries (the o11y deploy readback)
 - [ ] 6.5 Alert drill: a canary leaf declared with a lifetime under seven days fires the
       expiry alert; pausing the schedule past the window fires the silent-job alert (or the
       rule's `for` window shortened for the drill and restored); both reach the contact

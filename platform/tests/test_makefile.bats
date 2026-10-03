@@ -5,6 +5,15 @@
 #
 # Run: bats platform/tests/test_makefile.bats
 
+load assert_helpers
+
+# The recipe lines of one Makefile target: the tab-indented lines after `<target>:`,
+# up to the first line that is not part of the recipe. Scoped by construct, not by
+# a guessed line count (docs/MISTAKES.md 2.6).
+_recipe() {
+  awk -v t="$1:" 'f && !/^\t/ {exit} f {print} index($0, t) == 1 {f = 1}' "$MF"
+}
+
 setup() {
   REPO_ROOT=$(git rev-parse --show-toplevel)
   MF="$REPO_ROOT/Makefile"
@@ -70,8 +79,8 @@ setup() {
 # ── local-up: Tier-3 services deployed through Semaphore ─────────────────────
 
 @test "Makefile: local-up runs local-bootstrap BEFORE the deploy targets" {
-  run grep -A10 '^local-up:' "$MF"
-  [ "$status" -eq 0 ]
+  output=$(_recipe local-up)
+  [ -n "$output" ]
   # Enforce ORDER, not mere presence: the bootstrap line must precede the first
   # local-deploy line within the recipe block.
   local boot_ln deploy_ln
@@ -81,11 +90,10 @@ setup() {
 }
 
 @test "Makefile: local-up deploys o11y, opa, erpnext after bootstrap" {
-  run grep -A15 '^local-up:' "$MF"
-  [ "$status" -eq 0 ]
-  [[ "$output" =~ "local-deploy-o11y" ]]
-  [[ "$output" =~ "local-deploy-opa" ]]
-  [[ "$output" =~ "local-deploy-erpnext" ]]
+  output=$(_recipe local-up)
+  assert_contains "$output" "local-deploy-o11y"
+  assert_contains "$output" "local-deploy-opa"
+  assert_contains "$output" "local-deploy-erpnext"
 }
 
 @test "Makefile: local-up treats n8n as best-effort (leading dash)" {
@@ -100,8 +108,8 @@ setup() {
   # Assert the recipe actually invokes $(LOCAL_DEV) <subcommand> — a loose word
   # match (e.g. 'bootstrap') could be satisfied by a comment or unrelated text,
   # missing a regression in the recipe command itself.
-  grep -A2 '^local-bootstrap:' "$MF" | grep -qE '\$\(LOCAL_DEV\)[[:space:]]+bootstrap'
-  grep -A2 '^local-clean:'     "$MF" | grep -qE '\$\(LOCAL_DEV\)[[:space:]]+clean'
-  grep -A2 '^promote:'         "$MF" | grep -qE '\$\(LOCAL_DEV\)[[:space:]]+promote'
-  grep -A2 '^local-deploy-%:'  "$MF" | grep -qE '\$\(LOCAL_DEV\)[[:space:]]+deploy'
+  assert_grep -qE '\$\(LOCAL_DEV\)[[:space:]]+bootstrap' <<<"$(_recipe local-bootstrap)"
+  assert_grep -qE '\$\(LOCAL_DEV\)[[:space:]]+clean'     <<<"$(_recipe local-clean)"
+  assert_grep -qE '\$\(LOCAL_DEV\)[[:space:]]+promote'   <<<"$(_recipe promote)"
+  assert_grep -qE '\$\(LOCAL_DEV\)[[:space:]]+deploy'    <<<"$(_recipe local-deploy-%)"
 }

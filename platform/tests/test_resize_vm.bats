@@ -121,8 +121,12 @@ setup() {
 }
 
 @test "resize-vm: reboot survey var defaults to false" {
-  run bash -c "awk '/^  - name: Resize VM\$/,/^  - name: [^R]/' '$TPL' | grep -A 5 'name: allow_reboot' | grep -c 'default_value: \"false\"'"
-  [ "$output" = "1" ]
+  python3 - "$TPL" <<'PY2'
+import sys, yaml
+tpl, = (t for t in yaml.safe_load(open(sys.argv[1], encoding="utf-8"))["templates"] if t["name"] == "Resize VM")
+var, = (v for v in tpl["survey_vars"] if v["name"] == "allow_reboot")
+assert var.get("default_value") == "false", var
+PY2
 }
 
 @test "resize-vm: requires HTTPS for the Proxmox API" {
@@ -170,11 +174,11 @@ setup() {
   # the run reported "Config unchanged" while ignoring the requested size.
   grep -qE 'Refuse a requested disk change that cannot be made safely' "$PB"
   # Gated only on a size being requested — not on detection succeeding.
-  run bash -c "grep -A 20 'Refuse a requested disk change' '$PB' | grep -c 'when: (_want_disk_gb | string | length) > 0'"
-  [ "$output" = "1" ]
+  local refuse
+  refuse=$(task_block "$PB" 'Refuse a requested disk change')
+  [ "$(grep -c 'when: (_want_disk_gb | string | length) > 0' <<<"$refuse")" = "1" ]
   # And it asserts BOTH failure modes.
-  run bash -c "grep -A 6 'Refuse a requested disk change' '$PB' | grep -cE '_disk_device \| trim \| length\) > 0|_disk_parsed'"
-  [ "$output" -ge 2 ]
+  [ "$(grep -cE '^ +- \(_disk_device \| trim \| length\) > 0$|^ +- _disk_parsed' <<<"$refuse")" -ge 2 ]
 }
 
 @test "resize-vm: the restart decision compares RUNNING state, not this run's diff" {

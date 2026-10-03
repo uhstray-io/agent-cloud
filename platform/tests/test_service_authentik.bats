@@ -83,8 +83,13 @@ setup() {
   local f="$DEPLOY_DIR/blueprints/platform-groups.yaml"
   [ -f "$f" ]
   for g in platform-admins platform-developers platform-user; do grep -q "name: $g" "$f"; done
-  # admins carries is_superuser: true (portable: check the lines after its name).
-  grep -A3 'name: platform-admins' "$f" | grep -q 'is_superuser: true'
+  # admins carries is_superuser: true (read from the parsed group entry).
+  python3 - "$f" <<'PY2'
+import sys, yaml
+doc = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
+grp, = (e for e in doc["entries"] if e.get("identifiers", {}).get("name") == "platform-admins")
+assert grp["attrs"]["is_superuser"] is True, grp
+PY2
 }
 
 @test "authentik: netbox + openbao are forward_auth proxy providers (no client secret)" {
@@ -122,8 +127,12 @@ setup() {
   # tier (gate denies developers); the template maps admin tier -> the admin policy.
   local c="$DEPLOY_DIR/app-catalog.yml"
   [ -f "$c" ]
-  grep -A3 'semaphore:' "$c" | grep -q 'type: oidc'
-  grep -A3 'netbox:' "$c" | grep -q 'type: forward_auth'
-  grep -A4 'openbao-oidc:' "$c" | grep -q 'tier: admin'
+  python3 - "$c" <<'PY2'
+import sys, yaml
+cat = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))["authentik_app_catalog"]
+assert cat["semaphore"]["type"] == "oidc", cat["semaphore"]
+assert cat["netbox"]["type"] == "forward_auth", cat["netbox"]
+assert cat["openbao-oidc"]["tier"] == "admin", cat["openbao-oidc"]
+PY2
   grep -q 'policy-platform-admin' "$DEPLOY_DIR/templates/zz-sso-bindings.yaml.j2"
 }

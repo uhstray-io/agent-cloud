@@ -19,6 +19,9 @@ _client_defs: >-
     {%- if out.append({'name': 'client_' ~ c, 'type': 'random', 'length': 48}) -%}{%- endif -%}
   {%- endfor -%}
   {{ out }}
+# legacy_shared_key_sha256 lives at this path too but is deliberately NOT declared here: a declared
+# `existing` field absent from the store is written back as '' by manage-secrets, which could erase
+# a fingerprint an overlapping deploy recorded. tasks/agw-legacy-key-check.yml owns it (CAS write).
 # agw_db_password: the gateway's own Postgres (budget usage only) — generated
 # once, reused; a new value would orphan the existing data directory.
 # agw_oidc_cookie_seed: random seed the env template hashes into the 64-hex
