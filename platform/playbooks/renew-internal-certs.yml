@@ -27,14 +27,25 @@
 #   caddy client leaf    reload `caddy reload --force` in the Caddy container (a plain reload
 #                        is skipped: the Caddyfile did not change); then the serial in
 #                        `current/` must still equal the issued one, and one request through
-#                        Caddy's inference route (`inference_route_address`, sent to Caddy's
-#                        own HTTPS port on the Caddy host with a placeholder Bearer value)
-#                        must answer 401 from the upstream: Caddy reached the gateway with
-#                        its client leaf (502 or 403 otherwise). Caddy's listening port is
-#                        never checked for its client leaf.
+#                        a Caddy route that dials the gateway WITH that leaf must answer the
+#                        status only the gateway gives: Caddy reached the gateway with its
+#                        client leaf (502 or 403 otherwise). Sent to Caddy's own HTTPS port on
+#                        the Caddy host, under the route's name, with a placeholder Bearer
+#                        value. Caddy's listening port is never checked for its client leaf.
+#                          renew_caddy_proof_host    the route (default inference_route_address)
+#                          renew_caddy_proof_path    the request path (default /v1/models)
+#                          renew_caddy_proof_status  the expected status (default 401: the
+#                                                    gateway refusing the placeholder key)
+#                        The route MUST be one whose transport presents the leaf, or the proof
+#                        passes without exercising it. While the inference route still dials
+#                        vLLM directly (before the gateway route switch, gateway task 4.3), the
+#                        only route carrying the leaf is the gateway UI's: set, on the Caddy
+#                        host, renew_caddy_proof_host to the UI route (admin.inference.<zone>)
+#                        and renew_caddy_proof_status to 302, the gateway's OIDC redirect to
+#                        the IdP, which only a request that crossed the mutual-TLS hop gets.
 # A leaf the declaration gives no proof path is REFUSED before anything is issued: a server
 # leaf other than the gateway's own, a client leaf whose reload is not one of the above, a
-# caddy leaf off caddy_svc or without inference_route_address, a per-call leaf off the
+# caddy leaf off caddy_svc or without a proof route, a per-call leaf off the
 # gateway host without agw_verify_base_url, more than one per-call leaf on one host.
 # The gateway proofs need the gateway's listener TLS: with agw_listener_tls off nothing uses
 # the gateway leaves, so they are renewed, not restarted, and reported "not in use".
@@ -105,10 +116,13 @@
             {%- set _ = errs.append(n ~ ': a server leaf can be proven only as the gateway\'s own (agentgateway_svc, agw_server_leaf) with reload restart or none') -%}
           {%- endif -%}
         {%- elif l.profile | default('') == 'client' and r == 'caddy reload --force' -%}
-          {%- if _caddy | length == 1 and h == _caddy[0] and hostvars[h].inference_route_address | default('') | length > 0 -%}
+          {%- if _caddy | length == 1 and h == _caddy[0]
+                 and (hostvars[h].renew_caddy_proof_host | default(hostvars[h].inference_route_address | default(''), true)) | length > 0
+                 and (hostvars[h].renew_caddy_proof_status | default(401) | string) is match('^[1-5][0-9][0-9]$')
+                 and (hostvars[h].renew_caddy_proof_path | default('/v1/models') | string) is match('^/[!-~]*$') -%}
             {%- set cls.v = 'caddy-client' -%}
           {%- else -%}
-            {%- set _ = errs.append(n ~ ': a caddy-reloaded leaf must be on the one caddy_svc host, which must declare inference_route_address') -%}
+            {%- set _ = errs.append(n ~ ': a caddy-reloaded leaf must be on the one caddy_svc host, which must declare inference_route_address (or renew_caddy_proof_host), with renew_caddy_proof_status an HTTP status and renew_caddy_proof_path an absolute path') -%}
           {%- endif -%}
         {%- elif l.profile | default('') == 'client' and r == 'none' -%}
           {%- if _gw | length > 0 and (h == _gw or hostvars[h].agw_verify_base_url is defined) -%}
@@ -246,19 +260,19 @@
       except (OSError, ssl.SSLError, ValueError) as e:
           print("ERROR " + type(e).__name__ + ": " + str(e))
           sys.exit(1)
-    # One request through Caddy's inference route: TLS to Caddy's own port on this host under
-    # the route's name (verified against the system trust plus the internal bundle, since
-    # local-dev's Caddy serves an internal certificate), a placeholder Bearer value so Caddy's
-    # edge check passes it upstream. Prints the HTTP status.
+    # One request through a Caddy route: TLS to Caddy's own port on this host under the route's
+    # name (verified against the system trust plus the internal bundle, since local-dev's Caddy
+    # serves an internal certificate), a placeholder Bearer value so Caddy's edge check passes
+    # it upstream. Prints the HTTP status; a redirect is not followed.
     _renew_route_prover: |
       import http.client, socket, ssl, sys
-      addr, ip, port, bundle = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4]
+      addr, ip, port, bundle, path = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4], sys.argv[5]
       try:
           ctx = ssl.create_default_context()
           ctx.load_verify_locations(bundle)
           conn = http.client.HTTPConnection(addr, port, timeout=30)
           conn.sock = ctx.wrap_socket(socket.create_connection((ip, port), timeout=30), server_hostname=addr)
-          conn.putrequest("GET", "/v1/models", skip_host=True)
+          conn.putrequest("GET", path, skip_host=True)
           conn.putheader("Host", addr)
           conn.putheader("Authorization", "Bearer renewal-proof-placeholder")
           conn.endheaders()
@@ -463,21 +477,22 @@
             label: "{{ item.name }}"
           when: (_renew_due | bool) and not ansible_check_mode
 
-        - name: "Prove one request through Caddy's inference route"
+        - name: "Prove one request through a Caddy route that presents the leaf"
           ansible.builtin.command:
             argv:
               - python3
               - -c
               - "{{ _renew_route_prover }}"
-              - "{{ inference_route_address | default('') }}"
+              - "{{ renew_caddy_proof_host | default(inference_route_address | default(''), true) }}"
               - 127.0.0.1
               - "{{ caddy_https_port | default('443') }}"
               - "{{ (_mine | selectattr('class', 'equalto', 'caddy-client') | first).dir | dirname }}/step-ca-bundle.crt"
+              - "{{ renew_caddy_proof_path | default('/v1/models') }}"
           register: _renew_routed
           changed_when: false
           retries: "{{ _retries }}"
           delay: "{{ _delay }}"
-          until: _renew_routed.rc == 0 and (_renew_routed.stdout | trim) == '401'
+          until: _renew_routed.rc == 0 and (_renew_routed.stdout | trim) == (renew_caddy_proof_status | default(401) | string)
           when:
             - (_renew_due | bool) and not ansible_check_mode
             - _mine | selectattr('class', 'equalto', 'caddy-client') | list | length > 0
@@ -491,7 +506,7 @@
               {%- for l in _mine -%}
                 {%- set c = (_renew_after if renewed else _renew_before)[l.dir] -%}
                 {%- if not renewed -%}{%- set proof = 'check mode' if (_renew_due | bool) else 'left alone' -%}
-                {%- elif l.class == 'caddy-client' -%}{%- set proof = 'caddy reloaded, serial in current, route answered 401' -%}
+                {%- elif l.class == 'caddy-client' -%}{%- set proof = 'caddy reloaded, serial in current, ' ~ (renew_caddy_proof_host | default(inference_route_address, true)) ~ ' answered ' ~ (renew_caddy_proof_status | default(401)) -%}
                 {%- elif not (_gw_tls | bool) -%}{%- set proof = 'not in use: gateway listener TLS off' -%}
                 {%- elif l.class == 'gateway-server' -%}{%- set proof = 'served on every listener' -%}
                 {%- else -%}{%- set proof = 'probe path answered 401' -%}{%- endif -%}
@@ -557,10 +572,15 @@
     # The stream labels are the o11y alert rules' contract (o11y deployment README, "Scheduled
     # jobs and internal CA expiry"): nothing else goes in a label; remaining_seconds is taken
     # at push time.
+    # The push time, frozen once: a vars entry would be evaluated again at every reference.
+    - name: "Take the push time"
+      ansible.builtin.set_fact:
+        _push_now: "{{ now().timestamp() | int }}"
+
     - name: "Build the expiry lines"
       ansible.builtin.set_fact:
         _cert_streams: >-
-          {%- set now_s = now().timestamp() | int -%}
+          {%- set now_s = _push_now | int -%}
           {%- set out = [] -%}
           {%- for c in _certs -%}
             {%- set _ = out.append({'stream': {'job': _job, 'kind': 'cert', 'role': c.role, 'host': c.host, 'leaf': c.leaf},
@@ -598,7 +618,7 @@
         push_loki_streams:
           - stream: {job: "{{ _job }}", kind: run, status: "{{ _status }}"}
             values:
-              - ["{{ (now().timestamp() | int) ~ '000000000' }}",
+              - ["{{ _push_now ~ '000000000' }}",
                  "{{ {'renewed': _leaf_results | selectattr('renewed') | map(attribute='leaf') | list,
                       'leaves': _leaf_results | length, 'errors': _errors} | to_json }}"]
         push_loki_must_succeed: true

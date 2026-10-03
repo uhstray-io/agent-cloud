@@ -326,9 +326,15 @@ host. Push, pull requests and merges happen only when Joe authorizes each one.
       `emit-step-result.yml`: that task's step ids must exist in the service-onboarding
       registry (`test_workflow_registry.py`), and renewal is not a workflow step (the
       conformance collector does the same). `platform/tests/test_renew_internal_certs.py` runs
-      the playbook against a stub CA engine, a TLS gateway and Caddy, and a Loki. Remaining:
-      production `inference_route_address` on the Caddy host (site-config does not declare it
-      yet, so the first run refuses the `caddy` leaf), and a real run
+      the playbook against a stub CA engine, a TLS gateway and Caddy, and a Loki. The Caddy
+      proof's route, path and expected status are inventory values (`renew_caddy_proof_host`,
+      `_path`, `_status`; default `inference_route_address`, `/v1/models`, 401), because a
+      route whose transport does not present the leaf would pass without proving it: until the
+      gateway route switch (gateway task 4.3) the inference route dials vLLM directly and only
+      the gateway UI route carries `tls_client_auth`, so production declares the UI host and
+      302 (the gateway's OIDC redirect to the IdP). Remaining: those values (or
+      `inference_route_address`) in site-config on the Caddy host, without which the run
+      refuses the `caddy` leaf, and a real run
 - [ ] 6.2 `templates.yml`: `Renew Internal Certs` with a daily `schedule:` declared as
       code; run `setup-templates.yml`
       2026-10-02: PARTIAL — declared as `Renew Internal Certs (Dev)` (Dev-bound like the

@@ -12,7 +12,8 @@ the placement and the `current` swap are the real ones. Around it, in this proce
 - a TLS "gateway" that requires a client certificate from the test CA, admits only allowlisted
   SANs (403 otherwise), answers a keyless request 401, and serves its server leaf from
   `current/` on every connection (or, "frozen", the leaf it started with);
-- a TLS "Caddy" on its HTTPS port answering the inference route with a chosen status;
+- a TLS "Caddy" on its HTTPS port answering two routes (the inference route and the gateway
+  UI's) each with a chosen status, recording what it was asked;
 - a Loki that records every push.
 
 The gateway's server-leaf name is resolved to loopback for the probe path's `uri` call by a
@@ -46,6 +47,7 @@ PLAYBOOK = playbook_yaml.REPO / "platform/playbooks/renew-internal-certs.yml"
 TEMPLATES = playbook_yaml.REPO / "platform/semaphore/templates.yml"
 ZONE = "dc1.example.internal"
 ROUTE = "inference.example.test"
+ADMIN = "admin.inference.example.test"
 ISSUER_PW = {"server": "synthetic-issuer-server-pw", "client": "synthetic-issuer-client-pw"}
 NOW = datetime.datetime.now(datetime.UTC)
 DAY = datetime.timedelta(days=1)
@@ -251,9 +253,9 @@ def _gateway(ca, server_leaf, allowed, scratch: Path, frozen=False):
     return _TLSServer(context, Handler)
 
 
-def _caddy(ca, tmp: Path, status: dict):
+def _caddy(ca, tmp: Path, status: dict, asked: list):
     key = ec.generate_private_key(ec.SECP256R1())
-    cert = _sign(ca, key, [ROUTE], "server", (NOW - DAY, NOW + 30 * DAY))
+    cert = _sign(ca, key, [ROUTE, ADMIN], "server", (NOW - DAY, NOW + 30 * DAY))
     cert_f, key_f = tmp / ".caddy-cert.pem", tmp / ".caddy-key.pem"
     cert_f.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
     key_f.write_bytes(key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
@@ -268,8 +270,10 @@ def _caddy(ca, tmp: Path, status: dict):
             pass
 
         def do_GET(self):  # noqa: N802
-            ok = self.headers.get("Host") == ROUTE and self.headers.get("Authorization", "").startswith("Bearer ")
-            self.send_response(status["code"] if ok else 400)
+            host = self.headers.get("Host")
+            asked.append((host, self.path))
+            ok = host in status and self.headers.get("Authorization", "").startswith("Bearer ")
+            self.send_response(status[host] if ok else 400)
             self.send_header("Content-Length", "0")
             self.end_headers()
 
@@ -332,7 +336,8 @@ class World:
         (tmp / "site").mkdir()
         (tmp / "site/sitecustomize.py").write_text(SITECUSTOMIZE)
         self.pushes: list = []
-        self.caddy_status = {"code": 401}
+        self.caddy_status = {ROUTE: 401, ADMIN: 302}
+        self.caddy_asked: list = []
         self.allowed = [f"verifier.gateway.{ZONE}", f"caddy.{ZONE}"]
         self.playbook = _copy_playbook(tmp, password_fails)
 
@@ -350,7 +355,7 @@ class World:
         with ExitStack() as stack:
             gw = stack.enter_context(_thread(_gateway(self.ca, self.leaves["agw-server"], self.allowed,
                                                       self.tmp, frozen)))
-            caddy = stack.enter_context(_thread(_caddy(self.ca, self.tmp, self.caddy_status)))
+            caddy = stack.enter_context(_thread(_caddy(self.ca, self.tmp, self.caddy_status, self.caddy_asked)))
             loki = stack.enter_context(_thread(_loki(self.pushes)))
             hosts = {
                 "step_ca_svc": {"ca": dict(host)},
@@ -493,11 +498,39 @@ def test_a_per_call_leaf_the_gateway_refuses_fails_the_run(world):
 
 
 def test_a_route_that_does_not_reach_the_upstream_fails_the_run(world):
-    world.caddy_status["code"] = 502
+    world.caddy_status[ROUTE] = 502
     world.place(caddy=DUE)
     rc, out = world.run(extra={"renew_proof_retries": 1})
     assert rc != 0
-    assert "Prove one request through Caddy's inference route" in out
+    assert "Prove one request through a Caddy route that presents the leaf" in out
+
+
+def test_the_caddy_proof_asks_the_inference_route_for_401_by_default(world):
+    world.place(caddy=DUE)
+    rc, out = world.run()
+    assert rc == 0, out
+    assert set(world.caddy_asked) == {(ROUTE, "/v1/models")}
+    assert f"{ROUTE} answered 401" in out
+
+
+def test_the_caddy_proof_can_target_the_route_that_carries_the_leaf(world):
+    # Before the gateway route switch only the UI route presents Caddy's leaf: the gateway's
+    # OIDC redirect (302) is the status only a request across the mutual-TLS hop gets.
+    world.caddy_status[ROUTE] = 502  # the inference route must not be what passes the proof
+    world.place(caddy=DUE)
+    proof = {"renew_caddy_proof_host": ADMIN, "renew_caddy_proof_status": 302, "renew_caddy_proof_path": "/ui"}
+    rc, out = world.run(host_over={"caddy_svc": {"caddy": proof}})
+    assert rc == 0, out
+    assert set(world.caddy_asked) == {(ADMIN, "/ui")}
+    assert f"{ADMIN} answered 302" in out
+
+
+def test_a_caddy_proof_route_answering_another_status_fails_the_run(world):
+    world.place(caddy=DUE)
+    rc, out = world.run(host_over={"caddy_svc": {"caddy": {"renew_caddy_proof_host": ADMIN}}},
+                        extra={"renew_proof_retries": 1})
+    assert rc != 0, "302 from the UI route passed a proof that expects 401"
+    assert "Prove one request through a Caddy route that presents the leaf" in out
 
 
 def test_with_listener_tls_off_the_gateway_leaves_are_renewed_but_not_restarted(world):
@@ -568,7 +601,16 @@ def test_two_per_call_leaves_on_one_host_are_refused(world):
 def test_a_caddy_without_the_route_address_is_refused(world):
     world.place(caddy=DUE)
     rc, out = world.run(host_over={"caddy_svc": {"caddy": {"inference_route_address": ""}}})
-    _refused(world, out, rc, "which must declare inference_route_address")
+    _refused(world, out, rc, "which must declare inference_route_address (or renew_caddy_proof_host)")
+
+
+@pytest.mark.parametrize("over", [{"renew_caddy_proof_status": "ok"}, {"renew_caddy_proof_status": 999},
+                                  {"renew_caddy_proof_path": "v1/models"}, {"renew_caddy_proof_path": "/a b"}],
+                         ids=["status-word", "status-999", "relative-path", "path-space"])
+def test_a_malformed_caddy_proof_is_refused(world, over):
+    world.place(caddy=DUE)
+    rc, out = world.run(host_over={"caddy_svc": {"caddy": over}})
+    _refused(world, out, rc, "renew_caddy_proof_status an HTTP status")
 
 
 # ── Check mode ─────────────────────────────────────────────────────────────────
@@ -620,7 +662,7 @@ def test_a_failed_host_pushes_only_the_certificates_it_read(world):
     world.place()
     Path(world.leaves["caddy"]["dir"], "current").unlink()
     (Path(world.leaves["caddy"]["dir"]) / "current").symlink_to("missing")
-    world.caddy_status["code"] = 502
+    world.caddy_status[ROUTE] = 502
     rc, out = world.run(extra={"renew_proof_retries": 1})
     assert rc != 0
     certs = {s["stream"]["leaf"] for s in world.streams() if s["stream"]["kind"] == "cert"}
