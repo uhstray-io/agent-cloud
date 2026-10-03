@@ -312,6 +312,7 @@ TEMPFILE_USERS = {
     "tasks/backup-ssh-key-to-site-config.yml": "pair derivation scratch",
     "tasks/site-config-clone.yml": "clone and deploy-key scratch",
     "generate-service-ssh-key.yml": "ssh-keygen output scratch",
+    "run-agw-conformance.yml": "conformance key files and results, removed in an always: block",
 }
 
 

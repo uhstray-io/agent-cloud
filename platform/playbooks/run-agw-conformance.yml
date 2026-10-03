@@ -1,0 +1,348 @@
+---
+# run-agw-conformance.yml — send the same requests to the inference gateway and straight to vLLM,
+# from the gateway VM, and report where the two differ (change inference-gateway-agentgateway,
+# tasks 2.1 and 2.2; spec scenario "Conformance against direct vLLM").
+#
+# The cases and the comparison live in
+# platform/services/agentgateway/deployment/tests/conformance.sh: the models list, a chat
+# completion with thinking off, one per reasoning_effort value (seven), a chat_template_kwargs
+# override, a tool call, a streamed xhigh request timed to first token and between chunks, and one
+# Responses API request — each to the gateway, then to vLLM.
+#
+# How the keys travel. The runner reads the verifying identity's client key and the upstream key
+# from secret/services/<service_name> in no_log tasks, writes each into its own 0600 file in a
+# 0700 temporary directory on the gateway VM, and runs the script there with the FILE PATHS in its
+# environment. The script hands each key to curl through a pipe, never an argument. The directory
+# goes in an `always:`, so a failed run removes it too. Nothing here prints a key or a response
+# body: the results carry status codes, hashes, shapes, a few semantic fields and timings.
+#
+# Why the VM: "from the gateway VM" keeps the two paths identical apart from the gateway hop, and
+# the VM is where the gateway's listener and the client leaf it trusts (agw-verifier) both are.
+# With listener TLS the gateway URL names the server leaf's SAN and curl's --resolve maps it to
+# the published bind, so no hosts line is needed (the deploy's probes still use one, task 7.2).
+#
+# Every request is a real completion that costs upstream capacity, so a dry run (--check) sends
+# nothing and says so. Usage (Semaphore template "Run agentgateway Conformance"): no survey.
+#
+# Inventory (agentgateway_svc host), all read by the deploy too:
+#   agw_upstream_base_url, agw_models, agw_clients, agw_client_policies, agw_bind, agw_port,
+#   agw_listener_tls, agw_tls_server_name, agw_verifier_leaf, internal_leaves,
+#   agw_verify_base_url, agw_verify_client, agw_upstream_requires_key
+# Optional:
+#   agw_conformance_client      identity to send as (default: agw_verify_client, then the first
+#                               agw_clients entry, as the deploy's verify does)
+#   agw_conformance_model       served name to request (default: the identity's first model)
+#   agw_conformance_timeout     per-request ceiling in seconds (default 600)
+#   agw_conformance_stream_max_tokens  max_tokens for the streamed case (default 2048)
+
+- name: "Pre-flight"
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: agentgateway_svc
+    preflight_group_expected: agentgateway_svc
+
+- name: "Run the agentgateway conformance cases against the gateway and direct vLLM"
+  hosts: agentgateway_svc
+  gather_facts: false
+  become: false
+  vars:
+    _bao_url: "{{ openbao_addr | default('') }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    _tls: "{{ agw_listener_tls | default(false) | bool }}"
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+    _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path | default('platform/services/agentgateway/deployment') }}"
+    _port: "{{ agw_port | default('4000') }}"
+    _probe_ip: "{{ '127.0.0.1' if (agw_bind | default('127.0.0.1')) in ['0.0.0.0', '::', ''] else agw_bind | default('127.0.0.1') }}"
+    _server_name: "{{ agw_tls_server_name | default('gateway.' ~ (dns_site | default('')) ~ '.' ~ (dns_zone | default(''))) }}"
+    # The same base URL the deploy's probes use (deploy-agentgateway.yml, "Probe path"), plus /v1.
+    _gateway_url: >-
+      {{ (agw_verify_base_url if (agw_verify_base_url is defined)
+          else (('https://' ~ _server_name ~ ':' ~ _port) if _tls else ('http://' ~ _probe_ip ~ ':' ~ _port))) ~ '/v1' }}
+    # curl --resolve stands in for the deploy's interim hosts line; a declared base URL resolves itself.
+    _gateway_resolve: "{{ (_server_name ~ ':' ~ _port ~ ':' ~ _probe_ip) if (_tls and agw_verify_base_url is not defined) else '' }}"
+    _leaf_dir: >-
+      {{ internal_leaves | default([]) | selectattr('name', 'equalto', agw_verifier_leaf | default('agw-verifier'))
+         | map(attribute='dir') | first | default('') }}
+    _ca: "{{ _deploy_dir }}/certs/step-ca-bundle.crt"
+    _client: "{{ agw_conformance_client | default(agw_verify_client | default((agw_clients | default([]) | first) | default(''))) }}"
+    _client_models: >-
+      {{ ((agw_client_policies | default({}))[_client] | default({})).allowed_models
+         | default(agw_models | default([]) | map(attribute='name') | list)
+         | intersect(agw_models | default([]) | map(attribute='name') | list) }}
+    _model: "{{ agw_conformance_model | default(_client_models | first | default('')) }}"
+    _direct_model: >-
+      {{ (agw_models | default([]) | selectattr('name', 'equalto', _model) | first | default({})).upstream_model | default(_model) }}
+
+  tasks:
+    # The one dry-run guard is the `when` on "Run the cases" below: OpenBao, the key files and
+    # every request sit inside that block.
+    - name: "Dry run: report (every case is a real completion)"
+      ansible.builtin.debug:
+        msg: "check mode: the conformance run sends real requests to the gateway and to vLLM; nothing was sent."
+      when: ansible_check_mode
+
+    - name: "Require one gateway host, an upstream, and an identity allowed the model"
+      ansible.builtin.assert:
+        that:
+          - groups['agentgateway_svc'] | length == 1
+          - agw_upstream_base_url | default('') | length > 0
+          - _client | length > 0
+          - _client in (agw_clients | default([]))
+          - _model | length > 0
+          - _model in _client_models
+        fail_msg: >-
+          agentgateway_svc must hold one host with agw_upstream_base_url, and the conformance identity
+          '{{ _client }}' must be in agw_clients and allowed '{{ _model }}' (it may use:
+          {{ _client_models | join(', ') | default('nothing', true) }}).
+        quiet: true
+
+    - name: "Refuse a cleartext OpenBao endpoint"
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
+    # Both targets receive a key in a header, so the same transport rule applies to them.
+    - name: "Refuse a cleartext public gateway URL"
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _gateway_url }}"
+        _assert_url_label: "the gateway"
+
+    - name: "Refuse a cleartext public upstream URL"
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ agw_upstream_base_url }}"
+        _assert_url_label: "vLLM"
+
+    - name: "Run the cases"
+      when: not ansible_check_mode
+      block:
+        - name: "Require curl, jq and a sha256 tool on the gateway VM"
+          ansible.builtin.command:
+            argv:
+              - sh
+              - -c
+              - >-
+                for t in bash curl jq; do command -v "$t" >/dev/null || { echo "missing: $t"; exit 1; }; done;
+                command -v sha256sum >/dev/null || command -v shasum >/dev/null || { echo "missing: sha256sum"; exit 1; }
+          changed_when: false
+
+        - name: "Listener TLS: the verifier leaf and the trust bundle are on the VM"
+          ansible.builtin.stat:
+            path: "{{ item }}"
+          loop:
+            - "{{ _leaf_dir }}/current/cert.pem"
+            - "{{ _leaf_dir }}/current/key.pem"
+            - "{{ _ca }}"
+          register: _tls_files
+          when: _tls
+
+        - name: "Listener TLS: refuse to run without them"
+          ansible.builtin.assert:
+            that:
+              - _leaf_dir | length > 0
+              - _tls_files.results | rejectattr('stat.exists') | list | length == 0
+            fail_msg: >-
+              With agw_listener_tls the run presents the {{ agw_verifier_leaf | default('agw-verifier') }} leaf and
+              trusts {{ _ca }}; missing: {{ _tls_files.results | rejectattr('stat.exists') | map(attribute='item') | join(', ') }}.
+            quiet: true
+          when: _tls
+
+        - name: "Authenticate to OpenBao"
+          ansible.builtin.uri:
+            url: "{{ _bao_url }}/v1/auth/approle/login"
+            method: POST
+            body_format: json
+            body: { role_id: "{{ _bao_role_id }}", secret_id: "{{ _bao_secret_id }}" }
+            status_code: [200]
+          register: _bao_auth
+          delegate_to: localhost
+          changed_when: false
+          no_log: true
+
+        - name: "Read the gateway's secret path"
+          ansible.builtin.uri:
+            url: "{{ _bao_url }}/v1/secret/data/services/{{ service_name }}"
+            method: GET
+            follow_redirects: none
+            unredirected_headers: [X-Vault-Token]
+            headers:
+              X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
+            status_code: [200]
+          register: _conf_secret
+          delegate_to: localhost
+          no_log: true
+
+        # Only booleans leave this task; the values stay in no_log facts.
+        - name: "Keep the two keys"
+          ansible.builtin.set_fact:
+            _conf_client_key: "{{ _conf_secret.json.data.data['client_' ~ _client] | default('') }}"
+            _conf_upstream_key: "{{ _conf_secret.json.data.data.vllm_api_key | default('') }}"
+            _conf_have_client: "{{ (_conf_secret.json.data.data['client_' ~ _client] | default('')) | length > 0 }}"
+            _conf_have_upstream: "{{ (_conf_secret.json.data.data.vllm_api_key | default('')) | length > 0 }}"
+          no_log: true
+
+        - name: "Require the identity's key, and the upstream key unless the upstream takes none"
+          ansible.builtin.assert:
+            that:
+              - _conf_have_client | bool
+              - (_conf_have_upstream | bool) or not (agw_upstream_requires_key | default(true) | bool)
+            fail_msg: >-
+              secret/services/{{ service_name }} lacks
+              {{ ('client_' ~ _client) if not (_conf_have_client | bool) else 'vllm_api_key' }}; deploy the gateway
+              (it mints client keys) or seed the upstream key before running conformance.
+            quiet: true
+
+        - name: "Run on the VM; remove the keys whatever happens"
+          block:
+            - name: "Make a private working directory"
+              ansible.builtin.tempfile:
+                state: directory
+                prefix: agw-conformance.
+              register: _agwc_tmpdir
+
+            # Every write and the delete below take their path from this registered result, and an
+            # extra var outranks a registered one: `-e _agwc_tmpdir=...` would aim the key files and
+            # `state: absent` anywhere. So the path is checked before anything is written into it, and
+            # again as the delete's condition: an `agw-conformance.<suffix>` directory directly under
+            # /tmp or the runner's TMPDIR (the roots tempfile uses with no `path:`), with no `..`.
+            # The expression is inline in both places on purpose: a variable holding it, or its
+            # verdict, could be overridden the same way (PR 409 review).
+            - name: "Refuse a working directory that is not this run's tempfile"
+              ansible.builtin.assert:
+                that: >-
+                  (_agwc_tmpdir | default({})).path is defined
+                  and (_agwc_tmpdir.path is string)
+                  and (_agwc_tmpdir.path is match('^/'))
+                  and ('/../' not in (_agwc_tmpdir.path ~ '/'))
+                  and ((_agwc_tmpdir.path | basename) is match('^agw-conformance\\.[A-Za-z0-9_]+$'))
+                  and ((_agwc_tmpdir.path | dirname | realpath) in (['/tmp', lookup('ansible.builtin.env', 'TMPDIR') | default('/tmp', true)] | map('realpath') | list))
+                fail_msg: >-
+                  The working directory is not an agw-conformance.* directory directly under the temp
+                  root, so nothing is written or deleted. Do not pass _agwc_tmpdir as an extra var.
+                quiet: true
+
+            - name: "Place the conformance script"
+              ansible.builtin.copy:
+                src: "{{ playbook_dir }}/../services/agentgateway/deployment/tests/conformance.sh"
+                dest: "{{ _agwc_tmpdir.path }}/conformance.sh"
+                mode: "0700"
+
+            # Not a secret: each served name and the upstream id it reaches (upstream_model, or the
+            # name itself), so the comparison can translate model names the gateway reports.
+            - name: "Place the gateway-to-upstream model map"
+              ansible.builtin.copy:
+                content: >-
+                  {%- set out = {} -%}
+                  {%- for m in agw_models -%}
+                    {%- set _ = out.update({m.name: (m.upstream_model | default('', true)) or m.name}) -%}
+                  {%- endfor -%}
+                  {{ out | to_json }}
+                dest: "{{ _agwc_tmpdir.path }}/model-map.json"
+                mode: "0600"
+
+            - name: "Place the client key (0600)"
+              ansible.builtin.copy:
+                content: "{{ _conf_client_key }}"
+                dest: "{{ _agwc_tmpdir.path }}/gateway.key"
+                mode: "0600"
+              no_log: true
+
+            - name: "Place the upstream key (0600)"
+              ansible.builtin.copy:
+                content: "{{ _conf_upstream_key }}"
+                dest: "{{ _agwc_tmpdir.path }}/direct.key"
+                mode: "0600"
+              no_log: true
+              when: _conf_have_upstream | bool
+
+            # Not no_log: its environment holds file paths only, and its output is one
+            # "<case> <target> <status>" line per request, which is what diagnoses a failure.
+            - name: "Send every case to the gateway and to vLLM"
+              ansible.builtin.command:
+                argv: [bash, "{{ _agwc_tmpdir.path }}/conformance.sh", run]
+              environment:
+                AGW_CONF_OUT: "{{ _agwc_tmpdir.path }}"
+                AGW_CONF_GATEWAY_URL: "{{ _gateway_url }}"
+                AGW_CONF_GATEWAY_KEY_FILE: "{{ _agwc_tmpdir.path }}/gateway.key"
+                AGW_CONF_GATEWAY_RESOLVE: "{{ _gateway_resolve }}"
+                AGW_CONF_GATEWAY_CERT: "{{ (_leaf_dir ~ '/current/cert.pem') if _tls else '' }}"
+                AGW_CONF_GATEWAY_CERT_KEY: "{{ (_leaf_dir ~ '/current/key.pem') if _tls else '' }}"
+                AGW_CONF_GATEWAY_CA: "{{ _ca if _tls else '' }}"
+                AGW_CONF_DIRECT_URL: "{{ agw_upstream_base_url }}"
+                AGW_CONF_DIRECT_KEY_FILE: "{{ (_agwc_tmpdir.path ~ '/direct.key') if (_conf_have_upstream | bool) else '' }}"
+                AGW_CONF_MODEL: "{{ _model }}"
+                AGW_CONF_DIRECT_MODEL: "{{ _direct_model }}"
+                AGW_CONF_TIMEOUT: "{{ agw_conformance_timeout | default(600) }}"
+                AGW_CONF_STREAM_MAX_TOKENS: "{{ agw_conformance_stream_max_tokens | default(2048) }}"
+              register: _conf_run
+              changed_when: false
+
+            - name: "Compare the gateway with direct vLLM (task 2.2)"
+              ansible.builtin.command:
+                argv:
+                  - bash
+                  - "{{ _agwc_tmpdir.path }}/conformance.sh"
+                  - diff
+                  - "{{ _agwc_tmpdir.path }}/results.jsonl"
+                  - "{{ _agwc_tmpdir.path }}/model-map.json"
+              register: _conf_diff
+              changed_when: false
+
+            - name: "Read the per-request results"
+              ansible.builtin.slurp:
+                src: "{{ _agwc_tmpdir.path }}/results.jsonl"
+              register: _conf_results
+
+          always:
+            - name: "Remove the working directory, keys included"
+              ansible.builtin.file:
+                path: "{{ _agwc_tmpdir.path }}"
+                state: absent
+              # The same inline check as before the writes (see there): never delete another path.
+              when: >-
+                (_agwc_tmpdir | default({})).path is defined
+                and (_agwc_tmpdir.path is string)
+                and (_agwc_tmpdir.path is match('^/'))
+                and ('/../' not in (_agwc_tmpdir.path ~ '/'))
+                and ((_agwc_tmpdir.path | basename) is match('^agw-conformance\\.[A-Za-z0-9_]+$'))
+                and ((_agwc_tmpdir.path | dirname | realpath) in (['/tmp', lookup('ansible.builtin.env', 'TMPDIR') | default('/tmp', true)] | map('realpath') | list))
+
+        - name: "Keep the report"
+          ansible.builtin.set_fact:
+            _conf_report: "{{ _conf_diff.stdout | from_json }}"
+            _conf_lines: "{{ (_conf_results.content | b64decode).splitlines() | map('from_json') | list }}"
+
+        - name: "Record the results for machine readers (CUSTOM STATS)"
+          ansible.builtin.set_stats:
+            data:
+              agw_conformance:
+                client: "{{ _client }}"
+                model: "{{ _model }}"
+                gateway_url: "{{ _gateway_url }}"
+                report: "{{ _conf_report }}"
+                results: "{{ _conf_lines }}"
+
+        - name: "Report gateway against direct vLLM: summary"
+          ansible.builtin.debug:
+            msg: >-
+              Conformance as {{ _client }} for {{ _model }}: {{ _conf_report.verdict | upper }},
+              {{ _conf_report.matched }}/{{ _conf_report.total }} cases match{{ ('; not matched: '
+              ~ (_conf_report.not_matched | join(', '))) if (_conf_report.not_matched | length > 0) else '' }}.
+
+        # The whole report: per case the two statuses, which comparisons matched, each semantic
+        # difference and the timing deltas (gateway minus direct). No body and no key is in it.
+        - name: "Report gateway against direct vLLM: per case"
+          ansible.builtin.debug:
+            var: _conf_report.cases
+
+        - name: "Require the gateway to match direct vLLM"
+          ansible.builtin.assert:
+            that: _conf_report.verdict == 'pass'
+            fail_msg: >-
+              The gateway did not match direct vLLM on: {{ _conf_report.not_matched | join(', ') }}.
+              {{ ('Failed requests: ' ~ (_conf_report.failures | join('; ')) ~ '.') if (_conf_report.failures | length > 0) else '' }}
+              The report above names each difference; record it under task 2.2 in
+              platform/services/agentgateway/context/architecture.md.
+            quiet: true
