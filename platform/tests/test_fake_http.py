@@ -38,7 +38,9 @@ def test_every_fake_server_derives_from_the_draining_base():
     # The allowlist only shrinks, and each entry must still read the body before replying.
     assert sorted(standalone) == sorted(STANDALONE_HANDLERS), sorted(standalone)
     for rel, node in standalone.items():
-        writers = [m for m in node.body if isinstance(m, ast.FunctionDef) and m.name in ("do_POST", "do_PUT", "do_PATCH")]
+        writers = [
+            m for m in node.body if isinstance(m, ast.FunctionDef) and m.name in ("do_POST", "do_PUT", "do_PATCH")
+        ]
         for method in writers:
             assert "rfile.read" in ast.unparse(method), f"{rel}: {method.name} must read the body before replying"
 
