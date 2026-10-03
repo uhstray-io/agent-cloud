@@ -10,6 +10,9 @@
 # Change inference-telemetry-production, task 3.3.
 services:
   node-exporter:
+    # Repeats the base policy: this overlay lives in its own directory, and the restart-policy
+    # guard (test_restart_policy.bats) reads each directory's compose files on their own.
+    restart: always
     command:
       - --path.rootfs=/host
       - --path.procfs=/host/proc

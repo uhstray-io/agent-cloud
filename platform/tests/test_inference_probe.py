@@ -266,10 +266,13 @@ def test_the_env_file_carries_the_shared_read_key_and_inventory_settings():
 
 
 def test_the_overlay_is_the_base_exporter_command_plus_only_the_textfile_collector():
-    base = yaml.safe_load((DEPLOY / "compose.yml").read_text())["services"]["node-exporter"]["command"]
+    base_svc = yaml.safe_load((DEPLOY / "compose.yml").read_text())["services"]["node-exporter"]
+    base = base_svc["command"]
     overlay = yaml.safe_load((PROBE_DIR / "compose.textfile.yml").read_text())
     assert list(overlay["services"]) == ["node-exporter"]
-    assert list(overlay["services"]["node-exporter"]) == ["command"]
+    # `restart` is repeated only for the per-directory restart-policy guard, and must equal the base.
+    assert sorted(overlay["services"]["node-exporter"]) == ["command", "restart"]
+    assert overlay["services"]["node-exporter"]["restart"] == base_svc["restart"]
     assert overlay["services"]["node-exporter"]["command"] == base + [
         "--collector.textfile",
         f"--collector.textfile.directory=/host{TEXTFILE_DIR}",
