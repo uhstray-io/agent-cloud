@@ -61,6 +61,7 @@ die() {
 	exit 2
 }
 
+# Reads stdin to EOF; under pipefail a failing producer (`jq ... | sha256`) fails the caller.
 sha256() {
 	if command -v sha256sum >/dev/null 2>&1; then
 		sha256sum | cut -d' ' -f1
@@ -217,16 +218,30 @@ run_stream() { # case target
 	# passes each chunk on unbuffered. Measured with a stub emitting every 0.3 s: the stamps
 	# reproduce the cadence (platform/tests/test_agw_conformance.py).
 	t0=$(jq -n now)
-	set +e +o pipefail
-	curl_target "$target" -sS -N --max-time "$TIMEOUT" -D "$hdr" -H 'Content-Type: application/json' \
+	# pipefail stays ON here, and the pipeline sits in an `if` so that neither outcome aborts the
+	# run before both exit statuses are read: PIPESTATUS is taken first thing in either branch.
+	# The two members fail for different reasons and are judged apart:
+	#   curl  a timeout (28), a connection cut mid-stream (18, 56) or a refused connection (7) is
+	#         a RESULT, recorded as curl_exit; the comparison then fails the case on it, so a cut
+	#         stream can never pass. A stream the server ends early but cleanly (curl 0, no
+	#         [DONE]) is caught by `done: false` in its semantics, which the comparison also fails.
+	#   jq    the stamping reader itself failing leaves no trustworthy timeline: stop the run. Its
+	#         death would make curl fail too (write error 23), so jq's status is checked first.
+	# Nothing in this pipeline exits early on purpose (no head, no grep -q): jq reads to EOF.
+	local -a st
+	if curl_target "$target" -sS -N --max-time "$TIMEOUT" -D "$hdr" -H 'Content-Type: application/json' \
 		--data-binary "@$req" "$(base_url "$target")/chat/completions" 2>>"$WORK/curl.err" |
-		jq -R -c --unbuffered '[now, .]' >"$raw"
-	local -a st=("${PIPESTATUS[@]}")
-	set -e -o pipefail
+		jq -R -c --unbuffered '[now, .]' >"$raw"; then
+		st=("${PIPESTATUS[@]}")
+	else
+		st=("${PIPESTATUS[@]}")
+	fi
 	rc_curl="${st[0]}"
 	rc_jq="${st[1]}"
 	[ "$rc_jq" -eq 0 ] || die "jq failed while reading the $target stream"
 	local status
+	# tr and awk both read their whole input, so no SIGPIPE; an empty header file (no connection)
+	# prints 0, which is the "no answer" status the comparison treats as a failure.
 	status=$(tr -d '\r' <"$hdr" | awk '/^HTTP\//{s=$2} END{print s+0}')
 	jq -s -c --argjson t0 "$t0" --argjson status "$status" "$JQ_LIB"'
 		map(.[1] |= rtrimstr("\r")) as $lines
@@ -325,7 +340,8 @@ cmd_run() {
 }
 
 # ── 2.2: the comparison ────────────────────────────────────────────────────────
-# A case MATCHES only when both targets succeeded (curl exit 0 and a 2xx status) and gave the same
+# A case MATCHES only when both targets succeeded (curl exit 0, a 2xx status, and for the stream
+# [DONE] with no error event) and gave the same
 # status, the same body shape and the same semantic fields. Either side failing is an "error"
 # whose `failure` names the status (or the curl exit) on each side: two identical 401s are a
 # failed run, not a conforming one (PR 409 review). The normalised-body hash is reported as
@@ -355,8 +371,15 @@ cmd_diff() {
 			| if has("model") then .model |= up else . end;
 		def direct_norm: if has("ids") and ($declared | length) > 0
 			then .ids |= map(select(. as $i | $declared | index($i))) else . end;
-		def ok: .curl_exit == 0 and .status >= 200 and .status < 300;
-		def how: if .curl_exit != 0 then "curl exit \(.curl_exit)" else "HTTP \(.status)" end;
+		# A stream must also have ended with [DONE] and carried no error event: a stream the server
+		# closed early but cleanly leaves curl at exit 0 and the status at 200.
+		def ok: .curl_exit == 0 and .status >= 200 and .status < 300
+			and .semantic.done != false and .semantic.error_event != true;
+		def how: if .curl_exit != 0 then "curl exit \(.curl_exit)"
+			elif .status < 200 or .status >= 300 then "HTTP \(.status)"
+			elif .semantic.done == false then "HTTP \(.status), stream ended without [DONE]"
+			elif .semantic.error_event == true then "HTTP \(.status), stream carried an error event"
+			else "HTTP \(.status)" end;
 		group_by(.case)
 		| map(
 			(map(select(.target == "gateway")) | first) as $g

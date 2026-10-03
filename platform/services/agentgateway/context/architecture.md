@@ -114,7 +114,8 @@ body to both. The cases are the models list, thinking off
 contract lists), a `chat_template_kwargs` override (`reasoning_effort: low`), a tool call, a
 streamed `xhigh` request and one Responses API request.
 
-A case **matches** when both targets succeeded (curl exit 0 and a 2xx status) and returned the
+A case **matches** when both targets succeeded (curl exit 0, a 2xx status, and for the stream
+an ending `[DONE]` with no error event) and returned the
 same status, the same body shape (every leaf path and its JSON type) and the same semantic fields:
 model, finish reason, whether content, reasoning and tool calls came back, and whether reasoning
 tokens were zero. A failure on either side is an error, and the report names the status on each

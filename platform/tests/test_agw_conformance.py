@@ -21,7 +21,7 @@ import subprocess
 import sys
 import threading
 import time
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 import harness_sandbox
@@ -29,6 +29,7 @@ import playbook_yaml
 import pytest
 import seed_harness
 import yaml
+from fake_http import DrainingHandler
 
 REPO = playbook_yaml.REPO
 SCRIPT = REPO / "platform/services/agentgateway/deployment/tests/conformance.sh"
@@ -59,18 +60,20 @@ class Stub:
     reorder         reverse JSON key order
     first_delay / gap  stream timing: seconds to the first token, seconds between chunks
     models          the ids its models list returns (default ["m"])
+    cut_stream      end the stream cleanly right after the first token: no finish, no [DONE]
     """
 
     def __init__(self, key=None, drop_reasoning=False, buffer_stream=False, responses_404=False,
-                 reorder=False, first_delay=0.4, gap=0.1, models=("m",)):
+                 reorder=False, first_delay=0.4, gap=0.1, models=("m",), cut_stream=False):
         self.key, self.drop_reasoning, self.buffer_stream = key, drop_reasoning, buffer_stream
         self.responses_404, self.reorder = responses_404, reorder
         self.first_delay, self.gap = first_delay, gap
         self.models = list(models)
+        self.cut_stream = cut_stream
         self.seen = []
         stub = self
 
-        class Handler(BaseHTTPRequestHandler):
+        class Handler(DrainingHandler):
             protocol_version = "HTTP/1.1"
 
             def log_message(self, *_a):
@@ -161,8 +164,11 @@ class Stub:
             if self.drop_reasoning:
                 delta = {k: v for k, v in delta.items() if k != "reasoning"} or {"content": ""}
             parts.append((self.first_delay if i == 0 else self.gap, chunk(delta)))
-        parts.append((self.gap, chunk({}, "stop")))
-        parts.append((0.0, b"data: [DONE]\n\n"))
+        if self.cut_stream:
+            parts = parts[:3]  # role chunk, keep-alive, first token
+        else:
+            parts.append((self.gap, chunk({}, "stop")))
+            parts.append((0.0, b"data: [DONE]\n\n"))
         h.send_response(200)
         h.send_header("Content-Type", "text/event-stream")
         h.send_header("Connection", "close")
@@ -382,6 +388,36 @@ def test_identical_http_failures_on_both_sides_fail(tmp_path, stubs):
     for c in report["cases"]:
         assert c["status_match"] and c["semantic_match"] and c["verdict"] == "error", c
         assert c["failure"] == "gateway HTTP 401, direct HTTP 401"
+
+
+def _stream(lines, target):
+    return next(x for x in lines if x["case"] == "stream-xhigh" and x["target"] == target)
+
+
+def test_a_stream_the_gateway_ends_early_but_cleanly_fails_and_the_run_continues(tmp_path, stubs):
+    # curl sees a clean close (exit 0) and a 200: only the missing [DONE] tells. Under pipefail the
+    # run must neither abort on it nor let it pass.
+    gw, direct = stubs(key=GW_KEY, cut_stream=True), stubs(key=UP_KEY)
+    r, lines = _run(tmp_path, gw, direct)
+    assert r.returncode == 0, r.stderr
+    g = _stream(lines, "gateway")
+    assert g["curl_exit"] == 0 and g["status"] == 200 and g["semantic"]["done"] is False, g
+    assert lines[-1]["case"] == "responses"  # the cases after the stream still ran
+    c = _case(_diff(tmp_path), "stream-xhigh")
+    assert c["verdict"] == "error" and c["failure"] == "gateway HTTP 200, stream ended without [DONE], direct HTTP 200"
+
+
+def test_a_stream_cut_by_the_timeout_is_recorded_and_fails_without_aborting_the_run(tmp_path, stubs):
+    # Every stub answers its plain cases at once; only the stream waits 3 s for its first token,
+    # past the 1 s ceiling, so curl ends it with exit 28 mid-pipeline.
+    gw, direct = stubs(key=GW_KEY, first_delay=3), stubs(key=UP_KEY, first_delay=3)
+    r, lines = _run(tmp_path, gw, direct, env={"AGW_CONF_TIMEOUT": "1"})
+    assert r.returncode == 0, r.stderr
+    for t in ("gateway", "direct"):
+        assert _stream(lines, t)["curl_exit"] == 28, _stream(lines, t)
+    assert lines[-1]["case"] == "responses"
+    c = _case(_diff(tmp_path), "stream-xhigh")
+    assert c["verdict"] == "error" and c["failure"] == "gateway curl exit 28, direct curl exit 28"
 
 
 def test_a_failure_on_one_side_only_is_an_error(tmp_path):
