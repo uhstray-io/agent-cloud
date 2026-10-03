@@ -10,6 +10,43 @@
 # Each phase clones the agent-cloud monorepo and runs the service deploy.sh.
 # GitHub deploy key fetched once from OpenBao, reused across phases.
 
+# Every group deploy-all touches must be populated: a missing one would skip its
+# phase and still exit 0 (docs/MISTAKES.md 2.21).
+- name: "Pre-flight: openbao_svc is real"
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: openbao_svc
+    # Paired so one `-e preflight_group=` cannot redirect the guard (MISTAKES 2.21).
+    preflight_group_expected: openbao_svc
+
+- name: "Pre-flight: nocodb_svc is real"
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: nocodb_svc
+    # Paired so one `-e preflight_group=` cannot redirect the guard (MISTAKES 2.21).
+    preflight_group_expected: nocodb_svc
+
+- name: "Pre-flight: n8n_svc is real"
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: n8n_svc
+    # Paired so one `-e preflight_group=` cannot redirect the guard (MISTAKES 2.21).
+    preflight_group_expected: n8n_svc
+
+- name: "Pre-flight: netbox_svc is real"
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: netbox_svc
+    # Paired so one `-e preflight_group=` cannot redirect the guard (MISTAKES 2.21).
+    preflight_group_expected: netbox_svc
+
+- name: "Pre-flight: nemoclaw_svc is real"
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: nemoclaw_svc
+    # Paired so one `-e preflight_group=` cannot redirect the guard (MISTAKES 2.21).
+    preflight_group_expected: nemoclaw_svc
+
 # ── Phase 1: OpenBao ────────────────────────────────────────────────────
 - name: "Phase 1: Deploy OpenBao (secrets backbone)"
   hosts: openbao_svc

@@ -13,6 +13,15 @@
 # inventory are wired separately (see the plan).
 # Plan: plan/development/11-tududi-honcho-deployment.md (Service A — tududi).
 
+# A play over no hosts exits 0 and records a deploy that did nothing as a success
+# (docs/MISTAKES.md 2.21), so refuse an absent or empty group first.
+- name: "Pre-flight: tududi_svc is real"
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: tududi_svc
+    # Paired so one `-e preflight_group=` cannot redirect the guard (MISTAKES 2.21).
+    preflight_group_expected: tududi_svc
+
 # ── Phase 1: Place repo + secrets + env ─────────────────────────────────────
 - name: "Phase 1: Place repo + manage tududi secrets"
   hosts: tududi_svc

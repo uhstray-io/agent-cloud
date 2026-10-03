@@ -19,26 +19,3 @@
 # pre-flight covers the expression its play targets.
 #
 # One filename per line. Remove a line in the same commit that adds the pre-flight.
-deploy-all.yml
-deploy-authentik.yml
-deploy-caddy.yml
-deploy-dns.yml
-deploy-erpnext.yml
-deploy-github-runner.yml
-deploy-honcho.yml
-deploy-inference-comfyui.yml
-deploy-inference-hunyuan3d.yml
-deploy-n8n.yml
-deploy-nemoclaw.yml
-deploy-netbox.yml
-deploy-nocodb.yml
-deploy-opa.yml
-deploy-openbao.yml
-deploy-openhands.yml
-deploy-orb-agent.yml
-deploy-semaphore.yml
-deploy-service.yml
-deploy-step-ca.yml
-deploy-tududi.yml
-deploy-uhhcraft.yml
-deploy-wisbot.yml
