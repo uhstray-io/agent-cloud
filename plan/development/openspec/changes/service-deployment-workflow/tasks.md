@@ -92,8 +92,16 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
 
 ## 3. Local-dev agent runtime (skynet)
 
-- [ ] 3.0 Entry gate: `git ls-tree origin/dev platform/services/agentgateway` lists the service
+- [x] 3.0 Entry gate: `git ls-tree origin/dev platform/services/agentgateway` lists the service
       (the gateway implementation has merged to `dev`); rebase this branch onto `dev`
+      - 2026-10-02, `origin/dev` at `31c1aa7c25e9a937807fe2a131623ebceb0b0f48`: `git ls-tree`
+        lists `platform/services/agentgateway` as a tree (`e07dd329`), holding
+        `context/architecture.md` and `deployment/` (`README.md`, `compose.yml`,
+        `compose.local.yml`, `compose.tls.yml`, `deploy.sh`, `gateway-addr.sh`,
+        `templates/config.yaml.j2`, `templates/env.j2`). The gate condition holds.
+      - The rebase half does not apply as written: this change has no long-lived branch. Each
+        increment is its own branch cut from `origin/dev` and merged by pull request, so every
+        later section-3 branch starts from a `dev` that already carries the gateway.
 - [ ] 3.1 Prove the DGX API is reachable from inside the local controller's container (not
       only the host); record the result; if unreachable, record the degraded path in design
 - [ ] 3.2 Local inventory: agentgateway upstream set to the DGX API in `local-dev.yml` only;
@@ -300,7 +308,12 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
         result, never a pass.
 - [ ] 7.6 **[skynet]** Role packs, `service_onboarding` graph built from the registry, proposer
       wiring with the three schemas, eval harness with thresholds in CI
-- [ ] 7.7 `agent-practices.md` for agentgateway
+- [x] 7.7 `agent-practices.md` for agentgateway
+      - 2026-10-02: `platform/services/agentgateway/context/agent-practices.md`, the path the
+        three snapshot playbooks read. Ports, both auth surfaces, what healthy means (deploy
+        Phase 3), templates, what OPA lets each role launch, secrets boundary, undo path and
+        known quirks, each citing its source file. Open for review: the access schema takes one
+        `auth_mode` while the service has two surfaces (`api_key` on `/v1`, `oidc` on the UI).
 - [ ] 7.8 Validation gate: spec scenarios "Passing step records its evidence", "A failure with
       no result is still recorded", "Invalid proposal never executes", "Assessment sees
       earlier steps", "Failure appears within one interval", "NetBox outage does not block

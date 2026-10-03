@@ -122,6 +122,41 @@ Every rule holds for at least five minutes and routes to the existing `agent-clo
 Discord contact point. Their uids start with `inference_`, so the deploy readback and the
 drills, which check only the `o11y_` rules, do not cover them yet.
 
+## Scheduled jobs and internal CA expiry
+
+Two Loki-backed groups render in every environment (change `production-internal-ca`,
+task 6.4, design decision 10). Their uids start with `o11y_`, so the deploy readback and
+the drills require them active whenever alerts are enabled; like the other `o11y_` rules
+they pause while the canary runs.
+
+- `scheduled-jobs`: one rule, "Scheduled job silent", over the declared list
+  `o11y_scheduled_jobs` (each entry `job` and `max_silence_hours`). It fires, per job,
+  when that job has pushed no successful result line within its silence. The template
+  default declares `renew-internal-certs` at 36 hours; an inventory value replaces the
+  whole list, so keep that entry when adding a job. An empty list removes the rule
+  through `deleteRules`. It is one rule rather than one per job so that removing a job
+  rewrites an expression instead of leaving a provisioned rule behind. A job declared
+  here fires as soon as alerts are active and the job has not run, so declare it in the
+  same rollout that schedules it, or set the list in an environment that does not run it.
+- `internal-ca`: a leaf with fewer than seven days left (critical) and the intermediate
+  with fewer than ninety (warning).
+
+Every line goes through `platform/playbooks/tasks/push-loki-lines.yml`. The rules select
+on these stream labels; anything else belongs in the line body, never in a label:
+
+| Line | Stream labels | Body (JSON) |
+|---|---|---|
+| Scheduled-job result, one per run, pushed last | `job`=`<declared job>`, `kind`=`run`, `status`=`success` or `failure` | free-form run summary |
+| Leaf expiry, one per declared leaf per run | `job`=`renew-internal-certs`, `kind`=`cert`, `role`=`leaf`, `host`=`<consumer inventory host>`, `leaf`=`<declared leaf name>` | `not_after` (epoch seconds), `remaining_seconds` (integer, at push time), optional `serial` |
+| Intermediate expiry, one per run | `job`=`renew-internal-certs`, `kind`=`cert`, `role`=`intermediate`, `host`=`<CA inventory host>`, `leaf`=`intermediate` | as for a leaf |
+
+`status` is `success` only when the whole run passed, including every leaf's proof. Only
+a `success` line resets the silence: a failing renewal stops publishing expiry lines, and
+an expiry series that stops reads as no data, which the expiry rules treat as OK. The
+expiry rules read the newest `remaining_seconds` within two days, so the value can be one
+run interval stale, and the two-day window outlasts the 36-hour silence, so a stopped run
+raises the silent alert before its expiry series disappears.
+
 ## Local alert-delivery canary
 
 After `Seed o11y Alert Webhook (Dev)` stores the approved webhook in OpenBao,

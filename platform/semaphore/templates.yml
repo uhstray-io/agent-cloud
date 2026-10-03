@@ -656,6 +656,24 @@ templates:
           - { name: "false", value: "false" }
           - { name: "true", value: "true" }
 
+  # Daily: re-issue every declared leaf on a host once any of them has less than a third of
+  # its lifetime left, reload each host once, prove every renewed leaf in use, and push the
+  # expiry and run-result lines the o11y alerts read (openspec production-internal-ca tasks
+  # 6.1 and 6.2). The schedule is code. Dev-bound with the CA templates above. The rotation
+  # drill (task 6.3) launches it by hand with renew_threshold=1; left empty, the playbook's
+  # default third applies.
+  - name: Renew Internal Certs (Dev)
+    playbook: platform/playbooks/renew-internal-certs.yml
+    repository: agent-cloud dev
+    schedule:
+      cron: "17 4 * * *"
+    survey_vars:
+      - name: renew_threshold
+        title: "Renewal threshold"
+        description: "Fraction of a leaf's lifetime left below which its host renews, above 0 and at most 1; empty = one third; 1 renews every leaf (rotation drill)"
+        type: string
+        required: false
+
   - name: Manage agentgateway Client Key
     playbook: platform/playbooks/manage-agentgateway-client-key.yml
     # Introduced on dev (PR #191); main has no agentgateway code until promotion, so

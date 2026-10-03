@@ -957,6 +957,7 @@ PY
 
 @test "o11y: real alert-enabled deploy verifies live rule and contact state" {
   python3 - "$REPO_ROOT/platform/playbooks/deploy-o11y.yml" "$DEPLOY_DIR/templates/alerts.yml.j2" <<'PY'
+import base64
 import json
 import re
 import sys
@@ -982,10 +983,21 @@ tasks = block['block']
 rule_check = next(task for task in tasks if task['name'] == 'Require expected o11y rules and active routed rules')
 env.tests['match'] = lambda value, pattern: re.match(pattern, value) is not None
 env.filters['from_json'] = json.loads
+env.filters['b64decode'] = lambda value: base64.b64decode(value).decode()
+env.filters['from_yaml'] = yaml.safe_load
+env.filters['flatten'] = lambda value: [item for sub in value for item in sub]
 compile_value = lambda value: env.compile_expression(value.removeprefix('{{').removesuffix('}}').strip())
 select_rules = compile_value(rule_check['vars']['_o11y_rules'])
 rules_for_active_routing = compile_value(rule_check['vars']['_o11y_rules_for_active_routing'])
+provisioned_doc = compile_value(rule_check['vars']['_o11y_provisioned'])
+expected_uids = compile_value(rule_check['vars']['_o11y_expected_uids'])
+withdrawn_uids = compile_value(rule_check['vars']['_o11y_withdrawn_uids'])
 checks = [env.compile_expression(expr) for expr in rule_check['ansible.builtin.assert']['that']]
+slurp = next(task for task in tasks if task['name'] == 'Read the provisioned alert rules file')
+assert tasks.index(slurp) < tasks.index(rule_check)
+assert slurp['register'] == '_provisioned_rules_file' and 'no_log' not in slurp
+assert slurp['ansible.builtin.slurp']['src'].endswith('/config/grafana/provisioning/alerting/observability.yml')
+LEGACY_FILE = {'groups': [{'rules': [{'uid': 'o11y_service_down'}, {'uid': 'o11y_receiver_root_disk_low'}]}]}
 settings = {
     'group_by': ['service', 'environment', 'cluster', 'alertname'],
     'group_wait': '30s', 'group_interval': '5m', 'repeat_interval': '4h',
@@ -995,10 +1007,15 @@ healthy_disk = {'uid': 'o11y_receiver_root_disk_low', 'isPaused': False, 'notifi
 paused_disk = {'uid': 'o11y_receiver_root_disk_low', 'isPaused': True}
 wrong_group = {'uid': 'o11y_service_down', 'isPaused': False,
                'notification_settings': settings | {'group_by': ['instance']}}
-def verify_rules(rules, local_mode, expected):
-    scoped = select_rules(_active_rules={'stdout': json.dumps(rules)})
+def verify_rules(rules, local_mode, expected, provisioned=LEGACY_FILE):
+    active = {'stdout': json.dumps(rules)}
+    scoped = select_rules(_active_rules=active)
     active_routing = rules_for_active_routing(_o11y_rules=scoped, local_mode=local_mode)
-    assert all(bool(check(_o11y_rules=scoped, _o11y_rules_for_active_routing=active_routing)) for check in checks) is expected
+    doc = provisioned_doc(_provisioned_rules_file={'content': base64.b64encode(yaml.safe_dump(provisioned).encode()).decode()})
+    names = dict(_o11y_rules=scoped, _o11y_rules_for_active_routing=active_routing, _active_rules=active,
+                 _o11y_expected_uids=expected_uids(_o11y_provisioned=doc),
+                 _o11y_withdrawn_uids=withdrawn_uids(_o11y_provisioned=doc))
+    assert all(bool(check(**names)) for check in checks) is expected
 
 for rules, expected in [
     ([healthy, healthy_disk], True),
@@ -1014,16 +1031,27 @@ for rules, expected in [
 
 # Exercise actual rendered local and production rule sets. Only the intentionally
 # paused local disk rule is excluded from active/routing checks.
+# The live set must equal the provisioned file's o11y_ set, and no withdrawn uid may
+# survive, whatever its prefix.
 render_alerts = env.from_string(alert_template)
-local_rules = yaml.safe_load(render_alerts.render(local_mode=True, o11y_alerts_enabled=True))['groups'][0]['rules']
-prod_rules = yaml.safe_load(render_alerts.render(local_mode=False, o11y_alerts_enabled=True))['groups'][0]['rules']
+local_doc = yaml.safe_load(render_alerts.render(local_mode=True, o11y_alerts_enabled=True))
+prod_doc = yaml.safe_load(render_alerts.render(local_mode=False, o11y_alerts_enabled=True))
+all_rules = lambda doc: [rule for group in doc['groups'] for rule in group['rules']]
+local_rules, prod_rules = all_rules(local_doc), all_rules(prod_doc)
+assert len(prod_rules) > 2, 'the rendered file carries more than the two legacy rules'
 assert next(rule for rule in local_rules if rule['uid'] == 'o11y_receiver_root_disk_low')['isPaused'] is True
 assert next(rule for rule in prod_rules if rule['uid'] == 'o11y_receiver_root_disk_low')['isPaused'] is False
-verify_rules(local_rules, local_mode=True, expected=True)
-verify_rules(prod_rules, local_mode=False, expected=True)
+verify_rules(local_rules, local_mode=True, expected=True, provisioned=local_doc)
+verify_rules(prod_rules, local_mode=False, expected=True, provisioned=prod_doc)
+verify_rules(prod_rules[:-1], local_mode=False, expected=False, provisioned=prod_doc)  # a rendered rule is missing
+verify_rules(prod_rules + [dict(prod_rules[0], uid='o11y_stray')], local_mode=False, expected=False,
+             provisioned=prod_doc)  # a rule the file does not carry
+withdrawn = prod_doc['deleteRules'][0]['uid']
+verify_rules(prod_rules + [{'uid': withdrawn, 'isPaused': True}], local_mode=False, expected=False,
+             provisioned=prod_doc)  # a withdrawn rule survived
 local_service_down = next(rule for rule in local_rules if rule['uid'] == 'o11y_service_down')
 local_service_down['isPaused'] = True
-verify_rules(local_rules, local_mode=True, expected=False)
+verify_rules(local_rules, local_mode=True, expected=False, provisioned=local_doc)
 contact = next(task for task in tasks if task['name'] == 'Read live Grafana contact points without displaying webhook settings')
 count = next(task for task in tasks if task['name'] == 'Count only the intended contact point without its settings')
 assert contact['no_log'] is True and count['no_log'] is True
@@ -2027,10 +2055,15 @@ def seconds(value):
     return int(value[:-1]) * {'s': 1, 'm': 60, 'h': 3600}[value[-1]]
 
 
+def own(groups):
+    # The Loki-backed platform groups render regardless of the scrape; tested below.
+    return [group for group in groups if group['name'] not in ('scheduled-jobs', 'internal-ca')]
+
+
 for scrape in (False, True):
-    groups = yaml.safe_load(template.render(local_mode=False, o11y_alerts_enabled=True,
-                                            o11y_expected_metrics_targets=[],
-                                            dgx_spark_scrape_enabled=scrape))['groups']
+    groups = own(yaml.safe_load(template.render(local_mode=False, o11y_alerts_enabled=True,
+                                                o11y_expected_metrics_targets=[],
+                                                dgx_spark_scrape_enabled=scrape))['groups'])
     names = [group['name'] for group in groups]
     if not scrape:
         assert names == ['service-telemetry'], names
@@ -2043,7 +2076,7 @@ for enabled in (False, True):
                       dgx_spark_scrape_enabled=True)
         if canary:
             values['o11y_alert_canary_service'] = canary
-        groups = yaml.safe_load(template.render(**values))['groups']
+        groups = own(yaml.safe_load(template.render(**values))['groups'])
         rules = {group['name']: group['rules'] for group in groups[1:]}
         assert [rule['uid'] for rule in rules['inference-failing']] == ['inference_queue_stalled']
         assert [rule['uid'] for rule in rules['memory-thermal']] == ['inference_node_memavailable_low', 'inference_node_memfree_low']
@@ -2076,11 +2109,11 @@ assert memory['inference_node_memfree_low']['data'][1]['model']['conditions'][0]
 stalled = rules['inference-failing'][0]['data'][0]['model']['expr']
 assert 'vllm:num_requests_waiting{job="dgx-spark-vllm",cluster="dgx-spark"}' in stalled
 assert 'rate(vllm:generation_tokens_total{job="dgx-spark-vllm",cluster="dgx-spark"}[5m])) == 0' in stalled
-tuned = yaml.safe_load(template.render(local_mode=False, o11y_alerts_enabled=True, o11y_expected_metrics_targets=[],
-                                       dgx_spark_scrape_enabled=True,
-                                       o11y_dgx_spark_memfree_floor_bytes=2147483648))['groups'][2]['rules']
+tuned = own(yaml.safe_load(template.render(local_mode=False, o11y_alerts_enabled=True, o11y_expected_metrics_targets=[],
+                                           dgx_spark_scrape_enabled=True,
+                                           o11y_dgx_spark_memfree_floor_bytes=2147483648))['groups'])[2]['rules']
 assert tuned[1]['data'][1]['model']['conditions'][0]['evaluator'] == {'type': 'lt', 'params': [2147483648]}
-local = yaml.safe_load(template.render(local_mode=True))['groups']
+local = own(yaml.safe_load(template.render(local_mode=True))['groups'])
 assert [group['name'] for group in local] == ['service-telemetry']
 PY
 }
@@ -2109,7 +2142,8 @@ assert 'deleteRules' not in enabled, enabled.get('deleteRules')
 
 for values in (dict(base, dgx_spark_scrape_enabled=False), dict(base), dict(local_mode=True)):
     disabled = yaml.safe_load(template.render(**values))
-    assert [group['name'] for group in disabled['groups']] == ['service-telemetry'], values
+    assert [group['name'] for group in disabled['groups']
+            if group['name'] not in ('scheduled-jobs', 'internal-ca')] == ['service-telemetry'], values
     assert all(not rule['uid'].startswith('inference_')
                for group in disabled['groups'] for rule in group['rules']), values
     assert disabled['deleteRules'] == [{'orgId': 1, 'uid': uid} for uid in created], disabled['deleteRules']
@@ -2153,5 +2187,172 @@ queries = [t['expr'] for p in client['panels'] for t in p['targets']]
 assert any('agentgateway_gen_ai_server_request_duration_bucket{job="agentgateway", identity=~"$identity"}' in q for q in queries)
 latency = json.loads((deploy / 'config/grafana/dashboards/inference-latency-capacity.json').read_text())
 assert any(link['url'] == '/d/agentgateway-client-view' for link in latency['links'])
+PY
+}
+
+@test "o11y: scheduled-job silent and internal-CA expiry rules render for every rollout state" {
+  python3 - "$DEPLOY_DIR/templates/alerts.yml.j2" <<'PY'
+import json
+import sys
+
+import yaml
+from jinja2 import Environment, StrictUndefined
+
+# Change production-internal-ca task 6.4 (design decision 10). The line schema these
+# selectors match is the o11y README's "Scheduled jobs and internal CA expiry".
+env = Environment(undefined=StrictUndefined, trim_blocks=True)
+env.filters['bool'] = bool
+env.filters['to_json'] = json.dumps
+template = env.from_string(open(sys.argv[1], encoding='utf-8').read())
+LOKI_GROUPS = ('scheduled-jobs', 'internal-ca')
+
+
+def render(**values):
+    text = template.render(**values)
+    assert text.count('\ndeleteRules:') <= 1, 'two deleteRules keys: YAML keeps only the last'
+    return yaml.safe_load(text)
+
+
+def loki_rules(doc):
+    return {rule['uid']: rule for group in doc['groups'] if group['name'] in LOKI_GROUPS
+            for rule in group['rules']}
+
+
+default = render(local_mode=False, o11y_alerts_enabled=True, o11y_expected_metrics_targets=[])
+assert [group['name'] for group in default['groups']] == ['service-telemetry', 'scheduled-jobs', 'internal-ca']
+assert all(group['interval'] == '5m' for group in default['groups'] if group['name'] in LOKI_GROUPS)
+rules = loki_rules(default)
+assert list(rules) == ['o11y_scheduled_job_silent', 'o11y_internal_ca_leaf_expiring',
+                       'o11y_internal_ca_intermediate_expiring']
+assert 'deleteRules' not in render(local_mode=False, o11y_expected_metrics_targets=[], dgx_spark_scrape_enabled=True)
+
+silent = rules['o11y_scheduled_job_silent']
+assert silent['title'] == 'Scheduled job silent'
+assert silent['data'][0]['model']['expr'] == (
+    'absent_over_time({job="renew-internal-certs", kind="run", status="success"}[36h])')
+assert silent['data'][0]['relativeTimeRange'] == {'from': 36 * 3600, 'to': 0}
+assert silent['data'][1]['model']['conditions'][0]['evaluator'] == {'type': 'gt', 'params': [0.5]}
+assert silent['labels']['service'] == '{{ $$labels.job }}'
+
+leaf = rules['o11y_internal_ca_leaf_expiring']
+intermediate = rules['o11y_internal_ca_intermediate_expiring']
+for rule, role, seconds_left, severity in ((leaf, 'leaf', 7 * 86400, 'critical'),
+                                           (intermediate, 'intermediate', 90 * 86400, 'warning')):
+    assert rule['data'][0]['model']['expr'] == (
+        f'last_over_time({{job="renew-internal-certs", kind="cert", role="{role}"}} '
+        '| json remaining_seconds="remaining_seconds" | unwrap remaining_seconds | __error__="" [2d])')
+    assert rule['data'][0]['relativeTimeRange'] == {'from': 2 * 86400, 'to': 0}
+    assert rule['data'][1]['model']['conditions'][0]['evaluator'] == {'type': 'lt', 'params': [seconds_left]}
+    assert rule['labels']['severity'] == severity and rule['labels']['service'] == 'step-ca'
+
+for rule in rules.values():
+    query = rule['data'][0]
+    assert query['datasourceUid'] == 'loki' and query['model']['queryType'] == 'instant'
+    assert rule['condition'] == 'B' and rule['data'][1]['datasourceUid'] == '__expr__'
+    assert rule['noDataState'] == 'OK' and rule['executionErrorState'] == 'Alerting'
+    assert rule['for'] == '5m' and rule['labels']['owner'] == 'platform-operations'
+
+# Active and routed exactly when alerts are enabled and no canary is running, in local
+# and production alike, so the deploy readback (every o11y_ rule active) holds.
+canary = 'o11y-fault-probe-' + 'c' * 12
+for local in (False, True):
+    for enabled in (False, True):
+        for probe in (None, canary):
+            values = dict(local_mode=local, o11y_alerts_enabled=enabled)
+            if probe:
+                values['o11y_alert_canary_service'] = probe
+            active = enabled and probe is None
+            for uid, rule in loki_rules(render(**values)).items():
+                assert uid.startswith('o11y_')
+                assert rule['isPaused'] is (not active), (uid, values)
+                assert ('notification_settings' in rule) is active, (uid, values)
+                if active:
+                    assert rule['notification_settings'] == {
+                        'receiver': 'agent-cloud-ops',
+                        'group_by': ['service', 'environment', 'cluster', 'alertname'],
+                        'group_wait': '30s', 'group_interval': '5m', 'repeat_interval': '4h'}
+
+# A declared list is ONE rule over every job, each with its own silence; the query
+# range covers the longest.
+jobs = [{'job': 'renew-internal-certs', 'max_silence_hours': 36},
+        {'job': 'inference-personal-keys', 'max_silence_hours': 2}]
+listed = loki_rules(render(local_mode=False, o11y_scheduled_jobs=jobs))
+assert [uid for uid in listed if uid == 'o11y_scheduled_job_silent'] == ['o11y_scheduled_job_silent']
+assert listed['o11y_scheduled_job_silent']['data'][0]['model']['expr'] == (
+    'absent_over_time({job="renew-internal-certs", kind="run", status="success"}[36h]) or '
+    'absent_over_time({job="inference-personal-keys", kind="run", status="success"}[2h])')
+assert listed['o11y_scheduled_job_silent']['data'][0]['relativeTimeRange'] == {'from': 36 * 3600, 'to': 0}
+
+# An empty declaration withdraws the rule through the file's single deleteRules key,
+# alongside the inference rules when the scrape is off.
+inference = ['inference_queue_stalled', 'inference_node_memavailable_low', 'inference_node_memfree_low',
+             'inference_benchmark_gate_placeholder']
+for scrape, deleted in ((True, ['o11y_scheduled_job_silent']),
+                        (False, inference + ['o11y_scheduled_job_silent'])):
+    empty = render(local_mode=False, o11y_scheduled_jobs=[], o11y_expected_metrics_targets=[],
+                   dgx_spark_scrape_enabled=scrape)
+    assert 'scheduled-jobs' not in [group['name'] for group in empty['groups']]
+    assert 'o11y_scheduled_job_silent' not in loki_rules(empty)
+    assert empty['deleteRules'] == [{'orgId': 1, 'uid': uid} for uid in deleted], empty['deleteRules']
+PY
+}
+
+@test "o11y: the README documents the Loki line schema the CA and silent-job rules select" {
+  python3 - "$DEPLOY_DIR/README.md" "$DEPLOY_DIR/templates/alerts.yml.j2" <<'PY'
+import re
+import sys
+
+readme = open(sys.argv[1], encoding='utf-8').read()
+template = open(sys.argv[2], encoding='utf-8').read()
+section = readme.split('## Scheduled jobs and internal CA expiry', 1)[1].split('\n## ', 1)[0]
+# Every label a rule selects on, and the one body field it unwraps, is in the schema.
+for name in ('job', 'kind', 'status', 'role', 'host', 'leaf', 'remaining_seconds', 'not_after',
+             'o11y_scheduled_jobs', 'max_silence_hours'):
+    assert f'`{name}`' in section, name
+assert '`platform/playbooks/tasks/push-loki-lines.yml`' in section
+selected = set(re.findall(r'\{job="[^"]+", ((?:[a-z_]+="[^"]+"(?:, )?)+)\}', template.replace('\\"', '"')))
+labels = {pair.split('=')[0] for group in selected for pair in group.split(', ')}
+assert labels == {'kind', 'status', 'role'}, labels
+for label in labels:
+    assert f'`{label}`' in section, label
+PY
+}
+
+@test "o11y: rule labels survive Grafana provisioning's environment interpolation" {
+  python3 - "$DEPLOY_DIR/templates/alerts.yml.j2" <<'PY'
+import json
+import re
+import sys
+
+import yaml
+from jinja2 import Environment, StrictUndefined
+
+# Grafana v11.4.0 runs rule LABELS through interpolation (rules_types.go: Labels.Value())
+# but stores annotations and query models raw. values.go interpolateValue splits on "$$",
+# runs os.ExpandEnv on each part and joins the parts with "$"; an unset variable expands
+# to "". Mirror that so a label template is checked as Grafana will store it.
+def grafana_interpolate(value, environ={}):
+    expand = lambda part: re.sub(r'\$(\{([^}]*)\}|[A-Za-z0-9_]+)',
+                                 lambda m: environ.get(m.group(2) or m.group(1), ''), part)
+    return '$'.join(expand(part) for part in value.split('$$'))
+
+
+env = Environment(undefined=StrictUndefined, trim_blocks=True)
+env.filters['bool'] = bool
+env.filters['to_json'] = json.dumps
+template = env.from_string(open(sys.argv[1], encoding='utf-8').read())
+assert grafana_interpolate('{{ $labels.job }}') == '{{ .job }}'
+assert grafana_interpolate('{{ $$labels.job }}') == '{{ $labels.job }}'
+for values in (dict(local_mode=False, o11y_alerts_enabled=True, dgx_spark_scrape_enabled=True),
+               dict(local_mode=True, o11y_alerts_enabled=True),
+               dict(local_mode=False, o11y_scheduled_jobs=[{'job': 'a', 'max_silence_hours': 1}])):
+    doc = yaml.safe_load(template.render(**values))
+    for rule in (rule for group in doc['groups'] for rule in group['rules']):
+        for key, value in rule['labels'].items():
+            stored = grafana_interpolate(str(value))
+            assert stored == str(value).replace('$$', '$'), (rule['uid'], key, value, stored)
+silent = next(rule for group in yaml.safe_load(template.render(local_mode=False))['groups']
+              for rule in group['rules'] if rule['uid'] == 'o11y_scheduled_job_silent')
+assert grafana_interpolate(silent['labels']['service']) == '{{ $labels.job }}'
 PY
 }

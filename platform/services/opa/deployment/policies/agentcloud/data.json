@@ -162,7 +162,21 @@
         "Clean Deploy OPA",
         "Clean Deploy ERPNext",
         "Wipe and Rebuild"
-      ]
+      ],
+      "launch_branches": [
+        "main",
+        "dev"
+      ],
+      "declared_objects": {
+        "repository": [
+          "agent-cloud",
+          "agent-cloud dev"
+        ],
+        "key": [],
+        "inventory": [
+          "production"
+        ]
+      }
     },
     "workflow_steps": {
       "vm-template": {
@@ -339,6 +353,15 @@
         "per_service": false,
         "reviewed": false
       }
-    }
+    },
+    "placeholder_markers": [
+      "probe",
+      "probe-only",
+      "test",
+      "dummy",
+      "placeholder",
+      "changeme",
+      "example"
+    ]
   }
 }

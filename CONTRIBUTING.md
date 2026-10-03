@@ -168,6 +168,10 @@ a branch-deletion push. Failing open like that is deliberate and the opposite of
 pre-commit secret gate, which fails closed: a leaked secret is irreversible, a skipped test
 is not. Escape hatch, for a reason you can defend in review: `SKIP_TESTS=1 git push`.
 
+**One run per branch at a time:** a second push of a branch whose first push is still inside
+the hook is refused immediately, naming the push that holds it, while other branches proceed
+and a lock left by a push that has exited is reclaimed automatically (`docs/MISTAKES.md` §5.11).
+
 ---
 
 ## Adding a New Service
