@@ -49,6 +49,9 @@ def _run_many(tmp_path: Path, hosts: dict, groups: dict | None = None, *, check:
         task.pop("become", None)
     stub_env = {"UFW_STUB_STATE": "{{ ufw_stub_state }}", "UFW_STUB_LOG": "{{ ufw_stub_log }}",
                 "PODMAN_STUB": "{{ podman_stub }}"}
+    # Print each host's verdict, so a test can read what the record play would receive.
+    tasks.append({"name": "Show the verdict",
+                  "ansible.builtin.debug": {"msg": "VERDICT {{ _fw_verdict | to_json }}"}})
     (tmp_path / "play.yml").write_text(yaml.safe_dump(
         [{"hosts": "targets", "gather_facts": False, "become": False, "vars": play["vars"],
           "environment": stub_env, "tasks": tasks}]))
@@ -512,3 +515,35 @@ def test_an_egress_denial_that_is_not_scoped_is_refused_before_any_rule_is_added
         f"allow from {SSH} to any port 22 proto tcp": _tag("in", "22/tcp", SSH),
         "deny out to 198.51.100.1 port 8200": _tag("out-deny", "8200/any", "198.51.100.1"),
         "deny out to 198.51.100.2 port 53 proto udp": _tag("out-deny", "53/udp", "198.51.100.2")}
+
+
+def _verdict(result):
+    msg = re.search(r'"msg": ("VERDICT .*")', result.stdout).group(1)
+    return json.loads(json.loads(msg)[len("VERDICT "):])
+
+
+def test_a_dry_run_over_untagged_equivalent_rules_lists_the_adds_and_does_not_fail(tmp_path):
+    # Untagged rules equal to the declared ones are not this playbook's: a dry run plans the
+    # tagged adds, and since it changed nothing the live state still lacks them. That is what
+    # it WOULD change, not a failure (a dry run against a host whose rules were added by hand).
+    before = {"active": True, "rules": [
+        [f"allow from {SSH} to any port 22 proto tcp", ""],
+        ["allow from 192.0.2.5 to any port 8080 proto tcp", ""]]}
+    host = {"firewall_detect_ports": False, "firewall_allow_rules": [{"port": 8080, "from": "192.0.2.5"}]}
+    r, state = _run(tmp_path, host, state=before, check=True)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert state == before
+    v = _verdict(r)
+    assert v["errors"] == [], v
+    (gap,) = v["would_change"]
+    assert gap.startswith("declared rules not held: ") and _tag("in", "8080/tcp", "192.0.2.5") in gap
+    assert _tag("in", "22/tcp", SSH) in gap
+
+
+def test_a_real_run_over_untagged_equivalent_rules_adds_the_tagged_ones_and_passes(tmp_path):
+    before = {"active": True, "rules": [[f"allow from {SSH} to any port 22 proto tcp", ""]]}
+    r, state = _run(tmp_path, {"firewall_detect_ports": False}, state=before)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert _tag("in", "22/tcp", SSH) in _rules(state).values()
+    v = _verdict(r)
+    assert v["errors"] == [] and v["would_change"] == [], v
