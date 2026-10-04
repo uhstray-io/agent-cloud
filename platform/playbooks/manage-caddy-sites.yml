@@ -57,7 +57,8 @@
 
 # A play whose hosts: matches nothing exits 0 with no step result, which reads as a pass (D10
 # review 2026-10-03). This play refuses a target group that names no host, and records the
-# refusal as a failed edge-route result. It checks only a bare group name. A compound pattern,
+# refusal as a failed edge-route result. A bare name (a group OR a single host) is resolved the
+# way `hosts:` resolves it, with the inventory_hostnames lookup. It checks only a bare name. A compound pattern,
 # such as rollback-inference-route.yml's deliberate 'caddy_svc:!caddy_svc' for gateway-config
 # mode, is an importer's own choice to skip the work, so it is not refused here.
 - name: "Refuse a target group that matches no hosts"
@@ -67,7 +68,8 @@
   vars:
     _edge_target: "{{ target_service | default('caddy_svc') }}"
     _edge_target_empty: >-
-      {{ (_edge_target is match('^[A-Za-z0-9_.-]+$')) and (groups.get(_edge_target, []) | length == 0) }}
+      {{ (_edge_target is match('^[A-Za-z0-9_.-]+$'))
+         and (query('ansible.builtin.inventory_hostnames', _edge_target) | length == 0) }}
   tasks:
     - name: "Record the refusal as the step result"
       ansible.builtin.include_tasks: tasks/emit-step-result.yml

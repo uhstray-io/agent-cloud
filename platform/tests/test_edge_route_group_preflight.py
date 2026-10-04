@@ -56,8 +56,9 @@ def test_an_absent_target_group_is_a_recorded_failure(tmp_path, check):
     assert "matches no hosts in this inventory" in res["error"]
 
 
-@pytest.mark.parametrize("target", ["caddy_svc", "caddy_svc:!caddy_svc"])
-def test_a_populated_group_or_a_compound_pattern_passes_the_guard(tmp_path, target):
+@pytest.mark.parametrize("target", ["caddy_svc", "caddy", "caddy_svc:!caddy_svc"])
+def test_a_populated_group_a_host_or_a_compound_pattern_passes_the_guard(tmp_path, target):
+    # "caddy" is a HOST name: a valid hosts: pattern that is not a key of `groups`.
     # caddy_svc:!caddy_svc is rollback-inference-route.yml's deliberate skip in gateway-config mode.
     guard = _guard_only(tmp_path)
     try:

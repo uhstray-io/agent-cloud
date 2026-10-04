@@ -122,3 +122,31 @@ stays as it was written.
 Verdict: edge-route **passes** all D10 checks. Its `review_gap` now records the pass. The
 remaining gaps are oidc-config (second-run no-change, an operator decision), cloud-init and
 service-deploy.
+
+### Correction — 2026-10-03 (review of PR #421)
+
+Two passes recorded above were wrong. The sections above stay as they were written. Both
+steps are back to a dated gap in the registry.
+
+- **access-harden does not pass.** The step's first criterion is "key-only access was proven
+  before password authentication was withdrawn" (AGENTS.md Critical Deployment Rule 5).
+  harden-ssh.yml turns off password authentication and restarts sshd (:70-99) before its
+  first key-auth probe (:149-165). The executor therefore proves key access only after the
+  password path is already gone. The proof made before that change lives in a separate
+  template, Verify Host Access (verify-host-access.yml). Whether this executor must prove it
+  itself, or may rely on that gate, is an operator decision. The first table missed this
+  because its re-run column recorded idempotent writes and did not check the criteria's order.
+- **edge-route does not pass.** The step's third criterion, "the Cloudflare plan is
+  zero-diff", is delegated to Apply Cloudflare Tofu (manage-caddy-sites.yml:49-50) and is not
+  in `evidence_keys`. The executor proves two of three criteria. The operator decides whether to
+  split that criterion into its own step or to accept the delegation. The group preflight
+  added in the follow-up stays.
+- **Preflight fix.** The preflight had refused a bare target that names a host rather than a
+  group, because a host name is a valid `hosts:` pattern but not a key of `groups`. It now
+  resolves a bare name with the `ansible.builtin.inventory_hostnames` lookup. Compound
+  patterns are still exempt, so the rollback's `caddy_svc:!caddy_svc` keeps skipping the play.
+  A host-name case was added to the test. To mutation-check it, the lookup was put back to
+  `groups.get`: the host case went red, and the file was restored byte-exact.
+
+Remaining gaps: access-harden, edge-route and oidc-config (each an operator decision), and
+cloud-init and service-deploy (not re-reviewed).

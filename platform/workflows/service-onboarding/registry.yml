@@ -143,7 +143,11 @@ steps:
       - sudo is passwordless for the management user
     evidence_keys: [key_only_proven, password_rejected]
     reviewed: null
-    review_gap: "none in the executor: passed all D10 checks 2026-10-03; the stamp waits on the matching OPA data.json workflow_steps change"
+    review_gap: >-
+      key-only access is not proven before password authentication is withdrawn: harden-ssh.yml
+      disables it and restarts sshd (:70-99) before its first key-auth probe (:149-165). The
+      pre-proof lives in a separate template, Verify Host Access (verify-host-access.yml);
+      whether this executor must prove it itself is an operator decision (D10 review 2026-10-03)
 
   - id: service-assess
     order: 9
@@ -244,7 +248,11 @@ steps:
       - the Cloudflare plan is zero-diff
     evidence_keys: [resolves, route_status]
     reviewed: null
-    review_gap: "none in the executor: passed all D10 checks 2026-10-03; the stamp waits on the matching OPA data.json workflow_steps change"
+    review_gap: >-
+      criterion 3 (the Cloudflare plan is zero-diff) is not proven here: manage-caddy-sites.yml
+      delegates it to Apply Cloudflare Tofu (:49-50) and it is not in evidence_keys; splitting
+      the criterion into its own step or accepting the delegation is an operator decision (D10
+      review 2026-10-03)
 
   - id: fw-assess
     order: 16
