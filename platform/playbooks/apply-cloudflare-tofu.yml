@@ -171,16 +171,10 @@
     # the parsed change counts, and fail on them. The plan text is not printed: it carries
     # the declared origin address, which is private configuration.
     #
-    # A dry run must change nothing persistent, but `tofu init` writes its working data
-    # (.terraform/: providers, backend config). Under --check that data goes to a throwaway
-    # TF_DATA_DIR removed in `always` (OpenTofu reads TF_DATA_DIR for the .terraform location).
-    - name: "Dry run: throwaway tofu data directory"
-      ansible.builtin.tempfile:
-        state: directory
-        suffix: tofu-data
-      register: _tf_data_tmp
-      check_mode: false
-      when: ansible_check_mode
+    # Known limit (D10 gap): `tofu init` runs in a dry run too and writes its working data
+    # (.terraform/) into the runner's checkout of the tofu root. A throwaway TF_DATA_DIR was
+    # tried and withdrawn: a tempfile/file write forced to run in check mode in a play with
+    # vars: is refused by test_check_mode_contract.py (plan/architecture/08 runner scratch).
 
     - name: "Build the tofu environment"
       ansible.builtin.set_fact:
@@ -189,8 +183,7 @@
               'AWS_SECRET_ACCESS_KEY': _cf.r2_secret_access_key,
               'CLOUDFLARE_API_TOKEN': _cf.api_token,
               'TF_VAR_zone_id': _zone_id,
-              'TF_VAR_caddy_origin_ip': _caddy_ip}
-             | combine({'TF_DATA_DIR': _tf_data_tmp.path} if ansible_check_mode else {}) }}
+              'TF_VAR_caddy_origin_ip': _caddy_ip} }}
       no_log: true
 
     - name: "OpenTofu run"
@@ -251,19 +244,11 @@
           register: _tf_verify
           changed_when: false
           failed_when: false
+          check_mode: false
           no_log: true
           when:
             - _tf_apply is not skipped
             - _tf_apply.rc == 0
-      always:
-        - name: "Dry run: remove the throwaway tofu data directory"
-          ansible.builtin.file:
-            path: "{{ _tf_data_tmp.path }}"
-            state: absent
-          check_mode: false
-          when:
-            - _tf_data_tmp is not skipped
-            - _tf_data_tmp.path is defined
 
     # Visible and credential-free: exit codes and counts only, extracted from the protected
     # registers by value (never the register itself, never a loop over it).

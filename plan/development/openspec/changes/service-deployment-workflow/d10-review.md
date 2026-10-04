@@ -237,3 +237,20 @@ The edge-dns pass recorded above had two defects. The sections above stay as the
   - the cleanup pointed at the wrong path.
 
 Verdict: edge-dns still **passes** D10, with these fixes.
+
+### Correction to the correction — 2026-10-04
+
+The section above stays as it was written. One of its two fixes has been withdrawn.
+
+- **The throwaway `TF_DATA_DIR` is withdrawn.** A `tempfile` create and a `file` removal forced
+  to run in check mode, in a play that has `vars:`, are violations under the repository's
+  check-mode contract (`platform/tests/test_check_mode_contract.py`, the runner-scratch class
+  from plan/architecture/08). The `tempfile` users allowlist in `test_materialise_ssh_key.py`
+  pins its population too. The full suite caught both after the previous commit. Widening that
+  contract is not this change's call.
+- **edge-dns is back to a gap.** A dry run still runs `tofu init`, and init writes `.terraform/`
+  into the runner's checkout of the tofu root. The registry `review_gap` says so. The
+  `no_log` fix stands. The plan after apply now carries `check_mode: false` like the other
+  reads, but it does not run in a dry run, because its apply never ran.
+
+Verdict: edge-dns **gap** (the dry run is not read-only). edge-route and cloud-init still pass.

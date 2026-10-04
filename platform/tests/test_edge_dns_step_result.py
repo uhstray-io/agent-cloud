@@ -125,36 +125,3 @@ def test_the_visible_report_carries_only_exit_codes_and_counts():
             shown = str(t["ansible.builtin.debug"])
             assert "_tf_plan" not in shown and "_tf_apply" not in shown and "_tf_verify" not in shown \
                 and "_tf_init" not in shown and "_tf_env" not in shown and "_cf" not in shown, t["name"]
-
-
-@needs_ansible
-def test_a_dry_run_leaves_no_tofu_working_data(tmp_path):
-    # PR 436 Codex review: --check still runs `tofu init`, which writes .terraform/. Under check
-    # mode that data must land in a throwaway TF_DATA_DIR removed afterwards. A fake tofu
-    # records the directory it was given and writes into it, as init would.
-    bin_dir, tf_dir, log = tmp_path / "bin", tmp_path / "tf", tmp_path / "tofu.log"
-    bin_dir.mkdir()
-    tf_dir.mkdir()
-    fake = bin_dir / "tofu"
-    fake.write_text(f'#!/bin/sh\nd="${{TF_DATA_DIR:-.terraform}}"\nmkdir -p "$d"\ntouch "$d/written"\n'
-                    f'echo "$1 $d" >> {log}\n[ "$1" = plan ] && echo "No changes."\nexit 0\n')
-    fake.chmod(0o755)
-    names = ("Dry run: throwaway tofu data directory", "Build the tofu environment", "OpenTofu run")
-    tasks = [t for t in _tasks() if t.get("name") in names]
-    assert len(tasks) == len(names)
-    harness = [{"hosts": "localhost", "connection": "local", "gather_facts": False,
-                "vars": {"_tf_dir": str(tf_dir), "tofu_action": "plan", "_zone_id": "z", "_caddy_ip": "192.0.2.1",
-                         "_cf": {"r2_access_key_id": "a", "r2_secret_access_key": "b", "api_token": "c"}},
-                "tasks": tasks}]
-    (tmp_path / "p.yml").write_text(json.dumps(harness))
-    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
-    env["PATH"] = f"{bin_dir}:{env['PATH']}"
-    proc = subprocess.run(["ansible-playbook", "-i", "localhost,", "--check", str(tmp_path / "p.yml")], cwd=REPO,
-                          env=env, text=True, capture_output=True, stdin=subprocess.DEVNULL, check=False)
-    assert proc.returncode == 0, proc.stdout[-2000:]
-    runs = log.read_text().split("\n")
-    assert [r.split()[0] for r in runs if r] == ["init", "plan"]
-    data_dirs = {r.split()[1] for r in runs if r}
-    assert len(data_dirs) == 1 and ".terraform" not in data_dirs
-    assert not Path(data_dirs.pop()).exists(), "the throwaway data directory was not removed"
-    assert list(tf_dir.iterdir()) == [], "the dry run wrote into the tofu root"

@@ -261,7 +261,11 @@ steps:
       - the Cloudflare plan is zero-diff (after an apply, a fresh plan shows no changes)
     evidence_keys: [plan_changes]
     reviewed: null
-    review_gap: "none in the executor: passed all D10 checks 2026-10-04; the stamp waits on the playbook reaching main"
+    review_gap: >-
+      a dry run is not read-only: tofu init runs under --check and writes .terraform/ into the
+      runner's checkout of the tofu root (apply-cloudflare-tofu.yml "OpenTofu init"); a
+      throwaway data directory conflicts with the check-mode contract (D10 review 2026-10-04,
+      PR 436)
 
   - id: fw-assess
     order: 17
