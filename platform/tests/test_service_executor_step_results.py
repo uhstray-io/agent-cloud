@@ -86,6 +86,15 @@ def test_firewall_result_fails_when_any_host_fails(tmp_path, check):
 
 
 @needs_ansible
+def test_firewall_dry_run_with_only_planned_changes_is_a_skip_not_a_failure(tmp_path):
+    planned = {**_verdict(), "would_change": ["declared rules not held: agent-cloud:in:22/tcp:x"]}
+    proc, res = _run_record(tmp_path, {"a": _verdict(), "b": planned}, "--check")
+    assert proc.returncode == 0, proc.stdout[-3000:]
+    assert res["status"] == "skip" and res["check_mode"] is True
+    assert "b: would change: declared rules not held: agent-cloud:in:22/tcp:x" in proc.stdout
+
+
+@needs_ansible
 def test_firewall_host_without_a_verdict_counts_as_failed(tmp_path):
     proc, res = _run_record(tmp_path, {"a": _verdict(), "b": None})
     assert proc.returncode != 0 and res["status"] == "fail"

@@ -756,25 +756,34 @@
     # default deny inbound, and the allow set equal to the declaration. A real run reaching
     # here has proven the declared rules held (drift guard), stale tagged rules gone (post-prune
     # assert) and SSH answering after enable (the fresh-handshake verify); what is left to
-    # check is the final state and any stale rule HELD back. A dry run judges the live state:
-    # every rule it would add, retag or delete is a criterion not yet met. Untagged rules are
-    # not this playbook's (header note "Convergence") and are reported above, not counted.
+    # check is the final state and any stale rule HELD back. A dry run changed nothing, so
+    # the live state it reads still lacks everything a real run would converge: enabling ufw,
+    # the default deny, every declared rule it would add or retag, every stale tagged rule it
+    # would delete. Those are listed as `would_change`, not errors, because a dry run must not
+    # fail on what it would change (plan/architecture/08, check mode); only a real run
+    # enforces "declared rules held". What a real run would NOT fix (a stale rule held back)
+    # stays an error in both modes. Untagged rules are not this playbook's (header note
+    # "Convergence"): an untagged rule equivalent to a declared one does not satisfy the
+    # declaration, so a dry run lists that rule as one it would add.
     - name: "Decide this host's firewall verdict"
       ansible.builtin.set_fact:
         _fw_verdict:
           skipped: false
           active: "{{ 'Status: active' in _fw_final }}"
           allows: "{{ _fw_declared }}"
+          would_change: "{{ _fw_gaps if ansible_check_mode else [] }}"
           errors: >-
-            {{ (['ufw is not active'] if 'Status: active' not in _fw_final else [])
-               + (['default incoming policy is not deny'] if 'deny (incoming)' not in _fw_final else [])
-               + (['declared rules not held: ' ~ (_fw_missing | join(', '))] if _fw_missing else [])
-               + (['stale tagged rules present: ' ~ (_fw_prune | map(attribute='tag') | join(', '))]
-                  if (ansible_check_mode and _fw_prune) else [])
+            {{ ([] if ansible_check_mode else _fw_gaps)
                + (['stale rules held back (detection found no ports): ' ~ (_fw_held | map(attribute='tag') | join(', '))]
                   if _fw_held else []) }}
       vars:
         _fw_final: "{{ _status.stdout if (_status is not skipped) else _fw_state.stdout }}"
+        _fw_gaps: >-
+          {{ (['ufw is not active'] if 'Status: active' not in _fw_final else [])
+             + (['default incoming policy is not deny'] if 'deny (incoming)' not in _fw_final else [])
+             + (['declared rules not held: ' ~ (_fw_missing | join(', '))] if _fw_missing else [])
+             + (['stale tagged rules present: ' ~ (_fw_prune | map(attribute='tag') | join(', '))]
+                if (ansible_check_mode and _fw_prune) else []) }}
 
 # One step result for the whole target group, from a play that runs even when every target
 # host was ended early (end_host) or failed: a failed host has no verdict and counts as a
@@ -801,14 +810,28 @@
       {%- endfor -%}
       {{ out }}
     _fw_all_skipped: "{{ _fw_hosts | length > 0 and (_fw_verdicts.values() | rejectattr('skipped') | list | length == 0) }}"
+    # Dry run only: what a real run would converge. Not a failure; the step is recorded as
+    # skip (criteria not yet judged) rather than pass, since the live state does not meet them.
+    _fw_would_change: >-
+      {%- set out = [] -%}
+      {%- for h, v in _fw_verdicts.items() -%}
+        {%- for e in v.would_change | default([]) -%}{%- set _ = out.append(h ~ ': would change: ' ~ e) -%}{%- endfor -%}
+      {%- endfor -%}
+      {{ out }}
   tasks:
+    - name: "Report what a real run would change"
+      ansible.builtin.debug:
+        msg: "{{ _fw_would_change }}"
+      when: _fw_would_change | length > 0
+
     - name: "Record the step result"
       ansible.builtin.include_tasks: tasks/emit-step-result.yml
       vars:
         step_result_step: fw-harden
         step_result_service: "{{ hostvars[_fw_hosts | first].service_name | default('') if _fw_hosts else '' }}"
         step_result_status: >-
-          {{ 'fail' if _fw_group_errors else ('skip' if (_fw_all_skipped | bool) else 'pass') }}
+          {{ 'fail' if _fw_group_errors
+             else ('skip' if (_fw_all_skipped | bool) or (_fw_would_change | length > 0) else 'pass') }}
         step_result_evidence:
           # per host: one result covers the group
           ufw_active: "{{ dict(_fw_verdicts.keys() | zip(_fw_verdicts.values() | map(attribute='active'))) }}"
