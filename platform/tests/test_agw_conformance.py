@@ -667,34 +667,83 @@ def test_the_committed_shape_allowlist_passes_the_scripts_own_refusal_rules(tmp_
 
 
 T2614 = REPO / "platform/services/agentgateway/deployment/tests/conformance-shape-t2614.json"
+T2698 = REPO / "platform/services/agentgateway/deployment/tests/conformance-shape-t2698.json"
+RECORDS = {"2614": T2614, "2698": T2698}
 _LISTS = (("gateway_may_add", "only_gateway"), ("gateway_may_drop", "only_direct"),
           ("gateway_may_retype", "type_changed"))
 
 
-def test_the_committed_shape_allowlist_accepts_exactly_what_task_2614_reported():
-    # Operator decision 2026-10-03: accept every difference production run task 2614 reported, for
-    # the case it was seen in. The record is that run's shape_diff, paths only. The allowlist must
-    # cover it exactly: nothing missing, and nothing extra in any case or at the top level.
+def test_the_committed_shape_allowlist_accepts_exactly_the_union_of_the_recorded_runs():
+    # Operator decision 2026-10-03: accept every difference a production run reported, for the case
+    # it was seen in. Each record is one run's shape_diff, paths only (tasks 2614 and 2698; the
+    # stream chunk-union shape varies run to run). The allowlist must equal their union exactly:
+    # nothing missing, and nothing extra in any case or at the top level.
     allow = json.loads(ALLOW.read_text())
-    record = json.loads(T2614.read_text())["cases"]
-    assert set(allow) == set(FULL_ALLOW) | {"_comment", "cases"} and "2614" in allow["_comment"]
-    assert set(allow["cases"]) <= set(record)
-    for case, seen in record.items():
+    records = [json.loads(p.read_text())["cases"] for p in RECORDS.values()]
+    assert set(allow) == set(FULL_ALLOW) | {"_comment", "cases"}
+    assert all(task in allow["_comment"] for task in RECORDS)
+    cases = set().union(*records)
+    assert set(allow["cases"]) <= cases
+    for case in cases:
         own = allow["cases"].get(case, {})
         for name, key in _LISTS:
-            assert sorted(set(allow[name]) | set(own.get(name, []))) == sorted(set(seen[key])), (case, name)
+            seen = set().union(*(set(r.get(case, {}).get(key, [])) for r in records))
+            assert sorted(set(allow[name]) | set(own.get(name, []))) == sorted(seen), (case, name)
     for lists in [allow, *allow["cases"].values()]:
         for name, _ in _LISTS:
             paths = lists.get(name, [])
             assert all(isinstance(p, str) and p for p in paths) and paths == sorted(set(paths)), name
 
 
-def test_the_task_2614_record_carries_paths_only():
-    record = json.loads(T2614.read_text())
-    assert set(record) == {"_comment", "cases"} and len(record["cases"]) == 13
+@pytest.mark.parametrize("task", sorted(RECORDS))
+def test_each_run_record_carries_paths_only(task):
+    record = json.loads(RECORDS[task].read_text())
+    assert set(record) == {"_comment", "cases"} and len(record["cases"]) == 13 and task in record["_comment"]
     for seen in record["cases"].values():
         assert set(seen) == {"only_gateway", "only_direct", "type_changed"}
         assert all(isinstance(p, str) and p for v in seen.values() for p in v)
+
+
+# The playbook's own model-selection expressions, rendered by ansible's templar in a fresh
+# interpreter per PYTHONHASHSEED. `intersect` (a set operation) made `first` pick a different model
+# per process; the selection must follow allowed_models order, else agw_models order.
+_RENDER = """
+import json, sys, yaml
+from ansible.parsing.dataloader import DataLoader
+from ansible.template import Templar, trust_as_template
+play = next(p for p in yaml.safe_load(open(sys.argv[1])) if "_model" in p.get("vars", {}))
+v = json.loads(sys.argv[2])
+for k in ("_client", "_client_models", "_model"):
+    v[k] = Templar(loader=DataLoader(), variables=v).template(trust_as_template(play["vars"][k]))
+print(json.dumps(v["_model"]))
+"""
+
+
+def _ansible_python():
+    exe = shutil.which("ansible-playbook")
+    if not exe:
+        pytest.skip("ansible-playbook not installed")
+    first = Path(exe).read_text(errors="replace").splitlines()[0]
+    return first[2:].strip().split()[-1] if first.startswith("#!") else sys.executable
+
+
+_MODELS = [{"name": n} for n in ("a", "b", "c", "d", "e", "f")]
+
+
+@pytest.mark.parametrize("inputs,expected", [
+    ({"agw_clients": ["stray"], "agw_models": _MODELS,
+      "agw_client_policies": {"stray": {"allowed_models": ["e", "undeclared", "c", "a"]}}}, "e"),
+    ({"agw_clients": ["stray"], "agw_models": _MODELS}, "a"),
+])
+def test_the_conformance_model_is_the_same_under_every_hash_seed(inputs, expected):
+    py = _ansible_python()
+    picked = set()
+    for seed in ("1", "2", "3", "4", "5", "6"):
+        r = subprocess.run([py, "-c", _RENDER, str(PLAYBOOK), json.dumps(inputs)], capture_output=True, text=True,
+                           timeout=120, env={**os.environ, "PYTHONHASHSEED": seed})
+        assert r.returncode == 0, r.stderr[-2000:]
+        picked.add(json.loads(r.stdout.strip().splitlines()[-1]))
+    assert picked == {expected}
 
 
 # ── listener TLS options and input checks ─────────────────────────────────────

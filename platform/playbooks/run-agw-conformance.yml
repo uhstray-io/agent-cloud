@@ -66,10 +66,13 @@
          | map(attribute='dir') | first | default('') }}
     _ca: "{{ _deploy_dir }}/certs/step-ca-bundle.crt"
     _client: "{{ agw_conformance_client | default(agw_verify_client | default((agw_clients | default([]) | first) | default(''))) }}"
+    # Order-preserving filter, not `intersect`: intersect is a set operation whose order follows
+    # per-process string hashing, so `first` picked a different model run to run (prod tasks 2614,
+    # 2681, 2698). This keeps allowed_models order, else agw_models order.
     _client_models: >-
       {{ ((agw_client_policies | default({}))[_client] | default({})).allowed_models
          | default(agw_models | default([]) | map(attribute='name') | list)
-         | intersect(agw_models | default([]) | map(attribute='name') | list) }}
+         | select('in', agw_models | default([]) | map(attribute='name') | list) | list }}
     _model: "{{ agw_conformance_model | default(_client_models | first | default('')) }}"
     _direct_model: >-
       {{ (agw_models | default([]) | selectattr('name', 'equalto', _model) | first | default({})).upstream_model | default(_model) }}

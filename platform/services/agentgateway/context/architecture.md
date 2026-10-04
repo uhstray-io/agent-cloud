@@ -222,6 +222,30 @@ Client-visible differences, as task 2614 reported them:
   gateway's lacks. The report gives the paths only; why the gateway's chunks are shaped this way was
   not established from it.
 
+**Accepted shape differences, second record (2026-10-04).** Production run Semaphore task 2698
+(commit `79a8eb76`, after the `/v1/responses` passthrough deploy, task 2696) matched 12 of 13.
+`responses` now matches: the gateway passes the request through to vLLM, and the semantic fields
+agree. Its shape still differs on three paths, all accepted from task 2614: vLLM's output items carry
+`output.[].encrypted_content` and `output.[].phase` that the gateway's lack, and `output.[].status`
+changes type.
+`stream-xhigh` matched semantics but failed shape on `choices.[].delta` appearing only on the
+gateway's side, where task 2614 had it only on vLLM's side. The chunk union of a stream varies by
+run: a chunk whose `delta` is empty or absent on one side flips which union carries the path. Under
+the 2026-10-03 rule the path is accepted in both directions for that case. Client-visible: a
+streaming client may see chunks with an empty or absent `delta` from either target. Task 2698's
+per-case paths are kept as `deployment/tests/conformance-shape-t2698.json`; the test now holds the
+allowlist to exactly the union of both records. Of the 38 `responses` entries accepted from task 2614,
+task 2698 used only those three; the other 35 (among them the request echo and per-turn usage paths) went
+unused. They stay (operator decision); they may be pruned once several consecutive production runs
+show `responses` matching without them.
+
+Also found from these runs: the conformance model was not stable. Task 2614 and 2698 tested one
+served model and 2681 another, because the model was the first item of a set intersection of the
+identity's allowed models and the declared models, and that order follows per-process string
+hashing. The selection now keeps `allowed_models` order (else the declared `agw_models` order), as
+does the deploy's keyed verification probe, and a repository test refuses taking the first item of a
+set-operation result in any playbook or task.
+
 The timing measures below were not part of that report and stay pending.
 
 | Measure | Gateway | Direct | Delta | Run |
@@ -262,4 +286,8 @@ The timing measures below were not part of that report and stay pending.
   through the gateway), 0/13 shape match. Every reported shape difference accepted by the
   operator and committed to `conformance-shape-allow.json` (78 paths, each scoped to the case it was seen in); the
   client-visible ones are listed under "Accepted shape differences". Timing deltas not yet recorded.
+- 2026-10-04 — task 2.2, production conformance run Semaphore task 2698 (commit `79a8eb76`):
+  12/13. `responses` matches after the passthrough deploy; `stream-xhigh` failed only on
+  `choices.[].delta` from the gateway side, now accepted (union of the task 2614 and 2698 records).
+  Model selection made deterministic (see "Accepted shape differences, second record").
 - Task 2 (conformance against the direct upstream): shape decision recorded; timing deltas pending.

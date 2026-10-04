@@ -640,7 +640,9 @@
     # The identity may be restricted to some models (agw_client_policies.<name>.allowed_models):
     # it is checked against, and asks for, only models it may use. The URL is the published
     # port (an unspecified bind is reached on loopback); local-dev, where the target is the
-    # Semaphore container, declares agw_verify_base_url.
+    # Semaphore container, declares agw_verify_base_url. `select('in', ...)` keeps allowed_models
+    # order so `_verify_models[0]` is the same model every run; `intersect` is a set operation
+    # whose order follows per-process hashing (test_no_first_of_set_operation.py).
     - name: "Keyed probes: pick the verifying identity, its models and the gateway URL"
       ansible.builtin.set_fact:
         _verify_client: "{{ agw_verify_client | default((agw_clients | default([]) | first) | default('')) }}"
@@ -648,7 +650,7 @@
           {{ ((agw_client_policies | default({}))[agw_verify_client | default((agw_clients | default([]) | first) | default(''))]
               | default({})).allowed_models
              | default(agw_models | map(attribute='name') | list)
-             | intersect(agw_models | map(attribute='name') | list) }}
+             | select('in', agw_models | map(attribute='name') | list) | list }}
         _verify_url: "{{ _agwp_base }}"
 
     - name: "Keyed probes: the identity may use at least one declared model"
