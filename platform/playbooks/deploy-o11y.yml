@@ -1046,7 +1046,7 @@
           - (_agentgateway_client_dashboard.stdout | from_json).dashboard.templating.list | selectattr('name', 'equalto', 'identity') | list | length == 1
           - (_agentgateway_client_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'First-token latency p50') | list | length == 1
           - (_agentgateway_client_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'First-token latency p95') | list | length == 1
-          - (_agentgateway_client_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Request duration p95') | list | length == 1
+          - (_agentgateway_client_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Request duration p95 (HTTP and model)') | list | length == 1
         fail_msg: "Grafana did not provision the complete Agentgateway client-view dashboard."
       when: not ansible_check_mode
 
