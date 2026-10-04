@@ -89,7 +89,9 @@ hashes every input that must restart a container — the compose files in effect
 `compose.prod.yml` and the probe overlay when set), `.env`, `env/*.env` and everything under
 `config/` — and stores the digest as a label on each container. A deploy whose digest and
 image IDs match the running containers leaves them alone; a changed input, a re-pulled tag,
-or a stopped or missing container recreates the whole project. The script prints
+a stopped or missing container, or a leftover container whose service is no longer
+declared recreates the whole project (`--remove-orphans` removes the leftover). The service set
+comes from the effective config (`compose config --services` over the same files). The script prints
 `DEPLOY_CHANGED=true` or `DEPLOY_CHANGED=false`, and `deploy-o11y.yml` reports the task
 changed only on the first. Operator decision 2026-10-04: a second deploy with identical
 inputs is a true no-op.

@@ -33,13 +33,14 @@ S="$STUB_STATE"
 if [ "$1" = image ] && [ "$2" = inspect ]; then cat "$S/image_now"; exit 0; fi
 if [ "$1" = ps ]; then
   [ "$*" = "ps -a --filter label=com.docker.compose.project.working_dir=$STUB_DIR --format {{.Names}}" ] || exit 0
-  for n in $STUB_NAMES; do [ -d "$S/c/$n" ] && echo "$n"; done; exit 0
+  for d in "$S"/c/*; do [ -d "$d" ] && basename "$d"; done; exit 0
 fi
 if [ "$1" = inspect ]; then
   if [ "$2" = --format ]; then fmt="$3" name="$4"; else fmt="${2#--format=}" name="$3"; fi
   c="$S/c/$name"; [ -d "$c" ] || exit 1
   case "$fmt" in
     *Health*) echo healthy ;;
+    *compose.service*) cat "$c/service" ;;
     *State.Running*) cat "$c/running" ;;
     *Labels*) cat "$c/label" 2>/dev/null || echo "<no value>" ;;
     *Config.Image*) echo cr.example/img:v1 ;;
@@ -52,23 +53,42 @@ STUB
 
   cat > "$T/bin/compose" <<'STUB'
 #!/usr/bin/env bash
+# STUB_NAMES: container=service pairs the provider would create.
 S="$STUB_STATE"
 echo "$*" >> "$S/compose.log"
-case " $* " in *" up "*) ;; *) exit 0 ;; esac
-case " $* " in *" --force-recreate "*) ;; *) exit 0 ;; esac
-prev="" overlay=""
+files=() prev="" overlay=""
 for a in "$@"; do
-  [ "$prev" = -f ] && case "$a" in *inputs-label.yml) overlay="$a" ;; esac
+  if [ "$prev" = -f ]; then
+    case "$a" in *inputs-label.yml) overlay="$a" ;; *) files+=("$a") ;; esac
+  fi
   prev="$a"
 done
+if case " $* " in *" config --services "*) true ;; *) false ;; esac; then
+  [ -f "$S/no_config" ] && exit 1
+  for f in "${files[@]}"; do
+    awk '/^services:/ {s=1; next} s && /^[^ #]/ {s=0} s && /^  [a-z0-9-]+:/ {sub(/^  /,""); sub(/:.*/,""); print}' "$f"
+  done | awk '!seen[$0]++'
+  exit 0
+fi
+case " $* " in *" up "*) ;; *) exit 0 ;; esac
+case " $* " in *" --force-recreate "*) ;; *) exit 0 ;; esac
 [ -n "$overlay" ] || { echo "recreate without the label overlay" >&2; exit 1; }
 label=$(sed -n 's/^ *io\.agent-cloud\.inputs-sha256: "\(.*\)"$/\1/p' "$overlay" | sort -u)
 [ "$(printf '%s\n' "$label" | grep -c .)" -eq 1 ] || { echo "labels differ" >&2; exit 1; }
-for n in $STUB_NAMES; do
+svcs=$(sed -n 's/^  \([a-z0-9-]*\):$/\1/p' "$overlay")
+if case " $* " in *" --remove-orphans "*) true ;; *) false ;; esac; then
+  for d in "$S"/c/*; do
+    [ -d "$d" ] || continue
+    printf '%s\n' "$svcs" | grep -qx "$(cat "$d/service")" || rm -rf "$d"
+  done
+fi
+for pair in $STUB_NAMES; do
+  n="${pair%%=*}" svc="${pair#*=}"
+  printf '%s\n' "$svcs" | grep -qx "$svc" || continue
   mkdir -p "$S/c/$n"; echo true > "$S/c/$n/running"; echo "$label" > "$S/c/$n/label"
-  cp "$S/image_now" "$S/c/$n/image_run"
+  echo "$svc" > "$S/c/$n/service"; cp "$S/image_now" "$S/c/$n/image_run"
 done
-grep -c '^  [a-z]' "$overlay" > "$S/labelled_services"
+printf '%s\n' "$svcs" | grep -c . > "$S/labelled_services"
 echo $(( $(cat "$S/recreates") + 1 )) > "$S/recreates"
 STUB
   chmod +x "$T/bin/engine" "$T/bin/compose"
@@ -76,7 +96,7 @@ STUB
 
 deploy() {
   run env STUB_STATE="$S" STUB_DIR="$D" STUB_NAMES="$NAMES" CONTAINER_ENGINE="$T/bin/engine" \
-    COMPOSE_CMD="$T/bin/compose" LOCAL_MODE="${LOCAL:-}" COMPOSE_OVERLAYS="" bash "$D/deploy.sh" --no-pull
+    COMPOSE_CMD="$T/bin/compose" LOCAL_MODE="${LOCAL:-}" COMPOSE_OVERLAYS="${OVERLAYS:-}" bash "$D/${SCRIPT:-deploy.sh}" --no-pull
 }
 recreates() { cat "$S/recreates"; }
 changed() { printf '%s\n' "${lines[@]}" | grep -x "DEPLOY_CHANGED=$1"; }
@@ -85,7 +105,7 @@ setup() { REPO_ROOT=$(git rev-parse --show-toplevel); }
 
 # ── authentik ────────────────────────────────────────────────────────────────
 a_setup() {
-  svc_setup authentik authentik-postgresql authentik-redis authentik-server authentik-worker
+  svc_setup authentik authentik-postgresql=postgresql authentik-redis=redis authentik-server=server authentik-worker=worker
   mkdir -p "$D/blueprints-active"; printf 'version: 1\n' > "$D/blueprints-active/a.yaml"
 }
 
@@ -137,8 +157,9 @@ a_setup() {
   echo false > "$S/c/authentik-worker/running"
   deploy; changed true; [ "$(recreates)" -eq 2 ]
   rm -rf "$S/c/authentik-redis"
-  NAMES="authentik-postgresql authentik-server authentik-worker" deploy
+  deploy
   changed true; [ "$(recreates)" -eq 3 ]
+  deploy; changed false
 }
 
 @test "authentik: an unreadable input refuses rather than guessing" {
@@ -167,7 +188,7 @@ a_setup() {
 
 # ── o11y ─────────────────────────────────────────────────────────────────────
 o_setup() {
-  svc_setup o11y o11y-node-exporter o11y-prometheus o11y-loki o11y-alloy o11y-tempo o11y-pyroscope o11y-grafana
+  svc_setup o11y o11y-node-exporter=node-exporter o11y-prometheus=prometheus o11y-loki=loki o11y-alloy=alloy o11y-tempo=tempo o11y-pyroscope=pyroscope o11y-grafana=grafana
 }
 
 @test "o11y: first deploy creates, second identical deploy is a no-op" {
@@ -198,6 +219,73 @@ o_setup() {
   deploy; [ "$status" -eq 0 ]
   LOCAL=true deploy; [ "$status" -eq 0 ]; changed true
   LOCAL=true deploy; changed false
+}
+
+# ── synthetic project: overlay-only and removed services ─────────────────────
+# A minimal deploy dir whose deploy.sh is just compose_up_if_changed, so the overlay topology
+# (postiz's compose.search.yml shape) is tested without migrating another service.
+syn_setup() {
+  svc_setup authentik base-c=base extra-c=extra
+  D="$T/platform/services/syn/deployment"; mkdir -p "$D"
+  printf 'services:\n  base:\n    image: img\n' > "$D/compose.yml"
+  printf 'services:\n  extra:\n    image: img\n' > "$D/compose.extra.yml"
+  printf 'K=v\n' > "$D/.env"
+  cat > "$D/deploy.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$0")"
+source ../../../lib/common.sh
+compose_up_if_changed
+SH
+}
+
+@test "overlay-only service is labelled and the second run is a no-op" {
+  syn_setup
+  OVERLAYS=compose.extra.yml deploy; [ "$status" -eq 0 ]; changed true
+  [ "$(cat "$S/labelled_services")" -eq 2 ]
+  [ -d "$S/c/extra-c" ]
+  OVERLAYS=compose.extra.yml deploy; [ "$status" -eq 0 ]; changed false
+  [ "$(recreates)" -eq 1 ]
+}
+
+@test "provider without config --services: every compose file is parsed instead" {
+  syn_setup
+  touch "$S/no_config"
+  OVERLAYS=compose.extra.yml deploy; [ "$status" -eq 0 ]; changed true
+  [ "$(cat "$S/labelled_services")" -eq 2 ]
+  OVERLAYS=compose.extra.yml deploy; changed false
+}
+
+@test "a removed service: one recreate removes its orphan, then a no-op" {
+  syn_setup
+  OVERLAYS=compose.extra.yml deploy; [ "$status" -eq 0 ]
+  deploy; [ "$status" -eq 0 ]; changed true
+  grep -q -- '--remove-orphans' "$S/compose.log"
+  [ ! -d "$S/c/extra-c" ]
+  deploy; changed false
+  [ "$(recreates)" -eq 2 ]
+}
+
+@test "an orphan with current inputs (service gone, files unchanged) recreates once, then a no-op" {
+  syn_setup
+  deploy; [ "$status" -eq 0 ]
+  cp -R "$S/c/base-c" "$S/c/stale-c"; echo gone > "$S/c/stale-c/service"
+  deploy; [ "$status" -eq 0 ]; changed true
+  [ ! -d "$S/c/stale-c" ]
+  deploy; changed false
+}
+
+@test "a directory symlink loop refuses rather than hanging or guessing" {
+  a_setup
+  deploy; [ "$status" -eq 0 ]
+  mkdir "$D/blueprints-active/sub"; ln -s .. "$D/blueprints-active/sub/up"
+  deploy
+  [ "$status" -ne 0 ]
+  grep -q 'Symlink loop' <<< "$output"
+  rm "$D/blueprints-active/sub/up"; ln -s . "$D/blueprints-active/sub/self"
+  deploy
+  [ "$status" -ne 0 ]
+  [ "$(recreates)" -eq 1 ]
 }
 
 # ── playbooks read the line ──────────────────────────────────────────────────

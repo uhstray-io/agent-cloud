@@ -110,8 +110,8 @@ compose() {
 # input that must trigger a recreate is hashed — the compose files in effect, .env,
 # env/*.env, plus each path the caller names (a file, or a directory hashed recursively,
 # following symlinks) — and the digest rides a label on every service, through a generated
-# overlay. The project's running containers are compared against it: a missing, stopped or
-# unlabelled container, a different digest, or a container whose image ID is not the one its
+# overlay. The project's running containers are compared against it: a missing, stopped,
+# orphaned (service no longer declared) or unlabelled container, a different digest, or a container whose image ID is not the one its
 # tag names now (a re-pulled tag) recreates the whole project with --force-recreate. The
 # label, not this run's render, is the record: a run that fails after rendering keeps the old
 # label, so the next run still sees the difference.
@@ -134,11 +134,40 @@ compose_files() {
   for ov in ${COMPOSE_OVERLAYS:-}; do echo "$ov"; done
 }
 
-# compose_services: the top-level service keys of compose.yml (overlays only extend them).
+# compose_services: every service in the EFFECTIVE config — the same file list compose() uses,
+# so a service only an overlay declares (postiz's compose.search.yml) is labelled too. Both
+# providers print one name per line for `config --services` (docker compose v2;
+# podman-compose 1.6.0). If the provider cannot, every file compose_files names is parsed for
+# its top-level service keys instead.
 compose_services() {
-  awk '/^services:[[:space:]]*$/ {s=1; next}
-       s && /^[^[:space:]#]/ {s=0}
-       s && /^  [A-Za-z0-9._-]+:[[:space:]]*$/ {sub(/^  /, ""); sub(/:.*/, ""); print}' compose.yml
+  local out
+  if out=$(compose config --services 2>/dev/null) && [ -n "$out" ]; then
+    printf '%s\n' "$out"; return 0
+  fi
+  local f
+  while IFS= read -r f; do
+    awk '/^services:[[:space:]]*$/ {s=1; next}
+         s && /^[^[:space:]#]/ {s=0}
+         s && /^  [A-Za-z0-9._-]+:[[:space:]]*$/ {sub(/^  /, ""); sub(/:.*/, ""); print}' "$f"
+  done < <(compose_files) | awk '!seen[$0]++'
+}
+
+# _compose_refuse_symlink_loop <dir>: refuse a directory symlink that points at itself or an
+# ancestor. GNU find -L reports such a loop and fails (refused below); BSD find skips it
+# silently, so the inputs would hash one way on Linux and another on a Mac. Checked here so
+# both refuse. A loop through two links, neither pointing at its own ancestor, is left to
+# find: GNU fails on it, BSD skips it — neither hangs.
+_compose_refuse_symlink_loop() {
+  local l tgt dir links
+  links=$(find "$1" -type l) || error "Cannot list ${1}; refusing to guess whether the service's inputs changed."
+  while IFS= read -r l; do
+    [ -n "$l" ] && [ -d "$l" ] || continue
+    tgt=$(cd -P "$l" && pwd) || error "Cannot resolve ${l}; refusing to guess."
+    dir=$(cd -P "$(dirname "$l")" && pwd) || error "Cannot resolve ${l}; refusing to guess."
+    case "${dir}/" in
+      "${tgt}/"*) error "Symlink loop at ${l}; refusing to guess whether the service's inputs changed." ;;
+    esac
+  done <<< "$links"
 }
 
 # compose_inputs_digest [input-path ...]: one sha256 over every input file, by path.
@@ -151,6 +180,7 @@ compose_inputs_digest() {
   for f in env/*.env; do [ -f "$f" ] && files+=("$f"); done
   for p in "$@"; do
     if [ -d "$p" ]; then
+      _compose_refuse_symlink_loop "$p"
       listing=$(find -L "$p" -type f) \
         || error "Cannot list ${p}; refusing to guess whether the service's inputs changed."
       listing=$(printf '%s\n' "$listing" | LC_ALL=C sort)
@@ -168,15 +198,21 @@ compose_inputs_digest() {
   printf '%s' "$combined" | _compose_sha256
 }
 
-# _compose_recreate_reason <digest>: empty when every project container matches.
+# _compose_recreate_reason <digest> <services>: empty when every project container matches.
+# A container whose service is no longer declared is an orphan: it counts as a change, and
+# the recreate's --remove-orphans removes it, so the run after is stable.
 _compose_recreate_reason() {
-  local want="$1" names name count=0 want_count running have ref image_run image_now
+  local want="$1" services="$2" names name svc seen=$'\n' running have ref image_run image_now
   names=$($CONTAINER_ENGINE ps -a --filter "label=com.docker.compose.project.working_dir=$(pwd)" \
     --format '{{.Names}}' 2>/dev/null) || names=""
-  want_count=$(compose_services | grep -c .)
   while IFS= read -r name; do
     [ -n "$name" ] || continue
-    count=$((count + 1))
+    svc=$($CONTAINER_ENGINE inspect --format '{{ index .Config.Labels "com.docker.compose.service" }}' "$name" 2>/dev/null) || svc=""
+    case $'\n'"${services}"$'\n' in
+      *$'\n'"${svc}"$'\n'*) ;;
+      *) echo "orphan container: ${name}"; return 0 ;;
+    esac
+    seen+="${svc}"$'\n'
     running=$($CONTAINER_ENGINE inspect --format '{{.State.Running}}' "$name" 2>/dev/null) || running=""
     if [ "$running" != "true" ]; then echo "container not running: ${name}"; return 0; fi
     have=$($CONTAINER_ENGINE inspect --format "{{ index .Config.Labels \"${COMPOSE_INPUTS_LABEL}\" }}" "$name" 2>/dev/null) || have=""
@@ -186,15 +222,22 @@ _compose_recreate_reason() {
     image_now=$($CONTAINER_ENGINE image inspect --format '{{.Id}}' "$ref" 2>/dev/null) || image_now=""
     if [ -z "$image_now" ] || [ "$image_now" != "$image_run" ]; then echo "image changed: ${name}"; return 0; fi
   done <<< "$names"
-  if [ "$count" -eq 0 ]; then echo "no containers"; return 0; fi
-  if [ "$count" -lt "$want_count" ]; then echo "containers missing (${count} of ${want_count})"; fi
+  while IFS= read -r svc; do
+    [ -n "$svc" ] || continue
+    case "$seen" in
+      *$'\n'"${svc}"$'\n'*) ;;
+      *) echo "no container for service: ${svc}"; return 0 ;;
+    esac
+  done <<< "$services"
 }
 
 compose_up_if_changed() {
   detect_runtime
-  local want reason label_dir svc
+  local want services reason label_dir svc
   want=$(compose_inputs_digest "$@")
-  reason=$(_compose_recreate_reason "$want")
+  services=$(compose_services)
+  [ -n "$services" ] || error "No services found in the compose files; refusing to guess."
+  reason=$(_compose_recreate_reason "$want" "$services")
   if [ -z "$reason" ]; then
     info "Every container matches its inputs and image; leaving the project alone."
     echo "DEPLOY_CHANGED=false"
@@ -207,9 +250,12 @@ compose_up_if_changed() {
     while IFS= read -r svc; do
       [ -n "$svc" ] || continue
       printf '  %s:\n    labels:\n      %s: "%s"\n' "$svc" "$COMPOSE_INPUTS_LABEL" "$want"
-    done < <(compose_services)
+    done <<< "$services"
   } > "${label_dir}/inputs-label.yml"
-  if ! COMPOSE_OVERLAYS="${COMPOSE_OVERLAYS:-} ${label_dir}/inputs-label.yml" compose up -d --force-recreate; then
+  # --remove-orphans: a service dropped from the compose files would otherwise leave its old
+  # labelled container behind and every later run would recreate (podman-compose 1.6.0 and
+  # docker compose v2 both accept it).
+  if ! COMPOSE_OVERLAYS="${COMPOSE_OVERLAYS:-} ${label_dir}/inputs-label.yml" compose up -d --force-recreate --remove-orphans; then
     rm -rf "$label_dir"
     error "compose up --force-recreate failed."
   fi
