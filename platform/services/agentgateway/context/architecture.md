@@ -308,10 +308,20 @@ agentgateway v1.5.0 already does this for chat completions, so no config knob is
   (`crates/llm/src/conversion/responses.rs:102-111`).
 - The budget is settled from those recorded figures when the request's log completes
   (`crates/agentgateway/src/telemetry/log.rs:1279-1280`), i.e. after the stream ends.
-- Gap: a client that sends its own `stream_options` without `include_usage: true` is left as sent
-  (the injection only runs when `stream_options` is absent), and that stream is charged nothing.
-  v1.5.0 has no override for it; the request bucket still applies.
+- That injection runs only when `stream_options` is absent. Measured on the v1.5.0 image
+  2026-10-04 against a recording upstream: a client sending `{"include_usage": false}` streamed
+  with no usage chunk, so it was charged nothing; `stream_options: {}` is refused by the gateway
+  (400, missing field `include_usage`). Closed in `config.yaml.j2`: every model carries a CEL body
+  `transformation` (`crates/agentgateway/src/types/local.rs:807-809`, applied by
+  `crates/agentgateway/src/llm/policy/mod.rs:799-835`) that merges `include_usage: true` into a
+  streamed request's `stream_options`, keeping the client's other keys (`celx` `merge`, later key
+  wins). A non-streamed request keeps what it sent. Measured on the same image: `{}`,
+  `{"include_usage": false, "continuous_usage_stats": true}` and `null` all reach the upstream with
+  `include_usage: true`. The visible change for a client is the extra usage chunk it opted out of.
+  Not measured: a streamed Responses request carrying its own `stream_options` also gets
+  `include_usage` merged in, which vLLM may or may not accept.
 
-The conformance `stream-xhigh` case sends no `stream_options` and fails when the gateway's stream
-carries no usage chunk; the report shows `stream_usage` for both targets. vLLM is not required to
+The conformance `stream-xhigh` case sends no `stream_options`, and `stream-options-without-usage`
+sends `{"include_usage": false}` (vLLM directly gets `true`, the request the gateway should forward).
+Either fails when the gateway's stream carries no usage chunk; the report shows `stream_usage` for both targets. vLLM is not required to
 send one, and the flag is not part of the semantic comparison.
