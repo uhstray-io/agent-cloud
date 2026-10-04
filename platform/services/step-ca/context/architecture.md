@@ -66,11 +66,23 @@ site-config only.
   `Clean Deploy step-ca (Dev)` run from `dev`, because `main`'s playbooks lack these
   guards.
 
-The host firewall is converged (default deny, SSH from the declared sources only; task
-group 3), with its reboot and LAN reachability checks still to run. Still to come in the
-same change: cross-host issuance
-with the key generated on the consumer and every name declared (4), the consumers' leaves
-(5), renewal and expiry alerting (6), and backup and restore of the CA material (7).
+Status of the rest of the change, as its `tasks.md` records it (2026-10-03):
+
+- **Firewall (group 3):** applied on the CA host (3.1 done; `fw-harden` and
+  `systemd-enablement` ran, 3.2/3.3 partial). Still to run: Snapshot Firewall, the reboot,
+  `service-validate`, and the LAN reachability gate (3.4).
+- **Cross-host issuance (group 4):** proven in production — the throwaway leaf of 4.7 and
+  the edge leaves of 5.2 were each issued with the key made on the consumer and nothing left
+  in the CA container; the declared-name guard (4.2) and root distribution (4.3) are done.
+  Open: the wildcard path through `deploy-caddy.yml` (4.1/4.6) and the 4.8 gate.
+- **Consumer leaves (group 5):** `agw-server`, `agw-verifier` and `caddy` issued and inspected
+  (5.2 partial); `bench` waits on its VM.
+- **Renewal and alerting (group 6):** `renew-internal-certs.yml` runs in production as
+  `Renew Internal Certs (Dev)` on a daily schedule (6.1/6.2 partial: nothing yet re-issued by a
+  real renewal), and the expiry alert rules are deployed (6.4 done). Open: the rotation drill
+  (6.3) and the alert drill (6.5).
+- **Backup and restore (group 7):** `backup-step-ca-to-site-config.yml` and its template are
+  code (7.1/7.2); no backup run and no restore drill are recorded.
 
 Recorded risk: the step-ca 0.30.2 entrypoint keeps the key password in the volume beside
 the keys and prints it to the first boot's container log (the change's design,

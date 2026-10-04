@@ -50,6 +50,15 @@ Caddy can solve ACME DNS-01 against the internal zone.
 - **Records are code.** Edit inventory vars (`dns_records`, `dns_wildcard_target`,
   `dns_zone`) and re-run the deploy — never hand-edit a running zone. The one
   exception is the Phase 2 dynamic challenge sub-zone (transient TXT records).
+- **Gateway leaf records are derived, not declared** (inference-gateway-agentgateway task 7.2).
+  `deploy-dns.yml` builds `_dns_agw_records`: for every `agentgateway_svc` host with
+  `agw_listener_tls`, one A record per SAN of its server leaf (`agw_server_leaf`, default
+  `agw-server`, from `internal_leaves`) that falls inside `dns_zone`, pointing at the
+  published bind (`agw_bind`, or the host's address when it binds every interface). The
+  deploy refuses a record whose value is not an IPv4 address, a loopback target outside
+  local-dev, or a name `dns_records` also declares. Probing hosts switch from their interim
+  `/etc/hosts` line to these records only when `agw_internal_dns_authoritative` is declared
+  (`tasks/agw-probe-resolution.yml`).
 - **No real zone in the public repo.** `dns_zone` defaults to the RFC 6761
   reserved `agent-cloud.test` locally; the real internal zone lives in the gitignored
   working inventory / site-config.

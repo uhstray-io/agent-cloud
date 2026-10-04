@@ -114,6 +114,9 @@
       (variable `model_alias`, link field to dgx-spark `results/`)
       2026-10-02 rescope: OPEN — no `inference-*.json` dashboard exists; the source list is
       dgx-spark `results/vllm-metric-names-506e66caa3ef.txt`.
+      2026-10-03: CODE LANDED (PR #380) — the three `inference-*.json` dashboards are under
+      `platform/services/o11y/deployment/config/grafana/dashboards/`, with the metric-name list
+      vendored as a test fixture. Rendering waits on an enabled Deploy o11y and the 3.5 gate.
 - [ ] 3.2 `config/grafana/provisioning/alerting/inference.yml`: groups
       `inference-failing`, `telemetry-missing`, `memory-thermal`, `benchmark-gate`
       (last one with a single placeholder rule marked disabled until the manifest metric
@@ -192,6 +195,10 @@
       2026-10-02: CODE — `check-o11y-liveness.yml` (Dev-bound `Check o11y Liveness (Dev)`,
       `*/10` schedule) and `provision-o11y-watcher-token.yml` mint path landed with fake
       Grafana/Discord tests. Still OPEN: mint run, first scheduled run and the drill.
+      2026-10-03: `o11y-fault-drill.yml`, which 2.5, 3.5 and this task name as their drill,
+      does not exist in `platform/playbooks/`. The drills that exist are
+      `drill-o11y-active-alert-delivery.yml`, `drill-o11y-alert-canary.yml` and
+      `drill-o11y-unreachable.yml`; none implements the `drill=exporter|probe|grafana` modes.
       2026-10-03: the code is PR #410 (merged). Runtime pending: inventory values, the watcher-token provisioning run and the first scheduled run
 
 ## 4. Retention, thresholds, records
