@@ -146,9 +146,44 @@ is accepted to introduce: `gateway_may_add`, `gateway_may_drop` and `gateway_may
 list of paths written exactly as `shape_diff` prints them. All three lists must be present, though
 each may be empty. A file that lacks one, carries any other key, or has a non-string `_comment` is
 refused. An allowlisted difference is still
-reported, under `shape_allowed`. Only the rest (`shape_unaccepted`) fails a case. The committed
-list is empty. Adding a path is the operator's decision after reading a run's diff; record it and
-its reason in this section when making it.
+reported, under `shape_allowed`. Only the rest (`shape_unaccepted`) fails a case. The lists are
+global: a path accepted for one case is accepted for every case. Adding a path is the operator's
+decision after reading a run's diff; record it and its reason in this section when making it.
+
+**Accepted shape differences (operator decision, 2026-10-03).** The second production run, Semaphore
+task 2614 (commit `1f8057aa`), matched semantics in all 13 cases and shape in none. The operator
+accepted every difference it reported: the allowlist now carries the union over all cases, 5 paths in
+`gateway_may_add`, 53 in `gateway_may_drop` and 1 in `gateway_may_retype`. They are accepted, not
+hidden: each is still listed under `shape_allowed` on every run. The client-visible ones below are
+candidates for passthrough upstream in agentgateway; a later release that passes a field through
+makes its entry redundant, not wrong.
+
+Client-visible differences, as task 2614 reported them:
+- **Cached-token counts.** Chat completions through the gateway lack `usage.prompt_tokens_details`,
+  so a client reading cached-prompt token counts gets none. `service_tier` is also dropped.
+- **Responses reasoning continuity.** On `/v1/responses` the gateway's output items lack
+  `output.[].encrypted_content`, `output.[].summary` and `output.[].phase`. A client that carries
+  reasoning state between turns, or shows reasoning summaries, loses them through the gateway.
+- **Responses request echo.** The gateway's Responses body lacks the fields vLLM echoes back from
+  the request and its own bookkeeping: `instructions`, `tools`, `tool_choice`, `reasoning.*`
+  (`context`, `effort`, `generate_summary`, `mode`, `summary`), `metadata`, `temperature`, `top_p`,
+  `text`, `truncation`, `previous_response_id`, `user` and others, plus the per-turn usage details
+  (`usage.*_per_turn`, `usage.output_tokens_details.tool_output_tokens`).
+- **Responses item status retyped.** `output.[].status` is `null` or a string from vLLM and always a
+  string through the gateway.
+- **Models list.** `/v1/models` through the gateway lacks `data.[].max_model_len`, so a client that
+  reads the context length from the models list loses it; `data.[].parent`, `data.[].root` and
+  `data.[].permission.[].*` are also dropped.
+- **Tool-call message content.** For the tool-call case the gateway's body lacks
+  `choices.[].message.content` that vLLM's carries.
+- **Stream chunks.** Over the stream's chunks, the gateway's union has a top-level `choices` path
+  and `usage.prompt_tokens`, `usage.completion_tokens`,
+  `usage.completion_tokens_details.reasoning_tokens` and `usage.total_tokens` that vLLM's does not:
+  the gateway emits a usage chunk vLLM does not. vLLM's union has `choices.[].delta`, which the
+  gateway's lacks. The report gives the paths only; why the gateway's chunks are shaped this way was
+  not established from it.
+
+The timing measures below were not part of that report and stay pending.
 
 | Measure | Gateway | Direct | Delta | Run |
 |---|---|---|---|---|
@@ -183,4 +218,8 @@ its reason in this section when making it.
   `vllm_api_key`; redeploy (task 616) rendered `params.apiKey: $VLLM_API_KEY` with no
   plaintext in config.yaml; completions succeed on :4000 and through the UI origin; no-key
   is still 401. This is the exact prod shape with vLLM's key.
-- Task 2 (conformance against the direct upstream): pending.
+- 2026-10-03 — task 2.2, production conformance run Semaphore task 2614 (commit `1f8057aa`):
+  13/13 cases semantic match, 0/13 shape match. Every reported shape difference accepted by the
+  operator and committed to `conformance-shape-allow.json` (5 add, 53 drop, 1 retype); the
+  client-visible ones are listed under "Accepted shape differences". Timing deltas not yet recorded.
+- Task 2 (conformance against the direct upstream): shape decision recorded; timing deltas pending.

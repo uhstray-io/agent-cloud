@@ -637,10 +637,28 @@ def test_a_complete_empty_allowlist_with_a_comment_is_accepted(tmp_path):
     assert r.returncode == 0, r.stderr
 
 
-def test_the_committed_shape_allowlist_is_empty():
-    # Accepting a difference is the operator's decision after reading a run's shape_diff.
+def test_the_committed_shape_allowlist_passes_the_scripts_own_refusal_rules(tmp_path):
+    # The file the playbook hands to the diff must be one conformance.sh accepts.
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "results.jsonl").write_text("")
+    r = subprocess.run(["bash", str(SCRIPT), "diff", str(out / "results.jsonl"), "", str(ALLOW)],
+                       capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, r.stderr
+
+
+def test_the_committed_shape_allowlist_is_sorted_unique_strings_with_the_task_2614_decision():
+    # Accepting a difference is the operator's decision after reading a run's shape_diff
+    # (2026-10-03: every difference in production run task 2614, recorded in architecture.md).
     allow = json.loads(ALLOW.read_text())
-    assert {k: v for k, v in allow.items() if k != "_comment"} == FULL_ALLOW
+    assert set(allow) == set(FULL_ALLOW) | {"_comment"}
+    assert "2614" in allow["_comment"]
+    for name in FULL_ALLOW:
+        paths = allow[name]
+        assert all(isinstance(p, str) and p for p in paths), name
+        assert paths == sorted(set(paths)), name
+    assert "usage.prompt_tokens_details" in allow["gateway_may_drop"]
+    assert allow["gateway_may_retype"] == ["output.[].status"]
 
 
 # ── listener TLS options and input checks ─────────────────────────────────────
