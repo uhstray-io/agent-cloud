@@ -102,12 +102,21 @@ Retirement date: _not yet set_ — `legacy_shared_expires` is the route-switch d
 ## Conformance against direct vLLM (tasks 2.1, 2.2)
 
 **Results.** The first production run (Semaphore task 2592, sent as an enrolled identity for
-the served model, as reported by the operator) matched 0 of 13 cases. Every case returned
-200 on both sides with the same semantic fields, but a different body shape. That run's report
+the served model, as reported by the operator) matched 0 of 13 cases. As reported, every case
+returned 200 on both sides with the same semantic fields but a different body shape (that run's
+output was not kept, so this is not re-checked; the next run disproves it for `responses`). That run's report
 carried only a hash of each shape, so it could not say which fields differed, and no decision
 could be made from it. The comparison now names the differing key paths (`shape_diff`, below). The
-second production run, task 2614, named them; the accepted differences are recorded below. The
-timing deltas are still to be recorded.
+second production run, task 2614, named them; the accepted differences are recorded below. That
+run matched semantics in 12 of 13 cases, not 13: in `responses` the gateway's answer has no
+`reasoning` output item where vLLM's has one. The third run, task 2681 (commit `80c27733`, with the
+allowlist), matched 12/13; `responses` still differs on semantics only, its shape accepted: the
+reasoning item, and the `model` field (the gateway reports the served name, vLLM its own id).
+Cause, read from agentgateway v1.5.0's source: with only the `completions` format declared, a
+`/v1/responses` request is translated to chat completions and the answer rebuilt
+(`crates/llm/src/conversion/openai_compat.rs`, `to_responses::translate_response_internal`),
+which emits message text and tool calls only and names the requested model. The timing deltas
+are still to be recorded.
 
 How the comparison is made: the Semaphore template `Run agentgateway Conformance`
 (`platform/playbooks/run-agw-conformance.yml`) runs `deployment/tests/conformance.sh` on the gateway
@@ -154,7 +163,9 @@ plus its own entry, so a path accepted for the stream does not excuse it in a pl
 decision after reading a run's diff; record it and its reason in this section when making it.
 
 **Accepted shape differences (operator decision, 2026-10-03).** The second production run, Semaphore
-task 2614 (commit `1f8057aa`), matched semantics in all 13 cases and shape in none. The operator
+task 2614 (commit `1f8057aa`), matched semantics in 12 of 13 cases (`responses` differs, see
+Results) and shape in none. An earlier version of this line said all 13; the operator's
+decision was made on that wrong summary (`docs/MISTAKES.md` 1.16). The operator
 accepted every difference it reported, for the case it was seen in. The run's per-case paths are kept
 as `deployment/tests/conformance-shape-t2614.json` (paths only), and a test holds the allowlist to
 exactly that record. No path appeared in every case, so the top-level lists stay empty and all 78
@@ -224,7 +235,8 @@ The timing measures below were not part of that report and stay pending.
   plaintext in config.yaml; completions succeed on :4000 and through the UI origin; no-key
   is still 401. This is the exact prod shape with vLLM's key.
 - 2026-10-03 — task 2.2, production conformance run Semaphore task 2614 (commit `1f8057aa`):
-  13/13 cases semantic match, 0/13 shape match. Every reported shape difference accepted by the
+  12/13 cases semantic match (corrected from 13/13: `responses` lacks the reasoning output item
+  through the gateway), 0/13 shape match. Every reported shape difference accepted by the
   operator and committed to `conformance-shape-allow.json` (78 paths, each scoped to the case it was seen in); the
   client-visible ones are listed under "Accepted shape differences". Timing deltas not yet recorded.
 - Task 2 (conformance against the direct upstream): shape decision recorded; timing deltas pending.
