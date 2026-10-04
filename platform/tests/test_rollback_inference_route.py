@@ -636,14 +636,16 @@ TEMPLATE = playbook_yaml.REPO / "platform/services/agentgateway/deployment/templ
 
 def _render(tmp, dest, clients, **hv):
     """Render the repo's real config.yaml.j2, as the deploy does."""
-    secrets = {"vllm_api_key": "synthetic-vllm-x", **{f"client_{c}": f"synthetic-k-{c}-{v}" for c, v in clients.items()}}
+    secrets = {"vllm_api_key": "synthetic-vllm-x",
+               **{f"client_{c}": f"synthetic-k-{c}-{v}" for c, v in clients.items()}}
     vars_ = {"agw_clients": list(clients), "agw_models": [{"name": "m"}], "agw_upstream_base_url": "http://u.invalid/v1",
              "secrets": secrets, **hv}
     (tmp / "rv.json").write_text(json.dumps(vars_))
     (tmp / "render.yml").write_text(yaml.safe_dump([{"hosts": "localhost", "gather_facts": False, "tasks": [
         {"ansible.builtin.template": {"src": str(TEMPLATE), "dest": str(dest), "mode": "0644"}}]}]))
     r = harness_sandbox.run(["ansible-playbook", "-i", "localhost,", "-c", "local", str(tmp / "render.yml"),
-                             "-e", f"@{tmp / 'rv.json'}"], tmp, cwd=playbook_yaml.REPO, env=harness_sandbox.env_for(tmp))
+                             "-e", f"@{tmp / 'rv.json'}"],
+                            tmp, cwd=playbook_yaml.REPO, env=harness_sandbox.env_for(tmp))
     assert r.returncode == 0, r.stdout + r.stderr
 
 
