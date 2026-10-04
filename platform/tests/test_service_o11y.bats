@@ -987,71 +987,58 @@ env.filters['b64decode'] = lambda value: base64.b64decode(value).decode()
 env.filters['from_yaml'] = yaml.safe_load
 env.filters['flatten'] = lambda value: [item for sub in value for item in sub]
 compile_value = lambda value: env.compile_expression(value.removeprefix('{{').removesuffix('}}').strip())
-select_rules = compile_value(rule_check['vars']['_o11y_rules'])
-rules_for_active_routing = compile_value(rule_check['vars']['_o11y_rules_for_active_routing'])
-provisioned_doc = compile_value(rule_check['vars']['_o11y_provisioned'])
-expected_uids = compile_value(rule_check['vars']['_o11y_expected_uids'])
-withdrawn_uids = compile_value(rule_check['vars']['_o11y_withdrawn_uids'])
+V = {name: compile_value(expr) for name, expr in rule_check['vars'].items()}
 checks = [env.compile_expression(expr) for expr in rule_check['ansible.builtin.assert']['that']]
 slurp = next(task for task in tasks if task['name'] == 'Read the provisioned alert rules file')
 assert tasks.index(slurp) < tasks.index(rule_check)
 assert slurp['register'] == '_provisioned_rules_file' and 'no_log' not in slurp
 assert slurp['ansible.builtin.slurp']['src'].endswith('/config/grafana/provisioning/alerting/observability.yml')
-LEGACY_FILE = {'groups': [{'rules': [{'uid': 'o11y_service_down'}, {'uid': 'o11y_receiver_root_disk_low'}]}]}
-settings = {
-    'group_by': ['service', 'environment', 'cluster', 'alertname'],
-    'group_wait': '30s', 'group_interval': '5m', 'repeat_interval': '4h',
-}
-healthy = {'uid': 'o11y_service_down', 'isPaused': False, 'notification_settings': settings}
-healthy_disk = {'uid': 'o11y_receiver_root_disk_low', 'isPaused': False, 'notification_settings': settings}
-paused_disk = {'uid': 'o11y_receiver_root_disk_low', 'isPaused': True}
-wrong_group = {'uid': 'o11y_service_down', 'isPaused': False,
-               'notification_settings': settings | {'group_by': ['instance']}}
-def verify_rules(rules, local_mode, expected, provisioned=LEGACY_FILE):
-    active = {'stdout': json.dumps(rules)}
-    scoped = select_rules(_active_rules=active)
-    active_routing = rules_for_active_routing(_o11y_rules=scoped, local_mode=local_mode)
-    doc = provisioned_doc(_provisioned_rules_file={'content': base64.b64encode(yaml.safe_dump(provisioned).encode()).decode()})
-    names = dict(_o11y_rules=scoped, _o11y_rules_for_active_routing=active_routing, _active_rules=active,
-                 _o11y_expected_uids=expected_uids(_o11y_provisioned=doc),
-                 _o11y_withdrawn_uids=withdrawn_uids(_o11y_provisioned=doc))
-    assert all(bool(check(**names)) for check in checks) is expected
+env.tests['none'] = lambda value: value is None
+def verify_rules(rules, provisioned):
+    names = {'_active_rules': {'stdout': json.dumps(rules)},
+             '_provisioned_rules_file': {'content': base64.b64encode(yaml.safe_dump(provisioned).encode()).decode()}}
+    # Resolve the vars in dependency order, as Ansible does lazily.
+    for name in ['_o11y_provisioned', '_o11y_expected_rules', '_o11y_expected_uids',
+                 '_o11y_expected_active_uids', '_o11y_expected_routed_uids', '_o11y_withdrawn_uids', '_o11y_rules', '_o11y_routed_rules']:
+        names[name] = V[name](**names)
+    return all(bool(check(**names)) for check in checks)
 
-for rules, expected in [
-    ([healthy, healthy_disk], True),
-    ([healthy, healthy_disk, {'uid': 'unrelated', 'isPaused': True}], True),
-    ([healthy, healthy_disk, {'uid': 'o11y_missing_caddy', 'isPaused': True}], False),
-    ([healthy], False),
-    ([{'uid': 'unrelated', 'isPaused': False}], False),
-    ([{'uid': 'o11y_service_down'}, healthy_disk], False),
-    ([healthy, {'uid': 'o11y_receiver_root_disk_low', 'isPaused': False}], False),
-    ([wrong_group], False),
-]:
-    verify_rules(rules, local_mode=False, expected=expected)
-
-# Exercise actual rendered local and production rule sets. Only the intentionally
-# paused local disk rule is excluded from active/routing checks.
-# The live set must equal the provisioned file's o11y_ set, and no withdrawn uid may
-# survive, whatever its prefix.
+# Exercise the actual rendered rule sets, including the inference groups (uids
+# inference_*): the live set must mirror the provisioned file -- every uid, paused and
+# routed as rendered -- and no withdrawn uid may survive, whatever its prefix.
 render_alerts = env.from_string(alert_template)
+all_rules = lambda doc: [rule for group in doc['groups'] for rule in group['rules']]
 local_doc = yaml.safe_load(render_alerts.render(local_mode=True, o11y_alerts_enabled=True))
 prod_doc = yaml.safe_load(render_alerts.render(local_mode=False, o11y_alerts_enabled=True))
-all_rules = lambda doc: [rule for group in doc['groups'] for rule in group['rules']]
-local_rules, prod_rules = all_rules(local_doc), all_rules(prod_doc)
-assert len(prod_rules) > 2, 'the rendered file carries more than the two legacy rules'
+inf_doc = yaml.safe_load(render_alerts.render(local_mode=False, o11y_alerts_enabled=True,
+                                              dgx_spark_scrape_enabled=True, o11y_inference_probe_enabled=True))
+local_rules, prod_rules, inf_rules = all_rules(local_doc), all_rules(prod_doc), all_rules(inf_doc)
+inference = [rule for rule in inf_rules if rule['uid'].startswith('inference_')]
+assert len(inference) == 8, [rule['uid'] for rule in inference]
 assert next(rule for rule in local_rules if rule['uid'] == 'o11y_receiver_root_disk_low')['isPaused'] is True
-assert next(rule for rule in prod_rules if rule['uid'] == 'o11y_receiver_root_disk_low')['isPaused'] is False
-verify_rules(local_rules, local_mode=True, expected=True, provisioned=local_doc)
-verify_rules(prod_rules, local_mode=False, expected=True, provisioned=prod_doc)
-verify_rules(prod_rules[:-1], local_mode=False, expected=False, provisioned=prod_doc)  # a rendered rule is missing
-verify_rules(prod_rules + [dict(prod_rules[0], uid='o11y_stray')], local_mode=False, expected=False,
-             provisioned=prod_doc)  # a rule the file does not carry
+assert verify_rules(local_rules, local_doc)
+assert verify_rules(prod_rules, prod_doc)
+assert verify_rules(inf_rules, inf_doc)
+assert verify_rules(inf_rules + [{'uid': 'unrelated', 'isPaused': True}], inf_doc)
+for rule in inference:  # each inference rule missing live fails the readback
+    assert not verify_rules([r for r in inf_rules if r is not rule], inf_doc), rule['uid']
+routed = next(rule for rule in inference if rule.get('notification_settings'))
+assert not verify_rules([dict(r, isPaused=True) if r is routed else r for r in inf_rules], inf_doc)
+assert not verify_rules([{k: v for k, v in r.items() if k != 'notification_settings'} if r is routed else r
+                         for r in inf_rules], inf_doc)
+assert not verify_rules([dict(r, notification_settings=r['notification_settings'] | {'group_by': ['instance']})
+                         if r is routed else r for r in inf_rules], inf_doc)
+assert not verify_rules(prod_rules[:-1], prod_doc)  # a rendered rule is missing
+assert not verify_rules(prod_rules + [dict(prod_rules[0], uid='o11y_stray')], prod_doc)
+assert not verify_rules(prod_rules + [dict(prod_rules[0], uid='inference_stray')], prod_doc)
 withdrawn = prod_doc['deleteRules'][0]['uid']
-verify_rules(prod_rules + [{'uid': withdrawn, 'isPaused': True}], local_mode=False, expected=False,
-             provisioned=prod_doc)  # a withdrawn rule survived
-local_service_down = next(rule for rule in local_rules if rule['uid'] == 'o11y_service_down')
-local_service_down['isPaused'] = True
-verify_rules(local_rules, local_mode=True, expected=False, provisioned=local_doc)
+assert not verify_rules(prod_rules + [{'uid': withdrawn, 'isPaused': True}], prod_doc)
+assert not verify_rules([{k: v for k, v in r.items() if k != 'isPaused'} for r in prod_rules], prod_doc)
+pause_down = lambda rules: [dict(r, isPaused=True) if r['uid'] == 'o11y_service_down' else r for r in rules]
+assert not verify_rules(pause_down(local_rules), local_doc)
+paused_doc = {**local_doc, 'groups': [dict(g, rules=pause_down(g['rules'])) for g in local_doc['groups']]}
+assert not verify_rules(pause_down(local_rules), paused_doc)  # file and live agree, service_down still required active
+assert not verify_rules([], {'groups': []})
 contact = next(task for task in tasks if task['name'] == 'Read live Grafana contact points without displaying webhook settings')
 count = next(task for task in tasks if task['name'] == 'Count only the intended contact point without its settings')
 assert contact['no_log'] is True and count['no_log'] is True
@@ -1064,6 +1051,46 @@ for contacts, expected in [
 ]:
     selected = count_contacts(_active_contacts={'stdout': json.dumps(contacts)})
     assert bool(contact_check(_o11y_contact_count=selected)) is expected
+PY
+}
+
+@test "o11y: real deploy verifies every provisioned dashboard is live" {
+  python3 - "$REPO_ROOT/platform/playbooks/deploy-o11y.yml" "$DEPLOY_DIR/config/grafana/dashboards" <<'PY'
+import base64
+import glob
+import json
+import sys
+
+import yaml
+from jinja2 import Environment, StrictUndefined
+
+plays = yaml.safe_load(open(sys.argv[1], encoding='utf-8'))
+verify = next(play for play in plays if play.get('name') == 'Phase 3: Verify o11y')
+block = next(task for task in verify['tasks'] if task['name'] == 'Verify every provisioned dashboard is live')
+assert block['when'] == 'not ansible_check_mode'
+tasks = block['block']
+find = tasks[0]['ansible.builtin.find']
+assert find['paths'].endswith('/config/grafana/dashboards') and find['patterns'] == '*.json'
+check = tasks[-1]
+env = Environment(undefined=StrictUndefined)
+env.filters['from_json'] = json.loads
+env.filters['b64decode'] = lambda value: base64.b64decode(value).decode()
+env.filters['difference'] = lambda a, b: [x for x in a if x not in b]
+expected = env.compile_expression(check['vars']['_dashboard_expected_uids'].strip().removeprefix('{{').removesuffix('}}').strip())
+checks = [env.compile_expression(expr) for expr in check['ansible.builtin.assert']['that']]
+files = sorted(glob.glob(sys.argv[2] + '/*.json'))
+uids = [json.load(open(f))['uid'] for f in files]
+assert {'inference-fleet-health', 'inference-latency-capacity', 'inference-placement-comparison'} <= set(uids)
+docs = {'results': [{'content': base64.b64encode(open(f, 'rb').read()).decode()} for f in files]}
+def ok(live):
+    names = {'_dashboard_docs': docs, '_dashboard_files': {'files': [{'path': f} for f in files]},
+             '_live_dashboards': {'stdout': json.dumps([{'uid': u} for u in live])}}
+    names['_dashboard_expected_uids'] = expected(**names)
+    return all(bool(c(**names)) for c in checks)
+assert ok(uids)
+assert ok(uids + ['other'])
+for uid in uids:
+    assert not ok([u for u in uids if u != uid]), uid
 PY
 }
 
