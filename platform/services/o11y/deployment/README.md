@@ -305,7 +305,12 @@ Every run requires `expected_repository_sha` (clean reviewed controller checkout
 the private inventory map `o11y_fault_drill_exporters: {<node>: {host: <inventory host>,
 unit: <exporter systemd unit>}}`. `exporter` and `probe` refuse a paused rule (alerts must
 be enabled). A dry run (`--check`) runs every refusal and read and induces nothing. After an
-interrupted run, launch the same mode with `drill_restore_only=true`.
+interrupted run, launch the same mode with `drill_restore_only=true`. A host that becomes unreachable
+mid-drill does not skip the restore (the fault section sets `ignore_unreachable`; Ansible
+skips `always:` for unreachable hosts); the run then fails naming that recovery. The
+probe environment file holds the inference key, so every task touching it sets
+`diff: false` and `no_log`. The probe restore requires a success sample for the deployed
+model newer than the restore, and the resolved check covers every drill model name.
 
 ### Fresh-volume render proof (task 3.5)
 

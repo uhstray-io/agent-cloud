@@ -39,6 +39,12 @@
 #
 # Interrupted run: re-run the same mode with `drill_restore_only=true`; it performs only
 # the restore steps and the resolved proof. Re-running a restore is a no-op.
+#
+# Lost connection: the fault section sets `ignore_unreachable`, because Ansible does not
+# run `always:` for an unreachable host (docs: playbooks_blocks). The restore therefore
+# runs anyway, and its last step fails the run, naming `drill_restore_only=true`, if any
+# restore could not reach its host. The probe restore is proven by a fresh successful
+# sample for the deployed model, not by the oneshot unit exiting 0.
 
 - name: Pre-flight
   ansible.builtin.import_playbook: preflight-target-group.yml
@@ -107,6 +113,7 @@
     # probe
     _probe_env: "{{ _deploy_dir }}/probe/inference-probe.env"
     _probe_env_backup: "{{ _deploy_dir }}/probe/inference-probe.env.drill-backup"
+    _drill_model_prefix: o11y-drill-absent-model-
     _probe_health_url: "{{ o11y_inference_probe_url | default('') | regex_replace('/v1$', '') }}/health"
     # grafana
     _grafana_hold_minutes: "{{ drill_grafana_hold_minutes | default(15) | int }}"
@@ -140,6 +147,7 @@
         that:
           - o11y_inference_probe_enabled | default(false) | bool
           - o11y_inference_probe_url | default('') is match('^https://[A-Za-z0-9.-]+(:[0-9]+)?/v1$')
+          - o11y_inference_probe_model | default('') is match('^[A-Za-z0-9._:/@-]+$')
         fail_msg: "The probe drill needs the deployed inference probe (o11y_inference_probe_enabled and _url). No fault was induced."
       when: drill == 'probe'
 
@@ -175,7 +183,7 @@
 
     - name: Name this run's unservable probe model
       ansible.builtin.command:
-        argv: [python3, -c, "import uuid; print('o11y-drill-absent-model-' + uuid.uuid4().hex[:12])"]
+        argv: [python3, -c, "import uuid; print('{{ _drill_model_prefix }}' + uuid.uuid4().hex[:12])"]
       register: _drill_model
       delegate_to: localhost
       changed_when: false
@@ -194,8 +202,18 @@
     # ---- The fault, its proof, and the restore -------------------------------------
     # The whole section is skipped under --check (inherited by `always:`), so a dry run
     # cannot stop, rewrite or start anything.
+    #
+    # ignore_unreachable: "Errors caused by invalid task definitions and unreachable
+    # hosts do not trigger the rescue or always sections of a block" (Ansible docs,
+    # playbooks_blocks, "Handling errors with blocks"). A connection lost after the
+    # fault would otherwise skip the restore and leave the exporter, probe or Grafana
+    # broken. With it, an unreachable task records `unreachable` instead of removing
+    # the host, the next proof fails on it, and `always:` still runs. Every restore task
+    # registers its result; the gate after the block fails the run, naming the manual
+    # recovery, if any restore could not reach its host.
     - name: Induce, prove, restore
       when: not ansible_check_mode
+      ignore_unreachable: true
       block:
         # exporter -----------------------------------------------------------------
         - name: Stop the declared DGX node exporter
@@ -204,6 +222,13 @@
             state: stopped
           delegate_to: "{{ _exporter.host }}"
           become: true
+          register: _exporter_stopped
+          when: drill == 'exporter' and not _restore_only
+
+        - name: Require the exporter host reached
+          ansible.builtin.assert:
+            that: _exporter_stopped is not unreachable
+            fail_msg: "The exporter host was unreachable; restoring."
           when: drill == 'exporter' and not _restore_only
 
         - name: Wait for Prometheus to read the stopped exporter as down
@@ -246,6 +271,9 @@
           when: drill == 'exporter' and not _restore_only
 
         # probe --------------------------------------------------------------------
+        # The probe environment file holds the inference API key (rendered from
+        # OpenBao): every task touching it is a credential task — diff: false so
+        # --diff never prints it, no_log so no result carries it.
         - name: Keep the deployed probe environment to restore from
           ansible.builtin.copy:
             src: "{{ _probe_env }}"
@@ -253,6 +281,15 @@
             remote_src: true
             mode: "0600"
             force: false
+          register: _probe_backup_made
+          diff: false
+          no_log: true
+          when: drill == 'probe' and not _restore_only
+
+        - name: Require the backup in place before the probe is rewritten
+          ansible.builtin.assert:
+            that: _probe_backup_made is not unreachable and _probe_backup_made is not failed
+            fail_msg: "Could not keep the probe environment; it was not rewritten."
           when: drill == 'probe' and not _restore_only
 
         - name: Point the probe at a model the server does not serve
@@ -260,6 +297,8 @@
             path: "{{ _probe_env }}"
             regexp: '^INFERENCE_PROBE_MODEL='
             line: "INFERENCE_PROBE_MODEL={{ _drill_model.stdout }}"
+          diff: false
+          no_log: true
           when: drill == 'probe' and not _restore_only
 
         - name: Take the first failing sample now, not at the next timer tick
@@ -351,12 +390,14 @@
             state: started
           delegate_to: "{{ _exporter.host }}"
           become: true
+          register: _restore_exporter
           when: drill == 'exporter'
 
         - name: Check for a kept probe environment
           ansible.builtin.stat:
             path: "{{ _probe_env_backup }}"
           register: _probe_backup
+          diff: false
           when: drill == 'probe'
 
         - name: Restore the deployed probe environment
@@ -365,26 +406,53 @@
             dest: "{{ _probe_env }}"
             remote_src: true
             mode: "0600"
+          register: _restore_probe_env
+          diff: false
+          no_log: true
           when: drill == 'probe' and _probe_backup.stat.exists | default(false)
 
         - name: Remove the kept copy once restored
           ansible.builtin.file:
             path: "{{ _probe_env_backup }}"
             state: absent
-          when: drill == 'probe' and _probe_backup.stat.exists | default(false)
+          diff: false
+          no_log: true
+          when: >-
+            drill == 'probe' and _probe_backup.stat.exists | default(false)
+            and _restore_probe_env is not unreachable and _restore_probe_env is not failed
+
+        - name: Record when the restored probe sample starts
+          ansible.builtin.set_fact:
+            _restored_at: "{{ lookup('ansible.builtin.pipe', 'date +%s') | int }}"
+          when: drill == 'probe'
 
         - name: Take a good sample with the restored target
           ansible.builtin.systemd_service:
             name: inference-probe.service
             state: started
           become: true
+          register: _restore_probe_sample
           when: drill == 'probe'
 
         - name: Start Grafana
           ansible.builtin.command:
             argv: ["{{ _engine }}", start, o11y-grafana]
+          register: _restore_grafana
           changed_when: true
           when: drill == 'grafana'
+
+        # Every restore registered its result above. One that could not reach its host
+        # leaves the fault in place: fail loudly and name the manual recovery.
+        - name: Require every restore to have reached its host
+          ansible.builtin.assert:
+            that: >-
+              [_restore_exporter | default({}), _probe_backup | default({}),
+               _restore_probe_env | default({}), _restore_probe_sample | default({}),
+               _restore_grafana | default({})] | selectattr('unreachable', 'defined') |
+              selectattr('unreachable') | list | length == 0
+            fail_msg: >-
+              A restore step could not reach its host; the drill={{ drill }} fault may still be
+              in place. Re-run the same mode with drill_restore_only=true once the host answers.
 
     # ---- Resolved proof (after the restore) -----------------------------------------
     - name: Require Grafana answering again
@@ -424,14 +492,45 @@
       changed_when: false
       retries: 60
       delay: 10
+      # Probe: ANY drill model, not this run's — a restore-only run generates a new
+      # name that never fired, so matching it alone would pass vacuously.
       until: >-
         _after_alerts.rc == 0 and
         ((_after_alerts.stdout | from_json).data.alerts |
          selectattr('labels.' ~ ('node' if drill == 'exporter' else 'model_name'), 'defined') |
-         selectattr('labels.' ~ ('node' if drill == 'exporter' else 'model_name'), 'equalto',
-                    drill_node if drill == 'exporter' else (_drill_model.stdout | default(''))) |
+         selectattr('labels.' ~ ('node' if drill == 'exporter' else 'model_name'),
+                    'equalto' if drill == 'exporter' else 'match',
+                    drill_node if drill == 'exporter' else _drill_model_prefix) |
          selectattr('state', 'match', '^(Alerting|firing)$') | list | length) == 0
       when: not ansible_check_mode and drill in ['exporter', 'probe']
+
+    # The probe is a oneshot that exits 0 after recording a failure, so a started unit
+    # proves nothing: require a success sample for the deployed model taken after the
+    # restore began.
+    - name: Require a successful probe sample for the deployed model after the restore
+      ansible.builtin.command:
+        argv:
+          - "{{ _engine }}"
+          - exec
+          - o11y-grafana
+          - wget
+          - -q
+          - -O
+          - "-"
+          - "http://prometheus:9090/api/v1/query?query={{ _probe_restored_query | urlencode }}"
+      vars:
+        _probe_restored_query: >-
+          inference_probe_success{job="receiver-host",model_name="{{ o11y_inference_probe_model }}"} == 1
+          and on (model_name)
+          inference_probe_last_run_timestamp_seconds{job="receiver-host",model_name="{{ o11y_inference_probe_model }}"} >= {{ _restored_at }}
+      register: _probe_restored
+      changed_when: false
+      retries: 30
+      delay: 10
+      until: >-
+        _probe_restored.rc == 0 and
+        ((_probe_restored.stdout | from_json).data.result | length) == 1
+      when: not ansible_check_mode and drill == 'probe'
 
     - name: Report the drill result
       ansible.builtin.debug:
