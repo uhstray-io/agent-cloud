@@ -520,6 +520,172 @@ def test_gateway_config_without_a_previous_config_is_refused(env):
     assert (tmp / "gw" / "config.yaml").read_text() == "config: current\n" and not _calls(tmp, "deploy")
 
 
+def _cfg(*keys) -> str:
+    """A rendered config enrolling (name, hash) pairs where the template puts them."""
+    return yaml.safe_dump({"llm": {"policies": {"apiKey": {"mode": "strict", "keys": [
+        {"keyHash": f"sha256:{h}", "metadata": {"name": n}} for n, h in keys]}}}})
+
+
+def _hash_never_printed(out):
+    for h in ("aaaa1111", "bbbb2222", "cccc3333", "dddd4444"):
+        assert h not in out, f"{h} printed"
+
+
+def test_gateway_config_refuses_a_previous_that_enrols_a_rotated_or_revoked_key(env):
+    tmp = env[0]
+    live = _cfg(("stray", "aaaa1111"), ("pi", "bbbb2222"))
+    (tmp / "gw" / "config.yaml").write_text(live)
+    # stray's old hash (rotated) and old-laptop (revoked) are enrolled only in the kept copy.
+    (tmp / "gw" / "config.yaml.previous").write_text(
+        _cfg(("stray", "cccc3333"), ("pi", "bbbb2222"), ("old-laptop", "dddd4444")))
+    for check in (False, True):
+        rc, out = _run(env, mode="gateway-config", check=check)
+        assert rc != 0 and "rotated, revoked or never enrolled now): old-laptop, stray" in out, out
+        _hash_never_printed(out)
+        assert (tmp / "gw" / "config.yaml").read_text() == live and not _calls(tmp, "deploy")
+
+
+def test_gateway_config_allows_a_previous_whose_identities_the_live_config_enrols(env):
+    tmp = env[0]
+    live = _cfg(("stray", "aaaa1111"), ("pi", "bbbb2222"))
+    (tmp / "gw" / "config.yaml").write_text(live)
+    previous = _cfg(("stray", "aaaa1111"))  # a removed client is fine: fewer keys, not more
+    (tmp / "gw" / "config.yaml.previous").write_text(previous)
+    rc, out = _run(env, mode="gateway-config", check=True)  # check mode passes the guard, writes nothing
+    assert rc == 0 and not _calls(tmp, "deploy"), out
+    assert (tmp / "gw" / "config.yaml").read_text() == live
+    rc, out = _run(env, mode="gateway-config")
+    assert rc == 0, out
+    _hash_never_printed(out)
+    assert (tmp / "gw" / "config.yaml").read_text() == previous and len(_calls(tmp, "deploy")) == 1
+
+
+def test_gateway_config_refuses_a_previous_without_a_live_config_to_compare(env):
+    tmp = env[0]
+    (tmp / "gw" / "config.yaml").unlink()
+    (tmp / "gw" / "config.yaml.previous").write_text(_cfg(("stray", "aaaa1111")))
+    rc, out = _run(env, mode="gateway-config")
+    assert rc != 0 and "never enrolled now): stray" in out, out
+    assert not (tmp / "gw" / "config.yaml").exists()
+
+
+@pytest.mark.parametrize(("expires", "refused"), [("2026-10-01", True), ("2099-01-01", False)])
+def test_gateway_config_refuses_legacy_shared_after_its_grace_period(env, expires, refused):
+    tmp = env[0]
+    both = _cfg(("stray", "aaaa1111"), ("legacy-shared", "bbbb2222"))
+    (tmp / "gw" / "config.yaml").write_text(both)
+    (tmp / "gw" / "config.yaml.previous").write_text(both.replace("mode: strict", "mode: strict  # kept"))
+    rc, out = _run(env, mode="gateway-config",
+                   gateway={"legacy_shared_expires": expires, "agw_today": "2026-10-03"})
+    assert (rc != 0) == refused, out
+    assert ("legacy-shared, whose grace period (legacy_shared_expires) has ended" in out) == refused, out
+
+
+def _refused(env, *names):
+    tmp = env[0]
+    live = (tmp / "gw" / "config.yaml").read_text() if (tmp / "gw" / "config.yaml").exists() else None
+    rc, out = _run(env, mode="gateway-config")
+    assert rc != 0 and f"never enrolled now): {', '.join(names)}." in out, out
+    _hash_never_printed(out)
+    assert not _calls(tmp, "deploy")
+    assert ((tmp / "gw" / "config.yaml").read_text() if live is not None else None) == live
+
+
+def test_gateway_config_refuses_a_plaintext_key_the_live_config_does_not_enrol(env):
+    """local-dev agw_plaintext_keys renders `key:` (the value), not `keyHash:`."""
+    tmp = env[0]
+    (tmp / "gw" / "config.yaml").write_text(yaml.safe_dump({"llm": {"policies": {"apiKey": {"keys": [
+        {"key": "aaaa1111", "metadata": {"name": "stray"}}]}}}}))
+    (tmp / "gw" / "config.yaml.previous").write_text(yaml.safe_dump({"llm": {"policies": {"apiKey": {"keys": [
+        {"key": "aaaa1111", "metadata": {"name": "stray"}}, {"key": "bbbb2222", "metadata": {"name": "pi"}}]}}}}))
+    _refused(env, "pi")
+
+
+def test_gateway_config_sees_through_anchors_aliases_and_merge_keys(env):
+    tmp = env[0]
+    (tmp / "gw" / "config.yaml").write_text(_cfg(("stray", "aaaa1111")))
+    (tmp / "gw" / "config.yaml.previous").write_text(
+        "x-base: &base\n  keyHash: sha256:aaaa1111\n  metadata: {name: stray}\n"
+        "x-extra: &extra {keyHash: 'sha256:cccc3333', metadata: {name: ghost}}\n"
+        "llm:\n  policies:\n    apiKey:\n      keys:\n"
+        "        - *base\n        - *extra\n"
+        "        - <<: *base\n          keyHash: sha256:dddd4444\n          metadata: {name: merged}\n")
+    _refused(env, "ghost", "merged")
+
+
+def test_gateway_config_counts_every_identity_new_when_live_enrols_none(env):
+    tmp = env[0]
+    (tmp / "gw" / "config.yaml").write_text(yaml.safe_dump({"llm": {"policies": {"localRateLimit": []}}}))
+    (tmp / "gw" / "config.yaml.previous").write_text(_cfg(("stray", "aaaa1111"), ("pi", "bbbb2222")))
+    _refused(env, "pi", "stray")
+
+
+def test_gateway_config_reads_apikey_enrolments_outside_the_llm_policy(env):
+    """A kept file is whatever was on disk: keys under a route policy count too."""
+    tmp = env[0]
+    (tmp / "gw" / "config.yaml").write_text(_cfg(("stray", "aaaa1111")))
+    previous = yaml.safe_load(_cfg(("stray", "aaaa1111")))
+    previous["binds"] = [{"listeners": [{"routes": [{"policies": {"apiKey": {"keys": [
+        {"keyHash": "sha256:cccc3333", "metadata": {"name": "sneaky"}}]}}}]}]}]
+    (tmp / "gw" / "config.yaml.previous").write_text(yaml.safe_dump(previous))
+    _refused(env, "sneaky")
+
+
+TEMPLATE = playbook_yaml.REPO / "platform/services/agentgateway/deployment/templates/config.yaml.j2"
+
+
+def _render(tmp, dest, clients, **hv):
+    """Render the repo's real config.yaml.j2, as the deploy does."""
+    secrets = {"vllm_api_key": "synthetic-vllm-x",
+               **{f"client_{c}": f"synthetic-k-{c}-{v}" for c, v in clients.items()}}
+    vars_ = {"agw_clients": list(clients), "agw_models": [{"name": "m"}], "agw_upstream_base_url": "http://u.invalid/v1",
+             "secrets": secrets, **hv}
+    (tmp / "rv.json").write_text(json.dumps(vars_))
+    (tmp / "render.yml").write_text(yaml.safe_dump([{"hosts": "localhost", "gather_facts": False, "tasks": [
+        {"ansible.builtin.template": {"src": str(TEMPLATE), "dest": str(dest), "mode": "0644"}}]}]))
+    r = harness_sandbox.run(["ansible-playbook", "-i", "localhost,", "-c", "local", str(tmp / "render.yml"),
+                             "-e", f"@{tmp / 'rv.json'}"],
+                            tmp, cwd=playbook_yaml.REPO, env=harness_sandbox.env_for(tmp))
+    assert r.returncode == 0, r.stdout + r.stderr
+
+
+def _template_enrolments(path):
+    """Every apiKey keys entry in a rendered file, found independently of the playbook."""
+    found = []
+
+    def walk(n):
+        if isinstance(n, dict):
+            for k, v in n.items():
+                if k == "apiKey" and isinstance(v, dict) and isinstance(v.get("keys"), list):
+                    found.extend(e["metadata"]["name"] for e in v["keys"])
+                walk(v)
+        elif isinstance(n, list):
+            for v in n:
+                walk(v)
+    walk(yaml.safe_load(path.read_text()))
+    return sorted(found)
+
+
+@pytest.mark.parametrize("hv", [{}, {"agw_ui_enabled": False},
+                                {"legacy_shared_expires": "2099-01-01", "agw_today": "2026-10-03",
+                                 "_legacy_shared_active": True}])
+def test_gateway_config_reads_every_enrolment_the_real_template_renders(env, hv):
+    tmp = env[0]
+    live, prev = tmp / "gw" / "config.yaml", tmp / "gw" / "config.yaml.previous"
+    _render(tmp, prev, {"stray": 1, "pi": 1, "old-laptop": 1}, **hv)
+    expected = ["old-laptop", "pi", "stray"] + (["legacy-shared"] if hv.get("legacy_shared_expires") else [])
+    assert _template_enrolments(prev) == sorted(expected)
+    # A rotation of stray and a revocation of old-laptop, rendered for real.
+    _render(tmp, live, {"stray": 2, "pi": 1}, **hv)
+    rc, out = _run(env, mode="gateway-config", gateway=hv)
+    assert rc != 0 and "never enrolled now): old-laptop, stray." in out, out
+    assert "synthetic-k-" not in out
+    # The same render on both sides is admitted.
+    _render(tmp, prev, {"stray": 2, "pi": 1}, **hv)
+    rc, out = _run(env, mode="gateway-config", gateway=hv)
+    assert rc == 0, out
+
+
 @pytest.mark.parametrize("group", ["caddy_svc", "agentgateway_svc"])
 def test_a_group_that_matches_no_hosts_fails(env, group):
     tmp = env[0]

@@ -10,7 +10,11 @@ every identity's current token-budget window.
 `config.yaml`) are rendered by `deploy-agentgateway.yml` from OpenBao + inventory and
 are gitignored. Operational reference: `../context/architecture.md`. When a deploy's render changes `config.yaml`, the file it replaced is kept
 beside it as `config.yaml.previous` (an unchanged render leaves that copy alone; never under
-local-dev's `agw_plaintext_keys`), which `rollback-inference-route.yml` gateway-config mode puts back.
+local-dev's `agw_plaintext_keys`), which `rollback-inference-route.yml` gateway-config mode puts back. The
+rollback refuses, before any write, a kept copy that enrols an identity the live config does not
+(a rotated or revoked key) or `legacy-shared` past `legacy_shared_expires`, naming the identities
+only; and `manage-agentgateway-client-key.yml` removes the copy once its deploy succeeds, so a
+rotation or revocation leaves no rollback path to the old key.
 
 ## A deploy recreates the gateway only when its inputs changed
 

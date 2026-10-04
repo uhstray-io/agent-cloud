@@ -374,6 +374,85 @@
           there; until a deploy has replaced one, roll back in direct mode or fix forward.
       when: _rb_mode == 'gateway-config'
 
+    # A kept config can enrol a key that has since been rotated or revoked (the deploy keeps
+    # whatever the last changed render replaced, and rotate/revoke IS a changed render), or the
+    # shared vLLM key after its grace period ended. Putting it back would re-admit that key, so
+    # the rollback refuses before any write. The files hold key hashes (or, under local-dev's
+    # agw_plaintext_keys, keys), so they are read and compared in no_log tasks that keep only
+    # identity NAMES; the visible assert below prints those names and nothing else.
+    - name: "Read both configs' enrolled identities (credential-adjacent)"
+      # A missing live config counts as enrolling nobody: the check fails closed.
+      ansible.builtin.slurp:
+        src: "{{ _deploy_dir }}/{{ item }}"
+      loop: [config.yaml, config.yaml.previous]
+      loop_control:
+        index_var: _i
+      register: _rb_cfg_text
+      no_log: true
+      when:
+        - _rb_mode == 'gateway-config'
+        - _rb_cfg.results[_i].stat.exists
+
+    - name: "Name every identity the previous config enrols that the live one does not"
+      vars:
+        # Every enrolment, wherever it sits: the template renders one apiKey policy (llm.policies),
+        # but a kept file is whatever was on disk, so the walk takes the `keys` list of EVERY
+        # `apiKey` mapping at any depth (from_yaml resolves anchors, aliases and merge keys).
+        _keys_of: >-
+          {%- macro walk(n) -%}
+          {%- if n is mapping -%}
+          {%- for k, v in n.items() -%}
+          {%- if k == 'apiKey' and v is mapping and v.get('keys') is sequence and v.get('keys') is not string -%}
+          {%- for e in v.get('keys') -%}{{ (e if e is mapping else {}) | to_json }},{%- endfor -%}
+          {%- endif -%}
+          {{- walk(v) -}}
+          {%- endfor -%}
+          {%- elif n is sequence and n is not string -%}
+          {%- for v in n -%}{{- walk(v) -}}{%- endfor -%}
+          {%- endif -%}
+          {%- endmacro -%}
+          {%- set ns = namespace(out=[]) -%}
+          {%- for r in _rb_cfg_text.results -%}
+          {%- set doc = (r.content | b64decode | from_yaml) if r.content is defined else {} -%}
+          {%- set ns.out = ns.out + [('[' ~ (walk(doc) | default('', true)) ~ 'null]') | from_json | select | list] -%}
+          {%- endfor -%}
+          {{ ns.out }}
+        _live_creds: >-
+          {{ (_keys_of[0] | selectattr('keyHash', 'defined') | map(attribute='keyHash') | list)
+             + (_keys_of[0] | selectattr('key', 'defined') | map(attribute='key') | list) }}
+        _live_names: "{{ _keys_of[0] | map(attribute='metadata.name', default='') | list }}"
+        _today: "{{ agw_today | default(now(utc=true).strftime('%Y-%m-%d')) | string }}"
+        _expires: "{{ legacy_shared_expires | default('', true) | string }}"
+      ansible.builtin.set_fact:
+        _rb_readmitted: >-
+          {%- set ns = namespace(out=[]) -%}
+          {%- for k in _keys_of[1] -%}
+          {%- set n = (k.metadata | default({})).name | default('(unnamed)') -%}
+          {%- set c = k.keyHash | default(k.key | default('')) -%}
+          {%- if c not in _live_creds or n not in _live_names -%}{%- set ns.out = ns.out + [n] -%}{%- endif -%}
+          {%- endfor -%}
+          {{ ns.out | unique | sort }}
+        _rb_legacy_expired: >-
+          {{ ('legacy-shared' in (_keys_of[1] | map(attribute='metadata.name', default='') | list))
+             and (_expires | length > 0) and (_today >= _expires) }}
+      no_log: true
+      when: _rb_mode == 'gateway-config'
+
+    - name: "Refuse a previous config that would re-admit a rotated, revoked or expired key"
+      ansible.builtin.assert:
+        that:
+          - _rb_readmitted | length == 0
+          - not (_rb_legacy_expired | bool)
+        fail_msg: >-
+          config.yaml.previous enrols identities the live config does not (rotated, revoked or
+          never enrolled now): {{ _rb_readmitted | join(', ') or 'none' }}{{
+          '; and legacy-shared, whose grace period (legacy_shared_expires) has ended'
+          if (_rb_legacy_expired | bool) else '' }}. Putting it back would re-admit those keys,
+          so nothing was changed. Fix forward with deploy-agentgateway.yml, or roll back in
+          direct mode.
+        quiet: true
+      when: _rb_mode == 'gateway-config'
+
     - name: "Put the previous config in place (only when it differs)"
       # 0644 as the deploy renders it: the gateway runs as a non-root user, and the file
       # holds hashes and names only (deploy-agentgateway.yml, _env_templates).

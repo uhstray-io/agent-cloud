@@ -202,3 +202,58 @@ def test_the_change_aware_digest_does_not_hash_the_kept_copies():
     script = (DEPLOY_DIR / "deploy.sh").read_text()
     assert "files+=(.env config.yaml)" in script
     assert "config.yaml.previous" not in script and "config.yaml.replaced" not in script
+
+
+MANAGE = REPO / "platform/playbooks/manage-agentgateway-client-key.yml"
+DROP = "Drop the rollback copy that still enrols the old key"
+
+
+def test_rotate_and_revoke_drop_the_rollback_copy_after_the_deploy(tmp_path):
+    """The copy a rotate/revoke deploy keeps enrols the OLD key; the run ends by removing it."""
+    plays = yaml.safe_load(MANAGE.read_text())
+    names = [p.get("name") for p in plays]
+    deploy = next(i for i, p in enumerate(plays) if p.get("import_playbook") == "deploy-agentgateway.yml")
+    assert names.index(DROP) == deploy + 1 == len(plays) - 1
+    drop = plays[names.index(DROP)]
+    assert drop["hosts"] == "agentgateway_svc"
+    d = tmp_path / "gw"
+    d.mkdir()
+    (d / "config.yaml").write_text("live\n")
+    (d / "config.yaml.previous").write_text("old key hash\n")
+    inv = {"all": {"hosts": {"g": {"ansible_connection": "local", "local_monorepo_dir": str(tmp_path),
+                                   "monorepo_deploy_path": "gw"}},
+                   "children": {"agentgateway_svc": {"hosts": {"g": {}}}}}}
+    (tmp_path / "inv.yml").write_text(yaml.safe_dump(inv))
+    (tmp_path / "play.yml").write_text(yaml.safe_dump([drop]))
+
+    def run(*args):
+        return harness_sandbox.run(["ansible-playbook", "-i", str(tmp_path / "inv.yml"), str(tmp_path / "play.yml"),
+                                    *args], tmp_path, cwd=REPO, env=harness_sandbox.env_for(tmp_path))
+
+    _ok(run("--check"))
+    assert (d / "config.yaml.previous").exists()  # check mode writes nothing
+    _ok(run())
+    assert not (d / "config.yaml.previous").exists() and (d / "config.yaml").read_text() == "live\n"
+    _ok(run())  # idempotent: nothing left to remove
+
+
+def test_a_failed_deploy_leaves_the_rollback_copy_in_place(tmp_path):
+    """The real playbook's tail — the deploy import replaced by a stand-in that fails or
+    succeeds — so the drop runs only after a deploy that succeeded."""
+    plays = yaml.safe_load(MANAGE.read_text())
+    deploy = next(i for i, p in enumerate(plays) if p.get("import_playbook") == "deploy-agentgateway.yml")
+    d = tmp_path / "gw"
+    d.mkdir()
+    inv = {"all": {"hosts": {"g": {"ansible_connection": "local", "local_monorepo_dir": str(tmp_path),
+                                   "monorepo_deploy_path": "gw"}},
+                   "children": {"agentgateway_svc": {"hosts": {"g": {}}}}}}
+    (tmp_path / "inv.yml").write_text(yaml.safe_dump(inv))
+    for fails in (True, False):
+        (d / "config.yaml.previous").write_text("old key hash\n")
+        stand_in = {"name": "deploy stand-in", "hosts": "agentgateway_svc", "gather_facts": False,
+                    "tasks": [{"ansible.builtin.fail": {"msg": "deploy failed"}, "when": fails}]}
+        (tmp_path / "play.yml").write_text(yaml.safe_dump([stand_in, *plays[deploy + 1:]]))
+        r = harness_sandbox.run(["ansible-playbook", "-i", str(tmp_path / "inv.yml"), str(tmp_path / "play.yml")],
+                                tmp_path, cwd=REPO, env=harness_sandbox.env_for(tmp_path))
+        assert (r.returncode != 0) == fails, r.stdout + r.stderr
+        assert (d / "config.yaml.previous").exists() == fails
