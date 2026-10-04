@@ -3,7 +3,8 @@ as a failed edge-route step result (D10 review 2026-10-03). Without the guard, a
 hosts exits 0 with no result, which reads as a pass.
 
 The absent-group runs execute the whole playbook: the guard fails it before any Caddy task.
-The populated and compound-pattern runs execute only the guard play, so no Caddy host is needed.
+The populated, host-name and compound-pattern runs execute only the guard play, staged in
+tmp_path, so no Caddy host is needed.
 """
 
 import importlib.util
@@ -40,9 +41,14 @@ def _run(tmp_path, playbook, target, *extra):
 
 
 def _guard_only(tmp_path):
+    # Staged in tmp_path, never in the repo tree: other tests scan platform/playbooks/ while
+    # this runs under xdist. The include is made absolute so it resolves from here.
     guard = yaml.safe_load(PLAYBOOK.read_text())[0]
     assert guard["name"] == "Refuse a target group that matches no hosts"
-    path = PLAYBOOK.parent / f".guard-{tmp_path.name}.yml"  # beside the real one: tasks/ resolves
+    for task in guard["tasks"]:
+        if str(task.get("ansible.builtin.include_tasks", "")).endswith("emit-step-result.yml"):
+            task["ansible.builtin.include_tasks"] = str(PLAYBOOK.parent / "tasks/emit-step-result.yml")
+    path = tmp_path / "guard.yml"
     path.write_text(json.dumps([guard]))
     return path
 
@@ -60,10 +66,6 @@ def test_an_absent_target_group_is_a_recorded_failure(tmp_path, check):
 def test_a_populated_group_a_host_or_a_compound_pattern_passes_the_guard(tmp_path, target):
     # "caddy" is a HOST name: a valid hosts: pattern that is not a key of `groups`.
     # caddy_svc:!caddy_svc is rollback-inference-route.yml's deliberate skip in gateway-config mode.
-    guard = _guard_only(tmp_path)
-    try:
-        proc, found = _run(tmp_path, guard, target)
-    finally:
-        guard.unlink()
+    proc, found = _run(tmp_path, _guard_only(tmp_path), target)
     assert proc.returncode == 0, proc.stdout[-3000:]
     assert found == []
