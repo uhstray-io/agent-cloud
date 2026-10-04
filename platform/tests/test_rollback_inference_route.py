@@ -520,6 +520,67 @@ def test_gateway_config_without_a_previous_config_is_refused(env):
     assert (tmp / "gw" / "config.yaml").read_text() == "config: current\n" and not _calls(tmp, "deploy")
 
 
+def _cfg(*keys) -> str:
+    """A rendered config enrolling (name, hash) pairs where the template puts them."""
+    return yaml.safe_dump({"llm": {"policies": {"apiKey": {"mode": "strict", "keys": [
+        {"keyHash": f"sha256:{h}", "metadata": {"name": n}} for n, h in keys]}}}})
+
+
+def _hash_never_printed(out):
+    for h in ("aaaa1111", "bbbb2222", "cccc3333", "dddd4444"):
+        assert h not in out, f"{h} printed"
+
+
+def test_gateway_config_refuses_a_previous_that_enrols_a_rotated_or_revoked_key(env):
+    tmp = env[0]
+    live = _cfg(("stray", "aaaa1111"), ("pi", "bbbb2222"))
+    (tmp / "gw" / "config.yaml").write_text(live)
+    # stray's old hash (rotated) and old-laptop (revoked) are enrolled only in the kept copy.
+    (tmp / "gw" / "config.yaml.previous").write_text(
+        _cfg(("stray", "cccc3333"), ("pi", "bbbb2222"), ("old-laptop", "dddd4444")))
+    for check in (False, True):
+        rc, out = _run(env, mode="gateway-config", check=check)
+        assert rc != 0 and "rotated, revoked or never enrolled now): old-laptop, stray" in out, out
+        _hash_never_printed(out)
+        assert (tmp / "gw" / "config.yaml").read_text() == live and not _calls(tmp, "deploy")
+
+
+def test_gateway_config_allows_a_previous_whose_identities_the_live_config_enrols(env):
+    tmp = env[0]
+    live = _cfg(("stray", "aaaa1111"), ("pi", "bbbb2222"))
+    (tmp / "gw" / "config.yaml").write_text(live)
+    previous = _cfg(("stray", "aaaa1111"))  # a removed client is fine: fewer keys, not more
+    (tmp / "gw" / "config.yaml.previous").write_text(previous)
+    rc, out = _run(env, mode="gateway-config", check=True)  # check mode passes the guard, writes nothing
+    assert rc == 0 and not _calls(tmp, "deploy"), out
+    assert (tmp / "gw" / "config.yaml").read_text() == live
+    rc, out = _run(env, mode="gateway-config")
+    assert rc == 0, out
+    _hash_never_printed(out)
+    assert (tmp / "gw" / "config.yaml").read_text() == previous and len(_calls(tmp, "deploy")) == 1
+
+
+def test_gateway_config_refuses_a_previous_without_a_live_config_to_compare(env):
+    tmp = env[0]
+    (tmp / "gw" / "config.yaml").unlink()
+    (tmp / "gw" / "config.yaml.previous").write_text(_cfg(("stray", "aaaa1111")))
+    rc, out = _run(env, mode="gateway-config")
+    assert rc != 0 and "never enrolled now): stray" in out, out
+    assert not (tmp / "gw" / "config.yaml").exists()
+
+
+@pytest.mark.parametrize(("expires", "refused"), [("2026-10-01", True), ("2099-01-01", False)])
+def test_gateway_config_refuses_legacy_shared_after_its_grace_period(env, expires, refused):
+    tmp = env[0]
+    both = _cfg(("stray", "aaaa1111"), ("legacy-shared", "bbbb2222"))
+    (tmp / "gw" / "config.yaml").write_text(both)
+    (tmp / "gw" / "config.yaml.previous").write_text(both.replace("mode: strict", "mode: strict  # kept"))
+    rc, out = _run(env, mode="gateway-config",
+                   gateway={"legacy_shared_expires": expires, "agw_today": "2026-10-03"})
+    assert (rc != 0) == refused, out
+    assert ("legacy-shared, whose grace period (legacy_shared_expires) has ended" in out) == refused, out
+
+
 @pytest.mark.parametrize("group", ["caddy_svc", "agentgateway_svc"])
 def test_a_group_that_matches_no_hosts_fails(env, group):
     tmp = env[0]

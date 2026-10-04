@@ -202,3 +202,36 @@ def test_the_change_aware_digest_does_not_hash_the_kept_copies():
     script = (DEPLOY_DIR / "deploy.sh").read_text()
     assert "files+=(.env config.yaml)" in script
     assert "config.yaml.previous" not in script and "config.yaml.replaced" not in script
+
+
+MANAGE = REPO / "platform/playbooks/manage-agentgateway-client-key.yml"
+DROP = "Drop the rollback copy that still enrols the old key"
+
+
+def test_rotate_and_revoke_drop_the_rollback_copy_after_the_deploy(tmp_path):
+    """The copy a rotate/revoke deploy keeps enrols the OLD key; the run ends by removing it."""
+    plays = yaml.safe_load(MANAGE.read_text())
+    names = [p.get("name") for p in plays]
+    deploy = next(i for i, p in enumerate(plays) if p.get("import_playbook") == "deploy-agentgateway.yml")
+    assert names.index(DROP) == deploy + 1 == len(plays) - 1
+    drop = plays[names.index(DROP)]
+    assert drop["hosts"] == "agentgateway_svc"
+    d = tmp_path / "gw"
+    d.mkdir()
+    (d / "config.yaml").write_text("live\n")
+    (d / "config.yaml.previous").write_text("old key hash\n")
+    inv = {"all": {"hosts": {"g": {"ansible_connection": "local", "local_monorepo_dir": str(tmp_path),
+                                   "monorepo_deploy_path": "gw"}},
+                   "children": {"agentgateway_svc": {"hosts": {"g": {}}}}}}
+    (tmp_path / "inv.yml").write_text(yaml.safe_dump(inv))
+    (tmp_path / "play.yml").write_text(yaml.safe_dump([drop]))
+
+    def run(*args):
+        return harness_sandbox.run(["ansible-playbook", "-i", str(tmp_path / "inv.yml"), str(tmp_path / "play.yml"),
+                                    *args], tmp_path, cwd=REPO, env=harness_sandbox.env_for(tmp_path))
+
+    _ok(run("--check"))
+    assert (d / "config.yaml.previous").exists()  # check mode writes nothing
+    _ok(run())
+    assert not (d / "config.yaml.previous").exists() and (d / "config.yaml").read_text() == "live\n"
+    _ok(run())  # idempotent: nothing left to remove

@@ -143,3 +143,22 @@
 
 - name: "Re-render and reload the gateway"
   import_playbook: deploy-agentgateway.yml
+
+# The deploy just kept the config it replaced as config.yaml.previous — the one that still
+# enrols the OLD key's hash. Left there, a later rollback-inference-route.yml (gateway-config,
+# its default mode) would put that config back and re-admit a key this run rotated or revoked.
+# Rotation and revocation must leave no rollback path to the old key, so the copy goes once the
+# deploy has succeeded: a host whose deploy failed has left the run before this play. The
+# rollback also refuses such a copy on its own; this removes the trap instead of relying on it.
+- name: "Drop the rollback copy that still enrols the old key"
+  hosts: agentgateway_svc
+  gather_facts: false
+  become: false
+  vars:
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+    _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
+  tasks:
+    - name: "Remove config.yaml.previous"
+      ansible.builtin.file:
+        path: "{{ _deploy_dir }}/config.yaml.previous"
+        state: absent
