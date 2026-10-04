@@ -1,0 +1,441 @@
+---
+# o11y-fault-drill.yml — induce ONE bounded fault, prove the matching alert path fires,
+# restore in an `always:` section, and prove the alert resolved.
+#
+# Author: Joseph A. Wisneski IV <stray@uhstray.io>
+#
+# Change inference-telemetry-production, tasks 2.5, 3.5 and 3.6 name this playbook as
+# their drill. One mode per run, selected by `-e drill=`:
+#
+#   exporter  stops one DGX Spark node exporter (systemd unit on an inventory host),
+#             proves Prometheus reads `up == 0` for that node and Grafana's
+#             `inference_target_down` rule (group `telemetry-missing`) fires for it,
+#             restarts the exporter in `always:`, proves `up == 1` and the alert cleared.
+#             Needs an operator dgx-spark window: refused unless
+#             `-e drill_window_confirmed=true` and the node is declared in
+#             `o11y_fault_drill_exporters` (see below).
+#   probe     rewrites the synthetic inference probe's model name to one the server does
+#             not serve, starts `inference-probe.service` at once, holds the invalid
+#             target for twelve minutes while `/health` must answer 200 on every check,
+#             proves `inference_probe_failing` fires for that model and the Discord
+#             contact point delivered it, restores the probe environment in `always:`.
+#   grafana   stops the `o11y-grafana` container for up to fifteen minutes and proves the
+#             external liveness watcher (check-o11y-liveness.yml, its own Semaphore
+#             schedule) posted its failure message through the alert webhook; restarts
+#             Grafana in `always:` and proves `/api/health` answers again.
+#
+# Refusals before any fault: the reviewed clean controller revision
+# (`expected_repository_sha`), `confirm_fault_drill` equal to the mode name, a known mode,
+# and the mode's own prerequisites (an active, unpaused rule; a readable Discord channel).
+#
+# Check mode (`--check`): every refusal and read runs; the fault block is skipped whole,
+# so nothing is stopped, rewritten or started, and the play reports what a real run does.
+#
+# Inventory (private, site-config):
+#   o11y_fault_drill_exporters  map of DGX node name -> {host: <inventory hostname>,
+#                               unit: <systemd unit of its node exporter>}; the drill
+#                               never guesses either, an undeclared node is refused.
+#   o11y_alert_discord_channel_id, openbao_addr: as for the existing alert drills.
+#
+# Interrupted run: re-run the same mode with `drill_restore_only=true`; it performs only
+# the restore steps and the resolved proof. Re-running a restore is a no-op.
+
+- name: Pre-flight
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: o11y_svc
+    preflight_group_expected: o11y_svc
+
+- name: Verify the reviewed Dev checkout and the explicit drill confirmation
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Require a known mode confirmed by name
+      ansible.builtin.assert:
+        that:
+          - drill | default('') in ['exporter', 'probe', 'grafana']
+          - confirm_fault_drill | default('') == drill | default('')
+        fail_msg: >-
+          Pass -e drill=exporter|probe|grafana and -e confirm_fault_drill=<the same mode>;
+          no fault was induced.
+
+    - name: Read the controller checkout revision
+      ansible.builtin.command:
+        argv: [git, rev-parse, HEAD]
+        chdir: "{{ playbook_dir | dirname | dirname }}"
+      register: _controller_revision
+      changed_when: false
+      check_mode: false
+
+    - name: Require the exact reviewed revision
+      ansible.builtin.assert:
+        that:
+          - expected_repository_sha | default('') is match('^[0-9a-f]{40}$')
+          - _controller_revision.stdout == expected_repository_sha
+        fail_msg: "Semaphore checked out a different revision; no fault was induced."
+
+    - name: Read controller checkout changes
+      ansible.builtin.command:
+        argv: [git, status, --porcelain, --untracked-files=all]
+        chdir: "{{ playbook_dir | dirname | dirname }}"
+      register: _controller_changes
+      changed_when: false
+      check_mode: false
+
+    - name: Require a clean reviewed checkout
+      ansible.builtin.assert:
+        that: _controller_changes.stdout | length == 0
+        fail_msg: "Controller checkout has uncommitted files; no fault was induced."
+
+- name: Induce one bounded o11y fault, prove the alert path, restore
+  hosts: o11y_svc
+  gather_facts: false
+  become: false
+  vars:
+    _engine: "{{ container_engine | default('podman') }}"
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+    _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
+    _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    _channel_id: "{{ o11y_alert_discord_channel_id | default('') | string }}"
+    _restore_only: "{{ drill_restore_only | default(false) | bool }}"
+    # exporter
+    _drill_exporters: "{{ o11y_fault_drill_exporters | default({}) }}"
+    _exporter: "{{ _drill_exporters[drill_node | default('')] | default({}) }}"
+    # probe
+    _probe_env: "{{ _deploy_dir }}/probe/inference-probe.env"
+    _probe_env_backup: "{{ _deploy_dir }}/probe/inference-probe.env.drill-backup"
+    _probe_health_url: "{{ o11y_inference_probe_url | default('') | regex_replace('/v1$', '') }}/health"
+    # grafana
+    _grafana_hold_minutes: "{{ drill_grafana_hold_minutes | default(15) | int }}"
+    _watcher_marker: "o11y liveness watcher:"
+    _drill_proved:
+      exporter: inference_target_down fired
+      probe: inference_probe_failing fired and reached Discord with /health 200 throughout
+      grafana: the liveness watcher reached Discord
+    # One Grafana API read, admin credential from the container's own environment.
+    _grafana_api_sh: >-
+      printf 'user = "admin:%s"\n' "$GF_SECURITY_ADMIN_PASSWORD" |
+      curl -fsS --config - http://127.0.0.1:3000
+  tasks:
+    # ---- Mode-specific refusals (no state changed) ----------------------------------
+    - name: Require a declared exporter target inside an operator window
+      ansible.builtin.assert:
+        that:
+          - drill_window_confirmed | default(false) | bool
+          - dgx_spark_scrape_enabled | default(false) | bool
+          - drill_node | default('') in (dgx_spark_nodes | default([]) | map(attribute='name') | list)
+          - _exporter.host | default('') in groups['all']
+          - _exporter.unit | default('') is match('^[A-Za-z0-9@._-]+\.service$')
+        fail_msg: >-
+          The exporter drill stops a DGX node exporter: it needs -e drill_window_confirmed=true
+          (an agreed dgx-spark window), -e drill_node=<declared node>, and that node in
+          o11y_fault_drill_exporters with an inventory host and a systemd unit. No fault was induced.
+      when: drill == 'exporter'
+
+    - name: Require the synthetic probe deployed and its health route declared
+      ansible.builtin.assert:
+        that:
+          - o11y_inference_probe_enabled | default(false) | bool
+          - o11y_inference_probe_url | default('') is match('^https://[A-Za-z0-9.-]+(:[0-9]+)?/v1$')
+        fail_msg: "The probe drill needs the deployed inference probe (o11y_inference_probe_enabled and _url). No fault was induced."
+      when: drill == 'probe'
+
+    - name: Name the alert rule this mode must fire
+      ansible.builtin.set_fact:
+        _drill_rule_uid: "{{ {'exporter': 'inference_target_down', 'probe': 'inference_probe_failing'}[drill] | default('') }}"
+
+    - name: Read the provisioned rule this mode exercises
+      ansible.builtin.command:
+        argv: ["{{ _engine }}", exec, o11y-grafana, sh, -c, "{{ _grafana_api_sh }}/api/v1/provisioning/alert-rules/{{ _drill_rule_uid }}"]
+      register: _drill_rule
+      changed_when: false
+      check_mode: false
+      when: _drill_rule_uid | length > 0 and not _restore_only
+
+    - name: Refuse a paused rule; the drill would prove nothing
+      ansible.builtin.assert:
+        that: not ((_drill_rule.stdout | from_json).isPaused | bool)
+        fail_msg: "{{ _drill_rule_uid }} is paused (alerts not enabled); no fault was induced."
+      when: _drill_rule_uid | length > 0 and not _restore_only
+
+    - name: Refuse a cleartext OpenBao endpoint
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+      when: drill in ['probe', 'grafana'] and not _restore_only
+
+    # Reads the bot token and webhook identity (no_log inside) and marks the newest
+    # Discord message, so only messages after the fault count as receipts.
+    - name: Verify Discord receipt prerequisites before the fault
+      ansible.builtin.include_tasks: tasks/o11y-alert-delivery-preflight.yml
+      when: drill in ['probe', 'grafana'] and not _restore_only
+
+    - name: Name this run's unservable probe model
+      ansible.builtin.command:
+        argv: [python3, -c, "import uuid; print('o11y-drill-absent-model-' + uuid.uuid4().hex[:12])"]
+      register: _drill_model
+      delegate_to: localhost
+      changed_when: false
+      check_mode: false
+      when: drill == 'probe'
+
+    - name: Report what a real run does (check mode induces nothing)
+      ansible.builtin.debug:
+        msg: >-
+          check mode: drill={{ drill }} would {{
+          {'exporter': 'stop ' ~ (_exporter.unit | default('?')) ~ ' on ' ~ (_exporter.host | default('?')) ~ ' and wait for inference_target_down',
+           'probe': 'point the probe at ' ~ (_drill_model.stdout | default('?')) ~ ' for 12 minutes and wait for inference_probe_failing + Discord',
+           'grafana': 'stop o11y-grafana for up to ' ~ _grafana_hold_minutes ~ ' minutes and wait for the liveness watcher message'}[drill] }}; nothing was changed.
+      when: ansible_check_mode
+
+    # ---- The fault, its proof, and the restore -------------------------------------
+    # The whole section is skipped under --check (inherited by `always:`), so a dry run
+    # cannot stop, rewrite or start anything.
+    - name: Induce, prove, restore
+      when: not ansible_check_mode
+      block:
+        # exporter -----------------------------------------------------------------
+        - name: Stop the declared DGX node exporter
+          ansible.builtin.systemd_service:
+            name: "{{ _exporter.unit }}"
+            state: stopped
+          delegate_to: "{{ _exporter.host }}"
+          become: true
+          when: drill == 'exporter' and not _restore_only
+
+        - name: Wait for Prometheus to read the stopped exporter as down
+          ansible.builtin.command:
+            argv:
+              - "{{ _engine }}"
+              - exec
+              - o11y-grafana
+              - wget
+              - -q
+              - -O
+              - "-"
+              - "http://prometheus:9090/api/v1/query?query={{ ('up{job=\"dgx-spark-node\",node=\"' ~ drill_node ~ '\"}') | urlencode }}"
+          register: _exporter_up
+          changed_when: false
+          retries: 24
+          delay: 10
+          until: >-
+            _exporter_up.rc == 0 and
+            ((_exporter_up.stdout | from_json).data.result | selectattr('value.1', 'equalto', '0') | list | length) == 1
+          when: drill == 'exporter' and not _restore_only
+
+        # Twelve minutes: the rule's `for: 5m`, its 60s evaluation interval and the
+        # 10-minute query window, with scrape margin (task 2.5).
+        - name: Wait for inference_target_down to fire for the stopped node
+          ansible.builtin.command:
+            argv: ["{{ _engine }}", exec, o11y-grafana, sh, -c, "{{ _grafana_api_sh }}/api/prometheus/grafana/api/v1/alerts"]
+          register: _exporter_alerts
+          changed_when: false
+          retries: 72
+          delay: 10
+          until: >-
+            _exporter_alerts.rc == 0 and
+            ((_exporter_alerts.stdout | from_json).data.alerts |
+             selectattr('labels.node', 'defined') |
+             selectattr('labels.node', 'equalto', drill_node) |
+             selectattr('labels.job', 'defined') |
+             selectattr('labels.job', 'equalto', 'dgx-spark-node') |
+             selectattr('state', 'match', '^(Alerting|firing)$') | list | length) > 0
+          when: drill == 'exporter' and not _restore_only
+
+        # probe --------------------------------------------------------------------
+        - name: Keep the deployed probe environment to restore from
+          ansible.builtin.copy:
+            src: "{{ _probe_env }}"
+            dest: "{{ _probe_env_backup }}"
+            remote_src: true
+            mode: "0600"
+            force: false
+          when: drill == 'probe' and not _restore_only
+
+        - name: Point the probe at a model the server does not serve
+          ansible.builtin.lineinfile:
+            path: "{{ _probe_env }}"
+            regexp: '^INFERENCE_PROBE_MODEL='
+            line: "INFERENCE_PROBE_MODEL={{ _drill_model.stdout }}"
+          when: drill == 'probe' and not _restore_only
+
+        - name: Take the first failing sample now, not at the next timer tick
+          ansible.builtin.systemd_service:
+            name: inference-probe.service
+            state: started
+          become: true
+          when: drill == 'probe' and not _restore_only
+
+        # 24 checks, 30 s apart: twelve minutes of the invalid target, with /health
+        # required to answer 200 on every one (scenario "Health up, inference down").
+        - name: Hold the invalid target while /health stays up
+          ansible.builtin.uri:
+            url: "{{ _probe_health_url }}"
+            method: GET
+            follow_redirects: none
+            timeout: 15
+            status_code: [200]
+          # The list itself is empty unless this run holds the probe fault: a skipped
+          # item still waits out `pause`, so `when:` alone would sleep 12 minutes.
+          loop: "{{ range(24) | list if (drill == 'probe' and not _restore_only and not ansible_check_mode) else [] }}"
+          loop_control:
+            pause: 30
+            label: "health check {{ item + 1 }}/24"
+          delegate_to: localhost
+          check_mode: false
+          changed_when: false
+          when: drill == 'probe' and not _restore_only
+
+        - name: Require inference_probe_failing firing for the drill model
+          ansible.builtin.command:
+            argv: ["{{ _engine }}", exec, o11y-grafana, sh, -c, "{{ _grafana_api_sh }}/api/prometheus/grafana/api/v1/alerts"]
+          register: _probe_alerts
+          changed_when: false
+          retries: 18
+          delay: 10
+          until: >-
+            _probe_alerts.rc == 0 and
+            ((_probe_alerts.stdout | from_json).data.alerts |
+             selectattr('labels.model_name', 'defined') |
+             selectattr('labels.model_name', 'equalto', _drill_model.stdout) |
+             selectattr('state', 'match', '^(Alerting|firing)$') | list | length) > 0
+          when: drill == 'probe' and not _restore_only
+
+        # grafana ------------------------------------------------------------------
+        - name: Stop Grafana
+          ansible.builtin.command:
+            argv: ["{{ _engine }}", stop, o11y-grafana]
+          changed_when: true
+          when: drill == 'grafana' and not _restore_only
+
+        # Receipt for probe (the contact point's firing line, service=vllm) and for
+        # grafana (the watcher's own line). Only messages after the pre-fault mark count.
+        - name: Wait for the matching Discord message from the alert webhook
+          ansible.builtin.uri:
+            url: >-
+              https://discord.com/api/v10/channels/{{ _channel_id }}/messages?limit=100{{ '&after=' ~ _before_messages.json[0].id if _before_messages.json | length > 0 else '' }}
+            headers:
+              Authorization: "Bot {{ _discord_secret.json.data.data.bot_token }}"
+              User-Agent: "DiscordBot (https://github.com/uhstray-io/agent-cloud, 1.0)"
+            status_code: [200]
+          register: _discord_messages
+          delegate_to: localhost
+          retries: "{{ 60 if drill == 'probe' else (_grafana_hold_minutes * 6) }}"
+          delay: 10
+          until: >-
+            (_discord_messages.json | default([]) |
+             selectattr('webhook_id', 'defined') |
+             selectattr('webhook_id', 'equalto', _webhook_id) |
+             list | to_json) is search(
+               'o11y-delivery-status=firing service=vllm' if drill == 'probe' else _watcher_marker)
+          no_log: true
+          ignore_errors: true
+          check_mode: false
+          changed_when: false
+          when: drill in ['probe', 'grafana'] and not _restore_only
+
+        - name: Require the Discord receipt
+          ansible.builtin.assert:
+            that: _discord_messages is succeeded
+            fail_msg: >-
+              No matching Discord message from the alert webhook within the hold
+              ({{ 'contact point firing line' if drill == 'probe' else 'liveness watcher line' }}).
+          when: drill in ['probe', 'grafana'] and not _restore_only
+      always:
+        - name: Restart the DGX node exporter
+          ansible.builtin.systemd_service:
+            name: "{{ _exporter.unit }}"
+            state: started
+          delegate_to: "{{ _exporter.host }}"
+          become: true
+          when: drill == 'exporter'
+
+        - name: Check for a kept probe environment
+          ansible.builtin.stat:
+            path: "{{ _probe_env_backup }}"
+          register: _probe_backup
+          when: drill == 'probe'
+
+        - name: Restore the deployed probe environment
+          ansible.builtin.copy:
+            src: "{{ _probe_env_backup }}"
+            dest: "{{ _probe_env }}"
+            remote_src: true
+            mode: "0600"
+          when: drill == 'probe' and _probe_backup.stat.exists | default(false)
+
+        - name: Remove the kept copy once restored
+          ansible.builtin.file:
+            path: "{{ _probe_env_backup }}"
+            state: absent
+          when: drill == 'probe' and _probe_backup.stat.exists | default(false)
+
+        - name: Take a good sample with the restored target
+          ansible.builtin.systemd_service:
+            name: inference-probe.service
+            state: started
+          become: true
+          when: drill == 'probe'
+
+        - name: Start Grafana
+          ansible.builtin.command:
+            argv: ["{{ _engine }}", start, o11y-grafana]
+          changed_when: true
+          when: drill == 'grafana'
+
+    # ---- Resolved proof (after the restore) -----------------------------------------
+    - name: Require Grafana answering again
+      ansible.builtin.command:
+        argv: ["{{ _engine }}", exec, o11y-grafana, wget, -q, -O, /dev/null, "http://127.0.0.1:3000/api/health"]
+      register: _grafana_back
+      changed_when: false
+      retries: 30
+      delay: 5
+      until: _grafana_back.rc == 0
+      when: not ansible_check_mode
+
+    - name: Require the exporter scraped up again
+      ansible.builtin.command:
+        argv:
+          - "{{ _engine }}"
+          - exec
+          - o11y-grafana
+          - wget
+          - -q
+          - -O
+          - "-"
+          - "http://prometheus:9090/api/v1/query?query={{ ('up{job=\"dgx-spark-node\",node=\"' ~ drill_node ~ '\"}') | urlencode }}"
+      register: _exporter_back
+      changed_when: false
+      retries: 24
+      delay: 10
+      until: >-
+        _exporter_back.rc == 0 and
+        ((_exporter_back.stdout | from_json).data.result | selectattr('value.1', 'equalto', '1') | list | length) == 1
+      when: not ansible_check_mode and drill == 'exporter'
+
+    - name: Require the drill alert resolved
+      ansible.builtin.command:
+        argv: ["{{ _engine }}", exec, o11y-grafana, sh, -c, "{{ _grafana_api_sh }}/api/prometheus/grafana/api/v1/alerts"]
+      register: _after_alerts
+      changed_when: false
+      retries: 60
+      delay: 10
+      until: >-
+        _after_alerts.rc == 0 and
+        ((_after_alerts.stdout | from_json).data.alerts |
+         selectattr('labels.' ~ ('node' if drill == 'exporter' else 'model_name'), 'defined') |
+         selectattr('labels.' ~ ('node' if drill == 'exporter' else 'model_name'), 'equalto',
+                    drill_node if drill == 'exporter' else (_drill_model.stdout | default(''))) |
+         selectattr('state', 'match', '^(Alerting|firing)$') | list | length) == 0
+      when: not ansible_check_mode and drill in ['exporter', 'probe']
+
+    - name: Report the drill result
+      ansible.builtin.debug:
+        msg: >-
+          drill={{ drill }}: fault induced, {{ _drill_proved[drill] }};
+          restored and verified.
+      when: not ansible_check_mode and not _restore_only
