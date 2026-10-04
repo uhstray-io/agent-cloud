@@ -239,6 +239,17 @@
       instead of translating it (schema and policy evidence from agentgateway v1.5.0 source in
       `context/architecture.md`, "Upstream"). The next production run decides whether the case
       matches.
+      2026-10-04: production run Semaphore task 2698 (commit `79a8eb76`, after the passthrough
+      deploy, task 2696) matched 12/13. `responses` now matches (passthrough). `stream-xhigh`
+      matched semantics and failed only on an unaccepted shape path: the gateway's chunk union
+      carried `choices.[].delta`, which in task 2614 was on vLLM's side instead. The stream's chunk
+      union varies run to run. Under the 2026-10-03 rule the path is now accepted as a gateway
+      addition too; the allowlist must equal the union of the task 2614 and 2698 records. Found on
+      the way: the run tested a different model each time (2614 and 2698 one name, 2681 another)
+      because the model was the first item of a set intersection, whose order follows per-process
+      hashing. It now follows `allowed_models` order, else `agw_models` order, and a repository test
+      refuses taking the first item of a set operation anywhere under `platform/`. Timing deltas
+      still not recorded, so this task stays unticked.
 - [ ] 2.3 Confirm SSE keep-alive comment lines from vLLM pass through unchanged and
       unbuffered (needs dgx-spark `inference-endpoint-reliability` deployed)
 - [ ] 2.3a Streams and the budget: confirm whether a streamed completion is charged to the
