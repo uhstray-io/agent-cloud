@@ -149,6 +149,7 @@ and why.
 | 10.19 | Harden SSH's password-rejection probe used BatchMode with public keys off, so it exited non-zero whatever the server allowed | Test that cannot fail | 1 | Test (`test_harden_password_probe.py`) |
 | 10.20 | Recorded "no leaf declared, nothing is issued" for the CA; an empty or absent step-ca policy issues any name, and the probe retirement would have removed the only restriction | Assumed runtime semantics | 1 | Test (`test_step_ca_deploy.py`, mutation-checked) |
 | 10.21 | Checked-in ruleset declared `active`; the live one was `evaluate` and `main` was unprotected | Config drift | 1 | Convention (scheduled live-vs-JSON check proposed) |
+| 10.22 | A dashboard panel was renamed and the deploy's verify kept the old title; only a production run compared them | Mechanism never exercised | 1 | Test (`test_o11y_dashboard_asserts.py`, mutation-checked) |
 | 11.1 | 76 assertions across the suite could never fail — `!` and `[[ ]]` are exempt from `set -e` | False-green test | 1 | **Ratchet test** (`test_assertions_are_real.bats` + `known_inert_assertions.txt`) |
 | 11.2 | Sourced a config file instead of reading it, turning every credential into shell code | Live-state damage | 1 | Test |
 | 11.3 | Committed without running the suite — third occurrence | Process | 1 | Pre-push hook (status note 2026-10-02) |
@@ -3890,6 +3891,29 @@ back and matches it. A claim of enforcement cites that read, not the file.
 
 **Enforced by.** Convention. Proposed: a scheduled CI job that reads the live ruleset with a
 read-only token (`gh api`) and fails when it differs from `protect-main.json`.
+
+### 10.22 A renamed dashboard panel reached production with the verify still naming the old title
+
+**What happened.** The change that made the o11y stack scrape agentgateway renamed the
+client-view dashboard panel `Request duration p95` to `Request duration p95 (HTTP and
+model)`. The o11y deploy's verify asserts that a panel with the old exact title exists, and
+the change left that assertion alone. Every static gate passed. Semaphore task 2662 (Deploy
+o11y (Dev)) then failed at the client-view dashboard check on a healthy stack, and the
+checks after it, including the alert-rule readback, never ran.
+
+**Root cause.** The assertion strings are copies of the committed dashboard JSON, and the
+only thing that ever compared the two was a live Grafana read during a deploy. A rename on
+one side had nothing to fail against until production.
+
+**The rule.** When a playbook asserts on the content of an artifact committed in this
+repository, a test compares the assertion with the committed artifact, so a rename fails
+before the deploy runs.
+
+**Enforced by.** Test: `platform/tests/test_o11y_dashboard_asserts.py` maps each fetched
+dashboard's register to its uid and requires every asserted title once among that
+dashboard's top-level panels, and each asserted metric name in that panel's queries. It
+reports the line and the closest committed title. Reverting the fix makes it fail at line
+1049.
 
 ## 11. The largest one
 
