@@ -132,6 +132,11 @@
     _bridge: "{{ _decl.vm_net_bridge | default(_defaults.net_bridge | default('vmbr0')) }}"
     _netmask: "{{ _decl.vm_netmask | default(_defaults.netmask | default(24)) }}"
     _tags: "{{ _decl.vm_tags | default(_svc.tags | default(_defaults.base_tags | default('pbs;debian13' if _pbs_mode else 'ubuntu;24.04'))) }}"
+    # Proxmox CPU type. Empty means the VM keeps whatever the template gave it, which is every
+    # VM's behaviour before this existed. A workload compiled for an instruction set declares
+    # it: weft's workspace image needs AVX2 (`x86-64-v3` or `host`, never the `kvm64` default),
+    # or its transcriber dies of SIGILL on the first recording.
+    _cpu: "{{ _decl.vm_cpu | default(_svc.cpu | default('')) }}"
 
   tasks:
     # Every hard failure below (a refused declaration, the clone, migrate, configure, start,
@@ -826,6 +831,25 @@
               description: "{{ _pbs_vm_description if (_pbs_mode | bool) else omit }}"
             status_code: [200]
           when: not ansible_check_mode
+
+        - name: "Guard target VMID before CPU type"
+          ansible.builtin.include_tasks: tasks/guard-o11y-restore-target.yml
+          vars:
+            _o11y_restore_target_guard_candidates: ["{{ _vmid }}"]
+          tags: [always]
+
+        - name: "Set the declared CPU type"
+          # Its own request so a VM that declares none is configured exactly as before.
+          ansible.builtin.uri:
+            url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/config"
+            method: PUT
+            body_format: form-urlencoded
+            body:
+              cpu: "{{ _cpu }}"
+            status_code: [200]
+          when:
+            - not ansible_check_mode
+            - _cpu | length > 0
 
         - name: "Guard target VMID before tag update"
           ansible.builtin.include_tasks: tasks/guard-o11y-restore-target.yml

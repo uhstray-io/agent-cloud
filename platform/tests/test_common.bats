@@ -137,3 +137,25 @@ teardown() {
   [ "$status" -ne 0 ]
   [[ "$output" == *"compose.absent.yml"* ]]
 }
+
+@test "compose: COMPOSE_BASE replaces compose.yml, and a missing base fails loudly" {
+  cd "$TEST_DIR"
+  touch compose.yml compose.workspace.yml compose.local.yml
+  detect_runtime() { COMPOSE_CMD="echo"; }
+
+  # One directory, two stacks (weft's workspace and front door): the named base
+  # is the only -f, and the local overlay still follows it.
+  export COMPOSE_BASE="compose.workspace.yml"
+  run compose up -d
+  [ "$output" = "-f compose.workspace.yml up -d" ]
+  export LOCAL_MODE=true
+  run compose up -d
+  [ "$output" = "-f compose.workspace.yml -f compose.local.yml up -d" ]
+
+  # A named base that does not exist must FAIL rather than fall back to
+  # compose.yml: that would start a different service's stack on this host.
+  export COMPOSE_BASE="compose.door.yml"
+  run compose up -d
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"compose.door.yml"* ]]
+}

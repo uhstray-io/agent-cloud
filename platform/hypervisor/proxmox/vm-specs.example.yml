@@ -16,6 +16,10 @@
 #     vmid                     Proxmox VMID (unique across the cluster).
 #     node                     Proxmox node hosting this VM.
 #     cores                    CPU cores.
+#     cpu                      Optional Proxmox CPU type (e.g. x86-64-v3, host). Absent
+#                              leaves the template's. Required for a workload built for an
+#                              instruction set: a weft workspace needs AVX2, so x86-64-v3 or
+#                              host, never kvm64. Per host: vm_cpu.
 #     memory                   RAM in MB.
 #     disk                     Disk size (e.g., "32G").
 #     ip                       Static IP, no CIDR. Defaults.netmask applies.

@@ -461,3 +461,20 @@ YAML
   assert_grep -qF "cloud-init: done" <<<"$output"
   assert_grep -qF "Runner: skipped (no runner token supplied)" <<<"$output"
 }
+
+@test "provision-vm: a declared CPU type is set, and an undeclared one changes nothing" {
+  # weft's workspace image is built for AVX2; on Proxmox's kvm64 CPU type its
+  # transcriber dies of SIGILL on the first recording, long after every deploy
+  # check passed. So the type is a declaration (vm_cpu), read from the declared
+  # HOST like every other field, and a VM that declares none gets no cpu write.
+  local pb="$BATS_TEST_DIRNAME/../playbooks/provision-vm.yml"
+  assert_grep -qF "_cpu: \"{{ _decl.vm_cpu | default(_svc.cpu | default('')) }}\"" "$pb"
+  local blk
+  blk=$(sed -n '/name: "Set the declared CPU type"/,/^$/p' "$pb")
+  assert_grep -qF 'cpu: "{{ _cpu }}"' <<<"$blk"
+  assert_grep -qF '_cpu | length > 0' <<<"$blk"
+  # The shared resource PUT does not carry it, so its body is unchanged for every VM.
+  local configure
+  configure=$(sed -n '/name: "Configure VM resources and cloud-init"/,/status_code/p' "$pb")
+  refute_grep -qF 'cpu:' <<<"$configure"
+}
