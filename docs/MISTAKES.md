@@ -45,7 +45,7 @@ and why.
 | 1.13 | Rejected Semaphore's matching single-environment list projection as if it were a second binding | Unverified claim | 1 | Test |
 | 1.14 | **x2** — Told the user the approved OpenBao address is the inventory's `all.vars`, from the public template; production declares it under a group `localhost` is not in | Unverified claim | 2 | Test (`test_inventory_template_banner.py` + banners); reading habit Convention |
 | 1.15 | **x2** — Said a run-time check closed extra-var overrides; a templated extra var bypasses it, and any launcher may set extra vars | Unverified claim | 2 | Convention |
-| 1.16 | Wrote "44 files log in to OpenBao" into a merged plan without running a count; the count is 43 | Unverified claim | 1 | Convention |
+| 1.16 | **x2** — Wrote "44 files log in to OpenBao" into a merged plan without running a count; the count is 43 | Unverified claim | 2 | Convention |
 | 1.17 | Explained a 401 as the token's scope; the service's database had just gone down, and those were the outage's first 401s | Unverified claim | 1 | Convention |
 | 1.18 | Listed an auth failure's causes from the code, missed the database-error 401, and chased credentials while the orchestrator's disk was full | Unverified claim | 1 | Convention (disk alert proposed) |
 | 1.19 | A negative claim about a host's state from evidence that cannot establish it (widens 1.6) | Unverified claim | 1 | Convention |
@@ -686,7 +686,7 @@ proposed fix is a security claim too, and the strongest input it must withstand 
 
 ### 1.16 A count written into a committed plan without running the count
 
-**Occurrences: 1** — 2026-09-25
+**Occurrences: 2** — 2026-09-25, 2026-10-03
 
 **What happened.** Recording the launch-permission gap for #264, I wrote into
 `plan/development/01-secrets-credentials.md` that "44 playbook and task files log in to
@@ -704,6 +704,20 @@ date, run at the time of writing; a count that cannot be re-run is not written. 
 plan line now cites its command.)
 
 **Enforced by.** Convention.
+
+**Occurrence 2 — 2026-10-03.** Relaying the agentgateway conformance run (Semaphore task 2614,
+commit `1f8057aa`), the coordinating session told the operator that all 13 cases matched on
+meaning and only the body shape differed. It had read `semantic_match` for the first cases of
+the per-case report and generalised; the `responses` case further down carried
+`semantic_match: false` (the gateway's answer has no `reasoning` output item; vLLM's does).
+The operator decided the shape allowlist on that summary, and "13/13 semantic match" was
+merged into the service's architecture doc and the change's task log. The next run (task 2681)
+failed on exactly that case, which is how it surfaced. Why the rule did not fire: it was
+worded for a count written into a plan, and this count was first spoken to the operator and
+only then written down; the number was also derived from a report in hand, so it felt
+measured. The rule covers it — a count is the output of a command over the whole set, not a
+reading of its first entries. Corrected in the architecture doc and the task log from the
+saved task output (12/13 semantic, 0/13 shape).
 
 ### 1.17 Explained a 401 as the token's scope; the service's database had just gone down
 

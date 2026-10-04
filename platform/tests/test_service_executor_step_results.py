@@ -261,5 +261,5 @@ def test_the_rollback_fails_on_the_edge_verdict_manage_caddy_sites_records():
     i = next(n for n, p in enumerate(plays) if p.get("ansible.builtin.import_playbook") == "manage-caddy-sites.yml")
     gate = plays[i + 1]["tasks"][0]
     assert "_edge_group_errors" in gate["ansible.builtin.assert"]["that"]
-    edge = _plays("manage-caddy-sites.yml")[0]["tasks"]
+    edge = next(p for p in _plays("manage-caddy-sites.yml") if p["hosts"] != "localhost")["tasks"]
     assert any("_edge_group_errors" in (t.get("ansible.builtin.set_fact") or {}) for t in edge)

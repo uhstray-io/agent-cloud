@@ -214,6 +214,14 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
         `provision-vm.yml` recording `cloud-init` (#419). The per-service deploy step and
         `deploy-authentik.yml` outside its `oidc-config` step still record none. The D10
         re-review against these merges is PR #421 (open).
+      - 2026-10-03: the D10 re-review itself (PR #421; `d10-review.md`). Eight more pass
+        (vm-template, provision-vm, ssh-keys, ssh-key-backup, vm-rightsize, fw-harden,
+        systemd-enablement, credential-backup). Three are gaps that wait on an operator decision:
+        access-harden proves key-only access only after password authentication is withdrawn;
+        edge-route delegates the Cloudflare zero-diff criterion (it also gained a
+        populated-group preflight that records a failed edge-route result); oidc-config
+        recreates every container on each run. cloud-init and service-deploy were not
+        re-reviewed. Stamps still wait on the OPA `data.json` change.
 - [x] 7.2 `provision-vm.yml` sets `onboot`; restart-policy check beside `enable-linger`.
       2026-09-22: onboot with per-host opt-out; `verify-service-persistence.yml` (step
       systemd-enablement) passes on local tududi, normal and check mode (tasks 977, 978)
