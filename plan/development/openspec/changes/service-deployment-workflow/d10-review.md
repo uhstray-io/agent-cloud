@@ -211,3 +211,29 @@ with that template on its `allowed_templates`. The review rules are unchanged: O
 the `(Dev)` variant until the step is stamped. The role has no principal bound to it. Agent
 identity is the `agent` field of each OPA request, and no other mapping exists in this repo.
 `netclaw` stays frozen (plan 15 D7).
+
+### Correction — 2026-10-04 (review of PR #436)
+
+The edge-dns pass recorded above had two defects. The sections above stay as they were written.
+
+- **Credentials in visible tasks.** Every tofu command (init, plan, apply, and the new plan
+  after apply) ran visibly with the R2 keys and the Cloudflare token in its environment. The
+  test even required that no `no_log` be set. This was true of the existing tasks as well as
+  the new one. Now every tofu command is its own `no_log` task with `failed_when: false`, and
+  its environment comes from a `no_log` fact. A visible report shows only exit codes and
+  change counts, and a visible assert fails the run on a tofu error. The plan text is no
+  longer printed: it carries the declared origin address. Reviewing the diff before an apply
+  now needs a run with access to that output. That is a trade-off for the operator.
+- **A dry run was not read-only.** `--check` still ran `tofu init -reconfigure`, which writes
+  `.terraform/` into the tofu root. In check mode, tofu now gets a throwaway `TF_DATA_DIR` (a
+  temporary directory that an `always` step removes). A fake-tofu test proves that init and
+  plan used that directory, that it is gone afterwards, and that the tofu root is untouched.
+  Limit: the committed `.terraform.lock.hcl` is still read from the root. Init rewrites it
+  only when the providers or hashes differ from it, which this test does not exercise.
+- Guards are in `test_edge_dns_step_result.py`. Three mutations each turned a test red, and
+  the file was restored byte-exact each time:
+  - `no_log` dropped from one plan;
+  - `TF_DATA_DIR` not set;
+  - the cleanup pointed at the wrong path.
+
+Verdict: edge-dns still **passes** D10, with these fixes.
