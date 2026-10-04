@@ -224,16 +224,20 @@ Client-visible differences, as task 2614 reported them:
 
 **Accepted shape differences, second record (2026-10-04).** Production run Semaphore task 2698
 (commit `79a8eb76`, after the `/v1/responses` passthrough deploy, task 2696) matched 12 of 13.
-`responses` now matches: the gateway passes the request through to vLLM, so its body is vLLM's.
+`responses` now matches: the gateway passes the request through to vLLM, and the semantic fields
+agree. Its shape still differs on three paths, all accepted from task 2614: vLLM's output items carry
+`output.[].encrypted_content` and `output.[].phase` that the gateway's lack, and `output.[].status`
+changes type.
 `stream-xhigh` matched semantics but failed shape on `choices.[].delta` appearing only on the
 gateway's side, where task 2614 had it only on vLLM's side. The chunk union of a stream varies by
 run: a chunk whose `delta` is empty or absent on one side flips which union carries the path. Under
 the 2026-10-03 rule the path is accepted in both directions for that case. Client-visible: a
 streaming client may see chunks with an empty or absent `delta` from either target. Task 2698's
 per-case paths are kept as `deployment/tests/conformance-shape-t2698.json`; the test now holds the
-allowlist to exactly the union of both records. The `responses` entries accepted from task 2614 are
-now unused by a matching run. They stay (operator decision); they may be pruned once several
-consecutive production runs show `responses` matching with none of them used.
+allowlist to exactly the union of both records. Of the 38 `responses` entries accepted from task 2614,
+task 2698 used only those three; the other 35 (among them the request echo and per-turn usage paths) went
+unused. They stay (operator decision); they may be pruned once several consecutive production runs
+show `responses` matching without them.
 
 Also found from these runs: the conformance model was not stable. Task 2614 and 2698 tested one
 served model and 2681 another, because the model was the first item of a set intersection of the
