@@ -1052,6 +1052,57 @@
         fail_msg: "Grafana did not provision the complete Agentgateway client-view dashboard."
       when: not ansible_check_mode
 
+    # Every committed dashboard file must be live by its own uid: the asserts above
+    # check three dashboards' contents, this checks that none of the rest is missing.
+    - name: Verify every provisioned dashboard is live
+      when: not ansible_check_mode
+      block:
+        - name: Find the provisioned dashboard files
+          ansible.builtin.find:
+            paths: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}/{{ monorepo_deploy_path }}/config/grafana/dashboards"
+            patterns: "*.json"
+          register: _dashboard_files
+
+        - name: Read the provisioned dashboard files
+          ansible.builtin.slurp:
+            src: "{{ item.path }}"
+          loop: "{{ _dashboard_files.files }}"
+          loop_control:
+            label: "{{ item.path | basename }}"
+          register: _dashboard_docs
+
+        - name: Read live Grafana dashboards
+          ansible.builtin.command:
+            argv:
+              - "{{ _engine }}"
+              - exec
+              - o11y-grafana
+              - sh
+              - -c
+              - >-
+                printf 'user = "admin:%s"\n' "$GF_SECURITY_ADMIN_PASSWORD" |
+                curl -fsS --config - 'http://127.0.0.1:3000/api/search?type=dash-db&limit=5000'
+          register: _live_dashboards
+          changed_when: false
+          retries: 6
+          delay: 5
+          until: _live_dashboards.rc == 0
+
+        - name: Require every provisioned dashboard uid to be live
+          ansible.builtin.assert:
+            that:
+              - _dashboard_expected_uids | length > 0
+              - _dashboard_expected_uids | length == _dashboard_files.files | length
+              - _dashboard_expected_uids | unique | length == _dashboard_expected_uids | length
+              - _dashboard_expected_uids | difference(_live_dashboards.stdout | from_json | map(attribute='uid') | list) | length == 0
+            fail_msg: >-
+              Provisioned dashboards missing from Grafana:
+              {{ _dashboard_expected_uids | difference(_live_dashboards.stdout | from_json | map(attribute='uid') | list) }}
+          vars:
+            _dashboard_expected_uids: >-
+              {{ _dashboard_docs.results | map(attribute='content') | map('b64decode')
+                 | map('from_json') | map(attribute='uid') | select | list }}
+
     - name: Verify enabled Grafana alert provisioning after a real deploy
       when:
         - o11y_alerts_enabled | default(false) | bool
@@ -1082,33 +1133,72 @@
             src: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}/{{ monorepo_deploy_path }}/config/grafana/provisioning/alerting/observability.yml"
           register: _provisioned_rules_file
 
-        - name: Require expected o11y rules and active routed rules
+        # Rule groups are scoped by folder UID, so resolve the provisioned folder titles.
+        # /api/folders returns [{uid, title}]; provisioned rules carry folderUID and
+        # ruleGroup (Grafana 11.4 alerting OpenAPI, ProvisionedAlertRule:
+        # https://raw.githubusercontent.com/grafana/grafana/v11.4.0/pkg/services/ngalert/api/tooling/api.json).
+        - name: Read live Grafana folders
+          ansible.builtin.command:
+            argv:
+              - "{{ _engine }}"
+              - exec
+              - o11y-grafana
+              - sh
+              - -c
+              - >-
+                printf 'user = "admin:%s"\n' "$GF_SECURITY_ADMIN_PASSWORD" |
+                curl -fsS --config - 'http://127.0.0.1:3000/api/folders?limit=1000'
+          register: _live_folders
+          changed_when: false
+
+        # The live set must MIRROR the provisioned file: the rules Grafana holds in the
+        # file's folder+group scope are exactly the file's rules, each paused and routed
+        # field by field as rendered. A uid-prefix filter once let a deploy pass without
+        # reading the inference rules back at all (docs/MISTAKES.md 1.21).
+        - name: Scope live rules to the provisioned folders and groups
+          ansible.builtin.set_fact:
+            _o11y_expected_rules: "{{ _o11y_provisioned.groups | default([]) | map(attribute='rules') | flatten | sort(attribute='uid') }}"
+            _o11y_withdrawn_uids: "{{ _o11y_provisioned.deleteRules | default([]) | map(attribute='uid') | list }}"
+            _o11y_rules: >-
+              {{ _active_rules.stdout | from_json
+                 | selectattr('folderUID', 'in', _o11y_folder_uids)
+                 | selectattr('ruleGroup', 'in', _o11y_provisioned.groups | default([]) | map(attribute='name') | list)
+                 | sort(attribute='uid') }}
+          vars:
+            _o11y_provisioned: "{{ _provisioned_rules_file.content | b64decode | from_yaml }}"
+            _o11y_folder_uids: >-
+              {{ _live_folders.stdout | from_json
+                 | selectattr('title', 'in', _o11y_provisioned.groups | default([]) | map(attribute='folder') | list)
+                 | map(attribute='uid') | list }}
+
+        - name: Require the live rule set to equal the provisioned rules
           ansible.builtin.assert:
             that:
-              - _o11y_rules | selectattr('uid', 'equalto', 'o11y_service_down') | list | length == 1
-              - _o11y_rules | selectattr('uid', 'equalto', 'o11y_receiver_root_disk_low') | list | length == 1
-              - _o11y_rules | map(attribute='uid') | sort == _o11y_expected_uids
+              - _o11y_expected_rules | length > 0
+              - _o11y_rules | map(attribute='uid') | list == _o11y_expected_rules | map(attribute='uid') | list
+              - _o11y_rules | selectattr('uid', 'equalto', 'o11y_service_down') | selectattr('isPaused', 'defined') | selectattr('isPaused', 'equalto', false) | list | length == 1
               - _active_rules.stdout | from_json | map(attribute='uid') | select('in', _o11y_withdrawn_uids) | list | length == 0
-              - _o11y_rules_for_active_routing | selectattr('isPaused', 'defined') | selectattr('isPaused', 'equalto', false) | list | length == _o11y_rules_for_active_routing | length
-              - _o11y_rules_for_active_routing | selectattr('notification_settings', 'defined') | list | length == _o11y_rules_for_active_routing | length
-              - _o11y_rules_for_active_routing | rejectattr('notification_settings.group_by', 'equalto', ['service', 'environment', 'cluster', 'alertname']) | list | length == 0
-              - _o11y_rules_for_active_routing | rejectattr('notification_settings.group_wait', 'equalto', '30s') | list | length == 0
-              - _o11y_rules_for_active_routing | rejectattr('notification_settings.group_interval', 'equalto', '5m') | list | length == 0
-              - _o11y_rules_for_active_routing | rejectattr('notification_settings.repeat_interval', 'equalto', '4h') | list | length == 0
-            fail_msg: "Grafana has missing or paused o11y rules after alert enablement."
+            fail_msg: "Live Grafana alert rules do not match the provisioned rules file (missing, extra or withdrawn)."
+
+        # Same uid order on both sides (asserted above), so each field compares rule by
+        # rule; an absent or null notification_settings, or field, compares as ''. The
+        # durations are strings in the 11.4 AlertRuleNotificationSettings schema.
+        - name: Require each live rule's pause and routing to equal the provisioned rule's
+          ansible.builtin.assert:
+            that:
+              - _o11y_rules | map(attribute='isPaused', default='') | list == _o11y_expected_rules | map(attribute='isPaused', default='') | list
+              - _live_settings | map(attribute=item, default='') | list == _file_settings | map(attribute=item, default='') | list
+            fail_msg: "Live Grafana rules differ from the provisioned file in isPaused or notification_settings.{{ item }}."
           vars:
-            _o11y_rules: "{{ _active_rules.stdout | from_json | selectattr('uid', 'match', '^o11y_') | list }}"
-            _o11y_provisioned: "{{ _provisioned_rules_file.content | b64decode | from_yaml }}"
-            _o11y_expected_uids: >-
-              {{ _o11y_provisioned.groups | map(attribute='rules') | flatten
-                 | map(attribute='uid') | select('match', '^o11y_') | sort }}
-            _o11y_withdrawn_uids: "{{ _o11y_provisioned.deleteRules | default([]) | map(attribute='uid') | list }}"
-            _o11y_rules_for_active_routing: >-
-              {{ (_o11y_rules
-                  | rejectattr('uid', 'equalto', 'o11y_receiver_root_disk_low')
-                  | list)
-                 if (local_mode | default(false) | bool)
-                 else _o11y_rules }}
+            _live_settings: "{{ _o11y_rules | map(attribute='notification_settings', default={}) | map('default', {}, true) | list }}"
+            _file_settings: "{{ _o11y_expected_rules | map(attribute='notification_settings', default={}) | map('default', {}, true) | list }}"
+          loop:
+            - receiver
+            - group_by
+            - group_wait
+            - group_interval
+            - repeat_interval
+            - mute_time_intervals
 
         - name: Read live Grafana contact points without displaying webhook settings
           ansible.builtin.command:
