@@ -1493,6 +1493,45 @@ templates:
     # scrape. Both restore paused provisioning in an always block. If the
     # controller is interrupted, run Restore o11y Alert Baseline (Dev).
 
+  - name: o11y Fault Drill (Dev)
+    playbook: platform/playbooks/o11y-fault-drill.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact Dev revision required before any fault is induced"
+        type: string
+        required: true
+      - name: drill
+        title: "Drill mode"
+        description: "exporter | probe | grafana"
+        type: string
+        required: true
+      - name: confirm_fault_drill
+        title: "Confirm mode"
+        description: "Type the drill mode again; anything else refuses"
+        type: string
+        required: true
+      - name: drill_node
+        title: "DGX node (exporter mode)"
+        description: "A node declared in o11y_fault_drill_exporters"
+        type: string
+        required: false
+      - name: drill_window_confirmed
+        title: "dgx-spark window agreed (exporter mode)"
+        description: "true only inside an agreed dgx-spark operator window"
+        type: string
+        required: false
+        default_value: "false"
+      - name: drill_restore_only
+        title: "Restore only"
+        description: "true after an interrupted run: restore and prove, induce nothing"
+        type: string
+        required: false
+        default_value: "false"
+    # inference-telemetry-production 2.5 (exporter), 3.5 (probe), 3.6 (grafana).
+    # One bounded fault, alert proof, restore in an always block. Dry run induces nothing.
+
   - name: Restore o11y Alert Baseline (Dev)
     playbook: platform/playbooks/restore-o11y-alert-baseline.yml
     repository: agent-cloud dev

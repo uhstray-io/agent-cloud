@@ -301,6 +301,45 @@ drill job and the active alert/contact state is read back. It does not remove
 stored metrics, logs, or traces. This recovery is separate from the paused
 canary's `Restore o11y Alert Baseline (Dev)` workflow.
 
+## Fault drills (`o11y Fault Drill (Dev)`)
+
+`platform/playbooks/o11y-fault-drill.yml` induces one bounded fault, proves the alert
+path it should trip, restores in an `always:` section and proves the alert cleared. It is
+the drill that inference-telemetry-production tasks 2.5, 3.5 and 3.6 name.
+
+| Mode | Fault | Proof | Restore |
+|------|-------|-------|---------|
+| `exporter` | stop one DGX node exporter's systemd unit | `up{job="dgx-spark-node",node=…} == 0`, then `inference_target_down` (group `telemetry-missing`) firing for that node within 12 min | unit started; `up == 1`; alert no longer firing |
+| `probe` | probe environment points at an unservable model; `inference-probe.service` started at once | `/health` 200 on 24 checks over 12 min, `inference_probe_failing` firing for that model, contact-point Discord line `service=vllm` | environment copied back, one good sample taken, alert cleared |
+| `grafana` | `o11y-grafana` stopped (≤15 min, `drill_grafana_hold_minutes`) | the liveness watcher's own Discord line (`o11y liveness watcher:`), posted by its scheduled `Check o11y Liveness (Dev)` run | container started; `/api/health` answers |
+
+Every run requires `expected_repository_sha` (clean reviewed controller checkout) and
+`confirm_fault_drill` equal to `drill`. `exporter` also refuses unless
+`drill_window_confirmed=true` (an agreed dgx-spark window) and `drill_node` is declared in
+the private inventory map `o11y_fault_drill_exporters: {<node>: {host: <inventory host>,
+unit: <exporter systemd unit>}}`. `exporter` and `probe` refuse a paused rule (alerts must
+be enabled). A dry run (`--check`) runs every refusal and read and induces nothing. After an
+interrupted run, launch the same mode with `drill_restore_only=true`. A host that becomes unreachable
+mid-drill does not skip the restore (the fault section sets `ignore_unreachable`; Ansible
+skips `always:` for unreachable hosts); the run then fails naming that recovery. The
+probe environment file holds the inference key, so every task touching it sets
+`diff: false` and `no_log`. The probe restore requires a success sample for the deployed
+model newer than the restore, and the resolved check covers every drill model name.
+
+### Fresh-volume render proof (task 3.5)
+
+"Dashboards render from provisioning alone" is proven on throwaway state, never by
+wiping the production receiver (operator decision 2026-10-04):
+
+```bash
+make local-o11y-render-proof     # = scripts/o11y-render-proof.sh
+```
+
+It renders `templates/alerts.yml.j2` with the DGX and probe groups on (paused), starts a
+uniquely named Grafana on an anonymous empty volume with the committed provisioning, reads
+back every dashboard uid and alert-rule uid over the API, and removes the container and
+volume on exit. It shares no port, network or volume with a running stack.
+
 ## Trace rollout receipts
 
 Both receiver and gateway deploys use the shared trace gate when tracing is
