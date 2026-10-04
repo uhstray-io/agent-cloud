@@ -157,7 +157,7 @@ Decided by OPA on the committed catalog
   ("service proposal names a destructive template").
 - **Manage agentgateway Client Key** and **Rollback Inference Route.** Neither is on any
   workflow role's `allowed_templates` or `service_deploy_templates` (`data.json`), so OPA
-  denies them to `infra-agent`, `security-agent`, `o11y-agent` and `service-agent`. Note: the
+  denies them to `infra-agent`, `security-agent`, `o11y-agent`, `service-agent` and `network-agent`. Note: the
   legacy `skynet` and `nemoclaw` catalog entries declare no `allowed_templates`
   (`data.json:3`, `data.json:62`), so they are not role-scoped (`agent_actions.rego:74`): OPA
   limits their `run_task` by template only through the destructive rule

@@ -247,6 +247,7 @@ and `nemoclaw` entries are frozen with a comment that they are no longer agent r
 | `security-agent` | semaphore: run_task, check_task; netbox: read | 8, 16-17, 20-22 |
 | `o11y-agent` | semaphore: run_task, check_task; netbox: read | 12, 18 |
 | `service-agent` | semaphore: run_task, check_task; netbox: read | 9, 11, 13-15, 18, 20 |
+| `network-agent` | semaphore: run_task, check_task; netbox: read | edge-dns (added 2026-10-04 by operator decision: the step split from edge-route, run by Apply Cloudflare Tofu; the role is not bound to `netclaw`, which stays frozen per D7) |
 
 ### Registry (`platform/workflows/service-onboarding/registry.yml`)
 

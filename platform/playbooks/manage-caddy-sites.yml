@@ -45,9 +45,9 @@
 # registry.yml) last, in check mode too. From the executor it resolves the probe URL's host and
 # requests the URL — caddy_probe_url, default https://<caddy_probe_host>/ — so the route is judged by the path a client takes:
 # pass needs the name to resolve and an HTTP answer below 500 (a 5xx is Caddy answering for an
-# upstream that is down). No caddy_probe_host declared fails: the route cannot be checked. The
-# registry's third criterion, a zero-diff Cloudflare plan, is Apply Cloudflare Tofu's to prove,
-# not this playbook's. A dry run probes the live route, so a route not yet loaded records a fail
+# upstream that is down). No caddy_probe_host declared fails: the route cannot be checked. A
+# zero-diff Cloudflare plan is its own step, edge-dns, recorded by Apply Cloudflare Tofu,
+# not by this playbook. A dry run probes the live route, so a route not yet loaded records a fail
 # there: the criterion is not met yet. A host that fails before its verdict counts as failed.
 # The verdict is RECORDED here, not fatal, so the edit's own outcome stays its own: an importer
 # decides. rollback-inference-route.yml imports this playbook and FAILS on _edge_group_errors

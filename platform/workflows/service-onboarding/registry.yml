@@ -253,7 +253,7 @@ steps:
     order: 16
     diagram_label: null
     added: true
-    owner: service-agent
+    owner: network-agent
     executor: Apply Cloudflare Tofu
     undo: none
     policy: required

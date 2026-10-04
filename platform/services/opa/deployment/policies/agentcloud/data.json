@@ -139,7 +139,6 @@
         "Check Secrets",
         "Verify Service Health",
         "Manage Caddy Sites",
-        "Apply Cloudflare Tofu",
         "Snapshot Service Assessment",
         "Snapshot Access"
       ],
@@ -153,6 +152,21 @@
         "Deploy UhhCraft",
         "Deploy ComfyUI Sidecar",
         "Deploy Hunyuan3D Sidecar"
+      ]
+    },
+    "network-agent": {
+      "allowed_actions": {
+        "semaphore": [
+          "list_templates",
+          "run_task",
+          "check_task"
+        ],
+        "netbox": [
+          "read"
+        ]
+      },
+      "allowed_templates": [
+        "Apply Cloudflare Tofu"
       ]
     },
     "semaphore": {
@@ -299,7 +313,7 @@
         "reviewed": false
       },
       "edge-dns": {
-        "owner": "service-agent",
+        "owner": "network-agent",
         "templates": [
           "Apply Cloudflare Tofu"
         ],

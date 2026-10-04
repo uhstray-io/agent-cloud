@@ -202,3 +202,12 @@ playbook reaching `main`. Once `dev` is promoted to `main`, the stamps can land 
 other change (`main` has no `workflow_steps` in `data.json` yet).
 
 Remaining gaps: access-harden and oidc-config (other work in progress), and service-deploy.
+
+### edge-dns owner — 2026-10-04
+
+The operator decided the same day that `service-agent` must not launch Apply Cloudflare Tofu.
+A new role-scoped OPA identity, `network-agent`, now owns edge-dns, and it is the only role
+with that template on its `allowed_templates`. The review rules are unchanged: OPA allows only
+the `(Dev)` variant until the step is stamped. The role has no principal bound to it. Agent
+identity is the `agent` field of each OPA request, and no other mapping exists in this repo.
+`netclaw` stays frozen (plan 15 D7).

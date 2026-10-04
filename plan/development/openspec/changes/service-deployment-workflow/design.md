@@ -172,7 +172,8 @@ flowchart LR
   limits, telemetry, routes. skynet's orchestration API (start a run, run status, eval
   replay) is one more route on the gateway, key-gated like `/v1`.
 - skynet's agent-cloud path drops Bifrost: Tier 2 calls agentgateway directly. Each role
-  (`infra-agent`, `security-agent`, `o11y-agent`, `service-agent`) plus `skynet-eval` is an
+  (`infra-agent`, `security-agent`, `o11y-agent`, `service-agent`, and since 2026-10-04
+  `network-agent`) plus `skynet-eval` is an
   entry in `agw_clients`, so per-role budgets and attribution come from the gateway's
   existing per-identity accounting instead of new code.
 - Bifrost's pre-inference gates (model authorization, cloud-egress DLP) map to the gateway:

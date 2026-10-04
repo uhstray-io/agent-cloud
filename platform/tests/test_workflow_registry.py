@@ -24,7 +24,7 @@ SERVICE_OVERVIEW_DASHBOARD = REPO / "platform/services/o11y/deployment/config/gr
 DRAWING = REPO / "docs/agent-cloud-service-deploy.excalidraw"
 OPA_DATA = REPO / "platform/services/opa/deployment/policies/agentcloud/data.json"
 
-ROLES = {"infra-agent", "security-agent", "o11y-agent", "service-agent"}
+ROLES = {"infra-agent", "security-agent", "o11y-agent", "service-agent", "network-agent"}
 PER_SERVICE = "Deploy {service}"
 # The secret store, the orchestrator, the IPAM authority, the runner security boundary and the
 # all-services wrapper: never an agent's per-service deploy.
