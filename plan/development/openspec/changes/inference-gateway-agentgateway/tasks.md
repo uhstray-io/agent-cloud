@@ -355,6 +355,13 @@
       tasks 2460 (dry run) and 2462: keyless request 401, keyed models list and one completion
       through mutual TLS. Left open: this note does not re-verify the local-dev records, the
       allowlist refusal or the BATS assertions the task names
+      2026-10-03: the assertions exist as pytest, not BATS — `platform/tests/test_agw_listener_tls.py`:
+      both listeners render TLS with the CA root and the SAN rule
+      (`test_both_listeners_serve_tls_require_a_ca_client_cert_and_carry_the_san_rule`), the
+      default list is `caddy` alone (`test_the_default_allowlist_is_caddy_alone`), and an
+      undeclared entry is refused naming it
+      (`test_a_declaration_the_gateway_cannot_serve_is_refused_naming_it`, case `undeclared`).
+      The local-dev records the task names are still not re-verified here
 - [ ] 6.1a The one gateway probe path. Every check that sends a request to the gateway
       from outside Caddy uses it: this deploy's own verify, the personal-key 401 gates
       (`inference-personal-keys`), the renewal proof for the client leaves that are probed
@@ -385,6 +392,11 @@
       line. Local-dev keeps `agw_verify_base_url` and sets it to the SAN form; unverified:
       how the Semaphore container resolves that name on the `local-dev` network, settled
       before 6.1a lands
+      2026-10-03: CODE LANDED — `platform/playbooks/tasks/agw-probe.yml` is the shared probe;
+      `deploy-agentgateway.yml` sends its three probes through it. Name resolution is the one
+      step `tasks/agw-probe-resolution.yml` (PR #418), used by `deploy-agentgateway.yml` and,
+      read-only, by `renew-internal-certs.yml` (PR #420). The other consumers this task lists
+      (personal keys, benchmark VM, access-record verify) are not checked here
 - [ ] 6.2 Caddy's `inference` and `admin.inference` blocks proxy to `https://` with
       `transport http { tls_server_name <gateway SAN>; tls_trust_pool file <root>;
       tls_client_auth <cert> <key> }` (Caddy 2.11.4), the leaf files read from the Caddy

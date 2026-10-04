@@ -123,6 +123,26 @@ For services needing WebSocket support (e.g., collaborative editing, real-time d
 }
 ```
 
+### Mutual-TLS Upstream Block
+
+A route in `caddy_routes` (rendered by `platform/services/caddy/deployment/templates/Caddyfile.local.j2`)
+may declare `upstream_tls: {server_name, client_leaf}`. The template then renders:
+
+```caddyfile
+reverse_proxy https://<upstream> {
+    transport http {
+        tls_server_name <server_name>
+        tls_trust_pool file /etc/caddy/certs/step-ca-bundle.crt
+        tls_client_auth /etc/caddy/certs/<client_leaf>/current/cert.pem /etc/caddy/certs/<client_leaf>/current/key.pem
+    }
+}
+```
+
+The `current/` directory is mounted rather than the files, because renewal swaps it. Asserted
+by `platform/tests/test_service_caddy.bats` ("an upstream_tls route proxies over mutual TLS").
+Production blocks in `caddy_managed_sites` are raw Caddyfile text, so they write these
+directives directly.
+
 ### Variable Resolution
 
 Variables resolve at container startup. Currently `start-caddy.sh` parses CLI args and exports them before `docker compose up`. [TARGET] replace this with Ansible-templated `.env` files following the composable pattern.

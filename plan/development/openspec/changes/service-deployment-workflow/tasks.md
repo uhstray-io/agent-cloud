@@ -209,6 +209,11 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
         four passing stamps wait on the matching OPA `data.json` workflow_steps change.
       - 2026-10-03: review merged in PR #397: 4 pass, 13 fail (twelve with no step result, plus
         systemd-enablement). Stamps wait on the OPA `data.json` change and a decision on the `main` run
+      - 2026-10-03: the missing emits landed — access executors (PR #413), VM lifecycle
+        executors (#416), service executors (#417), and several results per run with
+        `provision-vm.yml` recording `cloud-init` (#419). The per-service deploy step and
+        `deploy-authentik.yml` outside its `oidc-config` step still record none. The D10
+        re-review against these merges is PR #421 (open).
 - [x] 7.2 `provision-vm.yml` sets `onboot`; restart-policy check beside `enable-linger`.
       2026-09-22: onboot with per-host opt-out; `verify-service-persistence.yml` (step
       systemd-enablement) passes on local tududi, normal and check mode (tasks 977, 978)
@@ -241,6 +246,10 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
         reports it. The ARP and Proxmox reads can only run against production (local-dev has
         neither), so they are proven by the evaluated BATS test and wait for a `(Dev)` dry run.
         OPEN: `instrument-host-o11y.yml`, blocked on the OTLP receiver.
+      - 2026-10-03: blocker restated — the receiver exists in code:
+        `platform/services/o11y/deployment/templates/config.alloy.j2:136`
+        (`otelcol.receiver.otlp "traces"`) and `:202` (`"conformance"`). What remains open is
+        `instrument-host-o11y.yml` itself (no such playbook exists yet).
 - [x] 7.4 Snapshot templates for service, firewall and access assessment; each verify-only,
       emitting one JSON document. 2026-09-22: all three pass on local tududi in normal and
       check mode (tasks 971-976); the document is recorded with set_stats under `snapshot`
