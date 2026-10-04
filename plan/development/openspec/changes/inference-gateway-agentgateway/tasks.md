@@ -234,6 +234,11 @@
       from the gateway translating `/v1/responses` to chat completions, because the provider
       declares only the `completions` format (agentgateway v1.5.0 source, see `architecture.md`).
       Open: decide whether to declare the `responses` format for passthrough or accept the case.
+      2026-10-04: decision on the open question above (operator): declare the `responses`
+      upstream format beside `completions` so the gateway passes `/v1/responses` through to vLLM
+      instead of translating it (schema and policy evidence from agentgateway v1.5.0 source in
+      `context/architecture.md`, "Upstream"). The next production run decides whether the case
+      matches.
 - [ ] 2.3 Confirm SSE keep-alive comment lines from vLLM pass through unchanged and
       unbuffered (needs dgx-spark `inference-endpoint-reliability` deployed)
 - [ ] 2.3a Streams and the budget: confirm whether a streamed completion is charged to the

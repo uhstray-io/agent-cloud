@@ -234,8 +234,14 @@ llm:
   - name: {{ m.name }}
     provider:
       custom:
+        # `responses` lets /v1/responses pass through to vLLM's own endpoint
+        # (chat translation dropped reasoning items and echoed fields; prod
+        # conformance task 2681). Format list, route pick and default path
+        # `<baseUrl>/responses`: agentgateway v1.5.0 crates/llm/src/custom.rs:189-232,
+        # crates/agentgateway/src/llm/mod.rs:324,991-1000,1338-1380.
         formats:
         - type: completions
+        - type: responses
     params:
       baseUrl: {{ agw_upstream_base_url }}
 {% if m.upstream_model | default('') %}

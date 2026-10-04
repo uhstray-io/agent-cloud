@@ -188,6 +188,9 @@ setup() {
 @test "agentgateway: upstream is the custom completions provider with an inventory baseUrl" {
   assert_grep -qE '^\s*custom:' "$CONFIG"
   assert_grep -qE '^\s*-\s*type: completions' "$CONFIG"
+  # Responses is a declared upstream format, so /v1/responses passes through
+  # natively instead of being translated to chat completions (task 2681).
+  assert_grep -qE '^\s*-\s*type: responses' "$CONFIG"
   assert_grep -qF 'baseUrl: {{ agw_upstream_base_url }}' "$CONFIG"
 }
 
