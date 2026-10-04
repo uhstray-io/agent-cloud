@@ -291,3 +291,27 @@ The timing measures below were not part of that report and stay pending.
   `choices.[].delta` from the gateway side, now accepted (union of the task 2614 and 2698 records).
   Model selection made deterministic (see "Accepted shape differences, second record").
 - Task 2 (conformance against the direct upstream): shape decision recorded; timing deltas pending.
+
+## Streamed completions and the token budget (task 2.3a)
+
+Operator decision 2026-10-04: a streamed call must be charged to the caller's per-key budget.
+agentgateway v1.5.0 already does this for chat completions, so no config knob is set:
+
+- On `/v1/chat/completions` with `stream: true` and no `stream_options`, the gateway sets
+  `stream_options: {include_usage: true}` before forwarding (upstream
+  `crates/agentgateway/src/llm/mod.rs:1549-1560`, `process_completions_request`). vLLM then ends the
+  stream with a usage chunk (`choices: []`, `usage.*`). That is the extra chunk recorded under
+  "Stream chunks" above, so a client can see one chunk it did not ask for.
+- The chat stream reader records `prompt_tokens`/`completion_tokens`/`total_tokens` from that chunk
+  (`crates/llm/src/conversion/completions.rs:1207-1219`, `passthrough_stream`). The Responses
+  stream reads usage from the `response.completed` event
+  (`crates/llm/src/conversion/responses.rs:102-111`).
+- The budget is settled from those recorded figures when the request's log completes
+  (`crates/agentgateway/src/telemetry/log.rs:1279-1280`), i.e. after the stream ends.
+- Gap: a client that sends its own `stream_options` without `include_usage: true` is left as sent
+  (the injection only runs when `stream_options` is absent), and that stream is charged nothing.
+  v1.5.0 has no override for it; the request bucket still applies.
+
+The conformance `stream-xhigh` case sends no `stream_options` and fails when the gateway's stream
+carries no usage chunk; the report shows `stream_usage` for both targets. vLLM is not required to
+send one, and the flag is not part of the semantic comparison.
