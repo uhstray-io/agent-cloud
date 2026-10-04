@@ -48,6 +48,14 @@
       variable name) and ssh_host_key_addr.
     quiet: true
 
+# The pinned line and its path decide which host the probe trusts; refuse an extra var
+# that would forge them (tasks/refuse-var-overrides.yml).
+- name: "Pin SSH host key: refuse extra-var overrides of its internal names"
+  ansible.builtin.include_tasks: refuse-var-overrides.yml
+  loop: "{{ ['_pshk_read', '_pshk_kh', '_pshk_line', '_pshk_write', ssh_host_key_result_var] }}"
+  loop_control:
+    loop_var: _rvo_name
+
 # Freeze the address and port HERE, in a task that is not delegated.
 - name: "Pin SSH host key: start from 'not pinned'"
   ansible.builtin.set_fact:
