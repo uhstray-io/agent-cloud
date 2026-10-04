@@ -395,12 +395,26 @@
 
     - name: "Name every identity the previous config enrols that the live one does not"
       vars:
+        # Every enrolment, wherever it sits: the template renders one apiKey policy (llm.policies),
+        # but a kept file is whatever was on disk, so the walk takes the `keys` list of EVERY
+        # `apiKey` mapping at any depth (from_yaml resolves anchors, aliases and merge keys).
         _keys_of: >-
+          {%- macro walk(n) -%}
+          {%- if n is mapping -%}
+          {%- for k, v in n.items() -%}
+          {%- if k == 'apiKey' and v is mapping and v.get('keys') is sequence and v.get('keys') is not string -%}
+          {%- for e in v.get('keys') -%}{{ (e if e is mapping else {}) | to_json }},{%- endfor -%}
+          {%- endif -%}
+          {{- walk(v) -}}
+          {%- endfor -%}
+          {%- elif n is sequence and n is not string -%}
+          {%- for v in n -%}{{- walk(v) -}}{%- endfor -%}
+          {%- endif -%}
+          {%- endmacro -%}
           {%- set ns = namespace(out=[]) -%}
           {%- for r in _rb_cfg_text.results -%}
-          {%- set doc = ((r.content | default('') | b64decode | from_yaml) or {}) if r.content is defined else {} -%}
-          {%- set ks = ((((doc.llm | default({})) or {}).policies | default({})) or {}).apiKey | default({}) -%}
-          {%- set ns.out = ns.out + [(ks or {}).get('keys') or []] -%}
+          {%- set doc = (r.content | b64decode | from_yaml) if r.content is defined else {} -%}
+          {%- set ns.out = ns.out + [('[' ~ (walk(doc) | default('', true)) ~ 'null]') | from_json | select | list] -%}
           {%- endfor -%}
           {{ ns.out }}
         _live_creds: >-
