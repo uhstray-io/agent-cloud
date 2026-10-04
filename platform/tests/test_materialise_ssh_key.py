@@ -494,7 +494,28 @@ def test_extra_vars_cannot_move_the_pinned_known_hosts(tmp_path, playbook):
     out, _, _ = _run(tmp_path, playbook, check=True, ssh="ok",
                      cli=["-e", f"_pshk_root={tmp_path / 'evil'}", "-e", f"_pshk_kh={kh}"])
     assert not kh.exists(), "an extra var redirected the pinned known_hosts"
-    assert out.returncode != 0 and "refusing to write it" in out.stdout, out.stdout[-1500:]
+    # Refused up front now (tasks/refuse-var-overrides.yml); the inline-root check stays behind it.
+    assert out.returncode != 0 and ("refusing to write it" in out.stdout
+                                    or "_pshk_kh is internal to this play" in out.stdout), out.stdout[-1500:]
+
+
+@needs_ansible
+@pytest.mark.parametrize("playbook", CONVERTED)
+@pytest.mark.parametrize("forged", ["_msk_dir", "result_var"])
+def test_extra_vars_cannot_misdirect_the_key_or_its_wipe(tmp_path, playbook, forged):
+    # PR #430 review: an extra var outranks register/set_fact, so a forged `_msk_dir` sends the
+    # key to a directory the wipe never learns of, and a forged result var points the wipe away
+    # from where the key went. Either is refused before a byte of key material is written.
+    name = _section(playbook)[2] if forged == "result_var" else "_msk_dir"
+    decoy = tmp_path / ".sshkey_decoy"
+    decoy.mkdir()
+    forged_value = json.dumps({name: {"path": str(decoy), "dir": str(decoy), "key": str(decoy / "id"),
+                                      "known_hosts": str(decoy / "known_hosts"), "materialised": True}})
+    out, calls, _ = _run(tmp_path, playbook, check=False, ssh="ok", cli=["-e", forged_value])
+    assert out.returncode != 0, out.stdout[-1500:]
+    assert f"{name} is internal to this play" in out.stdout, out.stdout[-2000:]
+    assert not [c for c in calls if "key" in c], "ssh ran with a key despite the forged var"
+    assert not (decoy / "id").exists()
 
 
 @needs_ansible

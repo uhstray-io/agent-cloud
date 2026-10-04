@@ -92,6 +92,13 @@ Do not hand-roll `tempfile` + `copy` again: `tempfile` has no check-mode support
 pattern cannot pass a dry run (`platform/tests/test_materialise_ssh_key.py` holds the closed
 list of files allowed to write a private key).
 
+**Internal names cannot come from extra vars.** An extra var outranks anything a play
+registers or sets, so `-e` could forge a probe result or a scratch path. A play whose gates or
+cleanup read such names includes `tasks/refuse-var-overrides.yml` first, passing each name as
+the loop variable `_rvo_name` (a loop variable, unlike an include var, is not outranked by
+`-e`); it refuses any name an extra var holds. The materialise and pin tasks guard their own
+internal names the same way.
+
 ```yaml
 - name: "Fetch key"
   ansible.builtin.set_fact:

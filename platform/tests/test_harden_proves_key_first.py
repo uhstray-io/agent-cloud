@@ -18,7 +18,6 @@ import yaml
 REPO = Path(__file__).resolve().parents[2]
 PLAYBOOK = REPO / "platform/playbooks/harden-ssh.yml"
 PROBE = "Probe a fresh key-only login before hardening"
-REFUSE = "Refuse to harden without a proven key-only login"
 WRITERS = ("ansible.builtin.copy", "ansible.builtin.lineinfile", "ansible.builtin.meta")
 
 
@@ -37,7 +36,11 @@ def test_the_key_only_proof_precedes_every_edit():
     tasks = _host_tasks()
     names = [t.get("name") for t in tasks]
     first_write = next(i for i, t in enumerate(tasks) if any(m in t for m in WRITERS))
-    assert names.index(PROBE) < names.index(REFUSE) < first_write, names[first_write]
+    assert names.index(PROBE) < first_write, names[first_write]
+    # Decided inside the probe task itself, from its own rc and stdout: no later or outside
+    # variable can open the gate.
+    assert tasks[names.index(PROBE)]["failed_when"] == \
+        "_key_preproof.rc != 0 or 'KEY_ONLY_OK' not in _key_preproof.stdout"
     probe = tasks[names.index(PROBE)]
     argv = probe["ansible.builtin.command"]["argv"]
     for opt in ("BatchMode=yes", "StrictHostKeyChecking=yes", "IdentitiesOnly=yes",
@@ -48,7 +51,8 @@ def test_the_key_only_proof_precedes_every_edit():
 
 
 def test_key_only_evidence_comes_only_from_the_pre_hardening_probe():
-    emit = yaml.safe_load(PLAYBOOK.read_text())[-1]["tasks"][1]
+    emit = next(t for t in yaml.safe_load(PLAYBOOK.read_text())[-1]["tasks"]
+                if str(t.get("ansible.builtin.include_tasks", "")).endswith("emit-step-result.yml"))
     evidence = emit["vars"]["step_result_evidence"]["key_only_proven"]
     assert "_key_preproof" in evidence and "_key_test" not in evidence
 
@@ -83,6 +87,55 @@ def test_a_failed_proof_edits_nothing_and_records_the_refusal(tmp_path):
     assert cfg.read_text() == "PasswordAuthentication yes\n", out
     assert "TASK [Harden /etc/ssh/sshd_config]" not in proc.stdout, out
     result = step_results.results_in(proc.stdout.splitlines())[0]
-    assert result["status"] == "fail" and REFUSE in result["error"], result
+    assert result["status"] == "fail" and PROBE in result["error"], result
     assert "Permission denied" in result["error"], result
     assert result["evidence"]["key_only_proven"] in (False, "False"), result
+
+
+GUARD = "tasks/refuse-var-overrides.yml"
+
+
+def test_every_gate_name_is_refused_as_an_extra_var_before_anything_runs():
+    plays = yaml.safe_load(PLAYBOOK.read_text())
+    host = list(_flat(plays[0]["tasks"]))
+    first = host[1]  # the block's first task
+    assert first.get("ansible.builtin.include_tasks") == GUARD and first["loop_control"]["loop_var"] == "_rvo_name"
+    for name in ("_key_preproof", "_proof_key", "_proof_pin", "_verify_key", "_verify_pin", "_pw_problems"):
+        assert name in first["loop"], name
+    ctl = plays[-1]["tasks"][0]
+    assert ctl.get("ansible.builtin.include_tasks") == GUARD
+    for name in ("_harden_verdict", "_harden_error", "_pw_problems", "_key_preproof"):
+        assert name in ctl["loop"], name
+
+
+@pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="ansible-playbook not installed")
+@pytest.mark.parametrize("forged", [
+    '{"_key_preproof": {"rc": 0, "stdout": "KEY_ONLY_OK"}}',
+    '{"_proof_key": {"materialised": true, "dir": "/nonexistent", "key": "/nonexistent/id", "known_hosts": "/x"}}',
+    '{"_harden_verdict": true}',
+])
+def test_a_forged_internal_var_is_refused_before_any_write(tmp_path, forged):
+    cfg = tmp_path / "sshd_config"
+    cfg.write_text("PasswordAuthentication yes\n")
+    inv = tmp_path / "inv.ini"
+    inv.write_text("[demo_svc]\nh1 ansible_connection=local service_name=demo ansible_user=nobody\n")
+    env = harness_sandbox.env_for(tmp_path)
+    env.update(BAO_ROLE_ID="r", BAO_SECRET_ID="s")
+    proc = harness_sandbox.run(
+        ["ansible-playbook", "-i", str(inv), str(PLAYBOOK), "-e", "target_service=demo_svc",
+         "-e", "ansible_become=false", "-e", "openbao_addr=https://127.0.0.1:9", "-e", forged,
+         "-e", f"_sshd_config_path={cfg}", "-e", f"_sshd_config_dir={tmp_path}"],
+        tmp_path, cwd=REPO, env=env)
+    out = proc.stdout + proc.stderr
+    name = next(iter(__import__("json").loads(forged)))
+    assert proc.returncode != 0, out
+    assert f"{name} is internal to this play" in proc.stdout, out[-3000:]
+    assert cfg.read_text() == "PasswordAuthentication yes\n", out
+    # No scratch directory, so no key on the runner (the shared temp root is not inspected:
+    # parallel tests use it too).
+    for task in ("Fetch management private key from OpenBao",
+                 "Materialise SSH key: create the runner-local scratch directory (0700)", "Harden /etc/ssh/sshd_config",
+                 "Materialise SSH key: write the key material (0600)"):
+        assert f"TASK [{task}]" not in proc.stdout, task
+    # Nothing records a pass from a forged value.
+    assert '"status": "pass"' not in proc.stdout

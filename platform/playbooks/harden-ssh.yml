@@ -52,6 +52,17 @@
         # requires a sudo password. become:false here so this fetch itself needs no
         # sudo. On an already-NOPASSWD host the value is simply unused. Empty/missing
         # become_password => become fails loudly (correct: run store-ssh-password.yml).
+        # Extra vars outrank everything this play registers or sets (refuse-var-overrides.yml
+        # cites the precedence), so a forged probe result could open the gate below or a
+        # forged path could misdirect a key wipe. Refused before anything runs. Not probed:
+        # _harden_error and _harden_verdict, read with `is defined`/truthiness — the
+        # controller play refuses an override of those.
+        - name: "Refuse extra-var overrides of this play's internal names"
+          ansible.builtin.include_tasks: tasks/refuse-var-overrides.yml
+          loop: [_mgmt_priv_key, _proof_key, _proof_pin, _key_preproof, _sshd_overrides, _verify_key, _verify_pin, _key_test, _pw_probe, _sshd_eff, _pw_problems]
+          loop_control:
+            loop_var: _rvo_name
+
         - name: "Fetch sudo (become) password from OpenBao"
           ansible.builtin.set_fact:
             ansible_become_password: "{{ lookup('community.hashi_vault.hashi_vault',
@@ -135,7 +146,9 @@
               become: false
               register: _key_preproof
               changed_when: false
-              failed_when: false
+              # The gate is decided HERE, from this task's own result, so nothing set later or
+              # from outside can open it; the rescue records the failure with ssh's last line.
+              failed_when: _key_preproof.rc != 0 or 'KEY_ONLY_OK' not in _key_preproof.stdout
               check_mode: false
 
           always:
@@ -143,16 +156,6 @@
               ansible.builtin.include_tasks: tasks/remove-ssh-key.yml
               vars:
                 ssh_key_result_var: _proof_key
-
-        - name: "Refuse to harden without a proven key-only login"
-          ansible.builtin.assert:
-            that: "'KEY_ONLY_OK' in (_key_preproof.stdout | default(''))"
-            fail_msg: >-
-              Key-only login to {{ inventory_hostname }} is NOT proven (ssh rc
-              {{ _key_preproof.rc | default('?') }}:
-              {{ _key_preproof.stderr_lines | default([]) | last | default('no output') }}),
-              so password auth was left in place and nothing was edited.
-            quiet: true
 
         - name: "Configure NOPASSWD sudo for user — {{ ansible_user }}"
           ansible.builtin.copy:
@@ -365,7 +368,9 @@
             _harden_error: >-
               {{ ansible_failed_task.name | default('a task') }}:
               {{ '(details hidden: the task is no_log)' if (ansible_failed_task.no_log | default(false) | bool)
-                 else (ansible_failed_result.msg | default('failed')) }}
+                 else (ansible_failed_result.msg | default('failed'))
+                      ~ ((' — ' ~ (ansible_failed_result.stderr_lines | last))
+                         if (ansible_failed_result.stderr_lines | default([]) | length) > 0 else '') }}
 
     # Reached on success AND after a rescued failure; an unreachable host never gets here.
     - name: "Mark this host's verdict as reached"
@@ -400,6 +405,14 @@
     _targets: "{{ groups.get(target_service, []) }}"
     _verdicts: "{{ _targets | map('extract', hostvars) | list }}"
   tasks:
+    # Host facts are read from hostvars below; an extra var outranks every one of them, so
+    # refuse it here (this play's own facts are probed; -e applies to every host alike).
+    - name: "Refuse extra-var overrides of this play's internal names"
+      ansible.builtin.include_tasks: tasks/refuse-var-overrides.yml
+      loop: [_harden_verdict, _harden_error, _pw_problems, _key_preproof, _group_errors]
+      loop_control:
+        loop_var: _rvo_name
+
     # key_only_proven comes ONLY from the pre-hardening probe: the fresh key-only login made
     # before sudoers or sshd_config was touched.
     - name: "Collect the verdict across the target group"

@@ -69,6 +69,15 @@
       variable name).
     quiet: true
 
+# Every name below decides what is written or wiped; an extra var outranks register and
+# set_fact, so refuse one (tasks/refuse-var-overrides.yml). The result var is named by
+# the caller and so passed through the same loop variable.
+- name: "Materialise SSH key: refuse extra-var overrides of its internal names"
+  ansible.builtin.include_tasks: refuse-var-overrides.yml
+  loop: "{{ ['_msk_dir', '_rsk_dir', ssh_key_result_var] }}"
+  loop_control:
+    loop_var: _rvo_name
+
 - name: "Materialise SSH key: refuse empty key material"
   ansible.builtin.assert:
     that:

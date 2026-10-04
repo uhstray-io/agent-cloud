@@ -1,0 +1,47 @@
+---
+# refuse-var-overrides.yml — refuse to run when an extra var shadows one of a play's
+# internal names.
+#
+# Extra vars "always win precedence" over registered vars and set_facts (ansible-core
+# variable precedence, entries 19 and 22:
+# https://docs.ansible.com/ansible/latest/playbook_guide/playbooks_variables.html#understanding-variable-precedence).
+# So `-e '{"_key_preproof": {"stdout": "KEY_ONLY_OK"}}'` replaces whatever the play later
+# registers under that name, and a safety gate or a cleanup path that reads it reads the
+# forgery (PR #430 review). A Semaphore launch can pass extra vars.
+#
+# Mechanism: set the name to a probe value, then read it back. A name nothing outranks
+# reads back the probe; a name an extra var holds reads back the extra var, and the play
+# refuses. The probe value is left in place; the caller's own register/set_fact replaces it.
+#
+# USAGE — the name arrives as the LOOP VARIABLE, never as an ordinary var: an extra var
+# outranks include/task vars (so `-e` could swap the list for a harmless one), but not a
+# loop variable (verified on ansible-core in this repo's toolchain: `-e item=x` leaves a
+# loop's `item` untouched). Include it FIRST, before anything reads or writes:
+#
+#   - name: "Refuse extra-var overrides of this play's internal names"
+#     ansible.builtin.include_tasks: tasks/refuse-var-overrides.yml
+#     loop: [_name_one, _name_two]
+#     loop_control:
+#       loop_var: _rvo_name
+
+- name: "Refuse var overrides: validate the name"
+  ansible.builtin.assert:
+    that:
+      - _rvo_name is defined
+      - _rvo_name is string
+      - _rvo_name is match('^[A-Za-z_][A-Za-z0-9_]*$')
+    fail_msg: "refuse-var-overrides.yml takes one plain variable name per iteration, as loop_var _rvo_name."
+    quiet: true
+
+- name: "Refuse var overrides: set the name to the probe value"
+  ansible.builtin.set_fact:
+    "{{ _rvo_name }}": "__override_probe__"
+
+- name: "Refuse var overrides: refuse the name if an extra var outranks it"
+  ansible.builtin.assert:
+    that: lookup('ansible.builtin.vars', _rvo_name, default='') == '__override_probe__'
+    fail_msg: >-
+      Refusing to run: {{ _rvo_name }} is internal to this play and is set from outside it
+      (an extra var outranks what the play registers), which would let a safety gate or a
+      cleanup path read a forged value.
+    quiet: true
