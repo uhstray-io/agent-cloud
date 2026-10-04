@@ -74,6 +74,17 @@ capacity, not an unallocated IP address. NetBox report task 1116 lacked a
 token-provisioning task requires separate authorization because it creates a
 persistent credential with view/add permissions.
 
+2026-10-04 measured budget (task 1.5, copied from `platform/services/o11y/deployment/README.md`,
+not re-measured): read-only budget task 1823, after production deploy task 1822 on `dev`
+`c0f65d9b`, resolved all five named volumes to the shared guest-root filesystem with 7.06%
+free, 13,088 active Prometheus head series, 87.55% guest memory headroom and a sample limit
+of 2,000. Read-only budget task 1831, after deploy task 1830 on `dev` `33905575`, read 6.75%
+root free, 13,503 active series and 87.73% guest memory headroom. Retention at both reads:
+Prometheus 15d with a 0B size cap, Loki 7d, Tempo 168h. These are point-in-time readings,
+not the 24-hour read the task names, and carry no per-container resident memory; task 2115
+later read the guest root filesystem as full. Task 1.5 stays open for the per-container
+figures.
+
 ## Goals / Non-Goals
 
 Goals: one production Grafana with the two nodes and vLLM on graphs within a week of
