@@ -8,7 +8,8 @@
 # healthy (first boot runs DB migrations + applies blueprints, so allow time).
 #
 # Usage: ./deploy.sh [--no-pull]
-# Steps (idempotent): verify .env present, pull, up, wait healthy.
+# Steps (idempotent): verify .env present, pull, up (recreate only on input/image change),
+# wait healthy. Prints DEPLOY_CHANGED=true|false; the playbook reads it for changed status.
 
 set -euo pipefail
 
@@ -40,12 +41,13 @@ step_pull_image() {
 }
 
 step_start() {
-  info "Step 3: Starting authentik (postgres + redis + server + worker)..."
-  # --force-recreate: server/worker read runtime config (secrets, OIDC client
-  # secrets, blueprints' !Env) from `env_file: .env`. An env_file content change
-  # is NOT a compose-spec change, so plain `up -d` leaves the old containers
-  # running with stale env. Force-recreate so re-rendered .env always applies.
-  compose up -d --force-recreate
+  info "Step 3: Starting authentik (postgres + redis + server + worker), recreating only on change..."
+  # server/worker read runtime config (secrets, OIDC client secrets, blueprints' !Env) from
+  # `env_file: .env`, and the blueprints from the ./blueprints-active bind mount. Neither is a
+  # compose-spec change, so compose_up_if_changed (common.sh) hashes them with the compose
+  # files and recreates only when that digest or an image differs from what the running
+  # containers started with. A re-run with identical inputs touches nothing.
+  compose_up_if_changed blueprints-active
 }
 
 step_wait_healthy() {

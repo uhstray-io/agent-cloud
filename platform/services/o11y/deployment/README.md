@@ -82,6 +82,20 @@ series to exist in Prometheus. A different failed instance does not mask this
 target's result; a service-wide check without an instance still requires every
 scrape to be healthy. Keep the separate Loki log receipt for log shippers.
 
+## Recreate only on change
+
+`deploy.sh` starts the stack through `compose_up_if_changed` (`platform/lib/common.sh`). It
+hashes every input that must restart a container — the compose files in effect (including
+`compose.prod.yml` and the probe overlay when set), `.env`, `env/*.env` and everything under
+`config/` — and stores the digest as a label on each container. A deploy whose digest and
+image IDs match the running containers leaves them alone; a changed input, a re-pulled tag,
+a stopped or missing container, or a leftover container whose service is no longer
+declared recreates the whole project (`--remove-orphans` removes the leftover). The service set
+comes from the effective config (`compose config --services` over the same files). The script prints
+`DEPLOY_CHANGED=true` or `DEPLOY_CHANGED=false`, and `deploy-o11y.yml` reports the task
+changed only on the first. Operator decision 2026-10-04: a second deploy with identical
+inputs is a true no-op.
+
 ## Inference dashboards and alerts
 
 Three provisioned dashboards cover the DGX Spark pair: `inference-latency-capacity`
