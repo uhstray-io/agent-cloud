@@ -41,7 +41,7 @@ steps:
       - a cloud-init drive is attached to the template
     evidence_keys: [template_vmid, node]
     reviewed: null
-    review_gap: "none in the executor: passed all D10 checks 2026-10-03; the stamp waits on the matching OPA data.json workflow_steps change"
+    review_gap: "none in the executor: passed all D10 checks 2026-10-03; the stamp waits on the playbook reaching main (D10 review 2026-10-04)"
 
   - id: lookup-inventory
     order: 2
@@ -56,7 +56,7 @@ steps:
       - no other VM claims the declared address
     evidence_keys: [vm_spec, address_status]
     reviewed: null
-    review_gap: "none in the executor: passed all D10 checks 2026-10-02; the stamp waits on the matching OPA data.json workflow_steps change"
+    review_gap: "none in the executor: passed all D10 checks 2026-10-02; the stamp waits on the playbook reaching main (D10 review 2026-10-04)"
 
   - id: validate-address
     order: 3
@@ -70,7 +70,7 @@ steps:
       - a NetBox VM object exists for the service after the step
     evidence_keys: [arp_present, netbox_vm_id]
     reviewed: null
-    review_gap: "none in the executor: passed all D10 checks 2026-10-02; the stamp waits on the matching OPA data.json workflow_steps change"
+    review_gap: "none in the executor: passed all D10 checks 2026-10-02; the stamp waits on the playbook reaching main (D10 review 2026-10-04)"
 
   - id: provision-vm
     order: 4
@@ -84,7 +84,7 @@ steps:
       - onboot is 1
     evidence_keys: [vmid, node, onboot]
     reviewed: null
-    review_gap: "none in the executor: passed all D10 checks 2026-10-03; the stamp waits on the matching OPA data.json workflow_steps change"
+    review_gap: "none in the executor: passed all D10 checks 2026-10-03; the stamp waits on the playbook reaching main (D10 review 2026-10-04)"
 
   - id: cloud-init
     order: 5
@@ -98,7 +98,7 @@ steps:
       - SSH answers on the declared address with the bootstrap identity
     evidence_keys: [cloud_init_done, ssh_reachable]
     reviewed: null
-    review_gap: "result recorded by provision-vm.yml's verdict play since 2026-10-03; the D10 review has not been re-run against it"
+    review_gap: "none in the executor: passed all D10 checks 2026-10-04; the stamp waits on the playbook reaching main"
 
   - id: ssh-keys
     order: 6
@@ -113,7 +113,7 @@ steps:
       - key login is proven
     evidence_keys: [key_present, key_login]
     reviewed: null
-    review_gap: "none in the executor: passed all D10 checks 2026-10-03; the stamp waits on the matching OPA data.json workflow_steps change"
+    review_gap: "none in the executor: passed all D10 checks 2026-10-03; the stamp waits on the playbook reaching main (D10 review 2026-10-04)"
 
   - id: ssh-key-backup
     order: 7
@@ -128,7 +128,7 @@ steps:
       - the output carries names only
     evidence_keys: [branch]
     reviewed: null
-    review_gap: "none in the executor: passed all D10 checks 2026-10-03; the stamp waits on the matching OPA data.json workflow_steps change"
+    review_gap: "none in the executor: passed all D10 checks 2026-10-03; the stamp waits on the playbook reaching main (D10 review 2026-10-04)"
 
   - id: access-harden
     order: 8
@@ -176,7 +176,7 @@ steps:
       - live cores, memory and disk equal the declared spec
     evidence_keys: [cores, memory_mb, disk_gb]
     reviewed: null
-    review_gap: "none in the executor: passed all D10 checks 2026-10-03; the stamp waits on the matching OPA data.json workflow_steps change"
+    review_gap: "none in the executor: passed all D10 checks 2026-10-03; the stamp waits on the playbook reaching main (D10 review 2026-10-04)"
 
   - id: secrets-approle
     order: 11
@@ -192,7 +192,7 @@ steps:
         (a committed OpenBao policy file named for the service)
     evidence_keys: [path_found, key_count, missing, empty, approle]
     reviewed: null
-    review_gap: "none in the executor: passed all D10 checks 2026-10-02; the stamp waits on the matching OPA data.json workflow_steps change"
+    review_gap: "none in the executor: passed all D10 checks 2026-10-02; the stamp waits on the playbook reaching main (D10 review 2026-10-04)"
 
   - id: instrument-host
     order: 12
@@ -232,7 +232,7 @@ steps:
       - the service health URI answers 200 through its declared path
     evidence_keys: [health_status]
     reviewed: null
-    review_gap: "none in the executor: passed all D10 checks 2026-10-02; the stamp waits on the matching OPA data.json workflow_steps change"
+    review_gap: "none in the executor: passed all D10 checks 2026-10-02; the stamp waits on the playbook reaching main (D10 review 2026-10-04)"
 
   - id: edge-route
     order: 15
@@ -245,17 +245,26 @@ steps:
     criteria:
       - the hostname resolves
       - the route answers through Caddy
-      - the Cloudflare plan is zero-diff
     evidence_keys: [resolves, route_status]
     reviewed: null
-    review_gap: >-
-      criterion 3 (the Cloudflare plan is zero-diff) is not proven here: manage-caddy-sites.yml
-      delegates it to Apply Cloudflare Tofu (:49-50) and it is not in evidence_keys; splitting
-      the criterion into its own step or accepting the delegation is an operator decision (D10
-      review 2026-10-03)
+    review_gap: "none in the executor: passed all D10 checks 2026-10-04 (the zero-diff Cloudflare plan moved to edge-dns); the stamp waits on the playbook reaching main"
+
+  - id: edge-dns
+    order: 16
+    diagram_label: null
+    added: true
+    owner: service-agent
+    executor: Apply Cloudflare Tofu
+    undo: none
+    policy: required
+    criteria:
+      - the Cloudflare plan is zero-diff (after an apply, a fresh plan shows no changes)
+    evidence_keys: [plan_changes]
+    reviewed: null
+    review_gap: "none in the executor: passed all D10 checks 2026-10-04; the stamp waits on the playbook reaching main"
 
   - id: fw-assess
-    order: 16
+    order: 17
     diagram_label: FW Assess
     owner: security-agent
     executor: null
@@ -272,7 +281,7 @@ steps:
     reviewed: null
 
   - id: fw-harden
-    order: 17
+    order: 18
     diagram_label: FW Harden
     owner: security-agent
     executor: Apply Firewall
@@ -284,10 +293,10 @@ steps:
       - SSH answers after apply
     evidence_keys: [ufw_active, allows]
     reviewed: null
-    review_gap: "none in the executor: passed all D10 checks 2026-10-03; the stamp waits on the matching OPA data.json workflow_steps change"
+    review_gap: "none in the executor: passed all D10 checks 2026-10-03; the stamp waits on the playbook reaching main (D10 review 2026-10-04)"
 
   - id: instrument-service
-    order: 18
+    order: 19
     diagram_label: Instrument Service Observability
     owner: o11y-agent
     executor: null
@@ -300,7 +309,7 @@ steps:
     reviewed: null
 
   - id: systemd-enablement
-    order: 19
+    order: 20
     diagram_label: Systemd enablement
     owner: infra-agent
     executor: Verify Service Persistence
@@ -312,10 +321,10 @@ steps:
       - every container has restart policy always, or "no" as a declared one-shot that exited 0, or is started by the service's enabled agent-cloud-boot-<service>.service
     evidence_keys: [linger, restart_policies, boot_unit]
     reviewed: null
-    review_gap: "none in the executor: passed all D10 checks 2026-10-03; the stamp waits on the matching OPA data.json workflow_steps change"
+    review_gap: "none in the executor: passed all D10 checks 2026-10-03; the stamp waits on the playbook reaching main (D10 review 2026-10-04)"
 
   - id: access-assess
-    order: 20
+    order: 21
     diagram_label: Role & Access Assessment
     owner: service-agent
     executor: null
@@ -332,7 +341,7 @@ steps:
     reviewed: null
 
   - id: oidc-config
-    order: 21
+    order: 22
     diagram_label: OIDC Configuration
     owner: security-agent
     executor: Deploy Authentik
@@ -349,7 +358,7 @@ steps:
       (D10 review 2026-10-03)
 
   - id: credential-backup
-    order: 22
+    order: 23
     diagram_label: null
     added: true
     owner: security-agent
@@ -360,4 +369,4 @@ steps:
       - the named fields are present in site-config on a pushed branch
     evidence_keys: [branch, field_count]
     reviewed: null
-    review_gap: "none in the executor: passed all D10 checks 2026-10-03; the stamp waits on the matching OPA data.json workflow_steps change"
+    review_gap: "none in the executor: passed all D10 checks 2026-10-03; the stamp waits on the playbook reaching main (D10 review 2026-10-04)"

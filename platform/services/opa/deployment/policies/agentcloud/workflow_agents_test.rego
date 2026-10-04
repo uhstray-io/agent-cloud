@@ -140,6 +140,22 @@ test_destructive_template_denied_for_workflow_agent if {
 }
 
 # Scenario "Unreviewed step cannot run from main"
+# edge-dns (split from edge-route 2026-10-04): the service agent runs Apply Cloudflare Tofu
+# for that step only, and only off main until the step is reviewed.
+test_edge_dns_runs_apply_cloudflare_tofu_off_main if {
+	agentcloud.allow with input as _run("service-agent", "Apply Cloudflare Tofu", "edge-dns")
+}
+
+test_edge_dns_unreviewed_denied_on_main if {
+	d := agentcloud.decision with input as object.union(_run("service-agent", "Apply Cloudflare Tofu", "edge-dns"), {"template_name": "Apply Cloudflare Tofu", "git_branch": "main"})
+	not d.allowed
+	d.reason == "an unreviewed step cannot run from main"
+}
+
+test_edge_route_no_longer_executes_the_tofu_plan if {
+	not agentcloud.allow with input as _run("service-agent", "Apply Cloudflare Tofu", "edge-route")
+}
+
 test_unreviewed_step_denied_on_main if {
 	d := agentcloud.decision with input as object.union(_run("security-agent", "Harden SSH", "access-harden"), {"template_name": "Harden SSH", "git_branch": "main"})
 	not d.allowed

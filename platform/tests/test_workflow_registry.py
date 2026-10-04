@@ -46,9 +46,9 @@ def _drawn_labels() -> set[str]:
     }
 
 
-def test_twenty_two_steps_in_order():
-    assert len(STEPS) == 22
-    assert [s["order"] for s in STEPS] == list(range(1, 23))
+def test_twenty_three_steps_in_order():
+    assert len(STEPS) == 23
+    assert [s["order"] for s in STEPS] == list(range(1, 24))
     ids = [s["id"] for s in STEPS]
     assert len(set(ids)) == len(ids)
 

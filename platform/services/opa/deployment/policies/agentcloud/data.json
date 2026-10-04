@@ -139,6 +139,7 @@
         "Check Secrets",
         "Verify Service Health",
         "Manage Caddy Sites",
+        "Apply Cloudflare Tofu",
         "Snapshot Service Assessment",
         "Snapshot Access"
       ],
@@ -293,6 +294,14 @@
         "owner": "service-agent",
         "templates": [
           "Manage Caddy Sites"
+        ],
+        "per_service": false,
+        "reviewed": false
+      },
+      "edge-dns": {
+        "owner": "service-agent",
+        "templates": [
+          "Apply Cloudflare Tofu"
         ],
         "per_service": false,
         "reviewed": false

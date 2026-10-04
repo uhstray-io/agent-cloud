@@ -122,6 +122,24 @@ templates once this branch reaches `dev`. That run is read-only against producti
 construction: every write is skipped under `--check`, and each playbook's guard test
 enforces it.
 
+### Production `(Dev)` dry runs — 2026-10-04
+
+Production Semaphore, `(Dev)` templates on `dev` at 21891372, launched by the coordinator
+against the o11y service. Each result is identified by its Semaphore task id.
+
+| Template | Target | Result | Notes |
+|---|---|---|---|
+| Verify Host Access (Dev) | o11y_svc | pass (2727) | |
+| Distribute SSH Keys (Dev) | o11y_svc | fail (2728), then dry run pass (2741), real run 2742 | no per-service key existed at `secret/services/ssh/o11y`; generated in 2738 |
+| Apply Firewall (Dev) | o11y_svc | **fail (2729), pending** | the verify fails in check mode on the simulated rules; the fix is a separate PR (`fix/apply-firewall-check-mode-verify`) |
+| Provision VM (Dev) | o11y | pass (2735) | the existing VM was adopted and the clone was skipped |
+| Resize VM (Dev) | o11y | pass (2736) | |
+| Back Up Service SSH Key (Dev) | o11y | fail (2733, key absent), then dry run pass (2739) | |
+| Back Up Credentials to site-config (Dev) | o11y | pass (2734) | |
+| Harden SSH (Dev) | | **pending** | waits on the pre-proof change (separate PR) |
+| Destroy VM (Dev) | | **held** | not run; waits on the operator |
+| Snapshot VM, Create VM Template | | not run | no `(Dev)` variant, so they are bound to main |
+
 ## Goals / Non-Goals
 
 **Goals:**
