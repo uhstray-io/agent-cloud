@@ -90,9 +90,32 @@ Retirement date: _not yet set_ — `legacy_shared_expires` is the route-switch d
 
 ## Upstream
 
-`custom` provider, `formats: [{type: completions}]`, `params.baseUrl` from inventory
+`custom` provider, `formats: [{type: completions}, {type: responses}]`, `params.baseUrl` from inventory
 `agw_upstream_base_url`, one model entry per name in `agw_models` (an optional
 `upstream_model` remaps the name the client sends to the id the upstream serves).
+
+**Responses passthrough (2026-10-04, operator decision after production conformance task 2681,
+whose `responses` case was a `semantic_diff`).** With only `completions` declared, agentgateway
+translated `/v1/responses` into a chat completion, which dropped reasoning output items and echoed
+the requested model. Declaring `responses` too makes the gateway forward the request to vLLM's own
+`<baseUrl>/responses` unchanged. Evidence, agentgateway v1.5.0 source:
+- the `formats` entries are `ProviderFormatConfig { type, path }` over the `ProviderFormat` enum,
+  which includes `Responses`, and an omitted `path` falls back to the default
+  (`crates/llm/src/custom.rs:189-216`);
+- a custom provider's `responses` format maps to the native Responses chat format
+  (`crates/agentgateway/src/llm/mod.rs:991-1000`), and the ordered translation table puts
+  Responses-to-Responses passthrough first (`mod.rs:324`), so it wins over the completions fallback;
+- with no `path`, the upstream path is the `baseUrl` path prefix plus `/responses`
+  (`mod.rs:1338-1380`, `crates/llm/src/openai.rs:65-69`);
+- the per-key model allow-list is checked on the requested model before any format choice, for
+  every LLM route (`crates/agentgateway/src/llm/model_router.rs:173-183`);
+- usage is read on the passthrough path for both unary responses
+  (`crates/llm/src/types/responses.rs:786-822`) and streams
+  (`crates/llm/src/conversion/responses.rs:22-111`), which is what the per-key token budget charges.
+API-key authentication and the request rate limit are listener policies, independent of format.
+Not yet proven live: the next conformance run must show the `responses` case matching; the
+Responses entries in `conformance-shape-allow.json` that the passthrough makes redundant are left
+in place until that run reports them.
 
 | Environment | `agw_upstream_base_url` | Key |
 |---|---|---|

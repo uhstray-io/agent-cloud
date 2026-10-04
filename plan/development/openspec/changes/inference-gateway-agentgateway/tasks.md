@@ -227,6 +227,12 @@
       and shape 0/13. Operator decision: accept every reported difference; the allowlist holds the
       reported paths scoped per case (78, none global) and `architecture.md` records the client-visible ones. Still
       open: the first-token and gap deltas are not recorded yet, so this task stays unticked.
+      2026-10-04: production run Semaphore task 2681 reported the `responses` case as a
+      `semantic_diff`: the gateway translated Responses into chat completions, dropping reasoning
+      output items and echoing the requested model. Operator decision: declare the `responses`
+      upstream format beside `completions` so the gateway passes `/v1/responses` through to vLLM
+      (schema and policy evidence from agentgateway v1.5.0 source in `context/architecture.md`,
+      "Upstream"). The next production run decides whether the case matches.
 - [ ] 2.3 Confirm SSE keep-alive comment lines from vLLM pass through unchanged and
       unbuffered (needs dgx-spark `inference-endpoint-reliability` deployed)
 - [ ] 2.3a Streams and the budget: confirm whether a streamed completion is charged to the

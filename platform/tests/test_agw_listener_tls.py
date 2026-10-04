@@ -215,3 +215,15 @@ def test_the_deploy_resolves_the_probe_name_through_the_shared_step(tmp_path, ch
 def test_the_bundle_step_lets_the_shared_task_pick_the_ca_hosts_engine():
     step = next(t for t in PHASE1["tasks"] if t["name"] == "Distribute the step-ca trust bundle into ./certs")
     assert "_ca_engine" not in step["vars"]
+
+
+def test_every_model_declares_completions_and_responses(tmp_path):
+    """Responses passes through to the upstream instead of being translated to chat completions
+    (prod conformance task 2681: translation dropped reasoning items). agentgateway v1.5.0 picks
+    the native format first when the custom provider declares it (crates/agentgateway/src/llm/mod.rs:324)."""
+    cfg = _render(tmp_path, agw_models=[{"name": "a"}, {"name": "b", "upstream_model": "org/b"}])
+    models = cfg["llm"]["models"]
+    assert [m["name"] for m in models] == ["a", "b"]
+    for m in models:
+        types = [f["type"] for f in m["provider"]["custom"]["formats"]]
+        assert types == ["completions", "responses"], (m["name"], types)
