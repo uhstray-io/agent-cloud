@@ -1,0 +1,194 @@
+---
+# weft-rollback.yml — put one weft host back on the version it ran before a deploy that failed its
+# health check or its watch (weft's docs/cicd.md §6.2). Included by weft-deploy.yml's rescue, and
+# by rollback-weft-workspace.yml when a person decides to roll one back.
+#
+#   1. stop every container of the host
+#   2. restore the backup this deploy took, with the PREVIOUS image: `restore` refuses while
+#      anything has the database open, checks the copy's schema is one that image supports, and
+#      moves the current file aside as <db>.failed-<version>-<time> with its -wal and -shm. It
+#      never deletes it: what people wrote while the new version ran is kept there.
+#   3. render .env (and weft.toml) for the previous digests and start them
+#   4. run the health check against the previous version
+#   5. healthy: Discord says which check failed and where the minutes of writes are kept
+#      not healthy: stop everything, leave every file where it is, and ask a person in Discord.
+#      Nothing tries a third time.
+#
+# Either way the new release is recorded as REFUSED on this host, so the next timer tick does not
+# deploy it again, and the run fails, so a rollout stops here.
+#
+# Caller passes everything weft-deploy.yml set: _weft_role, _weft_label, _weft_environment,
+# _weft_state_dir, _weft_deploy_dir, _weft_deploy_env, _weft_health_argv, _weft_deployed,
+# _weft_release_json (the failed release), _weft_from, _weft_to, _weft_started, _weft_refused,
+# _weft_backup_set (absent when there was nothing to back up), and _weft_failed_check;
+# _weft_rollback_by_hand when a person asked for it.
+
+- name: "Name what failed"
+  ansible.builtin.set_fact:
+    _weft_failed_commit: "{{ _weft_release_json.commit }}"
+    _weft_previous: "{{ _weft_deployed.release | default(none) }}"
+    _weft_db_name: "{{ 'weft.db' if _weft_role == 'workspace' else 'front-door.db' }}"
+
+- name: "Say where a rollout stopped"
+  # In a rollout, the hosts before this one run the new release and the ones after it never
+  # started it: a person reading Discord needs both lists, not only this host's.
+  ansible.builtin.set_fact:
+    _weft_rollout_line: >-
+      {%- set hosts = (_weft_rollout | default({})).hosts | default([]) -%}
+      {%- if inventory_hostname in hosts -%}
+      {%- set at = hosts.index(inventory_hostname) -%}
+      {{ ' ' }}The rollout of {{ _weft_rollout.version }} stopped here. On {{ _weft_rollout.version }}:
+      {{ hosts[:at] | join(', ') or 'none' }}. Still on the release they ran: {{ hosts[at + 1:] | join(', ') or 'none' }}.
+      {%- endif -%}
+
+- name: "Report the failure"
+  ansible.builtin.debug:
+    msg: "{{ _weft_label }}: {{ _weft_to }} failed '{{ _weft_failed_check }}'; rolling back to {{ _weft_from }}."
+
+- name: "Stop every container of {{ _weft_label }}"
+  ansible.builtin.command:
+    argv: [bash, deploy.sh, "{{ _weft_role }}", stop]
+    chdir: "{{ _weft_deploy_dir }}"
+  environment: "{{ _weft_deploy_env }}"
+  changed_when: true
+  when: not ansible_check_mode
+
+- name: "Restore and start {{ _weft_from }}"
+  block:
+    - name: "Require a version to go back to"
+      ansible.builtin.assert:
+        that: _weft_previous is not none
+        fail_msg: "{{ _weft_label }} ran nothing before {{ _weft_to }}, so there is no version to roll back to."
+
+    - name: "Take the previous release's images"
+      ansible.builtin.set_fact:
+        _weft_release_json: "{{ _weft_previous }}"
+        _weft_images: "{{ _weft_previous.images }}"
+
+    - name: "Render .env for {{ _weft_from }}"
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../services/weft/deployment/templates/{{ _weft_role }}.env.j2"
+        dest: "{{ _weft_deploy_dir }}/.env"
+        mode: "0600"
+
+    - name: "Render the workspace's files for {{ _weft_from }}"
+      ansible.builtin.include_tasks: weft-workspace-files.yml
+      when: _weft_role == 'workspace'
+
+    - name: "Restore the backup this deploy took, setting the failed file aside"
+      ansible.builtin.command:
+        argv: [bash, deploy.sh, "{{ _weft_role }}", restore, --from, "{{ _weft_backup_set }}", --label, "failed-{{ _weft_to }}"]
+        chdir: "{{ _weft_deploy_dir }}"
+      environment: "{{ _weft_deploy_env }}"
+      changed_when: true
+      when:
+        - not ansible_check_mode
+        - _weft_backup_set | default('') | length > 0
+
+    - name: "Start {{ _weft_from }}"
+      ansible.builtin.command:
+        argv: [bash, deploy.sh, "{{ _weft_role }}", up]
+        chdir: "{{ _weft_deploy_dir }}"
+      environment: "{{ _weft_deploy_env }}"
+      changed_when: true
+      when: not ansible_check_mode
+
+    - name: "Health of {{ _weft_from }}"
+      ansible.builtin.command:
+        argv: "{{ _weft_health_argv }}"
+        chdir: "{{ _weft_deploy_dir }}"
+      environment: "{{ _weft_deploy_env }}"
+      register: _weft_rollback_health
+      changed_when: false
+      check_mode: false
+      retries: "{{ (_weft_health_minutes | int) * 6 }}"
+      delay: 10
+      until: _weft_rollback_health.rc == 0
+
+    - name: "Rolled back"
+      ansible.builtin.set_fact:
+        _weft_rolled_back: true
+
+  rescue:
+    - name: "The rollback failed too"
+      ansible.builtin.set_fact:
+        _weft_rolled_back: false
+        _weft_rollback_failed_at: "{{ ansible_failed_task.name | default('unknown step') }}"
+
+    - name: "Stop everything and leave every file where it is"
+      ansible.builtin.command:
+        argv: [bash, deploy.sh, "{{ _weft_role }}", stop]
+        chdir: "{{ _weft_deploy_dir }}"
+      environment: "{{ _weft_deploy_env }}"
+      changed_when: true
+      failed_when: false
+      when: not ansible_check_mode
+
+- name: "Note when the rollback ended"
+  ansible.builtin.command: date -u +%Y-%m-%dT%H:%M:%SZ
+  register: _weft_rollback_ended
+  changed_when: false
+  check_mode: false
+
+- name: "Record the failed release as refused on this host: {{ _weft_to }}"
+  # The previous release stays recorded as what this host should run, healthy or not, and the
+  # failed one is never deployed here again by a timer.
+  ansible.builtin.copy:
+    content: >-
+      {{ {'release': _weft_previous, 'deployed_at': _weft_deployed.deployed_at | default(none),
+          'refused': (_weft_refused + [_weft_failed_commit]) | unique} | to_nice_json }}
+    dest: "{{ _weft_state_dir }}/deployed.json"
+    mode: "0600"
+
+- name: "Tell Discord it rolled back"
+  ansible.builtin.include_tasks: notify-discord.yml
+  vars:
+    _discord_webhook_url: "{{ _weft_discord_webhook }}"
+    _discord_message: >-
+      {{ _weft_environment }}: {{ _weft_label }} rolled back to {{ _weft_from }}: {{ _weft_to }}
+      failed '{{ _weft_failed_check }}'.
+      {%- if _weft_backup_set | default('') | length > 0 %} What was written between
+      {{ _weft_started.stdout }} and {{ _weft_rollback_ended.stdout }} is kept in
+      {{ _weft_state_dir }}/{{ _weft_db_name }}.failed-{{ _weft_to }}-*.{% endif %}
+      {{- _weft_rollout_line }}
+  when: _weft_rolled_back | default(false) | bool
+
+- name: "Ask a person: the rollback failed too"
+  # The question shape every weft question uses: the question, background, context, options A-D,
+  # a recommendation.
+  ansible.builtin.include_tasks: notify-discord.yml
+  vars:
+    _discord_webhook_url: "{{ _weft_discord_webhook }}"
+    _discord_message: >-
+      **{{ _weft_environment }}: {{ _weft_label }} is down. What should happen to it?**
+      Background: {{ _weft_to }} failed '{{ _weft_failed_check }}', and going back to
+      {{ _weft_from }} failed '{{ _weft_rollback_failed_at | default('unknown step') }}'.
+      Context: every container of it is stopped and no file was deleted.
+      {%- if _weft_backup_set | default('') | length > 0 %} The backup this deploy took is
+      {{ _weft_backup_set }}.{% endif %} Nothing will try again.
+      Options: A) restore that backup by hand with the {{ _weft_from }} image and start it;
+      B) roll the VM back to its last Proxmox snapshot; C) leave it stopped and look at the
+      containers' logs first; D) release a fix and redeploy with weft_force_redeploy.
+      Recommendation: C, then A.{{ _weft_rollout_line }}
+  when: not (_weft_rolled_back | default(false) | bool)
+
+- name: "Mark the GitHub deployment failed"
+  ansible.builtin.include_tasks: weft-github-deployment.yml
+  vars:
+    _wgd_action: status
+    _wgd_id: "{{ _weft_github_deployment_id | default('') }}"
+    _wgd_state: failure
+    _wgd_description: >-
+      {{ _weft_label }}: {{ _weft_to }} failed '{{ _weft_failed_check }}';
+      {{ 'rolled back to ' ~ _weft_from if (_weft_rolled_back | default(false) | bool) else 'rollback failed too' }}
+  when: _weft_github_deployment_id | default('') | string | length > 0
+
+- name: "Fail the run: the release was rolled back, {{ _weft_to }}"
+  # An automatic rollback always fails the run, so a rollout stops here. A person's rollback
+  # (rollback-weft-workspace.yml) fails only when it did not come back healthy.
+  ansible.builtin.fail:
+    msg: >-
+      {{ _weft_label }}: {{ _weft_to }} failed '{{ _weft_failed_check }}'.
+      {{ ('Rolled back to ' ~ _weft_from ~ ' and healthy.') if (_weft_rolled_back | default(false) | bool)
+         else ('The rollback failed too, at ' ~ (_weft_rollback_failed_at | default('unknown step')) ~ '; everything is stopped.') }}
+  when: not (_weft_rollback_by_hand | default(false) | bool) or not (_weft_rolled_back | default(false) | bool)

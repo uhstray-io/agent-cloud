@@ -1,0 +1,39 @@
+{#- weft's central-Caddy fragment for ONE environment (the rack or staging) — rendered from
+    inventory by deploy-weft-door.yml and stand-up-weft-workspace.yml, distributed and validated
+    by tasks/distribute-caddy-site.yml. Caddy is the EDGE proxy: TLS and hostname routing, nothing
+    else. The front door behind it redirects and never proxies; it is not this.
+
+      <domain>          -> the front door's VM
+      <id>.<domain>     -> that workspace's VM, one host matcher per workspace
+
+    A workspace's hostname is the id the front door minted for it (a DNS label), because the front
+    door builds every workspace address from its own WEFT_FRONT_DOOR_WORKSPACE_URL template.
+    An unknown subdomain gets 404 rather than somebody else's board.
+
+    Calls are NOT here: the edge routes by hostname, a UDP datagram has none, and the rack forwards
+    each workspace's UDP port straight to its VM.
+    Do NOT edit by hand. -#}
+{%- set tls = weft_caddy_tls | default('dns cloudflare {$CLOUDFLARE_API_KEY}') -%}
+{%- set door = _weft_door_hosts | first -%}
+{{ weft_domain }} {
+	tls {
+		{{ tls }}
+	}
+	reverse_proxy {{ hostvars[door].weft_door_bind | default(hostvars[door].ansible_host) }}:{{ hostvars[door].weft_door_port | default(8081) }}
+}
+
+*.{{ weft_domain }} {
+	tls {
+		{{ tls }}
+	}
+{% for host in _weft_workspace_hosts %}
+{% set h = hostvars[host] %}
+	@ws{{ loop.index }} host {{ h.weft_workspace_id }}.{{ weft_domain }}
+	handle @ws{{ loop.index }} {
+		reverse_proxy {{ h.weft_board_bind | default(h.ansible_host) }}:{{ h.weft_board_port | default(8080) }}
+	}
+{% endfor %}
+	handle {
+		respond 404
+	}
+}

@@ -1,0 +1,38 @@
+# weft — the front door, on its own VM: identity across companies, workspace membership, and a
+# URL per workspace (weft's docs/deployment.md). It REDIRECTS AND NEVER PROXIES: a browser signs
+# in here, is handed a signed one-minute assertion, and from then on talks to its workspace
+# directly. So this holds the least of anything on the rack, and it holds no workspace's data.
+#
+# The image is pinned by the digest deploy-weft-door.yml read from the signed release.json.
+#
+# The records (front-door.db) are on the VM's own disk, in the door directory, at the same path
+# inside and out, for the reason the workspace's catalog is: SQLite's WAL needs one kernel.
+#
+# The signing key is a 0600 file rendered from OpenBao next to this file and mounted read-only.
+# A file and not a variable: a variable is inherited by every child, shown by `podman inspect`,
+# and readable in /proc/<pid>/environ. The front door refuses a key file others can read. This
+# key signs for every company's workspace; no backup set holds it.
+
+name: weft-door
+
+services:
+  door:
+    image: ${WEFT_DOOR_IMAGE}
+    container_name: weft-door
+    restart: always
+    userns_mode: "keep-id:uid=10001,gid=10001"
+    environment:
+      WEFT_FRONT_DOOR_LISTEN: "0.0.0.0:8081"
+      WEFT_FRONT_DOOR_KEY_FILE: /run/weft/door.key
+      WEFT_FRONT_DOOR_RECORDS: ${WEFT_DOOR_DIR}/front-door.db
+      # https://{id}.<weft domain>: a workspace's address is its front-door id as a DNS label.
+      WEFT_FRONT_DOOR_WORKSPACE_URL: ${WEFT_DOOR_WORKSPACE_URL}
+      WEFT_FRONT_DOOR_SECURE: "true"
+      # Caddy is in front, so the client address is in X-Forwarded-For. Without this, the
+      # per-address sign-in counter is one counter for the whole world.
+      WEFT_FRONT_DOOR_BEHIND_A_PROXY: "true"
+    volumes:
+      - ${WEFT_DOOR_DIR}:${WEFT_DOOR_DIR}
+      - ./door.key:/run/weft/door.key:ro
+    ports:
+      - "${WEFT_DOOR_BIND}:${WEFT_DOOR_PORT}:8081"

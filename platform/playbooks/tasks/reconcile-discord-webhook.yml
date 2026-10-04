@@ -1,0 +1,147 @@
+---
+# reconcile-discord-webhook.yml — make sure ONE named, bot-owned incoming webhook exists in ONE
+# declared text channel, and hand its URL back in memory. The caller stores the URL in OpenBao.
+#
+# The steps are seed-o11y-alert-webhook.yml's, written once here for every later caller (weft's
+# deploy notifications are the second). That playbook keeps its own inline copy because its tests
+# pin its task list; moving it onto this file is a follow-up, not part of adding a caller.
+#
+# Why each check exists:
+# - the channel is read back and must be a TEXT channel in the declared GUILD, so a mistyped id
+#   cannot point deploy messages at somebody else's server;
+# - a webhook with the name is reused only when exactly one exists, it is an incoming webhook in
+#   that channel, and THIS bot made it. A duplicate, or one somebody else made with the same name,
+#   is refused rather than adopted: adopting it would store a URL another account can revoke or
+#   read from.
+#
+# Caller passes (the bot token from OpenBao, in memory):
+#   _dw_bot_token     Discord bot token (secret/services/discord:bot_token)
+#   _dw_guild_id      the declared guild (server) id
+#   _dw_channel_id    the declared text channel id
+#   _dw_name          the webhook's name, which is how it is found again
+# Sets:
+#   _dw_url           https://discord.com/api/webhooks/<id>/<token> — undefined under --check
+#                     when the webhook does not exist yet (a dry run creates nothing)
+#   _dw_created       true when this run created it
+#
+# Every request and every fact that carries the token or the URL is no_log; asserts print their
+# condition text, never values.
+
+- name: "Require the declared destination"
+  ansible.builtin.assert:
+    that:
+      - _dw_bot_token | default('') | length > 0
+      - not (_dw_bot_token | default('')).startswith('REPLACE_WITH_')
+      - _dw_guild_id | string is match('^[0-9]{17,21}$')
+      - _dw_channel_id | string is match('^[0-9]{17,21}$')
+      - _dw_name | default('') | length > 0
+    fail_msg: "Seed the bot token and declare the Discord guild and text-channel ids before reconciling a webhook."
+  no_log: true
+
+- name: "Read the declared Discord channel"
+  ansible.builtin.uri:
+    url: "https://discord.com/api/v10/channels/{{ _dw_channel_id }}"
+    headers:
+      Authorization: "Bot {{ _dw_bot_token }}"
+      User-Agent: "DiscordBot (https://github.com/uhstray-io/agent-cloud, 1.0)"
+    status_code: [200]
+  register: _dw_channel
+  check_mode: false
+  delegate_to: localhost
+  no_log: true
+
+- name: "Require a text channel in the declared guild"
+  ansible.builtin.assert:
+    that:
+      - _dw_channel.json.id == _dw_channel_id | string
+      - _dw_channel.json.guild_id == _dw_guild_id | string
+      - _dw_channel.json.type == 0
+    fail_msg: "The webhook's destination must be a text channel in the declared Discord guild."
+
+- name: "Read the bot identity"
+  ansible.builtin.uri:
+    url: https://discord.com/api/v10/users/@me
+    headers:
+      Authorization: "Bot {{ _dw_bot_token }}"
+      User-Agent: "DiscordBot (https://github.com/uhstray-io/agent-cloud, 1.0)"
+    status_code: [200]
+  register: _dw_bot
+  check_mode: false
+  delegate_to: localhost
+  no_log: true
+
+- name: "List the channel webhooks"
+  ansible.builtin.uri:
+    url: "https://discord.com/api/v10/channels/{{ _dw_channel_id }}/webhooks"
+    headers:
+      Authorization: "Bot {{ _dw_bot_token }}"
+      User-Agent: "DiscordBot (https://github.com/uhstray-io/agent-cloud, 1.0)"
+    status_code: [200]
+  register: _dw_listed
+  check_mode: false
+  delegate_to: localhost
+  no_log: true
+
+- name: "Find the webhook with the declared name"
+  ansible.builtin.set_fact:
+    _dw_matching: "{{ _dw_listed.json | selectattr('name', 'equalto', _dw_name) | list }}"
+  no_log: true
+
+- name: "Refuse a duplicated or foreign webhook of that name"
+  ansible.builtin.assert:
+    that:
+      - _dw_matching | length <= 1
+      - _dw_matching | length == 0 or _dw_matching[0].type == 1
+      - _dw_matching | length == 0 or _dw_matching[0].channel_id == _dw_channel_id | string
+      - _dw_matching | length == 0 or _dw_matching[0].user.id | default('') == _dw_bot.json.id
+    fail_msg: "The named webhook is duplicated or owned by another account; remove it by hand in Discord and run again."
+  no_log: true
+
+- name: "Create the webhook only when absent"
+  ansible.builtin.uri:
+    url: "https://discord.com/api/v10/channels/{{ _dw_channel_id }}/webhooks"
+    method: POST
+    headers:
+      Authorization: "Bot {{ _dw_bot_token }}"
+      User-Agent: "DiscordBot (https://github.com/uhstray-io/agent-cloud, 1.0)"
+    body_format: json
+    body:
+      name: "{{ _dw_name }}"
+    status_code: [200, 201]
+  register: _dw_create
+  when:
+    - not ansible_check_mode
+    - _dw_matching | length == 0
+  delegate_to: localhost
+  no_log: true
+
+- name: "Select the existing or new webhook"
+  ansible.builtin.set_fact:
+    _dw_webhook: "{{ _dw_matching[0] if _dw_matching | length == 1 else _dw_create.json }}"
+    _dw_created: "{{ _dw_matching | length == 0 }}"
+  when: not (ansible_check_mode and _dw_matching | length == 0)
+  no_log: true
+
+- name: "Require a usable incoming webhook token"
+  ansible.builtin.assert:
+    that:
+      - _dw_webhook.type == 1
+      - _dw_webhook.channel_id == _dw_channel_id | string
+      - _dw_webhook.id is match('^[0-9]{17,21}$')
+      - _dw_webhook.token | default('') | length > 0
+    fail_msg: "Discord did not return a usable incoming webhook."
+  when: not (ansible_check_mode and _dw_matching | length == 0)
+  no_log: true
+
+- name: "Build the webhook URL in memory"
+  ansible.builtin.set_fact:
+    _dw_url: "https://discord.com/api/webhooks/{{ _dw_webhook.id }}/{{ _dw_webhook.token }}"
+  when: not (ansible_check_mode and _dw_matching | length == 0)
+  no_log: true
+
+- name: "Report the webhook (no credential)"
+  ansible.builtin.debug:
+    msg: >-
+      Discord webhook '{{ _dw_name }}':
+      {{ 'would be created (check mode)' if (ansible_check_mode and _dw_matching | length == 0)
+         else ('created' if _dw_matching | length == 0 else 'already present') }}.

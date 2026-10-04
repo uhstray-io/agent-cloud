@@ -1,0 +1,51 @@
+---
+# notify-discord.yml — post one plain-text line to a Discord channel through an incoming webhook.
+# Deploy notifications as a reusable step: until this, only Grafana's alerting reached Discord.
+#
+# The webhook URL IS the credential (anyone holding it can post as it), so the caller reads it
+# from OpenBao into memory — never a file, never an argument — and every step that holds it is
+# no_log. The message is not secret and is printed by the report task, so a run's log says what
+# was announced even when Discord was unreachable.
+#
+# A notification never decides an outcome. A failed post is reported and the run carries on:
+# a deploy that rolled back must still finish rolling back when Discord is down, and the
+# Semaphore task's own status stays the record of what happened.
+#
+# Caller passes:
+#   _discord_webhook_url   https://discord.com/api/webhooks/<id>/<token> (from OpenBao)
+#   _discord_message       the line to post; cut to Discord's 2000-character limit
+#
+# Mentions are disabled (allowed_mentions.parse = []), so a name or an @everyone inside a
+# message, which may quote a commit title somebody else wrote, pings nobody.
+
+- name: "Require a Discord webhook URL"
+  ansible.builtin.assert:
+    that:
+      - _discord_webhook_url | default('') is match('^https://(discord\\.com|discordapp\\.com)/api/webhooks/[0-9]+/[A-Za-z0-9_-]+$')
+    fail_msg: "notify-discord.yml needs an https Discord webhook URL from OpenBao."
+  no_log: true
+
+- name: "Post to Discord"
+  ansible.builtin.uri:
+    url: "{{ _discord_webhook_url }}"
+    method: POST
+    body_format: json
+    body:
+      content: "{{ _discord_message | truncate(2000, true, '…', 0) }}"
+      allowed_mentions:
+        parse: []
+    status_code: [200, 204]
+    follow_redirects: none
+  register: _discord_post
+  failed_when: false
+  delegate_to: localhost
+  no_log: true
+  when: not ansible_check_mode
+
+- name: "Report the notification"
+  ansible.builtin.debug:
+    msg: >-
+      {{ 'check mode: would post' if ansible_check_mode
+         else ('posted' if (_discord_post.status | default(0)) in [200, 204]
+               else 'NOT posted (Discord answered ' ~ (_discord_post.status | default('nothing')) ~ ')') }}:
+      {{ _discord_message }}

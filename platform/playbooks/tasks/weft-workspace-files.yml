@@ -1,0 +1,39 @@
+---
+# weft-workspace-files.yml — the files a workspace's release needs in its directory before it
+# starts: the whisper model the release pins, and weft.toml naming the release's agent images.
+# Included by the deploy for the new release and by the rollback for the previous one, so both
+# render from the same release.json the images came from (_weft_release_json / _weft_images).
+#
+# The model is fetched by the deploy rather than baked into the image (148 MB per model, and the
+# workspace chooses which) and checked against the sha256 in the SIGNED release.json, so the
+# release pins the model as it pins the code. A file already present is re-checked, not trusted.
+
+- name: "Choose the whisper model"
+  ansible.builtin.set_fact:
+    _weft_whisper_model: "{{ weft_whisper_model | default(_weft_release_json.whisper.default) }}"
+
+- name: "Require a model the release pins"
+  ansible.builtin.assert:
+    that: _weft_whisper_model in _weft_release_json.whisper.models
+    fail_msg: >-
+      weft_whisper_model '{{ _weft_whisper_model }}' is not one release.json pins
+      ({{ _weft_release_json.whisper.models.keys() | list | join(', ') }}).
+
+- name: "Make the models directory"
+  ansible.builtin.file:
+    path: "{{ _weft_workspace_dir }}/models"
+    state: directory
+    mode: "0700"
+
+- name: "Fetch the model, checked against the release's sum"
+  ansible.builtin.get_url:
+    url: "{{ _weft_release_json.whisper.models[_weft_whisper_model].url }}"
+    dest: "{{ _weft_workspace_dir }}/models/{{ _weft_release_json.whisper.models[_weft_whisper_model].file }}"
+    checksum: "sha256:{{ _weft_release_json.whisper.models[_weft_whisper_model].sha256 }}"
+    mode: "0600"
+
+- name: "Render weft.toml for this release"
+  ansible.builtin.template:
+    src: "{{ playbook_dir }}/../services/weft/deployment/templates/weft.toml.j2"
+    dest: "{{ _weft_workspace_dir }}/weft.toml"
+    mode: "0600"

@@ -1,0 +1,167 @@
+---
+# weft-release.yml — on the target VM: fetch the release.json a deploy is asked for, prove it and
+# every image it names were signed by weft's images.yml on main, and pull those images by digest.
+#
+# A deploy reads release.json and never a tag (weft's docs/cicd.md §2.2). A tag is a name that can
+# be moved; release.json names every image by digest, so what is pulled is what was signed and,
+# for a release, what staging ran. The file itself is fetched by digest and verified before a
+# single field of it is believed, because a deploy must not trust a file it cannot verify.
+#
+# Caller passes:
+#   weft_release     a full 40-hex commit (staging follows main) or vX.Y.Z (a release)
+#   _weft_role       workspace | door
+#   _weft_state_dir  the role's directory on the VM (release.json is fetched under it)
+# with vars/weft.yml loaded. Sets:
+#   _weft_release_json   the verified release.json
+#   _weft_images         {image name: <registry>/<image>@sha256:...} from it
+#
+# Under --check nothing is fetched or pulled (each step runs a container); the caller reports
+# what it would deploy and stops.
+
+- name: "Require a commit or a release version"
+  ansible.builtin.assert:
+    that:
+      - weft_release | default('') is match('^([0-9a-f]{40}|v[0-9]+\\.[0-9]+\\.[0-9]+)$')
+    fail_msg: >-
+      weft_release must be a full commit (what main published) or a release like v0.5.0, not
+      '{{ weft_release | default('') }}'. A short commit or a branch name is a guess.
+
+- name: "Registry login for weft's private images"
+  ansible.builtin.include_tasks: registry-login.yml
+  when: not (local_mode | default(false) | bool)
+
+- name: "Read the deploy user's id (rootless podman keeps its registry login under it)"
+  ansible.builtin.command: id -u
+  register: _weft_uid
+  changed_when: false
+  check_mode: false
+
+- name: "Locate the registry login the containers below borrow"
+  ansible.builtin.set_fact:
+    _weft_auth_file: "/run/user/{{ _weft_uid.stdout }}/containers/auth.json"
+    _weft_incoming: "{{ _weft_state_dir }}/release-incoming"
+    _weft_release_repo: "{{ _weft_registry }}/weft-release"
+
+- name: "Make an empty directory for the fetched release.json"
+  ansible.builtin.file:
+    path: "{{ _weft_incoming }}"
+    state: "{{ item }}"
+    mode: "0700"
+  loop: [absent, directory]
+
+- name: "Resolve release.json to a digest for {{ weft_release }}"
+  ansible.builtin.command:
+    argv:
+      - "{{ container_engine | default('podman') }}"
+      - run
+      - --rm
+      - --user=0
+      - -v
+      - "{{ _weft_auth_file }}:/auth/config.json:ro"
+      - "{{ _weft_oras_image }}"
+      - resolve
+      - --registry-config
+      - /auth/config.json
+      - "{{ _weft_release_repo }}:{{ weft_release }}"
+  register: _weft_resolved
+  changed_when: false
+  failed_when: >-
+    _weft_resolved.rc != 0
+    or not (_weft_resolved.stdout | trim is match('^sha256:[0-9a-f]{64}$'))
+  when: not ansible_check_mode
+
+- name: "Verify release.json was signed by weft's images.yml on main"
+  ansible.builtin.include_tasks: verify-cosign.yml
+  vars:
+    _cosign_refs: ["{{ _weft_release_repo }}@{{ _weft_resolved.stdout | trim }}"]
+    _cosign_identity: "{{ _weft_signer }}"
+    _cosign_issuer: "{{ _weft_issuer }}"
+    _cosign_auth_file: "{{ _weft_auth_file }}"
+  when: not ansible_check_mode
+
+- name: "Fetch the verified release.json by its digest"
+  ansible.builtin.command:
+    argv:
+      - "{{ container_engine | default('podman') }}"
+      - run
+      - --rm
+      - --user=0
+      - -v
+      - "{{ _weft_auth_file }}:/auth/config.json:ro"
+      - -v
+      - "{{ _weft_incoming }}:/out"
+      - "{{ _weft_oras_image }}"
+      - pull
+      - --registry-config
+      - /auth/config.json
+      - -o
+      - /out
+      - "{{ _weft_release_repo }}@{{ _weft_resolved.stdout | trim }}"
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: "Read release.json"
+  ansible.builtin.slurp:
+    src: "{{ _weft_incoming }}/release.json"
+  register: _weft_release_raw
+  when: not ansible_check_mode
+
+- name: "Parse release.json"
+  ansible.builtin.set_fact:
+    _weft_release_json: "{{ _weft_release_raw.content | b64decode | from_json }}"
+  when: not ansible_check_mode
+
+- name: "Refuse a release.json that is not the one asked for"
+  # The signature proves who wrote the file; these prove it is the file this deploy asked for.
+  # A release names its version, and its commit is the one main published; a commit names
+  # itself and no version.
+  ansible.builtin.assert:
+    that:
+      - _weft_release_json.format == 1
+      - _weft_release_json.commit is match('^[0-9a-f]{40}$')
+      - (weft_release == _weft_release_json.commit) if (weft_release | length == 40) else (weft_release == _weft_release_json.version)
+      - _weft_release_json.signed_by.identity == _weft_signer
+      - _weft_images_by_role[_weft_role] | difference(_weft_release_json.images.keys() | list) | length == 0
+    fail_msg: >-
+      release.json for {{ weft_release }} does not describe it: format, commit, version, signer or
+      a {{ _weft_role }} image is not what this deploy expects. Nothing has changed on this host.
+  when: not ansible_check_mode
+
+- name: "Take this role's images from release.json"
+  ansible.builtin.set_fact:
+    _weft_images: "{{ _weft_release_json.images }}"
+    _weft_role_refs: >-
+      {{ _weft_images_by_role[_weft_role] | map('extract', _weft_release_json.images) | list }}
+  when: not ansible_check_mode
+
+- name: "Refuse an image that is not weft's, by digest, in weft's registry"
+  ansible.builtin.assert:
+    that:
+      - item is match('^' ~ (_weft_registry | regex_escape) ~ '/weft-[a-z-]+@sha256:[0-9a-f]{64}$')
+    fail_msg: "release.json names {{ item }}, which is not a weft image in {{ _weft_registry }} pinned by digest."
+  loop: "{{ _weft_role_refs }}"
+  when: not ansible_check_mode
+
+- name: "Verify every image this role runs"
+  ansible.builtin.include_tasks: verify-cosign.yml
+  vars:
+    _cosign_refs: "{{ _weft_role_refs }}"
+    _cosign_identity: "{{ _weft_signer }}"
+    _cosign_issuer: "{{ _weft_issuer }}"
+    _cosign_auth_file: "{{ _weft_auth_file }}"
+  when: not ansible_check_mode
+
+- name: "Pull the verified images by digest"
+  ansible.builtin.command:
+    argv: ["{{ container_engine | default('podman') }}", pull, "{{ item }}"]
+  loop: "{{ _weft_role_refs }}"
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: "Report the release"
+  ansible.builtin.debug:
+    msg: >-
+      {{ ('check mode: would fetch, verify and pull weft ' ~ weft_release) if ansible_check_mode
+         else ('weft ' ~ (_weft_release_json.version or _weft_release_json.commit[:12]) ~ ' (commit '
+               ~ _weft_release_json.commit ~ '): release.json and '
+               ~ (_weft_role_refs | length) ~ ' image(s) verified and pulled for the ' ~ _weft_role ~ '.') }}

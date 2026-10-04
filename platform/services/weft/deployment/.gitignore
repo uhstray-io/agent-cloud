@@ -1,0 +1,7 @@
+# Rendered per deploy by deploy-weft-*.yml. Never committed.
+# .env holds the release's image digests and paths (no secret); the other two are
+# credentials from OpenBao: the workspace's provider and forge keys, and the front
+# door's signing key.
+.env
+secrets.env
+door.key

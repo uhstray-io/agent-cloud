@@ -1,0 +1,79 @@
+---
+# weft-github-deployment.yml — record a deploy on weft's repository as a GitHub deployment, from
+# inside the rack. weft's release.yml refuses a commit whose `staging` deployment is not
+# `success`, so this record is what lets a commit that ran healthily on staging be released, and
+# what stops one that did not.
+#
+# Semaphore pulls from GitHub and writes back here; GitHub never reaches Semaphore (no GitHub
+# job holds a deploy credential). The token is _weft_github_token, from weft-credentials.yml.
+#
+# Caller passes:
+#   _wgd_action        create | status
+#   create:  _wgd_sha (full commit), _wgd_environment (staging | rack)  -> sets _weft_github_deployment_id
+#   status:  _wgd_id, _wgd_state (in_progress | success | failure), _wgd_description (<= 140 chars)
+# Every request carries the token, so each is no_log; the report prints the id and the state.
+
+- name: "Create the GitHub deployment"
+  ansible.builtin.uri:
+    url: "https://api.github.com/repos/{{ _weft_repo }}/deployments"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ _weft_github_token }}"
+      Accept: application/vnd.github+json
+      X-GitHub-Api-Version: "2022-11-28"
+    body_format: json
+    body:
+      ref: "{{ _wgd_sha }}"
+      environment: "{{ _wgd_environment }}"
+      # No merge into the default branch and no required statuses: this records a deploy of an
+      # exact commit that already passed its checks; it asks GitHub to do nothing.
+      auto_merge: false
+      required_contexts: []
+      transient_environment: false
+      production_environment: "{{ _wgd_environment == 'rack' }}"
+      description: "Semaphore: {{ _wgd_environment }} deploy of {{ _wgd_sha[:12] }}"
+    status_code: [201]
+    follow_redirects: none
+  register: _wgd_created
+  delegate_to: localhost
+  run_once: true
+  no_log: true
+  when:
+    - _wgd_action == 'create'
+    - not ansible_check_mode
+
+- name: "Keep the deployment id"
+  ansible.builtin.set_fact:
+    _weft_github_deployment_id: "{{ _wgd_created.json.id }}"
+  when:
+    - _wgd_action == 'create'
+    - not ansible_check_mode
+
+- name: "Set the deployment's state"
+  ansible.builtin.uri:
+    url: "https://api.github.com/repos/{{ _weft_repo }}/deployments/{{ _wgd_id }}/statuses"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ _weft_github_token }}"
+      Accept: application/vnd.github+json
+      X-GitHub-Api-Version: "2022-11-28"
+    body_format: json
+    body:
+      state: "{{ _wgd_state }}"
+      description: "{{ _wgd_description | default('') | truncate(140, true, '…', 0) }}"
+    status_code: [201]
+    follow_redirects: none
+  delegate_to: localhost
+  run_once: true
+  no_log: true
+  when:
+    - _wgd_action == 'status'
+    - (_wgd_id | default('') | string | length) > 0
+    - not ansible_check_mode
+
+- name: "Report the GitHub deployment"
+  ansible.builtin.debug:
+    msg: >-
+      {{ 'check mode: would ' ~ _wgd_action ~ ' a GitHub deployment' if ansible_check_mode
+         else ('GitHub deployment ' ~ (_weft_github_deployment_id | default(_wgd_id | default('')))
+               ~ (' created for ' ~ _wgd_environment if _wgd_action == 'create' else ' is ' ~ _wgd_state)) }}
