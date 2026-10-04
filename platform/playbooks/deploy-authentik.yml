@@ -294,7 +294,9 @@
         # default(omit) — omit leaks its placeholder into environment (rc 127).
         COMPOSE_CMD: "{{ local_compose_cmd | default('') }}"
       register: _deploy
-      changed_when: true
+      # deploy.sh recreates only when its inputs or images changed (common.sh
+      # compose_up_if_changed) and says which on its own line.
+      changed_when: "'DEPLOY_CHANGED=true' in _deploy.stdout_lines"
       when: not ansible_check_mode
 
     - name: "Show deploy.sh output"

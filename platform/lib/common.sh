@@ -100,6 +100,123 @@ compose() {
   $COMPOSE_CMD "${files[@]}" "$@"
 }
 
+# ── Change-aware start ────────────────────────────────────────────────────────
+#
+# compose_up_if_changed [input-path ...]
+# Start a compose project, recreating its containers ONLY when what they run on changed.
+# A re-run with identical inputs is a true no-op (operator decision 2026-10-04). Plain
+# `up -d` is not enough on its own: env_file content and bind-mounted config are not part of
+# the compose spec, so a changed .env would leave the old process on stale values. So every
+# input that must trigger a recreate is hashed — the compose files in effect, .env,
+# env/*.env, plus each path the caller names (a file, or a directory hashed recursively,
+# following symlinks) — and the digest rides a label on every service, through a generated
+# overlay. The project's running containers are compared against it: a missing, stopped or
+# unlabelled container, a different digest, or a container whose image ID is not the one its
+# tag names now (a re-pulled tag) recreates the whole project with --force-recreate. The
+# label, not this run's render, is the record: a run that fails after rendering keeps the old
+# label, so the next run still sees the difference.
+# Prior art: agentgateway's deploy.sh (gateway task 1.12), which keeps its own copy.
+#
+# Prints `DEPLOY_CHANGED=true` or `DEPLOY_CHANGED=false` on its own line; playbooks read it
+# for the task's changed status. Run from the deploy directory, like compose().
+COMPOSE_INPUTS_LABEL="io.agent-cloud.inputs-sha256"
+
+_compose_sha256() {  # stdin -> hex digest; sha256sum on Linux, shasum where only it exists
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum | cut -d' ' -f1
+  else shasum -a 256 | cut -d' ' -f1; fi
+}
+
+# compose_files: the compose files compose() passes, in its order.
+compose_files() {
+  echo compose.yml
+  if [ "${LOCAL_MODE:-}" = "true" ] && [ -f compose.local.yml ]; then echo compose.local.yml; fi
+  local ov
+  for ov in ${COMPOSE_OVERLAYS:-}; do echo "$ov"; done
+}
+
+# compose_services: the top-level service keys of compose.yml (overlays only extend them).
+compose_services() {
+  awk '/^services:[[:space:]]*$/ {s=1; next}
+       s && /^[^[:space:]#]/ {s=0}
+       s && /^  [A-Za-z0-9._-]+:[[:space:]]*$/ {sub(/^  /, ""); sub(/:.*/, ""); print}' compose.yml
+}
+
+# compose_inputs_digest [input-path ...]: one sha256 over every input file, by path.
+# Every listing and per-file digest is checked: a digest over whichever files happened to be
+# readable is a guess, not a comparison. Only digests are combined; no content is printed.
+compose_inputs_digest() {
+  local f p listing digest combined="" files=()
+  while IFS= read -r f; do files+=("$f"); done < <(compose_files)
+  files+=(.env)
+  for f in env/*.env; do [ -f "$f" ] && files+=("$f"); done
+  for p in "$@"; do
+    if [ -d "$p" ]; then
+      listing=$(find -L "$p" -type f) \
+        || error "Cannot list ${p}; refusing to guess whether the service's inputs changed."
+      listing=$(printf '%s\n' "$listing" | LC_ALL=C sort)
+      while IFS= read -r f; do if [ -n "$f" ]; then files+=("$f"); fi; done <<< "$listing"
+    else
+      files+=("$p")
+    fi
+  done
+  for f in "${files[@]}"; do
+    if ! digest=$(_compose_sha256 < "$f") || [ -z "$digest" ]; then
+      error "Cannot read ${f} to hash the service's inputs; refusing to guess whether it changed."
+    fi
+    combined+="${digest}  ${f}"$'\n'
+  done
+  printf '%s' "$combined" | _compose_sha256
+}
+
+# _compose_recreate_reason <digest>: empty when every project container matches.
+_compose_recreate_reason() {
+  local want="$1" names name count=0 want_count running have ref image_run image_now
+  names=$($CONTAINER_ENGINE ps -a --filter "label=com.docker.compose.project.working_dir=$(pwd)" \
+    --format '{{.Names}}' 2>/dev/null) || names=""
+  want_count=$(compose_services | grep -c .)
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    count=$((count + 1))
+    running=$($CONTAINER_ENGINE inspect --format '{{.State.Running}}' "$name" 2>/dev/null) || running=""
+    if [ "$running" != "true" ]; then echo "container not running: ${name}"; return 0; fi
+    have=$($CONTAINER_ENGINE inspect --format "{{ index .Config.Labels \"${COMPOSE_INPUTS_LABEL}\" }}" "$name" 2>/dev/null) || have=""
+    if [ "$have" != "$want" ]; then echo "inputs changed: ${name}"; return 0; fi
+    ref=$($CONTAINER_ENGINE inspect --format '{{.Config.Image}}' "$name" 2>/dev/null) || ref=""
+    image_run=$($CONTAINER_ENGINE inspect --format '{{.Image}}' "$name" 2>/dev/null) || image_run=""
+    image_now=$($CONTAINER_ENGINE image inspect --format '{{.Id}}' "$ref" 2>/dev/null) || image_now=""
+    if [ -z "$image_now" ] || [ "$image_now" != "$image_run" ]; then echo "image changed: ${name}"; return 0; fi
+  done <<< "$names"
+  if [ "$count" -eq 0 ]; then echo "no containers"; return 0; fi
+  if [ "$count" -lt "$want_count" ]; then echo "containers missing (${count} of ${want_count})"; fi
+}
+
+compose_up_if_changed() {
+  detect_runtime
+  local want reason label_dir svc
+  want=$(compose_inputs_digest "$@")
+  reason=$(_compose_recreate_reason "$want")
+  if [ -z "$reason" ]; then
+    info "Every container matches its inputs and image; leaving the project alone."
+    echo "DEPLOY_CHANGED=false"
+    return 0
+  fi
+  info "Recreating the project (${reason})..."
+  label_dir=$(mktemp -d)
+  {
+    echo "services:"
+    while IFS= read -r svc; do
+      [ -n "$svc" ] || continue
+      printf '  %s:\n    labels:\n      %s: "%s"\n' "$svc" "$COMPOSE_INPUTS_LABEL" "$want"
+    done < <(compose_services)
+  } > "${label_dir}/inputs-label.yml"
+  if ! COMPOSE_OVERLAYS="${COMPOSE_OVERLAYS:-} ${label_dir}/inputs-label.yml" compose up -d --force-recreate; then
+    rm -rf "$label_dir"
+    error "compose up --force-recreate failed."
+  fi
+  rm -rf "$label_dir"
+  echo "DEPLOY_CHANGED=true"
+}
+
 # ── Health Waiters ────────────────────────────────────────────────────────────
 
 # redact_secrets — filter stdin so a container log can go into a task log (Semaphore stores
