@@ -98,7 +98,7 @@ steps:
       - SSH answers on the declared address with the bootstrap identity
     evidence_keys: [cloud_init_done, ssh_reachable]
     reviewed: null
-    review_gap: "no step result: provision-vm.yml does not include emit-step-result (D10 review 2026-10-02)"
+    review_gap: "result recorded by provision-vm.yml's verdict play since 2026-10-03; the D10 review has not been re-run against it"
 
   - id: ssh-keys
     order: 6

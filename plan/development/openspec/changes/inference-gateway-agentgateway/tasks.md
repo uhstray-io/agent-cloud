@@ -223,6 +223,10 @@
       case (`shape_diff`; paths and types only) and accepts only what
       `deployment/tests/conformance-shape-allow.json` lists. That list is committed empty; the
       operator fills it after reading the next run. Then this task is recorded.
+      2026-10-03: production run Semaphore task 2614 (commit `1f8057aa`) matched semantics 13/13
+      and shape 0/13. Operator decision: accept every reported difference; the allowlist holds the
+      reported paths scoped per case (78, none global) and `architecture.md` records the client-visible ones. Still
+      open: the first-token and gap deltas are not recorded yet, so this task stays unticked.
 - [ ] 2.3 Confirm SSE keep-alive comment lines from vLLM pass through unchanged and
       unbuffered (needs dgx-spark `inference-endpoint-reliability` deployed)
 - [ ] 2.3a Streams and the budget: confirm whether a streamed completion is charged to the
@@ -355,6 +359,13 @@
       tasks 2460 (dry run) and 2462: keyless request 401, keyed models list and one completion
       through mutual TLS. Left open: this note does not re-verify the local-dev records, the
       allowlist refusal or the BATS assertions the task names
+      2026-10-03: the assertions exist as pytest, not BATS — `platform/tests/test_agw_listener_tls.py`:
+      both listeners render TLS with the CA root and the SAN rule
+      (`test_both_listeners_serve_tls_require_a_ca_client_cert_and_carry_the_san_rule`), the
+      default list is `caddy` alone (`test_the_default_allowlist_is_caddy_alone`), and an
+      undeclared entry is refused naming it
+      (`test_a_declaration_the_gateway_cannot_serve_is_refused_naming_it`, case `undeclared`).
+      The local-dev records the task names are still not re-verified here
 - [ ] 6.1a The one gateway probe path. Every check that sends a request to the gateway
       from outside Caddy uses it: this deploy's own verify, the personal-key 401 gates
       (`inference-personal-keys`), the renewal proof for the client leaves that are probed
@@ -385,6 +396,11 @@
       line. Local-dev keeps `agw_verify_base_url` and sets it to the SAN form; unverified:
       how the Semaphore container resolves that name on the `local-dev` network, settled
       before 6.1a lands
+      2026-10-03: CODE LANDED — `platform/playbooks/tasks/agw-probe.yml` is the shared probe;
+      `deploy-agentgateway.yml` sends its three probes through it. Name resolution is the one
+      step `tasks/agw-probe-resolution.yml` (PR #418), used by `deploy-agentgateway.yml` and,
+      read-only, by `renew-internal-certs.yml` (PR #420). The other consumers this task lists
+      (personal keys, benchmark VM, access-record verify) are not checked here
 - [ ] 6.2 Caddy's `inference` and `admin.inference` blocks proxy to `https://` with
       `transport http { tls_server_name <gateway SAN>; tls_trust_pool file <root>;
       tls_client_auth <cert> <key> }` (Caddy 2.11.4), the leaf files read from the Caddy
@@ -434,9 +450,12 @@
       non-IPv4 or `dns_records`-colliding record, and digs each one in its verify phase.
       `tasks/agw-probe-resolution.yml` is the one resolution step: interim hosts line while
       `agw_internal_dns_authoritative` is false (the default), and with it true removes every
-      marker line (only those) and refuses a name the host resolver does not answer. Open:
-      `deploy-agentgateway.yml` and `renew-internal-certs.yml` still carry or rely on the inline
-      `lineinfile` and must include the new task instead; the flag stays false until production
+      marker line (only those) and refuses a name the host resolver does not answer.
+      Done (2026-10-03): `deploy-agentgateway.yml` and `renew-internal-certs.yml` include that
+      task instead of an inline `lineinfile` (same interim line with the flag false); the deploy
+      is the one writer, the daily renewal calls it read-only (`_agwr_check_only`: no write,
+      no escalation, no OpenBao read; it fails naming Deploy agentgateway when the line is
+      wrong), and a test refuses any other file carrying the marker. Open: the flag stays false until production
       hickory-dns runs and the probing hosts resolve through it (`internal-dns-naming` 6.1,
       6.1a, 6.2 — no production DNS template exists in `platform/semaphore/templates.yml`)
 - [ ] 7.3 Validation gate: with the Cloudflare skip rule temporarily disabled in a declared

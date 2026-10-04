@@ -602,12 +602,13 @@
       ansible.builtin.include_tasks: tasks/resolve-become-password.yml
       when: _tls and not ansible_check_mode and agw_verify_base_url is not defined
 
-    - name: "Probe path: map the server leaf's name to the published bind (interim, task 7.2)"
-      ansible.builtin.lineinfile:
-        path: /etc/hosts
-        regexp: '# agent-cloud-managed: agw-probe \(interim, task 7\.2\)$'
-        line: "{{ _agw_probe_ip }} {{ _agw_server_name }} # agent-cloud-managed: agw-probe (interim, task 7.2)"
-      become: true
+    # The one resolution step (tasks/agw-probe-resolution.yml): the interim hosts line while
+    # agw_internal_dns_authoritative is false, the internal zone's record once it is true.
+    - name: "Probe path: resolve the server leaf's name (task 7.2)"
+      ansible.builtin.include_tasks: tasks/agw-probe-resolution.yml
+      vars:
+        _agwr_name: "{{ _agw_server_name }}"
+        _agwr_ip: "{{ _agw_probe_ip }}"
       when: _tls and not ansible_check_mode and agw_verify_base_url is not defined
 
     - name: "An unenrolled request is refused at the gateway (401, never reaches the upstream)"

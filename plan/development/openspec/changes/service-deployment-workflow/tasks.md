@@ -56,7 +56,12 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
       step-result fields; `ANSIBLE_SHOW_CUSTOM_STATS=true` in both controllers' environment.
       2026-09-22: done as a repo-root `ansible.cfg` (`show_custom_stats = True`) instead of an
       env var per controller, since Semaphore runs from the clone root; proven by
-      `platform/tests/test_emit_step_result.py` in normal and check mode (mutated once: red)
+      `platform/tests/test_emit_step_result.py` in normal and check mode (mutated once: red).
+      2026-10-03: a second, aggregating `set_stats` appends each result to a `step_results`
+      list so one run can record several steps (Provision VM now records `cloud-init` from its
+      post-boot checks); the collector reads the list and falls back to the single
+      `step_result` older task output carries. Proven by `test_emit_step_result.py` and
+      `test_vm_lifecycle_step_results.py` (parser and cloud-init skip mutations: red)
 - [x] 1.4 pytest check-mode guard: flags state-changing `command`/`shell`/non-GET `uri`
       without `when: not ansible_check_mode` or `check_mode`, and read-only `uri` GET without
       `check_mode: false`; seeded with an allowlist of every current violation so it passes
@@ -204,17 +209,19 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
         four passing stamps wait on the matching OPA `data.json` workflow_steps change.
       - 2026-10-03: review merged in PR #397: 4 pass, 13 fail (twelve with no step result, plus
         systemd-enablement). Stamps wait on the OPA `data.json` change and a decision on the `main` run
-      - 2026-10-03: re-review after the executors began recording results (PRs #413, #416,
-        #417; `d10-review.md`). Nine more pass (vm-template, provision-vm, ssh-keys,
-        ssh-key-backup, access-harden, vm-rightsize, fw-harden, systemd-enablement,
-        credential-backup). edge-route lacks a populated-group preflight; oidc-config recreates
-        every container on each run. cloud-init and service-deploy were not re-reviewed. Stamps
-        still wait on the OPA `data.json` change.
-        Same day, edge-route passes after `manage-caddy-sites.yml` gained a populated-group
-        preflight that records a failed edge-route result.
-        Corrected on review (PR #421): access-harden and edge-route are back to gaps. Key-only
-        access is proven only after password authentication is withdrawn, and the Cloudflare
-        zero-diff criterion is delegated. Both are operator decisions.
+      - 2026-10-03: the missing emits landed — access executors (PR #413), VM lifecycle
+        executors (#416), service executors (#417), and several results per run with
+        `provision-vm.yml` recording `cloud-init` (#419). The per-service deploy step and
+        `deploy-authentik.yml` outside its `oidc-config` step still record none. The D10
+        re-review against these merges is PR #421 (open).
+      - 2026-10-03: the D10 re-review itself (PR #421; `d10-review.md`). Eight more pass
+        (vm-template, provision-vm, ssh-keys, ssh-key-backup, vm-rightsize, fw-harden,
+        systemd-enablement, credential-backup). Three are gaps that wait on an operator decision:
+        access-harden proves key-only access only after password authentication is withdrawn;
+        edge-route delegates the Cloudflare zero-diff criterion (it also gained a
+        populated-group preflight that records a failed edge-route result); oidc-config
+        recreates every container on each run. cloud-init and service-deploy were not
+        re-reviewed. Stamps still wait on the OPA `data.json` change.
 - [x] 7.2 `provision-vm.yml` sets `onboot`; restart-policy check beside `enable-linger`.
       2026-09-22: onboot with per-host opt-out; `verify-service-persistence.yml` (step
       systemd-enablement) passes on local tududi, normal and check mode (tasks 977, 978)
@@ -247,6 +254,10 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
         reports it. The ARP and Proxmox reads can only run against production (local-dev has
         neither), so they are proven by the evaluated BATS test and wait for a `(Dev)` dry run.
         OPEN: `instrument-host-o11y.yml`, blocked on the OTLP receiver.
+      - 2026-10-03: blocker restated — the receiver exists in code:
+        `platform/services/o11y/deployment/templates/config.alloy.j2:136`
+        (`otelcol.receiver.otlp "traces"`) and `:202` (`"conformance"`). What remains open is
+        `instrument-host-o11y.yml` itself (no such playbook exists yet).
 - [x] 7.4 Snapshot templates for service, firewall and access assessment; each verify-only,
       emitting one JSON document. 2026-09-22: all three pass on local tududi in normal and
       check mode (tasks 971-976); the document is recorded with set_stats under `snapshot`

@@ -217,7 +217,10 @@ goes red, restore, confirm green. This is the only step that distinguishes a rea
 assertion from a decorative one, and it is how every defect above was found.
 
 `platform/tests/test_assertions_are_real.bats` ratchets the count of assertions that cannot
-fail: it may go down and may not go up. It does not catch the `grep -v` form.
+fail: it may go down and may not go up. A second check in the same file keeps a ratchet
+list of the `grep -v ... -q` form (every spelling, including those flags handed to
+`assert_grep`/`refute_grep`) and of `<assertion> || true`, and fails on any new one
+("no new grep -v -q or || true assertions outside the ratchet").
 
 ## Code Standards
 

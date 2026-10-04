@@ -298,6 +298,12 @@ host. Push, pull requests and merges happen only when Joe authorizes each one.
       collector to it in the same change; BATS asserts the collector includes the task and
       carries no inline push. The renewal run, the personal-key reconcile and the benchmark
       results all push through it
+      2026-10-03: CODE LANDED (PR #383) — `tasks/push-loki-lines.yml` exists; the collector
+      includes it with `push_loki_must_succeed: false` and carries no inline push, asserted in
+      pytest rather than BATS (`platform/tests/test_push_loki_lines.py`,
+      `test_collector_includes_the_shared_push_task`, `test_collector_carries_no_inline_loki_push`).
+      `renew-internal-certs.yml` pushes through it. Not ticked: the personal-key reconcile and
+      the benchmark results are not checked here
 - [ ] 6.1 `renew-internal-certs.yml`: for every declared leaf, read the current
       certificate's expiry on the consumer; when any leaf on a consumer host has less than
       a third of its lifetime left, re-issue every declared leaf on that host through task
@@ -402,8 +408,12 @@ host. Push, pull requests and merges happen only when Joe authorizes each one.
       site-config clone under `secrets/step-ca/` through `tasks/site-config-clone.yml` and
       `tasks/site-config-push.yml`, a new branch per run, file names only in the output;
       the key-bearing steps `no_log`, nothing else
+      2026-10-03: CODE LANDED (PR #381) — `backup-step-ca-to-site-config.yml` with
+      `platform/tests/test_backup_step_ca.py`. No run recorded
 - [ ] 7.2 `templates.yml`: `Back Up step-ca to site-config`; run it, then run `Back Up
       Credentials to site-config` with `credential_service=step-ca` for the passwords
+      2026-10-03: the template is declared (PR #381, `Back Up step-ca to site-config (Dev)` in
+      `platform/semaphore/templates.yml`). Owed: the backup run and the credential backup run
 - [ ] 7.3 Restore drill in local-dev: restore the backed-up material into a fresh volume,
       start the CA, compare the root fingerprint, then return local-dev to its own CA
 - [ ] 7.4 Validation gate: scenarios "Restore keeps the root" and "Backup output carries no
