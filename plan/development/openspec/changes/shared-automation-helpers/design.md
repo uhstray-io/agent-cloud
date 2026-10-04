@@ -20,7 +20,7 @@ Author: Joseph A. Wisneski IV. Proposal awaiting operator approval.
 | 0 | Test helpers (ratchet_compare, fake_http `serve()` + FakeLoki, `harness_sandbox.env_for`, `playbook_yaml.play/template`) | Every later phase's characterization tests use them |
 | 1 | CI/pre-push speed | Cheap, no runtime effect; shortens every later PR |
 | 2 | `bao-login.yml` | Foundation for 3, 4 and hygiene; highest copy count (47) |
-| 3 | `capture-failure.yml` + `emit-step-result` folding | Depends on nothing runtime; touches 13 playbooks, so done in batches |
+| 3 | `capture-failure.yml` + `emit-step-result` folding | Depends on nothing runtime; touches 12 playbooks, so done in batches |
 | 4 | `agw-read-secret.yml`; site-config deploy-key fetch | Uses `bao-login`; drift reconciled by returning the raw store plus derived flags so both callers keep their view |
 | 5 | Internal-leaf split, renewal declarations, DNS from leaves | Highest logic risk; isolated behind characterization of issued cert fields |
 | 6 | agentgateway readiness, compose helpers | Shell lib change affects every service; last of the runtime-bearing work |

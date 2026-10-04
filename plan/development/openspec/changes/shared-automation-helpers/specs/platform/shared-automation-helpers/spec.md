@@ -55,3 +55,75 @@ CI SHALL run BATS with parallel jobs and cache pip and Ansible collection instal
 #### Scenario: CI run
 - **WHEN** the Unit Tests job runs
 - **THEN** BATS runs with `--jobs` and dependency installs hit a cache key
+
+### Requirement: Internal-leaf issuance separates validation from implementation
+`tasks/issue-internal-leaf.yml` SHALL contain only input validation and the call into
+`files/internal_leaf.py`; leaf classification MUST be a single filter plugin used by every
+caller. Issued leaves MUST carry the same subject, SANs, profile and validity as before the
+split.
+
+#### Scenario: Leaf fields unchanged
+- **WHEN** the same leaf declaration is issued before and after the split
+- **THEN** the characterization test finds identical subject, SANs, profile and validity
+
+#### Scenario: Invalid declaration refused before issuance
+- **WHEN** a leaf declaration lacks a required field
+- **THEN** the task fails naming the field and `internal_leaf.py` is never invoked
+
+### Requirement: Renewal is driven by per-leaf declarations
+Certificate renewal SHALL reload and prove each leaf from that leaf's own declaration, and DNS
+records for server-profile leaves MUST be derived from those leaves rather than listed
+separately.
+
+#### Scenario: New server-profile leaf
+- **WHEN** a server-profile leaf is added to the declarations
+- **THEN** its DNS record is derived without a second edit, and renewal reloads and proves it
+
+### Requirement: agentgateway readiness and compose helpers are shared
+agentgateway readiness SHALL be probed through one `gateway-ready.sh` against the target
+declared in `vars/agw-probe-target.yml`. `platform/lib/common.sh` SHALL provide
+`compose_files()` and `compose_up_if_changed`; the latter MUST NOT restart containers when no
+compose input changed.
+
+#### Scenario: Unchanged inputs
+- **WHEN** `compose_up_if_changed` runs with no changed compose file or env file
+- **THEN** no container is recreated
+
+#### Scenario: Gateway not ready
+- **WHEN** the gateway readiness endpoint does not answer 200 within the bound
+- **THEN** `gateway-ready.sh` exits non-zero and every consumer fails the same way
+
+### Requirement: Shared guards are adopted
+Playbooks requiring an exact reviewed commit SHALL include `require-reviewed-checkout.yml`,
+and `preflight-target-group.yml` SHALL offer a `target_service` mode that resolves the group
+from a literal service name.
+
+#### Scenario: Unreviewed checkout
+- **WHEN** a guarded playbook runs on a dirty or mismatched checkout
+- **THEN** it refuses before any change
+
+#### Scenario: Unknown target service
+- **WHEN** the preflight is given a `target_service` with no populated group
+- **THEN** it fails naming the service
+
+### Requirement: Hygiene guards
+`check-o11y-liveness.yml` SHALL revoke its OpenBao token on every exit path.
+`caddy_probe_host` MUST come from inventory with no literal default. OPA `launch_branches` MUST
+be tested against the Semaphore repository records. The Discord webhook-URL shape MUST be
+checked by one shared task. Proxmox status waits MUST use one shared task.
+
+#### Scenario: Liveness check fails
+- **WHEN** the liveness check fails after login
+- **THEN** the token is revoked before the play ends
+
+#### Scenario: Probe host unset
+- **WHEN** `caddy_probe_host` is not in inventory
+- **THEN** the playbook fails naming the variable
+
+#### Scenario: Branch lists diverge
+- **WHEN** a branch is in `launch_branches` but in no Semaphore repository record, or the reverse
+- **THEN** the sync test fails naming the branch
+
+#### Scenario: Malformed webhook URL
+- **WHEN** a stored webhook URL is not https Discord `/api/webhooks/`
+- **THEN** the shared assert fails without printing the URL

@@ -15,28 +15,35 @@ where the costly mistakes live.
 
 Verified evidence at `18534658`:
 
-1. **Step-result verdict/rescue skeleton.** Each of these playbooks hand-builds its own
-   block/rescue and verdict before including `tasks/emit-step-result.yml`:
-   `provision-vm.yml` (rescue :668, emits :696 and :879), `resize-vm.yml` (:451 / :558),
-   `provision-template.yml` (:94 / :245), `harden-ssh.yml` (:277 / :336),
-   `distribute-ssh-keys.yml` (:65 / :339), `backup-service-ssh-key.yml` (:216 / :228),
-   `backup-credentials-to-site-config.yml` (:233 / :245). Per-host folding is re-explained in
-   comments in `deploy-authentik.yml:432`, `manage-caddy-sites.yml:285` and
-   `verify-service-persistence.yml:199`; `apply-firewall.yml:806` emits without a shared
-   rescue; `renew-internal-certs.yml` (rescue :223, comment :75) and `mount-caddy-certs.yml`
-   (rescue :229) carry their own rescue capture.
-2. **OpenBao AppRole login.** `auth/approle/login` is hand-rolled at **47** sites across 46
-   files (`grep -rn 'auth/approle/login' platform/playbooks | wc -l`), each pairing its own
-   transport assertion, `no_log` scoping and token fact.
+1. **Step-result verdict/failure-capture skeleton.** These rescues exist only to record why
+   the step failed before `tasks/emit-step-result.yml` is included, and each is hand-written:
+   `provision-vm.yml` (rescue :668, emits :696 and :879), `resize-vm.yml` (:521 / :558),
+   `provision-template.yml` (:205 / :245), `harden-ssh.yml` (:277 / :336),
+   `distribute-ssh-keys.yml` (:181 and :291 / :339), `backup-service-ssh-key.yml`
+   (:216 / :228), `backup-credentials-to-site-config.yml` (:233 / :245),
+   `renew-internal-certs.yml` (:223, records a refusal; result via `set_stats`, comment :75).
+   Per-host folding is re-explained in comments in `deploy-authentik.yml:432`,
+   `manage-caddy-sites.yml:285` and `verify-service-persistence.yml:199`;
+   `apply-firewall.yml:806` emits without a capture rescue. Out of scope, because they are
+   recovery or fallback logic rather than failure capture: `provision-template.yml:94` (upload
+   fallback), `distribute-ssh-keys.yml:65` (password fallback), `resize-vm.yml:451` (guest
+   state recovery), `manage-caddy-sites.yml:175` (Caddyfile rollback),
+   `mount-caddy-certs.yml:229` (compose restore).
+2. **OpenBao AppRole login.** `auth/approle/login` appears **47** times in **46** files under
+   `platform/playbooks/` (`grep -rn` / `grep -rl`). Of those 46 files, **29** include
+   `tasks/assert-bao-transport.yml` in the same file and **17** do not — 7 shared tasks under
+   `tasks/` (which may rely on their callers' assertion, unverified per caller) and 10
+   playbooks, e.g. `wire-caddy-cloudflare-token.yml:59`. `no_log` scoping and the token fact
+   are written per site.
 3. **agentgateway secret read.** Three copies read `secret/data/services/{{ service_name }}`:
    `rollback-inference-route.yml:232` and `:596`, `run-agw-conformance.yml:166`. They have
    already drifted: the rollback copies expose the whole store and enumerate `direct_*` keys
    (:248–:252); the conformance copy derives `client_<name>` and `vllm_api_key` presence flags
    (:180–:183).
-4. **Site-config deploy-key fetch.** `backup-credentials-to-site-config.yml:65` and
-   `backup-step-ca-to-site-config.yml:60` each read `secret/data/services/ssh/site-config`
-   themselves before calling `tasks/site-config-clone.yml`, which only refuses when no key was
-   passed (:32).
+4. **Site-config deploy-key fetch.** `backup-credentials-to-site-config.yml` declares the key
+   path at :65 and reads it at :157; `backup-step-ca-to-site-config.yml` declares it at :60 and
+   reads it at :95. Both then call `tasks/site-config-clone.yml`, which only refuses when no key
+   was passed (:32).
 5. **Internal-leaf issuance.** `tasks/issue-internal-leaf.yml` (284 lines) embeds Python
    inline (:69, :130 shell, :217) alongside its validation.
 6. **Certificate renewal** declares per-leaf reload and proof by hand, and DNS records for
@@ -56,15 +63,15 @@ Verified evidence at `18534658`:
     `wire-caddy-cloudflare-token.yml:37` defaults `caddy_probe_host` to a literal public
     hostname in a public repo; OPA `launch_branches` lives in
     `platform/services/opa/deployment/policies/agentcloud/data.json` with no test keeping it in
-    sync with Semaphore's repository records; Discord webhook-URL validation is repeated
-    (`check-o11y-liveness.yml`, `seed-o11y-alert-webhook.yml`, `deploy-uhhcraft.yml`); PVE
+    sync with Semaphore's repository records; the Discord webhook-URL shape check is written twice
+    (`check-o11y-liveness.yml:96-102`, `tasks/o11y-alert-provision.yml:29`); PVE
     `until:` status waits repeat in `provision-vm.yml`, `resize-vm.yml`,
     `provision-template.yml`, `destroy-vm.yml`.
 
 ## What Changes
 
 - New composable tasks: `tasks/capture-failure.yml`, `tasks/bao-login.yml`,
-  `tasks/agw-read-secret.yml`, a PVE wait task and a Discord webhook assert task; extend
+  `tasks/agw-read-secret.yml`, a PVE wait task and one Discord webhook-URL assert task replacing the two shape checks; extend
   `tasks/emit-step-result.yml` to accept per-host errors/evidence and fold them, and
   `tasks/site-config-clone.yml` to fetch its own deploy key.
 - Internal-leaf issuance split: validation stays in the task, Python moves to
