@@ -6,6 +6,7 @@
 #   - SSH key auth verified working
 #
 # What this playbook does:
+#   0. Proves a fresh key-only SSH login from the runner; refuses, editing nothing, if not
 #   1. Configures NOPASSWD sudo for ansible_user
 #   2. Hardens /etc/ssh/sshd_config and all sshd_config.d/*.conf files
 #   3. Restarts sshd
@@ -60,6 +61,99 @@
           become: false
           no_log: true
 
+        - name: "Fetch management private key from OpenBao"
+          ansible.builtin.set_fact:
+            _mgmt_priv_key: "{{ lookup('community.hashi_vault.hashi_vault',
+              'secret/data/services/ssh:private_key',
+              url=_bao_url, auth_method='approle',
+              role_id=_bao_role_id, secret_id=_bao_secret_id) }}"
+          become: false
+          no_log: true
+
+        # ── Prove key-only login BEFORE anything is edited (AGENTS.md deployment rule 5) ──
+        # Withdrawing password auth is only safe once a FRESH key-only login is shown to work:
+        # a new ssh from the runner with the management key, password and keyboard-interactive
+        # disabled client-side, against the host key pinned over this run's connection. If it
+        # does not get in, the play refuses here — sudoers and sshd_config are untouched. This
+        # probe is the only source of the `key_only_proven` evidence. It only connects and
+        # echoes, so it runs under --check too (plan/architecture/08: a read-only probe with
+        # check_mode: false); the scratch key is runner-local and wiped in `always`.
+        - name: "Prove key-only login before hardening"
+          become: false
+          block:
+            - name: "Materialise the pre-hardening proof key (runner-local, 0600)"
+              ansible.builtin.include_tasks: tasks/materialise-ssh-key.yml
+              vars:
+                ssh_key_content: "{{ _mgmt_priv_key }}"
+                ssh_key_result_var: _proof_key
+
+            - name: "Pin the target's SSH host key for the pre-hardening proof"
+              ansible.builtin.include_tasks: tasks/pin-ssh-host-key.yml
+              vars:
+                ssh_key_result_var: _proof_key
+                ssh_host_key_result_var: _proof_pin
+                ssh_host_key_addr: "{{ hostvars[inventory_hostname].ansible_host | default(inventory_hostname, true) }}"
+                ssh_host_key_port: "{{ hostvars[inventory_hostname].ansible_port | default(22, true) }}"
+
+            - name: "Refuse an unpinned pre-hardening proof"
+              ansible.builtin.assert:
+                that: _proof_pin.pinned | bool
+                fail_msg: >-
+                  Could not read {{ inventory_hostname }}'s SSH host key over the Ansible
+                  connection, so key-only login cannot be proven. Refusing to harden.
+                quiet: true
+
+            - name: "Probe a fresh key-only login before hardening"
+              ansible.builtin.command:
+                argv:
+                  - ssh
+                  - -i
+                  - "{{ _proof_key.key }}"
+                  - -o
+                  - BatchMode=yes
+                  - -o
+                  - ConnectTimeout=10
+                  - -o
+                  - StrictHostKeyChecking=yes
+                  - -o
+                  - "UserKnownHostsFile={{ _proof_key.known_hosts }}"
+                  - -o
+                  - IdentitiesOnly=yes
+                  - -o
+                  - PasswordAuthentication=no
+                  - -o
+                  - KbdInteractiveAuthentication=no
+                  - -o
+                  - PubkeyAuthentication=yes
+                  - -o
+                  - PreferredAuthentications=publickey
+                  - -p
+                  - "{{ _proof_pin.port }}"
+                  - "{{ ansible_user }}@{{ _proof_pin.addr }}"
+                  - echo KEY_ONLY_OK
+              delegate_to: localhost
+              become: false
+              register: _key_preproof
+              changed_when: false
+              failed_when: false
+              check_mode: false
+
+          always:
+            - name: "Remove the runner-local pre-hardening proof key"
+              ansible.builtin.include_tasks: tasks/remove-ssh-key.yml
+              vars:
+                ssh_key_result_var: _proof_key
+
+        - name: "Refuse to harden without a proven key-only login"
+          ansible.builtin.assert:
+            that: "'KEY_ONLY_OK' in (_key_preproof.stdout | default(''))"
+            fail_msg: >-
+              Key-only login to {{ inventory_hostname }} is NOT proven (ssh rc
+              {{ _key_preproof.rc | default('?') }}:
+              {{ _key_preproof.stderr_lines | default([]) | last | default('no output') }}),
+              so password auth was left in place and nothing was edited.
+            quiet: true
+
         - name: "Configure NOPASSWD sudo for user — {{ ansible_user }}"
           ansible.builtin.copy:
             content: "{{ ansible_user }} ALL=(ALL) NOPASSWD:ALL\n"
@@ -99,15 +193,6 @@
           ansible.builtin.meta: flush_handlers
 
         # ── Post-lockdown verification (runs from Semaphore runner, no become) ────
-
-        - name: "Fetch management private key from OpenBao"
-          ansible.builtin.set_fact:
-            _mgmt_priv_key: "{{ lookup('community.hashi_vault.hashi_vault',
-              'secret/data/services/ssh:private_key',
-              url=_bao_url, auth_method='approle',
-              role_id=_bao_role_id, secret_id=_bao_secret_id) }}"
-          become: false
-          no_log: true
 
         # The key goes on disk only for the probes, via the shared task, and is wiped in
         # `always` — on a failed probe too, which the hand-rolled version did not do. Under
@@ -315,7 +400,8 @@
     _targets: "{{ groups.get(target_service, []) }}"
     _verdicts: "{{ _targets | map('extract', hostvars) | list }}"
   tasks:
-    # Key login is proven by the post-lockdown probe, which disables password auth client-side.
+    # key_only_proven comes ONLY from the pre-hardening probe: the fresh key-only login made
+    # before sudoers or sshd_config was touched.
     - name: "Collect the verdict across the target group"
       ansible.builtin.set_fact:
         _group_errors: >-
@@ -341,9 +427,9 @@
         step_result_evidence:
           key_only_proven: >-
             {{ _verdicts
-               | map(attribute='_key_test', default={})
+               | map(attribute='_key_preproof', default={})
                | map(attribute='stdout', default='')
-               | select('search', 'KEY_AUTH_OK')
+               | select('search', 'KEY_ONLY_OK')
                | list | length
                == (_targets | length) and (_targets | length) > 0 }}
           password_rejected: >-

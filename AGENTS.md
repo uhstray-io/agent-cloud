@@ -349,7 +349,7 @@ Each deployment concern is its own playbook — independently runnable and retry
 | Provision Orb Agent AppRole | `provision-orb-agent-approle.yml` | Code-managed: scoped policy + AppRole from `orb-agent.hcl`, creds → `secret/services/approles/orb-agent` |
 | Clean Deploy NetBox | `clean-deploy-netbox.yml` | Destructive: wipe volumes + fresh deploy |
 | Distribute SSH Keys | `distribute-ssh-keys.yml` | Deploy keys from OpenBao, verify key auth |
-| Harden SSH | `harden-ssh.yml` | NOPASSWD sudo + sshd lockdown (after key verification) |
+| Harden SSH | `harden-ssh.yml` | Proves a fresh key-only login from the runner FIRST (pinned host key, password methods off client-side) and refuses with nothing edited if it fails; then NOPASSWD sudo + sshd lockdown, re-verified key login + password rejected. `key_only_proven` comes only from the pre-hardening probe |
 | Install Docker | `install-docker.yml` | Docker CE from official repo (idempotent) |
 | Install QEMU Guest Agent | `install-qemu-guest-agent.yml` | Install + start `qemu-guest-agent` on ONE `<name>_svc` group of existing VMs that predate the cloud-init package list. Refuses an empty group or host pattern, and any VM without the guest-agent virtio port (run Resize VM with `allow_reboot=true` first: it converges `agent=1`) |
 | Preflight Target Group | `preflight-target-group.yml` | Assert a target group resolves and its hosts are reachable before a deploy touches them |

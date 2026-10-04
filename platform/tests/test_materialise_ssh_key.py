@@ -258,11 +258,13 @@ def test_every_converted_playbook_wipes_in_always():
     for playbook in CONVERTED:
         blocks = [t for t in _tasks(PLAYBOOKS / playbook)
                   if any(s.get("ansible.builtin.include_tasks") == MATERIALISE for s in t.get("block") or [])]
-        assert len(blocks) == 1, playbook
-        (block,) = blocks
-        (inc,) = [s for s in block["block"] if s.get("ansible.builtin.include_tasks") == MATERIALISE]
-        wipes = [s for s in block.get("always") or [] if s.get("ansible.builtin.include_tasks") == REMOVE]
-        assert [w["vars"]["ssh_key_result_var"] for w in wipes] == [inc["vars"]["ssh_key_result_var"]], playbook
+        # Harden SSH materialises twice (pre-hardening proof, post-lockdown verify); each
+        # block must wipe its own key.
+        assert blocks, playbook
+        for block in blocks:
+            (inc,) = [s for s in block["block"] if s.get("ansible.builtin.include_tasks") == MATERIALISE]
+            wipes = [s for s in block.get("always") or [] if s.get("ansible.builtin.include_tasks") == REMOVE]
+            assert [w["vars"]["ssh_key_result_var"] for w in wipes] == [inc["vars"]["ssh_key_result_var"]], playbook
 
 
 def test_only_the_write_of_the_key_is_no_log():

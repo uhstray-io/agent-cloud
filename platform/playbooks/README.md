@@ -157,7 +157,7 @@ list of files allowed to write a private key).
 | Playbook | Purpose |
 |----------|---------|
 | `distribute-ssh-keys.yml` | Deploy SSH keys from OpenBao, verify key auth (no sudo) |
-| `harden-ssh.yml` | NOPASSWD sudo + sshd lockdown + post-lockdown verification (requires sudo) |
+| `harden-ssh.yml` | Pre-hardening key-only login proof (refuses, nothing edited, on failure) + NOPASSWD sudo + sshd lockdown + post-lockdown verification (requires sudo) |
 | `generate-service-ssh-key.yml` | Generate + store a per-service ed25519 key in OpenBao (never rotates); backs the pair up to site-config in the same run when `site_config_dir` is set |
 | `backup-service-ssh-key.yml` | Copy an existing per-service keypair OUT of OpenBao into site-config on a NEW branch per run, cloning with the deploy key read from `secret/services/ssh/site-config`. Read-only against the store; refuses a mismatched pair and a differing existing file (`force_overwrite` to replace) |
 | `backup-credentials-to-site-config.yml` | Copy named credential fields out of OpenBao into site-config on a NEW branch per run, pushed with the deploy key read from `secret/services/ssh/site-config` over pinned GitHub host keys (`tasks/site-config-clone.yml` + `site-config-push.yml`); no value ever reaches task output |
