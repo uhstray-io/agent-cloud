@@ -1,84 +1,81 @@
 {
-  "_comment": "Shape differences the inference gateway is ACCEPTED to introduce against direct vLLM (conformance.sh diff, change inference-gateway-agentgateway task 2.2). Each entry is a key path exactly as shape_diff prints it. The top-level lists apply to every case; `cases` adds lists for one named case only, so a difference seen in one case does not excuse it elsewhere. gateway_may_add: paths only the gateway's body has; gateway_may_drop: paths only vLLM's has; gateway_may_retype: paths whose JSON type differs. Operator decision 2026-10-03: every difference observed in production run Semaphore task 2614 (13/13 semantic match; record in conformance-shape-t2614.json) is accepted for the case it was seen in; each is still reported under shape_allowed. The client-visible ones are recorded in context/architecture.md. Add a path only after reading a run's shape_diff and recording the decision there.",
-  "gateway_may_add": [],
-  "gateway_may_drop": [],
-  "gateway_may_retype": [],
+  "_comment": "Shape differences reported by production conformance run Semaphore task 2614 (commit 1f8057aa), per case: key paths only, as conformance.sh shape_diff printed them (type_changed reduced to its paths). No values. test_agw_conformance.py checks the committed allowlist against this record.",
   "cases": {
     "chat-template-kwargs": {
-      "gateway_may_add": [],
-      "gateway_may_drop": [
+      "only_gateway": [],
+      "only_direct": [
         "service_tier",
         "usage.prompt_tokens_details"
       ],
-      "gateway_may_retype": []
+      "type_changed": []
     },
     "chat-thinking-off": {
-      "gateway_may_add": [],
-      "gateway_may_drop": [
+      "only_gateway": [],
+      "only_direct": [
         "service_tier",
         "usage.prompt_tokens_details"
       ],
-      "gateway_may_retype": []
+      "type_changed": []
     },
     "effort-high": {
-      "gateway_may_add": [],
-      "gateway_may_drop": [
+      "only_gateway": [],
+      "only_direct": [
         "service_tier",
         "usage.prompt_tokens_details"
       ],
-      "gateway_may_retype": []
+      "type_changed": []
     },
     "effort-low": {
-      "gateway_may_add": [],
-      "gateway_may_drop": [
+      "only_gateway": [],
+      "only_direct": [
         "service_tier",
         "usage.prompt_tokens_details"
       ],
-      "gateway_may_retype": []
+      "type_changed": []
     },
     "effort-max": {
-      "gateway_may_add": [],
-      "gateway_may_drop": [
+      "only_gateway": [],
+      "only_direct": [
         "service_tier",
         "usage.prompt_tokens_details"
       ],
-      "gateway_may_retype": []
+      "type_changed": []
     },
     "effort-medium": {
-      "gateway_may_add": [],
-      "gateway_may_drop": [
+      "only_gateway": [],
+      "only_direct": [
         "service_tier",
         "usage.prompt_tokens_details"
       ],
-      "gateway_may_retype": []
+      "type_changed": []
     },
     "effort-minimal": {
-      "gateway_may_add": [],
-      "gateway_may_drop": [
+      "only_gateway": [],
+      "only_direct": [
         "service_tier",
         "usage.prompt_tokens_details"
       ],
-      "gateway_may_retype": []
+      "type_changed": []
     },
     "effort-none": {
-      "gateway_may_add": [],
-      "gateway_may_drop": [
+      "only_gateway": [],
+      "only_direct": [
         "service_tier",
         "usage.prompt_tokens_details"
       ],
-      "gateway_may_retype": []
+      "type_changed": []
     },
     "effort-xhigh": {
-      "gateway_may_add": [],
-      "gateway_may_drop": [
+      "only_gateway": [],
+      "only_direct": [
         "service_tier",
         "usage.prompt_tokens_details"
       ],
-      "gateway_may_retype": []
+      "type_changed": []
     },
     "models": {
-      "gateway_may_add": [],
-      "gateway_may_drop": [
+      "only_gateway": [],
+      "only_direct": [
         "data.[].max_model_len",
         "data.[].parent",
         "data.[].permission.[].allow_create_engine",
@@ -93,11 +90,11 @@
         "data.[].permission.[].organization",
         "data.[].root"
       ],
-      "gateway_may_retype": []
+      "type_changed": []
     },
     "responses": {
-      "gateway_may_add": [],
-      "gateway_may_drop": [
+      "only_gateway": [],
+      "only_direct": [
         "background",
         "ec_transfer_params",
         "frequency_penalty",
@@ -136,31 +133,31 @@
         "usage.output_tokens_details.tool_output_tokens_per_turn",
         "user"
       ],
-      "gateway_may_retype": [
+      "type_changed": [
         "output.[].status"
       ]
     },
     "stream-xhigh": {
-      "gateway_may_add": [
+      "only_gateway": [
         "choices",
         "usage.completion_tokens",
         "usage.completion_tokens_details.reasoning_tokens",
         "usage.prompt_tokens",
         "usage.total_tokens"
       ],
-      "gateway_may_drop": [
+      "only_direct": [
         "choices.[].delta"
       ],
-      "gateway_may_retype": []
+      "type_changed": []
     },
     "tool-call": {
-      "gateway_may_add": [],
-      "gateway_may_drop": [
+      "only_gateway": [],
+      "only_direct": [
         "choices.[].message.content",
         "service_tier",
         "usage.prompt_tokens_details"
       ],
-      "gateway_may_retype": []
+      "type_changed": []
     }
   }
 }

@@ -101,12 +101,13 @@ Retirement date: _not yet set_ — `legacy_shared_expires` is the route-switch d
 
 ## Conformance against direct vLLM (tasks 2.1, 2.2)
 
-**Results pending.** The first production run (Semaphore task 2592, sent as an enrolled identity for
+**Results.** The first production run (Semaphore task 2592, sent as an enrolled identity for
 the served model, as reported by the operator) matched 0 of 13 cases. Every case returned
 200 on both sides with the same semantic fields, but a different body shape. That run's report
 carried only a hash of each shape, so it could not say which fields differed, and no decision
 could be made from it. The comparison now names the differing key paths (`shape_diff`, below). The
-deltas and the accepted differences are recorded here after the next run.
+second production run, task 2614, named them; the accepted differences are recorded below. The
+timing deltas are still to be recorded.
 
 How the comparison is made: the Semaphore template `Run agentgateway Conformance`
 (`platform/playbooks/run-agw-conformance.yml`) runs `deployment/tests/conformance.sh` on the gateway
@@ -146,14 +147,18 @@ is accepted to introduce: `gateway_may_add`, `gateway_may_drop` and `gateway_may
 list of paths written exactly as `shape_diff` prints them. All three lists must be present, though
 each may be empty. A file that lacks one, carries any other key, or has a non-string `_comment` is
 refused. An allowlisted difference is still
-reported, under `shape_allowed`. Only the rest (`shape_unaccepted`) fails a case. The lists are
-global: a path accepted for one case is accepted for every case. Adding a path is the operator's
+reported, under `shape_allowed`. Only the rest (`shape_unaccepted`) fails a case. The top-level
+lists apply to every case. An optional `cases` object, keyed by case name, holds the same three lists
+for that case only (any subset of them, nothing else); a case is judged against the top-level lists
+plus its own entry, so a path accepted for the stream does not excuse it in a plain completion. Adding a path is the operator's
 decision after reading a run's diff; record it and its reason in this section when making it.
 
 **Accepted shape differences (operator decision, 2026-10-03).** The second production run, Semaphore
 task 2614 (commit `1f8057aa`), matched semantics in all 13 cases and shape in none. The operator
-accepted every difference it reported: the allowlist now carries the union over all cases, 5 paths in
-`gateway_may_add`, 53 in `gateway_may_drop` and 1 in `gateway_may_retype`. They are accepted, not
+accepted every difference it reported, for the case it was seen in. The run's per-case paths are kept
+as `deployment/tests/conformance-shape-t2614.json` (paths only), and a test holds the allowlist to
+exactly that record. No path appeared in every case, so the top-level lists stay empty and all 78
+entries sit under `cases`, across all 13 cases. They are accepted, not
 hidden: each is still listed under `shape_allowed` on every run. The client-visible ones below are
 candidates for passthrough upstream in agentgateway; a later release that passes a field through
 makes its entry redundant, not wrong.
@@ -220,6 +225,6 @@ The timing measures below were not part of that report and stay pending.
   is still 401. This is the exact prod shape with vLLM's key.
 - 2026-10-03 — task 2.2, production conformance run Semaphore task 2614 (commit `1f8057aa`):
   13/13 cases semantic match, 0/13 shape match. Every reported shape difference accepted by the
-  operator and committed to `conformance-shape-allow.json` (5 add, 53 drop, 1 retype); the
+  operator and committed to `conformance-shape-allow.json` (78 paths, each scoped to the case it was seen in); the
   client-visible ones are listed under "Accepted shape differences". Timing deltas not yet recorded.
 - Task 2 (conformance against the direct upstream): shape decision recorded; timing deltas pending.

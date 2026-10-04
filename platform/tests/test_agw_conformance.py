@@ -607,6 +607,18 @@ def test_a_type_change_is_named_and_only_its_own_allowlist_entry_accepts_it(tmp_
 FULL_ALLOW = {"gateway_may_add": [], "gateway_may_drop": [], "gateway_may_retype": []}
 
 
+def test_a_per_case_entry_accepts_the_path_for_that_case_only(tmp_path, stubs):
+    # A path accepted for the stream must not excuse the same path appearing in a plain completion.
+    gw, direct = stubs(key=GW_KEY, mutate=_adds_route), stubs(key=UP_KEY)
+    _run(tmp_path, gw, direct)
+    report = _diff_allow(tmp_path, {"cases": {"stream-xhigh": {"gateway_may_add": ["x_route.trace"]}}})
+    s = _case(report, "stream-xhigh")
+    assert s["verdict"] == "match" and s["shape_allowed"]["only_gateway"] == ["x_route.trace"]
+    c = _case(report, "effort-low")
+    assert c["verdict"] == "differ" and c["shape_unaccepted"]["only_gateway"] == ["x_route.trace"]
+    assert report["verdict"] == "fail" and "stream-xhigh" not in report["not_matched"]
+
+
 @pytest.mark.parametrize("allow", [
     {**FULL_ALLOW, "gateway_may_ad": ["x"]},           # a misspelt extra key
     {**FULL_ALLOW, "gateway_may_add": "x_route"},      # not a list
@@ -616,6 +628,13 @@ FULL_ALLOW = {"gateway_may_add": [], "gateway_may_drop": [], "gateway_may_retype
     {"_comment": "only a comment"},                    # comment only
     {"gateway_may_add": ["x"], "gateway_may_drop": []},  # partial: gateway_may_retype missing
     {**FULL_ALLOW, "_comment": ["not", "a", "string"]},  # comment not a string
+    {**FULL_ALLOW, "cases": []},                                            # cases not an object
+    {**FULL_ALLOW, "cases": {"models": ["x"]}},                             # case entry not an object
+    {**FULL_ALLOW, "cases": {"models": {}}},                                # case entry empty
+    {**FULL_ALLOW, "cases": {"models": {"gateway_may_ad": ["x"]}}},         # misspelt list in a case
+    {**FULL_ALLOW, "cases": {"models": {"gateway_may_drop": "x"}}},         # case list not a list
+    {**FULL_ALLOW, "cases": {"models": {"gateway_may_drop": [1]}}},         # case list not strings
+    {**FULL_ALLOW, "cases": {"": {"gateway_may_drop": ["x"]}}},             # empty case name
 ])
 def test_a_malformed_shape_allowlist_is_refused(tmp_path, allow):
     out = tmp_path / "out"
@@ -647,18 +666,35 @@ def test_the_committed_shape_allowlist_passes_the_scripts_own_refusal_rules(tmp_
     assert r.returncode == 0, r.stderr
 
 
-def test_the_committed_shape_allowlist_is_sorted_unique_strings_with_the_task_2614_decision():
-    # Accepting a difference is the operator's decision after reading a run's shape_diff
-    # (2026-10-03: every difference in production run task 2614, recorded in architecture.md).
+T2614 = REPO / "platform/services/agentgateway/deployment/tests/conformance-shape-t2614.json"
+_LISTS = (("gateway_may_add", "only_gateway"), ("gateway_may_drop", "only_direct"),
+          ("gateway_may_retype", "type_changed"))
+
+
+def test_the_committed_shape_allowlist_accepts_exactly_what_task_2614_reported():
+    # Operator decision 2026-10-03: accept every difference production run task 2614 reported, for
+    # the case it was seen in. The record is that run's shape_diff, paths only. The allowlist must
+    # cover it exactly: nothing missing, and nothing extra in any case or at the top level.
     allow = json.loads(ALLOW.read_text())
-    assert set(allow) == set(FULL_ALLOW) | {"_comment"}
-    assert "2614" in allow["_comment"]
-    for name in FULL_ALLOW:
-        paths = allow[name]
-        assert all(isinstance(p, str) and p for p in paths), name
-        assert paths == sorted(set(paths)), name
-    assert "usage.prompt_tokens_details" in allow["gateway_may_drop"]
-    assert allow["gateway_may_retype"] == ["output.[].status"]
+    record = json.loads(T2614.read_text())["cases"]
+    assert set(allow) == set(FULL_ALLOW) | {"_comment", "cases"} and "2614" in allow["_comment"]
+    assert set(allow["cases"]) <= set(record)
+    for case, seen in record.items():
+        own = allow["cases"].get(case, {})
+        for name, key in _LISTS:
+            assert sorted(set(allow[name]) | set(own.get(name, []))) == sorted(set(seen[key])), (case, name)
+    for lists in [allow, *allow["cases"].values()]:
+        for name, _ in _LISTS:
+            paths = lists.get(name, [])
+            assert all(isinstance(p, str) and p for p in paths) and paths == sorted(set(paths)), name
+
+
+def test_the_task_2614_record_carries_paths_only():
+    record = json.loads(T2614.read_text())
+    assert set(record) == {"_comment", "cases"} and len(record["cases"]) == 13
+    for seen in record["cases"].values():
+        assert set(seen) == {"only_gateway", "only_direct", "type_changed"}
+        assert all(isinstance(p, str) and p for v in seen.values() for p in v)
 
 
 # ── listener TLS options and input checks ─────────────────────────────────────

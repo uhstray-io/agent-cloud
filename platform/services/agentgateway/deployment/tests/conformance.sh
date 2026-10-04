@@ -364,8 +364,11 @@ cmd_run() {
 # argument is the shape allowlist (conformance-shape-allow.json beside this script): paths the
 # gateway is accepted to add (`gateway_may_add`), drop (`gateway_may_drop`) or retype
 # (`gateway_may_retype`). An allowlisted difference is still listed in shape_diff, and also under
-# `shape_allowed`; only `shape_unaccepted` decides the verdict. The committed allowlist is empty:
-# accepting a difference is the operator's decision after reading the diff, made by adding the path.
+# `shape_allowed`; only `shape_unaccepted` decides the verdict. The top-level lists apply to every
+# case; an optional `cases` object adds the same three lists for one named case only, so a path
+# accepted for the stream does not excuse it in a plain completion. Accepting a difference is the
+# operator's decision after reading the diff, made by adding the path (the committed file holds the
+# differences the operator accepted from production run task 2614, recorded in context/architecture.md).
 cmd_diff() {
 	[ -r "${1:-}" ] || die "usage: conformance.sh diff <results.jsonl> [<model-map.json>|''] [<shape-allow.json>]"
 	local map='{}' allow='{}'
@@ -378,15 +381,21 @@ cmd_diff() {
 	if [ -n "${3:-}" ]; then
 		[ -r "$3" ] || die "shape allowlist $3 is not readable"
 		# A misspelt or missing key would silently allow nothing, so the file must carry exactly the
-		# three lists (each may be empty), plus at most a string `_comment`, and nothing else.
+		# three lists (each may be empty), plus at most a string `_comment` and a `cases` object, and
+		# nothing else. Each `cases` entry is keyed by a case name and holds one or more of the three
+		# lists and nothing else.
 		jq -e '["gateway_may_add", "gateway_may_drop", "gateway_may_retype"] as $lists
-			| type == "object"
+			| def strlist: type == "array" and all(.[]; type == "string");
+			type == "object"
 			and (. as $o
-				| ((keys - $lists - ["_comment"]) | length == 0)
+				| ((keys - $lists - ["_comment", "cases"]) | length == 0)
 				# Each list must be an array; a missing one reads as null and fails here.
-				and all($lists[]; . as $k | $o[$k] | type == "array" and all(.[]; type == "string"))
-				and (($o | has("_comment") | not) or ($o._comment | type == "string")))' "$3" >/dev/null ||
-			die "shape allowlist $3 must hold exactly gateway_may_add, gateway_may_drop and gateway_may_retype (string lists, may be empty) and optionally a string _comment"
+				and all($lists[]; . as $k | $o[$k] | strlist)
+				and (($o | has("_comment") | not) or ($o._comment | type == "string"))
+				and (($o | has("cases") | not) or ($o.cases | type == "object"
+					and all(to_entries[]; (.key | length > 0) and (.value | type == "object"
+						and length > 0 and ((keys - $lists) | length == 0) and all(.[]; strlist))))))' "$3" >/dev/null ||
+			die "shape allowlist $3 must hold exactly gateway_may_add, gateway_may_drop and gateway_may_retype (string lists, may be empty), optionally a string _comment, and optionally a cases object of per-case lists"
 		allow=$(jq -c . "$3")
 	fi
 	jq -s -c --argjson map "$map" --argjson allow "$allow" "$JQ_LIB"'
@@ -412,12 +421,17 @@ cmd_diff() {
 				| {path: $k, gateway: $gt[$k], direct: $dt[$k]}]};
 		def not_in($l): map(. as $x | select(($l // []) | index($x) | not));
 		def only_in($l): map(. as $x | select(($l // []) | index($x)));
-		def unaccepted: {only_gateway: (.only_gateway | not_in($allow.gateway_may_add)),
-			only_direct: (.only_direct | not_in($allow.gateway_may_drop)),
-			type_changed: [.type_changed[] | .path as $p | select(($allow.gateway_may_retype // []) | index($p) | not)]};
-		def allowed: {only_gateway: (.only_gateway | only_in($allow.gateway_may_add)),
-			only_direct: (.only_direct | only_in($allow.gateway_may_drop)),
-			type_changed: [.type_changed[] | .path as $p | select(($allow.gateway_may_retype // []) | index($p))]};
+		# The lists for one case: the global ones plus the entry for that case, if any.
+		def lists($c): ($allow.cases[$c]? // {}) as $o
+			| {add: (($allow.gateway_may_add // []) + ($o.gateway_may_add // [])),
+			   drop: (($allow.gateway_may_drop // []) + ($o.gateway_may_drop // [])),
+			   retype: (($allow.gateway_may_retype // []) + ($o.gateway_may_retype // []))};
+		def unaccepted($l): {only_gateway: (.only_gateway | not_in($l.add)),
+			only_direct: (.only_direct | not_in($l.drop)),
+			type_changed: [.type_changed[] | .path as $p | select($l.retype | index($p) | not)]};
+		def allowed($l): {only_gateway: (.only_gateway | only_in($l.add)),
+			only_direct: (.only_direct | only_in($l.drop)),
+			type_changed: [.type_changed[] | .path as $p | select($l.retype | index($p))]};
 		def empty_diff: .only_gateway == [] and .only_direct == [] and .type_changed == [];
 		def how: if .curl_exit != 0 then "curl exit \(.curl_exit)"
 			elif .status < 200 or .status >= 300 then "HTTP \(.status)"
@@ -446,8 +460,9 @@ cmd_diff() {
 					ttft_s: d($g.timing.ttft_s; $d.timing.ttft_s),
 					gap_p95_s: d($g.timing.gaps.p95_s; $d.timing.gaps.p95_s),
 					gap_max_s: d($g.timing.gaps.max_s; $d.timing.gaps.max_s)}}
-				| .shape_allowed = (.shape_diff | allowed)
-				| .shape_unaccepted = (.shape_diff | unaccepted)
+				| lists($g.case) as $l
+				| .shape_allowed = (.shape_diff | allowed($l))
+				| .shape_unaccepted = (.shape_diff | unaccepted($l))
 				# A result line without the shape list (an older run) cannot be judged path by path.
 				| .shape_accepted = (.shape_match
 					or ($g.shape != null and $d.shape != null and (.shape_unaccepted | empty_diff)))

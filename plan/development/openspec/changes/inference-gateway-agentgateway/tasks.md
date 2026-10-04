@@ -225,7 +225,7 @@
       operator fills it after reading the next run. Then this task is recorded.
       2026-10-03: production run Semaphore task 2614 (commit `1f8057aa`) matched semantics 13/13
       and shape 0/13. Operator decision: accept every reported difference; the allowlist holds the
-      union (5 add, 53 drop, 1 retype) and `architecture.md` records the client-visible ones. Still
+      reported paths scoped per case (78, none global) and `architecture.md` records the client-visible ones. Still
       open: the first-token and gap deltas are not recorded yet, so this task stays unticked.
 - [ ] 2.3 Confirm SSE keep-alive comment lines from vLLM pass through unchanged and
       unbuffered (needs dgx-spark `inference-endpoint-reliability` deployed)
