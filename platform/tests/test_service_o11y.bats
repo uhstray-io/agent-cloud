@@ -980,64 +980,93 @@ should_verify = [env.compile_expression(condition) for condition in block['when'
 assert all(check(local_mode=False, o11y_alerts_enabled=True, ansible_check_mode=False) for check in should_verify)
 assert all(check(local_mode=True, o11y_alerts_enabled=True, ansible_check_mode=False) for check in should_verify)
 tasks = block['block']
-rule_check = next(task for task in tasks if task['name'] == 'Require expected o11y rules and active routed rules')
-env.tests['match'] = lambda value, pattern: re.match(pattern, value) is not None
+by_name = {task['name']: task for task in tasks}
+scope = by_name['Scope live rules to the provisioned folders and groups']
+set_check = by_name['Require the live rule set to equal the provisioned rules']
+field_check = by_name["Require each live rule's pause and routing to equal the provisioned rule's"]
+slurp = by_name['Read the provisioned alert rules file']
+folders = by_name['Read live Grafana folders']
+assert tasks.index(slurp) < tasks.index(scope) and tasks.index(folders) < tasks.index(scope)
+assert tasks.index(scope) < tasks.index(set_check) < tasks.index(field_check)
+assert slurp['register'] == '_provisioned_rules_file' and 'no_log' not in slurp
+assert slurp['ansible.builtin.slurp']['src'].endswith('/config/grafana/provisioning/alerting/observability.yml')
+assert '/api/folders' in folders['ansible.builtin.command']['argv'][-1]
+assert 'match' not in json.dumps(scope), 'scope comes from the provisioned file, never a uid pattern'
 env.filters['from_json'] = json.loads
 env.filters['b64decode'] = lambda value: base64.b64decode(value).decode()
 env.filters['from_yaml'] = yaml.safe_load
 env.filters['flatten'] = lambda value: [item for sub in value for item in sub]
-compile_value = lambda value: env.compile_expression(value.removeprefix('{{').removesuffix('}}').strip())
-V = {name: compile_value(expr) for name, expr in rule_check['vars'].items()}
-checks = [env.compile_expression(expr) for expr in rule_check['ansible.builtin.assert']['that']]
-slurp = next(task for task in tasks if task['name'] == 'Read the provisioned alert rules file')
-assert tasks.index(slurp) < tasks.index(rule_check)
-assert slurp['register'] == '_provisioned_rules_file' and 'no_log' not in slurp
-assert slurp['ansible.builtin.slurp']['src'].endswith('/config/grafana/provisioning/alerting/observability.yml')
-env.tests['none'] = lambda value: value is None
-def verify_rules(rules, provisioned):
+env.tests['in'] = lambda value, seq: value in seq
+compile_value = lambda value: env.compile_expression(value.strip().removeprefix('{{').removesuffix('}}').strip())
+set_checks = [env.compile_expression(expr) for expr in set_check['ansible.builtin.assert']['that']]
+field_exprs = [env.compile_expression(expr) for expr in field_check['ansible.builtin.assert']['that']]
+fields = field_check['loop']
+assert {'receiver', 'group_by', 'group_wait', 'group_interval', 'repeat_interval', 'mute_time_intervals'} == set(fields)
+
+def live_of(doc, folder_uid='f1'):
+    return [dict(rule, folderUID=folder_uid, ruleGroup=group['name']) for group in doc['groups'] for rule in group['rules']]
+
+def verify_rules(rules, provisioned, live_folders=({'uid': 'f1', 'title': 'agent-cloud'},)):
     names = {'_active_rules': {'stdout': json.dumps(rules)},
+             '_live_folders': {'stdout': json.dumps(list(live_folders))},
              '_provisioned_rules_file': {'content': base64.b64encode(yaml.safe_dump(provisioned).encode()).decode()}}
-    # Resolve the vars in dependency order, as Ansible does lazily.
-    for name in ['_o11y_provisioned', '_o11y_expected_rules', '_o11y_expected_uids',
-                 '_o11y_expected_active_uids', '_o11y_expected_routed_uids', '_o11y_withdrawn_uids', '_o11y_rules', '_o11y_routed_rules']:
-        names[name] = V[name](**names)
-    return all(bool(check(**names)) for check in checks)
+    names['_o11y_provisioned'] = compile_value(scope['vars']['_o11y_provisioned'])(**names)
+    names['_o11y_folder_uids'] = compile_value(scope['vars']['_o11y_folder_uids'])(**names)
+    for key, expr in scope['ansible.builtin.set_fact'].items():
+        names[key] = compile_value(expr)(**names)
+    if not all(bool(check(**names)) for check in set_checks):
+        return False
+    for key, expr in field_check['vars'].items():
+        names[key] = compile_value(expr)(**names)
+    return all(bool(check(item=item, **names)) for item in fields for check in field_exprs)
 
 # Exercise the actual rendered rule sets, including the inference groups (uids
-# inference_*): the live set must mirror the provisioned file -- every uid, paused and
-# routed as rendered -- and no withdrawn uid may survive, whatever its prefix.
+# inference_*): the live set in the file's folder+group scope must mirror the file --
+# every uid, each paused and routed field by field as rendered -- and no withdrawn uid
+# may survive anywhere.
 render_alerts = env.from_string(alert_template)
-all_rules = lambda doc: [rule for group in doc['groups'] for rule in group['rules']]
 local_doc = yaml.safe_load(render_alerts.render(local_mode=True, o11y_alerts_enabled=True))
 prod_doc = yaml.safe_load(render_alerts.render(local_mode=False, o11y_alerts_enabled=True))
 inf_doc = yaml.safe_load(render_alerts.render(local_mode=False, o11y_alerts_enabled=True,
                                               dgx_spark_scrape_enabled=True, o11y_inference_probe_enabled=True))
-local_rules, prod_rules, inf_rules = all_rules(local_doc), all_rules(prod_doc), all_rules(inf_doc)
-inference = [rule for rule in inf_rules if rule['uid'].startswith('inference_')]
+local_live, prod_live, inf_live = live_of(local_doc), live_of(prod_doc), live_of(inf_doc)
+inference = [rule for rule in inf_live if rule['uid'].startswith('inference_')]
 assert len(inference) == 8, [rule['uid'] for rule in inference]
-assert next(rule for rule in local_rules if rule['uid'] == 'o11y_receiver_root_disk_low')['isPaused'] is True
-assert verify_rules(local_rules, local_doc)
-assert verify_rules(prod_rules, prod_doc)
-assert verify_rules(inf_rules, inf_doc)
-assert verify_rules(inf_rules + [{'uid': 'unrelated', 'isPaused': True}], inf_doc)
+assert next(rule for rule in local_live if rule['uid'] == 'o11y_receiver_root_disk_low')['isPaused'] is True
+assert verify_rules(local_live, local_doc)
+assert verify_rules(prod_live, prod_doc)
+assert verify_rules(inf_live, inf_doc)
+# Out of scope: another folder, or an unprovisioned group in this folder.
+assert verify_rules(inf_live + [dict(inf_live[0], uid='unrelated', folderUID='f2')], inf_doc,
+                    ({'uid': 'f1', 'title': 'agent-cloud'}, {'uid': 'f2', 'title': 'other'}))
+assert verify_rules(inf_live + [dict(inf_live[0], uid='unrelated', ruleGroup='someone-else')], inf_doc)
 for rule in inference:  # each inference rule missing live fails the readback
-    assert not verify_rules([r for r in inf_rules if r is not rule], inf_doc), rule['uid']
+    assert not verify_rules([r for r in inf_live if r is not rule], inf_doc), rule['uid']
 routed = next(rule for rule in inference if rule.get('notification_settings'))
-assert not verify_rules([dict(r, isPaused=True) if r is routed else r for r in inf_rules], inf_doc)
-assert not verify_rules([{k: v for k, v in r.items() if k != 'notification_settings'} if r is routed else r
-                         for r in inf_rules], inf_doc)
-assert not verify_rules([dict(r, notification_settings=r['notification_settings'] | {'group_by': ['instance']})
-                         if r is routed else r for r in inf_rules], inf_doc)
-assert not verify_rules(prod_rules[:-1], prod_doc)  # a rendered rule is missing
-assert not verify_rules(prod_rules + [dict(prod_rules[0], uid='o11y_stray')], prod_doc)
-assert not verify_rules(prod_rules + [dict(prod_rules[0], uid='inference_stray')], prod_doc)
+swap = lambda change: [change(r) if r is routed else r for r in inf_live]
+ns = lambda **kw: (lambda r: dict(r, notification_settings=r['notification_settings'] | kw))
+assert not verify_rules(swap(lambda r: dict(r, isPaused=True)), inf_doc)
+assert not verify_rules(swap(lambda r: {k: v for k, v in r.items() if k != 'notification_settings'}), inf_doc)
+assert not verify_rules(swap(ns(group_by=['instance'])), inf_doc)
+assert not verify_rules(swap(ns(receiver='other')), inf_doc)
+assert not verify_rules(swap(ns(mute_time_intervals=['maintenance'])), inf_doc)
+# Routing values come from the file, not a parallel list: rendered 45s vs live 30s fails,
+# and a file that says 45s passes when live says 45s.
+wait45 = {**inf_doc, 'groups': [dict(g, rules=[dict(r, notification_settings=r['notification_settings'] | {'group_wait': '45s'})
+          if r.get('notification_settings') else r for r in g['rules']]) for g in inf_doc['groups']]}
+assert not verify_rules(inf_live, wait45)
+assert verify_rules(live_of(wait45), wait45)
+assert not verify_rules(prod_live[:-1], prod_doc)  # a rendered rule is missing
+assert not verify_rules(prod_live + [dict(prod_live[0], uid='o11y_stray')], prod_doc)
+assert not verify_rules(prod_live + [dict(prod_live[0], uid='zz_stray')], prod_doc)  # any name, in scope
+assert not verify_rules(prod_live, prod_doc, ({'uid': 'f9', 'title': 'agent-cloud'},))  # folder uid mismatch
 withdrawn = prod_doc['deleteRules'][0]['uid']
-assert not verify_rules(prod_rules + [{'uid': withdrawn, 'isPaused': True}], prod_doc)
-assert not verify_rules([{k: v for k, v in r.items() if k != 'isPaused'} for r in prod_rules], prod_doc)
+assert not verify_rules(prod_live + [{'uid': withdrawn, 'isPaused': True, 'folderUID': 'x', 'ruleGroup': 'x'}], prod_doc)
+assert not verify_rules([{k: v for k, v in r.items() if k != 'isPaused'} for r in prod_live], prod_doc)
 pause_down = lambda rules: [dict(r, isPaused=True) if r['uid'] == 'o11y_service_down' else r for r in rules]
-assert not verify_rules(pause_down(local_rules), local_doc)
 paused_doc = {**local_doc, 'groups': [dict(g, rules=pause_down(g['rules'])) for g in local_doc['groups']]}
-assert not verify_rules(pause_down(local_rules), paused_doc)  # file and live agree, service_down still required active
+assert not verify_rules(pause_down(local_live), local_doc)
+assert not verify_rules(live_of(paused_doc), paused_doc)  # file and live agree, service_down still required active
 assert not verify_rules([], {'groups': []})
 contact = next(task for task in tasks if task['name'] == 'Read live Grafana contact points without displaying webhook settings')
 count = next(task for task in tasks if task['name'] == 'Count only the intended contact point without its settings')
@@ -1076,6 +1105,7 @@ env = Environment(undefined=StrictUndefined)
 env.filters['from_json'] = json.loads
 env.filters['b64decode'] = lambda value: base64.b64decode(value).decode()
 env.filters['difference'] = lambda a, b: [x for x in a if x not in b]
+env.filters['unique'] = lambda a: list(dict.fromkeys(a))
 expected = env.compile_expression(check['vars']['_dashboard_expected_uids'].strip().removeprefix('{{').removesuffix('}}').strip())
 checks = [env.compile_expression(expr) for expr in check['ansible.builtin.assert']['that']]
 files = sorted(glob.glob(sys.argv[2] + '/*.json'))
@@ -1091,6 +1121,10 @@ assert ok(uids)
 assert ok(uids + ['other'])
 for uid in uids:
     assert not ok([u for u in uids if u != uid]), uid
+# Two files sharing one uid pass a subset check against a single live dashboard.
+docs['results'].append(dict(docs['results'][0]))
+files.append(files[0] + '.copy')
+assert not ok(uids)
 PY
 }
 
