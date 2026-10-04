@@ -41,7 +41,7 @@ steps:
       - a cloud-init drive is attached to the template
     evidence_keys: [template_vmid, node]
     reviewed: null
-    review_gap: "no step result: provision-template.yml does not include emit-step-result (D10 review 2026-10-02)"
+    review_gap: "none in the executor: passed all D10 checks 2026-10-03; the stamp waits on the matching OPA data.json workflow_steps change"
 
   - id: lookup-inventory
     order: 2
@@ -84,7 +84,7 @@ steps:
       - onboot is 1
     evidence_keys: [vmid, node, onboot]
     reviewed: null
-    review_gap: "no step result: provision-vm.yml does not include emit-step-result (D10 review 2026-10-02)"
+    review_gap: "none in the executor: passed all D10 checks 2026-10-03; the stamp waits on the matching OPA data.json workflow_steps change"
 
   - id: cloud-init
     order: 5
@@ -113,7 +113,7 @@ steps:
       - key login is proven
     evidence_keys: [key_present, key_login]
     reviewed: null
-    review_gap: "no step result: distribute-ssh-keys.yml does not include emit-step-result (D10 review 2026-10-02)"
+    review_gap: "none in the executor: passed all D10 checks 2026-10-03; the stamp waits on the matching OPA data.json workflow_steps change"
 
   - id: ssh-key-backup
     order: 7
@@ -128,7 +128,7 @@ steps:
       - the output carries names only
     evidence_keys: [branch]
     reviewed: null
-    review_gap: "no step result: backup-service-ssh-key.yml does not include emit-step-result; each run pushes a new branch (D10 review 2026-10-02)"
+    review_gap: "none in the executor: passed all D10 checks 2026-10-03; the stamp waits on the matching OPA data.json workflow_steps change"
 
   - id: access-harden
     order: 8
@@ -143,7 +143,11 @@ steps:
       - sudo is passwordless for the management user
     evidence_keys: [key_only_proven, password_rejected]
     reviewed: null
-    review_gap: "no step result: harden-ssh.yml does not include emit-step-result (D10 review 2026-10-02)"
+    review_gap: >-
+      key-only access is not proven before password authentication is withdrawn: harden-ssh.yml
+      disables it and restarts sshd (:70-99) before its first key-auth probe (:149-165). The
+      pre-proof lives in a separate template, Verify Host Access (verify-host-access.yml);
+      whether this executor must prove it itself is an operator decision (D10 review 2026-10-03)
 
   - id: service-assess
     order: 9
@@ -172,7 +176,7 @@ steps:
       - live cores, memory and disk equal the declared spec
     evidence_keys: [cores, memory_mb, disk_gb]
     reviewed: null
-    review_gap: "no step result: resize-vm.yml does not include emit-step-result (D10 review 2026-10-02)"
+    review_gap: "none in the executor: passed all D10 checks 2026-10-03; the stamp waits on the matching OPA data.json workflow_steps change"
 
   - id: secrets-approle
     order: 11
@@ -244,7 +248,11 @@ steps:
       - the Cloudflare plan is zero-diff
     evidence_keys: [resolves, route_status]
     reviewed: null
-    review_gap: "no step result: manage-caddy-sites.yml does not include emit-step-result (D10 review 2026-10-02)"
+    review_gap: >-
+      criterion 3 (the Cloudflare plan is zero-diff) is not proven here: manage-caddy-sites.yml
+      delegates it to Apply Cloudflare Tofu (:49-50) and it is not in evidence_keys; splitting
+      the criterion into its own step or accepting the delegation is an operator decision (D10
+      review 2026-10-03)
 
   - id: fw-assess
     order: 16
@@ -276,7 +284,7 @@ steps:
       - SSH answers after apply
     evidence_keys: [ufw_active, allows]
     reviewed: null
-    review_gap: "no step result: apply-firewall.yml does not include emit-step-result (D10 review 2026-10-02)"
+    review_gap: "none in the executor: passed all D10 checks 2026-10-03; the stamp waits on the matching OPA data.json workflow_steps change"
 
   - id: instrument-service
     order: 18
@@ -304,12 +312,7 @@ steps:
       - every container has restart policy always, or "no" as a declared one-shot that exited 0, or is started by the service's enabled agent-cloud-boot-<service>.service
     evidence_keys: [linger, restart_policies, boot_unit]
     reviewed: null
-    review_gap: >-
-      no populated-group preflight: hosts is the target group directly
-      (verify-service-persistence.yml:22-23), so an absent group exits 0 with no step result;
-      errors are per host (:151-167) but the emitter is run_once
-      (tasks/emit-step-result.yml:35,52), so a multi-host run records only the first host's
-      verdict (D10 review 2026-10-02)
+    review_gap: "none in the executor: passed all D10 checks 2026-10-03; the stamp waits on the matching OPA data.json workflow_steps change"
 
   - id: access-assess
     order: 20
@@ -340,7 +343,10 @@ steps:
       - the provider redirect URI is verified
     evidence_keys: [blueprint_status, redirect_verified]
     reviewed: null
-    review_gap: "no step result: deploy-authentik.yml does not include emit-step-result (D10 review 2026-10-02)"
+    review_gap: >-
+      second-run no-change not proven: deploy.sh recreates every container on each run
+      (deploy.sh:48 compose up -d --force-recreate; deploy-authentik.yml:297 changed_when: true)
+      (D10 review 2026-10-03)
 
   - id: credential-backup
     order: 22
@@ -354,4 +360,4 @@ steps:
       - the named fields are present in site-config on a pushed branch
     evidence_keys: [branch, field_count]
     reviewed: null
-    review_gap: "no step result: backup-credentials-to-site-config.yml does not include emit-step-result; each run pushes a new branch (D10 review 2026-10-02)"
+    review_gap: "none in the executor: passed all D10 checks 2026-10-03; the stamp waits on the matching OPA data.json workflow_steps change"

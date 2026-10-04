@@ -18,7 +18,8 @@ PLAYBOOK = (
 @pytest.fixture(scope="module")
 def play():
     assert PLAYBOOK.is_file(), f"playbook not found at {PLAYBOOK}"
-    return yaml.safe_load(PLAYBOOK.read_text())[0]
+    # The first play is the localhost group guard; the edit lives in the host play.
+    return next(p for p in yaml.safe_load(PLAYBOOK.read_text()) if p["hosts"] != "localhost")
 
 
 @pytest.fixture(scope="module")
