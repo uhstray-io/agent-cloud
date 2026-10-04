@@ -138,7 +138,10 @@ reverse_proxy https://<upstream> {
 }
 ```
 
-The `current/` directory is mounted rather than the files, because renewal swaps it. Asserted
+Caddy mounts the whole certificate tree read-only at `/etc/caddy/certs` (`./certs` in
+`compose.local.yml`; `caddy_certs_dir`, default `<caddy_compose_dir>/certs`, added by
+`mount-caddy-certs.yml` in production) and reads each leaf through its `current` link, so a
+renewal that repoints `current` is visible without changing the mount. Asserted
 by `platform/tests/test_service_caddy.bats` ("an upstream_tls route proxies over mutual TLS").
 Production blocks in `caddy_managed_sites` are raw Caddyfile text, so they write these
 directives directly.
