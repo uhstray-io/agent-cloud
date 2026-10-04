@@ -223,6 +223,10 @@
       case (`shape_diff`; paths and types only) and accepts only what
       `deployment/tests/conformance-shape-allow.json` lists. That list is committed empty; the
       operator fills it after reading the next run. Then this task is recorded.
+      2026-10-03: production run Semaphore task 2614 (commit `1f8057aa`) matched semantics 13/13
+      and shape 0/13. Operator decision: accept every reported difference; the allowlist holds the
+      reported paths scoped per case (78, none global) and `architecture.md` records the client-visible ones. Still
+      open: the first-token and gap deltas are not recorded yet, so this task stays unticked.
 - [ ] 2.3 Confirm SSE keep-alive comment lines from vLLM pass through unchanged and
       unbuffered (needs dgx-spark `inference-endpoint-reliability` deployed)
 - [ ] 2.3a Streams and the budget: confirm whether a streamed completion is charged to the
