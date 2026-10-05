@@ -74,6 +74,11 @@
           - (semaphore_url | default(_semaphore_url)) == 'http://127.0.0.1:3000'
         fail_msg: "The collector may only use the controller's fixed loopback API."
 
+    # An unparsed inventory empties every group; name that before the OTLP guard reads them.
+    - name: "Require the inventory to have parsed"
+      ansible.builtin.include_tasks: tasks/require-parsed-inventory.yml
+      when: not (local_mode | default(false) | bool)
+
     - name: "Require the exact private Alloy OTLP/HTTP destination in production"
       ansible.builtin.assert:
         that:

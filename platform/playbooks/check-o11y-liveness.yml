@@ -41,6 +41,12 @@
     # substitutes a loopback fake through this variable.
     _webhook_hosts: "{{ o11y_watch_webhook_hosts | default(['discord.com', 'discordapp.com']) }}"
   tasks:
+    # Without o11y_watch_url the front door is derived from the o11y_svc group, which an
+    # unparsed inventory leaves empty; name that rather than "declare o11y_zone".
+    - name: Require the inventory to have parsed
+      ansible.builtin.include_tasks: tasks/require-parsed-inventory.yml
+      when: o11y_watch_url is not defined
+
     - name: Require a declared Grafana front door and datasource uid
       ansible.builtin.assert:
         that:

@@ -266,6 +266,53 @@ def test_production_collector_refuses_missing_or_mismatched_host_destination(tmp
         assert "Production conformance delivery requires collector_otlp_url" in output
 
 
+def _run_with_broken_inventory(tmp_path, playbook, extra=None):
+    inventory_path = tmp_path / "inventory.yml"
+    inventory_path.write_text("not: [valid\n")
+    env = os.environ.copy()
+    env.update(ANSIBLE_LOCAL_TEMP=str(tmp_path), ANSIBLE_REMOTE_TEMP=str(tmp_path),
+               ANSIBLE_STDOUT_CALLBACK="default", ANSIBLE_NOCOLOR="1")
+    cmd = ["ansible-playbook", "-i", str(inventory_path), str(REPO / playbook)]
+    if extra is not None:
+        cmd += ["-e", json.dumps(extra)]
+    result = subprocess.run(cmd, cwd=REPO, env=env, capture_output=True, text=True, timeout=60)
+    return result.returncode, result.stdout + result.stderr
+
+
+UNPARSED = "The inventory could not be parsed or contained no hosts"
+
+
+def test_production_collector_names_an_unparsed_inventory(tmp_path):
+    """Task 2858: an unreadable inventory emptied every group and surfaced as an OTLP mismatch."""
+    rc, output = _run_with_broken_inventory(
+        tmp_path, "platform/playbooks/collect-service-conformance.yml", {"local_mode": False})
+    assert rc != 0
+    assert UNPARSED in output
+    assert "Production conformance delivery requires collector_otlp_url" not in output
+
+
+def test_local_collector_does_not_require_a_parsed_inventory():
+    collector = yaml.safe_load((REPO / "platform/playbooks/collect-service-conformance.yml").read_text())[0]
+    guard = next(t for t in collector["tasks"] if t.get("name") == "Require the inventory to have parsed")
+    assert guard["ansible.builtin.include_tasks"] == "tasks/require-parsed-inventory.yml"
+    assert guard["when"] == "not (local_mode | default(false) | bool)"
+    assert collector["tasks"].index(guard) < next(
+        i for i, t in enumerate(collector["tasks"])
+        if t.get("name") == "Require the exact private Alloy OTLP/HTTP destination in production")
+
+
+@pytest.mark.parametrize("playbook, extra", [
+    ("platform/playbooks/preflight-target-group.yml",
+     {"preflight_group": "o11y_svc", "preflight_group_expected": "o11y_svc"}),
+    ("platform/playbooks/renew-internal-certs.yml", None),
+    ("platform/playbooks/check-o11y-liveness.yml", None),
+])
+def test_scheduled_callers_name_an_unparsed_inventory(tmp_path, playbook, extra):
+    rc, output = _run_with_broken_inventory(tmp_path, playbook, extra)
+    assert rc != 0
+    assert UNPARSED in output
+
+
 @pytest.mark.parametrize(
     ("response", "expected_status", "expected_rc", "private_marker"),
     [
