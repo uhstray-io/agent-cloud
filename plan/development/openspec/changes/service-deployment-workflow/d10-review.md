@@ -254,3 +254,27 @@ The section above stays as it was written. One of its two fixes has been withdra
   reads, but it does not run in a dry run, because its apply never ran.
 
 Verdict: edge-dns **gap** (the dry run is not read-only). edge-route and cloud-init still pass.
+
+### Plan visibility — 2026-10-04
+
+Operator decision: the visible output shows each changed resource's address and action, and
+nothing else. The plan and the post-apply plan are each saved inside tofu's own `.terraform/`
+(`-out`). `tofu show -json` reads each saved plan inside the `no_log` boundary. The visible
+report takes only `resource_changes[].address` and `.change.actions`, skipping `["no-op"]`,
+as `plan_actions` / `verify_actions` entries of the form `"<address>: <action>"`. The schema
+is the OpenTofu JSON output format (https://opentofu.org/docs/internals/json-format/). No
+before or after values reach the report, so neither does the origin address.
+
+The saved plan files are removed in `always`. The removal is not forced under `--check`, as
+the check-mode contract requires, so a dry run leaves them inside the `.terraform/` that the
+edge-dns gap already records.
+
+Guards are in `test_edge_dns_step_result.py`:
+- a fixture plan JSON carrying values shows address and action only;
+- the visible report has an exact set of keys.
+
+Two mutations each turned the tests red, and the file was restored byte-exact:
+- `change.after` appended to the entry;
+- the no-op filter dropped.
+
+The edge-dns verdict is unchanged: gap.

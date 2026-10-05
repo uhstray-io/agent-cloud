@@ -29,6 +29,7 @@ needs_ansible = pytest.mark.skipif(shutil.which("ansible-playbook") is None, rea
 SKIPPED = {"skipped": True, "changed": False}
 CHANGES = "Plan: 1 to add, 2 to change, 0 to destroy.\n"
 TAIL = ("Summarise the tofu run (exit codes and change counts only)",
+        "Show the tofu result for action {{ tofu_action }}",
         "Fail on a tofu error (details withheld: the commands carry credentials)",
         "Judge edge-dns on the last plan", "Record the edge-dns step result")
 
@@ -45,7 +46,7 @@ def _all_tasks(tasks=None):
             yield from _all_tasks(t.get(key) or [])
 
 
-def _run(tmp_path, tf_plan, tf_verify, action):
+def _run(tmp_path, tf_plan, tf_verify, action, show_plan=None, show_verify=None):
     tail = [t for t in _tasks() if t.get("name") in TAIL]
     assert len(tail) == len(TAIL)
     for t in tail:
@@ -54,6 +55,7 @@ def _run(tmp_path, tf_plan, tf_verify, action):
     harness = [{"hosts": "localhost", "connection": "local", "gather_facts": False,
                 "vars": {"_tf_init": {"rc": 0}, "_tf_plan": tf_plan, "_tf_verify": tf_verify,
                          "_tf_apply": SKIPPED if action == "plan" else {"rc": 0, "changed": True},
+                         "_tf_show_plan": show_plan or SKIPPED, "_tf_show_verify": show_verify or SKIPPED,
                          "tofu_action": action},
                 "tasks": tail}]
     (tmp_path / "p.yml").write_text(json.dumps(harness))
@@ -64,6 +66,7 @@ def _run(tmp_path, tf_plan, tf_verify, action):
                           text=True, capture_output=True, stdin=subprocess.DEVNULL, check=False)
     found = step_results.results_in(proc.stdout.splitlines())
     assert len(found) == 1, proc.stdout[-3000:]
+    _run.stdout = proc.stdout
     return found[0]
 
 
@@ -106,7 +109,7 @@ def test_every_credential_bearing_tofu_command_is_no_log():
     # PR 436 Codex review: each tofu command runs with the R2 keys and the Cloudflare token in
     # its environment, so it is its own no_log task; failures surface through the visible report.
     tofu = [t for t in _all_tasks() if (t.get("ansible.builtin.command") or {}).get("argv", [None])[0] == "tofu"]
-    assert len(tofu) == 4
+    assert len(tofu) == 6  # init, plan, show, apply, plan after apply, show
     for t in tofu:
         assert t.get("no_log") is True, t["name"]
         assert t.get("failed_when") is False, t["name"]
@@ -119,9 +122,52 @@ def test_the_visible_report_carries_only_exit_codes_and_counts():
     (report,) = [t for t in _tasks() if "_tf_report" in (t.get("ansible.builtin.set_fact") or {})]
     assert "no_log" not in report
     assert set(report["ansible.builtin.set_fact"]["_tf_report"]) == {
-        "init_rc", "plan_rc", "apply_rc", "apply_changed", "verify_rc", "plan_changes", "verify_changes"}
+        "init_rc", "plan_rc", "apply_rc", "apply_changed", "verify_rc", "plan_changes", "verify_changes",
+        "plan_actions", "verify_actions"}
     for t in _tasks():
         if "ansible.builtin.debug" in t:
             shown = str(t["ansible.builtin.debug"])
-            assert "_tf_plan" not in shown and "_tf_apply" not in shown and "_tf_verify" not in shown \
-                and "_tf_init" not in shown and "_tf_env" not in shown and "_cf" not in shown, t["name"]
+            protected = ("_tf_plan", "_tf_apply", "_tf_verify", "_tf_init", "_tf_env", "_tf_show", "_cf")
+            assert not [p for p in protected if p in shown], t["name"]
+
+
+# A `tofu show -json` plan carrying values that must never reach the visible report.
+SECRET_ORIGIN = "203.0.113.77"
+PLAN_JSON = json.dumps({"format_version": "1.2", "resource_changes": [
+    {"address": "cloudflare_record.app", "change": {"actions": ["update"],
+     "before": {"content": "198.51.100.9"}, "after": {"content": SECRET_ORIGIN}}},
+    {"address": "cloudflare_ruleset.waf", "change": {"actions": ["delete", "create"],
+     "before": {"rules": ["x"]}, "after": {"rules": ["y"]}}},
+    {"address": "cloudflare_record.unchanged", "change": {"actions": ["no-op"],
+     "before": {"content": SECRET_ORIGIN}, "after": {"content": SECRET_ORIGIN}}},
+]})
+
+
+@needs_ansible
+def test_the_report_lists_address_and_action_only(tmp_path):
+    res = _run(tmp_path, {"rc": 2, "stdout": "Plan: 0 to add, 1 to change, 0 to destroy.\n"}, SKIPPED, "plan",
+               show_plan={"rc": 0, "stdout": PLAN_JSON})
+    assert res["status"] == "fail"
+    out = _run.stdout
+    assert '"cloudflare_record.app: update"' in out and '"cloudflare_ruleset.waf: delete/create"' in out
+    assert "cloudflare_record.unchanged" not in out, "a no-op resource was listed"
+    for leaked in (SECRET_ORIGIN, "198.51.100.9", "content", "before", "after"):
+        assert leaked not in out, f"the visible output carries {leaked!r}"
+
+
+@needs_ansible
+def test_the_post_apply_plan_is_listed_the_same_way(tmp_path):
+    res = _run(tmp_path, SKIPPED, {"rc": 2, "stdout": "Plan: 0 to add, 1 to change, 0 to destroy.\n"}, "apply",
+               show_verify={"rc": 0, "stdout": PLAN_JSON})
+    assert res["status"] == "fail"
+    assert '"cloudflare_record.app: update"' in _run.stdout and SECRET_ORIGIN not in _run.stdout
+
+
+def test_saved_plans_are_removed_and_shown_inside_the_no_log_boundary():
+    (block,) = [t for t in _tasks() if t.get("name") == "OpenTofu run"]
+    shows = [t for t in block["block"] if (t.get("ansible.builtin.command") or {}).get("argv", [None, None])[:2]
+             == ["tofu", "show"]]
+    assert len(shows) == 2 and all(t.get("no_log") is True for t in shows)
+    (cleanup,) = block["always"]
+    assert cleanup["ansible.builtin.file"]["state"] == "absent"
+    assert set(cleanup["loop"]) == {"{{ _tf_planfile }}", "{{ _tf_verify_planfile }}"}
