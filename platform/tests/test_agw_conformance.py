@@ -38,7 +38,7 @@ GW_KEY = "synthetic-gateway-client-key-7f3a"
 UP_KEY = "synthetic-vllm-upstream-key-91c2"
 EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
 CASES = ["models", "chat-thinking-off", *[f"effort-{e}" for e in EFFORTS], "chat-template-kwargs",
-         "tool-call", "stream-xhigh", "responses"]
+         "tool-call", "stream-xhigh", "stream-options-without-usage", "responses"]
 REAL_CURL = shutil.which("curl")
 
 
@@ -61,19 +61,25 @@ class Stub:
     first_delay / gap  stream timing: seconds to the first token, seconds between chunks
     models          the ids its models list returns (default ["m"])
     cut_stream      end the stream cleanly right after the first token: no finish, no [DONE]
+    usage_chunk     the stream's final usage chunk (choices [], usage totals) before [DONE]: True
+                    always sends it (the gateway, which adds include_usage itself), False never,
+                    "requested" only when the request sets stream_options.include_usage (vLLM),
+                    "injects" also when the request has no stream_options (agentgateway v1.5.0
+                    WITHOUT the config.yaml.j2 transformation)
     mutate          a function applied to every 2xx JSON body and every stream chunk before it is
                     sent (a gateway adding, dropping or retyping fields)
     """
 
     def __init__(self, key=None, drop_reasoning=False, buffer_stream=False, responses_404=False,
                  reorder=False, first_delay=0.4, gap=0.1, models=("m",), cut_stream=False,
-                 mutate=None):
+                 mutate=None, usage_chunk=True):
         self.key, self.drop_reasoning, self.buffer_stream = key, drop_reasoning, buffer_stream
         self.responses_404, self.reorder = responses_404, reorder
         self.first_delay, self.gap = first_delay, gap
         self.models = list(models)
         self.cut_stream = cut_stream
         self.mutate = mutate
+        self.usage_chunk = usage_chunk
         self.seen = []
         stub = self
 
@@ -173,6 +179,13 @@ class Stub:
             parts = parts[:3]  # role chunk, keep-alive, first token
         else:
             parts.append((self.gap, chunk({}, "stop")))
+            asked = (body.get("stream_options") or {}).get("include_usage") is True
+            injected = self.usage_chunk == "injects" and "stream_options" not in body
+            if self.usage_chunk is True or (self.usage_chunk in ("requested", "injects") and asked) or injected:
+                event = {"id": "chatcmpl-" + rid, "object": "chat.completion.chunk", "created": now,
+                         "model": body["model"], "choices": [],
+                         "usage": {"prompt_tokens": 9, "completion_tokens": 7, "total_tokens": 16}}
+                parts.append((0.0, ("data: " + json.dumps(event) + "\n\n").encode()))
             parts.append((0.0, b"data: [DONE]\n\n"))
         h.send_response(200)
         h.send_header("Content-Type", "text/event-stream")
@@ -314,12 +327,19 @@ def test_the_requests_carry_every_effort_the_kwargs_tools_stream_and_responses_s
     assert {"reasoning_effort": "low"} in [b.get("chat_template_kwargs") for b in bodies]
     assert any(b.get("tools") and b["tools"][0]["function"]["name"] == "get_weather" for b in bodies)
     streamed = [b for b in bodies if b.get("stream")]
-    assert len(streamed) == 1 and streamed[0]["reasoning_effort"] == "xhigh"
+    assert [b["reasoning_effort"] for b in streamed] == ["xhigh", "low"]
+    assert [b.get("stream_options") for b in streamed] == [
+        None, {"include_usage": True, "continuous_usage_stats": True}]
     responses = [s["body"] for s in direct.seen if s["path"] == "/v1/responses"]
     assert len(responses) == 1 and responses[0]["reasoning"] == {"effort": "low"}
     assert "reasoning_effort" not in responses[0]
-    # The gateway and vLLM got the same request bodies.
-    assert [s["body"] for s in gw.seen] == [s["body"] for s in direct.seen]
+    # The gateway and vLLM got the same request bodies, except that the opt-out stream reaches
+    # vLLM as the gateway should rewrite it.
+    def rewritten(b):
+        if b and b.get("stream_options") == {"include_usage": False}:
+            return {**b, "stream_options": {"include_usage": True, "continuous_usage_stats": True}}
+        return b
+    assert [rewritten(s["body"]) for s in gw.seen] == [s["body"] for s in direct.seen]
 
 
 def test_the_gateway_and_vllm_model_names_can_differ(tmp_path, stubs):
@@ -332,7 +352,7 @@ def test_the_gateway_and_vllm_model_names_can_differ(tmp_path, stubs):
 
 def test_stream_timing_measures_first_token_not_first_byte_and_the_chunk_gaps(tmp_path, stubs):
     # The role chunk and a keep-alive arrive at once; the first token 0.4 s later; then 0.1 s gaps.
-    gw, direct = stubs(key=GW_KEY), stubs(key=UP_KEY, first_delay=0.4, gap=0.1)
+    gw, direct = stubs(key=GW_KEY), stubs(key=UP_KEY, first_delay=0.4, gap=0.1, usage_chunk="requested")
     r, lines = _run(tmp_path, gw, direct)
     assert r.returncode == 0, r.stderr
     d = next(x for x in lines if x["case"] == "stream-xhigh" and x["target"] == "direct")
@@ -341,7 +361,7 @@ def test_stream_timing_measures_first_token_not_first_byte_and_the_chunk_gaps(tm
     gaps = d["timing"]["gaps"]
     assert gaps["count"] == 5 and 0.07 <= gaps["p50_s"] <= 0.3, gaps
     assert d["semantic"] == {"finish_reason": "stop", "has_content": True, "has_reasoning": True, "done": True,
-                             "error_event": False}
+                             "error_event": False, "usage_chunk": False}
 
 
 def test_a_buffering_gateway_shows_in_the_timing_deltas(tmp_path, stubs):
@@ -410,6 +430,45 @@ def test_a_stream_the_gateway_ends_early_but_cleanly_fails_and_the_run_continues
     assert lines[-1]["case"] == "responses"  # the cases after the stream still ran
     c = _case(_diff(tmp_path), "stream-xhigh")
     assert c["verdict"] == "error" and c["failure"] == "gateway HTTP 200, stream ended without [DONE], direct HTTP 200"
+
+
+def test_the_stream_request_leaves_usage_to_the_gateway(tmp_path, stubs):
+    # Task 2.3a: the client contract is unchanged, so conformance sends no stream_options; the
+    # gateway itself must add include_usage for the budget to charge the stream.
+    gw, direct = stubs(key=GW_KEY), stubs(key=UP_KEY)
+    r, _ = _run(tmp_path, gw, direct)
+    assert r.returncode == 0, r.stderr
+    streamed = [s["body"] for s in gw.seen + direct.seen if s["body"] and s["body"].get("stream")
+                and s["body"]["reasoning_effort"] == "xhigh"]
+    assert len(streamed) == 2 and all("stream_options" not in b for b in streamed), streamed
+    c = _case(_diff(tmp_path), "stream-xhigh")
+    assert c["verdict"] == "match" and c["stream_usage"] == {"gateway": True, "direct": True}, c
+
+
+@pytest.mark.parametrize("gw_usage", [False, "requested"])
+def test_a_gateway_stream_without_a_usage_chunk_fails_and_vllm_need_not_send_one(tmp_path, stubs, gw_usage):
+    # "requested": a gateway that only passes the client's stream_options through, i.e. does not
+    # add include_usage itself, charges a plain stream nothing.
+    gw, direct = stubs(key=GW_KEY, usage_chunk=gw_usage), stubs(key=UP_KEY, usage_chunk="requested")
+    r, _ = _run(tmp_path, gw, direct)
+    assert r.returncode == 0, r.stderr
+    report = _diff(tmp_path)
+    c = _case(report, "stream-xhigh")
+    assert c["verdict"] == "error" and c["stream_usage"] == {"gateway": False, "direct": False}, c
+    assert c["failure"] == ("gateway HTTP 200, stream carried no usage chunk "
+                            "(its tokens are not charged to the budget)"), c
+    assert report["verdict"] == "fail" and "stream-xhigh" in report["not_matched"]
+
+
+def test_a_gateway_usage_chunk_vllm_was_not_asked_for_is_not_a_semantic_difference(tmp_path, stubs):
+    # Production shape (tasks 2614/2698): only the gateway's stream carries usage. The flag is
+    # never compared, so the case turns on the shape allowlist alone.
+    gw, direct = stubs(key=GW_KEY), stubs(key=UP_KEY, usage_chunk="requested")
+    r, _ = _run(tmp_path, gw, direct)
+    assert r.returncode == 0, r.stderr
+    c = _case(_diff(tmp_path), "stream-xhigh")
+    assert c["semantic_match"] and c["stream_usage"] == {"gateway": True, "direct": False}, c
+    assert "usage.total_tokens" in c["shape_diff"]["only_gateway"], c
 
 
 def test_a_stream_cut_by_the_timeout_is_recorded_and_fails_without_aborting_the_run(tmp_path, stubs):
@@ -936,3 +995,33 @@ def test_agents_md_lists_the_workflow():
 
 def test_script_is_executable():
     assert SCRIPT.stat().st_mode & stat.S_IXUSR
+
+
+def test_a_client_cannot_opt_its_stream_out_of_usage(tmp_path, stubs):
+    # The gateway is sent include_usage false as the client wrote it; vLLM directly is sent the
+    # request as the gateway should rewrite it. A gateway that only injects when stream_options is
+    # absent (v1.5.0 without the transformation) passes stream-xhigh and fails this case.
+    gw, direct = stubs(key=GW_KEY, usage_chunk="injects"), stubs(key=UP_KEY, usage_chunk="requested")
+    r, _ = _run(tmp_path, gw, direct)
+    assert r.returncode == 0, r.stderr
+    opts = lambda s: [x["body"].get("stream_options") for x in s.seen  # noqa: E731
+                      if x["body"] and x["body"].get("stream")]
+    assert opts(gw) == [None, {"include_usage": False}]
+    assert opts(direct) == [None, {"include_usage": True, "continuous_usage_stats": True}]
+    report = _diff(tmp_path)
+    # stream-xhigh differs only on the usage-chunk shape (no allowlist here), never on usage.
+    assert _case(report, "stream-xhigh")["stream_usage"]["gateway"] is True
+    assert "failure" not in _case(report, "stream-xhigh")
+    c = _case(report, "stream-options-without-usage")
+    assert c["verdict"] == "error" and c["stream_usage"] == {"gateway": False, "direct": True}, c
+    assert report["failures"] == ["stream-options-without-usage: gateway HTTP 200, stream carried no usage "
+                                  "chunk (its tokens are not charged to the budget)"], report
+
+
+def test_a_gateway_forcing_usage_on_every_stream_matches_both_stream_cases(tmp_path, stubs):
+    gw, direct = stubs(key=GW_KEY), stubs(key=UP_KEY, usage_chunk="requested")
+    r, _ = _run(tmp_path, gw, direct)
+    assert r.returncode == 0, r.stderr
+    c = _case(_diff(tmp_path), "stream-options-without-usage")
+    assert c["verdict"] == "match" and c["shape_match"], c
+    assert c["stream_usage"] == {"gateway": True, "direct": True}, c

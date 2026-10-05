@@ -19,7 +19,19 @@
 #   chat-template-kwargs chat completion with chat_template_kwargs {"reasoning_effort": "low"}
 #   tool-call           chat completion offering one function tool
 #   stream-xhigh        streamed chat completion at reasoning_effort xhigh: time to first token
-#                       and the gaps between chunks
+#                       and the gaps between chunks. The request carries NO stream_options: the
+#                       gateway must add include_usage itself (agentgateway v1.5.0
+#                       crates/agentgateway/src/llm/mod.rs:1549-1560) and its stream must end with a
+#                       usage chunk, or the per-key token budget charges the stream nothing (task
+#                       2.3a). A gateway stream without one fails the case; vLLM's stream is not
+#                       required to carry one, and the usage_chunk field is never compared
+#   stream-options-without-usage
+#                       streamed chat completion whose client sets stream_options
+#                       {"include_usage": false}: the gateway's per-model `transformation`
+#                       (config.yaml.j2) must still force usage, or a client could opt its streams
+#                       out of the budget. vLLM is sent the request as the gateway should rewrite
+#                       it (include_usage and continuous_usage_stats true), so the two shapes are
+#                       comparable
 #   responses           one Responses API request (POST /responses, reasoning.effort nested)
 #
 # Each case goes to the gateway, then straight to vLLM, from the same host, so the two differ only
@@ -119,8 +131,8 @@ def token_event: any(.e.choices[]?; (.delta.content | nonempty) or (.delta.reaso
 # ── Request bodies ─────────────────────────────────────────────────────────────
 # Deterministic where the server allows it (temperature 0, fixed seed), so the body comparison
 # has a chance to be exact; the verdict rests on status, shape and semantics, not the hash.
-body_for() { # case model -> JSON on stdout
-	local case="$1" model="$2"
+body_for() { # case model target -> JSON on stdout
+	local case="$1" model="$2" target="${3:-}"
 	local base
 	base=$(jq -nc --arg m "$model" --arg p "$PROMPT" --argjson mt "$MAX_TOKENS" \
 		'{model: $m, temperature: 0, seed: 7, max_tokens: $mt, messages: [{role: "user", content: $p}]}')
@@ -138,6 +150,13 @@ body_for() { # case model -> JSON on stdout
 		;;
 	stream-xhigh)
 		jq -nc --argjson b "$base" --argjson mt "$STREAM_MAX_TOKENS" '$b + {stream: true, reasoning_effort: "xhigh", max_tokens: $mt}'
+		;;
+	stream-options-without-usage)
+		local iu=false
+		[ "$target" != direct ] || iu=true
+		jq -nc --argjson b "$base" --argjson mt "$STREAM_MAX_TOKENS" --argjson iu "$iu" \
+			'$b + {stream: true, stream_options: ({include_usage: $iu} + if $iu then {continuous_usage_stats: true} else {} end),
+			reasoning_effort: "low", max_tokens: $mt}'
 		;;
 	responses)
 		jq -nc --arg m "$model" --arg p "$PROMPT" --argjson mt "$MAX_TOKENS" \
@@ -212,7 +231,7 @@ run_stream() { # case target
 	local case="$1" target="$2"
 	local req="$WORK/$case.$target.req" raw="$WORK/$case.$target.raw" hdr="$WORK/$case.$target.hdr"
 	local t0 rc_curl rc_jq
-	body_for "$case" "$(model_for "$target")" >"$req"
+	body_for "$case" "$(model_for "$target")" "$target" >"$req"
 	: >"$raw"
 	: >"$hdr"
 	# One long-lived jq stamps every line as it arrives (`now`, microsecond resolution); curl -N
@@ -266,7 +285,8 @@ run_stream() { # case target
 					has_reasoning: any($ev[].e.choices[]?; (.delta.reasoning | nonempty)
 						or (.delta.reasoning_content | nonempty)),
 					done: $done,
-					error_event: any($ev[]; .e.error != null)}},
+					error_event: any($ev[]; .e.error != null),
+					usage_chunk: any($ev[]; (.e.usage.total_tokens | type) == "number")}},
 			   timing: {
 				ttft_s: (if $ft == null then null else ($ft - $t0 | r3) end),
 				total_s: ($tend - $t0 | r3),
@@ -337,6 +357,7 @@ cmd_run() {
 	for t in gateway direct; do run_plain chat-template-kwargs chat POST /chat/completions "$t"; done
 	for t in gateway direct; do run_plain tool-call chat POST /chat/completions "$t"; done
 	for t in gateway direct; do run_stream stream-xhigh "$t"; done
+	for t in gateway direct; do run_stream stream-options-without-usage "$t"; done
 	for t in gateway direct; do run_plain responses responses POST /responses "$t"; done
 }
 
@@ -402,9 +423,11 @@ cmd_diff() {
 		def d($a; $b): if $a == null or $b == null then null else ($a - $b | r3) end;
 		def up: . as $v | if ($v | type) == "string" and ($map | has($v)) then $map[$v] else $v end;
 		($map | [.[]] | unique) as $declared
-		| def gw_norm: if has("ids") then .ids |= (map(up) | sort) else . end
+		# usage_chunk is judged on the gateway side alone (below), never compared: vLLM sends the
+		# usage chunk only when the request asks for it, and this request deliberately does not.
+		| def gw_norm: del(.usage_chunk) | if has("ids") then .ids |= (map(up) | sort) else . end
 			| if has("model") then .model |= up else . end;
-		def direct_norm: if has("ids") and ($declared | length) > 0
+		def direct_norm: del(.usage_chunk) | if has("ids") and ($declared | length) > 0
 			then .ids |= map(select(. as $i | $declared | index($i))) else . end;
 		# A stream must also have ended with [DONE] and carried no error event: a stream the server
 		# closed early but cleanly leaves curl at exit 0 and the status at 200.
@@ -466,7 +489,13 @@ cmd_diff() {
 				# A result line without the shape list (an older run) cannot be judged path by path.
 				| .shape_accepted = (.shape_match
 					or ($g.shape != null and $d.shape != null and (.shape_unaccepted | empty_diff)))
-				| if ($g | ok) and ($d | ok) then
+				| if ($g.semantic | has("done")) then
+					.stream_usage = {gateway: $g.semantic.usage_chunk, direct: $d.semantic.usage_chunk}
+				  else . end
+				| if ($g | ok) and ($d | ok) and ($g.semantic | has("done")) and $g.semantic.usage_chunk != true then
+					.verdict = "error"
+					| .failure = "gateway \($g | how), stream carried no usage chunk (its tokens are not charged to the budget)"
+				  elif ($g | ok) and ($d | ok) then
 					.verdict = (if .status_match and .shape_accepted and .semantic_match then "match" else "differ" end)
 				  else
 					.verdict = "error" | .failure = "gateway \($g | how), direct \($d | how)"
