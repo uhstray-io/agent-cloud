@@ -190,6 +190,81 @@ def test_a_misconfiguration_is_a_recorded_failure_and_curl_is_not_called(probe, 
     assert not (probe.stub / "argv").exists(), f"curl ran despite: {why}"
 
 
+# ── gateway mutual TLS (o11y_inference_probe_client_leaf) ─────────────────────
+
+TLS_VARS = ("INFERENCE_PROBE_CACERT", "INFERENCE_PROBE_CLIENT_CERT", "INFERENCE_PROBE_CLIENT_KEY")
+TLS_FLAGS = {"INFERENCE_PROBE_CACERT": "--cacert", "INFERENCE_PROBE_CLIENT_CERT": "--cert",
+             "INFERENCE_PROBE_CLIENT_KEY": "--key"}
+GATEWAY_URL = "https://gateway.lab.example.test:4000/v1"
+
+
+@pytest.fixture
+def leaf(tmp_path):
+    d = tmp_path / "certs" / "o11y-probe" / "current"
+    d.mkdir(parents=True)
+    files = {"INFERENCE_PROBE_CACERT": tmp_path / "certs" / "step-ca-bundle.crt",
+             "INFERENCE_PROBE_CLIENT_CERT": d / "cert.pem", "INFERENCE_PROBE_CLIENT_KEY": d / "key.pem"}
+    for f in files.values():
+        f.write_text("PEM\n")
+    files["INFERENCE_PROBE_CLIENT_KEY"].chmod(0o600)
+    return {k: str(v) for k, v in files.items()}
+
+
+def test_the_gateway_identity_presents_the_client_leaf_and_verifies_against_the_bundle(probe, leaf):
+    done, text = probe(env={"INFERENCE_PROBE_URL": GATEWAY_URL, **leaf})
+    assert done.returncode == 0, done.stderr
+    assert _samples(text)["inference_probe_success"][1] == "1"
+    argv = (probe.stub / "argv").read_text().splitlines()
+    assert argv[0] == "--disable"
+    assert argv[-1] == f"{GATEWAY_URL}/chat/completions"
+    for var, flag in TLS_FLAGS.items():
+        assert argv[argv.index(flag) + 1] == leaf[var], flag
+    # The key still travels on stdin only; the leaf's key file is a path, never its bytes.
+    assert KEY not in "\n".join(argv)
+    assert (probe.stub / "stdin").read_text() == f'header = "Authorization: Bearer {KEY}"\n'
+
+
+def test_without_the_tls_inputs_curl_uses_its_own_trust_and_presents_nothing(probe):
+    probe()
+    argv = (probe.stub / "argv").read_text().splitlines()
+    assert not {"--cacert", "--cert", "--key", "--insecure", "-k"} & set(argv)
+
+
+@pytest.mark.parametrize("missing", TLS_VARS)
+def test_the_tls_inputs_are_all_or_nothing(probe, leaf, missing):
+    done, text = probe(env={**leaf, missing: None})
+    assert done.returncode == 0
+    assert _samples(text)["inference_probe_success"][1] == "0"
+    assert not (probe.stub / "argv").exists(), f"curl ran without {missing}"
+    assert "set together or not at all" in done.stderr
+
+
+@pytest.mark.parametrize("var", TLS_VARS)
+@pytest.mark.parametrize("why", ["relative path to an existing file", "missing file",
+                                 "colon curl --cert reads as a passphrase", "a directory",
+                                 pytest.param("an unreadable file", marks=pytest.mark.skipif(
+                                     os.geteuid() == 0, reason="root reads any file"))])
+def test_a_bad_tls_path_is_a_recorded_failure_naming_only_the_variable(probe, leaf, tmp_path, var, why):
+    if why.startswith("relative"):
+        value = os.path.relpath(leaf[var])
+    elif why == "missing file":
+        value = str(tmp_path / "no-such-file.pem")
+    elif why.startswith("colon"):
+        value = str(tmp_path / "cert.pem:passphrase")
+        Path(value).write_text("PEM\n")
+    elif why == "a directory":
+        value = str(tmp_path / "certs")
+    else:
+        value = leaf[var]
+        Path(value).chmod(0)
+    done, text = probe(env={**leaf, var: value})
+    assert done.returncode == 0, why
+    assert _samples(text)["inference_probe_success"][1] == "0", why
+    assert not (probe.stub / "argv").exists(), f"curl ran with {why}"
+    assert f"{var} must name a readable file" in done.stderr
+    assert value not in done.stderr
+
+
 # ── atomic write ─────────────────────────────────────────────────────────────
 
 def test_metrics_are_published_by_renaming_a_temporary_file_in_the_same_directory(probe):
@@ -249,8 +324,9 @@ def test_the_script_holds_no_literal_key_and_passes_shellcheck():
 # ── units, env file, overlay ─────────────────────────────────────────────────
 
 def _render(path: Path, **ctx) -> str:
-    return Environment(undefined=StrictUndefined, keep_trailing_newline=True).from_string(
-        path.read_text()).render(**ctx)
+    env = Environment(undefined=StrictUndefined, keep_trailing_newline=True)
+    env.filters["dirname"] = os.path.dirname  # an Ansible filter the probe env template uses
+    return env.from_string(path.read_text()).render(**ctx)
 
 
 def test_the_timer_fires_the_probe_service_every_five_minutes():
@@ -292,6 +368,32 @@ def test_the_env_file_carries_the_shared_read_key_and_inventory_settings():
     }
 
 
+def test_the_env_file_names_the_leaf_and_bundle_paths_only_for_a_gateway_identity():
+    ctx = dict(o11y_inference_probe_url=GATEWAY_URL, o11y_inference_probe_model=MODEL,
+               o11y_inference_probe_key_field="client_o11y-probe", secrets={"client_o11y-probe": KEY},
+               _probe_textfile_dir=TEXTFILE_DIR)
+    leaf_dir = "/srv/agent-cloud/o11y/certs/o11y-probe"
+
+    def values(**extra):
+        env = _render(PROBE_DIR / "inference-probe.env.j2", **ctx, **extra)
+        return dict(ln.split("=", 1) for ln in env.splitlines() if "=" in ln and not ln.startswith("#"))
+
+    assert not set(TLS_VARS) & set(values(_probe_leaf_dir=""))
+    v = values(_probe_leaf_dir=leaf_dir)
+    # The bundle beside the leaf directory and the leaf's renewal-swapped current/: the paths
+    # renew-internal-certs.yml proves the same leaf with.
+    assert {k: v[k] for k in TLS_VARS} == {
+        "INFERENCE_PROBE_CACERT": "/srv/agent-cloud/o11y/certs/step-ca-bundle.crt",
+        "INFERENCE_PROBE_CLIENT_CERT": f"{leaf_dir}/current/cert.pem",
+        "INFERENCE_PROBE_CLIENT_KEY": f"{leaf_dir}/current/key.pem",
+    }
+
+
+def test_the_leaf_directory_is_gitignored():
+    done = subprocess.run(["git", "check-ignore", "-q", str(DEPLOY / "certs" / "step-ca-bundle.crt")], cwd=REPO)
+    assert done.returncode == 0
+
+
 def test_the_overlay_is_the_base_exporter_command_plus_only_the_textfile_collector():
     base_svc = yaml.safe_load((DEPLOY / "compose.yml").read_text())["services"]["node-exporter"]
     base = base_svc["command"]
@@ -327,7 +429,7 @@ def _phase(prefix):
 def test_every_probe_task_is_gated_on_the_inventory_flag():
     p1 = _phase("Phase 1")
     probe_tasks = [t for t in p1["tasks"] if "probe" in t.get("name", "").lower()]
-    assert len(probe_tasks) == 7
+    assert len(probe_tasks) == 10
     for t in probe_tasks:
         assert "_probe_enabled" in json.dumps(t.get("when")), t["name"]
     install = next(t for t in probe_tasks if t["name"] == "Install the synthetic inference probe")
@@ -392,6 +494,153 @@ def test_probe_on_reads_its_key_from_the_owning_service_into_a_separate_file(tmp
     assert w["overlays"] == "probe/compose.textfile.yml"
     assert (DEPLOY / "templates" / w["env"][1]["src"]).resolve() == PROBE_DIR / "inference-probe.env.j2"
     assert (DEPLOY / w["overlays"]).is_file()
+
+
+# ── deploy wiring: the gateway client identity ───────────────────────────────
+
+GATEWAY_REFUSAL = "Require a gateway client-identity probe the gateway admits and the renewal can prove"
+PROBE_LEAF = {"name": "o11y-probe", "host": "o11y", "dir": "/srv/agent-cloud/o11y/certs/o11y-probe",
+              "profile": "client", "sans": ["probe.o11y.lab.example.test"], "reload": "none"}
+
+
+def _gateway_inventory(gw=None, o11y=None, leaves=None, gateways=1, cas=1):
+    gw_vars = {"ansible_host": "192.0.2.10", "agw_bind": "0.0.0.0", "agw_port": "4000", "agw_listener_tls": True,
+               "agw_client_cert_allowlist": ["caddy", "agw-verifier", "o11y-probe"],
+               "agw_clients": ["stray", "o11y-probe"], **(gw or {})}
+    o11y_vars = {"ansible_connection": "local", "ansible_python_interpreter": "python3",
+                 "o11y_inference_probe_enabled": True, "o11y_inference_probe_client_leaf": "o11y-probe",
+                 "o11y_inference_probe_url": "https://gateway.lab.example.test:4000/v1",
+                 "o11y_inference_probe_model": MODEL, "o11y_inference_probe_key_field": "client_o11y-probe",
+                 "agw_verify_base_url": "https://gateway.lab.example.test:4000", **(o11y or {})}
+    o11y_vars = {k: v for k, v in o11y_vars.items() if v is not None}
+    return {"all": {
+        "vars": {"dns_site": "lab", "dns_zone": "example.test",
+                 "internal_leaves": [PROBE_LEAF] if leaves is None else leaves},
+        "children": {
+            "agentgateway_svc": {"hosts": {f"gw{i}": gw_vars for i in range(gateways)}},
+            "o11y_svc": {"hosts": {"o11y": o11y_vars}},
+            "step_ca_svc": {"hosts": {f"ca{i}": {} for i in range(cas)}},
+        }}}
+
+
+def _gateway_identity(tmp_path, **inv):
+    """Run the deploy's own gateway-identity refusal on the o11y host and report the derived path."""
+    p1 = _phase("Phase 1")
+    refusal = next(t for t in p1["tasks"] if t.get("name") == GATEWAY_REFUSAL)
+    names = ["_probe_enabled", "_probe_leaf_name", "_probe_leaf_dir", "_probe_gw", "_probe_gw_name",
+             "_probe_gw_port", "_probe_gw_address"]
+    play = [{"hosts": "o11y_svc", "gather_facts": False, "vars": {k: p1["vars"][k] for k in names},
+             "tasks": [refusal, {"ansible.builtin.debug": {"msg": "PATH {{ {'dir': _probe_leaf_dir, "
+                                 "'name': _probe_gw_name, 'address': _probe_gw_address} | to_json }}"}}]}]
+    (tmp_path / "pb.yml").write_text(yaml.safe_dump(play))
+    (tmp_path / "inv.yml").write_text(yaml.safe_dump(_gateway_inventory(**inv)))
+    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
+    env["ANSIBLE_NOCOLOR"] = "1"
+    done = subprocess.run(["ansible-playbook", "-i", str(tmp_path / "inv.yml"), str(tmp_path / "pb.yml")],
+                          cwd=REPO, env=env, text=True, capture_output=True, stdin=subprocess.DEVNULL)
+    line = next((ln for ln in done.stdout.splitlines() if "PATH " in ln), None)
+    derived = json.loads(json.loads(line.split('"msg": ', 1)[1]).split("PATH ", 1)[1]) if line else None
+    return done, derived
+
+
+@needs_ansible
+def test_a_complete_gateway_identity_passes_and_derives_the_gateway_path(tmp_path):
+    done, derived = _gateway_identity(tmp_path)
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert derived == {"dir": PROBE_LEAF["dir"], "name": "gateway.lab.example.test", "address": "192.0.2.10"}
+
+
+@needs_ansible
+def test_a_gateway_bound_to_one_address_is_reached_there(tmp_path):
+    done, derived = _gateway_identity(tmp_path, gw={"agw_bind": "192.0.2.20"})
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert derived["address"] == "192.0.2.20"
+
+
+@needs_ansible
+@pytest.mark.parametrize("inv,why", [
+    ({"gw": {"agw_client_cert_allowlist": ["caddy", "agw-verifier"]}}, "leaf not on the gateway's SAN allowlist"),
+    ({"gw": {"agw_listener_tls": False}}, "gateway listener without mutual TLS"),
+    ({"gw": {"agw_bind": "127.0.0.1"}}, "gateway published on loopback only"),
+    ({"gw": {"agw_clients": ["stray"]}}, "key identity not enrolled at the gateway"),
+    ({"gateways": 2}, "two gateways: which one is probed is ambiguous"),
+    ({"cas": 0}, "no internal CA to read the trust bundle from"),
+    ({"leaves": []}, "leaf not declared"),
+    ({"leaves": [{**PROBE_LEAF, "host": "gw0"}]}, "leaf declared on another host"),
+    ({"leaves": [{**PROBE_LEAF, "profile": "server"}]}, "server-profile leaf"),
+    ({"leaves": [{**PROBE_LEAF, "reload": "restart"}]}, "a reload the renewal has no proof path for"),
+    ({"leaves": [PROBE_LEAF, PROBE_LEAF]}, "leaf declared twice"),
+    ({"o11y": {"o11y_inference_probe_url": "https://inference.example.test/v1"}}, "URL is not the gateway's name"),
+    ({"o11y": {"o11y_inference_probe_url": "https://gateway.lab.example.test:4001/v1"}}, "URL on the UI port"),
+    ({"o11y": {"agw_verify_base_url": None}}, "renewal proof path not declared on this host"),
+    ({"o11y": {"agw_verify_base_url": "https://gateway.lab.example.test:4001"}}, "renewal proves another path"),
+    ({"o11y": {"o11y_inference_probe_key_field": "direct_o11y-probe"}}, "a direct vLLM key"),
+    ({"o11y": {"o11y_inference_probe_key_service": "o11y"}}, "key from a service other than the gateway"),
+])
+def test_an_incomplete_gateway_identity_is_refused(tmp_path, inv, why):
+    done, _ = _gateway_identity(tmp_path, **inv)
+    assert done.returncode != 0, why
+    assert "o11y_inference_probe_client_leaf=o11y-probe needs" in done.stdout, why
+
+
+@needs_ansible
+@pytest.mark.parametrize("o11y", [{"o11y_inference_probe_client_leaf": None},
+                                  {"o11y_inference_probe_enabled": False}])
+def test_without_a_client_leaf_the_gateway_identity_checks_do_not_run(tmp_path, o11y):
+    # The public-path probe (or a disabled one) needs no gateway, CA or renewal declaration.
+    done, derived = _gateway_identity(tmp_path, leaves=[], gateways=0, o11y=o11y)
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert derived["dir"] == ""
+
+
+LEAF_FILES = "Require the probe's client leaf issued and private to the probe user"
+
+
+@needs_ansible
+@pytest.mark.parametrize("case,expect", [
+    ("issued", True),
+    ("no key", False),
+    ("no certificate", False),
+    ("key readable by the group", False),
+    ("key owned by another user", False),
+])
+def test_the_probe_client_leaf_must_be_issued_with_a_private_key(tmp_path, case, expect):
+    import pwd
+    block = next(t for t in _phase("Phase 1")["tasks"] if t.get("name") == LEAF_FILES)
+    current = tmp_path / "o11y-probe" / "current"
+    current.mkdir(parents=True)
+    if case != "no certificate":
+        (current / "cert.pem").write_text("PEM\n")
+    if case != "no key":
+        (current / "key.pem").write_text("KEY\n")
+        (current / "key.pem").chmod(0o640 if case == "key readable by the group" else 0o600)
+    me = pwd.getpwuid(os.getuid()).pw_name
+    pv = {"_probe_enabled": True, "_probe_leaf_name": "o11y-probe", "_probe_leaf_dir": str(current.parent),
+          "_probe_user": "someone-else" if case == "key owned by another user" else me}
+    play = [{"hosts": "localhost", "connection": "local", "gather_facts": False, "vars": pv, "tasks": [block]}]
+    (tmp_path / "pb.yml").write_text(yaml.safe_dump(play))
+    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
+    done = subprocess.run(["ansible-playbook", "-i", "localhost,", str(tmp_path / "pb.yml")], cwd=REPO, env=env,
+                          text=True, capture_output=True, stdin=subprocess.DEVNULL)
+    assert (done.returncode == 0) is expect, (case, done.stdout[-2000:])
+    assert "KEY" not in done.stdout, "the key file's bytes reached the output"
+
+
+def test_the_gateway_path_inputs_are_placed_where_the_renewal_proof_reads_them():
+    p1 = _phase("Phase 1")
+    block = next(t for t in p1["tasks"]
+                 if t.get("name") == "Give the probe's gateway client identity its trust bundle and the gateway's name")
+    assert block["when"] == ["_probe_enabled | bool", "_probe_leaf_name | length > 0"]
+    bundle, resolve = block["block"]
+    assert bundle["ansible.builtin.include_tasks"] == "tasks/distribute-ca-root.yml"
+    # renew-internal-certs.yml verifies a per-call leaf against <dir>/../step-ca-bundle.crt.
+    assert bundle["vars"]["_ca_bundle_dest"] == "{{ _probe_leaf_dir | dirname }}/step-ca-bundle.crt"
+    # The one resolution step (its single-writer ratchet: test_agw_internal_dns_records.py).
+    assert resolve["ansible.builtin.include_tasks"] == "tasks/agw-probe-resolution.yml"
+    assert resolve["vars"] == {"_agwr_name": "{{ _probe_gw_name }}", "_agwr_ip": "{{ _probe_gw_address }}",
+                               "_agwr_expect": "{{ _probe_gw_address }}"}
+    # Reading the CA bundle is a rootless `podman exec` on the CA host: never under become.
+    assert "become" not in block and "become" not in bundle
 
 
 # ── disabled cleanup: each artefact on its own, sudo only for one that exists ─

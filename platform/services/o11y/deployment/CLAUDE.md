@@ -40,6 +40,7 @@ All default off, so declaring a value alone never starts a scrape or pages anyon
 |---|---|
 | `dgx_spark_scrape_enabled` | Renders `config/scrape.d/dgx-spark.yml` and the `inference-failing`, `telemetry-missing`, `memory-thermal` and `benchmark-gate` alert groups; off lists those rules under `deleteRules` |
 | `o11y_inference_probe_enabled` | Installs the five-minute probe timer, its textfile collector and the two probe rules; off removes any leftover artefacts |
+| `o11y_inference_probe_client_leaf` | With the probe enabled, sends it straight to the gateway's mutual-TLS listener as a gateway client identity, presenting this declared internal-CA client leaf; places the CA bundle beside the leaf and maps the gateway's name on this host (README, "Gateway client identity") |
 | `o11y_alerts_enabled` | Unpauses the rendered rules and routes them to the Discord contact point, except the `benchmark-gate` placeholder, which stays paused and unrouted (`templates/alerts.yml.j2:340-349,428-432`) |
 | `o11y_gateway_span_logs_enabled` | Also writes one Loki line per gateway span |
 
@@ -53,10 +54,10 @@ All default off, so declaring a value alone never starts a scrape or pages anyon
   cap defaults to `1GB` in local mode and `0B` (no cap) otherwise (`templates/env.j2:26-30`).
   In production, any retention other than that baseline is refused unless the run has a
   nonzero Prometheus cap and a numeric `o11y_capacity_receipt_id`
-  (`deploy-o11y.yml:113-127`), the named volumes resolve with at least 30% headroom
-  (`:137-159`), and the capacity readback reports an acceptable state (`:161-167`). The
+  (`deploy-o11y.yml:132-146`), the named volumes resolve with at least 30% headroom
+  (`:156-178`), and the capacity readback reports an acceptable state (`:180-186`). The
   retention gate does not check a backup or restore receipt; that receipt is required only
-  for Tempo-derived metrics (`:287-291`).
+  for Tempo-derived metrics (`:306-310`).
 - Every `vllm:` and `node_` metric name used by a dashboard or alert rule must appear in
   the vendored fixtures under `platform/tests/fixtures/`; the o11y BATS suite enforces it.
 - The deploy readback covers `o11y_` rule uids only; the `inference_` rules are not read

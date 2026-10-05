@@ -208,6 +208,16 @@
       enabled deploy whose readback shows a fresh sample for the configured model, and the
       alert rule (3.2).
       2026-10-03: the code is PR #402 (merged). Runtime pending: inventory values and an enabled Deploy o11y
+      2026-10-05: gateway-identity path code on branch `feat/o11y-probe-gateway-mtls`, not
+      merged, runtime unproven. Until the route switch (gateway task 4.3) a gateway key through
+      the public hostname reaches vLLM, so the probe can instead present its own internal-CA
+      client leaf (`o11y_inference_probe_client_leaf`) straight to the gateway's mutual-TLS
+      listener. `deploy-o11y.yml` refuses the declaration unless the gateway admits the leaf and
+      the daily renewal can prove it from the o11y host, places the CA bundle beside the leaf, and
+      maps the gateway's name through the shared resolution step. The script presents the leaf
+      only with all three TLS inputs. Tested in `platform/tests/test_inference_probe.py`. Still
+      open: the site-config declarations (leaf, allowlist, `agw_clients` entry, the gateway's
+      firewall rule for the o11y host), the leaf's issuance, and an enabled deploy.
 - [x] 3.4 `platform/tests/test_service_o11y.bats`: dashboards and alerting files are
       valid JSON/YAML, every `vllm:` name in a dashboard appears in the imported list,
       probe script `shellcheck` clean and contains no literal key
