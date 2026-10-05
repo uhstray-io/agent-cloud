@@ -226,14 +226,21 @@
     # access policy, so they grant nothing). This is intentional for the prod prune
     # (see PROD-SSO-ROLLOUT-PLAN.md). Full deprovisioning (state: absent tombstones
     # per removed slug, like openbao-oidc's tombstone) is a tracked future enhancement.
-    - name: "Reset the active-blueprints dir (drop de-selected/removed apps)"
+    # Converged IN PLACE, never reset: a wholesale delete+recreate re-rendered every
+    # file and reported changed on every run even with identical content, so a
+    # second deploy could never report "no change". template/copy are idempotent;
+    # only files outside the active set are removed (the prune tasks below).
+    - name: "Ensure the active-blueprints dir exists"
       ansible.builtin.file:
         path: "{{ _deploy_dir }}/blueprints-active"
-        state: "{{ item }}"
+        state: directory
         mode: "0755"
-      loop: [absent, directory]
-      loop_control:
-        label: "{{ item }}"
+
+    - name: "Compute the active blueprint file set"
+      ansible.builtin.set_fact:
+        _active_blueprints: >-
+          {{ _shared_blueprints
+             + (_enabled_apps | map('extract', authentik_app_catalog, 'file') | list) }}
 
     # RENDERED (not copied) so environment-specific values (OIDC redirect_uris,
     # meta_launch_url) bake into the file content from inventory. Authentik gates
@@ -248,7 +255,7 @@
         src: "{{ _authentik_tpls }}/blueprints/{{ item }}"
         dest: "{{ _deploy_dir }}/blueprints-active/{{ item }}"
         mode: "0644"
-      loop: "{{ _shared_blueprints + (_enabled_apps | map('extract', authentik_app_catalog, 'file') | list) }}"
+      loop: "{{ _active_blueprints }}"
 
     - name: "Render zz-sso-bindings from the enabled set"
       ansible.builtin.template:
@@ -257,6 +264,23 @@
         mode: "0644"
       vars:
         authentik_apps: "{{ _enabled_apps }}"
+
+    # Read-only listing (find runs under --check too), so check mode reports which
+    # stale files WOULD be removed without removing them.
+    - name: "List files in the active-blueprints dir"
+      ansible.builtin.find:
+        paths: "{{ _deploy_dir }}/blueprints-active"
+        file_type: any
+        hidden: true
+      register: _bp_present
+
+    - name: "Remove blueprints no longer in the active set (de-selected/removed apps)"
+      ansible.builtin.file:
+        path: "{{ _deploy_dir }}/blueprints-active/{{ item }}"
+        state: absent
+      loop: >-
+        {{ _bp_present.files | map(attribute='path') | map('basename') | list
+           | difference(_active_blueprints + ['zz-sso-bindings.yaml']) }}
 
     - name: "Create convenience symlink ~/authentik -> deploy dir"
       # Satisfies "a folder for authentik at ~/authentik" while keeping the
