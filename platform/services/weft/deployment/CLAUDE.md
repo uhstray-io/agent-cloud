@@ -12,7 +12,7 @@ repository; this directory is its slice 11.
 | VM | Containers (one image each, by digest) | Its directory on the VM's own disk |
 |---|---|---|
 | front door | `weft-door` (`weft-door` image) | `/srv/weft-door/` (`front-door.db`) |
-| workspace `<id>` | `weft-board`, `weft-orchestrator`, `weft-capture` (all `weft-workspace`) | `/srv/weft/<id>/` (`weft.db`, `seal.key`, `weft.toml`, models, checkouts, backups) |
+| workspace `<id>` (reached at `<name>.<domain>`) | `weft-board`, `weft-orchestrator`, `weft-capture` (all `weft-workspace`) | `/srv/weft/<id>/` (`weft.db`, `seal.key`, `weft.toml`, models, checkouts, backups) |
 
 The orchestrator starts agent and egress-proxy containers (`weft-builder`, `weft-proxy`,
 `weft-harness-*`) through the deploy user's rootless podman socket; the deploy pulls and verifies

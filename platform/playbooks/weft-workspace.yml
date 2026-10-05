@@ -71,7 +71,7 @@
       - --since
       - "{{ _weft_started.stdout }}"
       - --board
-      - "https://{{ weft_workspace_id }}.{{ weft_domain }}"
+      - "https://{{ weft_workspace_name }}.{{ weft_domain }}"
       - --workspace
       - "{{ weft_workspace_id }}"
 
@@ -80,8 +80,10 @@
       ansible.builtin.assert:
         that:
           - weft_release | default('') | length > 0
-          # The front door's id, used as this workspace's DNS label.
+          # The front door's id: what sign-in claims are bound to, and this workspace's directory.
           - weft_workspace_id | default('') is match('^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$')
+          # The company name its admin chose: this workspace's DNS label, <name>.<domain>.
+          - weft_workspace_name | default('') is match('^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$')
           - weft_domain | default('') | length > 0
           - weft_environment | default('') in ['rack', 'staging']
           - weft_voice_udp | default('') | string is match('^[0-9]+$')
@@ -92,8 +94,8 @@
           - weft_daily_tokens is defined
           - weft_tracker_bot_login | default('') | length > 0
         fail_msg: >-
-          {{ inventory_hostname }} is missing part of its weft declaration (weft_workspace_id as a
-          DNS label, weft_domain, weft_environment, weft_voice_udp, weft_public_address as an IP,
+          {{ inventory_hostname }} is missing part of its weft declaration (weft_workspace_id and
+          weft_workspace_name as DNS labels, weft_domain, weft_environment, weft_voice_udp, weft_public_address as an IP,
           weft_providers with weft_default_provider among them, weft_daily_tokens and
           weft_tracker_bot_login). See platform/services/weft/deployment/README.md.
 

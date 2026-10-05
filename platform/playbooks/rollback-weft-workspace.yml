@@ -52,7 +52,7 @@
       - --since
       - "{{ _weft_started.stdout }}"
       - --board
-      - "https://{{ weft_workspace_id }}.{{ weft_domain }}"
+      - "https://{{ weft_workspace_name }}.{{ weft_domain }}"
       - --workspace
       - "{{ weft_workspace_id }}"
 

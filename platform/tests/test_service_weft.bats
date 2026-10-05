@@ -261,3 +261,20 @@ sys.exit(1 if missing or len(playbooks) != 7 else 0)
 PY
   [ "$status" -eq 0 ] || { echo "no template for: $output"; false; }
 }
+
+@test "weft: a workspace is addressed by its company name, and its id stays a claim audience" {
+  # Jacob's decision: <company>.<domain>. The route, the front door's address template and every
+  # health check must agree on the name; a route built from the id while the front door redirects
+  # to the name sends every sign-in to a hostname Caddy does not serve.
+  local site="$DEPLOY_DIR/templates/caddy-site.j2"
+  assert_grep -qF 'host {{ h.weft_workspace_name }}.{{ weft_domain }}' "$site"
+  refute_grep -qF 'h.weft_workspace_id' "$site"
+  assert_grep -qF "default('https://{name}.' ~ weft_domain)" "$DEPLOY_DIR/templates/door.env.j2"
+  local pb
+  for pb in "$PB/weft-workspace.yml" "$PB/rollback-weft-workspace.yml"; do
+    assert_grep -qF '"https://{{ weft_workspace_name }}.{{ weft_domain }}"' "$pb"
+  done
+  refute_grep -rqF 'https://{{ weft_workspace_id }}.' "$PB" "$DEPLOY_DIR"
+  # The id is still what weft.toml binds sign-in claims to.
+  assert_grep -qF 'known_as = "{{ weft_workspace_id }}"' "$DEPLOY_DIR/templates/weft.toml.j2"
+}

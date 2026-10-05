@@ -8,7 +8,7 @@ weft's CI, signed, and deployed by digest; a release promotes the digests stagin
 
 ```text
 browser ──> Caddy (edge: TLS, hostname routing) ─┬─ <domain>        ──> front door VM  :8081  weft-door
-                                                 └─ <id>.<domain>   ──> workspace VM   :8080  weft-board
+                                                 └─ <name>.<domain> ──> workspace VM   :8080  weft-board
 browser ──(UDP, calls)──> rack firewall ──────────────────────────────> workspace VM   :<udp> weft-board (weft-voice)
 
 workspace VM:  weft-board ─┐
@@ -63,7 +63,7 @@ deployment/
     ├── door.env.j2         .env for a front door (no secret)
     ├── door.key.j2         the front door's signing key (0600)
     ├── weft.toml.j2        the workspace's deployment file: agent images by digest, paths
-    └── caddy-site.j2       <domain> -> front door, <id>.<domain> -> each workspace
+    └── caddy-site.j2       <domain> -> front door, <name>.<domain> -> each workspace
 ```
 
 ## Playbooks (Semaphore templates)
@@ -92,7 +92,9 @@ as the canary), `weft_staging_door` (one host), `weft_staging_workspace` (one ho
 | `weft_public_address` | workspace groups | the rack's public IP, browsers send call audio there |
 | `weft_release_approver` | `all` | the GitHub login whose `rack` approval counts |
 | `weft_discord_guild_id`, `weft_discord_channel_id` | `weft_door` | the weft-dev channel's numeric ids |
-| `weft_workspace_id` | each workspace host | the id the front door minted (a DNS label) |
+| `weft_workspace_id` | each workspace host | the id the front door minted: sign-in claims are bound to it |
+| `weft_workspace_name` | each workspace host | the company name its admin chose: the subdomain, `<name>.<domain>` (needs weft's workspace-name change) |
+| `weft_door_workspace_url` | optional, front door group | overrides the front door's address template (default `https://{name}.<domain>`) |
 | `weft_voice_udp` | each workspace host | its own UDP port; the rack forwards the same number |
 | `weft_providers`, `weft_default_provider` | each workspace host | the `[providers.*]` tables (name, endpoint, wire, budget, models), as a dict; no key and no key variable |
 | `weft_daily_tokens`, `weft_tracker_bot_login` | each workspace host | weft has no default for either |

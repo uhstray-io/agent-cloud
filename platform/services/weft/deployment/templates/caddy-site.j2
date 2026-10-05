@@ -4,10 +4,11 @@
     else. The front door behind it redirects and never proxies; it is not this.
 
       <domain>          -> the front door's VM
-      <id>.<domain>     -> that workspace's VM, one host matcher per workspace
+      <name>.<domain>   -> that workspace's VM, one host matcher per workspace
 
-    A workspace's hostname is the id the front door minted for it (a DNS label), because the front
-    door builds every workspace address from its own WEFT_FRONT_DOOR_WORKSPACE_URL template.
+    A workspace's hostname is its company name as its admin chose it on the front door
+    (weft_workspace_name, a DNS label), the same name the front door's address template fills in.
+    Its id (weft_workspace_id) is what claims are bound to, never a hostname.
     An unknown subdomain gets 404 rather than somebody else's board.
 
     Calls are NOT here: the edge routes by hostname, a UDP datagram has none, and the rack forwards
@@ -28,7 +29,7 @@
 	}
 {% for host in _weft_workspace_hosts %}
 {% set h = hostvars[host] %}
-	@ws{{ loop.index }} host {{ h.weft_workspace_id }}.{{ weft_domain }}
+	@ws{{ loop.index }} host {{ h.weft_workspace_name }}.{{ weft_domain }}
 	handle @ws{{ loop.index }} {
 		reverse_proxy {{ h.weft_board_bind | default(h.ansible_host) }}:{{ h.weft_board_port | default(8080) }}
 	}

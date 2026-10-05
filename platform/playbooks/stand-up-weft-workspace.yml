@@ -13,7 +13,7 @@
 #      Harden SSH, Apply Firewall
 #
 # Then this:
-#   - re-renders weft's Caddy fragment for the environment, so <id>.<domain> reaches the new VM
+#   - re-renders weft's Caddy fragment for the environment, so <name>.<domain> reaches the new VM
 #     (through Deploy weft Front Door, whose deploy step leaves the front door alone when it
 #     already runs the release)
 #   - deploys to the new workspace the release its front door runs, so a new workspace never
@@ -51,9 +51,11 @@
           - target_host | default('') | length > 0
           - _in_rack or _in_staging
           - hostvars[target_host].weft_workspace_id is defined
+          - hostvars[target_host].weft_workspace_name is defined
         fail_msg: >-
           target_host must name a host declared in weft_workspaces or weft_staging_workspace, with
-          its weft_workspace_id (the id the front door minted). Nothing was changed.
+          its weft_workspace_id (the id the front door minted) and weft_workspace_name (the company
+          name its admin chose). Nothing was changed.
 
     - name: "Name its environment's groups"
       ansible.builtin.set_fact:

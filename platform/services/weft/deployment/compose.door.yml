@@ -25,7 +25,7 @@ services:
       WEFT_FRONT_DOOR_LISTEN: "0.0.0.0:8081"
       WEFT_FRONT_DOOR_KEY_FILE: /run/weft/door.key
       WEFT_FRONT_DOOR_RECORDS: ${WEFT_DOOR_DIR}/front-door.db
-      # https://{id}.<weft domain>: a workspace's address is its front-door id as a DNS label.
+      # https://{name}.<weft domain>: a workspace's address is the company name its admin chose.
       WEFT_FRONT_DOOR_WORKSPACE_URL: ${WEFT_DOOR_WORKSPACE_URL}
       WEFT_FRONT_DOOR_SECURE: "true"
       # Caddy is in front, so the client address is in X-Forwarded-For. Without this, the

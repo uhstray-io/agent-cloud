@@ -1128,7 +1128,7 @@ templates:
   - name: Stand Up weft Workspace
     playbook: platform/playbooks/stand-up-weft-workspace.yml
     # After the workspace exists on the front door and its VM is provisioned and hardened:
-    # routes <id>.<domain> to it and deploys the release its front door runs.
+    # routes <name>.<domain> to it and deploys the release its front door runs.
     dev_variant: true
     survey_vars:
       - name: target_host
