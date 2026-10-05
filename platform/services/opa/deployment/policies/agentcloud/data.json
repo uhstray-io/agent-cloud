@@ -154,6 +154,21 @@
         "Deploy Hunyuan3D Sidecar"
       ]
     },
+    "network-agent": {
+      "allowed_actions": {
+        "semaphore": [
+          "list_templates",
+          "run_task",
+          "check_task"
+        ],
+        "netbox": [
+          "read"
+        ]
+      },
+      "allowed_templates": [
+        "Apply Cloudflare Tofu"
+      ]
+    },
     "semaphore": {
       "destructive_templates": [
         "Clean Deploy NetBox",
@@ -293,6 +308,14 @@
         "owner": "service-agent",
         "templates": [
           "Manage Caddy Sites"
+        ],
+        "per_service": false,
+        "reviewed": false
+      },
+      "edge-dns": {
+        "owner": "network-agent",
+        "templates": [
+          "Apply Cloudflare Tofu"
         ],
         "per_service": false,
         "reviewed": false

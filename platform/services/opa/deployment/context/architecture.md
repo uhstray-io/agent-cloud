@@ -51,7 +51,7 @@ supplied per-query in `input` — never stored in OPA.
 
 ### Workflow agents (service-deployment workflow)
 
-`infra-agent`, `security-agent`, `o11y-agent` and `service-agent` are **role-scoped**: each
+`infra-agent`, `security-agent`, `o11y-agent`, `service-agent` and `network-agent` (2026-10-04: the edge-dns step, the only role allowed `Apply Cloudflare Tofu`) are **role-scoped**: each
 declares `allowed_templates` (and `service-agent` a closed `service_deploy_templates` list of
 application-service deploys, never the foundation), which must equal the
 templates the step registry (`platform/workflows/service-onboarding/registry.yml`) assigns
