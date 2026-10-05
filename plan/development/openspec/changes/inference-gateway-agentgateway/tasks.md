@@ -317,7 +317,7 @@
       `agw_client_policies`; Semaphore templates shared + local; BATS. Local rotate drill
       run through the local Semaphore 2026-09-17 (task 615 after the Authentik tombstone,
       MISTAKES 6.5): the morning's key answers 401, the rotated value 200, gateway 0 restarts. LEFT for prod: mint the
-      first set (`stray`, `opencode`, `pi`, `skynet` — declared in site-config) by the first
+      first set (the four clients declared in site-config) by the first
       deploy, hand each out with `backup-credentials-to-site-config.yml`, and enrol the
       legacy shared key as identity `legacy-shared` with the tightest budget and
       `legacy_shared_expires: <date>` in inventory (task 5.1 enforces the expiry)
