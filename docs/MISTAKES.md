@@ -44,7 +44,7 @@ and why.
 | 1.12 | **x2** — Reported a 30-minute deploy hang from a check-in timer, not the clock; the task was two minutes in | Unverified claim | 2 | Convention |
 | 1.13 | Rejected Semaphore's matching single-environment list projection as if it were a second binding | Unverified claim | 1 | Test |
 | 1.14 | **x2** — Told the user the approved OpenBao address is the inventory's `all.vars`, from the public template; production declares it under a group `localhost` is not in | Unverified claim | 2 | Test (`test_inventory_template_banner.py` + banners); reading habit Convention |
-| 1.15 | **x2** — Said a run-time check closed extra-var overrides; a templated extra var bypasses it, and any launcher may set extra vars | Unverified claim | 2 | Convention |
+| 1.15 | **x3** — Said a run-time check closed extra-var overrides; a templated extra var bypasses it, and any launcher may set extra vars | Unverified claim | 3 | Test (`test_extra_var_refusal_tests.py`: refusal tests must try templated forgeries) |
 | 1.16 | **x2** — Wrote "44 files log in to OpenBao" into a merged plan without running a count; the count is 43 | Unverified claim | 2 | Convention |
 | 1.17 | Explained a 401 as the token's scope; the service's database had just gone down, and those were the outage's first 401s | Unverified claim | 1 | Convention |
 | 1.18 | Listed an auth failure's causes from the code, missed the database-error 401, and chased credentials while the orchestrator's disk was full | Unverified claim | 1 | Convention (disk alert proposed) |
@@ -661,7 +661,7 @@ environments) before it is stated.
 
 ### 1.15 A security check's guarantee stated past what its tests exercised
 
-**Occurrences: 2** — 2026-09-25, 2026-09-26
+**Occurrences: 3** — 2026-09-25, 2026-09-26, 2026-10-05
 
 **What happened.** #256 added a run-time check that the seed run's OpenBao address is the one
 the inventory declares. After Codex showed forged helper variables bypassed the first version,
@@ -680,7 +680,12 @@ saw" and "the value the login used" are two renderings, not one.
 tests include the input class's strongest member (for extra vars: a template keyed on task
 context). Anything wider is written as a limit, with the boundary that actually holds it.
 
-**Enforced by.** Convention.
+**Enforced by.** `platform/tests/test_extra_var_refusal_tests.py` (from occurrence 3): every test
+named for an extra-var refusal parametrizes over `forgeries.templated_forgeries` (plain,
+context-keyed and stateful templates) or is listed with the limit that stands; every playbook
+relying on the value probe in `tasks/refuse-var-overrides.yml` opens with
+`refuse-internal-extra-vars.yml`, which refuses by name; and the templates are proved to defeat
+that value probe.
 
 **Occurrence 2 — 2026-09-26.** Correcting occurrence 1 in #264, I wrote the launch-permission gap
 as "redirect that template's OpenBao AppRole login" and listed building request URLs inline as a
@@ -690,6 +695,21 @@ launch runs arbitrary commands on the Semaphore runner (ansible-core 2.16.18 thr
 The real gap is code execution, and no URL change touches it. Why the rule did not fire: I
 applied it to the check I was correcting, not to the mitigation I proposed in the same note. A
 proposed fix is a security claim too, and the strongest input it must withstand is the same one.
+
+**Occurrence 3 — 2026-10-05.** PR #458 made the shared step-result task refuse its inputs when
+they arrive as extra vars, by setting each to a probe value one precedence level below extra
+vars and reading it back. Tested with plain `-e` values for every input, it was reported as
+closing step-result forgery. The Codex review sent `-e 'step_result_status={{
+"__extra_var_probe__" if _sr_input is defined else "pass" }}'`: the probe's loop variable was
+defined only inside the check, so the check read the probe value and the record read "pass".
+Reproduced on ansible-core 2.21.0 before fixing. The refusal now asks whether the NAME is in
+hostvars, which no rendering changes. Why the rule did not fire: it lived in this ledger and
+nothing ran it; the tests were written from the plain-value threat the review had named, and
+the repository's own `refuse-var-overrides.yml` comparison was assumed sound because it had
+shipped. Building the guard showed it is not: the context and stateful templates in
+`forgeries.py` pass that probe too (`test_the_templates_defeat_a_value_probe`). Its callers are
+covered because each opens with the by-name refusal; the lifted-section tests that exercise it
+alone are listed as plain-value limits.
 
 ### 1.16 A count written into a committed plan without running the count
 

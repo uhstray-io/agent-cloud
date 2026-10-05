@@ -14,6 +14,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
+import forgeries
 import playbook_yaml
 import pytest
 import yaml
@@ -129,7 +130,8 @@ def test_hostvars_holds_extra_vars_but_not_what_a_play_defines(tmp_path):
 
 @needs_ansible
 @pytest.mark.parametrize("check", [False, True])
-def test_the_guard_ends_the_run_before_any_other_play(tmp_path, check):
+@pytest.mark.parametrize("forge", forgeries.templated_forgeries("_verdict", "fail", "pass"))
+def test_the_guard_ends_the_run_before_any_other_play(tmp_path, check, forge):
     inv = tmp_path / "inv.ini"
     inv.write_text("[tgt]\nother ansible_connection=local\n")
     play = [{"ansible.builtin.import_playbook": str(PLAYBOOKS / GUARD)},
@@ -139,11 +141,9 @@ def test_the_guard_ends_the_run_before_any_other_play(tmp_path, check):
     path.write_text(json.dumps(play))
     ok = _run(path, tmp_path, *(["--check"] if check else []), inventory=str(inv))
     assert ok.returncode == 0 and "VERDICT fail" in ok.stdout, ok.stdout + ok.stderr
-    # An extra var is a template rendered afresh per task (docs/MISTAKES.md 1.15): this one
-    # renders the honest value inside the guard play and the forgery after it. The guard reads
-    # the key, so its rendering does not matter.
-    templated = json.dumps({"_verdict": "{{ 'fail' if ansible_play_name is match('Refuse') else 'pass' }}"})
-    for args in (["-e", "_verdict=pass"], ["--tags", "verify", "-e", "_verdict=pass"], ["-e", templated]):
+    # Plain and templated (forgeries.py): the templates render "fail" where the guard play
+    # could look and "pass" afterwards; the guard reads the key, so the rendering cannot matter.
+    for args in (["-e", forge(tmp_path)], ["--tags", "verify", "-e", forge(tmp_path)]):
         proc = _run(path, tmp_path, *args, *(["--check"] if check else []), inventory=str(inv))
         assert proc.returncode != 0, proc.stdout
         assert "Refusing to run: _verdict set from outside the playbook" in proc.stdout
@@ -162,15 +162,24 @@ VERDICT = {
 }
 
 
-# Each real executor, launched with a forged value for one of its own internal names: refused
-# in the guard play, no other play started and no step result recorded.
-@needs_ansible
-@pytest.mark.parametrize("path", EXECUTORS, ids=lambda p: p.name)
-def test_a_forged_internal_name_is_refused_by_the_real_executor(path, tmp_path):
+def _forged_name(path: Path) -> str:
     internal = sorted(n for n in playbook_yaml.defined_names(path) if n.startswith("_"))
     name = VERDICT.get(path.name, internal[0])
     assert name in internal, f"{path.name} no longer defines {name}"
-    proc = _run(path, tmp_path, "-e", "target_service=demo_svc", "-e", json.dumps({name: []}), "--check")
+    return name
+
+
+# Each real executor, launched with a forged value for one of its own internal names, plain and
+# templated: refused in the guard play, no other play started and no step result recorded.
+@needs_ansible
+@pytest.mark.parametrize("path,forge", [
+    pytest.param(path, f.values[0], id=f"{path.name}-{f.id}")
+    for path in EXECUTORS
+    for f in forgeries.templated_forgeries(_forged_name(path), [], {"forged": True})
+])
+def test_a_forged_internal_name_is_refused_by_the_real_executor(path, forge, tmp_path):
+    name = _forged_name(path)
+    proc = _run(path, tmp_path, "-e", "target_service=demo_svc", "-e", forge(tmp_path), "--check")
     assert proc.returncode != 0, proc.stdout + proc.stderr
     assert f"Refusing to run: {name} set from outside the playbook" in proc.stdout, proc.stdout + proc.stderr
     assert proc.stdout.count("PLAY [") == 1, proc.stdout
