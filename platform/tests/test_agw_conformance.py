@@ -328,7 +328,7 @@ def test_the_requests_carry_every_effort_the_kwargs_tools_stream_and_responses_s
     assert any(b.get("tools") and b["tools"][0]["function"]["name"] == "get_weather" for b in bodies)
     streamed = [b for b in bodies if b.get("stream")]
     assert [b["reasoning_effort"] for b in streamed] == ["xhigh", "low"]
-    assert [b.get("stream_options") for b in streamed] == [None, {"include_usage": True}]
+    assert [b.get("stream_options") for b in streamed] == [None, {"include_usage": True, "continuous_usage_stats": True}]
     responses = [s["body"] for s in direct.seen if s["path"] == "/v1/responses"]
     assert len(responses) == 1 and responses[0]["reasoning"] == {"effort": "low"}
     assert "reasoning_effort" not in responses[0]
@@ -336,7 +336,7 @@ def test_the_requests_carry_every_effort_the_kwargs_tools_stream_and_responses_s
     # vLLM as the gateway should rewrite it.
     def rewritten(b):
         if b and b.get("stream_options") == {"include_usage": False}:
-            return {**b, "stream_options": {"include_usage": True}}
+            return {**b, "stream_options": {"include_usage": True, "continuous_usage_stats": True}}
         return b
     assert [rewritten(s["body"]) for s in gw.seen] == [s["body"] for s in direct.seen]
 
@@ -1005,7 +1005,7 @@ def test_a_client_cannot_opt_its_stream_out_of_usage(tmp_path, stubs):
     assert r.returncode == 0, r.stderr
     opts = lambda s: [x["body"].get("stream_options") for x in s.seen  # noqa: E731
                       if x["body"] and x["body"].get("stream")]
-    assert opts(gw) == [None, {"include_usage": False}] and opts(direct) == [None, {"include_usage": True}]
+    assert opts(gw) == [None, {"include_usage": False}] and opts(direct) == [None, {"include_usage": True, "continuous_usage_stats": True}]
     report = _diff(tmp_path)
     # stream-xhigh differs only on the usage-chunk shape (no allowlist here), never on usage.
     assert _case(report, "stream-xhigh")["stream_usage"]["gateway"] is True

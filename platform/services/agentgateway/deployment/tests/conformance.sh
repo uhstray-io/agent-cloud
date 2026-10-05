@@ -28,9 +28,10 @@
 #   stream-options-without-usage
 #                       streamed chat completion whose client sets stream_options
 #                       {"include_usage": false}: the gateway's per-model `transformation`
-#                       (config.yaml.j2) must still force a usage chunk, or a client could opt its
-#                       streams out of the budget. vLLM is sent the request as the gateway should
-#                       rewrite it (include_usage true), so the two shapes are comparable
+#                       (config.yaml.j2) must still force usage, or a client could opt its streams
+#                       out of the budget. vLLM is sent the request as the gateway should rewrite
+#                       it (include_usage and continuous_usage_stats true), so the two shapes are
+#                       comparable
 #   responses           one Responses API request (POST /responses, reasoning.effort nested)
 #
 # Each case goes to the gateway, then straight to vLLM, from the same host, so the two differ only
@@ -154,7 +155,8 @@ body_for() { # case model target -> JSON on stdout
 		local iu=false
 		[ "$target" != direct ] || iu=true
 		jq -nc --argjson b "$base" --argjson mt "$STREAM_MAX_TOKENS" --argjson iu "$iu" \
-			'$b + {stream: true, stream_options: {include_usage: $iu}, reasoning_effort: "low", max_tokens: $mt}'
+			'$b + {stream: true, stream_options: ({include_usage: $iu} + if $iu then {continuous_usage_stats: true} else {} end),
+			reasoning_effort: "low", max_tokens: $mt}'
 		;;
 	responses)
 		jq -nc --arg m "$model" --arg p "$PROMPT" --argjson mt "$MAX_TOKENS" \

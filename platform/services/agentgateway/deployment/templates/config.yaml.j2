@@ -178,9 +178,9 @@ llm:
         # AFTER each response from the upstream's reported usage (upstream docs,
         # cost-controls/budget-limits: the request that crosses the limit completes,
         # the NEXT one is rejected, and a response without usage is not charged at
-        # all). Every streamed chat request carries include_usage: the gateway adds it
-        # when stream_options is absent, and each model's `transformation` below forces it
-        # when the client opted out (task 2.3a). It is a spend guard, not a
+        # all). Each model's `transformation` below makes every streamed chat request
+        # carry usage on every chunk, so a stream is charged even when the client opts
+        # out or disconnects early (task 2.3a). It is a spend guard, not a
         # hard cap; the hard admission control is the global request bucket below.
         # Default figure from inventory (design §4); per-identity override in
         # agw_client_policies.<name>.tokens_per_hour. The only per-identity control
@@ -252,15 +252,25 @@ llm:
 {% if secrets.vllm_api_key | default('') %}
       apiKey: $VLLM_API_KEY
 {% endif %}
-    # Every streamed chat request carries include_usage: true, so the per-key token budget
-    # charges it (operator decision 2026-10-04, task 2.3a). The gateway adds stream_options
-    # itself only when the client sent none (v1.5.0 llm/mod.rs:1549-1560); without this a
-    # client sending {"include_usage": false} streamed for free. CEL body transformation
-    # (types/local.rs:807-809, llm/policy/mod.rs:799-835): a client's other stream_options
-    # keys are kept (merge, later key wins: celx general.rs:303-313); a non-streamed request
-    # keeps what it sent. A CEL error removes the key (eval_transformation_expression returns
-    # None), which is the "no stream_options" case the gateway's own injection then covers.
-    # Verified on the v1.5.0 image 2026-10-04 against a recording upstream.
+    # Every streamed CHAT request is sent to vLLM with include_usage AND continuous_usage_stats
+    # true, so the per-key token budget charges it (operator decision 2026-10-04, task 2.3a).
+    # - The gateway adds stream_options itself only when the client sent none (agentgateway
+    #   v1.5.0 crates/agentgateway/src/llm/mod.rs:1549-1560); without this a client sending
+    #   {"include_usage": false} streamed for free.
+    # - continuous_usage_stats: vLLM then puts cumulative usage on EVERY chunk (vllm
+    #   entrypoints/serve/utils/api_utils.py should_include_usage). The gateway keeps the last
+    #   usage it parsed (crates/llm/src/conversion/completions.rs:1207-1219) and settles the
+    #   budget from it when the request ends (crates/agentgateway/src/telemetry/log.rs:1279-1280,
+    #   http/budget/mod.rs:478-494 skips a response without usage). With only the final usage
+    #   chunk, a client that disconnects after the answer is never charged. Clients therefore
+    #   see a usage object on every chunk.
+    # - Chat only: `has(llmRequest.messages)`; a Responses request (`input`) keeps its own
+    #   stream_options untouched. A non-streamed request keeps what it sent; a client's other
+    #   stream_options keys are kept (celx merge, later key wins: crates/celx/src/general.rs:303-313).
+    # - Mechanism: per-model CEL body transformation (crates/agentgateway/src/types/local.rs:807-809,
+    #   applied by crates/agentgateway/src/llm/policy/mod.rs:799-835; a CEL error removes the key).
+    # Measured on the v1.5.0 image 2026-10-04: a stream dropped by the client after the answer is
+    # charged with this, and not without it (platform/tests/test_agw_stream_usage.py).
     transformation:
-      stream_options: 'has(llmRequest.stream) && llmRequest.stream == true && has(llmRequest.stream_options) ? llmRequest.stream_options.merge({"include_usage": true}) : llmRequest.stream_options'
+      stream_options: 'has(llmRequest.messages) && has(llmRequest.stream) && llmRequest.stream == true ? (has(llmRequest.stream_options) && type(llmRequest.stream_options) == map ? llmRequest.stream_options : {}).merge({"include_usage": true, "continuous_usage_stats": true}) : llmRequest.stream_options'
 {% endfor %}

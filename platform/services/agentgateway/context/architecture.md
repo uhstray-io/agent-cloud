@@ -295,33 +295,50 @@ The timing measures below were not part of that report and stay pending.
 ## Streamed completions and the token budget (task 2.3a)
 
 Operator decision 2026-10-04: a streamed call must be charged to the caller's per-key budget.
-agentgateway v1.5.0 already does this for chat completions, so no config knob is set:
+Line references are agentgateway at tag `v1.5.0` (commit `fe673247`).
 
-- On `/v1/chat/completions` with `stream: true` and no `stream_options`, the gateway sets
-  `stream_options: {include_usage: true}` before forwarding (upstream
-  `crates/agentgateway/src/llm/mod.rs:1549-1560`, `process_completions_request`). vLLM then ends the
-  stream with a usage chunk (`choices: []`, `usage.*`). That is the extra chunk recorded under
-  "Stream chunks" above, so a client can see one chunk it did not ask for.
-- The chat stream reader records `prompt_tokens`/`completion_tokens`/`total_tokens` from that chunk
-  (`crates/llm/src/conversion/completions.rs:1207-1219`, `passthrough_stream`). The Responses
-  stream reads usage from the `response.completed` event
-  (`crates/llm/src/conversion/responses.rs:102-111`).
-- The budget is settled from those recorded figures when the request's log completes
-  (`crates/agentgateway/src/telemetry/log.rs:1279-1280`), i.e. after the stream ends.
-- That injection runs only when `stream_options` is absent. Measured on the v1.5.0 image
-  2026-10-04 against a recording upstream: a client sending `{"include_usage": false}` streamed
-  with no usage chunk, so it was charged nothing; `stream_options: {}` is refused by the gateway
-  (400, missing field `include_usage`). Closed in `config.yaml.j2`: every model carries a CEL body
-  `transformation` (`crates/agentgateway/src/types/local.rs:807-809`, applied by
-  `crates/agentgateway/src/llm/policy/mod.rs:799-835`) that merges `include_usage: true` into a
-  streamed request's `stream_options`, keeping the client's other keys (`celx` `merge`, later key
-  wins). A non-streamed request keeps what it sent. Measured on the same image: `{}`,
-  `{"include_usage": false, "continuous_usage_stats": true}` and `null` all reach the upstream with
-  `include_usage: true`. The visible change for a client is the extra usage chunk it opted out of.
-  Not measured: a streamed Responses request carrying its own `stream_options` also gets
-  `include_usage` merged in, which vLLM may or may not accept.
+How v1.5.0 charges a stream:
 
-The conformance `stream-xhigh` case sends no `stream_options`, and `stream-options-without-usage`
-sends `{"include_usage": false}` (vLLM directly gets `true`, the request the gateway should forward).
-Either fails when the gateway's stream carries no usage chunk; the report shows `stream_usage` for both targets. vLLM is not required to
-send one, and the flag is not part of the semantic comparison.
+- On `/v1/chat/completions` with `stream: true` and NO `stream_options`, the gateway sets
+  `stream_options: {include_usage: true}` before forwarding
+  (`crates/agentgateway/src/llm/mod.rs:1549-1560`, `process_completions_request`).
+- The chat stream reader overwrites the recorded token counts each time a chunk carries `usage`
+  (`crates/llm/src/conversion/completions.rs:1207-1219`). The budget is settled from the last
+  recorded figures when the request's log completes (`crates/agentgateway/src/telemetry/log.rs:1279-1280`).
+  A response with no usage is skipped, not charged (`crates/agentgateway/src/http/budget/mod.rs:478-494`).
+
+Two bypasses followed, both measured on the v1.5.0 image on 2026-10-04 against a recording upstream:
+
+1. A client sending `{"include_usage": false}` is forwarded as sent, so the stream has no usage
+   chunk and is never charged. (`stream_options: {}` is refused by the gateway: 400, missing
+   field `include_usage`.)
+2. vLLM sends the answer before a separate final usage chunk. A client that disconnects after the
+   answer leaves before usage arrives, so nothing is charged. Measured: budget 10 tokens, a
+   50-token stream dropped after the answer, then the next request was still 200.
+
+Closed in `config.yaml.j2`. Every model carries a CEL body `transformation`
+(`crates/agentgateway/src/types/local.rs:807-809`, applied by
+`crates/agentgateway/src/llm/policy/mod.rs:799-835`; a CEL error removes the key). It sends every
+streamed chat request with `include_usage: true` and `continuous_usage_stats: true`, and keeps the
+client's other `stream_options` keys. vLLM then puts cumulative usage on every chunk (vLLM
+`entrypoints/serve/utils/api_utils.py` `should_include_usage`, read on vLLM main 2026-10-04; the
+prod vLLM version was not checked). So the gateway holds the latest usage whenever the client
+leaves. Measured with the transformation: the same dropped stream was charged, and the next request
+got 429. `{}`, `{"include_usage": false, ...}` and `null` all reach the upstream forced.
+
+- **Scope.** Chat only, guarded on `has(llmRequest.messages)`. A Responses request (`input`) keeps
+  its own `stream_options` untouched; OpenAI defines `include_obfuscation` there, not
+  `include_usage`. Non-streamed requests keep what they sent.
+- **Client-visible change.** Every chunk of a chat stream carries a `usage` object, plus the
+  final usage chunk.
+- **Residual.** A client disconnecting before the first token is charged nothing. The Responses
+  stream records usage from the `response.created` and `response.completed` events
+  (`crates/llm/src/conversion/responses.rs:62-72, 102-111`), so a Responses client that drops
+  before completion is not charged for its output. Not closed here: vLLM's server flag `--enable-force-include-usage` (named in vLLM `docs/features/per_request_metrics.md`) forces usage on every
+  stream (same vLLM function), but it is dgx-spark's to set.
+
+The conformance `stream-xhigh` case sends no `stream_options`. `stream-options-without-usage` sends
+`{"include_usage": false}`, and vLLM directly gets the forced form, which is what the gateway should
+forward. Either case fails when the gateway's stream carries no usage chunk, and the report shows
+`stream_usage` for both targets. vLLM's own stream is not required to carry usage, and that flag is
+not part of the semantic comparison.
