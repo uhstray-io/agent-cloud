@@ -33,7 +33,7 @@ pytestmark = pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason
 
 
 def _plays(name):
-    return yaml.safe_load((PLAYBOOKS / name).read_text())
+    return playbook_yaml.plays(PLAYBOOKS / name)
 
 
 def _tasks(play, names):

@@ -12,8 +12,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
+import playbook_yaml
 import pytest
-import yaml
 
 REPO = Path(__file__).resolve().parents[2]
 PLAYBOOK = REPO / "platform/playbooks/apply-cloudflare-tofu.yml"
@@ -35,7 +35,7 @@ TAIL = ("Summarise the tofu run (exit codes and change counts only)",
 
 
 def _tasks():
-    (play,) = yaml.safe_load(PLAYBOOK.read_text())
+    (play,) = playbook_yaml.plays(PLAYBOOK)
     return play["tasks"]
 
 

@@ -38,6 +38,11 @@
 # Requires the Proxmox API token in OpenBao at secret/services/proxmox
 # (url, token_id, api_token) — same source provision-vm.yml uses.
 
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
 - name: "Resize VM — {{ target_service | default('vmid ' ~ (target_vmid | default('?'))) }}"
   hosts: localhost
   connection: local

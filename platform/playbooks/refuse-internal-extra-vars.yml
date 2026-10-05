@@ -1,0 +1,52 @@
+---
+# refuse-internal-extra-vars.yml — refuse a run in which an extra var sets an internal
+# (underscore-prefixed) name, before the run has set any of them.
+#
+# Extra vars outrank everything a playbook defines: play vars, vars_files, block and task
+# vars, include params, registered vars and set_facts (ansible-core variable precedence,
+# entries 12-21 against 22,
+# https://docs.ansible.com/ansible/latest/playbook_guide/playbooks_variables.html#understanding-variable-precedence).
+# So `-e '_fw_group_errors=[]'` replaces the verdict Apply Firewall computes, and the step
+# result it records says pass for a host that failed; the collector carries that to NetBox
+# and Loki. This repository names a playbook's internal values with a leading underscore,
+# so an underscore-prefixed extra var is one of them by definition.
+#
+# Mechanism: hostvars holds a host's inventory vars, facts, set_facts, registered vars and
+# extra vars, but not play, block or task vars, and by default no underscore-prefixed name
+# (verified on ansible-core 2.21; platform/tests/test_executor_internal_overrides.py pins
+# both). As the first play of a run, before anything is registered or set, an underscore
+# name in hostvars came from outside the playbook. Nothing is written, so a name a playbook
+# defines as a play or task var keeps its value. The set_fact probe of
+# tasks/refuse-var-overrides.yml cannot guard those: set_fact outranks play and task vars,
+# so its probe value would shadow them for the rest of the run.
+#
+# One rule instead of a per-playbook list: it also covers the names the run's task files
+# and imported playbooks define, and a name added later needs no list edit. No inventory
+# defines an underscore name; one that did would be refused too.
+#
+# Usage — the FIRST entry of a playbook, before any play or import:
+#
+#   - name: "Refuse extra vars that set internal names"
+#     ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+#
+# It runs under --check and under any --tags (tag `always`). Like every play it is skipped
+# by a --limit that excludes localhost, and by --start-at-task (preflight-target-group.yml
+# states the same --limit limitation). A failed guard ends the whole run: no later play
+# starts once every host of a play has failed.
+
+- name: "Refuse extra vars that set internal names"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  tags: [always]
+  tasks:
+    - name: "Refuse an extra var that sets an underscore-prefixed name"
+      ansible.builtin.assert:
+        that: hostvars[inventory_hostname].keys() | select('match', '_') | list | length == 0
+        fail_msg: >-
+          Refusing to run: {{ hostvars[inventory_hostname].keys() | select('match', '_') | sort | join(', ') }}
+          set from outside the playbook. Underscore-prefixed names are internal: an extra var
+          outranks the value the playbook computes, which would let a forged value decide a
+          verdict or the step result it records.
+        quiet: true

@@ -99,6 +99,16 @@ the loop variable `_rvo_name` (a loop variable, unlike an include var, is not ou
 `-e`); it refuses any name an extra var holds. The materialise and pin tasks guard their own
 internal names the same way.
 
+Every workflow executor and snapshot playbook goes further: its FIRST entry imports
+`refuse-internal-extra-vars.yml`, a localhost play that refuses the run when any
+underscore-prefixed name is set from outside (it reads `hostvars`, which holds extra vars but
+not play or task vars, so it needs no name list and writes nothing). That covers the names
+computed from play and task `vars`, which the set_fact probe above cannot guard without
+shadowing them, and the verdicts the step result is built from (`-e '_fw_group_errors=[]'`
+would otherwise record a failed Apply Firewall as passed).
+`platform/tests/test_executor_internal_overrides.py` requires it in every registry executor
+and launches each with a forged internal name.
+
 ```yaml
 - name: "Fetch key"
   ansible.builtin.set_fact:
@@ -221,6 +231,7 @@ internal names the same way.
 | `provision-template.yml` | Create Proxmox VM template with cloud-init |
 | `proxmox-validate.yml` | Validate Proxmox cluster readiness (tolerates an offline node — a guest on a downed node returns no name), and report each online node's capacity (live use, configured guest commitment, free VM storage), most free memory first, for placing a new VM |
 | `preflight-target-group.yml` | Assert a target group resolves and its hosts are reachable before a deploy touches them |
+| `refuse-internal-extra-vars.yml` | Imported first by every workflow executor: refuse a run in which an extra var sets an underscore-prefixed (internal) name, before anything is set. Skipped, like any play, by a `--limit` excluding localhost or by `--start-at-task` |
 | `netbox-allocate-ip.yml` | Ask NetBox for free addresses and report the recorded state of named ones. Read-only unless `-e reserve=true`; reserving takes explicit static addresses and checks live pfSense DHCP configuration first |
 
 The NetBox API endpoint comes from the single private `netbox_svc` host's

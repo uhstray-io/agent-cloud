@@ -3,6 +3,11 @@
 # Run via Semaphore or:
 #   ansible-playbook -i inventory/local.yml playbooks/provision-vm.yml -e target_service=openbao
 
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
 - name: "Pre-validate: Cluster ready for VM provisioning"
   ansible.builtin.import_playbook: proxmox-validate.yml
 
