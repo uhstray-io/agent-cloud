@@ -24,7 +24,7 @@ SERVICE_OVERVIEW_DASHBOARD = REPO / "platform/services/o11y/deployment/config/gr
 DRAWING = REPO / "docs/agent-cloud-service-deploy.excalidraw"
 OPA_DATA = REPO / "platform/services/opa/deployment/policies/agentcloud/data.json"
 
-ROLES = {"infra-agent", "security-agent", "o11y-agent", "service-agent"}
+ROLES = {"infra-agent", "security-agent", "o11y-agent", "service-agent", "network-agent"}
 PER_SERVICE = "Deploy {service}"
 # The secret store, the orchestrator, the IPAM authority, the runner security boundary and the
 # all-services wrapper: never an agent's per-service deploy.
@@ -46,9 +46,9 @@ def _drawn_labels() -> set[str]:
     }
 
 
-def test_twenty_two_steps_in_order():
-    assert len(STEPS) == 22
-    assert [s["order"] for s in STEPS] == list(range(1, 23))
+def test_twenty_three_steps_in_order():
+    assert len(STEPS) == 23
+    assert [s["order"] for s in STEPS] == list(range(1, 24))
     ids = [s["id"] for s in STEPS]
     assert len(set(ids)) == len(ids)
 

@@ -246,14 +246,24 @@ hashing. The selection now keeps `allowed_models` order (else the declared `agw_
 does the deploy's keyed verification probe, and a repository test refuses taking the first item of a
 set-operation result in any playbook or task.
 
-The timing measures below were not part of that report and stay pending.
+Timing measures (recorded 2026-10-04). `conformance.sh diff` reports each measure as gateway
+minus direct, in seconds (`timing_delta`; positive means the gateway was slower). The report
+carries only the delta, not the two absolute values. `stream-xhigh` is the one streamed case,
+so it is the only case with first-token and gap measures. Task 2709 (commit `21891372`) is the
+first run to pass 13/13, but its saved output is truncated before the `stream-xhigh` entry, so
+its stream deltas are not recorded here; the three earlier production runs below are.
 
-| Measure | Gateway | Direct | Delta | Run |
-|---|---|---|---|---|
-| Stream time to first token (s) | pending | pending | pending | — |
-| Stream inter-chunk gap p95 (s) | pending | pending | pending | — |
-| Stream inter-chunk gap max (s) | pending | pending | pending | — |
-| Cases matched | pending | | | — |
+| Measure (`stream-xhigh`, gateway minus direct) | Task 2614 (`1f8057aa`) | Task 2681 (`80c27733`) | Task 2698 (`79a8eb76`) |
+|---|---|---|---|
+| Time to first token (s) | +0.023 | +0.026 | +0.029 |
+| Inter-chunk gap p95 (s) | -0.001 | +0.001 | +0.001 |
+| Inter-chunk gap max (s) | -0.002 | -0.001 | +0.001 |
+| Total (s) | +0.072 | +0.020 | -0.030 |
+| Cases matched | 0/13 | 12/13 | 12/13 |
+
+Task 2681 tested a different served model from the other two (see the paragraph above).
+Reading: the gateway adds roughly 25 ms to the first token and nothing measurable to the gaps
+between chunks. Cases matched at task 2709: **13/13, PASS**.
 
 ## Verification log
 
@@ -290,7 +300,10 @@ The timing measures below were not part of that report and stay pending.
   12/13. `responses` matches after the passthrough deploy; `stream-xhigh` failed only on
   `choices.[].delta` from the gateway side, now accepted (union of the task 2614 and 2698 records).
   Model selection made deterministic (see "Accepted shape differences, second record").
-- Task 2 (conformance against the direct upstream): shape decision recorded; timing deltas pending.
+- 2026-10-04 — task 2.2, production conformance run Semaphore task 2709 (commit `21891372`):
+  PASS, 13/13 cases match. Stream timing deltas from tasks 2614, 2681 and 2698 recorded in the
+  table under "Conformance against direct vLLM".
+- Task 2 (conformance against the direct upstream): shape decision and timing deltas recorded.
 
 ## Streamed completions and the token budget (task 2.3a)
 

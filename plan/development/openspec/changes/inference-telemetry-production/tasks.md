@@ -9,6 +9,10 @@
       `grafanapodman` retired by the operator 2026-09-26 (site-config#33). `nemoclaw`,
       `nocodb`, `openhands` were never reached; rerun `Audit o11y Containers (Dev)` or close
       as superseded now that the dedicated receiver runs.
+      2026-10-04: `Audit o11y Containers (Dev)` task 2743 at `21891372` reached 15 hosts; only the o11y
+      receiver host runs `o11y-*` containers (its own seven, expected). `nocodb`, `nemoclaw` and
+      `openhands` were unreachable over SSH ("Host is unreachable"), so the task ended in error.
+      Not ticked: the operator decides whether to close as superseded or investigate those three.
 - [ ] 0.3 Allocate the o11y VM in site-config `proxmox/vm-specs.yml` (Auxiliary tier,
       Podman) and provision it through the onboarding checklist phases 1 to 2
       2026-10-02 rescope: PARTIAL — the VM is reserved and provisioned under
@@ -17,6 +21,15 @@
       site-config#24). Remaining: onboarding phases 1 to 2 also back up and harden the
       per-service SSH key and add a service `CLAUDE.md`; site-config has no `secrets/ssh/o11y`
       entry and the deployment directory has no such document (review of #375).
+      2026-10-04: the service `CLAUDE.md` now exists
+      (`platform/services/o11y/deployment/CLAUDE.md`, with the relative `AGENTS.md` symlink, listed
+      in the root `AGENTS.md`). Still open: the per-service SSH key backup to site-config and
+      hardening.
+      2026-10-04 (task ids reported by the coordinator; only 2743 output was read here): per-service
+      SSH key generated (`Generate Service SSH Key (Dev)` task 2738, `secret/services/ssh/o11y`),
+      backed up to a site-config branch (`Back Up Service SSH Key (Dev)` task 2740; the site-config PR
+      is pending), distributed with key auth confirmed (`Distribute SSH Keys (Dev)` task 2742).
+      Still open: SSH hardening, waiting on the harden-ssh pre-proof change, and the site-config merge.
 - [x] 0.4 Validation gate: `openspec validate inference-telemetry-production --store
       agent-cloud` passes; the VM answers SSH via the distributed key; proves nothing in
       the spec yet and unblocks section 1
@@ -40,6 +53,13 @@
       `O11Y_OTLP_BIND`) was later bound to the VM interface on purpose for gateway traces,
       firewall-scoped (site-config#37), so "Alloy on loopback" no longer holds; the
       requirement needs restating as superseded (review of #375).
+      2026-10-04 restatement: the "Alloy on loopback" clause is SUPERSEDED, by design. The OTLP
+      listener binds `${O11Y_OTLP_BIND:-127.0.0.1}` on 4317/4318 (`compose.yml:102,105`,
+      `templates/env.j2:24`); production sets `o11y_otlp_bind` to the VM address for gateway
+      traces, and `deploy-o11y.yml:257-268` refuses a loopback or non-IPv4 bind, or one that
+      differs from the gateway's `agw_otlp_host`, when gateway tracing is enabled. Prometheus stays
+      loopback by default (`compose.yml:52`, `env.j2:20`). The remaining text is met; this box
+      stays unticked because its text as written is not, and closes as superseded at archive.
 - [ ] 1.3 Caddy route `o11y.uhstray.io` to the Grafana port in site-config
       `caddy_managed_sites`, `forward_auth` to Authentik per the existing route shape,
       with two paths exempted from `forward_auth`: `/api/health` (unauthenticated liveness,
@@ -52,6 +72,11 @@
       uses native Authentik OIDC (PR #275), so the `forward_auth` exemptions are moot.
       Remaining: production sign-in returns to the login page (O11Y-GRAFANA-AUTH-INCIDENT.md);
       close this task when that incident's phase 3 acceptance passes.
+      2026-10-04: `Diagnose Grafana OAuth Failure (Dev)` task 2746 at `21891372` ran end to end (2103 did
+      not) and reported `category=no_oauth_failure_in_window`; the playbook then stops by design,
+      because it requires a failure category (`diagnose-o11y-grafana-auth.yml:85-97`). Next: the
+      operator attempts a Grafana sign-in and, if it fails, reruns the diagnostic inside the window.
+      Not ticked.
 - [x] 1.4 `firewall_allow_rules` on the o11y host: Grafana port from the Caddy host; Loki
       push port from the two node addresses; `apply-firewall.yml` through Semaphore
       2026-10-02 rescope: rules declared in site-config#36 and applied by firewall tasks 1661
@@ -61,6 +86,8 @@
       2026-10-02 rescope: PARTIAL — deployed (task 1359); budget tasks 1823 and 1831 measured
       7.06%/6.75% root free and ~87.6% memory headroom (o11y README). Remaining: copy those
       into `design.md` with per-container memory. Root is now full (task 2115).
+      2026-10-04: the task 1823 and 1831 readings are copied into `design.md` Context. Still
+      open: per-container resident memory and a 24-hour read; neither receipt has them.
 - [ ] 1.6 Validation gate: a second deploy run reports no changes and the three health
       endpoints return 200, proving scenario "Deploy converges and verifies"; `curl` to
       the Grafana port from a LAN host is refused while `https://o11y.uhstray.io` serves
@@ -117,6 +144,10 @@
       2026-10-03: CODE LANDED (PR #380) — the three `inference-*.json` dashboards are under
       `platform/services/o11y/deployment/config/grafana/dashboards/`, with the metric-name list
       vendored as a test fixture. Rendering waits on an enabled Deploy o11y and the 3.5 gate.
+      2026-10-04: NOT proven at runtime. Deploy o11y (Dev) task 2671 at `bd76f29c` succeeded and that
+      commit carries the three `inference-*.json` files, but its readback checks only the
+      self-monitoring and two agentgateway dashboards; nothing reads back an `inference-*`
+      dashboard. Needs a readback or the 3.5 gate.
 - [ ] 3.2 `config/grafana/provisioning/alerting/inference.yml`: groups
       `inference-failing`, `telemetry-missing`, `memory-thermal`, `benchmark-gate`
       (last one with a single placeholder rule marked disabled until the manifest metric
@@ -133,6 +164,11 @@
       exporter is scraped) and benchmark-gate (paused placeholder) groups, every rule
       `for: 5m`, routed to `agent-cloud-ops`. Each flag that is off lists its rules under
       `deleteRules`. Pending: an enabled Deploy o11y and the task 3.5 drill.
+      2026-10-04: NOT proven at runtime. Task 2671 rendered the DGX scrape file (so
+      `dgx_spark_scrape_enabled` was true and `alerts.yml.j2:351-433` emits all four groups), but
+      "Require expected o11y rules and active routed rules" filters uids on `^o11y_`
+      (`deploy-o11y.yml:1083-1103`), so no `inference_` rule was read back live. The probe was
+      disabled in that run (probe tasks skipped), so the two probe rules were not rendered.
 - [ ] 3.3 Synthetic probe: `platform/services/o11y/deployment/probe/inference-probe.sh`
       (curl, one short chat completion, effort `none`, through
       `https://inference.uhstray.io/v1`, key from OpenBao at deploy into the gitignored
@@ -208,15 +244,21 @@
       2026-10-02 rescope: OPEN, blocked — retention stays 15d/7d/168h with a 0B cap. Reaching
       the 90d/45d/1080h target needs a seven-day forecast, ≥30% free space and an
       isolated-restore receipt (estate-wide 4.2/4.6e). The root disk is full (task 2115).
-- [ ] 4.2 Append dated status lines to `plan/development/05-observability.md` and
+- [x] 4.2 Append dated status lines to `plan/development/05-observability.md` and
       `plan/architecture/06-observability-instrumentation.md`
       2026-10-02 rescope: PARTIAL — 05-observability.md carries the dated production lines
       (2026-09-26 through 2026-09-29). 06-observability-instrumentation.md still states
       (2026-09-22) that no production receiver exists; append a dated correction.
-- [ ] 4.3 `plan/architecture/` record: static node scrape jobs and a dedicated o11y VM,
+      2026-10-04: DONE — `06-observability-instrumentation.md` gains the dated "Production receiver
+      correction, 2026-10-04" callout (appended; no existing line changed).
+- [x] 4.3 `plan/architecture/` record: static node scrape jobs and a dedicated o11y VM,
       with the rejected alternatives from the design
       2026-10-02 rescope: OPEN — no `plan/architecture` record of the production telemetry
       decisions exists yet.
+      2026-10-04: DONE as **Proposed** — section "Production telemetry receiver: dedicated o11y VM
+      and static node scrape" in `plan/architecture/06-observability-instrumentation.md` (the
+      repo's convention: a section in the numbered doc), with the three rejected alternatives
+      from design decisions 1 and 2. Accepted when Joe confirms the text.
 - [ ] 4.4 Validation gate: both plan documents carry the dated lines and `git diff` shows
       only appended text, proving scenario "Status is dated and append-only"; on archive,
       retain the outcome (worked / dead end / corrected) into bank `agent-cloud-750a33b9`

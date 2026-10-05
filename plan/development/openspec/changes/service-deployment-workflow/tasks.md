@@ -86,6 +86,14 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
       is proven by `--list-tasks`, since Semaphore cannot launch a tag override. REMAINING:
       a production dry run of each Proxmox, SSH-host and backup playbook's `(Dev)` template
       after this branch reaches `dev` (operator decision)
+      - 2026-10-04: production `(Dev)` dry runs on `dev` at 21891372 against o11y. The task ids
+        are in design "Production `(Dev)` dry runs — 2026-10-04".
+        - Pass: Verify Host Access, Distribute SSH Keys (after its missing key was generated),
+          Provision VM, Resize VM, Back Up Service SSH Key (after the key existed) and Back Up
+          Credentials.
+        - Still open: Apply Firewall fails its check-mode verify (fix in a separate PR); Harden
+          SSH waits on the pre-proof change; Destroy VM is held for the operator. Snapshot VM
+          and Create VM Template have no `(Dev)` variant. 2.2 stays open.
 - [x] 2.3 Wave 2, the remaining playbooks, grouped by service; same patterns and runs.
       2026-09-22: 67 files (161 reads, 27 logins, 125 skips) applied from the guard's own
       findings; normal runs are unchanged by construction (every guard is inert without
@@ -168,10 +176,17 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
         Inventory, Validate Address Free and the three snapshots), so none could run in
         production; `test_workflow_templates_are_dev_bound_until_promoted` now requires a
         twin for every step template that does not predate the workflow
+      - 2026-10-04: NOT APPLICABLE by operator decision (Joseph A. Wisneski IV): keep the
+        `main`/`dev` twin templates and do not enable `allow_override_branch_in_task`
+        (`docs/MISTAKES.md` 1.9 risk). No launch by branch is attempted. Left unticked, because
+        this file records no precedent for ticking a not-applicable item
 - [x] 5.2 Test that no `templates-local.yml` entry reaches the production catalog
       (`platform/tests/test_local_templates_isolation.py`, mutated once: red)
 - [ ] 5.3 Validation gate: spec scenarios "Integration run without a twin" and "Local template
       cannot reach production" pass (the first is marked not-applicable if 5.1 kept the twins)
+      - 2026-10-04: "Integration run without a twin" is NOT APPLICABLE: 5.1 kept the twins by
+        operator decision. "Local template cannot reach production" is covered by 5.2's test,
+        but this gate has not been run as a whole. Left unticked
 
 ## 6. Local NetBox
 
@@ -222,6 +237,13 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
         populated-group preflight that records a failed edge-route result); oidc-config
         recreates every container on each run. cloud-init and service-deploy were not
         re-reviewed. Stamps still wait on the OPA `data.json` change.
+      - 2026-10-04: operator decisions (`d10-review.md`). The Cloudflare zero-diff criterion
+        moved out of edge-route into a new step, edge-dns, executed by Apply Cloudflare Tofu,
+        which now records it (`plan_changes`; judged on `tofu plan -detailed-exitcode`, after
+        an apply too). Twenty-three steps. edge-route, edge-dns and cloud-init pass D10. No step
+        was stamped: a stamp lets the main-bound base template run, and on `main` no executor
+        records a step result and six executor playbooks do not exist, so stamps wait on the
+        dev to main promotion.
 - [x] 7.2 `provision-vm.yml` sets `onboot`; restart-policy check beside `enable-linger`.
       2026-09-22: onboot with per-host opt-out; `verify-service-persistence.yml` (step
       systemd-enablement) passes on local tududi, normal and check mode (tasks 977, 978)

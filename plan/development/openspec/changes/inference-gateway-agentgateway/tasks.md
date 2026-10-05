@@ -187,12 +187,17 @@
       2026-10-02: change-aware deploy merged in PR #382. The live drill (unchanged deploy keeps
       the start time; rotated key served; failed deploy converged; removed container restored) is
       not run
+      2026-10-04: `Deploy agentgateway (Dev)` re-run at `21891372` with unchanged inputs, task 2745
+      (dry run 2744 first): deploy.sh reported "running gateway matches the rendered inputs and
+      image" and "deploy-result: unchanged". The previous changed deploy was task 2696 (`79a8eb76`).
+      Not ticked: the key-rotation leg (live key, operator) and the failed-deploy and
+      removed-container legs (local-dev) are not done.
 
 ## 2. Conformance against direct vLLM
       Added 2026-09-22 (security review): the gateway's `platform-admins in jwt.groups` rule
       has never been shown DENYING anyone — log in as a platform-developers member and
       require a refusal at the gateway (the IdP-side admin binding is the other half).
-- [ ] 2.1 Conformance script `platform/services/agentgateway/deployment/tests/conformance.sh`
+- [x] 2.1 Conformance script `platform/services/agentgateway/deployment/tests/conformance.sh`
       (curl + jq): models list; chat completion thinking off; `reasoning_effort` each of
       the seven values; `chat_template_kwargs` override; tool call; streamed request with
       `xhigh` and timing of first token and inter-chunk gaps; one Responses API request;
@@ -208,7 +213,10 @@
       `chat_template_kwargs.reasoning_effort: low`. The seven efforts are dgx-spark's
       (`plans/development/openspec/specs/inference-endpoint/spec.md`, `vllm/public_probe.py`).
       `platform/tests/test_agw_conformance.py` runs it against stub servers.
-- [ ] 2.2 Diff bodies (ignoring ids and timestamps); record first-token and gap deltas
+      2026-10-04: DONE — `Run agentgateway Conformance (Dev)` task 2709 at `21891372` ran all 13
+      cases (models, thinking off, the seven efforts, the override, tool call, `stream-xhigh`,
+      `responses`) against the gateway and direct vLLM from the gateway VM: PASS, 13/13.
+- [x] 2.2 Diff bodies (ignoring ids and timestamps); record first-token and gap deltas
       in `context/architecture.md`
       2026-10-02: `conformance.sh diff` is the comparison, and the playbook runs it. A case
       matches only when both sides succeeded (curl exit 0, 2xx) and agree on status, shape and
@@ -250,6 +258,11 @@
       hashing. It now follows `allowed_models` order, else `agw_models` order, and a repository test
       refuses taking the first item of a set operation anywhere under `platform/`. Timing deltas
       still not recorded, so this task stays unticked.
+      2026-10-04: DONE — task 2709 at `21891372` matched 13/13. The `stream-xhigh` first-token and
+      gap deltas (gateway minus direct) from production tasks 2614, 2681 and 2698 are recorded in
+      `context/architecture.md` ("Conformance against direct vLLM"): first token +0.023/+0.026/+0.029
+      s, gap p95 and max within ±0.002 s. Task 2709's saved output is truncated before the stream
+      case, so its own stream deltas are not in the table.
 - [ ] 2.3 Confirm SSE keep-alive comment lines from vLLM pass through unchanged and
       unbuffered (needs dgx-spark `inference-endpoint-reliability` deployed)
 - [ ] 2.3a Streams and the budget: confirm whether a streamed completion is charged to the
@@ -355,6 +368,11 @@
 - [ ] 5.2 Accept the architecture record; append a dated pointer line to
       `plan/development/06-inference-skynet.md`; `platform/services/inference/` stub
       gains a README pointing at the gateway service and the dgx-spark roadmap record
+      2026-10-04: the non-decision half is done — a dated pointer callout in
+      `plan/development/06-inference-skynet.md`, and `platform/services/inference/README.md`
+      replaces the two `.gitkeep` stubs, pointing at `platform/services/agentgateway/` and the
+      dgx-spark `node-telemetry-and-placement-benchmark` roadmap record. Open: accepting the
+      architecture record is Joe's decision, so this box stays unticked.
 - [ ] 5.3 Validation gate: 5.1 proves scenario "Grace period ends"; the record and the
       plan 06 line prove scenario "Decision is findable and plan 06 is amended"; on
       archive, retain the outcome (worked / dead end / corrected) into bank
@@ -424,6 +442,11 @@
       step `tasks/agw-probe-resolution.yml` (PR #418), used by `deploy-agentgateway.yml` and,
       read-only, by `renew-internal-certs.yml` (PR #420). The other consumers this task lists
       (personal keys, benchmark VM, access-record verify) are not checked here
+      2026-10-04: NOT ticked. The deploy and the renewal proof use the shared probe
+      (`deploy-agentgateway.yml:615,665,714`, `renew-internal-certs.yml:550`), but the task says every
+      check from outside Caddy uses it: the personal-key gates, the benchmark VM's attribution check
+      and the access-record verify do not exist in `platform/playbooks/` yet, and
+      `run-agw-conformance.yml` reaches the gateway with its own curl and `--resolve`, not this probe.
 - [ ] 6.2 Caddy's `inference` and `admin.inference` blocks proxy to `https://` with
       `transport http { tls_server_name <gateway SAN>; tls_trust_pool file <root>;
       tls_client_auth <cert> <key> }` (Caddy 2.11.4), the leaf files read from the Caddy

@@ -59,7 +59,7 @@ a new user their first login waits on this step passing.
 |---|---|
 | `deployment/compose.yml` | server + worker + postgres + redis; `ak healthcheck`; HTTP :9000 |
 | `deployment/compose.local.yml` | slim overlay (caps, `label=disable`, joins `local-dev` so Caddy reaches it) |
-| `deployment/deploy.sh` | container lifecycle only (verify .env, pull, up, wait healthy — long first boot) |
+| `deployment/deploy.sh` | container lifecycle only (verify .env, pull, up, wait healthy — long first boot). Recreates only on change: `compose_up_if_changed` (`platform/lib/common.sh`) hashes the compose files in effect, `.env`, `env/*.env` and `blueprints-active/` into a label on every container, and a re-run with identical inputs and images is a true no-op. Prints `DEPLOY_CHANGED=true\|false`, which sets the playbook task's changed status |
 | `deployment/templates/env.j2` | compose-subst vars + authentik runtime config + secrets from OpenBao |
 | `deployment/blueprints/*.yaml` | config-as-code applied by the worker (committed; non-secret) |
 | `deployment/templates/verify-users.py.j2` | post-apply live-state check (above); rendered per deploy, run inside the server container |

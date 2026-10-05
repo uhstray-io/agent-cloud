@@ -53,6 +53,21 @@
 > with the switch off verified two paused rules and zero o11y contact points;
 > no notification delivery has been claimed.
 
+> **Production receiver correction, 2026-10-04:** The 2026-09-22 note above that
+> no production receiver exists is no longer current. A dedicated production o11y
+> VM was provisioned by Semaphore task 1353 and first deployed by task 1359
+> (2026-09-26; `plan/development/05-observability.md`, "Production receiver
+> receipt, 2026-09-26"). DGX Spark node targets were confirmed up by tasks
+> 1634-1636, and alert delivery to Discord by tasks 1395 and 1701. The most
+> recent deploy, Dev-bound `Deploy o11y (Dev)` task 2671 at `bd76f29c`
+> (2026-10-04), succeeded with the DGX scrape and the agentgateway scrape
+> rendered, Grafana, Prometheus, Loki, Tempo and Pyroscope ready, the `o11y_`
+> alert rules active and routed, and the Discord contact point active. Its
+> readback does not cover the `inference_` rules or the three `inference-*`
+> dashboards. Task 2115 earlier read the receiver's guest root filesystem as
+> full; this note does not record whether it has been grown since. The
+> receiver decision is recorded below as a Proposed section.
+
 
 <!-- ======================= source: OBSERVABILITY-INSTRUMENTATION.md ======================= -->
 
@@ -432,9 +447,54 @@ Querying Prometheus (metrics) and Loki (logs) via their datasource UIDs (`promet
 
 ---
 
+## Production telemetry receiver: dedicated o11y VM and static node scrape (PROPOSED 2026-10-04)
+
+Status: **Proposed.** Becomes Accepted when the operator confirms this text; until then it
+binds nothing. Author: Joseph A. Wisneski IV <stray@uhstray.io>.
+
+**Decision.**
+
+- **A dedicated small VM holds the production telemetry store.** Prometheus, Loki,
+  Grafana and Alloy (with Tempo and Pyroscope added later) run as one rootless-Podman
+  compose stack on their own Auxiliary-tier VM (`o11y_svc`), not on a host that serves
+  requests or runs the control plane. The store has to survive a GPU-host failure and
+  stay apart from load generation; Caddy is the front door and Semaphore the control
+  plane, so a disk-filling Loki or a stress test on either would be a platform outage.
+- **The DGX Spark nodes are static Prometheus scrape targets.** The nodes are remote
+  hosts running systemd units, not containers on the receiver's engine socket, so the
+  contract's zero-touch socket discovery does not apply to them. One `dgx-spark` scrape
+  file is rendered from private inventory (no node addresses in this repo) and included
+  through `scrape_config_files`; it renders only when `dgx_spark_scrape_enabled` is set
+  after a reviewed reachability probe. The nodes push their journal to Loki.
+
+**Alternatives rejected.**
+
+1. *Run Alloy on the nodes as a remote-write agent, so Prometheus sees one target.*
+   Rejected: the companion dgx-spark design chose pull for the lowest node overhead, and
+   the ecosystem document allows either.
+2. *Co-locate the store with Caddy or Semaphore.* Rejected: either host failing or
+   filling its disk would take down the front door or the control plane.
+3. *Co-locate the store with the inference gateway host.* Rejected: the gateway is in
+   the request path and the telemetry store must not be.
+
+**Consequences.** A dead receiver cannot alert on itself, so an external liveness check
+from the Semaphore host is required (`check-o11y-liveness.yml`); until its first scheduled
+run is recorded, a receiver failure has no timely alert. Each node exporter and the Loki
+push need source-scoped firewall rules on both ends, declared in site-config. Retention
+starts at Prometheus 15d and Loki 7d and changes only on measured ingestion. The
+guest root filesystem the stack shares has been read as full
+(task 2115), which blocks the retention review.
+
+Deliberation, receipts and the phased plan: OpenSpec change
+`plan/development/openspec/changes/inference-telemetry-production` (design.md decisions
+1, 2 and 7).
+
+---
+
 ## Revision History
 
 | Date | Summary |
 |------|---------|
 | 2026-06-14 | Initial draft — instrumentation contract, socket-SD metrics auto-discovery, Grafana MCP triage workflow, phased rollout. |
 | 2026-06-14 | Added the tracing pillar — Tempo (monolithic, local→MinIO), OTLP via the existing Alloy, metrics-generator RED/service-graph, trace↔logs↔metrics correlation by `service.name`; Phase 4 (tracing) + Phase 5 (prod). |
+| 2026-10-04 | Production receiver correction callout (dated, appended); Proposed record for the dedicated o11y VM and static DGX Spark node scrape. |

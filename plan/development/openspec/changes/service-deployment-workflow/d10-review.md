@@ -150,3 +150,131 @@ steps are back to a dated gap in the registry.
 
 Remaining gaps: access-harden, edge-route and oidc-config (each an operator decision), and
 cloud-init and service-deploy (not re-reviewed).
+
+## Operator decisions and re-review — 2026-10-04
+
+Author: Joseph A. Wisneski IV — 2026-10-04
+
+The operator decided three things on 2026-10-04. Line numbers are on this change, based on
+`dev` at 21891372.
+
+1. **edge-route is split.** Its third criterion, "the Cloudflare plan is zero-diff", is now its own
+   step, **edge-dns** (order 16, right after edge-route). The executor is Apply Cloudflare Tofu,
+   the owner is service-agent, the undo is `none`, the policy is `required`, and the evidence is
+   `plan_changes`. Steps 16 to 22 moved down to 17 to 23. OPA `data.json` has the matching
+   `workflow_steps.edge-dns` entry and gives service-agent `Apply Cloudflare Tofu` in
+   `allowed_templates`. Until the step is reviewed, OPA allows only the dev-bound variant.
+2. **cloud-init is re-reviewed** against the verdict play that #419 added to provision-vm.yml.
+3. **Stamp every passing step.** Not done: the hazard is below.
+
+| Step | Playbook | Result emitted | Re-run | Group / failure handling | Guard | Verdict |
+|------|----------|----------------|--------|--------------------------|-------|---------|
+| edge-route | manage-caddy-sites.yml | :75 (preflight refusal), :331 | unchanged from 2026-10-03 (restarts only on a changed or retired block) | the populated-group preflight (:63-87) and per-host verdicts folded into the run_once result (:318-339) | test_service_executor_step_results.py, test_edge_route_group_preflight.py | **pass**. Both remaining criteria are proven: `resolves` (:306) and an HTTP answer below 500 (`route_status`) |
+| edge-dns | apply-cloudflare-tofu.yml | :259, and :150 as a `skip` when a dry run stops on a stale backend | a plan is read-only. An apply is followed by a fresh plan (:223-239), so it passes only if that plan shows no changes, and an already-converged zone applies nothing | localhost only. Both plans run `-detailed-exitcode` (:192, :227): 0 passes, 2 is a recorded fail with the parsed change count, and 1 fails the task (:201, :236). A tofu error therefore leaves no result, and the collector records the failure from the output tail, the same limit as the other executors. Only the credential tasks use `no_log` | test_edge_dns_step_result.py | **pass** |
+| cloud-init | provision-vm.yml | :878 in the verdict play (:862), with undo `Destroy VM` | read-only: `cloud-init status --wait`, `changed_when: false` (:751-761) | the login (:739-744) and the cloud-init wait `ignore_errors`/`ignore_unreachable` and are classified (:813-823), so the verdict play still records a result after a failed login. A dry run or a VM that never reached post-boot is a `skip`, never a pass (:874-875). Address = the declared `vm_ip` (:96, :658); user = the `ciuser` that cloud-init was given (:465, :659) | test_vm_lifecycle_step_results.py (:400-421) | **pass** |
+
+Limit on cloud-init: the login uses the orchestrator's SSH credential, which is kept in
+Semaphore's key store. The repo does not record that this key is the one cloud-init
+authorized (:857-861), so "bootstrap identity" is proven as the user and the connection, not
+as a matching key fingerprint. The failure message names what to compare.
+
+The edge-dns plan-only failure is recorded, but the run does not fail on it, because a
+plan-only run is a preview. The step result carries the verdict.
+
+**Not stamped: the hazard.** A stamp sets `workflow_steps.<id>.reviewed`, and OPA then lets the
+**base** template run (agent_actions.rego:128-143). Base templates are bound to the
+`agent-cloud` repository record, which is `main` (repositories.yml:33-36). Locally they are
+bound the same way: setup-templates.yml:42-51 binds only templates-local.yml entries to the
+working tree. On `origin/main` (11792d26), checked 2026-10-04:
+
+- No step executor includes `tasks/emit-step-result.yml`.
+- These playbooks are absent: lookup-service-inventory.yml, validate-address-free.yml,
+  backup-service-ssh-key.yml, verify-service-health.yml, verify-service-persistence.yml and
+  backup-credentials-to-site-config.yml.
+- Every other executor playbook (provision-template, provision-vm, distribute-ssh-keys,
+  resize-vm, check-secrets, apply-firewall, manage-caddy-sites, apply-cloudflare-tofu) differs
+  from `dev`.
+
+A stamped step would therefore run code that was not reviewed and records no step result.
+For the six absent playbooks, the run would fail outright. This applies to every candidate,
+so the stamp list is empty. Each passing `review_gap` now says the stamp waits on the
+playbook reaching `main`. Once `dev` is promoted to `main`, the stamps can land with no
+other change (`main` has no `workflow_steps` in `data.json` yet).
+
+Remaining gaps: access-harden and oidc-config (other work in progress), and service-deploy.
+
+### edge-dns owner — 2026-10-04
+
+The operator decided the same day that `service-agent` must not launch Apply Cloudflare Tofu.
+A new role-scoped OPA identity, `network-agent`, now owns edge-dns, and it is the only role
+with that template on its `allowed_templates`. The review rules are unchanged: OPA allows only
+the `(Dev)` variant until the step is stamped. The role has no principal bound to it. Agent
+identity is the `agent` field of each OPA request, and no other mapping exists in this repo.
+`netclaw` stays frozen (plan 15 D7).
+
+### Correction — 2026-10-04 (review of PR #436)
+
+The edge-dns pass recorded above had two defects. The sections above stay as they were written.
+
+- **Credentials in visible tasks.** Every tofu command (init, plan, apply, and the new plan
+  after apply) ran visibly with the R2 keys and the Cloudflare token in its environment. The
+  test even required that no `no_log` be set. This was true of the existing tasks as well as
+  the new one. Now every tofu command is its own `no_log` task with `failed_when: false`, and
+  its environment comes from a `no_log` fact. A visible report shows only exit codes and
+  change counts, and a visible assert fails the run on a tofu error. The plan text is no
+  longer printed: it carries the declared origin address. Reviewing the diff before an apply
+  now needs a run with access to that output. That is a trade-off for the operator.
+- **A dry run was not read-only.** `--check` still ran `tofu init -reconfigure`, which writes
+  `.terraform/` into the tofu root. In check mode, tofu now gets a throwaway `TF_DATA_DIR` (a
+  temporary directory that an `always` step removes). A fake-tofu test proves that init and
+  plan used that directory, that it is gone afterwards, and that the tofu root is untouched.
+  Limit: the committed `.terraform.lock.hcl` is still read from the root. Init rewrites it
+  only when the providers or hashes differ from it, which this test does not exercise.
+- Guards are in `test_edge_dns_step_result.py`. Three mutations each turned a test red, and
+  the file was restored byte-exact each time:
+  - `no_log` dropped from one plan;
+  - `TF_DATA_DIR` not set;
+  - the cleanup pointed at the wrong path.
+
+Verdict: edge-dns still **passes** D10, with these fixes.
+
+### Correction to the correction — 2026-10-04
+
+The section above stays as it was written. One of its two fixes has been withdrawn.
+
+- **The throwaway `TF_DATA_DIR` is withdrawn.** A `tempfile` create and a `file` removal forced
+  to run in check mode, in a play that has `vars:`, are violations under the repository's
+  check-mode contract (`platform/tests/test_check_mode_contract.py`, the runner-scratch class
+  from plan/architecture/08). The `tempfile` users allowlist in `test_materialise_ssh_key.py`
+  pins its population too. The full suite caught both after the previous commit. Widening that
+  contract is not this change's call.
+- **edge-dns is back to a gap.** A dry run still runs `tofu init`, and init writes `.terraform/`
+  into the runner's checkout of the tofu root. The registry `review_gap` says so. The
+  `no_log` fix stands. The plan after apply now carries `check_mode: false` like the other
+  reads, but it does not run in a dry run, because its apply never ran.
+
+Verdict: edge-dns **gap** (the dry run is not read-only). edge-route and cloud-init still pass.
+
+### Plan visibility — 2026-10-04
+
+Operator decision: the visible output shows each changed resource's address and action, and
+nothing else. The plan and the post-apply plan are each saved inside tofu's own `.terraform/`
+(`-out`). `tofu show -json` reads each saved plan inside the `no_log` boundary. The visible
+report takes only `resource_changes[].address` and `.change.actions`, skipping `["no-op"]`,
+as `plan_actions` / `verify_actions` entries of the form `"<address>: <action>"`. The schema
+is the OpenTofu JSON output format (https://opentofu.org/docs/internals/json-format/). No
+before or after values reach the report, so neither does the origin address.
+
+The saved plan files are removed in `always`. The removal is not forced under `--check`, as
+the check-mode contract requires, so a dry run leaves them inside the `.terraform/` that the
+edge-dns gap already records.
+
+Guards are in `test_edge_dns_step_result.py`:
+- a fixture plan JSON carrying values shows address and action only;
+- the visible report has an exact set of keys.
+
+Two mutations each turned the tests red, and the file was restored byte-exact:
+- `change.after` appended to the entry;
+- the no-op filter dropped.
+
+The edge-dns verdict is unchanged: gap.

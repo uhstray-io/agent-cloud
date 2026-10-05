@@ -37,7 +37,8 @@ the orchestrator, check mode, the Semaphore environment model and local NetBox.
   variable for one release.
 - **An Ansible standards reference** lands in `plan/architecture/` from the official
   documentation, and the automation documents are brought into line with it.
-- **Four OPA identities** (`infra-agent`, `security-agent`, `o11y-agent`, `service-agent`)
+- **Four OPA identities** (`infra-agent`, `security-agent`, `o11y-agent`, `service-agent`;
+  a fifth, `network-agent`, was added 2026-10-04 to own the edge-dns step)
   with per-role template allowlists and content rules over proposals. `netclaw` and
   `nemoclaw` are frozen as agent runtimes. A firewall proposal can never remove the
   orchestrator's SSH source and can never open SSH wider than the declared sources.

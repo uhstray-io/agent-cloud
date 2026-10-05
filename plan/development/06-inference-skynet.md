@@ -17,6 +17,14 @@
 > below are the source plans verbatim; where they describe NemoClaw/OpenClaw as the live
 > runtime, read that as the pre-skynet state being migrated away from.
 
+> **Inference edge gateway pointer, 2026-10-04:** agentgateway now fronts the DGX Spark
+> vLLM API as the inference edge (per-client keys, per-key token budgets, request
+> telemetry), alongside skynet, not instead of it. Mentions of "no separate gateway" below
+> predate that decision. Record: `plan/architecture/05-platform-infra.md`,
+> "Inference gateway: agentgateway alongside skynet" (still **Proposed**, awaiting operator
+> confirmation). Service: `platform/services/agentgateway/`. Change:
+> `plan/development/openspec/changes/inference-gateway-agentgateway`.
+
 
 <!-- ======================= source: SKYNET-REPLACEMENT-PLAN.md ======================= -->
 
