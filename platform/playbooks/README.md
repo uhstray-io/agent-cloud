@@ -102,7 +102,8 @@ internal names the same way.
 Every workflow executor and snapshot playbook goes further: its FIRST entry imports
 `refuse-internal-extra-vars.yml`, a localhost play that refuses the run when any
 underscore-prefixed name is set from outside (it reads `hostvars`, which holds extra vars but
-not play or task vars, so it needs no name list and writes nothing). That covers the names
+not play or task vars, so it needs no name list and writes nothing; because `hostvars` also
+holds inventory vars, the `_` prefix is RESERVED and no inventory may define one). That covers the names
 computed from play and task `vars`, which the set_fact probe above cannot guard without
 shadowing them, and the verdicts the step result is built from (`-e '_fw_group_errors=[]'`
 would otherwise record a failed Apply Firewall as passed).

@@ -184,3 +184,31 @@ def test_a_forged_internal_name_is_refused_by_the_real_executor(path, forge, tmp
     assert f"Refusing to run: {name} set from outside the playbook" in proc.stdout, proc.stdout + proc.stderr
     assert proc.stdout.count("PLAY [") == 1, proc.stdout
     assert "CUSTOM STATS" not in proc.stdout or "step_result" not in proc.stdout, proc.stdout
+
+
+# The `_` prefix is RESERVED: hostvars also holds inventory vars, so an inventory that defined an
+# underscore variable would be refused like a forged extra var. The example inventories define
+# none (resolved by ansible-inventory, group vars merged), and a collision names the rule.
+@needs_ansible
+@pytest.mark.parametrize("path", sorted((REPO / "platform/inventory").glob("*.y*ml*")), ids=lambda p: p.name)
+def test_no_example_inventory_defines_a_reserved_name(path, tmp_path):
+    copy = tmp_path / "inventory.yml"  # the yaml plugin reads a .yml name, not .example
+    copy.write_text(path.read_text())
+    out = subprocess.run(["ansible-inventory", "-i", str(copy), "--list"], cwd=REPO, text=True,
+                         capture_output=True, check=True, stdin=subprocess.DEVNULL).stdout
+    hostvars = json.loads(out)["_meta"]["hostvars"]
+    assert hostvars, path.name
+    assert sorted({f"{h}: {k}" for h, v in hostvars.items() for k in v if k.startswith("_")}) == []
+
+
+@needs_ansible
+def test_an_inventory_var_with_the_reserved_prefix_is_refused_with_the_rule(tmp_path):
+    inv = tmp_path / "inv.yml"
+    inv.write_text(yaml.safe_dump({"all": {"hosts": {"localhost": {"ansible_connection": "local"}},
+                                           "vars": {"_collides": 1}}}))
+    play = tmp_path / "play.yml"
+    play.write_text(json.dumps([{"ansible.builtin.import_playbook": str(PLAYBOOKS / GUARD)}]))
+    proc = _run(play, tmp_path, inventory=str(inv))
+    assert proc.returncode != 0, proc.stdout
+    assert "Refusing to run: _collides set from outside the playbook" in proc.stdout
+    assert "RESERVED for playbook" in proc.stdout and "Rename the colliding variable" in proc.stdout

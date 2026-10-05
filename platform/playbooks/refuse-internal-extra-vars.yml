@@ -21,8 +21,13 @@
 # so its probe value would shadow them for the rest of the run.
 #
 # One rule instead of a per-playbook list: it also covers the names the run's task files
-# and imported playbooks define, and a name added later needs no list edit. No inventory
-# defines an underscore name; one that did would be refused too.
+# and imported playbooks define, and a name added later needs no list edit.
+#
+# RESERVED PREFIX. hostvars also holds inventory vars, so the leading underscore is reserved
+# for playbook internals: no inventory (site-config included) may define an underscore-
+# prefixed variable, and one that did is refused exactly like a forged extra var, because
+# the two cannot be told apart. platform/tests/test_executor_internal_overrides.py holds the
+# example inventories to it; site-config defined none when this landed.
 #
 # Usage — the FIRST entry of a playbook, before any play or import:
 #
@@ -46,7 +51,9 @@
         that: hostvars[inventory_hostname].keys() | select('match', '_') | list | length == 0
         fail_msg: >-
           Refusing to run: {{ hostvars[inventory_hostname].keys() | select('match', '_') | sort | join(', ') }}
-          set from outside the playbook. Underscore-prefixed names are internal: an extra var
-          outranks the value the playbook computes, which would let a forged value decide a
-          verdict or the step result it records.
+          set from outside the playbook. Underscore-prefixed names are RESERVED for playbook
+          internals: an extra var outranks the value the playbook computes, which would let a
+          forged value decide a verdict or the step result it records, and an inventory var of
+          the same name is refused alike, since the two cannot be told apart. Rename the
+          colliding variable.
         quiet: true
