@@ -30,6 +30,23 @@
 # Optional: step_result_service (default: service_name), step_result_undo (default: none),
 # workflow_id (extra var set by the orchestrator; empty for a human-launched run).
 # Tag the include `verify` in a playbook that has a verify-only run.
+#
+# Every input above (and the record built below) is refused when it arrives as an extra
+# var: an extra var outranks the include vars the executor passes, so `-e
+# step_result_status=pass` would otherwise forge the result of a failed step. The check is
+# a probe include, emit-step-result-refuse-overrides.yml; workflow_id is not probed because
+# the orchestrator sets it as an extra var by design.
+
+- name: "Step result: refuse inputs set as extra vars"
+  ansible.builtin.include_tasks: emit-step-result-refuse-overrides.yml
+  vars:
+    step_result_step: __extra_var_probe__
+    step_result_status: __extra_var_probe__
+    step_result_evidence: __extra_var_probe__
+    step_result_error: __extra_var_probe__
+    step_result_service: __extra_var_probe__
+    step_result_undo: __extra_var_probe__
+    _step_result_record: __extra_var_probe__
 
 - name: "Step result: validate the inputs"
   ansible.builtin.assert:
