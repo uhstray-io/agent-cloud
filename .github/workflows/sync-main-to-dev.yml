@@ -12,6 +12,15 @@ name: Sync main to dev
 # so its content is unchanged and only the merge-base advances; non-conflicting
 # `main`-only changes — e.g. dependabot bumps landed directly on `main` — still
 # propagate into `dev`). See CLAUDE.md "Why the auto-sync".
+#
+# LIMITATION: this job cannot carry a `main`-only change to a file under
+# `.github/workflows/`. GITHUB_TOKEN has no `workflows` permission, so GitHub rejects the
+# push ("refusing to allow a GitHub App to create or update workflow ... without
+# `workflows` permission") and the run fails red on `main`'s Actions tab, where nobody is
+# watching. That is how the setup-python/setup-go v7 bumps sat on `main` alone from
+# 2026-08-28 (docs/MISTAKES.md 10.23). The promotion guard
+# (`enforce-promotion-source.yml`) refuses a `dev` -> `main` PR until `main` is an ancestor
+# of `dev`; merge `main` into `dev` through a feature PR to clear it.
 
 on:
   push:

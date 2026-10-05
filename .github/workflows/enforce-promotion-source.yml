@@ -5,7 +5,11 @@ name: Promotion Source Guard
 # restrict a PR's HEAD branch, so this job is the enforcing half — it is wired in as a
 # required status check on the `protect-main` ruleset (.github/rulesets/protect-main.json).
 #
-# Runs only for PRs whose base is `main`. Fails unless the head branch is exactly `dev`.
+# Runs only for PRs whose base is `main`. Fails unless the head branch is exactly `dev`,
+# and unless that head already contains every commit on `main`. The second check exists
+# because `sync-main-to-dev.yml` cannot carry a `main`-only change to a workflow file into
+# `dev` (GITHUB_TOKEN has no `workflows` permission), so a promotion from a `dev` that
+# lacks it would silently revert it on `main` (docs/MISTAKES.md 10.23).
 # Emergency hotfixes bypass via the ruleset's Admin break-glass actor (they can merge
 # despite this check), so this is a guardrail, not an absolute lock.
 
@@ -30,3 +34,28 @@ jobs:
             exit 1
           fi
           echo "OK: promotion source is 'dev' -> 'main'."
+
+      - name: Check out the PR head (full history)
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Require dev to contain every commit on main
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          # Fetch main explicitly rather than trust what the checkout left behind.
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          rc=0
+          git merge-base --is-ancestor origin/main "$HEAD_SHA" || rc=$?
+          if [ "$rc" -eq 1 ]; then
+            echo "::error title=main has commits dev lacks::Merging this PR would revert $(git rev-list --count "$HEAD_SHA"..origin/main) commit(s) that are on 'main' but not on 'dev'. Merge main into dev through a feature PR first (git merge --no-ff origin/main on a branch cut from dev). sync-main-to-dev cannot push changes to workflow files, so it never carries those across."
+            git log --oneline "$HEAD_SHA"..origin/main
+            exit 1
+          elif [ "$rc" -ne 0 ]; then
+            echo "::error title=Ancestry check failed::git merge-base exited ${rc} comparing origin/main with ${HEAD_SHA}."
+            exit "$rc"
+          fi
+          echo "OK: dev contains every commit on main."

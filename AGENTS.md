@@ -544,6 +544,16 @@ environment before operations; a checked-in deploy path is not proof it is runni
 
 **Why the auto-sync (`main` → `dev`).** Merge-commit promotions keep `dev`↔`main` ancestry intact, so promotions no longer diverge (this is what historically forced a manual back-merge: a *squashed* `dev` → `main` writes dev's content onto `main` as a new commit with no ancestry into `dev`, freezing the merge-base and conflicting the next promotion on files like `templates.yml`). The sync workflow still earns its keep: it carries `main`-only changes — e.g. dependabot bumps that land directly on `main` — back into `dev`, and is the safety net if a promotion ever lands as a squash (the sensitive-content case), which *would* reintroduce the divergence. On every push to `main` it merges `main` into `dev` favoring `dev` (`-X ours`, so dev's content is unchanged; non-conflicting `main`-only changes propagate) and pushes `dev`.
 
+**It cannot sync workflow files.** GitHub refuses a push from `GITHUB_TOKEN` that changes a
+file under `.github/workflows/` (the token has no `workflows` permission), so a `main`-only
+workflow change — a dependabot action bump, typically — never reaches `dev`, and the sync
+run fails on `main` where nobody sees it. It went unnoticed from 2026-08-28 until a
+promotion review caught the `dev` → `main` PR reverting the setup-python and setup-go v7
+bumps (`docs/MISTAKES.md` 10.23). The `Promotion source (dev -> main)` check therefore also
+requires `main` to be an ancestor of the PR head and refuses otherwise; clear it by merging
+`main` into `dev` through a feature PR (`git merge --no-ff origin/main` on a branch cut from
+`dev`).
+
 **Enforcement.** On `main` this is no longer convention alone — it is mechanically enforced by the `protect-main` repository ruleset (config-as-code in `.github/rulesets/`): no direct or force pushes, no deletion, PR required, review conversations resolved, and the `Static Analysis` / `Security Scan` / `Unit Tests` checks must pass; merges into `main` allow **merge commits (the default) or squash**, and linear history is NOT required — so `dev` → `main` promotions are merge commits (use squash only to scrub accidental sensitive content). (`dev` itself is not push-protected — the sync workflow pushes to it.) (The checked-in ruleset declares `active`; this documentation review did not query remote enforcement.) The sole bypass actor is the Repository admin role (break-glass) — AI agents (NemoClaw, Claude Code) and automation PATs have no bypass path. See `.github/rulesets/README.md` and `plan/development/03-guardrails-governance.md`.
 
 ### Test check on push (`.githooks/pre-push`)
