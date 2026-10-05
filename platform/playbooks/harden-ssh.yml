@@ -59,7 +59,8 @@
         # controller play refuses an override of those.
         - name: "Refuse extra-var overrides of this play's internal names"
           ansible.builtin.include_tasks: tasks/refuse-var-overrides.yml
-          loop: [_mgmt_priv_key, _proof_key, _proof_pin, _key_preproof, _sshd_overrides, _verify_key, _verify_pin, _key_test, _pw_probe, _sshd_eff, _pw_problems]
+          loop: [_mgmt_priv_key, _proof_key, _proof_pin, _key_preproof, _sshd_overrides, _verify_key, _verify_pin, _key_test, _pw_probe, _sshd_eff, _pw_problems,
+                 _sudoers_change, _sshd_main_change, _sshd_dropin_change]
           loop_control:
             loop_var: _rvo_name
 
@@ -163,6 +164,7 @@
             dest: "/etc/sudoers.d/{{ ansible_user }}"
             mode: "0440"
             validate: "visudo -cf %s"
+          register: _sudoers_change
 
         - name: "Harden /etc/ssh/sshd_config"
           ansible.builtin.lineinfile:
@@ -173,6 +175,7 @@
           loop: "{{ _sshd_settings }}"
           loop_control:
             label: "{{ item.line }}"
+          register: _sshd_main_change
           notify: Restart sshd
 
         - name: "Find all sshd_config.d override files"
@@ -190,6 +193,7 @@
           loop_control:
             label: "{{ item.0.path | basename }}: {{ item.1.line }}"
           when: _sshd_overrides.files | length > 0
+          register: _sshd_dropin_change
           notify: Restart sshd
 
         - name: "Flush handlers to restart sshd now"
@@ -409,7 +413,8 @@
     # refuse it here (this play's own facts are probed; -e applies to every host alike).
     - name: "Refuse extra-var overrides of this play's internal names"
       ansible.builtin.include_tasks: tasks/refuse-var-overrides.yml
-      loop: [_harden_verdict, _harden_error, _pw_problems, _key_preproof, _group_errors]
+      loop: [_harden_verdict, _harden_error, _pw_problems, _key_preproof, _group_errors,
+             _sudoers_change, _sshd_main_change, _sshd_dropin_change, _would_change]
       loop_control:
         loop_var: _rvo_name
 
@@ -431,12 +436,48 @@
           {%- endfor -%}
           {{ out }}
 
+    # Dry run only: what a real run would still change, read from evidence the host play
+    # already gathered (the live password probes, and the simulated sudoers/sshd edits'
+    # `changed`). Not an error: a dry run must not fail on what it would change
+    # (plan/architecture/08, check mode). But it withdrew nothing, so it must not record
+    # `pass` either unless the host ALREADY meets every criterion; it records `skip`, the
+    # convention apply-firewall's fw-harden record uses. A failed key-only pre-proof is a
+    # rescued error above and stays `fail` in both modes. Names and settings only.
+    - name: "List what a real run would change"
+      ansible.builtin.set_fact:
+        _would_change: >-
+          {%- set out = [] -%}
+          {%- if ansible_check_mode -%}
+          {%- for h in _targets -%}
+            {%- set hv = hostvars[h] -%}
+            {%- if (hv._harden_verdict | default(false)) and hv._harden_error is not defined -%}
+              {%- if (hv._pw_problems | default(['unproven']) | length) > 0 -%}
+                {%- if out.append(h ~ ': would withdraw password auth (' ~ (hv._pw_problems | default(['unproven']) | join('; ')) ~ ')') -%}{%- endif -%}{%- endif -%}
+              {%- if hv._sudoers_change.changed | default(false) -%}
+                {%- if out.append(h ~ ': would write the NOPASSWD sudoers entry') -%}{%- endif -%}{%- endif -%}
+              {%- set lines = (hv._sshd_main_change.results | default([]) | selectattr('changed') | map(attribute='item.line') | list)
+                              + (hv._sshd_dropin_change.results | default([]) | selectattr('changed')
+                                 | map(attribute='item') | map('last') | map(attribute='line') | list) -%}
+              {%- if lines -%}
+                {%- if out.append(h ~ ': would set sshd ' ~ (lines | unique | join(', '))) -%}{%- endif -%}{%- endif -%}
+            {%- endif -%}
+          {%- endfor -%}
+          {%- endif -%}
+          {{ out }}
+
+    - name: "Report what a real run would change"
+      ansible.builtin.debug:
+        msg: "{{ _would_change }}"
+      when: _would_change | length > 0
+
     - name: "Record the step result"
       ansible.builtin.include_tasks: tasks/emit-step-result.yml
       vars:
         step_result_service: "{{ hostvars[_targets[0]].service_name | default(target_service) if _targets else target_service }}"
         step_result_step: access-harden
-        step_result_status: "{{ 'pass' if (_group_errors | length == 0) and (_targets | length > 0) else 'fail' }}"
+        step_result_status: >-
+          {{ 'fail' if (_group_errors | length > 0) or (_targets | length == 0)
+             else ('skip' if _would_change | length > 0 else 'pass') }}
         step_result_evidence:
           key_only_proven: >-
             {{ _verdicts
