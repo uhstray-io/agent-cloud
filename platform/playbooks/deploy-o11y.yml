@@ -65,6 +65,8 @@
   become: false
   vars_files:
     - vars/secret-declarations/o11y.yml
+    # _o11y_forbidden_metric_label_names_regex, shared by Alloy and every scrape job
+    - vars/o11y-metric-labels.yml
   vars:
     _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
     _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
@@ -73,11 +75,6 @@
       {{ (o11y_prom_retention | default('15d') | string) != '15d' or
          (o11y_loki_retention | default('7d') | string) != '7d' or
          (o11y_tempo_retention | default('168h') | string) != '168h' }}
-    # Shared by Alloy and every Prometheus scrape job. Drop known sensitive or
-    # request-specific label names while retaining declared bounded dimensions
-    # such as service, identity, model, status, device, and GPU labels.
-    _o11y_forbidden_metric_label_names_regex: >-
-      (?i).*(^|_)(request_id|requestid|user_id|userid|client_id|clientid|session_id|sessionid|trace_id|traceid|span_id|spanid|email|api_key|apikey|access_token|refresh_token|token_value|token_id|password|secret|authorization|cookie|prompt|prompt_text|raw_path|path|http_target|address|remote_addr|remote_address|source_ip|client_ip|timestamp|url|uri|query|query_text)(_|$).*
     _bao_url: "{{ openbao_addr | default('') }}"
     _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"

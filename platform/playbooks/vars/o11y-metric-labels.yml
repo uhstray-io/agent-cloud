@@ -1,0 +1,11 @@
+---
+# o11y-metric-labels.yml — the metric label names Alloy and every o11y Prometheus scrape job
+# drop: known sensitive or request-specific names. Declared bounded dimensions such as service,
+# identity, model, status, device and GPU labels are kept.
+#
+# The one definition. Loaded with vars_files by deploy-o11y.yml (Alloy and the scrape jobs it
+# renders) and instrument-host-o11y.yml (the host scrape jobs); platform/tests/
+# test_instrument_host_o11y.py refuses a second definition.
+
+_o11y_forbidden_metric_label_names_regex: >-
+  (?i).*(^|_)(request_id|requestid|user_id|userid|client_id|clientid|session_id|sessionid|trace_id|traceid|span_id|spanid|email|api_key|apikey|access_token|refresh_token|token_value|token_id|password|secret|authorization|cookie|prompt|prompt_text|raw_path|path|http_target|address|remote_addr|remote_address|source_ip|client_ip|timestamp|url|uri|query|query_text)(_|$).*
