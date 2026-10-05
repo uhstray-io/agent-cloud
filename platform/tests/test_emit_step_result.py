@@ -13,6 +13,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
+import playbook_yaml
 import pytest
 import yaml
 
@@ -201,7 +202,8 @@ def _failing_executor(tmp_path: Path, hosts: str = "localhost", **include_kw) ->
 
 def _refused(proc, name: str) -> None:
     assert proc.returncode != 0, proc.stdout
-    assert f"Refusing to record a step result: {name} set as an extra var" in proc.stdout, proc.stdout
+    assert f"Refusing to record a step result: {name} is defined outside the executor" in proc.stdout, proc.stdout
+    assert "reserved for emit-step-result's include vars" in proc.stdout, proc.stdout
     assert step_results.results_in(proc.stdout.splitlines()) == []
 
 
@@ -320,3 +322,44 @@ def test_every_caller_passes_only_guarded_inputs():
                     unguarded = set(task.get("vars", {})) - set(GUARDED)
                     assert not unguarded, f"{path.name}: unguarded emit input(s) {unguarded}"
     assert callers >= 17, callers
+
+
+# The names are RESERVED: the refusal reads hostvars, which also holds inventory vars, facts
+# and registered vars, so an honest definition of one there would be refused like a forgery.
+def _keys(node):
+    if isinstance(node, dict):
+        for k, v in node.items():
+            yield k
+            yield from _keys(v)
+    elif isinstance(node, list):
+        for v in node:
+            yield from _keys(v)
+
+
+def test_no_playbook_or_task_sets_or_registers_a_reserved_name():
+    offenders = []
+    for path in playbook_yaml.files():
+        for task in playbook_yaml.tasks(playbook_yaml.load(path)):
+            names = set(task.get("ansible.builtin.set_fact") or task.get("set_fact") or {})
+            names |= {task.get("register")}
+            offenders += [f"{path.relative_to(REPO)}: {n}" for n in names & set(GUARDED)]
+    assert offenders == []
+
+
+def test_no_example_inventory_defines_a_reserved_name():
+    found = []
+    for path in sorted((REPO / "platform/inventory").glob("*")):
+        if path.suffix in (".yml", ".yaml", ".example"):
+            found += [f"{path.name}: {k}" for k in _keys(yaml.safe_load(path.read_text())) if k in GUARDED]
+    assert found == []
+
+
+def test_an_inventory_var_of_a_reserved_name_is_refused_with_the_rule(tmp_path):
+    # A site-config collision is refused too, and the message says why.
+    inv = tmp_path / "inv.yml"
+    inv.write_text(yaml.safe_dump({"all": {"hosts": {"localhost": {"ansible_connection": "local",
+                                                                   "step_result_undo": "none"}}}}))
+    play = _failing_executor(tmp_path)
+    proc = _run(play, "-i", str(inv))
+    _refused(proc, "step_result_undo")
+    assert "Rename the colliding variable" in proc.stdout

@@ -37,9 +37,18 @@
 # https://docs.ansible.com/ansible/latest/playbook_guide/playbooks_variables.html#understanding-variable-precedence),
 # so `-e step_result_status=pass` would otherwise forge the result of a failed step.
 #
+# RESERVED NAMES. step_result_step, step_result_status, step_result_evidence,
+# step_result_error, step_result_service, step_result_undo and _step_result_record belong to
+# this task: a caller passes them ONLY as include vars. Nothing may define them as an extra
+# var, an inventory var (site-config included), a set_fact or a registered var; the task
+# refuses any of those, honest or not, because it cannot tell them apart.
+# test_emit_step_result.py holds the repository to it (no playbook or task sets or registers
+# them, no example inventory defines them).
+#
 # The check asks whether the NAME is in hostvars, never what it renders to. hostvars holds
-# extra vars, facts and registered vars but not include, block or task vars (pinned by
-# platform/tests/test_emit_step_result.py), and no caller sets these names as facts. An
+# extra vars, inventory vars, facts and registered vars but not include, block or task vars
+# (pinned by platform/tests/test_emit_step_result.py), so with the names reserved, a name
+# there came from outside the executor. An
 # extra var is a Jinja template rendered afresh in every task, so a check that compared its
 # VALUE could be shown one value and the record another (`{{ 'probe' if <check context> else
 # 'pass' }}`, PR #458 review); the presence of the key does not depend on the rendering.
@@ -55,9 +64,11 @@
     fail_msg: >-
       Refusing to record a step result: {{ ['step_result_step', 'step_result_status',
       'step_result_evidence', 'step_result_error', 'step_result_service', 'step_result_undo',
-      '_step_result_record'] | select('in', hostvars[inventory_hostname]) | join(', ') }} set
-      as an extra var, which outranks the value the executor computes and would forge the
-      recorded result.
+      '_step_result_record'] | select('in', hostvars[inventory_hostname]) | join(', ') }} is
+      defined outside the executor. These names are reserved for emit-step-result's include
+      vars: an extra var would outrank the value the executor computes and forge the result,
+      and an inventory var, set_fact or register of the same name is refused alike, since the
+      task cannot tell them apart. Rename the colliding variable.
     quiet: true
   run_once: true
 
