@@ -255,6 +255,12 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
         reported no change after the forced recreate 2896); edge-route still passes. edge-dns
         stays a gap: a dry run's `tofu init` writes `.terraform/`. No stamp, for the same
         `main` hazard.
+      - 2026-10-05: edge-dns dry-run gap closed in the executor (`d10-review.md`, "edge-dns
+        dry-run gap closed"). Under `--check`, init, plan and show run as one command in its
+        own `mktemp -d` root with `TF_DATA_DIR` pointed into it and `-lockfile=readonly`, the
+        shape the check-mode contract already accepts; a real run is unchanged. Proven with a
+        fake tofu (tofu root byte-identical, throwaway root removed); a dry run against real
+        tofu and R2 is still to do. No stamp, for the same `main` hazard.
 - [x] 7.2 `provision-vm.yml` sets `onboot`; restart-policy check beside `enable-linger`.
       2026-09-22: onboot with per-host opt-out; `verify-service-persistence.yml` (step
       systemd-enablement) passes on local tududi, normal and check mode (tasks 977, 978)
