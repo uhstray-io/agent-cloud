@@ -406,6 +406,12 @@ templates:
         required: false
         default_value: "false"
 
+  # Read-only: compares declared vs running blueprint mounts, the host and worker
+  # blueprint listings, and the API's blueprint instances. Names/statuses only.
+  - name: Inspect Authentik Blueprints (Dev)
+    playbook: platform/playbooks/inspect-authentik-blueprints.yml
+    repository: agent-cloud dev
+
   - name: Print User Credentials
     playbook: platform/playbooks/print-platform-user-credentials.yml
     # GATED, and it PRINTS a live credential into this task's output. Exists so an
