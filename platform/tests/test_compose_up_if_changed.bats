@@ -136,9 +136,12 @@ a_setup() {
   [ "$status" -eq 0 ]; changed true
   [ "$(recreates)" -eq 2 ]
   printf '%s\n' "${lines[@]}" | grep -q 'FORCE_RECREATE=true'
-  FORCE=false deploy
-  [ "$status" -eq 0 ]; changed false
-  [ "$(recreates)" -eq 2 ]
+  local v
+  for v in false yes 1 True; do
+    FORCE=$v deploy
+    [ "$status" -eq 0 ]; changed false
+    [ "$(recreates)" -eq 2 ]
+  done
 }
 
 @test "deploy playbooks pass deploy_force_recreate to deploy.sh, default off" {
@@ -148,7 +151,14 @@ a_setup() {
 import sys, yaml
 plays = yaml.safe_load(open(sys.argv[1]))
 t = [t for p in plays for t in p.get("tasks", []) if t.get("name") == "Run deploy.sh (container lifecycle)"][0]
-assert t["environment"]["FORCE_RECREATE"] == "{{ 'true' if (deploy_force_recreate | default(false) | bool) else '' }}"
+import jinja2
+expr = t["environment"]["FORCE_RECREATE"]
+render = lambda **kw: jinja2.Environment().from_string(expr).render(**kw)
+assert render() == "", "default must not force"
+for v in (True, "true", "True", "TRUE"):
+    assert render(deploy_force_recreate=v) == "true", v
+for v in ("yes", "1", 1, "on", "y", False, "false", ""):
+    assert render(deploy_force_recreate=v) == "", v
 PY2
   done
 }
