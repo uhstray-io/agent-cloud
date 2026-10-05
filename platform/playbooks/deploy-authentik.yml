@@ -317,6 +317,9 @@
         # Empty on the Semaphore path; detect_runtime derives ([ -z ]). NOT
         # default(omit) — omit leaks its placeholder into environment (rc 127).
         COMPOSE_CMD: "{{ local_compose_cmd | default('') }}"
+        # Operator lever (survey `deploy_force_recreate`, only the literal true): recreate even when every input
+        # and image matches — clears a stale bind mount a running container still holds.
+        FORCE_RECREATE: "{{ 'true' if ((deploy_force_recreate | default('false') | string | lower) == 'true') else '' }}"
       register: _deploy
       # deploy.sh recreates only when its inputs or images changed (common.sh
       # compose_up_if_changed) and says which on its own line.

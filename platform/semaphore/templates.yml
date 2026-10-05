@@ -58,6 +58,12 @@ templates:
         description: "Exact dev commit required on controller and receiver"
         type: string
         required: true
+      - name: deploy_force_recreate
+        title: "Force container recreate"
+        description: "true to recreate every container even when inputs and images match (clears a stale bind mount)"
+        type: string
+        required: false
+        default_value: "false"
 
   - name: Verify o11y Service
     playbook: platform/playbooks/verify-o11y-service.yml
@@ -390,6 +396,12 @@ templates:
         type: string
         required: false
         default_value: "main"
+      - name: deploy_force_recreate
+        title: "Force container recreate"
+        description: "true to recreate every container even when inputs and images match (clears a stale bind mount)"
+        type: string
+        required: false
+        default_value: "false"
 
   - name: Audit Authentik Retirements
     playbook: platform/playbooks/audit-authentik-retirements.yml
