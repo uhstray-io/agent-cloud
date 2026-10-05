@@ -194,14 +194,14 @@ steps:
     order: 12
     diagram_label: Instrument OS/Infra Observability
     owner: o11y-agent
-    executor: null
-    planned_executor: Instrument Host Observability
+    executor: Instrument Host Observability
     undo: none
     policy: advisory
     criteria:
       - host series for the service host are present in Prometheus within one scrape interval
-    evidence_keys: [series_present]
+    evidence_keys: [exporter_running, series_present]
     reviewed: null
+    review_gap: "never run: the (Dev) check-mode run and an apply against one enrolled host are pending; production enrollment also waits on the estate observability baseline (2026-10-05)"
 
   - id: service-deploy
     order: 13
