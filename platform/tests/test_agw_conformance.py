@@ -809,8 +809,7 @@ def test_the_conformance_model_is_the_same_under_every_hash_seed(inputs, expecte
 
 def test_listener_tls_options_go_to_the_gateway_only(tmp_path, stubs):
     gw, direct = stubs(key=GW_KEY), stubs(key=UP_KEY)
-    tls = {"AGW_CONF_GATEWAY_RESOLVE": "gateway.dc1.example.internal:4000:127.0.0.1",
-           "AGW_CONF_GATEWAY_CERT": "/leaf/cert.pem", "AGW_CONF_GATEWAY_CERT_KEY": "/leaf/key.pem",
+    tls = {"AGW_CONF_GATEWAY_CERT": "/leaf/cert.pem", "AGW_CONF_GATEWAY_CERT_KEY": "/leaf/key.pem",
            "AGW_CONF_GATEWAY_CA": "/ca/bundle.crt"}
     r, _ = _run(tmp_path, gw, direct, env=tls, shim_exit=7)
     assert r.returncode == 0, r.stderr
@@ -819,11 +818,12 @@ def test_listener_tls_options_go_to_the_gateway_only(tmp_path, stubs):
     direct_calls = [c for c in calls if any(a.startswith(direct.url) for a in c)]
     assert len(gw_calls) == len(direct_calls) == len(CASES)
     for c in gw_calls:
-        for flag, value in (("--resolve", tls["AGW_CONF_GATEWAY_RESOLVE"]), ("--cert", "/leaf/cert.pem"),
-                            ("--key", "/leaf/key.pem"), ("--cacert", "/ca/bundle.crt")):
+        for flag, value in (("--cert", "/leaf/cert.pem"), ("--key", "/leaf/key.pem"), ("--cacert", "/ca/bundle.crt")):
             assert c[c.index(flag) + 1] == value
     for c in direct_calls:
-        assert not {"--resolve", "--cert", "--key", "--cacert"} & set(c)
+        assert not {"--cert", "--key", "--cacert"} & set(c)
+    # The name resolves through the host resolver, as for every other gateway probe (task 6.1a).
+    assert not any("--resolve" in c for c in calls)
 
 
 @pytest.mark.parametrize("env, message", [
@@ -914,7 +914,10 @@ def test_the_playbook_runs_reports_and_removes_its_directory(tmp_path, stubs):
     assert rc == 0, out
     assert f"Conformance as stray for m: PASS, {len(CASES)}/{len(CASES)} cases match." in out
     assert '"agw_conformance"' in out or "agw_conformance" in out  # CUSTOM STATS
-    assert len(gw.seen) == len(direct.seen) == len(CASES)
+    # The one keyless probe through the shared probe path first, then every case with the key.
+    assert gw.seen[0]["path"] == "/v1/models" and gw.seen[0]["auth"] is None
+    assert len(gw.seen) - 1 == len(direct.seen) == len(CASES)
+    assert all(x["auth"] == f"Bearer {GW_KEY}" for x in gw.seen[1:])
     assert made and not _left_behind(made), "working directory left behind"
 
 
@@ -954,7 +957,7 @@ def test_an_extra_var_cannot_redirect_the_key_files_or_the_delete(tmp_path, stub
     rc, out, _ = _playbook(tmp_path, gw, direct, extra={"_agwc_tmpdir": {"path": str(target)}})
     assert rc != 0 and "Do not pass _agwc_tmpdir as an extra var" in out, out
     assert sorted(p.name for p in target.iterdir()) == ["canary"]
-    assert gw.seen == [] and direct.seen == []
+    assert [x for x in gw.seen if x["auth"]] == [] and direct.seen == []
 
 
 def test_the_playbook_prints_the_shape_differences_by_path_only(tmp_path, stubs):
@@ -970,6 +973,68 @@ def test_a_dry_run_sends_nothing(tmp_path, stubs):
     rc, out, _ = _playbook(tmp_path, gw, direct, check=True)
     assert rc == 0 and "nothing was sent" in out, out
     assert gw.seen == [] and direct.seen == [] and Bao.requests == []
+
+
+def test_a_gateway_that_answers_a_keyless_request_stops_the_run_before_any_key_is_read(tmp_path, stubs):
+    # The shared probe's keyless /v1/models must be refused (401). A gateway that serves it has no
+    # key check in front of the upstream, so the run stops there: OpenBao is never read, no key file
+    # is written and no completion is spent on either side.
+    gw, direct = stubs(key=None), stubs(key=UP_KEY)
+    rc, out, made = _playbook(tmp_path, gw, direct)
+    assert rc != 0 and "the gateway must refuse it with 401 before conformance spends a key" in out, out
+    assert [(x["method"], x["path"], x["auth"]) for x in gw.seen] == [("GET", "/v1/models", None)]
+    assert direct.seen == [] and Bao.requests == [] and made == []
+
+
+def _tls_host(tmp: Path):
+    """Listener TLS host vars whose leaf and bundle files exist (placeholder bytes: the run must stop
+    before a handshake), and a scratch hosts file the resolution step reads instead of /etc/hosts."""
+    leaf = tmp / "leaves" / "agw-verifier"
+    (leaf / "current").mkdir(parents=True)
+    for f in ("cert.pem", "key.pem"):
+        (leaf / "current" / f).write_text("placeholder\n")
+    certs = tmp / "mono" / "platform/services/agentgateway/deployment/certs"
+    certs.mkdir(parents=True)
+    (certs / "step-ca-bundle.crt").write_text("placeholder\n")
+    return {"agw_listener_tls": True, "agw_tls_server_name": "gateway.dc1.example.internal",
+            "internal_leaves": [{"name": "agw-verifier", "dir": str(leaf)}],
+            "local_monorepo_dir": str(tmp / "mono")}
+
+
+MARKED_ELSEWHERE = "127.0.0.2 gateway.dc1.example.internal # agent-cloud-managed: agw-probe (interim, task 7.2)\n"
+
+
+@pytest.mark.parametrize("hosts", ["", MARKED_ELSEWHERE])
+def test_with_listener_tls_a_name_the_deploy_has_not_mapped_stops_the_run_before_any_request(tmp_path, stubs, hosts):
+    # The cases' curl resolves the SAN through this host's resolver, so the playbook first requires
+    # the one resolution step's mapping, read-only (Deploy agentgateway writes it): absent, or mapped
+    # to another address, and nothing is probed, read or sent.
+    (tmp_path / "hosts").write_text(hosts)
+    gw, direct = stubs(key=GW_KEY), stubs(key=UP_KEY)
+    rc, out, made = _playbook(tmp_path, gw, direct, host_vars=_tls_host(tmp_path),
+                              extra={"_agwr_hosts_file": str(tmp_path / "hosts")})
+    assert rc != 0 and "Run Deploy agentgateway to converge the probe name's resolution" in out, out
+    assert gw.seen == [] and direct.seen == [] and Bao.requests == [] and made == []
+    assert (tmp_path / "hosts").read_text() == hosts
+
+
+def test_with_listener_tls_the_keyless_probe_names_the_san_and_presents_the_verifier_leaf():
+    # Structure the stub run cannot reach without a CA: the probe goes through tasks/agw-probe.yml
+    # with the verifier leaf and bundle the TLS precheck stats, and the resolution step it relies on
+    # is read-only; both run before OpenBao is authenticated to.
+    tasks = playbook_yaml.load(PLAYBOOK)[1]["tasks"]
+    run = next(t for t in tasks if t.get("name") == "Run the cases")["block"]
+    names = [t["name"] for t in run]
+    res = next(t for t in run if t.get("ansible.builtin.include_tasks") == "tasks/agw-probe-resolution.yml")
+    probe = next(t for t in run if t.get("ansible.builtin.include_tasks") == "tasks/agw-probe.yml")
+    assert res["vars"] == {"_agwr_check_only": True, "_agwr_name": "{{ _server_name }}", "_agwr_ip": "{{ _probe_ip }}"}
+    assert res["when"] == "_tls and agw_verify_base_url is not defined"
+    assert probe["vars"] == {"_agwp_base": "{{ _gateway_base }}", "_agwp_path": "/v1/models", "_agwp_status": [401],
+                             "_agwp_leaf_dir": "{{ _leaf_dir }}", "_agwp_ca": "{{ _ca }}"}
+    assert "_agwp_key" not in json.dumps(probe)
+    auth = names.index("Authenticate to OpenBao")
+    assert names.index(res["name"]) < names.index(probe["name"]) < names.index("Require the keyless refusal") < auth
+    assert "--resolve" not in PLAYBOOK.read_text() and "--resolve" not in SCRIPT.read_text()
 
 
 def test_the_key_files_are_0600_in_a_private_directory():

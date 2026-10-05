@@ -145,7 +145,10 @@ How the comparison is made: the Semaphore template `Run agentgateway Conformance
 (`platform/playbooks/run-agw-conformance.yml`) runs `deployment/tests/conformance.sh` on the gateway
 VM. The script sends each case twice: once to the gateway, presenting the `agw-verifier` leaf
 when listener TLS is on, and once straight to `agw_upstream_base_url`, sending the same request
-body to both. The cases are the models list, thinking off
+body to both. The gateway is reached through the one probe path (task 6.1a): the deploy's base
+URL, leaf and trust bundle, the server leaf's name resolved by the host resolver after the shared
+resolution step's read-only check, and one keyless `/v1/models` through `tasks/agw-probe.yml`
+that must answer 401 before any key is read or any completion is spent. The cases are the models list, thinking off
 (`chat_template_kwargs.enable_thinking: false`), one request per `reasoning_effort` value (`none`,
 `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, the seven values dgx-spark's endpoint
 contract lists), a `chat_template_kwargs` override (`reasoning_effort: low`), a tool call, a
