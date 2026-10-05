@@ -100,11 +100,13 @@ def test_every_gate_name_is_refused_as_an_extra_var_before_anything_runs():
     host = list(_flat(plays[0]["tasks"]))
     first = host[1]  # the block's first task
     assert first.get("ansible.builtin.include_tasks") == GUARD and first["loop_control"]["loop_var"] == "_rvo_name"
-    for name in ("_key_preproof", "_proof_key", "_proof_pin", "_verify_key", "_verify_pin", "_pw_problems"):
+    for name in ("_key_preproof", "_proof_key", "_proof_pin", "_verify_key", "_verify_pin", "_pw_problems",
+                 "_sudoers_change", "_sshd_main_change", "_sshd_dropin_change"):
         assert name in first["loop"], name
     ctl = plays[-1]["tasks"][0]
     assert ctl.get("ansible.builtin.include_tasks") == GUARD
-    for name in ("_harden_verdict", "_harden_error", "_pw_problems", "_key_preproof"):
+    for name in ("_harden_verdict", "_harden_error", "_pw_problems", "_key_preproof",
+                 "_sudoers_change", "_sshd_main_change", "_sshd_dropin_change", "_would_change"):
         assert name in ctl["loop"], name
 
 
@@ -113,6 +115,7 @@ def test_every_gate_name_is_refused_as_an_extra_var_before_anything_runs():
     '{"_key_preproof": {"rc": 0, "stdout": "KEY_ONLY_OK"}}',
     '{"_proof_key": {"materialised": true, "dir": "/nonexistent", "key": "/nonexistent/id", "known_hosts": "/x"}}',
     '{"_harden_verdict": true}',
+    '{"_sudoers_change": {"changed": false}}',
 ])
 def test_a_forged_internal_var_is_refused_before_any_write(tmp_path, forged):
     cfg = tmp_path / "sshd_config"

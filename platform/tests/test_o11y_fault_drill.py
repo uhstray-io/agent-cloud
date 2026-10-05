@@ -20,6 +20,13 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 PLAYBOOK = ROOT / "platform/playbooks/o11y-fault-drill.yml"
 
+# Deterministic unreachable host: Ansible's ssh connection treats exit 255 as
+# UNREACHABLE. Real network routing to a TEST-NET address differs between machines.
+FAKE_SSH = """#!/bin/sh
+echo "ssh: connect to host spark-host port 22: Connection timed out" >&2
+exit 255
+"""
+
 FAKE_ENGINE = """#!/bin/sh
 printf '%s\\n' "$*" >> "$FAKE_ENGINE_LOG"
 case "$*" in
@@ -33,10 +40,16 @@ esac
 def clean_copy(tmp_path_factory):
     """A committed, clean copy: the drill's revision gate then passes for real."""
     root = tmp_path_factory.mktemp("drill-repo")
-    shutil.copytree(ROOT / "platform/playbooks", root / "platform/playbooks")
+    # Bytecode is excluded and ignored: ansible-playbook compiles the filter and callback
+    # plugins on first use, and an untracked __pycache__ makes the drill's clean-checkout
+    # gate refuse every later run. A developer tree that already holds compiled files
+    # hid this; a fresh CI checkout does not (CI run 37259691735).
+    skip = shutil.ignore_patterns("__pycache__", "*.pyc", "*.retry")
+    shutil.copytree(ROOT / "platform/playbooks", root / "platform/playbooks", ignore=skip)
     shutil.copy(ROOT / "ansible.cfg", root / "ansible.cfg")
     if (ROOT / "callback_plugins").is_dir():
-        shutil.copytree(ROOT / "callback_plugins", root / "callback_plugins")
+        shutil.copytree(ROOT / "callback_plugins", root / "callback_plugins", ignore=skip)
+    (root / ".gitignore").write_text("__pycache__/\n*.pyc\n*.retry\n")
     env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
     env.update(GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@example.invalid",
                GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@example.invalid")
@@ -47,13 +60,17 @@ def clean_copy(tmp_path_factory):
     return root, sha
 
 
-def run(tmp_path, clean_copy, extra, *, check=False, exporter_host="o11y-test", other_hosts=None):
+def run(tmp_path, clean_copy, extra, *, check=False, exporter_host="o11y-test", other_hosts=None,
+        expect_dirty=False):
     root, sha = clean_copy
     bindir = tmp_path / "bin"
     bindir.mkdir()
     engine = bindir / "podman"
     engine.write_text(FAKE_ENGINE)
     engine.chmod(0o755)
+    ssh = bindir / "ssh"
+    ssh.write_text(FAKE_SSH)
+    ssh.chmod(0o755)
     log = tmp_path / "engine.log"
     log.write_text("")
     inventory = tmp_path / "inventory.yml"
@@ -71,13 +88,19 @@ def run(tmp_path, clean_copy, extra, *, check=False, exporter_host="o11y-test", 
     env = {k: v for k, v in os.environ.items()
            if not k.startswith("GIT_") and k not in ("OPENBAO_ADDR", "BAO_ROLE_ID", "BAO_SECRET_ID")}
     env.update(PATH=f"{bindir}{os.pathsep}{env.get('PATH', '')}", FAKE_ENGINE_LOG=str(log),
+               PYTHONDONTWRITEBYTECODE="1", ANSIBLE_SSH_RETRIES="0",
                ANSIBLE_LOCAL_TEMP=str(tmp_path), ANSIBLE_STDOUT_CALLBACK="default", ANSIBLE_NOCOLOR="1")
     result = subprocess.run(
         ["ansible-playbook", *(["--check"] if check else []), "-i", str(inventory),
          "platform/playbooks/o11y-fault-drill.yml", "-e", json.dumps({"expected_repository_sha": sha, **extra})],
         cwd=root, env=env, text=True, capture_output=True, timeout=180, stdin=subprocess.DEVNULL,
     )
-    return result.returncode, result.stdout + result.stderr, log.read_text().splitlines()
+    out = result.stdout + result.stderr
+    # Every case must get past the revision gate; a dirty copy would make each refusal
+    # pass for the wrong reason.
+    if not expect_dirty:
+        assert "Controller checkout has uncommitted files" not in out, out
+    return result.returncode, out, log.read_text().splitlines()
 
 
 @pytest.mark.parametrize("extra", [
@@ -242,13 +265,31 @@ def test_probe_restore_requires_a_fresh_success_sample():
 
 
 def test_unreachable_exporter_host_still_runs_the_restore_and_fails_loudly(tmp_path, clean_copy):
-    # TEST-NET-1, never routed: the stop AND the restart are unreachable. Without
+    # The stop AND the restart are unreachable. Without
     # ignore_unreachable the always section would be skipped (Ansible docs).
-    unreachable = {"spark-host": {"ansible_host": "192.0.2.1", "ansible_connection": "ssh",
-                                  "ansible_ssh_common_args": "-o ConnectTimeout=1 -o BatchMode=yes"}}
+    # The fake ssh on PATH exits 255 for every connection: unreachable on any machine.
+    unreachable = {"spark-host": {"ansible_host": "spark-host.invalid", "ansible_connection": "ssh",
+                                  "ansible_ssh_executable": "ssh"}}
     rc, out, _ = run(tmp_path, clean_copy, {
         "drill": "exporter", "confirm_fault_drill": "exporter", "drill_node": "spark-test",
         "drill_window_confirmed": True}, exporter_host="spark-host", other_hosts=unreachable)
     assert rc != 0
     assert "TASK [Restart the DGX node exporter]" in out
     assert "A restore step could not reach its host" in out
+    assert "UNREACHABLE" in out
+
+
+def test_dirty_checkout_is_refused_before_any_fault(tmp_path, clean_copy):
+    root, _ = clean_copy
+    stray = root / "platform/playbooks/uncommitted-drill-edit.yml"
+    stray.write_text("# not reviewed\n")
+    try:
+        rc, out, calls = run(tmp_path, clean_copy, {
+            "drill": "exporter", "confirm_fault_drill": "exporter", "drill_node": "spark-test",
+            "drill_window_confirmed": True}, expect_dirty=True)
+    finally:
+        stray.unlink()
+    assert rc != 0
+    assert "Controller checkout has uncommitted files" in out
+    assert "PLAY [Induce one bounded o11y fault" not in out
+    assert calls == []
