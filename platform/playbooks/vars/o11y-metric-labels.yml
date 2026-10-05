@@ -1,0 +1,13 @@
+---
+# o11y-metric-labels.yml — the metric label names every o11y Prometheus scrape job drops.
+#
+# Known sensitive or request-specific label names; declared bounded dimensions such as
+# service, identity, model, status, device and GPU labels are kept. Loaded with vars_files by
+# instrument-host-o11y.yml, which renders a scrape job outside deploy-o11y.yml.
+#
+# deploy-o11y.yml still carries its own copy as a play var (it renders Alloy and every other
+# scrape job with it); moving it onto this file is the follow-up, kept out of this change.
+# platform/tests/test_instrument_host_o11y.py pins the two equal.
+
+_o11y_forbidden_metric_label_names_regex: >-
+  (?i).*(^|_)(request_id|requestid|user_id|userid|client_id|clientid|session_id|sessionid|trace_id|traceid|span_id|spanid|email|api_key|apikey|access_token|refresh_token|token_value|token_id|password|secret|authorization|cookie|prompt|prompt_text|raw_path|path|http_target|address|remote_addr|remote_address|source_ip|client_ip|timestamp|url|uri|query|query_text)(_|$).*

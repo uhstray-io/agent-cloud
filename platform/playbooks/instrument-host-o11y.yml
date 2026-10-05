@@ -1,0 +1,486 @@
+---
+# instrument-host-o11y.yml — workflow step instrument-host (plan 15, step 12).
+#
+# Change service-deployment-workflow task 7.3. Gives every host of one service group the same
+# bounded node metric source the o11y receiver runs for itself, declares it to the receiver's
+# Prometheus, and proves the series arrive:
+#   1. each host runs `agent-cloud-node-exporter`: the receiver's own exporter image and
+#      collectors (cpu, meminfo, root filesystem, loadavg — o11y compose.yml), reading the host
+#      through a read-only mount, on the host network, listening only on the host's declared
+#      private address;
+#   2. the receiver gets HTTP 200 from every declared endpoint BEFORE the scrape is declared: a
+#      declared target that answers nothing fires the up{service!=""} service-down rule
+#      (estate-wide-observability-instrumentation design: probe from the receiver, and only then
+#      merge the scrape declaration);
+#   3. config/scrape.d/host-<group>.yml on the receiver lists the group's endpoints; Prometheus
+#      reloads when it changes, and a rejected reload puts the previous file back, so a bad file
+#      never waits on disk for Prometheus's next restart;
+#   4. every endpoint reports up == 1 and node_memory_MemAvailable_bytes in Prometheus.
+# It records one step result for the whole group and fails when any host does not hold.
+#
+# Why the host network, not a published port: apply-firewall.yml admits every published
+# container port from firewall_upstream_source (the Caddy host). An exporter listening on the
+# host network publishes nothing, so admission is only what the host declares — on each host:
+#   firewall_allow_groups: [{port: <o11y_host_exporter_port>, group: o11y_svc}]
+# which is an INPUT rule and works on a Docker host too (no DNAT).
+#
+# Inventory (site-config, on each host of the group):
+#   o11y_host_exporter_bind  IPv4 address of the host's private interface; required. Never the
+#                            wildcard; loopback only in local_mode.
+#   o11y_host_exporter_port  default 9100
+#   o11y_node_exporter_image the image; defaults to the receiver's pin (o11y env.j2)
+# and exactly one o11y_svc host with o11y deployed (its config/scrape.d exists).
+#
+# Check mode writes nothing: the container commands and the reload are skipped, the scrape file
+# reports its diff. The result is `skip` when the run would change something, else the live
+# verdict. Idempotent: a matching running exporter (spec hash label) and an unchanged scrape file
+# change nothing.
+#
+# Production gate, not enforced here: the estate change admits no sender beyond the
+# receiver-host pilot before its seven-day baseline (estate-wide-observability-instrumentation
+# tasks 1.3/1.4). Declaring o11y_host_exporter_bind for a host is the enrollment; that
+# declaration waits on the gate.
+#
+# Undo: none yet. Removing a host is: drop its declaration, re-run for the group (the file loses
+# it), then remove the container.
+#
+# Usage (Semaphore): -e target_service=tududi_svc
+
+- name: "Refuse a run that would instrument nothing"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: "Require the inventory to have parsed"
+      ansible.builtin.include_tasks: tasks/require-parsed-inventory.yml
+      vars:
+        require_parsed_inventory_group: "{{ target_service | default('') }}"
+
+    # The verdict gates read these; an extra var would outrank what the plays set.
+    - name: "Refuse extra-var overrides of this run's internal names"
+      ansible.builtin.include_tasks: tasks/refuse-var-overrides.yml
+      loop:
+        - _ih_errors
+        - _ih_running
+        - _ih_would_change
+        - _ih_inspect
+        - _ih_probe
+        - _ih_prior
+        - _ih_fragment
+        - _ih_fragment_changed
+        - _ih_reload
+        - _ih_up
+        - _ih_mem
+        - _ih_series
+        - _ih_receiver_errors
+      loop_control:
+        loop_var: _rvo_name
+
+    # The guard and the work read the SAME target_service, so one override moves both; the
+    # guard only proves the group is populated (as in verify-service-persistence.yml).
+    - name: "Require target_service to name a populated group and one o11y receiver"
+      ansible.builtin.assert:
+        that:
+          - target_service | default('') is match('^[a-z0-9_-]+$')
+          - (groups.get(target_service | default(''), []) | length) > 0
+          - target_service != 'o11y_svc'
+          - groups.get('o11y_svc', []) | length == 1
+        fail_msg: >-
+          Pass -e target_service=<group> naming a populated inventory group other than o11y_svc
+          (the receiver scrapes its own host as receiver-host), with exactly one o11y_svc host;
+          got target_service '{{ target_service | default('') }}' and
+          {{ groups.get('o11y_svc', []) | length }} o11y_svc host(s).
+
+- name: "Run the host exporter on {{ target_service | default('(unset)') }}"
+  hosts: "{{ target_service | default('ungrouped') }}"
+  gather_facts: false
+  become: false
+  # An unreachable host must not end the run before the result is recorded; the inspect below
+  # turns it into this host's error instead.
+  ignore_unreachable: true
+  vars:
+    _engine: "{{ container_engine | default('podman') }}"
+    _ih_name: agent-cloud-node-exporter
+    _ih_bind: "{{ o11y_host_exporter_bind | default('') | string }}"
+    _ih_port: "{{ o11y_host_exporter_port | default(9100) | string }}"
+    _ih_image: "{{ o11y_node_exporter_image | default('quay.io/prometheus/node-exporter:v1.12.1') }}"
+    # The receiver's own collector set (o11y compose.yml node-exporter command), pinned equal by
+    # platform/tests/test_instrument_host_o11y.py.
+    _ih_collector_args:
+      - --path.rootfs=/host
+      - --path.procfs=/host/proc
+      - --path.sysfs=/host/sys
+      - --collector.disable-defaults
+      - --collector.cpu
+      - --collector.meminfo
+      - --collector.filesystem
+      - --collector.filesystem.mount-points-include=^/$
+      - --collector.loadavg
+    # Everything the container is created with except its spec label, which is this hashed.
+    _ih_spec: >-
+      {{ ['--restart', 'always', '--network', 'host', '--volume', '/:/host:ro,rslave']
+         + (['--security-opt', 'label=disable'] if (local_mode | default(false) | bool) else [])
+         + [_ih_image] + _ih_collector_args + ['--web.listen-address=' ~ _ih_bind ~ ':' ~ _ih_port] }}
+    _ih_spec_hash: "{{ (_ih_spec | to_json | hash('sha256'))[:16] }}"
+    _ih_become: "{{ podman_rootful | default(false) | bool }}"
+
+  tasks:
+    - name: "Converge the exporter, recording this host's verdict"
+      block:
+        - name: "Refuse an undeclared or unusable exporter endpoint"
+          ansible.builtin.assert:
+            that:
+              - _ih_bind is match('^[0-9]{1,3}(\\.[0-9]{1,3}){3}$')
+              - _ih_bind.split('.') | map('int') | max <= 255
+              - _ih_bind.split('.')[0] | int != 0
+              - _ih_bind.split('.')[0] | int != 127 or (local_mode | default(false) | bool)
+              - _ih_port is match('^[0-9]+$')
+              - _ih_port | int > 0 and _ih_port | int < 65536
+            fail_msg: >-
+              o11y_host_exporter_bind must declare this host's private IPv4 address (got
+              '{{ _ih_bind }}'; never the wildcard, loopback only in local_mode) and
+              o11y_host_exporter_port a TCP port (got '{{ _ih_port }}').
+
+        - name: "Read the exporter's spec label and state"
+          ansible.builtin.command:
+            argv:
+              - "{{ _engine }}"
+              - inspect
+              - --format
+              - >-
+                {{ '{{' }}index .Config.Labels "agent-cloud.spec"{{ '}}' }} {{ '{{' }}.State.Status{{ '}}' }}
+              - "{{ _ih_name }}"
+          become: "{{ _ih_become }}"
+          register: _ih_inspect
+          changed_when: false
+          failed_when: false
+          check_mode: false
+
+        - name: "Refuse an unreachable host"
+          ansible.builtin.assert:
+            that: not (_ih_inspect.unreachable | default(false))
+            fail_msg: "unreachable: {{ _ih_inspect.msg | default('no connection') }}"
+
+        - name: "Decide whether the exporter needs (re)creating"
+          ansible.builtin.set_fact:
+            _ih_would_change: "{{ (_ih_inspect.stdout | default('') | trim) != (_ih_spec_hash ~ ' running') }}"
+
+        - name: "Remove a stale or stopped exporter"
+          ansible.builtin.command:
+            argv: ["{{ _engine }}", rm, --force, "{{ _ih_name }}"]
+          become: "{{ _ih_become }}"
+          when:
+            - not ansible_check_mode
+            - _ih_would_change | bool
+            - _ih_inspect.rc == 0
+          changed_when: true
+
+        - name: "Start the exporter"
+          ansible.builtin.command:
+            argv: >-
+              {{ [_engine, 'run', '--detach', '--name', _ih_name, '--label', 'agent-cloud.spec=' ~ _ih_spec_hash]
+                 + _ih_spec }}
+          become: "{{ _ih_become }}"
+          when:
+            - not ansible_check_mode
+            - _ih_would_change | bool
+          changed_when: true
+
+        # Rootless podman's `restart: always` starts at boot only with linger and podman's user
+        # boot unit; rootful podman and Docker restart it themselves.
+        - name: "Rootless podman: keep the exporter across a reboot"
+          ansible.builtin.include_tasks: tasks/enable-linger.yml
+          when:
+            - _engine == 'podman'
+            - not (_ih_become | bool)
+
+        - name: "Record this host's verdict"
+          ansible.builtin.set_fact:
+            _ih_running: "{{ not (_ih_would_change | bool) or not ansible_check_mode }}"
+            _ih_errors: []
+
+      rescue:
+        - name: "Record this host's failure"
+          ansible.builtin.set_fact:
+            _ih_running: false
+            _ih_errors: ["{{ ansible_failed_result.msg | default('the exporter step failed') }}"]
+
+- name: "Declare and verify the host scrape on the o11y receiver"
+  hosts: o11y_svc
+  gather_facts: false
+  become: false
+  ignore_unreachable: true
+  vars_files:
+    - vars/o11y-metric-labels.yml
+  vars:
+    _ih_hosts: "{{ groups[target_service] }}"
+    # A host with no verdict (it failed before it) counts as failed.
+    _ih_group_ok: >-
+      {%- set bad = [] -%}
+      {%- for h in _ih_hosts -%}
+      {%- if hostvars[h]._ih_errors | default(['no verdict']) | length > 0 -%}{%- set _ = bad.append(h) -%}{%- endif -%}
+      {%- endfor -%}
+      {{ bad | length == 0 }}
+    _ih_group_would_change: >-
+      {%- set changing = [] -%}
+      {%- for h in _ih_hosts -%}
+      {%- if hostvars[h]._ih_would_change | default(false) | bool -%}{%- set _ = changing.append(h) -%}{%- endif -%}
+      {%- endfor -%}
+      {{ changing | length > 0 }}
+    _ih_job: "host-node-{{ target_service }}"
+    _ih_endpoints: >-
+      {%- set out = [] -%}
+      {%- for h in _ih_hosts -%}
+      {%- set hv = hostvars[h] -%}
+      {%- set _ = out.append({
+            'host': h,
+            'address': (hv.o11y_host_exporter_bind | default('') | string) ~ ':'
+                       ~ (hv.o11y_host_exporter_port | default(9100) | string),
+            'service': (hv.service_name | default(target_service | regex_replace('_svc$', ''))) ~ '/host'}) -%}
+      {%- endfor -%}
+      {{ out }}
+    _ih_deploy_dir: >-
+      {{ (local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud'))
+         ~ '/' ~ monorepo_deploy_path | default('platform/services/o11y/deployment') }}
+    _ih_fragment_path: "{{ _ih_deploy_dir }}/config/scrape.d/host-{{ target_service }}.yml"
+    _ih_prom: "http://{{ o11y_prom_bind | default('127.0.0.1') }}:{{ o11y_prom_port | default(9090) }}"
+    # Prometheus scrapes every 15s (prometheus.yml.j2) and spreads first scrapes across one
+    # interval after a reload; 8 x 5s covers two intervals plus the reload itself.
+    _ih_wait_retries: 8
+    _ih_wait_delay: 5
+
+  tasks:
+    - name: "Skip the receiver while a host of the group failed"
+      ansible.builtin.set_fact:
+        _ih_series: "{{ dict(_ih_hosts | product([none])) }}"
+        _ih_fragment_changed: false
+        _ih_receiver_errors: []
+      when: not (_ih_group_ok | bool)
+
+    - name: "Declare the scrape and verify the series"
+      when: _ih_group_ok | bool
+      vars:
+        # A dry run that would change the exporter or the scrape file has nothing live to verify.
+        _ih_verifiable: >-
+          {{ not (ansible_check_mode and ((_ih_group_would_change | bool) or (_ih_fragment.changed | default(false)))) }}
+      block:
+        - name: "Read the receiver's scrape directory"
+          ansible.builtin.stat:
+            path: "{{ _ih_deploy_dir }}/config/scrape.d"
+          register: _ih_scrape_dir
+          check_mode: false
+
+        - name: "Require a reachable receiver with o11y deployed"
+          ansible.builtin.assert:
+            that:
+              - not (_ih_scrape_dir.unreachable | default(false))
+              - _ih_scrape_dir.stat.isdir | default(false)
+            fail_msg: >-
+              {{ ('unreachable: ' ~ (_ih_scrape_dir.msg | default('no connection')))
+                 if (_ih_scrape_dir.unreachable | default(false))
+                 else (_ih_deploy_dir ~ '/config/scrape.d is missing: deploy o11y first') }}
+
+        - name: "Ask each declared exporter for its metrics, from the receiver"
+          ansible.builtin.uri:
+            url: "http://{{ item.address }}/metrics"
+            method: GET
+            use_proxy: false
+            follow_redirects: none
+            return_content: false
+            status_code: 200
+            timeout: 5
+          # uri's timeout is per socket operation; the task keyword bounds the whole request.
+          timeout: 15
+          loop: "{{ _ih_endpoints }}"
+          loop_control:
+            label: "{{ item.host }}"
+          register: _ih_probe
+          changed_when: false
+          failed_when: false
+          check_mode: false
+
+        # A dry run of a group whose exporters are not running yet cannot reach them; it reports
+        # what it would declare instead, and records skip.
+        - name: "Refuse to declare an exporter the receiver cannot reach"
+          ansible.builtin.assert:
+            that: _ih_unanswered | length == 0
+            fail_msg: >-
+              The receiver got no HTTP 200 from {{ _ih_unanswered | join(', ') }}; not declaring the
+              scrape (a declared target that answers nothing fires the service-down rule). Check the
+              host's firewall_allow_groups entry for o11y_svc on its exporter port.
+          vars:
+            # uri answers status -1 when it cannot connect.
+            _ih_unanswered: >-
+              {%- set out = [] -%}
+              {%- for r in _ih_probe.results if r.status | default(-1) != 200 -%}
+              {%- set _ = out.append(r.item.host ~ ' (HTTP ' ~ (r.status | default(-1)) ~ ')') -%}
+              {%- endfor -%}
+              {{ out }}
+          when: not (ansible_check_mode and (_ih_group_would_change | bool))
+
+        - name: "Keep the current scrape file, to put back if Prometheus rejects the new one"
+          ansible.builtin.slurp:
+            src: "{{ _ih_fragment_path }}"
+          register: _ih_prior
+          failed_when: false
+          check_mode: false
+
+        - name: "Write the group's scrape file"
+          ansible.builtin.template:
+            src: "{{ playbook_dir }}/../services/o11y/deployment/templates/scrape-host-node.yml.j2"
+            dest: "{{ _ih_fragment_path }}"
+            mode: "0644"
+          register: _ih_fragment
+
+        - name: "Note whether the scrape file changes"
+          ansible.builtin.set_fact:
+            _ih_fragment_changed: "{{ _ih_fragment.changed }}"
+
+        - name: "Reload Prometheus"
+          ansible.builtin.uri:
+            url: "{{ _ih_prom }}/-/reload"
+            method: POST
+            status_code: [200]
+            return_content: true
+          register: _ih_reload
+          failed_when: false
+          when:
+            - _ih_fragment.changed
+            - not ansible_check_mode
+
+        - name: "Put back the previous scrape file when Prometheus rejected the new one"
+          when:
+            - not ansible_check_mode
+            - _ih_reload is not skipped
+            - _ih_reload.status | default(-1) != 200
+          block:
+            - name: "Restore the previous scrape file"
+              ansible.builtin.copy:
+                content: "{{ _ih_prior.content | b64decode }}"
+                dest: "{{ _ih_fragment_path }}"
+                mode: "0644"
+              when: _ih_prior.content is defined
+
+            - name: "Remove the rejected scrape file (there was none before)"
+              ansible.builtin.file:
+                path: "{{ _ih_fragment_path }}"
+                state: absent
+              when: _ih_prior.content is not defined
+
+            - name: "Reload Prometheus with the restored configuration"
+              ansible.builtin.uri:
+                url: "{{ _ih_prom }}/-/reload"
+                method: POST
+                status_code: [200]
+              failed_when: false
+              when: not ansible_check_mode
+
+            - name: "Fail on the rejected scrape file"
+              ansible.builtin.fail:
+                msg: >-
+                  Prometheus rejected {{ _ih_fragment_path }} (reload answered
+                  {{ _ih_reload.status | default(-1) }}: {{ _ih_reload.content | default(_ih_reload.msg | default('')) | trim }});
+                  the previous file is back.
+
+        - name: "Wait for every endpoint's scrape to succeed"
+          ansible.builtin.uri:
+            url: "{{ _ih_prom }}/api/v1/query?query={{ ('up{job=\"' ~ _ih_job ~ '\"}') | urlencode }}"
+            method: GET
+            return_content: true
+          register: _ih_up
+          changed_when: false
+          failed_when: false
+          check_mode: false
+          retries: "{{ _ih_wait_retries }}"
+          delay: "{{ _ih_wait_delay }}"
+          until: >-
+            (_ih_up.json.data.result | default([]) | selectattr('value.1', 'equalto', '1')
+             | map(attribute='metric.host') | unique | sort | list) == (_ih_hosts | sort | list)
+          when: _ih_verifiable | bool
+
+        - name: "Read a host series for every endpoint"
+          ansible.builtin.uri:
+            url: "{{ _ih_prom }}/api/v1/query?query={{ ('node_memory_MemAvailable_bytes{job=\"' ~ _ih_job ~ '\"}') | urlencode }}"
+            method: GET
+            return_content: true
+          register: _ih_mem
+          changed_when: false
+          failed_when: false
+          check_mode: false
+          when: _ih_verifiable | bool
+
+        - name: "Decide each host's series"
+          ansible.builtin.set_fact:
+            _ih_series: >-
+              {%- set out = {} -%}
+              {%- for h in _ih_hosts -%}
+              {%- set _ = out.update({h: ((h in _up_hosts and h in _mem_hosts) if (_ih_verifiable | bool) else none)}) -%}
+              {%- endfor -%}
+              {{ out }}
+            _ih_receiver_errors: >-
+              {{ (_ih_hosts | reject('in', _up_hosts) | map('regex_replace', '$', ': scrape not up in Prometheus')
+                  | list
+                  + (_ih_hosts | select('in', _up_hosts) | reject('in', _mem_hosts)
+                     | map('regex_replace', '$', ': no node_memory_MemAvailable_bytes series in Prometheus') | list))
+                 if (_ih_verifiable | bool) else [] }}
+          vars:
+            _up_hosts: >-
+              {{ _ih_up.json.data.result | default([]) | selectattr('value.1', 'equalto', '1')
+                 | map(attribute='metric.host') | list }}
+            _mem_hosts: "{{ _ih_mem.json.data.result | default([]) | map(attribute='metric.host') | list }}"
+
+      rescue:
+        - name: "Record the receiver's failure"
+          ansible.builtin.set_fact:
+            _ih_series: "{{ dict(_ih_hosts | product([none])) }}"
+            _ih_fragment_changed: "{{ _ih_fragment.changed | default(false) }}"
+            _ih_receiver_errors: ["o11y receiver: {{ ansible_failed_result.msg | default('the scrape step failed') }}"]
+
+- name: "Record the instrument-host result for {{ target_service | default('(unset)') }}"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    _ih_hosts: "{{ groups[target_service] }}"
+    _ih_receiver: "{{ groups['o11y_svc'] | first }}"
+  tasks:
+    # One result for the group: every host's errors, prefixed with the host, and a host or a
+    # receiver that never reached its verdict counts as a failure rather than vanishing.
+    - name: "Collect the verdict across the group and the receiver"
+      ansible.builtin.set_fact:
+        _ih_group_errors: >-
+          {%- set out = [] -%}
+          {%- for h in _ih_hosts -%}
+            {%- for e in hostvars[h]._ih_errors | default(['no exporter verdict (the host failed before it)']) -%}
+              {%- if out.append(h ~ ': ' ~ e) -%}{%- endif -%}
+            {%- endfor -%}
+          {%- endfor -%}
+          {%- for e in hostvars[_ih_receiver]._ih_receiver_errors | default(['o11y receiver: no verdict (it failed before it)']) -%}
+            {%- if out.append(e) -%}{%- endif -%}
+          {%- endfor -%}
+          {{ out }}
+        _ih_any_change: >-
+          {%- set changing = [] -%}
+          {%- for h in _ih_hosts -%}
+          {%- if hostvars[h]._ih_would_change | default(false) | bool -%}{%- set _ = changing.append(h) -%}{%- endif -%}
+          {%- endfor -%}
+          {{ changing | length > 0 or (hostvars[_ih_receiver]._ih_fragment_changed | default(false) | bool) }}
+
+    - name: "Record the step result"
+      ansible.builtin.include_tasks: tasks/emit-step-result.yml
+      vars:
+        step_result_step: instrument-host
+        step_result_service: "{{ hostvars[_ih_hosts | first].service_name | default(target_service | regex_replace('_svc$', '')) }}"
+        step_result_status: >-
+          {{ 'fail' if (_ih_group_errors | length > 0)
+             else ('skip' if (ansible_check_mode and (_ih_any_change | bool)) else 'pass') }}
+        step_result_evidence:
+          # per host: one result covers the group (null where it was not reached)
+          exporter_running: "{%- set out = {} -%}{%- for h in _ih_hosts -%}{%- set _ = out.update({h: hostvars[h]._ih_running | default(none)}) -%}{%- endfor -%}{{ out }}"
+          series_present: "{{ hostvars[_ih_receiver]._ih_series | default(dict(_ih_hosts | product([none]))) }}"
+        step_result_error: "{{ _ih_group_errors | join('; ') }}"
+
+    - name: "Fail when the host instrumentation did not pass"
+      ansible.builtin.fail:
+        msg: "{{ _ih_group_errors | join('; ') }}"
+      when: _ih_group_errors | length > 0

@@ -1029,6 +1029,19 @@ templates:
         type: string
         required: true
 
+  # Workflow step instrument-host: the receiver's bounded node exporter on every host of one
+  # service group (host network, declared private address), declared to the o11y receiver's
+  # Prometheus only after the receiver reaches it, then series proven. Check mode writes nothing.
+  - name: Instrument Host Observability
+    playbook: platform/playbooks/instrument-host-o11y.yml
+    dev_variant: true
+    survey_vars:
+      - name: target_service
+        title: Target group
+        description: Inventory group of the service hosts to instrument (e.g. tududi_svc)
+        type: string
+        required: true
+
   # Reboot ONE host and wait for it (production-internal-ca task 3.3; the workflow's optional
   # reboot test). Refuses unless the group holds exactly one host and confirm_reboot names it.
   # Run Verify Service Persistence before and Verify Service Health after.

@@ -58,6 +58,9 @@ All default off, so declaring a value alone never starts a scrape or pages anyon
   (`:156-178`), and the capacity readback reports an acceptable state (`:180-186`). The
   retention gate does not check a backup or restore receipt; that receipt is required only
   for Tempo-derived metrics (`:306-310`).
+- `config/scrape.d/host-<group>.yml` (rendered from `templates/scrape-host-node.yml.j2`) is
+  written by `instrument-host-o11y.yml`, the service deployment workflow's instrument-host
+  step, never by `deploy-o11y.yml`, which neither writes nor removes it.
 - Every `vllm:` and `node_` metric name used by a dashboard or alert rule must appear in
   the vendored fixtures under `platform/tests/fixtures/`; the o11y BATS suite enforces it.
 - The deploy readback requires the live rules in the provisioned folders and groups to
