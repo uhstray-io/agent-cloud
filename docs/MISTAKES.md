@@ -3004,7 +3004,7 @@ prod-only, so local-dev found it by crash loop. Proposal: run the redirect VERIF
 **Occurrences: 3** — 2026-09-23, 2026-09-23, 2026-09-26
 
 **What happened.** On 2026-09-23 a Codex review of the main checkout found
-`.codebase-memory/artifact.json` rewritten (project `Users-stray-Documents-GitHub-agent-cloud`,
+`.codebase-memory/artifact.json` rewritten (project `Users-<user>-Documents-GitHub-agent-cloud`,
 9,250 nodes, written 11:35 local) and `.codebase-memory/graph.db.zst` deleted. `list_projects`
 showed two graph projects on the same root: the documented `agent-cloud` (7,697 nodes, matching
 the committed artifact) and a path-named one (9,474 nodes). codebase-memory-mcp 0.9.0 runs with
@@ -3028,7 +3028,7 @@ reading the index) and `platform/tests/test_graph_artifact_guard.bats`, which re
 machine configuration, not repository code.
 
 **Occurrence 2 — 2026-09-23.** The same day, in the PR #205 worktree, I committed and pushed
-the auto-index output (`aeeb951`: project `Users-stray-Documents-GitHub-agent-cloud-seed-envs`,
+the auto-index output (`aeeb951`: project `Users-<user>-Documents-GitHub-agent-cloud-seed-envs`,
 graph grown from 1.6 MB to 2.7 MB) by staging with `git add -A` after a pre-commit hook had
 fixed a file. Reverted in a new commit (`91109ef`). The rule did not prevent it because the
 gate was only on this branch (#211), not yet on `dev`, so the #205 branch carried no guard;
