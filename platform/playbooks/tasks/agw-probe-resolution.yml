@@ -44,8 +44,8 @@
         (agw_internal_dns_authoritative | default(false) | bool)
         or (_agwr_ip | default('') is match('^((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])[.]){3}(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])$'))
     fail_msg: >-
-      agw-probe-resolution needs _agwr_name (the server leaf SAN, a DNS name){ '' if (agw_internal_dns_authoritative
-      | default(false) | bool) else ' and _agwr_ip (the published bind, an IPv4 address)' }.
+      agw-probe-resolution needs _agwr_name (the server leaf SAN, a DNS name){{ '' if (agw_internal_dns_authoritative
+      | default(false) | bool) else ' and _agwr_ip (the published bind, an IPv4 address)' }}.
     quiet: true
 
 - name: "Probe resolution: map the server leaf's name to the published bind (interim, task 7.2)"

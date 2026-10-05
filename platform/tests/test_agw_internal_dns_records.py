@@ -207,6 +207,17 @@ def test_interim_mode_refuses_a_value_the_hosts_line_cannot_carry(tmp_path, extr
     r, text = _resolve(tmp_path, extra, hosts="127.0.0.1 localhost\n")
     assert r.returncode != 0, why
     assert text == "127.0.0.1 localhost\n", f"hosts file written for {why}"
+    # The refusal is rendered, not printed as template source.
+    assert "and _agwr_ip (the published bind, an IPv4 address)." in r.stdout, why
+    assert "{ '" not in r.stdout and "' }" not in r.stdout, why
+
+
+def test_authoritative_mode_refuses_a_malformed_name_without_asking_for_an_address(tmp_path):
+    r, text = _resolve(tmp_path, {"agw_internal_dns_authoritative": True, "_agwr_name": "two names"})
+    assert r.returncode != 0
+    assert text == HOSTS
+    assert "needs _agwr_name (the server leaf SAN, a DNS name)." in r.stdout
+    assert "_agwr_ip" not in r.stdout.split("needs _agwr_name", 1)[1].split("\n", 1)[0]
 
 
 @pytest.mark.parametrize("ip", ["0.0.0.0", "255.255.255.255", "192.0.2.199", "203.0.113.250"])
