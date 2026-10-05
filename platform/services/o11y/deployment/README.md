@@ -390,8 +390,17 @@ the drill that inference-telemetry-production tasks 2.5, 3.5 and 3.6 name.
 | Mode | Fault | Proof | Restore |
 |------|-------|-------|---------|
 | `exporter` | stop one DGX node exporter's systemd unit | `up{job="dgx-spark-node",node=…} == 0`, then `inference_target_down` (group `telemetry-missing`) firing for that node within 12 min | unit started; `up == 1`; alert no longer firing |
-| `probe` | probe environment points at an unservable model; `inference-probe.service` started at once | `/health` 200 on 24 checks over 12 min, `inference_probe_failing` firing for that model, contact-point Discord line `service=vllm` | environment copied back, one good sample taken, alert cleared |
+| `probe` | probe environment points at an unservable model; `inference-probe.service` started at once | `/health` 200 on 24 checks over 12 min (see below for where it is read), `inference_probe_failing` firing for that model, contact-point Discord line `service=vllm` | environment copied back, one good sample taken, alert cleared |
 | `grafana` | `o11y-grafana` stopped (≤15 min, `drill_grafana_hold_minutes`) | the liveness watcher's own Discord line (`o11y liveness watcher:`), posted by its scheduled `Check o11y Liveness (Dev)` run | container started; `/api/health` answers |
+
+The probe mode's `/health` is read where it means "the upstream serves while the probe
+fails". On the public path it is the probe URL's own `/health`, from the runner. With a
+gateway client identity (`o11y_inference_probe_client_leaf`, see "Gateway client
+identity") the probe URL names the gateway's mutual-TLS listener, which resolves only on
+the o11y host and declares no `/health` route (`config.yaml.j2` routes only the LLM API;
+its readiness port binds loopback by default). The drill then reads the gateway upstream's `/health`
+(`agw_upstream_base_url` without `/v1`) from the o11y host, and refuses to start without
+exactly one gateway declaring that URL.
 
 Every run requires `expected_repository_sha` (clean reviewed controller checkout) and
 `confirm_fault_drill` equal to `drill`. `exporter` also refuses unless
