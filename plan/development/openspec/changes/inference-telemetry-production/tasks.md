@@ -154,10 +154,13 @@
       dashboard. Needs a readback or the 3.5 gate.
       2026-10-05: PROVEN at runtime. Deploy o11y (Dev) task 2839 at `bdc13789` reads back every
       provisioned dashboard live (#434), the three `inference-*` dashboards included.
-- [x] 3.2 `config/grafana/provisioning/alerting/inference.yml`: groups
+- [x] 3.2 `config/grafana/provisioning/alerting/observability.yml` (rendered from
+      `templates/alerts.yml.j2`): groups
       `inference-failing`, `telemetry-missing`, `memory-thermal`, `benchmark-gate`
       (last one with a single placeholder rule marked disabled until the manifest metric
-      exists); contact point Discord webhook from OpenBao `secret/services/o11y:discord_webhook`
+      exists); contact point Discord webhook (`contact.yml`, from `templates/alert-contact.yml.j2`)
+      from OpenBao `secret/services/o11y:alert_discord_webhook_url`
+      (2026-10-05: requirement text corrected to the implemented file and field; originally named inference.yml and discord_webhook)
       2026-10-02 rescope: PARTIAL — `alerts.yml.j2` has one group, `service-telemetry`
       (service-down `up`, per-target missing-telemetry, receiver disk-low). The Discord
       contact is rendered from OpenBao `secret/services/o11y:alert_discord_webhook_url`;
@@ -180,8 +183,7 @@
       only `o11y_`. The probe was disabled in 2839 (its unit, timer and enable tasks all
       skipped, per the coordinator's read of the output), so its two rules were not rendered or
       read back. This task names only the four groups, which 2839 covers; the probe rules
-      belong to task 3.3, which needs the probe enabled in site-config. The contact point reads
-      `alert_discord_webhook_url`, not the `discord_webhook` field named above.
+      belong to task 3.3, which needs the probe enabled in site-config.
 - [ ] 3.3 Synthetic probe: `platform/services/o11y/deployment/probe/inference-probe.sh`
       (curl, one short chat completion, effort `none`, through
       `https://inference.uhstray.io/v1`, key from OpenBao at deploy into the gitignored
