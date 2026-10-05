@@ -99,7 +99,7 @@ and why.
 | 4.6 | **x2** — A failure-path diagnostic printed the very values the success path was built to keep out of stdout | Secret in transcript | 2 | Test (static guard, `test_no_request_in_loop_items.py`) + stdout callback (`callback_plugins/redact_requests.py`) |
 | 4.7 | An address edit replaced every matching line and left a production runner declared at the new VM's address | Data handling | 1 | Playbook guard + test (provision-vm address-claim check) |
 | 4.8 | A credential-shaped test fixture was pushed; CI's unscoped all-detectors scan let it fail other PRs | Data handling | 1 | CI (scan scoped to the PR's commits) |
-| 4.9 | Private Discord destination IDs were copied into a public test fixture | Data handling | 1 | Convention |
+| 4.9 | **x2** — Private site data in public code: Discord destination IDs in a fixture; the operator's account in a Proxmox token fallback, gateway fixtures and path-derived ids | Data handling | 2 | Test (`test_no_site_identity.py`, the three account shapes); other private values Convention |
 | 4.10 | **x3** — A heredoc script and a stdin redirect both targeted one interpreter; it parsed the operator token file as source and the syntax error printed the token | Secret in transcript | 3 | Convention — **count ≥ 3: the PreToolUse hook is now required, not proposed** |
 | 4.11 | A workstation home path reached a committed ledger entry; the audit grep for it ran by hand only | Data handling | 1 | Pre-commit hook (`no-machine-paths`) |
 | 5.1 | Security check duplicated per caller; a fix reached three copies and missed two | Duplication | 1 | Test |
@@ -2345,6 +2345,8 @@ fix independently the same evening). The fixture rule itself is Convention.
 
 ### 4.9 Private Discord destination IDs in a public test fixture
 
+**Occurrences: 2** — 2026-09-25, 2026-10-05
+
 **What happened.** The first PR revision copied the real guild and channel IDs
 from private site-config into a public Python test. The values are destination
 identifiers, not the bot token, but the public repo still must not publish
@@ -2364,6 +2366,18 @@ records a private local projection that bootstrap consumes and validates.
 
 **Enforced by.** Convention and review. This sync's test constructs synthetic
 IDs, but no general mechanical scan can identify private destination IDs.
+
+**Occurrence 2 — 2026-10-05.** The review of promotion PR 447 found the operator's real
+account in public code: every Proxmox play fell back to a literal token id
+(`<user>@pve!<token>`) when the store had no `token_id`, the discovery seed and the token
+writer wrote another literal, the agentgateway fixtures enrolled a client named after the
+account, and the graph-guard fixture and entry 6.6 quoted a path-derived project id that
+embeds the home-directory name. None was a credential, so no secret gate fired, and the rule
+above was written about one fixture rather than about site identity in general. The fallback
+is gone (the plays refuse an empty stored token id), the fixtures are synthetic, and
+`platform/tests/test_no_site_identity.py` now fails on the three account shapes in any
+tracked file. Private values without a fixed shape (destination IDs, other usernames) stay
+convention and review.
 
 ### 4.10 The interpreter read the token file as its program, and its error printed the token
 
