@@ -240,13 +240,31 @@
 
         # Rootless podman's `restart: always` starts at boot only with linger and podman's user
         # boot unit; rootful podman and Docker restart it themselves.
+        #
+        # Not under --check: it would change nothing, and its unit-link block becomes
+        # linger_user, which is an unprivileged become whenever that account differs from the
+        # connecting one. Without setfacl on the host Ansible cannot hand it its temporary files
+        # and the dry run fails (CI, PR 457; the link ansible-core's own error gives:
+        # https://docs.ansible.com/ansible-core/2.19/playbook_guide/playbooks_privilege_escalation.html#risks-of-becoming-an-unprivileged-user).
+        # The read-back below is the dry run's answer. A real run with the default linger_user
+        # (= ansible_user) is not an unprivileged become; a service declaring a separate account
+        # needs `acl` on its host, as deploy-github-runner.yml installs.
         - name: "Rootless podman: keep the exporter across a reboot"
           ansible.builtin.include_tasks: tasks/enable-linger.yml
+          when:
+            - not ansible_check_mode
+            - _ih_rootless | bool
+
+        # Read both settings back (as verify-service-persistence.yml does), as the connecting
+        # user with no become: a pending change must show here, or the dry run reports a pass for
+        # a host whose exporter would not start at boot.
+        - name: "Rootless podman: look up the account's home"
+          ansible.builtin.getent:
+            database: passwd
+            key: "{{ _ih_linger_user }}"
+          check_mode: false
           when: _ih_rootless | bool
 
-        # Read both settings back (as verify-service-persistence.yml does): under --check the
-        # include changes nothing, so a pending change must show here, or the dry run reports a
-        # pass for a host whose exporter would not start at boot.
         - name: "Rootless podman: read back the account's linger"
           ansible.builtin.command:
             argv: [loginctl, show-user, "{{ _ih_linger_user }}", --property=Linger]
