@@ -506,7 +506,7 @@ PROBE_LEAF = {"name": "o11y-probe", "host": "o11y", "dir": "/srv/agent-cloud/o11
 def _gateway_inventory(gw=None, o11y=None, leaves=None, gateways=1, cas=1):
     gw_vars = {"ansible_host": "192.0.2.10", "agw_bind": "0.0.0.0", "agw_port": "4000", "agw_listener_tls": True,
                "agw_client_cert_allowlist": ["caddy", "agw-verifier", "o11y-probe"],
-               "agw_clients": ["stray", "o11y-probe"], **(gw or {})}
+               "agw_clients": ["other-client", "o11y-probe"], **(gw or {})}
     o11y_vars = {"ansible_connection": "local", "ansible_python_interpreter": "python3",
                  "o11y_inference_probe_enabled": True, "o11y_inference_probe_client_leaf": "o11y-probe",
                  "o11y_inference_probe_url": "https://gateway.lab.example.test:4000/v1",
@@ -563,7 +563,7 @@ def test_a_gateway_bound_to_one_address_is_reached_there(tmp_path, bind):
     ({"gw": {"agw_client_cert_allowlist": ["caddy", "agw-verifier"]}}, "leaf not on the gateway's SAN allowlist"),
     ({"gw": {"agw_listener_tls": False}}, "gateway listener without mutual TLS"),
     ({"gw": {"agw_bind": "127.0.0.1"}}, "gateway published on loopback only"),
-    ({"gw": {"agw_clients": ["stray"]}}, "key identity not enrolled at the gateway"),
+    ({"gw": {"agw_clients": ["other-client"]}}, "key identity not enrolled at the gateway"),
     ({"gateways": 2}, "two gateways: which one is probed is ambiguous"),
     ({"cas": 0}, "no internal CA to read the trust bundle from"),
     ({"leaves": []}, "leaf not declared"),
@@ -576,7 +576,7 @@ def test_a_gateway_bound_to_one_address_is_reached_there(tmp_path, bind):
     ({"o11y": {"agw_verify_base_url": None}}, "renewal proof path not declared on this host"),
     ({"o11y": {"agw_verify_base_url": "https://gateway.lab.example.test:4001"}}, "renewal proves another path"),
     ({"o11y": {"o11y_inference_probe_key_field": "direct_o11y-probe"}}, "a direct vLLM key"),
-    ({"o11y": {"o11y_inference_probe_key_field": "client_stray"}}, "another enrolled client's key"),
+    ({"o11y": {"o11y_inference_probe_key_field": "client_other-client"}}, "another enrolled client's key"),
     ({"gw": {"ansible_host": "999.999.999.999"}}, "an address with octets above 255"),
     ({"gw": {"ansible_host": "256.1.1.1"}}, "an address with one octet above 255"),
     ({"gw": {"agw_bind": "192.0.2.1.5"}}, "five octets"),
