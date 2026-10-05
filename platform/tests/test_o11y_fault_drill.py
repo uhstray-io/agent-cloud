@@ -60,7 +60,8 @@ def clean_copy(tmp_path_factory):
     return root, sha
 
 
-def run(tmp_path, clean_copy, extra, *, check=False, exporter_host="o11y-test", other_hosts=None):
+def run(tmp_path, clean_copy, extra, *, check=False, exporter_host="o11y-test", other_hosts=None,
+        expect_dirty=False):
     root, sha = clean_copy
     bindir = tmp_path / "bin"
     bindir.mkdir()
@@ -97,7 +98,8 @@ def run(tmp_path, clean_copy, extra, *, check=False, exporter_host="o11y-test", 
     out = result.stdout + result.stderr
     # Every case must get past the revision gate; a dirty copy would make each refusal
     # pass for the wrong reason.
-    assert "Controller checkout has uncommitted files" not in out, out
+    if not expect_dirty:
+        assert "Controller checkout has uncommitted files" not in out, out
     return result.returncode, out, log.read_text().splitlines()
 
 
@@ -275,3 +277,19 @@ def test_unreachable_exporter_host_still_runs_the_restore_and_fails_loudly(tmp_p
     assert "TASK [Restart the DGX node exporter]" in out
     assert "A restore step could not reach its host" in out
     assert "UNREACHABLE" in out
+
+
+def test_dirty_checkout_is_refused_before_any_fault(tmp_path, clean_copy):
+    root, _ = clean_copy
+    stray = root / "platform/playbooks/uncommitted-drill-edit.yml"
+    stray.write_text("# not reviewed\n")
+    try:
+        rc, out, calls = run(tmp_path, clean_copy, {
+            "drill": "exporter", "confirm_fault_drill": "exporter", "drill_node": "spark-test",
+            "drill_window_confirmed": True}, expect_dirty=True)
+    finally:
+        stray.unlink()
+    assert rc != 0
+    assert "Controller checkout has uncommitted files" in out
+    assert "PLAY [Induce one bounded o11y fault" not in out
+    assert calls == []
