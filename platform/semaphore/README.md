@@ -43,7 +43,14 @@ running task would kill itself.
 The production templates use the two repository records declared in
 [`repositories.yml`](repositories.yml): `agent-cloud` (branch `main`) and
 `agent-cloud dev` (branch `dev`). A template names its record with `repository:`
-in `templates.yml`; `dev_variant: true` generates the `(Dev)` twin bound to `dev`.
+in `templates.yml`; `dev_variant: true` generates the `(Dev)` twin bound to `dev`,
+its `service_branch` survey defaulting to `dev`. That default is a form value only:
+Semaphore never applies survey defaults to a task created through the API (upstream
+issue #2244; no default merge in v2.17.31 `LocalJob.go` or v2.19.11
+`local_executor.go`), so the launcher below fills them, and the shared placement
+(`tasks/assert-placement-branch.yml`) refuses to check out `main` on a target from a
+playbook running on another named branch unless `-e allow_cross_branch_placement=true`
+(`docs/MISTAKES.md` 3.12).
 **No production feature-branch record is declared, and a production template cannot run a
 feature branch either.** On v2.19.11, the pinned production version, the runner applies a
 task's `git_branch` only when the template sets `allow_override_branch_in_task`
@@ -109,8 +116,9 @@ scripted path exist and are recorded here so it is built once, deliberately:
    can arrive after secrets are written. Launch with
    [`scripts/semaphore-launch.py`](../../scripts/semaphore-launch.py): it builds the
    body with the flags in `params`, refuses check mode on a server version whose
-   shape is unverified, allows only the template's declared survey fields, and
-   refuses while the template already has a running task, all before the POST.
+   shape is unverified, allows only the template's declared survey fields, fills a
+   declared field left unset with its declared `default_value` as the web form does,
+   and refuses while the template already has a running task, all before the POST.
    Its read-back-and-stop after the POST is only a tripwire for a changed server; `GET /api/project/{project_id}/tasks/{task_id}`
    for status; `GET .../tasks/{task_id}/output` for the log. Endpoint shapes are
    from the upstream `api-docs.yml` on the `develop` branch (read 2026-09-14) and

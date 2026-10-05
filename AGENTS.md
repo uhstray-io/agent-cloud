@@ -265,7 +265,7 @@ All deployment automation is built from reusable Ansible tasks. See `plan/archit
 | `tasks/deploy-orb-agent.yml` | Start privileged orb-agent with vault-integrated config |
 | `tasks/clean-service.yml` | Destroy containers, volumes, clone for full rebuild |
 | `tasks/clone-and-deploy.yml` | Clone monorepo, run deploy.sh, health check (legacy services) |
-| `tasks/place-monorepo.yml` | Put the monorepo on the target (clone in prod, copy the working tree in local-dev) — the shared Phase-1 preamble for composable deploys |
+| `tasks/place-monorepo.yml` | Put the monorepo on the target (clone in prod, copy the working tree in local-dev) — the shared Phase-1 preamble for composable deploys. Refuses to clone `main` from a playbook running on another named branch (a `(Dev)` template launched without `service_branch`); `-e allow_cross_branch_placement=true` places it on purpose |
 | `tasks/enable-linger.yml` | Linger plus podman's user boot unit, so rootless `restart: always` containers survive a reboot (linger alone does not). Included by `place-monorepo.yml`; takes an optional `linger_user` for a dedicated service account |
 | `tasks/assert-bao-transport.yml` | Refuse to send secret material over public cleartext. Included by every play that reaches OpenBao — and by any other endpoint that receives a token, via `_assert_url_label` |
 | `tasks/site-config-clone.yml` / `tasks/site-config-push.yml` | Clone site-config on a fresh branch with the deploy key the caller read from OpenBao (0600 inside the scratch dir, `IdentitiesOnly`, pinned host keys), then stage one path, commit, push and report names only. The shared path both backup playbooks use; the caller wipes the dir in `always:` |
