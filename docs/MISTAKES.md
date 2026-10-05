@@ -155,6 +155,7 @@ and why.
 | 10.20 | Recorded "no leaf declared, nothing is issued" for the CA; an empty or absent step-ca policy issues any name, and the probe retirement would have removed the only restriction | Assumed runtime semantics | 1 | Test (`test_step_ca_deploy.py`, mutation-checked) |
 | 10.21 | Checked-in ruleset declared `active`; the live one was `evaluate` and `main` was unprotected | Config drift | 1 | Convention (scheduled live-vs-JSON check proposed) |
 | 10.22 | A dashboard panel was renamed and the deploy's verify kept the old title; only a production run compared them | Mechanism never exercised | 1 | Test (`test_o11y_dashboard_asserts.py`, mutation-checked) |
+| 10.23 | The main-to-dev sync failed on every workflow-file change from 2026-08-28; a promotion would have reverted two action bumps on `main` | Mechanism never exercised | 1 | CI (`Promotion source (dev -> main)` ancestry step; `test_promotion_source_guard.py`, mutation-checked) |
 | 11.1 | 76 assertions across the suite could never fail — `!` and `[[ ]]` are exempt from `set -e` | False-green test | 1 | **Ratchet test** (`test_assertions_are_real.bats` + `known_inert_assertions.txt`) |
 | 11.2 | Sourced a config file instead of reading it, turning every credential into shell code | Live-state damage | 1 | Test |
 | 11.3 | Committed without running the suite — third occurrence | Process | 1 | Pre-push hook (status note 2026-10-02) |
@@ -4074,6 +4075,34 @@ dashboard's register to its uid and requires every asserted title once among tha
 dashboard's top-level panels, and each asserted metric name in that panel's queries. It
 reports the line and the closest committed title. Reverting the fix makes it fail at line
 1049.
+
+### 10.23 The main-to-dev sync failed on every workflow-file change; a promotion would have reverted them
+
+**What happened.** Dependabot bumped `actions/setup-python` and `actions/setup-go` from 6 to
+7 directly on `main` (PRs #120 and #121, 2026-08-28). Both `sync-main-to-dev.yml` runs that
+followed failed: GitHub rejected the push to `dev` with "refusing to allow a GitHub App to
+create or update workflow `.github/workflows/lint-and-test.yml` without `workflows`
+permission". The instructions said the sync carries `main`-only changes such as dependabot
+bumps back into `dev`, and nobody read the failed runs on `main`'s Actions tab. Five weeks
+later the review of the `dev` → `main` promotion PR #447 found it would put both actions
+back to v6 on `main`.
+
+**Root cause.** The sync was documented as the mechanism that keeps `dev` current with
+`main`, but it had only ever been seen succeeding on changes outside `.github/workflows/`.
+`GITHUB_TOKEN` cannot be granted the `workflows` permission, so that class of change could
+never sync, and a failed run on a push-triggered workflow notifies no one who is looking.
+Nothing at the promotion checked that `dev` actually contained `main`.
+
+**The rule.** A promotion into `main` requires `main` to be an ancestor of the PR head. When
+it is not, merge `main` into `dev` through a feature PR (a real merge, never a rebase) before
+promoting. Do not assume the sync ran; its job is a convenience, not the guarantee.
+
+**Enforced by.** CI: the `Promotion source (dev -> main)` required check
+(`.github/workflows/enforce-promotion-source.yml`) fetches `main` and fails with
+`::error` when `git merge-base --is-ancestor` says the head lacks a commit on `main`.
+`platform/tests/test_promotion_source_guard.py` runs that step's own script against
+throwaway repositories; removing the fetch, the `exit 1`, the error/non-ancestor split or the
+full-history checkout each turns one of its tests red.
 
 ## 11. The largest one
 
