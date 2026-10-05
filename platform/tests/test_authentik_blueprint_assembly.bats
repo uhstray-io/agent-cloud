@@ -81,3 +81,27 @@ _changed() { grep -oE 'changed=[0-9]+' <<<"$out" | head -1 | cut -d= -f2; }
   [ -f "$T/deploy/blueprints-active/app-b.yaml" ]
   [ "$before" = "$(cd "$T/deploy" && find . -type f -exec shasum {} + | sort)" ]
 }
+
+@test "blueprint assembly: a hidden stale file is pruned" {
+  _run '["a"]'
+  printf 'stale\n' > "$T/deploy/blueprints-active/.foo.yaml"
+  _run '["a"]'
+  [ ! -e "$T/deploy/blueprints-active/.foo.yaml" ]
+  [ "$(_changed)" -eq 1 ] || { echo "$out"; false; }
+}
+
+@test "blueprint assembly: a stale symlink is pruned, its target untouched" {
+  _run '["a"]'
+  printf 'outside\n' > "$T/outside.yaml"
+  ln -s "$T/outside.yaml" "$T/deploy/blueprints-active/link.yaml"
+  _run '["a"]'
+  [ ! -L "$T/deploy/blueprints-active/link.yaml" ]
+  [ "$(cat "$T/outside.yaml")" = "outside" ]
+  _run '["a"]'
+  [ "$(_changed)" -eq 0 ] || { echo "$out"; false; }
+}
+
+@test "blueprint assembly: first-ever --check (dir absent) succeeds and writes nothing" {
+  _run '["a","b"]' --check
+  [ ! -e "$T/deploy/blueprints-active" ]
+}
