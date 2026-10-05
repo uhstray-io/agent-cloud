@@ -551,10 +551,11 @@ def test_a_complete_gateway_identity_passes_and_derives_the_gateway_path(tmp_pat
 
 
 @needs_ansible
-def test_a_gateway_bound_to_one_address_is_reached_there(tmp_path):
-    done, derived = _gateway_identity(tmp_path, gw={"agw_bind": "192.0.2.20"})
+@pytest.mark.parametrize("bind", ["192.0.2.20", "255.255.255.254", "203.0.113.0", "198.51.100.199"])
+def test_a_gateway_bound_to_one_address_is_reached_there(tmp_path, bind):
+    done, derived = _gateway_identity(tmp_path, gw={"agw_bind": bind})
     assert done.returncode == 0, done.stdout + done.stderr
-    assert derived["address"] == "192.0.2.20"
+    assert derived["address"] == bind
 
 
 @needs_ansible
@@ -575,6 +576,11 @@ def test_a_gateway_bound_to_one_address_is_reached_there(tmp_path):
     ({"o11y": {"agw_verify_base_url": None}}, "renewal proof path not declared on this host"),
     ({"o11y": {"agw_verify_base_url": "https://gateway.lab.example.test:4001"}}, "renewal proves another path"),
     ({"o11y": {"o11y_inference_probe_key_field": "direct_o11y-probe"}}, "a direct vLLM key"),
+    ({"o11y": {"o11y_inference_probe_key_field": "client_stray"}}, "another enrolled client's key"),
+    ({"gw": {"ansible_host": "999.999.999.999"}}, "an address with octets above 255"),
+    ({"gw": {"ansible_host": "256.1.1.1"}}, "an address with one octet above 255"),
+    ({"gw": {"agw_bind": "192.0.2.1.5"}}, "five octets"),
+    ({"gw": {"ansible_host": "gateway-vm"}}, "an inventory name, not an address"),
     ({"o11y": {"o11y_inference_probe_key_service": "o11y"}}, "key from a service other than the gateway"),
 ])
 def test_an_incomplete_gateway_identity_is_refused(tmp_path, inv, why):

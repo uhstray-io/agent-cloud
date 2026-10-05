@@ -33,14 +33,19 @@
 #                     miss fails and names Deploy agentgateway, the one writer. Used by the
 #                     daily renewal, which must not gain sudo or OpenBao dependencies.
 
-- name: "Probe resolution: refuse an empty server name"
+# Both values are written into one hosts line, so each must be exactly one token of its
+# kind: a DNS name, and (interim mode) a dotted-quad IPv4 address with every octet 0-255. A
+# value such as 999.1.1.1 would otherwise be written and break resolution for the name.
+- name: "Probe resolution: refuse an empty or malformed server name or address"
   ansible.builtin.assert:
     that:
-      - _agwr_name | default('') | length > 0
-      - (agw_internal_dns_authoritative | default(false) | bool) or (_agwr_ip | default('') | length > 0)
+      - _agwr_name | default('') is match('^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?([.][A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*$')
+      - >-
+        (agw_internal_dns_authoritative | default(false) | bool)
+        or (_agwr_ip | default('') is match('^((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])[.]){3}(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])$'))
     fail_msg: >-
-      agw-probe-resolution needs _agwr_name (the server leaf SAN){{ '' if (agw_internal_dns_authoritative
-      | default(false) | bool) else ' and _agwr_ip (the published bind)' }}.
+      agw-probe-resolution needs _agwr_name (the server leaf SAN, a DNS name){ '' if (agw_internal_dns_authoritative
+      | default(false) | bool) else ' and _agwr_ip (the published bind, an IPv4 address)' }.
     quiet: true
 
 - name: "Probe resolution: map the server leaf's name to the published bind (interim, task 7.2)"

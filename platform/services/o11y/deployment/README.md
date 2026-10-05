@@ -245,15 +245,19 @@ anything is placed, the deploy refuses the declaration unless all of these hold:
   403 even with a valid key.
 - one `internal_leaves` entry of that name: profile `client`, host this o11y host, reload
   `none`.
-- `o11y_inference_probe_key_field` is `client_<name>` for a name in the gateway's
-  `agw_clients`, read from `agentgateway`.
+- `o11y_inference_probe_key_field` is `client_<leaf name>`, read from `agentgateway`,
+  and the leaf name is in the gateway's `agw_clients`. The key is the leaf's own
+  identity. Another client's key would put the probe's traffic on that client's
+  budget and dashboards, so it is refused even when that client is enrolled.
 - `o11y_inference_probe_url` is exactly `https://<gateway server name>:<agw_port>/v1`, and
   this host declares `agw_verify_base_url` as the same URL without `/v1`. The daily
   `Renew Internal Certs (Dev)` proves a per-call client leaf off the gateway host through
   that variable and refuses the whole run for a leaf it cannot prove, so the probe and the
   renewal proof must use one path.
 - one `step_ca_svc` host, and the gateway published on a non-loopback IPv4 address (its
-  `agw_bind`, or its `ansible_host` when it binds every interface).
+  `agw_bind`, or its `ansible_host` when it binds every interface), with every octet
+  0-255. The shared resolution step refuses a malformed name or address too, before it
+  writes the hosts line.
 - the leaf has been issued: `current/cert.pem` and `current/key.pem` exist, and the key is
   mode 0600 and owned by the deploy user, which the probe unit runs as.
 

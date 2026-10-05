@@ -357,18 +357,21 @@
           - _leaf[0].host | default('') == inventory_hostname
           - _leaf[0].reload | default('') == 'none'
           - o11y_inference_probe_key_service | default('agentgateway') == 'agentgateway'
-          - o11y_inference_probe_key_field | default('') is match('^client_[a-z0-9][a-z0-9-]*$')
-          - o11y_inference_probe_key_field[7:] in (hostvars[_probe_gw].agw_clients | default([]))
+          # The key is the leaf's own identity: another client's key would bill and attribute
+          # the probe's traffic to that client (config.yaml.j2 keys budgets by identity).
+          - o11y_inference_probe_key_field | default('') == 'client_' ~ _probe_leaf_name
+          - _probe_leaf_name in (hostvars[_probe_gw].agw_clients | default([]))
           - o11y_inference_probe_url == _base ~ '/v1'
           - agw_verify_base_url | default('') == _base
           - groups.get('step_ca_svc', []) | length == 1
-          - _probe_gw_address is match('^(?!127[.])[0-9]{1,3}([.][0-9]{1,3}){3}$')
+          - _probe_gw_address is match('^((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])[.]){3}(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])$')
+          - not (_probe_gw_address is match('^127[.]'))
         fail_msg: >-
           o11y_inference_probe_client_leaf={{ _probe_leaf_name }} needs: one agentgateway_svc host
           with agw_listener_tls and {{ _probe_leaf_name }} in its agw_client_cert_allowlist; one
           internal_leaves entry {{ _probe_leaf_name }} (profile client, host {{ inventory_hostname }},
-          reload none); o11y_inference_probe_key_field client_<name> for a name in the gateway's
-          agw_clients (key service agentgateway); o11y_inference_probe_url {{ _base }}/v1 and, on this
+          reload none); o11y_inference_probe_key_field client_{{ _probe_leaf_name }}, with {{ _probe_leaf_name }}
+          in the gateway's agw_clients (key service agentgateway); o11y_inference_probe_url {{ _base }}/v1 and, on this
           host, agw_verify_base_url {{ _base }} (the renewal's proof path); one step_ca_svc host; and
           the gateway published on a non-loopback IPv4 address.
         quiet: true
