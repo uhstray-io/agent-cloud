@@ -349,10 +349,10 @@ _render_ui() {  # $1 = true|false|unset ; renders into $BATS_TEST_TMPDIR/<name>
   vars:
     $flag
     agw_otlp_host: "${2:-}"
-    agw_clients: [stray]
+    agw_clients: [workstation]
     agw_models: [{name: m}]
     agw_upstream_base_url: "http://upstream.invalid:8000/v1"
-    secrets: {client_stray: k, vllm_api_key: v, agw_db_password: p, agw_oidc_cookie_seed: s, agentgateway_oidc_client_secret: c}
+    secrets: {client_workstation: k, vllm_api_key: v, agw_db_password: p, agw_oidc_cookie_seed: s, agentgateway_oidc_client_secret: c}
   tasks:
     - ansible.builtin.template: {src: "$DEPLOY_DIR/templates/config.yaml.j2", dest: "$BATS_TEST_TMPDIR/config.yaml", mode: "0644"}
     - ansible.builtin.template: {src: "$DEPLOY_DIR/templates/env.j2", dest: "$BATS_TEST_TMPDIR/env", mode: "0600"}

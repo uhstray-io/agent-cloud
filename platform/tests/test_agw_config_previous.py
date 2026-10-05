@@ -34,8 +34,8 @@ HASHED_LOCAL = {"local_mode": True, "agw_plaintext_keys": False}
 
 
 def _hosts(key: str, **hv) -> dict:
-    return {"agw_clients": ["stray"], "agw_models": [{"name": "m"}], "agw_upstream_base_url": "http://u.invalid/v1",
-            "secrets": {"client_stray": key, "vllm_api_key": "v", "agw_db_password": "p",
+    return {"agw_clients": ["workstation"], "agw_models": [{"name": "m"}], "agw_upstream_base_url": "http://u.invalid/v1",
+            "secrets": {"client_workstation": key, "vllm_api_key": "v", "agw_db_password": "p",
                         "agw_oidc_cookie_seed": "s", "agentgateway_oidc_client_secret": "c"}, **hv}
 
 
