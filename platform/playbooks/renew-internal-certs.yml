@@ -163,6 +163,9 @@
       {%- endfor -%}
       {{ {'errors': errs, 'plan': plan} | to_json }}
   tasks:
+    - name: "Require the inventory to have parsed"
+      ansible.builtin.include_tasks: tasks/require-parsed-inventory.yml
+
     # Without the o11y host there is nowhere to report a refusal, so this one fails at once.
     - name: "Require one o11y host"
       ansible.builtin.assert:

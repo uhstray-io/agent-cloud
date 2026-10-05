@@ -74,6 +74,12 @@
           unconditionally, which is worse than not having it.
         quiet: true
 
+    # Every caller benefits: an unparsed inventory is named as such, not as one empty group.
+    - name: "Require the inventory to have parsed"
+      ansible.builtin.include_tasks: tasks/require-parsed-inventory.yml
+      vars:
+        require_parsed_inventory_group: "{{ preflight_group }}"
+
     - name: "Require the group to exist and contain at least one host"
       ansible.builtin.assert:
         that:

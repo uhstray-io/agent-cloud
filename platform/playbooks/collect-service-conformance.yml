@@ -74,17 +74,9 @@
           - (semaphore_url | default(_semaphore_url)) == 'http://127.0.0.1:3000'
         fail_msg: "The collector may only use the controller's fixed loopback API."
 
-    # Semaphore task 2858 failed the OTLP guard below while 2853, same template and inputs,
-    # passed: its log showed "Unable to parse .../inventory_N.yml" and "No inventory was
-    # parsed", so every group was empty. That is a missing inventory, not a mismatched
-    # receiver; name it as such so the flap is diagnosed at its cause.
-    - name: "Require the production inventory to have parsed"
-      ansible.builtin.assert:
-        that:
-          - groups.get('all', []) | length > 0
-        fail_msg: >-
-          No inventory host was parsed (the Semaphore inventory file was unreadable or empty
-          for this run); refusing to judge the OTLP destination against an empty inventory.
+    # An unparsed inventory empties every group; name that before the OTLP guard reads them.
+    - name: "Require the inventory to have parsed"
+      ansible.builtin.include_tasks: tasks/require-parsed-inventory.yml
       when: not (local_mode | default(false) | bool)
 
     - name: "Require the exact private Alloy OTLP/HTTP destination in production"
