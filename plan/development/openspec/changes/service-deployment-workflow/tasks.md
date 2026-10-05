@@ -94,6 +94,11 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
         - Still open: Apply Firewall fails its check-mode verify (fix in a separate PR); Harden
           SSH waits on the pre-proof change; Destroy VM is held for the operator. Snapshot VM
           and Create VM Template have no `(Dev)` variant. 2.2 stays open.
+      - 2026-10-05: Apply Firewall (Dev) dry run passes (2756, after #432); Harden SSH (Dev) dry
+        run records `skip` with `key_only_proven` true and a would-change list (2859, after #430
+        and #439). Destroy VM is still held for the operator; Snapshot VM and Create VM Template
+        still have no `(Dev)` variant. 2.2 stays open. Task ids in design "Production `(Dev)` dry
+        runs — 2026-10-04".
 - [x] 2.3 Wave 2, the remaining playbooks, grouped by service; same patterns and runs.
       2026-09-22: 67 files (161 reads, 27 logins, 125 skips) applied from the guard's own
       findings; normal runs are unchanged by construction (every guard is inert without
@@ -244,6 +249,12 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
         was stamped: a stamp lets the main-bound base template run, and on `main` no executor
         records a step result and six executor playbooks do not exist, so stamps wait on the
         dev to main promotion.
+      - 2026-10-05: re-review on `dev` at 95a498a3 (`d10-review.md`). access-harden now passes
+        (key-only login proven before anything is edited, #430; a dry run records `skip`, #439);
+        oidc-config passes (recreate only on change, #438 and #444; live: Deploy Authentik 2899
+        reported no change after the forced recreate 2896); edge-route still passes. edge-dns
+        stays a gap: a dry run's `tofu init` writes `.terraform/`. No stamp, for the same
+        `main` hazard.
 - [x] 7.2 `provision-vm.yml` sets `onboot`; restart-policy check beside `enable-linger`.
       2026-09-22: onboot with per-host opt-out; `verify-service-persistence.yml` (step
       systemd-enablement) passes on local tududi, normal and check mode (tasks 977, 978)

@@ -96,6 +96,10 @@
       (1403, 1822, 1830, 1851) and https://o11y.uhstray.io serves Grafana. No receipt shows a
       no-change second deploy or a refused LAN curl to the Grafana port. Blocked by the full
       guest root (tasks 2103, 2115).
+      2026-10-05: convergence half PROVEN — Deploy o11y (Dev) task 2839 at `bdc13789` (first
+      change-aware deploy, `DEPLOY_CHANGED=true`), then task 2841 reported `changed=0`,
+      `DEPLOY_CHANGED=false`. Still open: no receipt of a refused LAN `curl` to the Grafana port,
+      so the front-door scenario is unproven and the box stays open.
 
 ## 2. Scrape the nodes, receive their logs
 - [x] 2.1 `config/prometheus.yml`: `scrape_config_files: [scrape.d/*.yml]`;
@@ -135,7 +139,7 @@
       proven by the 2.4 evidence. Still missing: the DGX exporter drill (2.5). The controller Mac's refused push is recorded: dgx-spark `node-telemetry-and-placement-benchmark` task 3.1 notes its push timed out while both Sparks' pushes returned 204.
 
 ## 3. Dashboards, alerts, synthetic probe
-- [ ] 3.1 Import the metric-name list from dgx-spark `results/vllm-metric-names-*.txt`
+- [x] 3.1 Import the metric-name list from dgx-spark `results/vllm-metric-names-*.txt`
       into `config/grafana/dashboards/inference-latency-capacity.json`; build
       `inference-fleet-health.json` and `inference-placement-comparison.json`
       (variable `model_alias`, link field to dgx-spark `results/`)
@@ -148,7 +152,9 @@
       commit carries the three `inference-*.json` files, but its readback checks only the
       self-monitoring and two agentgateway dashboards; nothing reads back an `inference-*`
       dashboard. Needs a readback or the 3.5 gate.
-- [ ] 3.2 `config/grafana/provisioning/alerting/inference.yml`: groups
+      2026-10-05: PROVEN at runtime. Deploy o11y (Dev) task 2839 at `bdc13789` reads back every
+      provisioned dashboard live (#434), the three `inference-*` dashboards included.
+- [x] 3.2 `config/grafana/provisioning/alerting/inference.yml`: groups
       `inference-failing`, `telemetry-missing`, `memory-thermal`, `benchmark-gate`
       (last one with a single placeholder rule marked disabled until the manifest metric
       exists); contact point Discord webhook from OpenBao `secret/services/o11y:discord_webhook`
@@ -169,6 +175,11 @@
       "Require expected o11y rules and active routed rules" filters uids on `^o11y_`
       (`deploy-o11y.yml:1083-1103`), so no `inference_` rule was read back live. The probe was
       disabled in that run (probe tasks skipped), so the two probe rules were not rendered.
+      2026-10-05: PROVEN at runtime. Deploy o11y (Dev) task 2839 at `bdc13789` asserts the live
+      rule set equals the provisioned one (#434), so the `inference_` rules are read back, not
+      only `o11y_`. unverified: whether the inference probe was enabled in 2839, which decides
+      whether its two rules were in the provisioned set. The contact point reads
+      `alert_discord_webhook_url`, not the `discord_webhook` field named above.
 - [ ] 3.3 Synthetic probe: `platform/services/o11y/deployment/probe/inference-probe.sh`
       (curl, one short chat completion, effort `none`, through
       `https://inference.uhstray.io/v1`, key from OpenBao at deploy into the gitignored

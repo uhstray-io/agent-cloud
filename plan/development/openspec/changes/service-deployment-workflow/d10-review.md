@@ -278,3 +278,37 @@ Two mutations each turned the tests red, and the file was restored byte-exact:
 - the no-op filter dropped.
 
 The edge-dns verdict is unchanged: gap.
+
+## Re-review — 2026-10-05
+
+Author: Joseph A. Wisneski IV — 2026-10-05
+
+Four steps re-checked on `dev` at 95a498a3, after #430, #436, #438, #439 and #444 merged. Line
+numbers are on that commit. Semaphore task ids are production runs launched by the operator's
+coordinating session.
+
+| Step | Playbook | Result emitted | Re-run | Group / failure handling | Guard | Verdict |
+|------|----------|----------------|--------|--------------------------|-------|---------|
+| access-harden | harden-ssh.yml | :473, controller play (:403) | `copy`/`lineinfile` (:161 on); sshd restarts only through the handler (:199). A fresh key-only login is probed (:118) before sudoers or sshd_config is touched, and a failed probe refuses with nothing edited (#430). A dry run records `skip` with a would-change list, never `pass`, unless the host already meets every criterion (:446, #439) | the controller play folds every host's verdict; an empty group or a host with no verdict fails | test_harden_proves_key_first.py, test_harden_check_mode_verdict.py, test_access_executors_step_result.py | **pass** |
+| oidc-config | deploy-authentik.yml | :473 (verify failed), :538 (last) | deploy.sh recreates only when an input or image changed (`compose_up_if_changed`, deploy.sh:47-50) and prints `DEPLOY_CHANGED`, which sets `changed` (:326). Active blueprints converge in place (#438). The operator lever `deploy_force_recreate` (:322, #444) accepts only the literal true | unchanged: preflight plus per-host verdicts folded into one result | test_service_executor_step_results.py | **pass** |
+| edge-route | manage-caddy-sites.yml | unchanged since 2026-10-04 (the playbook has no commit since 21891372) | unchanged | unchanged | test_service_executor_step_results.py, test_edge_route_group_preflight.py | **pass** |
+| edge-dns | apply-cloudflare-tofu.yml | unchanged | unchanged | unchanged | test_edge_dns_step_result.py | **gap**: a dry run still runs `tofu init` (:193-201), which writes `.terraform/` into the runner's checkout of the tofu root (the known limit at :176-179) |
+
+Live evidence:
+
+- oidc-config second run, no change: Deploy Authentik task 2896 forced a recreate
+  (`FORCE_RECREATE`, verify OK, 14 blueprints); the next normal run, 2899, reported `changed=0`,
+  `DEPLOY_CHANGED=false`, verify OK. The earlier tasks 2843 and 2846 belong to the stale-mount
+  incident recorded in `docs/MISTAKES.md` 3.11 (separate PR).
+- access-harden: the dry run 2859 against the o11y host recorded `skip`, `key_only_proven`
+  true, and a would-change list. A real hardening run has not happened; it is the operator's.
+
+Limit on access-harden: the criterion "sudo is passwordless for the management user" is
+converged by the sudoers write (validated by `visudo`), but no evidence key records a
+passwordless `sudo -n` probe. The criteria written for this step are what the evidence proves:
+`key_only_proven` and `password_rejected`.
+
+**Not stamped**, for the hazard recorded on 2026-10-04: a stamp lets the base template run
+from `main`, which does not carry these playbooks yet. access-harden, oidc-config and
+edge-route each carry the passing `review_gap`. Remaining gaps: edge-dns (dry run not
+read-only) and service-deploy.

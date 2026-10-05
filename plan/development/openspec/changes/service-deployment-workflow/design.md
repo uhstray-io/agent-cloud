@@ -140,6 +140,15 @@ against the o11y service. Each result is identified by its Semaphore task id.
 | Destroy VM (Dev) | | **held** | not run; waits on the operator |
 | Snapshot VM, Create VM Template | | not run | no `(Dev)` variant, so they are bound to main |
 
+2026-10-05, later runs on `dev`, launched by the coordinator against o11y:
+
+| Template | Target | Result | Notes |
+|---|---|---|---|
+| Apply Firewall (Dev) | o11y_svc | dry run pass (2756) | reports what it would change, after the check-mode verify fix (#432) |
+| Harden SSH (Dev) | o11y_svc | dry run `skip` (2859) | key-only login proven first (`key_only_proven` true, #430); `skip` with a would-change list, not `pass` (#439). A real run is the operator's |
+| Destroy VM (Dev) | | **held** | still waits on the operator |
+| Snapshot VM, Create VM Template | | not run | still no `(Dev)` variant |
+
 ## Goals / Non-Goals
 
 **Goals:**
