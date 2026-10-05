@@ -83,15 +83,18 @@
         _pve_secret: "{{ _pve_data.api_token }}"
       no_log: true
 
-    - name: Require Proxmox API over HTTPS with a stored token id
+    - name: Require Proxmox API over HTTPS
       ansible.builtin.assert:
-        that:
-          - _pve_host is match('^https://')
-          # No site default: the token id names a real Proxmox user.
-          - _pve_token_id | length > 0
+        that: _pve_host is match('^https://')
+        fail_msg: "The Proxmox API URL from OpenBao must use HTTPS."
+
+    # The token id names a real Proxmox user, so it comes from the store, never a default.
+    - name: Require the stored Proxmox token id
+      ansible.builtin.assert:
+        that: _pve_token_id | length > 0
         fail_msg: >-
-          secret/services/proxmox must give an HTTPS url and a token_id
-          (<user>@<realm>!<token-name>) beside api_token.
+          secret/services/proxmox has no token_id. Store the Proxmox API token id
+          (<user>@<realm>!<token-name>) beside api_token; there is no built-in default.
 
     - name: Read target VM record from Proxmox
       ansible.builtin.uri:
