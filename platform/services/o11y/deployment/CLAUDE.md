@@ -60,8 +60,9 @@ All default off, so declaring a value alone never starts a scrape or pages anyon
   for Tempo-derived metrics (`:306-310`).
 - Every `vllm:` and `node_` metric name used by a dashboard or alert rule must appear in
   the vendored fixtures under `platform/tests/fixtures/`; the o11y BATS suite enforces it.
-- The deploy readback covers `o11y_` rule uids only; the `inference_` rules are not read
-  back yet (README, "Inference dashboards and alerts").
+- The deploy readback requires the live rules in the provisioned folders and groups to
+  equal the rendered alert file, so it covers the `inference_` rules as well as the `o11y_`
+  ones; the drills check only `o11y_` rules (README, "Inference dashboards and alerts").
 
 ## Tests
 

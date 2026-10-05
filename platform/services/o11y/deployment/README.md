@@ -152,17 +152,21 @@ leaves the file, so turning a flag off would otherwise leave the rules live and 
   the dgx-spark benchmark manifest writer publishes a metric.
 
 Every rule holds for at least five minutes and routes to the existing `agent-cloud-ops`
-Discord contact point. Their uids start with `inference_`, so the deploy readback and the
-drills, which check only the `o11y_` rules, do not cover them yet.
+Discord contact point. Their uids start with `inference_`. The deploy readback covers
+them: it requires Grafana's live rules in the provisioned folders and groups to equal the
+rendered file, whatever the uid ("Require the live rule set to equal the provisioned
+rules" in `deploy-o11y.yml`). The drills check only the `o11y_` rules, so they do not
+cover these yet.
 
 ## Synthetic inference probe
 
 `/health` answering means the host is reachable. It does not mean the model is serving.
-The probe sends one short chat completion through the public inference hostname every
-five minutes and records the result as metrics. It sets `reasoning_effort: none` and
-`max_tokens: 16`. Because it uses the public hostname, it goes through Cloudflare, Caddy
-and the gateway, the same path a client uses. This is task 3.3 of
-`inference-telemetry-production`.
+The probe sends one short chat completion every five minutes and records the result as
+metrics. It sets `reasoning_effort: none` and `max_tokens: 16`. By default it uses the
+public inference hostname, so it goes through Cloudflare, Caddy and the gateway, the same
+path a client uses. With a gateway client identity (below) it goes straight to the
+gateway's mutual-TLS listener instead, which is how production runs it until the public
+route points at the gateway. This is task 3.3 of `inference-telemetry-production`.
 
 The probe is off unless private inventory sets `o11y_inference_probe_enabled: true`.
 With the flag off, `Deploy o11y` reads the same secrets and renders the same files and
@@ -288,17 +292,22 @@ gitignored.
 
 Caveats:
 
-- **Rollback.** During a `direct`-mode rollback (`rollback-inference-route.yml`), vLLM
-  does not accept gateway keys, so the probe records failures. To keep it green, point
-  `o11y_inference_probe_key_field` at the published `direct_<name>` field until the route
-  is restored.
+- **Rollback.** On the public path, a `direct`-mode rollback (`rollback-inference-route.yml`)
+  points the route at vLLM, which does not accept gateway keys, so the probe records
+  failures. To keep it green, point `o11y_inference_probe_key_field` at the published
+  `direct_<name>` field until the route is restored. The gateway client-identity path does
+  not use the route: that mode moves only Caddy and leaves the gateway running, so the
+  probe keeps its `client_<name>` key (and a `direct_` field is refused there).
 - **Local canary.** The local-only `Drill o11y Alert Canary` restarts the stack through
   `deploy.sh` without this overlay. On that host the textfile collector stays off until
   the next deploy.
-- **Not yet verified.** The o11y host's egress to the public hostname, and whether the
-  served model accepts `reasoning_effort: none`, are not verified until the first enabled
-  deploy. The gateway client-identity path is tested against a stub curl and the deploy's
-  own refusals only; no enabled deploy or renewal proof has run it.
+- **Runtime evidence and gaps.** The first enabled production deploy (2026-10-05, Deploy
+  o11y (Dev) task 2967) ran the gateway client-identity path: its forced sample read back
+  success 1 for the configured model, so the served model accepts `reasoning_effort: none`
+  through the gateway. Still unproven: a renewal run that re-issues the probe's leaf and
+  proves it from the o11y host (task 2969 was a dry run, with the leaf outside its renewal
+  window), and the public path, including the o11y host's egress to the public hostname,
+  which the probe does not use until the route points at the gateway (gateway task 4.3).
 
 ## Scheduled jobs and internal CA expiry
 
