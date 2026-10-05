@@ -28,6 +28,12 @@
       - (monorepo_repo is defined) or (local_mode | default(false) | bool)
     fail_msg: "Missing required variables for place-monorepo.yml"
 
+- name: "Refuse to place main from a non-main checkout"
+  # The playbook's checkout and _branch are two selectors for one deploy; this makes
+  # them agree (docs/MISTAKES.md 3.12). Local mode copies the checkout, so they cannot differ.
+  ansible.builtin.include_tasks: assert-placement-branch.yml
+  when: not (local_mode | default(false) | bool)
+
 - name: "Install git if needed"
   ansible.builtin.apt:
     name: git

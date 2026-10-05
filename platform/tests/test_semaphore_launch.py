@@ -92,6 +92,44 @@ def test_undeclared_survey_values_are_refused_before_any_task():
     assert posts(api) == []
 
 
+def dev_template(api, default="dev"):
+    api.template["survey_vars"] = [
+        {"name": "service_branch", "type": "string", "default_value": default},
+        {"name": "confirm", "type": "string", "required": True},
+    ]
+
+
+def test_an_omitted_survey_field_gets_its_declared_default_as_the_web_form_does():
+    # Semaphore fills survey defaults only in its form (upstream #2244): without this, a
+    # (Dev) launch with no --set ran with service_branch absent and placed main (MISTAKES 3.12).
+    api = FakeAPI()
+    dev_template(api)
+    launcher.launch(api, "Deploy agentgateway (Dev)", {}, dry_run=False)
+    assert json.loads(api.created["environment"]) == {"service_branch": "dev"}
+
+
+def test_an_explicit_survey_value_wins_over_the_declared_default():
+    api = FakeAPI()
+    dev_template(api)
+    launcher.launch(api, "Deploy agentgateway (Dev)", {"service_branch": "feat/x"}, dry_run=False)
+    assert json.loads(api.created["environment"]) == {"service_branch": "feat/x"}
+
+
+def test_a_field_without_a_default_stays_absent():
+    api = FakeAPI()
+    launcher.launch(api, "Deploy agentgateway (Dev)", {}, dry_run=False)
+    assert "environment" not in api.created
+
+
+@pytest.mark.parametrize("default", [["dev"], {"values": ["dev"]}, 3])
+def test_a_non_string_default_is_refused_before_any_task(default):
+    api = FakeAPI()
+    dev_template(api, default)
+    with pytest.raises(launcher.Refusal, match="non-string default"):
+        launcher.launch(api, "Deploy agentgateway (Dev)", {}, dry_run=False)
+    assert posts(api) == []
+
+
 def test_a_running_task_on_the_template_refuses_a_second():
     api = FakeAPI(busy=True)
     with pytest.raises(launcher.Refusal, match="already has a running task"):

@@ -90,6 +90,7 @@ and why.
 | 3.9 | A mutation test aimed a playbook write at `~/.ssh/known_hosts`; the harness ran it for real on the workstation and overwrote the operator's real known_hosts | Live state | 1 | Test (pinned targets + definitions, before every run) + runtime path asserts against an inline root + default-deny sandboxed harness on macOS/bwrap; CI has no kernel sandbox |
 | 3.10 | A test wrote scratch playbooks into the tracked tree and raced parallel tests that glob it | Working-tree damage | 1 | Convention (session-end tree check proposed) |
 | 3.11 | Made a deploy stop recreating containers without auditing a step that relied on it; a directory reset under a live bind mount emptied Authentik's custom blueprints in prod | Live state | 1 | Test (`test_no_bind_mount_dir_delete.py` + FORCE_RECREATE case in `test_compose_up_if_changed.bats`) |
+| 3.12 | Launched two `(Dev)` deploys through the API without `service_branch`; Semaphore applies survey defaults only in its form, so both hosts checked out `main` under Dev playbooks | Live state | 1 | Playbook guard (`assert-placement-branch.yml`) + launcher default fill + tests (`test_placement_branch_guard.py`, `test_semaphore_launch.py`, mutation-checked) |
 | 4.1 | `while read` silently dropped an unterminated final line | Data handling | 1 | Convention |
 | 4.2 | Stored `.env` values without stripping surrounding quotes | Data handling | 1 | Convention |
 | 4.3 | Used a real internal IP address as a test vector | Data leak | 1 | Pre-commit (existing) |
@@ -2060,6 +2061,49 @@ Authentik and o11y bind sources.
 task 2896, recreated the project ("operator requested FORCE_RECREATE=true") and its verify
 reported 14 blueprints applied. The normal deploy after it, task 2899, reported
 `DEPLOY_CHANGED=false`, changed=0, with 14 blueprints OK.
+
+### 3.12 Two `(Dev)` deploys checked out `main` on their hosts, because the API launch carried no survey defaults
+
+**What happened.** On 2026-10-05 the coordinating session launched `Deploy step-ca (Dev)`
+(Semaphore task 2954) and `Deploy agentgateway (Dev)` (task 2956) through the Semaphore API
+without `service_branch`. Both templates run their playbooks from the `agent-cloud dev`
+repository record, and both are declared with a `service_branch` survey defaulting to `dev`. The tasks were created with no environment, so every deploy's
+`_branch: "{{ service_branch | default('main') }}"` resolved to `main`, and
+`tasks/place-monorepo.yml` checked `main` out on each host. `main` does not carry the
+agentgateway deployment yet: task 2956 failed with rc 127, `bash: deploy.sh: No such file or
+directory`, and its check-mode retry (task 2958) failed on a missing `gateway-addr.sh`,
+because check mode skips the clone. Task 2954 reported success while placing `main` on the
+CA host. `deploy.sh` never ran, so no container changed, but both host checkouts silently
+regressed to the production branch. Recovered by relaunching with `service_branch=dev`
+(tasks 2959, 2960 and 2961).
+
+**Root cause.** Two independent selectors decide which code one deploy uses: the repository
+record the template runs from, and `service_branch`, whose fallback in every deploy playbook is
+`main`. The only link between them was the survey default, and Semaphore applies survey
+defaults in its web form alone. No default merge exists in v2.17.31 `services/tasks/LocalJob.go`
+or v2.19.11 `services/tasks/local_executor.go`; upstream tracks it as issue #2244. The
+launcher sent only what `--set` named, and nothing checked that the playbook's own checkout and
+the placement agreed.
+
+**The rule.** A deploy playbook running from a non-`main` branch may place `main` on a target
+only when the operator says so explicitly. An API launch sends every declared survey default
+the web form would send; an explicit value always wins.
+
+**Enforced by.** Playbook guard plus tests. `platform/playbooks/tasks/assert-placement-branch.yml`,
+included before the clone in both `place-monorepo.yml` and `clone-and-deploy.yml`, reads the
+controller checkout's branch (`git rev-parse --abbrev-ref HEAD`, on localhost, also under
+`--check`) and refuses `main` from any other named branch unless
+`-e allow_cross_branch_placement=true`. A detached or missing checkout refuses nothing, and
+the documented feature-branch deploy from a `main`-bound template still passes.
+`scripts/semaphore-launch.py` fills each omitted declared field with its string
+`default_value`, and refuses a non-string default rather than guess its form semantics.
+`platform/tests/test_placement_branch_guard.py` runs the guard from throwaway checkouts and
+holds every Dev-bound template that reads `service_branch` to a published default of `dev`.
+`platform/tests/test_semaphore_launch.py` covers the default fill and precedence. Each guard
+was mutation-checked. Four playbooks clone with their own `ansible.builtin.git` task instead of
+the shared ones (`deploy-openhands.yml`, `deploy-wisbot.yml`, `deploy-inference-comfyui.yml`,
+`deploy-inference-hunyuan3d.yml`). None has a Dev-bound template today, and the guard does not
+cover them.
 
 ## 4. Data handling
 

@@ -10,6 +10,10 @@
 #   health_status_codes   — Accepted HTTP codes (default [200])
 #   openbao_addr          — OpenBao address for deploy.sh (via _bao_url)
 
+- name: "Refuse to place main from a non-main checkout"
+  # Same guard as place-monorepo.yml (docs/MISTAKES.md 3.12).
+  ansible.builtin.include_tasks: assert-placement-branch.yml
+
 - name: "Install git if needed"
   ansible.builtin.apt:
     name: git

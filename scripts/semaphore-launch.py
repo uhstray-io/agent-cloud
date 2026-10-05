@@ -10,7 +10,11 @@ of PR #220). The gate is therefore this launcher, before the POST:
      (Semaphore v2.17 db/Task.go AnsibleTaskParams); a top-level `dry_run` is ignored;
   2. a dry run is refused on any server version whose `params` shape has not been
      verified (VERIFIED_DRY_RUN_VERSIONS);
-  3. survey values must be the template's own declared survey fields.
+  3. survey values must be the template's own declared survey fields;
+  4. a declared field left unset gets its declared default_value, as the web form does.
+     Semaphore fills survey defaults only in its form, never for an API-created task
+     (upstream issue #2244): a "(Dev)" template launched without service_branch otherwise
+     runs with it absent, and the deploy places main (docs/MISTAKES.md 3.12).
 
 After the POST, the recorded task is read back as a tripwire: if the server did not
 record check mode the task is stopped and the launch exits non-zero. That catches a
@@ -50,12 +54,29 @@ def parse_settings(pairs):
     return settings
 
 
+def with_survey_defaults(template, settings):
+    """Explicit values win over declared defaults, the precedence the web form uses."""
+    merged = {}
+    for var in template.get("survey_vars") or []:
+        name, default = var.get("name"), var.get("default_value")
+        if name in settings or default in (None, ""):
+            continue
+        # v2.17 declares default_value as a string (db/Template.go SurveyVar). Any other
+        # shape is a server whose form semantics were not read: refuse rather than guess.
+        if not isinstance(default, str):
+            raise Refusal(f"Survey field {name!r} of {template['name']!r} has a non-string default; "
+                          "pass it explicitly with --set")
+        merged[name] = default
+    return {**merged, **settings}
+
+
 def build_task(template, project, settings, dry_run, message):
     """The exact POST body. Check mode lives in `params`, never at the top level."""
     declared = {v.get("name") for v in template.get("survey_vars") or []}
     unknown = sorted(set(settings) - declared)
     if unknown:
         raise Refusal(f"Not survey fields of {template['name']!r}: {', '.join(unknown)}")
+    settings = with_survey_defaults(template, settings)
     body = {"project_id": project, "template_id": template["id"], "message": message}
     if settings:
         body["environment"] = json.dumps(settings)

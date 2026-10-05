@@ -1,0 +1,52 @@
+---
+# assert-placement-branch.yml — refuse to place production code from a non-production
+# checkout. Included by every task that clones the monorepo onto a target at _branch
+# (place-monorepo.yml, clone-and-deploy.yml).
+#
+# Two branch selectors decide one deploy and nothing made them agree: the Semaphore
+# repository record a template runs from (the playbook's own checkout) and _branch, which
+# every deploy computes as `service_branch | default('main')`. Semaphore applies a survey's
+# default_value only in its web form, never to a task created through the API (upstream
+# issue #2244), so a "(Dev)" template launched without service_branch ran Dev playbooks
+# while checking out main on the host — the host lost the Dev-only deploy files mid-deploy
+# (docs/MISTAKES.md 3.12).
+#
+# The refusal is deliberately narrow: a playbook running from a named branch other than
+# main may not place main. The documented branch-deploy flow (a main-bound template with
+# service_branch=<feature>, plan/architecture/03-testing-ci-quality.md) still works, and so
+# does any feature branch placed from a Dev checkout. When the checkout's branch cannot be
+# read — a detached HEAD (Semaphore checks out a commit hash when the task carries one) or
+# no git checkout at all — nothing is refused: there is no branch to disagree with.
+#
+# Placing main from a non-main checkout on purpose: -e allow_cross_branch_placement=true.
+#
+# Expects in the including scope: _branch. Local mode never clones, so it is not checked.
+
+- name: "Read the branch this playbook is running from"
+  # On the controller, not the target: it is the checkout that supplied this playbook.
+  # become: false because the controller (the Semaphore container) has no sudo, and a
+  # play-level become would otherwise follow the delegation.
+  ansible.builtin.command:
+    argv: [git, -C, "{{ playbook_dir }}", rev-parse, --abbrev-ref, HEAD]
+  delegate_to: localhost
+  become: false
+  run_once: true
+  register: _placement_checkout
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: "Refuse to place main from a non-main checkout"
+  vars:
+    _checkout_branch: "{{ (_placement_checkout.stdout | default('') | trim) if _placement_checkout.rc | default(1) == 0 else '' }}"
+  ansible.builtin.assert:
+    that: >-
+      _checkout_branch in ['', 'HEAD', 'main']
+      or _branch != 'main'
+      or (allow_cross_branch_placement | default(false) | bool)
+    fail_msg: >-
+      cross_branch_placement_refused: this playbook runs from branch '{{ _checkout_branch }}'
+      but would check out 'main' on the target. Launch with service_branch={{ _checkout_branch }}
+      (an API-created task gets no survey defaults), or pass
+      -e allow_cross_branch_placement=true to place main on purpose.
+    quiet: true
