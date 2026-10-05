@@ -177,8 +177,10 @@
       disabled in that run (probe tasks skipped), so the two probe rules were not rendered.
       2026-10-05: PROVEN at runtime. Deploy o11y (Dev) task 2839 at `bdc13789` asserts the live
       rule set equals the provisioned one (#434), so the `inference_` rules are read back, not
-      only `o11y_`. unverified: whether the inference probe was enabled in 2839, which decides
-      whether its two rules were in the provisioned set. The contact point reads
+      only `o11y_`. The probe was disabled in 2839 (its unit, timer and enable tasks all
+      skipped, per the coordinator's read of the output), so its two rules were not rendered or
+      read back. This task names only the four groups, which 2839 covers; the probe rules
+      belong to task 3.3, which needs the probe enabled in site-config. The contact point reads
       `alert_discord_webhook_url`, not the `discord_webhook` field named above.
 - [ ] 3.3 Synthetic probe: `platform/services/o11y/deployment/probe/inference-probe.sh`
       (curl, one short chat completion, effort `none`, through
