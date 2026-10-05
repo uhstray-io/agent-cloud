@@ -238,6 +238,7 @@ def _gateway(ca, server_leaf, allowed, scratch: Path, frozen=False, cert_optiona
         if not frozen:
             load()
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.minimum_version = ssl.TLSVersion.TLSv1_2
         cert_f, key_f = scratch / ".gw-cert.pem", scratch / ".gw-key.pem"
         cert_f.write_bytes(held["files"][0])
         key_f.write_bytes(held["files"][1])
@@ -270,6 +271,7 @@ def _caddy(ca, tmp: Path, status: dict, asked: list):
                                         serialization.NoEncryption()))
     def context():
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.minimum_version = ssl.TLSVersion.TLSv1_2
         ctx.load_cert_chain(cert_f, key_f)
         return ctx
 
@@ -829,6 +831,7 @@ def test_the_serial_python_reports_is_the_serial_openssl_prints(tmp_path):
     srv = _thread(_gateway(ca, leaf, [], tmp_path))
     with srv as server:
         ctx = ssl.create_default_context(cadata=ca["bundle"])
+        ctx.minimum_version = ssl.TLSVersion.TLSv1_2
         client = {"dir": str(tmp_path / "c"), "sans": [f"c.{ZONE}"], "profile": "client"}
         _place(ca, client, FRESH)
         ctx.load_cert_chain(Path(client["dir"]) / "current/cert.pem", Path(client["dir"]) / "current/key.pem")

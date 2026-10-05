@@ -262,7 +262,10 @@ def stage_and_seed(api, project, target, values, *, extra=None,
     if (len(created) != len(values) or {item["name"] for item in created} != set(values)
             or any(item.get("type") != "env" or not isinstance(item.get("id"), int) for item in created)):
         raise Refusal("Encrypted input read-back differs; retain inputs for reconciliation")
-    print("Created encrypted input IDs: " + ", ".join(str(item["id"]) for item in created), flush=True)
+    # Print a projection rebuilt through int(), not the read-back records: those come from
+    # the environment's secret list, so the log line carries nothing but the numeric IDs.
+    created_ids = [int(item["id"]) for item in created]
+    print("Created encrypted input IDs: " + ", ".join(str(item_id) for item_id in created_ids), flush=True)
     now = api(f"/templates/{template_id}")
     pinned = ("id", "name", "playbook", "environment_id", "repository_id", "inventory_id", "arguments", "app")
     if any(now.get(key) != template.get(key) for key in pinned):

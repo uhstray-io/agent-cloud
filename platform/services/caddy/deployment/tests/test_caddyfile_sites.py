@@ -147,7 +147,8 @@ def test_retire_mixes_an_adopted_name_with_a_real_retirement():
     assert removed == ["devlog.example.io"]
     assert already_managed == ["canvas.example.io"]
     assert "devlog.example.io" not in out
-    assert "canvas.example.io" in out
+    # The adopted block survives as a parsed, still-managed site, not merely as text.
+    assert find_site(parse_sites(out), "canvas.example.io")["managed"] is True
 
 
 def test_retire_refuses_a_shared_block():
