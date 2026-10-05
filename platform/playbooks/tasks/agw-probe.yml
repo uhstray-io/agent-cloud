@@ -20,20 +20,33 @@
 #   _agwp_status    accepted statuses (list); the call never fails itself, the caller asserts
 #   _agwp_key       optional API key; absent or empty means keyless. Never printed.
 #   _agwp_method    GET (default) or POST
-#   _agwp_body      JSON body for POST
+#   _agwp_body      JSON body for POST; ignored for any other method
 #   _agwp_timeout   seconds (default 10)
 #   _agwp_leaf_dir  client leaf directory (TLS only); `current/` holds cert.pem and key.pem
 #   _agwp_ca        trust bundle path (TLS only)
 # Output: `_agwp_out` = {status, content, json, msg}. The raw result carries the request,
 # Authorization header included, so it is copied field by field under no_log and never kept.
+#
+# Extra vars outrank register and set_fact, so `-e _agwp_out=...` would hand every caller's
+# gate a forged status. The two names this file writes are refused here, for every caller
+# (tasks/refuse-var-overrides.yml). The INPUTS above cannot be checked here: they arrive as
+# include vars, which outrank set_fact, so that check would refuse every honest caller. A
+# caller whose gate must not be redirected refuses its input names itself, before the include,
+# and passes every one of them explicitly (run-agw-conformance.yml).
+
+- name: "Gateway probe: refuse extra-var overrides of its internal names"
+  ansible.builtin.include_tasks: refuse-var-overrides.yml
+  loop: [_agwp_raw, _agwp_out]
+  loop_control:
+    loop_var: _rvo_name
 
 - name: "Gateway probe: {{ _agwp_path }}"
   ansible.builtin.uri:
     url: "{{ _agwp_base }}{{ _agwp_path }}"
     method: "{{ _agwp_method | default('GET') }}"
     headers: "{{ {'Authorization': 'Bearer ' ~ _agwp_key} if (_agwp_key | default('') | length > 0) else {} }}"
-    body_format: "{{ 'json' if (_agwp_body is defined) else omit }}"
-    body: "{{ _agwp_body | default(omit) }}"
+    body_format: "{{ 'json' if (_agwp_body is defined and (_agwp_method | default('GET')) == 'POST') else omit }}"
+    body: "{{ _agwp_body if (_agwp_body is defined and (_agwp_method | default('GET')) == 'POST') else omit }}"
     client_cert: "{{ (_agwp_leaf_dir ~ '/current/cert.pem') if (agw_listener_tls | default(false) | bool) else omit }}"
     client_key: "{{ (_agwp_leaf_dir ~ '/current/key.pem') if (agw_listener_tls | default(false) | bool) else omit }}"
     ca_path: "{{ _agwp_ca if (agw_listener_tls | default(false) | bool) else omit }}"
