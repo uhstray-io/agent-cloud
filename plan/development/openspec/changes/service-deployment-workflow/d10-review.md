@@ -358,3 +358,10 @@ the runner's platform.
 
 Verdict: edge-dns **passes** D10 in the executor, pending that live dry run. Not stamped, for
 the `main` hazard recorded on 2026-10-04.
+
+Follow-up, same day (PR 454 Codex review): the exit code of `tofu show` was recorded nowhere,
+so a failed show left `plan_actions` / `verify_actions` empty while the run still passed. The
+report now carries `show_rc` and `verify_show_rc`, and the visible assert fails the run on a
+non-zero value, in a dry run and a real run alike. Three tests prove it (plan show, post-apply
+show, and a fake tofu whose show exits 1 under `--check` and for real); dropping either assert,
+or reporting `show_rc` as none, turned them red.

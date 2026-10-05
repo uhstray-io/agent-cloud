@@ -46,7 +46,7 @@ def _all_tasks(tasks=None):
             yield from _all_tasks(t.get(key) or [])
 
 
-def _run(tmp_path, tf_plan, tf_verify, action, show_plan=None, show_verify=None):
+def _run(tmp_path, tf_plan, tf_verify, action, show_plan=None, show_verify=None, fails=False):
     tail = [t for t in _tasks() if t.get("name") in TAIL]
     assert len(tail) == len(TAIL)
     for t in tail:
@@ -64,9 +64,11 @@ def _run(tmp_path, tf_plan, tf_verify, action, show_plan=None, show_verify=None)
     env["ANSIBLE_SHOW_CUSTOM_STATS"] = "1"
     proc = subprocess.run(["ansible-playbook", "-i", "localhost,", str(tmp_path / "p.yml")], cwd=REPO, env=env,
                           text=True, capture_output=True, stdin=subprocess.DEVNULL, check=False)
+    _run.stdout = proc.stdout
+    if fails:
+        return proc
     found = step_results.results_in(proc.stdout.splitlines())
     assert len(found) == 1, proc.stdout[-3000:]
-    _run.stdout = proc.stdout
     return found[0]
 
 
@@ -134,8 +136,8 @@ def test_the_visible_report_carries_only_exit_codes_and_counts():
     (report,) = [t for t in _tasks() if "_tf_report" in (t.get("ansible.builtin.set_fact") or {})]
     assert "no_log" not in report
     assert set(report["ansible.builtin.set_fact"]["_tf_report"]) == {
-        "init_rc", "plan_rc", "apply_rc", "apply_changed", "verify_rc", "plan_changes", "verify_changes",
-        "plan_actions", "verify_actions"}
+        "init_rc", "plan_rc", "apply_rc", "apply_changed", "verify_rc", "show_rc", "verify_show_rc",
+        "plan_changes", "verify_changes", "plan_actions", "verify_actions"}
     for t in _tasks():
         if "ansible.builtin.debug" in t:
             shown = str(t["ansible.builtin.debug"])
@@ -202,14 +204,15 @@ case "$1" in
     printf '%s\\n' "$FAKE_PLAN_STDOUT"
     exit "${FAKE_PLAN_RC:-0}" ;;
   show)
-    printf '%s\\n' "$FAKE_SHOW_JSON" ;;
+    printf '%s\\n' "$FAKE_SHOW_JSON"
+    exit "${FAKE_SHOW_RC:-0}" ;;
 esac
 """
 ROOT_FILES = {".terraform.lock.hcl": "# committed lock\n", "backend.hcl": 'bucket = "b"\n',
               "versions.tf": "terraform {}\n"}
 
 
-def _tofu_run(tmp_path, check, plan_rc=0, plan_stdout="No changes.", init_rc=0):
+def _tofu_run(tmp_path, check, plan_rc=0, plan_stdout="No changes.", init_rc=0, show_rc=0):
     """Run the playbook's tofu block and its report through ansible-playbook with a fake tofu."""
     bin_dir, tf_dir, log = tmp_path / "bin", tmp_path / "tf", tmp_path / "tofu.log"
     bin_dir.mkdir()
@@ -234,7 +237,8 @@ def _tofu_run(tmp_path, check, plan_rc=0, plan_stdout="No changes.", init_rc=0):
     env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
     env.update({"PATH": f"{bin_dir}:{env['PATH']}", "ANSIBLE_NOCOLOR": "1", "ANSIBLE_SHOW_CUSTOM_STATS": "1",
                 "FAKE_TOFU_LOG": str(log), "FAKE_INIT_RC": str(init_rc), "FAKE_PLAN_RC": str(plan_rc),
-                "FAKE_PLAN_STDOUT": plan_stdout, "FAKE_SHOW_JSON": PLAN_JSON})
+                "FAKE_PLAN_STDOUT": plan_stdout, "FAKE_SHOW_JSON": PLAN_JSON,
+                "FAKE_SHOW_RC": str(show_rc)})
     argv = ["ansible-playbook", "-i", "localhost,", *(["--check"] if check else []), str(tmp_path / "p.yml")]
     proc = subprocess.run(argv, cwd=REPO, env=env, text=True, capture_output=True, stdin=subprocess.DEVNULL,
                           check=False)
@@ -291,3 +295,29 @@ def test_a_real_plan_is_unchanged(tmp_path):
     assert not (tf_dir / ".terraform/edge-dns.tfplan").exists(), "the saved plan was not removed"
     (res,) = step_results.results_in(proc.stdout.splitlines())
     assert res["status"] == "pass"
+
+
+# PR 454 Codex review: a failed `tofu show` left plan_actions empty while the run still passed,
+# so the resource and action evidence could silently go missing.
+FAILED_SHOW = {"rc": 1, "stdout": ""}
+
+
+@needs_ansible
+def test_a_failed_show_of_the_plan_fails_the_run(tmp_path):
+    proc = _run(tmp_path, {"rc": 0, "stdout": "No changes."}, SKIPPED, "plan", show_plan=FAILED_SHOW, fails=True)
+    assert proc.returncode != 0 and "'show_rc': 1," in proc.stdout, proc.stdout[-3000:]
+    assert step_results.results_in(proc.stdout.splitlines()) == []
+
+
+@needs_ansible
+def test_a_failed_show_of_the_post_apply_plan_fails_the_run(tmp_path):
+    proc = _run(tmp_path, SKIPPED, {"rc": 0, "stdout": "No changes."}, "apply", show_verify=FAILED_SHOW, fails=True)
+    assert proc.returncode != 0 and "'verify_show_rc': 1," in proc.stdout, proc.stdout[-3000:]
+
+
+@needs_ansible
+@pytest.mark.parametrize("check", [True, False], ids=["dry-run", "real-plan"])
+def test_a_failed_tofu_show_fails_the_run_in_either_mode(tmp_path, check):
+    proc, calls, _, _ = _tofu_run(tmp_path, check=check, show_rc=1)
+    assert [c[0] for c in calls] == ["init", "plan", "show"]
+    assert proc.returncode != 0 and "'show_rc': 1," in proc.stdout, proc.stdout[-3000:]

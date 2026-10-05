@@ -368,6 +368,10 @@
           apply_rc: "{{ none if (_tf_apply is skipped) else _tf_apply.rc | default(none) }}"
           apply_changed: "{{ (_tf_apply is not skipped) and (_tf_apply is changed) }}"
           verify_rc: "{{ none if (_tf_verify is skipped) else _tf_verify.rc | default(none) }}"
+          # A show that fails leaves plan_actions empty, so its exit code is judged too: a run
+          # must not pass without the resource and action evidence (PR 454 Codex review).
+          show_rc: "{{ none if (_show_plan is skipped) else _show_plan.rc | default(none) }}"
+          verify_show_rc: "{{ none if (_tf_show_verify is skipped) else _tf_show_verify.rc | default(none) }}"
           plan_changes: >-
             {{ none if (_plan is skipped or _plan.rc | default(1) not in [0, 2]) else (0 if _plan.rc == 0
                else (((_plan.stdout | default('') | regex_findall(_re)) | first | map('int') | sum)
@@ -411,6 +415,8 @@
           - _tf_report.plan_rc in [none, '', 0, 2] or (_tf_report.plan_rc | int) in [0, 2]
           - _tf_report.apply_rc in [none, ''] or (_tf_report.apply_rc | int) == 0
           - _tf_report.verify_rc in [none, ''] or (_tf_report.verify_rc | int) in [0, 2]
+          - _tf_report.show_rc in [none, ''] or (_tf_report.show_rc | int) == 0
+          - _tf_report.verify_show_rc in [none, ''] or (_tf_report.verify_show_rc | int) == 0
         fail_msg: >-
           tofu failed: {{ _tf_report }}. Its output is withheld because the commands run with
           the Cloudflare and R2 credentials; reproduce with the same plan from the controller.
