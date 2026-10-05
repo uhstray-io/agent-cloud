@@ -32,21 +32,34 @@
 # Tag the include `verify` in a playbook that has a verify-only run.
 #
 # Every input above (and the record built below) is refused when it arrives as an extra
-# var: an extra var outranks the include vars the executor passes, so `-e
-# step_result_status=pass` would otherwise forge the result of a failed step. The check is
-# a probe include, emit-step-result-refuse-overrides.yml; workflow_id is not probed because
-# the orchestrator sets it as an extra var by design.
+# var: an extra var outranks the include vars the executor passes (ansible-core variable
+# precedence, 21 include params against 22 extra vars,
+# https://docs.ansible.com/ansible/latest/playbook_guide/playbooks_variables.html#understanding-variable-precedence),
+# so `-e step_result_status=pass` would otherwise forge the result of a failed step.
+#
+# The check asks whether the NAME is in hostvars, never what it renders to. hostvars holds
+# extra vars, facts and registered vars but not include, block or task vars (pinned by
+# platform/tests/test_emit_step_result.py), and no caller sets these names as facts. An
+# extra var is a Jinja template rendered afresh in every task, so a check that compared its
+# VALUE could be shown one value and the record another (`{{ 'probe' if <check context> else
+# 'pass' }}`, PR #458 review); the presence of the key does not depend on the rendering.
+# workflow_id is not checked because the orchestrator sets it as an extra var by design.
 
 - name: "Step result: refuse inputs set as extra vars"
-  ansible.builtin.include_tasks: emit-step-result-refuse-overrides.yml
-  vars:
-    step_result_step: __extra_var_probe__
-    step_result_status: __extra_var_probe__
-    step_result_evidence: __extra_var_probe__
-    step_result_error: __extra_var_probe__
-    step_result_service: __extra_var_probe__
-    step_result_undo: __extra_var_probe__
-    _step_result_record: __extra_var_probe__
+  ansible.builtin.assert:
+    that:
+      - >-
+        ['step_result_step', 'step_result_status', 'step_result_evidence', 'step_result_error',
+        'step_result_service', 'step_result_undo', '_step_result_record']
+        | select('in', hostvars[inventory_hostname]) | list | length == 0
+    fail_msg: >-
+      Refusing to record a step result: {{ ['step_result_step', 'step_result_status',
+      'step_result_evidence', 'step_result_error', 'step_result_service', 'step_result_undo',
+      '_step_result_record'] | select('in', hostvars[inventory_hostname]) | join(', ') }} set
+      as an extra var, which outranks the value the executor computes and would forge the
+      recorded result.
+    quiet: true
+  run_once: true
 
 - name: "Step result: validate the inputs"
   ansible.builtin.assert:

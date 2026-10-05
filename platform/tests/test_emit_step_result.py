@@ -163,8 +163,8 @@ def test_a_non_list_step_results_earlier_in_the_run_falls_back_to_the_single_key
 # precedence: 21 include params, 22 extra vars), so `-e step_result_status=pass` on a launch
 # would record a failed step as passed. The task refuses every input it reads when it arrives
 # that way; the run then records no result at all, which the collector counts as a failure.
-PROBED = ["step_result_step", "step_result_status", "step_result_evidence", "step_result_error",
-          "step_result_service", "step_result_undo", "_step_result_record"]
+GUARDED = ["step_result_step", "step_result_status", "step_result_evidence", "step_result_error",
+           "step_result_service", "step_result_undo", "_step_result_record"]
 FORGERIES = {
     "step_result_step": "dns",
     "step_result_status": "pass",
@@ -175,39 +175,88 @@ FORGERIES = {
     "_step_result_record": {"schema": "agentcloud/step-result/v1", "step": "fw-harden",
                             "status": "pass", "evidence": {}, "check_mode": False},
 }
+# An extra var is a template rendered afresh in each task. This one renders the caller's honest
+# value wherever the refusal could be looking (any task-context marker a check might set) and
+# the forgery everywhere else (PR #458 review; docs/MISTAKES.md 1.15).
+CONTEXT_KEYED = ("{{{{ (lookup('ansible.builtin.vars', 'ansible_loop_var', default='') or"
+                 " lookup('ansible.builtin.vars', '_sr_input', default='')) | ternary({honest}, {forged}) }}}}")
+HONEST = {"step_result_step": "'fw-harden'", "step_result_status": "'fail'",
+          "step_result_evidence": "{'ufw_active': False}", "step_result_error": "'ufw is inactive'",
+          "step_result_service": "'dns'", "step_result_undo": "'none'", "_step_result_record": "none"}
 
 
-def _failing_executor(tmp_path: Path, **include_kw) -> Path:
+def _failing_executor(tmp_path: Path, hosts: str = "localhost", **include_kw) -> Path:
     """An executor whose step failed, recording that through the shared task."""
     include = {"name": "Record the step result", "ansible.builtin.include_tasks": str(TASK),
                "vars": {"step_result_step": "fw-harden", "step_result_status": "fail",
                         "step_result_evidence": {"ufw_active": False},
                         "step_result_error": "ufw is inactive"}}
     include.update(include_kw)
-    play = [{"name": "failing executor", "hosts": "localhost", "connection": "local",
+    play = [{"name": "failing executor", "hosts": hosts, "connection": "local",
              "gather_facts": False, "vars": {"service_name": "dns"}, "tasks": [include]}]
     path = tmp_path / "play.yml"
     path.write_text(json.dumps(play))
     return path
 
 
+def _refused(proc, name: str) -> None:
+    assert proc.returncode != 0, proc.stdout
+    assert f"Refusing to record a step result: {name} set as an extra var" in proc.stdout, proc.stdout
+    assert step_results.results_in(proc.stdout.splitlines()) == []
+
+
 @pytest.mark.parametrize("check", [False, True])
-@pytest.mark.parametrize("name", PROBED)
+@pytest.mark.parametrize("name", GUARDED)
 def test_an_input_set_as_an_extra_var_is_refused_and_records_nothing(tmp_path, name, check):
     play = _failing_executor(tmp_path)
-    proc = _run(play, "-e", json.dumps({name: FORGERIES[name]}), *(["--check"] if check else []))
-    assert proc.returncode != 0, proc.stdout
-    assert f"Refusing to record a step result: {name} is set as an extra var" in proc.stdout
-    assert step_results.results_in(proc.stdout.splitlines()) == []
+    _refused(_run(play, "-e", json.dumps({name: FORGERIES[name]}), *(["--check"] if check else [])), name)
 
 
-def test_the_loop_variable_cannot_be_swapped_to_hide_a_forgery(tmp_path):
+@pytest.mark.parametrize("name", GUARDED)
+def test_a_templated_extra_var_keyed_on_task_context_is_refused(tmp_path, name):
     play = _failing_executor(tmp_path)
-    proc = _run(play, "-e", json.dumps({"_sr_input": "step_result_step",
-                                        "step_result_status": "pass"}))
+    forged = CONTEXT_KEYED.format(honest=HONEST[name], forged=json.dumps(FORGERIES[name]).replace('"', "'"))
+    _refused(_run(play, "-e", json.dumps({name: forged})), name)
+
+
+def test_the_review_template_is_refused(tmp_path):
+    # The exact extra var from the PR #458 review: the old probe saw its marker, the record "pass".
+    play = _failing_executor(tmp_path)
+    _refused(_run(play, "-e", json.dumps(
+        {"step_result_status": "{{ '__extra_var_probe__' if _sr_input is defined else 'pass' }}"})),
+        "step_result_status")
+
+
+@pytest.mark.parametrize("override", [{"inventory_hostname": "elsewhere"},
+                                      {"hostvars": {"localhost": {}}}])
+def test_redirecting_the_lookup_does_not_let_a_forgery_through(tmp_path, override):
+    play = _failing_executor(tmp_path)
+    proc = _run(play, "-e", json.dumps(override), "-e", "step_result_status=pass")
     assert proc.returncode != 0, proc.stdout
-    assert "step_result_status is set as an extra var" in proc.stdout
     assert step_results.results_in(proc.stdout.splitlines()) == []
+
+
+def test_every_host_of_a_multi_host_play_is_refused(tmp_path):
+    # The refusal is run_once; its failure must still stop every host before the set_stats.
+    inv = tmp_path / "inv.ini"
+    inv.write_text("[grp]\na ansible_connection=local\nb ansible_connection=local\n")
+    play = _failing_executor(tmp_path, hosts="grp")
+    proc = _run(play, "-i", str(inv), "-e", "step_result_status=pass")
+    assert proc.returncode != 0, proc.stdout
+    assert step_results.results_in(proc.stdout.splitlines()) == []
+
+
+def test_hostvars_holds_an_extra_var_but_not_the_include_vars_a_caller_passes(tmp_path):
+    # The mechanism the refusal relies on.
+    probe = ("{{ ['step_result_status', 'step_result_step'] | select('in', hostvars[inventory_hostname])"
+             " | list | to_json }}")
+    play = [{"hosts": "localhost", "connection": "local", "gather_facts": False,
+             "tasks": [{"ansible.builtin.debug": {"msg": "SEEN " + probe},
+                        "vars": {"step_result_step": "fw-harden", "step_result_status": "fail"}}]}]
+    path = tmp_path / "play.yml"
+    path.write_text(json.dumps(play))
+    assert '"msg": "SEEN []"' in _run(path).stdout
+    assert '"msg": "SEEN [\\"step_result_status\\"]"' in _run(path, "-e", "step_result_status=pass").stdout
 
 
 def test_a_tag_filtered_caller_is_refused_too(tmp_path):
@@ -215,10 +264,7 @@ def test_a_tag_filtered_caller_is_refused_too(tmp_path):
         tmp_path,
         **{"ansible.builtin.include_tasks": {"file": str(TASK), "apply": {"tags": ["verify"]}},
            "tags": ["verify"]})
-    proc = _run(play, "--tags", "verify", "-e", "step_result_status=pass")
-    assert proc.returncode != 0, proc.stdout
-    assert "step_result_status is set as an extra var" in proc.stdout
-    assert step_results.results_in(proc.stdout.splitlines()) == []
+    _refused(_run(play, "--tags", "verify", "-e", "step_result_status=pass"), "step_result_status")
 
 
 def test_extra_vars_the_task_does_not_own_are_still_accepted(tmp_path):
@@ -231,23 +277,20 @@ def test_extra_vars_the_task_does_not_own_are_still_accepted(tmp_path):
     assert (result["workflow_id"], result["service"], result["status"]) == ("wf-1", "authentik", "fail")
 
 
-def _probe() -> tuple[list[str], dict]:
-    tasks = yaml.safe_load(TASK.read_text())
-    probe_include = next(t for t in tasks if "emit-step-result-refuse-overrides.yml"
-                         in str(t.get("ansible.builtin.include_tasks", "")))
-    refuse = yaml.safe_load((TASK.parent / "emit-step-result-refuse-overrides.yml").read_text())
-    return refuse[0]["loop"], probe_include["vars"]
+def _guarded_names() -> list[str]:
+    refusal = next(t for t in yaml.safe_load(TASK.read_text())
+                   if t.get("name") == "Step result: refuse inputs set as extra vars")
+    return re.findall(r"'([A-Za-z_]+)'", refusal["ansible.builtin.assert"]["that"][0].split("|")[0])
 
 
-def test_every_input_the_task_reads_is_probed():
-    # A new input added to the task without a probe would be forgeable again.
-    loop, probe_vars = _probe()
+def test_every_input_the_task_reads_is_guarded():
+    # A new input added to the task without the refusal would be forgeable again.
+    guarded = _guarded_names()
     body = TASK.read_text().split("\n- name:", 1)[1]  # the tasks, not the header comment
-    # (?<![&*]): not the YAML anchor the two set_stats tasks share
-    read = set(re.findall(r"(?<![&*])\b(step_result_[a-z_]+|_step_result_record)\b", body))
-    assert read <= set(loop), f"read but not probed: {read - set(loop)}"
-    assert set(probe_vars) == set(loop) == set(PROBED)
-    assert set(probe_vars.values()) == {"__extra_var_probe__"}
+    # (?<![&*]): not the YAML anchor the two set_stats tasks share; (?<!'): not the list itself
+    read = set(re.findall(r"(?<![&*'])\b(step_result_[a-z_]+|_step_result_record)\b", body))
+    assert read <= set(guarded), f"read but not guarded: {read - set(guarded)}"
+    assert set(guarded) == set(GUARDED)
 
 
 def _emit_includes(tasks):
@@ -262,9 +305,9 @@ def _emit_includes(tasks):
             yield task
 
 
-def test_every_caller_passes_only_probed_inputs():
+def test_every_caller_passes_only_guarded_inputs():
     # Ratchet over the callers: each records through the guarded task, and passes no input
-    # name the probe does not cover.
+    # name the refusal does not cover.
     callers = 0
     for path in sorted((REPO / "platform/playbooks").glob("*.yml")):
         doc = yaml.safe_load(path.read_text())
@@ -274,6 +317,6 @@ def test_every_caller_passes_only_probed_inputs():
             for key in ("pre_tasks", "tasks", "post_tasks", "handlers"):
                 for task in _emit_includes(play.get(key)):
                     callers += 1
-                    unprobed = set(task.get("vars", {})) - set(PROBED)
-                    assert not unprobed, f"{path.name}: unprobed emit input(s) {unprobed}"
+                    unguarded = set(task.get("vars", {})) - set(GUARDED)
+                    assert not unguarded, f"{path.name}: unguarded emit input(s) {unguarded}"
     assert callers >= 17, callers
