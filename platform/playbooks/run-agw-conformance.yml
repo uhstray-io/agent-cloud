@@ -61,11 +61,6 @@
     _port: "{{ agw_port | default('4000') }}"
     _probe_ip: "{{ '127.0.0.1' if (agw_bind | default('127.0.0.1')) in ['0.0.0.0', '::', ''] else agw_bind | default('127.0.0.1') }}"
     _server_name: "{{ agw_tls_server_name | default('gateway.' ~ (dns_site | default('')) ~ '.' ~ (dns_zone | default(''))) }}"
-    # The same base URL the deploy's probes use (deploy-agentgateway.yml, "Probe path"); the cases add /v1.
-    _gateway_base: >-
-      {{ agw_verify_base_url if (agw_verify_base_url is defined)
-         else (('https://' ~ _server_name ~ ':' ~ _port) if _tls else ('http://' ~ _probe_ip ~ ':' ~ _port)) }}
-    _gateway_url: "{{ _gateway_base }}/v1"
     _leaf_dir: >-
       {{ internal_leaves | default([]) | selectattr('name', 'equalto', agw_verifier_leaf | default('agw-verifier'))
          | map(attribute='dir') | first | default('') }}
@@ -108,8 +103,24 @@
         - _agwp_timeout
         - _agwp_leaf_dir
         - _agwp_ca
+        - _gateway_base
+        - _gateway_url
       loop_control:
         loop_var: _rvo_name
+
+    # The gate and the cases must reach ONE gateway, so both URLs are set here, after the refusal
+    # above (a play var would be outranked by an extra var; a set_fact after the refusal is not):
+    # the base from the inventory (agw_verify_base_url, else the deploy's own form,
+    # deploy-agentgateway.yml "Probe path"), and the cases' URL from that base alone.
+    - name: "The gateway base URL the keyless gate probes"
+      ansible.builtin.set_fact:
+        _gateway_base: >-
+          {{ agw_verify_base_url if (agw_verify_base_url is defined)
+             else (('https://' ~ _server_name ~ ':' ~ _port) if _tls else ('http://' ~ _probe_ip ~ ':' ~ _port)) }}
+
+    - name: "The cases' URL: the same base, plus /v1"
+      ansible.builtin.set_fact:
+        _gateway_url: "{{ _gateway_base }}/v1"
 
     # The one dry-run guard is the `when` on "Run the cases" below: OpenBao, the key files and
     # every request sit inside that block.

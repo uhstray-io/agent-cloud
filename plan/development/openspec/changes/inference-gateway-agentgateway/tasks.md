@@ -469,7 +469,9 @@
       resolves the SAN through the same host resolver. Tests: `platform/tests/test_agw_conformance.py`.
       Extra vars cannot aim or forge that gate (PR #456 review): the shared probe and resolution
       tasks refuse overrides of the results they write, for every caller; the playbook refuses
-      every input name it passes them, and passes each explicitly.
+      every input name it passes them, and passes each explicitly. The gate's base URL and the
+      cases' URL are one value, set after that refusal (the cases' is the base plus `/v1`), and
+      both names are refused, so an extra var cannot split the gate from the cases.
       Proof still owed: one `Run agentgateway Conformance (Dev)` run in production. Still NOT ticked:
       the personal-key gates, the benchmark VM's attribution check and the access-record verify
       do not exist yet

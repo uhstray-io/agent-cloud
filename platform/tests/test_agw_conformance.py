@@ -1018,10 +1018,13 @@ def test_with_listener_tls_a_name_the_deploy_has_not_mapped_stops_the_run_before
 PROBE_INPUTS = ["_agwr_check_only", "_agwr_name", "_agwr_ip", "_agwr_expect", "_agwr_hosts_file",
                 "_agwp_base", "_agwp_path", "_agwp_status", "_agwp_key", "_agwp_method", "_agwp_timeout",
                 "_agwp_leaf_dir", "_agwp_ca"]
+# The one gateway URL the gate probes and the cases use, set after the refusal.
+GATEWAY_URLS = ["_gateway_base", "_gateway_url"]
 PROBE_INTERNALS = {"_agwp_raw": {"status": 401}, "_agwp_out": {"status": 401, "msg": "", "content": "", "json": {}}}
 
 
-@pytest.mark.parametrize("name, value", [*[(n, "/forged") for n in PROBE_INPUTS], *PROBE_INTERNALS.items()])
+@pytest.mark.parametrize("name, value", [*[(n, "/forged") for n in PROBE_INPUTS + GATEWAY_URLS],
+                                         *PROBE_INTERNALS.items()])
 def test_an_extra_var_cannot_aim_or_forge_the_keyless_gate(tmp_path, stubs, name, value):
     # The gateway here serves a keyless request: only a redirected or forged gate could pass it.
     # Each name is refused before any request, any OpenBao read and any key file.
@@ -1071,8 +1074,17 @@ def test_with_listener_tls_the_keyless_probe_names_the_san_and_presents_the_veri
     # and the refusal is the play's first task.
     guard = tasks[0]
     assert guard["ansible.builtin.include_tasks"] == "tasks/refuse-var-overrides.yml"
-    assert guard["loop_control"] == {"loop_var": "_rvo_name"} and sorted(guard["loop"]) == sorted(PROBE_INPUTS)
+    assert guard["loop_control"] == {"loop_var": "_rvo_name"}
+    assert sorted(guard["loop"]) == sorted(PROBE_INPUTS + GATEWAY_URLS)
     assert set(PROBE_INPUTS) == set(res["vars"]) | set(probe["vars"])
+    # One source: the cases' URL is the gate's base plus /v1, both set after the refusal, never play vars.
+    play = playbook_yaml.load(PLAYBOOK)[1]
+    assert not set(GATEWAY_URLS) & set(play["vars"])
+    facts = [t["ansible.builtin.set_fact"] for t in tasks[1:3]]
+    assert list(facts[0]) == ["_gateway_base"] and facts[1] == {"_gateway_url": "{{ _gateway_base }}/v1"}
+    env = next(t for t in run if "Run on the VM" in t["name"])["block"]
+    cases = next(t for t in env if t.get("name") == "Send every case to the gateway and to vLLM")
+    assert cases["environment"]["AGW_CONF_GATEWAY_URL"] == "{{ _gateway_url }}"
     auth = names.index("Authenticate to OpenBao")
     assert names.index(res["name"]) < names.index(probe["name"]) < names.index("Require the keyless refusal") < auth
     assert "--resolve" not in PLAYBOOK.read_text() and "--resolve" not in SCRIPT.read_text()
