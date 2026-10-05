@@ -96,8 +96,12 @@ list of files allowed to write a private key).
 registers or sets, so `-e` could forge a probe result or a scratch path. A play whose gates or
 cleanup read such names includes `tasks/refuse-var-overrides.yml` first, passing each name as
 the loop variable `_rvo_name` (a loop variable, unlike an include var, is not outranked by
-`-e`); it refuses any name an extra var holds. The materialise and pin tasks guard their own
-internal names the same way.
+`-e`); it refuses any name an extra var holds. The materialise and pin tasks and the gateway
+probe tasks (`agw-probe.yml`, `agw-probe-resolution.yml`) guard their own internal names the
+same way. A shared task cannot guard its INPUTS: they arrive as include vars, which outrank
+`set_fact`, so the read-back would refuse every honest caller. A caller whose gate depends on
+them refuses those names itself, then passes each one explicitly to the include
+(`run-agw-conformance.yml`).
 
 ```yaml
 - name: "Fetch key"
