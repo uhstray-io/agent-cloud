@@ -988,7 +988,8 @@ def test_a_gateway_that_answers_a_keyless_request_stops_the_run_before_any_key_i
 
 def _tls_host(tmp: Path):
     """Listener TLS host vars whose leaf and bundle files exist (placeholder bytes: the run must stop
-    before a handshake), and a scratch hosts file the resolution step reads instead of /etc/hosts."""
+    before a handshake). The resolution step reads this machine's /etc/hosts, which carries no
+    interim marker line for the example name."""
     leaf = tmp / "leaves" / "agw-verifier"
     (leaf / "current").mkdir(parents=True)
     for f in ("cert.pem", "key.pem"):
@@ -1001,21 +1002,54 @@ def _tls_host(tmp: Path):
             "local_monorepo_dir": str(tmp / "mono")}
 
 
-MARKED_ELSEWHERE = "127.0.0.2 gateway.dc1.example.internal # agent-cloud-managed: agw-probe (interim, task 7.2)\n"
-
-
-@pytest.mark.parametrize("hosts", ["", MARKED_ELSEWHERE])
-def test_with_listener_tls_a_name_the_deploy_has_not_mapped_stops_the_run_before_any_request(tmp_path, stubs, hosts):
+def test_with_listener_tls_a_name_the_deploy_has_not_mapped_stops_the_run_before_any_request(tmp_path, stubs):
     # The cases' curl resolves the SAN through this host's resolver, so the playbook first requires
-    # the one resolution step's mapping, read-only (Deploy agentgateway writes it): absent, or mapped
-    # to another address, and nothing is probed, read or sent.
-    (tmp_path / "hosts").write_text(hosts)
+    # the one resolution step's mapping, read-only (Deploy agentgateway writes it): without it,
+    # nothing is probed, read or sent. (A line mapped to another address is the shared task's own
+    # test, platform/tests/test_agw_internal_dns_records.py.)
     gw, direct = stubs(key=GW_KEY), stubs(key=UP_KEY)
-    rc, out, made = _playbook(tmp_path, gw, direct, host_vars=_tls_host(tmp_path),
-                              extra={"_agwr_hosts_file": str(tmp_path / "hosts")})
+    rc, out, made = _playbook(tmp_path, gw, direct, host_vars=_tls_host(tmp_path))
     assert rc != 0 and "Run Deploy agentgateway to converge the probe name's resolution" in out, out
     assert gw.seen == [] and direct.seen == [] and Bao.requests == [] and made == []
-    assert (tmp_path / "hosts").read_text() == hosts
+
+
+# Every input the two shared includes take (refused by this playbook), and every name the shared
+# tasks write (refused inside them, for every caller).
+PROBE_INPUTS = ["_agwr_check_only", "_agwr_name", "_agwr_ip", "_agwr_expect", "_agwr_hosts_file",
+                "_agwp_base", "_agwp_path", "_agwp_status", "_agwp_key", "_agwp_method", "_agwp_timeout",
+                "_agwp_leaf_dir", "_agwp_ca"]
+PROBE_INTERNALS = {"_agwp_raw": {"status": 401}, "_agwp_out": {"status": 401, "msg": "", "content": "", "json": {}}}
+
+
+@pytest.mark.parametrize("name, value", [*[(n, "/forged") for n in PROBE_INPUTS], *PROBE_INTERNALS.items()])
+def test_an_extra_var_cannot_aim_or_forge_the_keyless_gate(tmp_path, stubs, name, value):
+    # The gateway here serves a keyless request: only a redirected or forged gate could pass it.
+    # Each name is refused before any request, any OpenBao read and any key file.
+    gw, direct = stubs(key=None), stubs(key=UP_KEY)
+    rc, out, made = _playbook(tmp_path, gw, direct, extra={name: value})
+    assert rc != 0 and f"Refusing to run: {name} is internal to this play" in out, out
+    assert gw.seen == [] and direct.seen == [] and Bao.requests == [] and made == []
+
+
+@pytest.mark.parametrize("name, value", [
+    ("_agwr_hosts", {"content": "MTI3LjAuMC4xIGdhdGV3YXk="}),
+    ("_agwr_getent", {"rc": 0, "stdout_lines": ["127.0.0.1"]}),
+])
+def test_an_extra_var_cannot_forge_the_resolution_verdict(tmp_path, stubs, name, value):
+    gw, direct = stubs(key=GW_KEY), stubs(key=UP_KEY)
+    rc, out, made = _playbook(tmp_path, gw, direct, host_vars=_tls_host(tmp_path), extra={name: value})
+    assert rc != 0 and f"Refusing to run: {name} is internal to this play" in out, out
+    assert gw.seen == [] and direct.seen == [] and Bao.requests == [] and made == []
+
+
+def test_a_body_extra_var_does_not_turn_the_keyless_probe_into_a_write(tmp_path, stubs):
+    # _agwp_body cannot be refused (refusing leaves it defined); the shared probe sends a body only
+    # with POST, and the method is pinned to GET.
+    gw, direct = stubs(key=GW_KEY), stubs(key=UP_KEY)
+    rc, out, made = _playbook(tmp_path, gw, direct, extra={"_agwp_body": {"model": "m"}})
+    assert rc == 0, out
+    assert (gw.seen[0]["method"], gw.seen[0]["path"], gw.seen[0]["auth"]) == ("GET", "/v1/models", None)
+    assert not gw.seen[0]["body"]
 
 
 def test_with_listener_tls_the_keyless_probe_names_the_san_and_presents_the_verifier_leaf():
@@ -1027,11 +1061,18 @@ def test_with_listener_tls_the_keyless_probe_names_the_san_and_presents_the_veri
     names = [t["name"] for t in run]
     res = next(t for t in run if t.get("ansible.builtin.include_tasks") == "tasks/agw-probe-resolution.yml")
     probe = next(t for t in run if t.get("ansible.builtin.include_tasks") == "tasks/agw-probe.yml")
-    assert res["vars"] == {"_agwr_check_only": True, "_agwr_name": "{{ _server_name }}", "_agwr_ip": "{{ _probe_ip }}"}
+    assert res["vars"] == {"_agwr_check_only": True, "_agwr_name": "{{ _server_name }}", "_agwr_ip": "{{ _probe_ip }}",
+                           "_agwr_expect": "", "_agwr_hosts_file": "/etc/hosts"}
     assert res["when"] == "_tls and agw_verify_base_url is not defined"
     assert probe["vars"] == {"_agwp_base": "{{ _gateway_base }}", "_agwp_path": "/v1/models", "_agwp_status": [401],
+                             "_agwp_key": "", "_agwp_method": "GET", "_agwp_timeout": 10,
                              "_agwp_leaf_dir": "{{ _leaf_dir }}", "_agwp_ca": "{{ _ca }}"}
-    assert "_agwp_key" not in json.dumps(probe)
+    # Every refused input is passed explicitly, so the refusal's probe value never reaches the include,
+    # and the refusal is the play's first task.
+    guard = tasks[0]
+    assert guard["ansible.builtin.include_tasks"] == "tasks/refuse-var-overrides.yml"
+    assert guard["loop_control"] == {"loop_var": "_rvo_name"} and sorted(guard["loop"]) == sorted(PROBE_INPUTS)
+    assert set(PROBE_INPUTS) == set(res["vars"]) | set(probe["vars"])
     auth = names.index("Authenticate to OpenBao")
     assert names.index(res["name"]) < names.index(probe["name"]) < names.index("Require the keyless refusal") < auth
     assert "--resolve" not in PLAYBOOK.read_text() and "--resolve" not in SCRIPT.read_text()

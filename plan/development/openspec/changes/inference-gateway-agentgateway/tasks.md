@@ -467,6 +467,9 @@
       `agw-verifier` leaf, requiring 401. The cases stay curl in `conformance.sh`, because `uri`
       cannot time a stream's first token and chunk gaps; its `--resolve` input is removed, so curl
       resolves the SAN through the same host resolver. Tests: `platform/tests/test_agw_conformance.py`.
+      Extra vars cannot aim or forge that gate (PR #456 review): the shared probe and resolution
+      tasks refuse overrides of the results they write, for every caller; the playbook refuses
+      every input name it passes them, and passes each explicitly.
       Proof still owed: one `Run agentgateway Conformance (Dev)` run in production. Still NOT ticked:
       the personal-key gates, the benchmark VM's attribution check and the access-record verify
       do not exist yet

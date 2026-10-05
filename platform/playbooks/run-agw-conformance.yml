@@ -83,6 +83,34 @@
       {{ (agw_models | default([]) | selectattr('name', 'equalto', _model) | first | default({})).upstream_model | default(_model) }}
 
   tasks:
+    # The pre-OpenBao gate below is only as good as its inputs. They reach the shared probe and
+    # resolution tasks as include vars, and an extra var outranks those: `-e _agwp_base=...`
+    # would aim the gate at another endpoint while the cases go to the gateway, and
+    # `-e _agwr_hosts_file=...` would hand the resolution check a forged hosts file. So every
+    # input name the two includes take is refused here first (tasks/refuse-var-overrides.yml),
+    # and each include passes every one explicitly, so the probe value this leaves behind is
+    # always outranked. The names the shared tasks write themselves they refuse themselves.
+    # `_agwp_body` is not listed: refusing it would leave it defined. The probe ignores a body on
+    # anything but POST, and the method is refused here and pinned to GET.
+    - name: "Refuse extra-var overrides of the gateway probe's inputs"
+      ansible.builtin.include_tasks: tasks/refuse-var-overrides.yml
+      loop:
+        - _agwr_check_only
+        - _agwr_name
+        - _agwr_ip
+        - _agwr_expect
+        - _agwr_hosts_file
+        - _agwp_base
+        - _agwp_path
+        - _agwp_status
+        - _agwp_key
+        - _agwp_method
+        - _agwp_timeout
+        - _agwp_leaf_dir
+        - _agwp_ca
+      loop_control:
+        loop_var: _rvo_name
+
     # The one dry-run guard is the `when` on "Run the cases" below: OpenBao, the key files and
     # every request sit inside that block.
     - name: "Dry run: report (every case is a real completion)"
@@ -165,6 +193,9 @@
             _agwr_check_only: true
             _agwr_name: "{{ _server_name }}"
             _agwr_ip: "{{ _probe_ip }}"
+            # Any address the internal zone answers: the published bind may be loopback here.
+            _agwr_expect: ""
+            _agwr_hosts_file: /etc/hosts
           when: _tls and agw_verify_base_url is not defined
 
         # Keyless, before any key is read or any completion is spent: 401 is the gateway's key
@@ -176,6 +207,9 @@
             _agwp_base: "{{ _gateway_base }}"
             _agwp_path: /v1/models
             _agwp_status: [401]
+            _agwp_key: ""
+            _agwp_method: GET
+            _agwp_timeout: 10
             _agwp_leaf_dir: "{{ _leaf_dir }}"
             _agwp_ca: "{{ _ca }}"
 

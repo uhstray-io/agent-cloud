@@ -33,6 +33,16 @@
 #                     miss fails and names Deploy agentgateway, the one writer. Used by the
 #                     daily renewal, which must not gain sudo or OpenBao dependencies.
 
+# The two results this file registers decide its verdicts; an extra var outranks register, so
+# refuse one here, for every caller (tasks/refuse-var-overrides.yml). The inputs above are
+# include vars, which outrank set_fact, so a caller that must not be redirected refuses those
+# itself before the include (run-agw-conformance.yml).
+- name: "Probe resolution: refuse extra-var overrides of its internal names"
+  ansible.builtin.include_tasks: refuse-var-overrides.yml
+  loop: [_agwr_hosts, _agwr_getent]
+  loop_control:
+    loop_var: _rvo_name
+
 # Both values are written into one hosts line, so each must be exactly one token of its
 # kind: a DNS name, and (interim mode) a dotted-quad IPv4 address with every octet 0-255. A
 # value such as 999.1.1.1 would otherwise be written and break resolution for the name.
