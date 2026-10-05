@@ -165,9 +165,12 @@
           - o11y_inference_probe_enabled | default(false) | bool
           - o11y_inference_probe_url | default('') is match('^https://[A-Za-z0-9.-]+(:[0-9]+)?/v1$')
           - o11y_inference_probe_model | default('') is match('^[A-Za-z0-9._:/@-]+$')
-          # Gateway client identity: the health hold reads the one gateway's upstream.
+          # Gateway client identity: the health hold reads the one gateway's upstream. A
+          # restore-only run holds nothing, so it never waits on this (the restore needs only
+          # the local probe environment).
           - >-
-            not (_probe_gateway_identity | bool)
+            _restore_only | bool
+            or not (_probe_gateway_identity | bool)
             or (groups.get('agentgateway_svc', []) | length == 1
                 and _probe_upstream is match('^https?://[A-Za-z0-9.-]+(:[0-9]+)?/v1$'))
         fail_msg: >-

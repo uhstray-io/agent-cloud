@@ -306,7 +306,8 @@ UPSTREAM = "http://192.0.2.30:8000/v1"
 def _probe_wiring(tmp_path, o11y=None, gateways=1, upstream=UPSTREAM):
     """Run the drill's own probe refusal on the o11y host, then report where /health is read."""
     play = playbook_yaml.load(PLAYBOOK)[2]
-    names = ["_probe_gateway_identity", "_probe_gw", "_probe_upstream", "_probe_health_url", "_probe_health_from"]
+    names = ["_restore_only", "_probe_gateway_identity", "_probe_gw", "_probe_upstream", "_probe_health_url",
+             "_probe_health_from"]
     refusal = next(t for t in play["tasks"] if t.get("name") == PROBE_REFUSAL)
     harness = [{"hosts": "o11y_svc", "gather_facts": False, "vars": {k: play["vars"][k] for k in names},
                 "tasks": [refusal, {"ansible.builtin.debug": {
@@ -358,6 +359,16 @@ def test_gateway_identity_without_one_declared_upstream_is_refused(tmp_path, gat
     assert done.returncode != 0, why
     assert "No fault was induced" in done.stdout, why
     assert got is None, why
+
+
+@pytest.mark.parametrize("gateways,upstream", [(0, None), (2, UPSTREAM), (1, None), (1, "http://192.0.2.30:8000")])
+def test_a_restore_only_run_is_never_gated_on_the_health_hold_inputs(tmp_path, gateways, upstream):
+    # Restore must not wait on anything it does not need: the gateway upstream feeds only the
+    # health hold, which a restore-only run never performs.
+    done, _ = _probe_wiring(tmp_path, o11y={"o11y_inference_probe_client_leaf": "o11y-probe",
+                                            "drill_restore_only": True},
+                            gateways=gateways, upstream=upstream)
+    assert done.returncode == 0, done.stdout + done.stderr
 
 
 def test_the_health_hold_is_read_from_the_path_aware_host():
