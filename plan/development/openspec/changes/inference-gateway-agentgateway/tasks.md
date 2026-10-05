@@ -192,6 +192,9 @@
       image" and "deploy-result: unchanged". The previous changed deploy was task 2696 (`79a8eb76`).
       Not ticked: the key-rotation leg (live key, operator) and the failed-deploy and
       removed-container legs (local-dev) are not done.
+      2026-10-05: `Deploy agentgateway (Dev)` task 2880 recreated the gateway for a real input
+      change (the stream-usage transformation, #437), the changed-deploy half. The legs above are
+      still not done; not ticked.
 
 ## 2. Conformance against direct vLLM
       Added 2026-09-22 (security review): the gateway's `platform-admins in jwt.groups` rule
@@ -265,10 +268,20 @@
       case, so its own stream deltas are not in the table.
 - [ ] 2.3 Confirm SSE keep-alive comment lines from vLLM pass through unchanged and
       unbuffered (needs dgx-spark `inference-endpoint-reliability` deployed)
-- [ ] 2.3a Streams and the budget: confirm whether a streamed completion is charged to the
+- [x] 2.3a Streams and the budget: confirm whether a streamed completion is charged to the
       per-key budget, and whether a model `overrides: {stream_options: {include_usage: true}}`
       entry makes vLLM report usage on streams without changing the client-visible contract
       (the budget is otherwise best-effort for streams; PR 191 review)
+      2026-10-05: DONE. Answer, from agentgateway v1.5.0 source and a local measurement on its
+      image (`context/architecture.md`, "Streamed completions and the token budget"): a stream is
+      charged only when it carries usage, and a client could avoid that (`include_usage: false`,
+      or a disconnect before the final usage chunk). A per-model body `transformation`, not an
+      `overrides` entry, forces `include_usage` and `continuous_usage_stats` on every streamed chat
+      request (#437). The client-visible contract does change: every chunk carries `usage`.
+      Production: `Deploy agentgateway (Dev)` task 2880, then `Run agentgateway Conformance (Dev)`
+      task 2882 PASS 14/14, with `stream_usage.gateway` true on `stream-xhigh` and on the new
+      `stream-options-without-usage` case. A production budget charge on a dropped stream was not
+      measured; the 429 after a dropped stream is the local measurement.
 - [ ] 2.4 Validation gate: 2.2 proves scenario "Conformance against direct vLLM"; 2.3
       with a stream past 130 s proves scenario "Stream is not buffered"
 

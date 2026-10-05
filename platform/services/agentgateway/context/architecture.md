@@ -304,6 +304,10 @@ between chunks. Cases matched at task 2709: **13/13, PASS**.
   PASS, 13/13 cases match. Stream timing deltas from tasks 2614, 2681 and 2698 recorded in the
   table under "Conformance against direct vLLM".
 - Task 2 (conformance against the direct upstream): shape decision and timing deltas recorded.
+- 2026-10-05 — tasks 2.2 and 2.3a, production: `Deploy agentgateway (Dev)` Semaphore task 2880
+  recreated the gateway with the stream-usage transformation; `Run agentgateway Conformance (Dev)`
+  task 2882 PASS, 14/14 cases match, `stream_usage.gateway` true on `stream-xhigh` and
+  `stream-options-without-usage`. Both tasks launched by the operator's coordinating session.
 
 ## Streamed completions and the token budget (task 2.3a)
 

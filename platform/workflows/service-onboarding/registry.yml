@@ -143,11 +143,7 @@ steps:
       - sudo is passwordless for the management user
     evidence_keys: [key_only_proven, password_rejected]
     reviewed: null
-    review_gap: >-
-      key-only access is not proven before password authentication is withdrawn: harden-ssh.yml
-      disables it and restarts sshd (:70-99) before its first key-auth probe (:149-165). The
-      pre-proof lives in a separate template, Verify Host Access (verify-host-access.yml);
-      whether this executor must prove it itself is an operator decision (D10 review 2026-10-03)
+    review_gap: "none in the executor: passed all D10 checks 2026-10-05; the stamp waits on the playbook reaching main (D10 review 2026-10-05)"
 
   - id: service-assess
     order: 9
@@ -247,7 +243,7 @@ steps:
       - the route answers through Caddy
     evidence_keys: [resolves, route_status]
     reviewed: null
-    review_gap: "none in the executor: passed all D10 checks 2026-10-04 (the zero-diff Cloudflare plan moved to edge-dns); the stamp waits on the playbook reaching main"
+    review_gap: "none in the executor: passed all D10 checks 2026-10-05; the stamp waits on the playbook reaching main (D10 review 2026-10-05)"
 
   - id: edge-dns
     order: 16
@@ -265,7 +261,7 @@ steps:
       a dry run is not read-only: tofu init runs under --check and writes .terraform/ into the
       runner's checkout of the tofu root (apply-cloudflare-tofu.yml "OpenTofu init"); a
       throwaway data directory conflicts with the check-mode contract (D10 review 2026-10-04,
-      PR 436)
+      PR 436; unchanged at D10 review 2026-10-05)
 
   - id: fw-assess
     order: 17
@@ -356,10 +352,7 @@ steps:
       - the provider redirect URI is verified
     evidence_keys: [blueprint_status, redirect_verified]
     reviewed: null
-    review_gap: >-
-      second-run no-change not proven: deploy.sh recreates every container on each run
-      (deploy.sh:48 compose up -d --force-recreate; deploy-authentik.yml:297 changed_when: true)
-      (D10 review 2026-10-03)
+    review_gap: "none in the executor: passed all D10 checks 2026-10-05; the stamp waits on the playbook reaching main (D10 review 2026-10-05)"
 
   - id: credential-backup
     order: 23
