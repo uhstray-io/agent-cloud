@@ -1,0 +1,153 @@
+---
+# Read-only diagnosis of why blueprint instances under custom/ may be missing from
+# the Authentik API. Compares what compose.yml declares, what the running server and
+# worker containers actually mount, what the host holds in blueprints-active/, what
+# the worker sees inside its blueprint directory, and what the API records.
+# Reports names, paths, sizes, label values and statuses only: no environment
+# values, no tokens, no logs. Nothing here writes to the host or the containers.
+- name: Require one declared Authentik host
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Refuse a missing or ambiguous target
+      ansible.builtin.assert:
+        that: "groups.get('authentik_svc', []) | length == 1"
+        fail_msg: "Declare exactly one authentik_svc host before inspecting."
+
+- name: Inspect Authentik blueprint discovery without changing live state
+  hosts: authentik_svc
+  gather_facts: false
+  become: false
+  vars:
+    _ak_containers: [authentik-server, authentik-worker]
+    _ak_label_keys:
+      - io.agent-cloud.inputs-sha256
+      - com.docker.compose.project
+      - com.docker.compose.service
+      - com.docker.compose.project.working_dir
+      - com.docker.compose.project.config_files
+      - com.docker.compose.config-hash
+      - com.docker.compose.container-number
+    _ak_become: "{{ podman_rootful | default(false) | bool }}"
+  tasks:
+    - name: List the service's containers (resolves deploy dir and engine)
+      ansible.builtin.include_tasks: tasks/list-service-containers.yml
+      vars:
+        _lsc_fields: [Names, Status]
+        _lsc_all: true
+
+    - name: Report the service's containers
+      ansible.builtin.debug:
+        msg: "deploy_dir={{ _deploy_dir }} containers={{ _lsc.stdout_lines }}"
+
+    # ── a) mounts, compose labels, created time ───────────────────────────────
+    # Named label keys only (never a full label dump) and the mount table.
+    - name: Read mounts, labels and creation time of server and worker
+      ansible.builtin.command:
+        argv:
+          - "{{ _engine }}"
+          - inspect
+          - --format
+          - >-
+            created={{ '{{' }}.Created{{ '}}' }}
+            {%- for k in _ak_label_keys %} {{ k }}={{ '{{' }}index .Config.Labels "{{ k }}"{{ '}}' }}{% endfor %}
+            mounts={{ '{{' }}range .Mounts{{ '}}' }}[{{ '{{' }}.Source{{ '}}' }} -> {{ '{{' }}.Destination{{ '}}' }} rw={{ '{{' }}.RW{{ '}}' }}]{{ '{{' }}end{{ '}}' }}
+          - "{{ item }}"
+      loop: "{{ _ak_containers }}"
+      become: "{{ _ak_become }}"
+      register: _ak_inspect
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Report mounts, compose labels and creation time
+      ansible.builtin.debug:
+        msg: "{{ item }} rc={{ _ak_inspect.results[_i].rc }} {{ _ak_inspect.results[_i].stdout | default('') }} {{ _ak_inspect.results[_i].stderr | default('') | trim }}"
+      loop: "{{ _ak_containers }}"
+      loop_control:
+        index_var: _i
+
+    # ── declared mounts, from the compose.yml actually on the host ────────────
+    - name: Read the deployed compose.yml
+      ansible.builtin.slurp:
+        src: "{{ _deploy_dir }}/compose.yml"
+      register: _ak_compose
+      failed_when: false
+      check_mode: false
+
+    # A damaged compose.yml must not stop the later probes: report and continue.
+    - name: Report declared volumes for server and worker
+      block:
+        - name: Parse declared volumes for server and worker
+          ansible.builtin.debug:
+            msg: >-
+              {{ 'compose.yml unreadable: ' ~ (_ak_compose.msg | default('')) if 'content' not in _ak_compose else
+                 {'server': (_ak_compose.content | b64decode | from_yaml).services.server.volumes | default([]),
+                  'worker': (_ak_compose.content | b64decode | from_yaml).services.worker.volumes | default([])} }}
+      rescue:
+        - name: Report an unparseable compose.yml
+          ansible.builtin.debug:
+            msg: "compose.yml could not be parsed; declared volumes unknown"
+
+    # ── b) host blueprints-active listing ─────────────────────────────────────
+    - name: List host blueprints-active (names and sizes)
+      ansible.builtin.command:
+        argv: [find, "{{ _deploy_dir }}/blueprints-active", -maxdepth, "2", -printf, "%y %s %P\\n"]
+      become: "{{ _ak_become }}"
+      register: _ak_host_bp
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Report host blueprints-active
+      ansible.builtin.debug:
+        msg: "rc={{ _ak_host_bp.rc }} {{ _ak_host_bp.stdout_lines }} {{ _ak_host_bp.stderr | default('') | trim }}"
+
+    # ── c) worker-side blueprint directory listing (mount target /blueprints/custom) ─
+    - name: List the worker's /blueprints tree (names only)
+      ansible.builtin.command:
+        argv: ["{{ _engine }}", exec, authentik-worker, find, /blueprints, -maxdepth, "2"]
+      become: "{{ _ak_become }}"
+      register: _ak_worker_bp
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Report the worker's /blueprints tree
+      ansible.builtin.debug:
+        msg: "rc={{ _ak_worker_bp.rc }} {{ _ak_worker_bp.stdout_lines }} {{ _ak_worker_bp.stderr | default('') | trim }}"
+
+    # ── d) API instances, read inside authentik-server with its own token ─────
+    # The token is read from the container env by the script and never printed.
+    - name: Read blueprint instances through the container-local API
+      ansible.builtin.command:
+        argv:
+          - "{{ _engine }}"
+          - exec
+          - authentik-server
+          - python
+          - -c
+          - |
+            import collections, http.client, json, os, sys
+            tok = os.environ.get("AUTHENTIK_BOOTSTRAP_TOKEN")
+            if not tok:
+                print("no bootstrap token in the server env"); sys.exit(3)
+            c = http.client.HTTPConnection("localhost", 9000, timeout=10)
+            c.request("GET", "/api/v3/managed/blueprints/?page_size=200", headers={"Authorization": "Bearer " + tok})
+            r = c.getresponse()
+            if r.status != 200:
+                print("API returned %s" % r.status); sys.exit(3)
+            res = json.load(r).get("results", [])
+            by = collections.Counter(((b.get("path") or "").split("/", 1)[0] if "/" in (b.get("path") or "") else "(root)") for b in res)
+            print("total %d by_prefix %s" % (len(res), dict(sorted(by.items()))))
+            for b in sorted(res, key=lambda x: x.get("path") or ""):
+                print("%-50s %-12s %s" % (b.get("path"), b.get("status"), b.get("last_applied")))
+      become: "{{ _ak_become }}"
+      register: _ak_api
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Report blueprint instances
+      ansible.builtin.debug:
+        msg: "rc={{ _ak_api.rc }} {{ _ak_api.stdout_lines }}"
