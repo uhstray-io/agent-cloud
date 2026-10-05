@@ -89,7 +89,7 @@ and why.
 | 3.8 | Launched a production deploy as a "dry run" through the Semaphore API with a top-level `dry_run` the server ignores; it ran for real through the secret phase | Live state | 1 | Test: committed launcher places and gates the flag before launch |
 | 3.9 | A mutation test aimed a playbook write at `~/.ssh/known_hosts`; the harness ran it for real on the workstation and overwrote the operator's real known_hosts | Live state | 1 | Test (pinned targets + definitions, before every run) + runtime path asserts against an inline root + default-deny sandboxed harness on macOS/bwrap; CI has no kernel sandbox |
 | 3.10 | A test wrote scratch playbooks into the tracked tree and raced parallel tests that glob it | Working-tree damage | 1 | Convention (session-end tree check proposed) |
-| 3.11 | Made a deploy stop recreating containers without auditing a step that relied on it; a directory reset under a live bind mount emptied Authentik's custom blueprints in prod | Live state | 1 | Convention until PR #444 lands its bind-mount-delete guard |
+| 3.11 | Made a deploy stop recreating containers without auditing a step that relied on it; a directory reset under a live bind mount emptied Authentik's custom blueprints in prod | Live state | 1 | Test (`test_no_bind_mount_dir_delete.py` + FORCE_RECREATE case in `test_compose_up_if_changed.bats`) |
 | 4.1 | `while read` silently dropped an unterminated final line | Data handling | 1 | Convention |
 | 4.2 | Stored `.env` values without stripping surrounding quotes | Data handling | 1 | Convention |
 | 4.3 | Used a real internal IP address as a test vector | Data leak | 1 | Pre-commit (existing) |
@@ -2049,12 +2049,16 @@ any caller depended on recreation.
 that replaces something the process holds open: bind-mounted directories, files read once
 at start. Each replacement must happen in place, or be followed by a restart.
 
-**Enforced by.** PR #438 assembles the blueprint directory in place with no reset. PR #444
-adds a forced-recreate lever, a static guard against deleting a bind-mounted directory
-(test_no_bind_mount_dir_delete.py), and an audit of the Authentik and o11y bind sources. #444
-is not merged as of this entry, so the guard is not on `dev` yet and this rule is Convention
-until it lands. Recovery: one forced recreate (`Deploy Authentik (Dev)` with
-`deploy_force_recreate=true`) is pending, not done.
+**Enforced by.** `platform/tests/test_no_bind_mount_dir_delete.py` (static guard against
+deleting a bind-mounted directory, PR #444) and the FORCE_RECREATE case in
+`platform/tests/test_compose_up_if_changed.bats`. PR #438 assembles the blueprint directory
+in place with no reset; PR #444 also added the forced-recreate lever and audited the
+Authentik and o11y bind sources.
+
+**Recovery.** Done. `Deploy Authentik (Dev)` with `deploy_force_recreate=true`, Semaphore
+task 2896, recreated the project ("operator requested FORCE_RECREATE=true") and its verify
+reported 14 blueprints applied. The normal deploy after it, task 2899, reported
+`DEPLOY_CHANGED=false`, changed=0, with 14 blueprints OK.
 
 ## 4. Data handling
 
