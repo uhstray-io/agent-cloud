@@ -11,7 +11,6 @@
 #   2. the VM exists and is hardened, through the platform's usual workflow, each its own
 #      template: Provision VM (vm_cpu must give it AVX2: x86-64-v3 or host), Distribute SSH Keys,
 #      Harden SSH, Apply Firewall
-#   3. its credentials are in OpenBao (Seed weft Secrets lists what is missing)
 #
 # Then this:
 #   - re-renders weft's Caddy fragment for the environment, so <id>.<domain> reaches the new VM
@@ -19,6 +18,10 @@
 #     already runs the release)
 #   - deploys to the new workspace the release its front door runs, so a new workspace never
 #     starts on a version the rest of its environment does not run
+#
+# Afterwards the workspace's admin signs in and enters its model keys and forge token on
+# Settings > Credentials; they are sealed in its catalog and never pass through Semaphore or
+# OpenBao (weft's D539). Until then its orchestrator has no model to call and says so.
 #
 # Until this has run, the front door shows the workspace as not answering yet; that is the
 # recoverable half-state, because the half that exists (the front door's row) is the half that

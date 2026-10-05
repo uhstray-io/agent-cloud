@@ -44,17 +44,19 @@ those images too.
 - **The seal has one other copy, in OpenBao** (`seal_key_b64` at the workspace's path), never in a
   backup set. `tasks/weft-seal.yml` refuses to start a workspace whose VM and OpenBao hold
   different seals.
-- **A workspace's provider and forge keys are operator-seeded, never generated**: weft names them
-  by variable in `weft.toml` (`key_from_env`), `secrets.env` sets them for the orchestrator only.
+- **A workspace's model keys and forge token never touch this platform** (weft's D539). Its admin
+  enters them on Settings › Credentials after the first sign-in; they are sealed in its catalog.
+  Nothing here renders, stores or names one: no env file, no `key_from_env`, no OpenBao path.
 
 ## What not to do
 
 - Don't deploy by tag, pin a tag in inventory, or add `:latest` anywhere: digests come from
   `release.json` only.
 - Don't mount the workspace directory or the podman socket into another container.
-- Don't put a credential in `weft.toml.j2`; weft has no field for one.
+- Don't put a credential in `weft.toml.j2`, or a variable name for one, or a key in OpenBao for
+  a workspace: they belong to the company and live in its catalog.
 - Don't make a restore automatic outside `tasks/weft-deploy.yml`'s rescue.
-- Don't edit `.env`, `secrets.env`, `door.key` or `weft.toml` on a VM; they are re-rendered on
+- Don't edit `.env`, `door.key` or `weft.toml` on a VM; they are re-rendered on
   every deploy.
 
 ## Related

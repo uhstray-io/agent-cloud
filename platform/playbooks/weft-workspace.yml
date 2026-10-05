@@ -13,8 +13,9 @@
 # Per workspace:
 #   - place the repo; make the workspace directory; enable the deploy user's podman socket (the
 #     orchestrator starts agent and egress-proxy containers through it)
-#   - secrets.env from OpenBao: the provider and forge keys weft.toml names, seeded by an operator
-#     and never generated; the front door's public key is read from the door's path
+#   - the front door's public key, read from the door's OpenBao path for weft.toml. No model
+#     key or forge token: the workspace's admin enters them on Settings > Credentials after the
+#     first sign-in, and they stay sealed in the catalog (weft's D539)
 #   - one deploy (tasks/weft-deploy.yml): verify, stop, back up, start, health through the edge,
 #     watch, and roll back automatically if health or the watch fails
 #
@@ -37,7 +38,6 @@
   become: false
   vars_files:
     - vars/weft.yml
-    - vars/secret-declarations/weft-workspace.yml
   vars:
     _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
     _branch: "{{ service_branch | default('main') }}"
@@ -91,15 +91,11 @@
           - weft_default_provider | default('') in weft_providers | default({})
           - weft_daily_tokens is defined
           - weft_tracker_bot_login | default('') | length > 0
-          - weft_secret_env | default([]) | reject('match', '^[A-Z][A-Z0-9_]*$') | list | length == 0
-          - (weft_tracker_token_env | default('WEFT_GITHUB_TOKEN')) in weft_secret_env | default([])
-          - weft_providers | dict2items | map(attribute='value.key_from_env') | difference(weft_secret_env | default([])) | length == 0
         fail_msg: >-
           {{ inventory_hostname }} is missing part of its weft declaration (weft_workspace_id as a
           DNS label, weft_domain, weft_environment, weft_voice_udp, weft_public_address as an IP,
-          weft_providers with weft_default_provider among them, weft_daily_tokens,
-          weft_tracker_bot_login, and weft_secret_env naming every key_from_env and the tracker's
-          token variable). See platform/services/weft/deployment/README.md.
+          weft_providers with weft_default_provider among them, weft_daily_tokens and
+          weft_tracker_bot_login). See platform/services/weft/deployment/README.md.
 
     - name: "Refuse a cleartext OpenBao endpoint"
       ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
@@ -137,15 +133,46 @@
       environment:
         XDG_RUNTIME_DIR: "/run/user/{{ _weft_uid.stdout }}"
 
-    - name: "Render secrets.env from OpenBao, with the front door's public key"
-      ansible.builtin.include_tasks: tasks/manage-secrets.yml
-      vars:
-        service_name: "{{ _weft_secrets }}/workspaces/{{ weft_workspace_id }}"
-        monorepo_deploy_path: platform/services/weft/deployment
-        _shared_reads:
-          - { from_service: "{{ _weft_secrets }}/door", read_keys: [public_key] }
-        _env_templates:
-          - { src: secrets.env.j2, dest: secrets.env, mode: "0600" }
+    # The workspace keeps no key from OpenBao; it needs only the front door's public half (not a
+    # secret) for weft.toml, and the login the seal copy uses.
+    - name: "Authenticate to OpenBao"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/auth/approle/login"
+        method: POST
+        body_format: json
+        body:
+          role_id: "{{ _bao_role_id }}"
+          secret_id: "{{ _bao_secret_id }}"
+        status_code: [200]
+      register: _bao_auth
+      changed_when: false
+      check_mode: false
+      delegate_to: localhost
+      no_log: true
+
+    - name: "Read the front door's path"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/secret/data/services/{{ _weft_secrets }}/door"
+        headers:
+          X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
+        status_code: [200, 404]
+      register: _weft_door_secret
+      check_mode: false
+      delegate_to: localhost
+      no_log: true
+
+    - name: "Take the front door's public key"
+      ansible.builtin.set_fact:
+        _shared:
+          public_key: "{{ (_weft_door_secret.json | default({})).data.data.public_key | default('') if _weft_door_secret.status == 200 else '' }}"
+      no_log: true
+
+    - name: "Require the front door's public key"
+      ansible.builtin.assert:
+        that: _shared.public_key is match('^[0-9a-f]{64}$')
+        fail_msg: >-
+          services/{{ _weft_secrets }}/door has no public_key: deploy the front door first (Deploy
+          weft Front Door writes it), because every workspace's weft.toml names it.
 
     - name: "One deploy, with automatic rollback"
       ansible.builtin.include_tasks: tasks/weft-deploy.yml

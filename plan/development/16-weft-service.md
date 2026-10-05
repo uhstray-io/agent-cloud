@@ -34,9 +34,8 @@ weft's CI builds every image once, signs it with keyless cosign, and publishes a
 - A deploy interrupts agent sessions in progress; the next pass starts them again (weft §6.1).
 - OpenBao holds every workspace's seal copy; a compromise of OpenBao opens every workspace's stored
   credentials. Only the controller's AppRole reads them, and no weft VM reaches OpenBao.
-- A workspace's provider and forge keys are in OpenBao and rendered to `secrets.env`, because weft
-  today reads them from its environment (`key_from_env`). weft's §5 places a company's own keys in
-  its catalog under the seal; until weft reads them from there, this is where they live.
+- A new workspace has no model to call until its admin signs in and enters its keys on Settings ›
+  Credentials (weft D539): the keys are the company's and never pass through Semaphore or OpenBao.
 - Until `dev` is promoted, the two scheduled templates' main-bound bases fail visibly on main's
   absent playbooks (the `setup-templates.yml` rule for pre-promotion schedules).
 

@@ -1,8 +1,9 @@
 {#- One workspace's deployment file — rendered by deploy-weft-workspace.yml into the workspace
     directory, for the release being deployed (its agent images, by digest) and again for the
-    previous release when a deploy rolls back. NO CREDENTIAL GOES IN THIS FILE: weft has no field
-    for one. A provider and the tracker name the *variable* holding the key, and secrets.env sets
-    it for the orchestrator only. weft refuses a key it does not know, so every key here is one its
+    previous release when a deploy rolls back. NO CREDENTIAL GOES IN THIS FILE, and none names an
+    environment variable either: a workspace's model keys and forge token are entered by its admin
+    on Settings > Credentials and kept sealed in its catalog (weft's D539), so no provider or
+    tracker here names a variable to read one from. weft refuses a key it does not know, so every key here is one its
     loader lists (weft's crates/catalog-types/deployment-file-keys.txt).
 
     Every path weft writes through starts with the workspace directory, because one file is one
@@ -35,7 +36,6 @@ compact_days = {{ weft_audio_compact_days | default(30) }}
 
 [tracker]
 bot_login = "{{ weft_tracker_bot_login }}"
-token_from_env = "{{ weft_tracker_token_env | default('WEFT_GITHUB_TOKEN') }}"
 
 [sealing]
 quiet_after_minutes = {{ weft_quiet_after_minutes | default(30) }}
@@ -92,7 +92,6 @@ name = {{ provider.name | to_json }}
 endpoint = {{ provider.endpoint | to_json }}
 wire = {{ provider.wire | to_json }}
 budget = {{ provider.budget | to_json }}
-key_from_env = {{ provider.key_from_env | to_json }}
 {% for class in ['economy', 'standard', 'frontier'] if class in provider.models %}
 models.{{ class }} = {{ provider.models[class] | to_json }}
 {% endfor %}

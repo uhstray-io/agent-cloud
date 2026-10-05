@@ -263,7 +263,7 @@ Services provision their own AppRoles via `tasks/manage-approle.yml` — no need
 | `secret/services/weft/discord` | `webhook_url` of the bot-owned "weft deploys" webhook (made by `Seed weft Secrets`) |
 | `secret/services/weft/github` | `token` Semaphore reads weft's repository and records GitHub deployments with (operator-seeded) |
 | `secret/services/weft/door`, `secret/services/weft-staging/door` | Front door `signing_key` (hex, generated once by `Deploy weft Front Door`) and its `public_key`; staging shares nothing with the rack |
-| `secret/services/weft/workspaces/<id>` (and `weft-staging/…`) | One workspace's provider and forge keys, named by its `weft_secret_env` (operator-seeded, never generated), and `seal_key_b64`, the one copy of its seal outside the VM (never in a backup set) |
+| `secret/services/weft/workspaces/<id>` (and `weft-staging/…`) | `seal_key_b64`, the one copy of a workspace's seal outside its VM (never in a backup set). A workspace's model keys and forge token are NOT in OpenBao: its admin enters them in weft and they stay sealed in its catalog (weft D539) |
 | `secret/services/ssh/uhhcraft` | Per-service SSH keypair for the UhhCraft VM |
 | `secret/services/ssh/inference-comfyui` | Per-service SSH keypair for the ComfyUI GPU VM |
 | `secret/services/ssh/inference-hunyuan3d` | Per-service SSH keypair for the Hunyuan3D GPU VM |

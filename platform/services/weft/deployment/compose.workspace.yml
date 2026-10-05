@@ -65,10 +65,8 @@ services:
     restart: always
     userns_mode: "keep-id:uid=10001,gid=10001"
     command: ["orchestrator", "run"]
-    # The provider and forge keys weft.toml names by variable (key_from_env, token_from_env),
-    # rendered from OpenBao. The board and capture do not get them.
-    env_file:
-      - secrets.env
+    # No env_file and no key in the environment (weft's D539): model keys and the forge token are
+    # entered by the workspace's admin on Settings > Credentials and kept sealed in the catalog.
     environment:
       WEFT_DB: ${WEFT_WORKSPACE_DIR}/weft.db
       WEFT_CONFIG: ${WEFT_WORKSPACE_DIR}/weft.toml

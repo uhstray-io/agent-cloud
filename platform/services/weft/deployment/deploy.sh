@@ -2,7 +2,7 @@
 # weft — container lifecycle only, for one workspace or one front door.
 #
 # Ansible's deploy-weft-workspace.yml / deploy-weft-door.yml render .env (the release's image
-# digests and the paths, no secret), secrets.env (workspace) or door.key (front door) BEFORE this
+# digests and the paths, no secret) and, for a front door, door.key, BEFORE this
 # runs, and they decide the order of the steps below. This script never reads OpenBao, never
 # generates a secret, and never chooses a version: the image it runs is the digest .env names,
 # so a rollback is a re-rendered .env and the same commands.

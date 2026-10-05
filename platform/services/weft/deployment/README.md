@@ -61,7 +61,6 @@ deployment/
 └── templates/
     ├── workspace.env.j2    .env for a workspace: image digest, paths, ports (no secret)
     ├── door.env.j2         .env for a front door (no secret)
-    ├── secrets.env.j2      the workspace's provider and forge keys, orchestrator only (0600)
     ├── door.key.j2         the front door's signing key (0600)
     ├── weft.toml.j2        the workspace's deployment file: agent images by digest, paths
     └── caddy-site.j2       <domain> -> front door, <id>.<domain> -> each workspace
@@ -73,8 +72,8 @@ deployment/
 |---|---|---|
 | Seed weft Secrets | `seed-weft-secrets.yml` | Makes the bot-owned "weft deploys" webhook in the declared channel, stores its URL; lists, by name, what is still to seed |
 | Deploy weft Front Door | `deploy-weft-door.yml` | Signing key (generated once) and its public half; the Caddy fragment; one deploy |
-| Deploy weft Workspace | `deploy-weft-workspace.yml` | Directory, podman socket, `secrets.env`; one deploy per workspace, one at a time |
-| Stand Up weft Workspace | `stand-up-weft-workspace.yml` | A new workspace VM: routes its hostname, deploys the release its front door runs |
+| Deploy weft Workspace | `deploy-weft-workspace.yml` | Directory, podman socket, the front door's public key; one deploy per workspace, one at a time |
+| Stand Up weft Workspace | `stand-up-weft-workspace.yml` | A new workspace VM: routes its hostname, deploys the release its front door runs; its admin then enters the model keys and forge token on Settings › Credentials |
 | Follow weft main | `follow-weft-main.yml` | Timer: staging follows `main`; records the GitHub deployment `staging` |
 | Roll Out weft Release | `roll-out-weft-release.yml` | Timer: an approved release, front door first, then each workspace |
 | Roll Back weft Workspace | `rollback-weft-workspace.yml` | A person's rollback to a named release from a named backup set |
@@ -95,8 +94,7 @@ as the canary), `weft_staging_door` (one host), `weft_staging_workspace` (one ho
 | `weft_discord_guild_id`, `weft_discord_channel_id` | `weft_door` | the weft-dev channel's numeric ids |
 | `weft_workspace_id` | each workspace host | the id the front door minted (a DNS label) |
 | `weft_voice_udp` | each workspace host | its own UDP port; the rack forwards the same number |
-| `weft_secret_env` | each workspace host | every variable `weft.toml` names, e.g. `[ANTHROPIC_API_KEY, WEFT_GITHUB_TOKEN]` |
-| `weft_providers`, `weft_default_provider` | each workspace host | the `[providers.*]` tables, as a dict |
+| `weft_providers`, `weft_default_provider` | each workspace host | the `[providers.*]` tables (name, endpoint, wire, budget, models), as a dict; no key and no key variable |
 | `weft_daily_tokens`, `weft_tracker_bot_login` | each workspace host | weft has no default for either |
 | `weft_clones` | each workspace host | `{"<org>/<repo>": "<name>"}`, cloned under the workspace directory |
 | `weft_board_bind` / `weft_door_bind` | optional | defaults to `ansible_host`; the Caddy host must reach it |
@@ -109,10 +107,13 @@ as the canary), `weft_staging_door` (one host), `weft_staging_workspace` (one ho
 | `secret/services/weft/discord` | `webhook_url` | Seed weft Secrets (the bot makes the webhook) |
 | `secret/services/weft/github` | `token` | an operator, through Seed OpenBao Key: fine-grained, weft repository, contents and actions read, deployments write |
 | `secret/services/<root>/door` | `signing_key`, `public_key` | Deploy weft Front Door (generated once) |
-| `secret/services/<root>/workspaces/<id>` | each name in `weft_secret_env` | an operator, through Seed OpenBao Key |
 | `secret/services/<root>/workspaces/<id>` | `seal_key_b64` | Deploy weft Workspace, after the first start |
 | `secret/services/github` | `pat` (existing) | read by `registry-login.yml`; needs `read:packages` for weft's images |
 | `secret/services/discord` | `bot_token` (existing) | read by Seed weft Secrets |
+
+A workspace's **model keys and forge token are in none of these** (weft's D539): its admin enters
+them on Settings › Credentials after the first sign-in, and they stay sealed in its catalog. The
+seal's copy above is what lets a restore onto a new VM open them again.
 
 ## Not built yet
 

@@ -125,20 +125,34 @@ PY
   assert_grep -qF '{ name: signing_key, type: hex, length: 64 }' "$PB/weft-door.yml"
 }
 
-@test "weft: the workspace's keys reach the orchestrator only" {
-  # secrets.env carries the provider and forge keys. The board faces the internet and capture
-  # reads rooms; neither needs a model key.
+@test "weft: the_workspace_env_names_no_model_key_or_forge_token" {
+  # D539: a workspace's model keys and forge token are entered by its admin on Settings >
+  # Credentials and live only in its catalog, under its seal. Nothing the platform renders may
+  # carry one or name a variable for one: a key in an env file or in OpenBao is a second copy of a
+  # company's credential that the rack's operator holds, and weft's D539 exists to end that.
   command -v python3 >/dev/null || skip "python3 not installed"
   python3 -c 'import yaml' 2>/dev/null || skip "PyYAML not installed"
-  local holders
-  holders=$(python3 -c '
+  run python3 - "$DEPLOY_DIR/compose.workspace.yml" <<'PY'
 import sys, yaml
 doc = yaml.safe_load(open(sys.argv[1]))
-print(" ".join(n for n, s in sorted(doc["services"].items()) if "secrets.env" in str(s.get("env_file", ""))))
-' "$DEPLOY_DIR/compose.workspace.yml")
-  [ "$holders" = "orchestrator" ]
-  # weft.toml names variables, never values.
+bad = []
+for name, svc in doc['services'].items():
+    if svc.get('env_file'):
+        bad.append(f'{name}: env_file {svc["env_file"]}')
+    for var in (svc.get('environment') or {}):
+        if any(word in var.upper() for word in ('KEY', 'TOKEN', 'SECRET', 'PASSWORD')):
+            bad.append(f'{name}: {var}')
+print('\n'.join(bad))
+sys.exit(1 if bad else 0)
+PY
+  [ "$status" -eq 0 ] || { echo "workspace environment carries: $output"; false; }
+  # No template renders a key, and weft.toml names no variable to read one from.
+  [ ! -e "$DEPLOY_DIR/templates/secrets.env.j2" ]
+  refute_grep -qE 'key_from_env|token_from_env' "$DEPLOY_DIR/templates/weft.toml.j2"
   refute_grep -qE '\{\{[^}]*(secrets|_resolved)' "$DEPLOY_DIR/templates/weft.toml.j2"
+  # And no playbook asks inventory or OpenBao for one.
+  refute_grep -rqE 'weft_secret_env|weft_tracker_token_env' "$PB" "$DEPLOY_DIR"
+  [ ! -e "$PB/vars/secret-declarations/weft-workspace.yml" ]
 }
 
 @test "weft: every path weft.toml writes through is inside the workspace directory" {
