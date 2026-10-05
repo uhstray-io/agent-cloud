@@ -59,7 +59,8 @@
         # controller play refuses an override of those.
         - name: "Refuse extra-var overrides of this play's internal names"
           ansible.builtin.include_tasks: tasks/refuse-var-overrides.yml
-          loop: [_mgmt_priv_key, _proof_key, _proof_pin, _key_preproof, _sshd_overrides, _verify_key, _verify_pin, _key_test, _pw_probe, _sshd_eff, _pw_problems]
+          loop: [_mgmt_priv_key, _proof_key, _proof_pin, _key_preproof, _sshd_overrides, _verify_key, _verify_pin, _key_test, _pw_probe, _sshd_eff, _pw_problems,
+                 _sudoers_change, _sshd_main_change, _sshd_dropin_change]
           loop_control:
             loop_var: _rvo_name
 

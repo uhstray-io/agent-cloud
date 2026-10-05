@@ -111,3 +111,42 @@ def test_a_real_run_still_fails_when_password_is_not_rejected(tmp_path):
     proc, r = _record(tmp_path, SOFT, check=False)
     assert proc.returncode != 0
     assert r["status"] == "fail" and "server offers password" in r["error"]
+
+
+def test_check_mode_is_skip_when_only_the_main_sshd_config_would_change(tmp_path):
+    facts = {**HARDENED, "_sshd_main_change": {"results": [
+        {"changed": True, "item": {"line": "PermitRootLogin no"}}]}}
+    proc, r = _record(tmp_path, facts, check=True)
+    assert r["status"] == "skip", proc.stdout
+    assert "would set sshd PermitRootLogin no" in proc.stdout
+
+
+def test_check_mode_is_skip_when_only_a_dropin_would_change(tmp_path):
+    facts = {**HARDENED, "_sshd_dropin_change": {"results": [
+        {"changed": True, "item": [{"path": "/x/50-cloud-init.conf"}, {"line": "PasswordAuthentication no"}]}]}}
+    proc, r = _record(tmp_path, facts, check=True)
+    assert r["status"] == "skip", proc.stdout
+    assert "would set sshd PasswordAuthentication no" in proc.stdout
+
+
+SENTINEL = "SENTINEL-must-not-print-7f3a"
+
+
+def test_registered_contents_and_diffs_never_reach_the_output(tmp_path):
+    # Only setting lines and fixed phrases are reported; a registered result's content or
+    # diff (which could carry file bytes) must never be echoed.
+    leak = {"content": SENTINEL, "diff": {"before": SENTINEL, "after": SENTINEL}}
+    facts = {
+        **SOFT,
+        "_sudoers_change": {"changed": True, **leak},
+        "_sshd_main_change": {"results": [
+            {"changed": True, "item": {"line": "PasswordAuthentication no"}, **leak}]},
+        "_sshd_dropin_change": {"results": [
+            {"changed": True, "item": [{"path": "/x/a.conf"}, {"line": "KbdInteractiveAuthentication no"}], **leak}]},
+    }
+    proc, r = _record(tmp_path, facts, check=True)
+    assert r["status"] == "skip", proc.stdout
+    # The plant play echoes its loop items; judge only the record play's output.
+    record = proc.stdout.split("PLAY [Record the access-harden step result]", 1)[1]
+    assert SENTINEL not in record
+    assert SENTINEL not in json.dumps(r)
