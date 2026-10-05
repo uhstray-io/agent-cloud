@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
-# inference-probe.sh — one synthetic chat completion through the public inference
-# hostname, recorded as node_exporter textfile metrics.
+# inference-probe.sh — one synthetic chat completion through the inference endpoint,
+# recorded as node_exporter textfile metrics.
 #
 # Author: Joseph A. Wisneski IV <stray@uhstray.io>
 #
 # Change inference-telemetry-production, task 3.3. `/health` answering proves the
 # host is reachable; it does not prove the model serves. This sends one short chat
-# completion (reasoning effort `none`) through the same public path every client
-# uses (Cloudflare -> Caddy -> gateway/vLLM) and writes:
+# completion (reasoning effort `none`) either through the same public path every client
+# uses (Cloudflare -> Caddy -> gateway/vLLM), or straight to the gateway's mutual-TLS
+# listener as a gateway client identity (the three INFERENCE_PROBE_CACERT/_CLIENT_* inputs
+# below), and writes:
 #
 #   inference_probe_success{model_name}                  1 on a 200 with choices, else 0
 #   inference_probe_latency_seconds{model_name}          curl's total request time
@@ -23,6 +25,15 @@
 #   INFERENCE_PROBE_KEY             API key (OpenBao, rendered at deploy)
 #   INFERENCE_PROBE_TIMEOUT_SECONDS latency budget, default 30
 #   INFERENCE_PROBE_TEXTFILE_DIR    default /var/lib/node_exporter/textfile
+#
+# Gateway mutual TLS, all three or none (deploy-o11y.yml, o11y_inference_probe_client_leaf).
+# The URL's host is then the gateway server leaf's SAN that curl verifies; the host's
+# resolver maps it to the gateway (tasks/agw-probe-resolution.yml, the same mapping the
+# leaf's renewal proof uses):
+#
+#   INFERENCE_PROBE_CACERT          internal CA bundle the gateway's server leaf chains to
+#   INFERENCE_PROBE_CLIENT_CERT     the probe's client leaf, admitted by the gateway's SAN
+#   INFERENCE_PROBE_CLIENT_KEY      allowlist; its key (mode 0600). Paths, not secrets.
 #
 # The key never reaches a process argument list: it goes to curl as a config line on
 # stdin from the printf builtin. Nothing here prints the key or the response body.
@@ -87,7 +98,7 @@ write_metrics() {
     return 1
   }
   if ! {
-    printf '# HELP inference_probe_success 1 if the last synthetic chat completion through the public inference hostname succeeded within its latency budget, else 0.\n'
+    printf '# HELP inference_probe_success 1 if the last synthetic chat completion through the inference endpoint succeeded within its latency budget, else 0.\n'
     printf '# TYPE inference_probe_success gauge\n'
     printf 'inference_probe_success{%s} %s\n' "$labels" "$success"
     printf '# HELP inference_probe_latency_seconds Total request time of the last synthetic chat completion.\n'
@@ -137,6 +148,25 @@ if ! [[ "$TIMEOUT" =~ ^[1-9][0-9]*$ ]]; then
   log "INFERENCE_PROBE_TIMEOUT_SECONDS must be a positive integer"
   record 0 0
 fi
+# Mutual TLS is all or nothing: a client leaf without the internal bundle cannot verify the
+# gateway, and the bundle alone is refused at the gateway's handshake. No ':' in a path,
+# which curl's --cert would read as the start of a passphrase. The empty-array expansion
+# below is the form bash before 4.4 accepts under `set -u`.
+tls_args=()
+if [ -n "${INFERENCE_PROBE_CACERT:-}${INFERENCE_PROBE_CLIENT_CERT:-}${INFERENCE_PROBE_CLIENT_KEY:-}" ]; then
+  for var in INFERENCE_PROBE_CACERT INFERENCE_PROBE_CLIENT_CERT INFERENCE_PROBE_CLIENT_KEY; do
+    path="${!var:-}"
+    if [ -z "$path" ]; then
+      log "INFERENCE_PROBE_CACERT, INFERENCE_PROBE_CLIENT_CERT and INFERENCE_PROBE_CLIENT_KEY are set together or not at all"
+      record 0 0
+    fi
+    if ! [[ "$path" =~ ^/[A-Za-z0-9._/-]+$ ]] || ! [ -f "$path" ] || ! [ -r "$path" ]; then
+      log "${var} must name a readable file by an absolute path"
+      record 0 0
+    fi
+  done
+  tls_args=(--cacert "$INFERENCE_PROBE_CACERT" --cert "$INFERENCE_PROBE_CLIENT_CERT" --key "$INFERENCE_PROBE_CLIENT_KEY")
+fi
 
 body_file="$(mktemp)" || { log "cannot create a response file"; record 0 0; }
 trap 'rm -f "$body_file"' EXIT
@@ -151,6 +181,7 @@ write_out=$(printf 'header = "Authorization: Bearer %s"\n' "$INFERENCE_PROBE_KEY
   "$CURL_BIN" --disable --config - \
     --silent --show-error \
     --proto '=https' \
+    ${tls_args[@]+"${tls_args[@]}"} \
     --max-time "$TIMEOUT" \
     --header 'Content-Type: application/json' \
     --data-binary "$payload" \

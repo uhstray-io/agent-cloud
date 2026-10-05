@@ -85,6 +85,25 @@
     _probe_textfile_dir: /var/lib/node_exporter/textfile
     _probe_user: "{{ ansible_user | default('deploy') }}"
     _probe_unit_dir: /etc/systemd/system
+    # Gateway client identity (optional): the probe presents this internal-CA client leaf
+    # straight to the gateway's mutual-TLS listener instead of using the public hostname.
+    # Empty (the default) leaves the probe on its plain public path.
+    _probe_leaf_name: "{{ o11y_inference_probe_client_leaf | default('') }}"
+    _probe_leaf_dir: >-
+      {{ (internal_leaves | default([]) | selectattr('name', 'equalto', _probe_leaf_name)
+          | map(attribute='dir') | first | default('')) if (_probe_leaf_name | length > 0) else '' }}
+    _probe_gw: "{{ groups.get('agentgateway_svc', []) | first | default('') }}"
+    # The name the gateway's server leaf carries and the address it is published on, read from
+    # the gateway host's own variables as deploy-agentgateway.yml and deploy-dns.yml read them.
+    _probe_gw_name: >-
+      {{ (hostvars[_probe_gw].agw_tls_server_name | default('gateway.' ~ (hostvars[_probe_gw].dns_site | default(''))
+           ~ '.' ~ (hostvars[_probe_gw].dns_zone | default(''))))
+         if (_probe_gw | length > 0) else '' }}
+    _probe_gw_port: "{{ (hostvars[_probe_gw].agw_port | default('4000') | string) if (_probe_gw | length > 0) else '' }}"
+    _probe_gw_address: >-
+      {{ (((hostvars[_probe_gw].ansible_host | default(_probe_gw))
+           if (hostvars[_probe_gw].agw_bind | default('127.0.0.1')) in ['0.0.0.0', '::', '']
+           else hostvars[_probe_gw].agw_bind) if (_probe_gw | length > 0) else '') | trim }}
     # Host files an enable creates; a disabled deploy removes whichever of them exist.
     _probe_host_artefacts:
       - "{{ _probe_unit_dir }}/inference-probe.timer"
@@ -322,6 +341,74 @@
           (default agentgateway); the latency budget o11y_inference_probe_timeout_seconds is 1-120.
       when: _probe_enabled | bool
 
+    # The probe as a gateway client identity (o11y_inference_probe_client_leaf): every
+    # declaration the path needs, checked before anything is placed. The gateway admits a
+    # client leaf by its SANs only when the leaf is on its allowlist (config.yaml.j2), and
+    # the daily renewal proves a per-call leaf off the gateway host through this host's
+    # agw_verify_base_url (renew-internal-certs.yml), so both must name this exact path.
+    - name: "Require a gateway client-identity probe the gateway admits and the renewal can prove"
+      ansible.builtin.assert:
+        that:
+          - _probe_gw | length > 0 and groups['agentgateway_svc'] | length == 1
+          - hostvars[_probe_gw].agw_listener_tls | default(false) | bool
+          - _probe_leaf_name in (hostvars[_probe_gw].agw_client_cert_allowlist | default(['caddy']))
+          - _leaf | length == 1
+          - _leaf[0].profile | default('') == 'client'
+          - _leaf[0].host | default('') == inventory_hostname
+          - _leaf[0].reload | default('') == 'none'
+          - o11y_inference_probe_key_service | default('agentgateway') == 'agentgateway'
+          # The key is the leaf's own identity: another client's key would bill and attribute
+          # the probe's traffic to that client (config.yaml.j2 keys budgets by identity).
+          - o11y_inference_probe_key_field | default('') == 'client_' ~ _probe_leaf_name
+          - _probe_leaf_name in (hostvars[_probe_gw].agw_clients | default([]))
+          - o11y_inference_probe_url == _base ~ '/v1'
+          - agw_verify_base_url | default('') == _base
+          - groups.get('step_ca_svc', []) | length == 1
+          - _probe_gw_address is match('^((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])[.]){3}(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])$')
+          - not (_probe_gw_address is match('^127[.]'))
+        fail_msg: >-
+          o11y_inference_probe_client_leaf={{ _probe_leaf_name }} needs: one agentgateway_svc host
+          with agw_listener_tls and {{ _probe_leaf_name }} in its agw_client_cert_allowlist; one
+          internal_leaves entry {{ _probe_leaf_name }} (profile client, host {{ inventory_hostname }},
+          reload none); o11y_inference_probe_key_field client_{{ _probe_leaf_name }}, with {{ _probe_leaf_name }}
+          in the gateway's agw_clients (key service agentgateway); o11y_inference_probe_url {{ _base }}/v1 and, on this
+          host, agw_verify_base_url {{ _base }} (the renewal's proof path); one step_ca_svc host; and
+          the gateway published on a non-loopback IPv4 address.
+        quiet: true
+      vars:
+        _leaf: "{{ internal_leaves | default([]) | selectattr('name', 'equalto', _probe_leaf_name) | list }}"
+        _base: "https://{{ _probe_gw_name }}:{{ _probe_gw_port }}"
+      when:
+        - _probe_enabled | bool
+        - _probe_leaf_name | length > 0
+
+    # Read-only (stat runs under --check too). Issue Internal Leaf places the key 0600 as the
+    # deploy user, which the probe unit runs as; anything else is not the issued key.
+    - name: "Require the probe's client leaf issued and private to the probe user"
+      when:
+        - _probe_enabled | bool
+        - _probe_leaf_name | length > 0
+      block:
+        - name: "Read the probe's issued client leaf files"
+          ansible.builtin.stat:
+            path: "{{ _probe_leaf_dir }}/current/{{ item }}"
+            get_checksum: false
+            get_mime: false
+          loop: [cert.pem, key.pem]
+          register: _probe_leaf_files
+
+        - name: "Refuse a probe client leaf that is not issued, or a key the probe user does not own alone"
+          ansible.builtin.assert:
+            that:
+              - _probe_leaf_files.results | map(attribute='stat.exists') | select | list | length == 2
+              - _probe_leaf_files.results[1].stat.mode == '0600'
+              - _probe_leaf_files.results[1].stat.pw_name == _probe_user
+            fail_msg: >-
+              {{ _probe_leaf_dir }}/current must hold cert.pem and key.pem (key mode 0600, owned by
+              {{ _probe_user }}). Run Issue Internal Leaf (Dev) with target_service o11y_svc and
+              leaf_name {{ _probe_leaf_name }} after Deploy step-ca (Dev) has the leaf's SANs.
+            quiet: true
+
     - name: "Place the monorepo + ensure podman/compose"
       ansible.builtin.include_tasks: tasks/place-monorepo.yml
 
@@ -391,6 +478,30 @@
         state: absent
       register: _agentgateway_scrape_absent
       when: agentgateway_metrics_address is not defined
+
+    # The gateway client-identity path's two host inputs, shared with the leaf's renewal
+    # proof: the internal CA bundle beside the leaf directory (where renew-internal-certs.yml
+    # reads it), and the mapping of the gateway server leaf's name to its published address
+    # through the one resolution step (the interim hosts line, or the internal zone once
+    # agw_internal_dns_authoritative is declared for this host). Neither is removed when the
+    # probe is disabled: the declared leaf must stay provable until it is removed.
+    - name: "Give the probe's gateway client identity its trust bundle and the gateway's name"
+      when:
+        - _probe_enabled | bool
+        - _probe_leaf_name | length > 0
+      block:
+        - name: "Place the internal CA's trust bundle beside the probe's client leaf"
+          ansible.builtin.include_tasks: tasks/distribute-ca-root.yml
+          vars:
+            _ca_bundle_dest: "{{ _probe_leaf_dir | dirname }}/step-ca-bundle.crt"
+            _ca_host: "{{ groups['step_ca_svc'] | first }}"
+
+        - name: "Resolve the gateway server leaf's name on the probe host"
+          ansible.builtin.include_tasks: tasks/agw-probe-resolution.yml
+          vars:
+            _agwr_name: "{{ _probe_gw_name }}"
+            _agwr_ip: "{{ _probe_gw_address }}"
+            _agwr_expect: "{{ _probe_gw_address }}"
 
     # Synthetic inference probe. Its environment file (key from OpenBao) was rendered
     # by manage-secrets above; the units and the textfile directory are host config.

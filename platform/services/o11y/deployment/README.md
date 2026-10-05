@@ -225,6 +225,59 @@ and the key file. An interrupted install or removal is therefore still cleaned u
 Privileged steps run only for an artefact that exists, so a host that never ran the
 probe needs no sudo.
 
+### Gateway client identity
+
+Until the public inference route points at the gateway (gateway task 4.3), a gateway
+key sent through the public hostname reaches vLLM, which does not accept it. The probe
+can instead go straight to the gateway's mutual-TLS listener as a gateway client
+identity. Set `o11y_inference_probe_client_leaf` on the o11y host to the name of an
+internal-CA client leaf declared for it. Unset, the probe stays on the public path and
+nothing below runs.
+
+The probe then presents that leaf, verifies the gateway's server leaf against the
+internal CA bundle, and names the gateway by its server leaf's SAN. The paths reach curl
+as arguments (they are not secrets); the key still travels on stdin only. Before
+anything is placed, the deploy refuses the declaration unless all of these hold:
+
+- exactly one `agentgateway_svc` host, with `agw_listener_tls` on and the leaf in its
+  `agw_client_cert_allowlist`. The gateway admits a client leaf by its SANs only through
+  that list (`agentgateway/deployment/templates/config.yaml.j2`); a leaf outside it gets
+  403 even with a valid key.
+- one `internal_leaves` entry of that name: profile `client`, host this o11y host, reload
+  `none`.
+- `o11y_inference_probe_key_field` is `client_<leaf name>`, read from `agentgateway`,
+  and the leaf name is in the gateway's `agw_clients`. The key is the leaf's own
+  identity. Another client's key would put the probe's traffic on that client's
+  budget and dashboards, so it is refused even when that client is enrolled.
+- `o11y_inference_probe_url` is exactly `https://<gateway server name>:<agw_port>/v1`, and
+  this host declares `agw_verify_base_url` as the same URL without `/v1`. The daily
+  `Renew Internal Certs (Dev)` proves a per-call client leaf off the gateway host through
+  that variable and refuses the whole run for a leaf it cannot prove, so the probe and the
+  renewal proof must use one path.
+- one `step_ca_svc` host, and the gateway published on a non-loopback IPv4 address (its
+  `agw_bind`, or its `ansible_host` when it binds every interface), with every octet
+  0-255. The shared resolution step refuses a malformed name or address too, before it
+  writes the hosts line.
+- the leaf has been issued: `current/cert.pem` and `current/key.pem` exist, and the key is
+  mode 0600 and owned by the deploy user, which the probe unit runs as.
+
+An enabled deploy then places two host inputs that the renewal proof also reads:
+
+- **Trust bundle.** The CA's root and intermediate, written to
+  `<leaf dir>/../step-ca-bundle.crt` by `tasks/distribute-ca-root.yml`.
+- **Gateway name.** The server leaf's name is mapped to the gateway's address by the
+  shared resolution step, `tasks/agw-probe-resolution.yml`. This is the interim marked
+  `/etc/hosts` line, or the internal zone once this host declares
+  `agw_internal_dns_authoritative`.
+
+The env file gains `INFERENCE_PROBE_CACERT`, `INFERENCE_PROBE_CLIENT_CERT` and
+`INFERENCE_PROBE_CLIENT_KEY`. The script requires all three or none, and records a failed
+sample naming only the variable for a path that is not an absolute, readable file. When
+the probe is disabled, neither host input is removed: the declared leaf must stay
+provable until it is removed with `Issue Internal Leaf (Dev)`, action `remove`, and then
+its declaration dropped. Leaf directories under this deployment's `certs/` are
+gitignored.
+
 Caveats:
 
 - **Rollback.** During a `direct`-mode rollback (`rollback-inference-route.yml`), vLLM
@@ -236,7 +289,8 @@ Caveats:
   the next deploy.
 - **Not yet verified.** The o11y host's egress to the public hostname, and whether the
   served model accepts `reasoning_effort: none`, are not verified until the first enabled
-  deploy.
+  deploy. The gateway client-identity path is tested against a stub curl and the deploy's
+  own refusals only; no enabled deploy or renewal proof has run it.
 
 ## Scheduled jobs and internal CA expiry
 

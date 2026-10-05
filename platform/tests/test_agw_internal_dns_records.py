@@ -194,6 +194,39 @@ def _resolve(tmp_path, extra, check=False, hosts=HOSTS):
     return r, hf.read_text()
 
 
+@pytest.mark.parametrize("extra,why", [
+    ({"_agwr_name": "gateway.lab.x", "_agwr_ip": "999.999.999.999"}, "octets above 255"),
+    ({"_agwr_name": "gateway.lab.x", "_agwr_ip": "256.1.1.1"}, "one octet above 255"),
+    ({"_agwr_name": "gateway.lab.x", "_agwr_ip": "192.0.2.1.5"}, "five octets"),
+    ({"_agwr_name": "gateway.lab.x", "_agwr_ip": "gateway-vm"}, "a name where the address goes"),
+    ({"_agwr_name": "gateway.lab.x", "_agwr_ip": ""}, "no address"),
+    ({"_agwr_name": "gateway.lab.x other.name", "_agwr_ip": "192.0.2.1"}, "a second name in the line"),
+    ({"_agwr_name": "", "_agwr_ip": "192.0.2.1"}, "no name"),
+])
+def test_interim_mode_refuses_a_value_the_hosts_line_cannot_carry(tmp_path, extra, why):
+    r, text = _resolve(tmp_path, extra, hosts="127.0.0.1 localhost\n")
+    assert r.returncode != 0, why
+    assert text == "127.0.0.1 localhost\n", f"hosts file written for {why}"
+    # The refusal is rendered, not printed as template source.
+    assert "and _agwr_ip (the published bind, an IPv4 address)." in r.stdout, why
+    assert "{ '" not in r.stdout and "' }" not in r.stdout, why
+
+
+def test_authoritative_mode_refuses_a_malformed_name_without_asking_for_an_address(tmp_path):
+    r, text = _resolve(tmp_path, {"agw_internal_dns_authoritative": True, "_agwr_name": "two names"})
+    assert r.returncode != 0
+    assert text == HOSTS
+    assert "needs _agwr_name (the server leaf SAN, a DNS name)." in r.stdout
+    assert "_agwr_ip" not in r.stdout.split("needs _agwr_name", 1)[1].split("\n", 1)[0]
+
+
+@pytest.mark.parametrize("ip", ["0.0.0.0", "255.255.255.255", "192.0.2.199", "203.0.113.250"])
+def test_interim_mode_accepts_every_valid_ipv4_address(tmp_path, ip):
+    r, text = _resolve(tmp_path, {"_agwr_name": "gateway.lab.x", "_agwr_ip": ip}, hosts="127.0.0.1 localhost\n")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert f"{ip} gateway.lab.x {MARKER}" in text
+
+
 def test_interim_mode_keeps_exactly_one_marker_line(tmp_path):
     r, text = _resolve(
         tmp_path, {"_agwr_name": "gateway.lab.x", "_agwr_ip": "127.0.0.1"}, hosts="127.0.0.1 localhost\n"

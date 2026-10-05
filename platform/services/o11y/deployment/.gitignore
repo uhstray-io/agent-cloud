@@ -13,3 +13,7 @@ config/grafana/provisioning/alerting/contact.yml
 # The synthetic inference probe's key file, rendered from OpenBao by deploy-o11y.yml
 # when o11y_inference_probe_enabled is true. Never committed.
 probe/inference-probe.env
+# The probe's gateway client leaf (issued on the host by Issue Internal Leaf) and the CA
+# bundle deploy-o11y.yml places beside it, when o11y_inference_probe_client_leaf points the
+# probe at the gateway. Host state, never committed; also kept by local rsync --delete.
+/certs/
