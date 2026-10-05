@@ -312,3 +312,49 @@ passwordless `sudo -n` probe. The criteria written for this step are what the ev
 from `main`, which does not carry these playbooks yet. access-harden, oidc-config and
 edge-route each carry the passing `review_gap`. Remaining gaps: edge-dns (dry run not
 read-only) and service-deploy.
+
+## edge-dns dry-run gap closed — 2026-10-05
+
+Author: Joseph A. Wisneski IV — 2026-10-05
+
+The sections above stay as written. The gap they record, a dry run whose `tofu init` writes
+`.terraform/` into the runner's checkout of the tofu root, is closed in the executor without
+widening the check-mode contract. Line numbers are on this change's commit.
+
+- **Mechanism.** Under `--check`, init, plan and show run as ONE shell command
+  (`apply-cloudflare-tofu.yml:206`) that makes its own `root=$(mktemp -d)`, removes it with
+  `trap 'rm -rf "$root"' EXIT`, and points `TF_DATA_DIR` into it. OpenTofu keeps its
+  per-working-directory data where `TF_DATA_DIR` says, and the value must hold for every
+  command from init on (https://opentofu.org/docs/cli/config/environment-variables/#tf_data_dir),
+  which is why the three run in one process instead of three tasks. That is the command shape
+  `test_check_mode_contract.py` already classes as a read (`_sandboxed`, as used by the netplan
+  validation); no Ansible `tempfile` or `file` write is forced into check mode, so the
+  runner-scratch class is not widened.
+- **The lock file.** The dry-run init takes `-lockfile=readonly`, which verifies checksums
+  against the committed `.terraform.lock.hcl` and suppresses changes to it
+  (https://opentofu.org/docs/cli/commands/init/).
+- **No remote write.** The plan takes no state lock: the s3 backend locks only with
+  `dynamodb_table` or `use_lockfile` (https://opentofu.org/docs/language/settings/backends/s3/),
+  and neither `versions.tf` nor the rendered `backend.hcl` sets one.
+- **Results.** The command prints one JSON object with what the real init, plan and show tasks
+  would have registered; a `no_log` task unpacks it (:248) and the visible report reads it in
+  check mode (:399). The report is unchanged: exit codes, counts, address and action only.
+- **A real run is unchanged.** The real init now carries `when: not ansible_check_mode`
+  (:266) instead of `check_mode: false`; plan, show, apply and the post-apply plan run as
+  before, in the tofu root's own `.terraform/`.
+
+Tests, with a fake `tofu` that writes into its data directory, rewrites the lock file unless
+told `-lockfile=readonly`, and saves its `-out` file (`test_edge_dns_step_result.py:247-292`):
+a dry run leaves the tofu root byte-identical and removes the throwaway root, records
+`pass`/`plan_changes: 0`; a dry run with changes records the count and address/action only;
+a dry run whose init fails fails the run and still writes nothing; a real plan still runs in
+`.terraform/` and removes its saved plan. Five mutations each turned a test red and were
+restored byte-exact: `TF_DATA_DIR` dropped, `-lockfile=readonly` dropped, the `trap` dropped,
+the real init forced back into check mode, and the report reading the real init in check mode.
+
+Not verified: a dry run against the real OpenTofu binary and the live R2 backend. The fake
+binary proves the playbook's handling, not tofu's own behaviour with `-lockfile=readonly` on
+the runner's platform.
+
+Verdict: edge-dns **passes** D10 in the executor, pending that live dry run. Not stamped, for
+the `main` hazard recorded on 2026-10-04.

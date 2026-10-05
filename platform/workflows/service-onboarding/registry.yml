@@ -258,10 +258,10 @@ steps:
     evidence_keys: [plan_changes]
     reviewed: null
     review_gap: >-
-      a dry run is not read-only: tofu init runs under --check and writes .terraform/ into the
-      runner's checkout of the tofu root (apply-cloudflare-tofu.yml "OpenTofu init"); a
-      throwaway data directory conflicts with the check-mode contract (D10 review 2026-10-04,
-      PR 436; unchanged at D10 review 2026-10-05)
+      none in the executor: the dry-run gap closed 2026-10-05 (under --check, init, plan and
+      show run in one command with a throwaway TF_DATA_DIR removed on exit, and init takes
+      -lockfile=readonly); the other D10 checks passed 2026-10-04; a dry run against real tofu
+      is not yet verified; the stamp waits on the playbook reaching main (D10 review 2026-10-05)
 
   - id: fw-assess
     order: 17
