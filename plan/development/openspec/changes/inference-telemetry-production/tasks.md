@@ -184,7 +184,7 @@
       skipped, per the coordinator's read of the output), so its two rules were not rendered or
       read back. This task names only the four groups, which 2839 covers; the probe rules
       belong to task 3.3, which needs the probe enabled in site-config.
-- [ ] 3.3 Synthetic probe: `platform/services/o11y/deployment/probe/inference-probe.sh`
+- [x] 3.3 Synthetic probe: `platform/services/o11y/deployment/probe/inference-probe.sh`
       (curl, one short chat completion, effort `none`, through
       `https://inference.uhstray.io/v1`, key from OpenBao at deploy into the gitignored
       `.env`), systemd timer every 5 min on the o11y host, writes
@@ -218,6 +218,21 @@
       only with all three TLS inputs. Tested in `platform/tests/test_inference_probe.py`. Still
       open: the site-config declarations (leaf, allowlist, `agw_clients` entry, the gateway's
       firewall rule for the o11y host), the leaf's issuance, and an enabled deploy.
+      2026-10-05: DONE, PROVEN at runtime through the gateway client-identity path (code merged
+      in #449, `b0f599ad`). The probe goes straight to the gateway's mutual-TLS listener, not
+      through the public hostname this task first named: until the route switch (gateway task
+      4.3) a gateway key on the public path reaches vLLM. Evidence, in the order run:
+      site-config #61 merged (`848d9b33`) and the Semaphore inventory synced; Deploy step-ca
+      (Dev) 2954/2961 (name policy 7 names); Deploy agentgateway (Dev) 2959 (recreated,
+      `client_o11y-probe` minted, keyed verify completion OK); Apply Firewall (Dev) on the
+      gateway 2963; Issue Internal Leaf (Dev) `o11y-probe` 2964 dry run, 2965 real; Deploy o11y
+      (Dev) 2966 dry run, 2967 real, whose forced sample read back
+      `inference_probe_success{model_name="qwen3.8-flash-next"} 1`, latency 0.159245 s; Renew
+      Internal Certs (Dev) dry run 2969 classified `o11y-probe` as a probe-client leaf with
+      29 of 30 days left. Not yet shown: a renewal run that re-issues and proves the
+      `o11y-probe` leaf from the o11y host (2969 was a dry run, outside the renewal window);
+      the probe's two alert rules firing (task 3.5 drill); moving the probe to the public
+      hostname after task 4.3, if wanted.
 - [x] 3.4 `platform/tests/test_service_o11y.bats`: dashboards and alerting files are
       valid JSON/YAML, every `vllm:` name in a dashboard appears in the imported list,
       probe script `shellcheck` clean and contains no literal key
