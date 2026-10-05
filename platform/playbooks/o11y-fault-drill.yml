@@ -162,12 +162,13 @@
     - name: Require the synthetic probe deployed and its health route declared
       ansible.builtin.assert:
         that:
-          - o11y_inference_probe_enabled | default(false) | bool
-          - o11y_inference_probe_url | default('') is match('^https://[A-Za-z0-9.-]+(:[0-9]+)?/v1$')
+          # A restore-only run is gated only on what the restore uses: the local probe
+          # environment and the model its fresh-sample proof reads. The enable flag and the
+          # URL feed only the fault and the health hold.
+          - _restore_only | bool or (o11y_inference_probe_enabled | default(false) | bool)
+          - _restore_only | bool or (o11y_inference_probe_url | default('') is match('^https://[A-Za-z0-9.-]+(:[0-9]+)?/v1$'))
           - o11y_inference_probe_model | default('') is match('^[A-Za-z0-9._:/@-]+$')
-          # Gateway client identity: the health hold reads the one gateway's upstream. A
-          # restore-only run holds nothing, so it never waits on this (the restore needs only
-          # the local probe environment).
+          # Gateway client identity: the health hold reads the one gateway's upstream.
           - >-
             _restore_only | bool
             or not (_probe_gateway_identity | bool)
@@ -176,7 +177,8 @@
         fail_msg: >-
           The probe drill needs the deployed inference probe (o11y_inference_probe_enabled and _url)
           and, with a gateway client identity, one agentgateway_svc host whose agw_upstream_base_url
-          is <scheme>://<host>[:port]/v1. No fault was induced.
+          is <scheme>://<host>[:port]/v1. A restore-only run needs only o11y_inference_probe_model.
+          No fault was induced.
       when: drill == 'probe'
 
     - name: Name the alert rule this mode must fire

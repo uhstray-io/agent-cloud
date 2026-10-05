@@ -316,6 +316,7 @@ def _probe_wiring(tmp_path, o11y=None, gateways=1, upstream=UPSTREAM):
     o11y_vars = {"ansible_connection": "local", "ansible_python_interpreter": shutil.which("python3"),
                  "drill": "probe", "o11y_inference_probe_enabled": True, "o11y_inference_probe_url": PUBLIC_URL,
                  "o11y_inference_probe_model": "served-model-a", **(o11y or {})}
+    o11y_vars = {k: v for k, v in o11y_vars.items() if v is not None}
     inventory = {"all": {"children": {
         "o11y_svc": {"hosts": {"o11y-test": o11y_vars}},
         "agentgateway_svc": {"hosts": {f"gw{i}": gw for i in range(gateways)}},
@@ -369,6 +370,28 @@ def test_a_restore_only_run_is_never_gated_on_the_health_hold_inputs(tmp_path, g
                                             "drill_restore_only": True},
                             gateways=gateways, upstream=upstream)
     assert done.returncode == 0, done.stdout + done.stderr
+
+
+@pytest.mark.parametrize("o11y,why", [
+    ({"o11y_inference_probe_enabled": False}, "probe disabled since the fault"),
+    ({"o11y_inference_probe_url": None}, "no probe URL"),
+    ({"o11y_inference_probe_url": "http://inference.example.test/v1"}, "a URL the probe would refuse"),
+])
+def test_a_restore_only_run_is_gated_only_on_what_the_restore_uses(tmp_path, o11y, why):
+    restore = {**o11y, "drill_restore_only": True}
+    done, _ = _probe_wiring(tmp_path, o11y=restore, gateways=0, upstream=None)
+    assert done.returncode == 0, (why, done.stdout + done.stderr)
+    # The same inventory still refuses a run that would induce the fault.
+    done, _ = _probe_wiring(tmp_path, o11y=o11y, gateways=0, upstream=None)
+    assert done.returncode != 0, why
+    assert "No fault was induced" in done.stdout, why
+
+
+def test_a_restore_only_run_still_needs_the_model_its_proof_reads(tmp_path):
+    done, _ = _probe_wiring(tmp_path, o11y={"drill_restore_only": True, "o11y_inference_probe_model": None},
+                            gateways=0, upstream=None)
+    assert done.returncode != 0
+    assert "No fault was induced" in done.stdout
 
 
 def test_the_health_hold_is_read_from_the_path_aware_host():
