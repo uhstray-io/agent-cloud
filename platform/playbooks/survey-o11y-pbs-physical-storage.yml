@@ -77,14 +77,19 @@
     - name: Derive Proxmox API connection values
       ansible.builtin.set_fact:
         _pve_host: "{{ _pve_data.url | default('') }}"
-        _pve_token_id: "{{ _pve_data.token_id | default('stray@pve!workflow-agent') }}"
+        _pve_token_id: "{{ _pve_data.token_id | default('') }}"
         _pve_secret: "{{ _pve_data.api_token }}"
       no_log: true
 
-    - name: Require Proxmox API over HTTPS
+    - name: Require Proxmox API over HTTPS with a stored token id
       ansible.builtin.assert:
-        that: _pve_host is match('^https://')
-        fail_msg: "The Proxmox API URL from OpenBao must use HTTPS."
+        that:
+          - _pve_host is match('^https://')
+          # No site default: the token id names a real Proxmox user.
+          - _pve_token_id | length > 0
+        fail_msg: >-
+          secret/services/proxmox must give an HTTPS url and a token_id
+          (<user>@<realm>!<token-name>) beside api_token.
 
     - name: Read Proxmox node listing before constructing a per-node URL
       ansible.builtin.uri:

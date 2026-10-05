@@ -90,7 +90,7 @@
     - name: Derive Proxmox API connection values
       ansible.builtin.set_fact:
         _pve_host: "{{ _pve_data.url | default('') }}"
-        _pve_token_id: "{{ _pve_data.token_id | default('stray@pve!workflow-agent') }}"
+        _pve_token_id: "{{ _pve_data.token_id | default('') }}"
         _pve_secret: "{{ _pve_data.api_token | default('') }}"
       no_log: true
 
@@ -100,7 +100,9 @@
           - _pve_host is match('^https://')
           - _pve_token_id | length > 0
           - _pve_secret | length > 0
-        fail_msg: "OpenBao must provide the HTTPS Proxmox endpoint and API token."
+        fail_msg: >-
+          secret/services/proxmox must give an HTTPS url, a token_id
+          (<user>@<realm>!<token-name>) and api_token; there is no built-in token id.
 
     - name: Read VM inventory from Proxmox
       ansible.builtin.uri:

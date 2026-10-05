@@ -18,7 +18,7 @@
   vars:
     _project_root: "{{ project_root | default(playbook_dir + '/..') }}"
     _pve_host: "{{ pve_host | default('') }}"
-    _pve_token_id: "{{ pve_token_id | default('stray@pve!workflow-agent') }}"
+    _pve_token_id: "{{ pve_token_id | default('') }}"
     _pve_secret: "{{ pve_token_secret | default(lookup('env', 'PVE_TOKEN_SECRET')) }}"
     _node: "{{ target_node | default('alphacentauri') }}"
     _vmid: "{{ template_vmid | default(9000) }}"
@@ -38,6 +38,14 @@
     # before any later task or play (D10 review, PR 416).
     - name: "Create or adopt the template"
       block:
+        # The token id names a real Proxmox user, so it is passed in, never defaulted.
+        - name: "Require the Proxmox token id"
+          ansible.builtin.assert:
+            that: _pve_token_id | length > 0
+            fail_msg: >-
+              Pass -e pve_token_id=<user>@<realm>!<token-name> (the token whose secret
+              is pve_token_secret / PVE_TOKEN_SECRET); there is no built-in default.
+
         - name: "Check if template VM already exists"
           ansible.builtin.uri:
             url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/config"

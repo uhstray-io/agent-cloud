@@ -263,7 +263,8 @@ def _template_play(tmp_path, cfg, check=False):
     fake = FakeProxmox({("GET", TEMPLATE_CFG): (200, cfg)})
     try:
         result, rc = _run(tmp_path, [play], check=check,
-                          extra=["-e", json.dumps({"pve_host": fake.url, "pve_token_secret": "x"})])
+                          extra=["-e", json.dumps({"pve_host": fake.url, "pve_token_id": "automation@pve!fixture",
+                                                     "pve_token_secret": "x"})])
     finally:
         fake.close()
     return result, rc, fake

@@ -15,7 +15,7 @@
 # Usage (operator-side):
 #   PVE_TOKEN_SECRET=… ansible-playbook platform/playbooks/snapshot-vm.yml \
 #     -e pve_api_host=https://<pve>:8006 -e pve_node=<node> -e pve_vmid=<id> \
-#     -e pve_token_id='stray@pve!…' -e snapshot_name=preupgrade-<svc>-<ts>
+#     -e pve_token_id='<user>@<realm>!<token-name>' -e snapshot_name=preupgrade-<svc>-<ts>
 #
 # Rollback (manual, only on catastrophic failure): in the Proxmox UI / API,
 # qemu/<vmid>/snapshot/<name>/rollback. This playbook only CREATES + validates.
@@ -44,7 +44,7 @@
                      url=_bao_url, auth_method='approle',
                      role_id=_bao_role_id, secret_id=_bao_secret_id) }}
     _pve_host: "{{ pve_api_host | default(_pve_data.url | default(''), true) }}"
-    _pve_token_id: "{{ pve_token_id | default(_pve_data.token_id | default('stray@pve!workflow-agent'), true) }}"
+    _pve_token_id: "{{ pve_token_id | default(_pve_data.token_id | default(''), true) }}"
     _pve_secret: "{{ _pve_secret_in if (_pve_secret_in | length > 0) else (_pve_data.api_token | default('')) }}"
     _snapname: "{{ snapshot_name | default('preup-' ~ (pve_vmid | default('vm')) ~ '-' ~ ansible_facts.date_time.iso8601_basic_short, true) }}"
     _vmstate: "{{ snapshot_vmstate | default(0) }}"
@@ -71,9 +71,12 @@
           # let it go to a plaintext http:// endpoint.
           - _pve_url is match('^https://')
           - _pve_sec | length > 0
+          - _pve_tid | length > 0
         fail_msg: >-
-          Need pve_vmid + pve_node, an HTTPS pve_api_host, and either
-          PVE_TOKEN_SECRET/pve_token_secret (operator) or OpenBao reachable (Semaphore).
+          Need pve_vmid + pve_node, an HTTPS pve_api_host, a token id
+          (-e pve_token_id=<user>@<realm>!<token-name>, or token_id in
+          secret/services/proxmox), and either PVE_TOKEN_SECRET/pve_token_secret
+          (operator) or OpenBao reachable (Semaphore).
 
     - name: "Validate snapshot name (Proxmox: <=40 chars, starts with a letter)"
       ansible.builtin.assert:
