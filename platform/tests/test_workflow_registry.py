@@ -266,6 +266,25 @@ def test_production_collector_refuses_missing_or_mismatched_host_destination(tmp
         assert "Production conformance delivery requires collector_otlp_url" in output
 
 
+def test_production_collector_names_an_unparsed_inventory(tmp_path):
+    """Task 2858: an unreadable inventory emptied every group and surfaced as an OTLP mismatch."""
+    playbook = REPO / "platform/playbooks/collect-service-conformance.yml"
+    inventory_path = tmp_path / "inventory.yml"
+    inventory_path.write_text("not: [valid\n")
+    env = os.environ.copy()
+    env.update(ANSIBLE_LOCAL_TEMP=str(tmp_path), ANSIBLE_REMOTE_TEMP=str(tmp_path),
+               ANSIBLE_STDOUT_CALLBACK="default", ANSIBLE_NOCOLOR="1")
+    result = subprocess.run(
+        ["ansible-playbook", "-i", str(inventory_path), str(playbook),
+         "-e", json.dumps({"local_mode": False})],
+        cwd=REPO, env=env, capture_output=True, text=True, timeout=30,
+    )
+    output = result.stdout + result.stderr
+    assert result.returncode != 0
+    assert "No inventory host was parsed" in output
+    assert "Production conformance delivery requires collector_otlp_url" not in output
+
+
 @pytest.mark.parametrize(
     ("response", "expected_status", "expected_rc", "private_marker"),
     [
