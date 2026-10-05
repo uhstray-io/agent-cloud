@@ -236,7 +236,7 @@ and launches each with a forged internal name.
 | `provision-template.yml` | Create Proxmox VM template with cloud-init |
 | `proxmox-validate.yml` | Validate Proxmox cluster readiness (tolerates an offline node — a guest on a downed node returns no name), and report each online node's capacity (live use, configured guest commitment, free VM storage), most free memory first, for placing a new VM |
 | `preflight-target-group.yml` | Assert a target group resolves and its hosts are reachable before a deploy touches them |
-| `refuse-internal-extra-vars.yml` | Imported first by every workflow executor: refuse a run in which an extra var sets an underscore-prefixed (internal) name, before anything is set. Skipped, like any play, by a `--limit` excluding localhost or by `--start-at-task` |
+| `refuse-internal-extra-vars.yml` | Imported first by every workflow executor and by every playbook relying on `tasks/refuse-var-overrides.yml` (a templated extra var defeats that value probe): refuse a run in which an extra var sets an underscore-prefixed (internal) name, before anything is set. Skipped, like any play, by a `--limit` excluding localhost or by `--start-at-task` |
 | `netbox-allocate-ip.yml` | Ask NetBox for free addresses and report the recorded state of named ones. Read-only unless `-e reserve=true`; reserving takes explicit static addresses and checks live pfSense DHCP configuration first |
 
 The NetBox API endpoint comes from the single private `netbox_svc` host's

@@ -34,21 +34,28 @@ def _literal(value) -> str:
 
 def templated_forgeries(name: str, honest, forged) -> list:
     """pytest params, ids plain/context/stateful. Each is a function of the test's tmp_path
-    (the stateful template counts its renderings in a file there) returning the -e JSON."""
+    (the stateful template counts its renderings in a file there) returning the -e JSON.
+    `honest` and `forged` may themselves be functions of tmp_path, for a value that names a
+    path inside it."""
+
+    def values(tmp_path: Path):
+        return tuple(v(tmp_path) if callable(v) else v for v in (honest, forged))
 
     def plain(tmp_path: Path) -> str:
-        return json.dumps({name: forged})
+        return json.dumps({name: values(tmp_path)[1]})
 
     def context(tmp_path: Path) -> str:
+        good, bad = values(tmp_path)
         cond = "(ansible_loop_var is defined or (ansible_play_name | default('')) is search('(?i)refuse'))"
-        return json.dumps({name: "{{ " + cond + " | ternary(" + _literal(honest) + ", " + _literal(forged) + ") }}"})
+        return json.dumps({name: "{{ " + cond + " | ternary(" + _literal(good) + ", " + _literal(bad) + ") }}"})
 
     def stateful(tmp_path: Path) -> str:
+        good, bad = values(tmp_path)
         counter = tmp_path / f"forgery-renders-{name}"
         assert " " not in str(counter), counter
         shell = f"n=$(cat {counter} 2>/dev/null || echo 0); echo $((n+1)) > {counter}; echo $n"
         cond = "(lookup('ansible.builtin.pipe', " + _string(shell) + ") | int < 1)"
-        return json.dumps({name: "{{ " + cond + " | ternary(" + _literal(honest) + ", " + _literal(forged) + ") }}"})
+        return json.dumps({name: "{{ " + cond + " | ternary(" + _literal(good) + ", " + _literal(bad) + ") }}"})
 
     return [pytest.param(plain, id="plain"), pytest.param(context, id="context"),
             pytest.param(stateful, id="stateful")]

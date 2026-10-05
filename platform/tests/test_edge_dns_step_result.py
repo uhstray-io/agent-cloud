@@ -221,7 +221,7 @@ def _tofu_run(tmp_path, check, plan_rc=0, plan_stdout="No changes.", init_rc=0, 
         (tf_dir / name).write_text(text)
     (bin_dir / "tofu").write_text(FAKE_TOFU)
     (bin_dir / "tofu").chmod(0o755)
-    (play,) = yaml.safe_load(PLAYBOOK.read_text())
+    (play,) = playbook_yaml.plays(PLAYBOOK)
     names = ("Build the tofu environment", "OpenTofu run", *TAIL)
     tasks = [t for t in play["tasks"] if t.get("name") in names]
     assert len(tasks) == len(names)

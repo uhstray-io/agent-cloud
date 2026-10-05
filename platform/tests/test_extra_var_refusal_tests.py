@@ -37,9 +37,6 @@ NOT_TEMPLATED = {
     "test_postiz_access_only.py::test_injected_extra_vars_cannot_move_the_login_or_the_write":
         "value check, plain values only: a templated override is a stated limit in the header "
         "of tasks/assert-bao-addr-declared.yml (docs/MISTAKES.md 1.15 occurrence 2)",
-    "test_agw_conformance.py::test_an_extra_var_cannot_redirect_the_key_files_or_the_delete":
-        "value check, plain values only: run-agw-conformance.yml does not import "
-        "refuse-internal-extra-vars.yml, so a templated _agwc_tmpdir is not refused",
     "test_materialise_ssh_key.py::test_extra_vars_cannot_move_the_pinned_known_hosts":
         "lifted section without the run's first play: tests the inner value check, which holds "
         "plain values only; every real caller imports refuse-internal-extra-vars.yml first "
