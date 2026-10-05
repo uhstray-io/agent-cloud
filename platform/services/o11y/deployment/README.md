@@ -275,7 +275,15 @@ The env file gains `INFERENCE_PROBE_CACERT`, `INFERENCE_PROBE_CLIENT_CERT` and
 sample naming only the variable for a path that is not an absolute, readable file. When
 the probe is disabled, neither host input is removed: the declared leaf must stay
 provable until it is removed with `Issue Internal Leaf (Dev)`, action `remove`, and then
-its declaration dropped. Leaf directories under this deployment's `certs/` are
+its declaration dropped.
+
+Rollout order, as first run in production on 2026-10-05: site-config declarations
+(leaf, allowlist, `agw_clients` entry, the gateway's firewall rule for the o11y host,
+the o11y probe variables) and an inventory sync; `Deploy step-ca (Dev)` (the CA signs
+only declared SANs); `Deploy agentgateway (Dev)` (allowlist rule, `client_<name>`
+minted); `Apply Firewall (Dev)` on the gateway; `Issue Internal Leaf (Dev)` with
+`target_service=o11y_svc`; `Deploy o11y (Dev)`; then `Renew Internal Certs (Dev)`,
+which must classify the leaf as a probe client. Leaf directories under this deployment's `certs/` are
 gitignored.
 
 Caveats:
