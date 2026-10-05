@@ -20,6 +20,7 @@ WORKFLOW = REPO / ".github/workflows/enforce-promotion-source.yml"
 RULESET = REPO / ".github/rulesets/protect-main.json"
 JOB = "promotion-source"
 ANCESTRY_STEP = "Require dev to contain every commit on main"
+SOURCE_STEP = "Require the PR to originate from dev"
 
 
 def _job() -> dict:
@@ -163,3 +164,40 @@ def test_an_unresolvable_head_is_an_error_not_a_missing_commit(tmp_path):
     assert result.returncode not in (0, 1), result.stdout + result.stderr
     assert "::error title=Ancestry check failed::" in result.stdout
     assert "main has commits dev lacks" not in result.stdout
+
+
+def _run_source(head_ref: str, head_repo: str, base_repo: str = "uhstray-io/agent-cloud"):
+    return subprocess.run(
+        ["bash", "-e", "-c", _step(SOURCE_STEP)["run"]],
+        env={"PATH": os.environ["PATH"], "HEAD_REF": head_ref, "HEAD_REPO": head_repo, "BASE_REPO": base_repo},
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_source_step_reads_the_head_repository_from_the_event():
+    env = _step(SOURCE_STEP)["env"]
+    assert env["HEAD_REF"] == "${{ github.head_ref }}"
+    assert env["HEAD_REPO"] == "${{ github.event.pull_request.head.repo.full_name }}"
+    assert env["BASE_REPO"] == "${{ github.repository }}"
+    # Values arrive through env only; an inline expression in the script is an injection path.
+    assert "${{" not in _step(SOURCE_STEP)["run"]
+
+
+def test_source_passes_for_this_repositorys_dev():
+    result = _run_source("dev", "uhstray-io/agent-cloud")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "OK: promotion source is 'dev' -> 'main'." in result.stdout
+
+
+def test_source_refuses_a_forks_branch_named_dev():
+    result = _run_source("dev", "someone/agent-cloud")
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "not a fork" in result.stdout
+    assert "someone/agent-cloud" in result.stdout
+
+
+def test_source_refuses_a_branch_other_than_dev():
+    result = _run_source("feat/x", "uhstray-io/agent-cloud")
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "must come from 'dev' (got 'feat/x')" in result.stdout

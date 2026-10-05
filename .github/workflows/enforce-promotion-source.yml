@@ -5,7 +5,8 @@ name: Promotion Source Guard
 # restrict a PR's HEAD branch, so this job is the enforcing half — it is wired in as a
 # required status check on the `protect-main` ruleset (.github/rulesets/protect-main.json).
 #
-# Runs only for PRs whose base is `main`. Fails unless the head branch is exactly `dev`,
+# Runs only for PRs whose base is `main`. Fails unless the head is exactly this repository's
+# `dev` branch (a fork's branch of the same name is refused),
 # and unless that head already contains every commit on `main`. The second check exists
 # because `sync-main-to-dev.yml` cannot carry a `main`-only change to a workflow file into
 # `dev` (GITHUB_TOKEN has no `workflows` permission), so a promotion from a `dev` that
@@ -28,7 +29,15 @@ jobs:
       - name: Require the PR to originate from dev
         env:
           HEAD_REF: ${{ github.head_ref }}
+          # head_ref is only the branch NAME: a fork's branch called `dev` matches it, so the
+          # head repository must be this one as well.
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          BASE_REPO: ${{ github.repository }}
         run: |
+          if [ "$HEAD_REPO" != "$BASE_REPO" ]; then
+            echo "::error title=Invalid promotion source::PRs into 'main' must come from this repository's 'dev' branch, not a fork (head repository '${HEAD_REPO}', expected '${BASE_REPO}')."
+            exit 1
+          fi
           if [ "$HEAD_REF" != "dev" ]; then
             echo "::error title=Invalid promotion source::PRs into 'main' must come from 'dev' (got '${HEAD_REF}'). Promote via the dev -> main cycle; see AGENTS.md 'Branch Workflow'. Emergency-only: an Admin can break-glass via the protect-main ruleset."
             exit 1

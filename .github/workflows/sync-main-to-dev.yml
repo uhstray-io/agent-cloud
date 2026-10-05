@@ -3,15 +3,15 @@ name: Sync main to dev
 
 # Auto-reconcile `dev` after every push to `main` — replaces the manual back-merge.
 #
-# WHY: the `dev` -> `main` promotion is squash-merged (to keep `main`'s required
-# linear history). A squash writes `dev`'s content onto `main` as a NEW commit with
-# no ancestry into `dev`, which freezes the `dev`<->`main` merge-base. The next
-# `dev` -> `main` PR then diffs from that stale base and conflicts on any file
-# changed on both sides (classically `platform/semaphore/templates.yml`). This job
-# merges `main` back into `dev` favoring `dev` (`-X ours`: `dev` is content-ahead,
-# so its content is unchanged and only the merge-base advances; non-conflicting
-# `main`-only changes — e.g. dependabot bumps landed directly on `main` — still
-# propagate into `dev`). See CLAUDE.md "Why the auto-sync".
+# WHY: `dev` -> `main` promotions are merge commits, which keep the two branches'
+# ancestry intact, but changes can still land on `main` alone (dependabot bumps), and a
+# promotion squashed to scrub sensitive content writes `dev`'s content onto `main` as a
+# NEW commit with no ancestry into `dev`, freezing the `dev`<->`main` merge-base so the
+# next promotion conflicts on any file changed on both sides (classically
+# `platform/semaphore/templates.yml`). This job merges `main` back into `dev` favoring
+# `dev` (`-X ours`: `dev`'s content is unchanged and the merge-base advances;
+# non-conflicting `main`-only changes still propagate into `dev`). See CLAUDE.md
+# "Why the auto-sync".
 #
 # LIMITATION: this job cannot carry a `main`-only change to a file under
 # `.github/workflows/`. GITHUB_TOKEN has no `workflows` permission, so GitHub rejects the
@@ -57,10 +57,10 @@ jobs:
             echo "dev already contains main — nothing to sync."
             exit 0
           fi
-          # -X ours: dev is content-ahead (the dev->main squash duplicated dev's
-          # content onto main under a new sha). Favoring dev keeps dev's content
-          # identical and only advances the merge-base so the next dev->main diff is
-          # clean. Non-conflicting main-only changes still merge in.
+          # -X ours: dev is content-ahead of main except for main-only commits.
+          # Favoring dev keeps dev's content identical on a conflict (e.g. after a
+          # squashed promotion) and advances the merge-base so the next dev->main diff
+          # is clean. Non-conflicting main-only changes still merge in.
           git merge -X ours --no-edit origin/main
           git push origin HEAD:dev
           echo "dev reconciled with main."
