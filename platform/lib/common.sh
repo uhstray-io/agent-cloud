@@ -117,6 +117,11 @@ compose() {
 # label, so the next run still sees the difference.
 # Prior art: agentgateway's deploy.sh (gateway task 1.12), which keeps its own copy.
 #
+# Operator lever: FORCE_RECREATE=true recreates regardless of the comparison (the playbooks'
+# `deploy_force_recreate` input). For a container holding a stale mount — e.g. a bind-mounted
+# directory deleted and recreated under a running container, whose mount still references the
+# deleted inode while every digest matches. Any other value leaves the comparison in charge.
+#
 # Prints `DEPLOY_CHANGED=true` or `DEPLOY_CHANGED=false` on its own line; playbooks read it
 # for the task's changed status. Run from the deploy directory, like compose().
 COMPOSE_INPUTS_LABEL="io.agent-cloud.inputs-sha256"
@@ -237,7 +242,11 @@ compose_up_if_changed() {
   want=$(compose_inputs_digest "$@")
   services=$(compose_services)
   [ -n "$services" ] || error "No services found in the compose files; refusing to guess."
-  reason=$(_compose_recreate_reason "$want" "$services")
+  if [ "${FORCE_RECREATE:-}" = "true" ]; then
+    reason="operator requested FORCE_RECREATE=true"
+  else
+    reason=$(_compose_recreate_reason "$want" "$services")
+  fi
   if [ -z "$reason" ]; then
     info "Every container matches its inputs and image; leaving the project alone."
     echo "DEPLOY_CHANGED=false"

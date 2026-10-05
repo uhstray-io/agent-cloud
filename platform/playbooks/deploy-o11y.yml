@@ -495,6 +495,9 @@
         # The inference probe's overlay adds node_exporter's textfile collector.
         # Empty when the probe is off, which is the pre-probe command line.
         COMPOSE_OVERLAYS: "{{ 'probe/compose.textfile.yml' if (o11y_inference_probe_enabled | default(false) | bool) else '' }}"
+        # Operator lever (survey `deploy_force_recreate`, only the literal true): recreate even when every input
+        # and image matches — clears a stale bind mount a running container still holds.
+        FORCE_RECREATE: "{{ 'true' if ((deploy_force_recreate | default('false') | string | lower) == 'true') else '' }}"
       register: _deploy
       # deploy.sh recreates only when its inputs or images changed (common.sh
       # compose_up_if_changed) and says which on its own line.
