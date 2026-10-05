@@ -134,7 +134,7 @@ The big ones, roughly in priority order:
   every "secrets never in the clone" claim depend on this landing first.
 - **RBAC role-based provisioning — designed, not built.** The Org>Dept>Team>Role + Access-Level
   schema and the (identity → per-service role) provisioning automation don't exist yet;
-  Semaphore user `stray` was hand-set to admin (a stopgap). See [04](plan/architecture/04-credentials-access.md).
+  the operator's Semaphore user was hand-set to admin (a stopgap). See [04](plan/architecture/04-credentials-access.md).
 - **AppRole rotation remains incomplete.** The shared task now defaults to `secret_id_ttl: 2160h`
   and reuses stored credentials. Expiry-aware rotation and finite SecretID login counts remain
   targets; `token_num_uses` limits issued tokens, not SecretID authentications.
