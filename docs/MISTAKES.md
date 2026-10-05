@@ -89,6 +89,7 @@ and why.
 | 3.8 | Launched a production deploy as a "dry run" through the Semaphore API with a top-level `dry_run` the server ignores; it ran for real through the secret phase | Live state | 1 | Test: committed launcher places and gates the flag before launch |
 | 3.9 | A mutation test aimed a playbook write at `~/.ssh/known_hosts`; the harness ran it for real on the workstation and overwrote the operator's real known_hosts | Live state | 1 | Test (pinned targets + definitions, before every run) + runtime path asserts against an inline root + default-deny sandboxed harness on macOS/bwrap; CI has no kernel sandbox |
 | 3.10 | A test wrote scratch playbooks into the tracked tree and raced parallel tests that glob it | Working-tree damage | 1 | Convention (session-end tree check proposed) |
+| 3.11 | Made a deploy stop recreating containers without auditing a step that relied on it; a directory reset under a live bind mount emptied Authentik's custom blueprints in prod | Live state | 1 | Convention until PR #444 lands its bind-mount-delete guard |
 | 4.1 | `while read` silently dropped an unterminated final line | Data handling | 1 | Convention |
 | 4.2 | Stored `.env` values without stripping surrounding quotes | Data handling | 1 | Convention |
 | 4.3 | Used a real internal IP address as a test vector | Data leak | 1 | Pre-commit (existing) |
@@ -2023,6 +2024,37 @@ directory instead.
 `conftest.py`) that records `git status --porcelain` for `platform/` at session start and
 fails the session if it differs at the end, plus a grep ratchet against tests that open
 paths under the repository's `platform/` for writing.
+
+### 3.11 Changed when a long-lived process restarts without auditing the steps that relied on the old restart; production Authentik lost every custom blueprint instance
+
+**What happened.** PR #431 made the Authentik and o11y deploys recreate their containers
+only when an input changed, instead of on every run. Semaphore task 2843, the first deploy
+under it, recreated the Authentik containers once. Task 2846 then ran the deploy's
+then-current "Reset the active-blueprints dir" step, which deleted the directory and created
+a fresh one. The containers were correctly left running, but their bind mount of that
+directory onto `/blueprints/custom` (read-only) still referenced the deleted directory's
+inode. The worker saw an empty directory while the host held 14 files, and its blueprint
+discovery removed every instance under `custom/` on 2026-10-05. The dry run in task 2856
+caught it: its verify reported no blueprint instances under `custom/`. `Inspect Authentik
+Blueprints (Dev)` (added in PR #441, task 2878) proved the mechanism: the mount source was
+correct and the directory inside the container was empty.
+
+**Root cause.** PR #431 changed the recreate contract without auditing which deploy steps
+silently depended on the old always-recreate behaviour. A directory reset followed by a
+forced recreate was safe; the same reset with no recreate leaves the running container
+holding the deleted directory. Reviews of #431 checked the change detection, not whether
+any caller depended on recreation.
+
+**The rule.** When changing when a long-lived process starts or restarts, audit every step
+that replaces something the process holds open: bind-mounted directories, files read once
+at start. Each replacement must happen in place, or be followed by a restart.
+
+**Enforced by.** PR #438 assembles the blueprint directory in place with no reset. PR #444
+adds a forced-recreate lever, a static guard against deleting a bind-mounted directory
+(test_no_bind_mount_dir_delete.py), and an audit of the Authentik and o11y bind sources. #444
+is not merged as of this entry, so the guard is not on `dev` yet and this rule is Convention
+until it lands. Recovery: one forced recreate (`Deploy Authentik (Dev)` with
+`deploy_force_recreate=true`) is pending, not done.
 
 ## 4. Data handling
 
