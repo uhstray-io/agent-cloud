@@ -78,6 +78,7 @@ and why.
 | 2.25 | The zero-hosts pre-flight rule named deploy playbooks only; 60 other group-targeting playbooks lack it (widens 2.21) | Wrong-reason pass | 1 | Test (`mount-caddy-certs.yml`); fleet-wide allow-list proposed |
 | 2.26 | A fixture placed an inventory variable where production does not; the planning play saw it in tests and nothing in prod (widens 2.22) | False-green fixture | 1 | Test (one playbook); class Convention |
 | 2.27 | A run that matched its hosts, found nothing to do, and reported success (widens 2.21) | Wrong-reason pass | 1 | Test (one playbook); class Convention, lint proposed |
+| 2.28 | A clean-copy test passed only where the copy carried bytecode caches; refusal tests matched text every refusal prints | Wrong-reason pass | 1 | Test (`test_o11y_fault_drill.py`) |
 | 3.1 | Wrote a probe value over a real credential in a live secret store | Live-state damage | 1 | OPA (`agent_actions.rego`; inert until callers send fields) |
 | 3.2 | Attempted to mutate a shared orchestrator credential without asking | Live-state damage | 1 | Sandbox + OPA (`agent_actions.rego`; inert until callers send grants) |
 | 3.3 | Treated failed workstation login as a controller access prerequisite | Wrong executor boundary | 1 | Test + convention |
@@ -87,6 +88,7 @@ and why.
 | 3.7 | A new test's scratch-repo `git init`/`git config`, run by the pre-push hook with git's exported `GIT_DIR`, wrote the shared `.git/config`: `core.bare=true` and a fake identity for every checkout | Live state | 1 | Pre-push hook clears the git environment + behavioral test (mutation-proven) |
 | 3.8 | Launched a production deploy as a "dry run" through the Semaphore API with a top-level `dry_run` the server ignores; it ran for real through the secret phase | Live state | 1 | Test: committed launcher places and gates the flag before launch |
 | 3.9 | A mutation test aimed a playbook write at `~/.ssh/known_hosts`; the harness ran it for real on the workstation and overwrote the operator's real known_hosts | Live state | 1 | Test (pinned targets + definitions, before every run) + runtime path asserts against an inline root + default-deny sandboxed harness on macOS/bwrap; CI has no kernel sandbox |
+| 3.10 | A test wrote scratch playbooks into the tracked tree and raced parallel tests that glob it | Working-tree damage | 1 | Convention (session-end tree check proposed) |
 | 4.1 | `while read` silently dropped an unterminated final line | Data handling | 1 | Convention |
 | 4.2 | Stored `.env` values without stripping surrounding quotes | Data handling | 1 | Convention |
 | 4.3 | Used a real internal IP address as a test vector | Data leak | 1 | Pre-commit (existing) |
@@ -113,9 +115,10 @@ and why.
 | 5.13 | A broad stage commits whatever a tool generated in the tree (widens 6.6; 3 occurrences) | Process | 3 | Convention (pre-commit hook proposed) |
 | 5.14 | Wrote a file into a checkout another task owns with a path checkout; widens 5.10 past branch switches | Process | 1 | Convention (hook proposed) |
 | 5.15 | Published AI attribution in a PR body; widens 5.9 from commits to every GitHub artifact | Process | 1 | Convention (`gh` wrapper proposed) |
+| 5.16 | Merged on a PR status rollup that still showed the previous head's checks; CI on the merged head was running | Process | 1 | Convention (operator-side script; `dev` has no required checks) |
 | 6.1 | Built an edit from an assumed file structure instead of a read one | Process | 1 | Convention |
 | 6.2 | Built an interface the consumer never calls, without reading how it invokes | Process | 1 | Test |
-| 6.3 | Repeated 6.2 — assumed openssl and jq exist on the orchestrator image; neither does | Process | 2 | Convention -> **Test + declared dep** |
+| 6.3 | Repeated 6.2 — assumed openssl and jq exist on the orchestrator image; neither does — **x3** (CI never installed the playbook collections) | Process | 3 | Convention -> **Test + declared dep**; CI installs `collections/requirements.yml` |
 | 6.4 | Reused an inventory variable name for a different fact; the gate read the app's public edge URL and failed, censored | Process | 1 | Test (`test_verify_url_defaults.bats` + ratchet) |
 | 6.5 | Deleted an Authentik blueprint file to retire its object; the object stayed and the replacement matched it by name | Assumption about files | 1 | Convention; the deploy's prod-only redirect VERIFY would have caught it |
 | 6.6 | **x3** — The graph tool's auto-index rewrote the committed graph metadata under a path-derived project name while the graph file was deleted, and it sat uncommitted in a shared checkout | Assumption about files | 3 | Pre-commit gate + test |
@@ -1675,6 +1678,34 @@ The fixture half of this incident is 2.26.
 branch's base, so it is named here without its identifier). Class-wide, Convention. Proposed:
 a lint requiring state-changing playbooks to assert a non-empty work set.
 
+### 2.28 A clean-copy test passed only where the copy carried the workstation's bytecode caches
+
+**What happened.** `test_o11y_fault_drill.py` ran the fault drill from a clean git copy of the
+tree. Ansible compiles the repository's plugins into `__pycache__` on first use, so after the
+first run in a copy the drill's own "Require a clean reviewed checkout" gate saw untracked files
+and refused. Locally every case passed, because the copy was taken from a tree whose caches came
+along and the first refusal never surfaced as a difference. On a fresh CI checkout the later
+cases refused at the clean-checkout gate instead of where they meant to. Worse, the refusal-path
+cases asserted the shared "no fault was induced" text, which the wrong refusal also prints, so
+some of them could pass for the wrong reason.
+
+**Root cause.** The fixture's notion of "clean" depended on the machine it ran on, and the
+refusal-path assertions matched text common to every refusal instead of the refusal under test.
+
+**The rule.** A test that builds a clean copy makes it clean by construction (ignore and
+gitignore generated caches, disable bytecode writes) and asserts that it is still clean on every
+run. A refusal-path test must not be able to pass on a refusal from a different gate: either it
+asserts which gate refused, or every run asserts that the gate able to pre-empt it did not fire,
+and that gate gets its own dedicated test.
+
+**Enforced by.** Test (PR #442), in `test_o11y_fault_drill.py`: the copy ignores and gitignores
+`*.pyc` and runs with `PYTHONDONTWRITEBYTECODE`; the shared `run()` helper asserts on every
+run's output that "Controller checkout has uncommitted files" is absent unless the case passes
+`expect_dirty` (`platform/tests/test_o11y_fault_drill.py:101-102` on `dev`); and
+`test_dirty_checkout_is_refused_before_any_fault` (`:282`) covers the clean-checkout gate
+itself. The refusal-path cases still assert only the shared "no fault was induced" text; the
+every-run assertion is what stops a clean-checkout refusal from passing them.
+
 ## 3. Acting on live state
 
 ### 3.1 Overwriting a real credential with a probe value
@@ -1970,6 +2001,28 @@ variable. The scanner reads `k=v` and `args:` forms. The sandbox is default-deny
 targets only in scratch created for the purpose: B3 is refused by the source guard and, with
 it off, by the runtime assert. B4 is blocked by the runtime assert, and restoring the variable
 root makes the regression tests fail on the write. Nothing was written outside the scratch.
+
+### 3.10 A test wrote its scratch playbooks into the tracked tree, racing tests that read it
+
+**What happened.** On 2026-10-04 `test_edge_route_group_preflight.py` wrote temporary
+playbooks into `platform/playbooks/` and removed them afterwards. Under `pytest -n` other
+workers glob that directory; one listed a scratch file that was gone by the time it was
+opened, and `test_workflow_registry.py` failed with `FileNotFoundError` on an unrelated change.
+Fixed in PR #421 by writing to `tmp_path`.
+
+**Root cause.** The test treated a tracked directory as scratch space. Run serially that is
+invisible; run in parallel, every other test that enumerates the directory sees files that
+come and go.
+
+**The rule.** A test writes only under its own temporary directory (`tmp_path`,
+`$BATS_TEST_TMPDIR`), never into the repository tree, even for files it deletes afterwards.
+A test that needs a file beside the playbooks copies what it needs into its temporary
+directory instead.
+
+**Enforced by.** Convention. Proposed guard: a session-scoped pytest fixture (repository
+`conftest.py`) that records `git status --porcelain` for `platform/` at session start and
+fails the session if it differs at the end, plus a grep ratchet against tests that open
+paths under the repository's `platform/` for writing.
 
 ## 4. Data handling
 
@@ -2681,6 +2734,26 @@ that the repository's rule overrides, whenever it arrives in the session. Before
 pattern over the `--body`/`--body-file` and `--title` of a `gh pr create|edit` or
 `gh issue create|edit` command and refuses a match.
 
+### 5.16 Merged on a status rollup that still described the previous head
+
+**What happened.** On 2026-10-04 PR #430 was merged into `dev` while CI on its new head
+`32b455bb` was still running (Bash Tests, Python core, Security Scan and Static Analysis in
+progress). The merge script judged the PR's status rollup, which just after a push still
+showed the previous head's completed checks. CI on the new head passed afterwards, so nothing
+broken landed, but the merge rested on no evidence about the code merged.
+
+**Root cause.** The rollup is not keyed to the commit being merged. Right after a push it
+reports the last finished runs, which belong to the old head.
+
+**The rule.** A merge decision reads the check runs of the exact head SHA being merged
+(`commits/<sha>/check-runs`), takes the latest run per check name, and waits until every one
+is complete and passing. "Never merge a PR before its checks have completed and passed"
+(AGENTS.md) means the checks of that head.
+
+**Enforced by.** Convention. The merge script is operator-side, outside this repository, and
+now judges the head's check runs as above. No repository gate applies: `protect-main` includes
+only the default branch, so `dev` has no required-checks rule.
+
 ## 6. Working from assumptions about files
 
 ### 6.1 Editing against an imagined structure
@@ -2733,7 +2806,7 @@ was written to make the claim true rather than the claim weakened to match.
 
 ### 6.3 §6.2 repeated — assumed a dependency was present on the host that runs it
 
-**Occurrences: 2** — 2026-08-23, 2026-08-25
+**Occurrences: 3** — 2026-08-23, 2026-08-25, 2026-10-03
 
 **What happened.** The App credential helper was written in shell using `openssl` and
 `jq`, reasoned about explicitly as "no new dependency, matching the existing HTTP client
@@ -2771,6 +2844,17 @@ right and I applied it too narrowly — the widened form is that a dependency is
 verified on **every** environment declared to run it, and a test dependency counts.
 The cheap mechanical check is to install only what the pipeline declares and run the
 suite in that environment before pushing.
+
+**Occurrence 3 — 2026-10-03.** Whole-playbook tests (the distribute-ssh-keys case of
+`test_access_executors_step_result.py`) passed locally and failed in CI: the playbook's
+`ansible.posix.authorized_key` did not resolve at parse time, so the run printed empty stdout.
+The collections were installed in the workstation's own Ansible directory; CI never installed
+`collections/requirements.yml`. Why the rule did not fire: occurrence 2 widened it to every
+environment and to test dependencies, but the check it named, running in an environment that
+holds only what the pipeline declares, was never done, and collections were thought of as the
+playbooks' dependency rather than the tests'. Fixed in PR #413: the `python-core` job (`.github/workflows/lint-and-test.yml:227`) installs
+`collections/requirements.yml`. With a third occurrence the enforcement is now CI for this
+dependency class too; the general check stays a proposal.
 
 ### 6.4 Reused an inventory variable name for a different fact
 
