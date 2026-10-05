@@ -7,6 +7,7 @@ query answers come from the scrape file it last reloaded. local_mode allows the 
 exporter address and skips linger.
 """
 
+import hashlib
 import importlib.util
 import json
 import os
@@ -130,7 +131,7 @@ def estate(tmp_path):
         server.shutdown()
 
 
-def _run(estate, *extra, binds=None, host_vars=None) -> subprocess.CompletedProcess:
+def _inventory(estate, binds=None, host_vars=None) -> Path:
     tmp = estate["tmp"]
     lines = ["[demo_svc]"]
     for host, server in estate["exporters"].items():
@@ -152,8 +153,15 @@ def _run(estate, *extra, binds=None, host_vars=None) -> subprocess.CompletedProc
     ]
     inventory = tmp / "inventory.ini"
     inventory.write_text("\n".join(lines) + "\n")
+    return inventory
+
+
+def _run(estate, *extra, binds=None, host_vars=None, path_prefix=None) -> subprocess.CompletedProcess:
+    inventory = _inventory(estate, binds, host_vars)
     env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
     env["ANSIBLE_NOCOLOR"] = "1"
+    if path_prefix:
+        env["PATH"] = f"{path_prefix}:{env['PATH']}"
     return subprocess.run(
         ["ansible-playbook", "-i", str(inventory), str(PLAYBOOK), "-e", "target_service=demo_svc", *extra],
         cwd=REPO,
@@ -236,9 +244,23 @@ def test_check_mode_after_apply_verifies_live(estate):
 
 
 @needs_ansible
-@pytest.mark.parametrize("bind", ["", "0.0.0.0", "999.1.1.1"])
-def test_an_unusable_declaration_fails_the_group_and_declares_nothing(estate, bind):
-    proc = _run(estate, binds={"beta": bind})
+@pytest.mark.parametrize(
+    ("bind", "beta_vars"),
+    [
+        ("", ""),
+        ("0.0.0.0", ""),
+        ("999.1.1.1", ""),
+        # public: the exporter is on the host network, so its bind is its exposure
+        ("8.8.8.8", ""),
+        ("203.0.113.5", ""),
+        ("172.32.0.1", ""),
+        ("100.64.0.1", ""),
+        # loopback only in local_mode
+        ("127.0.0.1", "local_mode=false"),
+    ],
+)
+def test_an_unusable_declaration_fails_the_group_and_declares_nothing(estate, bind, beta_vars):
+    proc = _run(estate, binds={"beta": bind}, host_vars={"beta": beta_vars})
     assert proc.returncode != 0
     result = _result(proc)
     assert result["status"] == "fail"
@@ -302,6 +324,107 @@ def test_a_rejected_reload_puts_the_previous_file_back(estate):
 
 
 @needs_ansible
+def test_an_unreadable_current_scrape_file_stops_the_run_untouched(estate):
+    # It exists, so it must not be mistaken for absent (and deleted after a rejected reload).
+    previous = "scrape_configs: []\n"
+    estate["fragment"].write_text(previous)
+    estate["fragment"].chmod(0)
+    estate["prometheus"].reload_status = 500
+    try:
+        proc = _run(estate)
+    finally:
+        estate["fragment"].chmod(0o644)
+    assert proc.returncode != 0
+    result = _result(proc)
+    assert result["status"] == "fail" and result["error"].startswith("o11y receiver: ")
+    assert estate["fragment"].read_text() == previous
+    assert estate["prometheus"].reloads == 0
+
+
+# A private address built at run time: the pre-commit hook refuses RFC 1918 literals.
+PRIVATE_UNROUTED = ".".join(["10", "255", "255", "1"])
+
+
+def _spec_hash(bind: str, port: int, local_mode: bool) -> str:
+    # The playbook's _ih_spec, hashed as `_ih_spec | to_json | hash('sha256')`.
+    host = _play_vars("Run the host exporter")
+    image = re.search(r"default\('([^']+)'\)", host["_ih_image"]).group(1)
+    spec = ["--restart", "always", "--network", "host", "--volume", "/:/host:ro,rslave"]
+    spec += ["--security-opt", "label=disable"] if local_mode else []
+    spec += [image, *host["_ih_collector_args"], f"--web.listen-address={bind}:{port}"]
+    return hashlib.sha256(json.dumps(spec).encode()).hexdigest()[:16]
+
+
+@needs_ansible
+@pytest.mark.parametrize("persisted", [False, True])
+def test_check_mode_counts_a_pending_boot_persistence_change(estate, persisted):
+    # alpha: rootless podman outside local_mode, its exporter already current, so only linger and
+    # podman's user boot unit can differ. Its private address is unrouted, so the receiver's probe
+    # cannot reach it: a dry run that would change persistence verifies nothing live and records
+    # skip; one with nothing to change runs the probe and fails.
+    tmp = estate["tmp"]
+    bindir, home = tmp / "bin", tmp / "home"
+    bindir.mkdir()
+    (bindir / "podman").write_text(FAKE_ENGINE)
+    (bindir / "loginctl").write_text(f"#!/bin/sh\necho Linger={'yes' if persisted else 'no'}\n")
+    (bindir / "getent").write_text(f'#!/bin/sh\necho "$2:x:501:20::{home}:/bin/sh"\n')
+    for tool in bindir.iterdir():
+        tool.chmod(0o755)
+    if persisted:
+        wants = home / ".config/systemd/user/default.target.wants"
+        wants.mkdir(parents=True)
+        (wants / "podman-restart.service").write_text("")
+    ports = {h: srv.server_address[1] for h, srv in estate["exporters"].items()}
+    (bindir / "podman.state").write_text(
+        json.dumps({"agent-cloud-node-exporter": _spec_hash(PRIVATE_UNROUTED, ports["alpha"], False)})
+    )
+    (tmp / "engine-beta.state").write_text(
+        json.dumps({"agent-cloud-node-exporter": _spec_hash("127.0.0.1", ports["beta"], True)})
+    )
+    binds = {"alpha": PRIVATE_UNROUTED}
+    host_vars = {"alpha": "container_engine=podman local_mode=false ansible_user=tester"}
+    # The scrape file already declares both hosts, so the scrape file changes nothing either.
+    endpoints = [
+        {"host": h, "address": f"{binds.get(h, '127.0.0.1')}:{ports[h]}", "service": "demo/host"}
+        for h in ("alpha", "beta")
+    ]
+    rendered = subprocess.run(
+        [
+            "ansible",
+            "receiver",
+            "-i",
+            str(_inventory(estate, binds, host_vars)),
+            "-m",
+            "ansible.builtin.template",
+            "-a",
+            f"src={O11Y / 'templates/scrape-host-node.yml.j2'} dest={estate['fragment']} mode=0644",
+            "-e",
+            f"@{REPO / 'platform/playbooks/vars/o11y-metric-labels.yml'}",
+            "-e",
+            json.dumps({"_ih_job": "host-node-demo_svc", "_ih_endpoints": endpoints}),
+        ],
+        cwd=REPO,
+        text=True,
+        capture_output=True,
+        stdin=subprocess.DEVNULL,
+        check=False,
+    )
+    assert rendered.returncode == 0, rendered.stdout
+    proc = _run(estate, "--check", binds=binds, host_vars=host_vars, path_prefix=bindir)
+    result = _result(proc)
+    assert result["evidence"]["exporter_running"] == {"alpha": True, "beta": True}, proc.stdout[-4000:]
+    if persisted:
+        assert proc.returncode != 0
+        assert result["status"] == "fail"
+        assert "The receiver got no HTTP 200 from alpha" in result["error"]
+    else:
+        assert proc.returncode == 0, proc.stdout[-4000:]
+        assert (result["status"], result["error"]) == ("skip", "")
+    assert "changed: [receiver]" not in proc.stdout, proc.stdout[-4000:]
+    assert all(c.startswith("inspect ") for c in (bindir / "podman.log").read_text().splitlines())
+
+
+@needs_ansible
 @pytest.mark.parametrize("target", ["o11y_svc", "no_such_svc", "../etc"])
 def test_refuses_a_target_it_must_not_instrument(estate, target):
     proc = _run(estate, "-e", f"target_service={target}")
@@ -310,11 +433,50 @@ def test_refuses_a_target_it_must_not_instrument(estate, target):
     assert not estate["fragment"].exists()
 
 
+def _refused_names() -> list[str]:
+    guard = yaml.safe_load(PLAYBOOK.read_text())[0]["tasks"]
+    task = next(
+        t for t in guard if str(t.get("ansible.builtin.include_tasks", "")).endswith("refuse-var-overrides.yml")
+    )
+    return task["loop"]
+
+
+def _defined_names() -> set[str]:
+    """Every _-prefixed name the playbook defines: vars at any level, its vars files, registers,
+    set_fact keys and loop variables."""
+    found: set[str] = set()
+
+    def walk(tasks):
+        for task in tasks or []:
+            found.update(task.get("vars") or {})
+            found.add(task.get("register", ""))
+            found.update(task.get("ansible.builtin.set_fact") or {})
+            found.add((task.get("loop_control") or {}).get("loop_var", ""))
+            for key in ("block", "rescue", "always"):
+                walk(task.get(key))
+
+    for play in yaml.safe_load(PLAYBOOK.read_text()):
+        found.update(play.get("vars") or {})
+        for path in play.get("vars_files") or []:
+            found.update(yaml.safe_load((PLAYBOOK.parent / path).read_text()))
+        walk(play.get("tasks"))
+    return {n for n in found if n.startswith("_")} - {"_rvo_name"}
+
+
+def test_every_internal_name_is_refused_as_an_extra_var():
+    # A name the playbook sets but does not refuse can be forged with -e (PR 457 review: three
+    # verdict names were missing, so -e _ih_group_errors=[] could record a pass for a failing group).
+    assert sorted(_refused_names()) == sorted(_defined_names())
+
+
 @needs_ansible
-def test_refuses_an_extra_var_forging_a_verdict(estate):
-    proc = _run(estate, "-e", '{"_ih_errors": []}')
+@pytest.mark.parametrize("name", _refused_names())
+def test_refuses_an_extra_var_forging_an_internal_name(estate, name):
+    # beta's declaration is unusable, so a forged verdict would turn a failing group into a pass.
+    proc = _run(estate, "-e", json.dumps({name: []}), binds={"beta": "0.0.0.0"})
     assert proc.returncode != 0
-    assert "_ih_errors is internal to this play" in proc.stdout
+    assert f"{name} is internal to this play" in proc.stdout
+    assert step_results.results_in(proc.stdout.splitlines()) == []
 
 
 # Pins: the host exporter is the receiver's own, and the scrape job drops what every job drops.
@@ -334,15 +496,20 @@ def test_host_exporter_runs_the_receivers_image_and_collectors():
     assert f"default('{pin}')" in (O11Y / "templates/env.j2").read_text()
 
 
-def test_scrape_file_drops_the_shared_forbidden_labels():
-    deploy = yaml.safe_load((REPO / "platform/playbooks/deploy-o11y.yml").read_text())
-    inline = next(
-        p["vars"]["_o11y_forbidden_metric_label_names_regex"]
-        for p in deploy
-        if "_o11y_forbidden_metric_label_names_regex" in p.get("vars", {})
-    )
-    shared = yaml.safe_load((REPO / "platform/playbooks/vars/o11y-metric-labels.yml").read_text())
-    assert shared["_o11y_forbidden_metric_label_names_regex"] == inline
+def test_the_forbidden_label_regex_has_one_definition_both_playbooks_load():
+    files = subprocess.run(
+        ["git", "ls-files", "*.yml", "*.yaml"], cwd=REPO, text=True, capture_output=True, check=True
+    ).stdout.split()
+    defining = [
+        f
+        for f in files
+        if (REPO / f).is_file()
+        and re.search(r"^\s*_o11y_forbidden_metric_label_names_regex\s*:", (REPO / f).read_text(), re.M)
+    ]
+    assert defining == ["platform/playbooks/vars/o11y-metric-labels.yml"]
+    for playbook in ("deploy-o11y.yml", "instrument-host-o11y.yml"):
+        plays = yaml.safe_load((REPO / "platform/playbooks" / playbook).read_text())
+        assert any("vars/o11y-metric-labels.yml" in (p.get("vars_files") or []) for p in plays), playbook
     template = (O11Y / "templates/scrape-host-node.yml.j2").read_text()
     assert "_o11y_forbidden_metric_label_names_regex | to_json" in template
     assert "regex: '^device$'" in template
