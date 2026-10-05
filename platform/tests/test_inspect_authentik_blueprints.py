@@ -17,7 +17,11 @@ READ_MODULES = {"ansible.builtin.assert", "ansible.builtin.debug", "ansible.buil
 
 
 def _tasks():
-    return [t for play in yaml.safe_load(PLAYBOOK.read_text()) for t in play["tasks"]]
+    out = []
+    for play in yaml.safe_load(PLAYBOOK.read_text()):
+        for t in play["tasks"]:
+            out.extend(t.get("block", []) + t.get("rescue", []) if "block" in t else [t])
+    return out
 
 
 def test_only_read_modules():
@@ -57,13 +61,15 @@ def test_dev_template_declared():
 
 
 @pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="needs ansible-playbook")
-def test_check_mode_run_reports_each_section(tmp_path):
+@pytest.mark.parametrize("damaged", [False, True])
+def test_check_mode_run_reports_each_section(tmp_path, damaged):
     deploy = tmp_path / "deploy"
     (deploy / "blueprints-active").mkdir(parents=True)
     (deploy / "blueprints-active" / "a.yaml").write_text("x")
     (deploy / "compose.yml").write_text(
         "services:\n  server:\n    volumes: ['./blueprints-active:/blueprints/custom:ro']\n"
-        "  worker:\n    volumes: ['./blueprints-active:/blueprints/custom:ro']\n")
+        "  worker:\n    volumes: ['./blueprints-active:/blueprints/custom:ro']\n"
+        if not damaged else "services: [unclosed\n  : : :\n")
     engine = tmp_path / "engine"
     engine.write_text(
         "#!/bin/sh\n"
@@ -86,6 +92,10 @@ def test_check_mode_run_reports_each_section(tmp_path):
                           cwd=REPO, env=env, text=True, capture_output=True,
                           stdin=subprocess.DEVNULL)
     assert done.returncode == 0, done.stdout[-3000:]
-    for want in ("inspected authentik-server", "inspected authentik-worker",
-                 "/blueprints/custom:ro", "a.yaml", "/blueprints/custom/a.yaml", "total 1"):
+    if damaged:
+        assert "compose.yml could not be parsed" in done.stdout
+    else:
+        assert "/blueprints/custom:ro" in done.stdout
+    for want in ("inspected authentik-server", "inspected authentik-worker", "a.yaml",
+                 "/blueprints/custom/a.yaml", "total 1"):
         assert want in done.stdout, want

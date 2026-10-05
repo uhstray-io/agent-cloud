@@ -75,12 +75,19 @@
       failed_when: false
       check_mode: false
 
+    # A damaged compose.yml must not stop the later probes: report and continue.
     - name: Report declared volumes for server and worker
-      ansible.builtin.debug:
-        msg: >-
-          {{ 'compose.yml unreadable: ' ~ (_ak_compose.msg | default('')) if 'content' not in _ak_compose else
-             {'server': (_ak_compose.content | b64decode | from_yaml).services.server.volumes | default([]),
-              'worker': (_ak_compose.content | b64decode | from_yaml).services.worker.volumes | default([])} }}
+      block:
+        - name: Parse declared volumes for server and worker
+          ansible.builtin.debug:
+            msg: >-
+              {{ 'compose.yml unreadable: ' ~ (_ak_compose.msg | default('')) if 'content' not in _ak_compose else
+                 {'server': (_ak_compose.content | b64decode | from_yaml).services.server.volumes | default([]),
+                  'worker': (_ak_compose.content | b64decode | from_yaml).services.worker.volumes | default([])} }}
+      rescue:
+        - name: Report an unparseable compose.yml
+          ansible.builtin.debug:
+            msg: "compose.yml could not be parsed; declared volumes unknown"
 
     # ── b) host blueprints-active listing ─────────────────────────────────────
     - name: List host blueprints-active (names and sizes)
