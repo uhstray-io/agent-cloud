@@ -1694,12 +1694,17 @@ refusal-path assertions matched text common to every refusal instead of the refu
 
 **The rule.** A test that builds a clean copy makes it clean by construction (ignore and
 gitignore generated caches, disable bytecode writes) and asserts that it is still clean on every
-run. A refusal-path test asserts which gate refused, never only text that every refusal prints;
-the gate that could pre-empt it gets its own dedicated test.
+run. A refusal-path test must not be able to pass on a refusal from a different gate: either it
+asserts which gate refused, or every run asserts that the gate able to pre-empt it did not fire,
+and that gate gets its own dedicated test.
 
-**Enforced by.** Test (PR #442): `test_o11y_fault_drill.py` ignores and gitignores `*.pyc`,
-runs with `PYTHONDONTWRITEBYTECODE`, ratchet-asserts the copy is clean on every run, and
-`test_dirty_checkout_is_refused_before_any_fault` covers the clean-checkout gate itself.
+**Enforced by.** Test (PR #442), in `test_o11y_fault_drill.py`: the copy ignores and gitignores
+`*.pyc` and runs with `PYTHONDONTWRITEBYTECODE`; the shared `run()` helper asserts on every
+run's output that "Controller checkout has uncommitted files" is absent unless the case passes
+`expect_dirty` (`platform/tests/test_o11y_fault_drill.py:101-102` on `dev`); and
+`test_dirty_checkout_is_refused_before_any_fault` (`:282`) covers the clean-checkout gate
+itself. The refusal-path cases still assert only the shared "no fault was induced" text; the
+every-run assertion is what stops a clean-checkout refusal from passing them.
 
 ## 3. Acting on live state
 
@@ -2847,7 +2852,7 @@ The collections were installed in the workstation's own Ansible directory; CI ne
 `collections/requirements.yml`. Why the rule did not fire: occurrence 2 widened it to every
 environment and to test dependencies, but the check it named, running in an environment that
 holds only what the pipeline declares, was never done, and collections were thought of as the
-playbooks' dependency rather than the tests'. Fixed in PR #413: the Unit Tests job installs
+playbooks' dependency rather than the tests'. Fixed in PR #413: the `python-core` job (`.github/workflows/lint-and-test.yml:227`) installs
 `collections/requirements.yml`. With a third occurrence the enforcement is now CI for this
 dependency class too; the general check stays a proposal.
 
