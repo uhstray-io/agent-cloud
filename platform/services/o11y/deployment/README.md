@@ -96,6 +96,15 @@ comes from the effective config (`compose config --services` over the same files
 changed only on the first. Operator decision 2026-10-04: a second deploy with identical
 inputs is a true no-op.
 
+**Force a recreate.** Launch `Deploy o11y (Dev)` with the survey input
+`deploy_force_recreate=true` (default `false`); the playbook passes `FORCE_RECREATE=true` to
+`deploy.sh` and every container is recreated even though its digest matches. Use it when a
+running container holds a stale bind mount: a mounted directory (`config/scrape.d`,
+`config/grafana/provisioning`, `config/grafana/dashboards`) deleted and recreated under it
+keeps pointing at the deleted inode while every input hashes the same. Deploys converge those
+directories in place; `platform/tests/test_no_bind_mount_dir_delete.py` fails if a deploy
+task deletes one.
+
 ## Inference dashboards and alerts
 
 Three provisioned dashboards cover the DGX Spark pair: `inference-latency-capacity`

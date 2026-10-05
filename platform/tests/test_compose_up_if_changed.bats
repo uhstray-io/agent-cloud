@@ -96,7 +96,7 @@ STUB
 
 deploy() {
   run env STUB_STATE="$S" STUB_DIR="$D" STUB_NAMES="$NAMES" CONTAINER_ENGINE="$T/bin/engine" \
-    COMPOSE_CMD="$T/bin/compose" LOCAL_MODE="${LOCAL:-}" COMPOSE_OVERLAYS="${OVERLAYS:-}" bash "$D/${SCRIPT:-deploy.sh}" --no-pull
+    COMPOSE_CMD="$T/bin/compose" LOCAL_MODE="${LOCAL:-}" COMPOSE_OVERLAYS="${OVERLAYS:-}" FORCE_RECREATE="${FORCE:-}" bash "$D/${SCRIPT:-deploy.sh}" --no-pull
 }
 recreates() { cat "$S/recreates"; }
 changed() { printf '%s\n' "${lines[@]}" | grep -x "DEPLOY_CHANGED=$1"; }
@@ -127,6 +127,30 @@ a_setup() {
   [ "$status" -eq 0 ]; changed false
   [ "$(recreates)" -eq 1 ]
   refute_grep -q ' up ' "$S/compose.log"
+}
+
+@test "authentik: FORCE_RECREATE=true recreates with unchanged inputs; other values do not" {
+  a_setup
+  deploy; [ "$status" -eq 0 ]
+  FORCE=true deploy
+  [ "$status" -eq 0 ]; changed true
+  [ "$(recreates)" -eq 2 ]
+  printf '%s\n' "${lines[@]}" | grep -q 'FORCE_RECREATE=true'
+  FORCE=false deploy
+  [ "$status" -eq 0 ]; changed false
+  [ "$(recreates)" -eq 2 ]
+}
+
+@test "deploy playbooks pass deploy_force_recreate to deploy.sh, default off" {
+  local pb
+  for pb in deploy-authentik.yml deploy-o11y.yml; do
+    python3 - "$REPO_ROOT/platform/playbooks/$pb" <<'PY2'
+import sys, yaml
+plays = yaml.safe_load(open(sys.argv[1]))
+t = [t for p in plays for t in p.get("tasks", []) if t.get("name") == "Run deploy.sh (container lifecycle)"][0]
+assert t["environment"]["FORCE_RECREATE"] == "{{ 'true' if (deploy_force_recreate | default(false) | bool) else '' }}"
+PY2
+  done
 }
 
 @test "authentik: a changed .env, env/*.env, blueprint or compose file recreates" {
