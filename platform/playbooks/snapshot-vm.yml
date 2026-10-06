@@ -123,9 +123,13 @@
       no_log: true
       when: not ansible_check_mode
 
+    # Under --check the create, the wait and the read-back are skipped (a write that
+    # cannot simulate, and reads of what it would have made), so everything that reads
+    # their results is skipped too; the dry run ends with the report below.
     - name: "Record the snapshot task UPID"
       ansible.builtin.set_fact:
         _upid: "{{ _create.json.data }}"
+      when: not ansible_check_mode
 
     - name: "Wait for the snapshot task to FINISH (poll until stopped)"
       ansible.builtin.uri:
@@ -146,6 +150,7 @@
           - _wait.json.data.exitstatus is defined
           - _wait.json.data.exitstatus == 'OK'
         fail_msg: "Snapshot task ended with exitstatus '{{ _wait.json.data.exitstatus | default('?') }}' — do NOT upgrade."
+      when: not ansible_check_mode
 
     - name: "VALIDATE the snapshot exists in the VM's snapshot list"
       ansible.builtin.uri:
@@ -163,3 +168,11 @@
           - _snapname in (_snaps.json.data | map(attribute='name') | list)
         fail_msg: "Snapshot '{{ _snapname }}' not found after creation — do NOT upgrade."
         success_msg: "Snapshot '{{ _snapname }}' created + validated on {{ pve_node }}/{{ pve_vmid }}. Safe to upgrade."
+      when: not ansible_check_mode
+
+    - name: "Dry run: report the snapshot that would be taken"
+      ansible.builtin.debug:
+        msg: >-
+          Dry run: would snapshot VM {{ pve_vmid }} on node {{ pve_node }} as
+          '{{ _snapname }}' (vmstate={{ _vmstate }}). The VM was found; nothing was written.
+      when: ansible_check_mode
