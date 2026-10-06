@@ -30,7 +30,7 @@ setup() {
 import sys
 import yaml
 
-plays = yaml.safe_load(open(sys.argv[1], encoding='utf-8'))
+plays = yaml.safe_load(open(sys.argv[1], encoding='utf-8'))[1:]  # [0] imports the extra-var guard
 revision = plays[0]['tasks']
 assert all('when' not in task for task in revision if 'revision' in task['name'] or 'checkout changes' in task['name'] or 'clean candidate' in task['name'])
 tasks = plays[1]['tasks']
@@ -285,7 +285,7 @@ YAML
 import json, re, sys, yaml
 from jinja2 import Environment, StrictUndefined
 
-plays = yaml.safe_load(open(sys.argv[1]))
+plays = yaml.safe_load(open(sys.argv[1]))[1:]  # [0] imports the extra-var guard
 assert plays[0]['ansible.builtin.import_playbook'] == 'preflight-target-group.yml'
 assert plays[0]['vars']['preflight_group'] == plays[0]['vars']['preflight_group_expected'] == 'o11y_svc'
 revision = next(play for play in plays if play.get('name') == 'Verify the proposed revision before the fault drill')
@@ -367,7 +367,8 @@ import posixpath
 import sys
 import yaml
 
-canary, recovery, restore, catalog = [yaml.safe_load(open(path)) for path in sys.argv[1:]]
+# Each playbook's [0] imports the extra-var guard.
+canary, recovery, restore, catalog = [d[1:] if isinstance(d, list) and d and isinstance(d[0], dict) and d[0].get('ansible.builtin.import_playbook') == 'refuse-internal-extra-vars.yml' else d for d in (yaml.safe_load(open(path)) for path in sys.argv[1:])]
 assert canary[0]['ansible.builtin.import_playbook'] == 'preflight-target-group.yml'
 assert canary[1]['name'] == 'Verify the reviewed Dev checkout before the canary'
 assert canary[2]['name'] == 'Prove alert delivery and restore the paused baseline'
@@ -424,7 +425,8 @@ import sys
 import yaml
 from jinja2 import Environment, StrictUndefined
 
-canary, probe, restore, deploy, provision = [yaml.safe_load(open(path, encoding='utf-8')) for path in sys.argv[1:]]
+# Each playbook's [0] imports the extra-var guard.
+canary, probe, restore, deploy, provision = [d[1:] if isinstance(d, list) and d and isinstance(d[0], dict) and d[0].get('ansible.builtin.import_playbook') == 'refuse-internal-extra-vars.yml' else d for d in (yaml.safe_load(open(path, encoding='utf-8')) for path in sys.argv[1:])]
 tasks = canary[2]['tasks']
 slot = next(i for i, task in enumerate(tasks) if task['name'] == 'Require a clean production canary slot')
 flight = next(i for i, task in enumerate(tasks) if 'block' in task)
@@ -585,7 +587,7 @@ assert 'dgx_spark_nodes | default([]) | length > 0' in settings['ansible.builtin
 assert by_name['Render DGX scrape targets only after source proof enables scraping']['when'] == gate
 assert by_name['Remove DGX scrape targets while scraping is disabled']['when'] == f'not ({gate})'
 
-probe = yaml.safe_load(open(sys.argv[2], encoding='utf-8'))
+probe = yaml.safe_load(open(sys.argv[2], encoding='utf-8'))[1:]  # [0] imports the extra-var guard
 assert probe[0]['vars'] == {'preflight_group': 'o11y_svc', 'preflight_group_expected': 'o11y_svc'}
 preflight = probe[1]['tasks']
 assert any(task['name'] == 'Refuse a different controller revision' for task in preflight)
@@ -674,7 +676,7 @@ YAML
   python3 - "$REPO_ROOT/platform/playbooks/probe-o11y-metrics-endpoint.yml" "$REPO_ROOT/platform/semaphore/templates.yml" <<'PY'
 import sys
 import yaml
-probe = yaml.safe_load(open(sys.argv[1], encoding='utf-8'))
+probe = yaml.safe_load(open(sys.argv[1], encoding='utf-8'))[1:]  # [0] imports the extra-var guard
 steps = {task['name']: task for task in probe[2]['tasks']}
 request = steps['Send one direct bounded metrics request from the receiver']
 assert request['when'] == 'not ansible_check_mode'
@@ -938,7 +940,7 @@ import sys
 
 import yaml
 
-playbook, = yaml.safe_load(open(sys.argv[1], encoding='utf-8'))
+playbook, = yaml.safe_load(open(sys.argv[1], encoding='utf-8'))[1:]  # [0] imports the extra-var guard
 defaults = playbook['module_defaults']['ansible.builtin.uri']
 assert defaults['validate_certs'] is False
 assert defaults['follow_redirects'] == 'none'
@@ -1444,7 +1446,7 @@ PY
   python3 - "$REPO_ROOT/platform/playbooks/verify-o11y-service.yml" "$REPO_ROOT/platform/semaphore/templates.yml" <<'PY'
 import sys
 import yaml
-plays = yaml.safe_load(open(sys.argv[1], encoding='utf-8'))
+plays = yaml.safe_load(open(sys.argv[1], encoding='utf-8'))[1:]  # [0] imports the extra-var guard
 inputs = plays[0]['tasks'][-1]['ansible.builtin.assert']['that']
 assert any('expect_logs' in item for item in inputs)
 assert any('expect_traces' in item for item in inputs)
@@ -1499,7 +1501,8 @@ PY
 import sys
 import yaml
 
-drill, probe, recover, recovery, deploy, catalog = [yaml.safe_load(open(p, encoding='utf-8')) for p in sys.argv[1:]]
+# Each playbook's [0] imports the extra-var guard.
+drill, probe, recover, recovery, deploy, catalog = [d[1:] if isinstance(d, list) and d and isinstance(d[0], dict) and d[0].get('ansible.builtin.import_playbook') == 'refuse-internal-extra-vars.yml' else d for d in (yaml.safe_load(open(p, encoding='utf-8')) for p in sys.argv[1:])]
 assert drill[0]['ansible.builtin.import_playbook'] == 'preflight-target-group.yml'
 tasks = drill[2]['tasks']
 names = [task['name'] for task in tasks]
@@ -1568,7 +1571,8 @@ import subprocess
 import sys
 import yaml
 
-playbook, catalog = [yaml.safe_load(open(p, encoding='utf-8')) for p in sys.argv[1:3]]
+# The playbook's [0] imports the extra-var guard.
+playbook, catalog = [d[1:] if isinstance(d, list) and d and isinstance(d[0], dict) and d[0].get('ansible.builtin.import_playbook') == 'refuse-internal-extra-vars.yml' else d for d in (yaml.safe_load(open(p, encoding='utf-8')) for p in sys.argv[1:3])]
 comparator, diagnostic = sys.argv[3:5]
 assert playbook[0]['ansible.builtin.import_playbook'] == 'preflight-target-group.yml'
 assert "SEMAPHORE_TASK_ID" not in str(playbook)
@@ -2020,7 +2024,7 @@ assert phase_one['tasks'][preflight + 1]['ansible.builtin.assert']['that'] == '_
 assert "['observed', 'first_deploy']" in phase_one['tasks'][preflight + 2]['ansible.builtin.assert']['that']
 assert phase_one['tasks'][preflight + 1]['when'] == gate_when
 assert phase_one['tasks'][preflight + 2]['when'] == gate_when
-clean = yaml.safe_load(clean_deploy_path.read_text())
+clean = yaml.safe_load(clean_deploy_path.read_text())[1:]  # [0] imports the extra-var guard
 clean_tasks = clean[0]['tasks']
 assert clean_tasks[0]['name'] == 'Refuse expanded retention before destructive o11y cleanup'
 assert clean_tasks[0]['when'] == 'not (local_mode | default(false) | bool)'

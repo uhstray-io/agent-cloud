@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+import playbook_yaml
 import yaml
 from jinja2 import StrictUndefined
 from jinja2.nativetypes import NativeEnvironment
@@ -9,7 +10,7 @@ from jinja2.nativetypes import NativeEnvironment
 
 def test_reconcile_refuses_a_different_live_key_before_merging():
     playbook = Path(__file__).resolve().parents[1] / "playbooks/reconcile-pfsense-api-key.yml"
-    tasks = yaml.safe_load(playbook.read_text())[0]["tasks"]
+    tasks = playbook_yaml.plays(playbook)[0]["tasks"]
     block = next(task["block"] for task in tasks if "block" in task)
     names = [task["name"] for task in block]
     assert names.index("Preserve a different live key pending verification") < names.index(
@@ -46,7 +47,7 @@ def test_reconcile_refuses_a_different_live_key_before_merging():
 
 def test_reconcile_uses_visible_backup_check_and_version_guard():
     playbook = Path(__file__).resolve().parents[1] / "playbooks/reconcile-pfsense-api-key.yml"
-    tasks = yaml.safe_load(playbook.read_text())[0]["tasks"]
+    tasks = playbook_yaml.plays(playbook)[0]["tasks"]
     block = next(task["block"] for task in tasks if "block" in task)
     names = [task["name"] for task in block]
     assert names.index("Check the pfSense API key backup path") < names.index("Load the pfSense API key backup")
@@ -62,7 +63,7 @@ def test_reconcile_uses_visible_backup_check_and_version_guard():
 
 def test_reservation_treats_deleted_or_null_key_as_absent():
     playbook = Path(__file__).resolve().parents[1] / "playbooks/netbox-allocate-ip.yml"
-    tasks = yaml.safe_load(playbook.read_text())[0]["tasks"]
+    tasks = playbook_yaml.plays(playbook)[0]["tasks"]
     facts = next(
         task["ansible.builtin.set_fact"]
         for task in tasks

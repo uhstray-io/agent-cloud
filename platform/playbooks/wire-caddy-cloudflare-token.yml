@@ -24,6 +24,11 @@
 #
 # Usage (via Semaphore): -e target_service=caddy_svc
 
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
 - name: "Wire Caddy Cloudflare token via OpenBao on {{ target_service | default('caddy_svc') }}"
   hosts: "{{ target_service | default('caddy_svc') }}"
   gather_facts: false

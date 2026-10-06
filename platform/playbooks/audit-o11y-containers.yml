@@ -4,6 +4,12 @@
 # The legacy grafanapodman host this audit also inspected is retired (operator
 # decision 2026-09-26) and removed from the private inventory; the receiver is the
 # o11y VM, an agent_cloud host.
+
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
 - name: Audit production hosts for o11y containers
   hosts: agent_cloud
   gather_facts: false

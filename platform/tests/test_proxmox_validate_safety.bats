@@ -5,7 +5,7 @@
 import sys
 import yaml
 
-play, = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
+play, = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))[1:]  # [0] imports the extra-var guard
 tasks = play["tasks"]
 requests = [task for task in tasks if "ansible.builtin.uri" in task]
 assert len(requests) == 9
@@ -24,7 +24,7 @@ PY
 import sys
 import yaml
 
-src, = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
+src, = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))[1:]  # [0] imports the extra-var guard
 tasks = [t for t in src["tasks"] if t["name"] == "Derive node capacity"]
 assert len(tasks) == 1
 gib = 1073741824

@@ -8,6 +8,11 @@
 # Pass the token value via extra-vars:
 #   ansible-playbook update-proxmox-token.yml -e proxmox_api_token=<value>
 
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
 - name: "Update Proxmox API token in OpenBao"
   hosts: netbox_svc
   gather_facts: false

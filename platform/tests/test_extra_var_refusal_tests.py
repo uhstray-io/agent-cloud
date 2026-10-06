@@ -28,15 +28,12 @@ REFUSAL = re.compile(r"(refuse|refused|refuses|cannot).*extra_var|extra_var.*(re
 # Refusal tests that do not parametrize over templated_forgeries, each with the reason. Exact:
 # a test that starts using the helper must leave this list, and a new one must justify itself.
 NOT_TEMPLATED = {
-    "test_executor_internal_overrides.py::test_every_executor_refuses_internal_extra_vars_first":
+    "test_executor_internal_overrides.py::test_every_launchable_playbook_refuses_internal_extra_vars_first":
         "static: reads the playbooks, sends no extra var",
     "test_harden_proves_key_first.py::test_every_gate_name_is_refused_as_an_extra_var_before_anything_runs":
         "static: reads the playbook, sends no extra var",
     "test_postiz_seed_input.py::test_an_address_pin_or_extra_var_refuses_before_any_write":
         "Python staging, not Ansible: refuses ANY extra var in the environment, by presence",
-    "test_postiz_access_only.py::test_injected_extra_vars_cannot_move_the_login_or_the_write":
-        "value check, plain values only: a templated override is a stated limit in the header "
-        "of tasks/assert-bao-addr-declared.yml (docs/MISTAKES.md 1.15 occurrence 2)",
     "test_materialise_ssh_key.py::test_extra_vars_cannot_move_the_pinned_known_hosts":
         "lifted section without the run's first play: tests the inner value check, which holds "
         "plain values only; every real caller imports refuse-internal-extra-vars.yml first "

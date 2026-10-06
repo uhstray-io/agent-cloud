@@ -16,6 +16,7 @@ import threading
 from http.server import HTTPServer
 from pathlib import Path
 
+import playbook_yaml
 import pytest
 import yaml
 from fake_http import DrainingHandler
@@ -32,7 +33,7 @@ needs_ansible = pytest.mark.skipif(
 
 
 def _collector_tasks() -> list[dict]:
-    return yaml.safe_load(COLLECTOR.read_text())[0]["tasks"]
+    return playbook_yaml.plays(COLLECTOR)[0]["tasks"]
 
 
 def _local_loki_task() -> dict:

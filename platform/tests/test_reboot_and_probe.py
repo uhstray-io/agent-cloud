@@ -230,13 +230,13 @@ def test_a_limited_confirmed_dry_run_still_passes(tmp_path):
 
 
 def test_the_in_play_guard_comes_before_anything_that_escalates():
-    tasks = yaml.safe_load(REBOOT.read_text())[1]["tasks"]
+    tasks = playbook_yaml.plays(REBOOT)[1]["tasks"]
     assert "ansible.builtin.assert" in tasks[0], tasks[0]["name"]
     assert "include_tasks" in str(tasks[1]) and "resolve-become-password" in str(tasks[1])
 
 
 def test_the_reboot_itself_never_runs_in_check_mode_and_is_the_only_escalation():
-    tasks = yaml.safe_load(REBOOT.read_text())[1]["tasks"]
+    tasks = playbook_yaml.plays(REBOOT)[1]["tasks"]
     reboot = next(t for t in tasks if "ansible.builtin.reboot" in t)
     assert reboot["when"] == "not ansible_check_mode" and reboot.get("become") is True
     assert [t["name"] for t in tasks if t.get("become")] == [reboot["name"]]

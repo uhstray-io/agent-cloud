@@ -39,6 +39,11 @@
 # A run without net_confirm renders and validates the config, prints the diff, and
 # changes nothing — so the safe thing to do first is always the default.
 
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
 # The sentinel default exists so the playbook PARSES without target_service set;
 # it names no real group, so a run without the variable matches nothing and the
 # pre-flight play above fails loudly rather than silently doing nothing.

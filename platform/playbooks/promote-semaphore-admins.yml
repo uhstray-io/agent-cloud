@@ -28,6 +28,11 @@
 #   ansible-playbook promote-semaphore-admins.yml \
 #     -e '{"semaphore_admin_users":["alice","bob"]}'
 
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
 - name: "Promote declared platform admins to Semaphore admins (closes task #37)"
   hosts: localhost
   connection: local

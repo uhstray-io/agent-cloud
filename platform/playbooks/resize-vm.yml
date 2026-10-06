@@ -96,19 +96,19 @@
     _specs: "{{ (_specs_raw | from_yaml) if (_specs_raw | length > 0) else {} }}"
     _svc: "{{ (_specs.vms | default({}))[target_service] | default({}) }}"
 
-    _vmid: "{{ target_vmid | default(vm_vmid | default(_svc.vmid | default(''))) }}"
-    _node: "{{ target_node | default(vm_node | default(_svc.node | default(''))) }}"
+    _vmid: "{{ target_vmid | default(_hv_vm_vmid | default(_svc.vmid | default(''))) }}"
+    _node: "{{ target_node | default(_hv_vm_node | default(_svc.node | default(''))) }}"
 
-    _want_cores: "{{ resize_cores | default(vm_cores | default(_svc.cores | default(''))) }}"
-    _want_memory: "{{ resize_memory | default(vm_memory | default(_svc.memory | default(''))) }}"
+    _want_cores: "{{ resize_cores | default(_hv_vm_cores | default(_svc.cores | default(''))) }}"
+    _want_memory: "{{ resize_memory | default(_hv_vm_memory | default(_svc.memory | default(''))) }}"
     # Declared disk is like "32G"; strip the unit for arithmetic.
-    _want_disk_gb: "{{ (resize_disk | default(vm_disk | default(_svc.disk | default(''))))
+    _want_disk_gb: "{{ (resize_disk | default(_hv_vm_disk | default(_svc.disk | default(''))))
                        | regex_replace('(?i)\\s*g(b)?$', '') }}"
 
     # The Proxmox guest-agent channel: provision-vm.yml sets agent=1 on every new VM, so an
     # older VM converges to the same, and install-qemu-guest-agent.yml can then start the
     # service (its unit binds to that channel's virtio port). Per-host opt-out: vm_agent: false.
-    _want_agent: "{{ vm_agent | default(true) | bool }}"
+    _want_agent: "{{ _hv_vm_agent | default(true) | bool }}"
     # `agent` is a property string: "1", "0", or e.g. "fstrim_cloned_disks=1,enabled=1".
     # `enabled` is its default key (a bare 1/0) and may sit anywhere, so it is parsed by key
     # (Codex review of #265). Play vars resolve lazily: these read _cfg, and the facts set
@@ -131,15 +131,17 @@
       block:
         # This play runs on localhost (it talks to the PVE API, not to the guest), so
         # the target service's own inventory vars are NOT in scope automatically.
-        # Hoist them out of hostvars for the matching host in the <service>_svc group.
+        # Hoist them out of hostvars for the matching host in the <service>_svc group, under
+        # internal names: refuse-internal-extra-vars.yml refuses an extra var for those, while
+        # one named vm_cores would replace the declaration the run read.
         - name: "Resolve the target host's inventory vars"
           ansible.builtin.set_fact:
-            vm_cores: "{{ _hv.vm_cores | default(omit) }}"
-            vm_memory: "{{ _hv.vm_memory | default(omit) }}"
-            vm_disk: "{{ _hv.vm_disk | default(omit) }}"
-            vm_vmid: "{{ _hv.vm_vmid | default(omit) }}"
-            vm_node: "{{ _hv.vm_node | default(omit) }}"
-            vm_agent: "{{ _hv.vm_agent | default(omit) }}"
+            _hv_vm_cores: "{{ _hv.vm_cores | default(omit) }}"
+            _hv_vm_memory: "{{ _hv.vm_memory | default(omit) }}"
+            _hv_vm_disk: "{{ _hv.vm_disk | default(omit) }}"
+            _hv_vm_vmid: "{{ _hv.vm_vmid | default(omit) }}"
+            _hv_vm_node: "{{ _hv.vm_node | default(omit) }}"
+            _hv_vm_agent: "{{ _hv.vm_agent | default(omit) }}"
           vars:
             _grp: "{{ target_service | default('') }}_svc"
             _hv: "{{ hostvars[(groups[_grp] | default([]) | first) | default('')] | default({}) }}"

@@ -2,6 +2,11 @@
 # validate-all.yml — Validate all deployed services are healthy
 # Run after deploy-all.yml or independently for health checks.
 
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
 - name: "Validate OpenBao"
   hosts: openbao_svc
   gather_facts: false

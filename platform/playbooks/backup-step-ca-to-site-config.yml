@@ -41,6 +41,11 @@
 #
 # Read-only against the CA and OpenBao. Restore is the separate drill (task 7.3).
 
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
 # Ansible exits 0 on "no hosts matched" — the false green preflight-target-group.yml stops.
 - name: "Pre-flight: target group is real"
   ansible.builtin.import_playbook: preflight-target-group.yml

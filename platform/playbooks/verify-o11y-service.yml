@@ -1,6 +1,12 @@
 ---
 # Run after generating a fresh log line for the named service. The optional
 # agentgateway canary emits credential-free traffic to prove trace intake.
+
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
 - name: Require a declared o11y receiver and a service identity
   hosts: localhost
   connection: local

@@ -3,6 +3,11 @@
 # used by discovery and DHCP reservation. Run through the Dev-bound Semaphore
 # template; neither the key nor the site-config deploy key is a task parameter.
 
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
 - name: Reconcile the pfSense API key from site-config
   hosts: localhost
   gather_facts: false

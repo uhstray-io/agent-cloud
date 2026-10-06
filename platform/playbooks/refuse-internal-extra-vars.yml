@@ -29,10 +29,26 @@
 # the two cannot be told apart. platform/tests/test_executor_internal_overrides.py holds the
 # example inventories to it; site-config defined none when this landed.
 #
-# Usage — the FIRST entry of a playbook, before any play or import:
+# ansible_become_password is refused by name too: the playbooks resolve it from OpenBao with
+# set_fact, a magic variable that cannot carry the prefix.
+#
+# Usage — the FIRST entry of every playbook Semaphore launches (every templates.yml
+# playbook), before any play or import:
 #
 #   - name: "Refuse extra vars that set internal names"
 #     ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+#
+# NESTED RUNS. A guarded playbook imported by another one after work has begun (Clean
+# Deploy imports Deploy) would find the importer's own facts in hostvars and refuse an
+# honest run. The importer's guard already covered the run, so the import passes
+#
+#     vars:
+#       _extra_var_guard_nested: true
+#
+# and this play skips. That flag is an import var, which hostvars does not hold; the same
+# name sent as an extra var IS in hostvars, so the check runs and refuses it.
+# platform/tests/test_executor_internal_overrides.py requires every import of a guarded
+# playbook to pass the flag, and every playbook that passes it to start with the guard.
 #
 # It runs under --check and under any --tags (tag `always`). Like every play it is skipped
 # by a --limit that excludes localhost, and by --start-at-task (preflight-target-group.yml
@@ -46,14 +62,15 @@
   become: false
   tags: [always]
   tasks:
-    - name: "Refuse an extra var that sets an underscore-prefixed name"
+    - name: "Refuse an extra var that sets an internal name"
       ansible.builtin.assert:
-        that: hostvars[inventory_hostname].keys() | select('match', '_') | list | length == 0
+        that: hostvars[inventory_hostname].keys() | select('match', '_|ansible_become_password$') | list | length == 0
         fail_msg: >-
-          Refusing to run: {{ hostvars[inventory_hostname].keys() | select('match', '_') | sort | join(', ') }}
-          set from outside the playbook. Underscore-prefixed names are RESERVED for playbook
-          internals: an extra var outranks the value the playbook computes, which would let a
-          forged value decide a verdict or the step result it records, and an inventory var of
-          the same name is refused alike, since the two cannot be told apart. Rename the
-          colliding variable.
+          Refusing to run: {{ hostvars[inventory_hostname].keys() | select('match', '_|ansible_become_password$') | sort | join(', ') }}
+          set from outside the playbook. Underscore-prefixed names and ansible_become_password
+          are RESERVED for playbook internals: an extra var outranks the value the playbook
+          computes, which would let a forged value decide a verdict or the step result it
+          records, and an inventory var of the same name is refused alike, since the two
+          cannot be told apart. Rename the colliding variable.
         quiet: true
+      when: not (_extra_var_guard_nested is defined and '_extra_var_guard_nested' not in hostvars[inventory_hostname])
