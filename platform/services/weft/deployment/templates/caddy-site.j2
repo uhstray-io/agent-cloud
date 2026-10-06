@@ -4,12 +4,18 @@
     else. The front door behind it redirects and never proxies; it is not this.
 
       <domain>          -> the front door's VM
-      <name>.<domain>   -> that workspace's VM, one host matcher per workspace
+      <name>.<domain>   -> that workspace's VM, one host matcher per workspace (weft D540)
+      any other host    -> the front door's VM, which answers it itself
 
     A workspace's hostname is its company name as its admin chose it on the front door
-    (weft_workspace_name, a DNS label), the same name the front door's address template fills in.
-    Its id (weft_workspace_id) is what claims are bound to, never a hostname.
-    An unknown subdomain gets 404 rather than somebody else's board.
+    (weft_workspace_name, a DNS label), the name the front door's address template fills in. Its
+    id (weft_workspace_id) is what claims are bound to and names its VM and directory; it is never
+    a route.
+
+    Every other subdomain goes to the front door, which knows every name a workspace has had: a
+    307 to the current name for an old name or an id address, a 503 for a name an admin chose that
+    this fragment does not route yet (a rename before inventory catches up), and a 404 for
+    anything else. Never somebody else's board.
 
     Calls are NOT here: the edge routes by hostname, a UDP datagram has none, and the rack forwards
     each workspace's UDP port straight to its VM.
@@ -35,6 +41,6 @@
 	}
 {% endfor %}
 	handle {
-		respond 404
+		reverse_proxy {{ hostvars[door].weft_door_bind | default(hostvars[door].ansible_host) }}:{{ hostvars[door].weft_door_port | default(8081) }}
 	}
 }

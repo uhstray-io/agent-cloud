@@ -269,7 +269,15 @@ PY
   local site="$DEPLOY_DIR/templates/caddy-site.j2"
   assert_grep -qF 'host {{ h.weft_workspace_name }}.{{ weft_domain }}' "$site"
   refute_grep -qF 'h.weft_workspace_id' "$site"
-  assert_grep -qF "default('https://{name}.' ~ weft_domain)" "$DEPLOY_DIR/templates/door.env.j2"
+  assert_grep -qF 'WEFT_DOOR_WORKSPACE_URL=https://{name}.{{ weft_domain }}' "$DEPLOY_DIR/templates/door.env.j2"
+  refute_grep -qF '{id}' "$DEPLOY_DIR/templates/door.env.j2"
+  # Every host the edge does not route by name goes to the front door, which redirects an old
+  # name or an id address, answers 503 for a name not routed yet, and 404 otherwise. A 404 at the
+  # edge would break every link to a workspace that was just renamed.
+  local catch_all
+  catch_all=$(sed -n '/^	handle {$/,/^	}$/p' "$site")
+  assert_grep -qF 'reverse_proxy {{ hostvars[door].weft_door_bind' <<<"$catch_all"
+  refute_grep -qF 'respond 404' "$site"
   local pb
   for pb in "$PB/weft-workspace.yml" "$PB/rollback-weft-workspace.yml"; do
     assert_grep -qF '"https://{{ weft_workspace_name }}.{{ weft_domain }}"' "$pb"

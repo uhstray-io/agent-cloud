@@ -28,7 +28,7 @@ weft's CI builds every image once, signs it with keyless cosign, and publishes a
 | D6 | **A release a host rolled back is never retried on that host by a timer** | Without it the five-minute timer would redeploy a failing release every tick. The fix is a new release. |
 | D7 | **Per-host deploy lock** (`<dir>/deploying`), honoured by both timers | A deploy takes about twenty minutes and the timers fire every five. |
 | D8 | **VM creation stays the platform's onboarding workflow** (Provision VM → Distribute SSH Keys → Harden SSH → Apply Firewall); `Stand Up weft Workspace` does the weft half | Each concern is its own workflow (Critical Deployment Rule 3). `vm_cpu` gives a workspace VM AVX2 (`x86-64-v3` or `host`). |
-| D9 | **A workspace is reached at `<company>.<domain>`** (`weft_workspace_name`, the name its admin chose); `weft_workspace_id` stays the claim audience and the directory name | Jacob's decision 2026-10-05. Needs weft's change that lets the front door address a workspace by that name; until it lands the front door's template refuses `{name}` |
+| D9 | **A workspace is reached at `<company>.<domain>`** (`weft_workspace_name`, the name its admin chose); `weft_workspace_id` stays the claim audience, the VM and the directory name. Every other subdomain goes to the front door, which redirects old names and id addresses | weft D540 (weft#260). A rename is two steps: the admin renames, then inventory follows; between them the new name answers 503 |
 
 ## Accepted costs
 

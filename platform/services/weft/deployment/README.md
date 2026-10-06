@@ -93,14 +93,25 @@ as the canary), `weft_staging_door` (one host), `weft_staging_workspace` (one ho
 | `weft_release_approver` | `all` | the GitHub login whose `rack` approval counts |
 | `weft_discord_guild_id`, `weft_discord_channel_id` | `weft_door` | the weft-dev channel's numeric ids |
 | `weft_workspace_id` | each workspace host | the id the front door minted: sign-in claims are bound to it |
-| `weft_workspace_name` | each workspace host | the company name its admin chose: the subdomain, `<name>.<domain>` (needs weft's workspace-name change) |
-| `weft_door_workspace_url` | optional, front door group | overrides the front door's address template (default `https://{name}.<domain>`) |
+| `weft_workspace_name` | each workspace host | the company name its admin chose: the subdomain, `<name>.<domain>` (weft D540; the VM, its directory and `known_as` keep the id) |
 | `weft_voice_udp` | each workspace host | its own UDP port; the rack forwards the same number |
 | `weft_providers`, `weft_default_provider` | each workspace host | the `[providers.*]` tables (name, endpoint, wire, budget, models), as a dict; no key and no key variable |
 | `weft_daily_tokens`, `weft_tracker_bot_login` | each workspace host | weft has no default for either |
 | `weft_clones` | each workspace host | `{"<org>/<repo>": "<name>"}`, cloned under the workspace directory |
 | `weft_board_bind` / `weft_door_bind` | optional | defaults to `ansible_host`; the Caddy host must reach it |
 | `weft_board_trusted_proxies`, `weft_board_ingest_from` | optional | CIDR lists for `[board]` |
+
+## Renaming a workspace
+
+Two steps, in this order:
+
+1. The workspace's admin renames it on Settings › People. The front door answers the old name
+   with a 307 to the new one at once, so links keep working.
+2. Change `weft_workspace_name` in site-config and run Deploy weft Front Door (it re-renders the
+   edge; a front door already on the release is otherwise left alone). Until then the new name
+   answers 503 from the front door, because the edge still routes only the old one.
+
+The id, the VM, its directory and `known_as` do not change.
 
 ## What OpenBao holds
 
