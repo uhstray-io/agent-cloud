@@ -293,3 +293,114 @@ def test_dirty_checkout_is_refused_before_any_fault(tmp_path, clean_copy):
     assert "Controller checkout has uncommitted files" in out
     assert "PLAY [Induce one bounded o11y fault" not in out
     assert calls == []
+
+
+# ── probe drill: where "health up" is read ──────────────────────────────────
+
+PROBE_REFUSAL = "Require the synthetic probe deployed and its health route declared"
+HEALTH_HOLD = "Hold the invalid target while /health stays up"
+PUBLIC_URL = "https://inference.example.test/v1"
+UPSTREAM = "http://192.0.2.30:8000/v1"
+
+
+def _probe_wiring(tmp_path, o11y=None, gateways=1, upstream=UPSTREAM):
+    """Run the drill's own probe refusal on the o11y host, then report where /health is read."""
+    play = playbook_yaml.load(PLAYBOOK)[2]
+    names = ["_restore_only", "_probe_gateway_identity", "_probe_gw", "_probe_upstream", "_probe_health_url",
+             "_probe_health_from"]
+    refusal = next(t for t in play["tasks"] if t.get("name") == PROBE_REFUSAL)
+    harness = [{"hosts": "o11y_svc", "gather_facts": False, "vars": {k: play["vars"][k] for k in names},
+                "tasks": [refusal, {"ansible.builtin.debug": {
+                    "msg": "HEALTH {{ {'url': _probe_health_url, 'from': _probe_health_from} | to_json }}"}}]}]
+    gw = {"agw_upstream_base_url": upstream} if upstream is not None else {}
+    o11y_vars = {"ansible_connection": "local", "ansible_python_interpreter": shutil.which("python3"),
+                 "drill": "probe", "o11y_inference_probe_enabled": True, "o11y_inference_probe_url": PUBLIC_URL,
+                 "o11y_inference_probe_model": "served-model-a", **(o11y or {})}
+    o11y_vars = {k: v for k, v in o11y_vars.items() if v is not None}
+    inventory = {"all": {"children": {
+        "o11y_svc": {"hosts": {"o11y-test": o11y_vars}},
+        "agentgateway_svc": {"hosts": {f"gw{i}": gw for i in range(gateways)}},
+    }}}
+    (tmp_path / "pb.yml").write_text(yaml.safe_dump(harness))
+    (tmp_path / "inv.yml").write_text(json.dumps(inventory))
+    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
+    env.update(ANSIBLE_NOCOLOR="1", ANSIBLE_STDOUT_CALLBACK="default")
+    done = subprocess.run(["ansible-playbook", "-i", str(tmp_path / "inv.yml"), str(tmp_path / "pb.yml")],
+                          cwd=ROOT, env=env, text=True, capture_output=True, stdin=subprocess.DEVNULL)
+    line = next((ln for ln in done.stdout.splitlines() if "HEALTH " in ln), None)
+    got = json.loads(json.loads(line.split('"msg": ', 1)[1]).split("HEALTH ", 1)[1]) if line else None
+    return done, got
+
+
+def test_public_path_reads_health_through_the_probe_url_from_the_runner(tmp_path):
+    done, got = _probe_wiring(tmp_path, gateways=0, upstream=None)
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert got == {"url": "https://inference.example.test/health", "from": "localhost"}
+
+
+def test_gateway_identity_reads_the_upstreams_health_from_the_o11y_host(tmp_path):
+    # The gateway-identity probe URL names the gateway's mutual-TLS listener, which resolves
+    # only on the o11y host and serves no /health: task 2981 failed 24/24 on exactly that.
+    done, got = _probe_wiring(tmp_path, o11y={
+        "o11y_inference_probe_client_leaf": "o11y-probe",
+        "o11y_inference_probe_url": "https://gateway.lab.example.test:4000/v1"})
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert got == {"url": "http://192.0.2.30:8000/health", "from": "o11y-test"}
+
+
+@pytest.mark.parametrize("gateways,upstream,why", [
+    (0, None, "no gateway to read the upstream from"),
+    (2, UPSTREAM, "two gateways"),
+    (1, None, "gateway without a declared upstream"),
+    (1, "http://192.0.2.30:8000", "upstream that is not a /v1 base URL"),
+])
+def test_gateway_identity_without_one_declared_upstream_is_refused(tmp_path, gateways, upstream, why):
+    done, got = _probe_wiring(tmp_path, o11y={"o11y_inference_probe_client_leaf": "o11y-probe"},
+                              gateways=gateways, upstream=upstream)
+    assert done.returncode != 0, why
+    assert "No fault was induced" in done.stdout, why
+    assert got is None, why
+
+
+@pytest.mark.parametrize("gateways,upstream", [(0, None), (2, UPSTREAM), (1, None), (1, "http://192.0.2.30:8000")])
+def test_a_restore_only_run_is_never_gated_on_the_health_hold_inputs(tmp_path, gateways, upstream):
+    # Restore must not wait on anything it does not need: the gateway upstream feeds only the
+    # health hold, which a restore-only run never performs.
+    done, _ = _probe_wiring(tmp_path, o11y={"o11y_inference_probe_client_leaf": "o11y-probe",
+                                            "drill_restore_only": True},
+                            gateways=gateways, upstream=upstream)
+    assert done.returncode == 0, done.stdout + done.stderr
+
+
+@pytest.mark.parametrize("o11y,why", [
+    ({"o11y_inference_probe_enabled": False}, "probe disabled since the fault"),
+    ({"o11y_inference_probe_url": None}, "no probe URL"),
+    ({"o11y_inference_probe_url": "http://inference.example.test/v1"}, "a URL the probe would refuse"),
+])
+def test_a_restore_only_run_is_gated_only_on_what_the_restore_uses(tmp_path, o11y, why):
+    restore = {**o11y, "drill_restore_only": True}
+    done, _ = _probe_wiring(tmp_path, o11y=restore, gateways=0, upstream=None)
+    assert done.returncode == 0, (why, done.stdout + done.stderr)
+    # The same inventory still refuses a run that would induce the fault.
+    done, _ = _probe_wiring(tmp_path, o11y=o11y, gateways=0, upstream=None)
+    assert done.returncode != 0, why
+    assert "No fault was induced" in done.stdout, why
+
+
+def test_a_restore_only_run_still_needs_the_model_its_proof_reads(tmp_path):
+    done, _ = _probe_wiring(tmp_path, o11y={"drill_restore_only": True, "o11y_inference_probe_model": None},
+                            gateways=0, upstream=None)
+    assert done.returncode != 0
+    assert "No fault was induced" in done.stdout
+
+
+def test_the_health_hold_is_read_from_the_path_aware_host():
+    def walk(tasks):
+        for t in tasks:
+            yield t
+            for key in ("block", "rescue", "always"):
+                yield from walk(t.get(key, []))
+    task = next(t for t in walk(_play_tasks()) if t.get("name") == HEALTH_HOLD)
+    assert task["delegate_to"] == "{{ _probe_health_from }}"
+    assert task["ansible.builtin.uri"]["url"] == "{{ _probe_health_url }}"
+    assert task["ansible.builtin.uri"]["status_code"] == [200]

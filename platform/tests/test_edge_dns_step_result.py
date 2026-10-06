@@ -46,7 +46,7 @@ def _all_tasks(tasks=None):
             yield from _all_tasks(t.get(key) or [])
 
 
-def _run(tmp_path, tf_plan, tf_verify, action, show_plan=None, show_verify=None):
+def _run(tmp_path, tf_plan, tf_verify, action, show_plan=None, show_verify=None, fails=False):
     tail = [t for t in _tasks() if t.get("name") in TAIL]
     assert len(tail) == len(TAIL)
     for t in tail:
@@ -64,9 +64,11 @@ def _run(tmp_path, tf_plan, tf_verify, action, show_plan=None, show_verify=None)
     env["ANSIBLE_SHOW_CUSTOM_STATS"] = "1"
     proc = subprocess.run(["ansible-playbook", "-i", "localhost,", str(tmp_path / "p.yml")], cwd=REPO, env=env,
                           text=True, capture_output=True, stdin=subprocess.DEVNULL, check=False)
+    _run.stdout = proc.stdout
+    if fails:
+        return proc
     found = step_results.results_in(proc.stdout.splitlines())
     assert len(found) == 1, proc.stdout[-3000:]
-    _run.stdout = proc.stdout
     return found[0]
 
 
@@ -97,12 +99,21 @@ def test_changes_without_a_parsable_summary_still_fail(tmp_path):
     assert res["status"] == "fail" and res["evidence"] == {"plan_changes": None}
 
 
+DRY_RUN = "Dry run: OpenTofu init, plan and show in a throwaway data directory"
+
+
+def _dry_run_task():
+    (task,) = [t for t in _all_tasks() if t.get("name") == DRY_RUN]
+    return task
+
+
 def test_both_plans_detect_changes_by_exit_code():
     plans = [t for t in _all_tasks()
              if (t.get("ansible.builtin.command") or {}).get("argv", [None, None])[:2] == ["tofu", "plan"]]
     assert len(plans) == 2
     for t in plans:
         assert "-detailed-exitcode" in t["ansible.builtin.command"]["argv"], t["name"]
+    assert "tofu plan -input=false -no-color -detailed-exitcode" in _dry_run_task()["ansible.builtin.shell"]["cmd"]
 
 
 def test_every_credential_bearing_tofu_command_is_no_log():
@@ -110,20 +121,23 @@ def test_every_credential_bearing_tofu_command_is_no_log():
     # its environment, so it is its own no_log task; failures surface through the visible report.
     tofu = [t for t in _all_tasks() if (t.get("ansible.builtin.command") or {}).get("argv", [None])[0] == "tofu"]
     assert len(tofu) == 6  # init, plan, show, apply, plan after apply, show
+    tofu.append(_dry_run_task())  # the dry run's init, plan and show, in one throwaway root
     for t in tofu:
         assert t.get("no_log") is True, t["name"]
         assert t.get("failed_when") is False, t["name"]
         assert t["environment"] == "{{ _tf_env }}", t["name"]
     (env,) = [t for t in _all_tasks() if "_tf_env" in (t.get("ansible.builtin.set_fact") or {})]
     assert env.get("no_log") is True
+    (unpack,) = [t for t in _all_tasks() if "_tf_dry_result" in (t.get("ansible.builtin.set_fact") or {})]
+    assert unpack.get("no_log") is True, "the dry run's plan text and JSON carry the origin address"
 
 
 def test_the_visible_report_carries_only_exit_codes_and_counts():
     (report,) = [t for t in _tasks() if "_tf_report" in (t.get("ansible.builtin.set_fact") or {})]
     assert "no_log" not in report
     assert set(report["ansible.builtin.set_fact"]["_tf_report"]) == {
-        "init_rc", "plan_rc", "apply_rc", "apply_changed", "verify_rc", "plan_changes", "verify_changes",
-        "plan_actions", "verify_actions"}
+        "init_rc", "plan_rc", "apply_rc", "apply_changed", "verify_rc", "show_rc", "verify_show_rc",
+        "plan_changes", "verify_changes", "plan_actions", "verify_actions"}
     for t in _tasks():
         if "ansible.builtin.debug" in t:
             shown = str(t["ansible.builtin.debug"])
@@ -171,3 +185,139 @@ def test_saved_plans_are_removed_and_shown_inside_the_no_log_boundary():
     (cleanup,) = block["always"]
     assert cleanup["ansible.builtin.file"]["state"] == "absent"
     assert set(cleanup["loop"]) == {"{{ _tf_planfile }}", "{{ _tf_verify_planfile }}"}
+
+
+# A fake tofu that writes what the real one would: init fills the data directory
+# (TF_DATA_DIR, else .terraform/ in the working directory) and rewrites the lock file unless
+# -lockfile=readonly; plan saves its -out file. It logs each call with the data directory.
+FAKE_TOFU = """#!/bin/sh
+d="${TF_DATA_DIR:-.terraform}"
+echo "$1|$d|$*" >> "$FAKE_TOFU_LOG"
+case "$1" in
+  init)
+    mkdir -p "$d/providers" && touch "$d/terraform.tfstate"
+    case " $* " in *" -lockfile=readonly "*) ;; *) echo "# rewritten" >> .terraform.lock.hcl ;; esac
+    exit "${FAKE_INIT_RC:-0}" ;;
+  plan)
+    for a in "$@"; do case "$a" in -out=*) out="${a#-out=}" ;; esac; done
+    mkdir -p "$(dirname "$out")" && echo saved > "$out"
+    printf '%s\\n' "$FAKE_PLAN_STDOUT"
+    exit "${FAKE_PLAN_RC:-0}" ;;
+  show)
+    printf '%s\\n' "$FAKE_SHOW_JSON"
+    exit "${FAKE_SHOW_RC:-0}" ;;
+esac
+"""
+ROOT_FILES = {".terraform.lock.hcl": "# committed lock\n", "backend.hcl": 'bucket = "b"\n',
+              "versions.tf": "terraform {}\n"}
+
+
+def _tofu_run(tmp_path, check, plan_rc=0, plan_stdout="No changes.", init_rc=0, show_rc=0):
+    """Run the playbook's tofu block and its report through ansible-playbook with a fake tofu."""
+    bin_dir, tf_dir, log = tmp_path / "bin", tmp_path / "tf", tmp_path / "tofu.log"
+    bin_dir.mkdir()
+    tf_dir.mkdir()
+    for name, text in ROOT_FILES.items():
+        (tf_dir / name).write_text(text)
+    (bin_dir / "tofu").write_text(FAKE_TOFU)
+    (bin_dir / "tofu").chmod(0o755)
+    (play,) = yaml.safe_load(PLAYBOOK.read_text())
+    names = ("Build the tofu environment", "OpenTofu run", *TAIL)
+    tasks = [t for t in play["tasks"] if t.get("name") in names]
+    assert len(tasks) == len(names)
+    for t in tasks:
+        if "ansible.builtin.include_tasks" in t:
+            t["ansible.builtin.include_tasks"] = str(EMIT)
+    harness = [{"hosts": "localhost", "connection": "local", "gather_facts": False,
+                "vars": {**play["vars"], "_tf_dir": str(tf_dir), "tofu_action": "plan", "_zone_id": "z",
+                         "_caddy_ip": SECRET_ORIGIN,
+                         "_cf": {"r2_access_key_id": "a", "r2_secret_access_key": "b", "api_token": "c"}},
+                "tasks": tasks}]
+    (tmp_path / "p.yml").write_text(json.dumps(harness))
+    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
+    env.update({"PATH": f"{bin_dir}:{env['PATH']}", "ANSIBLE_NOCOLOR": "1", "ANSIBLE_SHOW_CUSTOM_STATS": "1",
+                "FAKE_TOFU_LOG": str(log), "FAKE_INIT_RC": str(init_rc), "FAKE_PLAN_RC": str(plan_rc),
+                "FAKE_PLAN_STDOUT": plan_stdout, "FAKE_SHOW_JSON": PLAN_JSON,
+                "FAKE_SHOW_RC": str(show_rc)})
+    argv = ["ansible-playbook", "-i", "localhost,", *(["--check"] if check else []), str(tmp_path / "p.yml")]
+    proc = subprocess.run(argv, cwd=REPO, env=env, text=True, capture_output=True, stdin=subprocess.DEVNULL,
+                          check=False)
+    calls = [line.split("|") for line in log.read_text().splitlines()] if log.exists() else []
+    root = {str(p.relative_to(tf_dir)): p.read_text() for p in tf_dir.rglob("*") if p.is_file()}
+    return proc, calls, root, tf_dir
+
+
+@needs_ansible
+def test_a_dry_run_writes_nothing_into_the_tofu_root(tmp_path):
+    # D10 (task 7.1): the dry run used to run `tofu init` in the tofu root, leaving .terraform/
+    # (and any lock-file update) in the runner's checkout.
+    proc, calls, root, tf_dir = _tofu_run(tmp_path, check=True)
+    assert proc.returncode == 0, proc.stdout[-3000:]
+    assert [c[0] for c in calls] == ["init", "plan", "show"]
+    assert root == ROOT_FILES, "the dry run wrote into the tofu root"
+    assert not (tf_dir / ".terraform").exists()
+    (data_dir,) = {c[1] for c in calls}
+    assert Path(data_dir).is_absolute() and not Path(data_dir).is_relative_to(tf_dir)
+    assert not Path(data_dir).parent.exists(), "the throwaway root was not removed"
+    assert "-lockfile=readonly" in calls[0][2].split()
+    (res,) = step_results.results_in(proc.stdout.splitlines())
+    assert (res["step"], res["status"], res["evidence"]) == ("edge-dns", "pass", {"plan_changes": 0})
+
+
+@needs_ansible
+def test_a_dry_run_with_changes_reports_counts_and_actions_only(tmp_path):
+    proc, calls, root, _ = _tofu_run(tmp_path, check=True, plan_rc=2,
+                                     plan_stdout="Plan: 0 to add, 1 to change, 0 to destroy.")
+    (res,) = step_results.results_in(proc.stdout.splitlines())
+    assert res["status"] == "fail" and res["evidence"] == {"plan_changes": 1}
+    assert '"cloudflare_record.app: update"' in proc.stdout
+    assert SECRET_ORIGIN not in proc.stdout and "198.51.100.9" not in proc.stdout
+    assert root == ROOT_FILES
+
+
+@needs_ansible
+def test_a_dry_run_init_failure_fails_the_run_and_still_writes_nothing(tmp_path):
+    proc, calls, root, _ = _tofu_run(tmp_path, check=True, init_rc=1)
+    assert proc.returncode != 0 and "'init_rc': 1," in proc.stdout, proc.stdout[-3000:]
+    assert [c[0] for c in calls] == ["init"]
+    assert root == ROOT_FILES
+    assert not Path(calls[0][1]).parent.exists()
+
+
+@needs_ansible
+def test_a_real_plan_is_unchanged(tmp_path):
+    # Not a dry run: init, plan and show run as separate tasks in the tofu root's own .terraform/.
+    proc, calls, root, tf_dir = _tofu_run(tmp_path, check=False)
+    assert proc.returncode == 0, proc.stdout[-3000:]
+    assert [(c[0], c[1]) for c in calls] == [("init", ".terraform"), ("plan", ".terraform"), ("show", ".terraform")]
+    assert "-lockfile=readonly" not in calls[0][2].split()
+    assert (tf_dir / ".terraform").is_dir()
+    assert not (tf_dir / ".terraform/edge-dns.tfplan").exists(), "the saved plan was not removed"
+    (res,) = step_results.results_in(proc.stdout.splitlines())
+    assert res["status"] == "pass"
+
+
+# PR 454 Codex review: a failed `tofu show` left plan_actions empty while the run still passed,
+# so the resource and action evidence could silently go missing.
+FAILED_SHOW = {"rc": 1, "stdout": ""}
+
+
+@needs_ansible
+def test_a_failed_show_of_the_plan_fails_the_run(tmp_path):
+    proc = _run(tmp_path, {"rc": 0, "stdout": "No changes."}, SKIPPED, "plan", show_plan=FAILED_SHOW, fails=True)
+    assert proc.returncode != 0 and "'show_rc': 1," in proc.stdout, proc.stdout[-3000:]
+    assert step_results.results_in(proc.stdout.splitlines()) == []
+
+
+@needs_ansible
+def test_a_failed_show_of_the_post_apply_plan_fails_the_run(tmp_path):
+    proc = _run(tmp_path, SKIPPED, {"rc": 0, "stdout": "No changes."}, "apply", show_verify=FAILED_SHOW, fails=True)
+    assert proc.returncode != 0 and "'verify_show_rc': 1," in proc.stdout, proc.stdout[-3000:]
+
+
+@needs_ansible
+@pytest.mark.parametrize("check", [True, False], ids=["dry-run", "real-plan"])
+def test_a_failed_tofu_show_fails_the_run_in_either_mode(tmp_path, check):
+    proc, calls, _, _ = _tofu_run(tmp_path, check=check, show_rc=1)
+    assert [c[0] for c in calls] == ["init", "plan", "show"]
+    assert proc.returncode != 0 and "'show_rc': 1," in proc.stdout, proc.stdout[-3000:]

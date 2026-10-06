@@ -541,7 +541,8 @@ env.filters['to_json'] = json.dumps
 env.filters['bool'] = bool
 plays = yaml.safe_load(open(sys.argv[2], encoding='utf-8'))
 phase_one = next(play for play in plays if play.get('name') == 'Phase 1: Place repo + manage o11y secrets')
-policy = phase_one['vars']['_o11y_forbidden_metric_label_names_regex']
+assert 'vars/o11y-metric-labels.yml' in phase_one['vars_files']
+policy = yaml.safe_load(open(sys.argv[2].rsplit('/', 1)[0] + '/vars/o11y-metric-labels.yml', encoding='utf-8'))['_o11y_forbidden_metric_label_names_regex']
 template = env.from_string(open(sys.argv[1], encoding='utf-8').read())
 values = {
     'dgx_spark_nodes': [
@@ -753,7 +754,8 @@ env.filters['to_json'] = json.dumps
 env.filters['bool'] = bool
 plays = yaml.safe_load(open(sys.argv[2], encoding='utf-8'))
 phase_one = next(play for play in plays if play.get('name') == 'Phase 1: Place repo + manage o11y secrets')
-policy = phase_one['vars']['_o11y_forbidden_metric_label_names_regex']
+assert 'vars/o11y-metric-labels.yml' in phase_one['vars_files']
+policy = yaml.safe_load(open(sys.argv[2].rsplit('/', 1)[0] + '/vars/o11y-metric-labels.yml', encoding='utf-8'))['_o11y_forbidden_metric_label_names_regex']
 config = yaml.safe_load(env.from_string(open(sys.argv[1], encoding='utf-8').read()).render(
     agentgateway_metrics_address='gateway.example.test',
     agentgateway_metrics_port=19002,
@@ -1153,7 +1155,8 @@ env.filters['to_json'] = json.dumps
 env.filters['bool'] = bool
 plays = yaml.safe_load(pathlib.Path(sys.argv[2]).read_text())
 phase_one = next(play for play in plays if play.get('name') == 'Phase 1: Place repo + manage o11y secrets')
-policy = phase_one['vars']['_o11y_forbidden_metric_label_names_regex']
+assert 'vars/o11y-metric-labels.yml' in phase_one['vars_files']
+policy = yaml.safe_load(open(sys.argv[2].rsplit('/', 1)[0] + '/vars/o11y-metric-labels.yml', encoding='utf-8'))['_o11y_forbidden_metric_label_names_regex']
 prometheus_template = (deploy / 'templates/prometheus.yml.j2').read_text()
 rendered_prometheus = env.from_string(prometheus_template).render(
     o11y_cluster='test-cluster', o11y_environment='prod', local_mode=False,
@@ -1735,7 +1738,8 @@ from jinja2 import Environment, StrictUndefined
 deploy = pathlib.Path(sys.argv[1])
 plays = yaml.safe_load(pathlib.Path(sys.argv[2]).read_text())
 phase_one = next(play for play in plays if play.get('name') == 'Phase 1: Place repo + manage o11y secrets')
-policy = phase_one['vars']['_o11y_forbidden_metric_label_names_regex']
+assert 'vars/o11y-metric-labels.yml' in phase_one['vars_files']
+policy = yaml.safe_load(open(sys.argv[2].rsplit('/', 1)[0] + '/vars/o11y-metric-labels.yml', encoding='utf-8'))['_o11y_forbidden_metric_label_names_regex']
 forbidden = re.compile(policy)
 for label in ('request_id', 'user_id', 'client_id', 'session_id', 'trace_id', 'email', 'api_key',
               'prompt', 'raw_path', 'remote_addr', 'timestamp', 'token_value',
