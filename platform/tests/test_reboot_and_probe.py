@@ -131,6 +131,31 @@ def test_a_target_that_does_not_resolve_is_a_probe_error_not_a_closed_port(tmp_p
     assert "22 closed" not in r.stdout and "was closed" not in r.stdout
 
 
+def _probe_script() -> str:
+    plays = playbook_yaml.load(PROBE)
+    task = next(t for p in plays for t in p.get("tasks", []) if t.get("name") == "Connect to each declared port")
+    return task["vars"]["_probe_script"]
+
+
+# A firewall's default deny (ufw: `default deny (incoming)`) DROPS the SYN, so from the LAN a
+# firewalled port is a connect TIMEOUT, not a refusal — the case every "a LAN host cannot reach
+# X" gate actually meets in production, and one a loopback test cannot produce. The connect is
+# patched to raise what the kernel would; an unreachable host must stay an error, never `closed`.
+@pytest.mark.parametrize("raised,rc,verdict", [
+    ("TimeoutError('timed out')", 1, "closed"),
+    ("OSError(errno.EHOSTUNREACH, 'No route to host')", 2, "probe error"),
+], ids=["dropped-is-closed", "unreachable-is-error"])
+def test_the_probe_reads_a_dropped_syn_as_closed_and_an_unreachable_host_as_an_error(raised, rc, verdict):
+    patch = (f"import errno, socket, sys\n"
+             f"def _connect(self, addr): raise {raised}\n"
+             f"socket.socket.connect = _connect\n"
+             f"sys.argv = ['probe', '127.0.0.1', '9', '1']\n")
+    r = subprocess.run([sys.executable, "-c", patch + _probe_script()], capture_output=True, text=True,
+                       timeout=30, check=False)
+    assert r.returncode == rc, r.stdout + r.stderr
+    assert verdict in r.stdout + r.stderr
+
+
 @pytest.mark.parametrize("decl,extra", [
     ([{"port": 0, "expect": "closed"}], {}),
     ([{"port": 65536, "expect": "closed"}], {}),

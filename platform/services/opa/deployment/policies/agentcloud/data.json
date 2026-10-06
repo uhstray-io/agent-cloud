@@ -122,7 +122,9 @@
           "read"
         ]
       },
-      "allowed_templates": []
+      "allowed_templates": [
+        "Instrument Host Observability"
+      ]
     },
     "service-agent": {
       "allowed_actions": {
@@ -285,7 +287,9 @@
       },
       "instrument-host": {
         "owner": "o11y-agent",
-        "templates": [],
+        "templates": [
+          "Instrument Host Observability"
+        ],
         "per_service": false,
         "reviewed": false
       },

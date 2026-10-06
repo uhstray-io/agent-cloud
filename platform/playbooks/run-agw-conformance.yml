@@ -18,8 +18,14 @@
 #
 # Why the VM: "from the gateway VM" keeps the two paths identical apart from the gateway hop, and
 # the VM is where the gateway's listener and the client leaf it trusts (agw-verifier) both are.
-# With listener TLS the gateway URL names the server leaf's SAN and curl's --resolve maps it to
-# the published bind, so no hosts line is needed (the deploy's probes still use one, task 7.2).
+#
+# The gateway is reached the way every other check from outside Caddy reaches it (task 6.1a): the
+# base URL, the presented leaf and the trust bundle the deploy's own verify uses, the server leaf's
+# SAN resolved through the one resolution step (tasks/agw-probe-resolution.yml, read-only here:
+# Deploy agentgateway is its one writer, on this same host), and, before any key is read, one
+# keyless /v1/models through the shared probe (tasks/agw-probe.yml) that must answer 401. The cases
+# themselves stay curl in the script, which times the stream; curl resolves the name through the
+# same host resolver, so there is no second, private mapping.
 #
 # Every request is a real completion that costs upstream capacity, so a dry run (--check) sends
 # nothing and says so. Usage (Semaphore template "Run agentgateway Conformance"): no survey.
@@ -27,7 +33,7 @@
 # Inventory (agentgateway_svc host), all read by the deploy too:
 #   agw_upstream_base_url, agw_models, agw_clients, agw_client_policies, agw_bind, agw_port,
 #   agw_listener_tls, agw_tls_server_name, agw_verifier_leaf, internal_leaves,
-#   agw_verify_base_url, agw_verify_client, agw_upstream_requires_key
+#   agw_verify_base_url, agw_verify_client, agw_upstream_requires_key, agw_internal_dns_authoritative
 # Optional:
 #   agw_conformance_client      identity to send as (default: agw_verify_client, then the first
 #                               agw_clients entry, as the deploy's verify does)
@@ -55,12 +61,6 @@
     _port: "{{ agw_port | default('4000') }}"
     _probe_ip: "{{ '127.0.0.1' if (agw_bind | default('127.0.0.1')) in ['0.0.0.0', '::', ''] else agw_bind | default('127.0.0.1') }}"
     _server_name: "{{ agw_tls_server_name | default('gateway.' ~ (dns_site | default('')) ~ '.' ~ (dns_zone | default(''))) }}"
-    # The same base URL the deploy's probes use (deploy-agentgateway.yml, "Probe path"), plus /v1.
-    _gateway_url: >-
-      {{ (agw_verify_base_url if (agw_verify_base_url is defined)
-          else (('https://' ~ _server_name ~ ':' ~ _port) if _tls else ('http://' ~ _probe_ip ~ ':' ~ _port))) ~ '/v1' }}
-    # curl --resolve stands in for the deploy's interim hosts line; a declared base URL resolves itself.
-    _gateway_resolve: "{{ (_server_name ~ ':' ~ _port ~ ':' ~ _probe_ip) if (_tls and agw_verify_base_url is not defined) else '' }}"
     _leaf_dir: >-
       {{ internal_leaves | default([]) | selectattr('name', 'equalto', agw_verifier_leaf | default('agw-verifier'))
          | map(attribute='dir') | first | default('') }}
@@ -78,6 +78,50 @@
       {{ (agw_models | default([]) | selectattr('name', 'equalto', _model) | first | default({})).upstream_model | default(_model) }}
 
   tasks:
+    # The pre-OpenBao gate below is only as good as its inputs. They reach the shared probe and
+    # resolution tasks as include vars, and an extra var outranks those: `-e _agwp_base=...`
+    # would aim the gate at another endpoint while the cases go to the gateway, and
+    # `-e _agwr_hosts_file=...` would hand the resolution check a forged hosts file. So every
+    # input name the two includes take is refused here first (tasks/refuse-var-overrides.yml),
+    # and each include passes every one explicitly, so the probe value this leaves behind is
+    # always outranked. The names the shared tasks write themselves they refuse themselves.
+    # `_agwp_body` is not listed: refusing it would leave it defined. The probe ignores a body on
+    # anything but POST, and the method is refused here and pinned to GET.
+    - name: "Refuse extra-var overrides of the gateway probe's inputs"
+      ansible.builtin.include_tasks: tasks/refuse-var-overrides.yml
+      loop:
+        - _agwr_check_only
+        - _agwr_name
+        - _agwr_ip
+        - _agwr_expect
+        - _agwr_hosts_file
+        - _agwp_base
+        - _agwp_path
+        - _agwp_status
+        - _agwp_key
+        - _agwp_method
+        - _agwp_timeout
+        - _agwp_leaf_dir
+        - _agwp_ca
+        - _gateway_base
+        - _gateway_url
+      loop_control:
+        loop_var: _rvo_name
+
+    # The gate and the cases must reach ONE gateway, so both URLs are set here, after the refusal
+    # above (a play var would be outranked by an extra var; a set_fact after the refusal is not):
+    # the base from the inventory (agw_verify_base_url, else the deploy's own form,
+    # deploy-agentgateway.yml "Probe path"), and the cases' URL from that base alone.
+    - name: "The gateway base URL the keyless gate probes"
+      ansible.builtin.set_fact:
+        _gateway_base: >-
+          {{ agw_verify_base_url if (agw_verify_base_url is defined)
+             else (('https://' ~ _server_name ~ ':' ~ _port) if _tls else ('http://' ~ _probe_ip ~ ':' ~ _port)) }}
+
+    - name: "The cases' URL: the same base, plus /v1"
+      ansible.builtin.set_fact:
+        _gateway_url: "{{ _gateway_base }}/v1"
+
     # The one dry-run guard is the `when` on "Run the cases" below: OpenBao, the key files and
     # every request sit inside that block.
     - name: "Dry run: report (every case is a real completion)"
@@ -151,6 +195,44 @@
               trusts {{ _ca }}; missing: {{ _tls_files.results | rejectattr('stat.exists') | map(attribute='item') | join(', ') }}.
             quiet: true
           when: _tls
+
+        # The same resolution the deploy converges, read-only: a hosts file the deploy has not
+        # converged, or a name the internal zone does not answer, stops the run here, by name.
+        - name: "Probe path: resolve the server leaf's name (task 7.2)"
+          ansible.builtin.include_tasks: tasks/agw-probe-resolution.yml
+          vars:
+            _agwr_check_only: true
+            _agwr_name: "{{ _server_name }}"
+            _agwr_ip: "{{ _probe_ip }}"
+            # Any address the internal zone answers: the published bind may be loopback here.
+            _agwr_expect: ""
+            _agwr_hosts_file: /etc/hosts
+          when: _tls and agw_verify_base_url is not defined
+
+        # Keyless, before any key is read or any completion is spent: 401 is the gateway's key
+        # check, which runs only after the handshake verified the presented leaf and the SAN rule
+        # admitted it. A wrong leaf, trust bundle or name fails here, not as thirteen curl errors.
+        - name: "The gateway probe path admits this host and refuses a keyless request"
+          ansible.builtin.include_tasks: tasks/agw-probe.yml
+          vars:
+            _agwp_base: "{{ _gateway_base }}"
+            _agwp_path: /v1/models
+            _agwp_status: [401]
+            _agwp_key: ""
+            _agwp_method: GET
+            _agwp_timeout: 10
+            _agwp_leaf_dir: "{{ _leaf_dir }}"
+            _agwp_ca: "{{ _ca }}"
+
+        - name: "Require the keyless refusal"
+          ansible.builtin.assert:
+            that: (_agwp_out.status | int) == 401
+            fail_msg: >-
+              Keyless /v1/models at {{ _gateway_base }} answered {{ _agwp_out.status }} {{ _agwp_out.msg }};
+              the gateway must refuse it with 401 before conformance spends a key{{ ' (403: the '
+              ~ (agw_verifier_leaf | default('agw-verifier')) ~ ' leaf is not on the SAN allowlist; -1: no
+              handshake, or the name does not resolve - see tasks/agw-probe-resolution.yml)' if _tls else '' }}.
+            quiet: true
 
         - name: "Authenticate to OpenBao"
           ansible.builtin.uri:
@@ -277,7 +359,6 @@
                 AGW_CONF_OUT: "{{ _agwc_tmpdir.path }}"
                 AGW_CONF_GATEWAY_URL: "{{ _gateway_url }}"
                 AGW_CONF_GATEWAY_KEY_FILE: "{{ _agwc_tmpdir.path }}/gateway.key"
-                AGW_CONF_GATEWAY_RESOLVE: "{{ _gateway_resolve }}"
                 AGW_CONF_GATEWAY_CERT: "{{ (_leaf_dir ~ '/current/cert.pem') if _tls else '' }}"
                 AGW_CONF_GATEWAY_CERT_KEY: "{{ (_leaf_dir ~ '/current/key.pem') if _tls else '' }}"
                 AGW_CONF_GATEWAY_CA: "{{ _ca if _tls else '' }}"

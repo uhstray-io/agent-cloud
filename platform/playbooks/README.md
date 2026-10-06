@@ -96,8 +96,12 @@ list of files allowed to write a private key).
 registers or sets, so `-e` could forge a probe result or a scratch path. A play whose gates or
 cleanup read such names includes `tasks/refuse-var-overrides.yml` first, passing each name as
 the loop variable `_rvo_name` (a loop variable, unlike an include var, is not outranked by
-`-e`); it refuses any name an extra var holds. The materialise and pin tasks guard their own
-internal names the same way.
+`-e`); it refuses any name an extra var holds. The materialise and pin tasks and the gateway
+probe tasks (`agw-probe.yml`, `agw-probe-resolution.yml`) guard their own internal names the
+same way. A shared task cannot guard its INPUTS: they arrive as include vars, which outrank
+`set_fact`, so the read-back would refuse every honest caller. A caller whose gate depends on
+them refuses those names itself, then passes each one explicitly to the include
+(`run-agw-conformance.yml`).
 
 ```yaml
 - name: "Fetch key"
@@ -265,6 +269,7 @@ except the collector and the custom-fields converger, and all are read-only exce
 | `snapshot-service-assessment.yml` | The one input to the service assessment: the committed compose services (image and ports, no environment), running containers, practices |
 | `snapshot-firewall.yml` | The one input to the firewall assessment: listening sockets, ufw state, published container ports, the declared firewall vars |
 | `snapshot-access.yml` | The one input to the role and access assessment: Authentik app-catalog entries, blueprints and OpenBao policy files for the service |
+| `instrument-host-o11y.yml` | Step instrument-host: the receiver's bounded node exporter on every host of the group (host network, declared RFC 1918 `o11y_host_exporter_bind` and `o11y_host_exporter_port`), probed from the o11y receiver before `config/scrape.d/host-<group>.yml` declares it, Prometheus reloaded (a rejected reload restores the previous file), then `up` and `node_memory_MemAvailable_bytes` required per host. Writes; check mode writes nothing and records `skip` when it would change something |
 | `verify-service-persistence.yml` | Step systemd-enablement: every container has restart policy `always` (podman's boot unit starts nothing else), or `"no"` when it is a declared one-shot (`agent-cloud.one-shot` label) that exited 0; rootless podman has linger and its boot unit; rootful podman (`podman_rootful: true`) has the system `podman-restart.service`, and a container off `always` passes only when the service's enabled `agent-cloud-boot-<service>.service` names it (read back from the unit file). Fails on an empty container selection. A service running from outside the monorepo declares `compose_working_dir` |
 | `verify-service-health.yml` | Step service-validate: HTTP 200 from the declared `health_url`, or `service_url` + `health_path`. Probed from the executor, or from the host itself when the host sets `health_probe_on_host: true` (for a port published on loopback only or firewalled to the Caddy host). A probe that cannot connect records "answered -1"; one whose module could not run at all records "answered no response" |
 | `ensure-service-persistence.yml` | The setup half of systemd-enablement: linger plus podman's user boot unit (rootless), the system `podman-restart.service` (rootful) or `docker.service` (Docker). A rootful service whose containers are off `always` (chosen by policy; a declared one-shot on `"no"` excepted) also gets `agent-cloud-boot-<service>.service`, a oneshot `podman start <names>` unit, enabled and never started, removed once none needs it; a rootless one is refused by name. The Ubuntu 24.04 podman (4.9.3) cannot change a restart policy in place. Boot settings only; restarts nothing. An empty or failed container listing fails the run |
@@ -341,7 +346,7 @@ used to live in `AUTOMATION-COMPOSABILITY.md`, which is now under `plan/archive/
 | `tasks/manage-cloudflare-record.yml` | Implemented | Create/update one Cloudflare DNS record |
 | `tasks/registry-login.yml` | Implemented | Authenticate the container engine to a registry |
 | `tasks/resolve-become-password.yml` | Implemented | Resolve the bootstrap sudo password from OpenBao before privileged tasks; leave sanitized status visible |
-| `tasks/emit-step-result.yml` | Implemented | Record one workflow step result per include with `set_stats` (aggregated `step_results` list, last one also as `step_result`), so a run covering several steps records each; runs in check mode too |
+| `tasks/emit-step-result.yml` | Implemented | Record one workflow step result per include with `set_stats` (aggregated `step_results` list, last one also as `step_result`), so a run covering several steps records each; runs in check mode too. Refuses, recording nothing, when any of its inputs arrives as an extra var — an extra var outranks the include vars the executor computes, so `-e step_result_status=pass` would forge a failed step's result (it checks whether each input NAME is in `hostvars`, which holds extra vars but not include vars, so a templated extra var that renders differently per task cannot slip past; `workflow_id` stays an extra var by design). The seven input names (`step_result_*`, `_step_result_record`) are therefore RESERVED: pass them only as include vars, never as an inventory var (site-config included), `set_fact` or `register`, which `hostvars` also holds and the task refuses alike |
 | `tasks/list-service-containers.yml` | Implemented | The containers one service's compose project created, by the compose `working_dir` label (project names are not stable per service): the monorepo deploy path, or `compose_working_dir` for a service still running from a legacy directory; listed as root when `podman_rootful: true`. A read |
 | `tasks/netbox-api-headers.yml` | Implemented | NetBox API headers for a stored token: `Bearer` for a v2 `nbt_` token, `Token` for a legacy v1 one |
 | `tasks/assert-local-discovery-scope.yml` | Implemented | Confine discovery to local-dev: the target allowlist is observed from the engine's networks, and no targets means discovery is disabled |

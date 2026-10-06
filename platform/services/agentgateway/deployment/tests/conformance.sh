@@ -47,10 +47,10 @@
 #
 # Environment (run):
 #   AGW_CONF_OUT              existing directory for results.jsonl (required)
-#   AGW_CONF_GATEWAY_URL      gateway base URL including /v1 (required)
+#   AGW_CONF_GATEWAY_URL      gateway base URL including /v1 (required); under listener TLS it
+#                             names the server leaf's SAN, resolved by this host's resolver (the
+#                             playbook checks that mapping first, tasks/agw-probe-resolution.yml)
 #   AGW_CONF_GATEWAY_KEY_FILE file holding one enrolled client key (required)
-#   AGW_CONF_GATEWAY_RESOLVE  optional curl --resolve entry name:port:address, so the URL can
-#                             name the server leaf's SAN without a hosts line
 #   AGW_CONF_GATEWAY_CERT, AGW_CONF_GATEWAY_CERT_KEY, AGW_CONF_GATEWAY_CA
 #                             listener TLS: the client leaf, its key and the trust bundle; all
 #                             three or none
@@ -325,7 +325,6 @@ cmd_run() {
 	DIRECT_MODEL="${AGW_CONF_DIRECT_MODEL:-$MODEL}"
 
 	GW_OPTS=()
-	[ -z "${AGW_CONF_GATEWAY_RESOLVE:-}" ] || GW_OPTS+=(--resolve "$AGW_CONF_GATEWAY_RESOLVE")
 	local tls_set=0
 	[ -z "${AGW_CONF_GATEWAY_CERT:-}" ] || tls_set=$((tls_set + 1))
 	[ -z "${AGW_CONF_GATEWAY_CERT_KEY:-}" ] || tls_set=$((tls_set + 1))

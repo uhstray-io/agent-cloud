@@ -255,6 +255,12 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
         reported no change after the forced recreate 2896); edge-route still passes. edge-dns
         stays a gap: a dry run's `tofu init` writes `.terraform/`. No stamp, for the same
         `main` hazard.
+      - 2026-10-05: edge-dns dry-run gap closed in the executor (`d10-review.md`, "edge-dns
+        dry-run gap closed"). Under `--check`, init, plan and show run as one command in its
+        own `mktemp -d` root with `TF_DATA_DIR` pointed into it and `-lockfile=readonly`, the
+        shape the check-mode contract already accepts; a real run is unchanged. Proven with a
+        fake tofu (tofu root byte-identical, throwaway root removed); a dry run against real
+        tofu and R2 is still to do. No stamp, for the same `main` hazard.
 - [x] 7.2 `provision-vm.yml` sets `onboot`; restart-policy check beside `enable-linger`.
       2026-09-22: onboot with per-host opt-out; `verify-service-persistence.yml` (step
       systemd-enablement) passes on local tududi, normal and check mode (tasks 977, 978)
@@ -291,6 +297,17 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
         `platform/services/o11y/deployment/templates/config.alloy.j2:136`
         (`otelcol.receiver.otlp "traces"`) and `:202` (`"conformance"`). What remains open is
         `instrument-host-o11y.yml` itself (no such playbook exists yet).
+      - 2026-10-05: `instrument-host-o11y.yml` built, template `Instrument Host Observability`
+        (`(Dev)` variant), registry executor, OPA `o11y-agent` grant. It runs the receiver's own
+        bounded node exporter on each host of the group (host network, declared
+        `o11y_host_exporter_bind`), probes it from the receiver before writing
+        `config/scrape.d/host-<group>.yml`, reloads Prometheus (restoring the previous file on a
+        rejected reload) and requires `up` plus `node_memory_MemAvailable_bytes` per host. Host
+        metrics only: the "Alloy on the host" half of the plan row (host logs over OTLP) is not
+        built. Proven by `platform/tests/test_instrument_host_o11y.py` (real playbook, fake engine
+        and Prometheus), not live. OPEN: the `(Dev)` check-mode run and an apply against one
+        enrolled host; production enrollment also waits on the estate observability baseline
+        (`estate-wide-observability-instrumentation` 1.3/1.4). Undo is `none`.
 - [x] 7.4 Snapshot templates for service, firewall and access assessment; each verify-only,
       emitting one JSON document. 2026-09-22: all three pass on local tududi in normal and
       check mode (tasks 971-976); the document is recorded with set_stats under `snapshot`
