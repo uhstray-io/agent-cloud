@@ -177,6 +177,49 @@
           - (_volume_capacity.stdout | from_json).volumes | length == 5
         fail_msg: "The volume readback was not a complete observation; no capacity receipt was issued."
 
+    - name: List the o11y compose project's containers
+      ansible.builtin.include_tasks: tasks/list-service-containers.yml
+      vars:
+        _lsc_fields: [Names, State]
+        _lsc_all: true
+
+    # ContainerStats.MemUsage is podman's raw cgroup byte count (the documented
+    # .ContainerStats placeholder); the JSON format only carries human-rounded sizes.
+    # --no-reset: without it podman clears the screen even under --no-stream.
+    - name: Read one-shot per-container memory usage
+      ansible.builtin.command:
+        argv: >-
+          {{ [_engine, 'stats', '--no-stream', '--no-reset', '--format',
+              '{{.Name}} {{.ContainerStats.MemUsage}}']
+             + (_lsc.stdout_lines | map('split') | map('first') | list) }}
+      become: "{{ podman_rootful | default(false) | bool }}"
+      register: _container_stats
+      when: _lsc.rc == 0 and _lsc.stdout_lines | length > 0
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Reduce per-container memory to names and MiB
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/files/summarize-o11y-container-memory.py"]
+        stdin: >-
+          {{ {'listing_rc': _lsc.rc,
+              'containers': _lsc.stdout_lines,
+              'stats_rc': _container_stats.rc | default(None),
+              'stats': _container_stats.stdout | default('')} | to_json }}
+      register: _container_memory
+      delegate_to: localhost
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Require a memory reading for every running o11y container
+      ansible.builtin.assert:
+        that: _container_memory.rc == 0
+        fail_msg: >-
+          The per-container memory receipt is unavailable; no budget receipt was issued.
+          Sanitized result: {{ _container_memory.stdout | trim }}
+
     - name: Read Loki runtime retention
       ansible.builtin.set_fact:
         _loki_retention: "{{ (_loki_config.stdout | from_yaml_all | select('mapping') | selectattr('limits_config.retention_period', 'defined') | list | first).limits_config.retention_period }}"
@@ -242,3 +285,4 @@
           guest_root_filesystem_available_bytes: "{{ _guest_root_disk.stdout_lines[1].split()[1] | int }}"
           guest_memory_headroom_percent: "{{ _guest_memory_headroom.stdout | float }}"
           o11y_volume_capacity: "{{ _volume_capacity.stdout | from_json }}"
+          o11y_container_memory_mib: "{{ (_container_memory.stdout | from_json).containers }}"
