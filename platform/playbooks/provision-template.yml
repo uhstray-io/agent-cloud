@@ -17,9 +17,20 @@
         Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
   vars:
     _project_root: "{{ project_root | default(playbook_dir + '/..') }}"
-    _pve_host: "{{ pve_host | default('') }}"
-    _pve_token_id: "{{ pve_token_id | default('') }}"
-    _pve_secret: "{{ pve_token_secret | default(lookup('env', 'PVE_TOKEN_SECRET')) }}"
+    # The Proxmox connection comes from OpenBao (secret/services/proxmox), the same record
+    # the imported validation play reads; Semaphore supplies no other input. An operator
+    # run that passes pve_token_secret / PVE_TOKEN_SECRET skips the store and must pass
+    # pve_host and pve_token_id too. Play vars do not cross the play boundary, so this
+    # play reads the store itself rather than relying on the validation play.
+    _pve_operator_secret: "{{ pve_token_secret | default(lookup('env', 'PVE_TOKEN_SECRET'), true) | default('', true) }}"
+    _bao_url: "{{ openbao_addr | default('') }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    _pve_data: >-
+      {{ {} if (_pve_operator_secret | length > 0)
+         else lookup('community.hashi_vault.hashi_vault', 'secret/data/services/proxmox',
+                     url=_bao_url, auth_method='approle',
+                     role_id=_bao_role_id, secret_id=_bao_secret_id) }}
     _node: "{{ target_node | default('alphacentauri') }}"
     _vmid: "{{ template_vmid | default(9000) }}"
     _name: "ubuntu-2404-template"
@@ -38,13 +49,31 @@
     # before any later task or play (D10 review, PR 416).
     - name: "Create or adopt the template"
       block:
-        # The token id names a real Proxmox user, so it is passed in, never defaulted.
+        - name: "Require a source for the Proxmox connection"
+          ansible.builtin.assert:
+            that: (_pve_operator_secret | length > 0) or (_bao_url | length > 0)
+            fail_msg: >-
+              Set openbao_addr (Semaphore) or pass pve_token_secret / PVE_TOKEN_SECRET
+              with pve_host and pve_token_id (operator).
+
+        # Resolved once into facts: the store is read a single time, and the facts outlive
+        # this play for the step-result plays that follow.
+        - name: "Resolve the Proxmox connection"
+          ansible.builtin.set_fact:
+            _pve_host: "{{ pve_host | default(_pve_data.url | default(''), true) }}"
+            _pve_token_id: "{{ pve_token_id | default(_pve_data.token_id | default(''), true) }}"
+            _pve_secret: >-
+              {{ _pve_operator_secret if (_pve_operator_secret | length > 0)
+                 else (_pve_data.api_token | default('')) }}
+          no_log: true
+
+        # The token id names a real Proxmox user, so it comes from the store or the run.
         - name: "Require the Proxmox token id"
           ansible.builtin.assert:
             that: _pve_token_id | length > 0
             fail_msg: >-
-              Pass -e pve_token_id=<user>@<realm>!<token-name> (the token whose secret
-              is pve_token_secret / PVE_TOKEN_SECRET); there is no built-in default.
+              secret/services/proxmox has no token_id (or an operator run passed no
+              -e pve_token_id=<user>@<realm>!<token-name>); there is no built-in default.
 
         - name: "Check if template VM already exists"
           ansible.builtin.uri:
@@ -228,6 +257,8 @@
       failed_when: false
       changed_when: false
       check_mode: false
+      # A refused or unresolved connection sends nothing; the step records the refusal.
+      when: (_pve_token_id | default('') | length > 0) and (_pve_host | default('') | length > 0)
 
     # The cloud-init drive is the one this playbook attaches: ide2 = "<storage>:cloudinit" in the
     # post-install PUT above, which Proxmox stores as a volume named "...-cloudinit" on that key.

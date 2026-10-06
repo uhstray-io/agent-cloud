@@ -277,6 +277,34 @@ def test_an_existing_template_is_adopted_without_a_write_and_proven(tmp_path):
     assert fake.seen.count(("GET", TEMPLATE_CFG)) == 2  # the guard's read, then the read-back
 
 
+def _template_play_from_store(tmp_path, record):
+    """The Semaphore path: no operator input, the connection comes from secret/services/proxmox.
+    `_pve_data` stands in for the store record (the hashi_vault lookup needs hvac, which the
+    test environment does not install); everything from that record onward runs for real."""
+    play = next(p for p in _plays("provision-template.yml") if p.get("tasks"))
+    fake = FakeProxmox({("GET", TEMPLATE_CFG): (200, {"template": 1, "ide2": "vm-lvms:vm-9000-cloudinit"})})
+    store = {"url": fake.url, "api_token": "synthetic", **record}
+    try:
+        result, rc = _run(tmp_path, [play], extra=["-e", json.dumps({
+            "openbao_addr": "https://bao.invalid", "_pve_data": store})])
+    finally:
+        fake.close()
+    return result, rc, fake
+
+
+def test_the_template_play_takes_the_token_id_from_the_store(tmp_path):
+    result, rc, fake = _template_play_from_store(tmp_path, {"token_id": "automation@pve!fixture"})
+    assert (result["status"], rc) == ("pass", 0), result
+    assert ("GET", TEMPLATE_CFG) in fake.seen
+
+
+def test_the_template_play_refuses_a_store_without_a_token_id_and_sends_nothing(tmp_path):
+    result, rc, fake = _template_play_from_store(tmp_path, {})
+    assert (result["status"], rc != 0) == ("fail", True)
+    assert "has no token_id" in result["error"]
+    assert fake.seen == []
+
+
 def test_cloudinit_named_anywhere_but_the_drive_does_not_pass(tmp_path):
     result, rc, _ = _template_play(tmp_path, {"template": 1, "description": "cloudinit ready",
                                               "tags": "cloudinit", "ide2": "none,media=cdrom"})

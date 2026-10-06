@@ -79,6 +79,27 @@ def test_each_pve_play_refuses_an_empty_token_id_before_its_first_request(name):
         assert ordered.index(guards[0]) < first_request, f"{name}: the token id guard runs after a request"
 
 
+def _token_id_sources(play):
+    """Where this play itself assigns its token id: play vars and set_fact, nothing inherited.
+    Play vars and facts set in an earlier play's vars do not cross the play boundary."""
+    names = ("_pve_token_id", "_pve_tid", "_pve_headers", "_pve")
+    found = [str(v) for k, v in (play.get("vars") or {}).items() if k in names]
+    for task in playbook_yaml.tasks(play.get("tasks")):
+        facts = task.get("ansible.builtin.set_fact") or {}
+        found += [str(v) for k, v in facts.items() if k in names]
+    return found
+
+
+@pytest.mark.parametrize("name", sorted(TOKEN_ID_VAR))
+def test_each_pve_play_reads_its_token_id_from_the_store_itself(name):
+    # PR 462 review: the template play validated the stored token id in its imported
+    # validation play, then defaulted its own to empty and refused on the Semaphore path.
+    for play in _plays_with_pve_header(PLAYBOOKS / name):
+        sources = _token_id_sources(play)
+        assert any(re.search(r"_pve(_data)?\.token_id", s) for s in sources), (
+            f"{name}: play {play.get('name')!r} does not read the stored token id itself")
+
+
 def _run_guards(tmp_path, name, token_id):
     var = TOKEN_ID_VAR[name]
     guards = [copy.deepcopy(g) for play in _plays_with_pve_header(PLAYBOOKS / name)
