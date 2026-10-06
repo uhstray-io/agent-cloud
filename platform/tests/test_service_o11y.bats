@@ -221,7 +221,7 @@ with tempfile.TemporaryDirectory() as temp:
 PY
 }
 
-@test "o11y: production Dev template pins both controller and receiver revisions" {
+@test "o11y: deploy template and its Dev twin pin both controller and receiver revisions" {
   local playbook="$REPO_ROOT/platform/playbooks/deploy-o11y.yml"
   local templates="$REPO_ROOT/platform/semaphore/templates.yml"
   python3 - "$templates" <<'PY'
@@ -229,12 +229,16 @@ import sys
 import yaml
 
 items = yaml.safe_load(open(sys.argv[1]))['templates']
-template, = (item for item in items if item['name'] == 'Deploy o11y (Dev)')
+# Main-bound base; setup-templates.yml generates "Deploy o11y (Dev)" from it with the
+# service_branch default rewritten to dev (test_scoped_publication.py covers that rewrite).
+template, = (item for item in items if item['name'] == 'Deploy o11y')
 survey = {item['name']: item for item in template['survey_vars']}
-assert template['repository'] == 'agent-cloud dev'
+assert template.get('repository', 'agent-cloud') == 'agent-cloud'
+assert template['dev_variant'] is True
 assert template['playbook'] == 'platform/playbooks/deploy-o11y.yml'
-assert survey['service_branch']['default_value'] == 'dev'
+assert survey['service_branch']['default_value'] == 'main'
 assert survey['expected_repository_sha']['required'] is True
+assert not any(item['name'] == 'Deploy o11y (Dev)' for item in items)
 PY
   assert_precedes "$playbook" 'Read the placed revision when a candidate SHA is required' 'Configure o11y alert provisioning from OpenBao'
   assert_grep -qF 'ansible.builtin.include_tasks: tasks/o11y-alert-provision.yml' "$playbook"
