@@ -790,9 +790,9 @@ _MODELS = [{"name": n} for n in ("a", "b", "c", "d", "e", "f")]
 
 
 @pytest.mark.parametrize("inputs,expected", [
-    ({"agw_clients": ["stray"], "agw_models": _MODELS,
-      "agw_client_policies": {"stray": {"allowed_models": ["e", "undeclared", "c", "a"]}}}, "e"),
-    ({"agw_clients": ["stray"], "agw_models": _MODELS}, "a"),
+    ({"agw_clients": ["workstation"], "agw_models": _MODELS,
+      "agw_client_policies": {"workstation": {"allowed_models": ["e", "undeclared", "c", "a"]}}}, "e"),
+    ({"agw_clients": ["workstation"], "agw_models": _MODELS}, "a"),
 ])
 def test_the_conformance_model_is_the_same_under_every_hash_seed(inputs, expected):
     py = _ansible_python()
@@ -883,10 +883,10 @@ class Bao(seed_harness.FakeBao):
 
 def _playbook(tmp: Path, gw: Stub, direct: Stub, extra=None, check=False, host_vars=None):
     Bao.requests = []
-    Bao.store = {"client_stray": GW_KEY, "vllm_api_key": UP_KEY, "agw_db_password": "synthetic-db"}
+    Bao.store = {"client_workstation": GW_KEY, "vllm_api_key": UP_KEY, "agw_db_password": "synthetic-db"}
     with seed_harness.serve(Bao) as address:
         host = {"ansible_connection": "local", "ansible_python_interpreter": sys.executable,
-                "service_name": "agentgateway", "agw_clients": ["stray"], "agw_models": [{"name": "m"}],
+                "service_name": "agentgateway", "agw_clients": ["workstation"], "agw_models": [{"name": "m"}],
                 "agw_upstream_base_url": direct.url, "agw_bind": "127.0.0.1", "agw_port": gw.port,
                 **(host_vars or {})}
         inv = {"all": {"vars": {"openbao_addr": address},
@@ -912,7 +912,7 @@ def test_the_playbook_runs_reports_and_removes_its_directory(tmp_path, stubs):
     gw, direct = stubs(key=GW_KEY), stubs(key=UP_KEY)
     rc, out, made = _playbook(tmp_path, gw, direct)
     assert rc == 0, out
-    assert f"Conformance as stray for m: PASS, {len(CASES)}/{len(CASES)} cases match." in out
+    assert f"Conformance as workstation for m: PASS, {len(CASES)}/{len(CASES)} cases match." in out
     assert '"agw_conformance"' in out or "agw_conformance" in out  # CUSTOM STATS
     # The one keyless probe through the shared probe path first, then every case with the key.
     assert gw.seen[0]["path"] == "/v1/models" and gw.seen[0]["auth"] is None

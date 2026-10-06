@@ -38,7 +38,7 @@
     _netbox_url: "{{ netbox_url | default(hostvars[groups['netbox_svc'][0]].service_url if (groups['netbox_svc'] | default([])) else '') }}"
     # Resolved lazily, once _pve is read; only ever used inside no_log requests.
     _pve_headers:
-      Authorization: "PVEAPIToken={{ _pve.token_id | default('stray@pve!workflow-agent') }}={{ _pve.api_token }}"
+      Authorization: "PVEAPIToken={{ _pve.token_id }}={{ _pve.api_token }}"
 
   tasks:
     - name: "Require a target service that resolves to one declaring host with an address"
@@ -76,6 +76,14 @@
           secret/services/netbox has no vm_recorder_api_token. Mint it once with Provision
           NetBox Automation Token, survey field Token profile = vm-recorder.
       no_log: true
+
+    # The token id names a real Proxmox user, so it comes from the store, never a default.
+    - name: "Require the stored Proxmox token id"
+      ansible.builtin.assert:
+        that: _pve.token_id | default('') | length > 0
+        fail_msg: >-
+          secret/services/proxmox has no token_id. Store the Proxmox API token id
+          (<user>@<realm>!<token-name>) beside api_token; there is no built-in default.
 
     - name: "Build the NetBox API headers"
       ansible.builtin.include_tasks: tasks/netbox-api-headers.yml

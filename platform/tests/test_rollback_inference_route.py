@@ -268,8 +268,8 @@ def env(tmp_path, route):
     _load_live(tmp_path)
     Bao.requests, Bao.version, Bao.events, Bao.gets = [], 1, tmp_path / "calls", 0
     Bao.rotate_on_get, Bao.bump_before_cas = 0, False
-    Bao.store = {"vllm_api_key": LIVE, "client_stray": "synthetic-client-stray", "client_pi": "synthetic-client-pi",
-                 "agw_db_password": "synthetic-db"}
+    Bao.store = {"vllm_api_key": LIVE, "client_workstation": "synthetic-client-workstation",
+                 "client_pi": "synthetic-client-pi", "agw_db_password": "synthetic-db"}
     with seed_harness.serve(Bao) as address:
         yield tmp_path, address, route
 
@@ -283,7 +283,7 @@ def _children(tmp, caddy=None, gateway=None, probe_url=None) -> dict:
                   "inference_route_address": ADDRESS,
                   "inference_route_gateway_upstream": GATEWAY, **(caddy or {})}
     gw_host = {**common, "service_name": "agentgateway", "local_monorepo_dir": str(tmp), "monorepo_deploy_path": "gw",
-               "agw_clients": ["stray", "pi"], "agw_upstream_base_url": f"http://{HEAD}/v1", **(gateway or {})}
+               "agw_clients": ["workstation", "pi"], "agw_upstream_base_url": f"http://{HEAD}/v1", **(gateway or {})}
     return {"caddy_svc": {"hosts": {"c": {k: v for k, v in caddy_host.items() if v is not None}}},
             "agentgateway_svc": {"hosts": {"g": {k: v for k, v in gw_host.items() if v is not None}}}}
 
@@ -301,7 +301,7 @@ def _run(env, mode=None, check=False, tags=None, caddy=None, gateway=None, group
                "ANSIBLE_STDOUT_CALLBACK": "default"}
     r = harness_sandbox.run(cmd, tmp, cwd=playbook_yaml.REPO, env=run_env)
     out = r.stdout + r.stderr
-    for value in (LIVE, ROTATED, *seed_harness.NEVER_PRINTED, "synthetic-client-stray", "synthetic-db"):
+    for value in (LIVE, ROTATED, *seed_harness.NEVER_PRINTED, "synthetic-client-workstation", "synthetic-db"):
         assert value not in out, f"{value} printed"
     return r.returncode, out
 
@@ -336,8 +336,8 @@ def test_direct_publishes_the_live_key_then_routes_to_vllm_and_never_prints_it(e
     Bao.store["direct_retired"] = LIVE  # a copy for a name no longer in agw_clients
     rc, out = _run(env, mode="direct")
     assert rc == 0, out
-    assert Bao.store["direct_stray"] == LIVE and Bao.store["direct_pi"] == LIVE
-    assert "direct_retired" not in Bao.store and Bao.store["client_stray"] == "synthetic-client-stray"
+    assert Bao.store["direct_workstation"] == LIVE and Bao.store["direct_pi"] == LIVE
+    assert "direct_retired" not in Bao.store and Bao.store["client_workstation"] == "synthetic-client-workstation"
     route = _route(tmp)
     assert HEAD in route and GATEWAY not in route
     assert len(_calls(tmp, "restart caddy")) == 1
@@ -357,7 +357,7 @@ def test_restore_routes_back_but_keeps_copies_that_still_hold_the_live_key(env):
     assert rc != 0 and "still hold the" in out and "LIVE vLLM key" in out, out
     route = _route(tmp)
     assert GATEWAY in route and HEAD not in route  # the route is back on the gateway first
-    assert Bao.store["direct_stray"] == LIVE and Bao.store["direct_pi"] == LIVE
+    assert Bao.store["direct_workstation"] == LIVE and Bao.store["direct_pi"] == LIVE
 
 
 def test_restore_after_rotation_waits_for_the_gateway_to_hold_the_new_key(env):
@@ -365,7 +365,7 @@ def test_restore_after_rotation_waits_for_the_gateway_to_hold_the_new_key(env):
     Bao.store["vllm_api_key"] = ROTATED  # rotated at vLLM and in OpenBao; gateway not redeployed
     rc, out = _run(env, mode="restore")
     assert rc != 0 and "still holds the previous one" in out, out
-    assert "direct_stray" in Bao.store and "direct_pi" in Bao.store
+    assert "direct_workstation" in Bao.store and "direct_pi" in Bao.store
 
 
 def test_restore_waits_for_the_running_gateway_not_just_the_rendered_file(env):
@@ -375,7 +375,7 @@ def test_restore_waits_for_the_running_gateway_not_just_the_rendered_file(env):
     (tmp / "gw" / ".env").write_text(f"VLLM_API_KEY={ROTATED}\n")  # rendered, container not recreated
     rc, out = _run(env, mode="restore")
     assert rc != 0 and "the running agentgateway" in out and "container does not" in out, out
-    assert "direct_stray" in Bao.store and "direct_pi" in Bao.store
+    assert "direct_workstation" in Bao.store and "direct_pi" in Bao.store
 
 
 def test_restore_after_rotation_and_redeploy_removes_every_copy_then_is_a_no_op(env):
@@ -454,7 +454,7 @@ def test_a_caddy_failure_in_restore_retires_no_copy(env):
     _state(tmp, gateway_key=ROTATED, caddy_invalid=True)
     rc, out = _run(env, mode="restore")
     assert rc != 0 and "rolled back" in out, out
-    assert HEAD in _route(tmp) and "direct_stray" in Bao.store and "direct_pi" in Bao.store
+    assert HEAD in _route(tmp) and "direct_workstation" in Bao.store and "direct_pi" in Bao.store
 
 
 def test_a_route_declaration_that_ignores_the_mode_is_refused_before_any_write(env):
@@ -473,7 +473,7 @@ def test_a_dry_run_of_direct_writes_nothing(env):
     assert rc == 0, out
     assert _patches() == [] and (tmp / "caddy" / "Caddyfile").read_text() == before
     assert not _calls(tmp, "restart") and not _calls(tmp, "cp ")
-    assert "keys that would be set: direct_stray, direct_pi" in out
+    assert "keys that would be set: direct_workstation, direct_pi" in out
 
 
 def test_verify_reads_the_state_and_changes_nothing(env):
@@ -484,7 +484,7 @@ def test_verify_reads_the_state_and_changes_nothing(env):
     assert _run(env, mode="direct")[0] == 0
     before, restarts = len(_patches()), len(_calls(tmp, "restart"))
     rc, out = _run(env, mode="direct", tags="verify")
-    assert rc == 0 and "published direct-path copies: direct_pi, direct_stray" in out, out
+    assert rc == 0 and "published direct-path copies: direct_pi, direct_workstation" in out, out
     assert len(_patches()) == before and len(_calls(tmp, "restart")) == restarts
 
 
@@ -533,23 +533,23 @@ def _hash_never_printed(out):
 
 def test_gateway_config_refuses_a_previous_that_enrols_a_rotated_or_revoked_key(env):
     tmp = env[0]
-    live = _cfg(("stray", "aaaa1111"), ("pi", "bbbb2222"))
+    live = _cfg(("workstation", "aaaa1111"), ("pi", "bbbb2222"))
     (tmp / "gw" / "config.yaml").write_text(live)
-    # stray's old hash (rotated) and old-laptop (revoked) are enrolled only in the kept copy.
+    # workstation's old hash (rotated) and old-laptop (revoked) are enrolled only in the kept copy.
     (tmp / "gw" / "config.yaml.previous").write_text(
-        _cfg(("stray", "cccc3333"), ("pi", "bbbb2222"), ("old-laptop", "dddd4444")))
+        _cfg(("workstation", "cccc3333"), ("pi", "bbbb2222"), ("old-laptop", "dddd4444")))
     for check in (False, True):
         rc, out = _run(env, mode="gateway-config", check=check)
-        assert rc != 0 and "rotated, revoked or never enrolled now): old-laptop, stray" in out, out
+        assert rc != 0 and "rotated, revoked or never enrolled now): old-laptop, workstation" in out, out
         _hash_never_printed(out)
         assert (tmp / "gw" / "config.yaml").read_text() == live and not _calls(tmp, "deploy")
 
 
 def test_gateway_config_allows_a_previous_whose_identities_the_live_config_enrols(env):
     tmp = env[0]
-    live = _cfg(("stray", "aaaa1111"), ("pi", "bbbb2222"))
+    live = _cfg(("workstation", "aaaa1111"), ("pi", "bbbb2222"))
     (tmp / "gw" / "config.yaml").write_text(live)
-    previous = _cfg(("stray", "aaaa1111"))  # a removed client is fine: fewer keys, not more
+    previous = _cfg(("workstation", "aaaa1111"))  # a removed client is fine: fewer keys, not more
     (tmp / "gw" / "config.yaml.previous").write_text(previous)
     rc, out = _run(env, mode="gateway-config", check=True)  # check mode passes the guard, writes nothing
     assert rc == 0 and not _calls(tmp, "deploy"), out
@@ -563,16 +563,16 @@ def test_gateway_config_allows_a_previous_whose_identities_the_live_config_enrol
 def test_gateway_config_refuses_a_previous_without_a_live_config_to_compare(env):
     tmp = env[0]
     (tmp / "gw" / "config.yaml").unlink()
-    (tmp / "gw" / "config.yaml.previous").write_text(_cfg(("stray", "aaaa1111")))
+    (tmp / "gw" / "config.yaml.previous").write_text(_cfg(("workstation", "aaaa1111")))
     rc, out = _run(env, mode="gateway-config")
-    assert rc != 0 and "never enrolled now): stray" in out, out
+    assert rc != 0 and "never enrolled now): workstation" in out, out
     assert not (tmp / "gw" / "config.yaml").exists()
 
 
 @pytest.mark.parametrize(("expires", "refused"), [("2026-10-01", True), ("2099-01-01", False)])
 def test_gateway_config_refuses_legacy_shared_after_its_grace_period(env, expires, refused):
     tmp = env[0]
-    both = _cfg(("stray", "aaaa1111"), ("legacy-shared", "bbbb2222"))
+    both = _cfg(("workstation", "aaaa1111"), ("legacy-shared", "bbbb2222"))
     (tmp / "gw" / "config.yaml").write_text(both)
     (tmp / "gw" / "config.yaml.previous").write_text(both.replace("mode: strict", "mode: strict  # kept"))
     rc, out = _run(env, mode="gateway-config",
@@ -595,17 +595,17 @@ def test_gateway_config_refuses_a_plaintext_key_the_live_config_does_not_enrol(e
     """local-dev agw_plaintext_keys renders `key:` (the value), not `keyHash:`."""
     tmp = env[0]
     (tmp / "gw" / "config.yaml").write_text(yaml.safe_dump({"llm": {"policies": {"apiKey": {"keys": [
-        {"key": "aaaa1111", "metadata": {"name": "stray"}}]}}}}))
+        {"key": "aaaa1111", "metadata": {"name": "workstation"}}]}}}}))
     (tmp / "gw" / "config.yaml.previous").write_text(yaml.safe_dump({"llm": {"policies": {"apiKey": {"keys": [
-        {"key": "aaaa1111", "metadata": {"name": "stray"}}, {"key": "bbbb2222", "metadata": {"name": "pi"}}]}}}}))
+        {"key": "aaaa1111", "metadata": {"name": "workstation"}}, {"key": "bbbb2222", "metadata": {"name": "pi"}}]}}}}))
     _refused(env, "pi")
 
 
 def test_gateway_config_sees_through_anchors_aliases_and_merge_keys(env):
     tmp = env[0]
-    (tmp / "gw" / "config.yaml").write_text(_cfg(("stray", "aaaa1111")))
+    (tmp / "gw" / "config.yaml").write_text(_cfg(("workstation", "aaaa1111")))
     (tmp / "gw" / "config.yaml.previous").write_text(
-        "x-base: &base\n  keyHash: sha256:aaaa1111\n  metadata: {name: stray}\n"
+        "x-base: &base\n  keyHash: sha256:aaaa1111\n  metadata: {name: workstation}\n"
         "x-extra: &extra {keyHash: 'sha256:cccc3333', metadata: {name: ghost}}\n"
         "llm:\n  policies:\n    apiKey:\n      keys:\n"
         "        - *base\n        - *extra\n"
@@ -616,15 +616,15 @@ def test_gateway_config_sees_through_anchors_aliases_and_merge_keys(env):
 def test_gateway_config_counts_every_identity_new_when_live_enrols_none(env):
     tmp = env[0]
     (tmp / "gw" / "config.yaml").write_text(yaml.safe_dump({"llm": {"policies": {"localRateLimit": []}}}))
-    (tmp / "gw" / "config.yaml.previous").write_text(_cfg(("stray", "aaaa1111"), ("pi", "bbbb2222")))
-    _refused(env, "pi", "stray")
+    (tmp / "gw" / "config.yaml.previous").write_text(_cfg(("workstation", "aaaa1111"), ("pi", "bbbb2222")))
+    _refused(env, "pi", "workstation")
 
 
 def test_gateway_config_reads_apikey_enrolments_outside_the_llm_policy(env):
     """A kept file is whatever was on disk: keys under a route policy count too."""
     tmp = env[0]
-    (tmp / "gw" / "config.yaml").write_text(_cfg(("stray", "aaaa1111")))
-    previous = yaml.safe_load(_cfg(("stray", "aaaa1111")))
+    (tmp / "gw" / "config.yaml").write_text(_cfg(("workstation", "aaaa1111")))
+    previous = yaml.safe_load(_cfg(("workstation", "aaaa1111")))
     previous["binds"] = [{"listeners": [{"routes": [{"policies": {"apiKey": {"keys": [
         {"keyHash": "sha256:cccc3333", "metadata": {"name": "sneaky"}}]}}}]}]}]
     (tmp / "gw" / "config.yaml.previous").write_text(yaml.safe_dump(previous))
@@ -672,16 +672,16 @@ def _template_enrolments(path):
 def test_gateway_config_reads_every_enrolment_the_real_template_renders(env, hv):
     tmp = env[0]
     live, prev = tmp / "gw" / "config.yaml", tmp / "gw" / "config.yaml.previous"
-    _render(tmp, prev, {"stray": 1, "pi": 1, "old-laptop": 1}, **hv)
-    expected = ["old-laptop", "pi", "stray"] + (["legacy-shared"] if hv.get("legacy_shared_expires") else [])
+    _render(tmp, prev, {"workstation": 1, "pi": 1, "old-laptop": 1}, **hv)
+    expected = ["old-laptop", "pi", "workstation"] + (["legacy-shared"] if hv.get("legacy_shared_expires") else [])
     assert _template_enrolments(prev) == sorted(expected)
-    # A rotation of stray and a revocation of old-laptop, rendered for real.
-    _render(tmp, live, {"stray": 2, "pi": 1}, **hv)
+    # A rotation of workstation and a revocation of old-laptop, rendered for real.
+    _render(tmp, live, {"workstation": 2, "pi": 1}, **hv)
     rc, out = _run(env, mode="gateway-config", gateway=hv)
-    assert rc != 0 and "never enrolled now): old-laptop, stray." in out, out
+    assert rc != 0 and "never enrolled now): old-laptop, workstation." in out, out
     assert "synthetic-k-" not in out
     # The same render on both sides is admitted.
-    _render(tmp, prev, {"stray": 2, "pi": 1}, **hv)
+    _render(tmp, prev, {"workstation": 2, "pi": 1}, **hv)
     rc, out = _run(env, mode="gateway-config", gateway=hv)
     assert rc == 0, out
 
