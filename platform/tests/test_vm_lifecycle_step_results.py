@@ -50,10 +50,10 @@ def _tasks(play, names):
 
 
 def _emit_absolute(node):
-    """The harness runs from a scratch directory, so the shared task is named by its path."""
+    """The harness runs from a scratch directory, so each shared task is named by its path."""
     for task in playbook_yaml.tasks(node):
         if "ansible.builtin.include_tasks" in task:
-            task["ansible.builtin.include_tasks"] = EMIT
+            task["ansible.builtin.include_tasks"] = str(PLAYBOOKS / task["ansible.builtin.include_tasks"])
     return node
 
 

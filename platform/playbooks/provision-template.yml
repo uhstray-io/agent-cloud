@@ -56,6 +56,13 @@
               Set openbao_addr (Semaphore) or pass pve_token_secret / PVE_TOKEN_SECRET
               with pve_host and pve_token_id (operator).
 
+        # The AppRole secret_id and the Proxmox token cross this connection.
+        - name: "Refuse a cleartext OpenBao endpoint"
+          ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+          vars:
+            _assert_bao_url: "{{ _bao_url }}"
+          when: _pve_operator_secret | length == 0
+
         # Resolved once into facts: the store is read a single time, and the facts outlive
         # this play for the step-result plays that follow.
         - name: "Resolve the Proxmox connection"
