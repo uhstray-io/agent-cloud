@@ -305,6 +305,63 @@ def test_the_template_play_refuses_a_store_without_a_token_id_and_sends_nothing(
     assert fake.seen == []
 
 
+# The whole playbook as Semaphore runs it: the imported validation play, the template play and
+# the post-validation play, each resolving the connection itself. A production dry run (task
+# 3166) found the template play sending to an empty URL because only the validation play read
+# the store, and play vars do not cross the play boundary.
+CLUSTER = {
+    ("GET", "/api2/json/version"): (200, {"version": "8.2"}),
+    ("GET", "/api2/json/nodes"): (200, [{"node": "alphacentauri", "status": "online"}]),
+    ("GET", "/api2/json/cluster/resources"): (200, []),
+    ("GET", "/api2/json/nodes/alphacentauri/storage"): (200, [
+        {"storage": "vm-lvms", "active": 1, "content": "images,rootdir", "avail": 0},
+        {"storage": "SharedISOs", "active": 1, "content": "iso"}]),
+    ("GET", "/api2/json/nodes/alphacentauri/storage/SharedISOs/content"): (200, [
+        {"volid": "SharedISOs:iso/ubuntu-24.04.3-live-server-amd64.iso"}]),
+    ("GET", "/api2/json/cluster/resources?type=vm"): (200, [
+        {"vmid": 9000, "name": "ubuntu-2404-template", "node": "alphacentauri", "template": 1}]),
+    ("GET", TEMPLATE_CFG): (200, {"template": 1, "ide2": "vm-lvms:vm-9000-cloudinit"}),
+    ("GET", "/api2/json/nodes/alphacentauri/network"): (200, [{"type": "bridge", "iface": "vmbr0"}]),
+}
+
+
+def _whole_template_playbook(tmp_path, record, check=False):
+    fake = FakeProxmox(CLUSTER)
+    inv = tmp_path / "inv.yml"
+    inv.write_text(yaml.safe_dump({"all": {"hosts": {"localhost": {"ansible_connection": "local"}}}}))
+    # `_pve_data` stands in for the store record in every play (hvac is not installed here);
+    # `ssh_key_check` for the validation play's SSH key lookup, which needs it too.
+    extra = {"openbao_addr": "https://bao.invalid", "ssh_key_check": "ssh-ed25519 AAAA",
+             "_pve_data": {"url": fake.url, "api_token": "synthetic", **record}}
+    env = {**harness_sandbox.env_for(tmp_path), "ANSIBLE_SHOW_CUSTOM_STATS": "1"}
+    try:
+        done = harness_sandbox.run(
+            ["ansible-playbook", "-i", str(inv), str(PLAYBOOKS / "provision-template.yml"), "-e", json.dumps(extra),
+             *(["--check"] if check else [])],
+            tmp_path, cwd=ROOT, env=env)
+    finally:
+        fake.close()
+    return done, fake
+
+
+@pytest.mark.parametrize("check", [False, True], ids=["run", "dry-run"])
+def test_the_whole_template_playbook_reaches_proxmox_from_the_store_in_every_play(tmp_path, check):
+    done, fake = _whole_template_playbook(tmp_path, {"token_id": "automation@pve!fixture"}, check)
+    assert done.returncode == 0, done.stdout[-3000:]
+    results = step_results.results_in(done.stdout.splitlines())
+    assert [(r["step"], r["status"]) for r in results] == [("vm-template", "pass")], results
+    # validation, the template play's own read and read-back, post-validation
+    assert fake.seen.count(("GET", TEMPLATE_CFG)) == 4
+    assert fake.writes() == []
+
+
+def test_the_whole_template_playbook_refuses_a_store_without_a_token_id_before_any_request(tmp_path):
+    done, fake = _whole_template_playbook(tmp_path, {})
+    assert done.returncode != 0
+    assert "has no token_id" in done.stdout
+    assert fake.seen == []
+
+
 def test_cloudinit_named_anywhere_but_the_drive_does_not_pass(tmp_path):
     result, rc, _ = _template_play(tmp_path, {"template": 1, "description": "cloudinit ready",
                                               "tags": "cloudinit", "ide2": "none,media=cdrom"})
