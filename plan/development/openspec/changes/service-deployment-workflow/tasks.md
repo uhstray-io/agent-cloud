@@ -99,6 +99,10 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
         and #439). Destroy VM is still held for the operator; Snapshot VM and Create VM Template
         still have no `(Dev)` variant. 2.2 stays open. Task ids in design "Production `(Dev)` dry
         runs — 2026-10-04".
+      - 2026-10-05: Snapshot VM and Create VM Template now declare `dev_variant: true` in
+        `platform/semaphore/templates.yml`, so `Snapshot VM (Dev)` and `Create VM Template (Dev)`
+        exist in the catalog. Neither is published to Semaphore nor dry run yet; Destroy VM is
+        unchanged and still held for the operator. 2.2 stays open.
 - [x] 2.3 Wave 2, the remaining playbooks, grouped by service; same patterns and runs.
       2026-09-22: 67 files (161 reads, 27 logins, 125 skips) applied from the guard's own
       findings; normal runs are unchanged by construction (every guard is inert without
