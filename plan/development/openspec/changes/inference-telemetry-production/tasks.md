@@ -44,6 +44,14 @@
       (site-config#24); production runs the Dev-bound `Deploy o11y (Dev)` template (template
       224, task 1156). Remaining: a main-bound Deploy and a Clean Deploy o11y template, or a
       decision recording that production stays Dev-bound.
+      2026-10-05: the catalog now declares main-bound `Deploy o11y` and `Clean Deploy o11y`, each
+      with `dev_variant: true`, following the 2026-10-04 operator decision to keep the main/dev
+      twins. The directly Dev-bound `Deploy o11y (Dev)` declaration is replaced by the base's
+      generated twin of the same name; publication finds a live template by name, so it updates the
+      existing one (template 224 as recorded above) rather than adding one. `Clean Deploy o11y`
+      offers no `expected_repository_sha`: the imported deploy checks it only after
+      the destroy. Not published and not dry run; site-config's `templates-prod` entry is still
+      open. Left unticked.
 - [ ] 1.2 `templates/env.j2`: `O11Y_PROM_RETENTION` default `15d`, `O11Y_LOKI_RETENTION`
       default `7d`, binds loopback for Prometheus and Alloy, Loki and Grafana bound to the
       VM address; compose reads the retention vars
