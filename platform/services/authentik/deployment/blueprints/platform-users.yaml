@@ -25,7 +25,7 @@ metadata:
   name: agent-cloud - platform users
 entries:
   # User 1 — full admin, member of platform-admins (top role in every app,
-  # identical tier to stray). Real identity via site-config (WISWARD_*).
+  # identical tier to the operator admin). Real identity via site-config (WISWARD_*).
   - model: authentik_core.user
     identifiers:
       username: !Env [WISWARD_USERNAME, "wisward"]
@@ -59,8 +59,8 @@ entries:
         - !Find [authentik_core.group, [name, platform-business]]
 
   # User 3 — full admin, member of platform-admins (Authentik superuser group;
-  # top role in every SSO'd app, same tier as agent-cloud-admin and stray). Real
-  # identity via site-config (JACOB_*).
+  # top role in every SSO'd app, same tier as agent-cloud-admin and the operator
+  # admin). Real identity via site-config (JACOB_*).
   - model: authentik_core.user
     identifiers:
       username: !Env [JACOB_USERNAME, "jacob"]

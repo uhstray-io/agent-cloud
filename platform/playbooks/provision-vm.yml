@@ -35,7 +35,7 @@
       url=_bao_url, auth_method='approle',
       role_id=_bao_role_id, secret_id=_bao_secret_id) }}"
     _pve_host: "{{ _pve_data.url | default('') }}"
-    _pve_token_id: "{{ _pve_data.token_id | default('stray@pve!workflow-agent') }}"
+    _pve_token_id: "{{ _pve_data.token_id | default('') }}"
     _pve_secret: "{{ _pve_data.api_token }}"
     _ssh_pub: "{{ lookup('community.hashi_vault.hashi_vault',
       'secret/data/services/ssh:public_key',
@@ -164,6 +164,14 @@
               private site-config repo the runner never checks out. From a
               workstation you may instead pass -e project_root=<site-config path>.
             success_msg: "VM declaration for '{{ target_service }}' is complete."
+
+        # The token id names a real Proxmox user, so it comes from the store, never a default.
+        - name: "Require the stored Proxmox token id"
+          ansible.builtin.assert:
+            that: _pve_token_id | length > 0
+            fail_msg: >-
+              secret/services/proxmox has no token_id. Store the Proxmox API token id
+              (<user>@<realm>!<token-name>) beside api_token; there is no built-in default.
 
         - name: "Show provisioning plan"
           ansible.builtin.debug:

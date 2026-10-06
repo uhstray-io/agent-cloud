@@ -1150,7 +1150,7 @@ Detailed runbooks live in `platform/docs/runbooks/` — this section captures th
 |------|----------|--------|--------|
 | Persistent `hvac` in Semaphore | High | Pending | Custom image (`FROM semaphore:latest` + `pip install hvac`) or startup hook. Lost on restart breaks vault lookups. |
 | SSH key auth for Semaphore VM | High | Pending | Replace password auth. Store private key in OpenBao, deploy public key to `authorized_keys`, disable `PasswordAuthentication`. |
-| Rename PVE API token | High | Pending | `{{ proxmox_token_id }}` → `stray@pve!agent-cloud`. Update: Proxmox, OpenBao (`secret/services/proxmox`), all playbooks. |
+| Rename PVE API token | High | Pending | `{{ proxmox_token_id }}` → `<user>@pve!agent-cloud`. Update: Proxmox, OpenBao (`secret/services/proxmox`), all playbooks. |
 | AppRole TTLs | Medium | Pending | `token_ttl=1h`, `token_max_ttl=4h`, `secret_id_ttl=720h`. Short token TTL limits leaked token blast radius. |
 | Root token rotation | Medium | Pending | `bao operator generate-root -init` ceremony. Rotate after any interactive session. |
 | OpenBao TLS | Medium | Pending | Self-signed CA or Let's Encrypt. Update `OPENBAO_ADDR` from `http://` to `https://` across all consumers. |
