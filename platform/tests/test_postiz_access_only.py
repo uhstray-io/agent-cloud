@@ -7,6 +7,9 @@ PR #205). tasks/assert-bao-seed-access.yml is the shared implementation.
 """
 
 
+import json
+
+import forgeries
 import pytest
 from seed_harness import FakeBao, run_seed, serve, writes
 
@@ -110,20 +113,29 @@ def test_an_inventory_without_the_address_is_refused_before_the_login(tmp_path):
 EVIL = "http://127.0.0.1:9"
 
 
-@pytest.mark.parametrize("inject", [
-    # Codex review of PR #256: forge the check's own message input alongside a plain override.
-    # (A TEMPLATED override is not stopped: the header of tasks/assert-bao-addr-declared.yml.)
-    {"openbao_addr": EVIL, "_ba_seen": [EVIL]},
-    {"_bao_url": EVIL},             # the login URL itself
-    {"_bm_url": EVIL},              # the merge target, set later by the playbook
-    {"_sa_url": EVIL},              # the access-check target
-], ids=["forged-check-inputs", "login-url", "merge-url", "access-url"])
-def test_injected_extra_vars_cannot_move_the_login_or_the_write(tmp_path, inject):
+# Codex review of PR #256: forge the check's own message input alongside a plain override; then
+# the login URL itself, the merge target set later by the playbook, and the access-check target.
+# Each plainly and as both templates (forgeries.py). An underscore name is refused by name in
+# the run's first play; a templated openbao_addr alone is not (the header of
+# tasks/assert-bao-addr-declared.yml).
+INJECTED = [("_ba_seen", [EVIL], {"openbao_addr": EVIL}), ("_bao_url", EVIL, {}), ("_bm_url", EVIL, {}),
+            ("_sa_url", EVIL, {})]
+
+
+@pytest.mark.parametrize("name, forge, alongside", [
+    pytest.param(name, f.values[0], alongside, id=f"{name}-{f.id}")
+    for name, value, alongside in INJECTED
+    for f in forgeries.templated_forgeries(name, "https://declared.example.test", value)
+])
+def test_injected_extra_vars_cannot_move_the_login_or_the_write(tmp_path, name, forge, alongside):
+    inject = {**alongside, **json.loads(forge(tmp_path))}
     code, output, requests = run_access_check(tmp_path, "openbao-key", ["read", "create"], inject=inject)
     assert code != 0, output
     # The login task must never RUN: a run whose login went to the injected address also shows
     # no request here and fails (nothing listens there), so an empty log alone proves nothing.
-    assert "TASK [Refuse an OpenBao address that is not the inventory's]" in output
+    # Each case sets an underscore name, refused by name in the run's first play
+    # (refuse-internal-extra-vars.yml) before the address check is reached.
+    assert f"Refusing to run: {name} set from outside the playbook" in output, output
     assert "TASK [Authenticate to OpenBao (AppRole)]" not in output
     assert requests == []
 

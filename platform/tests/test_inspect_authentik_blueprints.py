@@ -6,6 +6,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
+import playbook_yaml
 import pytest
 import yaml
 
@@ -18,7 +19,7 @@ READ_MODULES = {"ansible.builtin.assert", "ansible.builtin.debug", "ansible.buil
 
 def _tasks():
     out = []
-    for play in yaml.safe_load(PLAYBOOK.read_text()):
+    for play in playbook_yaml.plays(PLAYBOOK):
         for t in play["tasks"]:
             out.extend(t.get("block", []) + t.get("rescue", []) if "block" in t else [t])
     return out

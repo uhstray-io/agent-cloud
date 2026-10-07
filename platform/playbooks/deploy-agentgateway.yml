@@ -38,6 +38,11 @@
 #   agw_oidc_issuer / agw_ui_redirect_uri / agw_ui_admin_group  operator UI OIDC (defaults local)
 #   agw_ui_enabled                       (default true) false = no UI listener, no OIDC, no Authentik read
 
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
 # ── Pre-flight: refuse to "succeed" against a group the inventory lacks ──────
 # Ansible treats a play whose hosts: matches nothing as a no-op and exits 0, so a
 # missing group looks exactly like a deploy that worked (preflight-target-group.yml

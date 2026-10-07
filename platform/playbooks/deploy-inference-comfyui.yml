@@ -9,6 +9,11 @@
 # the wrapper can be redeployed without restarting the model. The wrapper
 # only talks to ComfyUI at COMFYUI_URL.
 
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
 # A play over no hosts exits 0 and records a deploy that did nothing as a success
 # (docs/MISTAKES.md 2.21), so refuse an absent or empty group first.
 - name: "Pre-flight: inference_comfyui_svc is real"

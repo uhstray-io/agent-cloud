@@ -26,6 +26,11 @@
 # Plan: plan/development/14-postiz-social-publishing.md
 # Change: plan/development/openspec/changes/deploy-postiz-social-publishing/
 
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
 # ── Phase 1: Place repo + secrets + env ─────────────────────────────────────
 # Pre-flight: refuse to report success against an empty target group. Ansible
 # treats a play matching no hosts as a no-op and exits 0, so an orchestrator

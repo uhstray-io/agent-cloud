@@ -63,6 +63,11 @@
 # Usage (Semaphore template "Rollback Inference Route"):
 #   -e mode=gateway-config | -e mode=direct | -e mode=restore
 
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
 - name: "Refuse an unknown rollback mode"
   hosts: localhost
   gather_facts: false
@@ -530,6 +535,7 @@
 - name: "Route the inference hostname for the mode (manage-caddy-sites: validate, roll back on failure)"
   ansible.builtin.import_playbook: manage-caddy-sites.yml
   vars:
+    _extra_var_guard_nested: true
     # gateway-config leaves Caddy alone: a pattern that matches no host skips this play.
     target_service: "{{ 'caddy_svc' if (mode | default('gateway-config')) in ['direct', 'restore'] else 'caddy_svc:!caddy_svc' }}"
     inference_route_mode: "{{ 'direct' if (mode | default('gateway-config')) == 'direct' else 'gateway' }}"

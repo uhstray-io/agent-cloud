@@ -2,6 +2,12 @@
 # Read-only preflight for a Dev Authentik deployment that may retire accounts.
 # Uses the same env.j2 retirement declarations as deploy-authentik.yml. The query
 # runs inside authentik-server, where its existing bootstrap token is available.
+
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
 - name: Require one declared Authentik host
   hosts: localhost
   gather_facts: false

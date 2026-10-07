@@ -64,7 +64,7 @@ setup() {
   # VM-recorder identities).
   python3 - "$bootstrap" <<'PY'
 import sys, yaml
-profile = yaml.safe_load(open(sys.argv[1]))[0]["vars"]["_profiles"]["device-writer"]
+profile = yaml.safe_load(open(sys.argv[1]))[1]["vars"]["_profiles"]["device-writer"]
 assert profile["view_permission"] == "skynet-ipam-prefix-view", profile
 assert profile["view_object_types"] == ["ipam.prefix"], profile
 assert "ipam.prefix" not in profile["object_types"], profile
@@ -100,7 +100,7 @@ assert env.from_string(header).render(_netbox_api_token="nbt_key.value") == "Bea
 assert env.from_string(header).render(_netbox_api_token="legacyvalue") == "Token legacyvalue"
 assert helper["no_log"] is True
 for name in ("netbox-allocate-ip.yml", "create-netbox-device.yml"):
-    tasks = yaml.safe_load((root / name).read_text())[0]["tasks"]
+    tasks = yaml.safe_load((root / name).read_text())[1]["tasks"]  # [0] imports the extra-var guard
     auth, = (task for task in tasks if task["name"] in ("Set the NetBox auth header", "Set NetBox auth header"))
     assert auth["ansible.builtin.include_tasks"] == "tasks/netbox-api-headers.yml"
     assert auth["no_log"] is True
@@ -121,7 +121,7 @@ PY
 import sys
 import yaml
 
-tasks = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))[0]["tasks"]
+tasks = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))[1]["tasks"]  # [0] imports the extra-var guard
 hidden = {task["name"] for task in tasks if task.get("no_log") is True}
 assert hidden == {
     "Authenticate to OpenBao (AppRole)",
@@ -181,7 +181,7 @@ PY
 import sys
 import yaml
 
-play, = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
+play, = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))[1:]  # [0] imports the extra-var guard
 refuse, = (t for t in play["tasks"]
            if t["name"] == "Refuse to report success for an address a reserve run failed to create")
 when = refuse["when"] if isinstance(refuse["when"], list) else [refuse["when"]]

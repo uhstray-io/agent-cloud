@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+import playbook_yaml
 import yaml
 from jinja2 import Environment
 
@@ -29,7 +30,7 @@ def test_exact_instance_filters_sibling_before_health_assertion():
 
 
 def test_dev_verifier_keeps_revision_and_survey_guards():
-    playbook = yaml.safe_load((ROOT / "platform/playbooks/verify-o11y-metrics-target.yml").read_text())
+    playbook = playbook_yaml.plays(ROOT / "platform/playbooks/verify-o11y-metrics-target.yml")
     assert playbook[0]["any_errors_fatal"] is True
     tasks = playbook[0]["tasks"]
     assert any(task["name"] == "Read controller checkout changes" for task in tasks)

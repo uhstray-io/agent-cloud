@@ -41,6 +41,11 @@
 #   agw_conformance_timeout     per-request ceiling in seconds (default 600)
 #   agw_conformance_stream_max_tokens  max_tokens for the streamed case (default 2048)
 
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
 - name: "Pre-flight"
   ansible.builtin.import_playbook: preflight-target-group.yml
   vars:

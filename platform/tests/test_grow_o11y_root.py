@@ -133,7 +133,7 @@ def test_a_missing_growpart_is_refused(monkeypatch):
 
 # ── The playbook ──────────────────────────────────────────────────────────────
 
-PLAYS = yaml.safe_load(PLAYBOOK.read_text())
+PLAYS = playbook_yaml.plays(PLAYBOOK)
 
 
 MAIN = PLAYS[2]

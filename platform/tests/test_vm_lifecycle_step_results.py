@@ -33,7 +33,7 @@ pytestmark = pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason
 
 
 def _plays(name):
-    return yaml.safe_load((PLAYBOOKS / name).read_text())
+    return playbook_yaml.plays(PLAYBOOKS / name)
 
 
 def _tasks(play, names):
@@ -197,7 +197,7 @@ def _provision(tmp_path, cfg, status=200, vm_exists=True, do_migrate=False, prov
     rec = dict(record, tasks=_tasks(record, [t["name"] for t in record["tasks"]]))
     harness = [{"hosts": "localhost", "gather_facts": False,
                 "vars": {"target_service": "dns", "_vmid": "220", "_node": "n1", "_cores": 2, "_mem": 4096,
-                         "_disk": "32G", "_onboot": "1", "vm_exists": vm_exists, "_do_migrate": do_migrate,
+                         "_disk": "32G", "_onboot": "1", "_vm_exists": vm_exists, "_do_migrate": do_migrate,
                          "_pv_cfg": {"status": status, "json": {"data": cfg}}},
                 "tasks": decide}]
     if provisioned:

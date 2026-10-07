@@ -25,7 +25,7 @@ pytestmark = pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason
 
 
 def decide(tmp_path, *, agent=None, pending=(), running=True, want_agent=True):
-    play = yaml.safe_load(PLAYBOOK.read_text())[0]
+    play = playbook_yaml.plays(PLAYBOOK)[0]
     tasks = {t["name"]: t for t in playbook_yaml.tasks(play["tasks"]) if t.get("name") in TASKS}
     assert set(tasks) == set(TASKS)
     cfg = {"cores": 2, "memory": 4096, "sockets": 1, **({"agent": agent} if agent is not None else {})}

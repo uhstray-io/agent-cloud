@@ -2,6 +2,11 @@
 # validate-all.yml — Validate all deployed services are healthy
 # Run after deploy-all.yml or independently for health checks.
 
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
 - name: "Validate OpenBao"
   hosts: openbao_svc
   gather_facts: false
@@ -12,13 +17,13 @@
         method: GET
         status_code: "{{ health_status_codes | default([200]) }}"
         timeout: 10
-      register: bao_health
+      register: _bao_health
       ignore_errors: true
       check_mode: false
 
     - name: Report OpenBao status
       ansible.builtin.debug:
-        msg: "OpenBao: {{ 'HEALTHY' if bao_health is succeeded else 'UNHEALTHY' }}"
+        msg: "OpenBao: {{ 'HEALTHY' if _bao_health is succeeded else 'UNHEALTHY' }}"
 
 - name: "Validate NocoDB"
   hosts: nocodb_svc
@@ -30,13 +35,13 @@
         method: GET
         status_code: [200]
         timeout: 10
-      register: nocodb_health
+      register: _nocodb_health
       ignore_errors: true
       check_mode: false
 
     - name: Report NocoDB status
       ansible.builtin.debug:
-        msg: "NocoDB: {{ 'HEALTHY' if nocodb_health is succeeded else 'UNHEALTHY' }}"
+        msg: "NocoDB: {{ 'HEALTHY' if _nocodb_health is succeeded else 'UNHEALTHY' }}"
 
 - name: "Validate n8n"
   hosts: n8n_svc
@@ -48,13 +53,13 @@
         method: GET
         status_code: [200]
         timeout: 10
-      register: n8n_health
+      register: _n8n_health
       ignore_errors: true
       check_mode: false
 
     - name: Report n8n status
       ansible.builtin.debug:
-        msg: "n8n: {{ 'HEALTHY' if n8n_health is succeeded else 'UNHEALTHY' }}"
+        msg: "n8n: {{ 'HEALTHY' if _n8n_health is succeeded else 'UNHEALTHY' }}"
 
 - name: "Validate Semaphore"
   hosts: semaphore_svc
@@ -66,13 +71,13 @@
         method: GET
         status_code: [200]
         timeout: 10
-      register: semaphore_health
+      register: _semaphore_health
       ignore_errors: true
       check_mode: false
 
     - name: Report Semaphore status
       ansible.builtin.debug:
-        msg: "Semaphore: {{ 'HEALTHY' if semaphore_health is succeeded else 'UNHEALTHY' }}"
+        msg: "Semaphore: {{ 'HEALTHY' if _semaphore_health is succeeded else 'UNHEALTHY' }}"
 
 - name: "Validate NetBox"
   hosts: netbox_svc
@@ -84,13 +89,13 @@
         method: GET
         status_code: [200]
         timeout: 10
-      register: netbox_health
+      register: _netbox_health
       ignore_errors: true
       check_mode: false
 
     - name: Report NetBox status
       ansible.builtin.debug:
-        msg: "NetBox: {{ 'HEALTHY' if netbox_health is succeeded else 'UNHEALTHY' }}"
+        msg: "NetBox: {{ 'HEALTHY' if _netbox_health is succeeded else 'UNHEALTHY' }}"
 
 - name: "Validate WisBot"
   hosts: wisbot_svc
@@ -102,13 +107,13 @@
         method: GET
         status_code: [200]
         timeout: 10
-      register: wisbot_health
+      register: _wisbot_health
       ignore_errors: true
       check_mode: false
 
     - name: Report WisBot status
       ansible.builtin.debug:
-        msg: "WisBot: {{ 'HEALTHY' if wisbot_health is succeeded else 'UNHEALTHY' }}"
+        msg: "WisBot: {{ 'HEALTHY' if _wisbot_health is succeeded else 'UNHEALTHY' }}"
 
 - name: "Validate tududi"
   hosts: tududi_svc
@@ -120,13 +125,13 @@
         method: GET
         status_code: [200]
         timeout: 10
-      register: tududi_health
+      register: _tududi_health
       ignore_errors: true
       check_mode: false
 
     - name: Report tududi status
       ansible.builtin.debug:
-        msg: "tududi: {{ 'HEALTHY' if tududi_health is succeeded else 'UNHEALTHY' }}"
+        msg: "tududi: {{ 'HEALTHY' if _tududi_health is succeeded else 'UNHEALTHY' }}"
 
 - name: "Validate honcho"
   hosts: honcho_svc
@@ -138,13 +143,13 @@
         method: GET
         status_code: [200]
         timeout: 10
-      register: honcho_health
+      register: _honcho_health
       ignore_errors: true
       check_mode: false
 
     - name: Report honcho status
       ansible.builtin.debug:
-        msg: "honcho: {{ 'HEALTHY' if honcho_health is succeeded else 'UNHEALTHY' }}"
+        msg: "honcho: {{ 'HEALTHY' if _honcho_health is succeeded else 'UNHEALTHY' }}"
 
 - name: "Validate postiz"
   hosts: postiz_svc
@@ -159,13 +164,13 @@
         # services here because postiz has no unauthenticated health endpoint.
         status_code: [200, 301, 302, 307, 308]
         timeout: 10
-      register: postiz_health
+      register: _postiz_health
       ignore_errors: true
       check_mode: false
 
     - name: Report postiz status
       ansible.builtin.debug:
-        msg: "postiz: {{ 'HEALTHY' if postiz_health is succeeded else 'UNHEALTHY' }}"
+        msg: "postiz: {{ 'HEALTHY' if _postiz_health is succeeded else 'UNHEALTHY' }}"
 
 - name: "Summary"
   hosts: localhost

@@ -201,6 +201,10 @@ class ScopedPublicationTests(unittest.TestCase):
         } | overrides
         if full_catalog:
             extra.pop("semaphore_template_names")
+        if (controller_wrapper or provision_wrapper) and "_semaphore_url" not in overrides:
+            # A launched wrapper refuses any underscore extra var in its first play
+            # (refuse-internal-extra-vars.yml); its loopback destination is fixed in the file.
+            extra.pop("_semaphore_url")
         env = os.environ.copy()
         env.update(
             SEMAPHORE_TOKEN="",
@@ -597,9 +601,11 @@ class ScopedPublicationTests(unittest.TestCase):
                 self.assertEqual(self.writes, [])
 
     def test_controller_provisioner_refuses_destination_override_before_auth(self):
-        code, output = self.run_play(provision=True, provision_wrapper=True)
+        code, output = self.run_play(provision=True, provision_wrapper=True,
+                                     _semaphore_url="https://collector.example.test")
         self.assertNotEqual(code, 0)
-        self.assertIn("fixed loopback API", output)
+        # Refused by name in the wrapper's first play, before its own loopback check.
+        self.assertIn("Refusing to run: _semaphore_url set from outside the playbook", output)
         self.assertEqual(self.requests, [])
 
     def test_bootstrap_without_explicit_bindings_refuses_before_network(self):
@@ -713,8 +719,7 @@ class ScopedPublicationTests(unittest.TestCase):
             with self.subTest(selection=selection, extra=extra):
                 self.setUp()
                 code, output = self.run_play(controller_wrapper=True, selection=selection,
-                                             semaphore_allow_scoped_schedule="true",
-                                             _semaphore_url="http://127.0.0.1:3000", **extra)
+                                             semaphore_allow_scoped_schedule="true", **extra)
                 self.assertNotEqual(code, 0)
                 self.assertIn("Scoped schedule publication requires one existing (Dev) template", output)
                 self.assertEqual(self.requests, [])
@@ -751,8 +756,7 @@ class ScopedPublicationTests(unittest.TestCase):
 
         self.setUp()
         code, output = self.run_play(controller_wrapper=True, selection=["Deploy NetBox"],
-                                     check_mode=True, semaphore_allow_scoped_schedule="true",
-                                     _semaphore_url="http://127.0.0.1:3000")
+                                     check_mode=True, semaphore_allow_scoped_schedule="true")
         self.assertNotEqual(code, 0)
         self.assertIn("Scoped schedule publication requires one existing (Dev) template", output)
         self.assertEqual(self.requests, [])
@@ -803,18 +807,19 @@ class ScopedPublicationTests(unittest.TestCase):
     def test_controller_rejects_https_destination_override_before_network(self):
         code, output = self.run_play(controller_wrapper=True, _semaphore_url="https://collector.example.test")
         self.assertNotEqual(code, 0)
-        self.assertIn("fixed loopback API destination", output)
+        # Refused by name in the wrapper's first play, before its own loopback check.
+        self.assertIn("Refusing to run: _semaphore_url set from outside the playbook", output)
         self.assertEqual(self.requests, [])
 
     def test_controller_refuses_create_bindings_on_survey_update(self):
-        code, output = self.run_play(controller_wrapper=True, _semaphore_url="http://127.0.0.1:3000",
+        code, output = self.run_play(controller_wrapper=True,
                                      semaphore_allow_scoped_create="false", semaphore_project_id="2")
         self.assertNotEqual(code, 0)
         self.assertIn("accepted only for one-template creation", output)
         self.assertEqual(self.requests, [])
 
     def test_controller_refuses_main_bound_template_creation(self):
-        code, output = self.run_play(controller_wrapper=True, _semaphore_url="http://127.0.0.1:3000",
+        code, output = self.run_play(controller_wrapper=True,
                                      selection=["Deploy NetBox"], semaphore_allow_scoped_create="true")
         self.assertNotEqual(code, 0)
         self.assertIn("one declared (Dev) template", output)

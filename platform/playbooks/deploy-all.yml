@@ -10,6 +10,11 @@
 # Each phase clones the agent-cloud monorepo and runs the service deploy.sh.
 # GitHub deploy key fetched once from OpenBao, reused across phases.
 
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
 # Every group deploy-all touches must be populated: a missing one would skip its
 # phase and still exit 0 (docs/MISTAKES.md 2.21).
 - name: "Pre-flight: openbao_svc is real"

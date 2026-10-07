@@ -13,6 +13,7 @@ import threading
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
+import playbook_yaml
 import pytest
 import yaml
 from fake_http import DrainingHandler
@@ -84,7 +85,7 @@ def run(tmp_path, *, declared, integrations=(), check=False, ignore_put=False):
     server = ThreadingHTTPServer(("127.0.0.1", 0), Fake)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
-        play = yaml.safe_load(PLAYBOOK.read_text())[0]
+        play = playbook_yaml.plays(PLAYBOOK)[0]
         names = [t["name"] for t in play["tasks"]]
         # Everything after the loopback check and the credential lookup, unchanged.
         tasks = play["tasks"][names.index("Semaphore runtime access (injected token, or the controller AppRole)") + 1:]
