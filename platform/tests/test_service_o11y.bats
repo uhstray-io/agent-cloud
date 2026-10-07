@@ -204,11 +204,11 @@ with tempfile.TemporaryDirectory() as temp:
     for mode in ('local', 'prod'):
         task = next(t for t in tasks if t['name'].startswith(f'Stop and remove containers + volumes ({mode})'))
         shell = task['ansible.builtin.shell']
-        shell = shell.replace('{{ _monorepo_dir }}', str(root))
-        shell = shell.replace('{{ monorepo_deploy_path }}', 'deployment')
-        shell = shell.replace('{{ container_engine | default(\'podman\') }}', str(engine))
-        shell = shell.replace('{{ container_engine | default(\'docker\') }}', str(engine))
-        shell = shell.replace('{{ service_name }}', 'o11y')
+        shell = shell.replace('{{ _clean_dir }}', str(root))
+        shell = shell.replace('{{ _clean_path }}', 'deployment')
+        shell = shell.replace('{{ _clean_local_engine }}', str(engine))
+        shell = shell.replace('{{ _clean_engine }}', str(engine))
+        shell = shell.replace('{{ _clean_service }}', 'o11y')
         shell = shell.replace("{{ '{{' }}.Names{{ '}}' }}", '.Names')
         args_path = root / f'{mode}-args'
         result = subprocess.run(['/bin/bash', '-c', shell], cwd=deploy,

@@ -31,39 +31,42 @@
       - _monorepo_dir | length > 0
     fail_msg: "clean-service.yml requires service_name, monorepo_deploy_path, and _monorepo_dir."
 
-# ── Pin and check what the prod teardown deletes and runs (prod) ────────────
+# ── Pin and check what the teardown deletes and runs ────────────────────────
 # `_monorepo_dir` comes from `local_monorepo_dir`, a public variable: an extra var sets it,
 # and refuse-internal-extra-vars.yml cannot tell that from the inventory declaration (it
-# only sees `_`-prefixed names). The prod branch deletes that directory with `become` and
-# interpolates it, `monorepo_deploy_path`, `service_name` and `container_engine` into a root
-# shell script, so `-e local_monorepo_dir=<any path>` (with `-e ansible_connection=local` it
-# runs on the controller) chose what was deleted, and a shell word in any of the four chose
-# what ran. The prod clone is not a free choice: it is the per-VM checkout every prod deploy
-# places, /home/<ansible_user>/agent-cloud, so anything else is refused before the first
-# task that uses it. The convenience symlink removed below is likewise
-# /home/<ansible_user>/<service_name>, built from those two, not from the public
-# `local_home_dir`. Both must be plain names (no `/`, no leading `.`, so no `..`).
+# only sees `_`-prefixed names). The prod branch deletes that directory with `become`, and
+# both branches (and the verify step) interpolate it, `monorepo_deploy_path`, `service_name`
+# and `container_engine` into shell scripts, so `-e local_monorepo_dir=<any path>` (with
+# `-e ansible_connection=local` it runs on the controller) chose what was deleted, and a
+# shell word in any of them chose what ran. The prod clone is not a free choice: it is the
+# per-VM checkout every prod deploy places, /home/<ansible_user>/agent-cloud, so anything
+# else is refused before the first task that uses it. The convenience symlink removed below
+# is likewise /home/<ansible_user>/<service_name>, built from those two, not from the public
+# `local_home_dir`. Names must be plain (no `/`, no leading `.`, so no `..`). Local mode has
+# no fixed tree (the genesis dir is the operator's), so there it must only be a shell-safe
+# absolute path.
 #
 # An extra var is a template rendered afresh at every read (docs/MISTAKES.md 1.15), so a
 # check that reads a name and tasks that read it again can see two values. The facts below
-# render each name ONCE; the check, the `when` of every task below (`local_mode` included: a
-# forgery that reads false for the deletion and true for the check would skip one and run the
-# other) and the two path removals read the facts. Underscore names cannot be set from
-# outside the run (refuse-internal-extra-vars.yml). The prod
-# shell script still renders the public names itself, because test_service_o11y.bats
-# substitutes those exact placeholders into it; a stateful template could therefore show the
-# check one value and that script another, so reading the facts there is the follow-up once
-# that test is updated. Local mode keeps the shared genesis tree, deletes nothing, and is
-# not checked here.
-- name: "Pin the teardown's mode and the prod inputs, each read once"
+# render each name ONCE; the checks, every `when` below (`local_mode` included: a forgery
+# that reads false for the deletion and true for the check would skip one and run the other),
+# the path removals and every shell script read the facts, never the public names (the
+# placeholders test_service_o11y.bats substitutes are the fact names). Underscore names
+# cannot be set from outside the run (refuse-internal-extra-vars.yml).
+- name: "Pin the teardown's mode, connection and inputs, each read once"
   ansible.builtin.set_fact:
     _clean_local_mode: "{{ local_mode | default(false) | bool }}"
     _clean_connection: "{{ ansible_connection | default('ssh') }}"
-    _clean_prod_user: "{{ ansible_user | default('deploy') }}"
-    _clean_prod_service: "{{ service_name }}"
-    _clean_prod_dir: "{{ _monorepo_dir }}"
-    _clean_prod_path: "{{ monorepo_deploy_path }}"
-    _clean_prod_engine: "{{ container_engine | default('docker') }}"
+    _clean_user: "{{ ansible_user | default('deploy') }}"
+    _clean_service: "{{ service_name }}"
+    _clean_dir: "{{ _monorepo_dir }}"
+    _clean_path: "{{ monorepo_deploy_path }}"
+    _clean_engine_set: "{{ container_engine | default('') }}"
+
+- name: "Derive the engine each branch runs from the pinned value"
+  ansible.builtin.set_fact:
+    _clean_engine: "{{ _clean_engine_set if _clean_engine_set | length > 0 else 'docker' }}"
+    _clean_local_engine: "{{ _clean_engine_set if _clean_engine_set | length > 0 else 'podman' }}"
 
 # A controller-local connection runs every teardown task below ON THE CONTROLLER: the
 # compose `down -v`, the `rm -f` of every container whose name starts with the service name,
@@ -88,30 +91,49 @@
       inventories) may. Nothing was removed.
     quiet: true
 
-- name: "Refuse a prod teardown whose inputs the inventory did not declare"
+- name: "Refuse a teardown whose service, deploy path or engine is not a plain name"
   ansible.builtin.assert:
     that:
-      - _clean_prod_user is match('^[A-Za-z0-9_][A-Za-z0-9._-]*\\Z')
-      - _clean_prod_service is match('^[A-Za-z0-9][A-Za-z0-9._-]*\\Z')
-      - _clean_prod_path is match('^[A-Za-z0-9][A-Za-z0-9._/-]*\\Z')
-      - "'..' not in _clean_prod_path"
-      - _clean_prod_engine in ['docker', 'podman']
-      - _clean_prod_dir == '/home/' ~ _clean_prod_user ~ '/agent-cloud'
+      - _clean_service is match('^[A-Za-z0-9][A-Za-z0-9._-]*\\Z')
+      - _clean_path is match('^[A-Za-z0-9][A-Za-z0-9._/-]*\\Z')
+      - "'..' not in _clean_path"
+      - _clean_engine in ['docker', 'podman']
+      - _clean_local_engine in ['docker', 'podman']
     fail_msg: >-
-      Refusing: the prod teardown for {{ _clean_prod_service }} removes
-      /home/{{ _clean_prod_user }}/agent-cloud, not {{ _clean_prod_dir }}; names must be plain
-      and the engine docker or podman. local_monorepo_dir is for local mode (inventory
-      local_mode: true); a prod host that checks the repo out elsewhere needs this guard
-      extended in code. Nothing was removed.
+      Refusing: the teardown for {{ _clean_service }} needs a plain service name and deploy
+      path (letters, digits, `.`, `_`, `-`, and `/` in the path; no `..`) and the engine docker
+      or podman. Nothing was removed.
+    quiet: true
+
+- name: "Refuse a prod teardown whose clone the inventory did not declare"
+  ansible.builtin.assert:
+    that:
+      - _clean_user is match('^[A-Za-z0-9_][A-Za-z0-9._-]*\\Z')
+      - _clean_dir == '/home/' ~ _clean_user ~ '/agent-cloud'
+    fail_msg: >-
+      Refusing: the teardown for {{ _clean_service }} removes /home/{{ _clean_user }}/agent-cloud,
+      not {{ _clean_dir }}. local_monorepo_dir is for local mode (inventory local_mode: true);
+      a prod host that checks the repo out elsewhere needs this guard extended in code. Nothing
+      was removed.
     quiet: true
   when: not _clean_local_mode
+
+- name: "Refuse a local teardown whose tree is not a shell-safe absolute path"
+  ansible.builtin.assert:
+    that: _clean_dir is match('^/[A-Za-z0-9._/ +@-]+\\Z')
+    fail_msg: >-
+      Refusing: the local teardown for {{ _clean_service }} runs its compose commands from
+      {{ _clean_dir }}, which must be an absolute path of letters, digits, spaces and
+      `. _ / + @ -` only. Nothing was removed.
+    quiet: true
+  when: _clean_local_mode
 
 # ── PROD teardown (per-VM clone) ────────────────────────────────────────────
 - name: "Stop and remove containers + volumes (prod) for {{ service_name }}"
   ansible.builtin.shell: |
     set -o pipefail
-    DEPLOY_DIR="{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
-    ENGINE="{{ container_engine | default('docker') }}"
+    DEPLOY_DIR="{{ _clean_dir }}/{{ _clean_path }}"
+    ENGINE="{{ _clean_engine }}"
     # The SUPERSET of compose files, not just the base: a service/volume that
     # exists only in an overlay (compose.local.yml, compose.search.yml) is
     # invisible to a base-only `down -v` and survives a "destroy everything"
@@ -130,10 +152,10 @@
         [ -f "$f" ] && COMPOSE_ARGS="$COMPOSE_ARGS -f $(basename "$f")"
       done
       cd "$DEPLOY_DIR"
-      $ENGINE compose --project-name {{ service_name }} $COMPOSE_ARGS down -v || exit $?
+      $ENGINE compose --project-name {{ _clean_service }} $COMPOSE_ARGS down -v || exit $?
     fi
     # Remove any containers with the service name prefix
-    $ENGINE ps -a --format '{{ '{{' }}.Names{{ '}}' }}' 2>/dev/null | grep "^{{ service_name }}" | xargs -r $ENGINE rm -f 2>/dev/null || true
+    $ENGINE ps -a --format '{{ '{{' }}.Names{{ '}}' }}' 2>/dev/null | grep "^{{ _clean_service }}" | xargs -r $ENGINE rm -f 2>/dev/null || true
   args:
     executable: /bin/bash   # `set -o pipefail` needs bash (Ubuntu /bin/sh is dash)
   become: true
@@ -147,8 +169,8 @@
 - name: "Stop and remove containers + volumes (local) for {{ service_name }}"
   ansible.builtin.shell: |
     set -o pipefail
-    DEPLOY_DIR="{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
-    ENGINE="{{ container_engine | default('podman') }}"
+    DEPLOY_DIR="{{ _clean_dir }}/{{ _clean_path }}"
+    ENGINE="{{ _clean_local_engine }}"
     # Superset of compose files — see the prod branch above for why.
     COMPOSE_ARGS=""
     for f in docker-compose.yml compose.yml; do
@@ -166,7 +188,7 @@
       # how deploy.sh brought it up) so the right volumes are removed.
       $ENGINE compose $COMPOSE_ARGS down -v || exit $?
     fi
-    $ENGINE ps -a --format '{{ '{{' }}.Names{{ '}}' }}' 2>/dev/null | grep "^{{ service_name }}" | xargs -r $ENGINE rm -f 2>/dev/null || true
+    $ENGINE ps -a --format '{{ '{{' }}.Names{{ '}}' }}' 2>/dev/null | grep "^{{ _clean_service }}" | xargs -r $ENGINE rm -f 2>/dev/null || true
   args:
     executable: /bin/bash   # `set -o pipefail` needs bash (Ubuntu /bin/sh is dash)
   register: _clean_local
@@ -178,14 +200,14 @@
 # ── Clone removal — PROD only (local shares the tree) ───────────────────────
 - name: "Remove agent-cloud clone (prod; may contain root-owned files)"
   ansible.builtin.file:
-    path: "{{ _clean_prod_dir }}"
+    path: "{{ _clean_dir }}"
     state: absent
   become: true
   when: not _clean_local_mode
 
 - name: "Remove convenience symlink (prod)"
   ansible.builtin.file:
-    path: "/home/{{ _clean_prod_user }}/{{ _clean_prod_service }}"
+    path: "/home/{{ _clean_user }}/{{ _clean_service }}"
     state: absent
   when: not _clean_local_mode
 
@@ -193,8 +215,8 @@
 - name: "Verify clean"
   ansible.builtin.shell: |
     set -o pipefail
-    {{ container_engine | default('docker') }} volume ls 2>/dev/null | grep {{ service_name }} || echo "No {{ service_name }} volumes"
-    {{ container_engine | default('docker') }} ps -a 2>/dev/null | grep {{ service_name }} || echo "No {{ service_name }} containers"
+    {{ _clean_engine }} volume ls 2>/dev/null | grep {{ _clean_service }} || echo "No {{ _clean_service }} volumes"
+    {{ _clean_engine }} ps -a 2>/dev/null | grep {{ _clean_service }} || echo "No {{ _clean_service }} containers"
   args:
     executable: /bin/bash   # `set -o pipefail` needs bash (Ubuntu /bin/sh is dash)
   register: _verify

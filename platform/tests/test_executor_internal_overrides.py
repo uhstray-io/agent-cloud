@@ -55,8 +55,10 @@ def _emitters() -> list[Path]:
     return out
 
 
-def _run(playbook: Path, tmp_path: Path, *args: str, inventory: str = "localhost,"):
+def _run(playbook: Path, tmp_path: Path, *args: str, inventory: str = "localhost,", path_prepend: Path | None = None):
     env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
+    if path_prepend:
+        env["PATH"] = f"{path_prepend}{os.pathsep}{env['PATH']}"
     env.update(ANSIBLE_NOCOLOR="1", ANSIBLE_LOCAL_TEMP=str(tmp_path), ANSIBLE_REMOTE_TEMP=str(tmp_path))
     return subprocess.run(["ansible-playbook", "-i", inventory, str(playbook), *args],
                           cwd=REPO, env=env, text=True, capture_output=True, check=False, timeout=120)
@@ -494,7 +496,7 @@ def test_clean_deploy_o11y_refuses_the_reviewed_commit_with_uncommitted_files(tm
 # nothing connects, and always --check.
 DEFAULT_USER = "deploy"  # the account the playbooks assume when ansible_user is unset
 SERVICE_VARS = "service_name=o11y monorepo_deploy_path=platform/services/o11y/deployment"
-PROD_REFUSAL = "Refusing: the prod teardown for"
+PROD_REFUSAL = "Refusing: the teardown for"
 PROD_TEARDOWN = "TASK [Stop and remove containers + volumes (prod)"
 
 
@@ -557,6 +559,104 @@ def test_a_forged_inventory_name_cannot_pass_a_remote_host_as_local_dev(forge, t
     assert proc.returncode != 0, proc.stdout
     assert CONTROLLER_LOCAL_REFUSAL in proc.stdout or "Refusing: pass -e confirm_o11y_reset" in proc.stdout, proc.stdout
     assert "TASK [Stop and remove containers" not in proc.stdout
+
+
+def _local_teardown_fixture(tmp_path: Path):
+    """A local-dev host whose teardown can really run: a genesis tree with a compose file, and a
+    fake `podman` ahead of the real engines on PATH that only logs its arguments. Returns the
+    inventory, the bin dir, the argument log and the marker a smuggled command would create."""
+    genesis = tmp_path / "genesis"
+    (genesis / "platform/services/o11y/deployment").mkdir(parents=True)
+    (genesis / "platform/services/o11y/deployment/compose.yml").write_text("services: {}\n")
+    log, marker = tmp_path / "engine-args", tmp_path / "pwned"
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    for name in ("podman", "docker"):
+        (bindir / name).write_text(f'#!/bin/sh\necho "$@" >> {log}\nexit 0\n')
+        (bindir / name).chmod(0o755)
+    return _clean_inventory(tmp_path, f"local_mode=true local_monorepo_dir={genesis} container_engine=podman"), \
+        bindir, log, marker, genesis
+
+
+# Each name the teardown scripts interpolate, with the inventory's value and a forgery that
+# would run a command (or, for the engine, name a program) when a script renders it.
+LOCAL_INPUTS = [
+    ("local_monorepo_dir", lambda t: str(t / "genesis"), lambda t: f"{t}/genesis/x$(touch {t}/pwned)"),
+    ("service_name", lambda t: "o11y", lambda t: f"o11y$(touch {t}/pwned)"),
+    ("monorepo_deploy_path", lambda t: "platform/services/o11y/deployment",
+     lambda t: f"platform/services/o11y/deployment/$(touch {t}/pwned)"),
+    ("container_engine", lambda t: "podman", lambda t: f"{t}/evil"),
+]
+
+
+@needs_ansible
+@pytest.mark.parametrize("kind", [0, 1, 2], ids=["plain", "context", "stateful"])
+@pytest.mark.parametrize("name, honest, forged", LOCAL_INPUTS, ids=["dir", "service", "path", "engine"])
+def test_a_forged_teardown_input_cannot_run_a_command_in_the_local_teardown(kind, name, honest, forged, tmp_path):
+    # The teardown scripts and the verify step read the pinned names, so what the checks saw is
+    # what ran. A refusal or the honest value is fine; a smuggled command or program is not.
+    inv, bindir, log, marker, genesis = _local_teardown_fixture(tmp_path)
+    evil = tmp_path / "evil"
+    evil.write_text(f"#!/bin/sh\ntouch {marker}\n")
+    evil.chmod(0o755)
+    forge = forgeries.templated_forgeries(name, honest, forged)[kind].values[0]
+    proc = _run(_destroy_only(tmp_path), tmp_path, "-e", forge(tmp_path),
+                "-e", json.dumps({"confirm_o11y_reset": "obs-local"}), inventory=inv, path_prepend=bindir)
+    assert not marker.exists(), proc.stdout
+    if proc.returncode == 0:
+        assert "compose" in log.read_text(), proc.stdout  # the honest teardown ran, on the fake engine
+    else:
+        assert "Refusing" in proc.stdout, proc.stdout
+    if kind != 2:
+        assert proc.returncode != 0, proc.stdout  # plain and context forgeries are refused outright
+
+
+PROD_ACCOUNT = "svc-w55-test"  # no such home directory: the prod removals below are no-ops
+
+
+def _prod_teardown_fixture(tmp_path: Path):
+    """The prod branch on a controller-local host named like a local-dev one: no local_mode, an
+    account with no home, a fake docker that only logs. Nothing exists at the paths it removes."""
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    for engine in ("podman", "docker"):
+        (bindir / engine).write_text(f'#!/bin/sh\necho "$@" >> {tmp_path / "engine-args"}\nexit 0\n')
+        (bindir / engine).chmod(0o755)
+    inv = _clean_inventory(tmp_path, f"ansible_user={PROD_ACCOUNT} container_engine=docker")
+    return inv, bindir, tmp_path / "pwned"
+
+
+@needs_ansible
+@pytest.mark.parametrize("mode", ["local", "prod"])
+@pytest.mark.parametrize("name", ["local_monorepo_dir", "service_name", "monorepo_deploy_path", "container_engine"])
+def test_a_late_flipping_template_never_reaches_the_teardown_scripts(mode, name, tmp_path):
+    # forgeries.templated_forgeries is honest on its FIRST rendering, which the task library's own
+    # early reads consume before the pin. A template honest for the first N renderings reaches
+    # the pin honest for some N, and whatever reads the public name afterwards sees the forgery.
+    # Over N = 1..8 the smuggled command must never run: every read after the pin is of the fact.
+    for limit in range(1, 9):
+        run = tmp_path / f"n{limit}"
+        run.mkdir()
+        if mode == "local":
+            inv, bindir, _log, marker, _genesis = _local_teardown_fixture(run)
+            honest, bad = {n: (h, f) for n, h, f in LOCAL_INPUTS}[name]
+        else:
+            inv, bindir, marker = _prod_teardown_fixture(run)
+            honest = {"local_monorepo_dir": lambda t: f"/home/{PROD_ACCOUNT}/agent-cloud",
+                      "service_name": lambda t: "o11y", "container_engine": lambda t: "docker",
+                      "monorepo_deploy_path": lambda t: "platform/services/o11y/deployment"}[name]
+            bad = {n: f for n, _h, f in LOCAL_INPUTS}[name]
+        (run / "evil").write_text(f"#!/bin/sh\ntouch {marker}\n")
+        (run / "evil").chmod(0o755)
+        counter = run / "renders"
+        shell = f"n=$(cat {counter} 2>/dev/null || echo 0); echo $((n+1)) > {counter}; echo $n"
+        cond = f"(lookup('ansible.builtin.pipe', {forgeries._string(shell)}) | int < {limit})"
+        template = ("{{ " + cond + " | ternary(" + forgeries._literal(honest(run)) + ", "
+                    + forgeries._literal(bad(run)) + ") }}")
+        _run(_destroy_only(run), run, "-e", json.dumps({name: template}),
+             "-e", json.dumps({"confirm_o11y_reset": "obs-local", "ansible_become": False}), inventory=inv,
+             path_prepend=bindir)
+        assert not marker.exists(), f"{mode}: {name} honest for {limit} renderings ran the smuggled command"
 
 
 def _destroy_only(tmp_path: Path) -> Path:
