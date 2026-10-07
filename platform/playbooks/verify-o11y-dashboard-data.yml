@@ -7,7 +7,7 @@
 # metric names are wrong, or whose traffic never arrived, loads just the same. This play
 # evaluates the dashboard's own Prometheus and Loki queries against the receiver over the
 # dashboard time range and reports, per panel, how many result groups contain data. It
-# passes only when every selected Prometheus or Loki panel has data.
+# passes only when every selected Prometheus panel and every explicitly selected Loki panel has data.
 # Validation gates that need it: inference-gateway-agentgateway 3.3 (one hour of traffic
 # renders p50/p95 first-token latency and per-identity counts) and
 # inference-telemetry-production 3.5 (the three inference dashboards render).
@@ -19,8 +19,9 @@
 #
 # How the queries are formed — Grafana's template and built-in variables, the step, instant
 # versus range, the default datasource, NaN and bounded Loki stream results — is documented,
-# with sources, in files/verify-o11y-dashboard-data.py. Tempo and other datasources are
-# skipped, not verified. A variable whose saved default the script cannot reproduce (a query
+# with sources, in files/verify-o11y-dashboard-data.py. Loki panels are evaluated only when
+# their exact titles are in panel_titles; whole-dashboard runs skip Loki. Tempo and other
+# datasources are skipped, not verified. A variable whose saved default the script cannot reproduce (a query
 # variable with a concrete selection, or All with no Custom all value) is refused unless
 # dashboard_variables supplies it.
 #
@@ -36,7 +37,8 @@
 #   dashboard_uid        the dashboard's uid (the file name without .json, for the committed
 #                        dashboards), e.g. agentgateway-client-view
 #   lookback             dashboard time range, one Prometheus duration unit (default 1h)
-#   panel_titles         optional JSON list of exact panel titles; empty means every panel
+#   panel_titles         optional JSON list of exact panel titles; empty means every
+#                        Prometheus panel, while Loki panels require an explicit title
 #   dashboard_variables  optional JSON object overriding template variables, e.g.
 #                        {"compare_offset": "7d"}; refused if it could change the query's
 #                        structure (quotes, braces, parentheses, backslashes, line breaks;
@@ -75,7 +77,7 @@
         _panel_titles: "{{ (panel_titles | default('[]', true)) | from_json if (panel_titles | default('[]', true)) is string else panel_titles }}"
         _dashboard_variables: "{{ (dashboard_variables | default('{}', true)) | from_json if (dashboard_variables | default('{}', true)) is string else dashboard_variables }}"
 
-- name: Evaluate the dashboard's Prometheus and Loki panels on the receiver
+- name: Evaluate the selected dashboard data queries on the receiver
   hosts: o11y_svc
   gather_facts: false
   become: false
@@ -132,7 +134,7 @@
       ansible.builtin.debug:
         msg: "{{ _vdd_readback.stdout | from_json | combine({'receiver_revision': _vdd_revision.stdout | default('') | trim if _vdd_revision.rc | default(1) == 0 else 'unknown'}) }}"
 
-    - name: Require every selected Prometheus or Loki panel to render data
+    - name: Require every selected Prometheus or explicitly selected Loki panel to render data
       ansible.builtin.assert:
         that: (_vdd_readback.stdout | from_json).status == 'pass'
         fail_msg: >-
@@ -141,6 +143,7 @@
              else 'Panels without data over ' ~ _vdd_lookback ~ ': '
                   ~ ((_vdd_readback.stdout | from_json).get('panels_failing', []) | join('; ')) }}
         success_msg: >-
-          {{ (_vdd_readback.stdout | from_json).get('panels_verified', 0) }} Prometheus or Loki panels of
+          {{ (_vdd_readback.stdout | from_json).get('panels_verified', 0) }}
+          {{ 'panel' if (_vdd_readback.stdout | from_json).get('panels_verified', 0) == 1 else 'panels' }} of
           {{ dashboard_uid }} render data over {{ _vdd_lookback }}:
           {{ (_vdd_readback.stdout | from_json).get('verified_panel_titles', []) | join('; ') }}.

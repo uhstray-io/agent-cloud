@@ -223,9 +223,9 @@ def test_inference_dashboards_plan_without_overrides(uid):
     planned = vdd.plan(_payload(uid))
     exprs = [t["expr"] for p in planned["panels"] for t in p["targets"] if "expr" in t]
     assert exprs and not any("$" in e for e in exprs)
+    skipped = [t for p in planned["panels"] for t in p["targets"] if t.get("status") == "skipped"]
     if uid == "inference-fleet-health":
-        queried = [t for p in planned["panels"] for t in p["targets"] if t["datasource"] == "loki"]
-        assert len(queried) == 2 and all("expr" in t for t in queried)
+        assert {t["datasource"] for t in skipped} == {"loki"}
 
 
 def test_placement_comparison_uses_the_saved_custom_offset_and_honours_an_override():
@@ -400,6 +400,22 @@ def test_unsupported_datasources_remain_skipped_and_do_not_count(tmp_path, prome
     assert skipped["targets"][0]["status"] == "skipped"
 
 
+def test_whole_dashboard_skips_loki_so_empty_log_panels_do_not_fail(prometheus, loki):
+    loki.rules['service="vllm"'] = "empty"
+    report = vdd.evaluate(
+        _payload("inference-fleet-health", prometheus_url=prometheus.url, loki_url=loki.url)
+    )
+    assert report["status"] == "pass"
+    assert report["panels_skipped"] == 2
+    assert loki.requests == []
+    assert all(
+        t["status"] == "skipped"
+        for p in report["panels"]
+        for t in p["targets"]
+        if t.get("datasource") == "loki"
+    )
+
+
 def test_mixed_prometheus_and_loki_panels_are_both_verified(prometheus, loki):
     report = vdd.evaluate(
         _payload(
@@ -442,6 +458,7 @@ def test_loki_metric_logql_results_use_the_metric_result_counter(tmp_path, loki)
         _payload(
             "synthetic",
             dashboards_dir=_dashboard_dir(tmp_path, dashboard),
+            panel_titles=["Only"],
             loki_url=loki.url,
         ),
         now=1700003600,
@@ -460,7 +477,12 @@ def test_instant_loki_metric_queries_use_query_endpoint(tmp_path, loki):
     dashboard["panels"][0]["targets"][0]["queryType"] = "instant"
     loki.rules["sum("] = "metric"
     report = vdd.evaluate(
-        _payload("synthetic", dashboards_dir=_dashboard_dir(tmp_path, dashboard), loki_url=loki.url),
+        _payload(
+            "synthetic",
+            dashboards_dir=_dashboard_dir(tmp_path, dashboard),
+            panel_titles=["Only"],
+            loki_url=loki.url,
+        ),
         now=1700003600,
     )
     assert report["status"] == "pass"
@@ -472,7 +494,9 @@ def test_instant_loki_raw_stream_query_is_refused(tmp_path):
     dashboard = _synthetic('{service="api"}', datasource={"type": "loki", "uid": "loki"})
     dashboard["panels"][0]["targets"][0]["queryType"] = "instant"
     with pytest.raises(vdd.Refused, match="instant log stream query"):
-        vdd.plan(_payload("synthetic", dashboards_dir=_dashboard_dir(tmp_path, dashboard)))
+        vdd.plan(
+            _payload("synthetic", dashboards_dir=_dashboard_dir(tmp_path, dashboard), panel_titles=["Only"])
+        )
 
 
 def test_empty_loki_stream_result_fails_with_counts_only(loki):
@@ -695,7 +719,7 @@ def _run(receiver, *extra):
 def test_playbook_passes_identically_under_check(receiver, check):
     proc = _run(receiver, "-e", "dashboard_uid=agentgateway-client-view", *(["--check"] if check else []))
     assert proc.returncode == 0, proc.stdout[-4000:]
-    assert "6 Prometheus or Loki panels of agentgateway-client-view render data over 1h" in proc.stdout
+    assert "6 panels of agentgateway-client-view render data over 1h" in proc.stdout
     assert "First-token latency p50; First-token latency p95; " in proc.stdout
     assert re.search(r"receiver\s+: ok=\d+\s+changed=0", proc.stdout)
     assert not any(label in proc.stdout for label in SECRET_LABELS)
@@ -738,7 +762,7 @@ def test_playbook_queries_selected_loki_panel_and_discards_log_content(receiver)
         '{"panel_titles": "[\\"Recent vLLM journal\\"]"}',
     )
     assert proc.returncode == 0, proc.stdout[-4000:]
-    assert "1 Prometheus or Loki panels of inference-fleet-health render data" in proc.stdout
+    assert "1 panel of inference-fleet-health render data" in proc.stdout
     assert receiver["loki"].requests[0][0] == "/loki/api/v1/query_range"
     assert "private log line" not in proc.stdout
     assert not any(label in proc.stdout for label in SECRET_LABELS)

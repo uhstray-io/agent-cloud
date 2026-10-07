@@ -1439,19 +1439,18 @@ Semaphore task 3341 succeeded with `changed=0` at exact reviewed `dev` SHA
 LVM-thin, so `declared_thinpool_linked=true`,
 `declared_thick_lvm_candidate_exact_match=false`, and all declared thick
 headroom booleans were false. The survey separately found one eligible visible
-thick-LVM candidate with complete VG mappings and one candidate in each of the
-three fixed reported-headroom bands. One candidate PV had a direct disk-path
-join and reported LVM use. Physical/backing media, device safety, allocation,
-PBS readiness/suitability, write authorization, and snapshot inventory
-completeness remained false. This proves the read-only survey receipt only; it
-does not authorize restore or capacity changes.
+thick-LVM candidate with complete VG mappings. That candidate met each cumulative
+minimum reported-headroom threshold; the 256/512/1024 GiB counts were 1/1/1.
+One candidate PV had a direct disk-path join and reported LVM use. Physical/backing
+media, device safety, allocation, PBS readiness/suitability, write authorization,
+and snapshot inventory completeness remained false. This proves the read-only
+survey receipt only; it does not authorize restore or capacity changes.
 
 ## 2026-10-07 provisioned-dashboard query verification
 
-The read-only dashboard data verifier now evaluates selected Prometheus and Loki
-targets from the receiver's provisioned dashboard JSON. Loki stream queries use a
-bounded range and result limit; metric LogQL results use the vector/matrix counters.
-Reports contain panel titles, target statuses, and counts only. Fake-backend tests
-cover stream and metric results, empty data, redacted errors, mixed dashboards, and
-redirect refusal. Dev-bound Semaphore validation of the Service Overview's two Loki
-panels remains pending.
+The read-only dashboard data verifier evaluates Prometheus panels from the receiver's
+provisioned dashboard JSON and evaluates Loki panels only when their exact titles are
+explicitly selected. Whole-dashboard runs skip Loki because a healthy log panel can be
+empty. Loki stream queries use a bounded range and result limit; metric LogQL results use
+the vector/matrix counters. Reports contain panel titles, target statuses, and counts only.
+Dev-bound Semaphore validation of the Service Overview's two Loki panels remains pending.

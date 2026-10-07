@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Evaluate one provisioned Grafana dashboard's Prometheus and Loki panels.
+"""Evaluate one provisioned Grafana dashboard's Prometheus panels and explicitly selected Loki panels.
 
 Read-only: it reads the dashboard JSON the receiver's Grafana provisions from, and sends
 query and query_range requests to the receiver's Prometheus and Loki APIs. It prints one
@@ -10,7 +10,8 @@ Input (stdin, JSON):
   dashboards_dir   directory Grafana's file provider loads (config/grafana/dashboards)
   dashboard_uid    the dashboard's `uid`
   lookback         Prometheus duration, one unit: 30m, 1h, 2d (the dashboard time range)
-  panel_titles     optional list of exact panel titles; empty means every panel
+  panel_titles     optional exact panel titles; empty means every Prometheus panel, while
+                   Loki panels must be explicitly selected by title
   variables        optional {name: value} overriding a template variable's saved default;
                    substituted as written, as Grafana substitutes a custom All value, but
                    never one that could change the query's structure (see below)
@@ -36,7 +37,8 @@ Grafana semantics reproduced, and where they come from:
     LogQL targets use Loki's instant endpoint
     (https://grafana.com/docs/loki/latest/reference/loki-http-api/).
   - A target or panel with no datasource uses the default one, which is Prometheus
-    (datasources.yml, isDefault). Tempo and other datasources are reported skipped.
+    (datasources.yml, isDefault). Loki targets are evaluated only when their panel title is
+    explicitly named in `panel_titles`; whole-dashboard runs skip Loki and unsupported data sources.
   - What this script does not reproduce, an evaluated panel may not use: a panel's own
     time range (timeFrom, timeShift), its query options (maxDataPoints, a min interval on
     the panel or a target, intervalFactor), repetition (repeat, on the panel or its row) and
@@ -61,8 +63,9 @@ encodes NaN as a string (https://prometheus.io/docs/prometheus/latest/querying/a
 histogram_quantile over a window with no traffic returns NaN, which a panel draws as a gap.
 A native histogram sample (the `histogram` key of a vector series, `histograms` of a matrix
 series, same page) counts when its observation count is finite.
-A panel passes when every visible Prometheus target has data; the run passes when every
-selected Prometheus panel passes.
+A panel passes when every queried Prometheus or Loki target has data; the run passes when at
+least one panel is evaluated and every evaluated panel passes. Whole-dashboard runs evaluate
+Prometheus panels; Loki panels require explicit title selection.
 
 Exit status: 0 pass, 1 a panel has no data or a query failed, 2 refused (bad input).
 """
@@ -267,7 +270,7 @@ def interpolate(expr: str, values: dict[str, str], builtins: dict[str, str]) -> 
 
 
 def plan(payload: dict[str, Any]) -> dict[str, Any]:
-    """Resolve every selected panel's queries without contacting Prometheus."""
+    """Resolve every selected panel's queries without contacting either backend."""
     lookback = duration_seconds(payload.get("lookback"))
     scrape = int(payload.get("scrape_interval_seconds") or 0)
     if scrape <= 0:
@@ -317,6 +320,9 @@ def plan(payload: dict[str, Any]) -> dict[str, Any]:
             kind = datasource_type(target, panel)
             ref = target.get("refId", "")
             if kind not in ("prometheus", "loki"):
+                entry["targets"].append({"ref": ref, "datasource": kind, "status": "skipped"})
+                continue
+            if kind == "loki" and not titles:
                 entry["targets"].append({"ref": ref, "datasource": kind, "status": "skipped"})
                 continue
             if target.get("hide"):
