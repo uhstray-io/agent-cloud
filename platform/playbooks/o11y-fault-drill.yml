@@ -134,11 +134,31 @@
     _probe_health_from: "{{ inventory_hostname if (_probe_gateway_identity | bool) else 'localhost' }}"
     # grafana
     _grafana_hold_minutes: "{{ drill_grafana_hold_minutes | default(15) | int }}"
-    _watcher_marker: "o11y liveness watcher:"
+    # Alert identity. Grafana sets an alert instance's `alertname` label to its rule's title
+    # (Grafana docs, "Labels and annotations", reserved labels), so _drill_alertname is the
+    # title read back from the provisioned rule, never a copy of it here. A firing alert
+    # counts only when that name AND the fault's own labels match; another rule firing for
+    # the same node or model proves nothing about this one.
     _drill_proved:
-      exporter: inference_target_down fired
-      probe: inference_probe_failing fired and reached Discord with /health 200 throughout
-      grafana: the liveness watcher reached Discord
+      exporter: "{{ _drill_rule_uid }} ({{ _drill_alertname | default('') }}) fired for node {{ drill_node | default('') }}"
+      probe: >-
+        {{ _drill_rule_uid }} ({{ _drill_alertname | default('') }}) fired for model {{ _drill_model.stdout | default('') }}
+        and reached Discord naming both, with /health 200 throughout
+      grafana: the liveness watcher's Grafana-health failure reached Discord
+    # What ONE Discord message must hold to count as this mode's receipt. Probe: the contact
+    # point's firing line, and inside the default message's Firing section the label lines
+    # " - alertname = <title>" and " - model_name = <this run's model>" (grafana/alerting
+    # templates/default_template.go, pinned by Grafana 11.4.0; Discord content is that
+    # message, truncated at 2000 runes). Grafana: the watcher's line naming Grafana's own
+    # health check, the first failure it lists (check-o11y-liveness.yml); its other failures
+    # (token, datasource) are not this fault.
+    _drill_firing_section: '[*][*]Firing[*][*](?:(?![*][*]Resolved[*][*]).)*^'
+    _drill_receipt:
+      probe: >-
+        {{ '(?ms)(?=.*o11y-delivery-status=firing service=vllm$)'
+           ~ '(?=.*' ~ _drill_firing_section ~ ' - alertname = ' ~ (_drill_alertname | default('') | regex_escape) ~ '$)'
+           ~ '(?=.*' ~ _drill_firing_section ~ ' - model_name = ' ~ (_drill_model.stdout | default('') | regex_escape) ~ '$)' }}
+      grafana: '^o11y liveness watcher: grafana /api/health failed'
     # One Grafana API read, admin credential from the container's own environment.
     _grafana_api_sh: >-
       printf 'user = "admin:%s"\n' "$GF_SECURITY_ADMIN_PASSWORD" |
@@ -193,10 +213,17 @@
       check_mode: false
       when: _drill_rule_uid | length > 0 and not _restore_only
 
+    - name: Hold the alertname this mode must match (the rule's title)
+      ansible.builtin.set_fact:
+        _drill_alertname: "{{ (_drill_rule.stdout | from_json).title | default('') }}"
+      when: _drill_rule_uid | length > 0 and not _restore_only
+
     - name: Refuse a paused rule; the drill would prove nothing
       ansible.builtin.assert:
-        that: not ((_drill_rule.stdout | from_json).isPaused | bool)
-        fail_msg: "{{ _drill_rule_uid }} is paused (alerts not enabled); no fault was induced."
+        that:
+          - not ((_drill_rule.stdout | from_json).isPaused | bool)
+          - _drill_alertname | length > 0
+        fail_msg: "{{ _drill_rule_uid }} is paused (alerts not enabled) or has no title; no fault was induced."
       when: _drill_rule_uid | length > 0 and not _restore_only
 
     - name: Refuse a cleartext OpenBao endpoint
@@ -293,6 +320,8 @@
           until: >-
             _exporter_alerts.rc == 0 and
             ((_exporter_alerts.stdout | from_json).data.alerts |
+             selectattr('labels.alertname', 'defined') |
+             selectattr('labels.alertname', 'equalto', _drill_alertname) |
              selectattr('labels.node', 'defined') |
              selectattr('labels.node', 'equalto', drill_node) |
              selectattr('labels.job', 'defined') |
@@ -370,6 +399,8 @@
           until: >-
             _probe_alerts.rc == 0 and
             ((_probe_alerts.stdout | from_json).data.alerts |
+             selectattr('labels.alertname', 'defined') |
+             selectattr('labels.alertname', 'equalto', _drill_alertname) |
              selectattr('labels.model_name', 'defined') |
              selectattr('labels.model_name', 'equalto', _drill_model.stdout) |
              selectattr('state', 'match', '^(Alerting|firing)$') | list | length) > 0
@@ -382,8 +413,8 @@
           changed_when: true
           when: drill == 'grafana' and not _restore_only
 
-        # Receipt for probe (the contact point's firing line, service=vllm) and for
-        # grafana (the watcher's own line). Only messages after the pre-fault mark count.
+        # Receipt for probe and grafana: one message from the alert webhook holding the
+        # whole _drill_receipt for the mode. Only messages after the pre-fault mark count.
         - name: Wait for the matching Discord message from the alert webhook
           ansible.builtin.uri:
             url: >-
@@ -400,8 +431,8 @@
             (_discord_messages.json | default([]) |
              selectattr('webhook_id', 'defined') |
              selectattr('webhook_id', 'equalto', _webhook_id) |
-             list | to_json) is search(
-               'o11y-delivery-status=firing service=vllm' if drill == 'probe' else _watcher_marker)
+             selectattr('content', 'defined') |
+             selectattr('content', 'search', _drill_receipt[drill]) | list | length) > 0
           no_log: true
           ignore_errors: true
           check_mode: false
@@ -413,7 +444,8 @@
             that: _discord_messages is succeeded
             fail_msg: >-
               No matching Discord message from the alert webhook within the hold
-              ({{ 'contact point firing line' if drill == 'probe' else 'liveness watcher line' }}).
+              ({{ 'contact point firing for ' ~ _drill_alertname ~ ' and model ' ~ _drill_model.stdout
+                  if drill == 'probe' else 'liveness watcher line naming grafana /api/health' }}).
           when: drill in ['probe', 'grafana'] and not _restore_only
       always:
         - name: Restart the DGX node exporter

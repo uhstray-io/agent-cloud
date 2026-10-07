@@ -30,7 +30,7 @@ exit 255
 FAKE_ENGINE = """#!/bin/sh
 printf '%s\\n' "$*" >> "$FAKE_ENGINE_LOG"
 case "$*" in
-  *provisioning/alert-rules/*) echo '{"isPaused": false}' ;;
+  *provisioning/alert-rules/*) echo '{"isPaused": false, "title": "DGX Spark scrape target down"}' ;;
   *) echo '{}' ;;
 esac
 """
@@ -61,12 +61,12 @@ def clean_copy(tmp_path_factory):
 
 
 def run(tmp_path, clean_copy, extra, *, check=False, exporter_host="o11y-test", other_hosts=None,
-        expect_dirty=False):
+        expect_dirty=False, engine_script=FAKE_ENGINE):
     root, sha = clean_copy
     bindir = tmp_path / "bin"
     bindir.mkdir()
     engine = bindir / "podman"
-    engine.write_text(FAKE_ENGINE)
+    engine.write_text(engine_script)
     engine.chmod(0o755)
     ssh = bindir / "ssh"
     ssh.write_text(FAKE_SSH)
@@ -404,3 +404,161 @@ def test_the_health_hold_is_read_from_the_path_aware_host():
     assert task["delegate_to"] == "{{ _probe_health_from }}"
     assert task["ansible.builtin.uri"]["url"] == "{{ _probe_health_url }}"
     assert task["ansible.builtin.uri"]["status_code"] == [200]
+
+
+# ── alert identity: the firing proof and the Discord receipt name THIS mode's alert ──
+# PR #465 review: the probe check matched any firing alert carrying the drill model, so a
+# different rule firing for that model passed it. Each case evaluates the playbook's own
+# expression with synthetic Grafana and Discord payloads.
+
+PROBE_TITLE = "Synthetic inference probe failing"
+EXPORTER_TITLE = "DGX Spark scrape target down"
+DRILL_MODEL = "o11y-drill-absent-model-0123456789ab"
+WEBHOOK = "900000000000000001"
+
+
+def _walk(tasks):
+    for t in tasks:
+        yield t
+        for key in ("block", "rescue", "always"):
+            yield from _walk(t.get(key, []))
+
+
+def _task(name):
+    return next(t for t in _walk(_play_tasks()) if t.get("name") == name)
+
+
+def _evaluate(tmp_path, expr, facts):
+    """True when the playbook expression `expr` holds for `facts`, with the play's own vars."""
+    play_vars = playbook_yaml.load(PLAYBOOK)[2]["vars"]
+    harness = [{"hosts": "localhost", "connection": "local", "gather_facts": False,
+                "vars": {**play_vars, **facts},
+                "tasks": [{"ansible.builtin.debug": {"msg": "VERDICT {{ (" + expr + ") | bool }}"}}]}]
+    (tmp_path / "pb.yml").write_text(yaml.safe_dump(harness))
+    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
+    env.update(ANSIBLE_NOCOLOR="1", ANSIBLE_STDOUT_CALLBACK="default", ANSIBLE_LOCALHOST_WARNING="0",
+               ANSIBLE_INVENTORY_UNPARSED_WARNING="0")
+    done = subprocess.run(["ansible-playbook", "-i", "localhost,", str(tmp_path / "pb.yml"),
+                           "-e", f"ansible_python_interpreter={shutil.which('python3')}"],
+                          cwd=ROOT, env=env, text=True, capture_output=True, stdin=subprocess.DEVNULL)
+    assert done.returncode == 0, done.stdout + done.stderr
+    if "VERDICT True" in done.stdout:
+        return True
+    assert "VERDICT False" in done.stdout, done.stdout
+    return False
+
+
+def _alerts(*alerts):
+    return {"rc": 0, "stdout": json.dumps({"data": {"alerts": [
+        {"labels": labels, "state": "Alerting"} for labels in alerts]}})}
+
+
+@pytest.mark.parametrize(("labels", "want"), [
+    ({"alertname": PROBE_TITLE, "model_name": DRILL_MODEL}, True),
+    # Same model, another rule: the staleness alert carries model_name too.
+    ({"alertname": "Synthetic inference probe has not reported", "model_name": DRILL_MODEL}, False),
+    ({"model_name": DRILL_MODEL}, False),
+    ({"alertname": PROBE_TITLE, "model_name": "served-model-a"}, False),
+])
+def test_probe_firing_proof_requires_the_rule_and_the_model(tmp_path, labels, want):
+    task = _task("Require inference_probe_failing firing for the drill model")
+    facts = {"drill": "probe", "_probe_alerts": _alerts(labels), "_drill_alertname": PROBE_TITLE,
+             "_drill_model": {"stdout": DRILL_MODEL}}
+    assert _evaluate(tmp_path, task["until"], facts) is want
+
+
+@pytest.mark.parametrize(("labels", "want"), [
+    ({"alertname": EXPORTER_TITLE, "node": "spark-test", "job": "dgx-spark-node"}, True),
+    # Same node and job, another rule (the memory guard alerts carry both).
+    ({"alertname": "DGX Spark node free memory below the memory guard floor", "node": "spark-test",
+      "job": "dgx-spark-node"}, False),
+    ({"node": "spark-test", "job": "dgx-spark-node"}, False),
+    ({"alertname": EXPORTER_TITLE, "node": "spark-other", "job": "dgx-spark-node"}, False),
+])
+def test_exporter_firing_proof_requires_the_rule_and_the_node(tmp_path, labels, want):
+    task = _task("Wait for inference_target_down to fire for the stopped node")
+    facts = {"drill": "exporter", "drill_node": "spark-test", "_exporter_alerts": _alerts(labels),
+             "_drill_alertname": EXPORTER_TITLE}
+    assert _evaluate(tmp_path, task["until"], facts) is want
+
+
+def _contact_message(firing, resolved=()):
+    """The agent-cloud-ops contact point's content: marker lines + Grafana's default.message."""
+    def alerts(entries):
+        return "".join(
+            "\nValue: B=0\nLabels:\n" + "".join(f" - {k} = {v}\n" for k, v in sorted(e.items()))
+            + "Annotations:\n - summary = synthetic\n" for e in entries)
+    head = "".join(f"o11y-delivery-status=firing service={e['service']}\n" for e in firing) + "\n"
+    body = ("**Firing**\n" + alerts(firing) if firing else "") + (
+        "\n\n**Resolved**\n" + alerts(resolved) if resolved else "")
+    return head + body
+
+
+def _probe_alert(alertname=PROBE_TITLE, model=DRILL_MODEL):
+    return {"alertname": alertname, "model_name": model, "service": "vllm", "cluster": "dgx-spark",
+            "environment": "prod", "grafana_folder": "agent-cloud", "severity": "critical"}
+
+
+def _receipt(tmp_path, drill, contents, webhook=WEBHOOK):
+    task = _task("Wait for the matching Discord message from the alert webhook")
+    facts = {"drill": drill, "_webhook_id": WEBHOOK, "_drill_alertname": PROBE_TITLE,
+             "_drill_model": {"stdout": DRILL_MODEL},
+             "_discord_messages": {"json": [{"webhook_id": webhook, "content": c} for c in contents]}}
+    return _evaluate(tmp_path, task["until"], facts)
+
+
+def test_probe_receipt_names_the_rule_and_this_runs_model(tmp_path):
+    assert _receipt(tmp_path, "probe", [_contact_message([_probe_alert()])]) is True
+
+
+@pytest.mark.parametrize("contents", [
+    # Another vllm rule's notification, same contact point line.
+    [_contact_message([{**_probe_alert(alertname="vLLM metric families absent"), "model_name": "x"}])],
+    # The probe rule, but for another model.
+    [_contact_message([_probe_alert(model="served-model-a")])],
+    # This run's model only in the Resolved section.
+    [_contact_message([_probe_alert(model="served-model-a")], resolved=[_probe_alert()])],
+    # The two halves split across two messages.
+    [_contact_message([_probe_alert(model="served-model-a")]),
+     _contact_message([{**_probe_alert(alertname="vLLM metric families absent")}])],
+    # Labels right, but not through the contact point's firing line.
+    [_contact_message([_probe_alert()]).replace("o11y-delivery-status=firing service=vllm", "")],
+])
+def test_probe_receipt_refuses_another_alerts_message(tmp_path, contents):
+    assert _receipt(tmp_path, "probe", contents) is False
+
+
+def test_probe_receipt_ignores_other_webhooks(tmp_path):
+    assert _receipt(tmp_path, "probe", [_contact_message([_probe_alert()])], webhook="900000000000000002") is False
+
+
+@pytest.mark.parametrize(("content", "want"), [
+    ("o11y liveness watcher: grafana /api/health failed (status -1); prometheus datasource unhealthy "
+     "(status -1) (https://grafana.example.test)", True),
+    # The watcher posting for a reason that is not Grafana being down.
+    ("o11y liveness watcher: watcher_token is not in secret/services/o11y; run Provision o11y Watcher Token "
+     "(https://grafana.example.test)", False),
+    ("o11y liveness watcher: prometheus datasource unhealthy (status 502) (https://grafana.example.test)", False),
+])
+def test_grafana_receipt_requires_the_grafana_health_failure(tmp_path, content, want):
+    assert _receipt(tmp_path, "grafana", [content]) is want
+
+
+def test_final_report_names_the_alert_read_from_grafana(tmp_path):
+    play_vars = playbook_yaml.load(PLAYBOOK)[2]["vars"]
+    expr = "_drill_proved[drill] is search('inference_probe_failing [(]Read Back Title[)] fired for model " \
+           + DRILL_MODEL + "')"
+    facts = {"drill": "probe", "_drill_rule_uid": "inference_probe_failing", "_drill_alertname": "Read Back Title",
+             "_drill_model": {"stdout": DRILL_MODEL}}
+    assert "_drill_alertname" in play_vars["_drill_proved"]["probe"]
+    assert _evaluate(tmp_path, expr, facts) is True
+
+
+def test_a_rule_without_a_title_is_refused_before_any_fault(tmp_path, clean_copy):
+    untitled = FAKE_ENGINE.replace(', "title": "DGX Spark scrape target down"', "")
+    rc, out, calls = run(tmp_path, clean_copy, {
+        "drill": "exporter", "confirm_fault_drill": "exporter", "drill_node": "spark-test",
+        "drill_window_confirmed": True}, check=True, engine_script=untitled)
+    assert rc != 0
+    assert "has no title; no fault was induced" in out
+    assert all(c.startswith("exec o11y-grafana") for c in calls), calls
