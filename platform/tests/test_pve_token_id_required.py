@@ -100,6 +100,24 @@ def test_each_pve_play_reads_its_token_id_from_the_store_itself(name):
             f"{name}: play {play.get('name')!r} does not read the stored token id itself")
 
 
+def test_every_private_name_in_module_defaults_is_a_play_var():
+    # Semaphore task 3177: module_defaults is templated for every task, fact gathering and the
+    # task that resolves the connection included. The template play named `_pve_token_id`
+    # there and set it only by set_fact, which ansible-core before 2.19 refuses as undefined;
+    # 2.21 tolerates it, so a run on a newer controller cannot catch it. A `_` name is play
+    # scoped (no inventory supplies it), so the play itself must declare it.
+    missing = []
+    for path in playbook_yaml.files():
+        for play in playbook_yaml.load(path) or []:
+            if not isinstance(play, dict) or "module_defaults" not in play:
+                continue
+            for text in playbook_yaml.strings(play["module_defaults"]):
+                for expr in re.findall(r"\{\{(.*?)\}\}", text):
+                    missing += [f"{path.name}: {name}" for name in re.findall(r"(?<![\w.])(_[a-z]\w*)", expr)
+                                if name not in (play.get("vars") or {})]
+    assert not missing, missing
+
+
 def _run_guards(tmp_path, name, token_id):
     var = TOKEN_ID_VAR[name]
     guards = [copy.deepcopy(g) for play in _plays_with_pve_header(PLAYBOOKS / name)

@@ -15,6 +15,7 @@ The patterns are assembled from fragments so this file does not match itself.
 import os
 import re
 import subprocess
+import tempfile
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
@@ -26,20 +27,29 @@ FORBIDDEN = {
 }
 
 
-def _git(*args, stdin=None):
+def _git(*args, stdin=None, stdout=subprocess.PIPE):
     # Git exports GIT_DIR and friends to hooks; clear them so this reads THIS checkout.
     env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
-    return subprocess.run(["git", "-C", str(REPO), *args], env=env, check=True, capture_output=True,
-                          input=stdin).stdout
+    return subprocess.run(["git", "-C", str(REPO), *args], env=env, check=True, stdin=stdin, stdout=stdout,
+                          stderr=subprocess.DEVNULL).stdout
 
 
 def committed(rev="HEAD"):
     """(path, bytes) for every blob in `rev`. The committed tree is what a push publishes, so
     working-tree churn (an indexer rewriting a tracked artifact, an unstaged edit) neither
-    trips this nor hides from it once committed."""
+    trips this nor hides from it once committed.
+
+    cat-file reads its object list from a file and writes into a file: no pipe in either
+    direction. Feeding ~1,000 ids through stdin while its output came back through a pipe
+    deadlocked a pytest-xdist worker on macOS for 1h43m (both sides blocked on a full pipe)."""
     entries = [e.split("\t", 1) for e in _git("ls-tree", "-r", "-z", rev).decode().split("\0") if e]
     blobs = [(meta.split()[2], path) for meta, path in entries if meta.split()[1] == "blob"]
-    stream = _git("cat-file", "--batch", stdin="".join(f"{oid}\n" for oid, _ in blobs).encode())
+    with tempfile.TemporaryDirectory() as scratch:
+        ids, objects = Path(scratch) / "ids", Path(scratch) / "objects"
+        ids.write_text("".join(f"{oid}\n" for oid, _ in blobs))
+        with ids.open("rb") as src, objects.open("wb") as dst:
+            _git("cat-file", "--batch", stdin=src, stdout=dst)
+        stream = objects.read_bytes()
     out, pos = [], 0
     for _oid, path in blobs:
         header_end = stream.index(b"\n", pos)

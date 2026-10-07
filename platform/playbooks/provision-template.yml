@@ -38,6 +38,14 @@
          else lookup('community.hashi_vault.hashi_vault', 'secret/data/services/proxmox',
                      url=_bao_url, auth_method='approle',
                      role_id=_bao_role_id, secret_id=_bao_secret_id) }}
+    # Placeholders until "Resolve the Proxmox connection" sets them as facts, which take
+    # precedence over play vars. module_defaults is templated for EVERY task, fact
+    # gathering and the resolution itself included, and ansible-core before 2.19 fails
+    # the task on an undefined name there (Semaphore task 3177). The refusals below run
+    # before any request, so an empty value never reaches Proxmox.
+    _pve_host: ""
+    _pve_token_id: ""
+    _pve_secret: ""
     _node: "{{ target_node | default('alphacentauri') }}"
     _vmid: "{{ template_vmid | default(9000) }}"
     _name: "ubuntu-2404-template"
