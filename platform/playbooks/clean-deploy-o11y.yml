@@ -21,8 +21,11 @@
 # is a public variable an extra var can set, which would have waived them for production.
 # Local dev runs the o11y host with ansible_connection=local (its inventories, and
 # bootstrap-local-dev.yml's) against an uncommitted working tree, so the gates cannot apply
-# there. An extra var that forges ansible_connection=local moves the destroy onto the
-# controller itself, so it still cannot reach the remote host's data unreviewed.
+# there. An extra var that forges ansible_connection=local on a remote host would move the
+# destroy onto the controller itself (compose down -v, removal of the service's containers,
+# the clone), so tasks/clean-service.yml refuses a local connection unless every host of the
+# play is named <service>-local, the name every local-dev inventory gives its hosts (read from
+# ansible_play_hosts_all, which an extra var cannot set).
 
 # An extra var outranks every value this playbook computes, so refuse any that sets an
 # internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).

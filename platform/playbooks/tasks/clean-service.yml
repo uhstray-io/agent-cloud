@@ -58,11 +58,35 @@
 - name: "Pin the teardown's mode and the prod inputs, each read once"
   ansible.builtin.set_fact:
     _clean_local_mode: "{{ local_mode | default(false) | bool }}"
+    _clean_connection: "{{ ansible_connection | default('ssh') }}"
     _clean_prod_user: "{{ ansible_user | default('deploy') }}"
     _clean_prod_service: "{{ service_name }}"
     _clean_prod_dir: "{{ _monorepo_dir }}"
     _clean_prod_path: "{{ monorepo_deploy_path }}"
     _clean_prod_engine: "{{ container_engine | default('docker') }}"
+
+# A controller-local connection runs every teardown task below ON THE CONTROLLER: the
+# compose `down -v`, the `rm -f` of every container whose name starts with the service name,
+# and the clone removal. `ansible_connection` is a public variable, so `-e
+# ansible_connection=local` moves a prod host's destroy there, and no variable an extra var can
+# set says the host is a local-dev one (local_mode, local_monorepo_dir are as forgeable, and so
+# are the magic names inventory_hostname, group_names and inventory_file: verified on
+# ansible-core 2.21 with a scratch play). What it cannot set is `ansible_play_hosts_all`, the
+# real names of the hosts this play runs on (also verified). Every local-dev inventory names
+# its hosts `<service>-local` (platform/inventory/local-dev.yml.example, and the inventory
+# bootstrap-local-dev.yml hands Semaphore); no production host carries that suffix. So a local
+# connection is accepted only when every host of the play is so named.
+- name: "Refuse a controller-local teardown of a host that is not a local-dev host"
+  ansible.builtin.assert:
+    that: >-
+      _clean_connection != 'local' or
+      (ansible_play_hosts_all | reject('match', '^[A-Za-z0-9._-]+-local\\Z') | list | length == 0)
+    fail_msg: >-
+      Refusing: {{ inventory_hostname }} resolves to a controller-local connection, which would
+      run this teardown (compose down -v, container removal, clone removal) on the controller,
+      and only a play whose hosts are all local-dev hosts (named <service>-local by the local
+      inventories) may. Nothing was removed.
+    quiet: true
 
 - name: "Refuse a prod teardown whose inputs the inventory did not declare"
   ansible.builtin.assert:
