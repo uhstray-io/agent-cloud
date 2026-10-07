@@ -39,6 +39,11 @@
 # ansible_ssh_pass, ansible_ssh_password). Also
 # https://docs.ansible.com/ansible/latest/collections/ansible/builtin/sudo_become.html and
 # https://docs.ansible.com/ansible/latest/collections/ansible/builtin/ssh_connection.html.
+# Semaphore's own login and become keys are unaffected: it passes their passwords as
+# --ask-pass / --ask-become-pass answers on stdin (Semaphore v2.17.31
+# services/tasks/LocalJob.go, the AccessKeyLoginPassword cases, about lines 379-403), which
+# are CLI prompts, not variables, so they never reach hostvars
+# (test_executor_internal_overrides.py runs the guard with both prompts answered).
 #
 # Usage — the FIRST entry of every playbook Semaphore launches (every templates.yml
 # playbook), before any play or import:

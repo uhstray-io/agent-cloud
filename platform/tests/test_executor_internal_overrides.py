@@ -444,3 +444,17 @@ def test_clean_deploy_o11y_refuses_the_reviewed_commit_with_uncommitted_files(tm
     assert proc.returncode != 0, proc.stdout
     assert f"The checkout is {head} with uncommitted files" in proc.stdout, proc.stdout
     assert "TASK [Destroy existing deployment]" not in proc.stdout
+
+
+@needs_ansible
+def test_password_prompts_are_not_variables_and_pass_the_guard(tmp_path):
+    # Semaphore passes its login and become key passwords as --ask-pass / --ask-become-pass
+    # answers on stdin, never as variables, so the guard must let them through.
+    play = tmp_path / "play.yml"
+    play.write_text(json.dumps([{"ansible.builtin.import_playbook": str(PLAYBOOKS / GUARD)},
+                                {"hosts": "localhost", "gather_facts": False,
+                                 "tasks": [{"ansible.builtin.debug": {"msg": "GUARD PASSED"}}]}]))
+    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
+    proc = subprocess.run(["ansible-playbook", "-i", "localhost,", str(play), "--ask-pass", "--ask-become-pass"],
+                          input="pw\npw\n", cwd=REPO, env=env, text=True, capture_output=True, check=False, timeout=120)
+    assert proc.returncode == 0 and "GUARD PASSED" in proc.stdout, proc.stdout + proc.stderr

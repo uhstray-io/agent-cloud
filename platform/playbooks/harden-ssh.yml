@@ -15,9 +15,11 @@
 #      keyboard-interactive method to the runner AND sshd's effective config says
 #      so; anything short of that proof fails the play
 #
-# Requires become (sudo). Pass become password via:
-#   Semaphore: set ansible_become_password in environment JSON
-#   CLI: --become --ask-become-pass
+# Requires become (sudo). The play reads the become password from OpenBao
+# (secret/services/ssh:become_password, stored by store-ssh-password.yml) and sets it
+# itself. Do NOT pass ansible_become_password, or any other become or connection password
+# name, as an extra var or in Semaphore environment JSON: refuse-internal-extra-vars.yml
+# refuses the run. A --ask-become-pass prompt answer is not a variable and is not refused.
 #
 # Usage: -e "target_service=agent_cloud"
 
