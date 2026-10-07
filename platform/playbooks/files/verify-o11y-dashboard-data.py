@@ -311,7 +311,13 @@ def plan(payload: dict[str, Any]) -> dict[str, Any]:
         if not targets:
             continue
         evaluated = [
-            t for t in targets if datasource_type(t, panel) in ("prometheus", "loki") and not t.get("hide")
+            t
+            for t in targets
+            if not t.get("hide")
+            and (
+                datasource_type(t, panel) == "prometheus"
+                or (titles and datasource_type(t, panel) == "loki")
+            )
         ]
         if evaluated:
             refuse_unsupported(panel, evaluated)

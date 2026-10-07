@@ -677,9 +677,19 @@ def test_empty_options_and_non_prometheus_panels_are_not_refused(tmp_path, facto
     dashboard = _synthetic("up")
     dashboard["panels"][0].update({"interval": "", "maxDataPoints": None})
     dashboard["panels"][0]["targets"][0].update({"interval": "", "intervalFactor": factor})
-    logs = {"title": "Logs", "type": "logs", "timeShift": "1d", "datasource": {"type": "tempo"}}
+    logs = {"title": "Logs", "type": "logs", "timeShift": "1d", "datasource": {"type": "loki"}}
     dashboard["panels"].append(dict(logs, targets=[{"refId": "A", "expr": '{a="b"}'}]))
     assert vdd.plan(_payload("synthetic", dashboards_dir=_dashboard_dir(tmp_path, dashboard)))
+
+
+def test_named_loki_panel_with_unsupported_options_is_refused(tmp_path):
+    dashboard = _synthetic("up")
+    logs = {"title": "Logs", "type": "logs", "timeShift": "1d", "datasource": {"type": "loki"}}
+    dashboard["panels"].append(dict(logs, targets=[{"refId": "A", "expr": '{a="b"}'}]))
+    with pytest.raises(vdd.Refused, match="timeShift"):
+        vdd.plan(
+            _payload("synthetic", dashboards_dir=_dashboard_dir(tmp_path, dashboard), panel_titles=["Logs"])
+        )
 
 
 # ── The playbook, end to end ─────────────────────────────────────────────────────────────
