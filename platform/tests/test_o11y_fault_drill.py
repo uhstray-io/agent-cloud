@@ -430,7 +430,7 @@ def _task(name):
 
 def _evaluate(tmp_path, expr, facts):
     """True when the playbook expression `expr` holds for `facts`, with the play's own vars."""
-    play_vars = playbook_yaml.load(PLAYBOOK)[2]["vars"]
+    play_vars = playbook_yaml.plays(PLAYBOOK)[2]["vars"]
     harness = [{"hosts": "localhost", "connection": "local", "gather_facts": False,
                 "vars": {**play_vars, **facts},
                 "tasks": [{"ansible.builtin.debug": {"msg": "VERDICT {{ (" + expr + ") | bool }}"}}]}]
@@ -545,7 +545,7 @@ def test_grafana_receipt_requires_the_grafana_health_failure(tmp_path, content, 
 
 
 def test_final_report_names_the_alert_read_from_grafana(tmp_path):
-    play_vars = playbook_yaml.load(PLAYBOOK)[2]["vars"]
+    play_vars = playbook_yaml.plays(PLAYBOOK)[2]["vars"]
     expr = "_drill_proved[drill] is search('inference_probe_failing [(]Read Back Title[)] fired for model " \
            + DRILL_MODEL + "')"
     facts = {"drill": "probe", "_drill_rule_uid": "inference_probe_failing", "_drill_alertname": "Read Back Title",
