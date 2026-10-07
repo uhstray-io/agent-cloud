@@ -36,7 +36,12 @@ Grafana semantics reproduced, and where they come from:
   - What this script does not reproduce, a Prometheus panel may not use: a panel's own
     time range (timeFrom, timeShift), its query options (maxDataPoints, a min interval on
     the panel or a target, intervalFactor), repetition (repeat, on the panel or its row) and
-    library panels (whose queries live outside the dashboard file). Each is refused.
+    library panels (whose queries live outside the dashboard file). Each is refused. A
+    library panel is refused whatever its datasource, since the file does not say.
+  - A row's panels are in its own `panels` list only while it is collapsed; an expanded row
+    keeps `panels: []` and its panels follow it at the top level until the next row
+    (Grafana DashboardModel getRowPanels/toggleRow). Both count as the row's.
+  - `#` outside a string starts a PromQL comment that runs to the end of the line.
 
 A variable's value may not change the query's structure. Inside a quoted PromQL string it
 may hold regex characters but not the closing quote, a backslash or a line break; outside
@@ -111,15 +116,19 @@ def duration_seconds(text: Any) -> int:
 
 
 def flatten_panels(panels: list[Any], repeated_row: bool = False) -> list[dict[str, Any]]:
-    """Every panel, including those a collapsed row holds in its own `panels` list. A panel
-    inside a repeating row is marked, since the row repeats it."""
+    """Every panel, including those a collapsed row holds in its own `panels` list and those
+    following an expanded row up to the next row. A panel of a repeating row is marked,
+    since the row repeats it."""
     out: list[dict[str, Any]] = []
+    in_repeating_row = repeated_row
     for panel in panels or []:
         if not isinstance(panel, dict):
             continue
-        if panel.get("type") != "row":
-            out.append(dict(panel, _repeated_row=True) if repeated_row else panel)
-        out.extend(flatten_panels(panel.get("panels", []), repeated_row or bool(panel.get("repeat"))))
+        if panel.get("type") == "row":
+            in_repeating_row = repeated_row or bool(panel.get("repeat"))
+            out.extend(flatten_panels(panel.get("panels", []), in_repeating_row))
+        else:
+            out.append(dict(panel, _repeated_row=True) if in_repeating_row else panel)
     return out
 
 
@@ -134,7 +143,7 @@ def refuse_unsupported(panel: dict[str, Any], targets: list[dict[str, Any]]) -> 
         fields.append("repeat (row)")
     for target in targets:
         fields += [f"{f} (target {target.get('refId', '')})" for f in TARGET_UNSUPPORTED if _set(target.get(f))]
-        if target.get("intervalFactor") not in (None, 1):
+        if target.get("intervalFactor") not in (None, 1, "1"):
             fields.append(f"intervalFactor (target {target.get('refId', '')})")
     if fields:
         raise Refused(f"panel {title!r} uses {', '.join(fields)}, which this check does not reproduce")
@@ -142,11 +151,14 @@ def refuse_unsupported(panel: dict[str, Any], targets: list[dict[str, Any]]) -> 
 
 def string_spans(expr: str) -> list[tuple[int, int]]:
     """(start, end) of each PromQL string literal, quotes included: "..." and '...' with
-    backslash escapes, `...` raw."""
+    backslash escapes, `...` raw. A comment (`#` to the end of the line) opens no string."""
     spans, i = [], 0
     while i < len(expr):
         quote = expr[i]
-        if quote in "\"'`":
+        if quote == "#":
+            end = expr.find("\n", i)
+            i = len(expr) if end < 0 else end
+        elif quote in "\"'`":
             j = i + 1
             while j < len(expr) and expr[j] != quote:
                 j += 2 if quote != "`" and expr[j] == "\\" else 1
@@ -276,6 +288,11 @@ def plan(payload: dict[str, Any]) -> dict[str, Any]:
 
     planned = []
     for panel in selected:
+        if _set(panel.get("libraryPanel")):
+            raise Refused(
+                f"panel {panel.get('title')!r} is a library panel: its queries live outside this file, "
+                "which this check does not reproduce"
+            )
         targets = [t for t in panel.get("targets", []) or [] if isinstance(t, dict)]
         if not targets:
             continue
@@ -345,7 +362,7 @@ def _query(base: str, mode: str, expr: str, end: float, lookback: int, step: int
     if body.get("status") != "success":
         # errorType only, never `error`: execution errors embed label sets.
         kind = body.get("errorType")
-        return {"error": kind if kind in ERROR_TYPES else "unrecognised error"}
+        return {"error": kind if isinstance(kind, str) and kind in ERROR_TYPES else "unrecognised error"}
     return {"data": body.get("data") or {}}
 
 

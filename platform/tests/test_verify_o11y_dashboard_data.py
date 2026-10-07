@@ -73,6 +73,8 @@ class FakePrometheus:
             text = f"found duplicate series for the match group on the right hand-side: [{', '.join(SECRET_LABELS)}]"
             kind = "execution" if behaviour == "execution" else "something_new"
             return 422, {"status": "error", "errorType": kind, "error": text}
+        if behaviour == "structured_error":
+            return 422, {"status": "error", "errorType": {"kind": "execution"}, "error": "x"}
         sample = {"data": "1.5", "nan": "NaN", "empty": None}[behaviour]
         series = (
             []
@@ -282,7 +284,12 @@ def test_one_empty_target_fails_a_two_target_panel(prometheus):
 
 @pytest.mark.parametrize(
     ("behaviour", "reported"),
-    [("error", "bad_data"), ("execution", "execution"), ("odd_error", "unrecognised error")],
+    [
+        ("error", "bad_data"),
+        ("execution", "execution"),
+        ("odd_error", "unrecognised error"),
+        ("structured_error", "unrecognised error"),
+    ],
 )
 def test_a_query_error_reports_its_type_never_its_text(prometheus, behaviour, reported):
     # An execution error's text embeds label sets: identity and model names.
@@ -358,6 +365,16 @@ def test_a_value_cannot_close_the_string_it_lands_in(tmp_path, expr, closing):
         vdd.plan(_payload("synthetic", dashboards_dir=_dashboard_dir(tmp_path, dashboard), variables={"v": closing}))
 
 
+def test_an_apostrophe_in_a_comment_opens_no_string(tmp_path):
+    # A comment's apostrophe once read as an opening quote, so the offset after it counted as
+    # inside a string and skipped the duration check.
+    dashboard = _synthetic("up # it's\n offset $o", [{"name": "o", "type": "custom", "current": {"value": "1h"}}])
+    with pytest.raises(vdd.Refused, match="outside a string"):
+        vdd.plan(_payload("synthetic", dashboards_dir=_dashboard_dir(tmp_path, dashboard), variables={"o": "1h or up"}))
+    planned = vdd.plan(_payload("synthetic", dashboards_dir=_dashboard_dir(tmp_path, dashboard)))
+    assert planned["panels"][0]["targets"][0]["expr"] == "up # it's\n offset 1h"
+
+
 def test_a_saved_default_outside_a_string_must_be_a_duration(tmp_path):
     dashboard = _synthetic("x offset $v", [{"name": "v", "type": "custom", "current": {"value": "1d or up"}}])
     with pytest.raises(vdd.Refused, match="outside a string"):
@@ -392,10 +409,34 @@ def test_a_panel_in_a_repeating_row_is_refused(tmp_path):
         vdd.plan(_payload("synthetic", dashboards_dir=_dashboard_dir(tmp_path, dashboard)))
 
 
-def test_empty_options_and_non_prometheus_panels_are_not_refused(tmp_path):
+def test_a_panel_after_an_expanded_repeating_row_is_refused_until_the_next_row(tmp_path):
+    # An expanded row keeps panels: [] and its panels follow it at the top level.
+    dashboard = _synthetic("up")
+    only = dashboard["panels"][0]
+    dashboard["panels"] = [
+        {"type": "row", "title": "Repeating", "repeat": "identity", "panels": []},
+        dict(only, title="In the row"),
+        {"type": "row", "title": "Plain", "panels": []},
+        dict(only, title="After the row"),
+    ]
+    path = _dashboard_dir(tmp_path, dashboard)
+    with pytest.raises(vdd.Refused, match=r"'In the row' uses repeat \(row\)"):
+        vdd.plan(_payload("synthetic", dashboards_dir=path))
+    assert vdd.plan(_payload("synthetic", dashboards_dir=path, panel_titles=["After the row"]))
+
+
+def test_a_library_panel_without_targets_is_refused(tmp_path):
+    dashboard = _synthetic("up")
+    dashboard["panels"].append({"title": "Shared", "libraryPanel": {"uid": "lib", "name": "Shared"}})
+    with pytest.raises(vdd.Refused, match="'Shared' is a library panel"):
+        vdd.plan(_payload("synthetic", dashboards_dir=_dashboard_dir(tmp_path, dashboard)))
+
+
+@pytest.mark.parametrize("factor", [1, "1"])
+def test_empty_options_and_non_prometheus_panels_are_not_refused(tmp_path, factor):
     dashboard = _synthetic("up")
     dashboard["panels"][0].update({"interval": "", "maxDataPoints": None})
-    dashboard["panels"][0]["targets"][0].update({"interval": "", "intervalFactor": 1})
+    dashboard["panels"][0]["targets"][0].update({"interval": "", "intervalFactor": factor})
     logs = {"title": "Logs", "type": "logs", "timeShift": "1d", "datasource": {"type": "loki"}}
     dashboard["panels"].append(dict(logs, targets=[{"refId": "A", "expr": '{a="b"}'}]))
     assert vdd.plan(_payload("synthetic", dashboards_dir=_dashboard_dir(tmp_path, dashboard)))
