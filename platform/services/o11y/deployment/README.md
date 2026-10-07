@@ -389,9 +389,9 @@ the drill that inference-telemetry-production tasks 2.5, 3.5 and 3.6 name.
 
 | Mode | Fault | Proof | Restore |
 |------|-------|-------|---------|
-| `exporter` | stop one DGX node exporter's systemd unit | `up{job="dgx-spark-node",node=…} == 0`, then `inference_target_down` (group `telemetry-missing`) firing for that node within 12 min | unit started; `up == 1`; alert no longer firing |
-| `probe` | probe environment points at an unservable model; `inference-probe.service` started at once | `/health` 200 on 24 checks over 12 min (see below for where it is read), `inference_probe_failing` firing for that model, contact-point Discord line `service=vllm` | environment copied back, one good sample taken, alert cleared |
-| `grafana` | `o11y-grafana` stopped (≤15 min, `drill_grafana_hold_minutes`) | the liveness watcher's own Discord line (`o11y liveness watcher:`), posted by its scheduled `Check o11y Liveness (Dev)` run | container started; `/api/health` answers |
+| `exporter` | stop one DGX node exporter's systemd unit | `up{job="dgx-spark-node",node=…} == 0`, then `inference_target_down` (group `telemetry-missing`) firing for that node within 12 min, matched by its `alertname` | unit started; `up == 1`; alert no longer firing |
+| `probe` | probe environment points at an unservable model; `inference-probe.service` started at once | `/health` 200 on 24 checks over 12 min (see below for where it is read), `inference_probe_failing` firing for that model, matched by its `alertname`; one contact-point Discord message carrying the `service=vllm` line and, in its Firing section, that `alertname` and model | environment copied back, one good sample taken, alert cleared |
+| `grafana` | `o11y-grafana` stopped (≤15 min, `drill_grafana_hold_minutes`) | the liveness watcher's Discord line naming Grafana's own health check (`o11y liveness watcher: grafana /api/health failed`), posted by its scheduled `Check o11y Liveness (Dev)` run | container started; `/api/health` answers |
 
 The probe mode's `/health` is read where it means "the upstream serves while the probe
 fails". On the public path it is the probe URL's own `/health`, from the runner. With a
@@ -414,6 +414,16 @@ skips `always:` for unreachable hosts); the run then fails naming that recovery.
 probe environment file holds the inference key, so every task touching it sets
 `diff: false` and `no_log`. The probe restore requires a success sample for the deployed
 model newer than the restore, and the resolved check covers every drill model name.
+
+Alert identity: Grafana sets an alert's `alertname` label to its rule's title, so the drill
+reads that title back from the provisioned rule (refusing a rule without one before any
+fault) and a firing alert counts only when that name and the fault's own labels (node, or
+this run's model) both match; another rule firing for the same node or model proves
+nothing. The Discord receipt is matched within one message against the mode's
+`_drill_receipt` pattern, and the final report names the rule uid, the title read back and
+the node or model from data. The post-restore resolved check does not filter by
+`alertname`: it fails closed (any alert still firing for the node or a drill model blocks
+it), and a `drill_restore_only=true` run never reads the rule, so it has no title to match.
 
 ### Fresh-volume render proof (task 3.5)
 

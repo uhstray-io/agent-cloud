@@ -150,6 +150,34 @@ templates:
         type: string
         required: true
 
+  # Read-only: evaluates one provisioned dashboard's Prometheus panels over the lookback and
+  # passes only when every selected panel has data. Prints names and counts, never label values.
+  - name: Verify o11y Dashboard Data (Dev)
+    playbook: platform/playbooks/verify-o11y-dashboard-data.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: dashboard_uid
+        title: "Dashboard uid"
+        description: "uid of one provisioned dashboard, e.g. agentgateway-client-view"
+        type: string
+        required: true
+      - name: lookback
+        title: "Lookback"
+        description: "Dashboard time range, one duration unit (30m, 1h, 2d)"
+        type: string
+        required: false
+        default_value: "1h"
+      - name: panel_titles
+        title: "Panel titles (JSON list)"
+        description: "Exact panel titles to verify; empty verifies every panel"
+        type: string
+        required: false
+      - name: dashboard_variables
+        title: "Template variables (JSON object)"
+        description: "Overrides for template variables, e.g. {\"compare_offset\": \"7d\"}"
+        type: string
+        required: false
+
   - name: Probe o11y DGX Exporter (Dev)
     playbook: platform/playbooks/probe-o11y-dgx-exporter.yml
     repository: agent-cloud dev

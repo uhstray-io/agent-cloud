@@ -313,6 +313,14 @@
       dashboard showing the model as not serving during the fault (the rest of "Health up,
       inference down"). The root disk is no longer full (task 1.5: 84.41% free in task 3141).
       Not ticked.
+      2026-10-07: the alert-identity follow-up above (and under 3.3) is enforced in code on
+      branch `fix/drill-alert-identity` (PR #466), not yet proven live: the firing proofs
+      require the `alertname` read back from the provisioned rule's title, the Discord
+      receipt must hold that name and this run's model within one message, and the final
+      message names what matched from data. A rerun of o11y Fault Drill (Dev) `drill=probe`
+      after merge is still needed to show `inference_probe_failing` specifically firing.
+      Open gap, left as is: the post-restore resolved check has no `alertname` filter; it
+      fails closed, and a restore-only run reads no rule, so it has no title to match.
 - [ ] 3.6 External liveness watcher on a path the firewall permits: a Semaphore schedule
       runs `check-o11y-liveness.yml` from the Semaphore host every 10 min against the
       Caddy front door, not the VM: Grafana `https://o11y.uhstray.io/api/health` (exempt
