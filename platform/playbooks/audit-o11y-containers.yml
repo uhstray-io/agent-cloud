@@ -19,7 +19,7 @@
         argv: [id, -u]
       vars:
         ansible_become: false
-      register: o11y_audit_uid
+      register: _o11y_audit_uid
       check_mode: false
       changed_when: false
 
@@ -28,7 +28,7 @@
         argv: [podman, ps, -a, --format, "{{ '{{.Names}}' }}"]
       vars:
         ansible_become: false
-      register: o11y_rootless
+      register: _o11y_rootless
       check_mode: false
       changed_when: false
       failed_when: false
@@ -36,17 +36,17 @@
     - name: List rootful o11y Podman containers
       ansible.builtin.command:
         argv: [sudo, -n, podman, ps, -a, --format, "{{ '{{.Names}}' }}"]
-      register: o11y_rootful
+      register: _o11y_rootful
       check_mode: false
       changed_when: false
       failed_when: false
 
     - name: List rootless o11y Docker containers
       ansible.builtin.command:
-        argv: [docker, --host, "unix:///run/user/{{ o11y_audit_uid.stdout }}/docker.sock", ps, -a, --format, "{{ '{{.Names}}' }}"]
+        argv: [docker, --host, "unix:///run/user/{{ _o11y_audit_uid.stdout }}/docker.sock", ps, -a, --format, "{{ '{{.Names}}' }}"]
       vars:
         ansible_become: false
-      register: o11y_docker_rootless
+      register: _o11y_docker_rootless
       check_mode: false
       changed_when: false
       failed_when: false
@@ -54,7 +54,7 @@
     - name: List rootful o11y Docker containers
       ansible.builtin.command:
         argv: [sudo, -n, docker, --host, unix:///var/run/docker.sock, ps, -a, --format, "{{ '{{.Names}}' }}"]
-      register: o11y_docker_rootful
+      register: _o11y_docker_rootful
       check_mode: false
       changed_when: false
       failed_when: false
@@ -63,18 +63,18 @@
       ansible.builtin.debug:
         msg:
           host: "{{ inventory_hostname }}"
-          rootless_rc: "{{ o11y_rootless.rc }}"
-          rootless_containers: "{{ o11y_rootless.stdout_lines | select('match', '^o11y-') | list }}"
-          rootless_errors: "{{ o11y_rootless.stderr_lines }}"
-          rootful_rc: "{{ o11y_rootful.rc }}"
-          rootful_containers: "{{ o11y_rootful.stdout_lines | select('match', '^o11y-') | list }}"
-          rootful_errors: "{{ o11y_rootful.stderr_lines }}"
-          docker_rootless_rc: "{{ o11y_docker_rootless.rc }}"
-          docker_rootless_containers: "{{ o11y_docker_rootless.stdout_lines | select('match', '^o11y-') | list }}"
-          docker_rootless_errors: "{{ o11y_docker_rootless.stderr_lines }}"
-          docker_rootful_rc: "{{ o11y_docker_rootful.rc }}"
-          docker_rootful_containers: "{{ o11y_docker_rootful.stdout_lines | select('match', '^o11y-') | list }}"
-          docker_rootful_errors: "{{ o11y_docker_rootful.stderr_lines }}"
+          rootless_rc: "{{ _o11y_rootless.rc }}"
+          rootless_containers: "{{ _o11y_rootless.stdout_lines | select('match', '^o11y-') | list }}"
+          rootless_errors: "{{ _o11y_rootless.stderr_lines }}"
+          rootful_rc: "{{ _o11y_rootful.rc }}"
+          rootful_containers: "{{ _o11y_rootful.stdout_lines | select('match', '^o11y-') | list }}"
+          rootful_errors: "{{ _o11y_rootful.stderr_lines }}"
+          docker_rootless_rc: "{{ _o11y_docker_rootless.rc }}"
+          docker_rootless_containers: "{{ _o11y_docker_rootless.stdout_lines | select('match', '^o11y-') | list }}"
+          docker_rootless_errors: "{{ _o11y_docker_rootless.stderr_lines }}"
+          docker_rootful_rc: "{{ _o11y_docker_rootful.rc }}"
+          docker_rootful_containers: "{{ _o11y_docker_rootful.stdout_lines | select('match', '^o11y-') | list }}"
+          docker_rootful_errors: "{{ _o11y_docker_rootful.stderr_lines }}"
 
 - name: Inspect OpenBao container state without reading secrets
   hosts: openbao
@@ -85,7 +85,7 @@
         argv: [podman, ps, -a, --filter, name=openbao, --format, "{{ '{{.Names}} {{.Status}}' }}"]
       vars:
         ansible_become: false
-      register: openbao_rootless
+      register: _openbao_rootless
       check_mode: false
       changed_when: false
       failed_when: false
@@ -93,7 +93,7 @@
     - name: List rootful OpenBao containers
       ansible.builtin.command:
         argv: [sudo, -n, podman, ps, -a, --filter, name=openbao, --format, "{{ '{{.Names}} {{.Status}}' }}"]
-      register: openbao_rootful
+      register: _openbao_rootful
       check_mode: false
       changed_when: false
       failed_when: false
@@ -101,9 +101,9 @@
     - name: Report OpenBao container states
       ansible.builtin.debug:
         msg:
-          rootless_rc: "{{ openbao_rootless.rc }}"
-          rootless_containers: "{{ openbao_rootless.stdout_lines }}"
-          rootless_errors: "{{ openbao_rootless.stderr_lines }}"
-          rootful_rc: "{{ openbao_rootful.rc }}"
-          rootful_containers: "{{ openbao_rootful.stdout_lines }}"
-          rootful_errors: "{{ openbao_rootful.stderr_lines }}"
+          rootless_rc: "{{ _openbao_rootless.rc }}"
+          rootless_containers: "{{ _openbao_rootless.stdout_lines }}"
+          rootless_errors: "{{ _openbao_rootless.stderr_lines }}"
+          rootful_rc: "{{ _openbao_rootful.rc }}"
+          rootful_containers: "{{ _openbao_rootful.stdout_lines }}"
+          rootful_errors: "{{ _openbao_rootful.stderr_lines }}"

@@ -2030,6 +2030,10 @@ assert phase_one['tasks'][preflight + 1]['when'] == gate_when
 assert phase_one['tasks'][preflight + 2]['when'] == gate_when
 clean = yaml.safe_load(clean_deploy_path.read_text())[1:]  # [0] imports the extra-var guard
 clean_tasks = clean[0]['tasks']
+# The confirm and reviewed-checkout refusals come first (test_executor_internal_overrides.py
+# runs them); the retention refusal is the last task before the destroy.
+retention = next(i for i, t in enumerate(clean_tasks) if t['name'] == 'Refuse expanded retention before destructive o11y cleanup')
+clean_tasks = clean_tasks[retention:]
 assert clean_tasks[0]['name'] == 'Refuse expanded retention before destructive o11y cleanup'
 assert clean_tasks[0]['when'] == 'not (local_mode | default(false) | bool)'
 clean_conditions = [Environment().compile_expression(condition) for condition in clean_tasks[0]['ansible.builtin.assert']['that']]

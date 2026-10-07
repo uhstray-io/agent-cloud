@@ -233,11 +233,11 @@
 
     - name: Report only actual container state changes
       ansible.builtin.set_fact:
-        netbox_runtime_state: "{{ _after.stdout | from_json }}"
+        _netbox_runtime_state: "{{ _after.stdout | from_json }}"
       changed_when: (_before.stdout | from_json) != (_after.stdout | from_json)
 
     - name: Show verified core state
       ansible.builtin.debug:
         msg:
           login_status: "{{ _login.status }}"
-          services: "{{ netbox_runtime_state }}"
+          services: "{{ _netbox_runtime_state }}"

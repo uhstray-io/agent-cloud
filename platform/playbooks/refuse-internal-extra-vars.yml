@@ -29,8 +29,16 @@
 # the two cannot be told apart. platform/tests/test_executor_internal_overrides.py holds the
 # example inventories to it; site-config defined none when this landed.
 #
-# ansible_become_password is refused by name too: the playbooks resolve it from OpenBao with
-# set_fact, a magic variable that cannot carry the prefix.
+# The escalation and connection passwords are refused by name too, under every name Ansible
+# reads them from: the playbooks resolve them from OpenBao (set_fact of ansible_become_password,
+# add_host of ansible_password), and an extra var under any alias would replace that. The
+# aliases are each plugin's documented `vars` for the option, read from ansible-core 2.21's
+# DOCUMENTATION blocks: become_pass in plugins/become/sudo.py (ansible_become_password,
+# ansible_become_pass, ansible_sudo_pass), su.py (+ ansible_su_pass) and runas.py
+# (+ ansible_runas_pass); password in plugins/connection/ssh.py (ansible_password,
+# ansible_ssh_pass, ansible_ssh_password). Also
+# https://docs.ansible.com/ansible/latest/collections/ansible/builtin/sudo_become.html and
+# https://docs.ansible.com/ansible/latest/collections/ansible/builtin/ssh_connection.html.
 #
 # Usage — the FIRST entry of every playbook Semaphore launches (every templates.yml
 # playbook), before any play or import:
@@ -64,11 +72,11 @@
   tasks:
     - name: "Refuse an extra var that sets an internal name"
       ansible.builtin.assert:
-        that: hostvars[inventory_hostname].keys() | select('match', '_|ansible_become_password$') | list | length == 0
+        that: hostvars[inventory_hostname].keys() | select('match', '_|ansible_(become_password|become_pass|sudo_pass|su_pass|runas_pass|password|ssh_pass|ssh_password)$') | list | length == 0
         fail_msg: >-
-          Refusing to run: {{ hostvars[inventory_hostname].keys() | select('match', '_|ansible_become_password$') | sort | join(', ') }}
-          set from outside the playbook. Underscore-prefixed names and ansible_become_password
-          are RESERVED for playbook internals: an extra var outranks the value the playbook
+          Refusing to run: {{ hostvars[inventory_hostname].keys() | select('match', '_|ansible_(become_password|become_pass|sudo_pass|su_pass|runas_pass|password|ssh_pass|ssh_password)$') | sort | join(', ') }}
+          set from outside the playbook. Underscore-prefixed names and the become and
+          connection passwords (every alias) are RESERVED for playbook internals: an extra var outranks the value the playbook
           computes, which would let a forged value decide a verdict or the step result it
           records, and an inventory var of the same name is refused alike, since the two
           cannot be told apart. Rename the colliding variable.

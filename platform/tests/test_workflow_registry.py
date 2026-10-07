@@ -347,7 +347,7 @@ def test_otlp_delivery_is_reported_before_a_generic_failure(tmp_path, response, 
             "_vm_ambiguous": [],
             "_vm_unreachable": [],
             "_pick": {"stdout": json.dumps({"window_full": []})},
-            "push_loki_result": {"status": 204},
+            "_push_loki_result": {"status": 204},
         },
         "tasks": selected,
     }]

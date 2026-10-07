@@ -134,21 +134,69 @@ GUARD_TASK = playbook_yaml.load(PLAYBOOKS / GUARD)[0]["tasks"][0]
 GUARD_PATTERN = re.search(r"select\('match', '([^']+)'\)", GUARD_TASK["ansible.builtin.assert"]["that"]).group(1)
 
 
-@pytest.mark.parametrize("path", EXECUTORS, ids=lambda p: p.name)
-def test_every_value_an_executor_computes_is_refused_by_the_guard(path):
+INCLUDE_KEYS = ("ansible.builtin.import_playbook", "import_playbook", "ansible.builtin.include_tasks",
+                "ansible.builtin.import_tasks", "include_tasks", "import_tasks")
+
+
+def _reached() -> list[Path]:
+    """Every launched playbook and every playbook or task file it imports or includes by a
+    literal path, transitively."""
+    seen: set[Path] = set()
+    stack = list(_launchable())
+    while stack:
+        path = stack.pop()
+        if path in seen:
+            continue
+        seen.add(path)
+        for task in playbook_yaml.tasks(playbook_yaml.load(path)):
+            for key in INCLUDE_KEYS:
+                ref = task.get(key)
+                ref = ref.get("file") if isinstance(ref, dict) else ref
+                if not isinstance(ref, str) or "{{" in ref:
+                    continue
+                for base in (path.parent, path.parent / "tasks", PLAYBOOKS, PLAYBOOKS / "tasks"):
+                    if (base / ref).is_file():
+                        stack.append((base / ref).resolve())
+                        break
+    return sorted(seen)
+
+
+def _computed(path: Path) -> set[str]:
+    """Literal register and set_fact names in any playbook or task file."""
+    names = set()
+    doc = playbook_yaml.load(path)
+    for task in playbook_yaml.tasks(doc if isinstance(doc, list) else []):
+        if isinstance(task.get("register"), str):
+            names.add(task["register"])
+        for module in playbook_yaml.SET_FACT:
+            if isinstance(task.get(module), dict):
+                names |= set(task[module]) - {"cacheable"}
+    return {n for n in names if "{{" not in n}
+
+
+@pytest.mark.parametrize("path", _reached(), ids=lambda p: str(p.relative_to(REPO)))
+def test_every_value_a_launched_run_computes_is_refused_by_the_guard(path):
     # A register or set_fact the guard does not cover can be replaced by an extra var (PR #459
-    # review: `all_vms` let a forged cluster read classify a foreign VM as owned).
-    names = playbook_yaml.defined_names(path)
-    public = sorted(n for n, kinds in names.items() if kinds & {"register", "set_fact"}
-                    and not re.match(GUARD_PATTERN, n))
+    # reviews: `all_vms` let a forged cluster read classify a foreign VM as owned, and a JSON
+    # `validation_results` suppressed Proxmox validation's final failure).
+    public = sorted(n for n in _computed(path) if not re.match(GUARD_PATTERN, n))
     assert public == [], f"{path.name}: name a computed value with a leading underscore: {public}"
+
+
+def test_the_reach_covers_imports_and_task_files():
+    reached = {p.relative_to(REPO).as_posix() for p in _reached()}
+    assert {"platform/playbooks/proxmox-validate.yml", "platform/playbooks/tasks/push-loki-lines.yml",
+            "platform/playbooks/tasks/clone-and-deploy.yml"} <= reached
 
 
 def test_the_guard_matches_every_internal_name():
     assert GUARD_TASK["ansible.builtin.assert"]["that"] == (
-        "hostvars[inventory_hostname].keys() | select('match', '_|ansible_become_password$') | list | length == 0")
+        "hostvars[inventory_hostname].keys() | select('match', "
+        "'_|ansible_(become_password|become_pass|sudo_pass|su_pass|runas_pass|password|ssh_pass|ssh_password)$')"
+        " | list | length == 0")
     assert GUARD_TASK["when"] == (f"not ({NESTED} is defined and '{NESTED}' not in hostvars[inventory_hostname])")
-    assert re.match(GUARD_PATTERN, "_anything") and re.match(GUARD_PATTERN, "ansible_become_password")
+    assert re.match(GUARD_PATTERN, "_anything")
+    assert all(re.match(GUARD_PATTERN, n) for n in PASSWORD_ALIASES)
     assert not re.match(GUARD_PATTERN, "ansible_become_password_file") and not re.match(GUARD_PATTERN, "target_service")
 
 
@@ -285,15 +333,39 @@ def test_a_wrapper_refuses_before_its_own_cleanup(forge, tmp_path):
     assert proc.stdout.count("PLAY [") == 1, proc.stdout
 
 
+# Every name Ansible reads the escalation or connection password from (ansible-core 2.21:
+# plugins/become/sudo.py, su.py, runas.py and plugins/connection/ssh.py, the option's `vars`).
+PASSWORD_ALIASES = ["ansible_become_password", "ansible_become_pass", "ansible_sudo_pass", "ansible_su_pass",
+                    "ansible_runas_pass", "ansible_password", "ansible_ssh_pass", "ansible_ssh_password"]
+
+
 @needs_ansible
-@pytest.mark.parametrize("forge", forgeries.templated_forgeries("ansible_become_password", "from-openbao", "forged"))
-def test_a_forged_become_password_is_refused(forge, tmp_path):
-    # A magic variable the playbooks resolve from OpenBao with set_fact cannot carry the prefix.
+def test_the_alias_list_is_what_the_installed_plugins_read():
+    # Read back from the installed ansible-core, so an upgrade that adds an alias fails here.
+    script = (
+        "import yaml, ansible.plugins.become.sudo as a, ansible.plugins.become.su as b, "
+        "ansible.plugins.become.runas as c, ansible.plugins.connection.ssh as d\n"
+        "names = set()\n"
+        "for m, opt in ((a, 'become_pass'), (b, 'become_pass'), (c, 'become_pass'), (d, 'password')):\n"
+        "    names |= {v['name'] for v in yaml.safe_load(m.DOCUMENTATION)['options'][opt].get('vars', [])}\n"
+        "print(' '.join(sorted(names)))")
+    python = Path(shutil.which("ansible-playbook")).read_text().splitlines()[0].removeprefix("#!").strip()
+    out = subprocess.run([python, "-c", script], text=True, capture_output=True, check=True).stdout.split()
+    assert sorted(out) == sorted(PASSWORD_ALIASES)
+
+
+@needs_ansible
+@pytest.mark.parametrize("name, forge", [
+    pytest.param(n, f.values[0], id=f"{n}-{f.id}")
+    for n in PASSWORD_ALIASES for f in forgeries.templated_forgeries(n, "from-openbao", "forged")
+])
+def test_a_forged_password_under_any_alias_is_refused(name, forge, tmp_path):
+    # Magic variables the playbooks resolve from OpenBao cannot carry the prefix.
     play = tmp_path / "play.yml"
     play.write_text(json.dumps([{"ansible.builtin.import_playbook": str(PLAYBOOKS / GUARD)}]))
     proc = _run(play, tmp_path, "-e", forge(tmp_path))
     assert proc.returncode != 0, proc.stdout
-    assert "Refusing to run: ansible_become_password set from outside" in proc.stdout, proc.stdout
+    assert f"Refusing to run: {name} set from outside" in proc.stdout, proc.stdout
 
 
 def _nested_fixture(tmp_path: Path) -> Path:
@@ -326,3 +398,49 @@ def test_a_forged_nested_flag_is_refused(forge, tmp_path):
         assert proc.returncode != 0, proc.stdout
         assert f"Refusing to run: {NESTED} set from outside the playbook" in proc.stdout, proc.stdout
         assert "INNER RAN" not in proc.stdout
+
+
+# Clean Deploy o11y destroys every o11y volume. Outside local mode it refuses before the
+# destroy unless the launch names the host and the checkout is the reviewed commit, clean
+# (PR #459 review: the imported deploy checked the SHA only after the volumes were gone).
+# Always --check: a regression must not reach the destroy on this machine.
+@needs_ansible
+@pytest.mark.parametrize("extra, refusal", [
+    ({}, "Refusing: pass -e confirm_o11y_reset=obs"),
+    ({"confirm_o11y_reset": "other"}, "Refusing: pass -e confirm_o11y_reset=obs"),
+    ({"confirm_o11y_reset": "obs"}, "Pass expected_repository_sha"),
+    ({"confirm_o11y_reset": "obs", "expected_repository_sha": "0" * 40}, "not the reviewed " + "0" * 40),
+], ids=["no-confirm", "wrong-confirm", "no-sha", "wrong-sha"])
+def test_clean_deploy_o11y_refuses_before_destroying(extra, refusal, tmp_path):
+    inv = tmp_path / "inv.ini"
+    inv.write_text("[o11y_svc]\nobs ansible_connection=local local_mode=false\n")
+    proc = _run(PLAYBOOKS / "clean-deploy-o11y.yml", tmp_path, "--check", "-e", json.dumps(extra),
+                inventory=str(inv))
+    assert proc.returncode != 0, proc.stdout
+    assert refusal in proc.stdout, proc.stdout
+    assert "TASK [Destroy existing deployment]" not in proc.stdout
+    assert "Fresh deploy" not in proc.stdout and "Phase 1" not in proc.stdout
+
+
+@needs_ansible
+def test_clean_deploy_o11y_refuses_the_reviewed_commit_with_uncommitted_files(tmp_path):
+    # A copy of the repository at HEAD plus one untracked file: the right SHA, a dirty tree.
+    # The working tree's own playbooks are committed in the copy, so it runs the code under test.
+    repo = tmp_path / "repo"
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    subprocess.run(["git", "clone", "-q", "--no-hardlinks", str(REPO), str(repo)], check=True, env=env)
+    shutil.copytree(PLAYBOOKS, repo / "platform/playbooks", dirs_exist_ok=True)
+    for args in (["add", "platform/playbooks"],
+                 ["-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-qm", "under test",
+                  "--allow-empty", "--no-verify"]):
+        subprocess.run(["git", "-C", str(repo), *args], check=True, env=env)
+    head = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True, capture_output=True,
+                          check=True, env=env).stdout.strip()
+    (repo / "untracked.txt").write_text("x")
+    inv = tmp_path / "inv.ini"
+    inv.write_text("[o11y_svc]\nobs ansible_connection=local local_mode=false\n")
+    proc = _run(repo / "platform/playbooks/clean-deploy-o11y.yml", tmp_path, "--check", "-e",
+                json.dumps({"confirm_o11y_reset": "obs", "expected_repository_sha": head}), inventory=str(inv))
+    assert proc.returncode != 0, proc.stdout
+    assert f"The checkout is {head} with uncommitted files" in proc.stdout, proc.stdout
+    assert "TASK [Destroy existing deployment]" not in proc.stdout
