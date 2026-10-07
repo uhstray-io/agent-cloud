@@ -103,14 +103,20 @@
       and 36 MB. Still open: per-container resident memory (the receipt does not carry it; PR
       #460 pending) and copying the 3141 readings into `design.md`. Not ticked.
       2026-10-07: DONE (task ids and readings reported by the coordinator; the task output was
-      not read here). The 3141 readings and the per-container figures are recorded in
-      `design.md`, "Measured 2026-10-07 (task 1.5)". Verify o11y Production Budgets (Dev) task
-      3314, after #460 merged, reported guest memory headroom 86.24%, root filesystem 84.23%
-      free, and resident memory for each of the seven o11y containers (50.2, 70.1, 81.5, 8.1,
-      99.8, 35.6 and 43.6 MiB; 388.9 MiB in total). The 24-hour reads are task 3141 (2026-10-06,
-      more than 24 hours after Deploy o11y (Dev) 2967). Caveat recorded in `design.md`: task
-      3314's per-container figures are a later point-in-time read, and container uptime at
-      that read is not shown.
+      not read here). Baseline corrected by the coordinator from the Semaphore API: the last
+      Deploy o11y (Dev) is task 2991 (newest in its template's task list; Clean Deploy o11y was
+      never run), ended 2026-10-05T18:34:53Z. Task 3141 ran 2026-10-06T18:05:13Z, 23 h 30 min
+      after 2991, so it is NOT a 24-hour read (the 2026-10-06 note above measured from 2967 and
+      is superseded on this point). Verify o11y Production Budgets (Dev) task 3314 (after #460
+      merged) ran 2026-10-07T18:40:41Z, 48 h 06 min after 2991, and is the 24-hour-or-more
+      read for all three figures: guest memory headroom 86.24%, root filesystem 84.23% free, and
+      resident memory for each of the seven o11y containers (50.2, 70.1, 81.5, 8.1, 99.8, 35.6
+      and 43.6 MiB; 388.9 MiB in total). The tick rests on 3314 alone; 3141 is recorded in
+      `design.md`, "Measured 2026-10-07 (task 1.5)", as an earlier point read. o11y Fault Drill
+      (Dev) probe-mode task 3295 ran between the two. In `o11y-fault-drill.yml` the probe path
+      rewrites the probe environment file and starts `inference-probe.service`
+      (`:341-373`) and does not stop or restart a container (the container stop belongs to the
+      `grafana` mode, `:24`); that is the playbook source, not an observation of task 3295.
 - [x] 1.6 Validation gate: a second deploy run reports no changes and the three health
       endpoints return 200, proving scenario "Deploy converges and verifies"; `curl` to
       the Grafana port from a LAN host is refused while `https://o11y.uhstray.io` serves
