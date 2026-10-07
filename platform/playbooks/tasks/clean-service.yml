@@ -55,9 +55,12 @@
 # cannot be set from outside the run (refuse-internal-extra-vars.yml).
 - name: "Pin the teardown's identity, connection and inputs, each read once"
   ansible.builtin.set_fact:
-    # The connection with its collection prefix removed, so `ansible.builtin.local` and
-    # `ansible.legacy.local` read as `local`.
-    _clean_conn: "{{ (ansible_connection | default('ssh')) | regex_replace('^.*\\.', '') }}"
+    # The connection the run would use for this host when nothing in its variables names one: the
+    # default, or the command line's -c. Only read for a host that sets no ansible_connection.
+    _clean_conn: "{{ ansible_connection | default('ssh') }}"
+    # Whether any host of the play that is not local-dev SETS ansible_connection at all: the key's
+    # presence in hostvars, which no template can change between the check and the connection.
+    _clean_conn_set: "{{ ansible_play_hosts_all | reject('match', '^[A-Za-z0-9._-]+-local\\Z') | map('extract', hostvars) | map('list') | select('contains', 'ansible_connection') | list | length > 0 }}"
     _clean_all_local: "{{ ansible_play_hosts_all | reject('match', '^[A-Za-z0-9._-]+-local\\Z') | list | length == 0 }}"
     _clean_mode_set: "{{ local_mode | default('unset') }}"
     _clean_user: "{{ ansible_user | default('deploy') }}"
@@ -85,23 +88,31 @@
 #    `local_mode` is read back, and a value that disagrees is refused, but never chooses the
 #    branch (forged `true` on a prod host skipped the prod checks and ran `compose down -v`
 #    in a launcher-chosen tree);
-#  - any other host must reach the machine it names, over ssh. The connection is an ALLOWLIST
-#    (ssh, once the collection prefix is removed), not a ban on `local`: `-e
-#    ansible_connection=ansible.builtin.local` or `ansible.legacy.local` ran the teardown on
-#    the controller past a check for the literal `local`;
+#  - any other host must reach the machine it names, over the default ssh, and must not SET
+#    ansible_connection at all. A value check cannot hold: an extra var is a template rendered
+#    afresh at every read, so one can read `ssh` where this checks and `local` where Ansible
+#    connects (docs/MISTAKES.md 1.15), and an exact-match allowlist on a normalised name passes
+#    `<other namespace>.ssh`, a different plugin. Whether the KEY is present in hostvars is not
+#    something a template can change, the principle refuse-internal-extra-vars.yml uses for `_`
+#    names. Production inventories set no ansible_connection (site-config origin/main
+#    production.yml, checked) and a local-dev host keeps its `local`. What remains readable is the
+#    command line's -c, which is a plain string, not a template: it must be ssh. The limit: a
+#    production host cannot declare a connection of its own (a jump or proxy setup would use
+#    ansible_ssh_common_args, which is not refused) without extending this check in code;
 #  - the host must belong to the service's own group, `<service_name>_svc` (hyphens as
 #    underscores, as the inventories name them), and the deploy path must be that service's own
 #    (`platform/services/<service>/deployment` or `agents/<service>/deployment`), so
 #    `-e service_name=` or `-e monorepo_deploy_path=` cannot aim the teardown at another
 #    service's project or at a directory named like one.
-- name: "Refuse a host that is neither a local-dev host nor reached over ssh"
+- name: "Refuse a host that is neither a local-dev host nor on the default ssh connection"
   ansible.builtin.assert:
-    that: _clean_all_local or _clean_conn == 'ssh'
+    that: _clean_all_local or (not _clean_conn_set and _clean_conn == 'ssh')
     fail_msg: >-
       Refusing: {{ inventory_hostname }} is not a local-dev host (named <service>-local by the
-      local inventories) but its connection resolves to {{ _clean_conn }}, not ssh. A teardown
-      over any other connection would run compose down -v, the container removal and the clone
-      removal on the controller. Nothing was removed.
+      local inventories) but its connection is not the default ssh: ansible_connection is
+      {{ 'set on a host of this play (any value, any spelling)' if _clean_conn_set else 'unset there, and the command line gives ' ~ _clean_conn }}.
+      A teardown over any other connection would run compose down -v, the container removal and
+      the clone removal on the controller. Nothing was removed.
     quiet: true
 
 - name: "Refuse a local_mode that disagrees with the hosts' identity"

@@ -504,7 +504,7 @@ PROD_ACCOUNT = "svc-w55-test"  # no home directory exists for it
 SERVICE_VARS = "service_name=o11y monorepo_deploy_path=platform/services/o11y/deployment"
 PROD_REFUSAL = "Refusing: the teardown for"
 PROD_TEARDOWN = "TASK [Stop and remove containers + volumes (prod)"
-CONNECTION_REFUSAL = "but its connection resolves to"
+CONNECTION_REFUSAL = "but its connection is not the default ssh"
 PROD_HOME = f"/home/{PROD_ACCOUNT}"
 
 
@@ -532,7 +532,7 @@ def _prod_inventory(tmp_path: Path, hostvars: str = "") -> str:
     ssh.chmod(0o755)
     inv = tmp_path / "prod-inv.ini"
     inv.write_text(
-        f"[o11y_svc]\nobs ansible_host=127.0.0.1 ansible_connection=ssh ansible_ssh_executable={ssh} "
+        f"[o11y_svc]\nobs ansible_host=127.0.0.1 ansible_ssh_executable={ssh} "
         f"ansible_ssh_pipelining=true ansible_python_interpreter={sys.executable} "
         f"ansible_user={PROD_ACCOUNT} container_engine=docker {SERVICE_VARS} {hostvars}\n")
     return str(inv)
@@ -590,22 +590,49 @@ def test_a_forged_local_monorepo_dir_cannot_choose_what_the_prod_teardown_delete
     assert (victim / "keep.txt").exists()
 
 
+# Every spelling a forgery might use, including an executable plugin of ANOTHER namespace that a
+# normalised comparison would have read as ssh.
+CONNECTIONS = ["local", "ansible.builtin.local", "ansible.legacy.local", "ssh", "ansible.builtin.ssh", "foo.ssh"]
+
+
 @needs_ansible
 @pytest.mark.parametrize("kind", [0, 1, 2], ids=["plain", "context", "stateful"])
-@pytest.mark.parametrize("conn", ["local", "ansible.builtin.local", "ansible.legacy.local"])
+@pytest.mark.parametrize("conn", CONNECTIONS)
 def test_a_forged_connection_cannot_move_a_remote_hosts_teardown_onto_the_controller(kind, conn, tmp_path):
-    # Only ssh is allowed for a host that is not local-dev, whatever spelling the forgery uses (a
-    # check for the literal `local` was bypassed by the collection-qualified names). The stateful
-    # forgery is honest on its first rendering, which the connection setup consumes, so there either
-    # the pin sees the forgery (refused) or an honest ssh (the run is then the honest one).
+    # A host that is not local-dev must not SET ansible_connection at all: key presence is what a
+    # template cannot change between the check and the connection (a value check was passed by a
+    # template that reads ssh at the check and local at the connection, and by <other>.ssh). So even
+    # an honest-looking `ssh` is refused. `foo.ssh` is no plugin: a plain forgery of it fails at
+    # connect, and the context and stateful ones, which read ssh there, are caught by the check.
     forge = forgeries.templated_forgeries("ansible_connection", "ssh", conn)[kind].values[0]
     proc, log = _prod_run(tmp_path, "-e", forge(tmp_path))
-    if kind == 2 and proc.returncode == 0:
-        return
     assert proc.returncode != 0, proc.stdout
-    assert CONNECTION_REFUSAL in proc.stdout, proc.stdout
+    assert CONNECTION_REFUSAL in proc.stdout or "was not found" in proc.stdout, proc.stdout
     assert PROD_TEARDOWN not in proc.stdout and "TASK [Remove agent-cloud clone" not in proc.stdout
     assert "compose" not in log
+
+
+@needs_ansible
+@pytest.mark.parametrize("conn", ["ssh", "ansible.builtin.ssh", "local"])
+def test_a_remote_host_that_declares_a_connection_is_refused_too(conn, tmp_path):
+    # The documented limit: a production host leaves ansible_connection unset. A declared one is
+    # indistinguishable from a forged one, so it is refused until the check is extended in code.
+    proc, log = _prod_run(tmp_path, hostvars=f"ansible_connection={conn}")
+    assert proc.returncode != 0, proc.stdout
+    assert CONNECTION_REFUSAL in proc.stdout, proc.stdout
+    assert "compose" not in log
+
+
+@needs_ansible
+@pytest.mark.parametrize("flag, ok", [("ssh", True), ("local", False)])
+def test_the_command_line_connection_must_still_be_ssh_for_a_remote_host(flag, ok, tmp_path):
+    # -c is not in hostvars and is a plain string, so it is the one source left to read by value.
+    proc, log = _prod_run(tmp_path, "-c", flag)
+    if ok:
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+    else:
+        assert proc.returncode != 0 and CONNECTION_REFUSAL in proc.stdout, proc.stdout
+        assert "compose" not in log
 
 
 @needs_ansible
@@ -619,14 +646,6 @@ def test_a_local_connection_set_from_outside_does_not_waive_the_o11y_gates_for_a
     assert proc.returncode != 0, proc.stdout
     assert "Pass expected_repository_sha" in proc.stdout, proc.stdout
     assert "TASK [Destroy existing deployment]" not in proc.stdout
-
-
-@needs_ansible
-@pytest.mark.parametrize("conn", ["ssh", "ansible.builtin.ssh", "ansible.legacy.ssh"])
-def test_a_remote_host_may_spell_its_ssh_connection_with_the_collection_prefix(conn, tmp_path):
-    proc, _log = _prod_run(tmp_path, hostvars=f"ansible_connection={conn}")
-    assert proc.returncode == 0, proc.stdout + proc.stderr
-    assert CONNECTION_REFUSAL not in proc.stdout
 
 
 @needs_ansible

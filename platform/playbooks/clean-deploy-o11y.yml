@@ -47,13 +47,15 @@
         quiet: true
 
     - name: "Decide whether this destroy is on a local-dev host"
-      # Waived only when the connection is local (the collection prefix removed, so
-      # ansible.builtin.local counts) AND every host of the play is named <service>-local, as the
-      # local-dev inventories name theirs. ansible_play_hosts_all is not settable by an extra var,
-      # so forging the connection of a production host waives nothing.
+      # Waived only when the connection is local (spelled as the local plugin's own names) AND
+      # every host of the play is named <service>-local, as the local-dev inventories name theirs.
+      # ansible_play_hosts_all is not settable by an extra var, so no ansible_connection value, in
+      # any spelling or rendering, can waive the gates for a production host; the connection is
+      # only read to tighten the waiver for a local-dev host. tasks/clean-service.yml refuses such
+      # a production host that sets ansible_connection at all.
       ansible.builtin.set_fact:
         _o11y_gated: >-
-          {{ not (((ansible_connection | default('ssh')) | regex_replace('^.*\.', '') == 'local')
+          {{ not (((ansible_connection | default('ssh')) in ['local', 'ansible.builtin.local', 'ansible.legacy.local'])
           and (ansible_play_hosts_all | reject('match', '^[A-Za-z0-9._-]+-local\Z') | list | length == 0)) }}
 
     - name: "Require the exact reviewed commit before destroying anything"
