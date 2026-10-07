@@ -1,9 +1,8 @@
-"""Verify o11y Dashboard Data evaluates a provisioned dashboard's Prometheus panels.
+"""Verify o11y Dashboard Data evaluates a provisioned dashboard's Prometheus and Loki panels.
 
 The evaluator (platform/playbooks/files/verify-o11y-dashboard-data.py) is exercised directly
-against the committed dashboards and a fake Prometheus, then the playbook is run end to end
-through ansible-playbook with a local-connection receiver whose deploy dir holds copies of
-the committed dashboards.
+against the committed dashboards and fake backends, then the playbook is run end to end through
+ansible-playbook with a local-connection receiver whose deploy dir holds dashboard copies.
 """
 
 import hashlib
@@ -53,9 +52,16 @@ class FakePrometheus:
                 outer.requests.append((self.path, form))
                 status, body = outer.answer(self.path, form)
                 self.send_response(status)
+                if status == 302:
+                    self.send_header("Location", "/redirect-target")
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
                 self.wfile.write(json.dumps(body).encode())
+
+            def do_GET(self):  # noqa: N802 (http.server API)
+                outer.requests.append((self.path, {}))
+                self.send_response(200)
+                self.end_headers()
 
             def log_message(self, *args):
                 pass
@@ -68,6 +74,8 @@ class FakePrometheus:
         behaviour = next((b for key, b in self.rules.items() if key in form["query"]), "data")
         if behaviour == "error":
             return 400, {"status": "error", "errorType": "bad_data", "error": "parse error"}
+        if behaviour == "redirect":
+            return 302, {"error": "redirect body must not be followed"}
         if behaviour in ("execution", "odd_error"):
             # Prometheus's one-to-one match failure names both colliding label sets.
             text = f"found duplicate series for the match group on the right hand-side: [{', '.join(SECRET_LABELS)}]"
@@ -92,6 +100,68 @@ class FakePrometheus:
         return 200, {"status": "success", "data": {"resultType": kind, "result": series}}
 
 
+class FakeLoki:
+    """Answers LogQL queries without retaining or exposing returned log lines."""
+
+    def __init__(self):
+        self.rules: dict[str, str] = {}
+        self.requests: list[tuple[str, dict]] = []
+        outer = self
+
+        class Handler(DrainingHandler):
+            def do_POST(self):  # noqa: N802 (http.server API)
+                form = {k: v[0] for k, v in parse_qs(self.rfile.read().decode()).items()}
+                outer.requests.append((self.path, form))
+                status, body = outer.answer(self.path, form)
+                self.send_response(status)
+                if status == 302:
+                    self.send_header("Location", "/redirect-target")
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps(body).encode())
+
+            def do_GET(self):  # noqa: N802 (http.server API)
+                outer.requests.append((self.path, {}))
+                self.send_response(200)
+                self.end_headers()
+
+            def log_message(self, *args):
+                pass
+
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
+
+    def answer(self, path, form):
+        behaviour = next((b for key, b in self.rules.items() if key in form["query"]), "streams")
+        if behaviour == "error":
+            return 400, {"status": "error", "errorType": "bad_data", "error": f"bad query {SECRET_LABELS[0]}"}
+        if behaviour == "query_error":
+            return 200, {"status": "error", "errorType": "unknown", "error": f"parse {SECRET_LABELS[0]} private log"}
+        if behaviour == "redirect":
+            return 302, {"error": "redirect body must not be followed"}
+        if behaviour == "empty":
+            result_type, result = "streams", []
+        elif behaviour == "metric":
+            result_type = "vector" if path.endswith("/query") else "matrix"
+            point = [1700000000, "2.5"]
+            result = [{"metric": {"model": SECRET_LABELS[2]}, "value": point}]
+            if result_type == "matrix":
+                result[0]["values"] = [[1700000000, "2.5"]]
+                result[0].pop("value")
+        else:
+            result_type = "streams"
+            result = [{"stream": {"identity": SECRET_LABELS[0]}, "values": [["1700000000", "private log line"]]}]
+        return 200, {"status": "success", "data": {"resultType": result_type, "result": result}}
+
+
+@pytest.fixture
+def loki():
+    fake = FakeLoki()
+    yield fake
+    fake.server.shutdown()
+
+
 @pytest.fixture
 def prometheus():
     fake = FakePrometheus()
@@ -107,6 +177,7 @@ def _payload(uid, **extra):
         "panel_titles": [],
         "variables": {},
         "prometheus_url": "http://127.0.0.1:9",
+        "loki_url": "http://127.0.0.1:9",
         "scrape_interval_seconds": 15,
     }
     payload.update(extra)
@@ -152,9 +223,9 @@ def test_inference_dashboards_plan_without_overrides(uid):
     planned = vdd.plan(_payload(uid))
     exprs = [t["expr"] for p in planned["panels"] for t in p["targets"] if "expr" in t]
     assert exprs and not any("$" in e for e in exprs)
-    skipped = [t for p in planned["panels"] for t in p["targets"] if t.get("status") == "skipped"]
     if uid == "inference-fleet-health":
-        assert {t["datasource"] for t in skipped} == {"loki"}
+        queried = [t for p in planned["panels"] for t in p["targets"] if t["datasource"] == "loki"]
+        assert len(queried) == 2 and all("expr" in t for t in queried)
 
 
 def test_placement_comparison_uses_the_saved_custom_offset_and_honours_an_override():
@@ -190,9 +261,10 @@ def test_unknown_panel_title_override_or_uid_is_refused():
         vdd.plan(_payload("agentgateway-client-view", lookback="1h30m"))
 
 
-def test_a_loki_only_selection_is_refused():
-    with pytest.raises(vdd.Refused, match="no Prometheus query"):
-        vdd.plan(_payload("agentgateway-traffic", panel_titles=["Recent access records"]))
+def test_a_loki_only_selection_is_planned():
+    planned = vdd.plan(_payload("inference-fleet-health", panel_titles=["Recent vLLM journal"]))
+    assert planned["panels"][0]["targets"][0]["datasource"] == "loki"
+    assert planned["panels"][0]["targets"][0]["modes"] == ["range"]
 
 
 def test_scrape_interval_matches_the_prometheus_datasource():
@@ -308,11 +380,155 @@ def test_an_unreachable_prometheus_reports_the_exception_class_only():
     assert report["panels"][0]["targets"][0]["error"] == "URLError"
 
 
-def test_skipped_datasources_do_not_count(prometheus):
-    report = vdd.evaluate(_payload("inference-fleet-health", prometheus_url=prometheus.url))
+def test_unsupported_datasources_remain_skipped_and_do_not_count(tmp_path, prometheus):
+    dashboard = _synthetic("up")
+    dashboard["panels"].append(
+        {
+            "title": "Unsupported trace query",
+            "type": "timeseries",
+            "datasource": {"type": "tempo", "uid": "tempo"},
+            "targets": [{"refId": "A", "expr": '{resource.service.name="api"}'}],
+        }
+    )
+    report = vdd.evaluate(
+        _payload("synthetic", dashboards_dir=_dashboard_dir(tmp_path, dashboard), prometheus_url=prometheus.url)
+    )
     assert report["status"] == "pass"
-    assert report["panels_skipped"] == 2
-    assert all(t["status"] == "skipped" for p in report["panels"] if p["status"] == "skipped" for t in p["targets"])
+    assert report["panels_skipped"] == 1
+    skipped = next(p for p in report["panels"] if p["status"] == "skipped")
+    assert skipped["targets"][0]["datasource"] == "tempo"
+    assert skipped["targets"][0]["status"] == "skipped"
+
+
+def test_mixed_prometheus_and_loki_panels_are_both_verified(prometheus, loki):
+    report = vdd.evaluate(
+        _payload(
+            "inference-fleet-health",
+            panel_titles=["Node exporter up", "Recent vLLM journal"],
+            prometheus_url=prometheus.url,
+            loki_url=loki.url,
+        ),
+        now=1700003600,
+    )
+    assert report["status"] == "pass"
+    assert report["panels_verified"] == 2
+    assert report["panels_failing"] == []
+    assert prometheus.requests[0][0] == "/api/v1/query"
+    path, form = loki.requests[0]
+    assert path == "/loki/api/v1/query_range"
+    assert form["limit"] == str(vdd.LOKI_RESULT_LIMIT)
+    assert (form["start"], form["end"]) == ("1700000000.000", "1700003600.000")
+    dumped = json.dumps(report)
+    assert "private log line" not in dumped
+    assert not any(label in dumped for label in SECRET_LABELS)
+
+
+def test_loki_stream_result_reports_only_bounded_counts(loki):
+    report = vdd.evaluate(
+        _payload("inference-fleet-health", panel_titles=["Recent vLLM journal"], loki_url=loki.url),
+        now=1700003600,
+    )
+    target = report["panels"][0]["targets"][0]
+    assert report["status"] == "pass"
+    assert (target["series"], target["series_with_values"]) == (1, 1)
+    assert loki.requests[0][1]["limit"] == "100"
+    assert "private log line" not in json.dumps(report)
+
+
+def test_loki_metric_logql_results_use_the_metric_result_counter(tmp_path, loki):
+    dashboard = _synthetic("sum(count_over_time({service=\"api\"}[5m]))", datasource={"type": "loki", "uid": "loki"})
+    loki.rules["sum("] = "metric"
+    report = vdd.evaluate(
+        _payload(
+            "synthetic",
+            dashboards_dir=_dashboard_dir(tmp_path, dashboard),
+            loki_url=loki.url,
+        ),
+        now=1700003600,
+    )
+    target = report["panels"][0]["targets"][0]
+    assert report["status"] == "pass"
+    assert (target["series"], target["series_with_values"]) == (1, 1)
+    assert loki.requests[0][0] == "/loki/api/v1/query_range"
+
+
+def test_instant_loki_metric_queries_use_query_endpoint(tmp_path, loki):
+    dashboard = _synthetic(
+        "sum(count_over_time({service=\"api\"}[5m]))",
+        datasource={"type": "loki", "uid": "loki"},
+    )
+    dashboard["panels"][0]["targets"][0]["queryType"] = "instant"
+    loki.rules["sum("] = "metric"
+    report = vdd.evaluate(
+        _payload("synthetic", dashboards_dir=_dashboard_dir(tmp_path, dashboard), loki_url=loki.url),
+        now=1700003600,
+    )
+    assert report["status"] == "pass"
+    assert loki.requests[0][0] == "/loki/api/v1/query"
+    assert loki.requests[0][1]["time"] == "1700003600.000"
+
+
+def test_instant_loki_raw_stream_query_is_refused(tmp_path):
+    dashboard = _synthetic('{service="api"}', datasource={"type": "loki", "uid": "loki"})
+    dashboard["panels"][0]["targets"][0]["queryType"] = "instant"
+    with pytest.raises(vdd.Refused, match="instant log stream query"):
+        vdd.plan(_payload("synthetic", dashboards_dir=_dashboard_dir(tmp_path, dashboard)))
+
+
+def test_empty_loki_stream_result_fails_with_counts_only(loki):
+    loki.rules["service=\"vllm\""] = "empty"
+    report = vdd.evaluate(
+        _payload("inference-fleet-health", panel_titles=["Recent vLLM journal"], loki_url=loki.url)
+    )
+    target = report["panels"][0]["targets"][0]
+    assert report["status"] == "fail"
+    assert target["status"] == "empty"
+    assert (target["series"], target["series_with_values"]) == (0, 0)
+
+
+def test_loki_http_error_body_is_discarded(loki):
+    loki.rules["service=\"vllm\""] = "error"
+    report = vdd.evaluate(
+        _payload("inference-fleet-health", panel_titles=["Recent vLLM journal"], loki_url=loki.url)
+    )
+    target = report["panels"][0]["targets"][0]
+    assert report["status"] == "fail"
+    assert target["status"] == "error" and target["error"] == "HTTP 400"
+    dumped = json.dumps(report)
+    assert "bad query" not in dumped
+    assert not any(label in dumped for label in SECRET_LABELS)
+
+
+def test_loki_query_error_text_is_discarded(loki):
+    loki.rules['service="vllm"'] = "query_error"
+    report = vdd.evaluate(
+        _payload("inference-fleet-health", panel_titles=["Recent vLLM journal"], loki_url=loki.url)
+    )
+    target = report["panels"][0]["targets"][0]
+    assert target["status"] == "error" and target["error"] == "unrecognised error"
+    dumped = json.dumps(report)
+    assert "private log" not in dumped
+    assert not any(label in dumped for label in SECRET_LABELS)
+
+
+@pytest.mark.parametrize("backend", ["prometheus", "loki"])
+def test_backend_redirects_are_not_followed(backend, prometheus, loki):
+    if backend == "prometheus":
+        prometheus.rules["up"] = "redirect"
+        report = vdd.evaluate(
+            _payload("inference-fleet-health", panel_titles=["Node exporter up"], prometheus_url=prometheus.url)
+        )
+        requests = prometheus.requests
+    else:
+        loki.rules["service=\"vllm\""] = "redirect"
+        report = vdd.evaluate(
+            _payload("inference-fleet-health", panel_titles=["Recent vLLM journal"], loki_url=loki.url)
+        )
+        requests = loki.requests
+    target = report["panels"][0]["targets"][0]
+    assert target["status"] == "error" and target["error"] == "HTTP 302"
+    assert len(requests) == 1
+    assert requests[0][0] != "/redirect-target"
 
 
 def test_unreachable_prometheus_fails():
@@ -437,7 +653,7 @@ def test_empty_options_and_non_prometheus_panels_are_not_refused(tmp_path, facto
     dashboard = _synthetic("up")
     dashboard["panels"][0].update({"interval": "", "maxDataPoints": None})
     dashboard["panels"][0]["targets"][0].update({"interval": "", "intervalFactor": factor})
-    logs = {"title": "Logs", "type": "logs", "timeShift": "1d", "datasource": {"type": "loki"}}
+    logs = {"title": "Logs", "type": "logs", "timeShift": "1d", "datasource": {"type": "tempo"}}
     dashboard["panels"].append(dict(logs, targets=[{"refId": "A", "expr": '{a="b"}'}]))
     assert vdd.plan(_payload("synthetic", dashboards_dir=_dashboard_dir(tmp_path, dashboard)))
 
@@ -446,7 +662,7 @@ def test_empty_options_and_non_prometheus_panels_are_not_refused(tmp_path, facto
 
 
 @pytest.fixture
-def receiver(tmp_path, prometheus):
+def receiver(tmp_path, prometheus, loki):
     deploy = tmp_path / "repo/o11y/config/grafana"
     shutil.copytree(DASHBOARDS, deploy / "dashboards")
     inventory = tmp_path / "inventory.ini"
@@ -454,9 +670,10 @@ def receiver(tmp_path, prometheus):
         "[o11y_svc]\n"
         f"receiver ansible_connection=local ansible_python_interpreter=auto_silent "
         f"local_monorepo_dir={tmp_path / 'repo'} monorepo_deploy_path=o11y "
-        f"o11y_prom_bind=127.0.0.1 o11y_prom_port={prometheus.server.server_address[1]}\n"
+        f"o11y_prom_bind=127.0.0.1 o11y_prom_port={prometheus.server.server_address[1]} "
+        f"o11y_loki_bind=127.0.0.1 o11y_loki_port={loki.server.server_address[1]}\n"
     )
-    return {"inventory": inventory, "prometheus": prometheus}
+    return {"inventory": inventory, "prometheus": prometheus, "loki": loki}
 
 
 def _run(receiver, *extra):
@@ -478,7 +695,7 @@ def _run(receiver, *extra):
 def test_playbook_passes_identically_under_check(receiver, check):
     proc = _run(receiver, "-e", "dashboard_uid=agentgateway-client-view", *(["--check"] if check else []))
     assert proc.returncode == 0, proc.stdout[-4000:]
-    assert "6 Prometheus panels of agentgateway-client-view render data over 1h" in proc.stdout
+    assert "6 Prometheus or Loki panels of agentgateway-client-view render data over 1h" in proc.stdout
     assert "First-token latency p50; First-token latency p95; " in proc.stdout
     assert re.search(r"receiver\s+: ok=\d+\s+changed=0", proc.stdout)
     assert not any(label in proc.stdout for label in SECRET_LABELS)
@@ -508,6 +725,22 @@ def test_playbook_never_prints_prometheus_error_text(receiver):
     assert "Panels without data over 1h: 5xx request ratio" in proc.stdout
     assert '"error": "execution"' in proc.stdout
     assert "duplicate series" not in proc.stdout
+    assert not any(label in proc.stdout for label in SECRET_LABELS)
+
+
+@needs_ansible
+def test_playbook_queries_selected_loki_panel_and_discards_log_content(receiver):
+    proc = _run(
+        receiver,
+        "-e",
+        "dashboard_uid=inference-fleet-health",
+        "-e",
+        '{"panel_titles": "[\\"Recent vLLM journal\\"]"}',
+    )
+    assert proc.returncode == 0, proc.stdout[-4000:]
+    assert "1 Prometheus or Loki panels of inference-fleet-health render data" in proc.stdout
+    assert receiver["loki"].requests[0][0] == "/loki/api/v1/query_range"
+    assert "private log line" not in proc.stdout
     assert not any(label in proc.stdout for label in SECRET_LABELS)
 
 

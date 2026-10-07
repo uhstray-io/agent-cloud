@@ -1445,3 +1445,13 @@ join and reported LVM use. Physical/backing media, device safety, allocation,
 PBS readiness/suitability, write authorization, and snapshot inventory
 completeness remained false. This proves the read-only survey receipt only; it
 does not authorize restore or capacity changes.
+
+## 2026-10-07 provisioned-dashboard query verification
+
+The read-only dashboard data verifier now evaluates selected Prometheus and Loki
+targets from the receiver's provisioned dashboard JSON. Loki stream queries use a
+bounded range and result limit; metric LogQL results use the vector/matrix counters.
+Reports contain panel titles, target statuses, and counts only. Fake-backend tests
+cover stream and metric results, empty data, redacted errors, mixed dashboards, and
+redirect refusal. Dev-bound Semaphore validation of the Service Overview's two Loki
+panels remains pending.

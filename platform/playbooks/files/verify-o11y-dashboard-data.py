@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Evaluate one provisioned Grafana dashboard's Prometheus panels and report series counts.
+"""Evaluate one provisioned Grafana dashboard's Prometheus and Loki panels.
 
 Read-only: it reads the dashboard JSON the receiver's Grafana provisions from, and sends
-query and query_range requests to the receiver's Prometheus. It prints one JSON report on
-stdout carrying names and counts only: no label value and no sample value leaves this
-script, so a per-identity panel reports how MANY identities answered, never which.
+query and query_range requests to the receiver's Prometheus and Loki APIs. It prints one
+JSON report on stdout carrying panel titles, target status and counts only: no label value,
+log line, query expression or sample value leaves this script.
 
 Input (stdin, JSON):
   dashboards_dir   directory Grafana's file provider loads (config/grafana/dashboards)
@@ -15,6 +15,7 @@ Input (stdin, JSON):
                    substituted as written, as Grafana substitutes a custom All value, but
                    never one that could change the query's structure (see below)
   prometheus_url   base URL of the Prometheus HTTP API
+  loki_url         base URL of the Loki HTTP API
   scrape_interval_seconds  the Prometheus datasource's timeInterval (datasources.yml: 15s)
 
 Grafana semantics reproduced, and where they come from:
@@ -29,11 +30,14 @@ Grafana semantics reproduced, and where they come from:
     (https://grafana.com/docs/grafana/latest/dashboards/variables/add-template-variables/);
     one without a Custom all value would be the regex of every option, which this script
     cannot compute without the variable's own query, so it is refused.
-  - A target with `instant: true` (and no `range: true`) is an instant query at the end of
-    the range; every other target is a range query over it.
+  - Prometheus targets with `instant: true` (and no `range: true`) are queried at the end of
+    the range; every other target is queried over it. Loki range queries use the same bounds
+    and a fixed result limit. Instant raw log stream queries are refused; instant metric
+    LogQL targets use Loki's instant endpoint
+    (https://grafana.com/docs/loki/latest/reference/loki-http-api/).
   - A target or panel with no datasource uses the default one, which is Prometheus
-    (datasources.yml, isDefault). Loki, Tempo and other datasources are reported skipped.
-  - What this script does not reproduce, a Prometheus panel may not use: a panel's own
+    (datasources.yml, isDefault). Tempo and other datasources are reported skipped.
+  - What this script does not reproduce, an evaluated panel may not use: a panel's own
     time range (timeFrom, timeShift), its query options (maxDataPoints, a min interval on
     the panel or a target, intervalFactor), repetition (repeat, on the panel or its row) and
     library panels (whose queries live outside the dashboard file). Each is refused. A
@@ -49,9 +53,8 @@ one (an offset, a range) it must be a duration or a number. An override is also 
 any of " { } ( ), a backslash or a line break, and the report names it with the first 12
 hex digits of its sha256 rather than its value.
 
-No Prometheus error TEXT reaches the report: an execution error such as "found duplicate
-series for the match group" embeds label sets. Only the API's errorType (one of a fixed
-list), an HTTP status or an exception class name is reported.
+No backend error body reaches the report: an execution error may embed label values or log
+content. Only a fixed error class, an HTTP status or an exception class name is reported.
 
 A target has data when at least one returned series carries a finite sample: Prometheus
 encodes NaN as a string (https://prometheus.io/docs/prometheus/latest/querying/api/), and
@@ -93,6 +96,7 @@ REFERENCE = re.compile(
 LITERAL_TYPES = {"custom", "constant", "interval", "textbox"}
 POINTS_PER_PANEL = 1000
 QUERY_TIMEOUT = 30
+LOKI_RESULT_LIMIT = 100
 # The Prometheus HTTP API's errorType values (prometheus web/api/v1/api.go).
 ERROR_TYPES = {"timeout", "canceled", "execution", "bad_data", "internal", "unavailable", "not_found", "not_acceptable"}
 # Characters an override may never carry, wherever it lands.
@@ -177,6 +181,13 @@ def datasource_type(target: dict[str, Any], panel: dict[str, Any]) -> str:
     if kind.startswith("$"):
         raise Refused(f"panel {panel.get('title')!r} takes its datasource from a variable")
     return kind.lower()
+
+
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Do not follow a server-supplied location to another endpoint."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
 
 
 def load_dashboard(dashboards_dir: str, uid: str) -> dict[str, Any]:
@@ -296,14 +307,16 @@ def plan(payload: dict[str, Any]) -> dict[str, Any]:
         targets = [t for t in panel.get("targets", []) or [] if isinstance(t, dict)]
         if not targets:
             continue
-        evaluated = [t for t in targets if datasource_type(t, panel) == "prometheus" and not t.get("hide")]
+        evaluated = [
+            t for t in targets if datasource_type(t, panel) in ("prometheus", "loki") and not t.get("hide")
+        ]
         if evaluated:
             refuse_unsupported(panel, evaluated)
         entry: dict[str, Any] = {"title": panel.get("title", ""), "targets": []}
         for target in targets:
             kind = datasource_type(target, panel)
             ref = target.get("refId", "")
-            if kind != "prometheus":
+            if kind not in ("prometheus", "loki"):
                 entry["targets"].append({"ref": ref, "datasource": kind, "status": "skipped"})
                 continue
             if target.get("hide"):
@@ -317,12 +330,22 @@ def plan(payload: dict[str, Any]) -> dict[str, Any]:
                 modes.append("range")
             if target.get("instant"):
                 modes.append("instant")
+            if kind == "loki":
+                query_type = str(target.get("queryType", "")).lower()
+                if query_type and query_type not in ("range", "instant"):
+                    raise Refused(f"panel {entry['title']!r} target {ref!r} uses an unsupported Loki query type")
+                if query_type == "instant":
+                    modes = ["instant"]
+                elif query_type == "range":
+                    modes = ["range"]
+                if "instant" in modes and expr.lstrip().startswith("{"):
+                    raise Refused(f"panel {entry['title']!r} target {ref!r} uses an unsupported instant log stream query")
             entry["targets"].append(
                 {"ref": ref, "datasource": kind, "modes": modes, "expr": interpolate(expr, values, builtins)}
             )
         planned.append(entry)
     if not any(t.get("expr") for p in planned for t in p["targets"]):
-        raise Refused("no Prometheus query is selected on this dashboard")
+        raise Refused("no supported Prometheus or Loki query is selected on this dashboard")
     return {
         "dashboard": dashboard,
         "lookback": lookback,
@@ -332,12 +355,22 @@ def plan(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _query(base: str, mode: str, expr: str, end: float, lookback: int, step: int) -> dict[str, Any]:
+def _query(base: str, backend: str, mode: str, expr: str, end: float, lookback: int, step: int) -> dict[str, Any]:
     if mode == "range":
-        path = "/api/v1/query_range"
-        form = {"query": expr, "start": f"{end - lookback:.3f}", "end": f"{end:.3f}", "step": f"{step}s"}
+        if backend == "loki":
+            path = "/loki/api/v1/query_range"
+            form = {
+                "query": expr,
+                "start": f"{end - lookback:.3f}",
+                "end": f"{end:.3f}",
+                "step": f"{step}s",
+                "limit": str(LOKI_RESULT_LIMIT),
+            }
+        else:
+            path = "/api/v1/query_range"
+            form = {"query": expr, "start": f"{end - lookback:.3f}", "end": f"{end:.3f}", "step": f"{step}s"}
     else:
-        path = "/api/v1/query"
+        path = "/loki/api/v1/query" if backend == "loki" else "/api/v1/query"
         form = {"query": expr, "time": f"{end:.3f}"}
     request = urllib.request.Request(
         base.rstrip("/") + path,
@@ -345,15 +378,20 @@ def _query(base: str, mode: str, expr: str, end: float, lookback: int, step: int
         headers={"Content-Type": "application/x-www-form-urlencoded"},
         method="POST",
     )
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirectHandler())
     try:
         with opener.open(request, timeout=QUERY_TIMEOUT) as response:
             body = json.loads(response.read())
     except urllib.error.HTTPError as error:
-        try:
-            body = json.loads(error.read())
-        except ValueError:
-            return {"error": f"HTTP {error.code}"}
+        if backend == "prometheus":
+            try:
+                body = json.loads(error.read())
+            except (OSError, ValueError):
+                return {"error": f"HTTP {error.code}"}
+            kind = body.get("errorType") if isinstance(body, dict) else None
+            if isinstance(body, dict) and body.get("status") == "error":
+                return {"error": kind if isinstance(kind, str) and kind in ERROR_TYPES else "unrecognised error"}
+        return {"error": f"HTTP {error.code}"}
     except (urllib.error.URLError, OSError, ValueError) as error:
         # The class name only: an exception's text is not ours to vouch for.
         return {"error": type(error).__name__}
@@ -375,8 +413,13 @@ def _finite(sample: Any) -> bool:
 
 
 def _count(data: dict[str, Any]) -> tuple[int, int]:
-    """(series, series with at least one finite sample) for a vector, matrix or scalar result."""
+    """(result groups, groups with data) without retaining or reporting sample contents."""
     kind, result = data.get("resultType"), data.get("result")
+    if kind == "streams":
+        if not isinstance(result, list):
+            return 0, 0
+        with_values = sum(isinstance(stream, dict) and bool(stream.get("values")) for stream in result)
+        return len(result), with_values
     if kind in ("scalar", "string"):
         return 1, int(kind == "scalar" and _finite(result))
     if not isinstance(result, list):
@@ -397,7 +440,7 @@ def _count(data: dict[str, Any]) -> tuple[int, int]:
 def evaluate(payload: dict[str, Any], now: float | None = None) -> dict[str, Any]:
     planned = plan(payload)
     end = time.time() if now is None else now
-    base = str(payload.get("prometheus_url", ""))
+    bases = {"prometheus": str(payload.get("prometheus_url", "")), "loki": str(payload.get("loki_url", ""))}
     panels = []
     for entry in planned["panels"]:
         targets = []
@@ -406,7 +449,10 @@ def evaluate(payload: dict[str, Any], now: float | None = None) -> dict[str, Any
                 targets.append({k: target[k] for k in ("ref", "datasource", "status")})
                 continue
             for mode in target["modes"]:
-                answer = _query(base, mode, target["expr"], end, planned["lookback"], planned["step"])
+                answer = _query(
+                    bases[target["datasource"]], target["datasource"], mode, target["expr"], end,
+                    planned["lookback"], planned["step"],
+                )
                 row = {"ref": target["ref"], "mode": mode}
                 if "error" in answer:
                     row.update(status="error", error=answer["error"])

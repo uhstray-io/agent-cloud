@@ -41,6 +41,11 @@
 - [ ] 6.2 Extend the existing 5.1/5.2 cohorts with a per-service log, metric, trace, and profile applicability matrix and exact-target receipts for each applicable signal. Require verified spans to underpin graph edges; a node alone, including an inferred peer, does not prove service trace coverage. Mark unsupported or not-applicable signals without inventing coverage.
 - [ ] 6.3 Evaluate Grafana 12 trace-correlations UI separately after documented backup/restore and receiver-capacity gates. Do not upgrade the pinned Grafana 11.4 image as part of this baseline.
 
+## 7. Provisioned dashboard query verification
+
+- [x] 7.1 Extend the read-only receiver-side dashboard verifier to evaluate selected Loki stream and metric LogQL targets from the exact provisioned dashboard JSON, with bounded requests and metadata-only reports.
+- [ ] 7.2 Run the Dev-bound dashboard verifier against `service-overview`, selecting `Service log lines per second` and `Recent service logs` with an explicit `service` variable; confirm both Loki targets have data at the returned receiver revision and review the output for counts/status only. Existing task 3343 covers only the Prometheus scrape-health panel, so these Loki checks still need a live receipt.
+
 The dashboard and sampled gateway path are deployed. Requests, request latency,
 and token usage have named production metric receipts; the time-to-first-token
 histogram has no series yet, and the status-labeled error series has not been
