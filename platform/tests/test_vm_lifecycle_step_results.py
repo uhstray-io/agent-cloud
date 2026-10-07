@@ -57,21 +57,22 @@ def _emit_absolute(node):
     return node
 
 
-def _run(tmp_path, harness, check=False, inventory=None, extra=(), step=None):
+def _run(tmp_path, harness, check=False, inventory=None, extra=(), step=None, env_extra=None):
     """The one result the run recorded, or with `step`, the result for that step."""
-    results, rc = _run_all(tmp_path, harness, check, inventory, extra)
+    results, rc = _run_all(tmp_path, harness, check, inventory, extra, env_extra)
     if step is not None:
         results = [r for r in results if r["step"] == step]
     assert len(results) == 1, results
     return results[0], rc
 
 
-def _run_all(tmp_path, harness, check=False, inventory=None, extra=()):
+def _run_all(tmp_path, harness, check=False, inventory=None, extra=(), env_extra=None):
     play_file = tmp_path / "play.yml"
     play_file.write_text(yaml.safe_dump(_emit_absolute(copy.deepcopy(harness)), sort_keys=False))
     inv = tmp_path / "inv.yml"
     inv.write_text(yaml.safe_dump(inventory or {"all": {"hosts": {"localhost": {"ansible_connection": "local"}}}}))
-    env = {**harness_sandbox.env_for(tmp_path), "ANSIBLE_NOCOLOR": "1", "ANSIBLE_SHOW_CUSTOM_STATS": "1"}
+    env = {**harness_sandbox.env_for(tmp_path), "ANSIBLE_NOCOLOR": "1", "ANSIBLE_SHOW_CUSTOM_STATS": "1",
+           **(env_extra or {})}
     done = harness_sandbox.run(
         ["ansible-playbook", "-i", str(inv), str(play_file), *(["--check"] if check else []), *extra],
         tmp_path, cwd=ROOT, env=env)
@@ -277,16 +278,61 @@ def test_an_existing_template_is_adopted_without_a_write_and_proven(tmp_path):
     assert fake.seen.count(("GET", TEMPLATE_CFG)) == 2  # the guard's read, then the read-back
 
 
+# A stand-in for community.hashi_vault.hashi_vault, found first on ANSIBLE_COLLECTIONS_PATH.
+# The real lookup needs hvac, which the test environment does not install. The stub answers
+# from a JSON file of secret paths and logs each read with the address it was sent to, so the
+# plays' own store reads run unmodified: no `_` variable is injected.
+FAKE_LOOKUP = """
+import json
+import os
+
+from ansible.plugins.lookup import LookupBase
+
+DOCUMENTATION = "name: hashi_vault\\nshort_description: test stand-in\\n"
+
+
+class LookupModule(LookupBase):
+    def run(self, terms, variables=None, **kwargs):
+        store = json.load(open(os.environ["FAKE_BAO_STORE"]))
+        out = []
+        for term in terms:
+            path, _, field = term.partition(":")
+            with open(os.environ["FAKE_BAO_LOG"], "a") as log:
+                log.write(json.dumps({"path": path, "url": kwargs.get("url")}) + "\\n")
+            out.append(store[path][field] if field else store[path])
+        return out
+"""
+BAO = "https://bao.invalid"
+
+
+def _fake_store(tmp_path, proxmox):
+    coll = tmp_path / "collections/ansible_collections/community/hashi_vault"
+    (coll / "plugins/lookup").mkdir(parents=True)
+    (coll / "meta").mkdir()
+    (coll / "galaxy.yml").write_text("namespace: community\nname: hashi_vault\nversion: 0.0.0\n")
+    (coll / "meta/runtime.yml").write_text('requires_ansible: ">=2.14"\n')
+    (coll / "plugins/lookup/hashi_vault.py").write_text(FAKE_LOOKUP)
+    store = tmp_path / "store.json"
+    store.write_text(json.dumps({"secret/data/services/proxmox": proxmox,
+                                 "secret/data/services/ssh": {"public_key": "ssh-ed25519 AAAA"}}))
+    return {"ANSIBLE_COLLECTIONS_PATH": str(tmp_path / "collections"), "FAKE_BAO_STORE": str(store),
+            "FAKE_BAO_LOG": str(tmp_path / "bao.log"), "BAO_ROLE_ID": "synthetic-role",
+            "BAO_SECRET_ID": "synthetic-role-secret"}
+
+
+def _store_reads(tmp_path):
+    log = tmp_path / "bao.log"
+    return [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
+
+
 def _template_play_from_store(tmp_path, record):
-    """The Semaphore path: no operator input, the connection comes from secret/services/proxmox.
-    `_pve_data` stands in for the store record (the hashi_vault lookup needs hvac, which the
-    test environment does not install); everything from that record onward runs for real."""
+    """The Semaphore path for the template play alone: no operator input, the connection comes
+    from secret/services/proxmox through the play's own lookup."""
     play = next(p for p in _plays("provision-template.yml") if p.get("tasks"))
     fake = FakeProxmox({("GET", TEMPLATE_CFG): (200, {"template": 1, "ide2": "vm-lvms:vm-9000-cloudinit"})})
-    store = {"url": fake.url, "api_token": "synthetic", **record}
+    env = _fake_store(tmp_path, {"url": fake.url, "api_token": "synthetic", **record})
     try:
-        result, rc = _run(tmp_path, [play], extra=["-e", json.dumps({
-            "openbao_addr": "https://bao.invalid", "_pve_data": store})])
+        result, rc = _run(tmp_path, [play], extra=["-e", json.dumps({"openbao_addr": BAO})], env_extra=env)
     finally:
         fake.close()
     return result, rc, fake
@@ -296,6 +342,7 @@ def test_the_template_play_takes_the_token_id_from_the_store(tmp_path):
     result, rc, fake = _template_play_from_store(tmp_path, {"token_id": "automation@pve!fixture"})
     assert (result["status"], rc) == ("pass", 0), result
     assert ("GET", TEMPLATE_CFG) in fake.seen
+    assert {"path": "secret/data/services/proxmox", "url": BAO} in _store_reads(tmp_path)
 
 
 def test_the_template_play_refuses_a_store_without_a_token_id_and_sends_nothing(tmp_path):
@@ -329,15 +376,12 @@ def _whole_template_playbook(tmp_path, record, check=False):
     fake = FakeProxmox(CLUSTER)
     inv = tmp_path / "inv.yml"
     inv.write_text(yaml.safe_dump({"all": {"hosts": {"localhost": {"ansible_connection": "local"}}}}))
-    # `_pve_data` stands in for the store record in every play (hvac is not installed here);
-    # `ssh_key_check` for the validation play's SSH key lookup, which needs it too.
-    extra = {"openbao_addr": "https://bao.invalid", "ssh_key_check": "ssh-ed25519 AAAA",
-             "_pve_data": {"url": fake.url, "api_token": "synthetic", **record}}
-    env = {**harness_sandbox.env_for(tmp_path), "ANSIBLE_SHOW_CUSTOM_STATS": "1"}
+    env = {**harness_sandbox.env_for(tmp_path), "ANSIBLE_SHOW_CUSTOM_STATS": "1",
+           **_fake_store(tmp_path, {"url": fake.url, "api_token": "synthetic", **record})}
     try:
         done = harness_sandbox.run(
-            ["ansible-playbook", "-i", str(inv), str(PLAYBOOKS / "provision-template.yml"), "-e", json.dumps(extra),
-             *(["--check"] if check else [])],
+            ["ansible-playbook", "-i", str(inv), str(PLAYBOOKS / "provision-template.yml"),
+             "-e", json.dumps({"openbao_addr": BAO}), *(["--check"] if check else [])],
             tmp_path, cwd=ROOT, env=env)
     finally:
         fake.close()
@@ -353,6 +397,7 @@ def test_the_whole_template_playbook_reaches_proxmox_from_the_store_in_every_pla
     # validation, the template play's own read and read-back, post-validation
     assert fake.seen.count(("GET", TEMPLATE_CFG)) == 4
     assert fake.writes() == []
+    assert {r["url"] for r in _store_reads(tmp_path)} == {BAO}
 
 
 def test_the_whole_template_playbook_refuses_a_store_without_a_token_id_before_any_request(tmp_path):
