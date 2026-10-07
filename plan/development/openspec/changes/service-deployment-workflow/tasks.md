@@ -103,6 +103,11 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
         `platform/semaphore/templates.yml`, so `Snapshot VM (Dev)` and `Create VM Template (Dev)`
         exist in the catalog. Neither is published to Semaphore nor dry run yet; Destroy VM is
         unchanged and still held for the operator. 2.2 stays open.
+      - 2026-10-06 (task ids and output reported by the coordinator; the task output was not
+        read here): Snapshot VM (Dev) dry run 3178 passes, reporting it would snapshot the VM
+        and that nothing was written (after #462). Create VM Template (Dev) dry run 3195 fails at
+        the template read-back step, reporting the template has no cloud-init drive on `ide2`
+        (diagnostic PR #464 pending). Destroy VM is still held for the operator. 2.2 stays open.
 - [x] 2.3 Wave 2, the remaining playbooks, grouped by service; same patterns and runs.
       2026-09-22: 67 files (161 reads, 27 logins, 125 skips) applied from the guard's own
       findings; normal runs are unchanged by construction (every guard is inert without
@@ -265,6 +270,11 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
         shape the check-mode contract already accepts; a real run is unchanged. Proven with a
         fake tofu (tofu root byte-identical, throwaway root removed); a dry run against real
         tofu and R2 is still to do. No stamp, for the same `main` hazard.
+      - 2026-10-06: edge-dns live dry run done (`d10-review.md`, "edge-dns live dry run"). Apply
+        Cloudflare Tofu (Dev) dry run 3006 against real tofu and the R2 backend recorded
+        `init_rc` 0, `plan_rc` 0, `show_rc` 0, `plan_changes` 0 and an edge-dns `pass` with
+        `check_mode` true (after #454). edge-dns passes D10 with no pending proof. No stamp, for
+        the same `main` hazard; service-deploy is still not re-reviewed, so 7.1 stays open.
 - [x] 7.2 `provision-vm.yml` sets `onboot`; restart-policy check beside `enable-linger`.
       2026-09-22: onboot with per-host opt-out; `verify-service-persistence.yml` (step
       systemd-enablement) passes on local tududi, normal and check mode (tasks 977, 978)
