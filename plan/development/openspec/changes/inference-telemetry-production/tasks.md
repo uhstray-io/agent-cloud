@@ -265,6 +265,11 @@
       failure (tasks 1395, 1701). The wipe/redeploy, the dashboards and the probe drill are
       absent; the production clean deploy refuses a nonbaseline tuple, and the root disk is
       full.
+      2026-10-07: the drill now proves alert identity (PR #465 review): the firing proofs
+      require the `alertname` read back from the provisioned rule's title, and the Discord
+      receipt must hold the rule name and this run's model within one message. Open gap,
+      left as is: the post-restore resolved check has no `alertname` filter; it fails
+      closed, and a restore-only run reads no rule, so it has no title to match.
 - [ ] 3.6 External liveness watcher on a path the firewall permits: a Semaphore schedule
       runs `check-o11y-liveness.yml` from the Semaphore host every 10 min against the
       Caddy front door, not the VM: Grafana `https://o11y.uhstray.io/api/health` (exempt
