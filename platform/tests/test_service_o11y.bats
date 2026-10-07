@@ -1864,7 +1864,8 @@ import yaml
 
 playbook = yaml.safe_load(open(sys.argv[1], encoding='utf-8'))
 script = sys.argv[2]
-tasks = playbook[2]['tasks']
+tasks = next(play for play in playbook
+             if play.get('name') == 'Read production retention and cardinality settings')['tasks']
 index = {task['name']: i for i, task in enumerate(tasks)}
 listing = tasks[index["List the o11y compose project's containers"]]
 assert listing['ansible.builtin.include_tasks'] == 'tasks/list-service-containers.yml'
