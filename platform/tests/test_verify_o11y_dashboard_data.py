@@ -5,6 +5,7 @@ against the committed dashboards and fake backends, then the playbook is run end
 ansible-playbook with a local-connection receiver whose deploy dir holds dashboard copies.
 """
 
+import errno
 import hashlib
 import importlib.util
 import json
@@ -729,6 +730,29 @@ def _run(receiver, *extra):
     )
 
 
+def _ipv6_loki_or_skip():
+    if not socket.has_ipv6:
+        pytest.skip("OS reports IPv6 support is unavailable")
+    try:
+        return FakeLoki("::1")
+    except OSError as exc:
+        unavailable = {errno.EAFNOSUPPORT, errno.EPROTONOSUPPORT, errno.EADDRNOTAVAIL}
+        if exc.errno in unavailable:
+            pytest.skip(f"OS cannot bind the IPv6 loopback address: {exc.strerror}")
+        raise
+
+
+def _set_loki_inventory(receiver, bind, loki):
+    previous_port = receiver["loki"].server.server_address[1]
+    inventory = receiver["inventory"]
+    contents = inventory.read_text().replace("o11y_loki_bind=127.0.0.1", f"o11y_loki_bind={bind}")
+    contents = contents.replace(
+        f"o11y_loki_port={previous_port}", f"o11y_loki_port={loki.server.server_address[1]}"
+    )
+    inventory.write_text(contents)
+    receiver["loki"] = loki
+
+
 @needs_ansible
 @pytest.mark.parametrize("check", [False, True])
 def test_playbook_passes_identically_under_check(receiver, check):
@@ -784,7 +808,7 @@ def test_playbook_queries_selected_loki_panel_and_discards_log_content(receiver)
 
 
 @needs_ansible
-@pytest.mark.parametrize("bind", ["0.0.0.0", "::", ""])
+@pytest.mark.parametrize("bind", ["0.0.0.0", ""])
 def test_playbook_uses_loopback_for_wildcard_loki_bind(receiver, bind):
     inventory = receiver["inventory"]
     inventory.write_text(inventory.read_text().replace("o11y_loki_bind=127.0.0.1", f"o11y_loki_bind={bind}"))
@@ -801,19 +825,23 @@ def test_playbook_uses_loopback_for_wildcard_loki_bind(receiver, bind):
 
 @needs_ansible
 def test_playbook_brackets_ipv6_loki_bind(receiver):
-    previous_port = receiver["loki"].server.server_address[1]
-    try:
-        loki = FakeLoki("::1")
-    except OSError as exc:
-        pytest.skip(f"IPv6 loopback is unavailable: {type(exc).__name__}")
-    receiver["loki"] = loki
-    inventory = receiver["inventory"]
-    contents = inventory.read_text().replace("o11y_loki_bind=127.0.0.1", "o11y_loki_bind=::1")
-    contents = contents.replace(
-        f"o11y_loki_port={previous_port}",
-        f"o11y_loki_port={loki.server.server_address[1]}",
+    loki = _ipv6_loki_or_skip()
+    _set_loki_inventory(receiver, "::1", loki)
+    proc = _run(
+        receiver,
+        "-e",
+        "dashboard_uid=inference-fleet-health",
+        "-e",
+        '{"panel_titles": "[\\"Recent vLLM journal\\"]"}',
     )
-    inventory.write_text(contents)
+    assert proc.returncode == 0, proc.stdout[-4000:]
+    assert loki.requests
+
+
+@needs_ansible
+def test_playbook_maps_ipv6_wildcard_loki_bind_to_ipv6_loopback(receiver):
+    loki = _ipv6_loki_or_skip()
+    _set_loki_inventory(receiver, "::", loki)
     proc = _run(
         receiver,
         "-e",

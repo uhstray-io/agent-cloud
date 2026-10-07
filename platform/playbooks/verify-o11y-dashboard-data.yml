@@ -91,8 +91,9 @@
     _vdd_variables: "{{ (dashboard_variables | default('{}', true)) | from_json if (dashboard_variables | default('{}', true)) is string else dashboard_variables }}"
     _vdd_loki_bind: "{{ o11y_loki_bind | default('127.0.0.1') }}"
     _vdd_loki_host: >-
-      {{ '127.0.0.1' if _vdd_loki_bind in ['0.0.0.0', '::', ''] else
-         ('[' ~ _vdd_loki_bind ~ ']' if ':' in _vdd_loki_bind else _vdd_loki_bind) }}
+      {{ '[::1]' if _vdd_loki_bind == '::' else
+         ('127.0.0.1' if _vdd_loki_bind in ['0.0.0.0', ''] else
+          ('[' ~ _vdd_loki_bind ~ ']' if ':' in _vdd_loki_bind else _vdd_loki_bind)) }}
   tasks:
     - name: Read the receiver checkout revision the dashboards were provisioned from
       ansible.builtin.command:
