@@ -325,18 +325,32 @@ CLUSTER = {
 }
 
 
+GUARD_IMPORT = ('- name: "Refuse extra vars that set internal names"\n'
+                '  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml\n')
+
+
 def _whole_template_playbook(tmp_path, record, check=False):
     fake = FakeProxmox(CLUSTER)
     inv = tmp_path / "inv.yml"
     inv.write_text(yaml.safe_dump({"all": {"hosts": {"localhost": {"ansible_connection": "local"}}}}))
     # `_pve_data` stands in for the store record in every play (hvac is not installed here);
-    # `ssh_key_check` for the validation play's SSH key lookup, which needs it too.
+    # `ssh_key_check` for the validation play's SSH key lookup, which needs it too. An
+    # underscore extra var is refused by the run's first play (refuse-internal-extra-vars.yml),
+    # so the stand-in runs from a copy of the playbooks without that import; project_root
+    # keeps the real tree for the seed files.
     extra = {"openbao_addr": "https://bao.invalid", "ssh_key_check": "ssh-ed25519 AAAA",
+             "project_root": str(ROOT / "platform"),
              "_pve_data": {"url": fake.url, "api_token": "synthetic", **record}}
+    staged = tmp_path / "playbooks"
+    shutil.copytree(PLAYBOOKS, staged, ignore=shutil.ignore_patterns("__pycache__"))
+    for name in ("provision-template.yml", "proxmox-validate.yml"):
+        text = (staged / name).read_text()
+        assert GUARD_IMPORT in text, name
+        (staged / name).write_text(text.replace(GUARD_IMPORT, ""))
     env = {**harness_sandbox.env_for(tmp_path), "ANSIBLE_SHOW_CUSTOM_STATS": "1"}
     try:
         done = harness_sandbox.run(
-            ["ansible-playbook", "-i", str(inv), str(PLAYBOOKS / "provision-template.yml"), "-e", json.dumps(extra),
+            ["ansible-playbook", "-i", str(inv), str(staged / "provision-template.yml"), "-e", json.dumps(extra),
              *(["--check"] if check else [])],
             tmp_path, cwd=ROOT, env=env)
     finally:
