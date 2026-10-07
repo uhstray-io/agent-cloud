@@ -541,18 +541,23 @@ step; live as soon as `make git-setup` has been run.
 
 `bats platform/tests/` is byte-identical to CI's; the pytest run is not — CI pins Python
 3.11 and installs the test dependencies, while the hook uses whatever `python3` is on your
-`PATH`.
+`PATH`. Each local phase prints its UTC start, completion status, and elapsed seconds;
+test execution uses named progress so a slow or stuck phase is identifiable.
 
 **Two different gates, on two different things.** The hook blocks *your push* when a suite
 runs and fails. CI blocks *the merge*. Neither substitutes for the other: a green push
 means the suites passed on your machine or were skipped, which is not evidence CI will
 pass — and CI never sees a push the hook stopped.
 
-It skips, with a message, when `SKIP_TESTS=1` is set, when `bats` is not installed, when
-the Python suite is not collectable because pytest or a test dependency is missing, and on
-a branch-deletion push. Failing open like that is deliberate and the opposite of the
-pre-commit secret gate, which fails closed: a leaked secret is irreversible, a skipped test
-is not. Escape hatch, for a reason you can defend in review: `SKIP_TESTS=1 git push`.
+It skips, with a message, when `SKIP_TESTS=1` is set, when `bats` is not installed, and on
+a branch-deletion push. When full pytest collection reports a missing dependency, pytest's
+configured roots are skipped locally but `platform/semaphore/tests/test_scoped_publication.py`
+runs once as a direct fallback. Any nonzero fallback status — including another missing
+dependency — blocks the push; syntax/config collection defects block without fallback. CI
+still installs all dependencies and runs every configured root. The unrelated-dependency
+fail-open is deliberate and opposite to the pre-commit secret gate, which fails closed
+because a leaked secret is irreversible. Escape hatch, for a reason you can defend in
+review: `SKIP_TESTS=1 git push`.
 
 Why push and not commit: the suite takes minutes (measured 2026-09-28: pytest ~6 min, a serial BATS run ~8 min), which on every commit is
 friction people route around with `--no-verify` — turning a gate into a habit of

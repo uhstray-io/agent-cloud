@@ -153,18 +153,23 @@ so you do not need to remember them.
 
 `bats platform/tests/` is byte-identical to CI's; the pytest run is not — CI pins Python
 3.11 and installs the test dependencies, while the hook uses whatever `python3` is on your
-`PATH`.
+`PATH`. Each local phase reports UTC start, status, and elapsed seconds; test execution
+uses named progress.
 
 **Two different gates, on two different things.** The hook blocks *your push* when a suite
 runs and fails. CI blocks *the merge*. Neither substitutes for the other: a green push
 means the suites passed on your machine or were skipped, which is not evidence CI will
 pass — and CI never sees a push the hook stopped.
 
-It skips, with a message, when `SKIP_TESTS=1` is set, when `bats` is not installed, when
-the Python suite is not collectable because pytest or a test dependency is missing, and on
-a branch-deletion push. Failing open like that is deliberate and the opposite of the
-pre-commit secret gate, which fails closed: a leaked secret is irreversible, a skipped test
-is not. Escape hatch, for a reason you can defend in review: `SKIP_TESTS=1 git push`.
+It skips, with a message, when `SKIP_TESTS=1` is set, when `bats` is not installed, and on
+a branch-deletion push. If full pytest collection reports a missing dependency, the hook
+skips the complete configured roots locally but directly runs the scoped Semaphore
+publication module once. That fallback fails closed on every nonzero status, including a
+missing dependency; syntax/config collection defects block without fallback. CI still runs
+every configured root with its installed dependencies. The unrelated-dependency fail-open
+is deliberate and opposite to the pre-commit secret gate, which fails closed because a
+leaked secret is irreversible. Escape hatch, for a reason you can defend in review:
+`SKIP_TESTS=1 git push`.
 
 ---
 

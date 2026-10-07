@@ -50,7 +50,7 @@ and why.
 | 1.18 | Listed an auth failure's causes from the code, missed the database-error 401, and chased credentials while the orchestrator's disk was full | Unverified claim | Convention (disk alert proposed) |
 | 1.19 | A negative claim about a host's state from evidence that cannot establish it (widens 1.6) | Unverified claim | Convention |
 | 1.20 | Assumed Semaphore injected a task-id environment variable; the first production drill printed a blank receipt ID | Unverified runtime assumption | Test (o11y receipt checks) |
-| 2.1 | Test compiled a pattern as raw file text, not as the runtime decodes it | False-green test | Test |
+| 2.1 | Test used a value before its runtime representation boundary — **x2** | False-green test | Test (mutation-proven) |
 | 2.2 | Test pinned the vulnerable form of a security check in place | False-green test | Test |
 | 2.3 | Negative assertion aborted under `set -e` because a no-match grep exits 1 | False-green test | Convention |
 | 2.4 | Test asserted state that lived on a different branch | False-green test | CI |
@@ -783,6 +783,8 @@ unwired in `platform/playbooks/tasks/assert-orchestrated.yml`.
 
 ### 2.1 Compiling a pattern as file text rather than as the runtime sees it
 
+**Occurrences: 2** — (first undated), 2026-10-01
+
 **What happened.** A test extracted a regex from a YAML playbook and compiled it
 with `re.match`. In the YAML the dots are written `\\.`; Jinja decodes that to
 `\.` before the regex engine sees it. Compiling the raw text instead means the
@@ -800,6 +802,21 @@ reproduce that decoding in the test, and say in a comment why.
 public ones` (`platform/tests/test_credential_leaks.bats`): it decodes with
 `codecs.decode(..., 'unicode_escape')` before compiling, and a companion
 structural assertion pins the escaping form so the two cannot drift.
+
+**Occurrence 2 — 2026-10-01.** Credential-scan batching changed each grep match from raw
+content to `file:line:content`, but the password and API-key comment exclusions still
+matched only `^[[:space:]]*#`. A comment can never appear at the start of the prefixed
+record, so commented credential-shaped lines became findings. The equivalence fixture
+compared the old and new raw scanner outputs before the downstream exclusions and carried
+no credential-shaped comments; 25/25 tests therefore passed while the plan claimed the
+line-exclusion contract was preserved. The rule did not fire because the prefix was
+regarded as diagnostic decoration rather than a representation boundary consumed by the
+next filter.
+
+**Occurrence 2 enforcement.** `credential scan excludes comments after the file and line
+prefix` covers leading and indented password/API comments and uncommented findings whose
+filename contains `#`, `:`, and `example`. Restoring the two raw-line comment predicates
+makes that test fail; the predicates now anchor comments after the `file:line:` prefix.
 
 ### 2.2 A test that pinned the vulnerable form in place
 

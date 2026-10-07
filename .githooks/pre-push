@@ -12,10 +12,11 @@
 # IPs, credential patterns, .env files, whitespace, EOF, YAML, large files, merge
 # conflicts and private keys — and nothing at all about tests. There was no gate to pass.
 #
-# Pre-push, not pre-commit, because the BATS suite takes ~37 seconds for 421 tests. On
-# every commit that is friction people route around with --no-verify, which converts a
-# gate into a habit of bypassing gates. On push it is paid once per batch, at the moment
-# the code stops being local — the last point at which a red suite is cheap.
+# Pre-push, not pre-commit, because both suites take minutes. On every commit that is
+# friction people route around with --no-verify, which converts a gate into a habit of
+# bypassing gates. On push it is paid once per batch, at the moment the code stops being
+# local — the last point at which a red suite is cheap. Each phase reports its measured
+# elapsed time instead of carrying an estimate that goes stale as coverage grows.
 #
 # FAIL-OPEN when a runner is absent, which is DELIBERATELY the opposite of the
 # pre-commit secret gate. That gate fails closed because a leaked secret is irreversible
@@ -34,10 +35,11 @@
 # WHAT DOES NOT: local execution, and therefore the result. CI pins Python 3.11 via
 # actions/setup-python and installs the test dependencies; this hook uses whatever
 # `python3` is on the developer's PATH, with whatever is installed there. The pytest
-# command also differs — `-q` here versus CI's `-v`, because a hook printing 95 passing
-# test names on every push is noise people learn to scroll past, and `python3 -m pytest`
-# rather than bare `pytest` so it uses this interpreter's pytest instead of whatever is
-# first on PATH. And pytest may be skipped here entirely when collection fails.
+# command also differs in its local interpreter: `python3 -m pytest` ensures collection
+# and execution use the same interpreter instead of whichever `pytest` executable is
+# first on PATH. Verbose progress names the test currently running, so a slow or stuck
+# phase can be located. Full pytest may still be skipped on a missing dependency, but the
+# scoped publication module then runs directly as the fail-closed fallback below.
 #
 # So a green push means the suites passed ON THIS MACHINE, or were skipped. It is not
 # evidence they pass in CI, and CI remains the authority. `bats platform/tests/` is the
@@ -72,12 +74,88 @@ fi
 
 failed=0
 
+phase_start() {
+  _phase_name=$1
+  _phase_started_epoch=$(date +%s)
+  printf 'pre-push: %s START at %s\n' "$_phase_name" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >&2
+}
+
+phase_end() {
+  _phase_status=$1
+  _phase_finished_epoch=$(date +%s)
+  _phase_elapsed=$((_phase_finished_epoch - _phase_started_epoch))
+  printf 'pre-push: %s END status=%s elapsed=%ss at %s\n' \
+    "$_phase_name" "$_phase_status" "$_phase_elapsed" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >&2
+}
+
+print_missing_dependencies() {
+  sed -nE \
+    -e "s/.*No module named ['\"]([^'\"]+)['\"].*/          dependency: \\1/p" \
+    -e "s/.*ImportError: cannot import name ['\"]([^'\"]+)['\"].*/          dependency: \\1/p"
+}
+
+collection_failure_is_missing_dependencies_only() {
+  awk '
+    /ERROR collecting / { collection_errors++ }
+    /^[[:space:]]*(E[[:space:]]+)?ModuleNotFoundError: No module named/ {
+      dependency_errors++
+      next
+    }
+    /^[[:space:]]*(E[[:space:]]+)?ImportError: cannot import name/ {
+      dependency_errors++
+      next
+    }
+    /: No module named [A-Za-z0-9_.-]+$/ {
+      dependency_errors++
+      next
+    }
+    /^[[:space:]]*(E[[:space:]]+)?(([A-Za-z_][A-Za-z0-9_]*\.)*[A-Za-z_][A-Za-z0-9_]*(Error|Exception)):/ {
+      non_dependency_error = 1
+    }
+    /^[[:space:]]*(E[[:space:]]+)?(KeyboardInterrupt|SystemExit|GeneratorExit|Failed|Skipped|Exit):/ {
+      non_dependency_error = 1
+    }
+    /^[[:space:]]*(ERROR:|INTERNALERROR>)/ {
+      non_dependency_error = 1
+    }
+    END {
+      if (dependency_errors < 1 || non_dependency_error ||
+          (collection_errors > 0 && collection_errors != dependency_errors)) {
+        exit 1
+      }
+    }
+  '
+}
+
+print_collection_failure_summary() {
+  sed -nE \
+    -e "s/.*No module named ['\"]([^'\"]+)['\"].*/          dependency: \\1/p" \
+    -e "s/.*ImportError: cannot import name ['\"]([^'\"]+)['\"].*/          dependency: \\1/p" \
+    -e 's/^[[:space:]]*(E[[:space:]]+)?(([A-Za-z_][A-Za-z0-9_.]*\.)*[A-Za-z_][A-Za-z0-9_]*(Error|Exception)):.*/          collection exception: \2/p' \
+    -e 's/^[[:space:]]*(E[[:space:]]+)?(KeyboardInterrupt|SystemExit|GeneratorExit|Failed|Skipped|Exit):.*/          collection exception: \2/p' \
+    -e 's/^[[:space:]]*ERROR:.*/          collection error: pytest configuration/p' \
+    -e 's/^[[:space:]]*INTERNALERROR>.*/          collection error: pytest internal/p'
+}
+
+sanitize_scoped_fallback_output() {
+  sed -nE \
+    -e 's/^(test_[A-Za-z0-9_]+ \(__main__\.[A-Za-z0-9_.]+\) \.\.\. (ok|FAIL|ERROR))$/          \1/p' \
+    -e 's/^(test_[A-Za-z0-9_]+ \(__main__\.[A-Za-z0-9_.]+\)) \.\.\. skipped .*/          \1 ... skipped/p' \
+    -e 's/^Ran ([0-9]+) tests? in .*$/          Ran \1 tests/p' \
+    -e 's/^(OK|FAILED \([^)]*\))$/          \1/p' \
+    -e "s/.*No module named ['\"]([^'\"]+)['\"].*/          dependency: \\1/p" \
+    -e "s/.*ImportError: cannot import name ['\"]([^'\"]+)['\"].*/          dependency: \\1/p"
+}
+
 # ── BATS ────────────────────────────────────────────────────────────────────
 if [ -d platform/tests ]; then
+  phase_start "BATS suite"
   if command -v bats >/dev/null 2>&1; then
-    printf 'pre-push: running BATS suite (~37s)...\n' >&2
     if ! bats platform/tests/; then
       failed=1
+      phase_end failed
+    else
+      phase_end passed
     fi
   else
     printf '\n' >&2
@@ -85,6 +163,7 @@ if [ -d platform/tests ]; then
     printf '  CI still gates the merge, but you are pushing untested.\n' >&2
     printf '  Install it:  brew install bats-core   (or: apt-get install bats)\n' >&2
     printf '\n' >&2
+    phase_end not-run
   fi
 fi
 
@@ -108,33 +187,53 @@ fi
 # RESIDUAL LIMIT, stated rather than papered over: a typo'd import and a genuinely
 # missing dependency both raise ModuleNotFoundError and cannot be distinguished from
 # the message alone — that would need a dependency manifest to compare against. So
-# that case still skips, but it now PRINTS the module it could not import and says
-# to declare it. Syntax errors and invalid config, which are unambiguous defects,
-# now fail. Verified all four cases: clean+deps runs, missing dep skips, a syntax
-# error fails, a bogus import skips with the module named.
+# the complete configured suite still skips in that case, but the scoped publication
+# module runs directly and fails closed before the hook can allow the push. Syntax
+# errors and invalid config, which are unambiguous defects, fail without fallback.
 py_pp=platform/services/netbox/deployment/workers/proxmox_discovery:platform/services/netbox/deployment/workers/pfsense_sync
 if [ -f pyproject.toml ]; then
   # COLLECTION decides whether to run, not `import pytest` — and its OUTPUT decides
   # whether a failure is forgivable. Keeping the output means no dependency list has
   # to be maintained here to drift out of step with what the tests actually import.
+  phase_start "Python collection"
   collect_out=$(PYTHONPATH="$py_pp" python3 -m pytest -q --collect-only 2>&1)
   collect_rc=$?
   if [ "$collect_rc" -eq 0 ]; then
-    printf 'pre-push: running Python suite...\n' >&2
-    if ! ( PYTHONPATH="$py_pp" python3 -m pytest -q ); then
+    phase_end passed
+    phase_start "Python suite"
+    if ! ( PYTHONPATH="$py_pp" python3 -m pytest -v ); then
       failed=1
+      phase_end failed
+    else
+      phase_end passed
     fi
-  elif printf '%s' "$collect_out" | grep -qE 'ModuleNotFoundError|No module named|ImportError: cannot import name'; then
+  elif printf '%s\n' "$collect_out" | collection_failure_is_missing_dependencies_only; then
+    phase_end missing-dependency
     printf 'pre-push: Python suite not collectable here — a dependency is missing:\n' >&2
-    printf '%s\n' "$collect_out" | grep -E 'ModuleNotFoundError|No module named|ImportError' | sed 's/^/          /' >&2
-    printf '          Skipped. CI installs the dependencies and runs it.\n' >&2
+    printf '%s\n' "$collect_out" | print_missing_dependencies >&2
+    printf '          Full pytest is skipped locally; running the scoped publication fallback.\n' >&2
+    printf '          CI installs the dependencies and runs the complete configured roots.\n' >&2
     printf '          If this names a module the tests legitimately need, DECLARE it in\n' >&2
     printf '          .github/workflows/lint-and-test.yml before pushing.\n' >&2
+
+    phase_start "Scoped publication fallback"
+    fallback_out=$(PYTHONPATH="$py_pp" python3 platform/semaphore/tests/test_scoped_publication.py -v 2>&1)
+    fallback_rc=$?
+    printf '%s\n' "$fallback_out" | sanitize_scoped_fallback_output >&2
+    if [ "$fallback_rc" -eq 0 ]; then
+      phase_end passed
+    else
+      phase_end failed
+      printf 'pre-push: scoped publication fallback failed with status %s; raw output suppressed.\n' \
+        "$fallback_rc" >&2
+      failed=1
+    fi
   else
+    phase_end failed
     printf 'pre-push: Python collection FAILED for a reason that is not a missing\n' >&2
     printf '          dependency — a syntax error, a bad import, or invalid config.\n' >&2
-    printf '          That is a defect, not an environment gap, so this does not skip:\n' >&2
-    printf '%s\n' "$collect_out" | tail -15 | sed 's/^/          /' >&2
+    printf '          That is a defect, not an environment gap, so this does not skip.\n' >&2
+    printf '%s\n' "$collect_out" | print_collection_failure_summary >&2
     failed=1
   fi
 fi

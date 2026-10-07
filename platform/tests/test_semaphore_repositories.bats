@@ -17,11 +17,36 @@ setup() {
   SETUP="$REPO_ROOT/platform/semaphore/setup-templates.yml"
   TPL="$REPO_ROOT/platform/semaphore/templates.yml"
   OLD="$REPO_ROOT/platform/playbooks/set-semaphore-branch.yml"
+  HOOK="$REPO_ROOT/.githooks/pre-push"
+  PYPROJECT="$REPO_ROOT/pyproject.toml"
 }
 
-@test "scoped controller publication: real playbook preserves scope, credentials and bindings" {
-  run python3 "$REPO_ROOT/platform/semaphore/tests/test_scoped_publication.py"
+@test "scoped controller publication: pytest owns the configured root" {
+  run python3 -c '
+import sys, tomllib
+expected = [
+    "platform/tests",
+    "platform/semaphore/tests",
+    "platform/services/netbox/deployment/tests",
+    "platform/services/caddy/deployment/tests",
+]
+with open(sys.argv[1], "rb") as fh:
+    roots = tomllib.load(fh)["tool"]["pytest"]["ini_options"]["testpaths"]
+assert roots == expected, f"configured roots changed: {roots!r}"
+print("\n".join(roots))
+' "$PYPROJECT"
   [ "$status" -eq 0 ] || { echo "$output"; false; }
+}
+
+@test "scoped controller publication: BATS never directly runs the module and the hook owns one fallback" {
+  local fallback_count
+  refute_grep -nE '^[[:space:]]*(run[[:space:]]+)?python3[[:space:]].*platform/semaphore/tests/test_scoped_publication\.py' \
+    "$REPO_ROOT"/platform/tests/*.bats
+  fallback_count=$(awk 'index($0, "python3 platform/semaphore/tests/test_scoped_publication.py -v") { count++ } END { print count + 0 }' "$HOOK")
+  [ "$fallback_count" -eq 1 ] || {
+    echo "expected one scoped fallback in $HOOK, found $fallback_count"
+    false
+  }
 }
 
 @test "repositories: both main and dev records are declared" {

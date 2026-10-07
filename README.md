@@ -271,14 +271,18 @@ CodeRabbit review, and — on a `dev` → `main` PR — a promotion-source check
 working directory and `PYTHONPATH` as CI. Live via the repo's `core.hooksPath` after
 `make git-setup`, no install step. `bats platform/tests/` is byte-identical to CI's; the
 pytest run is not — CI pins Python 3.11 and installs the test dependencies, while the hook
-uses whatever `python3` is on your `PATH`.
+uses whatever `python3` is on your `PATH`. The hook reports start/status/elapsed timing
+for each local phase and named progress during test execution.
 
 **Two different gates, on two different things.** The hook blocks *your push* when a suite
 runs and fails; CI blocks *the merge*. A green push means the suites passed on your machine
 or were skipped, which is not evidence CI will pass. It skips, with a message, on
-`SKIP_TESTS=1`, when `bats` is absent, when the Python suite is not collectable, and on a
-branch-deletion push — failing open deliberately, unlike the pre-commit secret gate, which
-fails closed because a leaked secret is irreversible and a skipped test is not.
+`SKIP_TESTS=1`, when `bats` is absent, and on a branch-deletion push. A missing dependency
+may skip the complete pytest roots locally, but the scoped Semaphore publication module
+then runs once as a fail-closed fallback; every nonzero fallback blocks. Syntax/config
+collection defects block without fallback. CI remains the complete dependency-installed
+gate. This is deliberately different from the pre-commit secret gate, where a leak is
+irreversible and every scan fails closed.
 
 Branch testing via Semaphore allows deploying feature branches to production VMs for validation before merging. See `plan/architecture/03-testing-ci-quality.md`.
 

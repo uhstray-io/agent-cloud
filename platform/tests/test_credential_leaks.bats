@@ -5,17 +5,25 @@
 # Run: bats platform/tests/test_credential_leaks.bats
 
 REPO_ROOT=""
+COMMITTED_FILES_MANIFEST=""
 
 load assert_helpers
 
-setup() {
+setup_file() {
   REPO_ROOT=$(git rev-parse --show-toplevel)
+  COMMITTED_FILES_MANIFEST="$BATS_FILE_TMPDIR/credential-scan-files"
+  _committed_files "$REPO_ROOT" > "$COMMITTED_FILES_MANIFEST"
+  export REPO_ROOT COMMITTED_FILES_MANIFEST
 }
 
-# ── Helper: list committed files, excluding vendored/test/doc paths ────
+setup() {
+  REPO_ROOT=${REPO_ROOT:-$(git rev-parse --show-toplevel)}
+}
+
+# ── Helper: list and scan committed files ─────────────────────────────
 
 _committed_files() {
-  # Returns git-tracked files, excluding:
+  # Returns git-tracked files, excluding exactly the historical scan set:
   #   - netbox-docker/ (vendored upstream)
   #   - .gitkeep files
   #   - binary images
@@ -23,38 +31,91 @@ _committed_files() {
   #   - markdown documentation (plan/, docs/, README, CLAUDE.md)
   #   - test fixture files (test_*.py, test_*.bats, conftest.py)
   #   - example files (*.example)
-  local filter="${1:-}"
-  git ls-files -- "$REPO_ROOT" \
-    | grep -v '^platform/services/netbox/deployment/netbox-docker/' \
-    | grep -v '\.gitkeep$' \
-    | grep -v '\.png$' \
-    | grep -v '\.svg$' \
-    | grep -v '\.ico$' \
-    | grep -v 'test_credential_leaks\.bats$' \
-    | grep -v '\.md$' \
-    | grep -v '\.MD$' \
-    | grep -v '^plan/' \
-    | grep -v '^docs/' \
-    | grep -v 'test_.*\.py$' \
-    | grep -v 'test_.*\.bats$' \
-    | grep -v 'conftest\.py$' \
-    | grep -v '\.example$' \
-    | grep -v '\.j2$' \
-    ${filter:+| grep "$filter"}
+  # The one awk process replaces fifteen serial grep filters without changing
+  # their case-sensitive regular expressions.
+  local root="${1:-$REPO_ROOT}"
+  git -C "$root" ls-files \
+    | awk '
+      /^platform\/services\/netbox\/deployment\/netbox-docker\// { next }
+      /\.gitkeep$/ { next }
+      /\.png$/ { next }
+      /\.svg$/ { next }
+      /\.ico$/ { next }
+      /test_credential_leaks\.bats$/ { next }
+      /\.md$/ { next }
+      /\.MD$/ { next }
+      /^plan\// { next }
+      /^docs\// { next }
+      /test_.*\.py$/ { next }
+      /test_.*\.bats$/ { next }
+      /conftest\.py$/ { next }
+      /\.example$/ { next }
+      /\.j2$/ { next }
+      { print }
+    '
+}
+
+_scan_committed_files() {
+  local root="$1"
+  shift
+  local manifest file
+  local -a files=()
+
+  # setup_file creates this immutable name manifest once for the checkout. Every
+  # test in this file is read-only there; synthetic coverage passes a separate
+  # scratch repository and rebuilds its own manifest instead.
+  if [ "$root" = "$REPO_ROOT" ] && [ -n "${COMMITTED_FILES_MANIFEST:-}" ]; then
+    manifest="$COMMITTED_FILES_MANIFEST"
+  else
+    manifest="$BATS_TEST_TMPDIR/credential-scan-files-${BATS_TEST_NUMBER:-fixture}"
+    _committed_files "$root" > "$manifest"
+  fi
+
+  while IFS= read -r file; do
+    [ -f "$root/$file" ] || continue
+    files+=("$file")
+  done < "$manifest"
+  [ "${#files[@]}" -gt 0 ] || return 0
+
+  # One grep keeps the existing grep engine and options, while -H produces the
+  # same relative file:line:content prefix that the old per-file sed added.
+  (cd "$root" && grep -nH "$@" -- "${files[@]}") || true
+}
+
+_private_ip_violations() {
+  local root="$1"
+  local pattern="$2"
+  local exclusions="$3"
+  # Apply exclusions only after the file:line: prefix. A filename containing
+  # "test" or "example" must not suppress a finding in that file.
+  _scan_committed_files "$root" -E "$pattern" \
+    | grep -viE "^.*:[0-9]+:.*($exclusions)" \
+    || true
+}
+
+_password_violations() {
+  local root="$1"
+  _scan_committed_files "$root" -iE '(password|passwd)\s*[:=]\s*["\x27]?[A-Za-z0-9!@#$%^&*]{8,}' \
+    | grep -vE '^.*:[0-9]+:[[:space:]]*#' \
+    | grep -vE '^.*:[0-9]+:.*(\{\{|\$|example|REPLACE_ME|changeme|placeholder)' \
+    || true
+}
+
+_api_key_violations() {
+  local root="$1"
+  _scan_committed_files "$root" -iE '(api_key|apikey|secret_key|secret_id|token)\s*[:=]\s*["\x27]?[A-Za-z0-9_-]{20,}' \
+    | grep -vE '^.*:[0-9]+:[[:space:]]*#' \
+    | grep -vE '^.*:[0-9]+:.*(\{\{|\$|example|REPLACE_ME|placeholder|dummyKey|dummy_key|LOCAL_FAKE)' \
+    || true
 }
 
 # ── RFC1918 IP detection ──────────────────────────────────────────────
 
 @test "credential leak: no hardcoded 192.168.x.x IPs in committed files" {
   local violations
-  violations=$(
-    _committed_files | while IFS= read -r f; do
-      [ -f "$REPO_ROOT/$f" ] || continue
-      grep -nE '192\.168\.[0-9]+\.[0-9]+' "$REPO_ROOT/$f" \
-        | grep -viE 'target|host:|subnet|scope|example|RFC1918|CIDR|placeholder|template|inventory_hostname|test|\.md:' \
-        | sed "s|^|$f:|" || true
-    done
-  )
+  violations=$(_private_ip_violations "$REPO_ROOT" \
+    '192\.168\.[0-9]+\.[0-9]+' \
+    'target|host:|subnet|scope|example|RFC1918|CIDR|placeholder|template|inventory_hostname|test|\.md:')
   if [ -n "$violations" ]; then
     echo "Found hardcoded 192.168.x.x IPs:"
     echo "$violations"
@@ -64,15 +125,10 @@ _committed_files() {
 
 @test "credential leak: no hardcoded 10.x.x.x IPs in committed files" {
   local violations
-  violations=$(
-    _committed_files | while IFS= read -r f; do
-      [ -f "$REPO_ROOT/$f" ] || continue
-      # Match 10.N.N.N but not version strings like 10.0 without third octet
-      grep -nE '\b10\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\b' "$REPO_ROOT/$f" \
-        | grep -viE 'target|host:|subnet|scope|example|RFC1918|CIDR|placeholder|template|test|\.md:' \
-        | sed "s|^|$f:|" || true
-    done
-  )
+  # Match 10.N.N.N but not version strings like 10.0 without third octet.
+  violations=$(_private_ip_violations "$REPO_ROOT" \
+    '\b10\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\b' \
+    'target|host:|subnet|scope|example|RFC1918|CIDR|placeholder|template|test|\.md:')
   if [ -n "$violations" ]; then
     echo "Found hardcoded 10.x.x.x IPs:"
     echo "$violations"
@@ -82,14 +138,9 @@ _committed_files() {
 
 @test "credential leak: no hardcoded 172.16-31.x.x IPs in committed files" {
   local violations
-  violations=$(
-    _committed_files | while IFS= read -r f; do
-      [ -f "$REPO_ROOT/$f" ] || continue
-      grep -nE '\b172\.(1[6-9]|2[0-9]|3[01])\.[0-9]{1,3}\.[0-9]{1,3}\b' "$REPO_ROOT/$f" \
-        | grep -viE 'target|host:|subnet|scope|example|RFC1918|CIDR|placeholder|template|test|\.md:' \
-        | sed "s|^|$f:|" || true
-    done
-  )
+  violations=$(_private_ip_violations "$REPO_ROOT" \
+    '\b172\.(1[6-9]|2[0-9]|3[01])\.[0-9]{1,3}\.[0-9]{1,3}\b' \
+    'target|host:|subnet|scope|example|RFC1918|CIDR|placeholder|template|test|\.md:')
   if [ -n "$violations" ]; then
     echo "Found hardcoded 172.16-31.x.x IPs:"
     echo "$violations"
@@ -101,22 +152,7 @@ _committed_files() {
 
 @test "credential leak: no hardcoded passwords in committed files" {
   local violations
-  violations=$(
-    _committed_files | while IFS= read -r f; do
-      [ -f "$REPO_ROOT/$f" ] || continue
-      # Match password/passwd assignments with literal values (8+ chars)
-      # Exclude template variables ({{ }}), env var refs ($), comments, and docs
-      grep -inE '(password|passwd)\s*[:=]\s*["\x27]?[A-Za-z0-9!@#$%^&*]{8,}' "$REPO_ROOT/$f" \
-        | grep -v '{{' \
-        | grep -v '\$' \
-        | grep -v '^\s*#' \
-        | grep -v 'example' \
-        | grep -v 'REPLACE_ME' \
-        | grep -v 'changeme' \
-        | grep -v 'placeholder' \
-        | sed "s|^|$f:|" || true
-    done
-  )
+  violations=$(_password_violations "$REPO_ROOT")
   if [ -n "$violations" ]; then
     echo "Found hardcoded passwords:"
     echo "$violations"
@@ -126,28 +162,208 @@ _committed_files() {
 
 @test "credential leak: no hardcoded API keys or tokens in committed files" {
   local violations
-  violations=$(
-    _committed_files | while IFS= read -r f; do
-      [ -f "$REPO_ROOT/$f" ] || continue
-      # Match token/api_key/secret_key assignments with literal values
-      grep -inE '(api_key|apikey|secret_key|secret_id|token)\s*[:=]\s*["\x27]?[A-Za-z0-9_-]{20,}' "$REPO_ROOT/$f" \
-        | grep -v '{{' \
-        | grep -v '\$' \
-        | grep -v '^\s*#' \
-        | grep -v 'example' \
-        | grep -v 'REPLACE_ME' \
-        | grep -v 'placeholder' \
-        | grep -v 'dummyKey' \
-        | grep -v 'dummy_key' \
-        | grep -v 'LOCAL_FAKE' \
-        | sed "s|^|$f:|" || true
-    done
-  )
+  violations=$(_api_key_violations "$REPO_ROOT")
   if [ -n "$violations" ]; then
     echo "Found hardcoded API keys or tokens:"
     echo "$violations"
     false
   fi
+}
+
+# ── Batched scanner regression fixtures ──────────────────────────────
+
+_fixture_git() {
+  local root="$1"
+  shift
+  env \
+    -u GIT_DIR \
+    -u GIT_WORK_TREE \
+    -u GIT_INDEX_FILE \
+    -u GIT_COMMON_DIR \
+    -u GIT_OBJECT_DIRECTORY \
+    -u GIT_ALTERNATE_OBJECT_DIRECTORIES \
+    -u GIT_PREFIX \
+    -u GIT_NAMESPACE \
+    git -C "$root" "$@"
+}
+
+_make_credential_scan_fixture() {
+  local root="$1"
+  local api_value password_value private_10 private_172 private_192
+  api_value=$(printf '%024d' 0)
+  password_value=$(printf '%012d' 0)
+  private_10=$(printf '10.%d.%d.%d' 20 30 40)
+  private_172=$(printf '172.%d.%d.%d' 20 30 40)
+  private_192=$(printf '192.%d.%d.%d' 168 30 40)
+
+  mkdir -p \
+    "$root/src" \
+    "$root/plan" \
+    "$root/docs" \
+    "$root/platform/services/netbox/deployment/netbox-docker"
+  _fixture_git "$root" init -q
+
+  printf 'listen=%s\n' "$private_192" > "$root/src/private address.conf"
+  printf 'listen=%s\n' "$private_10" > "$root/src/example test network.conf"
+  printf 'listen=%s\n' "$private_172" > "$root/src/network 172.conf"
+  printf 'api_key=%s\npassword=%s\n' "$api_value" "$password_value" > "$root/src/credential value.conf"
+  printf 'api_key=%s\npassword=%s\n' "$api_value" "$password_value" \
+    > "$root/src/# example:test credential.conf"
+  printf '# api_key=%s\n   # api_key=%s\n# password=%s\n   # password=%s\n' \
+    "$api_value" "$api_value" "$password_value" "$password_value" \
+    > "$root/src/commented credentials.conf"
+  printf 'workspace=/%s/%s/project\n' Users fixture-user > "$root/src/workstation path.conf"
+  printf '%s\n' 'listen={{ service_host }}' 'api_key=$RUNTIME_KEY' 'workspace=/srv/app' > "$root/src/clean.conf"
+
+  local word
+  : > "$root/src/private exclusions.conf"
+  for word in target host: subnet scope example RFC1918 CIDR placeholder template test .md:; do
+    printf '%s=%s\n' "$word" "$private_10" >> "$root/src/private exclusions.conf"
+  done
+  printf 'inventory_hostname=%s\n' "$private_192" >> "$root/src/private exclusions.conf"
+
+  {
+    printf 'api_key=%s {{ ignored }}\n' "$api_value"
+    printf 'api_key=%s $RUNTIME\n' "$api_value"
+    for word in example REPLACE_ME placeholder dummyKey dummy_key LOCAL_FAKE; do
+      printf 'api_key=%s%s\n' "$word" "$api_value"
+    done
+    printf 'password=%s {{ ignored }}\n' "$password_value"
+    printf 'password=%s $RUNTIME\n' "$password_value"
+    for word in example REPLACE_ME changeme placeholder; do
+      printf 'password=%s%s\n' "$word" "$password_value"
+    done
+  } > "$root/src/secret exclusions.conf"
+
+  local excluded
+  local -a excluded_files=(
+    'platform/services/netbox/deployment/netbox-docker/vendor.conf'
+    'src/.gitkeep'
+    'src/fixture.png'
+    'src/fixture.svg'
+    'src/fixture.ico'
+    'src/test_credential_leaks.bats'
+    'src/fixture.md'
+    'src/fixture.MD'
+    'plan/fixture.conf'
+    'docs/fixture.conf'
+    'src/test_fixture.py'
+    'src/test_fixture.bats'
+    'src/conftest.py'
+    'src/fixture.example'
+    'src/fixture.j2'
+  )
+  for excluded in "${excluded_files[@]}"; do
+    mkdir -p "$root/$(dirname "$excluded")"
+    printf 'api_key=%s\n' "$api_value" > "$root/$excluded"
+  done
+
+  _fixture_git "$root" add -- .
+}
+
+_legacy_scan_committed_files() {
+  local root="$1"
+  shift
+  local file
+  _committed_files "$root" | while IFS= read -r file; do
+    [ -f "$root/$file" ] || continue
+    grep -n "$@" "$root/$file" | sed "s|^|$file:|" || true
+  done
+}
+
+@test "credential scan batch preserves grep findings, prefixes, and status" {
+  local fixture="$BATS_TEST_TMPDIR/findings-repo"
+  _make_credential_scan_fixture "$fixture"
+
+  local batched legacy prefixes
+  batched=$(_scan_committed_files "$fixture" -E '192\.168\.[0-9]+\.[0-9]+')
+  local batched_status=$?
+  legacy=$(_legacy_scan_committed_files "$fixture" -E '192\.168\.[0-9]+\.[0-9]+')
+  local legacy_status=$?
+  [ "$batched_status" -eq "$legacy_status" ]
+  [ "$batched" = "$legacy" ]
+  prefixes=$(printf '%s\n' "$batched" | sed -E 's/^(.+:[0-9]+):.*$/\1/')
+  assert_grep -qxF 'src/private address.conf:1' <<< "$prefixes"
+
+  batched=$(_scan_committed_files "$fixture" -iE '(api_key|apikey|secret_key|secret_id|token)\s*[:=]\s*["\x27]?[A-Za-z0-9_-]{20,}')
+  legacy=$(_legacy_scan_committed_files "$fixture" -iE '(api_key|apikey|secret_key|secret_id|token)\s*[:=]\s*["\x27]?[A-Za-z0-9_-]{20,}')
+  [ "$batched" = "$legacy" ]
+
+  batched=$(_scan_committed_files "$fixture" -E '/(Users|home)/[A-Za-z0-9._-]+/')
+  legacy=$(_legacy_scan_committed_files "$fixture" -E '/(Users|home)/[A-Za-z0-9._-]+/')
+  [ "$batched" = "$legacy" ]
+  prefixes=$(printf '%s\n' "$batched" | sed -E 's/^(.+:[0-9]+):.*$/\1/')
+  [ "$prefixes" = 'src/workstation path.conf:1' ]
+
+  run _scan_committed_files "$fixture" -E 'THIS_PATTERN_HAS_NO_FIXTURE_MATCH'
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "credential scan batch preserves file and line exclusions" {
+  local fixture="$BATS_TEST_TMPDIR/exclusions-repo"
+  _make_credential_scan_fixture "$fixture"
+
+  local files excluded output_prefixes
+  files=$(_committed_files "$fixture")
+  local -a excluded_files=(
+    'platform/services/netbox/deployment/netbox-docker/vendor.conf'
+    'src/.gitkeep'
+    'src/fixture.png'
+    'src/fixture.svg'
+    'src/fixture.ico'
+    'src/test_credential_leaks.bats'
+    'src/fixture.md'
+    'src/fixture.MD'
+    'plan/fixture.conf'
+    'docs/fixture.conf'
+    'src/test_fixture.py'
+    'src/test_fixture.bats'
+    'src/conftest.py'
+    'src/fixture.example'
+    'src/fixture.j2'
+  )
+  for excluded in "${excluded_files[@]}"; do
+    refute_grep -qxF "$excluded" <<< "$files"
+  done
+
+  output_prefixes=$(_private_ip_violations "$fixture" \
+    '\b10\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\b' \
+    'target|host:|subnet|scope|example|RFC1918|CIDR|placeholder|template|test|\.md:' \
+    | sed -E 's/^(.+:[0-9]+):.*$/\1/')
+  [ "$output_prefixes" = 'src/example test network.conf:1' ]
+
+  output_prefixes=$(_private_ip_violations "$fixture" \
+    '192\.168\.[0-9]+\.[0-9]+' \
+    'target|host:|subnet|scope|example|RFC1918|CIDR|placeholder|template|inventory_hostname|test|\.md:' \
+    | sed -E 's/^(.+:[0-9]+):.*$/\1/')
+  [ "$output_prefixes" = 'src/private address.conf:1' ]
+
+  output_prefixes=$(_private_ip_violations "$fixture" \
+    '\b172\.(1[6-9]|2[0-9]|3[01])\.[0-9]{1,3}\.[0-9]{1,3}\b' \
+    'target|host:|subnet|scope|example|RFC1918|CIDR|placeholder|template|test|\.md:' \
+    | sed -E 's/^(.+:[0-9]+):.*$/\1/')
+  [ "$output_prefixes" = 'src/network 172.conf:1' ]
+
+  output_prefixes=$(_api_key_violations "$fixture" | sed -E 's/^(.+:[0-9]+):.*$/\1/')
+  [ "$output_prefixes" = $'src/# example:test credential.conf:1\nsrc/credential value.conf:1' ]
+  output_prefixes=$(_password_violations "$fixture" | sed -E 's/^(.+:[0-9]+):.*$/\1/')
+  [ "$output_prefixes" = $'src/# example:test credential.conf:2\nsrc/credential value.conf:2' ]
+}
+
+@test "credential scan excludes comments after the file and line prefix" {
+  local fixture="$BATS_TEST_TMPDIR/comment-prefix-repo"
+  _make_credential_scan_fixture "$fixture"
+
+  run _api_key_violations "$fixture"
+  [ "$status" -eq 0 ]
+  refute_grep -qF 'src/commented credentials.conf:' <<< "$output"
+  assert_grep -qF 'src/# example:test credential.conf:1:' <<< "$output"
+
+  run _password_violations "$fixture"
+  [ "$status" -eq 0 ]
+  refute_grep -qF 'src/commented credentials.conf:' <<< "$output"
+  assert_grep -qF 'src/# example:test credential.conf:2:' <<< "$output"
 }
 
 # ── Jinja2 template namespace validation ─────────────────────────────
