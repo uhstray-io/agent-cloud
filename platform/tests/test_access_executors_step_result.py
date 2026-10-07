@@ -13,8 +13,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
+import playbook_yaml
 import pytest
-import yaml
 
 REPO = Path(__file__).resolve().parents[2]
 PLAYBOOKS = REPO / "platform/playbooks"
@@ -33,7 +33,7 @@ EXECUTORS = {
 
 
 def _last_play_tasks(name: str) -> list:
-    plays = yaml.safe_load((PLAYBOOKS / name).read_text())
+    plays = playbook_yaml.plays(PLAYBOOKS / name)
     return plays[-1]["tasks"]
 
 
@@ -42,7 +42,7 @@ HOST_PLAYS = {"distribute-ssh-keys.yml", "harden-ssh.yml"}
 
 @pytest.mark.parametrize("name,step", EXECUTORS.items())
 def test_the_step_result_is_emitted_after_the_rescued_work(name, step):
-    plays = yaml.safe_load((PLAYBOOKS / name).read_text())
+    plays = playbook_yaml.plays(PLAYBOOKS / name)
     tasks = plays[-1]["tasks"]
     emits = [i for i, t in enumerate(tasks)
              if str(t.get("ansible.builtin.include_tasks", "")).endswith("emit-step-result.yml")]

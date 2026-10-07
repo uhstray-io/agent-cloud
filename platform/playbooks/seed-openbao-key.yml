@@ -36,6 +36,11 @@
 # loopback/RFC1918 host (the internal OpenBao VLAN): the transport guard below refuses
 # public cleartext. AppRole creds are injected by the Semaphore environment.
 
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
 - name: "Seed a single key into an OpenBao KV-v2 secret path"
   hosts: localhost
   gather_facts: false

@@ -22,6 +22,9 @@ def test_recovery_starts_only_existing_audit_dependencies():
         playbook = root / "platform/playbooks/recover-authentik-audit-runtime.yml"
         playbook.parent.mkdir(parents=True)
         playbook.write_bytes(PLAYBOOK.read_bytes())
+        # The run's first play, imported by name next to the playbook.
+        guard = PLAYBOOK.parent / "refuse-internal-extra-vars.yml"
+        (playbook.parent / guard.name).write_bytes(guard.read_bytes())
         inventory = root / "inventory.yml"
         inventory.write_text(
             "all:\n  children:\n    authentik_svc:\n      hosts:\n"

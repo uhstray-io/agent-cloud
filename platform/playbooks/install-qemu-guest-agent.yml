@@ -2,6 +2,11 @@
 # Install the guest agent on existing VMs that predate the cloud-init package list.
 # Run through the Install QEMU Guest Agent Semaphore template with an explicit group.
 
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
 # An empty or misspelled group makes the play below "skipping: no hosts matched"
 # and exit 0, which Semaphore records as a success. Same guard as destroy-vm.yml.
 - name: "Pre-flight: target group is real"

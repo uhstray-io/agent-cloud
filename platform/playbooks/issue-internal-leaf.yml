@@ -18,6 +18,11 @@
 # is safe under --check. Verification is tagged `verify` (plan/architecture/08, standard 3):
 # `--tags verify` runs the inspection, whatever the action, and changes nothing.
 
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
 # Without this a missing or empty group would match no hosts and the run would pass.
 - name: "Refuse a target group that matches no hosts"
   hosts: localhost

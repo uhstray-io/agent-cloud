@@ -11,6 +11,7 @@ import re
 import subprocess
 from pathlib import Path
 
+import playbook_yaml
 import pytest
 import yaml
 
@@ -188,7 +189,7 @@ def test_only_the_collector_writes_workflow_status():
 
 
 def test_production_conformance_uses_the_exact_private_otlp_receiver():
-    collector = yaml.safe_load((REPO / "platform/playbooks/collect-service-conformance.yml").read_text())[0]
+    collector = playbook_yaml.plays(REPO / "platform/playbooks/collect-service-conformance.yml")[0]
     tasks = collector["tasks"]
     pattern = collector["vars"]["_o11y_private_ipv4_pattern"]
     assert re.match(pattern, "10.23.45.67")
@@ -292,7 +293,7 @@ def test_production_collector_names_an_unparsed_inventory(tmp_path):
 
 
 def test_local_collector_does_not_require_a_parsed_inventory():
-    collector = yaml.safe_load((REPO / "platform/playbooks/collect-service-conformance.yml").read_text())[0]
+    collector = playbook_yaml.plays(REPO / "platform/playbooks/collect-service-conformance.yml")[0]
     guard = next(t for t in collector["tasks"] if t.get("name") == "Require the inventory to have parsed")
     assert guard["ansible.builtin.include_tasks"] == "tasks/require-parsed-inventory.yml"
     assert guard["when"] == "not (local_mode | default(false) | bool)"
@@ -326,7 +327,7 @@ def test_scheduled_callers_name_an_unparsed_inventory(tmp_path, playbook, extra)
 )
 def test_otlp_delivery_is_reported_before_a_generic_failure(tmp_path, response, expected_status,
                                                               expected_rc, private_marker):
-    collector = yaml.safe_load((REPO / "platform/playbooks/collect-service-conformance.yml").read_text())[0]
+    collector = playbook_yaml.plays(REPO / "platform/playbooks/collect-service-conformance.yml")[0]
     tasks = collector["tasks"]
     selected = [next(t for t in tasks if t.get("name") == name) for name in (
         "Classify the OTLP response without exposing its body",
@@ -346,7 +347,7 @@ def test_otlp_delivery_is_reported_before_a_generic_failure(tmp_path, response, 
             "_vm_ambiguous": [],
             "_vm_unreachable": [],
             "_pick": {"stdout": json.dumps({"window_full": []})},
-            "push_loki_result": {"status": 204},
+            "_push_loki_result": {"status": 204},
         },
         "tasks": selected,
     }]

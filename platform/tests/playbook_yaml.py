@@ -79,3 +79,56 @@ def strings(value, keys: bool = False):
     elif isinstance(value, list):
         for v in value:
             yield from strings(v, keys)
+
+
+SET_FACT = ("ansible.builtin.set_fact", "set_fact")
+
+
+def defined_names(path: Path) -> dict[str, set[str]]:
+    """Every variable name a playbook defines, with how: play `vars`, `vars_files` (literal
+    paths, resolved next to the playbook), block or task `vars` (include params too),
+    `register`, literal `set_fact` keys and `loop_control.loop_var`. Only this file: imported
+    playbooks and included task files are not followed. The override guards' ratchets read
+    it to decide which names an extra var must not set."""
+    found: dict[str, set[str]] = {}
+
+    def add(name, kind):
+        if isinstance(name, str) and "{{" not in name:
+            found.setdefault(name, set()).add(kind)
+
+    for play in load(path) or []:
+        if not isinstance(play, dict):
+            continue
+        for name in play.get("vars") or {}:
+            add(name, "play vars")
+        for ref in play.get("vars_files") or []:
+            file = path.parent / ref
+            if isinstance(ref, str) and "{{" not in ref and file.is_file():
+                for name in load(file) or {}:
+                    add(name, "vars_files")
+        for key in ("pre_tasks", "tasks", "post_tasks", "handlers"):
+            for task in tasks(play.get(key)):
+                for name in task.get("vars") or {}:
+                    add(name, "block vars" if "block" in task else "task vars")
+                add(task.get("register"), "register")
+                for module in SET_FACT:
+                    if isinstance(task.get(module), dict):
+                        for name in task[module]:
+                            if name != "cacheable":
+                                add(name, "set_fact")
+                add((task.get("loop_control") or {}).get("loop_var"), "loop_var")
+    return found
+
+
+# Every workflow executor opens with this import (refuse-internal-extra-vars.yml); the tests
+# that read or rebuild an executor's own plays skip it.
+OVERRIDE_GUARD = "refuse-internal-extra-vars.yml"
+
+
+def plays(path: Path) -> list:
+    """A playbook's plays without its leading extra-var guard import, freshly parsed so a
+    harness may edit them."""
+    doc = loads(path.read_text())
+    if doc and isinstance(doc[0], dict) and doc[0].get("ansible.builtin.import_playbook") == OVERRIDE_GUARD:
+        return doc[1:]
+    return doc

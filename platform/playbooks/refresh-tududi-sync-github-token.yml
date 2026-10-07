@@ -18,6 +18,11 @@
 # Failure is loud twice: the scheduled task goes red here, and the sync's own
 # cycles start answering 401 until the next successful refresh.
 
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
 - name: "Pre-flight: target group is real"
   ansible.builtin.import_playbook: preflight-target-group.yml
   vars:

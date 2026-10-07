@@ -1,6 +1,12 @@
 ---
 # Reconcile a named Discord webhook in the declared text channel, then store
 # its URL in OpenBao. The bot credential stays at secret/services/discord.
+
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
 - name: Verify the candidate checkout
   hosts: localhost
   connection: local

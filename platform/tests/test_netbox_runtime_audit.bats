@@ -36,7 +36,7 @@ PY2
 import sys
 import yaml
 
-tasks = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))[0]["tasks"]
+tasks = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))[1]["tasks"]  # [0] imports the extra-var guard
 permissions, = (task for task in tasks if task["name"] == "Ensure NetBox automation user and scoped permissions")
 assert '"is_staff"' not in permissions["ansible.builtin.shell"]
 refuse, = (task for task in tasks if task["name"] == "Refuse an unrecoverable dedicated token")
@@ -78,7 +78,7 @@ survey = {item["name"]: item for item in recovery[0]["survey_vars"]}
 assert survey["netbox_source_apply"]["default_value"] == "false"
 assert survey["netbox_runtime_apply"]["default_value"] == "false"
 
-plays = yaml.safe_load(open(sys.argv[2], encoding="utf-8"))
+plays = yaml.safe_load(open(sys.argv[2], encoding="utf-8"))[1:]  # [0] imports the extra-var guard
 assert plays[0]['ansible.builtin.import_playbook'] == 'preflight-target-group.yml'
 assert plays[0]['vars'] == {'preflight_group': 'netbox_svc', 'preflight_group_expected': 'netbox_svc'}
 controller_tasks = plays[1]['tasks']

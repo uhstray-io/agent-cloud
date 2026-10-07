@@ -6,6 +6,11 @@
 #
 # Usage: -e "target_service=agent_cloud"
 
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
 # ── Bootstrap: a freshly built VM has no key yet ──────────────────────────────
 # This playbook installs authorized_keys over a connection it does not create, so
 # on a host that was not provisioned with a cloud-init key it had no way in at

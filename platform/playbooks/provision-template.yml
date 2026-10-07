@@ -3,8 +3,15 @@
 # Run via Semaphore or:
 #   ansible-playbook -i inventory/local.yml playbooks/provision-template.yml
 
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
 - name: "Pre-validate: Cluster ready for template creation"
   ansible.builtin.import_playbook: proxmox-validate.yml
+  vars:
+    _extra_var_guard_nested: true
 
 - name: "Create Ubuntu 24.04 VM Template"
   hosts: localhost
@@ -94,20 +101,20 @@
           ansible.builtin.uri:
             url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/config"
             method: GET
-          register: existing_tmpl
-          failed_when: existing_tmpl.status | default(-1) not in [200, 404, 500]
+          register: _existing_tmpl
+          failed_when: _existing_tmpl.status | default(-1) not in [200, 404, 500]
           check_mode: false
 
         # An existing template is not a reason to end the play: the step result below still has to
         # be recorded, and the template still has to be proven (D10 review 2026-10-02).
         - name: "Note whether the template already exists"
           ansible.builtin.set_fact:
-            _tmpl_present: "{{ existing_tmpl.status == 200 and (existing_tmpl.json.data.template | default(0) | int == 1) }}"
+            _tmpl_present: "{{ _existing_tmpl.status == 200 and (_existing_tmpl.json.data.template | default(0) | int == 1) }}"
 
         - name: "Fail if VMID taken by non-template"
           ansible.builtin.fail:
             msg: "VMID {{ _vmid }} exists but is not a template."
-          when: existing_tmpl.status == 200 and (existing_tmpl.json.data.template | default(0) | int != 1)
+          when: _existing_tmpl.status == 200 and (_existing_tmpl.json.data.template | default(0) | int != 1)
 
         - name: "Create the template when it does not exist yet"
           when: not (_tmpl_present | bool)
@@ -116,18 +123,18 @@
               ansible.builtin.command:
                 cmd: "bash {{ _project_root }}/proxmox/cloud-init/build-seed-iso.sh {{ _seed_path }}"
                 creates: "{{ _seed_path }}"
-              register: seed_build
+              register: _seed_build
               notify: "Show seed ISO build output"
 
             - name: "Check if seed ISO already uploaded"
               ansible.builtin.uri:
                 url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/storage/local/content"
                 method: GET
-              register: local_content
+              register: _local_content
               check_mode: false
 
             - name: "Upload seed ISO via uri module"
-              when: local_content.json.data | selectattr('volid', 'equalto', _seed_volid) | list | length == 0
+              when: _local_content.json.data | selectattr('volid', 'equalto', _seed_volid) | list | length == 0
               block:
                 - name: "Attempt upload via uri module"
                   ansible.builtin.uri:
@@ -141,7 +148,7 @@
                         content: "{{ lookup('file', _seed_path) }}"
                         filename: "autoinstall-seed.iso"
                         mime_type: "application/octet-stream"
-                  register: upload_result
+                  register: _upload_result
                   when: not ansible_check_mode
               rescue:
                 - name: "Upload seed ISO via curl (fallback)"
@@ -152,7 +159,7 @@
                       -H "Authorization: PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
                       -F "content=iso"
                       -F "filename=@{{ _seed_path }}"
-                  register: upload_fallback
+                  register: _upload_fallback
                   changed_when: true
                   no_log: true
                   when: not ansible_check_mode
@@ -178,20 +185,20 @@
                   serial0: "socket"
                   vga: "serial0"
                 status_code: [200]
-              register: create_result
+              register: _create_result
               when: not ansible_check_mode
 
             - name: "Wait for VM creation task"
               ansible.builtin.uri:
-                url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/tasks/{{ create_result.json.data }}/status"
+                url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/tasks/{{ _create_result.json.data }}/status"
                 method: GET
-              register: task_status
-              until: task_status.json.data.status == "stopped"
+              register: _task_status
+              until: _task_status.json.data.status == "stopped"
               retries: 30
               delay: 5
               when:
                 - not ansible_check_mode
-                - create_result.json.data is defined and create_result.json.data is string
+                - _create_result.json.data is defined and _create_result.json.data is string
 
             - name: "Start VM for autoinstall"
               ansible.builtin.uri:
@@ -208,8 +215,8 @@
               ansible.builtin.uri:
                 url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/status/current"
                 method: GET
-              register: vm_status
-              until: vm_status.json.data.status == "running"
+              register: _vm_status
+              until: _vm_status.json.data.status == "running"
               retries: 12
               delay: 10
               when: not ansible_check_mode
@@ -218,8 +225,8 @@
               ansible.builtin.uri:
                 url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/status/current"
                 method: GET
-              register: vm_status
-              until: vm_status.json.data.status == "stopped"
+              register: _vm_status
+              until: _vm_status.json.data.status == "stopped"
               retries: 60
               delay: 15
               when: not ansible_check_mode
@@ -332,7 +339,9 @@
   handlers:
     - name: "Show seed ISO build output"
       ansible.builtin.debug:
-        var: seed_build.stdout_lines
+        var: _seed_build.stdout_lines
 
 - name: "Post-validate: Template exists and is ready"
   ansible.builtin.import_playbook: proxmox-validate.yml
+  vars:
+    _extra_var_guard_nested: true

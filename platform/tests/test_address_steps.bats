@@ -22,7 +22,7 @@ judge() {
   python3 - "$VALIDATE" "$BATS_TEST_TMPDIR/judge.yml" "$1" "$2" "$cfg" <<'PY'
 import json, sys, yaml
 plays = yaml.safe_load(open(sys.argv[1]))
-tasks = [t for p in plays for t in p["tasks"]
+tasks = [t for p in plays for t in p.get("tasks", [])  # the first entry imports the extra-var guard
          if t.get("name") in ("Judge the address", "Judge whether the ARP entry is the declared VM's own")]
 yaml.safe_dump([{
     "hosts": "localhost", "connection": "local", "gather_facts": False,

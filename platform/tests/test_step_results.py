@@ -6,6 +6,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import playbook_yaml
 import yaml
 
 REPO = Path(__file__).resolve().parents[2]
@@ -250,7 +251,7 @@ def test_pick_reports_a_template_whose_history_filled_the_window():
     got = _call({"mode": "pick", "groups": {}, "host_services": {}, "histories": [full, short, []]})
     assert got["window_full"] == [9]
     # HISTORY_WINDOW is the size of THIS endpoint's answer; /tasks/last answers 200
-    plays = yaml.safe_load((REPO / "platform/playbooks/collect-service-conformance.yml").read_text())
+    plays = playbook_yaml.plays(REPO / "platform/playbooks/collect-service-conformance.yml")
     read = next(t for t in plays[0]["tasks"] if t.get("name") == "Read each workflow template's task history")
     assert read["ansible.builtin.uri"]["url"].endswith("/templates/{{ item }}/tasks")
 

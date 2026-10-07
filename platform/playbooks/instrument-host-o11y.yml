@@ -47,6 +47,13 @@
 #
 # Usage (Semaphore): -e target_service=tududi_svc
 
+# An extra var outranks every value this playbook computes (`-e _ih_group_errors=[]` would record
+# a pass for a failing group), so refuse any that sets an internal (underscore-prefixed) name
+# before anything runs, by name, which a templated extra var cannot get past
+# (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
 - name: "Refuse a run that would instrument nothing"
   hosts: localhost
   connection: local
@@ -57,65 +64,6 @@
       vars:
         require_parsed_inventory_group: "{{ target_service | default('') }}"
 
-    # Every internal name this playbook sets or reads (play, block and task vars, registers,
-    # set_facts, its vars file): an extra var outranks all of them, so `-e _ih_group_errors=[]`
-    # would record a pass for a failing group. platform/tests/test_instrument_host_o11y.py pins
-    # this list to the names the playbook defines. The probe values stay on localhost, so the
-    # last play names its inputs with set_fact (which replaces them), never with play vars.
-    - name: "Refuse extra-var overrides of this run's internal names"
-      ansible.builtin.include_tasks: tasks/refuse-var-overrides.yml
-      loop:
-        - _ih_any_change
-        - _ih_become
-        - _ih_bind
-        - _ih_boot_unit
-        - _ih_collector_args
-        - _ih_deploy_dir
-        - _ih_endpoints
-        - _ih_engine
-        - _ih_errors
-        - _ih_fragment
-        - _ih_fragment_changed
-        - _ih_fragment_path
-        - _ih_group_errors
-        - _ih_group_ok
-        - _ih_group_would_change
-        - _ih_hosts
-        - _ih_image
-        - _ih_inspect
-        - _ih_job
-        - _ih_linger
-        - _ih_linger_user
-        - _ih_mem
-        - _ih_mem_hosts
-        - _ih_name
-        - _ih_octets
-        - _ih_persist_change
-        - _ih_port
-        - _ih_prior
-        - _ih_prior_stat
-        - _ih_probe
-        - _ih_prom
-        - _ih_receiver
-        - _ih_receiver_errors
-        - _ih_reload
-        - _ih_rootless
-        - _ih_running
-        - _ih_scrape_dir
-        - _ih_series
-        - _ih_spec
-        - _ih_spec_hash
-        - _ih_unanswered
-        - _ih_up
-        - _ih_up_hosts
-        - _ih_verifiable
-        - _ih_wait_delay
-        - _ih_wait_retries
-        - _ih_would_change
-        - _o11y_forbidden_metric_label_names_regex
-      loop_control:
-        loop_var: _rvo_name
-
     # The guard and the work read the SAME target_service, so one override moves both; the
     # guard only proves the group is populated (as in verify-service-persistence.yml).
     - name: "Require target_service to name a populated group and one o11y receiver"
@@ -125,10 +73,6 @@
           - (groups.get(target_service | default(''), []) | length) > 0
           - target_service != 'o11y_svc'
           - groups.get('o11y_svc', []) | length == 1
-          # The override probes above leave values on localhost, so it must not be a host the
-          # later plays read.
-          - "'localhost' not in groups.get(target_service | default(''), [])"
-          - "'localhost' not in groups.get('o11y_svc', [])"
         fail_msg: >-
           Pass -e target_service=<group> naming a populated inventory group other than o11y_svc
           (the receiver scrapes its own host as receiver-host), with exactly one o11y_svc host;
@@ -557,8 +501,6 @@
   connection: local
   gather_facts: false
   tasks:
-    # set_fact, not play vars: the override probes left values on this host, and those outrank
-    # play vars. set_fact replaces them.
     - name: "Name the group and the receiver"
       ansible.builtin.set_fact:
         _ih_hosts: "{{ groups[target_service] }}"

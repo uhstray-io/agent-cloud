@@ -65,6 +65,8 @@ def _copy_playbook(tmp: Path, password_fails: bool = False) -> Path:
     dest = tmp / "pb"
     shutil.copytree(playbook_yaml.REPO / "platform/playbooks/tasks", dest / "tasks")
     shutil.copy(PLAYBOOK, dest / PLAYBOOK.name)
+    # The run's first play, imported by name next to the playbook.
+    shutil.copy(PLAYBOOK.parent / playbook_yaml.OVERRIDE_GUARD, dest / playbook_yaml.OVERRIDE_GUARD)
     issue = dest / "tasks/issue-internal-leaf.yml"
     tasks = yaml.safe_load(issue.read_text())
     swapped = 0
@@ -813,7 +815,7 @@ def test_the_template_runs_daily_from_dev_right_after_issue_internal_leaf():
 
 
 def test_the_proof_scripts_never_print_a_key():
-    play = playbook_yaml.load(PLAYBOOK)[1]
+    play = playbook_yaml.plays(PLAYBOOK)[1]
     for name in ("_renew_reader", "_renew_server_prover", "_renew_route_prover"):
         script = play["vars"][name]
         assert "key.pem" not in script and "PRIVATE" not in script, name

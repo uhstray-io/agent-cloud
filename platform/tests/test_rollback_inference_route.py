@@ -324,7 +324,7 @@ def _unchanged(out):
 
 def test_the_three_modes_exist_and_anything_else_is_refused(env):
     tmp = env[0]
-    plays = playbook_yaml.load(PLAYBOOK)
+    plays = playbook_yaml.plays(PLAYBOOK)
     assert "['gateway-config', 'direct', 'restore']" in plays[0]["tasks"][0]["ansible.builtin.assert"]["that"]
     rc, out = _run(env, mode="sideways")
     assert rc != 0 and "takes gateway-config (default), direct or restore" in out, out
