@@ -339,7 +339,9 @@ def plan(payload: dict[str, Any]) -> dict[str, Any]:
                 elif query_type == "range":
                     modes = ["range"]
                 if "instant" in modes and expr.lstrip().startswith("{"):
-                    raise Refused(f"panel {entry['title']!r} target {ref!r} uses an unsupported instant log stream query")
+                    raise Refused(
+                        f"panel {entry['title']!r} target {ref!r} uses an unsupported instant log stream query"
+                    )
             entry["targets"].append(
                 {"ref": ref, "datasource": kind, "modes": modes, "expr": interpolate(expr, values, builtins)}
             )
