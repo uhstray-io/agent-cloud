@@ -16,6 +16,11 @@
 # objects the executor touches (not superuser); a stricter view-vs-add split is the
 # upgrade path if that over-grant ever matters.
 
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
 - name: "Provision scoped NetBox automation token"
   hosts: netbox_svc
   gather_facts: false

@@ -212,6 +212,11 @@
 #
 # Usage (via Semaphore): -e target_service=openhands_svc
 
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
 - name: "Apply UFW firewall to {{ target_service | default('(unset)') }}"
   hosts: "{{ target_service }}"
   gather_facts: false

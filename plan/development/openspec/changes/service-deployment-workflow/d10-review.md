@@ -365,3 +365,19 @@ report now carries `show_rc` and `verify_show_rc`, and the visible assert fails 
 non-zero value, in a dry run and a real run alike. Three tests prove it (plan show, post-apply
 show, and a fake tofu whose show exits 1 under `--check` and for real); dropping either assert,
 or reporting `show_rc` as none, turned them red.
+
+## edge-dns live dry run — 2026-10-06
+
+Author: Joseph A. Wisneski IV — 2026-10-06
+
+The sections above stay as written. The 2026-10-05 verdict was "passes D10 in the executor,
+pending that live dry run"; the run has happened. Apply Cloudflare Tofu (Dev) task 3006, a dry
+run on `dev` after #454, against the real OpenTofu binary and the live R2 backend, recorded
+`init_rc` 0, `plan_rc` 0, `show_rc` 0 and `plan_changes` 0, and an edge-dns step result of
+`pass` with `check_mode` true. The task id and these values were reported by the coordinator;
+the task output was not read for this note. A read-back that the runner's checkout of the tofu
+root was left unchanged is not part of the reported evidence; the byte-identical root remains
+proven by the fake-tofu tests only.
+
+Verdict: edge-dns **passes** D10, with no pending proof. Not stamped, for the `main` hazard
+recorded on 2026-10-04. Remaining gap: service-deploy, not yet re-reviewed.

@@ -43,9 +43,9 @@ def _ansible(tmp: Path, host_vars: dict, tasks: list, play_vars: dict | None = N
 
 
 def _render(tmp: Path, **hv) -> dict:
-    hv = {"agw_clients": ["stray"], "agw_models": [{"name": "m"}], "agw_upstream_base_url": "http://u.invalid/v1",
+    hv = {"agw_clients": ["workstation"], "agw_models": [{"name": "m"}], "agw_upstream_base_url": "http://u.invalid/v1",
           "internal_leaves": LEAVES,
-          "secrets": {"client_stray": "k", "vllm_api_key": "v", "agw_db_password": "p",
+          "secrets": {"client_workstation": "k", "vllm_api_key": "v", "agw_db_password": "p",
                       "agw_oidc_cookie_seed": "s", "agentgateway_oidc_client_secret": "c"}, **hv}
     task = {"ansible.builtin.template": {"src": str(CONFIG), "dest": str(tmp / "config.yaml"), "mode": "0644"}}
     r = _ansible(tmp, hv, [task])

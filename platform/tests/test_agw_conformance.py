@@ -24,6 +24,7 @@ import time
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
+import forgeries
 import harness_sandbox
 import playbook_yaml
 import pytest
@@ -790,9 +791,9 @@ _MODELS = [{"name": n} for n in ("a", "b", "c", "d", "e", "f")]
 
 
 @pytest.mark.parametrize("inputs,expected", [
-    ({"agw_clients": ["stray"], "agw_models": _MODELS,
-      "agw_client_policies": {"stray": {"allowed_models": ["e", "undeclared", "c", "a"]}}}, "e"),
-    ({"agw_clients": ["stray"], "agw_models": _MODELS}, "a"),
+    ({"agw_clients": ["workstation"], "agw_models": _MODELS,
+      "agw_client_policies": {"workstation": {"allowed_models": ["e", "undeclared", "c", "a"]}}}, "e"),
+    ({"agw_clients": ["workstation"], "agw_models": _MODELS}, "a"),
 ])
 def test_the_conformance_model_is_the_same_under_every_hash_seed(inputs, expected):
     py = _ansible_python()
@@ -883,10 +884,10 @@ class Bao(seed_harness.FakeBao):
 
 def _playbook(tmp: Path, gw: Stub, direct: Stub, extra=None, check=False, host_vars=None):
     Bao.requests = []
-    Bao.store = {"client_stray": GW_KEY, "vllm_api_key": UP_KEY, "agw_db_password": "synthetic-db"}
+    Bao.store = {"client_workstation": GW_KEY, "vllm_api_key": UP_KEY, "agw_db_password": "synthetic-db"}
     with seed_harness.serve(Bao) as address:
         host = {"ansible_connection": "local", "ansible_python_interpreter": sys.executable,
-                "service_name": "agentgateway", "agw_clients": ["stray"], "agw_models": [{"name": "m"}],
+                "service_name": "agentgateway", "agw_clients": ["workstation"], "agw_models": [{"name": "m"}],
                 "agw_upstream_base_url": direct.url, "agw_bind": "127.0.0.1", "agw_port": gw.port,
                 **(host_vars or {})}
         inv = {"all": {"vars": {"openbao_addr": address},
@@ -912,7 +913,7 @@ def test_the_playbook_runs_reports_and_removes_its_directory(tmp_path, stubs):
     gw, direct = stubs(key=GW_KEY), stubs(key=UP_KEY)
     rc, out, made = _playbook(tmp_path, gw, direct)
     assert rc == 0, out
-    assert f"Conformance as stray for m: PASS, {len(CASES)}/{len(CASES)} cases match." in out
+    assert f"Conformance as workstation for m: PASS, {len(CASES)}/{len(CASES)} cases match." in out
     assert '"agw_conformance"' in out or "agw_conformance" in out  # CUSTOM STATS
     # The one keyless probe through the shared probe path first, then every case with the key.
     assert gw.seen[0]["path"] == "/v1/models" and gw.seen[0]["auth"] is None
@@ -945,8 +946,20 @@ def test_the_playbook_hands_the_declared_model_remap_to_the_comparison(tmp_path,
     assert made and not _left_behind(made)
 
 
-@pytest.mark.parametrize("name", ["victim", "agw-conformance.evil"])
-def test_an_extra_var_cannot_redirect_the_key_files_or_the_delete(tmp_path, stubs, name):
+# The run's first play refuses every underscore-prefixed extra var by name
+# (refuse-internal-extra-vars.yml), so a template that shows a check one value and the work
+# another (forgeries.py; docs/MISTAKES.md 1.15) is refused before anything renders it.
+def _refused_first(out: str, name: str) -> bool:
+    return f"Refusing to run: {name} set from outside the playbook" in out
+
+
+@pytest.mark.parametrize("name, forge", [
+    pytest.param(name, f.values[0], id=f"{name}-{f.id}")
+    for name in ["victim", "agw-conformance.evil"]
+    for f in forgeries.templated_forgeries("_agwc_tmpdir", {"path": "/tmp/agw-conformance.honest"},
+                                           lambda t, n=name: {"path": str(t / n)})
+])
+def test_an_extra_var_cannot_redirect_the_key_files_or_the_delete(tmp_path, stubs, name, forge):
     # An extra var outranks the registered tempfile result. Aim it at a directory holding a canary:
     # nothing is written into it and it is not deleted, whether or not its name has the prefix
     # (the second is not directly under the temp root).
@@ -954,8 +967,8 @@ def test_an_extra_var_cannot_redirect_the_key_files_or_the_delete(tmp_path, stub
     target.mkdir()
     (target / "canary").write_text("keep")
     gw, direct = stubs(key=GW_KEY), stubs(key=UP_KEY)
-    rc, out, _ = _playbook(tmp_path, gw, direct, extra={"_agwc_tmpdir": {"path": str(target)}})
-    assert rc != 0 and "Do not pass _agwc_tmpdir as an extra var" in out, out
+    rc, out, _ = _playbook(tmp_path, gw, direct, extra=json.loads(forge(tmp_path)))
+    assert rc != 0 and _refused_first(out, "_agwc_tmpdir"), out
     assert sorted(p.name for p in target.iterdir()) == ["canary"]
     assert [x for x in gw.seen if x["auth"]] == [] and direct.seen == []
 
@@ -1023,43 +1036,48 @@ GATEWAY_URLS = ["_gateway_base", "_gateway_url"]
 PROBE_INTERNALS = {"_agwp_raw": {"status": 401}, "_agwp_out": {"status": 401, "msg": "", "content": "", "json": {}}}
 
 
-@pytest.mark.parametrize("name, value", [*[(n, "/forged") for n in PROBE_INPUTS + GATEWAY_URLS],
-                                         *PROBE_INTERNALS.items()])
-def test_an_extra_var_cannot_aim_or_forge_the_keyless_gate(tmp_path, stubs, name, value):
+@pytest.mark.parametrize("name, forge", [
+    pytest.param(n, f.values[0], id=f"{n}-{f.id}")
+    for n, value in [*[(n, "/forged") for n in PROBE_INPUTS + GATEWAY_URLS], *PROBE_INTERNALS.items()]
+    for f in forgeries.templated_forgeries(n, "__override_probe__", value)
+])
+def test_an_extra_var_cannot_aim_or_forge_the_keyless_gate(tmp_path, stubs, name, forge):
     # The gateway here serves a keyless request: only a redirected or forged gate could pass it.
     # Each name is refused before any request, any OpenBao read and any key file.
     gw, direct = stubs(key=None), stubs(key=UP_KEY)
-    rc, out, made = _playbook(tmp_path, gw, direct, extra={name: value})
-    assert rc != 0 and f"Refusing to run: {name} is internal to this play" in out, out
+    rc, out, made = _playbook(tmp_path, gw, direct, extra=json.loads(forge(tmp_path)))
+    assert rc != 0 and _refused_first(out, name), out
     assert gw.seen == [] and direct.seen == [] and Bao.requests == [] and made == []
 
 
-@pytest.mark.parametrize("name, value", [
-    ("_agwr_hosts", {"content": "MTI3LjAuMC4xIGdhdGV3YXk="}),
-    ("_agwr_getent", {"rc": 0, "stdout_lines": ["127.0.0.1"]}),
+@pytest.mark.parametrize("name, forge", [
+    pytest.param(n, f.values[0], id=f"{n}-{f.id}")
+    for n, value in [("_agwr_hosts", {"content": "MTI3LjAuMC4xIGdhdGV3YXk="}),
+                     ("_agwr_getent", {"rc": 0, "stdout_lines": ["127.0.0.1"]})]
+    for f in forgeries.templated_forgeries(n, "__override_probe__", value)
 ])
-def test_an_extra_var_cannot_forge_the_resolution_verdict(tmp_path, stubs, name, value):
+def test_an_extra_var_cannot_forge_the_resolution_verdict(tmp_path, stubs, name, forge):
     gw, direct = stubs(key=GW_KEY), stubs(key=UP_KEY)
-    rc, out, made = _playbook(tmp_path, gw, direct, host_vars=_tls_host(tmp_path), extra={name: value})
-    assert rc != 0 and f"Refusing to run: {name} is internal to this play" in out, out
+    rc, out, made = _playbook(tmp_path, gw, direct, host_vars=_tls_host(tmp_path), extra=json.loads(forge(tmp_path)))
+    assert rc != 0 and _refused_first(out, name), out
     assert gw.seen == [] and direct.seen == [] and Bao.requests == [] and made == []
 
 
 def test_a_body_extra_var_does_not_turn_the_keyless_probe_into_a_write(tmp_path, stubs):
-    # _agwp_body cannot be refused (refusing leaves it defined); the shared probe sends a body only
-    # with POST, and the method is pinned to GET.
+    # The value probe could not refuse _agwp_body (refusing leaves it defined), so the shared
+    # probe also sends a body only with POST and pins the method to GET. The run's first play
+    # now refuses it by name before anything is sent.
     gw, direct = stubs(key=GW_KEY), stubs(key=UP_KEY)
     rc, out, made = _playbook(tmp_path, gw, direct, extra={"_agwp_body": {"model": "m"}})
-    assert rc == 0, out
-    assert (gw.seen[0]["method"], gw.seen[0]["path"], gw.seen[0]["auth"]) == ("GET", "/v1/models", None)
-    assert not gw.seen[0]["body"]
+    assert rc != 0 and _refused_first(out, "_agwp_body"), out
+    assert gw.seen == [] and direct.seen == [] and Bao.requests == [] and made == []
 
 
 def test_with_listener_tls_the_keyless_probe_names_the_san_and_presents_the_verifier_leaf():
     # Structure the stub run cannot reach without a CA: the probe goes through tasks/agw-probe.yml
     # with the verifier leaf and bundle the TLS precheck stats, and the resolution step it relies on
     # is read-only; both run before OpenBao is authenticated to.
-    tasks = playbook_yaml.load(PLAYBOOK)[1]["tasks"]
+    tasks = playbook_yaml.plays(PLAYBOOK)[1]["tasks"]
     run = next(t for t in tasks if t.get("name") == "Run the cases")["block"]
     names = [t["name"] for t in run]
     res = next(t for t in run if t.get("ansible.builtin.include_tasks") == "tasks/agw-probe-resolution.yml")
@@ -1078,7 +1096,7 @@ def test_with_listener_tls_the_keyless_probe_names_the_san_and_presents_the_veri
     assert sorted(guard["loop"]) == sorted(PROBE_INPUTS + GATEWAY_URLS)
     assert set(PROBE_INPUTS) == set(res["vars"]) | set(probe["vars"])
     # One source: the cases' URL is the gate's base plus /v1, both set after the refusal, never play vars.
-    play = playbook_yaml.load(PLAYBOOK)[1]
+    play = playbook_yaml.plays(PLAYBOOK)[1]
     assert not set(GATEWAY_URLS) & set(play["vars"])
     facts = [t["ansible.builtin.set_fact"] for t in tasks[1:3]]
     assert list(facts[0]) == ["_gateway_base"] and facts[1] == {"_gateway_url": "{{ _gateway_base }}/v1"}
@@ -1091,7 +1109,7 @@ def test_with_listener_tls_the_keyless_probe_names_the_san_and_presents_the_veri
 
 
 def test_the_key_files_are_0600_in_a_private_directory():
-    plays = playbook_yaml.load(PLAYBOOK)
+    plays = playbook_yaml.plays(PLAYBOOK)
     tasks = json.dumps(plays[1]["tasks"])
     assert '"dest": "{{ _agwc_tmpdir.path }}/gateway.key", "mode": "0600"' in tasks
     assert '"dest": "{{ _agwc_tmpdir.path }}/direct.key", "mode": "0600"' in tasks

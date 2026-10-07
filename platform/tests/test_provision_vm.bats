@@ -147,7 +147,7 @@ setup() {
   # 9000 is on local storage, so a cross-node --target clone is refused (task 1064).
   local pb="$REPO_ROOT/platform/playbooks/provision-vm.yml"
   # The clone body carries no `target:` any more.
-  refute_grep -qE '^\s+target: "\{\{ _node \}\}"$' <(sed -n '/name: "Clone template to new VM/,/register: clone_result/p' "$pb")
+  refute_grep -qE '^\s+target: "\{\{ _node \}\}"$' <(sed -n '/name: "Clone template to new VM/,/register: _clone_result/p' "$pb")
   assert_grep -qE 'qemu/\{\{ _vmid \}\}/migrate' "$pb"
   assert_grep -qE 'targetstorage: "\{\{ _storage \}\}"' "$pb"
   assert_grep -q '_do_migrate' "$pb"

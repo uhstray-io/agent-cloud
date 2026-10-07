@@ -2,6 +2,12 @@
 # The controller updates exact declared surveys; one missing Dev template may be
 # created only with explicit verified bindings.
 # No service deploy, repository rebind, inventory update or credential export.
+
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
 - name: "Require explicit controller publication scope"
   hosts: localhost
   connection: local

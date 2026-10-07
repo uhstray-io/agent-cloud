@@ -179,7 +179,8 @@ def test_database_query_has_a_closed_read_only_call_surface():
     assert sql == ["SET TRANSACTION READ ONLY", "SET LOCAL statement_timeout = '15s'", "SHOW transaction_read_only"]
     assert any(isinstance(node, ast.Raise) for node in ast.walk(tree))
     # Changing the guard or introducing a setter fails this closed call allowlist.
-    playbook = yaml.safe_load((PLATFORM / "playbooks/check-discovery.yml").read_text())
+    # Its first entry imports the extra-var guard; the plays follow.
+    playbook = [p for p in yaml.safe_load((PLATFORM / "playbooks/check-discovery.yml").read_text()) if "hosts" in p]
     includes = [
         task["ansible.builtin.include_tasks"]
         for play in playbook
@@ -222,7 +223,7 @@ def test_revision_preflight_accepts_clean_commit_and_refuses_wrong_or_dirty_sour
         monkeypatch.setenv(name, str(tmp_path / "unrelated" / name))
     repo = tmp_path / "repo"
     repo.mkdir()
-    query = yaml.safe_load((PLATFORM / "playbooks/check-discovery.yml").read_text())[0]
+    query = [p for p in yaml.safe_load((PLATFORM / "playbooks/check-discovery.yml").read_text()) if "hosts" in p][0]
     commands = [task["ansible.builtin.command"] for task in query["tasks"]
                 if task.get("ansible.builtin.command", {}).get("argv", [None])[0] == "git"]
     assert commands[0]["argv"] == ["git", "rev-parse", "HEAD"]

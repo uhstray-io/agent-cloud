@@ -444,8 +444,8 @@ main checkout, which another session holds.
   VM" now hosts two containers, and the gateway is no longer stateless — the state is
   budget usage plus request metadata rows (no payloads by default). (a) remains the
   path to a per-identity request bucket.
-- ~~Per-client key list.~~ Declared 2026-09-17 in site-config: `stray`, `opencode`, `pi`,
-  `skynet` (local-dev: `dev-local`). `legacy-shared` joins in task 4.1.
+- ~~Per-client key list.~~ Declared 2026-09-17 in site-config: four clients
+  (the operator's workstation, two coding agents, `skynet`; local-dev: `dev-local`). `legacy-shared` joins in task 4.1.
 - Streamed completions were not charged to the budget in the local test (only the
   non-stream request's 93 tokens appeared in `budget_usage`); whether LM Studio omits
   `usage` in stream mode or the gateway charges late is for task 2's conformance run.

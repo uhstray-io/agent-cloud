@@ -3,6 +3,12 @@
 # NOTE: Semaphore is the deployment orchestrator. This playbook is for
 # provisioning Semaphore on a NEW VM only. Do not run this against
 # the live Semaphore instance that is executing your tasks.
+
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
 - name: "Deploy Semaphore"
   import_playbook: deploy-service.yml
   vars:

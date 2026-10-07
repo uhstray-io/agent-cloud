@@ -7,11 +7,14 @@ with nothing edited and records a failed step.
 """
 
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
 
+import forgeries
 import harness_sandbox
+import playbook_yaml
 import pytest
 import yaml
 
@@ -29,7 +32,7 @@ def _flat(tasks):
 
 
 def _host_tasks() -> list:
-    return list(_flat(yaml.safe_load(PLAYBOOK.read_text())[0]["tasks"]))
+    return list(_flat(playbook_yaml.plays(PLAYBOOK)[0]["tasks"]))
 
 
 def test_the_key_only_proof_precedes_every_edit():
@@ -96,7 +99,7 @@ GUARD = "tasks/refuse-var-overrides.yml"
 
 
 def test_every_gate_name_is_refused_as_an_extra_var_before_anything_runs():
-    plays = yaml.safe_load(PLAYBOOK.read_text())
+    plays = playbook_yaml.plays(PLAYBOOK)
     host = list(_flat(plays[0]["tasks"]))
     first = host[1]  # the block's first task
     assert first.get("ansible.builtin.include_tasks") == GUARD and first["loop_control"]["loop_var"] == "_rvo_name"
@@ -110,29 +113,42 @@ def test_every_gate_name_is_refused_as_an_extra_var_before_anything_runs():
         assert name in ctl["loop"], name
 
 
+# Each gate name forged plainly and as a template (forgeries.py): the context and stateful
+# templates show this play's own value probe the probe value and the work the forgery, which
+# that probe cannot see (docs/MISTAKES.md 1.15); the run's first play refuses by name.
+FORGED_GATES = {
+    "_key_preproof": {"rc": 0, "stdout": "KEY_ONLY_OK"},
+    "_proof_key": {"materialised": True, "dir": "/nonexistent", "key": "/nonexistent/id", "known_hosts": "/x"},
+    "_harden_verdict": True,
+    "_sudoers_change": {"changed": False},
+}
+
+
 @pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="ansible-playbook not installed")
-@pytest.mark.parametrize("forged", [
-    '{"_key_preproof": {"rc": 0, "stdout": "KEY_ONLY_OK"}}',
-    '{"_proof_key": {"materialised": true, "dir": "/nonexistent", "key": "/nonexistent/id", "known_hosts": "/x"}}',
-    '{"_harden_verdict": true}',
-    '{"_sudoers_change": {"changed": false}}',
+@pytest.mark.parametrize("name,forge", [
+    pytest.param(name, f.values[0], id=f"{name}-{f.id}")
+    for name, value in FORGED_GATES.items()
+    for f in forgeries.templated_forgeries(name, "__override_probe__", value)
 ])
-def test_a_forged_internal_var_is_refused_before_any_write(tmp_path, forged):
+def test_a_forged_internal_var_is_refused_before_any_write(tmp_path, name, forge):
     cfg = tmp_path / "sshd_config"
     cfg.write_text("PasswordAuthentication yes\n")
     inv = tmp_path / "inv.ini"
     inv.write_text("[demo_svc]\nh1 ansible_connection=local service_name=demo ansible_user=nobody\n")
     env = harness_sandbox.env_for(tmp_path)
     env.update(BAO_ROLE_ID="r", BAO_SECRET_ID="s")
+    forged = forge(tmp_path)
     proc = harness_sandbox.run(
         ["ansible-playbook", "-i", str(inv), str(PLAYBOOK), "-e", "target_service=demo_svc",
          "-e", "ansible_become=false", "-e", "openbao_addr=https://127.0.0.1:9", "-e", forged,
          "-e", f"_sshd_config_path={cfg}", "-e", f"_sshd_config_dir={tmp_path}"],
         tmp_path, cwd=REPO, env=env)
     out = proc.stdout + proc.stderr
-    name = next(iter(__import__("json").loads(forged)))
     assert proc.returncode != 0, out
-    assert f"{name} is internal to this play" in proc.stdout, out[-3000:]
+    # The run's first play refuses every underscore-prefixed extra var (refuse-internal-extra-
+    # vars.yml) before this play's own probe would.
+    refused = re.search(r"Refusing to run: (.*) set from outside the playbook", proc.stdout)
+    assert refused and name in refused.group(1).split(", "), out[-3000:]
     assert cfg.read_text() == "PasswordAuthentication yes\n", out
     # No scratch directory, so no key on the runner (the shared temp root is not inspected:
     # parallel tests use it too).

@@ -65,7 +65,7 @@ task library and `platform/lib/` first; a recurring need is promoted to a reusab
 site/AppRole/service/user inherits the first's recipe.
 *Why: the shared `/var/lib/agent-cloud-deploy` dir fixed bind-mounts for every local service at once
 - that leverage is the whole point. A hand-grant doesn't survive a redeploy and can't be repeated at
-scale - e.g. hand-setting Semaphore user `stray` to admin is a stopgap; the foundational fix is
+scale - e.g. hand-setting the operator's Semaphore user to admin is a stopgap; the foundational fix is
 role-based provisioning ("Human access is provisioned by role", Section 3). Introduce a new
 abstraction only when the same fact has provably been hand-copied into 4+ places, not in anticipation.*
 
@@ -201,7 +201,7 @@ per-service hand-grant.
 *Why: provisioning is the only way user management scales across many tenants/projects without drift;
 it is the no-monkey-patch rule (Section 2) applied to people. Decomposing identity (vs one opaque
 "user type") lets access be derived from real org structure instead of bespoke per-person grants.
-**[TARGET]** the provisioning automation + the group schema are not built yet - Semaphore user `stray`
+**[TARGET]** the provisioning automation + the group schema are not built yet - the operator's Semaphore user
 was hand-set to admin (a stopgap), and `platform-admins` is today's sole admin group, with a proposed rename to
 `uhstray-admins` (the uhstray-org Admin tier). The exact group-naming + (identity -> per-service role)
 mapping table lives in `plan/architecture/04-credentials-access.md`. Do not reason as if role-based

@@ -20,6 +20,11 @@
 #   Back Up n8n DB -> bump n8n_image in inventory -> guarded Deploy n8n ->
 #   (on migration failure) re-pin the old image + Restore n8n DB.
 
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
 # Ansible exits 0 on "no hosts matched", so without this an empty/misspelled
 # group reports SUCCESS having written no dump — right before a one-way
 # migration. The exact false green preflight-target-group.yml exists for.

@@ -7,6 +7,7 @@ import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
+import playbook_yaml
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -325,7 +326,7 @@ def test_privileged_root_only_collector_runs_only_readonly_host_queries():
 
 
 def test_dev_playbook_and_template_require_both_exact_revisions_and_only_read():
-    plays = yaml.safe_load((ROOT / "platform/playbooks/diagnose-o11y-host-storage.yml").read_text())
+    plays = playbook_yaml.plays(ROOT / "platform/playbooks/diagnose-o11y-host-storage.yml")
     assert plays[0]["ansible.builtin.import_playbook"] == "preflight-target-group.yml"
     controller = next(play for play in plays if play.get("hosts") == "localhost")
     controller_tasks = controller["tasks"]

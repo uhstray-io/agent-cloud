@@ -9,6 +9,11 @@
 # Uses composable tasks/clean-service.yml (container_engine: docker from
 # inventory) then runs deploy-openhands.yml.
 
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
 - name: "Clean OpenHands deployment"
   hosts: openhands_svc
   gather_facts: false
@@ -21,3 +26,5 @@
 
 - name: "Fresh deploy"
   import_playbook: deploy-openhands.yml
+  vars:
+    _extra_var_guard_nested: true

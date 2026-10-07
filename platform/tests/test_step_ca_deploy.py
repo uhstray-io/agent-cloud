@@ -73,7 +73,7 @@ def test_a_ca_reset_runs_only_when_the_launch_names_the_host(tmp_path, confirm, 
 
 
 def test_the_reset_guard_runs_before_anything_is_destroyed():
-    plays = playbook_yaml.load(CLEAN)
+    plays = playbook_yaml.plays(CLEAN)
     assert plays[0]["name"].startswith("Refuse a CA reset")
     assert plays[0].get("any_errors_fatal") is True
     # A confirmed reset with incomplete inventory refuses before the root is destroyed.

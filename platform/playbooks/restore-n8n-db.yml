@@ -26,6 +26,11 @@
 # dump under a newer image is the UPGRADE path, not an error — watch the app
 # container's logs on a major jump.
 
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
 # Ansible exits 0 on "no hosts matched" — the false green
 # preflight-target-group.yml exists to stop.
 - name: "Pre-flight: target group is real"

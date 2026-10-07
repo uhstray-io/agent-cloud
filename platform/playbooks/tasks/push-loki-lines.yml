@@ -15,7 +15,7 @@
 #                            passes false, because an unreachable Loki must never block its
 #                            NetBox writes or its report.
 # Sets:
-#   push_loki_result         the uri result (status 204 = pushed); registered as skipped
+#   _push_loki_result         the uri result (status 204 = pushed); registered as skipped
 #                            under --check. A caller that also gates the include with `when`
 #                            leaves it undefined when the include is skipped — treat
 #                            "undefined or skipped" as not pushed.
@@ -57,7 +57,7 @@
     body:
       streams: "{{ push_loki_streams }}"
     status_code: [204]
-  register: push_loki_result
+  register: _push_loki_result
   changed_when: true
-  failed_when: push_loki_must_succeed and (push_loki_result.status | default(-1) | int) != 204
+  failed_when: push_loki_must_succeed and (_push_loki_result.status | default(-1) | int) != 204
   when: not ansible_check_mode

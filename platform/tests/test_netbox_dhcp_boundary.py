@@ -7,6 +7,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import playbook_yaml
 import pytest
 import yaml
 
@@ -67,8 +68,7 @@ def test_unknown_router_response_fails_closed():
 
 
 def test_router_check_precedes_netbox_write():
-    playbook = (PLAYBOOKS / "netbox-allocate-ip.yml").read_text()
-    parsed = yaml.safe_load(playbook)[0]
+    parsed = playbook_yaml.plays(PLAYBOOKS / "netbox-allocate-ip.yml")[0]
     tasks = parsed["tasks"]
     names = [task["name"] for task in tasks]
     read = names.index("Read the live pfSense DHCP server configuration")
@@ -109,7 +109,7 @@ def test_router_check_precedes_netbox_write():
 @pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="ansible-playbook is unavailable")
 def test_tls_choice_uses_private_host_even_with_play_var_overrides(tmp_path):
     """Execute actual guards and URI templates without contacting a host."""
-    parsed = yaml.safe_load((PLAYBOOKS / "netbox-allocate-ip.yml").read_text())[0]
+    parsed = playbook_yaml.plays(PLAYBOOKS / "netbox-allocate-ip.yml")[0]
     tasks = {task["name"]: task for task in parsed["tasks"]}
     source_guard = tasks["Require the pfSense DHCP source before reserving"]
     endpoint_guard = tasks["Require the inventory-owned NetBox endpoint"]

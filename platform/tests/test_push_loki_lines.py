@@ -16,6 +16,7 @@ import threading
 from http.server import HTTPServer
 from pathlib import Path
 
+import playbook_yaml
 import pytest
 import yaml
 from fake_http import DrainingHandler
@@ -32,7 +33,7 @@ needs_ansible = pytest.mark.skipif(
 
 
 def _collector_tasks() -> list[dict]:
-    return yaml.safe_load(COLLECTOR.read_text())[0]["tasks"]
+    return playbook_yaml.plays(COLLECTOR)[0]["tasks"]
 
 
 def _local_loki_task() -> dict:
@@ -62,7 +63,7 @@ def test_collector_carries_no_inline_loki_push():
         uri = task.get("ansible.builtin.uri") or task.get("uri") or {}
         assert "loki" not in str(uri.get("url", "")).lower(), task.get("name")
     # the report reads the shared task's documented result, not a private register
-    assert "push_loki_result" in next(t for t in _collector_tasks() if t.get("name") == "Report")[
+    assert "_push_loki_result" in next(t for t in _collector_tasks() if t.get("name") == "Report")[
         "ansible.builtin.debug"]["msg"]["loki"]
 
 
@@ -123,8 +124,8 @@ def _include(**vars_) -> list:
     return [
         {"name": "push", "ansible.builtin.include_tasks": str(TASK), "vars": vars_},
         {"name": "show", "ansible.builtin.debug": {
-            "msg": "STATUS={{ push_loki_result.status | default('none') }} "
-                   "SKIPPED={{ push_loki_result is skipped }}"}},
+            "msg": "STATUS={{ _push_loki_result.status | default('none') }} "
+                   "SKIPPED={{ _push_loki_result is skipped }}"}},
     ]
 
 
