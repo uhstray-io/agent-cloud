@@ -142,6 +142,34 @@ def test_template_without_a_cloud_init_drive_fails_and_says_why(tmp_path):
     assert "no cloud-init drive" in result["error"]
 
 
+# Semaphore task 3195: a live template failed this check with nothing saying where, if
+# anywhere, its cloud-init volume was. The error names the drive keys that hold one, and only
+# the key names: the config's other values (storage, sizes, descriptions) stay out of it.
+def test_a_cloud_init_drive_on_another_key_is_named_by_key_only(tmp_path):
+    result, rc = _template(tmp_path, {"template": 1, "ide2": "none,media=cdrom",
+                                      "scsi1": "vm-lvms:vm-9000-cloudinit,media=cdrom",
+                                      "ide0": "secretstore:vm-9000-cloudinit",
+                                      "description": "vm-lvms:vm-9000-cloudinit"})
+    assert (result["status"], rc != 0) == ("fail", True)
+    assert result["error"].endswith("has no cloud-init drive on ide2 (cloudinit volume found on: ide0, scsi1)")
+    assert "vm-lvms" not in result["error"] and "secretstore" not in result["error"]
+
+
+def test_a_template_with_no_cloud_init_volume_says_so(tmp_path):
+    result, rc = _template(tmp_path, {"template": 1, "scsi0": "vm-lvms:vm-9000-disk-0,size=20G", "cores": 2})
+    assert (result["status"], rc != 0) == ("fail", True)
+    assert result["error"].endswith("has no cloud-init drive on ide2 (no cloudinit volume on any drive key)")
+
+
+def test_a_null_read_back_is_still_recorded_as_a_failure(tmp_path):
+    # PR 464 review: a 200 with "data": null survived default({}) and dict2items raised before
+    # the step result was recorded.
+    result, rc = _template(tmp_path, None)
+    assert (result["step"], result["status"], rc != 0) == ("vm-template", "fail", True)
+    assert "is not a template (HTTP 200)" in result["error"]
+    assert result["error"].endswith("has no cloud-init drive on ide2 (no cloudinit volume on any drive key)")
+
+
 def test_a_vm_that_is_not_a_template_fails(tmp_path):
     result, rc = _template(tmp_path, {}, status=500)
     assert (result["status"], rc != 0) == ("fail", True)
