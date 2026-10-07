@@ -902,7 +902,8 @@ templates:
     playbook: platform/playbooks/clean-deploy-o11y.yml
     # DESTRUCTIVE: removes every o11y container and volume (metrics, logs, Grafana
     # state), then imports deploy-o11y.yml. Refuses BEFORE removing anything unless the
-    # launch names the host and the controller checkout is the reviewed commit, clean.
+    # launch names the host and, for a remote host, the controller checkout is the
+    # reviewed commit, clean.
     dev_variant: true
     survey_vars:
       - name: confirm_o11y_reset

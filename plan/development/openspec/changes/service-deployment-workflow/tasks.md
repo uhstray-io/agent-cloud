@@ -427,6 +427,21 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
         (HTTP 200) for authentik 1472, n8n 1509, o11y 1500, openbao 1522, semaphore 1523,
         honcho 1561 and tududi 1563. caddy declares no health path. Before the change, the
         executor's direct probe answered -1 for tududi, honcho and n8n however healthy they were
+- [ ] 7.10 Connection identity is still settable from outside the run (open, recorded
+      2026-10-07 from the PR #459 review; not implemented). `refuse-internal-extra-vars.yml`
+      refuses `_` names and become/connection password variables (`ansible_password`,
+      `ansible_*_pass`, `ansible_*_password`), but not the public
+      connection variables: an extra var or a Semaphore environment JSON can set
+      `ansible_host`, `ansible_port`, `ansible_user`, `ansible_connection` or
+      `ansible_become_method`. Ansible host-key checking is off under Semaphore
+      (`platform/playbooks/README.md`, `tasks/pin-ssh-host-key.yml` row), so a forged
+      `ansible_host` sends the run, and the OpenBao-derived become password it hands to sudo,
+      to a host the launcher chose. Proposed fix, to be designed: refuse those names as extra
+      vars where the inventory is the only legitimate source, or pin the target's host key
+      before the first connection that carries a credential, and test both with
+      `forgeries.templated_forgeries`. Clean Deploy o11y's gates already key on the effective
+      connection, so forging `ansible_connection=local` there moves the destroy onto the
+      controller rather than past the gate
 
 ## 8. Backfill agentgateway end to end
 

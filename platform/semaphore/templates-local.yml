@@ -135,6 +135,12 @@ templates:
     playbook: platform/playbooks/clean-deploy-authentik.yml
   - name: "Clean Deploy o11y (Local)"
     playbook: platform/playbooks/clean-deploy-o11y.yml
+    survey_vars:
+      - name: confirm_o11y_reset
+        title: "Confirm: host whose o11y data is destroyed"
+        description: "Type the o11y inventory hostname. Anything else refuses. No default on purpose."
+        type: string
+        required: true
   - name: "Clean Deploy OPA (Local)"
     playbook: platform/playbooks/clean-deploy-opa.yml
   - name: "Clean Deploy n8n (Local)"
