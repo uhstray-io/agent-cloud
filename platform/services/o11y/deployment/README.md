@@ -478,11 +478,15 @@ the Docker listing and mount formats have equivalent tested support.
 
 The receipt also lists every container of the o11y compose project, stopped
 ones included, with its memory in MiB (`o11y_container_memory_mib`). It is one
-`podman stats --no-stream` reading of podman's raw cgroup byte count, which on
-cgroup v2 is `memory.current` minus `inactive_file`: the working set, not strict
-resident memory. Only container names and MiB values are printed. A stopped
-container, an unreadable `podman stats` (for example rootless Podman on cgroup
-v1) or a missing reading refuses the receipt instead of issuing a partial one.
+`podman stats --no-stream` reading of podman's raw cgroup byte count. On cgroup
+v2 that count is `memory.current` minus `inactive_file` (the working set) with
+podman >= 5.6.0 (containers/common v0.64), and the `anon` line of `memory.stat`
+with podman <= 5.5 (common v0.63.x) and every 4.x release; neither is strict
+resident memory, so read the receipt against the podman version of the host. Only
+container names and MiB values are printed. A stopped container, an unreadable
+`podman stats` (for example rootless Podman on cgroup v1), a missing reading or
+a reading of zero bytes (what `podman stats` reports for a container that exited
+after the listing) refuses the receipt instead of issuing a partial one.
 Task 1789 (2026-09-28) passed the
 retention/sample/cardinality checks but observed only 805,421,056 bytes free on
 the 10,464,022,528-byte guest root; that guest observation alone does not prove
