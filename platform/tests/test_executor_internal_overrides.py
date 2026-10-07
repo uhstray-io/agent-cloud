@@ -13,6 +13,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import forgeries
@@ -55,8 +56,10 @@ def _emitters() -> list[Path]:
     return out
 
 
-def _run(playbook: Path, tmp_path: Path, *args: str, inventory: str = "localhost,"):
+def _run(playbook: Path, tmp_path: Path, *args: str, inventory: str = "localhost,", path_prepend: Path | None = None):
     env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
+    if path_prepend:
+        env["PATH"] = f"{path_prepend}{os.pathsep}{env['PATH']}"
     env.update(ANSIBLE_NOCOLOR="1", ANSIBLE_LOCAL_TEMP=str(tmp_path), ANSIBLE_REMOTE_TEMP=str(tmp_path))
     return subprocess.run(["ansible-playbook", "-i", inventory, str(playbook), *args],
                           cwd=REPO, env=env, text=True, capture_output=True, check=False, timeout=120)
@@ -483,6 +486,476 @@ def test_clean_deploy_o11y_refuses_the_reviewed_commit_with_uncommitted_files(tm
     assert proc.returncode != 0, proc.stdout
     assert f"The checkout is {head} with uncommitted files" in proc.stdout, proc.stdout
     assert "TASK [Destroy existing deployment]" not in proc.stdout
+
+
+# tasks/clean-service.yml deletes a clone and runs root shell scripts built from public variables.
+# An extra var chose what it deleted and where it ran (PR #470 and #473 reviews): `-e
+# local_monorepo_dir=<path>`, `-e ansible_connection=local` or `ansible.builtin.local`, `-e
+# local_mode=true`, `-e service_name=` / `-e monorepo_deploy_path=` aimed at another service. It now
+# pins each name once, derives the mode from the play's host names (ansible_play_hosts_all, which an
+# extra var cannot set), allows only ssh for a host that is not local-dev, and requires the host to
+# be in the service's own group with the service's own deploy path.
+#
+# Prod runs here reach a host "over ssh" through a fake ssh executable that runs the command on this
+# machine, so the real prod branch executes (with ansible_become=false and an account that has no
+# home directory, its removals are no-ops) and the connection allowlist sees a genuine `ssh`
+# connection. Engines are fakes that only log. Local runs use a host named like a local-dev one.
+PROD_ACCOUNT = "svc-w55-test"  # no home directory exists for it
+SERVICE_VARS = "service_name=o11y monorepo_deploy_path=platform/services/o11y/deployment"
+PROD_REFUSAL = "Refusing: the teardown for"
+PROD_TEARDOWN = "TASK [Stop and remove containers + volumes (prod)"
+CONNECTION_REFUSAL = "but its connection is not the default ssh"
+PROD_HOME = f"/home/{PROD_ACCOUNT}"
+
+
+def _fake_engines(tmp_path: Path) -> Path:
+    """A bin dir with docker and podman that only log their arguments, to put ahead on PATH."""
+    bindir = tmp_path / "bin"
+    bindir.mkdir(exist_ok=True)
+    for name in ("podman", "docker"):
+        (bindir / name).write_text(f'#!/bin/sh\necho "$@" >> {tmp_path / "engine-args"}\nexit 0\n')
+        (bindir / name).chmod(0o755)
+    return bindir
+
+
+def _clean_inventory(tmp_path: Path, hostvars: str = "") -> str:
+    """A local-dev host: named <service>-local, on a local connection."""
+    inv = tmp_path / "inv.ini"
+    inv.write_text(f"[o11y_svc]\nobs-local ansible_connection=local {SERVICE_VARS} {hostvars}\n")
+    return str(inv)
+
+
+def _prod_inventory(tmp_path: Path, hostvars: str = "") -> str:
+    """A remote host reached over ssh, through an ssh that runs the command here."""
+    ssh = tmp_path / "fake-ssh"
+    ssh.write_text('#!/bin/sh\nfor last; do :; done\nexec /bin/sh -c "$last"\n')
+    ssh.chmod(0o755)
+    inv = tmp_path / "prod-inv.ini"
+    inv.write_text(
+        f"[o11y_svc]\nobs ansible_host=127.0.0.1 ansible_ssh_executable={ssh} "
+        f"ansible_ssh_pipelining=true ansible_python_interpreter={sys.executable} "
+        f"ansible_user={PROD_ACCOUNT} container_engine=docker {SERVICE_VARS} {hostvars}\n")
+    return str(inv)
+
+
+def _clean_only(tmp_path: Path) -> Path:
+    """The guard, then tasks/clean-service.yml alone with the includers' _monorepo_dir: the
+    teardown without an executor's own gates, which a remote host's SHA gate would stop first."""
+    play = [{"ansible.builtin.import_playbook": str(PLAYBOOKS / GUARD)},
+            {"hosts": "o11y_svc", "gather_facts": False,
+             "vars": {"_monorepo_dir": "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy'))"
+                                       " ~ '/agent-cloud') }}"},
+             "tasks": [{"ansible.builtin.include_tasks": str(PLAYBOOKS / "tasks/clean-service.yml")}]}]
+    out = tmp_path / "clean-only.yml"
+    out.write_text(yaml.safe_dump(play))
+    return out
+
+
+def _prod_run(tmp_path: Path, *extra: str, hostvars: str = "", limit: bool = False):
+    """A real run of the prod teardown on the ssh host. Returns (proc, engine log)."""
+    args = ["--limit", "obs"] if limit else []
+    proc = _run(_clean_only(tmp_path), tmp_path, *args, "-e", json.dumps({"ansible_become": False}), *extra,
+                inventory=_prod_inventory(tmp_path, hostvars), path_prepend=_fake_engines(tmp_path))
+    log = tmp_path / "engine-args"
+    return proc, (log.read_text() if log.exists() else "")
+
+
+def _destroy_only(tmp_path: Path) -> Path:
+    """clean-deploy-o11y.yml without its imported Fresh deploy, which would go on to render and
+    deploy o11y (reading OpenBao) on this machine. The play under test is the real one: only the
+    imports and the include are made absolute for a playbook that lives elsewhere."""
+    plays = yaml.safe_load((PLAYBOOKS / "clean-deploy-o11y.yml").read_text())
+    kept = [p for p in plays if p.get("name") != "Fresh deploy"]
+    assert len(kept) == len(plays) - 1
+    text = yaml.safe_dump(kept)
+    for rel in ("refuse-internal-extra-vars.yml", "tasks/clean-service.yml"):
+        assert rel in text
+        text = text.replace(rel, str(PLAYBOOKS / rel))
+    out = tmp_path / "destroy-only.yml"
+    out.write_text(text)
+    return out
+
+
+@needs_ansible
+@pytest.mark.parametrize("forge", forgeries.templated_forgeries(
+    "local_monorepo_dir", f"{PROD_HOME}/agent-cloud", lambda tmp_path: str(tmp_path / "victim")))
+def test_a_forged_local_monorepo_dir_cannot_choose_what_the_prod_teardown_deletes(forge, tmp_path):
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    (victim / "keep.txt").write_text("x")
+    proc, _log = _prod_run(tmp_path, "-e", forge(tmp_path))
+    assert proc.returncode != 0, proc.stdout
+    assert PROD_REFUSAL in proc.stdout, proc.stdout
+    assert PROD_TEARDOWN not in proc.stdout and "TASK [Remove agent-cloud clone" not in proc.stdout
+    assert (victim / "keep.txt").exists()
+
+
+# Every spelling a forgery might use, including an executable plugin of ANOTHER namespace that a
+# normalised comparison would have read as ssh.
+CONNECTIONS = ["local", "ansible.builtin.local", "ansible.legacy.local", "ssh", "ansible.builtin.ssh", "foo.ssh"]
+
+
+@needs_ansible
+@pytest.mark.parametrize("kind", [0, 1, 2], ids=["plain", "context", "stateful"])
+@pytest.mark.parametrize("conn", CONNECTIONS)
+def test_a_forged_connection_cannot_move_a_remote_hosts_teardown_onto_the_controller(kind, conn, tmp_path):
+    # A host that is not local-dev must not SET ansible_connection at all: key presence is what a
+    # template cannot change between the check and the connection (a value check was passed by a
+    # template that reads ssh at the check and local at the connection, and by <other>.ssh). So even
+    # an honest-looking `ssh` is refused. `foo.ssh` is no plugin: a plain forgery of it fails at
+    # connect, and the context and stateful ones, which read ssh there, are caught by the check.
+    forge = forgeries.templated_forgeries("ansible_connection", "ssh", conn)[kind].values[0]
+    proc, log = _prod_run(tmp_path, "-e", forge(tmp_path))
+    assert proc.returncode != 0, proc.stdout
+    assert CONNECTION_REFUSAL in proc.stdout or "was not found" in proc.stdout, proc.stdout
+    assert PROD_TEARDOWN not in proc.stdout and "TASK [Remove agent-cloud clone" not in proc.stdout
+    assert "compose" not in log
+
+
+@needs_ansible
+@pytest.mark.parametrize("conn", ["ssh", "ansible.builtin.ssh", "local"])
+def test_a_remote_host_that_declares_a_connection_is_refused_too(conn, tmp_path):
+    # The documented limit: a production host leaves ansible_connection unset. A declared one is
+    # indistinguishable from a forged one, so it is refused until the check is extended in code.
+    proc, log = _prod_run(tmp_path, hostvars=f"ansible_connection={conn}")
+    assert proc.returncode != 0, proc.stdout
+    assert CONNECTION_REFUSAL in proc.stdout, proc.stdout
+    assert "compose" not in log
+
+
+@needs_ansible
+@pytest.mark.parametrize("flag, ok", [("ssh", True), ("local", False)])
+def test_the_command_line_connection_must_still_be_ssh_for_a_remote_host(flag, ok, tmp_path):
+    # -c is not in hostvars and is a plain string, so it is the one source left to read by value.
+    proc, log = _prod_run(tmp_path, "-c", flag)
+    if ok:
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+    else:
+        assert proc.returncode != 0 and CONNECTION_REFUSAL in proc.stdout, proc.stdout
+        assert "compose" not in log
+
+
+@needs_ansible
+@pytest.mark.parametrize("conn", ["local", "ansible.builtin.local", "ansible.legacy.local"])
+def test_a_local_connection_set_from_outside_does_not_waive_the_o11y_gates_for_a_remote_host(conn, tmp_path):
+    # Clean Deploy o11y waives its SHA, checkout and retention gates for a local-dev host only: a
+    # remote host whose connection an extra var turns local still needs the reviewed commit.
+    proc = _run(PLAYBOOKS / "clean-deploy-o11y.yml", tmp_path, "--check", "-e",
+                json.dumps({"ansible_connection": conn, "confirm_o11y_reset": "obs"}),
+                inventory=_prod_inventory(tmp_path))
+    assert proc.returncode != 0, proc.stdout
+    assert "Pass expected_repository_sha" in proc.stdout, proc.stdout
+    assert "TASK [Destroy existing deployment]" not in proc.stdout
+
+
+@needs_ansible
+@pytest.mark.parametrize("conn", ["local", "ansible.builtin.local", "ansible.legacy.local"])
+def test_a_local_dev_host_waives_the_o11y_gates_under_any_spelling_of_a_local_connection(conn, tmp_path):
+    # The waiver reads the connection with its collection prefix removed, like the allowlist does,
+    # so a local-dev inventory may spell it either way.
+    genesis = tmp_path / "genesis"
+    genesis.mkdir()
+    inv = tmp_path / "inv.ini"
+    inv.write_text(f"[o11y_svc]\nobs-local ansible_connection={conn} local_mode=true local_monorepo_dir={genesis} "
+                   f"{SERVICE_VARS}\n")
+    proc = _run(_destroy_only(tmp_path), tmp_path, "--check", "-e", json.dumps({"confirm_o11y_reset": "obs-local"}),
+                inventory=str(inv))
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "Pass expected_repository_sha" not in proc.stdout
+    assert "TASK [Stop and remove containers + volumes (local) for o11y]" in proc.stdout
+
+
+@needs_ansible
+@pytest.mark.parametrize("forge", forgeries.templated_forgeries("inventory_hostname", "obs", "obs-local"))
+def test_a_forged_inventory_name_cannot_pass_a_remote_host_as_local_dev(forge, tmp_path):
+    # inventory_hostname (and group_names) CAN be set by an extra var, so the checks key on
+    # ansible_play_hosts_all and groups, which cannot. --limit skips the run-start guard (its
+    # limitation), so this reaches clean-service.yml with the forged name and a local connection.
+    proc, log = _prod_run(tmp_path, "-e", forge(tmp_path), "-e", json.dumps({"ansible_connection": "local"}),
+                          limit=True)
+    assert proc.returncode != 0, proc.stdout
+    assert CONNECTION_REFUSAL in proc.stdout, proc.stdout
+    assert "compose" not in log and PROD_TEARDOWN not in proc.stdout
+
+
+def _local_teardown_fixture(tmp_path: Path):
+    """A local-dev host whose teardown can really run: a genesis tree with a compose file, and a
+    fake `podman` ahead of the real engines on PATH that only logs its arguments. Returns the
+    inventory, the bin dir, the argument log and the marker a smuggled command would create."""
+    genesis = tmp_path / "genesis"
+    (genesis / "platform/services/o11y/deployment").mkdir(parents=True)
+    (genesis / "platform/services/o11y/deployment/compose.yml").write_text("services: {}\n")
+    log, marker = tmp_path / "engine-args", tmp_path / "pwned"
+    bindir = _fake_engines(tmp_path)
+    return _clean_inventory(tmp_path, f"local_mode=true local_monorepo_dir={genesis} container_engine=podman"), \
+        bindir, log, marker, genesis
+
+
+# Each name the teardown scripts interpolate, with the inventory's value and a forgery that
+# would run a command (or, for the engine, name a program) when a script renders it.
+LOCAL_INPUTS = [
+    ("local_monorepo_dir", lambda t: str(t / "genesis"), lambda t: f"{t}/genesis/x$(touch {t}/pwned)"),
+    ("service_name", lambda t: "o11y", lambda t: f"o11y$(touch {t}/pwned)"),
+    ("monorepo_deploy_path", lambda t: "platform/services/o11y/deployment",
+     lambda t: f"platform/services/o11y/deployment/$(touch {t}/pwned)"),
+    ("container_engine", lambda t: "podman", lambda t: f"{t}/evil"),
+]
+
+
+@needs_ansible
+@pytest.mark.parametrize("kind", [0, 1, 2], ids=["plain", "context", "stateful"])
+@pytest.mark.parametrize("name, honest, forged", LOCAL_INPUTS, ids=["dir", "service", "path", "engine"])
+def test_a_forged_teardown_input_cannot_run_a_command_in_the_local_teardown(kind, name, honest, forged, tmp_path):
+    # The teardown scripts and the verify step read the pinned names, so what the checks saw is
+    # what ran. A refusal or the honest value is fine; a smuggled command or program is not.
+    inv, bindir, log, marker, genesis = _local_teardown_fixture(tmp_path)
+    evil = tmp_path / "evil"
+    evil.write_text(f"#!/bin/sh\ntouch {marker}\n")
+    evil.chmod(0o755)
+    forge = forgeries.templated_forgeries(name, honest, forged)[kind].values[0]
+    proc = _run(_destroy_only(tmp_path), tmp_path, "-e", forge(tmp_path),
+                "-e", json.dumps({"confirm_o11y_reset": "obs-local"}), inventory=inv, path_prepend=bindir)
+    assert not marker.exists(), proc.stdout
+    if proc.returncode == 0:
+        assert "compose" in log.read_text(), proc.stdout  # the honest teardown ran, on the fake engine
+    else:
+        assert "Refusing" in proc.stdout, proc.stdout
+    if kind != 2:
+        assert proc.returncode != 0, proc.stdout  # plain and context forgeries are refused outright
+
+
+@needs_ansible
+@pytest.mark.parametrize("mode", ["local", "prod"])
+@pytest.mark.parametrize("name", ["local_monorepo_dir", "service_name", "monorepo_deploy_path", "container_engine"])
+def test_a_late_flipping_template_never_reaches_the_teardown_scripts(mode, name, tmp_path):
+    # forgeries.templated_forgeries is honest on its FIRST rendering, which the task library's own
+    # early reads consume before the pin. A template honest for the first N renderings reaches
+    # the pin honest for some N, and whatever reads the public name afterwards sees the forgery.
+    # Over N = 1..8 the smuggled command must never run: every read after the pin is of the fact.
+    for limit in range(1, 9):
+        run = tmp_path / f"n{limit}"
+        run.mkdir()
+        if mode == "local":
+            inv, bindir, _log, marker, _genesis = _local_teardown_fixture(run)
+            honest, bad = {n: (h, f) for n, h, f in LOCAL_INPUTS}[name]
+            playbook, extra = _destroy_only(run), {"confirm_o11y_reset": "obs-local"}
+        else:
+            inv, bindir, marker = _prod_inventory(run), _fake_engines(run), run / "pwned"
+            honest = {"local_monorepo_dir": lambda t: f"{PROD_HOME}/agent-cloud",
+                      "service_name": lambda t: "o11y", "container_engine": lambda t: "docker",
+                      "monorepo_deploy_path": lambda t: "platform/services/o11y/deployment"}[name]
+            bad = {n: f for n, _h, f in LOCAL_INPUTS}[name]
+            playbook, extra = _clean_only(run), {}
+        (run / "evil").write_text(f"#!/bin/sh\ntouch {marker}\n")
+        (run / "evil").chmod(0o755)
+        counter = run / "renders"
+        shell = f"n=$(cat {counter} 2>/dev/null || echo 0); echo $((n+1)) > {counter}; echo $n"
+        cond = f"(lookup('ansible.builtin.pipe', {forgeries._string(shell)}) | int < {limit})"
+        template = ("{{ " + cond + " | ternary(" + forgeries._literal(honest(run)) + ", "
+                    + forgeries._literal(bad(run)) + ") }}")
+        _run(playbook, run, "-e", json.dumps({name: template}),
+             "-e", json.dumps({**extra, "ansible_become": False}), inventory=inv, path_prepend=bindir)
+        assert not marker.exists(), f"{mode}: {name} honest for {limit} renderings ran the smuggled command"
+
+
+@needs_ansible
+@pytest.mark.parametrize("forge", forgeries.templated_forgeries("local_mode", True, False))
+def test_a_forged_local_mode_cannot_move_a_local_genesis_path_into_the_prod_teardown(forge, tmp_path):
+    # The local inventory's local_monorepo_dir is the shared genesis tree. A launch that forges
+    # local_mode false would hand it to the prod branch, which deletes its directory. The stateful
+    # forgery is honest on its first rendering, and the first read of local_mode is the one that
+    # pins it, so the run then is the honest local one: the clone removal is skipped, not refused.
+    genesis = tmp_path / "genesis"
+    genesis.mkdir()
+    (genesis / "keep.txt").write_text("x")
+    inv = _clean_inventory(tmp_path, f"local_mode=true local_monorepo_dir={genesis}")
+    proc = _run(_destroy_only(tmp_path), tmp_path, "--check", "-e", forge(tmp_path),
+                "-e", json.dumps({"confirm_o11y_reset": "obs-local"}), inventory=inv)
+    refused = PROD_REFUSAL in proc.stdout and proc.returncode != 0
+    skipped = re.search(r"TASK \[Remove agent-cloud clone[^\n]*\*\nskipping: \[obs-local\]", proc.stdout)
+    assert refused or skipped, proc.stdout
+    assert (genesis / "keep.txt").exists()
+
+
+@needs_ansible
+@pytest.mark.parametrize("forge", forgeries.templated_forgeries("local_mode", False, True))
+def test_a_forged_local_mode_cannot_run_a_prod_host_in_a_launcher_chosen_tree(forge, tmp_path):
+    # PR #473 review: local_mode=true on a production host skipped the prod clone check and ran
+    # compose down -v in whatever local_monorepo_dir named. The mode follows the hosts' names now,
+    # and a local_mode that disagrees is refused. The tree here has a compose file a regression
+    # would run.
+    tree = tmp_path / "tree"
+    (tree / "platform/services/o11y/deployment").mkdir(parents=True)
+    (tree / "platform/services/o11y/deployment/compose.yml").write_text("services: {}\n")
+    proc, log = _prod_run(tmp_path, "-e", forge(tmp_path), "-e", json.dumps({"local_monorepo_dir": str(tree)}))
+    assert proc.returncode != 0, proc.stdout
+    assert PROD_REFUSAL in proc.stdout, proc.stdout
+    assert "compose" not in log
+    assert PROD_TEARDOWN not in proc.stdout
+
+
+@needs_ansible
+def test_a_local_mode_that_disagrees_with_the_hosts_is_refused_by_name(tmp_path):
+    proc, log = _prod_run(tmp_path, "-e", json.dumps({"local_mode": True}))
+    assert proc.returncode != 0, proc.stdout
+    assert "The mode follows the hosts, not the variable" in proc.stdout, proc.stdout
+    assert "compose" not in log
+
+
+# Each name the prod teardown interpolates into a path or the root shell script, with the value
+# the inventory declares and a forged one that reaches outside the checkout, injects a command,
+# or aims the teardown at another service (its group, its deploy path, or a directory named like
+# one: `file state=absent` is recursive).
+PROD_INPUTS = [
+    ("ansible_user", PROD_ACCOUNT, ".."),
+    ("service_name", "o11y", "../../etc"),
+    ("service_name", "o11y", "caddy"),
+    ("service_name", "o11y", "Documents"),
+    ("monorepo_deploy_path", "platform/services/o11y/deployment", "platform/../../../etc"),
+    ("monorepo_deploy_path", "platform/services/o11y/deployment", "x; touch /tmp/pwned"),
+    ("monorepo_deploy_path", "platform/services/o11y/deployment", "platform/services/caddy/deployment"),
+    ("container_engine", "docker", "rm"),
+]
+PROD_INPUT_IDS = ["user-dotdot", "service-dotdot", "service-other", "service-folder", "path-dotdot",
+                  "path-injection", "path-other", "engine"]
+
+
+@needs_ansible
+@pytest.mark.parametrize("kind", [0, 1, 2], ids=["plain", "context", "stateful"])
+@pytest.mark.parametrize("name, honest, forged", PROD_INPUTS, ids=PROD_INPUT_IDS)
+def test_a_forged_prod_teardown_input_is_refused_before_any_prod_task(kind, name, honest, forged, tmp_path):
+    forge = forgeries.templated_forgeries(name, honest, forged)[kind].values[0]
+    proc, _log = _prod_run(tmp_path, "-e", forge(tmp_path))
+    if kind == 2 and name == "container_engine":
+        # container_engine is first read by the pin, so the stateful forgery is honest there and
+        # the check and the teardown both see docker: the run is the honest one.
+        assert PROD_REFUSAL in proc.stdout or proc.returncode == 0, proc.stdout
+        return
+    assert proc.returncode != 0, proc.stdout
+    assert PROD_REFUSAL in proc.stdout, proc.stdout
+    assert PROD_TEARDOWN not in proc.stdout and "TASK [Remove agent-cloud clone" not in proc.stdout
+    assert "TASK [Remove convenience symlink" not in proc.stdout
+
+
+@needs_ansible
+@pytest.mark.parametrize("kind", [0, 1, 2], ids=["plain", "context", "stateful"])
+@pytest.mark.parametrize("other", ["caddy", "Documents"])
+def test_a_forged_service_with_its_own_deploy_path_is_refused_for_a_host_outside_its_group(kind, other, tmp_path):
+    # A consistent forgery: another service's name AND its deploy path, which passes the path
+    # check on its own. Only the inventory's groups say this host does not run that service.
+    forge = forgeries.templated_forgeries("service_name", "o11y", other)[kind].values[0]
+    proc, log = _prod_run(tmp_path, "-e", forge(tmp_path),
+                          "-e", json.dumps({"monorepo_deploy_path": f"platform/services/{other}/deployment"}))
+    assert proc.returncode != 0, proc.stdout
+    assert PROD_REFUSAL in proc.stdout, proc.stdout
+    assert PROD_TEARDOWN not in proc.stdout and "TASK [Remove agent-cloud clone" not in proc.stdout
+    assert "compose" not in log
+
+
+@needs_ansible
+@pytest.mark.parametrize("forge", forgeries.templated_forgeries(
+    "local_home_dir", PROD_HOME, lambda tmp_path: str(tmp_path / "home")))
+def test_a_forged_local_home_dir_is_not_read_by_the_prod_teardown(forge, tmp_path):
+    # The convenience symlink was <local_home_dir>/<service_name>; it is built from the account now.
+    (tmp_path / "home" / "o11y").mkdir(parents=True)
+    proc, _log = _prod_run(tmp_path, "-e", forge(tmp_path))
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert (tmp_path / "home" / "o11y").is_dir()
+
+
+def _lifted(tmp_path: Path, prefixes: list[str], variables: dict, replace: dict | None = None) -> Path:
+    """A play of the named tasks of tasks/clean-service.yml, lifted verbatim (paths optionally
+    redirected into tmp_path), run on localhost with the given facts already set."""
+    tasks = yaml.safe_load((PLAYBOOKS / "tasks/clean-service.yml").read_text())
+    picked = [next(t for t in tasks if t["name"].startswith(p)) for p in prefixes]
+    text = yaml.safe_dump(picked, width=10**6)
+    for old, new in (replace or {}).items():
+        assert old in text, old
+        text = text.replace(old, new)
+    play = [{"hosts": "localhost", "connection": "local", "gather_facts": False, "vars": variables,
+             "tasks": yaml.safe_load(text)}]
+    out = tmp_path / "lifted.yml"
+    out.write_text(yaml.safe_dump(play))
+    return out
+
+
+SYMLINK_TASKS = ["Look for the convenience symlink", "Remove convenience symlink"]
+
+
+@needs_ansible
+@pytest.mark.parametrize("shape", ["directory", "symlink", "missing"])
+def test_the_convenience_symlink_removal_only_ever_removes_a_link(shape, tmp_path):
+    # PR #473 review: the path is /home/<user>/<service_name> and `file state=absent` is recursive,
+    # so a real directory of that name (`-e service_name=Documents` passed the shape check) was lost.
+    home = tmp_path / "home"
+    home.mkdir()
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "keep.txt").write_text("x")
+    entry = home / "o11y"
+    if shape == "directory":
+        entry.mkdir()
+        (entry / "keep.txt").write_text("x")
+    elif shape == "symlink":
+        entry.symlink_to(target)
+    play = _lifted(tmp_path, SYMLINK_TASKS, {"_clean_local_mode": False, "_clean_user": "u", "_clean_service": "o11y"},
+                   {"/home/{{ _clean_user }}": str(home)})
+    proc = _run(play, tmp_path, "-e", json.dumps({"ansible_become": False}))
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert (target / "keep.txt").exists()
+    if shape == "directory":
+        assert (entry / "keep.txt").exists()
+    else:
+        assert not entry.exists() and not entry.is_symlink()
+
+
+@needs_ansible
+@pytest.mark.parametrize("task", ["Stop and remove containers + volumes (prod)",
+                                  "Stop and remove containers + volumes (local)"])
+def test_the_container_removal_matches_the_service_name_literally(task, tmp_path):
+    # PR #473 review: grep "^o11y.b" matched o11yXb. regex_escape makes the dot literal.
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    log = tmp_path / "rm-args"
+    (bindir / "docker").write_text(
+        '#!/bin/sh\ncase "$1" in\n  ps) printf "o11yXb\\no11y.b\\n";;\n'
+        f'  rm) echo "$@" >> {log};;\nesac\nexit 0\n')
+    (bindir / "docker").chmod(0o755)
+    play = _lifted(tmp_path, [task], {"_clean_local_mode": "local" in task, "_clean_service": "o11y.b",
+                                      "_clean_dir": str(tmp_path), "_clean_path": "deployment",
+                                      "_clean_engine": "docker", "_clean_local_engine": "docker"})
+    proc = _run(play, tmp_path, "-e", json.dumps({"ansible_become": False}), path_prepend=bindir)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    removed = log.read_text()
+    assert "o11y.b" in removed and "o11yXb" not in removed, removed
+
+
+@needs_ansible
+def test_a_genuinely_local_o11y_host_passes_the_gates_and_reaches_the_destroy(tmp_path):
+    # PR #470 review LOW-2: the local tests covered refusals only. A host that is local to the
+    # controller (local dev), named by the confirm, waives the SHA, checkout and retention gates
+    # and reaches the local teardown; the prod teardown and its path check are not run.
+    genesis = tmp_path / "genesis"
+    genesis.mkdir()
+    inv = _clean_inventory(tmp_path, f"local_mode=true local_monorepo_dir={genesis}")
+    proc = _run(_destroy_only(tmp_path), tmp_path, "--check", "-e", json.dumps({"confirm_o11y_reset": "obs-local"}),
+                inventory=inv)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "Refusing" not in proc.stdout and "Pass expected_repository_sha" not in proc.stdout
+    assert "TASK [Destroy existing deployment]" in proc.stdout
+    assert "TASK [Stop and remove containers + volumes (local) for o11y]" in proc.stdout
+    assert "TASK [Verify clean]" in proc.stdout and "No o11y" in proc.stdout
+
+
+@needs_ansible
+def test_the_declared_prod_checkout_passes_the_checks(tmp_path):
+    # The honest prod launch: a host reached over ssh, no local_monorepo_dir, so the clone is
+    # /home/<ansible_user>/agent-cloud. The removals are no-ops: the account has no home here.
+    proc, log = _prod_run(tmp_path)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert PROD_REFUSAL not in proc.stdout and CONNECTION_REFUSAL not in proc.stdout
+    assert "TASK [Remove agent-cloud clone (prod; may contain root-owned files)]" in proc.stdout, proc.stdout
+    assert "ps -a" in log
 
 
 @needs_ansible

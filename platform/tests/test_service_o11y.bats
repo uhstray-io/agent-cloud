@@ -204,11 +204,12 @@ with tempfile.TemporaryDirectory() as temp:
     for mode in ('local', 'prod'):
         task = next(t for t in tasks if t['name'].startswith(f'Stop and remove containers + volumes ({mode})'))
         shell = task['ansible.builtin.shell']
-        shell = shell.replace('{{ _monorepo_dir }}', str(root))
-        shell = shell.replace('{{ monorepo_deploy_path }}', 'deployment')
-        shell = shell.replace('{{ container_engine | default(\'podman\') }}', str(engine))
-        shell = shell.replace('{{ container_engine | default(\'docker\') }}', str(engine))
-        shell = shell.replace('{{ service_name }}', 'o11y')
+        shell = shell.replace('{{ _clean_dir }}', str(root))
+        shell = shell.replace('{{ _clean_path }}', 'deployment')
+        shell = shell.replace('{{ _clean_local_engine }}', str(engine))
+        shell = shell.replace('{{ _clean_engine }}', str(engine))
+        shell = shell.replace('{{ _clean_service | regex_escape }}', 'o11y')
+        shell = shell.replace('{{ _clean_service }}', 'o11y')
         shell = shell.replace("{{ '{{' }}.Names{{ '}}' }}", '.Names')
         args_path = root / f'{mode}-args'
         result = subprocess.run(['/bin/bash', '-c', shell], cwd=deploy,
@@ -2105,7 +2106,7 @@ clean_tasks = clean[0]['tasks']
 retention = next(i for i, t in enumerate(clean_tasks) if t['name'] == 'Refuse expanded retention before destructive o11y cleanup')
 clean_tasks = clean_tasks[retention:]
 assert clean_tasks[0]['name'] == 'Refuse expanded retention before destructive o11y cleanup'
-assert clean_tasks[0]['when'] == "(ansible_connection | default('ssh')) != 'local'"
+assert clean_tasks[0]['when'] == '_o11y_gated'
 clean_conditions = [Environment().compile_expression(condition) for condition in clean_tasks[0]['ansible.builtin.assert']['that']]
 baseline = {'o11y_prom_retention': '15d', 'o11y_loki_retention': '7d', 'o11y_tempo_retention': '168h'}
 expanded = {'o11y_prom_retention': '90d', 'o11y_loki_retention': '45d', 'o11y_tempo_retention': '1080h'}
