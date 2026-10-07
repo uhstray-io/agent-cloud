@@ -90,7 +90,7 @@
       2026-10-02 rescope: rules declared in site-config#36 and applied by firewall tasks 1661
       and 1853 (and 1373 earlier); task 1639 read back default-deny plus a Caddy-only Grafana
       port.
-- [ ] 1.5 Deploy; record resident memory and disk after 24 hours in `design.md`
+- [x] 1.5 Deploy; record resident memory and disk after 24 hours in `design.md`
       2026-10-02 rescope: PARTIAL — deployed (task 1359); budget tasks 1823 and 1831 measured
       7.06%/6.75% root free and ~87.6% memory headroom (o11y README). Remaining: copy those
       into `design.md` with per-container memory. Root is now full (task 2115).
@@ -102,6 +102,15 @@
       86.46, root filesystem 84.41% free (87.5 GB of 103.7 GB), and store sizes of about 607 MB
       and 36 MB. Still open: per-container resident memory (the receipt does not carry it; PR
       #460 pending) and copying the 3141 readings into `design.md`. Not ticked.
+      2026-10-07: DONE (task ids and readings reported by the coordinator; the task output was
+      not read here). The 3141 readings and the per-container figures are recorded in
+      `design.md`, "Measured 2026-10-07 (task 1.5)". Verify o11y Production Budgets (Dev) task
+      3314, after #460 merged, reported guest memory headroom 86.24%, root filesystem 84.23%
+      free, and resident memory for each of the seven o11y containers (50.2, 70.1, 81.5, 8.1,
+      99.8, 35.6 and 43.6 MiB; 388.9 MiB in total). The 24-hour reads are task 3141 (2026-10-06,
+      more than 24 hours after Deploy o11y (Dev) 2967). Caveat recorded in `design.md`: task
+      3314's per-container figures are a later point-in-time read, and container uptime at
+      that read is not shown.
 - [x] 1.6 Validation gate: a second deploy run reports no changes and the three health
       endpoints return 200, proving scenario "Deploy converges and verifies"; `curl` to
       the Grafana port from a LAN host is refused while `https://o11y.uhstray.io` serves
@@ -273,6 +282,13 @@
       attempt, 2981, failed on the controller's resolution of the `/health` target, fixed in
       #455. Still not shown: `inference_probe_failing` specifically firing, the renewal
       re-issue of the `o11y-probe` leaf, and the staleness rule firing.
+      2026-10-07 (task id and output as quoted by the coordinator; the task output was not read
+      here): the alert-identity follow-up above is RESOLVED live. o11y Fault Drill (Dev)
+      `drill=probe` task 3295 at `ffe4bb33` (after #466) reported that `inference_probe_failing`
+      (title "Synthetic inference probe failing") fired for model
+      `o11y-drill-absent-model-e247d7b43ffe` and reached Discord naming both, with `/health` 200
+      throughout, then restored and verified. Still not shown: the renewal re-issue of the
+      `o11y-probe` leaf and the staleness rule firing. The box was already ticked.
 - [x] 3.4 `platform/tests/test_service_o11y.bats`: dashboards and alerting files are
       valid JSON/YAML, every `vllm:` name in a dashboard appears in the imported list,
       probe script `shellcheck` clean and contains no literal key
@@ -321,6 +337,19 @@
       after merge is still needed to show `inference_probe_failing` specifically firing.
       Open gap, left as is: the post-restore resolved check has no `alertname` filter; it
       fails closed, and a restore-only run reads no rule, so it has no title to match.
+      2026-10-07 (task ids and output as quoted by the coordinator; the task output was not read
+      here): two more pieces PROVEN live, the box still open. (1) Alert identity: o11y Fault
+      Drill (Dev) `drill=probe` task 3295 at `ffe4bb33` (after #466) reported
+      `inference_probe_failing` firing for the drill model and reaching Discord naming both,
+      with `/health` 200 throughout, then restored and verified; this resolves the follow-up in
+      the 2026-10-06 and 2026-10-07 notes above and shows scenario "Alert reaches the contact
+      point" for the probe. (2) Dashboards render: Verify o11y Dashboard Data (Dev) tasks 3303,
+      3304 and 3305, lookback 1h, rendered `inference-fleet-health` with 10 Prometheus panels,
+      `inference-latency-capacity` with 12 and `inference-placement-comparison` with 8 (the
+      Loki panels were skipped). Still open: the wipe and redeploy half (destructive,
+      operator-scheduled, not run), so "Dashboards render from provisioning alone" is not
+      proven; and the inference dashboard showing the model as not serving during the fault,
+      the rest of "Health up, inference down". Not ticked.
 - [ ] 3.6 External liveness watcher on a path the firewall permits: a Semaphore schedule
       runs `check-o11y-liveness.yml` from the Semaphore host every 10 min against the
       Caddy front door, not the VM: Grafana `https://o11y.uhstray.io/api/health` (exempt

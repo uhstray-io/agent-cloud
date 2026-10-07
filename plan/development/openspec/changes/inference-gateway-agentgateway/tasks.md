@@ -328,6 +328,13 @@
       2026-10-06: the first-token histogram reaches Prometheus (task 3.1 note, Verify o11y
       Metrics Target (Dev) 3142). No receipt yet of the dashboard panels returning data over an
       hour of traffic; the dashboard-data proof is a pending PR. Not ticked.
+      2026-10-07 (task id and output as quoted by the coordinator; the task output was not read
+      here): Verify o11y Dashboard Data (Dev) task 3302, dashboard `agentgateway-client-view`,
+      lookback 1h, FAILED: "Panels without data over 1h: First-token latency p50; First-token
+      latency p95; 5xx request ratio". The only gateway traffic today is the five-minute
+      non-streaming synthetic probe; first-token latency needs streaming client traffic, which
+      arrives with the route switch (task 4.3), and the 5xx ratio is empty because there were
+      no errors. Blocked on traffic, not on the dashboard. Not ticked.
 
 ## 4. Identities, limits, re-route
 - [ ] 4.1 Virtual-key lifecycle (design §10). DONE 2026-09-17 in code: the deploy mints

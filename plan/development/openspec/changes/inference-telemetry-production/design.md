@@ -85,6 +85,25 @@ not the 24-hour read the task names, and carry no per-container resident memory;
 later read the guest root filesystem as full. Task 1.5 stays open for the per-container
 figures.
 
+### Measured 2026-10-07 (task 1.5)
+
+Task ids and readings below are as reported by the coordinator; the task output was not read
+when this section was written. All runs are `Verify o11y Production Budgets (Dev)`.
+
+| Read | Task | Date | Guest memory headroom | Root filesystem free | Per-container resident memory |
+| --- | --- | --- | --- | --- | --- |
+| 24 hours or more after Deploy o11y (Dev) 2967 | 3141 | 2026-10-06 | 86.46% | 84.41% (87.5 GB of 103.7 GB) | not reported |
+| After #460 merged | 3314 | 2026-10-07 | 86.24% | 84.23% | 7 containers: 50.2, 70.1, 81.5, 8.1, 99.8, 35.6, 43.6 MiB; 388.9 MiB in total |
+
+Task 3141 also reported store sizes of about 607 MB and 36 MB. Container names are not
+recorded here: the figures were reported without them.
+
+What this shows: the guest has roughly 86% memory headroom and about 84% of the root
+filesystem free, both well clear of the 2026-10-04 readings (6.75% root free, task 1831) and
+of the full-root condition in task 2115. Caveat: the per-container figures come from task
+3314, a later point-in-time read, and container uptime at that read is not shown; the
+24-hour headroom and disk reads are task 3141's.
+
 ## Goals / Non-Goals
 
 Goals: one production Grafana with the two nodes and vLLM on graphs within a week of
