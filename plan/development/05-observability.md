@@ -1430,3 +1430,18 @@ Generic `Verify o11y Service` task 1857 failed because it queried
 `service.name` as a Loki `service` label. This was a verifier query mismatch,
 not a collector delivery failure: conformance records use
 `job=agent-cloud-conformance` and `service=<assessed service>`.
+
+## 2026-10-07 PBS declared-store preflight receipt
+
+PR #362 merged as `c2dd90dd` after Claude review and green checks. Dev-bound
+Semaphore task 3341 succeeded with `changed=0` at exact reviewed `dev` SHA
+`d211207127e078221db5bcc63cf8fd5e5d4924bc`. The private declaration remained
+LVM-thin, so `declared_thinpool_linked=true`,
+`declared_thick_lvm_candidate_exact_match=false`, and all declared thick
+headroom booleans were false. The survey separately found one eligible visible
+thick-LVM candidate with complete VG mappings and one candidate in each of the
+three fixed reported-headroom bands. One candidate PV had a direct disk-path
+join and reported LVM use. Physical/backing media, device safety, allocation,
+PBS readiness/suitability, write authorization, and snapshot inventory
+completeness remained false. This proves the read-only survey receipt only; it
+does not authorize restore or capacity changes.
