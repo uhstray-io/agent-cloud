@@ -40,6 +40,11 @@
 # Inventory (o11y_svc host): o11y_prom_bind / o11y_prom_port (the receiver's loopback
 # Prometheus, as deploy-o11y.yml reaches it), local_monorepo_dir, monorepo_deploy_path.
 
+# The verdict below is read from registered results, and an extra var outranks a register:
+# `-e '_vdd_readback={...}'` would forge a pass. Refused here, before anything is registered.
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
 - name: Require one receiver and well-formed inputs
   hosts: localhost
   connection: local
@@ -77,14 +82,6 @@
     _vdd_panel_titles: "{{ (panel_titles | default('[]', true)) | from_json if (panel_titles | default('[]', true)) is string else panel_titles }}"
     _vdd_variables: "{{ (dashboard_variables | default('{}', true)) | from_json if (dashboard_variables | default('{}', true)) is string else dashboard_variables }}"
   tasks:
-    # The verdict below is read from registered results, and an extra var outranks a register
-    # (tasks/refuse-var-overrides.yml), so `-e '_vdd_readback={...}'` would forge a pass.
-    - name: Refuse extra-var overrides of this play's results
-      ansible.builtin.include_tasks: tasks/refuse-var-overrides.yml
-      loop: [_vdd_readback, _vdd_revision]
-      loop_control:
-        loop_var: _rvo_name
-
     - name: Read the receiver checkout revision the dashboards were provisioned from
       ansible.builtin.command:
         argv: [git, rev-parse, HEAD]

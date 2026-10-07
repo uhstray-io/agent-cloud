@@ -17,6 +17,7 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs
 
+import forgeries
 import pytest
 import yaml
 from fake_http import DrainingHandler
@@ -373,12 +374,17 @@ def test_playbook_refuses_a_malformed_request_before_the_receiver(receiver):
     assert receiver["prometheus"].requests == []
 
 
+# The play's panel selection is a play var an extra var outranks: narrowing it to the panels
+# that have data would turn a failing gate into a pass. refuse-internal-extra-vars.yml refuses
+# the name, plainly and templated, before any play reads it.
 @needs_ansible
-def test_playbook_refuses_a_forged_readback(receiver):
-    forged = json.dumps({"_vdd_readback": {"rc": 0, "stdout": '{"status": "pass", "panels_verified": 9}'}})
-    proc = _run(receiver, "-e", "dashboard_uid=agentgateway-client-view", "-e", forged)
-    assert proc.returncode != 0
-    assert "_vdd_readback is internal to this play" in proc.stdout
+@pytest.mark.parametrize("forge", forgeries.templated_forgeries("_vdd_panel_titles", [], ["First-token latency p50"]))
+def test_playbook_refuses_a_forged_panel_selection(receiver, forge, tmp_path):
+    receiver["prometheus"].rules["sum by (identity)"] = "empty"
+    proc = _run(receiver, "-e", "dashboard_uid=agentgateway-client-view", "-e", forge(tmp_path))
+    assert proc.returncode != 0, proc.stdout
+    assert "Refusing to run: _vdd_panel_titles set from outside the playbook" in proc.stdout, proc.stdout
+    assert proc.stdout.count("PLAY [") == 1, proc.stdout
     assert receiver["prometheus"].requests == []
 
 
