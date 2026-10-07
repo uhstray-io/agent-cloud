@@ -284,10 +284,10 @@
         _tmpl_errors: >-
           {{ ([_tmpl_hard_error] if _tmpl_hard_error is defined else [])
              + ([] if (_tmpl_after.status | default(-1)) == 200
-                   and (_tmpl_after.json.data.template | default(0) | int == 1)
+                   and ((_tmpl_after.json.data | default({}, true)).template | default(0) | int == 1)
                 else ['vmid ' ~ _vmid ~ ' on ' ~ _node ~ ' is not a template (HTTP '
                       ~ (_tmpl_after.status | default('none')) ~ ')'])
-             + ([] if ((_tmpl_after.json.data | default({})).ide2 | default('') | string)
+             + ([] if ((_tmpl_after.json.data | default({}, true)).ide2 | default('') | string)
                       is search(_tmpl_ci_volume)
                 else ['template ' ~ _vmid ~ ' has no cloud-init drive on ide2 ('
                       ~ (('cloudinit volume found on: ' ~ (_tmpl_ci_keys | join(', ')))
@@ -298,10 +298,12 @@
              and _tmpl_hard_error is not defined }}
       vars:
         _tmpl_ci_volume: '^[^,=]+:([^,=]*-)?cloudinit(,|$)'
+        # `default({}, true)`: Proxmox can answer 200 with "data": null, which a plain default
+        # keeps, and dict2items on null would fail before the step result is recorded.
         # On a mismatch, say which drive keys DO hold a cloud-init volume (a template built by
         # older code may carry it elsewhere). Key names only: no other config value is reported.
         _tmpl_ci_keys: >-
-          {{ (_tmpl_after.json.data | default({})) | dict2items
+          {{ (_tmpl_after.json.data | default({}, true)) | dict2items
              | selectattr('key', 'match', '^(ide|sata|scsi|virtio)[0-9]+$')
              | selectattr('value', 'string')
              | selectattr('value', 'search', _tmpl_ci_volume)

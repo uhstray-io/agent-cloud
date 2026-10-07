@@ -161,6 +161,15 @@ def test_a_template_with_no_cloud_init_volume_says_so(tmp_path):
     assert result["error"].endswith("has no cloud-init drive on ide2 (no cloudinit volume on any drive key)")
 
 
+def test_a_null_read_back_is_still_recorded_as_a_failure(tmp_path):
+    # PR 464 review: a 200 with "data": null survived default({}) and dict2items raised before
+    # the step result was recorded.
+    result, rc = _template(tmp_path, None)
+    assert (result["step"], result["status"], rc != 0) == ("vm-template", "fail", True)
+    assert "is not a template (HTTP 200)" in result["error"]
+    assert result["error"].endswith("has no cloud-init drive on ide2 (no cloudinit volume on any drive key)")
+
+
 def test_a_vm_that_is_not_a_template_fails(tmp_path):
     result, rc = _template(tmp_path, {}, status=500)
     assert (result["status"], rc != 0) == ("fail", True)
