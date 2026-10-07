@@ -93,6 +93,11 @@
 # leaf in use is proven as it is now (served serial, probe and no-certificate refusal, Caddy
 # route); nothing is issued, reloaded or pushed, and `renewal` is still recorded.
 
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
 - name: "Refuse a renewal run that could not prove what it renews"
   hosts: localhost
   gather_facts: false

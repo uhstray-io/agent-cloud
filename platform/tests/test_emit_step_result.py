@@ -13,6 +13,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
+import forgeries
 import playbook_yaml
 import pytest
 import yaml
@@ -176,14 +177,11 @@ FORGERIES = {
     "_step_result_record": {"schema": "agentcloud/step-result/v1", "step": "fw-harden",
                             "status": "pass", "evidence": {}, "check_mode": False},
 }
-# An extra var is a template rendered afresh in each task. This one renders the caller's honest
-# value wherever the refusal could be looking (any task-context marker a check might set) and
-# the forgery everywhere else (PR #458 review; docs/MISTAKES.md 1.15).
-CONTEXT_KEYED = ("{{{{ (lookup('ansible.builtin.vars', 'ansible_loop_var', default='') or"
-                 " lookup('ansible.builtin.vars', '_sr_input', default='')) | ternary({honest}, {forged}) }}}}")
-HONEST = {"step_result_step": "'fw-harden'", "step_result_status": "'fail'",
-          "step_result_evidence": "{'ufw_active': False}", "step_result_error": "'ufw is inactive'",
-          "step_result_service": "'dns'", "step_result_undo": "'none'", "_step_result_record": "none"}
+# The caller's honest value for each input: what the plain forgery replaces and what the
+# templated forgeries (forgeries.py) show wherever a check could look.
+HONEST = {"step_result_step": "fw-harden", "step_result_status": "fail",
+          "step_result_evidence": {"ufw_active": False}, "step_result_error": "ufw is inactive",
+          "step_result_service": "dns", "step_result_undo": "none", "_step_result_record": None}
 
 
 def _failing_executor(tmp_path: Path, hosts: str = "localhost", **include_kw) -> Path:
@@ -207,18 +205,16 @@ def _refused(proc, name: str) -> None:
     assert step_results.results_in(proc.stdout.splitlines()) == []
 
 
+# Every input, forged plainly and as a context-keyed and a stateful template, in a run and
+# under --check (docs/MISTAKES.md 1.15).
 @pytest.mark.parametrize("check", [False, True])
-@pytest.mark.parametrize("name", GUARDED)
-def test_an_input_set_as_an_extra_var_is_refused_and_records_nothing(tmp_path, name, check):
+@pytest.mark.parametrize("name,forge", [
+    pytest.param(name, f.values[0], id=f"{name}-{f.id}")
+    for name in GUARDED for f in forgeries.templated_forgeries(name, HONEST[name], FORGERIES[name])
+])
+def test_an_input_set_as_an_extra_var_is_refused_and_records_nothing(tmp_path, name, forge, check):
     play = _failing_executor(tmp_path)
-    _refused(_run(play, "-e", json.dumps({name: FORGERIES[name]}), *(["--check"] if check else [])), name)
-
-
-@pytest.mark.parametrize("name", GUARDED)
-def test_a_templated_extra_var_keyed_on_task_context_is_refused(tmp_path, name):
-    play = _failing_executor(tmp_path)
-    forged = CONTEXT_KEYED.format(honest=HONEST[name], forged=json.dumps(FORGERIES[name]).replace('"', "'"))
-    _refused(_run(play, "-e", json.dumps({name: forged})), name)
+    _refused(_run(play, "-e", forge(tmp_path), *(["--check"] if check else [])), name)
 
 
 def test_the_review_template_is_refused(tmp_path):
@@ -231,9 +227,10 @@ def test_the_review_template_is_refused(tmp_path):
 
 @pytest.mark.parametrize("override", [{"inventory_hostname": "elsewhere"},
                                       {"hostvars": {"localhost": {}}}])
-def test_redirecting_the_lookup_does_not_let_a_forgery_through(tmp_path, override):
+@pytest.mark.parametrize("forge", forgeries.templated_forgeries("step_result_status", "fail", "pass"))
+def test_redirecting_the_lookup_does_not_let_a_forgery_through(tmp_path, override, forge):
     play = _failing_executor(tmp_path)
-    proc = _run(play, "-e", json.dumps(override), "-e", "step_result_status=pass")
+    proc = _run(play, "-e", json.dumps(override), "-e", forge(tmp_path))
     assert proc.returncode != 0, proc.stdout
     assert step_results.results_in(proc.stdout.splitlines()) == []
 

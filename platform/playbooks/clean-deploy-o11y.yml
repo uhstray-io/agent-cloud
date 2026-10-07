@@ -8,6 +8,18 @@
 #          (clean-service.yml branches on local_mode).
 #
 # Uses composable tasks/clean-service.yml then runs deploy-o11y.yml.
+#
+# Outside local mode it refuses BEFORE destroying anything unless the launch names the o11y
+# host it resets (-e confirm_o11y_reset=<inventory hostname>, the confirm pattern of
+# clean-deploy-step-ca.yml and destroy-vm.yml) and the controller checkout is exactly the
+# reviewed commit, clean (-e expected_repository_sha=<40 hex>, the checks of
+# require-reviewed-checkout.yml). The imported deploy checks the same SHA, but only after the
+# volumes are gone. Local mode copies the working tree, so neither applies there.
+
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
 
 - name: "Clean o11y deployment"
   hosts: o11y_svc
@@ -16,6 +28,48 @@
   vars:
     _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
   tasks:
+    - name: "Refuse a reset the launch did not name"
+      ansible.builtin.assert:
+        that: (confirm_o11y_reset | default('') | string) == inventory_hostname
+        fail_msg: >-
+          Refusing: pass -e confirm_o11y_reset={{ inventory_hostname }} to destroy every o11y
+          volume on this host (metrics, logs, Grafana state). Nothing was removed.
+        quiet: true
+      when: not (local_mode | default(false) | bool)
+
+    - name: "Require the exact reviewed commit before destroying anything"
+      ansible.builtin.assert:
+        that: expected_repository_sha | default('') is match('^[0-9a-f]{40}$')
+        fail_msg: "Pass expected_repository_sha: the full 40-character commit the review approved. Nothing was removed."
+        quiet: true
+      when: not (local_mode | default(false) | bool)
+
+    - name: "Read the controller checkout's commit and uncommitted files"  # noqa: run-once[task]
+      ansible.builtin.command:
+        argv: "{{ item }}"
+        chdir: "{{ playbook_dir | dirname | dirname }}"
+      loop:
+        - [git, rev-parse, HEAD]
+        - [git, status, --porcelain, --untracked-files=all]
+      register: _clean_checkout
+      changed_when: false
+      check_mode: false
+      delegate_to: localhost
+      run_once: true
+      when: not (local_mode | default(false) | bool)
+
+    - name: "Refuse any other commit, or a checkout with uncommitted files"
+      ansible.builtin.assert:
+        that:
+          - _clean_checkout.results[0].stdout == expected_repository_sha
+          - _clean_checkout.results[1].stdout | length == 0
+        fail_msg: >-
+          The checkout is {{ _clean_checkout.results[0].stdout }}{{ ' with uncommitted files'
+          if _clean_checkout.results[1].stdout else '' }}, not the reviewed
+          {{ expected_repository_sha }}. Nothing was removed.
+        quiet: true
+      when: not (local_mode | default(false) | bool)
+
     - name: Refuse expanded retention before destructive o11y cleanup
       ansible.builtin.assert:
         that:
@@ -33,3 +87,5 @@
 
 - name: "Fresh deploy"
   import_playbook: deploy-o11y.yml
+  vars:
+    _extra_var_guard_nested: true

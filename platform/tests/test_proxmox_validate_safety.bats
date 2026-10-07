@@ -5,7 +5,7 @@
 import sys
 import yaml
 
-play, = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
+play, = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))[1:]  # [0] imports the extra-var guard
 tasks = play["tasks"]
 requests = [task for task in tasks if "ansible.builtin.uri" in task]
 assert len(requests) == 9
@@ -24,7 +24,7 @@ PY
 import sys
 import yaml
 
-src, = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
+src, = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))[1:]  # [0] imports the extra-var guard
 tasks = [t for t in src["tasks"] if t["name"] == "Derive node capacity"]
 assert len(tasks) == 1
 gib = 1073741824
@@ -45,9 +45,9 @@ res = {"json": {"data": [
     {"type": "pool", "pool": "p"},
 ]}}
 yaml.safe_dump([{"hosts": "localhost", "gather_facts": False,
-                 "vars": {"pve_nodes": nodes, "pve_resources": res, "_vm_storage": "vm-lvms"},
+                 "vars": {"_pve_nodes": nodes, "_pve_resources": res, "_vm_storage": "vm-lvms"},
                  "tasks": tasks + [{"name": "dump", "ansible.builtin.copy": {
-                     "content": "{{ node_capacity | to_json }}", "dest": sys.argv[2] + ".json", "mode": "0600"}}]}],
+                     "content": "{{ _node_capacity | to_json }}", "dest": sys.argv[2] + ".json", "mode": "0600"}}]}],
                open(sys.argv[2], "w"))
 PY
   ansible-playbook -i localhost, -c local "$play" >/dev/null

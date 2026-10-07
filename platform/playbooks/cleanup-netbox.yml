@@ -32,6 +32,11 @@
 # Semaphore: Template 57 — pass extra vars via CLI args field.
 # Safe to re-run: all operations are idempotent.
 
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
 - name: "Cleanup NetBox Objects"
   hosts: netbox_svc
   gather_facts: false

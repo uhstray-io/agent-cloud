@@ -34,6 +34,11 @@
 # Controller API: fixed loopback, like the survey publisher; the OpenBao-sourced token never
 # goes to a caller-chosen address. Dry run (--check): reads and parses, writes nothing.
 
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
 #
 # NOT YET: the spec's collector also reads Prometheus, as the evidence for the
 # instrument-host and instrument-service steps. Those steps have no executor yet
@@ -340,7 +345,7 @@
           # Templates whose history filled the read window: their older runs were not read.
           history_window_full: "{{ (_pick.stdout | from_json).window_full }}"
           netbox_unreachable: "{{ _vm_unreachable }}"
-          loki: "{{ 'pushed' if (push_loki_result.status | default(0)) == 204 else ('skipped' if push_loki_result is not defined or push_loki_result is skipped else 'failed') }}"
+          loki: "{{ 'pushed' if (_push_loki_result.status | default(0)) == 204 else ('skipped' if _push_loki_result is not defined or _push_loki_result is skipped else 'failed') }}"
           otlp: "{{ 'check mode' if ansible_check_mode else ('no records' if _agg.otlp_payload.resourceLogs | length == 0 else ('skipped' if local_mode | default(false) | bool else ('delivered' if _otlp_delivery_ok | default(false) | bool else 'failed'))) }}"
 
     - name: "Fail after reporting unsuccessful production OTLP delivery"

@@ -16,6 +16,7 @@ import sys
 from pathlib import Path
 
 import harness_sandbox
+import playbook_yaml
 import yaml
 
 REPO = Path(__file__).resolve().parents[2]
@@ -42,7 +43,7 @@ def _run_many(tmp_path: Path, hosts: dict, groups: dict | None = None, *, check:
     cases that differ only in their inputs share one ansible-playbook spawn. A host that fails
     an assert stops alone; the others run on.
     """
-    play = yaml.safe_load(PLAYBOOK.read_text())[0]  # the record play follows it
+    play = playbook_yaml.plays(PLAYBOOK)[0]  # the record play follows it
     names = [t.get("name") for t in play["tasks"]]
     tasks = [dict(t) for t in play["tasks"][names.index(FIRST):] if t.get("name") not in SKIPPED]
     for task in tasks:

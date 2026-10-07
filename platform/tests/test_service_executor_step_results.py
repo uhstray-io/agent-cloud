@@ -16,6 +16,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
+import playbook_yaml
 import pytest
 import yaml
 
@@ -32,7 +33,7 @@ needs_ansible = pytest.mark.skipif(shutil.which("ansible-playbook") is None, rea
 
 
 def _plays(name):
-    return yaml.safe_load((PLAYBOOKS / name).read_text())
+    return playbook_yaml.plays(PLAYBOOKS / name)
 
 
 def _emits(tasks):

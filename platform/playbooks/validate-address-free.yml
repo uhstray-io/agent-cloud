@@ -21,6 +21,11 @@
 # Usage (Semaphore): -e target_service=<service> [-e target_host=<declaring host>]
 #                    [-e netbox_vm_cluster=<name>] when NetBox holds more than one cluster
 
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
 - name: "Validate the declared address is free: {{ target_service | default('(unset)') }}"
   hosts: localhost
   connection: local

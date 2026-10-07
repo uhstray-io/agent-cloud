@@ -334,7 +334,7 @@ def test_the_inspector_writes_nothing_on_the_host(tmp_path):
     import json
     import os
     _placed(tmp_path, "clientAuth")
-    inspector = next(p for p in playbook_yaml.load(PLAYBOOK) if p.get("hosts") != "localhost")["vars"][
+    inspector = next(p for p in playbook_yaml.plays(PLAYBOOK) if p.get("hosts") != "localhost")["vars"][
         "_leaf_inspector"]
     scratch = tmp_path / "tmpdir"
     scratch.mkdir()

@@ -14,8 +14,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
+import playbook_yaml
 import pytest
-import yaml
 
 REPO = Path(__file__).resolve().parents[2]
 PLAYBOOK = REPO / "platform/playbooks/manage-caddy-sites.yml"
@@ -43,7 +43,7 @@ def _run(tmp_path, playbook, target, *extra):
 def _guard_only(tmp_path):
     # Staged in tmp_path, never in the repo tree: other tests scan platform/playbooks/ while
     # this runs under xdist. The include is made absolute so it resolves from here.
-    guard = yaml.safe_load(PLAYBOOK.read_text())[0]
+    guard = playbook_yaml.plays(PLAYBOOK)[0]
     assert guard["name"] == "Refuse a target group that matches no hosts"
     for task in guard["tasks"]:
         if str(task.get("ansible.builtin.include_tasks", "")).endswith("emit-step-result.yml"):
