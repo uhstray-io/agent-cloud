@@ -439,15 +439,20 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
       to a host the launcher chose. Proposed fix, to be designed: refuse those names as extra
       vars where the inventory is the only legitimate source, or pin the target's host key
       before the first connection that carries a credential, and test both with
-      `forgeries.templated_forgeries`. Clean Deploy o11y's gates already key on the effective
-      connection, so forging `ansible_connection=local` there moves the destroy onto the
-      controller rather than past the gate. That vector is closed (PR #470 review LOW-1):
-      `tasks/clean-service.yml` pins its inputs once and refuses a prod teardown whose clone
-      is not `/home/<ansible_user>/agent-cloud` (so `-e local_monorepo_dir=<path>` can no
-      longer choose what `become` deletes), derives the convenience symlink from the same
-      pinned values instead of `local_home_dir`, and
-      `test_executor_internal_overrides.py` covers it with templated forgeries. The
-      connection variables themselves stay open here
+      `forgeries.templated_forgeries`. Closed for the clean-service path (PR #470 and #473
+      reviews): a forged `ansible_connection` can no longer move a teardown onto the controller
+      or past Clean Deploy o11y's gates, and `local_monorepo_dir`, `local_mode`, `service_name`
+      and `monorepo_deploy_path` can no longer choose what is deleted or run.
+      `tasks/clean-service.yml` pins its inputs once, allows only an ssh connection (the
+      collection prefix removed, so `ansible.builtin.local` and `ansible.legacy.local` do not
+      pass) for a host that is not local-dev, takes the mode from host identity (every host
+      of the play named `<service>-local`, read from `ansible_play_hosts_all`, which an
+      extra var cannot set) instead of `local_mode`, and requires the host to be in
+      `<service>_svc` with that service's own deploy path. The o11y gates are waived only for
+      a local connection on such a host. `test_executor_internal_overrides.py` covers it with
+      templated forgeries against a real run. Still open for the other executors: the
+      connection-identity variables (`ansible_host`, `ansible_user`, `ansible_become_method`)
+      and a connection forgery on any playbook that does not go through clean-service
 
 ## 8. Backfill agentgateway end to end
 
