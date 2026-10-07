@@ -83,7 +83,31 @@ root free, 13,503 active series and 87.73% guest memory headroom. Retention at b
 Prometheus 15d with a 0B size cap, Loki 7d, Tempo 168h. These are point-in-time readings,
 not the 24-hour read the task names, and carry no per-container resident memory; task 2115
 later read the guest root filesystem as full. Task 1.5 stays open for the per-container
-figures.
+figures (closed below, "Measured 2026-10-07 (task 1.5)").
+
+### Measured 2026-10-07 (task 1.5)
+
+Task ids and readings below are as reported by the coordinator; the task output was not read
+when this section was written. All runs are `Verify o11y Production Budgets (Dev)`. The
+baseline is the last Deploy o11y (Dev), task 2991, which ended 2026-10-05T18:34:53Z (read by
+the coordinator from the Semaphore API; Clean Deploy o11y was never run).
+
+| Read | Task | Run at | Time since task 2991 | Guest memory headroom | Root filesystem free | Per-container resident memory |
+| --- | --- | --- | --- | --- | --- | --- |
+| Earlier point read, under 24 hours | 3141 | 2026-10-06T18:05:13Z | 23 h 30 min | 86.46% | 84.41% (87.5 GB of 103.7 GB) | not reported |
+| 24 hours or more (task 1.5 reading) | 3314 | 2026-10-07T18:40:41Z | 48 h 06 min | 86.24% | 84.23% | 7 containers: 50.2, 70.1, 81.5, 8.1, 99.8, 35.6, 43.6 MiB; 388.9 MiB in total |
+
+Task 3141 also reported store sizes of about 607 MB and 36 MB. Container names are not
+recorded here: the figures were reported without them.
+
+What this shows: the guest has roughly 86% memory headroom and about 84% of the root
+filesystem free, both well clear of the 2026-10-04 readings (6.75% root free, task 1831) and
+of the full-root condition in task 2115. Task 1.5 rests on task 3314, which is more than 24
+hours after the last deploy for all three figures. o11y Fault Drill (Dev) probe-mode task
+3295 ran between the two reads; the playbook's probe path rewrites the probe environment file
+and starts `inference-probe.service` without stopping a container
+(`platform/playbooks/o11y-fault-drill.yml:341-373`), which is the playbook source and not an
+observation of that task.
 
 ## Goals / Non-Goals
 

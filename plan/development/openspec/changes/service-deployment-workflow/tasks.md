@@ -108,6 +108,18 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
         and that nothing was written (after #462). Create VM Template (Dev) dry run 3195 fails at
         the template read-back step, reporting the template has no cloud-init drive on `ide2`
         (diagnostic PR #464 pending). Destroy VM is still held for the operator. 2.2 stays open.
+      - 2026-10-07 (task ids and output as quoted by the coordinator; the task output was not
+        read here), all `(Dev)` templates: Validate Proxmox Cluster (Dev) dry run 3284 and
+        Deploy agentgateway (Dev) dry run 3285 both succeeded at `dev` `8dc61584`, showing the
+        run-start extra-variable guard (#459) passes honest production runs. Create VM Template
+        (Dev) dry run 3287 at `cf765af8` recorded step result `fail` with the message
+        "template 9000 has no cloud-init drive on ide2 (cloudinit volume found on: ide0)". The
+        cause is not established. `provision-template.yml` has attached the cloud-init drive on
+        `ide2` since its first monorepo commit (`4d4cfee0`; `ide0` there is the installer
+        cdrom; current lines `:180` and `:240-242`), so the live template 9000 was built some other way
+        (by hand or by another tool); an older version of this playbook is not the explanation.
+        DECISION FOR THE OPERATOR: rebuild the template, or make the playbook accept any drive
+        key. 2.2 stays open.
 - [x] 2.3 Wave 2, the remaining playbooks, grouped by service; same patterns and runs.
       2026-09-22: 67 files (161 reads, 27 logins, 125 skips) applied from the guard's own
       findings; normal runs are unchanged by construction (every guard is inert without

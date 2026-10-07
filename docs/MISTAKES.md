@@ -31,7 +31,7 @@ and why.
 | # | Mistake | Class | Count | Enforced by |
 |---|---------|-------|-------|-------------|
 | 1.1 | Claimed a value was copied verbatim when it had been retyped through a string literal | Unverified claim | 1 | Convention + test |
-| 1.2 | Asserted a config gap that did not exist, without reading the file — **x4** | Unverified claim | 4 | Convention + loader test; hook proposed (count ≥ 3) |
+| 1.2 | Asserted a config gap that did not exist, without reading the file — **x5** | Unverified claim | 5 | Convention + loader test; hook proposed (count ≥ 3) |
 | 1.3 | Reported a background job as successful when its exit code had been masked by a pipe — **x5** | Unverified claim | 5 | Test for committed scripts (`test_scripts_set_pipefail.bats` + ratchet); agent side Convention (operator PreToolUse hook outside repo) |
 | 1.4 | Guessed a resource id instead of reading the one the create call returned | Unverified claim | 1 | Convention |
 | 1.5 | Claimed per-job containerisation as an enforced control; a job that asked for nothing ran on the host | Unverified claim | 1 | Test |
@@ -210,7 +210,7 @@ confirmed you searched the right artifact. When two files could plausibly be
 
 **Enforced by.** Convention.
 
-**Occurrences: 4** — (first undated), 2026-09-05, 2026-09-25, 2026-09-25
+**Occurrences: 5** — (first undated), 2026-09-05, 2026-09-25, 2026-09-25, 2026-10-07
 
 **Repeat (2026-09-05).** Stale Postiz agent notes said the container sourced its
 configuration. Without checking the actual compose command, a change added shell
@@ -247,6 +247,30 @@ Grep/`grep`: when a search returns zero matches, it appends "zero matches is not
 check case, the path searched, and the file the runtime actually loads". That puts the rule at
 the moment of the search, not in this file. A claim about what a setting does cites the lines
 that implement it, not the setting's name.
+
+**Occurrence 5 — 2026-10-07.** Reviewing the first runtime-evidence PR (#472), the reviewer found
+two causes I had told the operator as fact, both inferred from a symptom and neither checked.
+(a) The Create VM Template dry run failed with "template 9000 has no cloud-init drive on ide2
+(cloudinit volume found on: ide0)", and I said the template was "built by an older version of
+the playbook". `git log` shows `provision-template.yml` has attached the drive on `ide2` since
+its first monorepo commit (`4d4cfee0`; `ide0` there is the installer cdrom), so no older
+version of it did otherwise; the cause is not established. (b) The agentgateway client-view
+check reported the "5xx request ratio" panel without data, and I said it was empty because
+there were zero errors and the route switch's traffic would fix it. The panel's expression is
+`sum(rate(...status=~"5.."...)) / clamp_min(sum(rate(...)), 1e-9)`; with no 5xx series the
+numerator is an empty vector and the division returns nothing, so the panel stays empty
+without a 5xx however much traffic arrives. That is a dashboard defect, not a traffic gap.
+**Why the rule did not fire.** Neither claim came from a search: (a) was reasoned from the
+error text and (b) from the panel's title, so the zero-match-grep hook proposed above would not
+have run, and the last sentence of the rule (cite the lines that implement it) was not recalled
+for a cause stated in chat. The rule is worded around gaps and settings; it does not say that a
+CAUSE offered for a failure needs the history or the query behind it.
+**Proposal (count 5; Convention is no longer acceptable).** Widen the hook proposed above to
+the claim, not only the search: a Stop hook on the main-thread reply that flags a causal
+phrase ("because", "built by", "predates", "empty since") with no `path:line`, commit SHA or
+task id in the same sentence, and asks for the source before the reply is sent. It will be
+noisy; start it as a warning. Until it exists, a cause for a failure is reported as "cause not
+established" unless the code, the commit history or the query is cited.
 
 ### 1.3 A masked exit code reported as success
 

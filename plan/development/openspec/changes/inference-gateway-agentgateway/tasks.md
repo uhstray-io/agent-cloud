@@ -328,6 +328,21 @@
       2026-10-06: the first-token histogram reaches Prometheus (task 3.1 note, Verify o11y
       Metrics Target (Dev) 3142). No receipt yet of the dashboard panels returning data over an
       hour of traffic; the dashboard-data proof is a pending PR. Not ticked.
+      2026-10-07 (task id and output as quoted by the coordinator; the task output was not read
+      here): Verify o11y Dashboard Data (Dev) task 3302, dashboard `agentgateway-client-view`,
+      lookback 1h, FAILED: "Panels without data over 1h: First-token latency p50; First-token
+      latency p95; 5xx request ratio". Two different causes. (1) The 5xx request ratio is a
+      DASHBOARD DEFECT, not a traffic gap: its expression in
+      `platform/services/o11y/deployment/config/grafana/dashboards/agentgateway-client-view.json`
+      (panel id 5) is `sum(rate(agentgateway_requests_total{... status=~"5.." ...}[5m])) /
+      clamp_min(sum(rate(agentgateway_requests_total{...}[5m])), 1e-9)`; with no 5xx series the
+      numerator is an empty vector, so the division returns nothing and the panel stays empty
+      for as long as the gateway returns no 5xx, however much traffic arrives. Follow-up: `or
+      vector(0)` on the numerator, or exempt the panel from the has-data check. (2) The two
+      first-token panels are empty by inference, not shown: the only gateway traffic the
+      coordinator named is the five-minute non-streaming synthetic probe, and task 3142 saw
+      `time_to_first_token_bucket` series exist; streaming client traffic arrives with the
+      route switch (task 4.3). Not ticked.
 
 ## 4. Identities, limits, re-route
 - [ ] 4.1 Virtual-key lifecycle (design §10). DONE 2026-09-17 in code: the deploy mints
