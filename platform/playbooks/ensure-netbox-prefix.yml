@@ -1,6 +1,12 @@
 ---
 # Declare one exact IPAM prefix through Semaphore before allocating service VM IPs.
 # Default run reports the state; apply is explicit and never changes an existing prefix.
+
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
 - name: Refuse an empty NetBox target group
   ansible.builtin.import_playbook: preflight-target-group.yml
   vars:

@@ -148,7 +148,7 @@ setup() {
 import sys
 import yaml
 
-src, = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
+src, = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))[1:]  # [0] imports the extra-var guard
 blk, = (t for t in src["tasks"] if t.get("name") == "Generate + store keypair when absent")
 assert [t["name"] for t in blk["always"]] == ["Wipe runner-local temp keys"], blk.get("always")
 assert all("Wipe" not in t["name"] for t in blk["block"])

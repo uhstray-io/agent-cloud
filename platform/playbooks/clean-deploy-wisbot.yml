@@ -4,6 +4,11 @@
 # WARNING: Destroys the WisBot container, its volumes (SQLite DB + recordings),
 # and the monorepo clone, then runs a fresh deploy-wisbot.yml.
 
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
 - name: "Clean WisBot deployment"
   hosts: wisbot_svc
   gather_facts: false
@@ -16,3 +21,5 @@
 
 - name: "Fresh deploy"
   import_playbook: deploy-wisbot.yml
+  vars:
+    _extra_var_guard_nested: true

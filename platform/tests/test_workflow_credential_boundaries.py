@@ -11,6 +11,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
+import playbook_yaml
 import pytest
 import yaml
 
@@ -83,7 +84,7 @@ def test_validate_address_hides_its_token_bearing_requests():
 
 
 def test_token_minting_uses_the_configured_engine():
-    play = yaml.safe_load((PLAYBOOKS / "provision-netbox-automation-token.yml").read_text())[0]
+    play = playbook_yaml.plays(PLAYBOOKS / "provision-netbox-automation-token.yml")[0]
     manage = play["vars"]["_manage"]
     assert "container_engine" in manage and "netbox_app_container" in manage, manage
 
@@ -163,7 +164,7 @@ def test_persistence_accepts_only_what_boots(tmp_path):
     # exited 0, never from a running one (PR review, Codex). Rootful podman once kept accepting
     # unless-stopped (PR 195 grounding review).
     path = PLAYBOOKS / "verify-service-persistence.yml"
-    play = yaml.safe_load(path.read_text())[1]  # [0] is the populated-group guard
+    play = playbook_yaml.plays(path)[1]  # [0] is the populated-group guard
     tasks = [_named(path, "Decide the result"), _named(path, "Decide the failures")]
     inspected = {"a": "always running 0 ", "b": "no exited 0 true", "c": "unless-stopped running 0 ",
                  "d": "on-failure running 0 ", "e": "no running 0 true", "f": "no exited 1 true",
@@ -189,7 +190,7 @@ def test_persistence_accepts_a_rootful_container_named_by_the_enabled_service_un
     # still required for the containers on always.
     import base64
     path = PLAYBOOKS / "verify-service-persistence.yml"
-    play = yaml.safe_load(path.read_text())[1]  # [0] is the populated-group guard
+    play = playbook_yaml.plays(path)[1]  # [0] is the populated-group guard
     tasks = [_named(path, "Decide the result"), _named(path, "Decide the failures")]
     # worker: long-running on "no", which Ensure puts in the unit (PR 284 re-review).
     inspected = {"app": "unless-stopped running 0 ", "db": " running 0 ", "run": "always running 0 ",
@@ -264,7 +265,7 @@ def test_the_token_profile_is_a_survey_choice_blank_meaning_the_default(tmp_path
     # A Semaphore template passes no arguments, so the profile arrives from the survey, where a
     # field left empty is "", not absent; an unknown name is refused before anything is minted.
     path = PLAYBOOKS / "provision-netbox-automation-token.yml"
-    play = yaml.safe_load(path.read_text())[0]
+    play = playbook_yaml.plays(path)[0]
     variables = {k: play["vars"][k] for k in ("_profiles", "_profile_name", "_profile")}
     variables["netbox_token_profile"] = value
     probe = {"ansible.builtin.set_fact": {"_got": "{{ _profile.field }}"}}
@@ -286,7 +287,7 @@ def test_the_token_profile_survey_field_is_the_playbooks_closed_list():
     tpl = next(t for t in templates if t["name"] == "Provision NetBox Automation Token")
     fields = {s["name"]: s for s in tpl["survey_vars"]}
     field = fields["netbox_token_profile"]
-    profiles = yaml.safe_load((PLAYBOOKS / "provision-netbox-automation-token.yml").read_text())[0]["vars"]["_profiles"]
+    profiles = playbook_yaml.plays(PLAYBOOKS / "provision-netbox-automation-token.yml")[0]["vars"]["_profiles"]
     assert field["type"] == "enum"
     assert [v["value"] for v in field["values"]] == list(profiles)
     assert field["default_value"] == "device-writer"

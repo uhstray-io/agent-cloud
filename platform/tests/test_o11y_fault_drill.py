@@ -147,7 +147,7 @@ def test_check_mode_reads_but_induces_nothing(tmp_path, clean_copy):
 # ---- structural ----------------------------------------------------------------------
 
 def _fault_block():
-    plays = playbook_yaml.load(PLAYBOOK)
+    plays = playbook_yaml.plays(PLAYBOOK)
     tasks = plays[2]["tasks"]
     blocks = [t for t in tasks if "block" in t]
     assert len(blocks) == 1
@@ -157,7 +157,7 @@ def _fault_block():
 def test_every_fault_is_inside_the_one_guarded_block():
     block = _fault_block()
     assert block["when"] == "not ansible_check_mode"
-    plays = playbook_yaml.load(PLAYBOOK)
+    plays = playbook_yaml.plays(PLAYBOOK)
     outside = [t for t in plays[2]["tasks"] if "block" not in t]
     for task in outside:
         text = json.dumps(task)
@@ -212,7 +212,7 @@ def test_render_proof_uses_throwaway_state_and_always_cleans_up():
 # ---- PR #433 review: unreachable, --diff, vacuous resolve, unverified restore ----------
 
 def _play_tasks():
-    return playbook_yaml.load(PLAYBOOK)[2]["tasks"]
+    return playbook_yaml.plays(PLAYBOOK)[2]["tasks"]
 
 
 def test_unreachable_cannot_skip_the_restore():
@@ -305,7 +305,7 @@ UPSTREAM = "http://192.0.2.30:8000/v1"
 
 def _probe_wiring(tmp_path, o11y=None, gateways=1, upstream=UPSTREAM):
     """Run the drill's own probe refusal on the o11y host, then report where /health is read."""
-    play = playbook_yaml.load(PLAYBOOK)[2]
+    play = playbook_yaml.plays(PLAYBOOK)[2]
     names = ["_restore_only", "_probe_gateway_identity", "_probe_gw", "_probe_upstream", "_probe_health_url",
              "_probe_health_from"]
     refusal = next(t for t in play["tasks"] if t.get("name") == PROBE_REFUSAL)

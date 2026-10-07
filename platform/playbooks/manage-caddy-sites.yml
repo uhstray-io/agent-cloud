@@ -55,6 +55,11 @@
 #
 # Usage (via Semaphore): -e target_service=caddy_svc
 
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
 # A play whose hosts: matches nothing exits 0 with no step result, which reads as a pass (D10
 # review 2026-10-03). This play refuses a target group that names no host, and records the
 # refusal as a failed edge-route result. A bare name (a group OR a single host) is resolved the

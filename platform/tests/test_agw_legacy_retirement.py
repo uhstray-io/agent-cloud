@@ -81,7 +81,7 @@ def bao():
 def _run(tmp: Path, url: str, vllm: str, *args: str, fp: str = "", live_fp: str | None = None,
          **hv) -> subprocess.CompletedProcess:
     """fp: the fingerprint manage-secrets read; live_fp: what the store holds now (default fp)."""
-    secrets = {"client_stray": "client-key-AAAA", "vllm_api_key": vllm, "agw_db_password": "p",
+    secrets = {"client_workstation": "client-key-AAAA", "vllm_api_key": vllm, "agw_db_password": "p",
                "agw_oidc_cookie_seed": "s", "agentgateway_oidc_client_secret": "c"}
     stored = dict(secrets)
     live = fp if live_fp is None else live_fp
@@ -89,7 +89,7 @@ def _run(tmp: Path, url: str, vllm: str, *args: str, fp: str = "", live_fp: str 
         stored["legacy_shared_key_sha256"] = live
     Bao.store = stored
     existing = dict(secrets, **({"legacy_shared_key_sha256": fp} if fp else {}))
-    host = {"ansible_connection": "local", "agw_clients": ["stray"], "agw_models": [{"name": "m"}],
+    host = {"ansible_connection": "local", "agw_clients": ["workstation"], "agw_models": [{"name": "m"}],
             "agw_upstream_base_url": "http://u.invalid/v1", "service_name": "agentgateway",
             "secrets": secrets, "_resolved": secrets, "_existing": existing,
             "_bao_auth": {"json": {"auth": {"client_token": seed_harness.LOGIN}}}, **hv}
@@ -130,7 +130,7 @@ def test_before_expiry_enrols_legacy_shared_pinned_to_the_recorded_fingerprint(t
     keys = _keys(tmp_path / "config.yaml")
     assert keys["legacy-shared"]["keyHash"] == "sha256:" + _sha(OLD)
     assert keys["legacy-shared"]["budgets"][0]["limit"]["amount"] == 1000
-    assert "stray" in keys
+    assert "workstation" in keys
     assert _writes() == []
     _no_secret(r)
 
@@ -169,7 +169,7 @@ def test_on_expiry_unrotated_key_rolls_out_without_the_identity_then_fails(tmp_p
     assert r.returncode != 0
     assert "still matches the pre-rotation shared key" in r.stdout
     # The deploy step ran BEFORE the verdict, with a config that no longer enrols the shared key.
-    assert set(_keys(tmp_path / "deployed")) == {"stray"}
+    assert set(_keys(tmp_path / "deployed")) == {"workstation"}
     assert r.stdout.index("deploy.sh stand-in") < r.stdout.index("still matches the pre-rotation shared key")
     _no_secret(r)
 
@@ -184,7 +184,7 @@ def test_after_expiry_unrotated_key_fails_in_check_mode_too(tmp_path, bao):
 def test_after_expiry_rotated_key_passes_without_the_identity(tmp_path, bao):
     r = _run(tmp_path, bao, NEW, "-e", "agw_today=2026-11-01", fp=_sha(OLD), legacy_shared_expires=EXPIRES)
     assert r.returncode == 0, r.stdout + r.stderr
-    assert set(_keys(tmp_path / "deployed")) == {"stray"}
+    assert set(_keys(tmp_path / "deployed")) == {"workstation"}
     assert _writes() == []
     _no_secret(r)
 
@@ -193,7 +193,7 @@ def test_after_expiry_with_no_recorded_fingerprint_rolls_out_then_fails(tmp_path
     r = _run(tmp_path, bao, NEW, "-e", "agw_today=2026-11-01", legacy_shared_expires=EXPIRES)
     assert r.returncode != 0
     assert "holds no legacy_shared_key_sha256" in " ".join(r.stdout.split())
-    assert set(_keys(tmp_path / "deployed")) == {"stray"}
+    assert set(_keys(tmp_path / "deployed")) == {"workstation"}
     assert _writes() == []
     _no_secret(r)
 
@@ -201,7 +201,7 @@ def test_after_expiry_with_no_recorded_fingerprint_rolls_out_then_fails(tmp_path
 def test_absent_expiry_renders_no_identity_and_skips_the_check(tmp_path, bao):
     r = _run(tmp_path, bao, OLD, "-e", "agw_today=2030-01-01")
     assert r.returncode == 0, r.stdout + r.stderr
-    assert set(_keys(tmp_path / "config.yaml")) == {"stray"}
+    assert set(_keys(tmp_path / "config.yaml")) == {"workstation"}
     assert "Compare the vLLM key" not in r.stdout
 
 
@@ -213,7 +213,7 @@ def test_an_expiry_that_is_not_a_calendar_date_is_refused(tmp_path, bao, bad):
 
 
 def test_legacy_shared_as_a_client_is_refused(tmp_path, bao):
-    r = _run(tmp_path, bao, OLD, legacy_shared_expires=EXPIRES, agw_clients=["stray", "legacy-shared"])
+    r = _run(tmp_path, bao, OLD, legacy_shared_expires=EXPIRES, agw_clients=["workstation", "legacy-shared"])
     assert r.returncode != 0 and "must be a real calendar date" in r.stdout
     assert not (tmp_path / "config.yaml").exists()
 

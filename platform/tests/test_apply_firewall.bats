@@ -189,7 +189,8 @@ names = [
     "Compute the declared rules (command, tag, stored spec), SSH first",
 ]
 with open(sys.argv[1]) as source:
-    tasks = [task for task in yaml.safe_load(source)[0]["tasks"] if task["name"] in names]
+    # [0] imports the extra-var guard; [1] is the firewall play.
+    tasks = [task for task in yaml.safe_load(source)[1]["tasks"] if task["name"] in names]
 assert [task["name"] for task in tasks] == names
 tasks.append({"name": "Show the rule commands",
               "ansible.builtin.debug": {"msg": "{{ _fw_desired | map(attribute='cmd') | list }}"}})

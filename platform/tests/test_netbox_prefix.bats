@@ -10,7 +10,7 @@ entry, = (item for item in templates if item["name"] == "Ensure NetBox Prefix")
 assert entry["dev_variant"] is True
 assert entry["survey_vars"][1]["name"] == "prefix_apply"
 assert entry["survey_vars"][1]["default_value"] == "false"
-plays = yaml.safe_load(open(sys.argv[2], encoding="utf-8"))
+plays = yaml.safe_load(open(sys.argv[2], encoding="utf-8"))[1:]  # [0] imports the extra-var guard
 assert plays[0]["ansible.builtin.import_playbook"] == "preflight-target-group.yml"
 assert plays[1]["hosts"] == "netbox_svc"
 tasks = plays[1]["tasks"]

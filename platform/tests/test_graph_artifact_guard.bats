@@ -45,7 +45,7 @@ write_meta() {  # $1 project, $2 compressed_size
 
 @test "graph guard: refuses the graph staged for deletion (the 2026-09-23 state)" {
   git rm -q --cached .codebase-memory/graph.db.zst
-  write_meta Users-stray-Documents-GitHub-agent-cloud 2391196
+  write_meta Users-user-Documents-GitHub-agent-cloud 2391196
   git add .codebase-memory/artifact.json
   run sh "$GUARD"
   [ "$status" -ne 0 ]
@@ -53,7 +53,7 @@ write_meta() {  # $1 project, $2 compressed_size
 }
 
 @test "graph guard: refuses a path-derived project id" {
-  write_meta Users-stray-Documents-GitHub-agent-cloud 11
+  write_meta Users-user-Documents-GitHub-agent-cloud 11
   git add -A
   run sh "$GUARD"
   [ "$status" -ne 0 ]

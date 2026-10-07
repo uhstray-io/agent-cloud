@@ -20,6 +20,11 @@
 # host. Limiting a two-host group to one member is still a two-host group, and is refused.
 # any_errors_fatal stops every host the moment one is refused.
 
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
 - name: "Refuse a reboot that is not of exactly one named host"
   hosts: localhost
   gather_facts: false

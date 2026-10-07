@@ -44,7 +44,7 @@ and why.
 | 1.12 | **x2** — Reported a 30-minute deploy hang from a check-in timer, not the clock; the task was two minutes in | Unverified claim | 2 | Convention |
 | 1.13 | Rejected Semaphore's matching single-environment list projection as if it were a second binding | Unverified claim | 1 | Test |
 | 1.14 | **x2** — Told the user the approved OpenBao address is the inventory's `all.vars`, from the public template; production declares it under a group `localhost` is not in | Unverified claim | 2 | Test (`test_inventory_template_banner.py` + banners); reading habit Convention |
-| 1.15 | **x2** — Said a run-time check closed extra-var overrides; a templated extra var bypasses it, and any launcher may set extra vars | Unverified claim | 2 | Convention |
+| 1.15 | **x3** — Said a run-time check closed extra-var overrides; a templated extra var bypasses it, and any launcher may set extra vars | Unverified claim | 3 | Test (`test_extra_var_refusal_tests.py`: refusal tests must try templated forgeries) |
 | 1.16 | **x2** — Wrote "44 files log in to OpenBao" into a merged plan without running a count; the count is 43 | Unverified claim | 2 | Convention |
 | 1.17 | Explained a 401 as the token's scope; the service's database had just gone down, and those were the outage's first 401s | Unverified claim | 1 | Convention |
 | 1.18 | Listed an auth failure's causes from the code, missed the database-error 401, and chased credentials while the orchestrator's disk was full | Unverified claim | 1 | Convention (disk alert proposed) |
@@ -99,7 +99,7 @@ and why.
 | 4.6 | **x2** — A failure-path diagnostic printed the very values the success path was built to keep out of stdout | Secret in transcript | 2 | Test (static guard, `test_no_request_in_loop_items.py`) + stdout callback (`callback_plugins/redact_requests.py`) |
 | 4.7 | An address edit replaced every matching line and left a production runner declared at the new VM's address | Data handling | 1 | Playbook guard + test (provision-vm address-claim check) |
 | 4.8 | A credential-shaped test fixture was pushed; CI's unscoped all-detectors scan let it fail other PRs | Data handling | 1 | CI (scan scoped to the PR's commits) |
-| 4.9 | Private Discord destination IDs were copied into a public test fixture | Data handling | 1 | Convention |
+| 4.9 | **x2** — Private site data in public code: Discord destination IDs in a fixture; the operator's account in a Proxmox token fallback, gateway fixtures and path-derived ids | Data handling | 2 | Test (`test_no_site_identity.py`, the three account shapes); other private values Convention |
 | 4.10 | **x3** — A heredoc script and a stdin redirect both targeted one interpreter; it parsed the operator token file as source and the syntax error printed the token | Secret in transcript | 3 | Convention — **count ≥ 3: the PreToolUse hook is now required, not proposed** |
 | 4.11 | A workstation home path reached a committed ledger entry; the audit grep for it ran by hand only | Data handling | 1 | Pre-commit hook (`no-machine-paths`) |
 | 5.1 | Security check duplicated per caller; a fix reached three copies and missed two | Duplication | 1 | Test |
@@ -661,7 +661,7 @@ environments) before it is stated.
 
 ### 1.15 A security check's guarantee stated past what its tests exercised
 
-**Occurrences: 2** — 2026-09-25, 2026-09-26
+**Occurrences: 3** — 2026-09-25, 2026-09-26, 2026-10-05
 
 **What happened.** #256 added a run-time check that the seed run's OpenBao address is the one
 the inventory declares. After Codex showed forged helper variables bypassed the first version,
@@ -680,7 +680,12 @@ saw" and "the value the login used" are two renderings, not one.
 tests include the input class's strongest member (for extra vars: a template keyed on task
 context). Anything wider is written as a limit, with the boundary that actually holds it.
 
-**Enforced by.** Convention.
+**Enforced by.** `platform/tests/test_extra_var_refusal_tests.py` (from occurrence 3): every test
+named for an extra-var refusal parametrizes over `forgeries.templated_forgeries` (plain,
+context-keyed and stateful templates) or is listed with the limit that stands; every playbook
+relying on the value probe in `tasks/refuse-var-overrides.yml` opens with
+`refuse-internal-extra-vars.yml`, which refuses by name; and the templates are proved to defeat
+that value probe.
 
 **Occurrence 2 — 2026-09-26.** Correcting occurrence 1 in #264, I wrote the launch-permission gap
 as "redirect that template's OpenBao AppRole login" and listed building request URLs inline as a
@@ -690,6 +695,21 @@ launch runs arbitrary commands on the Semaphore runner (ansible-core 2.16.18 thr
 The real gap is code execution, and no URL change touches it. Why the rule did not fire: I
 applied it to the check I was correcting, not to the mitigation I proposed in the same note. A
 proposed fix is a security claim too, and the strongest input it must withstand is the same one.
+
+**Occurrence 3 — 2026-10-05.** PR #458 made the shared step-result task refuse its inputs when
+they arrive as extra vars, by setting each to a probe value one precedence level below extra
+vars and reading it back. Tested with plain `-e` values for every input, it was reported as
+closing step-result forgery. The Codex review sent `-e 'step_result_status={{
+"__extra_var_probe__" if _sr_input is defined else "pass" }}'`: the probe's loop variable was
+defined only inside the check, so the check read the probe value and the record read "pass".
+Reproduced on ansible-core 2.21.0 before fixing. The refusal now asks whether the NAME is in
+hostvars, which no rendering changes. Why the rule did not fire: it lived in this ledger and
+nothing ran it; the tests were written from the plain-value threat the review had named, and
+the repository's own `refuse-var-overrides.yml` comparison was assumed sound because it had
+shipped. Building the guard showed it is not: the context and stateful templates in
+`forgeries.py` pass that probe too (`test_the_templates_defeat_a_value_probe`). Its callers are
+covered because each opens with the by-name refusal; the lifted-section tests that exercise it
+alone are listed as plain-value limits.
 
 ### 1.16 A count written into a committed plan without running the count
 
@@ -2345,6 +2365,8 @@ fix independently the same evening). The fixture rule itself is Convention.
 
 ### 4.9 Private Discord destination IDs in a public test fixture
 
+**Occurrences: 2** — 2026-09-25, 2026-10-05
+
 **What happened.** The first PR revision copied the real guild and channel IDs
 from private site-config into a public Python test. The values are destination
 identifiers, not the bot token, but the public repo still must not publish
@@ -2364,6 +2386,18 @@ records a private local projection that bootstrap consumes and validates.
 
 **Enforced by.** Convention and review. This sync's test constructs synthetic
 IDs, but no general mechanical scan can identify private destination IDs.
+
+**Occurrence 2 — 2026-10-05.** The review of promotion PR 447 found the operator's real
+account in public code: every Proxmox play fell back to a literal token id
+(`<user>@pve!<token>`) when the store had no `token_id`, the discovery seed and the token
+writer wrote another literal, the agentgateway fixtures enrolled a client named after the
+account, and the graph-guard fixture and entry 6.6 quoted a path-derived project id that
+embeds the home-directory name. None was a credential, so no secret gate fired, and the rule
+above was written about one fixture rather than about site identity in general. The fallback
+is gone (the plays refuse an empty stored token id), the fixtures are synthetic, and
+`platform/tests/test_no_site_identity.py` now fails on the three account shapes in any
+tracked file. Private values without a fixed shape (destination IDs, other usernames) stay
+convention and review.
 
 ### 4.10 The interpreter read the token file as its program, and its error printed the token
 
@@ -3004,7 +3038,7 @@ prod-only, so local-dev found it by crash loop. Proposal: run the redirect VERIF
 **Occurrences: 3** — 2026-09-23, 2026-09-23, 2026-09-26
 
 **What happened.** On 2026-09-23 a Codex review of the main checkout found
-`.codebase-memory/artifact.json` rewritten (project `Users-stray-Documents-GitHub-agent-cloud`,
+`.codebase-memory/artifact.json` rewritten (project `Users-<user>-Documents-GitHub-agent-cloud`,
 9,250 nodes, written 11:35 local) and `.codebase-memory/graph.db.zst` deleted. `list_projects`
 showed two graph projects on the same root: the documented `agent-cloud` (7,697 nodes, matching
 the committed artifact) and a path-named one (9,474 nodes). codebase-memory-mcp 0.9.0 runs with
@@ -3028,7 +3062,7 @@ reading the index) and `platform/tests/test_graph_artifact_guard.bats`, which re
 machine configuration, not repository code.
 
 **Occurrence 2 — 2026-09-23.** The same day, in the PR #205 worktree, I committed and pushed
-the auto-index output (`aeeb951`: project `Users-stray-Documents-GitHub-agent-cloud-seed-envs`,
+the auto-index output (`aeeb951`: project `Users-<user>-Documents-GitHub-agent-cloud-seed-envs`,
 graph grown from 1.6 MB to 2.7 MB) by staging with `git add -A` after a pre-commit hook had
 fixed a file. Reverted in a new commit (`91109ef`). The rule did not prevent it because the
 gate was only on this branch (#211), not yet on `dev`, so the #205 branch carried no guard;

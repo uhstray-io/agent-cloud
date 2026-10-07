@@ -33,7 +33,7 @@ pytestmark = pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason
 
 
 def _plays(name):
-    return yaml.safe_load((PLAYBOOKS / name).read_text())
+    return playbook_yaml.plays(PLAYBOOKS / name)
 
 
 def _tasks(play, names):
@@ -50,28 +50,29 @@ def _tasks(play, names):
 
 
 def _emit_absolute(node):
-    """The harness runs from a scratch directory, so the shared task is named by its path."""
+    """The harness runs from a scratch directory, so each shared task is named by its path."""
     for task in playbook_yaml.tasks(node):
         if "ansible.builtin.include_tasks" in task:
-            task["ansible.builtin.include_tasks"] = EMIT
+            task["ansible.builtin.include_tasks"] = str(PLAYBOOKS / task["ansible.builtin.include_tasks"])
     return node
 
 
-def _run(tmp_path, harness, check=False, inventory=None, extra=(), step=None):
+def _run(tmp_path, harness, check=False, inventory=None, extra=(), step=None, env_extra=None):
     """The one result the run recorded, or with `step`, the result for that step."""
-    results, rc = _run_all(tmp_path, harness, check, inventory, extra)
+    results, rc = _run_all(tmp_path, harness, check, inventory, extra, env_extra)
     if step is not None:
         results = [r for r in results if r["step"] == step]
     assert len(results) == 1, results
     return results[0], rc
 
 
-def _run_all(tmp_path, harness, check=False, inventory=None, extra=()):
+def _run_all(tmp_path, harness, check=False, inventory=None, extra=(), env_extra=None):
     play_file = tmp_path / "play.yml"
     play_file.write_text(yaml.safe_dump(_emit_absolute(copy.deepcopy(harness)), sort_keys=False))
     inv = tmp_path / "inv.yml"
     inv.write_text(yaml.safe_dump(inventory or {"all": {"hosts": {"localhost": {"ansible_connection": "local"}}}}))
-    env = {**harness_sandbox.env_for(tmp_path), "ANSIBLE_NOCOLOR": "1", "ANSIBLE_SHOW_CUSTOM_STATS": "1"}
+    env = {**harness_sandbox.env_for(tmp_path), "ANSIBLE_NOCOLOR": "1", "ANSIBLE_SHOW_CUSTOM_STATS": "1",
+           **(env_extra or {})}
     done = harness_sandbox.run(
         ["ansible-playbook", "-i", str(inv), str(play_file), *(["--check"] if check else []), *extra],
         tmp_path, cwd=ROOT, env=env)
@@ -196,7 +197,7 @@ def _provision(tmp_path, cfg, status=200, vm_exists=True, do_migrate=False, prov
     rec = dict(record, tasks=_tasks(record, [t["name"] for t in record["tasks"]]))
     harness = [{"hosts": "localhost", "gather_facts": False,
                 "vars": {"target_service": "dns", "_vmid": "220", "_node": "n1", "_cores": 2, "_mem": 4096,
-                         "_disk": "32G", "_onboot": "1", "vm_exists": vm_exists, "_do_migrate": do_migrate,
+                         "_disk": "32G", "_onboot": "1", "_vm_exists": vm_exists, "_do_migrate": do_migrate,
                          "_pv_cfg": {"status": status, "json": {"data": cfg}}},
                 "tasks": decide}]
     if provisioned:
@@ -263,7 +264,8 @@ def _template_play(tmp_path, cfg, check=False):
     fake = FakeProxmox({("GET", TEMPLATE_CFG): (200, cfg)})
     try:
         result, rc = _run(tmp_path, [play], check=check,
-                          extra=["-e", json.dumps({"pve_host": fake.url, "pve_token_secret": "x"})])
+                          extra=["-e", json.dumps({"pve_host": fake.url, "pve_token_id": "automation@pve!fixture",
+                                                     "pve_token_secret": "x"})])
     finally:
         fake.close()
     return result, rc, fake
@@ -274,6 +276,135 @@ def test_an_existing_template_is_adopted_without_a_write_and_proven(tmp_path):
     assert (result["status"], rc) == ("pass", 0)
     assert fake.writes() == []  # the create block was skipped
     assert fake.seen.count(("GET", TEMPLATE_CFG)) == 2  # the guard's read, then the read-back
+
+
+# A stand-in for community.hashi_vault.hashi_vault, found first on ANSIBLE_COLLECTIONS_PATH.
+# The real lookup needs hvac, which the test environment does not install. The stub answers
+# from a JSON file of secret paths and logs each read with the address it was sent to, so the
+# plays' own store reads run unmodified: no `_` variable is injected.
+FAKE_LOOKUP = """
+import json
+import os
+
+from ansible.plugins.lookup import LookupBase
+
+DOCUMENTATION = "name: hashi_vault\\nshort_description: test stand-in\\n"
+
+
+class LookupModule(LookupBase):
+    def run(self, terms, variables=None, **kwargs):
+        store = json.load(open(os.environ["FAKE_BAO_STORE"]))
+        out = []
+        for term in terms:
+            path, _, field = term.partition(":")
+            with open(os.environ["FAKE_BAO_LOG"], "a") as log:
+                log.write(json.dumps({"path": path, "url": kwargs.get("url")}) + "\\n")
+            out.append(store[path][field] if field else store[path])
+        return out
+"""
+BAO = "https://bao.invalid"
+
+
+def _fake_store(tmp_path, proxmox):
+    coll = tmp_path / "collections/ansible_collections/community/hashi_vault"
+    (coll / "plugins/lookup").mkdir(parents=True)
+    (coll / "meta").mkdir()
+    (coll / "galaxy.yml").write_text("namespace: community\nname: hashi_vault\nversion: 0.0.0\n")
+    (coll / "meta/runtime.yml").write_text('requires_ansible: ">=2.14"\n')
+    (coll / "plugins/lookup/hashi_vault.py").write_text(FAKE_LOOKUP)
+    store = tmp_path / "store.json"
+    store.write_text(json.dumps({"secret/data/services/proxmox": proxmox,
+                                 "secret/data/services/ssh": {"public_key": "ssh-ed25519 AAAA"}}))
+    return {"ANSIBLE_COLLECTIONS_PATH": str(tmp_path / "collections"), "FAKE_BAO_STORE": str(store),
+            "FAKE_BAO_LOG": str(tmp_path / "bao.log"), "BAO_ROLE_ID": "synthetic-role",
+            "BAO_SECRET_ID": "synthetic-role-secret"}
+
+
+def _store_reads(tmp_path):
+    log = tmp_path / "bao.log"
+    return [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
+
+
+def _template_play_from_store(tmp_path, record):
+    """The Semaphore path for the template play alone: no operator input, the connection comes
+    from secret/services/proxmox through the play's own lookup."""
+    play = next(p for p in _plays("provision-template.yml") if p.get("tasks"))
+    fake = FakeProxmox({("GET", TEMPLATE_CFG): (200, {"template": 1, "ide2": "vm-lvms:vm-9000-cloudinit"})})
+    env = _fake_store(tmp_path, {"url": fake.url, "api_token": "synthetic", **record})
+    try:
+        result, rc = _run(tmp_path, [play], extra=["-e", json.dumps({"openbao_addr": BAO})], env_extra=env)
+    finally:
+        fake.close()
+    return result, rc, fake
+
+
+def test_the_template_play_takes_the_token_id_from_the_store(tmp_path):
+    result, rc, fake = _template_play_from_store(tmp_path, {"token_id": "automation@pve!fixture"})
+    assert (result["status"], rc) == ("pass", 0), result
+    assert ("GET", TEMPLATE_CFG) in fake.seen
+    assert {"path": "secret/data/services/proxmox", "url": BAO} in _store_reads(tmp_path)
+
+
+def test_the_template_play_refuses_a_store_without_a_token_id_and_sends_nothing(tmp_path):
+    result, rc, fake = _template_play_from_store(tmp_path, {})
+    assert (result["status"], rc != 0) == ("fail", True)
+    assert "has no token_id" in result["error"]
+    assert fake.seen == []
+
+
+# The whole playbook as Semaphore runs it: the imported validation play, the template play and
+# the post-validation play, each resolving the connection itself. A production dry run (task
+# 3166) found the template play sending to an empty URL because only the validation play read
+# the store, and play vars do not cross the play boundary.
+CLUSTER = {
+    ("GET", "/api2/json/version"): (200, {"version": "8.2"}),
+    ("GET", "/api2/json/nodes"): (200, [{"node": "alphacentauri", "status": "online"}]),
+    ("GET", "/api2/json/cluster/resources"): (200, []),
+    ("GET", "/api2/json/nodes/alphacentauri/storage"): (200, [
+        {"storage": "vm-lvms", "active": 1, "content": "images,rootdir", "avail": 0},
+        {"storage": "SharedISOs", "active": 1, "content": "iso"}]),
+    ("GET", "/api2/json/nodes/alphacentauri/storage/SharedISOs/content"): (200, [
+        {"volid": "SharedISOs:iso/ubuntu-24.04.3-live-server-amd64.iso"}]),
+    ("GET", "/api2/json/cluster/resources?type=vm"): (200, [
+        {"vmid": 9000, "name": "ubuntu-2404-template", "node": "alphacentauri", "template": 1}]),
+    ("GET", TEMPLATE_CFG): (200, {"template": 1, "ide2": "vm-lvms:vm-9000-cloudinit"}),
+    ("GET", "/api2/json/nodes/alphacentauri/network"): (200, [{"type": "bridge", "iface": "vmbr0"}]),
+}
+
+
+def _whole_template_playbook(tmp_path, record, check=False):
+    fake = FakeProxmox(CLUSTER)
+    inv = tmp_path / "inv.yml"
+    inv.write_text(yaml.safe_dump({"all": {"hosts": {"localhost": {"ansible_connection": "local"}}}}))
+    env = {**harness_sandbox.env_for(tmp_path), "ANSIBLE_SHOW_CUSTOM_STATS": "1",
+           **_fake_store(tmp_path, {"url": fake.url, "api_token": "synthetic", **record})}
+    try:
+        done = harness_sandbox.run(
+            ["ansible-playbook", "-i", str(inv), str(PLAYBOOKS / "provision-template.yml"),
+             "-e", json.dumps({"openbao_addr": BAO}), *(["--check"] if check else [])],
+            tmp_path, cwd=ROOT, env=env)
+    finally:
+        fake.close()
+    return done, fake
+
+
+@pytest.mark.parametrize("check", [False, True], ids=["run", "dry-run"])
+def test_the_whole_template_playbook_reaches_proxmox_from_the_store_in_every_play(tmp_path, check):
+    done, fake = _whole_template_playbook(tmp_path, {"token_id": "automation@pve!fixture"}, check)
+    assert done.returncode == 0, done.stdout[-3000:]
+    results = step_results.results_in(done.stdout.splitlines())
+    assert [(r["step"], r["status"]) for r in results] == [("vm-template", "pass")], results
+    # validation, the template play's own read and read-back, post-validation
+    assert fake.seen.count(("GET", TEMPLATE_CFG)) == 4
+    assert fake.writes() == []
+    assert {r["url"] for r in _store_reads(tmp_path)} == {BAO}
+
+
+def test_the_whole_template_playbook_refuses_a_store_without_a_token_id_before_any_request(tmp_path):
+    done, fake = _whole_template_playbook(tmp_path, {})
+    assert done.returncode != 0
+    assert "has no token_id" in done.stdout
+    assert fake.seen == []
 
 
 def test_cloudinit_named_anywhere_but_the_drive_does_not_pass(tmp_path):

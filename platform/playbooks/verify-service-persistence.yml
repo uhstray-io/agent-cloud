@@ -23,6 +23,11 @@
 #
 # Usage (Semaphore): -e target_service=tududi_svc
 
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
 - name: "Refuse a target group that matches no hosts"
   # A play whose hosts: matches nothing exits 0 with no step result, which reads as a pass.
   # preflight-target-group.yml refuses survey-driven groups because its subject could be

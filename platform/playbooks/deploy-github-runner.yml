@@ -23,6 +23,11 @@
 #   never a survey var — Semaphore persists survey values, and one authoritative channel
 #   for a private key is the point of having a secret store.
 
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
 # A play over no hosts exits 0 and records a deploy that did nothing as a success
 # (docs/MISTAKES.md 2.21). preflight-target-group.yml refuses a survey-driven group, so
 # the guard is inline: it reads the SAME target_service as the work, so one override

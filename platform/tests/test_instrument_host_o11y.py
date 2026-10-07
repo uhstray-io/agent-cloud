@@ -19,6 +19,8 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+import forgeries
+import playbook_yaml
 import pytest
 import yaml
 from fake_http import DrainingHandler
@@ -433,14 +435,6 @@ def test_refuses_a_target_it_must_not_instrument(estate, target):
     assert not estate["fragment"].exists()
 
 
-def _refused_names() -> list[str]:
-    guard = yaml.safe_load(PLAYBOOK.read_text())[0]["tasks"]
-    task = next(
-        t for t in guard if str(t.get("ansible.builtin.include_tasks", "")).endswith("refuse-var-overrides.yml")
-    )
-    return task["loop"]
-
-
 def _defined_names() -> set[str]:
     """Every _-prefixed name the playbook defines: vars at any level, its vars files, registers,
     set_fact keys and loop variables."""
@@ -455,28 +449,36 @@ def _defined_names() -> set[str]:
             for key in ("block", "rescue", "always"):
                 walk(task.get(key))
 
-    for play in yaml.safe_load(PLAYBOOK.read_text()):
+    for play in playbook_yaml.plays(PLAYBOOK):
         found.update(play.get("vars") or {})
         for path in play.get("vars_files") or []:
             found.update(yaml.safe_load((PLAYBOOK.parent / path).read_text()))
         walk(play.get("tasks"))
-    return {n for n in found if n.startswith("_")} - {"_rvo_name"}
+    return {n for n in found if n.startswith("_")}
 
 
-def test_every_internal_name_is_refused_as_an_extra_var():
-    # A name the playbook sets but does not refuse can be forged with -e (PR 457 review: three
-    # verdict names were missing, so -e _ih_group_errors=[] could record a pass for a failing group).
-    assert sorted(_refused_names()) == sorted(_defined_names())
+def test_the_run_opens_by_refusing_internal_extra_vars():
+    # A name the playbook sets can be forged with -e (PR 457 review: -e _ih_group_errors=[] could
+    # record a pass for a failing group). The run's first play refuses every underscore-prefixed
+    # extra var by name, so every internal name is covered, including one added later.
+    assert yaml.safe_load(PLAYBOOK.read_text())[0] == {
+        "name": "Refuse extra vars that set internal names",
+        "ansible.builtin.import_playbook": playbook_yaml.OVERRIDE_GUARD}
+    assert _defined_names() and all(n.startswith("_") for n in _defined_names())
 
 
 @needs_ansible
-@pytest.mark.parametrize("name", _refused_names())
-def test_refuses_an_extra_var_forging_an_internal_name(estate, name):
+@pytest.mark.parametrize("name, forge", [
+    pytest.param(n, f.values[0], id=f"{n}-{f.id}")
+    for n in sorted(_defined_names()) for f in forgeries.templated_forgeries(n, [], [])
+])
+def test_refuses_an_extra_var_forging_an_internal_name(estate, name, forge):
     # beta's declaration is unusable, so a forged verdict would turn a failing group into a pass.
-    proc = _run(estate, "-e", json.dumps({name: []}), binds={"beta": "0.0.0.0"})
+    proc = _run(estate, "-e", forge(estate["tmp"]), binds={"beta": "0.0.0.0"})
     assert proc.returncode != 0
-    assert f"{name} is internal to this play" in proc.stdout
+    assert f"Refusing to run: {name} set from outside the playbook" in proc.stdout
     assert step_results.results_in(proc.stdout.splitlines()) == []
+    assert not estate["fragment"].exists()
 
 
 # Pins: the host exporter is the receiver's own, and the scrape job drops what every job drops.
