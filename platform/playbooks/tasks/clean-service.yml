@@ -53,42 +53,64 @@
 # the path removals and every shell script read the facts, never the public names (the
 # placeholders test_service_o11y.bats substitutes are the fact names). Underscore names
 # cannot be set from outside the run (refuse-internal-extra-vars.yml).
-- name: "Pin the teardown's mode, connection and inputs, each read once"
+- name: "Pin the teardown's identity, connection and inputs, each read once"
   ansible.builtin.set_fact:
-    _clean_local_mode: "{{ local_mode | default(false) | bool }}"
-    _clean_connection: "{{ ansible_connection | default('ssh') }}"
+    # The connection with its collection prefix removed, so `ansible.builtin.local` and
+    # `ansible.legacy.local` read as `local`.
+    _clean_conn: "{{ (ansible_connection | default('ssh')) | regex_replace('^.*\\.', '') }}"
+    _clean_all_local: "{{ ansible_play_hosts_all | reject('match', '^[A-Za-z0-9._-]+-local\\Z') | list | length == 0 }}"
+    _clean_mode_set: "{{ local_mode | default('unset') }}"
     _clean_user: "{{ ansible_user | default('deploy') }}"
     _clean_service: "{{ service_name }}"
     _clean_dir: "{{ _monorepo_dir }}"
     _clean_path: "{{ monorepo_deploy_path }}"
     _clean_engine_set: "{{ container_engine | default('') }}"
 
-- name: "Derive the engine each branch runs from the pinned value"
+- name: "Derive the mode and the engines from the pinned values"
   ansible.builtin.set_fact:
+    # The mode is the hosts' identity, never the public `local_mode`: see the checks below.
+    _clean_local_mode: "{{ _clean_all_local }}"
     _clean_engine: "{{ _clean_engine_set if _clean_engine_set | length > 0 else 'docker' }}"
     _clean_local_engine: "{{ _clean_engine_set if _clean_engine_set | length > 0 else 'podman' }}"
 
-# A controller-local connection runs every teardown task below ON THE CONTROLLER: the
-# compose `down -v`, the `rm -f` of every container whose name starts with the service name,
-# and the clone removal. `ansible_connection` is a public variable, so `-e
-# ansible_connection=local` moves a prod host's destroy there, and no variable an extra var can
-# set says the host is a local-dev one (local_mode, local_monorepo_dir are as forgeable, and so
-# are the magic names inventory_hostname, group_names and inventory_file: verified on
-# ansible-core 2.21 with a scratch play). What it cannot set is `ansible_play_hosts_all`, the
-# real names of the hosts this play runs on (also verified). Every local-dev inventory names
-# its hosts `<service>-local` (platform/inventory/local-dev.yml.example, and the inventory
-# bootstrap-local-dev.yml hands Semaphore); no production host carries that suffix. So a local
-# connection is accepted only when every host of the play is so named.
-- name: "Refuse a controller-local teardown of a host that is not a local-dev host"
+# WHERE and WHICH are decided by the inventory, never by an extra var. Every public variable
+# can be set by `-e`; so can the magic names inventory_hostname, group_names, inventory_file
+# and inventory_dir (verified on ansible-core 2.21 with a scratch play). What it cannot set
+# are `groups`, `ansible_play_hosts` and `ansible_play_hosts_all` (also verified), so the
+# checks key on those:
+#
+#  - a LOCAL-DEV host is one named `<service>-local`, which every local-dev inventory does
+#    (platform/inventory/local-dev.yml.example and the inventory bootstrap-local-dev.yml hands
+#    Semaphore) and no production host does. The teardown is local-mode only for such a host:
+#    `local_mode` is read back, and a value that disagrees is refused, but never chooses the
+#    branch (forged `true` on a prod host skipped the prod checks and ran `compose down -v`
+#    in a launcher-chosen tree);
+#  - any other host must reach the machine it names, over ssh. The connection is an ALLOWLIST
+#    (ssh, once the collection prefix is removed), not a ban on `local`: `-e
+#    ansible_connection=ansible.builtin.local` or `ansible.legacy.local` ran the teardown on
+#    the controller past a check for the literal `local`;
+#  - the host must belong to the service's own group, `<service_name>_svc` (hyphens as
+#    underscores, as the inventories name them), and the deploy path must be that service's own
+#    (`platform/services/<service>/deployment` or `agents/<service>/deployment`), so
+#    `-e service_name=` or `-e monorepo_deploy_path=` cannot aim the teardown at another
+#    service's project or at a directory named like one.
+- name: "Refuse a host that is neither a local-dev host nor reached over ssh"
   ansible.builtin.assert:
-    that: >-
-      _clean_connection != 'local' or
-      (ansible_play_hosts_all | reject('match', '^[A-Za-z0-9._-]+-local\\Z') | list | length == 0)
+    that: _clean_all_local or _clean_conn == 'ssh'
     fail_msg: >-
-      Refusing: {{ inventory_hostname }} resolves to a controller-local connection, which would
-      run this teardown (compose down -v, container removal, clone removal) on the controller,
-      and only a play whose hosts are all local-dev hosts (named <service>-local by the local
-      inventories) may. Nothing was removed.
+      Refusing: {{ inventory_hostname }} is not a local-dev host (named <service>-local by the
+      local inventories) but its connection resolves to {{ _clean_conn }}, not ssh. A teardown
+      over any other connection would run compose down -v, the container removal and the clone
+      removal on the controller. Nothing was removed.
+    quiet: true
+
+- name: "Refuse a local_mode that disagrees with the hosts' identity"
+  ansible.builtin.assert:
+    that: _clean_mode_set == 'unset' or (_clean_mode_set | bool) == _clean_local_mode
+    fail_msg: >-
+      Refusing: the teardown for {{ _clean_service }} has local_mode {{ _clean_mode_set }}, but
+      the hosts of this play are {{ 'all' if _clean_local_mode else 'not all' }} local-dev hosts
+      (named <service>-local). The mode follows the hosts, not the variable. Nothing was removed.
     quiet: true
 
 - name: "Refuse a teardown whose service, deploy path or engine is not a plain name"
@@ -103,6 +125,19 @@
       Refusing: the teardown for {{ _clean_service }} needs a plain service name and deploy
       path (letters, digits, `.`, `_`, `-`, and `/` in the path; no `..`) and the engine docker
       or podman. Nothing was removed.
+    quiet: true
+
+- name: "Refuse a teardown aimed at a service the hosts do not run"
+  ansible.builtin.assert:
+    that:
+      - ansible_play_hosts_all | difference(groups.get((_clean_service | replace('-', '_')) ~ '_svc', [])) | length == 0
+      - _clean_path in ['platform/services/' ~ _clean_service ~ '/deployment', 'agents/' ~ _clean_service ~ '/deployment']
+    fail_msg: >-
+      Refusing: the teardown for {{ _clean_service }}: the hosts of this play are not all in
+      {{ _clean_service | replace('-', '_') }}_svc, or {{ _clean_path }} is not {{ _clean_service }}'s own
+      deployment directory
+      (platform/services/{{ _clean_service }}/deployment or agents/{{ _clean_service }}/deployment).
+      service_name and monorepo_deploy_path are declared by the inventory. Nothing was removed.
     quiet: true
 
 - name: "Refuse a prod teardown whose clone the inventory did not declare"
@@ -155,7 +190,7 @@
       $ENGINE compose --project-name {{ _clean_service }} $COMPOSE_ARGS down -v || exit $?
     fi
     # Remove any containers with the service name prefix
-    $ENGINE ps -a --format '{{ '{{' }}.Names{{ '}}' }}' 2>/dev/null | grep "^{{ _clean_service }}" | xargs -r $ENGINE rm -f 2>/dev/null || true
+    $ENGINE ps -a --format '{{ '{{' }}.Names{{ '}}' }}' 2>/dev/null | grep "^{{ _clean_service | regex_escape }}" | xargs -r $ENGINE rm -f 2>/dev/null || true
   args:
     executable: /bin/bash   # `set -o pipefail` needs bash (Ubuntu /bin/sh is dash)
   become: true
@@ -188,7 +223,7 @@
       # how deploy.sh brought it up) so the right volumes are removed.
       $ENGINE compose $COMPOSE_ARGS down -v || exit $?
     fi
-    $ENGINE ps -a --format '{{ '{{' }}.Names{{ '}}' }}' 2>/dev/null | grep "^{{ _clean_service }}" | xargs -r $ENGINE rm -f 2>/dev/null || true
+    $ENGINE ps -a --format '{{ '{{' }}.Names{{ '}}' }}' 2>/dev/null | grep "^{{ _clean_service | regex_escape }}" | xargs -r $ENGINE rm -f 2>/dev/null || true
   args:
     executable: /bin/bash   # `set -o pipefail` needs bash (Ubuntu /bin/sh is dash)
   register: _clean_local
@@ -205,11 +240,23 @@
   become: true
   when: not _clean_local_mode
 
+# `file state=absent` removes a directory and everything under it, so it is only ever pointed at
+# something proven to be a link: the path is /home/<user>/<service>, which a real directory of that
+# name (a home folder called like the service) would otherwise lose.
+- name: "Look for the convenience symlink (prod)"
+  ansible.builtin.stat:
+    path: "/home/{{ _clean_user }}/{{ _clean_service }}"
+    follow: false
+  register: _clean_link
+  when: not _clean_local_mode
+
 - name: "Remove convenience symlink (prod)"
   ansible.builtin.file:
     path: "/home/{{ _clean_user }}/{{ _clean_service }}"
     state: absent
-  when: not _clean_local_mode
+  when:
+    - not _clean_local_mode
+    - _clean_link.stat.islnk | default(false)
 
 # ── Verify (both modes) ─────────────────────────────────────────────────────
 - name: "Verify clean"
