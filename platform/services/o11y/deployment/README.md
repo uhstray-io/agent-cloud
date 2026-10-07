@@ -455,7 +455,7 @@ values in private `site-config`.
 Run `Verify o11y Production Budgets (Dev)` against the current receiver. It reads the live
 Prometheus, Loki, Tempo, and Alloy settings plus active Prometheus series, then
 prints those budget values, series count, current guest root filesystem capacity,
-and current memory headroom. Record the numeric ID
+current memory headroom, and the memory of each o11y container. Record the numeric ID
 from its successful Semaphore task record as both receipts after
 reviewing the result. The check changes no configuration.
 Supply the reviewed Dev controller SHA and current deployed receiver SHA as
@@ -475,6 +475,14 @@ images unless each resolved volume filesystem has at least 30% free space.
 Ordinary deploy and recovery remain available without this expansion gate.
 The read-only volume receipt is intentionally limited to rootless Podman until
 the Docker listing and mount formats have equivalent tested support.
+
+The receipt also lists every container of the o11y compose project, stopped
+ones included, with its memory in MiB (`o11y_container_memory_mib`). It is one
+`podman stats --no-stream` reading of podman's raw cgroup byte count, which on
+cgroup v2 is `memory.current` minus `inactive_file`: the working set, not strict
+resident memory. Only container names and MiB values are printed. A stopped
+container, an unreadable `podman stats` (for example rootless Podman on cgroup
+v1) or a missing reading refuses the receipt instead of issuing a partial one.
 Task 1789 (2026-09-28) passed the
 retention/sample/cardinality checks but observed only 805,421,056 bytes free on
 the 10,464,022,528-byte guest root; that guest observation alone does not prove

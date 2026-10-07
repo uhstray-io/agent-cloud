@@ -1655,7 +1655,7 @@ assert set(summary) == {'status', 'receipt_instruction', 'prometheus_retention',
     'prometheus_retention_size', 'loki_retention', 'tempo_retention',
     'scrape_sample_limit', 'active_prometheus_series',
     'guest_root_filesystem_total_bytes', 'guest_root_filesystem_available_bytes',
-    'guest_memory_headroom_percent', 'o11y_volume_capacity'}
+    'guest_memory_headroom_percent', 'o11y_volume_capacity', 'o11y_container_memory_mib'}
 assert 'http://' not in str(summary)
 assert not any(any(key in task for key in ('ansible.builtin.file', 'ansible.builtin.copy',
     'ansible.builtin.template', 'ansible.builtin.uri')) for task in tasks)
@@ -1851,6 +1851,75 @@ assert malformed.returncode != 0 and json.loads(malformed.stdout)['reason'] == '
 payload = {'prometheus': '{"status":"success","data":null}', 'guest_df': 'Size Avail\n1 1'}
 result = subprocess.run([sys.executable, script], input=json.dumps(payload), text=True, capture_output=True)
 assert result.returncode != 0 and json.loads(result.stdout)['reason'] == 'prometheus_query_failed'
+PY
+}
+
+@test "o11y: budget receipt reports per-container memory as names and MiB, fail-closed" {
+  python3 - "$REPO_ROOT/platform/playbooks/verify-o11y-production-budgets.yml" \
+    "$REPO_ROOT/platform/playbooks/files/summarize-o11y-container-memory.py" <<'PY'
+import json
+import subprocess
+import sys
+import yaml
+
+playbook = yaml.safe_load(open(sys.argv[1], encoding='utf-8'))
+script = sys.argv[2]
+tasks = next(play for play in playbook
+             if play.get('name') == 'Read production retention and cardinality settings')['tasks']
+index = {task['name']: i for i, task in enumerate(tasks)}
+listing = tasks[index["List the o11y compose project's containers"]]
+assert listing['ansible.builtin.include_tasks'] == 'tasks/list-service-containers.yml'
+assert listing['vars'] == {'_lsc_fields': ['Names', 'State'], '_lsc_all': True}
+stats = tasks[index['Read one-shot per-container memory usage']]
+argv = stats['ansible.builtin.command']['argv']
+for token in ("'stats'", "'--no-stream'", "'--no-reset'", "'{{.Name}} {{.ContainerStats.MemUsage}}'"):
+    assert token in argv, token
+assert stats['check_mode'] is False and stats['changed_when'] is False and stats['failed_when'] is False
+assert stats['become'] == '{{ podman_rootful | default(false) | bool }}'
+reduce_task = tasks[index['Reduce per-container memory to names and MiB']]
+assert reduce_task['ansible.builtin.command']['argv'] == [
+    'python3', '{{ playbook_dir }}/files/summarize-o11y-container-memory.py']
+assert reduce_task['delegate_to'] == 'localhost' and reduce_task['check_mode'] is False
+gate = tasks[index['Require a memory reading for every running o11y container']]
+assert gate['ansible.builtin.assert']['that'] == '_container_memory.rc == 0'
+assert (index["List the o11y compose project's containers"]
+        < index['Read one-shot per-container memory usage']
+        < index['Reduce per-container memory to names and MiB']
+        < index['Require a memory reading for every running o11y container']
+        < len(tasks) - 1)
+assert all('no_log' not in tasks[i] for i in index.values())
+assert tasks[-1]['ansible.builtin.debug']['msg']['o11y_container_memory_mib'] == \
+    '{{ (_container_memory.stdout | from_json).containers }}'
+
+def run(payload):
+    result = subprocess.run([sys.executable, script], input=json.dumps(payload),
+                            text=True, capture_output=True)
+    return result.returncode, json.loads(result.stdout)
+
+listed = ['o11y-grafana running', 'o11y-loki running']
+code, good = run({'listing_rc': 0, 'containers': listed, 'stats_rc': 0,
+                  'stats': 'o11y-loki 104857600\no11y-grafana 1572864\n'})
+assert code == 0 and good == {'status': 'observed', 'containers': [
+    {'name': 'o11y-grafana', 'memory_mib': 1.5}, {'name': 'o11y-loki', 'memory_mib': 100.0}]}
+def reason(payload):
+    code, result = run(payload)
+    assert code == 1 and result['status'] == 'unavailable'
+    return result['reason']
+base = {'listing_rc': 0, 'containers': listed, 'stats_rc': 0,
+        'stats': 'o11y-grafana 1\no11y-loki 2\n'}
+assert reason({**base, 'listing_rc': 125}) == 'container_listing_unreadable'
+assert reason({**base, 'containers': []}) == 'container_listing_invalid'
+assert reason({**base, 'containers': listed + ['o11y-loki running']}) == 'container_listing_invalid'
+assert reason({**base, 'containers': ['o11y-grafana running', 'o11y-loki exited']}) == 'container_not_running'
+assert reason({**base, 'stats_rc': 125}) == 'stats_unreadable'
+assert reason({**base, 'stats_rc': None}) == 'stats_unreadable'
+assert reason({**base, 'stats': 'o11y-grafana 1\n'}) == 'container_reading_missing'
+assert reason({**base, 'stats': 'o11y-grafana 1.2MB\no11y-loki 2\n'}) == 'stats_output_unrecognized'
+assert reason({**base, 'stats': 'o11y-grafana 1\no11y-loki 2\nother 3\n'}) == 'stats_output_unrecognized'
+assert reason({**base, 'stats': 'o11y-grafana 1\no11y-grafana 1\no11y-loki 2\n'}) == 'stats_output_unrecognized'
+assert reason({**base, 'stats': '\x1b[2J\x1b[Ho11y-grafana 1\no11y-loki 2\n'}) == 'stats_output_unrecognized'
+code, leaked = run({**base, 'stats': 'o11y-grafana 1\no11y-loki 2 extra-field-marker\n'})
+assert code == 1 and 'marker' not in json.dumps(leaked)
 PY
 }
 
