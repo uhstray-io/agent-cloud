@@ -288,12 +288,24 @@
                 else ['vmid ' ~ _vmid ~ ' on ' ~ _node ~ ' is not a template (HTTP '
                       ~ (_tmpl_after.status | default('none')) ~ ')'])
              + ([] if ((_tmpl_after.json.data | default({})).ide2 | default('') | string)
-                      is search('^[^,=]+:([^,=]*-)?cloudinit(,|$)')
-                else ['template ' ~ _vmid ~ ' has no cloud-init drive on ide2']) }}
+                      is search(_tmpl_ci_volume)
+                else ['template ' ~ _vmid ~ ' has no cloud-init drive on ide2 ('
+                      ~ (('cloudinit volume found on: ' ~ (_tmpl_ci_keys | join(', ')))
+                         if _tmpl_ci_keys else 'no cloudinit volume on any drive key') ~ ')']) }}
         # A dry run against a node with no template yet would create one; nothing to prove.
         _tmpl_dry_absent: >-
           {{ ansible_check_mode and not (_tmpl_present | default(false) | bool)
              and _tmpl_hard_error is not defined }}
+      vars:
+        _tmpl_ci_volume: '^[^,=]+:([^,=]*-)?cloudinit(,|$)'
+        # On a mismatch, say which drive keys DO hold a cloud-init volume (a template built by
+        # older code may carry it elsewhere). Key names only: no other config value is reported.
+        _tmpl_ci_keys: >-
+          {{ (_tmpl_after.json.data | default({})) | dict2items
+             | selectattr('key', 'match', '^(ide|sata|scsi|virtio)[0-9]+$')
+             | selectattr('value', 'string')
+             | selectattr('value', 'search', _tmpl_ci_volume)
+             | map(attribute='key') | sort | list }}
 
     - name: "Record the step result"
       ansible.builtin.include_tasks: tasks/emit-step-result.yml
