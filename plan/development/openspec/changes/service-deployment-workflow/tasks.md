@@ -441,7 +441,13 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
       before the first connection that carries a credential, and test both with
       `forgeries.templated_forgeries`. Clean Deploy o11y's gates already key on the effective
       connection, so forging `ansible_connection=local` there moves the destroy onto the
-      controller rather than past the gate
+      controller rather than past the gate. That vector is closed (PR #470 review LOW-1):
+      `tasks/clean-service.yml` pins its inputs once and refuses a prod teardown whose clone
+      is not `/home/<ansible_user>/agent-cloud` (so `-e local_monorepo_dir=<path>` can no
+      longer choose what `become` deletes), derives the convenience symlink from the same
+      pinned values instead of `local_home_dir`, and
+      `test_executor_internal_overrides.py` covers it with templated forgeries. The
+      connection variables themselves stay open here
 
 ## 8. Backfill agentgateway end to end
 

@@ -31,6 +31,57 @@
       - _monorepo_dir | length > 0
     fail_msg: "clean-service.yml requires service_name, monorepo_deploy_path, and _monorepo_dir."
 
+# ── Pin and check what the prod teardown deletes and runs (prod) ────────────
+# `_monorepo_dir` comes from `local_monorepo_dir`, a public variable: an extra var sets it,
+# and refuse-internal-extra-vars.yml cannot tell that from the inventory declaration (it
+# only sees `_`-prefixed names). The prod branch deletes that directory with `become` and
+# interpolates it, `monorepo_deploy_path`, `service_name` and `container_engine` into a root
+# shell script, so `-e local_monorepo_dir=<any path>` (with `-e ansible_connection=local` it
+# runs on the controller) chose what was deleted, and a shell word in any of the four chose
+# what ran. The prod clone is not a free choice: it is the per-VM checkout every prod deploy
+# places, /home/<ansible_user>/agent-cloud, so anything else is refused before the first
+# task that uses it. The convenience symlink removed below is likewise
+# /home/<ansible_user>/<service_name>, built from those two, not from the public
+# `local_home_dir`. Both must be plain names (no `/`, no leading `.`, so no `..`).
+#
+# An extra var is a template rendered afresh at every read (docs/MISTAKES.md 1.15), so a
+# check that reads a name and tasks that read it again can see two values. The facts below
+# render each name ONCE; the check, the `when` of every task below (`local_mode` included: a
+# forgery that reads false for the deletion and true for the check would skip one and run the
+# other) and the two path removals read the facts. Underscore names cannot be set from
+# outside the run (refuse-internal-extra-vars.yml). The prod
+# shell script still renders the public names itself, because test_service_o11y.bats
+# substitutes those exact placeholders into it; a stateful template could therefore show the
+# check one value and that script another, so reading the facts there is the follow-up once
+# that test is updated. Local mode keeps the shared genesis tree, deletes nothing, and is
+# not checked here.
+- name: "Pin the teardown's mode and the prod inputs, each read once"
+  ansible.builtin.set_fact:
+    _clean_local_mode: "{{ local_mode | default(false) | bool }}"
+    _clean_prod_user: "{{ ansible_user | default('deploy') }}"
+    _clean_prod_service: "{{ service_name }}"
+    _clean_prod_dir: "{{ _monorepo_dir }}"
+    _clean_prod_path: "{{ monorepo_deploy_path }}"
+    _clean_prod_engine: "{{ container_engine | default('docker') }}"
+
+- name: "Refuse a prod teardown whose inputs the inventory did not declare"
+  ansible.builtin.assert:
+    that:
+      - _clean_prod_user is match('^[A-Za-z0-9_][A-Za-z0-9._-]*\\Z')
+      - _clean_prod_service is match('^[A-Za-z0-9][A-Za-z0-9._-]*\\Z')
+      - _clean_prod_path is match('^[A-Za-z0-9][A-Za-z0-9._/-]*\\Z')
+      - "'..' not in _clean_prod_path"
+      - _clean_prod_engine in ['docker', 'podman']
+      - _clean_prod_dir == '/home/' ~ _clean_prod_user ~ '/agent-cloud'
+    fail_msg: >-
+      Refusing: the prod teardown for {{ _clean_prod_service }} removes
+      /home/{{ _clean_prod_user }}/agent-cloud, not {{ _clean_prod_dir }}; names must be plain
+      and the engine docker or podman. local_monorepo_dir is for local mode (inventory
+      local_mode: true); a prod host that checks the repo out elsewhere needs this guard
+      extended in code. Nothing was removed.
+    quiet: true
+  when: not _clean_local_mode
+
 # ── PROD teardown (per-VM clone) ────────────────────────────────────────────
 - name: "Stop and remove containers + volumes (prod) for {{ service_name }}"
   ansible.builtin.shell: |
@@ -66,7 +117,7 @@
   changed_when: true
   when:
     - not ansible_check_mode
-    - not (local_mode | default(false) | bool)
+    - not _clean_local_mode
 
 # ── LOCAL teardown (shared deploy dir; keep the tree) ───────────────────────
 - name: "Stop and remove containers + volumes (local) for {{ service_name }}"
@@ -98,21 +149,21 @@
   changed_when: true
   when:
     - not ansible_check_mode
-    - local_mode | default(false) | bool
+    - _clean_local_mode
 
 # ── Clone removal — PROD only (local shares the tree) ───────────────────────
 - name: "Remove agent-cloud clone (prod; may contain root-owned files)"
   ansible.builtin.file:
-    path: "{{ _monorepo_dir }}"
+    path: "{{ _clean_prod_dir }}"
     state: absent
   become: true
-  when: not (local_mode | default(false) | bool)
+  when: not _clean_local_mode
 
 - name: "Remove convenience symlink (prod)"
   ansible.builtin.file:
-    path: "{{ local_home_dir | default('/home/' ~ (ansible_user | default('deploy'))) }}/{{ service_name }}"
+    path: "/home/{{ _clean_prod_user }}/{{ _clean_prod_service }}"
     state: absent
-  when: not (local_mode | default(false) | bool)
+  when: not _clean_local_mode
 
 # ── Verify (both modes) ─────────────────────────────────────────────────────
 - name: "Verify clean"

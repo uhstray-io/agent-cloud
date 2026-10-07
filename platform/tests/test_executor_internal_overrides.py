@@ -485,6 +485,150 @@ def test_clean_deploy_o11y_refuses_the_reviewed_commit_with_uncommitted_files(tm
     assert "TASK [Destroy existing deployment]" not in proc.stdout
 
 
+# tasks/clean-service.yml deletes the clone and runs a root shell script built from public
+# variables: `-e local_monorepo_dir=<path>` (with `-e ansible_connection=local`, on the controller)
+# chose what was deleted, and the other names it interpolates chose what ran (PR #470 review,
+# LOW-1). It now pins each name once and refuses a prod teardown that is not the declared
+# /home/<ansible_user>/agent-cloud checkout, before the first task that uses one. These runs use a
+# host that is local to the controller, so nothing connects, and always --check.
+DEFAULT_USER = "deploy"  # the account the playbooks assume when ansible_user is unset
+SERVICE_VARS = "service_name=o11y monorepo_deploy_path=platform/services/o11y/deployment"
+PROD_REFUSAL = "Refusing: the prod teardown for"
+PROD_TEARDOWN = "TASK [Stop and remove containers + volumes (prod)"
+
+
+def _clean_inventory(tmp_path: Path, hostvars: str = "") -> str:
+    inv = tmp_path / "inv.ini"
+    inv.write_text(f"[o11y_svc]\nobs ansible_connection=local {SERVICE_VARS} {hostvars}\n")
+    return str(inv)
+
+
+@needs_ansible
+@pytest.mark.parametrize("forge", forgeries.templated_forgeries(
+    "local_monorepo_dir", f"/home/{DEFAULT_USER}/agent-cloud", lambda tmp_path: str(tmp_path / "victim")))
+def test_a_forged_local_monorepo_dir_cannot_choose_what_the_prod_teardown_deletes(forge, tmp_path):
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    (victim / "keep.txt").write_text("x")
+    proc = _run(PLAYBOOKS / "clean-deploy-o11y.yml", tmp_path, "--check", "-e", forge(tmp_path),
+                "-e", json.dumps({"confirm_o11y_reset": "obs"}), inventory=_clean_inventory(tmp_path))
+    assert proc.returncode != 0, proc.stdout
+    assert PROD_REFUSAL in proc.stdout, proc.stdout
+    assert PROD_TEARDOWN not in proc.stdout and "TASK [Remove agent-cloud clone" not in proc.stdout
+    assert "Fresh deploy" not in proc.stdout and "Phase 1" not in proc.stdout
+    assert (victim / "keep.txt").exists()
+
+
+def _destroy_only(tmp_path: Path) -> Path:
+    """clean-deploy-o11y.yml without its imported Fresh deploy, which would go on to render and
+    deploy o11y (reading OpenBao) on this machine. The play under test is the real one: only the
+    imports and the include are made absolute for a playbook that lives elsewhere."""
+    plays = yaml.safe_load((PLAYBOOKS / "clean-deploy-o11y.yml").read_text())
+    kept = [p for p in plays if p.get("name") != "Fresh deploy"]
+    assert len(kept) == len(plays) - 1
+    text = yaml.safe_dump(kept)
+    for rel in ("refuse-internal-extra-vars.yml", "tasks/clean-service.yml"):
+        assert rel in text
+        text = text.replace(rel, str(PLAYBOOKS / rel))
+    out = tmp_path / "destroy-only.yml"
+    out.write_text(text)
+    return out
+
+
+@needs_ansible
+@pytest.mark.parametrize("forge", forgeries.templated_forgeries("local_mode", True, False))
+def test_a_forged_local_mode_cannot_move_a_local_genesis_path_into_the_prod_teardown(forge, tmp_path):
+    # The local inventory's local_monorepo_dir is the shared genesis tree. A launch that forges
+    # local_mode false would hand it to the prod branch, which deletes its directory. The stateful
+    # forgery is honest on its first rendering, and the first read of local_mode is the one that
+    # pins it, so the run then is the honest local one: the clone removal is skipped, not refused.
+    genesis = tmp_path / "genesis"
+    genesis.mkdir()
+    (genesis / "keep.txt").write_text("x")
+    inv = _clean_inventory(tmp_path, f"local_mode=true local_monorepo_dir={genesis}")
+    proc = _run(_destroy_only(tmp_path), tmp_path, "--check", "-e", forge(tmp_path),
+                "-e", json.dumps({"confirm_o11y_reset": "obs"}), inventory=inv)
+    refused = PROD_REFUSAL in proc.stdout and proc.returncode != 0
+    skipped = re.search(r"TASK \[Remove agent-cloud clone[^\n]*\*\nskipping: \[obs\]", proc.stdout)
+    assert refused or skipped, proc.stdout
+    assert (genesis / "keep.txt").exists()
+
+
+# Each name the prod teardown interpolates into a path or the root shell script, with the value
+# the inventory declares and a forged one that reaches outside the checkout or injects a command.
+PROD_INPUTS = [
+    ("ansible_user", DEFAULT_USER, ".."),
+    ("service_name", "o11y", "../../etc"),
+    ("monorepo_deploy_path", "platform/services/o11y/deployment", "platform/../../../etc"),
+    ("monorepo_deploy_path", "platform/services/o11y/deployment", "x; touch /tmp/pwned"),
+    ("container_engine", "docker", "rm"),
+]
+
+
+@needs_ansible
+@pytest.mark.parametrize("kind", [0, 1, 2], ids=["plain", "context", "stateful"])
+@pytest.mark.parametrize("name, honest, forged", PROD_INPUTS,
+                         ids=["user-dotdot", "service-dotdot", "path-dotdot", "path-injection", "engine"])
+def test_a_forged_prod_teardown_input_is_refused_before_any_prod_task(kind, name, honest, forged, tmp_path):
+    forge = forgeries.templated_forgeries(name, honest, forged)[kind].values[0]
+    proc = _run(PLAYBOOKS / "clean-deploy-o11y.yml", tmp_path, "--check", "-e", forge(tmp_path),
+                "-e", json.dumps({"confirm_o11y_reset": "obs"}), inventory=_clean_inventory(tmp_path))
+    if kind == 2 and name == "container_engine":
+        # container_engine is first read by the pin, so the stateful forgery is honest there and
+        # the check and the teardown both see docker: the run goes on to the removal's sudo.
+        assert PROD_REFUSAL in proc.stdout or "sudo: a password is required" in proc.stdout, proc.stdout
+        return
+    assert proc.returncode != 0, proc.stdout
+    assert PROD_REFUSAL in proc.stdout, proc.stdout
+    assert PROD_TEARDOWN not in proc.stdout and "TASK [Remove agent-cloud clone" not in proc.stdout
+    assert "TASK [Remove convenience symlink" not in proc.stdout
+
+
+@needs_ansible
+@pytest.mark.parametrize("forge", forgeries.templated_forgeries(
+    "local_home_dir", f"/home/{DEFAULT_USER}", lambda tmp_path: str(tmp_path / "home")))
+def test_a_forged_local_home_dir_cannot_choose_the_symlink_the_prod_teardown_removes(forge, tmp_path):
+    # The convenience symlink is <home>/<service_name>; state=absent on a real directory removes it.
+    (tmp_path / "home" / "o11y").mkdir(parents=True)
+    proc = _run(_destroy_only(tmp_path), tmp_path, "--check", "--diff", "-e", forge(tmp_path),
+                "-e", json.dumps({"confirm_o11y_reset": "obs", "ansible_become": False}),
+                inventory=_clean_inventory(tmp_path))
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "TASK [Remove convenience symlink (prod)]" in proc.stdout
+    assert str(tmp_path / "home") not in proc.stdout, proc.stdout
+    assert (tmp_path / "home" / "o11y").is_dir()
+
+
+@needs_ansible
+def test_a_genuinely_local_o11y_host_passes_the_gates_and_reaches_the_destroy(tmp_path):
+    # PR #470 review LOW-2: the local tests covered refusals only. A host that is local to the
+    # controller (local dev), named by the confirm, waives the SHA, checkout and retention gates
+    # and reaches the local teardown; the prod teardown and its path check are not run.
+    genesis = tmp_path / "genesis"
+    genesis.mkdir()
+    inv = _clean_inventory(tmp_path, f"local_mode=true local_monorepo_dir={genesis}")
+    proc = _run(_destroy_only(tmp_path), tmp_path, "--check", "-e", json.dumps({"confirm_o11y_reset": "obs"}),
+                inventory=inv)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "Refusing" not in proc.stdout and "Pass expected_repository_sha" not in proc.stdout
+    assert "TASK [Destroy existing deployment]" in proc.stdout
+    assert "TASK [Stop and remove containers + volumes (local) for o11y]" in proc.stdout
+    assert "TASK [Verify clean]" in proc.stdout and "No o11y" in proc.stdout
+
+
+@needs_ansible
+def test_the_declared_prod_checkout_passes_the_path_check(tmp_path):
+    # The honest prod launch: no local_monorepo_dir, so the clone is /home/<ansible_user>/agent-cloud.
+    # ansible_become=false keeps the removal's sudo off this machine; --check changes nothing.
+    proc = _run(_destroy_only(tmp_path), tmp_path, "--check", "-e",
+                json.dumps({"confirm_o11y_reset": "obs", "ansible_become": False}),
+                inventory=_clean_inventory(tmp_path, "ansible_user=svc-deploy"))
+    # The SHA gate is skipped for a local connection, so the run reaches the prod teardown.
+    assert PROD_REFUSAL not in proc.stdout, proc.stdout
+    assert "TASK [Remove agent-cloud clone (prod; may contain root-owned files)]" in proc.stdout, proc.stdout
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
 @needs_ansible
 def test_password_prompts_are_not_variables_and_pass_the_guard(tmp_path):
     # Semaphore passes its login and become key passwords as --ask-pass / --ask-become-pass
