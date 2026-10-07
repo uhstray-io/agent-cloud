@@ -218,6 +218,7 @@ and launches each with a forged internal name.
 |----------|---------|
 | `validate-all.yml` | Health check all services (HTTP only, no SSH commands) |
 | `verify-o11y-metrics-target.yml` | Dev-bound, read-only Prometheus receipt for one exact healthy target and one named exporter series; refuses an altered controller checkout |
+| `verify-o11y-dashboard-data.yml` | Dev-bound, read-only: evaluate one provisioned dashboard's Prometheus panel queries (read from the receiver's provisioned JSON by `dashboard_uid`) over `lookback` (default 1h) and pass only when every selected panel returns a series with a finite sample. Grafana variables are reproduced (`$__rate_interval`, `$__interval`, `$__range*`, saved Custom all values, custom-variable defaults; overrides via `dashboard_variables`), anything else refused; Loki/Tempo panels reported skipped. Prints names and series counts, never label values; identical under `--check` |
 | `drill-o11y-active-alert-delivery.yml` | Dev-bound production drill against already-active Grafana rules/contact; adds one failed scrape, reuses the named Discord receipt path, then removes only its scrape declaration and verifies recovery |
 | `recover-o11y-active-alert-drill.yml` | Separate idempotent recovery for an interrupted active alert drill; clears its marker only after scrape, rule, and contact readback |
 | `verify-o11y-production-budgets.yml` | Dev-bound read-only production receipt for Prometheus/Loki/Tempo retention, Alloy sample limit, active Prometheus series, and the Semaphore task ID |
