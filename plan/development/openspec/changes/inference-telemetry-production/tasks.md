@@ -96,7 +96,13 @@
       into `design.md` with per-container memory. Root is now full (task 2115).
       2026-10-04: the task 1823 and 1831 readings are copied into `design.md` Context. Still
       open: per-container resident memory and a 24-hour read; neither receipt has them.
-- [ ] 1.6 Validation gate: a second deploy run reports no changes and the three health
+      2026-10-06 (task ids and readings reported by the coordinator; the task output was not
+      read here): the 24-hour read exists. Verify o11y Production Budgets (Dev) task 3141, more
+      than 24 hours after Deploy o11y (Dev) 2967, reported `guest_memory_headroom_percent`
+      86.46, root filesystem 84.41% free (87.5 GB of 103.7 GB), and store sizes of about 607 MB
+      and 36 MB. Still open: per-container resident memory (the receipt does not carry it; PR
+      #460 pending) and copying the 3141 readings into `design.md`. Not ticked.
+- [x] 1.6 Validation gate: a second deploy run reports no changes and the three health
       endpoints return 200, proving scenario "Deploy converges and verifies"; `curl` to
       the Grafana port from a LAN host is refused while `https://o11y.uhstray.io` serves
       Grafana, proving scenario "Grafana reachable only through the front door"
@@ -108,6 +114,22 @@
       change-aware deploy, `DEPLOY_CHANGED=true`), then task 2841 reported `changed=0`,
       `DEPLOY_CHANGED=false`. Still open: no receipt of a refused LAN `curl` to the Grafana port,
       so the front-door scenario is unproven and the box stays open.
+      2026-10-06: DONE (task ids and output lines reported by the coordinator; the task output
+      was not read here). Front-door half PROVEN: Probe Reachability (Dev) task 2984, a TCP
+      connect from the agentgateway host (a LAN host that is not the Caddy host) to the o11y
+      host, reported `3002 closed (expected closed); 4317 open (expected open)`. 3002 is the
+      Grafana port: `o11y_grafana_port` defaults to `3002`
+      (`platform/services/o11y/deployment/templates/env.j2:19`) and the private inventory
+      overrides only the bind, to the VM address, so the port is published on the LAN and the
+      refusal is the firewall's (task 1.4 allows it from the Caddy host only), not a loopback
+      bind. `probe-reachability.yml` counts `closed` only for a refusal or a
+      timeout on every address, never for a resolution or network error. The open OTLP port in
+      the same run shows the probing host does reach the o11y host. The public hostname serving
+      Grafana is recorded under 1.3 (task 1372). Convergence stays proven by 2839 then 2841;
+      later deploys that changed things (2967, `changed=11`, enabling the probe; 2991,
+      `changed=3`, enabling gateway span logs from site-config #62) each applied a new
+      declaration, so they are first runs of a new configuration, not failed second runs.
+      Ticked: both scenarios' conditions are met.
 
 ## 2. Scrape the nodes, receive their logs
 - [x] 2.1 `config/prometheus.yml`: `scrape_config_files: [scrape.d/*.yml]`;
@@ -241,6 +263,16 @@
       `o11y-probe` leaf from the o11y host (2969 was a dry run, outside the renewal window);
       the probe's two alert rules firing (task 3.5 drill); moving the probe to the public
       hostname after task 4.3, if wanted.
+      2026-10-06 (task ids and output reported by the coordinator; the task output was not read
+      here): o11y Fault Drill (Dev) `drill=probe` task 2998 observed a firing alert for the
+      drill model, delivered to Discord, with `/health` 200 throughout, then restored and
+      verified. Alert identity is NOT proven: the drill accepts any firing alert whose
+      `model_name` is the drill model (`o11y-fault-drill.yml:363-375`, no `alertname` filter),
+      and its final message prints the configured text "inference_probe_failing fired"
+      (`:140`) whatever matched. Follow-up: the drill must match `alertname`. The first
+      attempt, 2981, failed on the controller's resolution of the `/health` target, fixed in
+      #455. Still not shown: `inference_probe_failing` specifically firing, the renewal
+      re-issue of the `o11y-probe` leaf, and the staleness rule firing.
 - [x] 3.4 `platform/tests/test_service_o11y.bats`: dashboards and alerting files are
       valid JSON/YAML, every `vllm:` name in a dashboard appears in the imported list,
       probe script `shellcheck` clean and contains no literal key
@@ -265,6 +297,22 @@
       failure (tasks 1395, 1701). The wipe/redeploy, the dashboards and the probe drill are
       absent; the production clean deploy refuses a nonbaseline tuple, and the root disk is
       full.
+      2026-10-06 (task ids and output reported by the coordinator; the task output was not read
+      here): probe drill run, alert identity unproven. `o11y-fault-drill.yml` now exists, and
+      o11y Fault Drill (Dev) `drill=probe` task 2998 observed a firing alert for the drill
+      model, delivered to Discord, with `/health` 200 throughout, then restored and verified
+      (the probe mode rewrites only the o11y host's probe environment, per the playbook header,
+      so nothing on the nodes is restarted). That a firing alert reached the contact point and
+      `/health` stayed up is shown; that the alert was `inference_probe_failing` is NOT: the
+      drill accepts any firing alert whose `model_name` is the drill model
+      (`o11y-fault-drill.yml:363-375`, no `alertname` filter), and its final message prints the
+      configured text "inference_probe_failing fired" (`:140`) whatever matched. Follow-up: the
+      drill must match `alertname`, then rerun. The first attempt, 2981, failed on the controller's resolution of the
+      `/health` target, fixed in #455. Still open: the wipe and redeploy with the three
+      dashboards rendering ("Dashboards render from provisioning alone"), and the inference
+      dashboard showing the model as not serving during the fault (the rest of "Health up,
+      inference down"). The root disk is no longer full (task 1.5: 84.41% free in task 3141).
+      Not ticked.
 - [ ] 3.6 External liveness watcher on a path the firewall permits: a Semaphore schedule
       runs `check-o11y-liveness.yml` from the Semaphore host every 10 min against the
       Caddy front door, not the VM: Grafana `https://o11y.uhstray.io/api/health` (exempt

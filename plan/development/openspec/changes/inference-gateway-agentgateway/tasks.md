@@ -135,6 +135,16 @@
       Authentik's authorize endpoint, the outpost ping answers 204, the worker applied
       the blueprint; the local overlay removes the UI host publish so no unauthenticated
       path exists. Browser login as `agent-cloud-admin` and the prod `nc` are Joe's/prod
+      2026-10-06 (task id and output reported by the coordinator; the task output was not read
+      here): prod network half PROVEN. Probe Reachability (Dev) task 2985, a TCP connect from
+      the o11y host (a LAN host that is not the Caddy host) to the gateway host, reported
+      `4001 closed; 4000 open`. 4001 is the UI listener
+      (`platform/services/agentgateway/deployment/compose.yml:25,46`; `agw_ui_port: "4001"` in
+      the private inventory, bound to the VM address), and `probe-reachability.yml`
+      counts `closed` only for a refusal or timeout, never a resolution or network error; the
+      open 4000 shows the probing host reaches the gateway. Still open: the browser half (302 to
+      Authentik on prod, `agent-cloud-admin` login renders the UI, `config_dump` only through
+      that path), which is Joe's. Not ticked.
 
 - [x] 1.10 `UI_READ_ONLY=true` in the gateway environment, and a BATS assertion that it is
       rendered; the UI must refuse writes itself, not only fail at the read-only mount
@@ -301,12 +311,23 @@
       inventory declares the endpoint and 3.3 proves it on live traffic
       2026-10-03: PR #399 merged (span-log flag, default off). A deploy with the flag set waits on
       the private inventory
+      2026-10-06 (task ids and output reported by the coordinator; the task output was not read
+      here): scrape half PROVEN. site-config #62 set `o11y_gateway_span_logs_enabled` (the
+      stats endpoint was already declared); Deploy o11y (Dev) task 2991 applied it
+      (`changed=3`), and Verify o11y
+      Metrics Target (Dev) task 3142 reported Prometheus has a healthy `agentgateway` target on
+      the stats port 19002 and `agentgateway_gen_ai_server_time_to_first_token_bucket` series.
+      Still open: no Loki readback of a span log line, and the client-view row is not proven on
+      live traffic (task 3.3; dashboard-data proof PR pending). Not ticked.
 - [x] 3.2 Check whether `localRateLimit` has a log-only mode in the v1.5.0 schema; record
       the answer in `design.md` and set the first-week policy accordingly. 2026-09-17: no
       such mode (`RateLimitSpec` has only `maxTokens`, `tokensPerFill`, `fillInterval`,
       `type`); first week runs with loose figures tightened from observed rates
 - [ ] 3.3 Validation gate: one hour of traffic renders p50 and p95 first-token latency and
       per-identity counts, proving scenario "Client-view latency on the dashboard"
+      2026-10-06: the first-token histogram reaches Prometheus (task 3.1 note, Verify o11y
+      Metrics Target (Dev) 3142). No receipt yet of the dashboard panels returning data over an
+      hour of traffic; the dashboard-data proof is a pending PR. Not ticked.
 
 ## 4. Identities, limits, re-route
 - [ ] 4.1 Virtual-key lifecycle (design §10). DONE 2026-09-17 in code: the deploy mints
@@ -475,6 +496,11 @@
       Proof still owed: one `Run agentgateway Conformance (Dev)` run in production. Still NOT ticked:
       the personal-key gates, the benchmark VM's attribution check and the access-record verify
       do not exist yet
+      2026-10-06 (task ids and output reported by the coordinator; the task output was not read
+      here): the conformance proof is in. Run agentgateway Conformance (Dev) task 3011 (dry run)
+      then 3012 (real) reported "PASS, 14/14 cases match" through the shared probe path (#456).
+      Still NOT ticked, for the same reason: the personal-key gates, the benchmark VM's
+      attribution check and the access-record verify do not exist yet
 - [ ] 6.2 Caddy's `inference` and `admin.inference` blocks proxy to `https://` with
       `transport http { tls_server_name <gateway SAN>; tls_trust_pool file <root>;
       tls_client_auth <cert> <key> }` (Caddy 2.11.4), the leaf files read from the Caddy
