@@ -264,11 +264,15 @@
       the probe's two alert rules firing (task 3.5 drill); moving the probe to the public
       hostname after task 4.3, if wanted.
       2026-10-06 (task ids and output reported by the coordinator; the task output was not read
-      here): the probe's failure rule fires. o11y Fault Drill (Dev) `drill=probe` task 2998
-      reported "fault induced, inference_probe_failing fired and reached Discord with /health
-      200 throughout; restored and verified". The first attempt, 2981, failed on the
-      controller's resolution of the `/health` target, fixed in #455. Still not shown: the
-      renewal re-issue of the `o11y-probe` leaf, and the staleness rule firing.
+      here): o11y Fault Drill (Dev) `drill=probe` task 2998 observed a firing alert for the
+      drill model, delivered to Discord, with `/health` 200 throughout, then restored and
+      verified. Alert identity is NOT proven: the drill accepts any firing alert whose
+      `model_name` is the drill model (`o11y-fault-drill.yml:363-375`, no `alertname` filter),
+      and its final message prints the configured text "inference_probe_failing fired"
+      (`:140`) whatever matched. Follow-up: the drill must match `alertname`. The first
+      attempt, 2981, failed on the controller's resolution of the `/health` target, fixed in
+      #455. Still not shown: `inference_probe_failing` specifically firing, the renewal
+      re-issue of the `o11y-probe` leaf, and the staleness rule firing.
 - [x] 3.4 `platform/tests/test_service_o11y.bats`: dashboards and alerting files are
       valid JSON/YAML, every `vllm:` name in a dashboard appears in the imported list,
       probe script `shellcheck` clean and contains no literal key
@@ -294,12 +298,16 @@
       absent; the production clean deploy refuses a nonbaseline tuple, and the root disk is
       full.
       2026-10-06 (task ids and output reported by the coordinator; the task output was not read
-      here): probe drill half PROVEN. `o11y-fault-drill.yml` now exists, and o11y Fault Drill
-      (Dev) `drill=probe` task 2998 reported "fault induced, inference_probe_failing fired and
-      reached Discord with /health 200 throughout; restored and verified", which covers "Alert
-      reaches the contact point" for the probe (the probe mode rewrites only the o11y host's
-      probe environment, per the playbook header, so nothing on the nodes is restarted) and the
-      `/health`-up half of "Health up, inference down". The first attempt, 2981, failed on the controller's resolution of the
+      here): probe drill run, alert identity unproven. `o11y-fault-drill.yml` now exists, and
+      o11y Fault Drill (Dev) `drill=probe` task 2998 observed a firing alert for the drill
+      model, delivered to Discord, with `/health` 200 throughout, then restored and verified
+      (the probe mode rewrites only the o11y host's probe environment, per the playbook header,
+      so nothing on the nodes is restarted). That a firing alert reached the contact point and
+      `/health` stayed up is shown; that the alert was `inference_probe_failing` is NOT: the
+      drill accepts any firing alert whose `model_name` is the drill model
+      (`o11y-fault-drill.yml:363-375`, no `alertname` filter), and its final message prints the
+      configured text "inference_probe_failing fired" (`:140`) whatever matched. Follow-up: the
+      drill must match `alertname`, then rerun. The first attempt, 2981, failed on the controller's resolution of the
       `/health` target, fixed in #455. Still open: the wipe and redeploy with the three
       dashboards rendering ("Dashboards render from provisioning alone"), and the inference
       dashboard showing the model as not serving during the fault (the rest of "Health up,
