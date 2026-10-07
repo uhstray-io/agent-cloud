@@ -12,7 +12,8 @@ Input (stdin, JSON):
   lookback         Prometheus duration, one unit: 30m, 1h, 2d (the dashboard time range)
   panel_titles     optional list of exact panel titles; empty means every panel
   variables        optional {name: value} overriding a template variable's saved default;
-                   substituted verbatim, as Grafana substitutes a custom All value
+                   substituted as written, as Grafana substitutes a custom All value, but
+                   never one that could change the query's structure (see below)
   prometheus_url   base URL of the Prometheus HTTP API
   scrape_interval_seconds  the Prometheus datasource's timeInterval (datasources.yml: 15s)
 
@@ -32,10 +33,26 @@ Grafana semantics reproduced, and where they come from:
     the range; every other target is a range query over it.
   - A target or panel with no datasource uses the default one, which is Prometheus
     (datasources.yml, isDefault). Loki, Tempo and other datasources are reported skipped.
+  - What this script does not reproduce, a Prometheus panel may not use: a panel's own
+    time range (timeFrom, timeShift), its query options (maxDataPoints, a min interval on
+    the panel or a target, intervalFactor), repetition (repeat, on the panel or its row) and
+    library panels (whose queries live outside the dashboard file). Each is refused.
+
+A variable's value may not change the query's structure. Inside a quoted PromQL string it
+may hold regex characters but not the closing quote, a backslash or a line break; outside
+one (an offset, a range) it must be a duration or a number. An override is also refused for
+any of " { } ( ), a backslash or a line break, and the report names it with the first 12
+hex digits of its sha256 rather than its value.
+
+No Prometheus error TEXT reaches the report: an execution error such as "found duplicate
+series for the match group" embeds label sets. Only the API's errorType (one of a fixed
+list), an HTTP status or an exception class name is reported.
 
 A target has data when at least one returned series carries a finite sample: Prometheus
 encodes NaN as a string (https://prometheus.io/docs/prometheus/latest/querying/api/), and
 histogram_quantile over a window with no traffic returns NaN, which a panel draws as a gap.
+A native histogram sample (the `histogram` key of a vector series, `histograms` of a matrix
+series, same page) counts when its observation count is finite.
 A panel passes when every visible Prometheus target has data; the run passes when every
 selected Prometheus panel passes.
 
@@ -44,6 +61,7 @@ Exit status: 0 pass, 1 a panel has no data or a query failed, 2 refused (bad inp
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import re
@@ -70,7 +88,15 @@ REFERENCE = re.compile(
 LITERAL_TYPES = {"custom", "constant", "interval", "textbox"}
 POINTS_PER_PANEL = 1000
 QUERY_TIMEOUT = 30
-ERROR_TEXT = 300
+# The Prometheus HTTP API's errorType values (prometheus web/api/v1/api.go).
+ERROR_TYPES = {"timeout", "canceled", "execution", "bad_data", "internal", "unavailable", "not_found", "not_acceptable"}
+# Characters an override may never carry, wherever it lands.
+OVERRIDE_FORBIDDEN = re.compile(r'["{}()\\\r\n]')
+# A value substituted outside a string literal: a duration or a number, nothing else.
+BARE_VALUE = re.compile(r"^[0-9]+(?:\.[0-9]+)?(?:ms|s|m|h|d|w|y)?$")
+# Panel and target fields whose effect this script does not reproduce.
+PANEL_UNSUPPORTED = ("maxDataPoints", "interval", "timeFrom", "timeShift", "repeat", "libraryPanel")
+TARGET_UNSUPPORTED = ("interval",)
 
 
 class Refused(Exception):
@@ -84,16 +110,51 @@ def duration_seconds(text: Any) -> int:
     return int(match.group(1)) * UNIT_SECONDS[match.group(2)]
 
 
-def flatten_panels(panels: list[Any]) -> list[dict[str, Any]]:
-    """Every panel, including those a collapsed row holds in its own `panels` list."""
+def flatten_panels(panels: list[Any], repeated_row: bool = False) -> list[dict[str, Any]]:
+    """Every panel, including those a collapsed row holds in its own `panels` list. A panel
+    inside a repeating row is marked, since the row repeats it."""
     out: list[dict[str, Any]] = []
     for panel in panels or []:
         if not isinstance(panel, dict):
             continue
         if panel.get("type") != "row":
-            out.append(panel)
-        out.extend(flatten_panels(panel.get("panels", [])))
+            out.append(dict(panel, _repeated_row=True) if repeated_row else panel)
+        out.extend(flatten_panels(panel.get("panels", []), repeated_row or bool(panel.get("repeat"))))
     return out
+
+
+def _set(value: Any) -> bool:
+    return value not in (None, "", [], {}, False)
+
+
+def refuse_unsupported(panel: dict[str, Any], targets: list[dict[str, Any]]) -> None:
+    title = panel.get("title")
+    fields = [f for f in PANEL_UNSUPPORTED if _set(panel.get(f))]
+    if panel.get("_repeated_row"):
+        fields.append("repeat (row)")
+    for target in targets:
+        fields += [f"{f} (target {target.get('refId', '')})" for f in TARGET_UNSUPPORTED if _set(target.get(f))]
+        if target.get("intervalFactor") not in (None, 1):
+            fields.append(f"intervalFactor (target {target.get('refId', '')})")
+    if fields:
+        raise Refused(f"panel {title!r} uses {', '.join(fields)}, which this check does not reproduce")
+
+
+def string_spans(expr: str) -> list[tuple[int, int]]:
+    """(start, end) of each PromQL string literal, quotes included: "..." and '...' with
+    backslash escapes, `...` raw."""
+    spans, i = [], 0
+    while i < len(expr):
+        quote = expr[i]
+        if quote in "\"'`":
+            j = i + 1
+            while j < len(expr) and expr[j] != quote:
+                j += 2 if quote != "`" and expr[j] == "\\" else 1
+            spans.append((i, j + 1))
+            i = j + 1
+        else:
+            i += 1
+    return spans
 
 
 def datasource_type(target: dict[str, Any], panel: dict[str, Any]) -> str:
@@ -134,7 +195,13 @@ def template_values(dashboard: dict[str, Any], overrides: dict[str, Any]) -> tup
     values, sources = {}, {}
     for name, variable in declared.items():
         if name in overrides:
-            values[name], sources[name] = str(overrides[name]), "override"
+            value = str(overrides[name])
+            if not value or OVERRIDE_FORBIDDEN.search(value):
+                raise Refused(
+                    f"override for {name!r} is empty or holds a quote, brace, parenthesis, backslash or line break"
+                )
+            values[name] = value
+            sources[name] = "override sha256:" + hashlib.sha256(value.encode()).hexdigest()[:12]
             continue
         current = (variable.get("current") or {}).get("value")
         if isinstance(current, list) and len(current) == 1:
@@ -153,6 +220,8 @@ def template_values(dashboard: dict[str, Any], overrides: dict[str, Any]) -> tup
 
 
 def interpolate(expr: str, values: dict[str, str], builtins: dict[str, str]) -> str:
+    spans = string_spans(expr)
+
     def replace(match: re.Match[str]) -> str:
         name = match.group("braced") or match.group("bracket") or match.group("bare")
         if match.group("bformat") is not None or match.group("kformat") is not None:
@@ -160,7 +229,13 @@ def interpolate(expr: str, values: dict[str, str], builtins: dict[str, str]) -> 
         if name in builtins:
             return builtins[name]
         if name in values:
-            return values[name]
+            value = values[name]
+            quote = next((expr[a] for a, b in spans if a < match.start() < b), None)
+            if quote is None and not BARE_VALUE.fullmatch(value):
+                raise Refused(f"variable {name!r} is used outside a string, where only a duration or number is safe")
+            if quote is not None and (quote in value or "\\" in value or "\n" in value or "\r" in value):
+                raise Refused(f"variable {name!r} would close the string it is substituted into")
+            return value
         if name.startswith("__"):
             raise Refused(f"built-in variable {name!r} is not supported by this check")
         raise Refused(f"variable {name!r} has no default this check can reproduce; pass it in dashboard_variables")
@@ -204,6 +279,9 @@ def plan(payload: dict[str, Any]) -> dict[str, Any]:
         targets = [t for t in panel.get("targets", []) or [] if isinstance(t, dict)]
         if not targets:
             continue
+        evaluated = [t for t in targets if datasource_type(t, panel) == "prometheus" and not t.get("hide")]
+        if evaluated:
+            refuse_unsupported(panel, evaluated)
         entry: dict[str, Any] = {"title": panel.get("title", ""), "targets": []}
         for target in targets:
             kind = datasource_type(target, panel)
@@ -260,18 +338,22 @@ def _query(base: str, mode: str, expr: str, end: float, lookback: int, step: int
         except ValueError:
             return {"error": f"HTTP {error.code}"}
     except (urllib.error.URLError, OSError, ValueError) as error:
-        return {"error": f"{type(error).__name__}: {error}"[:ERROR_TEXT]}
+        # The class name only: an exception's text is not ours to vouch for.
+        return {"error": type(error).__name__}
     if not isinstance(body, dict):
         return {"error": "response is not a JSON object"}
     if body.get("status") != "success":
-        return {"error": f"{body.get('errorType', 'error')}: {body.get('error')}"[:ERROR_TEXT]}
+        # errorType only, never `error`: execution errors embed label sets.
+        kind = body.get("errorType")
+        return {"error": kind if kind in ERROR_TYPES else "unrecognised error"}
     return {"data": body.get("data") or {}}
 
 
 def _finite(sample: Any) -> bool:
     try:
-        return math.isfinite(float(sample[1]))
-    except (TypeError, ValueError, IndexError):
+        value = sample[1]
+        return math.isfinite(float(value["count"] if isinstance(value, dict) else value))
+    except (TypeError, ValueError, IndexError, KeyError):
         return False
 
 
@@ -286,8 +368,11 @@ def _count(data: dict[str, Any]) -> tuple[int, int]:
     for series in result:
         if not isinstance(series, dict):
             continue
-        samples = series.get("values") if kind == "matrix" else [series.get("value")]
-        if any(_finite(sample) for sample in samples or []):
+        if kind == "matrix":
+            samples = (series.get("values") or []) + (series.get("histograms") or [])
+        else:
+            samples = [series.get("value"), series.get("histogram")]
+        if any(_finite(sample) for sample in samples):
             with_values += 1
     return len(result), with_values
 
@@ -337,6 +422,7 @@ def evaluate(payload: dict[str, Any], now: float | None = None) -> dict[str, Any
         "step_seconds": planned["step"],
         "variables": planned["variables"],
         "panels_verified": len(verified),
+        "verified_panel_titles": [p["title"] for p in verified],
         "panels_skipped": len(panels) - len(verified),
         "panels_failing": failing,
         "panels": panels,

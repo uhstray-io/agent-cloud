@@ -6,6 +6,7 @@ through ansible-playbook with a local-connection receiver whose deploy dir holds
 the committed dashboards.
 """
 
+import hashlib
 import importlib.util
 import json
 import os
@@ -67,6 +68,11 @@ class FakePrometheus:
         behaviour = next((b for key, b in self.rules.items() if key in form["query"]), "data")
         if behaviour == "error":
             return 400, {"status": "error", "errorType": "bad_data", "error": "parse error"}
+        if behaviour in ("execution", "odd_error"):
+            # Prometheus's one-to-one match failure names both colliding label sets.
+            text = f"found duplicate series for the match group on the right hand-side: [{', '.join(SECRET_LABELS)}]"
+            kind = "execution" if behaviour == "execution" else "something_new"
+            return 422, {"status": "error", "errorType": kind, "error": text}
         sample = {"data": "1.5", "nan": "NaN", "empty": None}[behaviour]
         series = (
             []
@@ -155,7 +161,7 @@ def test_placement_comparison_uses_the_saved_custom_offset_and_honours_an_overri
     exprs = [t["expr"] for p in planned["panels"] for t in p["targets"]]
     assert any("offset 1d" in e for e in exprs)
     overridden = vdd.plan(_payload("inference-placement-comparison", variables={"compare_offset": "7d"}))
-    assert overridden["variables"]["compare_offset"] == "override"
+    assert overridden["variables"]["compare_offset"] == "override sha256:" + hashlib.sha256(b"7d").hexdigest()[:12]
     assert any("offset 7d" in t["expr"] for p in overridden["panels"] for t in p["targets"])
 
 
@@ -168,7 +174,7 @@ def test_a_query_variable_without_a_reproducible_default_is_refused_until_overri
     with pytest.raises(vdd.Refused, match="'service' has no default"):
         vdd.plan(_payload("service-overview"))
     planned = vdd.plan(_payload("service-overview", variables={"service": "o11y"}))
-    assert planned["variables"] == {"service": "override"}
+    assert planned["variables"] == {"service": "override sha256:" + hashlib.sha256(b"o11y").hexdigest()[:12]}
 
 
 def test_unknown_panel_title_override_or_uid_is_refused():
@@ -274,12 +280,25 @@ def test_one_empty_target_fails_a_two_target_panel(prometheus):
     assert report["panels_failing"] == ["Request duration p95 (HTTP and model)"]
 
 
-def test_a_query_error_fails_the_panel_without_echoing_data(prometheus):
-    prometheus.rules['status=~"4.."'] = "error"
+@pytest.mark.parametrize(
+    ("behaviour", "reported"),
+    [("error", "bad_data"), ("execution", "execution"), ("odd_error", "unrecognised error")],
+)
+def test_a_query_error_reports_its_type_never_its_text(prometheus, behaviour, reported):
+    # An execution error's text embeds label sets: identity and model names.
+    prometheus.rules['status=~"4.."'] = behaviour
     report = vdd.evaluate(_payload("agentgateway-client-view", prometheus_url=prometheus.url))
     panel = next(p for p in report["panels"] if p["title"] == "4xx request ratio")
     assert panel["status"] == "error"
-    assert panel["targets"][0]["error"] == "bad_data: parse error"
+    assert panel["targets"][0]["error"] == reported
+    dumped = json.dumps(report)
+    assert "parse error" not in dumped and "duplicate series" not in dumped
+    assert not any(label in dumped for label in SECRET_LABELS)
+
+
+def test_an_unreachable_prometheus_reports_the_exception_class_only():
+    report = vdd.evaluate(_payload("agentgateway-client-view", panel_titles=["First-token latency p50"]))
+    assert report["panels"][0]["targets"][0]["error"] == "URLError"
 
 
 def test_skipped_datasources_do_not_count(prometheus):
@@ -299,6 +318,87 @@ def test_count_handles_every_result_type():
     assert vdd._count({"resultType": "scalar", "result": [1, "NaN"]}) == (1, 0)
     assert vdd._count({"resultType": "vector", "result": [{"value": [1, "+Inf"]}]}) == (1, 0)
     assert vdd._count({"resultType": "matrix", "result": [{"values": [[1, "NaN"], [2, "0"]]}]}) == (1, 1)
+
+
+def test_native_histogram_samples_count_by_their_observation_count():
+    histogram = {"count": "4", "sum": "1.5", "buckets": [[0, "0", "1", "4"]]}
+    assert vdd._count({"resultType": "vector", "result": [{"histogram": [1, histogram]}]}) == (1, 1)
+    assert vdd._count({"resultType": "matrix", "result": [{"histograms": [[1, histogram]]}]}) == (1, 1)
+    assert vdd._count({"resultType": "matrix", "result": [{"histograms": [[1, {"count": "NaN"}]]}]}) == (1, 0)
+    assert vdd._count({"resultType": "vector", "result": [{"histogram": [1, {"sum": "1"}]}]}) == (1, 0)
+
+
+# ── What an override and an unsupported panel may not do ─────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "value",
+    ['.*"}[5m]) or vector(1)) or (x{a=~".*', ".*}", "a(b", "a)b", "a\\b", "a\nb", ""],
+)
+def test_an_override_that_could_restructure_the_query_is_refused(value):
+    with pytest.raises(vdd.Refused, match="override for 'identity'"):
+        vdd.plan(_payload("agentgateway-client-view", variables={"identity": value}))
+
+
+def test_regex_characters_are_kept_inside_a_string():
+    planned = vdd.plan(_payload("agentgateway-client-view", variables={"identity": "a|b.+[0-9]*?^$"}))
+    assert all('identity=~"a|b.+[0-9]*?^$"' in t["expr"] for p in planned["panels"] for t in p["targets"])
+
+
+def test_outside_a_string_only_a_duration_or_number_is_substituted():
+    with pytest.raises(vdd.Refused, match="outside a string"):
+        vdd.plan(_payload("inference-placement-comparison", variables={"compare_offset": "1d or up"}))
+    assert vdd.plan(_payload("inference-placement-comparison", variables={"compare_offset": "90m"}))
+
+
+@pytest.mark.parametrize(("expr", "closing"), [("x{a='$v'}", "a'b"), ("x{a=`$v`}", "a`b")])
+def test_a_value_cannot_close_the_string_it_lands_in(tmp_path, expr, closing):
+    dashboard = _synthetic(expr, [{"name": "v", "type": "custom", "current": {"value": "a"}}])
+    with pytest.raises(vdd.Refused, match="would close the string"):
+        vdd.plan(_payload("synthetic", dashboards_dir=_dashboard_dir(tmp_path, dashboard), variables={"v": closing}))
+
+
+def test_a_saved_default_outside_a_string_must_be_a_duration(tmp_path):
+    dashboard = _synthetic("x offset $v", [{"name": "v", "type": "custom", "current": {"value": "1d or up"}}])
+    with pytest.raises(vdd.Refused, match="outside a string"):
+        vdd.plan(_payload("synthetic", dashboards_dir=_dashboard_dir(tmp_path, dashboard)))
+
+
+@pytest.mark.parametrize(
+    ("panel_extra", "target_extra"),
+    [
+        ({"maxDataPoints": 100}, {}),
+        ({"interval": "1m"}, {}),
+        ({"timeFrom": "6h"}, {}),
+        ({"timeShift": "1d"}, {}),
+        ({"repeat": "identity"}, {}),
+        ({"libraryPanel": {"uid": "lib"}}, {}),
+        ({}, {"interval": "30s"}),
+        ({}, {"intervalFactor": 2}),
+    ],
+)
+def test_a_panel_option_this_check_cannot_reproduce_is_refused(tmp_path, panel_extra, target_extra):
+    dashboard = _synthetic("up")
+    dashboard["panels"][0].update(panel_extra)
+    dashboard["panels"][0]["targets"][0].update(target_extra)
+    with pytest.raises(vdd.Refused, match="does not reproduce"):
+        vdd.plan(_payload("synthetic", dashboards_dir=_dashboard_dir(tmp_path, dashboard)))
+
+
+def test_a_panel_in_a_repeating_row_is_refused(tmp_path):
+    dashboard = _synthetic("up")
+    dashboard["panels"] = [{"type": "row", "title": "Row", "repeat": "identity", "panels": dashboard["panels"]}]
+    with pytest.raises(vdd.Refused, match=r"repeat \(row\)"):
+        vdd.plan(_payload("synthetic", dashboards_dir=_dashboard_dir(tmp_path, dashboard)))
+
+
+def test_empty_options_and_non_prometheus_panels_are_not_refused(tmp_path):
+    dashboard = _synthetic("up")
+    dashboard["panels"][0].update({"interval": "", "maxDataPoints": None})
+    dashboard["panels"][0]["targets"][0].update({"interval": "", "intervalFactor": 1})
+    logs = {"title": "Logs", "type": "logs", "timeShift": "1d", "datasource": {"type": "loki"}}
+    dashboard["panels"].append(dict(logs, targets=[{"refId": "A", "expr": '{a="b"}'}]))
+    assert vdd.plan(_payload("synthetic", dashboards_dir=_dashboard_dir(tmp_path, dashboard)))
 
 
 # ── The playbook, end to end ─────────────────────────────────────────────────────────────
@@ -338,6 +438,7 @@ def test_playbook_passes_identically_under_check(receiver, check):
     proc = _run(receiver, "-e", "dashboard_uid=agentgateway-client-view", *(["--check"] if check else []))
     assert proc.returncode == 0, proc.stdout[-4000:]
     assert "6 Prometheus panels of agentgateway-client-view render data over 1h" in proc.stdout
+    assert "First-token latency p50; First-token latency p95; " in proc.stdout
     assert re.search(r"receiver\s+: ok=\d+\s+changed=0", proc.stdout)
     assert not any(label in proc.stdout for label in SECRET_LABELS)
     assert receiver["prometheus"].requests
@@ -356,6 +457,17 @@ def test_playbook_fails_naming_the_empty_panel(receiver):
     assert proc.returncode != 0
     assert "Panels without data over 1h: Request rate by identity" in proc.stdout
     assert len(receiver["prometheus"].requests) == 2
+
+
+@needs_ansible
+def test_playbook_never_prints_prometheus_error_text(receiver):
+    receiver["prometheus"].rules['status=~"5.."'] = "execution"
+    proc = _run(receiver, "-e", "dashboard_uid=agentgateway-client-view")
+    assert proc.returncode != 0
+    assert "Panels without data over 1h: 5xx request ratio" in proc.stdout
+    assert '"error": "execution"' in proc.stdout
+    assert "duplicate series" not in proc.stdout
+    assert not any(label in proc.stdout for label in SECRET_LABELS)
 
 
 @needs_ansible
