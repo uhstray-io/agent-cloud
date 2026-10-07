@@ -11,6 +11,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import threading
 from http.server import ThreadingHTTPServer
@@ -103,7 +104,7 @@ class FakePrometheus:
 class FakeLoki:
     """Answers LogQL queries without retaining or exposing returned log lines."""
 
-    def __init__(self):
+    def __init__(self, host="127.0.0.1"):
         self.rules: dict[str, str] = {}
         self.requests: list[tuple[str, dict]] = []
         outer = self
@@ -128,9 +129,13 @@ class FakeLoki:
             def log_message(self, *args):
                 pass
 
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        server_type = ThreadingHTTPServer
+        if ":" in host:
+            server_type = type("IPv6ThreadingHTTPServer", (ThreadingHTTPServer,), {"address_family": socket.AF_INET6})
+        self.server = server_type((host, 0), Handler)
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
-        self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
+        url_host = f"[{host}]" if ":" in host else host
+        self.url = f"http://{url_host}:{self.server.server_address[1]}"
 
     def answer(self, path, form):
         behaviour = next((b for key, b in self.rules.items() if key in form["query"]), "streams")
@@ -776,6 +781,48 @@ def test_playbook_queries_selected_loki_panel_and_discards_log_content(receiver)
     assert receiver["loki"].requests[0][0] == "/loki/api/v1/query_range"
     assert "private log line" not in proc.stdout
     assert not any(label in proc.stdout for label in SECRET_LABELS)
+
+
+@needs_ansible
+@pytest.mark.parametrize("bind", ["0.0.0.0", "::", ""])
+def test_playbook_uses_loopback_for_wildcard_loki_bind(receiver, bind):
+    inventory = receiver["inventory"]
+    inventory.write_text(inventory.read_text().replace("o11y_loki_bind=127.0.0.1", f"o11y_loki_bind={bind}"))
+    proc = _run(
+        receiver,
+        "-e",
+        "dashboard_uid=inference-fleet-health",
+        "-e",
+        '{"panel_titles": "[\\"Recent vLLM journal\\"]"}',
+    )
+    assert proc.returncode == 0, proc.stdout[-4000:]
+    assert receiver["loki"].requests
+
+
+@needs_ansible
+def test_playbook_brackets_ipv6_loki_bind(receiver):
+    previous_port = receiver["loki"].server.server_address[1]
+    try:
+        loki = FakeLoki("::1")
+    except OSError as exc:
+        pytest.skip(f"IPv6 loopback is unavailable: {type(exc).__name__}")
+    receiver["loki"] = loki
+    inventory = receiver["inventory"]
+    contents = inventory.read_text().replace("o11y_loki_bind=127.0.0.1", "o11y_loki_bind=::1")
+    contents = contents.replace(
+        f"o11y_loki_port={previous_port}",
+        f"o11y_loki_port={loki.server.server_address[1]}",
+    )
+    inventory.write_text(contents)
+    proc = _run(
+        receiver,
+        "-e",
+        "dashboard_uid=inference-fleet-health",
+        "-e",
+        '{"panel_titles": "[\\"Recent vLLM journal\\"]"}',
+    )
+    assert proc.returncode == 0, proc.stdout[-4000:]
+    assert loki.requests
 
 
 @needs_ansible
