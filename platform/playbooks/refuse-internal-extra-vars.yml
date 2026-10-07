@@ -29,10 +29,13 @@
 # the two cannot be told apart. platform/tests/test_executor_internal_overrides.py holds the
 # example inventories to it; site-config defined none when this landed.
 #
-# The escalation and connection passwords are refused by name too, under every name Ansible
-# reads them from: the playbooks resolve them from OpenBao (set_fact of ansible_become_password,
-# add_host of ansible_password), and an extra var under any alias would replace that. The
-# aliases are each plugin's documented `vars` for the option, read from ansible-core 2.21's
+# The escalation and connection passwords are refused by name too: the playbooks resolve them
+# from OpenBao (set_fact of ansible_become_password, add_host of ansible_password), and an
+# extra var under any alias would replace that. The pattern refuses ansible_password and any
+# ansible_<x>_pass or ansible_<x>_password. That covers every alias ansible-core's own become
+# and ssh plugins read, and any other plugin's that follows the same naming; a plugin that
+# names its password variable otherwise is not covered. The core aliases are each plugin's
+# documented `vars` for the option, read from ansible-core 2.21's
 # DOCUMENTATION blocks: become_pass in plugins/become/sudo.py (ansible_become_password,
 # ansible_become_pass, ansible_sudo_pass), su.py (+ ansible_su_pass) and runas.py
 # (+ ansible_runas_pass); password in plugins/connection/ssh.py (ansible_password,
@@ -77,9 +80,9 @@
   tasks:
     - name: "Refuse an extra var that sets an internal name"
       ansible.builtin.assert:
-        that: hostvars[inventory_hostname].keys() | select('match', '_|ansible_(become_password|become_pass|sudo_pass|su_pass|runas_pass|password|ssh_pass|ssh_password)$') | list | length == 0
+        that: hostvars[inventory_hostname].keys() | select('match', '_|ansible_(password|\w+_pass|\w+_password)$') | list | length == 0
         fail_msg: >-
-          Refusing to run: {{ hostvars[inventory_hostname].keys() | select('match', '_|ansible_(become_password|become_pass|sudo_pass|su_pass|runas_pass|password|ssh_pass|ssh_password)$') | sort | join(', ') }}
+          Refusing to run: {{ hostvars[inventory_hostname].keys() | select('match', '_|ansible_(password|\w+_pass|\w+_password)$') | sort | join(', ') }}
           set from outside the playbook. Underscore-prefixed names and the become and
           connection passwords (every alias) are RESERVED for playbook internals: an extra var outranks the value the playbook
           computes, which would let a forged value decide a verdict or the step result it

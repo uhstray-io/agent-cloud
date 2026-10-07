@@ -192,11 +192,13 @@ def test_the_reach_covers_imports_and_task_files():
 def test_the_guard_matches_every_internal_name():
     assert GUARD_TASK["ansible.builtin.assert"]["that"] == (
         "hostvars[inventory_hostname].keys() | select('match', "
-        "'_|ansible_(become_password|become_pass|sudo_pass|su_pass|runas_pass|password|ssh_pass|ssh_password)$')"
+        "'_|ansible_(password|\\w+_pass|\\w+_password)$')"
         " | list | length == 0")
     assert GUARD_TASK["when"] == (f"not ({NESTED} is defined and '{NESTED}' not in hostvars[inventory_hostname])")
     assert re.match(GUARD_PATTERN, "_anything")
-    assert all(re.match(GUARD_PATTERN, n) for n in PASSWORD_ALIASES)
+    assert all(re.match(GUARD_PATTERN, n) for n in PASSWORD_ALIASES + OTHER_PLUGIN_ALIASES)
+    assert not any(re.match(GUARD_PATTERN, n) for n in (
+        "ansible_user", "ansible_become_method", "ansible_ssh_private_key_file", "ansible_passphrase"))
     assert not re.match(GUARD_PATTERN, "ansible_become_password_file") and not re.match(GUARD_PATTERN, "target_service")
 
 
@@ -354,10 +356,16 @@ def test_the_alias_list_is_what_the_installed_plugins_read():
     assert sorted(out) == sorted(PASSWORD_ALIASES)
 
 
+# Collection plugins' names under the same convention, refused by the pattern rather than a list.
+OTHER_PLUGIN_ALIASES = ["ansible_winrm_pass", "ansible_httpapi_pass", "ansible_httpapi_password",
+                        "ansible_doas_pass", "ansible_pbrun_pass"]
+
+
 @needs_ansible
 @pytest.mark.parametrize("name, forge", [
     pytest.param(n, f.values[0], id=f"{n}-{f.id}")
-    for n in PASSWORD_ALIASES for f in forgeries.templated_forgeries(n, "from-openbao", "forged")
+    for n in PASSWORD_ALIASES + OTHER_PLUGIN_ALIASES
+    for f in forgeries.templated_forgeries(n, "from-openbao", "forged")
 ])
 def test_a_forged_password_under_any_alias_is_refused(name, forge, tmp_path):
     # Magic variables the playbooks resolve from OpenBao cannot carry the prefix.
@@ -400,10 +408,15 @@ def test_a_forged_nested_flag_is_refused(forge, tmp_path):
         assert "INNER RAN" not in proc.stdout
 
 
-# Clean Deploy o11y destroys every o11y volume. Outside local mode it refuses before the
-# destroy unless the launch names the host and the checkout is the reviewed commit, clean
-# (PR #459 review: the imported deploy checked the SHA only after the volumes were gone).
-# Always --check: a regression must not reach the destroy on this machine.
+# Clean Deploy o11y destroys every o11y volume. It refuses before the destroy unless the launch
+# names the host, and for a remote host unless the checkout is the reviewed commit, clean (PR
+# #459 review: the imported deploy checked the SHA only after the volumes were gone). The o11y
+# host here is remote (ssh to a closed port): every refusal is decided on the controller, so
+# nothing connects. Always --check: a regression must not reach the destroy on this machine.
+REMOTE_O11Y = "[o11y_svc]\nobs ansible_host=127.0.0.1 ansible_port=1 ansible_connection=ssh\n"
+LOCAL_O11Y = "[o11y_svc]\nobs ansible_connection=local local_mode=true\n"
+
+
 @needs_ansible
 @pytest.mark.parametrize("extra, refusal", [
     ({}, "Refusing: pass -e confirm_o11y_reset=obs"),
@@ -413,13 +426,39 @@ def test_a_forged_nested_flag_is_refused(forge, tmp_path):
 ], ids=["no-confirm", "wrong-confirm", "no-sha", "wrong-sha"])
 def test_clean_deploy_o11y_refuses_before_destroying(extra, refusal, tmp_path):
     inv = tmp_path / "inv.ini"
-    inv.write_text("[o11y_svc]\nobs ansible_connection=local local_mode=false\n")
+    inv.write_text(REMOTE_O11Y)
     proc = _run(PLAYBOOKS / "clean-deploy-o11y.yml", tmp_path, "--check", "-e", json.dumps(extra),
                 inventory=str(inv))
     assert proc.returncode != 0, proc.stdout
     assert refusal in proc.stdout, proc.stdout
     assert "TASK [Destroy existing deployment]" not in proc.stdout
     assert "Fresh deploy" not in proc.stdout and "Phase 1" not in proc.stdout
+
+
+@needs_ansible
+@pytest.mark.parametrize("forge", forgeries.templated_forgeries("local_mode", False, True))
+def test_a_forged_local_mode_does_not_waive_the_reviewed_commit(forge, tmp_path):
+    # PR #459 follow-up: local_mode is public, so an extra var setting it skipped the SHA gate and
+    # destroyed a production host's volumes. What waives the gate now is a local connection.
+    inv = tmp_path / "inv.ini"
+    inv.write_text(REMOTE_O11Y)
+    proc = _run(PLAYBOOKS / "clean-deploy-o11y.yml", tmp_path, "--check", "-e", forge(tmp_path),
+                "-e", json.dumps({"confirm_o11y_reset": "obs"}), inventory=str(inv))
+    assert proc.returncode != 0, proc.stdout
+    assert "Pass expected_repository_sha" in proc.stdout, proc.stdout
+    assert "TASK [Destroy existing deployment]" not in proc.stdout
+
+
+@needs_ansible
+@pytest.mark.parametrize("extra", [{}, {"confirm_o11y_reset": "other"}], ids=["no-confirm", "wrong-confirm"])
+def test_clean_deploy_o11y_requires_the_confirmation_locally_too(extra, tmp_path):
+    inv = tmp_path / "inv.ini"
+    inv.write_text(LOCAL_O11Y)
+    proc = _run(PLAYBOOKS / "clean-deploy-o11y.yml", tmp_path, "--check", "-e", json.dumps(extra),
+                inventory=str(inv))
+    assert proc.returncode != 0, proc.stdout
+    assert "Refusing: pass -e confirm_o11y_reset=obs" in proc.stdout, proc.stdout
+    assert "TASK [Destroy existing deployment]" not in proc.stdout
 
 
 @needs_ansible
@@ -438,7 +477,7 @@ def test_clean_deploy_o11y_refuses_the_reviewed_commit_with_uncommitted_files(tm
                           check=True, env=env).stdout.strip()
     (repo / "untracked.txt").write_text("x")
     inv = tmp_path / "inv.ini"
-    inv.write_text("[o11y_svc]\nobs ansible_connection=local local_mode=false\n")
+    inv.write_text(REMOTE_O11Y)
     proc = _run(repo / "platform/playbooks/clean-deploy-o11y.yml", tmp_path, "--check", "-e",
                 json.dumps({"confirm_o11y_reset": "obs", "expected_repository_sha": head}), inventory=str(inv))
     assert proc.returncode != 0, proc.stdout
