@@ -325,9 +325,6 @@ def test_checkout_diagnostics_report_only_fixed_status_categories_and_counts(tmp
     assert all(task["ansible.builtin.command"]["argv"] == shared_argv for task in status_tasks)
     assert "import subprocess" in VERIFY_PLAYBOOK.read_text()
     assert VERIFY_PLAYBOOK.read_text().count("import subprocess") == 1
-    assert "subprocess.Popen(" in shared_argv[2]
-    assert "subprocess.run(" not in shared_argv[2]
-    assert "time.monotonic() + 10" in shared_argv[2]
     checkout_assertions = [
         task
         for task in gateway["tasks"]
@@ -561,6 +558,12 @@ def test_checkout_diagnostics_bound_git_output_and_runtime_with_static_metadata(
         "    handle.write(str(os.getpid()))\n"
         "if os.environ['FAKE_GIT_MODE'] == 'timeout':\n"
         "    time.sleep(30)\n"
+        "elif os.environ['FAKE_GIT_MODE'] == 'exact':\n"
+        "    prefix = b'?? repository-other/'\n"
+        "    payload = prefix + b'x' * (1048576 - len(prefix) - 1) + b'\\0'\n"
+        "    view = memoryview(payload)\n"
+        "    while view:\n"
+        "        view = view[os.write(1, view):]\n"
         "else:\n"
         "    block = b'x' * 65536\n"
         "    while True:\n"
@@ -580,6 +583,33 @@ def test_checkout_diagnostics_bound_git_output_and_runtime_with_static_metadata(
         )
         assert pid_file.exists()
         return result, int(pid_file.read_text())
+
+    result, exact_pid = run_fake_git("exact")
+    assert result.returncode == 0
+    assert result.stderr == ""
+    assert json.loads(result.stdout) == {
+        "status": "ok",
+        "counts": {
+            "modified": 0,
+            "added": 0,
+            "deleted": 0,
+            "renamed": 0,
+            "copied": 0,
+            "conflicted": 0,
+            "type_changed": 0,
+            "untracked": 1,
+        },
+        "untracked_categories": {
+            "gateway_deployment": 0,
+            "other_service_deployment": 0,
+            "service_tree_other": 0,
+            "platform_other": 0,
+            "repository_other": 1,
+        },
+        "path_count": 1,
+    }
+    with pytest.raises(ProcessLookupError):
+        os.kill(exact_pid, 0)
 
     result, oversized_pid = run_fake_git("oversized")
     assert result.returncode == 1

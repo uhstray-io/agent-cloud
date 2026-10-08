@@ -74,8 +74,6 @@
                 "platform_other": 0,
                 "repository_other": 0,
             }
-            gateway_deploy_prefix = b"platform/services/agentgateway/deployment/"
-            services_prefix = b"platform/services/"
             counts = {
                 "modified": 0,
                 "added": 0,
@@ -152,7 +150,7 @@
                 except OSError:
                     pass
                 try:
-                    process.wait()
+                    process.wait(timeout=5)
                 except (OSError, subprocess.SubprocessError):
                     pass
             print('{"status":"error","counts":{},"untracked_categories":{},"path_count":0,"reason":"git-status-failed"}')
