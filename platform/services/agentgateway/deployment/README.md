@@ -6,15 +6,15 @@ agentgateway** — removes both containers (gateway + its own Postgres) and the 
 volume, then redeploys. Keys come back from OpenBao unchanged; the only state lost is
 every identity's current token-budget window.
 
-Every real deploy runs the rendered `config.yaml` through the exact
-`cr.agentgateway.dev/agentgateway:v1.5.0 --validate-only -f /config.yaml`
-before `deploy.sh` can recreate containers. The playbook first asks `deploy.sh
---pull-only` to resolve the effective Compose images, then the validator uses
-`--pull=never` and the actual lifecycle uses `deploy.sh --no-pull`. This keeps
-the validated local v1.5.0 image and the image Compose starts aligned within the
-workflow instead of resolving a mutable tag twice. The pull-only mode uses the
-same Compose file/overlay selection as deployment and exits before any container
-decision or change. The validator receives `.env` by
+Every real deploy checks that rendered `AGW_IMAGE` equals the reviewed
+`cr.agentgateway.dev/agentgateway:v1.5.0` pin, then asks `deploy.sh --pull-only`
+to resolve the effective Compose images. It captures the resulting local image
+ID and runs that ID with `--validate-only -f /config.yaml` before `deploy.sh`
+can recreate containers. The validator uses `--pull=never`, and the actual
+lifecycle uses `deploy.sh --no-pull`; a second image-ID check immediately before
+deployment refuses a moved tag. The pull-only mode uses the same Compose
+file/overlay selection as deployment and exits before any container decision or
+change. The validator receives `.env` by
 file path and has no network. In local mode and when listener TLS is enabled it
 also receives the same read-only `/certs` mount and trust settings as Compose;
 the production TLS check uses the same keep-id mapping. Its output is suppressed
@@ -22,9 +22,11 @@ because parser errors may quote configuration. The invocation follows the
 [standalone validation command](https://agentgateway.dev/docs/standalone/latest/documentation/setup/update/)
 and the image comes from the [v1.5.0 release](https://github.com/agentgateway/agentgateway/releases/tag/v1.5.0).
 `Verify agentgateway Runtime (Dev)` is a separate,
-read-only receipt for the reviewed checkout SHA, image pin, and the two sampling
-values read from the rendered file. It records configuration acceptance inputs;
-it does not claim callback-marker absence from stored logs or spans. That runtime
+read-only receipt for a clean reviewed checkout SHA, the running input label and
+rendered files matching, readiness, the actual running image ID matching the
+resolved v1.5.0 image ID, and the two sampling values read from the rendered file.
+It reports only metadata; hashes and rendered file contents are not displayed.
+It does not claim callback-marker absence from stored logs or spans. That runtime
 correlation gate remains incomplete until stdout and OTLP records and an exact
 callback span can be joined to each bounded synthetic request. Validator success
 is necessary config evidence, not proof of runtime callback behavior. OTLP access

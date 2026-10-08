@@ -266,11 +266,18 @@ PY
 import sys
 import yaml
 plays = yaml.safe_load(open(sys.argv[1], encoding='utf-8'))
-tasks = [task for play in plays for task in play.get('tasks', [])]
+def walk(tasks):
+    for task in tasks or []:
+        yield task
+        for key in ('block', 'rescue', 'always'):
+            yield from walk(task.get(key))
+tasks = [task for play in plays for task in walk(play.get('tasks'))]
 validation = next(task for task in tasks if task.get('name', '').startswith('Validate the rendered config'))
-deploy = next(task for play in plays if play.get('name') == 'Phase 2: Start agentgateway' for task in play['tasks'] if task.get('name') == 'Run deploy.sh (container lifecycle)')
-assert validation.get('no_log') is True
-assert deploy.get('no_log') is not True
+no_log_tasks = {task.get('name') for task in tasks if task.get('no_log') is True}
+assert no_log_tasks == {
+    'Require the rendered Compose image to match the reviewed pin',
+    validation.get('name'),
+}
 PY
   refute_grep -qE "secrets\['client_" "$PLAYBOOK"
   refute_grep -qF 'read -r k' "$PLAYBOOK"

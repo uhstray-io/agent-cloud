@@ -11,9 +11,10 @@
 # base with no shell or curl, so a compose healthcheck cannot run inside it.
 # Readiness is probed from the sibling db container over the compose network.
 #
-# Usage: ./deploy.sh [--no-pull|--pull-only]
+# Usage: ./deploy.sh [--no-pull|--pull-only|--verify-only]
 # Steps (idempotent): verify rendered files, pull (unless --no-pull), decide, up
-# (only when needed), wait db healthy, wait ready. --pull-only prepares images and exits.
+# (only when needed), wait db healthy, wait ready. --pull-only prepares images;
+# --verify-only checks that running inputs, image IDs and readiness match without mutation.
 #
 # Change-aware (gateway task 1.12, design decision 11): a recreate drops every in-flight
 # stream, and scheduled or imported runs call this deploy, so the gateway is recreated only
@@ -31,6 +32,7 @@ set -euo pipefail
 
 SKIP_PULL=false
 PULL_ONLY=false
+VERIFY_ONLY=false
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIB_DIR="$(dirname "$(dirname "$(dirname "$SCRIPT_DIR")")")/lib"
 cd "${SCRIPT_DIR}"
@@ -42,11 +44,16 @@ for arg in "$@"; do
   case "$arg" in
     --no-pull) SKIP_PULL=true ;;
     --pull-only) PULL_ONLY=true ;;
-    *) echo "Unknown option: $arg"; echo "Usage: ./deploy.sh [--no-pull|--pull-only]"; exit 1 ;;
+    --verify-only) VERIFY_ONLY=true ;;
+    *) echo "Unknown option: $arg"; echo "Usage: ./deploy.sh [--no-pull|--pull-only|--verify-only]"; exit 1 ;;
   esac
 done
-[ "$SKIP_PULL" = false ] || [ "$PULL_ONLY" = false ] || {
-  echo "--no-pull and --pull-only cannot be combined." >&2
+[ "$SKIP_PULL" = false ] || { [ "$PULL_ONLY" = false ] && [ "$VERIFY_ONLY" = false ]; } || {
+  echo "--no-pull cannot be combined with a verification/pull-only mode." >&2
+  exit 1
+}
+[ "$PULL_ONLY" = false ] || [ "$VERIFY_ONLY" = false ] || {
+  echo "--pull-only and --verify-only cannot be combined." >&2
   exit 1
 }
 
@@ -225,6 +232,15 @@ main() {
   detect_runtime
   info "Container engine: ${CONTAINER_ENGINE}"
   step_verify_rendered
+  if [ "$VERIFY_ONLY" = true ]; then
+    step_decide
+    if [ -n "$RECREATE_REASON" ]; then
+      echo "runtime-inputs-result: refused"
+      error "The running gateway does not match the current rendered inputs (${RECREATE_REASON})."
+    fi
+    echo "runtime-inputs-result: pass"
+    return 0
+  fi
   step_pull_image
   if [ "$PULL_ONLY" = true ]; then
     info "=== agentgateway image pull complete; no containers were changed ==="

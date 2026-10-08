@@ -101,6 +101,11 @@ pull_only() {
     LOCAL_MODE="" COMPOSE_OVERLAYS="${OVERLAYS:-}" "$D/deploy.sh" --pull-only
 }
 
+verify_only() {
+  run env STUB_STATE="$S" STUB_DIR="${STUB_DIR:-$D}" CONTAINER_ENGINE="$T/bin/engine" COMPOSE_CMD="$T/bin/compose" \
+    LOCAL_MODE="" COMPOSE_OVERLAYS="${OVERLAYS:-}" "$D/deploy.sh" --verify-only
+}
+
 recreates() { cat "$S/recreates"; }
 # The run's last output line (bash 3.2 has no negative array index).
 last() { printf '%s' "${lines[${#lines[@]}-1]}"; }
@@ -111,6 +116,7 @@ last() { printf '%s' "${lines[${#lines[@]}-1]}"; }
   [ "$(last)" = "image-pull-result: complete" ]
   assert_grep -q ' pull$' "$S/compose.log"
   refute_grep -q ' up ' "$S/compose.log"
+  refute_contains "$output" "Step 3: Comparing"
   [ "$(recreates)" -eq 0 ]
 }
 
@@ -120,6 +126,25 @@ last() { printf '%s' "${lines[${#lines[@]}-1]}"; }
   [ "$status" -ne 0 ]
   assert_contains "$output" "cannot be combined"
   [ ! -f "$S/compose.log" ]
+}
+
+@test "agw deploy: verify-only is read-only and refuses inputs that differ from the running label" {
+  deploy
+  [ "$status" -eq 0 ]
+  : > "$S/compose.log"
+  verify_only
+  [ "$status" -eq 0 ]
+  assert_contains "$output" "runtime-inputs-result: pass"
+  [ ! -s "$S/compose.log" ]
+  [ "$(recreates)" -eq 1 ]
+
+  printf '# changed after start\n' >> "$D/config.yaml"
+  verify_only
+  [ "$status" -ne 0 ]
+  assert_contains "$output" "runtime-inputs-result: refused"
+  assert_contains "$output" "inputs changed"
+  [ ! -s "$S/compose.log" ]
+  [ "$(recreates)" -eq 1 ]
 }
 
 @test "agw change-aware: first deploy creates the gateway and labels it with its inputs" {

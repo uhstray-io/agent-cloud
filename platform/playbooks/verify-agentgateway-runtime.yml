@@ -1,8 +1,7 @@
 ---
 # Read-only Dev receipt for agentgateway observability-estate task 5.7.
-# This first stage confirms the exact reviewed revision, deployed image, and sampling
-# value from rendered files. Request-level marker correlation remains a separate runtime
-# gate and is not inferred from these configuration facts.
+# Sampling metadata is reported only when the exact checkout, rendered inputs,
+# running input label, image ID, and readiness all match.
 - name: Refuse extra vars that set internal names
   ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
 
@@ -44,23 +43,75 @@
         fail_msg: "The gateway checkout is not the exact reviewed Dev revision supplied to this read-only receipt."
         quiet: true
 
-    - name: Read safe metadata from rendered config and environment files
+    - name: Count checkout changes without printing filenames
+      ansible.builtin.command:
+        argv: [bash, -o, pipefail, -c, "git status --porcelain --untracked-files=normal | wc -l"]
+        chdir: "{{ _repo }}"
+      register: _agw_checkout_status
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Require a clean reviewed gateway checkout
+      ansible.builtin.assert:
+        that:
+          - _agw_checkout_status.rc == 0
+          - (_agw_checkout_status.stdout | default('') | trim) == '0'
+        fail_msg: "The gateway checkout has uncommitted or untracked source changes; runtime metadata is not attributed to the reviewed revision."
+        quiet: true
+
+    - name: Read safe metadata from rendered files before runtime comparison
       ansible.builtin.command:
         argv: [python3, -c, "{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/inspect-agentgateway-runtime.py') }}"]
         stdin: "{{ {'env_path': _deploy_dir ~ '/.env', 'config_path': _deploy_dir ~ '/config.yaml', 'revision': _agw_revision.stdout | trim} | to_json }}"
-      register: _agw_metadata
+      register: _agw_metadata_before
       changed_when: false
       failed_when: false
       check_mode: false
       no_log: true
 
-    - name: Require a safe rendered-runtime metadata receipt
+    - name: Compare rendered inputs to the running deployment without mutation
+      ansible.builtin.command:
+        argv: [bash, deploy.sh, --verify-only]
+        chdir: "{{ _deploy_dir }}"
+      environment:
+        CONTAINER_ENGINE: "{{ _engine }}"
+        LOCAL_MODE: "{{ 'true' if (local_mode | default(false) | bool) else '' }}"
+        COMPOSE_CMD: "{{ local_compose_cmd | default('') }}"
+        COMPOSE_OVERLAYS: >-
+          {{ 'compose.tls.yml' if ((agw_listener_tls | default(false) | bool)
+             and not (local_mode | default(false) | bool)) else '' }}
+      register: _agw_runtime_match
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Require the current files and running container input label to match
       ansible.builtin.assert:
         that:
-          - _agw_metadata.rc == 0
-          - (_agw_metadata.stdout | default('')) is match('^\s*\{')
-          - (_agw_metadata.stdout | from_json).status == 'pass'
-        fail_msg: "Rendered agentgateway image or sampling metadata did not satisfy the v1.5.0 runtime receipt."
+          - _agw_runtime_match.rc == 0
+          - "'runtime-inputs-result: pass' in (_agw_runtime_match.stdout | default(''))"
+        fail_msg: "The running gateway does not match the current rendered inputs, pinned image, and readiness; no sampling receipt was produced."
+        quiet: true
+
+    - name: Read safe metadata again after runtime comparison
+      ansible.builtin.command:
+        argv: [python3, -c, "{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/inspect-agentgateway-runtime.py') }}"]
+        stdin: "{{ {'env_path': _deploy_dir ~ '/.env', 'config_path': _deploy_dir ~ '/config.yaml', 'revision': _agw_revision.stdout | trim} | to_json }}"
+      register: _agw_metadata_after
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Require rendered metadata to be stable across the runtime comparison
+      ansible.builtin.assert:
+        that:
+          - _agw_metadata_before.rc == 0
+          - _agw_metadata_after.rc == 0
+          - _agw_metadata_before.stdout == _agw_metadata_after.stdout
+          - (_agw_metadata_after.stdout | from_json).status == 'pass'
+        fail_msg: "Rendered image or sampling metadata changed during the runtime receipt."
         quiet: true
 
     - name: Read the running container image reference
@@ -71,14 +122,79 @@
       failed_when: false
       check_mode: false
 
-    - name: Require the running container to use the validated image
+    - name: Require the running container to use the validated image reference
       ansible.builtin.assert:
         that:
           - _agw_running_image.rc == 0
           - _agw_running_image.stdout | trim == 'cr.agentgateway.dev/agentgateway:v1.5.0'
-        fail_msg: "The running gateway image does not match the validated v1.5.0 pin."
+        fail_msg: "The running gateway image reference does not match the reviewed v1.5.0 pin."
+        quiet: true
+
+    - name: Read the current pinned image ID
+      ansible.builtin.command:
+        argv: ["{{ _engine }}", image, inspect, --format, "{{ '{{.Id}}' }}", cr.agentgateway.dev/agentgateway:v1.5.0]
+      register: _agw_pinned_image_id
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Read the running gateway image ID
+      ansible.builtin.command:
+        argv: ["{{ _engine }}", inspect, --format, "{{ '{{.Image}}' }}", agentgateway]
+      register: _agw_running_image_id
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Require the running gateway image ID to match the pinned local image
+      ansible.builtin.assert:
+        that:
+          - _agw_pinned_image_id.rc == 0
+          - _agw_running_image_id.rc == 0
+          - _agw_pinned_image_id.stdout | trim is match('^sha256:[0-9a-f]{64}$')
+          - _agw_running_image_id.stdout | trim == _agw_pinned_image_id.stdout | trim
+        fail_msg: "The running gateway image ID differs from the locally resolved v1.5.0 image."
+        quiet: true
+
+    - name: Recheck the deployed repository revision
+      ansible.builtin.command:
+        argv: [git, rev-parse, HEAD]
+        chdir: "{{ _repo }}"
+      register: _agw_final_revision
+      changed_when: false
+      check_mode: false
+
+    - name: Require the revision to remain unchanged during the receipt
+      ansible.builtin.assert:
+        that:
+          - _agw_final_revision.stdout | trim == _agw_revision.stdout | trim
+          - _agw_final_revision.stdout | trim == expected_repository_sha
+        fail_msg: "The gateway checkout revision changed during the runtime receipt."
+        quiet: true
+
+    - name: Recount checkout changes without printing filenames
+      ansible.builtin.command:
+        argv: [bash, -o, pipefail, -c, "git status --porcelain --untracked-files=normal | wc -l"]
+        chdir: "{{ _repo }}"
+      register: _agw_final_checkout_status
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Require the checkout to remain clean at receipt completion
+      ansible.builtin.assert:
+        that:
+          - _agw_final_checkout_status.rc == 0
+          - (_agw_final_checkout_status.stdout | default('') | trim) == '0'
+        fail_msg: "The gateway checkout changed during the runtime receipt."
         quiet: true
 
     - name: Report the reviewed Dev runtime metadata
       ansible.builtin.debug:
-        msg: "{{ _agw_metadata.stdout | from_json }}"
+        msg:
+          status: pass
+          image: "{{ (_agw_metadata_after.stdout | from_json).image }}"
+          random_sampling: "{{ (_agw_metadata_after.stdout | from_json).random_sampling }}"
+          client_sampling: "{{ (_agw_metadata_after.stdout | from_json).client_sampling }}"
+          repository_revision: "{{ (_agw_metadata_after.stdout | from_json).repository_revision }}"
+          running_image_id: "{{ _agw_running_image_id.stdout | trim }}"

@@ -439,6 +439,29 @@
     # then use this same local image without either step pulling a mutable tag again.
     # The pull-only mode verifies rendered files and uses the same Compose files/env as
     # the real deploy, but exits before deciding or changing any container.
+    - name: "Require the rendered Compose image to match the reviewed pin"
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ _monorepo_dir }}/platform/playbooks/files/check-agentgateway-rendered-image.py"
+          - "{{ _deploy_dir }}/.env"
+      register: _agw_rendered_image
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+      when: not ansible_check_mode
+
+    - name: "Refuse image pull when the rendered Compose image differs from the reviewed pin"
+      ansible.builtin.assert:
+        that:
+          - _agw_rendered_image.rc == 0
+          - (_agw_rendered_image.stdout | from_json).status == 'pass'
+          - (_agw_rendered_image.stdout | from_json).image == 'cr.agentgateway.dev/agentgateway:v1.5.0'
+        fail_msg: "The rendered Compose image does not match the reviewed agentgateway v1.5.0 pin."
+        quiet: true
+      when: not ansible_check_mode
+
     - name: "Pull the deployment images once before config validation"
       ansible.builtin.shell: |
         cd "{{ _deploy_dir }}"
@@ -452,6 +475,30 @@
              and not (local_mode | default(false) | bool)) else '' }}
       register: _agw_image_pull
       changed_when: false
+      when: not ansible_check_mode
+
+    - name: "Read the resolved local v1.5.0 image ID for validation"
+      ansible.builtin.command:
+        argv:
+          - "{{ container_engine | default('podman') }}"
+          - image
+          - inspect
+          - --format
+          - "{{ '{{.Id}}' }}"
+          - cr.agentgateway.dev/agentgateway:v1.5.0
+      register: _agw_validated_image_id
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      when: not ansible_check_mode
+
+    - name: "Require an exact local image ID before config validation"
+      ansible.builtin.assert:
+        that:
+          - _agw_validated_image_id.rc == 0
+          - _agw_validated_image_id.stdout | trim is match('^sha256:[0-9a-f]{64}$')
+        fail_msg: "The reviewed v1.5.0 image ID is unavailable after the pre-validation pull."
+        quiet: true
       when: not ansible_check_mode
 
     # Task 5.7: exercise the exact pulled local binary against the rendered config before
@@ -479,7 +526,7 @@
              + (['--security-opt', 'label=disable'] if (local_mode | default(false) | bool) else [])
              + (['--userns=keep-id:uid=65532,gid=65532'] if (_tls and not (local_mode | default(false) | bool)) else [])
              + (['--user', _key_owner.stdout] if (_tls and (local_mode | default(false) | bool)) else [])
-             + ['cr.agentgateway.dev/agentgateway:v1.5.0', '--validate-only', '-f', '/config.yaml'] }}
+             + [_agw_validated_image_id.stdout | trim, '--validate-only', '-f', '/config.yaml'] }}
       register: _agw_config_validation
       changed_when: false
       failed_when: false
@@ -504,6 +551,30 @@
     _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
 
   tasks:
+    - name: "Confirm the validated image ID is still selected for deployment"
+      ansible.builtin.command:
+        argv:
+          - "{{ container_engine | default('podman') }}"
+          - image
+          - inspect
+          - --format
+          - "{{ '{{.Id}}' }}"
+          - cr.agentgateway.dev/agentgateway:v1.5.0
+      register: _agw_deploy_image_id
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      when: not ansible_check_mode
+
+    - name: "Refuse deployment if the validated image tag moved"
+      ansible.builtin.assert:
+        that:
+          - _agw_deploy_image_id.rc == 0
+          - _agw_deploy_image_id.stdout | trim == _agw_validated_image_id.stdout | trim
+        fail_msg: "The local v1.5.0 tag changed after validation; no gateway container was recreated."
+        quiet: true
+      when: not ansible_check_mode
+
     - name: "Run deploy.sh (container lifecycle)"
       ansible.builtin.shell: |
         cd "{{ _deploy_dir }}"
