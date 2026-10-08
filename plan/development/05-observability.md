@@ -1461,5 +1461,8 @@ remains no data rather than a healthy zero.
 Sanitized read-only Dev-bound Semaphore receipts 3350 and 3352 verified both Service
 Overview Loki panels (`Service log lines per second` and `Recent service logs`) for
 `agentgateway` over 6h. Receipt 3351 checked `Services tracked` and `Step status by service`
-at 24h, but did not prove Grafana table rendering. The conformance table can combine statuses
-from overlapping collector runs; interpreting and validating that rendered table remains open.
+at 24h, but did not prove Grafana table rendering. The dashboard query has since been changed
+to select the newest numeric step and inventory states across overlapping collector runs with
+Loki `last_over_time`; bounded labels and historical failure records remain available for
+drilldown. Empty collector windows remain no data. Live query behavior and rendered matrix
+remain unverified.

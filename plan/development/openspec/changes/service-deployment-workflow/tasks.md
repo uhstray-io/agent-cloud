@@ -414,10 +414,12 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
         result, never a pass.
       - 2026-10-07: read-only Dev-bound Semaphore task 3351 returned data for the
         provisioned `Services tracked` and `Step status by service` queries over 24h.
-        This does not prove the Grafana table renders correctly. Collector runs can overlap
-        inside the dashboard's 16-minute lookback and contribute different statuses for
-        one service and step; the matrix transformation does not select the newest run.
-        Keep the rendered-table and latest-status checks open.
+        It did not prove the Grafana table renders correctly. Collector runs can overlap
+        inside the dashboard's 16-minute lookback; the read model now selects the newest
+        numeric state, while rendered-table validation remains open.
+      - [ ] Validate the latest-state conformance read model after a non-destructive Dev-bound
+        o11y update: confirm overlapping collector snapshots select the newest state and verify
+        the rendered Grafana matrix.
 - [ ] 7.6 **[skynet]** Role packs, `service_onboarding` graph built from the registry, proposer
       wiring with the three schemas, eval harness with thresholds in CI
 - [x] 7.7 `agent-practices.md` for agentgateway

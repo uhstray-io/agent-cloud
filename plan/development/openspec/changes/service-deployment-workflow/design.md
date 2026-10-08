@@ -290,6 +290,28 @@ Unchanged from plan 15 D4 and D5, with two refinements: the collector reads `CUS
 instead of a marker line, and it tolerates an absent NetBox by recording the write failure
 and continuing with Loki (spec scenario "NetBox outage does not block deployment").
 
+### Latest conformance state in Grafana (2026-10-07 correction)
+
+The collector emits a complete snapshot every run. Counting `status`-labelled lines over
+16 minutes can combine a scheduled and a manual run, so the deployment-status matrix and
+failure stat must select the newest record for each `(service, step)`, not count every
+status seen in the window. Keep the existing bounded `status` label and detailed log body
+for failure drilldown, but add a numeric `state_code` to each step record (`fail=0`,
+`pass=1`, `skip=2`). Use Loki's `last_over_time` on that unwrapped body field,
+`by (service, step)`, with an instant 16-minute lookback. Extract only `state_code` in the
+query so task IDs and errors never become query labels. Map the numeric value back to
+pass/fail/skip in Grafana. The failure stat counts only newest `state_code=0` results;
+the failure log panel continues to show historical records with context.
+
+Emit one `step=none` inventory marker per tracked service per collector run with a bounded
+`status` (`no_history`, `has_history`, `history_incomplete`) and numeric `inventory_code`
+(`0`, `1`, `2` respectively). The no-history and incomplete-history panels select the
+newest marker per service, so a former no-history marker cannot remain visible after a
+newer successful run. No new indexed label is introduced. With no collector record inside
+16 minutes, show no data rather than zero or healthy. The report and NetBox writes remain
+the same single-writer sources; this changes the dashboard read model only. Validate both
+overlapping snapshots and a rendered Grafana matrix before calling the correction complete.
+
 ## Risks / Trade-offs
 
 - [Check-mode retrofit of 110 playbooks introduces regressions in normal runs] → edits are
