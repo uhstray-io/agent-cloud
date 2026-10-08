@@ -277,6 +277,8 @@ no_log_tasks = {task.get('name') for task in tasks if task.get('no_log') is True
 assert no_log_tasks == {
     'Require the rendered Compose image to match the reviewed pin',
     validation.get('name'),
+    'Classify the validator result without exposing its output',
+    'Normalize validator diagnostics to a protected allowlisted category',
 }
 PY
   refute_grep -qE "secrets\['client_" "$PLAYBOOK"

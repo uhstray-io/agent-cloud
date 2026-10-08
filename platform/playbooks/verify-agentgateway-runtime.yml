@@ -28,6 +28,70 @@
     _engine: "{{ container_engine | default('podman') }}"
     _repo: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
     _deploy_dir: "{{ _repo }}/{{ monorepo_deploy_path }}"
+    _agw_checkout_status_argv: &agw_checkout_status_argv
+      - python3
+      - -c
+      - |
+        import json
+        import subprocess
+        import sys
+
+        try:
+            result = subprocess.run(
+                ["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+            if result.returncode != 0:
+                raise ValueError
+            fields = result.stdout.split(b"\0")
+            counts = {
+                "modified": 0,
+                "added": 0,
+                "deleted": 0,
+                "renamed": 0,
+                "copied": 0,
+                "conflicted": 0,
+                "type_changed": 0,
+                "untracked": 0,
+            }
+            path_count = 0
+            index = 0
+            while index < len(fields) - 1:
+                entry = fields[index]
+                index += 1
+                if len(entry) < 4 or entry[2:3] != b" ":
+                    raise ValueError
+                status = entry[:2].decode("ascii")
+                path_count += 1
+                if status == "??":
+                    category = "untracked"
+                elif "U" in status or status in ("AA", "DD"):
+                    category = "conflicted"
+                elif "R" in status:
+                    category = "renamed"
+                elif "C" in status:
+                    category = "copied"
+                elif "A" in status:
+                    category = "added"
+                elif "D" in status:
+                    category = "deleted"
+                elif "T" in status:
+                    category = "type_changed"
+                elif "M" in status:
+                    category = "modified"
+                else:
+                    raise ValueError
+                counts[category] += 1
+                if "R" in status or "C" in status:
+                    if index >= len(fields) - 1:
+                        raise ValueError
+                    index += 1
+            print(json.dumps({"status": "ok", "counts": counts, "path_count": path_count}, separators=(",", ":")))
+        except Exception:
+            print('{"status":"error","counts":{},"path_count":0,"reason":"git-status-failed"}')
+            sys.exit(1)
   tasks:
     - name: Read the exact deployed repository revision
       ansible.builtin.command:
@@ -43,21 +107,30 @@
         fail_msg: "The gateway checkout is not the exact reviewed Dev revision supplied to this read-only receipt."
         quiet: true
 
-    - name: Count checkout changes without printing filenames
+    - name: Read checkout change categories as bounded safe metadata
       ansible.builtin.command:
-        argv: [bash, -o, pipefail, -c, "git status --porcelain --untracked-files=normal | wc -l"]
+        argv: *agw_checkout_status_argv
         chdir: "{{ _repo }}"
       register: _agw_checkout_status
       changed_when: false
       failed_when: false
       check_mode: false
 
-    - name: Require a clean reviewed gateway checkout
+    - name: Require checkout status diagnostics to be available
       ansible.builtin.assert:
         that:
           - _agw_checkout_status.rc == 0
-          - (_agw_checkout_status.stdout | default('') | trim) == '0'
-        fail_msg: "The gateway checkout has uncommitted or untracked source changes; the read-only receipt requires a clean checkout."
+          - (_agw_checkout_status.stdout | default('{"status":"error","counts":{},"path_count":0,"reason":"diagnostic-unavailable"}', true) | from_json).status == 'ok'
+        fail_msg: "Could not safely read the gateway checkout status; no read-only receipt was produced."
+        quiet: true
+
+    - name: Require a clean reviewed gateway checkout
+      ansible.builtin.assert:
+        that:
+          - (_agw_checkout_status.stdout | default('{"status":"error","counts":{},"path_count":0,"reason":"diagnostic-unavailable"}', true) | from_json).path_count == 0
+        fail_msg: >-
+          The gateway checkout has uncommitted or untracked source changes; the read-only
+          receipt requires a clean checkout. Safe status={{ _agw_checkout_status.stdout | default('{"status":"error","counts":{},"path_count":0,"reason":"diagnostic-unavailable"}', true) | from_json | to_json }}.
         quiet: true
 
     - name: Read safe metadata from rendered files before runtime comparison
@@ -172,21 +245,29 @@
         fail_msg: "The gateway checkout revision changed during the runtime receipt."
         quiet: true
 
-    - name: Recount checkout changes without printing filenames
+    - name: Reread checkout change categories as safe metadata
       ansible.builtin.command:
-        argv: [bash, -o, pipefail, -c, "git status --porcelain --untracked-files=normal | wc -l"]
+        argv: *agw_checkout_status_argv
         chdir: "{{ _repo }}"
       register: _agw_final_checkout_status
       changed_when: false
       failed_when: false
       check_mode: false
 
-    - name: Require the checkout to remain clean at receipt completion
+    - name: Require checkout status diagnostics to remain available
       ansible.builtin.assert:
         that:
           - _agw_final_checkout_status.rc == 0
-          - (_agw_final_checkout_status.stdout | default('') | trim) == '0'
-        fail_msg: "The gateway checkout changed during the runtime receipt."
+          - (_agw_final_checkout_status.stdout | default('{"status":"error","counts":{},"path_count":0,"reason":"diagnostic-unavailable"}', true) | from_json).status == 'ok'
+        fail_msg: "Could not safely reread the gateway checkout status; no read-only receipt was produced."
+        quiet: true
+
+    - name: Require the checkout to remain clean at receipt completion
+      ansible.builtin.assert:
+        that:
+          - (_agw_final_checkout_status.stdout | default('{"status":"error","counts":{},"path_count":0,"reason":"diagnostic-unavailable"}', true) | from_json).path_count == 0
+        fail_msg: >-
+          The checkout changed during the runtime receipt. Safe status={{ _agw_final_checkout_status.stdout | default('{"status":"error","counts":{},"path_count":0,"reason":"diagnostic-unavailable"}', true) | from_json | to_json }}.
         quiet: true
 
     - name: Report the reviewed Dev runtime metadata

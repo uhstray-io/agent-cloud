@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import importlib.util
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -41,6 +44,22 @@ def _load_helper():
     assert spec and spec.loader
     spec.loader.exec_module(module)
     return module
+
+
+def _isolated_git_environment():
+    env = os.environ.copy()
+    for name in (
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_COMMON_DIR",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_PREFIX",
+    ):
+        env.pop(name, None)
+    env["GIT_CONFIG_GLOBAL"] = os.devnull
+    env["GIT_CONFIG_NOSYSTEM"] = "1"
+    return env
 
 
 class _ComposeLoader(yaml.SafeLoader):
@@ -80,6 +99,26 @@ def test_config_validation_precedes_container_lifecycle_and_suppresses_diagnosti
         "Refuse container recreation when the pinned image rejects rendered config"
     )
     assert validate_index < refuse_index
+    validation_refusal = tasks[refuse_index]
+    refusal_message = validation_refusal["ansible.builtin.assert"]["fail_msg"]
+    classifier_index = task_names.index("Classify the validator result without exposing its output")
+    assert validate_index < classifier_index < refuse_index
+    classifier = tasks[classifier_index]
+    assert classifier["no_log"] is True
+    assert classifier["failed_when"] is False
+    assert "_agw_validation_safe_category" in refusal_message
+    for protected_result in ("_agw_validation_diagnostic", "_agw_config_validation"):
+        assert protected_result not in refusal_message
+    assert "argv" not in refusal_message
+    assert refusal_message.count("default('") == 1
+    assert refusal_message.count("', true)") == 1
+    assert validation_refusal["ansible.builtin.assert"]["that"] == ["_agw_config_validation.rc == 0"]
+    normalize = next(
+        task for task in tasks
+        if task.get("name") == "Normalize validator diagnostics to a protected allowlisted category"
+    )
+    assert normalize["no_log"] is True
+    assert normalize["ansible.builtin.set_fact"]["_agw_validation_safe_category"]
     argv = str(validate["ansible.builtin.command"]["argv"])
     assert "--validate-only" in argv and "/config.yaml" in argv
     assert "--volume" in argv and "/certs:/certs:ro" in argv
@@ -149,6 +188,371 @@ def test_config_validation_precedes_container_lifecycle_and_suppresses_diagnosti
         assert ("--userns=keep-id:uid=65532,gid=65532" in command) == (tls and not local)
         assert ("1000:1000" in command) == (tls and local)
         assert ("SSL_CERT_FILE=/certs/step-ca-bundle.crt" in command) == local
+
+
+def test_validator_failure_diagnostics_use_only_fixed_exit_code_categories():
+    plays = yaml.safe_load(PLAYBOOK.read_text())
+    phase_one = next(play for play in plays if play.get("name", "").startswith("Phase 1:"))
+    classifier = next(
+        task
+        for task in phase_one["tasks"]
+        if task.get("name") == "Classify the validator result without exposing its output"
+    )
+    program = classifier["ansible.builtin.command"]["argv"][2]
+    cases = {
+        0: ("accepted", "usage: a secret-shaped value must not affect an accepted result"),
+        125: ("container-runtime-error", "permission denied secret-path"),
+        126: ("validator-not-executable", ""),
+        127: ("validator-command-not-found", ""),
+        1: ("config-schema-error", "unknown field private-config-secret"),
+        2: ("file-mount-permission-error", "permission denied /private/secret"),
+        3: ("cli-argument-error", "unknown flag --secret-value"),
+        4: ("network-dependency-error", "connection refused https://secret.invalid"),
+        5: ("validator-nonzero-unclassified", "opaque-private-token-value"),
+        -1: ("validator-result-unavailable", ""),
+    }
+    for rc, (category, diagnostic) in cases.items():
+        encoded_input = base64.b64encode(
+            json.dumps({"rc": rc, "stdout": diagnostic, "stderr": ""}).encode()
+        ).decode()
+        result = subprocess.run(
+            [sys.executable, "-c", program],
+            input=encoded_input,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0
+        assert result.stdout.strip() == f"{category}|{rc}"
+        if diagnostic:
+            assert diagnostic not in result.stdout
+
+    invalid_input = subprocess.run(
+        [sys.executable, "-c", program], input="not-base64-json", capture_output=True, text=True, check=False
+    )
+    assert invalid_input.returncode == 0
+    assert invalid_input.stdout.strip() == "diagnostic-unavailable|-1"
+
+
+def test_validator_diagnostic_b64_stdin_round_trips_through_ansible_templar(tmp_path):
+    ansible_playbook = shutil.which("ansible-playbook")
+    if not ansible_playbook:
+        pytest.skip("ansible-playbook is unavailable")
+    ansible_python = Path(ansible_playbook).read_text().splitlines()[0].removeprefix("#!")
+    harness = r'''
+import json
+import subprocess
+import sys
+from ansible._internal._datatag._tags import TrustedAsTemplate
+from ansible.module_utils._internal._datatag import AnsibleTagHelper
+from ansible.parsing.dataloader import DataLoader
+from ansible.template import Templar
+
+playbook_path = sys.argv[1]
+payload = json.loads(sys.stdin.read())
+loader = DataLoader()
+plays = loader.load_from_file(playbook_path)
+tasks = next(
+    play for play in plays if play.get('name', '').startswith('Phase 1:')
+)['tasks']
+classifier = next(
+    task for task in tasks
+    if task.get('name') == 'Classify the validator result without exposing its output'
+)
+normalizer = next(
+    task for task in tasks
+    if task.get('name') == 'Normalize validator diagnostics to a protected allowlisted category'
+)
+variables = {'_agw_config_validation': payload}
+templar = Templar(loader=loader, variables=variables)
+stdin_template = classifier['ansible.builtin.command']['stdin']
+stdin_template = AnsibleTagHelper.tag(stdin_template, TrustedAsTemplate())
+encoded_payload = templar.template(stdin_template)
+classified = subprocess.run(
+    classifier['ansible.builtin.command']['argv'], input=encoded_payload.encode(),
+    capture_output=True, check=False,
+)
+if classified.returncode != 0:
+    raise SystemExit(2)
+variables['_agw_validation_diagnostic'] = {'stdout': classified.stdout.decode()}
+normalizer_template = normalizer['ansible.builtin.set_fact']['_agw_validation_safe_category']
+normalizer_template = AnsibleTagHelper.tag(normalizer_template, TrustedAsTemplate())
+category = templar.template(normalizer_template).strip()
+if category != 'accepted':
+    raise SystemExit(3)
+print(category)
+    '''
+    secret_shaped_output = "usage: private-token-ABC123.example.internal"
+    ansible_temp_root = "/private/tmp" if Path("/private/tmp").is_dir() else tempfile.gettempdir()
+    with tempfile.TemporaryDirectory(prefix="agw-ansible-templar-", dir=ansible_temp_root) as ansible_tmp:
+        env = os.environ.copy() | {
+            "ANSIBLE_LOCAL_TEMP": ansible_tmp,
+            "ANSIBLE_REMOTE_TEMP": ansible_tmp,
+        }
+        result = subprocess.run(
+            [ansible_python, "-c", harness, str(PLAYBOOK)],
+            cwd=tmp_path,
+            env=env,
+            input=json.dumps({"rc": 0, "stdout": secret_shaped_output, "stderr": ""}),
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    assert result.returncode == 0, "Ansible templar failed to classify validator metadata"
+    assert result.stdout.strip() == "accepted"
+    assert secret_shaped_output not in result.stdout + result.stderr
+    assert "private-token-ABC123" not in result.stdout + result.stderr
+
+
+def test_checkout_diagnostics_report_only_fixed_status_categories_and_counts(tmp_path):
+    plays = yaml.safe_load(VERIFY_PLAYBOOK.read_text())
+    gateway = next(play for play in plays if play.get("hosts") == "agentgateway_svc")
+    status_tasks = [
+        task
+        for task in gateway["tasks"]
+        if task.get("name") in {
+            "Read checkout change categories as bounded safe metadata",
+            "Reread checkout change categories as safe metadata",
+        }
+    ]
+    assert len(status_tasks) == 2
+    shared_argv = gateway["vars"]["_agw_checkout_status_argv"]
+    assert all(task["ansible.builtin.command"]["argv"] == shared_argv for task in status_tasks)
+    assert "import subprocess" in VERIFY_PLAYBOOK.read_text()
+    assert VERIFY_PLAYBOOK.read_text().count("import subprocess") == 1
+    checkout_assertions = [
+        task
+        for task in gateway["tasks"]
+        if task.get("name") in {
+            "Require a clean reviewed gateway checkout",
+            "Require the checkout to remain clean at receipt completion",
+            "Require checkout status diagnostics to be available",
+            "Require checkout status diagnostics to remain available",
+        }
+    ]
+    assert len(checkout_assertions) == 4
+    default_filter = Environment().from_string("{{ value | default(FALLBACK, true) }}")
+    for task in checkout_assertions:
+        assertion = task["ansible.builtin.assert"]
+        expressions = assertion["that"] + [assertion["fail_msg"]]
+        for expression in expressions:
+            if "from_json" not in expression:
+                continue
+            fallbacks = re.findall(r"default\('([^']+)', true\)", expression)
+            assert len(fallbacks) == expression.count("from_json")
+            for fallback in fallbacks:
+                parsed = json.loads(fallback)
+                assert parsed["status"] == "error"
+                assert default_filter.render(value="", FALLBACK=fallback) == fallback
+    programs = [task["ansible.builtin.command"]["argv"][2] for task in status_tasks]
+    assert programs[0] == programs[1]
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    git_env = _isolated_git_environment()
+
+    def git(*args, check=True):
+        return subprocess.run(
+            ["git", *args], cwd=repo, env=git_env, capture_output=True, check=check
+        )
+
+    git("init", "-q")
+    git("config", "user.email", "test@example.invalid")
+    git("config", "user.name", "Test")
+    git("config", "commit.gpgsign", "false")
+    odd_tracked = repo / "docs" / "line\nbreak.md"
+    ordinary_tracked = repo / "docs" / "ordinary-file.md"
+    odd_tracked.parent.mkdir()
+    odd_tracked.write_text("committed-content\n")
+    ordinary_tracked.write_text("committed-content\n")
+    git("add", "--", "docs")
+    git("commit", "-qm", "baseline", check=True)
+    odd_tracked.write_text("changed-content-must-not-appear\n")
+    ordinary_tracked.write_text("changed-content-must-not-appear\n")
+    untracked = repo / "new\nfile.txt"
+    untracked.write_text("untracked-content-must-not-appear\n")
+    (repo / "unsafe?secret.txt").write_text("unsafe-name-content-must-not-appear\n")
+    (repo / ("x" * 201 + ".txt")).write_text("long-name-content-must-not-appear\n")
+    secret_like_name = "private-token-ABC123.example.internal"
+    (repo / secret_like_name).write_text("secret-like-name-content-must-not-appear\n")
+
+    for program in programs:
+        result = subprocess.run(
+            [sys.executable, "-c", program], cwd=repo, env=git_env,
+            capture_output=True, text=True, check=False
+        )
+        assert result.returncode == 0
+        assert result.stderr == ""
+        assert result.stdout.count("\n") == 1
+        report = json.loads(result.stdout)
+        assert report == {
+            "status": "ok",
+            "counts": {
+                "modified": 2,
+                "added": 0,
+                "deleted": 0,
+                "renamed": 0,
+                "copied": 0,
+                "conflicted": 0,
+                "type_changed": 0,
+                "untracked": 4,
+            },
+            "path_count": 6,
+        }
+        assert "paths" not in report
+        assert "committed-content" not in result.stdout
+        assert "changed-content-must-not-appear" not in result.stdout
+        assert "untracked-content-must-not-appear" not in result.stdout
+        assert "line\\nbreak.md" not in result.stdout
+        assert "unsafe?secret.txt" not in result.stdout
+        assert "x" * 201 not in result.stdout
+        assert secret_like_name not in result.stdout
+        assert "secret-like-name-content-must-not-appear" not in result.stdout
+
+    bulk = repo / "bulk"
+    bulk.mkdir()
+    for index in range(55):
+        (bulk / f"{index:02}.txt").write_text("bulk-content-must-not-appear\n")
+    bounded = subprocess.run(
+        [sys.executable, "-c", programs[0]], cwd=repo, env=git_env, capture_output=True, text=True, check=False
+    )
+    assert bounded.returncode == 0
+    bounded_report = json.loads(bounded.stdout)
+    assert bounded_report["counts"]["untracked"] == 59
+    assert bounded_report["path_count"] == 61
+    assert "paths" not in bounded_report
+    assert "bulk-content-must-not-appear" not in bounded.stdout
+
+
+def test_checkout_diagnostics_fail_closed_with_static_error_metadata(tmp_path):
+    plays = yaml.safe_load(VERIFY_PLAYBOOK.read_text())
+    gateway = next(play for play in plays if play.get("hosts") == "agentgateway_svc")
+    status_task = next(
+        task
+        for task in gateway["tasks"]
+        if task.get("name") == "Read checkout change categories as bounded safe metadata"
+    )
+    program = status_task["ansible.builtin.command"]["argv"][2]
+    result = subprocess.run(
+        [sys.executable, "-c", program], cwd=tmp_path, env=_isolated_git_environment(),
+        capture_output=True, text=True, check=False
+    )
+    assert result.returncode == 1
+    assert result.stderr == ""
+    assert json.loads(result.stdout) == {
+        "status": "error",
+        "counts": {},
+        "path_count": 0,
+        "reason": "git-status-failed",
+    }
+    assert str(tmp_path) not in result.stdout
+
+
+def test_checkout_diagnostics_count_porcelain_renames_copies_and_other_statuses(tmp_path):
+    plays = yaml.safe_load(VERIFY_PLAYBOOK.read_text())
+    gateway = next(play for play in plays if play.get("hosts") == "agentgateway_svc")
+    program = gateway["vars"]["_agw_checkout_status_argv"][2]
+    repo = tmp_path / "status-cases"
+    repo.mkdir()
+    git_env = _isolated_git_environment()
+
+    def git(*args, check=True):
+        return subprocess.run(
+            ["git", *args], cwd=repo, env=git_env, capture_output=True, check=check
+        )
+
+    git("init", "-q")
+    git("config", "user.email", "test@example.invalid")
+    git("config", "user.name", "Test")
+    git("config", "commit.gpgsign", "false")
+    git("config", "status.renames", "copies")
+    (repo / "rename-source.txt").write_text("rename payload\n" * 8)
+    (repo / "copy-source.txt").write_text("copy payload\n" * 8)
+    (repo / "delete-me.txt").write_text("delete payload\n")
+    (repo / "type-change.txt").write_text("type payload\n")
+    (repo / "conflict.txt").write_text("base conflict payload\n")
+    git("add", "-A")
+    git("commit", "-qm", "baseline", check=True)
+
+    git("mv", "rename-source.txt", "renamed-target.txt")
+    (repo / "copy-target.txt").write_text((repo / "copy-source.txt").read_text())
+    git("add", "--", "copy-target.txt")
+    (repo / "delete-me.txt").unlink()
+    git("add", "-u")
+    (repo / "type-change.txt").unlink()
+    (repo / "type-change.txt").symlink_to("copy-source.txt")
+    git("add", "-A")
+
+    base = git("branch", "--show-current").stdout.decode().strip()
+    git("checkout", "-qb", "conflict-side")
+    (repo / "conflict.txt").write_text("side conflict payload\n")
+    git("commit", "-qam", "side", check=True)
+    git("checkout", "-q", base)
+    (repo / "conflict.txt").write_text("main conflict payload\n")
+    git("commit", "-qam", "main", check=True)
+    merge = git("merge", "conflict-side", check=False)
+    assert merge.returncode != 0
+
+    result = subprocess.run(
+        [sys.executable, "-c", program], cwd=repo, env=git_env,
+        capture_output=True, text=True, check=False
+    )
+    assert result.returncode == 0
+    report = json.loads(result.stdout)
+    assert report == {
+        "status": "ok",
+        "counts": {
+            "modified": 0,
+            "added": 1,
+            "deleted": 1,
+            "renamed": 1,
+            "copied": 0,
+            "conflicted": 1,
+            "type_changed": 1,
+            "untracked": 0,
+        },
+        "path_count": 5,
+    }
+    assert all(
+        name not in result.stdout
+        for name in ("rename-source.txt", "renamed-target.txt", "copy-source.txt", "copy-target.txt")
+    )
+
+
+def test_checkout_diagnostics_skip_both_paths_in_porcelain_rename_and_copy_records(tmp_path):
+    plays = yaml.safe_load(VERIFY_PLAYBOOK.read_text())
+    gateway = next(play for play in plays if play.get("hosts") == "agentgateway_svc")
+    program = gateway["vars"]["_agw_checkout_status_argv"][2]
+    porcelain = b"R  safe-new-name\0safe-old-name\0C  safe-copy-name\0safe-copy-source\0"
+    wrapped = (
+        "import subprocess; from types import SimpleNamespace; "
+        "subprocess.run = lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="
+        + repr(porcelain)
+        + ", stderr=b''); exec(" + repr(program) + ")"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", wrapped], cwd=tmp_path,
+        env=_isolated_git_environment(), capture_output=True, text=True, check=False,
+    )
+    assert result.returncode == 0
+    assert json.loads(result.stdout) == {
+        "status": "ok",
+        "counts": {
+            "modified": 0,
+            "added": 0,
+            "deleted": 0,
+            "renamed": 1,
+            "copied": 1,
+            "conflicted": 0,
+            "type_changed": 0,
+            "untracked": 0,
+        },
+        "path_count": 2,
+    }
+    assert all(name not in result.stdout for name in (
+        "safe-new-name", "safe-old-name", "safe-copy-name", "safe-copy-source",
+    ))
 
 
 def test_rendered_config_inspector_emits_only_pinned_image_sampling_revision_and_digest(tmp_path, capsys):
