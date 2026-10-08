@@ -2171,7 +2171,7 @@ never by the way a merge happens to be run. Do not rely on a merge command's def
 handling.
 
 **Enforced by.** `.github/rulesets/protect-dev.json` (`deletion` and `non_fast_forward`
-rules on `refs/heads/dev`, the same admin break-glass bypass as `protect-main`) and `platform/tests/test_ruleset_protect_dev.py`
+rules on `refs/heads/dev`, no bypass actor) and `platform/tests/test_ruleset_protect_dev.py`
 (mutation-checked: removing the `deletion` rule fails it). The ruleset takes effect only once
 an admin runs `.github/rulesets/apply.sh`; until then this is `Convention`, and
 `ruleset-drift.yml` reports the missing live ruleset as drift.
