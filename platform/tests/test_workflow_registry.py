@@ -109,10 +109,25 @@ def test_conformance_collection_and_dashboard_absence_are_explicit():
     assert stats["Recent failed step reports"]["fieldConfig"]["defaults"]["noValue"] == "No recent data"
     assert stats["Services tracked"]["fieldConfig"]["defaults"]["noValue"] == "No recent data"
     failure_query = stats["Recent failed step reports"]["targets"][0]["expr"]
-    assert 'status="fail"' in failure_query
-    assert 'or (sum(count_over_time({job="agent-cloud-conformance"} [16m])) * 0)' in failure_query
-    assert "No conformance records in the window" in stats["Recent failed step reports"]["description"]
-    assert "latest recorded result" not in stats["Recent failed step reports"]["description"]
+    assert "last_over_time" in failure_query
+    assert '| json state_code | unwrap state_code' in failure_query
+    assert "by (service, step) == bool 0" in failure_query
+    assert "count_over_time" not in failure_query, "old records must not imply a healthy zero"
+    assert "| json inventory_code | unwrap inventory_code" in failure_query
+    assert "no new-format snapshot" in stats["Recent failed step reports"]["description"]
+    assert "newest state" in stats["Recent failed step reports"]["description"]
+
+    historical_failures = next(panel for panel in conformance["panels"] if panel["title"] == "Failures with context")
+    assert 'status="fail"' in historical_failures["targets"][0]["expr"]
+    marker_panels = {panel["title"]: panel for panel in conformance["panels"]
+                     if panel["title"] in {"Services not yet run", "History incomplete"}}
+    no_history = marker_panels["Services not yet run"]["targets"][0]["expr"]
+    incomplete = marker_panels["History incomplete"]["targets"][0]["expr"]
+    for query, code in ((no_history, 0), (incomplete, 2)):
+        assert "last_over_time" in query
+        assert '| json inventory_code | unwrap inventory_code' in query
+        assert f"by (service) == {code}" in query
+        assert " or " not in query, "empty collector data must stay no data"
 
     overview = json.loads(SERVICE_OVERVIEW_DASHBOARD.read_text())
     health = next(panel for panel in overview["panels"] if panel["title"] == "Scrape target health")

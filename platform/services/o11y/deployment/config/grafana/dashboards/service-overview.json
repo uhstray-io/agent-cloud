@@ -7,7 +7,7 @@
       "title": "Scrape target health",
       "type": "stat",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 0 },
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 0 },
       "description": "Minimum up value across each service's scrape targets. 0 means at least one target is down; 1 means all reported targets are up. No metrics means no scrape data.",
       "fieldConfig": { "defaults": { "noValue": "No metrics", "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "green", "value": 1 } ] } }, "overrides": [] },
       "targets": [ { "refId": "A", "expr": "min by (service) (up{service=~\"$service\"})", "instant": true } ]
@@ -16,7 +16,7 @@
       "title": "Service log lines per second",
       "type": "timeseries",
       "datasource": { "type": "loki", "uid": "loki" },
-      "gridPos": { "h": 6, "w": 16, "x": 8, "y": 0 },
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 0 },
       "description": "No data means Loki has no indexed logs for this service in the selected time range; it does not indicate service health.",
       "fieldConfig": { "defaults": {}, "overrides": [] },
       "targets": [ { "refId": "A", "expr": "sum by (service) (rate({service=~\"$service\"}[5m]))", "legendFormat": "{{service}}" } ]
@@ -25,7 +25,7 @@
       "title": "Unhealthy scrape targets",
       "type": "table",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 6, "w": 24, "x": 0, "y": 6 },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 6 },
       "description": "Currently failed targets with their service, job, and instance labels. No rows means no reported failures; the health stat shows No metrics when no targets report.",
       "fieldConfig": { "defaults": {}, "overrides": [] },
       "targets": [ { "refId": "A", "expr": "up{service=~\"$service\"} == 0", "instant": true, "format": "table" } ],
@@ -35,10 +35,28 @@
       "title": "Recent service logs",
       "type": "logs",
       "datasource": { "type": "loki", "uid": "loki" },
-      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 12 },
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 14 },
       "description": "No data means Loki has no indexed logs for this service in the selected time range; it does not indicate service health.",
       "options": { "showLabels": true, "showTime": true, "wrapLogMessage": true },
       "targets": [ { "refId": "A", "expr": "{service=~\"$service\"}" } ]
+    },
+    {
+      "title": "Current scrape targets",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 6, "w": 6, "x": 6, "y": 0 },
+      "description": "Count of currently reported scrape targets for the selected service, including targets with up=0. This measures target visibility, not service health. No targets means no current scrape telemetry, not a healthy zero.",
+      "fieldConfig": { "defaults": { "noValue": "No targets", "thresholds": { "mode": "absolute", "steps": [ { "color": "blue", "value": null } ] } }, "overrides": [] },
+      "targets": [ { "refId": "A", "expr": "count by (service) (up{service=~\"$service\"})", "instant": true } ]
+    },
+    {
+      "title": "Scrape availability over time",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 6 },
+      "description": "At each point in the selected time range, the percentage of reported scrape targets for the service that are up. Failed scrapes count as 0%; missing telemetry produces gaps or no data, not a healthy zero.",
+      "fieldConfig": { "defaults": { "min": 0, "max": 100, "unit": "percent" }, "overrides": [] },
+      "targets": [ { "refId": "A", "expr": "avg by (service) (up{service=~\"$service\"}) * 100", "legendFormat": "{{service}}" } ]
     }
   ],
   "schemaVersion": 39,

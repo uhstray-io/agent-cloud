@@ -44,7 +44,7 @@
 ## 7. Provisioned dashboard query verification
 
 - [x] 7.1 Extend the read-only receiver-side dashboard verifier to evaluate explicitly named Loki stream and metric LogQL targets from the exact provisioned dashboard JSON, with bounded requests and metadata-only reports; whole-dashboard runs skip Loki panels.
-- [ ] 7.2 Run the Dev-bound dashboard verifier against `service-overview`, selecting `Service log lines per second` and `Recent service logs` with an explicit `service` variable; confirm both Loki targets have data at the returned receiver revision and review the output for counts/status only. Existing task 3343 covers only the Prometheus scrape-health panel, so these Loki checks still need a live receipt.
+- [x] 7.2 Run the Dev-bound dashboard verifier against `service-overview`, selecting `Service log lines per second` and `Recent service logs` with an explicit `service` variable; confirm both Loki targets have data at the returned receiver revision and review the output for counts/status only. Sanitized read-only Dev-bound Semaphore receipts 3350 and 3352 verified both Loki panels for `agentgateway` over 6h. Receipt 3351 checked `Services tracked` and `Step status by service` at 24h but did not prove Grafana table rendering; the conformance table can combine statuses from overlapping collector runs, so that rendering/aggregation behavior remains open.
 
 The dashboard and sampled gateway path are deployed. Requests, request latency,
 and token usage have named production metric receipts; the time-to-first-token
