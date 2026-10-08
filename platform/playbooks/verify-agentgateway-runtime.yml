@@ -33,26 +33,44 @@
       - -c
       - |
         import json
+        import os
+        import selectors
         import subprocess
         import sys
+        import time
 
+        process = None
         try:
-            result = subprocess.run(
+            process = subprocess.Popen(
                 ["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
-                check=False,
-                timeout=10,
             )
-            if result.returncode != 0:
+            deadline = time.monotonic() + 10
+            output_chunks = []
+            output_size = 0
+            with selectors.DefaultSelector() as selector:
+                selector.register(process.stdout, selectors.EVENT_READ)
+                while True:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0 or not selector.select(remaining):
+                        raise ValueError
+                    chunk = os.read(
+                        process.stdout.fileno(), min(65536, 1048577 - output_size)
+                    )
+                    if not chunk:
+                        break
+                    output_size += len(chunk)
+                    if output_size > 1048576:
+                        raise ValueError
+                    output_chunks.append(chunk)
+            if process.wait(timeout=max(deadline - time.monotonic(), 0.001)) != 0:
                 raise ValueError
-            if len(result.stdout) > 1048576:
-                raise ValueError
-            fields = result.stdout.split(b"\0")
+            fields = b"".join(output_chunks).split(b"\0")
             untracked_categories = {
                 "gateway_deployment": 0,
                 "other_service_deployment": 0,
-                "other_service_tree": 0,
+                "service_tree_other": 0,
                 "platform_other": 0,
                 "repository_other": 0,
             }
@@ -70,6 +88,8 @@
             }
             path_count = 0
             index = 0
+            gateway_deploy_prefix = b"platform/services/agentgateway/deployment/"
+            services_prefix = b"platform/services/"
             while index < len(fields) - 1:
                 entry = fields[index]
                 index += 1
@@ -82,12 +102,17 @@
                 if status == "??":
                     category = "untracked"
                     path = entry[3:]
+                    path_parts = path.split(b"/")
                     if path.startswith(gateway_deploy_prefix):
                         untracked_category = "gateway_deployment"
-                    elif path.startswith(services_prefix) and b"/deployment/" in path:
+                    elif (
+                        path.startswith(services_prefix)
+                        and len(path_parts) >= 5
+                        and path_parts[3] == b"deployment"
+                    ):
                         untracked_category = "other_service_deployment"
                     elif path.startswith(services_prefix):
-                        untracked_category = "other_service_tree"
+                        untracked_category = "service_tree_other"
                     elif path.startswith(b"platform/"):
                         untracked_category = "platform_other"
                     else:
@@ -121,8 +146,20 @@
                 "path_count": path_count,
             }, separators=(",", ":")))
         except Exception:
+            if process is not None:
+                try:
+                    process.kill()
+                except OSError:
+                    pass
+                try:
+                    process.wait()
+                except (OSError, subprocess.SubprocessError):
+                    pass
             print('{"status":"error","counts":{},"untracked_categories":{},"path_count":0,"reason":"git-status-failed"}')
             sys.exit(1)
+        finally:
+            if process is not None and process.stdout is not None:
+                process.stdout.close()
   tasks:
     - name: Read the exact deployed repository revision
       ansible.builtin.command:

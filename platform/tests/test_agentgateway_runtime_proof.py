@@ -325,6 +325,9 @@ def test_checkout_diagnostics_report_only_fixed_status_categories_and_counts(tmp
     assert all(task["ansible.builtin.command"]["argv"] == shared_argv for task in status_tasks)
     assert "import subprocess" in VERIFY_PLAYBOOK.read_text()
     assert VERIFY_PLAYBOOK.read_text().count("import subprocess") == 1
+    assert "subprocess.Popen(" in shared_argv[2]
+    assert "subprocess.run(" not in shared_argv[2]
+    assert "time.monotonic() + 10" in shared_argv[2]
     checkout_assertions = [
         task
         for task in gateway["tasks"]
@@ -406,7 +409,7 @@ def test_checkout_diagnostics_report_only_fixed_status_categories_and_counts(tmp
             "untracked_categories": {
                 "gateway_deployment": 0,
                 "other_service_deployment": 0,
-                "other_service_tree": 0,
+                "service_tree_other": 0,
                 "platform_other": 0,
                 "repository_other": 4,
             },
@@ -511,6 +514,10 @@ def test_checkout_diagnostics_classify_untracked_locations_without_exposing_path
             "UNIQUE-OTHER-DEPLOYMENT-CONTENT"
         ),
         "platform/services/o11y/context/private-hostname-ABC123.txt": "UNIQUE-OTHER-SERVICE-CONTENT",
+        "platform/services/agentgateway/debug/private-hostname-ABC123.txt": "UNIQUE-GATEWAY-TREE-CONTENT",
+        "platform/services/o11y/legacy/adapter/deployment/private-token-ABC123.txt": (
+            "UNIQUE-NESTED-DEPLOYMENT-CONTENT"
+        ),
         "platform/inventory/private-hostname-ABC123.txt": "UNIQUE-PLATFORM-CONTENT",
         "local/private-token-ABC123.example.internal.txt": "UNIQUE-REPOSITORY-CONTENT",
     }
@@ -530,7 +537,7 @@ def test_checkout_diagnostics_classify_untracked_locations_without_exposing_path
     assert report["untracked_categories"] == {
         "gateway_deployment": 1,
         "other_service_deployment": 1,
-        "other_service_tree": 1,
+        "service_tree_other": 3,
         "platform_other": 1,
         "repository_other": 1,
     }
@@ -539,25 +546,66 @@ def test_checkout_diagnostics_classify_untracked_locations_without_exposing_path
         assert private_value not in result.stdout
 
 
-def test_checkout_diagnostics_refuse_oversized_status_output_with_static_metadata(tmp_path):
+def test_checkout_diagnostics_bound_git_output_and_runtime_with_static_metadata(tmp_path):
     plays = yaml.safe_load(VERIFY_PLAYBOOK.read_text())
     gateway = next(play for play in plays if play.get("hosts") == "agentgateway_svc")
     program = gateway["vars"]["_agw_checkout_status_argv"][2]
-    wrapper = (
-        "import subprocess; from types import SimpleNamespace; "
-        "subprocess.run = lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout=b'x' * 1048577); "
-        "exec(" + repr(program) + ")"
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    fake_git = fake_bin / "git"
+    fake_git.write_text(
+        "#!/usr/bin/env python3\n"
+        "import os\n"
+        "import time\n"
+        "with open(os.environ['FAKE_GIT_PID_FILE'], 'w') as handle:\n"
+        "    handle.write(str(os.getpid()))\n"
+        "if os.environ['FAKE_GIT_MODE'] == 'timeout':\n"
+        "    time.sleep(30)\n"
+        "else:\n"
+        "    block = b'x' * 65536\n"
+        "    while True:\n"
+        "        os.write(1, block)\n"
     )
-    result = subprocess.run(
-        [sys.executable, "-c", wrapper], cwd=tmp_path,
-        env=_isolated_git_environment(), capture_output=True, text=True, check=False,
-    )
+    fake_git.chmod(0o755)
+
+    def run_fake_git(mode):
+        pid_file = tmp_path / f"fake-git-{mode}.pid"
+        env = _isolated_git_environment()
+        env["PATH"] = str(fake_bin) + os.pathsep + env["PATH"]
+        env["FAKE_GIT_MODE"] = mode
+        env["FAKE_GIT_PID_FILE"] = str(pid_file)
+        result = subprocess.run(
+            [sys.executable, "-c", program], cwd=tmp_path, env=env,
+            capture_output=True, text=True, check=False,
+        )
+        assert pid_file.exists()
+        return result, int(pid_file.read_text())
+
+    result, oversized_pid = run_fake_git("oversized")
     assert result.returncode == 1
-    assert result.stdout == (
-        '{"status":"error","counts":{},"untracked_categories":{},'
-        '"path_count":0,"reason":"git-status-failed"}\n'
-    )
-    assert len(result.stdout) < 200
+    assert result.stderr == ""
+    assert json.loads(result.stdout) == {
+        "status": "error",
+        "counts": {},
+        "untracked_categories": {},
+        "path_count": 0,
+        "reason": "git-status-failed",
+    }
+    with pytest.raises(ProcessLookupError):
+        os.kill(oversized_pid, 0)
+
+    result, timed_out_pid = run_fake_git("timeout")
+    assert result.returncode == 1
+    assert result.stderr == ""
+    assert json.loads(result.stdout) == {
+        "status": "error",
+        "counts": {},
+        "untracked_categories": {},
+        "path_count": 0,
+        "reason": "git-status-failed",
+    }
+    with pytest.raises(ProcessLookupError):
+        os.kill(timed_out_pid, 0)
 
 
 def test_checkout_diagnostics_count_porcelain_renames_copies_and_other_statuses(tmp_path):
@@ -626,7 +674,7 @@ def test_checkout_diagnostics_count_porcelain_renames_copies_and_other_statuses(
         "untracked_categories": {
             "gateway_deployment": 0,
             "other_service_deployment": 0,
-            "other_service_tree": 0,
+            "service_tree_other": 0,
             "platform_other": 0,
             "repository_other": 0,
         },
@@ -643,15 +691,20 @@ def test_checkout_diagnostics_skip_both_paths_in_porcelain_rename_and_copy_recor
     gateway = next(play for play in plays if play.get("hosts") == "agentgateway_svc")
     program = gateway["vars"]["_agw_checkout_status_argv"][2]
     porcelain = b"R  safe-new-name\0safe-old-name\0C  safe-copy-name\0safe-copy-source\0"
-    wrapped = (
-        "import subprocess; from types import SimpleNamespace; "
-        "subprocess.run = lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="
-        + repr(porcelain)
-        + ", stderr=b''); exec(" + repr(program) + ")"
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    fake_git = fake_bin / "git"
+    fake_git.write_text(
+        "#!/usr/bin/env python3\n"
+        "import os\n"
+        f"os.write(1, {porcelain!r})\n"
     )
+    fake_git.chmod(0o755)
+    env = _isolated_git_environment()
+    env["PATH"] = str(fake_bin) + os.pathsep + env["PATH"]
     result = subprocess.run(
-        [sys.executable, "-c", wrapped], cwd=tmp_path,
-        env=_isolated_git_environment(), capture_output=True, text=True, check=False,
+        [sys.executable, "-c", program], cwd=tmp_path,
+        env=env, capture_output=True, text=True, check=False,
     )
     assert result.returncode == 0
     assert json.loads(result.stdout) == {
@@ -669,7 +722,7 @@ def test_checkout_diagnostics_skip_both_paths_in_porcelain_rename_and_copy_recor
         "untracked_categories": {
             "gateway_deployment": 0,
             "other_service_deployment": 0,
-            "other_service_tree": 0,
+            "service_tree_other": 0,
             "platform_other": 0,
             "repository_other": 0,
         },
