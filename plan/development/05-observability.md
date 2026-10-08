@@ -1490,11 +1490,13 @@ selectors are not a synthetic union, and current data applicability still needs
 service-specific receipts. A capped all-streams drill-down remains available for
 unclassified Loki streams; source-specific panels lead the routine view.
 
-The conformance table now presents one service/step row and scopes status color
-mapping to the numeric state field. Its latest-state query remains authoritative
-for current failed status. The separate, 100-line-capped failure log view shows
-historical task snapshots in the selected time range; the collector may repeat a
-failed task in later snapshots and exposes no unique failure-event identity, so
+The conformance dashboard source configures the latest-state query and table
+transformations for an intended one-row-per-service-and-step view, with status
+color mapping scoped to the numeric state field. Its latest-state query remains
+authoritative for current failed status. The separate, 100-line-capped failure
+log view shows historical task snapshots in the selected time range. The
+collector may repeat a failed task in later snapshots and exposes no unique
+failure-event identity, so
 those rows are not new-event counts and may not match a subsequently recovered
 step. Static dashboard JSON and focused repository checks are the available
 evidence for this change; Grafana 11.4 rendering, Loki variable results, and
