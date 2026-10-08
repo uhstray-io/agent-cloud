@@ -91,6 +91,7 @@ and why.
 | 3.10 | A test wrote scratch playbooks into the tracked tree and raced parallel tests that glob it | Working-tree damage | 1 | Convention (session-end tree check proposed) |
 | 3.11 | Made a deploy stop recreating containers without auditing a step that relied on it; a directory reset under a live bind mount emptied Authentik's custom blueprints in prod | Live state | 1 | Test (`test_no_bind_mount_dir_delete.py` + FORCE_RECREATE case in `test_compose_up_if_changed.bats`) |
 | 3.12 | Launched two `(Dev)` deploys through the API without `service_branch`; Semaphore applies survey defaults only in its form, so both hosts checked out `main` under Dev playbooks | Live state | 1 | Playbook guard (`assert-placement-branch.yml`) + launcher default fill + tests (`test_placement_branch_guard.py`, `test_semaphore_launch.py`, mutation-checked) |
+| 3.13 | The `dev` -> `main` promotion merge let the repo's delete-head-branch-on-merge setting delete `dev`, the long-lived integration branch; the main -> dev sync then failed | Live state | 1 | Ruleset (`protect-dev.json`, deletion rule) + test (`test_ruleset_protect_dev.py`); ruleset not yet applied live |
 | 4.1 | `while read` silently dropped an unterminated final line | Data handling | 1 | Convention |
 | 4.2 | Stored `.env` values without stripping surrounding quotes | Data handling | 1 | Convention |
 | 4.3 | Used a real internal IP address as a test vector | Data leak | 1 | Pre-commit (existing) |
@@ -2148,6 +2149,32 @@ was mutation-checked. Four playbooks clone with their own `ansible.builtin.git` 
 the shared ones (`deploy-openhands.yml`, `deploy-wisbot.yml`, `deploy-inference-comfyui.yml`,
 `deploy-inference-hunyuan3d.yml`). None has a Dev-bound template today, and the guard does not
 cover them.
+
+### 3.13 The dev -> main promotion merge deleted `dev`, because the repository auto-deletes a merged PR's head branch
+
+**Occurrences: 1** — 2026-10-08
+
+**What happened.** PR #447 (`dev` -> `main`, head `dev`) merged at 2026-10-08T00:41Z as
+`c81ada2a`. The repository setting `delete_branch_on_merge` is `true`
+(`gh api repos/uhstray-io/agent-cloud --jq .delete_branch_on_merge`), so GitHub deleted the
+head branch `dev`. The `sync-main-to-dev.yml` run for that push then failed with "A branch or
+tag with the name 'dev' could not be found". `dev`'s last head was `74f81ee5`, already
+contained in `main`, so no commit was lost.
+
+**Root cause.** `dev` is the permanent integration branch, but it was the head of a PR, and
+nothing marked it as exempt from the repository-wide auto-delete, and the promotion flow
+did not account for the setting. Unverified: why earlier promotions did not delete `dev`
+(not investigated).
+
+**The rule.** A long-lived branch must be protected against deletion by a committed ruleset,
+never by the way a merge happens to be run. Do not rely on a merge command's default branch
+handling.
+
+**Enforced by.** `.github/rulesets/protect-dev.json` (`deletion` and `non_fast_forward`
+rules on `refs/heads/dev`, no bypass actor) and `platform/tests/test_ruleset_protect_dev.py`
+(mutation-checked: removing the `deletion` rule fails it). The ruleset takes effect only once
+an admin runs `.github/rulesets/apply.sh`; until then this is `Convention`, and
+`ruleset-drift.yml` reports the missing live ruleset as drift.
 
 ## 4. Data handling
 
