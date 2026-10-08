@@ -22,6 +22,24 @@ Metrics, logs, and traces for an instrumented container MUST carry one stable se
 - **WHEN** an operator selects a service in the generic dashboard
 - **THEN** its metrics and logs use the same service identity and the selection can be reused for trace lookup when traces exist
 
+### Requirement: OIDC callback queries stay out of agentgateway telemetry
+Agentgateway stdout access logs, OTLP access records, and sampled trace spans MUST omit OIDC callback query parameters. Their `http.path` attribute MUST remain query-free; applicable status, identity, model, usage, and trace-correlation fields MUST remain available on representative model requests. Configuration alone MUST NOT count as runtime proof.
+
+#### Scenario: Callback query marker is absent from emitted telemetry
+- **WHEN** a synthetic query marker is sent to the agentgateway OIDC callback and a representative model request produces at least one sampled trace
+- **THEN** the marker is absent from stdout access logs, OTLP access records, and sampled trace-span attributes
+- **AND** each emitted `http.path` contains only the callback path
+- **AND** applicable status, identity, model, usage, and trace correlation remain available for the representative model request
+- **AND** the verification records the pinned-image configuration acceptance and exact reviewed deployment revision
+
+### Requirement: Callback-path proxy logging is assessed separately
+The platform SHALL assess each declared proxy hop's access-log behavior for OIDC callback query exposure before claiming callback redaction covers the full request path. Missing source configuration alone MUST NOT be treated as proof of effective runtime behavior or as proof of a defect.
+
+#### Scenario: Edge callback logging is evidence checked
+- **WHEN** callback-query redaction is evaluated across the public route
+- **THEN** the Caddy site fragment, effective runtime configuration, log sinks, and retention are reviewed
+- **AND** any unavailable runtime evidence is recorded as unknown
+
 ### Requirement: Baseline views and alerts are provisioned
 The platform SHALL provision a generic service view and baseline service-down and missing-telemetry alert rules from version-controlled files. Notification credentials MUST come from OpenBao.
 
