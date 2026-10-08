@@ -404,12 +404,11 @@ def test_checkout_diagnostics_report_only_fixed_status_categories_and_counts(tmp
                 "untracked": 4,
             },
             "untracked_categories": {
-                "gateway_rendered_state": 0,
-                "gateway_certificate_material": 0,
-                "gateway_deployment_other": 0,
-                "service_runtime_state": 0,
-                "certificate_or_key_material": 0,
-                "other": 4,
+                "gateway_deployment": 0,
+                "other_service_deployment": 0,
+                "other_service_tree": 0,
+                "platform_other": 0,
+                "repository_other": 4,
             },
             "path_count": 6,
         }
@@ -472,15 +471,48 @@ def test_checkout_diagnostics_classify_untracked_locations_without_exposing_path
     git_env = _isolated_git_environment()
 
     subprocess.run(["git", "init", "-q"], cwd=repo, env=git_env, check=True)
+    gateway_deploy = repo / "platform/services/agentgateway/deployment"
+    gateway_deploy.mkdir(parents=True)
+    shutil.copy2(ROOT / ".gitignore", repo / ".gitignore")
+    shutil.copy2(
+        ROOT / "platform/services/agentgateway/deployment/.gitignore",
+        gateway_deploy / ".gitignore",
+    )
+    subprocess.run(
+        ["git", "add", "--", ".gitignore", "platform/services/agentgateway/deployment/.gitignore"],
+        cwd=repo, env=git_env, check=True,
+    )
+    subprocess.run(
+        ["git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+         "-c", "commit.gpgsign=false", "commit", "-qm", "baseline"],
+        cwd=repo, env=git_env, check=True,
+    )
+    ignored_paths = (
+        "platform/services/agentgateway/deployment/.env",
+        "platform/services/agentgateway/deployment/config.yaml",
+        "platform/services/agentgateway/deployment/config.yaml.previous",
+        "platform/services/agentgateway/deployment/config.yaml.replaced",
+        "platform/services/agentgateway/deployment/certs/private-hostname.pem",
+    )
+    for relative_path in ignored_paths:
+        destination = repo / relative_path
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text("UNIQUE-IGNORED-RENDERED-CONTENT")
+        ignored = subprocess.run(
+            ["git", "check-ignore", "-q", "--", relative_path],
+            cwd=repo, env=git_env, check=False,
+        )
+        assert ignored.returncode == 0
     paths = {
-        "platform/services/agentgateway/deployment/.env": "UNIQUE-ENV-FIXTURE-CONTENT",
-        "platform/services/agentgateway/deployment/config.yaml": "apiKey: UNIQUE-CONFIG-CONTENT",
-        "platform/services/agentgateway/deployment/config.yaml.previous": "old config secret-shaped content",
-        "platform/services/agentgateway/deployment/certs/private-hostname.pem": "UNIQUE-CERTIFICATE-CONTENT",
-        "platform/services/agentgateway/deployment/debug/private-token-ABC123.py": "UNIQUE-DEPLOYMENT-CONTENT",
-        "platform/services/o11y/deployment/.env": "UNIQUE-OTHER-ENV-CONTENT",
-        "unusual/private-hostname.pem": "UNIQUE-KEY-MATERIAL-CONTENT",
-        "unusual/private-token-ABC123.example.internal.txt": "UNIQUE-OTHER-CONTENT",
+        "platform/services/agentgateway/deployment/debug/private-token-ABC123.example.internal.py": (
+            "UNIQUE-GATEWAY-DEPLOYMENT-CONTENT"
+        ),
+        "platform/services/o11y/deployment/private-token-ABC123.example.internal.txt": (
+            "UNIQUE-OTHER-DEPLOYMENT-CONTENT"
+        ),
+        "platform/services/o11y/context/private-hostname-ABC123.txt": "UNIQUE-OTHER-SERVICE-CONTENT",
+        "platform/inventory/private-hostname-ABC123.txt": "UNIQUE-PLATFORM-CONTENT",
+        "local/private-token-ABC123.example.internal.txt": "UNIQUE-REPOSITORY-CONTENT",
     }
     for relative_path, contents in paths.items():
         destination = repo / relative_path
@@ -496,15 +528,14 @@ def test_checkout_diagnostics_classify_untracked_locations_without_exposing_path
     assert report["status"] == "ok"
     assert report["counts"]["untracked"] == len(paths)
     assert report["untracked_categories"] == {
-        "gateway_rendered_state": 3,
-        "gateway_certificate_material": 1,
-        "gateway_deployment_other": 1,
-        "service_runtime_state": 1,
-        "certificate_or_key_material": 1,
-        "other": 1,
+        "gateway_deployment": 1,
+        "other_service_deployment": 1,
+        "other_service_tree": 1,
+        "platform_other": 1,
+        "repository_other": 1,
     }
     assert report["path_count"] == len(paths)
-    for private_value in (*paths.keys(), *paths.values(), str(repo)):
+    for private_value in (*paths.keys(), *paths.values(), *ignored_paths, str(repo), "UNIQUE-IGNORED-RENDERED-CONTENT"):
         assert private_value not in result.stdout
 
 
@@ -593,12 +624,11 @@ def test_checkout_diagnostics_count_porcelain_renames_copies_and_other_statuses(
             "untracked": 0,
         },
         "untracked_categories": {
-            "gateway_rendered_state": 0,
-            "gateway_certificate_material": 0,
-            "gateway_deployment_other": 0,
-            "service_runtime_state": 0,
-            "certificate_or_key_material": 0,
-            "other": 0,
+            "gateway_deployment": 0,
+            "other_service_deployment": 0,
+            "other_service_tree": 0,
+            "platform_other": 0,
+            "repository_other": 0,
         },
         "path_count": 5,
     }
@@ -637,12 +667,11 @@ def test_checkout_diagnostics_skip_both_paths_in_porcelain_rename_and_copy_recor
             "untracked": 0,
         },
         "untracked_categories": {
-            "gateway_rendered_state": 0,
-            "gateway_certificate_material": 0,
-            "gateway_deployment_other": 0,
-            "service_runtime_state": 0,
-            "certificate_or_key_material": 0,
-            "other": 0,
+            "gateway_deployment": 0,
+            "other_service_deployment": 0,
+            "other_service_tree": 0,
+            "platform_other": 0,
+            "repository_other": 0,
         },
         "path_count": 2,
     }

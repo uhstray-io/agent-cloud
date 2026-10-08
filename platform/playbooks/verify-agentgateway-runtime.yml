@@ -50,25 +50,14 @@
                 raise ValueError
             fields = result.stdout.split(b"\0")
             untracked_categories = {
-                "gateway_rendered_state": 0,
-                "gateway_certificate_material": 0,
-                "gateway_deployment_other": 0,
-                "service_runtime_state": 0,
-                "certificate_or_key_material": 0,
-                "other": 0,
-            }
-            gateway_runtime_paths = {
-                b"platform/services/agentgateway/deployment/.env",
-                b"platform/services/agentgateway/deployment/config.yaml",
-                b"platform/services/agentgateway/deployment/config.yaml.previous",
-                b"platform/services/agentgateway/deployment/config.yaml.replaced",
+                "gateway_deployment": 0,
+                "other_service_deployment": 0,
+                "other_service_tree": 0,
+                "platform_other": 0,
+                "repository_other": 0,
             }
             gateway_deploy_prefix = b"platform/services/agentgateway/deployment/"
-            gateway_certs_prefix = gateway_deploy_prefix + b"certs/"
-            runtime_basenames = {
-                b".env", b".env.local", b"config.yaml",
-                b"config.yaml.previous", b"config.yaml.replaced",
-            }
+            services_prefix = b"platform/services/"
             counts = {
                 "modified": 0,
                 "added": 0,
@@ -93,19 +82,16 @@
                 if status == "??":
                     category = "untracked"
                     path = entry[3:]
-                    basename = path.rsplit(b"/", 1)[-1]
-                    if path in gateway_runtime_paths:
-                        untracked_category = "gateway_rendered_state"
-                    elif path.startswith(gateway_certs_prefix):
-                        untracked_category = "gateway_certificate_material"
-                    elif path.startswith(gateway_deploy_prefix):
-                        untracked_category = "gateway_deployment_other"
-                    elif basename in runtime_basenames:
-                        untracked_category = "service_runtime_state"
-                    elif basename.endswith((b".pem", b".key")):
-                        untracked_category = "certificate_or_key_material"
+                    if path.startswith(gateway_deploy_prefix):
+                        untracked_category = "gateway_deployment"
+                    elif path.startswith(services_prefix) and b"/deployment/" in path:
+                        untracked_category = "other_service_deployment"
+                    elif path.startswith(services_prefix):
+                        untracked_category = "other_service_tree"
+                    elif path.startswith(b"platform/"):
+                        untracked_category = "platform_other"
                     else:
-                        untracked_category = "other"
+                        untracked_category = "repository_other"
                     untracked_categories[untracked_category] += 1
                 elif "U" in status or status in ("AA", "DD"):
                     category = "conflicted"
