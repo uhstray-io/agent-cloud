@@ -15,7 +15,7 @@ or merged before checks pass.
 | File | Target | Protects |
 |------|--------|----------|
 | [`protect-main.json`](./protect-main.json) | default branch (`main`) | no direct push / force-push / deletion; PR required; conversations resolved; merge-commit or squash merges; required status checks; **PRs into `main` must originate from `dev`** |
-| [`protect-dev.json`](./protect-dev.json) | `refs/heads/dev` | no deletion or force-push; direct fast-forward updates remain allowed for `sync-main-to-dev` |
+| [`protect-dev.json`](./protect-dev.json) | `refs/heads/dev` | no deletion, no force-push; deliberately **no** PR or status-check rule |
 
 ### `protect-main` rules
 
@@ -29,12 +29,10 @@ or merged before checks pass.
 
 ### `protect-dev` rules
 
-- **Exact target:** `refs/heads/dev`, independent of the default branch name.
-- **Restrict deletions** and **block force pushes**. The active deletion rule also prevents GitHub's automatic head-branch deletion after a merged PR, which removed `dev` when PR #447 merged.
-- **No bypass actors.** The deletion restriction applies to every actor, including automation, so merge-time cleanup cannot bypass it.
-- **Fast-forward pushes stay allowed.** The ruleset does not restrict updates or require pull requests, allowing `sync-main-to-dev` to push the ancestry-preserving update. The non-fast-forward rule blocks history rewrites without blocking those fast-forward updates.
-
-GitHub documents that repository rules can prevent automatic head-branch deletion ([automatic deletion](https://docs.github.com/en/enterprise-cloud@latest/repositories/configuring-branches-and-merges-in-your-repository/configuring-pull-request-merges/managing-the-automatic-deletion-of-branches)). Apply this declaration after it reaches `dev` through the normal branch workflow, then confirm it appears as active and targets only `refs/heads/dev`.
+- **Restrict deletions** — the repository setting `delete_branch_on_merge` deletes a merged PR's head branch, and a `dev` -> `main` promotion has `dev` as its head. Merging PR #447 on 2026-10-08 deleted `dev` that way, and `sync-main-to-dev.yml` then failed with "A branch or tag with the name 'dev' could not be found" (`docs/MISTAKES.md` 3.13). GitHub's docs state that "Branch protection rules and repository rules can also prevent branches being automatically deleted" ([docs](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/configuring-pull-request-merges/managing-the-automatic-deletion-of-branches)); the `deletion` rule means "only users with bypass permissions can delete branches or tags whose name matches the pattern" ([docs](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/available-rules-for-rulesets)). Not verified against the live repo: that the automatic deletion is blocked in practice; confirm with the `rules/branches/dev` check under "Applying" below, and again after the next promotion.
+- **Block force pushes** — `sync-main-to-dev.yml` pushes a merge commit on top of `dev` (`git push origin HEAD:dev`), a fast-forward, so it is unaffected. A force-push of `dev` is now refused.
+- **No pull request rule, no required checks, no bypass actors** — the sync workflow pushes to `dev` directly with `GITHUB_TOKEN`; a PR or check rule would refuse it. With no bypass actor, deleting or rewriting `dev` on purpose means setting `enforcement` to `disabled` and re-applying first. Deliberately no admin bypass (unlike `protect-main`): promotions are merged by the admin account, and a bypass for that role may let the automatic head-branch deletion through the `deletion` rule and reopen the failure in `docs/MISTAKES.md` 3.13. An intentional delete or force-push of `dev` is a disable-then-change-then-re-enable sequence instead.
+- The rule is pattern-based, so it does not recreate a missing `dev`: restore the branch from its last head before applying.
 
 ## Applying
 
@@ -51,6 +49,9 @@ gh api repos/uhstray-io/agent-cloud/branches/main/protection
 
 # Show the effective, aggregated rules on main (what actually applies)
 gh api repos/uhstray-io/agent-cloud/rules/branches/main
+
+# Confirm protect-dev is live on dev: expect deletion + non_fast_forward
+gh api repos/uhstray-io/agent-cloud/rules/branches/dev
 ```
 
 ## Rollout: enforcement `active`

@@ -237,7 +237,7 @@ def test_conformance_json_body_format_matches_loki_dashboard_extraction():
     dashboard = json.loads((REPO / "platform/services/o11y/deployment/config/grafana/dashboards/"
                             "service-conformance.json").read_text())
     expressions = {panel["title"]: panel["targets"][0]["expr"] for panel in dashboard["panels"]}
-    assert '| json state_code | unwrap state_code' in expressions["Step status by service"]
+    assert '| json state_code | unwrap state_code' in expressions["Latest step status by service"]
     assert '| json inventory_code | unwrap inventory_code' in expressions["Services not yet run"]
 
 
@@ -511,10 +511,10 @@ def test_the_step_table_excludes_the_no_history_marker_and_a_panel_lists_it():
     dash = json.loads((REPO / "platform/services/o11y/deployment/config/grafana/dashboards/"
                                "service-conformance.json").read_text())
     exprs = {p["title"]: p["targets"][0]["expr"] for p in dash["panels"]}
-    assert 'step!="none"' in exprs["Step status by service"]
-    assert "last_over_time" in exprs["Step status by service"]
-    assert '| json state_code | unwrap state_code' in exprs["Step status by service"]
-    assert 'by (service, step)' in exprs["Step status by service"]
+    assert 'step!="none"' in exprs["Latest step status by service"]
+    assert "last_over_time" in exprs["Latest step status by service"]
+    assert '| json state_code | unwrap state_code' in exprs["Latest step status by service"]
+    assert 'by (service, step)' in exprs["Latest step status by service"]
     assert '| json inventory_code | unwrap inventory_code' in exprs["Services not yet run"]
     assert "by (service) == 0" in exprs["Services not yet run"]
     assert '| json inventory_code | unwrap inventory_code' in exprs["History incomplete"]

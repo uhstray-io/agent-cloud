@@ -22,7 +22,7 @@
   "description": "Per-service status of every service deployment workflow step, as last recorded by Collect Service Conformance (the only writer). Plan 15; change service-deployment-workflow task 7.5.",
   "panels": [
     {
-      "title": "Recent failed step reports",
+      "title": "Current failed step states",
       "type": "stat",
       "datasource": {
         "type": "loki",
@@ -34,7 +34,7 @@
         "x": 0,
         "y": 0
       },
-      "description": "Unique (service, step) pairs whose newest state in the last 16 minutes is fail. A new-format collector snapshot with no step states shows zero; no new-format snapshot shows No recent data.",
+      "description": "Count of unique service and step pairs whose newest state in the last 16 minutes is fail. This is current recorded state, not a count of new failure events. When inventory markers exist but no step is currently failed, the fallback returns one unlabeled zero; with no recent inventory marker the panel shows No recent data.",
       "fieldConfig": {
         "defaults": {
           "noValue": "No recent data",
@@ -62,7 +62,7 @@
             "uid": "loki"
           },
           "queryType": "instant",
-          "expr": "sum(last_over_time({job=\"agent-cloud-conformance\", step!=\"none\"} | json state_code | unwrap state_code | __error__=\"\" [16m]) by (service, step) == bool 0) or (sum(last_over_time({job=\"agent-cloud-conformance\", step=\"none\"} | json inventory_code | unwrap inventory_code | __error__=\"\" [16m]) by (service)) * 0)"
+          "expr": "sum(last_over_time({job=\"agent-cloud-conformance\", step!=\"none\"} | json state_code | unwrap state_code | __error__=\"\" [16m]) by (service, step) == bool 0) or (sum(last_over_time({job=\"agent-cloud-conformance\", step=\"none\"} | json inventory_code | unwrap inventory_code | __error__=\"\" [16m]) by (service) * 0))"
         }
       ]
     },
@@ -148,7 +148,7 @@
       ]
     },
     {
-      "title": "Step status by service",
+      "title": "Latest step status by service",
       "type": "table",
       "datasource": {
         "type": "loki",
@@ -160,39 +160,57 @@
         "x": 0,
         "y": 5
       },
-      "description": "Rows are services, columns are workflow step ids. Each cell maps the newest reported state in the last 16 minutes to fail, pass, or skip. An empty cell means no step state was reported in that window. Services that have not run any step are listed in \"Services not yet run\", not here.",
+      "description": "One row per service and workflow step. State is the newest report in the last 16 minutes and is shown as fail, pass, or skip. An empty result means no step state was reported in that window. Services that have not run any step are listed in \"Services not yet run\", not here.",
       "fieldConfig": {
         "defaults": {
-          "custom": {
-            "cellOptions": {
-              "type": "color-background"
-            },
-            "align": "center"
-          },
-          "mappings": [
-            {
-              "type": "value",
-              "options": {
-                "0": {
-                  "text": "fail",
-                  "color": "red",
-                  "index": 0
-                },
-                "1": {
-                  "color": "green",
-                  "index": 1,
-                  "text": "pass"
-                },
-                "2": {
-                  "text": "skip",
-                  "color": "gray",
-                  "index": 2
-                }
-              }
-            }
-          ]
+          "custom": {},
+          "mappings": []
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "State"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background"
+                }
+              },
+              {
+                "id": "custom.align",
+                "value": "center"
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "text": "fail",
+                        "color": "red",
+                        "index": 0
+                      },
+                      "1": {
+                        "text": "pass",
+                        "color": "green",
+                        "index": 1
+                      },
+                      "2": {
+                        "text": "skip",
+                        "color": "gray",
+                        "index": 2
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
       },
       "targets": [
         {
@@ -217,18 +235,20 @@
           "options": {}
         },
         {
-          "id": "groupingToMatrix",
+          "id": "organize",
           "options": {
-            "columnField": "step",
-            "rowField": "service",
-            "valueField": "Value",
-            "emptyValue": "empty"
+            "excludeByName": {
+              "Time": true
+            },
+            "renameByName": {
+              "Value": "State"
+            }
           }
         }
       ]
     },
     {
-      "title": "Failures with context",
+      "title": "Recent failed task snapshots",
       "type": "logs",
       "datasource": {
         "type": "loki",
@@ -240,10 +260,10 @@
         "x": 0,
         "y": 17
       },
-      "description": "Each failing step's error and Semaphore task id, one line per collector run.",
+      "description": "Failed task records received during the selected dashboard time range, including the error and Semaphore task id. The collector can repeat the same historical failure in later snapshots, so these rows are not new-event counts and may not match the latest state above. Use the task id to identify the workflow run.",
       "options": {
         "showLabels": true,
-        "wrapLogMessage": true,
+        "wrapLogMessage": false,
         "sortOrder": "Descending"
       },
       "targets": [
@@ -254,7 +274,8 @@
             "uid": "loki"
           },
           "queryType": "range",
-          "expr": "{job=\"agent-cloud-conformance\", status=\"fail\"}"
+          "expr": "{job=\"agent-cloud-conformance\", status=\"fail\"}",
+          "maxLines": 100
         }
       ]
     },

@@ -1,82 +1,368 @@
 {
-  "annotations": { "list": [] },
+  "annotations": {
+    "list": []
+  },
   "editable": false,
-  "description": "Service selector covers Prometheus metric-enabled services. A service shows unhealthy when any current scrape target is down; no metrics means no scrape data. Use Logs Drilldown for log-only services.",
+  "description": "Metrics panels use the Metrics service selector from Prometheus; Loki panels use the Logs service selector from Loki. Each Loki source has its own panel. A service missing from one selector has no observed data in that source, not a healthy zero.",
   "panels": [
     {
       "title": "Scrape target health",
       "type": "stat",
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 0 },
-      "description": "Minimum up value across each service's scrape targets. 0 means at least one target is down; 1 means all reported targets are up. No metrics means no scrape data.",
-      "fieldConfig": { "defaults": { "noValue": "No metrics", "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "green", "value": 1 } ] } }, "overrides": [] },
-      "targets": [ { "refId": "A", "expr": "min by (service) (up{service=~\"$service\"})", "instant": true } ]
-    },
-    {
-      "title": "Service log lines per second",
-      "type": "timeseries",
-      "datasource": { "type": "loki", "uid": "loki" },
-      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 0 },
-      "description": "No data means Loki has no indexed logs for this service in the selected time range; it does not indicate service health.",
-      "fieldConfig": { "defaults": {}, "overrides": [] },
-      "targets": [ { "refId": "A", "expr": "sum by (service) (rate({service=~\"$service\"}[5m]))", "legendFormat": "{{service}}" } ]
-    },
-    {
-      "title": "Unhealthy scrape targets",
-      "type": "table",
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 6 },
-      "description": "Currently failed targets with their service, job, and instance labels. No rows means no reported failures; the health stat shows No metrics when no targets report.",
-      "fieldConfig": { "defaults": {}, "overrides": [] },
-      "targets": [ { "refId": "A", "expr": "up{service=~\"$service\"} == 0", "instant": true, "format": "table" } ],
-      "options": { "showHeader": true }
-    },
-    {
-      "title": "Recent service logs",
-      "type": "logs",
-      "datasource": { "type": "loki", "uid": "loki" },
-      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 14 },
-      "description": "No data means Loki has no indexed logs for this service in the selected time range; it does not indicate service health.",
-      "options": { "showLabels": true, "showTime": true, "wrapLogMessage": true },
-      "targets": [ { "refId": "A", "expr": "{service=~\"$service\"}" } ]
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 0,
+        "y": 0
+      },
+      "description": "Minimum up value across the selected Metrics service scrape targets. 0 means at least one target is down; 1 means all reported targets are up. No metrics means no scrape data.",
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "No metrics",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "min by (service) (up{service=~\"$service\"})",
+          "instant": true
+        }
+      ]
     },
     {
       "title": "Current scrape targets",
       "type": "stat",
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 6, "w": 6, "x": 6, "y": 0 },
-      "description": "Count of currently reported scrape targets for the selected service, including targets with up=0. This measures target visibility, not service health. No targets means no current scrape telemetry, not a healthy zero.",
-      "fieldConfig": { "defaults": { "noValue": "No targets", "thresholds": { "mode": "absolute", "steps": [ { "color": "blue", "value": null } ] } }, "overrides": [] },
-      "targets": [ { "refId": "A", "expr": "count by (service) (up{service=~\"$service\"})", "instant": true } ]
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 6,
+        "y": 0
+      },
+      "description": "Count of currently reported scrape targets for the selected Metrics service, including targets with up=0. This measures target visibility, not service health. No targets means no current scrape telemetry, not a healthy zero.",
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "No targets",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "count by (service) (up{service=~\"$service\"})",
+          "instant": true
+        }
+      ]
     },
     {
       "title": "Scrape availability over time",
       "type": "timeseries",
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 6 },
-      "description": "At each point in the selected time range, the percentage of reported scrape targets for the service that are up. Failed scrapes count as 0%; missing telemetry produces gaps or no data, not a healthy zero.",
-      "fieldConfig": { "defaults": { "min": 0, "max": 100, "unit": "percent" }, "overrides": [] },
-      "targets": [ { "refId": "A", "expr": "avg by (service) (up{service=~\"$service\"}) * 100", "legendFormat": "{{service}}" } ]
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 6
+      },
+      "description": "At each point in the selected time range, the percentage of reported scrape targets for the selected Metrics service that are up. Failed scrapes count as 0%; missing telemetry produces gaps or no data, not a healthy zero.",
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "max": 100,
+          "unit": "percent"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "avg by (service) (up{service=~\"$service\"}) * 100",
+          "legendFormat": "{{service}}"
+        }
+      ]
+    },
+    {
+      "title": "Unhealthy scrape targets",
+      "type": "table",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 6
+      },
+      "description": "Currently failed targets for the selected Metrics service, with their service, job, and instance labels. No rows means no reported failures; the health stat shows No metrics when no targets report.",
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "up{service=~\"$service\"} == 0",
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "options": {
+        "showHeader": true
+      }
+    },
+    {
+      "title": "Log volume by source",
+      "type": "timeseries",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 14
+      },
+      "description": "Loki log lines per second for the selected Logs service, separated by container output, gateway access records, optional gateway span logs, and workflow conformance records. Missing data for a source means no matching logs were observed and does not indicate service health.",
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (service) (rate({service=~\"$log_service\", container=~\".+\"}[5m]))",
+          "legendFormat": "Container · {{service}}"
+        },
+        {
+          "refId": "B",
+          "expr": "sum by (service) (rate({service=~\"$log_service\", signal=\"access-log\"}[5m]))",
+          "legendFormat": "Access · {{service}}"
+        },
+        {
+          "refId": "C",
+          "expr": "sum by (service) (rate({service=~\"$log_service\", signal=\"span\"}[5m]))",
+          "legendFormat": "Span · {{service}}"
+        },
+        {
+          "refId": "D",
+          "expr": "sum by (service) (rate({service=~\"$log_service\", job=\"agent-cloud-conformance\"}[5m]))",
+          "legendFormat": "Conformance · {{service}}"
+        }
+      ]
+    },
+    {
+      "title": "Recent container logs",
+      "type": "logs",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 0,
+        "y": 22
+      },
+      "description": "Container stdout and stderr for the selected Logs service. This is container output, not service health.",
+      "options": {
+        "showLabels": true,
+        "showTime": true,
+        "wrapLogMessage": true
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "{service=~\"$log_service\", container=~\".+\"}",
+          "maxLines": 100
+        }
+      ]
+    },
+    {
+      "title": "Recent gateway access records",
+      "type": "logs",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 12,
+        "y": 22
+      },
+      "description": "OTLP gateway access records for the selected Logs service. These structured records are separate from container output and optional span logs.",
+      "options": {
+        "showLabels": true,
+        "showTime": true,
+        "wrapLogMessage": true
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "{service=~\"$log_service\", signal=\"access-log\"}",
+          "maxLines": 100
+        }
+      ]
+    },
+    {
+      "title": "Recent optional span logs",
+      "type": "logs",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 0,
+        "y": 32
+      },
+      "description": "Derived span log lines for the selected Logs service. This stream is inventory-gated and may be absent; Tempo remains the trace store.",
+      "options": {
+        "showLabels": true,
+        "showTime": true,
+        "wrapLogMessage": true
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "{service=~\"$log_service\", signal=\"span\"}",
+          "maxLines": 100
+        }
+      ]
+    },
+    {
+      "title": "Recent workflow conformance records",
+      "type": "logs",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 12,
+        "y": 32
+      },
+      "description": "Service workflow status records for the selected Logs service. These are collector snapshots, not application logs.",
+      "options": {
+        "showLabels": true,
+        "showTime": true,
+        "wrapLogMessage": true
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "{service=~\"$log_service\", job=\"agent-cloud-conformance\"}",
+          "maxLines": 100
+        }
+      ]
+    },
+    {
+      "title": "All Loki streams (mixed-source drill-down)",
+      "type": "logs",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 42
+      },
+      "description": "Bounded mixed-source drill-down for every Loki stream carrying the selected Logs service, including streams not yet classified in a source-specific panel. Prefer the source-specific panels above for routine review; mixed logs do not indicate service health.",
+      "options": {
+        "showLabels": true,
+        "showTime": true,
+        "wrapLogMessage": false
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "{service=~\"$log_service\"}",
+          "maxLines": 100
+        }
+      ]
     }
   ],
   "schemaVersion": 39,
-  "tags": ["agent-cloud", "observability"],
+  "tags": [
+    "agent-cloud",
+    "observability"
+  ],
   "templating": {
     "list": [
       {
         "name": "service",
-        "label": "Service with metrics",
+        "label": "Metrics service",
         "type": "query",
-        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
         "query": "label_values(up, service)",
         "refresh": 2,
         "includeAll": false,
         "multi": false,
-        "sort": 1
+        "sort": 1,
+        "description": "Values currently exposed by Prometheus. Services with logs only are available under Logs service."
+      },
+      {
+        "name": "log_service",
+        "label": "Logs service",
+        "type": "query",
+        "datasource": {
+          "type": "loki",
+          "uid": "loki"
+        },
+        "query": "label_values({service=~\".+\"}, service)",
+        "refresh": 2,
+        "includeAll": false,
+        "multi": false,
+        "sort": 1,
+        "description": "Values currently exposed by Loki. This includes services with logs but no Prometheus metrics."
       }
     ]
   },
-  "time": { "from": "now-6h", "to": "now" },
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
   "title": "Service Overview",
   "uid": "service-overview",
   "version": 1
