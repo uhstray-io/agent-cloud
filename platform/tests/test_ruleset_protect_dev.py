@@ -45,8 +45,10 @@ def test_no_pull_request_or_check_rule():
     assert not {"pull_request", "required_status_checks"} & set(_types(_dev()))
 
 
-def test_no_bypass_actor():
-    assert _dev()["bypass_actors"] == []
+def test_bypass_is_the_same_admin_break_glass_as_protect_main():
+    main = json.loads((RULESETS / "protect-main.json").read_text())
+    assert _dev()["bypass_actors"] == main["bypass_actors"]
+    assert _dev()["bypass_actors"]
 
 
 def test_sync_workflow_push_is_not_a_force_push():
