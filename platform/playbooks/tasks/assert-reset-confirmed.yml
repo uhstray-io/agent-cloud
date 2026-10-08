@@ -7,7 +7,7 @@
 # Included first by tasks/clean-service.yml, so every Clean Deploy refuses before any teardown
 # task; clean-deploy-o11y.yml and clean-deploy-step-ca.yml include it earlier still, so their
 # own pre-destroy gates (reviewed commit, first-boot settings) are not reached by an
-# unconfirmed launch.
+# unconfirmed launch. It refuses under --check too: a dry run names its host as well.
 #
 # The expected value is the play's real host list, taken from ansible_play_hosts_all, never
 # inventory_hostname: an extra var can set the latter (`-e inventory_hostname=x`), so a
@@ -15,22 +15,20 @@
 # outside the run (checked in tasks/clean-service.yml's notes). A play that targets several
 # hosts is confirmed by the sorted, comma-joined list of all of them.
 #
-# An extra var is a template rendered afresh at every read (docs/MISTAKES.md 1.15), so the
-# confirmation is rendered once into a fact and the assert reads the fact.
+# There is deliberately NO set_fact here. A fact is outranked by an extra var of the same name
+# (`-e _reset_hosts=x -e _reset_confirm=x` overwrote the pinned values and passed the gate), so
+# the comparison is ONE expression that reads each input once. That also satisfies the
+# single-read rule for a templated extra var (docs/MISTAKES.md 1.15): there is no second read
+# for a check and the work to disagree about.
 #
 # Expected variables: confirm_reset (the launch's -e / Semaphore survey value)
-
-- name: "Pin the confirmation and the hosts it must name, each read once"
-  ansible.builtin.set_fact:
-    _reset_confirm: "{{ confirm_reset | default('') | string }}"
-    _reset_hosts: "{{ ansible_play_hosts_all | sort | join(',') }}"
 
 - name: "Refuse a reset the launch did not name"
   ansible.builtin.assert:
     that:
-      - _reset_hosts | length > 0
-      - _reset_confirm == _reset_hosts
+      - ansible_play_hosts_all | length > 0
+      - (confirm_reset | default('') | string) == (ansible_play_hosts_all | sort | join(','))
     fail_msg: >-
-      Refusing: pass -e confirm_reset={{ _reset_hosts }} to destroy this host's service data
-      (containers, volumes and the checkout). Nothing was removed.
+      Refusing: pass -e confirm_reset={{ ansible_play_hosts_all | sort | join(',') }} to destroy
+      this host's service data (containers, volumes and the checkout). Nothing was removed.
     quiet: true

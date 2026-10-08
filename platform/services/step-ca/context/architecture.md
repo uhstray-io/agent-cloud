@@ -60,7 +60,7 @@ site-config only.
   in site-config. Two consecutive production runs printed the same one, and the second
   changed nothing.
 - **Reset is guarded.** `Clean Deploy step-ca (Dev)` destroys the root only when the
-  launch names the host in `confirm_ca_reset`, and checks the first-boot settings before
+  launch names the host in `confirm_reset`, and checks the first-boot settings before
   anything is destroyed.
 - **Templates are dev-bound until promotion.** `Deploy step-ca (Dev)` and
   `Clean Deploy step-ca (Dev)` run from `dev`, because `main`'s playbooks lack these

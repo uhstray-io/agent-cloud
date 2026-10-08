@@ -26,6 +26,7 @@ PLAYBOOKS = REPO / "platform/playbooks"
 GUARD = "refuse-internal-extra-vars.yml"
 REGISTRY = REPO / "platform/workflows/service-onboarding/registry.yml"
 CATALOG = REPO / "platform/semaphore/templates.yml"
+LOCAL_CATALOG = REPO / "platform/semaphore/templates-local.yml"
 PER_SERVICE = "Deploy {service}"
 
 needs_ansible = pytest.mark.skipif(shutil.which("ansible-playbook") is None,
@@ -74,8 +75,10 @@ def _launchable() -> list[Path]:
     """Every playbook Semaphore launches: a template's playbook, wrappers included. A wrapper
     that does work before importing an executor (Clean Deploy agentgateway) would run that
     work before the executor's own guard (PR #459 review), so the guard sits in the launched
-    file itself."""
-    return sorted({REPO / t["playbook"] for t in yaml.safe_load(CATALOG.read_text())["templates"]})
+    file itself. The local catalog launches playbooks too: a Clean Deploy caddy/dns/erpnext/opa
+    and their deploys shipped without the guard because only templates.yml was read."""
+    return sorted({REPO / t["playbook"] for catalog in (CATALOG, LOCAL_CATALOG)
+                   for t in yaml.safe_load(catalog.read_text())["templates"]})
 
 
 # Launched playbooks that may start without the guard, each with the reason. Empty: keep it so.

@@ -124,6 +124,25 @@ def test_a_forged_inventory_hostname_cannot_satisfy_the_confirmation(forge, path
 
 @needs_ansible
 @pytest.mark.parametrize("path", INCLUDERS, ids=IDS)
+@pytest.mark.parametrize("limit", [False, True], ids=["all-hosts", "limit"])
+@pytest.mark.parametrize("forge_hosts", forgeries.templated_forgeries("_reset_hosts", "honest", "x"))
+@pytest.mark.parametrize("forge_confirm", forgeries.templated_forgeries("_reset_confirm", "honest", "x"))
+def test_a_forged_internal_fact_cannot_satisfy_the_confirmation(forge_hosts, forge_confirm, path, limit, tmp_path):
+    # The gate once pinned its inputs with set_fact, which an extra var of the same name outranks:
+    # `-e _reset_hosts=x -e _reset_confirm=x` passed it with no confirm_reset at all. Run-start's
+    # refuse-internal-extra-vars.yml refuses such names, but --limit skips that check (its stated
+    # limitation) and the gate must hold on its own. The forged names are the old fact names, in
+    # the plain, context-keyed and stateful templated forms.
+    host = f"{_service(path)}-local"
+    args = ["--limit", host] if limit else []
+    host, proc = _launch(path, tmp_path, *args, "-e", forge_hosts(tmp_path), "-e", forge_confirm(tmp_path))
+    assert proc.returncode != 0, proc.stdout
+    assert f"{REFUSAL}{host}" in proc.stdout, proc.stdout
+    assert TEARDOWN not in proc.stdout, proc.stdout
+
+
+@needs_ansible
+@pytest.mark.parametrize("path", INCLUDERS, ids=IDS)
 def test_a_launch_naming_the_host_gets_past_the_confirmation(path, tmp_path):
     host, proc = _launch(path, tmp_path, "-e", json.dumps({"confirm_reset": f"{_service(path)}-local"}))
     assert proc.returncode == 0, proc.stdout + proc.stderr
