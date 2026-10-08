@@ -27,8 +27,8 @@ Agentgateway stdout access logs, OTLP access records, and sampled trace spans MU
 
 #### Scenario: Callback query marker is absent from emitted telemetry
 - **WHEN** a synthetic query marker is sent to the agentgateway OIDC callback and its callback trace is sampled, and a separate representative model request produces its own sampled trace
-- **THEN** the marker is absent from stdout access logs, OTLP access records, and sampled trace-span attributes
-- **AND** each emitted `http.path` contains only the callback path
+- **THEN** the marker is absent from stdout access logs and OTLP access records for the callback request, and from the name and all attributes of its sampled callback span
+- **AND** the callback's stdout/OTLP records and sampled span have an `http.path` containing only the callback path
 - **AND** applicable status, identity, model, usage, and trace correlation remain available for the representative model request
 - **AND** the verification records the pinned-image configuration acceptance and exact reviewed deployment revision
 
