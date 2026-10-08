@@ -64,12 +64,15 @@ def _failed(stdout: str) -> dict:
 @pytest.mark.parametrize("confirm,ok", [(None, False), ("some-other-host", False), ("step-ca", True)])
 def test_a_ca_reset_runs_only_when_the_launch_names_the_host(tmp_path, confirm, ok):
     guard = _play(CLEAN, "Refuse a CA reset")
-    extra = ["-e", f"confirm_ca_reset={confirm}"] if confirm else []
-    r = _run(tmp_path, {"local_mode": True}, [_task(guard, "Require the run to NAME the host whose CA it destroys")],
-             extra=extra)
+    task = dict(_task(guard, "Require the run to NAME the host whose CA it destroys"))
+    # The shared confirmation task; the lifted copy names it by absolute path.
+    assert task["ansible.builtin.include_tasks"] == "tasks/assert-reset-confirmed.yml"
+    task["ansible.builtin.include_tasks"] = str(REPO / "platform/playbooks/tasks/assert-reset-confirmed.yml")
+    extra = ["-e", f"confirm_reset={confirm}"] if confirm else []
+    r = _run(tmp_path, {"local_mode": True}, [task], extra=extra)
     assert (r.returncode == 0) is ok, r.stdout + r.stderr
     if not ok:
-        assert "Refusing: pass -e confirm_ca_reset=step-ca" in r.stdout
+        assert "Refusing: pass -e confirm_reset=step-ca" in r.stdout
 
 
 def test_the_reset_guard_runs_before_anything_is_destroyed():

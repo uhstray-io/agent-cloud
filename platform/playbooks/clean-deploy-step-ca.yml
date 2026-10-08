@@ -10,9 +10,10 @@
 #
 # Uses composable tasks/clean-service.yml then runs deploy-step-ca.yml.
 #
-# Refuses unless the launch names the host it resets: -e confirm_ca_reset=<inventory
-# hostname>, the confirm_destroy pattern of destroy-vm.yml. Every template that runs this
-# asks for it with no default (openspec production-internal-ca, task 2.3).
+# Refuses unless the launch names the host it resets: -e confirm_reset=<inventory
+# hostname>, the one confirmation every Clean Deploy requires (tasks/assert-reset-confirmed.yml,
+# also enforced by tasks/clean-service.yml). Every template that runs this asks for it with no
+# default (openspec production-internal-ca, task 2.3).
 
 # An extra var outranks every value this playbook computes, so refuse any that sets an
 # internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
@@ -25,13 +26,11 @@
   become: false
   any_errors_fatal: true
   tasks:
+    # The shared gate of every Clean Deploy (tasks/assert-reset-confirmed.yml): a reset issues a
+    # new root that every client must trust again, so the launch must say which host, in its own
+    # launch. Checked here as well as in clean-service.yml so it precedes the first-boot check.
     - name: "Require the run to NAME the host whose CA it destroys"
-      ansible.builtin.assert:
-        that: (confirm_ca_reset | default('') | string) == inventory_hostname
-        fail_msg: >-
-          Refusing: pass -e confirm_ca_reset={{ inventory_hostname }} to destroy this CA's
-          root and intermediate. A reset issues a new root that every client must trust
-          again, so a destructive template must be told which host, in its own launch.
+      ansible.builtin.include_tasks: tasks/assert-reset-confirmed.yml
 
     # The redeploy below refuses without these; checked here so a confirmed reset with
     # incomplete inventory refuses before the root is destroyed, not after.

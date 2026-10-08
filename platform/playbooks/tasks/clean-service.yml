@@ -17,6 +17,7 @@
 #
 # Expected variables:
 #   service_name, monorepo_deploy_path, _monorepo_dir
+#   confirm_reset (required: the host name the launch means to destroy; see assert-reset-confirmed.yml)
 #   container_engine (optional, defaults to docker)
 #   local_mode (optional, defaults to false)
 
@@ -30,6 +31,11 @@
       - _monorepo_dir is defined
       - _monorepo_dir | length > 0
     fail_msg: "clean-service.yml requires service_name, monorepo_deploy_path, and _monorepo_dir."
+
+# Every Clean Deploy goes through this file, so the confirmation is enforced here once, before
+# any other task: the launch must name the host(s) it destroys (-e confirm_reset=<host>).
+- name: "Refuse a teardown the launch did not confirm"
+  ansible.builtin.include_tasks: assert-reset-confirmed.yml
 
 # ── Pin and check what the teardown deletes and runs ────────────────────────
 # `_monorepo_dir` comes from `local_monorepo_dir`, a public variable: an extra var sets it,

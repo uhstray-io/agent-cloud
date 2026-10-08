@@ -26,6 +26,7 @@ PLAYBOOKS = REPO / "platform/playbooks"
 GUARD = "refuse-internal-extra-vars.yml"
 REGISTRY = REPO / "platform/workflows/service-onboarding/registry.yml"
 CATALOG = REPO / "platform/semaphore/templates.yml"
+LOCAL_CATALOG = REPO / "platform/semaphore/templates-local.yml"
 PER_SERVICE = "Deploy {service}"
 
 needs_ansible = pytest.mark.skipif(shutil.which("ansible-playbook") is None,
@@ -74,8 +75,10 @@ def _launchable() -> list[Path]:
     """Every playbook Semaphore launches: a template's playbook, wrappers included. A wrapper
     that does work before importing an executor (Clean Deploy agentgateway) would run that
     work before the executor's own guard (PR #459 review), so the guard sits in the launched
-    file itself."""
-    return sorted({REPO / t["playbook"] for t in yaml.safe_load(CATALOG.read_text())["templates"]})
+    file itself. The local catalog launches playbooks too: a Clean Deploy caddy/dns/erpnext/opa
+    and their deploys shipped without the guard because only templates.yml was read."""
+    return sorted({REPO / t["playbook"] for catalog in (CATALOG, LOCAL_CATALOG)
+                   for t in yaml.safe_load(catalog.read_text())["templates"]})
 
 
 # Launched playbooks that may start without the guard, each with the reason. Empty: keep it so.
@@ -422,10 +425,10 @@ LOCAL_O11Y = "[o11y_svc]\nobs ansible_connection=local local_mode=true\n"
 
 @needs_ansible
 @pytest.mark.parametrize("extra, refusal", [
-    ({}, "Refusing: pass -e confirm_o11y_reset=obs"),
-    ({"confirm_o11y_reset": "other"}, "Refusing: pass -e confirm_o11y_reset=obs"),
-    ({"confirm_o11y_reset": "obs"}, "Pass expected_repository_sha"),
-    ({"confirm_o11y_reset": "obs", "expected_repository_sha": "0" * 40}, "not the reviewed " + "0" * 40),
+    ({}, "Refusing: pass -e confirm_reset=obs"),
+    ({"confirm_reset": "other"}, "Refusing: pass -e confirm_reset=obs"),
+    ({"confirm_reset": "obs"}, "Pass expected_repository_sha"),
+    ({"confirm_reset": "obs", "expected_repository_sha": "0" * 40}, "not the reviewed " + "0" * 40),
 ], ids=["no-confirm", "wrong-confirm", "no-sha", "wrong-sha"])
 def test_clean_deploy_o11y_refuses_before_destroying(extra, refusal, tmp_path):
     inv = tmp_path / "inv.ini"
@@ -446,21 +449,21 @@ def test_a_forged_local_mode_does_not_waive_the_reviewed_commit(forge, tmp_path)
     inv = tmp_path / "inv.ini"
     inv.write_text(REMOTE_O11Y)
     proc = _run(PLAYBOOKS / "clean-deploy-o11y.yml", tmp_path, "--check", "-e", forge(tmp_path),
-                "-e", json.dumps({"confirm_o11y_reset": "obs"}), inventory=str(inv))
+                "-e", json.dumps({"confirm_reset": "obs"}), inventory=str(inv))
     assert proc.returncode != 0, proc.stdout
     assert "Pass expected_repository_sha" in proc.stdout, proc.stdout
     assert "TASK [Destroy existing deployment]" not in proc.stdout
 
 
 @needs_ansible
-@pytest.mark.parametrize("extra", [{}, {"confirm_o11y_reset": "other"}], ids=["no-confirm", "wrong-confirm"])
+@pytest.mark.parametrize("extra", [{}, {"confirm_reset": "other"}], ids=["no-confirm", "wrong-confirm"])
 def test_clean_deploy_o11y_requires_the_confirmation_locally_too(extra, tmp_path):
     inv = tmp_path / "inv.ini"
     inv.write_text(LOCAL_O11Y)
     proc = _run(PLAYBOOKS / "clean-deploy-o11y.yml", tmp_path, "--check", "-e", json.dumps(extra),
                 inventory=str(inv))
     assert proc.returncode != 0, proc.stdout
-    assert "Refusing: pass -e confirm_o11y_reset=obs" in proc.stdout, proc.stdout
+    assert "Refusing: pass -e confirm_reset=obs" in proc.stdout, proc.stdout
     assert "TASK [Destroy existing deployment]" not in proc.stdout
 
 
@@ -482,7 +485,7 @@ def test_clean_deploy_o11y_refuses_the_reviewed_commit_with_uncommitted_files(tm
     inv = tmp_path / "inv.ini"
     inv.write_text(REMOTE_O11Y)
     proc = _run(repo / "platform/playbooks/clean-deploy-o11y.yml", tmp_path, "--check", "-e",
-                json.dumps({"confirm_o11y_reset": "obs", "expected_repository_sha": head}), inventory=str(inv))
+                json.dumps({"confirm_reset": "obs", "expected_repository_sha": head}), inventory=str(inv))
     assert proc.returncode != 0, proc.stdout
     assert f"The checkout is {head} with uncommitted files" in proc.stdout, proc.stdout
     assert "TASK [Destroy existing deployment]" not in proc.stdout
@@ -554,7 +557,8 @@ def _clean_only(tmp_path: Path) -> Path:
 def _prod_run(tmp_path: Path, *extra: str, hostvars: str = "", limit: bool = False):
     """A real run of the prod teardown on the ssh host. Returns (proc, engine log)."""
     args = ["--limit", "obs"] if limit else []
-    proc = _run(_clean_only(tmp_path), tmp_path, *args, "-e", json.dumps({"ansible_become": False}), *extra,
+    proc = _run(_clean_only(tmp_path), tmp_path, *args,
+                "-e", json.dumps({"ansible_become": False, "confirm_reset": "obs"}), *extra,
                 inventory=_prod_inventory(tmp_path, hostvars), path_prepend=_fake_engines(tmp_path))
     log = tmp_path / "engine-args"
     return proc, (log.read_text() if log.exists() else "")
@@ -568,7 +572,7 @@ def _destroy_only(tmp_path: Path) -> Path:
     kept = [p for p in plays if p.get("name") != "Fresh deploy"]
     assert len(kept) == len(plays) - 1
     text = yaml.safe_dump(kept)
-    for rel in ("refuse-internal-extra-vars.yml", "tasks/clean-service.yml"):
+    for rel in ("refuse-internal-extra-vars.yml", "tasks/clean-service.yml", "tasks/assert-reset-confirmed.yml"):
         assert rel in text
         text = text.replace(rel, str(PLAYBOOKS / rel))
     out = tmp_path / "destroy-only.yml"
@@ -641,7 +645,7 @@ def test_a_local_connection_set_from_outside_does_not_waive_the_o11y_gates_for_a
     # Clean Deploy o11y waives its SHA, checkout and retention gates for a local-dev host only: a
     # remote host whose connection an extra var turns local still needs the reviewed commit.
     proc = _run(PLAYBOOKS / "clean-deploy-o11y.yml", tmp_path, "--check", "-e",
-                json.dumps({"ansible_connection": conn, "confirm_o11y_reset": "obs"}),
+                json.dumps({"ansible_connection": conn, "confirm_reset": "obs"}),
                 inventory=_prod_inventory(tmp_path))
     assert proc.returncode != 0, proc.stdout
     assert "Pass expected_repository_sha" in proc.stdout, proc.stdout
@@ -658,7 +662,7 @@ def test_a_local_dev_host_waives_the_o11y_gates_under_any_spelling_of_a_local_co
     inv = tmp_path / "inv.ini"
     inv.write_text(f"[o11y_svc]\nobs-local ansible_connection={conn} local_mode=true local_monorepo_dir={genesis} "
                    f"{SERVICE_VARS}\n")
-    proc = _run(_destroy_only(tmp_path), tmp_path, "--check", "-e", json.dumps({"confirm_o11y_reset": "obs-local"}),
+    proc = _run(_destroy_only(tmp_path), tmp_path, "--check", "-e", json.dumps({"confirm_reset": "obs-local"}),
                 inventory=str(inv))
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert "Pass expected_repository_sha" not in proc.stdout
@@ -714,7 +718,7 @@ def test_a_forged_teardown_input_cannot_run_a_command_in_the_local_teardown(kind
     evil.chmod(0o755)
     forge = forgeries.templated_forgeries(name, honest, forged)[kind].values[0]
     proc = _run(_destroy_only(tmp_path), tmp_path, "-e", forge(tmp_path),
-                "-e", json.dumps({"confirm_o11y_reset": "obs-local"}), inventory=inv, path_prepend=bindir)
+                "-e", json.dumps({"confirm_reset": "obs-local"}), inventory=inv, path_prepend=bindir)
     assert not marker.exists(), proc.stdout
     if proc.returncode == 0:
         assert "compose" in log.read_text(), proc.stdout  # the honest teardown ran, on the fake engine
@@ -738,14 +742,14 @@ def test_a_late_flipping_template_never_reaches_the_teardown_scripts(mode, name,
         if mode == "local":
             inv, bindir, _log, marker, _genesis = _local_teardown_fixture(run)
             honest, bad = {n: (h, f) for n, h, f in LOCAL_INPUTS}[name]
-            playbook, extra = _destroy_only(run), {"confirm_o11y_reset": "obs-local"}
+            playbook, extra = _destroy_only(run), {"confirm_reset": "obs-local"}
         else:
             inv, bindir, marker = _prod_inventory(run), _fake_engines(run), run / "pwned"
             honest = {"local_monorepo_dir": lambda t: f"{PROD_HOME}/agent-cloud",
                       "service_name": lambda t: "o11y", "container_engine": lambda t: "docker",
                       "monorepo_deploy_path": lambda t: "platform/services/o11y/deployment"}[name]
             bad = {n: f for n, _h, f in LOCAL_INPUTS}[name]
-            playbook, extra = _clean_only(run), {}
+            playbook, extra = _clean_only(run), {"confirm_reset": "obs"}
         (run / "evil").write_text(f"#!/bin/sh\ntouch {marker}\n")
         (run / "evil").chmod(0o755)
         counter = run / "renders"
@@ -770,7 +774,7 @@ def test_a_forged_local_mode_cannot_move_a_local_genesis_path_into_the_prod_tear
     (genesis / "keep.txt").write_text("x")
     inv = _clean_inventory(tmp_path, f"local_mode=true local_monorepo_dir={genesis}")
     proc = _run(_destroy_only(tmp_path), tmp_path, "--check", "-e", forge(tmp_path),
-                "-e", json.dumps({"confirm_o11y_reset": "obs-local"}), inventory=inv)
+                "-e", json.dumps({"confirm_reset": "obs-local"}), inventory=inv)
     refused = PROD_REFUSAL in proc.stdout and proc.returncode != 0
     skipped = re.search(r"TASK \[Remove agent-cloud clone[^\n]*\*\nskipping: \[obs-local\]", proc.stdout)
     assert refused or skipped, proc.stdout
@@ -938,7 +942,7 @@ def test_a_genuinely_local_o11y_host_passes_the_gates_and_reaches_the_destroy(tm
     genesis = tmp_path / "genesis"
     genesis.mkdir()
     inv = _clean_inventory(tmp_path, f"local_mode=true local_monorepo_dir={genesis}")
-    proc = _run(_destroy_only(tmp_path), tmp_path, "--check", "-e", json.dumps({"confirm_o11y_reset": "obs-local"}),
+    proc = _run(_destroy_only(tmp_path), tmp_path, "--check", "-e", json.dumps({"confirm_reset": "obs-local"}),
                 inventory=inv)
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert "Refusing" not in proc.stdout and "Pass expected_repository_sha" not in proc.stdout

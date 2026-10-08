@@ -121,40 +121,100 @@ templates:
   # redeploy. clean-service.yml is local-aware — it keeps the shared deploy tree.
   - name: "Clean Deploy DNS (Local)"
     playbook: platform/playbooks/clean-deploy-dns.yml
+    survey_vars:
+      - name: confirm_reset
+        title: "Confirm: host whose data is destroyed"
+        description: "Type the target host name to confirm destroying its data. Anything else refuses. No default on purpose."
+        type: string
+        required: true
   - name: "Clean Deploy step-ca (Local)"
     playbook: platform/playbooks/clean-deploy-step-ca.yml
     survey_vars:
-      - name: confirm_ca_reset
-        title: "Confirm: host whose CA is reset"
-        description: "Type the step-ca inventory hostname. Anything else refuses. No default on purpose."
+      - name: confirm_reset
+        title: "Confirm: host whose data is destroyed"
+        description: "Type the target host name to confirm destroying its data. Anything else refuses. No default on purpose."
         type: string
         required: true
   - name: "Clean Deploy Caddy (Local)"
     playbook: platform/playbooks/clean-deploy-caddy.yml
+    survey_vars:
+      - name: confirm_reset
+        title: "Confirm: host whose data is destroyed"
+        description: "Type the target host name to confirm destroying its data. Anything else refuses. No default on purpose."
+        type: string
+        required: true
   - name: "Clean Deploy Authentik (Local)"
     playbook: platform/playbooks/clean-deploy-authentik.yml
+    survey_vars:
+      - name: confirm_reset
+        title: "Confirm: host whose data is destroyed"
+        description: "Type the target host name to confirm destroying its data. Anything else refuses. No default on purpose."
+        type: string
+        required: true
   - name: "Clean Deploy o11y (Local)"
     playbook: platform/playbooks/clean-deploy-o11y.yml
     survey_vars:
-      - name: confirm_o11y_reset
-        title: "Confirm: host whose o11y data is destroyed"
-        description: "Type the o11y inventory hostname. Anything else refuses. No default on purpose."
+      - name: confirm_reset
+        title: "Confirm: host whose data is destroyed"
+        description: "Type the target host name to confirm destroying its data. Anything else refuses. No default on purpose."
         type: string
         required: true
   - name: "Clean Deploy OPA (Local)"
     playbook: platform/playbooks/clean-deploy-opa.yml
+    survey_vars:
+      - name: confirm_reset
+        title: "Confirm: host whose data is destroyed"
+        description: "Type the target host name to confirm destroying its data. Anything else refuses. No default on purpose."
+        type: string
+        required: true
   - name: "Clean Deploy n8n (Local)"
     playbook: platform/playbooks/clean-deploy-n8n.yml
+    survey_vars:
+      - name: confirm_reset
+        title: "Confirm: host whose data is destroyed"
+        description: "Type the target host name to confirm destroying its data. Anything else refuses. No default on purpose."
+        type: string
+        required: true
   - name: "Clean Deploy ERPNext (Local)"
     playbook: platform/playbooks/clean-deploy-erpnext.yml
+    survey_vars:
+      - name: confirm_reset
+        title: "Confirm: host whose data is destroyed"
+        description: "Type the target host name to confirm destroying its data. Anything else refuses. No default on purpose."
+        type: string
+        required: true
   - name: "Clean Deploy tududi (Local)"
     playbook: platform/playbooks/clean-deploy-tududi.yml
+    survey_vars:
+      - name: confirm_reset
+        title: "Confirm: host whose data is destroyed"
+        description: "Type the target host name to confirm destroying its data. Anything else refuses. No default on purpose."
+        type: string
+        required: true
   - name: "Clean Deploy honcho (Local)"
     playbook: platform/playbooks/clean-deploy-honcho.yml
+    survey_vars:
+      - name: confirm_reset
+        title: "Confirm: host whose data is destroyed"
+        description: "Type the target host name to confirm destroying its data. Anything else refuses. No default on purpose."
+        type: string
+        required: true
   - name: "Clean Deploy agentgateway (Local)"
     playbook: platform/playbooks/clean-deploy-agentgateway.yml
+    survey_vars:
+      - name: confirm_reset
+        title: "Confirm: host whose data is destroyed"
+        description: "Type the target host name to confirm destroying its data. Anything else refuses. No default on purpose."
+        type: string
+        required: true
   - name: "Clean Deploy Postiz (Local)"
     playbook: platform/playbooks/clean-deploy-postiz.yml
+    survey_vars:
+      - name: confirm_reset
+        title: "Confirm: host whose data is destroyed"
+        description: "Type the target host name to confirm destroying its data. Anything else refuses. No default on purpose."
+        type: string
+        required: true
 
 # Phase 2 adds (when platform/playbooks/bootstrap-data.yml lands):
 #   - name: "Bootstrap Data (Local)"

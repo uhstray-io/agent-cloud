@@ -181,12 +181,20 @@ deploy() {
 }
 
 # DESTRUCTIVE: wipe the service's containers + volumes, then redeploy. The
-# shared deploy tree is kept (clean-service.yml is local-aware).
+# shared deploy tree is kept (clean-service.yml is local-aware). Every Clean
+# Deploy refuses unless the launch names the host it destroys
+# (tasks/assert-reset-confirmed.yml), so the caller must pass it: the local host
+# is <svc>-local. It is NEVER filled in here — a confirmation that the tool
+# supplies is not one. The value rides as a JSON extra var built by python, not
+# spliced into a string.
 clean_deploy() {
-  local svc="${1:-}"
-  [ -n "$svc" ] || die "usage: local-dev.sh clean-deploy <service>"
+  local svc="${1:-}" confirm="${2:-}"
+  [ -n "$svc" ] || die "usage: local-dev.sh clean-deploy <service> <confirm-host>"
+  [ -n "$confirm" ] || die "usage: make local-clean-deploy-${svc} CONFIRM_RESET=<host>  (the local host is ${svc}-local)"
   guard "$INV"
-  _run_template "platform/playbooks/clean-deploy-${svc}.yml"
+  local extra
+  extra=$(python3 -c 'import json,sys; print(json.dumps({"confirm_reset": sys.argv[1]}))' "$confirm")
+  _run_template "platform/playbooks/clean-deploy-${svc}.yml" "$extra"
 }
 
 validate() {
@@ -575,7 +583,8 @@ usage: scripts/local-dev.sh <subcommand>
   guard [file]       refuse non-local inventories (used by every subcommand)
   bootstrap          stand up local OpenBao + Semaphore + templates
   deploy <service>   run the service's deploy template via LOCAL Semaphore
-  clean-deploy <svc> DESTRUCTIVE: wipe the service's containers+volumes, redeploy
+  clean-deploy <svc> <host>  DESTRUCTIVE: wipe the service's containers+volumes, redeploy;
+                     <host> must name the host (<svc>-local), as confirm_reset
   validate           run Validate All via LOCAL Semaphore
   templates          re-publish shared + local-only templates to LOCAL Semaphore
   run <playbook> [json]  run any registered template by playbook basename via

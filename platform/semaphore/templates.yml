@@ -677,11 +677,11 @@ templates:
     playbook: platform/playbooks/clean-deploy-step-ca.yml
     repository: agent-cloud dev
     # DESTRUCTIVE: deletes the CA root and intermediate; the redeploy issues a new root
-    # every client must trust again. Refuses unless confirm_ca_reset names the host.
+    # every client must trust again. Refuses unless confirm_reset names the host.
     survey_vars:
-      - name: confirm_ca_reset
-        title: "Confirm: host whose CA is reset"
-        description: "Type the step-ca inventory hostname. Anything else refuses. No default on purpose."
+      - name: confirm_reset
+        title: "Confirm: host whose data is destroyed"
+        description: "Type the target host name to confirm destroying its data. Anything else refuses. No default on purpose."
         type: string
         required: true
       - name: service_branch
@@ -819,6 +819,11 @@ templates:
   - name: Clean Deploy NetBox
     playbook: platform/playbooks/clean-deploy-netbox.yml
     survey_vars:
+      - name: confirm_reset
+        title: "Confirm: host whose data is destroyed"
+        description: "Type the target host name to confirm destroying its data. Anything else refuses. No default on purpose."
+        type: string
+        required: true
       - name: service_branch
         title: "Branch"
         description: "Git branch to deploy (leave as 'main' for production)"
@@ -884,6 +889,11 @@ templates:
   - name: Clean Deploy UhhCraft
     playbook: platform/playbooks/clean-deploy-uhhcraft.yml
     survey_vars:
+      - name: confirm_reset
+        title: "Confirm: host whose data is destroyed"
+        description: "Type the target host name to confirm destroying its data. Anything else refuses. No default on purpose."
+        type: string
+        required: true
       - name: service_branch
         title: "Branch"
         description: "Git branch to deploy (leave as 'main' for production)"
@@ -894,6 +904,11 @@ templates:
   - name: Clean Deploy WisBot
     playbook: platform/playbooks/clean-deploy-wisbot.yml
     survey_vars:
+      - name: confirm_reset
+        title: "Confirm: host whose data is destroyed"
+        description: "Type the target host name to confirm destroying its data. Anything else refuses. No default on purpose."
+        type: string
+        required: true
       - name: service_branch
         title: "Branch"
         description: "Git branch to deploy (leave as 'main' for production)"
@@ -904,6 +919,11 @@ templates:
   - name: Clean Deploy OpenHands
     playbook: platform/playbooks/clean-deploy-openhands.yml
     survey_vars:
+      - name: confirm_reset
+        title: "Confirm: host whose data is destroyed"
+        description: "Type the target host name to confirm destroying its data. Anything else refuses. No default on purpose."
+        type: string
+        required: true
       - name: service_branch
         title: "Branch"
         description: "Git branch to deploy (leave as 'main' for production)"
@@ -919,9 +939,9 @@ templates:
     # reviewed commit, clean.
     dev_variant: true
     survey_vars:
-      - name: confirm_o11y_reset
-        title: "Confirm: host whose o11y data is destroyed"
-        description: "Type the o11y inventory hostname. Anything else refuses. No default on purpose."
+      - name: confirm_reset
+        title: "Confirm: host whose data is destroyed"
+        description: "Type the target host name to confirm destroying its data. Anything else refuses. No default on purpose."
         type: string
         required: true
       - name: expected_repository_sha
@@ -939,6 +959,11 @@ templates:
   - name: Clean Deploy Authentik
     playbook: platform/playbooks/clean-deploy-authentik.yml
     survey_vars:
+      - name: confirm_reset
+        title: "Confirm: host whose data is destroyed"
+        description: "Type the target host name to confirm destroying its data. Anything else refuses. No default on purpose."
+        type: string
+        required: true
       - name: service_branch
         title: "Branch"
         description: "Git branch to deploy (leave as 'main' for production)"
@@ -949,6 +974,11 @@ templates:
   - name: Clean Deploy tududi
     playbook: platform/playbooks/clean-deploy-tududi.yml
     survey_vars:
+      - name: confirm_reset
+        title: "Confirm: host whose data is destroyed"
+        description: "Type the target host name to confirm destroying its data. Anything else refuses. No default on purpose."
+        type: string
+        required: true
       - name: service_branch
         title: "Branch"
         description: "Git branch to deploy (leave as 'main' for production)"
@@ -963,6 +993,11 @@ templates:
     # service_branch=dev so the VM checkout matches the playbook.
     dev_variant: true
     survey_vars:
+      - name: confirm_reset
+        title: "Confirm: host whose data is destroyed"
+        description: "Type the target host name to confirm destroying its data. Anything else refuses. No default on purpose."
+        type: string
+        required: true
       - name: service_branch
         title: "Branch"
         description: "Git branch to deploy (leave as 'main' for production)"
@@ -973,6 +1008,11 @@ templates:
   - name: Clean Deploy honcho
     playbook: platform/playbooks/clean-deploy-honcho.yml
     survey_vars:
+      - name: confirm_reset
+        title: "Confirm: host whose data is destroyed"
+        description: "Type the target host name to confirm destroying its data. Anything else refuses. No default on purpose."
+        type: string
+        required: true
       - name: service_branch
         title: "Branch"
         description: "Git branch to deploy (leave as 'main' for production)"
@@ -991,6 +1031,11 @@ templates:
     # this.
     dev_variant: true
     survey_vars:
+      - name: confirm_reset
+        title: "Confirm: host whose data is destroyed"
+        description: "Type the target host name to confirm destroying its data. Anything else refuses. No default on purpose."
+        type: string
+        required: true
       - name: service_branch
         title: "Branch"
         description: "Git branch to deploy (leave as 'main' for production)"
@@ -1008,6 +1053,11 @@ templates:
     # re-registering. Set postiz_disable_registration back to false first, or
     # nobody can sign in to the rebuilt stack.
     survey_vars:
+      - name: confirm_reset
+        title: "Confirm: host whose data is destroyed"
+        description: "Type the target host name to confirm destroying its data. Anything else refuses. No default on purpose."
+        type: string
+        required: true
       - name: service_branch
         title: "Branch"
         description: "Git branch to deploy (leave as 'main' for production)"

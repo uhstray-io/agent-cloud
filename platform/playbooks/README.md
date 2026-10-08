@@ -159,7 +159,7 @@ and launches each with a forged internal name.
 | `deploy-authentik.yml` | Composable | Deploy Authentik IdP (secrets → containers → blueprints assembled from inventory → live-state verify: every placed blueprint applied, declared accounts present/active/in-group, retired accounts gone → Caddy fragment) |
 | `audit-authentik-retirements.yml` | Read-only | Count the live Authentik accounts named by private `*_legacy_username` declarations before a Dev blueprint deploy; prints counts, not usernames or credentials |
 | `recover-authentik-audit-runtime.yml` | Dev-bound recovery | Default read-only preflight checks existing container identity, restart policy, and exact Postgres/Redis data volumes; explicit apply starts only the existing database, cache, and server, leaving the blueprint worker stopped for the retirement audit |
-| `clean-deploy-netbox.yml` | Composable | Destructive: wipe volumes + fresh NetBox deploy |
+| `clean-deploy-netbox.yml` | Composable | Destructive: wipe volumes + fresh NetBox deploy. Every `clean-deploy-*.yml` requires `-e confirm_reset=<host name>` (required, no-default survey field on its template); the gate also refuses under `--check`, so a dry run names its host too. Locally: `make local-clean-deploy-<svc> CONFIRM_RESET=<svc>-local` |
 | `clean-deploy-uhhcraft.yml` | Composable | Destructive: wipe volumes + fresh UhhCraft deploy |
 | `rollback-inference-route.yml` | Composable | Take the inference gateway out of the public path or put it back, as code (`-e mode=gateway-config\|direct\|restore`): the previous gateway config, or `direct_<name>` copies of the current vLLM key published before Caddy is pointed at vLLM, then withdrawn on restore |
 
@@ -331,7 +331,8 @@ used to live in `AUTOMATION-COMPOSABILITY.md`, which is now under `plan/archive/
 | `tasks/manage-approle.yml` | Implemented | Create/update AppRole + HCL policy, store credentials in OpenBao |
 | `tasks/manage-diode-credentials.yml` | Implemented | Create fresh Diode orb-agent OAuth2 credentials via NetBox plugin API |
 | `tasks/deploy-orb-agent.yml` | Implemented | Start privileged orb-agent with vault-integrated agent.yaml config |
-| `tasks/clean-service.yml` | Implemented | Destroy containers, volumes, runtime dir, and clone for full rebuild |
+| `tasks/clean-service.yml` | Implemented | Destroy containers, volumes, runtime dir, and clone for full rebuild. Refuses first unless `-e confirm_reset=<host>` names the play's host(s) (`tasks/assert-reset-confirmed.yml`) |
+| `tasks/assert-reset-confirmed.yml` | Implemented | Destructive-reset confirmation: `confirm_reset` must equal the play's host list from `ansible_play_hosts_all` (sorted, comma-joined), never `inventory_hostname`, which an extra var can set |
 | `tasks/clone-and-deploy.yml` | Legacy | Clone monorepo, symlink, run deploy.sh, health check (used by legacy services) |
 | `tasks/apply-openbao-policy.yml` | Implemented | Apply a single OpenBao policy from an .hcl file |
 | `tasks/seed-discovery-credential.yml` | Implemented | Copy/update one credential set at a discovery/* vault path |
@@ -392,7 +393,7 @@ For the complete onboarding checklist (7 phases, all tiers), see `plan/architect
 1. Create `platform/services/<name>/deployment/` with `deploy.sh` (container-lifecycle only), `compose.yml`, and `templates/*.j2`
 2. Define `_secret_definitions` and `_env_templates` for the service
 3. Create `platform/playbooks/deploy-<name>.yml` using composable tasks: `manage-secrets.yml` -> deploy.sh -> verify
-4. Create `platform/playbooks/clean-deploy-<name>.yml` using `tasks/clean-service.yml`
+4. Create `platform/playbooks/clean-deploy-<name>.yml` using `tasks/clean-service.yml`; its template needs the required `confirm_reset` survey variable (`test_clean_deploy_confirm.py` fails without it)
 5. Add host to site-config inventory with `service_name`, `monorepo_deploy_path`, `service_url`
 6. Add Semaphore templates to `platform/semaphore/templates.yml`, run `setup-templates.yml`
 7. Generate SSH key pair, store in OpenBao, run `distribute-ssh-keys.yml`, and confirm the

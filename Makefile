@@ -73,8 +73,8 @@ local-creds: ## Show the Authentik admin login (read live from OpenBao) for brow
 local-deploy-%: ## Deploy a service through the LOCAL Semaphore (e.g. make local-deploy-uhhcraft)
 	@$(LOCAL_DEV) deploy $*
 
-local-clean-deploy-%: ## DESTRUCTIVE: wipe a service's containers+volumes, then redeploy (e.g. make local-clean-deploy-dns)
-	@$(LOCAL_DEV) clean-deploy $*
+local-clean-deploy-%: ## DESTRUCTIVE: wipe a service's containers+volumes, then redeploy; CONFIRM_RESET=<host> required (make local-clean-deploy-dns CONFIRM_RESET=dns-local)
+	@$(LOCAL_DEV) clean-deploy $* "$(CONFIRM_RESET)"
 
 local-validate: ## Run Validate All through the LOCAL Semaphore
 	@$(LOCAL_DEV) validate
