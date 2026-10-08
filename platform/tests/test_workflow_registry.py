@@ -132,7 +132,10 @@ def test_conformance_collection_and_dashboard_absence_are_explicit():
 
     step_table = next(panel for panel in conformance["panels"]
                       if panel["title"] == "Latest step status by service")
-    assert "groupingToMatrix" not in [item["id"] for item in step_table["transformations"]]
+    assert [item["id"] for item in step_table["transformations"]] == [
+        "labelsToFields", "merge", "organize"
+    ]
+    assert step_table["transformations"][1]["options"] == {}
     assert step_table["fieldConfig"]["defaults"]["mappings"] == []
     value_style = next(item for item in step_table["fieldConfig"]["overrides"]
                        if item["matcher"]["options"] == "State")
