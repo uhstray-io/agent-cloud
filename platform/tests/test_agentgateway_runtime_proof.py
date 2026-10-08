@@ -106,6 +106,7 @@ def test_config_validation_precedes_container_lifecycle_and_suppresses_diagnosti
     classifier = tasks[classifier_index]
     assert classifier["no_log"] is True
     assert classifier["failed_when"] is False
+    assert classifier["ansible.builtin.command"]["stdin_add_newline"] is False
     assert "_agw_validation_safe_category" in refusal_message
     for protected_result in ("_agw_validation_diagnostic", "_agw_config_validation"):
         assert protected_result not in refusal_message
@@ -268,8 +269,11 @@ templar = Templar(loader=loader, variables=variables)
 stdin_template = classifier['ansible.builtin.command']['stdin']
 stdin_template = AnsibleTagHelper.tag(stdin_template, TrustedAsTemplate())
 encoded_payload = templar.template(stdin_template)
+stdin_bytes = encoded_payload.encode()
+if classifier['ansible.builtin.command'].get('stdin_add_newline', True):
+    stdin_bytes += b'\n'
 classified = subprocess.run(
-    classifier['ansible.builtin.command']['argv'], input=encoded_payload.encode(),
+    classifier['ansible.builtin.command']['argv'], input=stdin_bytes,
     capture_output=True, check=False,
 )
 if classified.returncode != 0:
@@ -344,6 +348,7 @@ def test_checkout_diagnostics_report_only_fixed_status_categories_and_counts(tmp
             for fallback in fallbacks:
                 parsed = json.loads(fallback)
                 assert parsed["status"] == "error"
+                assert parsed["untracked_categories"] == {}
                 assert default_filter.render(value="", FALLBACK=fallback) == fallback
     programs = [task["ansible.builtin.command"]["argv"][2] for task in status_tasks]
     assert programs[0] == programs[1]
@@ -398,6 +403,14 @@ def test_checkout_diagnostics_report_only_fixed_status_categories_and_counts(tmp
                 "type_changed": 0,
                 "untracked": 4,
             },
+            "untracked_categories": {
+                "gateway_rendered_state": 0,
+                "gateway_certificate_material": 0,
+                "gateway_deployment_other": 0,
+                "service_runtime_state": 0,
+                "certificate_or_key_material": 0,
+                "other": 4,
+            },
             "path_count": 6,
         }
         assert "paths" not in report
@@ -443,10 +456,77 @@ def test_checkout_diagnostics_fail_closed_with_static_error_metadata(tmp_path):
     assert json.loads(result.stdout) == {
         "status": "error",
         "counts": {},
+        "untracked_categories": {},
         "path_count": 0,
         "reason": "git-status-failed",
     }
     assert str(tmp_path) not in result.stdout
+
+
+def test_checkout_diagnostics_classify_untracked_locations_without_exposing_paths(tmp_path):
+    plays = yaml.safe_load(VERIFY_PLAYBOOK.read_text())
+    gateway = next(play for play in plays if play.get("hosts") == "agentgateway_svc")
+    program = gateway["vars"]["_agw_checkout_status_argv"][2]
+    repo = tmp_path / "classification-repo"
+    repo.mkdir()
+    git_env = _isolated_git_environment()
+
+    subprocess.run(["git", "init", "-q"], cwd=repo, env=git_env, check=True)
+    paths = {
+        "platform/services/agentgateway/deployment/.env": "UNIQUE-ENV-FIXTURE-CONTENT",
+        "platform/services/agentgateway/deployment/config.yaml": "apiKey: UNIQUE-CONFIG-CONTENT",
+        "platform/services/agentgateway/deployment/config.yaml.previous": "old config secret-shaped content",
+        "platform/services/agentgateway/deployment/certs/private-hostname.pem": "UNIQUE-CERTIFICATE-CONTENT",
+        "platform/services/agentgateway/deployment/debug/private-token-ABC123.py": "UNIQUE-DEPLOYMENT-CONTENT",
+        "platform/services/o11y/deployment/.env": "UNIQUE-OTHER-ENV-CONTENT",
+        "unusual/private-hostname.pem": "UNIQUE-KEY-MATERIAL-CONTENT",
+        "unusual/private-token-ABC123.example.internal.txt": "UNIQUE-OTHER-CONTENT",
+    }
+    for relative_path, contents in paths.items():
+        destination = repo / relative_path
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(contents)
+
+    result = subprocess.run(
+        [sys.executable, "-c", program], cwd=repo, env=git_env,
+        capture_output=True, text=True, check=False,
+    )
+    assert result.returncode == 0
+    report = json.loads(result.stdout)
+    assert report["status"] == "ok"
+    assert report["counts"]["untracked"] == len(paths)
+    assert report["untracked_categories"] == {
+        "gateway_rendered_state": 3,
+        "gateway_certificate_material": 1,
+        "gateway_deployment_other": 1,
+        "service_runtime_state": 1,
+        "certificate_or_key_material": 1,
+        "other": 1,
+    }
+    assert report["path_count"] == len(paths)
+    for private_value in (*paths.keys(), *paths.values(), str(repo)):
+        assert private_value not in result.stdout
+
+
+def test_checkout_diagnostics_refuse_oversized_status_output_with_static_metadata(tmp_path):
+    plays = yaml.safe_load(VERIFY_PLAYBOOK.read_text())
+    gateway = next(play for play in plays if play.get("hosts") == "agentgateway_svc")
+    program = gateway["vars"]["_agw_checkout_status_argv"][2]
+    wrapper = (
+        "import subprocess; from types import SimpleNamespace; "
+        "subprocess.run = lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout=b'x' * 1048577); "
+        "exec(" + repr(program) + ")"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", wrapper], cwd=tmp_path,
+        env=_isolated_git_environment(), capture_output=True, text=True, check=False,
+    )
+    assert result.returncode == 1
+    assert result.stdout == (
+        '{"status":"error","counts":{},"untracked_categories":{},'
+        '"path_count":0,"reason":"git-status-failed"}\n'
+    )
+    assert len(result.stdout) < 200
 
 
 def test_checkout_diagnostics_count_porcelain_renames_copies_and_other_statuses(tmp_path):
@@ -512,6 +592,14 @@ def test_checkout_diagnostics_count_porcelain_renames_copies_and_other_statuses(
             "type_changed": 1,
             "untracked": 0,
         },
+        "untracked_categories": {
+            "gateway_rendered_state": 0,
+            "gateway_certificate_material": 0,
+            "gateway_deployment_other": 0,
+            "service_runtime_state": 0,
+            "certificate_or_key_material": 0,
+            "other": 0,
+        },
         "path_count": 5,
     }
     assert all(
@@ -547,6 +635,14 @@ def test_checkout_diagnostics_skip_both_paths_in_porcelain_rename_and_copy_recor
             "conflicted": 0,
             "type_changed": 0,
             "untracked": 0,
+        },
+        "untracked_categories": {
+            "gateway_rendered_state": 0,
+            "gateway_certificate_material": 0,
+            "gateway_deployment_other": 0,
+            "service_runtime_state": 0,
+            "certificate_or_key_material": 0,
+            "other": 0,
         },
         "path_count": 2,
     }

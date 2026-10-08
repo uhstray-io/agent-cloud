@@ -42,10 +42,33 @@
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
                 check=False,
+                timeout=10,
             )
             if result.returncode != 0:
                 raise ValueError
+            if len(result.stdout) > 1048576:
+                raise ValueError
             fields = result.stdout.split(b"\0")
+            untracked_categories = {
+                "gateway_rendered_state": 0,
+                "gateway_certificate_material": 0,
+                "gateway_deployment_other": 0,
+                "service_runtime_state": 0,
+                "certificate_or_key_material": 0,
+                "other": 0,
+            }
+            gateway_runtime_paths = {
+                b"platform/services/agentgateway/deployment/.env",
+                b"platform/services/agentgateway/deployment/config.yaml",
+                b"platform/services/agentgateway/deployment/config.yaml.previous",
+                b"platform/services/agentgateway/deployment/config.yaml.replaced",
+            }
+            gateway_deploy_prefix = b"platform/services/agentgateway/deployment/"
+            gateway_certs_prefix = gateway_deploy_prefix + b"certs/"
+            runtime_basenames = {
+                b".env", b".env.local", b"config.yaml",
+                b"config.yaml.previous", b"config.yaml.replaced",
+            }
             counts = {
                 "modified": 0,
                 "added": 0,
@@ -65,8 +88,25 @@
                     raise ValueError
                 status = entry[:2].decode("ascii")
                 path_count += 1
+                if path_count > 2000:
+                    raise ValueError
                 if status == "??":
                     category = "untracked"
+                    path = entry[3:]
+                    basename = path.rsplit(b"/", 1)[-1]
+                    if path in gateway_runtime_paths:
+                        untracked_category = "gateway_rendered_state"
+                    elif path.startswith(gateway_certs_prefix):
+                        untracked_category = "gateway_certificate_material"
+                    elif path.startswith(gateway_deploy_prefix):
+                        untracked_category = "gateway_deployment_other"
+                    elif basename in runtime_basenames:
+                        untracked_category = "service_runtime_state"
+                    elif basename.endswith((b".pem", b".key")):
+                        untracked_category = "certificate_or_key_material"
+                    else:
+                        untracked_category = "other"
+                    untracked_categories[untracked_category] += 1
                 elif "U" in status or status in ("AA", "DD"):
                     category = "conflicted"
                 elif "R" in status:
@@ -88,9 +128,14 @@
                     if index >= len(fields) - 1:
                         raise ValueError
                     index += 1
-            print(json.dumps({"status": "ok", "counts": counts, "path_count": path_count}, separators=(",", ":")))
+            print(json.dumps({
+                "status": "ok",
+                "counts": counts,
+                "untracked_categories": untracked_categories,
+                "path_count": path_count,
+            }, separators=(",", ":")))
         except Exception:
-            print('{"status":"error","counts":{},"path_count":0,"reason":"git-status-failed"}')
+            print('{"status":"error","counts":{},"untracked_categories":{},"path_count":0,"reason":"git-status-failed"}')
             sys.exit(1)
   tasks:
     - name: Read the exact deployed repository revision
@@ -120,17 +165,17 @@
       ansible.builtin.assert:
         that:
           - _agw_checkout_status.rc == 0
-          - (_agw_checkout_status.stdout | default('{"status":"error","counts":{},"path_count":0,"reason":"diagnostic-unavailable"}', true) | from_json).status == 'ok'
+          - (_agw_checkout_status.stdout | default('{"status":"error","counts":{},"untracked_categories":{},"path_count":0,"reason":"diagnostic-unavailable"}', true) | from_json).status == 'ok'
         fail_msg: "Could not safely read the gateway checkout status; no read-only receipt was produced."
         quiet: true
 
     - name: Require a clean reviewed gateway checkout
       ansible.builtin.assert:
         that:
-          - (_agw_checkout_status.stdout | default('{"status":"error","counts":{},"path_count":0,"reason":"diagnostic-unavailable"}', true) | from_json).path_count == 0
+          - (_agw_checkout_status.stdout | default('{"status":"error","counts":{},"untracked_categories":{},"path_count":0,"reason":"diagnostic-unavailable"}', true) | from_json).path_count == 0
         fail_msg: >-
           The gateway checkout has uncommitted or untracked source changes; the read-only
-          receipt requires a clean checkout. Safe status={{ _agw_checkout_status.stdout | default('{"status":"error","counts":{},"path_count":0,"reason":"diagnostic-unavailable"}', true) | from_json | to_json }}.
+          receipt requires a clean checkout. Safe status={{ _agw_checkout_status.stdout | default('{"status":"error","counts":{},"untracked_categories":{},"path_count":0,"reason":"diagnostic-unavailable"}', true) | from_json | to_json }}.
         quiet: true
 
     - name: Read safe metadata from rendered files before runtime comparison
@@ -258,16 +303,16 @@
       ansible.builtin.assert:
         that:
           - _agw_final_checkout_status.rc == 0
-          - (_agw_final_checkout_status.stdout | default('{"status":"error","counts":{},"path_count":0,"reason":"diagnostic-unavailable"}', true) | from_json).status == 'ok'
+          - (_agw_final_checkout_status.stdout | default('{"status":"error","counts":{},"untracked_categories":{},"path_count":0,"reason":"diagnostic-unavailable"}', true) | from_json).status == 'ok'
         fail_msg: "Could not safely reread the gateway checkout status; no read-only receipt was produced."
         quiet: true
 
     - name: Require the checkout to remain clean at receipt completion
       ansible.builtin.assert:
         that:
-          - (_agw_final_checkout_status.stdout | default('{"status":"error","counts":{},"path_count":0,"reason":"diagnostic-unavailable"}', true) | from_json).path_count == 0
+          - (_agw_final_checkout_status.stdout | default('{"status":"error","counts":{},"untracked_categories":{},"path_count":0,"reason":"diagnostic-unavailable"}', true) | from_json).path_count == 0
         fail_msg: >-
-          The checkout changed during the runtime receipt. Safe status={{ _agw_final_checkout_status.stdout | default('{"status":"error","counts":{},"path_count":0,"reason":"diagnostic-unavailable"}', true) | from_json | to_json }}.
+          The checkout changed during the runtime receipt. Safe status={{ _agw_final_checkout_status.stdout | default('{"status":"error","counts":{},"untracked_categories":{},"path_count":0,"reason":"diagnostic-unavailable"}', true) | from_json | to_json }}.
         quiet: true
 
     - name: Report the reviewed Dev runtime metadata
