@@ -91,7 +91,7 @@ and why.
 | 3.10 | A test wrote scratch playbooks into the tracked tree and raced parallel tests that glob it | Working-tree damage | 1 | Convention (session-end tree check proposed) |
 | 3.11 | Made a deploy stop recreating containers without auditing a step that relied on it; a directory reset under a live bind mount emptied Authentik's custom blueprints in prod | Live state | 1 | Test (`test_no_bind_mount_dir_delete.py` + FORCE_RECREATE case in `test_compose_up_if_changed.bats`) |
 | 3.12 | Launched two `(Dev)` deploys through the API without `service_branch`; Semaphore applies survey defaults only in its form, so both hosts checked out `main` under Dev playbooks | Live state | 1 | Playbook guard (`assert-placement-branch.yml`) + launcher default fill + tests (`test_placement_branch_guard.py`, `test_semaphore_launch.py`, mutation-checked) |
-| 3.13 | The `dev` -> `main` promotion merge let the repo's delete-head-branch-on-merge setting delete `dev`, the long-lived integration branch; the main -> dev sync then failed | Live state | 1 | Ruleset (`protect-dev.json`, deletion rule) + test (`test_ruleset_protect_dev.py`); ruleset not yet applied live |
+| 3.13 | The `dev` -> `main` promotion merge let the repo's delete-head-branch-on-merge setting delete `dev`, the long-lived integration branch; the main -> dev sync then failed | Live state | 1 | Ruleset (`protect-dev.json`, deletion rule) + test (`test_ruleset_protect_dev.py`); live since 2026-10-08 |
 | 4.1 | `while read` silently dropped an unterminated final line | Data handling | 1 | Convention |
 | 4.2 | Stored `.env` values without stripping surrounding quotes | Data handling | 1 | Convention |
 | 4.3 | Used a real internal IP address as a test vector | Data leak | 1 | Pre-commit (existing) |
@@ -2175,6 +2175,13 @@ rules on `refs/heads/dev`, no bypass actor) and `platform/tests/test_ruleset_pro
 (mutation-checked: removing the `deletion` rule fails it). The ruleset takes effect only once
 an admin runs `.github/rulesets/apply.sh`; until then this is `Convention`, and
 `ruleset-drift.yml` reports the missing live ruleset as drift.
+
+**Status — 2026-10-08.** Applied live: ruleset `protect-dev` is `active`
+(`gh api repos/uhstray-io/agent-cloud/rulesets`), `gh api
+repos/uhstray-io/agent-cloud/rules/branches/dev` returns `deletion` and `non_fast_forward`,
+and `.github/rulesets/check-drift.sh` reports `OK [protect-dev] live ruleset matches`. Still
+unverified: that it blocks the automatic head-branch deletion in practice; the next
+`dev` -> `main` promotion is the test.
 
 ## 4. Data handling
 
