@@ -1765,11 +1765,24 @@ overview = json.loads((deploy / 'config/grafana/dashboards/service-overview.json
 service = next(variable for variable in overview['templating']['list'] if variable['name'] == 'service')
 assert service['datasource']['uid'] == 'prometheus'
 assert service['query'] == 'label_values(up, service)'
-queries = [target['expr'] for panel in overview['panels'] for target in panel['targets']]
-assert all('{service=~"$service"}' in query or 'service=~"$service"' in query for query in queries)
-assert all('container=' not in query for query in queries)
-log_rate = next(panel for panel in overview['panels'] if panel['title'] == 'Service log lines per second')
-assert log_rate['targets'][0]['expr'] == 'sum by (service) (rate({service=~"$service"}[5m]))'
+assert service['label'] == 'Metrics service'
+log_service = next(variable for variable in overview['templating']['list'] if variable['name'] == 'log_service')
+assert log_service['datasource']['uid'] == 'loki'
+assert log_service['query'] == 'label_values({service=~".+"}, service)'
+assert log_service['label'] == 'Logs service'
+metric_queries = [target['expr'] for panel in overview['panels'] if panel['datasource']['type'] == 'prometheus'
+                  for target in panel['targets']]
+loki_queries = [target['expr'] for panel in overview['panels'] if panel['datasource']['type'] == 'loki'
+                for target in panel['targets']]
+assert all('{service=~"$service"}' in query or 'service=~"$service"' in query for query in metric_queries)
+assert all('$log_service' in query for query in loki_queries)
+assert all('container=' not in query for query in metric_queries)
+log_rate = next(panel for panel in overview['panels'] if panel['title'] == 'Log volume by source')
+assert len(log_rate['targets']) == 4
+assert 'container=~".+"' in log_rate['targets'][0]['expr']
+assert 'signal="access-log"' in log_rate['targets'][1]['expr']
+assert 'signal="span"' in log_rate['targets'][2]['expr']
+assert 'job="agent-cloud-conformance"' in log_rate['targets'][3]['expr']
 
 alloy_template = (deploy / 'templates/config.alloy.j2').read_text()
 env = Environment(undefined=StrictUndefined)
