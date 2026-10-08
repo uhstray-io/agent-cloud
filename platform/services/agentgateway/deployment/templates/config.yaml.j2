@@ -114,6 +114,9 @@ frontendPolicies:
   accessLog:
     add:
       identity: apiKey.name
+      # The stock http.path may carry URL query parameters, including OIDC codes
+      # on /oidc/callback. Keep route visibility while emitting only the path.
+      http.path: request.path
 {% if agw_otlp_host | default('') %}
     # Access logs share Alloy's OTLP receiver with traces. The service field
     # becomes Loki's bounded service label; stdout logging stays available.
@@ -123,6 +126,8 @@ frontendPolicies:
         add:
           service: '"agentgateway"'
           identity: apiKey.name
+          # OTLP fields are configured separately, so sanitize its copy too.
+          http.path: request.path
 {% endif %}
 {% if agw_otlp_host | default('') %}
   tracing:

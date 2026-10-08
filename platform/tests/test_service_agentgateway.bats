@@ -151,6 +151,9 @@ setup() {
   assert_grep -qE '^\s*accessLog:$' "$CONFIG"
   refute_grep -qE '^\s*logging:$' "$CONFIG"
   [ "$(grep -c 'identity: apiKey.name' "$CONFIG")" -eq 3 ]
+  # v1.5.0 emits http.path in both stdout and OTLP records; each source replaces
+  # it with CEL's query-free request.path while retaining identity correlation.
+  [ "$(grep -c 'http.path: request.path' "$CONFIG")" -eq 2 ]
   # Key form only: a comment may NAME the fields it forbids.
   refute_grep -qE ':\s*llm\.(prompt|completion)\b' "$CONFIG"
 }
@@ -377,6 +380,10 @@ assert config['frontendPolicies']['accessLog']['add']['identity'] == 'apiKey.nam
 assert access['host'] == 'receiver.test:4317'
 assert access['fields']['add']['service'] == '"agentgateway"'
 assert access['fields']['add']['identity'] == 'apiKey.name'
+assert config['frontendPolicies']['accessLog']['add']['http.path'] == 'request.path'
+assert access['fields']['add']['http.path'] == 'request.path'
+assert config['frontendPolicies']['accessLog']['add']['http.path'] != 'request.pathAndQuery'
+assert access['fields']['add']['http.path'] != 'request.pathAndQuery'
 PY
   _render_ui false
   refute_grep -qE '^  tracing:' "$BATS_TEST_TMPDIR/config.yaml"
@@ -385,6 +392,8 @@ import sys
 import yaml
 config = yaml.safe_load(open(sys.argv[1], encoding='utf-8'))
 assert config['frontendPolicies']['accessLog']['add']['identity'] == 'apiKey.name'
+assert config['frontendPolicies']['accessLog']['add']['http.path'] == 'request.path'
+assert config['frontendPolicies']['accessLog']['add']['http.path'] != 'request.pathAndQuery'
 assert 'otlp' not in config['frontendPolicies']['accessLog']
 PY
 }
