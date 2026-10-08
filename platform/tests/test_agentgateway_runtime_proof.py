@@ -6,6 +6,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -80,6 +81,19 @@ def test_config_validation_precedes_container_lifecycle_and_suppresses_diagnosti
         "Refuse container recreation when the pinned image rejects rendered config"
     )
     assert validate_index < refuse_index
+    validation_refusal = tasks[refuse_index]
+    refusal_message = validation_refusal["ansible.builtin.assert"]["fail_msg"]
+    classifier_index = task_names.index("Classify the validator result without exposing its output")
+    assert validate_index < classifier_index < refuse_index
+    classifier = tasks[classifier_index]
+    assert classifier["no_log"] is True
+    assert classifier["failed_when"] is False
+    assert "_agw_validation_diagnostic.stdout" in refusal_message
+    assert "_agw_config_validation.stdout" not in refusal_message
+    assert "_agw_config_validation.stderr" not in refusal_message
+    assert "argv" not in refusal_message
+    assert refusal_message.count("default('") == 2
+    assert refusal_message.count("', true)") == 2
     argv = str(validate["ansible.builtin.command"]["argv"])
     assert "--validate-only" in argv and "/config.yaml" in argv
     assert "--volume" in argv and "/certs:/certs:ro" in argv
@@ -149,6 +163,178 @@ def test_config_validation_precedes_container_lifecycle_and_suppresses_diagnosti
         assert ("--userns=keep-id:uid=65532,gid=65532" in command) == (tls and not local)
         assert ("1000:1000" in command) == (tls and local)
         assert ("SSL_CERT_FILE=/certs/step-ca-bundle.crt" in command) == local
+
+
+def test_validator_failure_diagnostics_use_only_fixed_exit_code_categories():
+    plays = yaml.safe_load(PLAYBOOK.read_text())
+    phase_one = next(play for play in plays if play.get("name", "").startswith("Phase 1:"))
+    classifier = next(
+        task
+        for task in phase_one["tasks"]
+        if task.get("name") == "Classify the validator result without exposing its output"
+    )
+    program = classifier["ansible.builtin.command"]["argv"][2]
+    cases = {
+        125: ("container-runtime-error", "permission denied secret-path"),
+        126: ("validator-not-executable", ""),
+        127: ("validator-command-not-found", ""),
+        1: ("config-schema-error", "unknown field private-config-secret"),
+        2: ("file-mount-permission-error", "permission denied /private/secret"),
+        3: ("cli-argument-error", "unknown flag --secret-value"),
+        4: ("network-dependency-error", "connection refused https://secret.invalid"),
+        5: ("validator-nonzero-unclassified", "opaque-private-token-value"),
+        -1: ("validator-result-unavailable", ""),
+    }
+    for rc, (category, diagnostic) in cases.items():
+        result = subprocess.run(
+            [sys.executable, "-c", program],
+            input=json.dumps({"rc": rc, "stdout": "", "stderr": diagnostic}),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0
+        assert json.loads(result.stdout) == {"category": category, "rc": rc}
+        if diagnostic:
+            assert diagnostic not in result.stdout
+
+    invalid_input = subprocess.run(
+        [sys.executable, "-c", program], input="not-json", capture_output=True, text=True, check=False
+    )
+    assert invalid_input.returncode == 1
+    assert json.loads(invalid_input.stdout) == {"category": "diagnostic-unavailable", "rc": -1}
+
+
+def test_checkout_diagnostics_report_only_fixed_status_categories_and_counts(tmp_path):
+    plays = yaml.safe_load(VERIFY_PLAYBOOK.read_text())
+    gateway = next(play for play in plays if play.get("hosts") == "agentgateway_svc")
+    status_tasks = [
+        task
+        for task in gateway["tasks"]
+        if task.get("name") in {
+            "Read checkout change categories as bounded safe metadata",
+            "Reread checkout change categories as safe metadata",
+        }
+    ]
+    assert len(status_tasks) == 2
+    shared_argv = gateway["vars"]["_agw_checkout_status_argv"]
+    assert all(task["ansible.builtin.command"]["argv"] == shared_argv for task in status_tasks)
+    assert "import subprocess" in VERIFY_PLAYBOOK.read_text()
+    assert VERIFY_PLAYBOOK.read_text().count("import subprocess") == 1
+    checkout_assertions = [
+        task
+        for task in gateway["tasks"]
+        if task.get("name") in {
+            "Require a clean reviewed gateway checkout",
+            "Require the checkout to remain clean at receipt completion",
+        }
+    ]
+    assert len(checkout_assertions) == 2
+    default_filter = Environment().from_string("{{ value | default(FALLBACK, true) }}")
+    for task in checkout_assertions:
+        assertion = task["ansible.builtin.assert"]
+        expressions = assertion["that"] + [assertion["fail_msg"]]
+        for expression in expressions:
+            if "from_json" not in expression:
+                continue
+            fallbacks = re.findall(r"default\('([^']+)', true\)", expression)
+            assert len(fallbacks) == expression.count("from_json")
+            for fallback in fallbacks:
+                parsed = json.loads(fallback)
+                assert parsed["status"] == "error"
+                assert default_filter.render(value="", FALLBACK=fallback) == fallback
+    programs = [task["ansible.builtin.command"]["argv"][2] for task in status_tasks]
+    assert programs[0] == programs[1]
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
+    odd_tracked = repo / "docs" / "line\nbreak.md"
+    ordinary_tracked = repo / "docs" / "ordinary-file.md"
+    odd_tracked.parent.mkdir()
+    odd_tracked.write_text("committed-content\n")
+    ordinary_tracked.write_text("committed-content\n")
+    subprocess.run(["git", "add", "--", "docs"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "baseline"], cwd=repo, check=True)
+    odd_tracked.write_text("changed-content-must-not-appear\n")
+    ordinary_tracked.write_text("changed-content-must-not-appear\n")
+    untracked = repo / "new\nfile.txt"
+    untracked.write_text("untracked-content-must-not-appear\n")
+    (repo / "unsafe?secret.txt").write_text("unsafe-name-content-must-not-appear\n")
+    (repo / ("x" * 201 + ".txt")).write_text("long-name-content-must-not-appear\n")
+    secret_like_name = "private-token-ABC123.example.internal"
+    (repo / secret_like_name).write_text("secret-like-name-content-must-not-appear\n")
+
+    for program in programs:
+        result = subprocess.run(
+            [sys.executable, "-c", program], cwd=repo, capture_output=True, text=True, check=False
+        )
+        assert result.returncode == 0
+        assert result.stderr == ""
+        assert result.stdout.count("\n") == 1
+        report = json.loads(result.stdout)
+        assert report == {
+            "status": "ok",
+            "counts": {
+                "modified": 2,
+                "added": 0,
+                "deleted": 0,
+                "renamed": 0,
+                "copied": 0,
+                "conflicted": 0,
+                "type_changed": 0,
+                "untracked": 4,
+            },
+            "path_count": 6,
+        }
+        assert "paths" not in report
+        assert "committed-content" not in result.stdout
+        assert "changed-content-must-not-appear" not in result.stdout
+        assert "untracked-content-must-not-appear" not in result.stdout
+        assert "line\\nbreak.md" not in result.stdout
+        assert "unsafe?secret.txt" not in result.stdout
+        assert "x" * 201 not in result.stdout
+        assert secret_like_name not in result.stdout
+        assert "secret-like-name-content-must-not-appear" not in result.stdout
+
+    bulk = repo / "bulk"
+    bulk.mkdir()
+    for index in range(55):
+        (bulk / f"{index:02}.txt").write_text("bulk-content-must-not-appear\n")
+    bounded = subprocess.run(
+        [sys.executable, "-c", programs[0]], cwd=repo, capture_output=True, text=True, check=False
+    )
+    assert bounded.returncode == 0
+    bounded_report = json.loads(bounded.stdout)
+    assert bounded_report["counts"]["untracked"] == 59
+    assert bounded_report["path_count"] == 61
+    assert "paths" not in bounded_report
+    assert "bulk-content-must-not-appear" not in bounded.stdout
+
+
+def test_checkout_diagnostics_fail_closed_with_static_error_metadata(tmp_path):
+    plays = yaml.safe_load(VERIFY_PLAYBOOK.read_text())
+    gateway = next(play for play in plays if play.get("hosts") == "agentgateway_svc")
+    status_task = next(
+        task
+        for task in gateway["tasks"]
+        if task.get("name") == "Read checkout change categories as bounded safe metadata"
+    )
+    program = status_task["ansible.builtin.command"]["argv"][2]
+    result = subprocess.run(
+        [sys.executable, "-c", program], cwd=tmp_path, capture_output=True, text=True, check=False
+    )
+    assert result.returncode == 1
+    assert result.stderr == ""
+    assert json.loads(result.stdout) == {
+        "status": "error",
+        "counts": {},
+        "path_count": 0,
+        "reason": "git-status-failed",
+    }
+    assert str(tmp_path) not in result.stdout
 
 
 def test_rendered_config_inspector_emits_only_pinned_image_sampling_revision_and_digest(tmp_path, capsys):

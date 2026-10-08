@@ -533,10 +533,66 @@
       no_log: true
       when: not ansible_check_mode
 
+    # Classify only known diagnostic patterns. The input can contain rendered values, so
+    # the task is no_log and its output is restricted to fixed labels plus the exit code.
+    - name: "Classify the validator result without exposing its output"
+      ansible.builtin.command:
+        argv:
+          - python3
+          - -c
+          - |
+            import json
+            import re
+            import sys
+
+            try:
+                result = json.load(sys.stdin)
+                rc = int(result.get("rc", -1))
+                output = "\n".join(str(result.get(key, "")) for key in ("stdout", "stderr")).lower()
+                categories = (
+                    ("config-schema-error", r"unknown field|unknown key|failed to parse|parse error|schema validation|invalid (?:yaml|configuration|config)"),
+                    ("file-mount-permission-error", r"permission denied|operation not permitted|access denied|read-only file system"),
+                    ("cli-argument-error", r"unknown (?:flag|option)|unrecognized (?:flag|option)|flag provided but not defined|unexpected argument|requires an argument|usage:"),
+                    ("network-dependency-error", r"connection refused|connection reset|no route to host|temporary failure in name resolution|no such host|deadline exceeded|i/o timeout"),
+                )
+                if rc == 125:
+                    category = "container-runtime-error"
+                elif rc == 126:
+                    category = "validator-not-executable"
+                elif rc == 127:
+                    category = "validator-command-not-found"
+                elif rc < 0:
+                    category = "validator-result-unavailable"
+                elif rc == 0:
+                    category = "accepted"
+                else:
+                    category = next((name for name, pattern in categories if re.search(pattern, output)), "validator-nonzero-unclassified")
+                print(json.dumps({"category": category, "rc": rc}, separators=(",", ":")))
+            except Exception:
+                print('{"category":"diagnostic-unavailable","rc":-1}')
+                sys.exit(1)
+        stdin: >-
+          {{ {'rc': _agw_config_validation.rc | default(-1),
+              'stdout': _agw_config_validation.stdout | default(''),
+              'stderr': _agw_config_validation.stderr | default('')} | to_json }}
+      register: _agw_validation_diagnostic
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+      when: not ansible_check_mode
+
     - name: "Refuse container recreation when the pinned image rejects rendered config"
       ansible.builtin.assert:
-        that: _agw_config_validation.rc == 0
-        fail_msg: "The rendered agentgateway config was rejected by cr.agentgateway.dev/agentgateway:v1.5.0; no gateway container was recreated. Validator output is suppressed because it may include configuration values."
+        that:
+          - _agw_config_validation.rc == 0
+          - _agw_validation_diagnostic.rc == 0
+        fail_msg: >-
+          The rendered agentgateway config was not accepted by
+          cr.agentgateway.dev/agentgateway:v1.5.0; no gateway container was recreated
+          (category={{ (_agw_validation_diagnostic.stdout | default('{"category":"diagnostic-unavailable","rc":-1}', true) | from_json).category }},
+          rc={{ (_agw_validation_diagnostic.stdout | default('{"category":"diagnostic-unavailable","rc":-1}', true) | from_json).rc }}).
+          Validator output is suppressed because it may include configuration values.
         success_msg: "Pinned agentgateway v1.5.0 accepted rendered config before container lifecycle."
         quiet: true
       when: not ansible_check_mode
