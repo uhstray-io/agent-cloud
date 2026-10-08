@@ -113,7 +113,10 @@ def test_config_validation_precedes_container_lifecycle_and_suppresses_diagnosti
     assert refusal_message.count("default('") == 1
     assert refusal_message.count("', true)") == 1
     assert validation_refusal["ansible.builtin.assert"]["that"] == ["_agw_config_validation.rc == 0"]
-    normalize = next(task for task in tasks if task.get("name") == "Normalize validator diagnostics to a protected allowlisted category")
+    normalize = next(
+        task for task in tasks
+        if task.get("name") == "Normalize validator diagnostics to a protected allowlisted category"
+    )
     assert normalize["no_log"] is True
     assert normalize["ansible.builtin.set_fact"]["_agw_validation_safe_category"]
     argv = str(validate["ansible.builtin.command"]["argv"])
@@ -249,9 +252,17 @@ playbook_path = sys.argv[1]
 payload = json.loads(sys.stdin.read())
 loader = DataLoader()
 plays = loader.load_from_file(playbook_path)
-tasks = next(play for play in plays if play.get('name', '').startswith('Phase 1:'))['tasks']
-classifier = next(task for task in tasks if task.get('name') == 'Classify the validator result without exposing its output')
-normalizer = next(task for task in tasks if task.get('name') == 'Normalize validator diagnostics to a protected allowlisted category')
+tasks = next(
+    play for play in plays if play.get('name', '').startswith('Phase 1:')
+)['tasks']
+classifier = next(
+    task for task in tasks
+    if task.get('name') == 'Classify the validator result without exposing its output'
+)
+normalizer = next(
+    task for task in tasks
+    if task.get('name') == 'Normalize validator diagnostics to a protected allowlisted category'
+)
 variables = {'_agw_config_validation': payload}
 templar = Templar(loader=loader, variables=variables)
 stdin_template = classifier['ansible.builtin.command']['stdin']
