@@ -5,6 +5,10 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import os
+import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -18,6 +22,7 @@ TEMPLATES = ROOT / "platform/semaphore/templates.yml"
 HELPER = ROOT / "platform/playbooks/files/inspect-agentgateway-runtime.py"
 IMAGE_HELPER = ROOT / "platform/playbooks/files/check-agentgateway-rendered-image.py"
 CONFIG_TEMPLATE = ROOT / "platform/services/agentgateway/deployment/templates/config.yaml.j2"
+ENV_TEMPLATE = ROOT / "platform/services/agentgateway/deployment/templates/env.j2"
 RENDERED_CONFIG = (
     'apiKey: "do-not-print-this"\n'
     "frontendPolicies:\n"
@@ -214,6 +219,25 @@ def test_rendered_config_inspector_rejects_invalid_sampling_values(tmp_path, cap
     assert "do-not-print-this" not in json.dumps(report)
 
 
+def test_rendered_config_inspector_accepts_inclusive_sampling_limit(tmp_path, capsys):
+    helper = _load_helper()
+    env = tmp_path / ".env"
+    config = tmp_path / "config.yaml"
+    env.write_text("AGW_IMAGE=cr.agentgateway.dev/agentgateway:v1.5.0\n")
+    config.write_text(
+        RENDERED_CONFIG.replace("randomSampling: 0.05", "randomSampling: 0.1").replace(
+            "clientSampling: 0.05", "clientSampling: 0.1"
+        )
+    )
+    from unittest.mock import patch
+
+    with patch.object(sys, "stdin", open_json_input(env, config)):
+        assert helper.main() == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["status"] == "pass"
+    assert report["random_sampling"] == report["client_sampling"] == 0.1
+
+
 def test_actual_config_template_render_passes_sampling_inspector(tmp_path, capsys):
     env = Environment(trim_blocks=True, lstrip_blocks=True)
     env.filters.update(
@@ -254,6 +278,71 @@ def test_actual_config_template_render_passes_sampling_inspector(tmp_path, capsy
     assert report["random_sampling"] == report["client_sampling"] == 0.05
     assert "test-only-client-key" not in json.dumps(report)
     assert "test-only-upstream-key" not in json.dumps(report)
+
+
+def test_actual_env_template_pin_passes_checker_and_deploy_preflight(tmp_path):
+    template_env = Environment(trim_blocks=True, lstrip_blocks=True)
+    template_env.filters["bool"] = bool
+    rendered = template_env.from_string(ENV_TEMPLATE.read_text()).render(
+        secrets={"agw_db_password": "test-only-db-secret", "vllm_api_key": "test-only-upstream-secret"},
+        agw_ui_enabled=False,
+        agw_listener_tls=False,
+        local_mode=False,
+    )
+    deployment = tmp_path / "platform/services/agentgateway/deployment"
+    lib_dir = tmp_path / "platform/lib"
+    deployment.mkdir(parents=True)
+    lib_dir.mkdir(parents=True)
+    shutil.copy2(ROOT / "platform/lib/common.sh", lib_dir / "common.sh")
+    shutil.copy2(ROOT / "platform/services/agentgateway/deployment/deploy.sh", deployment / "deploy.sh")
+    (deployment / "deploy.sh").chmod(0o755)
+    (deployment / ".env").write_text(rendered)
+    (deployment / "config.yaml").write_text("binds: []\n")
+
+    checker = subprocess.run(
+        [sys.executable, str(IMAGE_HELPER), str(deployment / ".env")],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert checker.returncode == 0
+    assert json.loads(checker.stdout) == {
+        "status": "pass",
+        "image": "cr.agentgateway.dev/agentgateway:v1.5.0",
+    }
+
+    capture = tmp_path / "compose-capture"
+    compose = tmp_path / "compose-stub"
+    compose.write_text(
+        "#!/bin/sh\n"
+        'printf "%s\\n" "${AGW_IMAGE:-<unset>}" > "$COMPOSE_CAPTURE"\n'
+        'printf "%s\\n" "$*" > "$COMPOSE_ARGS_CAPTURE"\n'
+    )
+    compose.chmod(0o755)
+    process_env = os.environ.copy()
+    process_env.update(
+        {
+            "CONTAINER_ENGINE": "docker",
+            "COMPOSE_CMD": str(compose),
+            "COMPOSE_CAPTURE": str(capture),
+            "COMPOSE_ARGS_CAPTURE": str(tmp_path / "compose-args"),
+            "AGW_IMAGE": "cr.example/inherited-override:9",
+        }
+    )
+    deployment_run = subprocess.run(
+        ["bash", str(deployment / "deploy.sh"), "--pull-only"],
+        cwd=deployment,
+        env=process_env,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=15,
+    )
+    assert deployment_run.returncode == 0
+    assert capture.read_text().strip() == "cr.agentgateway.dev/agentgateway:v1.5.0"
+    assert (tmp_path / "compose-args").read_text().strip().endswith("pull")
+    assert "test-only-db-secret" not in deployment_run.stdout + deployment_run.stderr
+    assert "test-only-upstream-secret" not in deployment_run.stdout + deployment_run.stderr
 
 
 def test_rendered_config_inspector_accepts_disabled_client_sampling(tmp_path, capsys):

@@ -38,6 +38,7 @@ setup() {
   cat > "$T/bin/engine" <<'STUB'
 #!/usr/bin/env bash
 S="$STUB_STATE"
+printf '%s\n' "$*" >> "$S/engine.log"
 if [ "$1" = image ] && [ "$2" = inspect ]; then
   case "${!#}" in *postgres*) cat "$S/db_image_now" ;; *) cat "$S/image_now" ;; esac; exit 0
 fi
@@ -107,6 +108,18 @@ verify_only() {
     LOCAL_MODE="" COMPOSE_OVERLAYS="${OVERLAYS:-}" "$D/deploy.sh" --verify-only
 }
 
+assert_verify_engine_calls_read_only() {
+  local call
+  while IFS= read -r call; do
+    # step_decide reads the project container list and each image ID as well as
+    # inspecting containers and probing readiness; no lifecycle command is allowed.
+    case "$call" in
+      inspect*|exec*|ps*|image\ inspect*) ;;
+      *) echo "Unexpected engine command during verify-only: $call" >&2; return 1 ;;
+    esac
+  done < "$S/engine.log"
+}
+
 recreates() { cat "$S/recreates"; }
 # The run's last output line (bash 3.2 has no negative array index).
 last() { printf '%s' "${lines[${#lines[@]}-1]}"; }
@@ -144,15 +157,19 @@ last() { printf '%s' "${lines[${#lines[@]}-1]}"; }
   deploy
   [ "$status" -eq 0 ]
   : > "$S/compose.log"
+  : > "$S/engine.log"
   verify_only
   [ "$status" -eq 0 ]
+  assert_verify_engine_calls_read_only
   assert_contains "$output" "runtime-inputs-result: pass"
   [ ! -s "$S/compose.log" ]
   [ "$(recreates)" -eq 1 ]
 
   printf '# changed after start\n' >> "$D/config.yaml"
+  : > "$S/engine.log"
   verify_only
   [ "$status" -ne 0 ]
+  assert_verify_engine_calls_read_only
   assert_contains "$output" "runtime-inputs-result: refused"
   assert_contains "$output" "inputs changed"
   [ ! -s "$S/compose.log" ]
@@ -163,9 +180,11 @@ last() { printf '%s' "${lines[${#lines[@]}-1]}"; }
   deploy
   [ "$status" -eq 0 ]
   : > "$S/compose.log"
+  : > "$S/engine.log"
   touch "$S/not_ready"
   verify_only
   [ "$status" -ne 0 ]
+  assert_verify_engine_calls_read_only
   assert_contains "$output" "runtime-inputs-result: refused"
   assert_contains "$output" "readiness not answering"
   [ ! -s "$S/compose.log" ]
