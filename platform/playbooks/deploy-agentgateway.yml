@@ -560,14 +560,23 @@
                     str(result.get(key, ""))[:65536] for key in ("stdout", "stderr")
                 ).lower()
                 categories = (
-                    ("config-schema-error", r"unknown field|unknown key|failed to parse|parse error|schema validation|invalid (?:yaml|configuration|config)"),
-                    ("config-type-variant-error", r"invalid type|wrong type|expected (?:a |an )?(?:sequence|mapping|scalar)|unknown variant|expected (?:one of|variant)"),
-                    ("environment-reference-error", r"missing environment variable|environment variable.{0,80}(?:not set|undefined|missing)|(?:not set|undefined).{0,80}environment variable"),
                     (
                         "invalid-endpoint-error",
-                        r"invalid (?:url|uri|endpoint)|malformed (?:url|uri|endpoint)|"
+                        r"invalid (?:url|uri|endpoint|host:port)|malformed (?:url|uri|endpoint)|"
                         r"(?:url|uri|endpoint).{0,80}(?:invalid|malformed|not valid)|"
-                        r"failed to parse (?:url|uri|endpoint)",
+                        r"(?:url|uri|endpoint) parse error|failed to parse (?:url|uri|endpoint)",
+                    ),
+                    (
+                        "config-schema-error",
+                        r"unknown field|unknown key|failed to parse (?:yaml|configuration|config)|"
+                        r"parse error|schema validation|invalid (?:yaml|configuration|config)",
+                    ),
+                    ("config-type-variant-error", r"invalid type|wrong type|expected (?:a |an )?(?:sequence|mapping|scalar)|unknown variant|expected (?:one of|variant)"),
+                    (
+                        "environment-reference-error",
+                        r"missing environment variable|environment variable.{0,80}(?:not found|not set|undefined|missing)|"
+                        r"(?:not found|not set|undefined).{0,80}environment variable|"
+                        r"error looking key.{0,80} up: environment variable not found",
                     ),
                     (
                         "resource-certificate-load-error",

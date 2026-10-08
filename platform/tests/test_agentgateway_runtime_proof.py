@@ -213,8 +213,12 @@ def test_validator_failure_diagnostics_use_only_fixed_exit_code_categories():
         (1, "validator-nonzero-exit-1", "opaque private-token-ABC123.example.internal"),
         (6, "config-type-variant-error", "expected a sequence for private-token-ABC123"),
         (7, "environment-reference-error", "environment variable private-token-ABC123 is not set"),
+        (7, "environment-reference-error", "error looking key private-token-ABC123 up: environment variable not found"),
         (8, "invalid-endpoint-error", "invalid endpoint https://private-token-ABC123.invalid/path"),
-        (9, "resource-certificate-load-error", "failed to load certificate private-token-ABC123.pem"),
+        (8, "invalid-endpoint-error", "invalid host:port: private-token-ABC123.example.internal"),
+        (8, "invalid-endpoint-error", "failed to parse URL: https://private-token-ABC123.invalid/path"),
+        (9, "config-schema-error", "failed to parse YAML private-config-secret"),
+        (10, "resource-certificate-load-error", "failed to load certificate private-token-ABC123.pem"),
         (-1, "validator-result-unavailable", ""),
     ]
     for rc, category, diagnostic in cases:
