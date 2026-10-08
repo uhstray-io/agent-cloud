@@ -542,11 +542,13 @@
           - -c
           - |
             import json
+            import base64
             import re
             import sys
 
             try:
-                result = json.load(sys.stdin)
+                payload = base64.b64decode(sys.stdin.buffer.read(), validate=True)
+                result = json.loads(payload)
                 rc = int(result.get("rc", -1))
                 output = "\n".join(str(result.get(key, "")) for key in ("stdout", "stderr")).lower()
                 categories = (
@@ -567,14 +569,13 @@
                     category = "accepted"
                 else:
                     category = next((name for name, pattern in categories if re.search(pattern, output)), "validator-nonzero-unclassified")
-                print(json.dumps({"category": category, "rc": rc}, separators=(",", ":")))
+                print(f"{category}|{rc}")
             except Exception:
-                print('{"category":"diagnostic-unavailable","rc":-1}')
-                sys.exit(1)
+                print("diagnostic-unavailable|-1")
         stdin: >-
           {{ {'rc': _agw_config_validation.rc | default(-1),
               'stdout': _agw_config_validation.stdout | default(''),
-              'stderr': _agw_config_validation.stderr | default('')} | to_json }}
+              'stderr': _agw_config_validation.stderr | default('')} | to_json | b64encode }}
       register: _agw_validation_diagnostic
       changed_when: false
       failed_when: false
@@ -582,16 +583,27 @@
       no_log: true
       when: not ansible_check_mode
 
+    - name: "Normalize validator diagnostics to a protected allowlisted category"
+      ansible.builtin.set_fact:
+        _agw_validation_safe_category: >-
+          {% set candidate = (_agw_validation_diagnostic.stdout | default('diagnostic-unavailable|-1', true) | trim).split('|') | first %}
+          {{ candidate if candidate in [
+            'container-runtime-error', 'validator-not-executable', 'validator-command-not-found',
+            'validator-result-unavailable', 'accepted', 'config-schema-error',
+            'file-mount-permission-error', 'cli-argument-error', 'network-dependency-error',
+            'validator-nonzero-unclassified', 'diagnostic-unavailable'
+          ] else 'diagnostic-unavailable' }}
+      changed_when: false
+      no_log: true
+      when: not ansible_check_mode
+
     - name: "Refuse container recreation when the pinned image rejects rendered config"
       ansible.builtin.assert:
         that:
           - _agw_config_validation.rc == 0
-          - _agw_validation_diagnostic.rc == 0
         fail_msg: >-
-          The rendered agentgateway config was not accepted by
-          cr.agentgateway.dev/agentgateway:v1.5.0; no gateway container was recreated
-          (category={{ (_agw_validation_diagnostic.stdout | default('{"category":"diagnostic-unavailable","rc":-1}', true) | from_json).category }},
-          rc={{ (_agw_validation_diagnostic.stdout | default('{"category":"diagnostic-unavailable","rc":-1}', true) | from_json).rc }}).
+          The rendered agentgateway config validator failed; no gateway container was recreated
+          (category={{ _agw_validation_safe_category | default('diagnostic-unavailable', true) }}).
           Validator output is suppressed because it may include configuration values.
         success_msg: "Pinned agentgateway v1.5.0 accepted rendered config before container lifecycle."
         quiet: true

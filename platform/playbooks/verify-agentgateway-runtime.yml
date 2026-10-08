@@ -116,11 +116,17 @@
       failed_when: false
       check_mode: false
 
-    - name: Require a clean reviewed gateway checkout
+    - name: Require checkout status diagnostics to be available
       ansible.builtin.assert:
         that:
           - _agw_checkout_status.rc == 0
           - (_agw_checkout_status.stdout | default('{"status":"error","counts":{},"path_count":0,"reason":"diagnostic-unavailable"}', true) | from_json).status == 'ok'
+        fail_msg: "Could not safely read the gateway checkout status; no read-only receipt was produced."
+        quiet: true
+
+    - name: Require a clean reviewed gateway checkout
+      ansible.builtin.assert:
+        that:
           - (_agw_checkout_status.stdout | default('{"status":"error","counts":{},"path_count":0,"reason":"diagnostic-unavailable"}', true) | from_json).path_count == 0
         fail_msg: >-
           The gateway checkout has uncommitted or untracked source changes; the read-only
@@ -248,11 +254,17 @@
       failed_when: false
       check_mode: false
 
-    - name: Require the checkout to remain clean at receipt completion
+    - name: Require checkout status diagnostics to remain available
       ansible.builtin.assert:
         that:
           - _agw_final_checkout_status.rc == 0
           - (_agw_final_checkout_status.stdout | default('{"status":"error","counts":{},"path_count":0,"reason":"diagnostic-unavailable"}', true) | from_json).status == 'ok'
+        fail_msg: "Could not safely reread the gateway checkout status; no read-only receipt was produced."
+        quiet: true
+
+    - name: Require the checkout to remain clean at receipt completion
+      ansible.builtin.assert:
+        that:
           - (_agw_final_checkout_status.stdout | default('{"status":"error","counts":{},"path_count":0,"reason":"diagnostic-unavailable"}', true) | from_json).path_count == 0
         fail_msg: >-
           The checkout changed during the runtime receipt. Safe status={{ _agw_final_checkout_status.stdout | default('{"status":"error","counts":{},"path_count":0,"reason":"diagnostic-unavailable"}', true) | from_json | to_json }}.
