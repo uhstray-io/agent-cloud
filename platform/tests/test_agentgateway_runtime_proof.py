@@ -15,6 +15,16 @@ PLAYBOOK = ROOT / "platform/playbooks/deploy-agentgateway.yml"
 VERIFY_PLAYBOOK = ROOT / "platform/playbooks/verify-agentgateway-runtime.yml"
 TEMPLATES = ROOT / "platform/semaphore/templates.yml"
 HELPER = ROOT / "platform/playbooks/files/inspect-agentgateway-runtime.py"
+RENDERED_CONFIG = (
+    'apiKey: "do-not-print-this"\n'
+    "frontendPolicies:\n"
+    "  accessLog:\n"
+    "    add:\n"
+    "      identity: apiKey.name\n"
+    "  tracing:\n"
+    "    randomSampling: 0.05\n"
+    "    clientSampling: 0.05\n"
+)
 
 
 def _load_helper():
@@ -70,10 +80,7 @@ def test_rendered_config_inspector_emits_only_pinned_image_sampling_revision_and
     env = tmp_path / ".env"
     config = tmp_path / "config.yaml"
     env.write_text("AGW_IMAGE=cr.agentgateway.dev/agentgateway:v1.5.0\nVLLM_API_KEY=do-not-print-this\n")
-    config.write_text(
-        'apiKey: "do-not-print-this"\n'
-        "  tracing:\n    randomSampling: 0.05\n    clientSampling: 0.05\n"
-    )
+    config.write_text(RENDERED_CONFIG)
     import sys
     from unittest.mock import patch
 
@@ -99,7 +106,7 @@ def test_rendered_config_inspector_rejects_sampling_or_image_drift(tmp_path, cap
     env = tmp_path / ".env"
     config = tmp_path / "config.yaml"
     env.write_text("AGW_IMAGE=cr.agentgateway.dev/agentgateway:v1.5.1\n")
-    config.write_text("  tracing:\n    randomSampling: 0.05\n    clientSampling: 0.05\n")
+    config.write_text(RENDERED_CONFIG)
     import sys
     from unittest.mock import patch
 
@@ -115,7 +122,7 @@ def test_rendered_config_inspector_accepts_disabled_client_sampling(tmp_path, ca
     env = tmp_path / ".env"
     config = tmp_path / "config.yaml"
     env.write_text("AGW_IMAGE=cr.agentgateway.dev/agentgateway:v1.5.0\n")
-    config.write_text("  tracing:\n    randomSampling: 0.05\n    clientSampling: false\n")
+    config.write_text(RENDERED_CONFIG.replace("clientSampling: 0.05", "clientSampling: false"))
     import sys
     from unittest.mock import patch
 
@@ -124,6 +131,48 @@ def test_rendered_config_inspector_accepts_disabled_client_sampling(tmp_path, ca
     report = json.loads(capsys.readouterr().out)
     assert report["random_sampling"] == 0.05
     assert report["client_sampling"] is False
+
+
+def test_rendered_config_inspector_rejects_duplicate_sampling_declarations(tmp_path, capsys):
+    helper = _load_helper()
+    env = tmp_path / ".env"
+    config = tmp_path / "config.yaml"
+    env.write_text("AGW_IMAGE=cr.agentgateway.dev/agentgateway:v1.5.0\n")
+    import sys
+    from unittest.mock import patch
+
+    for duplicate in ("randomSampling", "clientSampling"):
+        config.write_text(RENDERED_CONFIG + f"    {duplicate}: 0.05\n")
+        with patch.object(sys, "stdin", open_json_input(env, config)):
+            assert helper.main() == 2
+        report = json.loads(capsys.readouterr().out)
+        assert report["status"] == "refused"
+        assert "duplicated" in report["reason"]
+        assert "do-not-print-this" not in json.dumps(report)
+
+
+def test_rendered_config_inspector_ignores_sampling_outside_frontend_tracing(tmp_path, capsys):
+    helper = _load_helper()
+    env = tmp_path / ".env"
+    config = tmp_path / "config.yaml"
+    env.write_text("AGW_IMAGE=cr.agentgateway.dev/agentgateway:v1.5.0\n")
+    config.write_text(
+        "tracing:\n"
+        "  randomSampling: 0.05\n"
+        "  clientSampling: 0.05\n"
+        "frontendPolicies:\n"
+        "  accessLog:\n"
+        "    add:\n"
+        "      identity: apiKey.name\n"
+    )
+    import sys
+    from unittest.mock import patch
+
+    with patch.object(sys, "stdin", open_json_input(env, config)):
+        assert helper.main() == 2
+    report = json.loads(capsys.readouterr().out)
+    assert report["status"] == "refused"
+    assert "frontendPolicies.tracing" in report["reason"]
 
 
 def test_dev_template_is_read_only_and_requires_the_expected_revision():
