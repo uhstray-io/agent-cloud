@@ -1453,4 +1453,13 @@ provisioned dashboard JSON and evaluates Loki panels only when their exact title
 explicitly selected. Whole-dashboard runs skip Loki because a healthy log panel can be
 empty. Loki stream queries use a bounded range and result limit; metric LogQL results use
 the vector/matrix counters. Reports contain panel titles, target statuses, and counts only.
-Dev-bound Semaphore validation of the Service Overview's two Loki panels remains pending.
+The Service Overview keeps UID `service-overview` and its existing four panel queries; it
+also shows the current count of reported scrape targets separately from scrape availability
+over the selected time range. The target count includes down targets, while missing telemetry
+remains no data rather than a healthy zero.
+
+Sanitized read-only Dev-bound Semaphore receipts 3350 and 3352 verified both Service
+Overview Loki panels (`Service log lines per second` and `Recent service logs`) for
+`agentgateway` over 6h. Receipt 3351 checked `Services tracked` and `Step status by service`
+at 24h, but did not prove Grafana table rendering. The conformance table can combine statuses
+from overlapping collector runs; interpreting and validating that rendered table remains open.
