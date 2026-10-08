@@ -150,8 +150,8 @@ templates:
         type: string
         required: true
 
-  # Read-only: evaluates one provisioned dashboard's Prometheus panels over the lookback and
-  # passes only when every selected panel has data. Prints names and counts, never label values.
+  # Read-only: evaluates selected Prometheus panels and explicitly named Loki panels from one
+  # provisioned dashboard. Prints titles and counts, never labels, samples, logs or queries.
   - name: Verify o11y Dashboard Data (Dev)
     playbook: platform/playbooks/verify-o11y-dashboard-data.yml
     repository: agent-cloud dev
@@ -169,7 +169,7 @@ templates:
         default_value: "1h"
       - name: panel_titles
         title: "Panel titles (JSON list)"
-        description: "Exact panel titles to verify; empty verifies every panel"
+        description: "Exact panel titles to verify; empty verifies all Prometheus panels. Name Loki panels explicitly."
         type: string
         required: false
       - name: dashboard_variables

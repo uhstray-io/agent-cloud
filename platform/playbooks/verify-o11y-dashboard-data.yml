@@ -5,9 +5,9 @@
 # Deploy o11y reads back every provisioned dashboard through Grafana's API, which proves the
 # file loaded. It says nothing about whether the panels draw anything: a dashboard whose
 # metric names are wrong, or whose traffic never arrived, loads just the same. This play
-# evaluates the dashboard's own Prometheus queries against the receiver's Prometheus over
-# the dashboard time range and reports, per panel, how many series came back and how many
-# carry a finite sample. It passes only when every selected Prometheus panel has data.
+# evaluates the dashboard's own Prometheus and Loki queries against the receiver over the
+# dashboard time range and reports, per panel, how many result groups contain data. It
+# passes only when every selected Prometheus panel and every explicitly selected Loki panel has data.
 # Validation gates that need it: inference-gateway-agentgateway 3.3 (one hour of traffic
 # renders p50/p95 first-token latency and per-identity counts) and
 # inference-telemetry-production 3.5 (the three inference dashboards render).
@@ -18,31 +18,35 @@
 # carries the receiver checkout's revision.
 #
 # How the queries are formed — Grafana's template and built-in variables, the step, instant
-# versus range, the default datasource, NaN — is documented, with sources, in
-# files/verify-o11y-dashboard-data.py. Loki, Tempo and other datasources are reported as
-# skipped, not verified. A variable whose saved default the script cannot reproduce (a query
+# versus range, the default datasource, NaN and bounded Loki stream results — is documented,
+# with sources, in files/verify-o11y-dashboard-data.py. Loki panels are evaluated only when
+# their exact titles are in panel_titles; whole-dashboard runs skip Loki. Tempo and other
+# datasources are skipped, not verified. A variable whose saved default the script cannot reproduce (a query
 # variable with a concrete selection, or All with no Custom all value) is refused unless
 # dashboard_variables supplies it.
 #
-# Read-only and identical under --check: the dashboard is read and Prometheus is queried in
+# Read-only and identical under --check: the dashboard is read and Prometheus or Loki is queried in
 # both. Output is names and counts only: no label value or sample value is printed, so a
-# per-identity panel reports the NUMBER of identities that answered, never their names.
+# per-identity panel reports the NUMBER of identities that answered, never their names; Loki
+# log lines and label values are also discarded.
 # Override values are not printed either, only the first 12 hex digits of each one's sha256.
-# No Prometheus error text is printed: execution errors embed label sets, so only the API's
-# errorType is reported.
+# No backend error body is printed: errors may embed label sets or log content. Only a fixed
+# status or exception class is reported.
 #
 # Survey (Semaphore template "Verify o11y Dashboard Data (Dev)"):
 #   dashboard_uid        the dashboard's uid (the file name without .json, for the committed
 #                        dashboards), e.g. agentgateway-client-view
 #   lookback             dashboard time range, one Prometheus duration unit (default 1h)
-#   panel_titles         optional JSON list of exact panel titles; empty means every panel
+#   panel_titles         optional JSON list of exact panel titles; empty means every
+#                        Prometheus panel, while Loki panels require an explicit title
 #   dashboard_variables  optional JSON object overriding template variables, e.g.
 #                        {"compare_offset": "7d"}; refused if it could change the query's
 #                        structure (quotes, braces, parentheses, backslashes, line breaks;
 #                        a non-duration outside a string)
 #
-# Inventory (o11y_svc host): o11y_prom_bind / o11y_prom_port (the receiver's loopback
-# Prometheus, as deploy-o11y.yml reaches it), local_monorepo_dir, monorepo_deploy_path.
+# Inventory (o11y_svc host): o11y_prom_bind / o11y_prom_port and o11y_loki_bind /
+# o11y_loki_port (receiver loopback APIs; defaults 127.0.0.1:9090 and 127.0.0.1:3100),
+# local_monorepo_dir, monorepo_deploy_path.
 
 # The verdict below is read from registered results, and an extra var outranks a register:
 # `-e '_vdd_readback={...}'` would forge a pass. Refused here, before anything is registered.
@@ -73,7 +77,7 @@
         _panel_titles: "{{ (panel_titles | default('[]', true)) | from_json if (panel_titles | default('[]', true)) is string else panel_titles }}"
         _dashboard_variables: "{{ (dashboard_variables | default('{}', true)) | from_json if (dashboard_variables | default('{}', true)) is string else dashboard_variables }}"
 
-- name: Evaluate the dashboard's Prometheus panels on the receiver
+- name: Evaluate the selected dashboard data queries on the receiver
   hosts: o11y_svc
   gather_facts: false
   become: false
@@ -85,6 +89,11 @@
     _vdd_lookback: "{{ lookback | default('1h', true) }}"
     _vdd_panel_titles: "{{ (panel_titles | default('[]', true)) | from_json if (panel_titles | default('[]', true)) is string else panel_titles }}"
     _vdd_variables: "{{ (dashboard_variables | default('{}', true)) | from_json if (dashboard_variables | default('{}', true)) is string else dashboard_variables }}"
+    _vdd_loki_bind: "{{ o11y_loki_bind | default('127.0.0.1') }}"
+    _vdd_loki_host: >-
+      {{ '[::1]' if _vdd_loki_bind == '::' else
+         ('127.0.0.1' if _vdd_loki_bind in ['0.0.0.0', ''] else
+          ('[' ~ _vdd_loki_bind ~ ']' if ':' in _vdd_loki_bind else _vdd_loki_bind)) }}
   tasks:
     - name: Read the receiver checkout revision the dashboards were provisioned from
       ansible.builtin.command:
@@ -111,6 +120,7 @@
               'panel_titles': _vdd_panel_titles,
               'variables': _vdd_variables,
               'prometheus_url': 'http://' ~ (o11y_prom_bind | default('127.0.0.1')) ~ ':' ~ (o11y_prom_port | default(9090)),
+              'loki_url': 'http://' ~ _vdd_loki_host ~ ':' ~ (o11y_loki_port | default(3100)),
               'scrape_interval_seconds': 15} | to_json }}
       register: _vdd_readback
       changed_when: false
@@ -129,7 +139,7 @@
       ansible.builtin.debug:
         msg: "{{ _vdd_readback.stdout | from_json | combine({'receiver_revision': _vdd_revision.stdout | default('') | trim if _vdd_revision.rc | default(1) == 0 else 'unknown'}) }}"
 
-    - name: Require every selected Prometheus panel to render data
+    - name: Require every selected Prometheus or explicitly selected Loki panel to render data
       ansible.builtin.assert:
         that: (_vdd_readback.stdout | from_json).status == 'pass'
         fail_msg: >-
@@ -138,6 +148,7 @@
              else 'Panels without data over ' ~ _vdd_lookback ~ ': '
                   ~ ((_vdd_readback.stdout | from_json).get('panels_failing', []) | join('; ')) }}
         success_msg: >-
-          {{ (_vdd_readback.stdout | from_json).get('panels_verified', 0) }} Prometheus panels of
+          {{ (_vdd_readback.stdout | from_json).get('panels_verified', 0) }}
+          {{ 'panel' if (_vdd_readback.stdout | from_json).get('panels_verified', 0) == 1 else 'panels' }} of
           {{ dashboard_uid }} render data over {{ _vdd_lookback }}:
           {{ (_vdd_readback.stdout | from_json).get('verified_panel_titles', []) | join('; ') }}.
