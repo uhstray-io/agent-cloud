@@ -33,19 +33,47 @@
       - -c
       - |
         import json
+        import os
+        import selectors
         import subprocess
         import sys
+        import time
 
+        process = None
         try:
-            result = subprocess.run(
+            process = subprocess.Popen(
                 ["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
-                check=False,
             )
-            if result.returncode != 0:
+            deadline = time.monotonic() + 10
+            output_chunks = []
+            output_size = 0
+            with selectors.DefaultSelector() as selector:
+                selector.register(process.stdout, selectors.EVENT_READ)
+                while True:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0 or not selector.select(remaining):
+                        raise ValueError
+                    chunk = os.read(
+                        process.stdout.fileno(), min(65536, 1048577 - output_size)
+                    )
+                    if not chunk:
+                        break
+                    output_size += len(chunk)
+                    if output_size > 1048576:
+                        raise ValueError
+                    output_chunks.append(chunk)
+            if process.wait(timeout=max(deadline - time.monotonic(), 0.001)) != 0:
                 raise ValueError
-            fields = result.stdout.split(b"\0")
+            fields = b"".join(output_chunks).split(b"\0")
+            untracked_categories = {
+                "gateway_deployment": 0,
+                "other_service_deployment": 0,
+                "service_tree_other": 0,
+                "platform_other": 0,
+                "repository_other": 0,
+            }
             counts = {
                 "modified": 0,
                 "added": 0,
@@ -58,6 +86,8 @@
             }
             path_count = 0
             index = 0
+            gateway_deploy_prefix = b"platform/services/agentgateway/deployment/"
+            services_prefix = b"platform/services/"
             while index < len(fields) - 1:
                 entry = fields[index]
                 index += 1
@@ -65,8 +95,27 @@
                     raise ValueError
                 status = entry[:2].decode("ascii")
                 path_count += 1
+                if path_count > 2000:
+                    raise ValueError
                 if status == "??":
                     category = "untracked"
+                    path = entry[3:]
+                    path_parts = path.split(b"/")
+                    if path.startswith(gateway_deploy_prefix):
+                        untracked_category = "gateway_deployment"
+                    elif (
+                        path.startswith(services_prefix)
+                        and len(path_parts) >= 5
+                        and path_parts[3] == b"deployment"
+                    ):
+                        untracked_category = "other_service_deployment"
+                    elif path.startswith(services_prefix):
+                        untracked_category = "service_tree_other"
+                    elif path.startswith(b"platform/"):
+                        untracked_category = "platform_other"
+                    else:
+                        untracked_category = "repository_other"
+                    untracked_categories[untracked_category] += 1
                 elif "U" in status or status in ("AA", "DD"):
                     category = "conflicted"
                 elif "R" in status:
@@ -88,10 +137,27 @@
                     if index >= len(fields) - 1:
                         raise ValueError
                     index += 1
-            print(json.dumps({"status": "ok", "counts": counts, "path_count": path_count}, separators=(",", ":")))
+            print(json.dumps({
+                "status": "ok",
+                "counts": counts,
+                "untracked_categories": untracked_categories,
+                "path_count": path_count,
+            }, separators=(",", ":")))
         except Exception:
-            print('{"status":"error","counts":{},"path_count":0,"reason":"git-status-failed"}')
+            if process is not None:
+                try:
+                    process.kill()
+                except OSError:
+                    pass
+                try:
+                    process.wait(timeout=5)
+                except (OSError, subprocess.SubprocessError):
+                    pass
+            print('{"status":"error","counts":{},"untracked_categories":{},"path_count":0,"reason":"git-status-failed"}')
             sys.exit(1)
+        finally:
+            if process is not None and process.stdout is not None:
+                process.stdout.close()
   tasks:
     - name: Read the exact deployed repository revision
       ansible.builtin.command:
@@ -120,17 +186,17 @@
       ansible.builtin.assert:
         that:
           - _agw_checkout_status.rc == 0
-          - (_agw_checkout_status.stdout | default('{"status":"error","counts":{},"path_count":0,"reason":"diagnostic-unavailable"}', true) | from_json).status == 'ok'
+          - (_agw_checkout_status.stdout | default('{"status":"error","counts":{},"untracked_categories":{},"path_count":0,"reason":"diagnostic-unavailable"}', true) | from_json).status == 'ok'
         fail_msg: "Could not safely read the gateway checkout status; no read-only receipt was produced."
         quiet: true
 
     - name: Require a clean reviewed gateway checkout
       ansible.builtin.assert:
         that:
-          - (_agw_checkout_status.stdout | default('{"status":"error","counts":{},"path_count":0,"reason":"diagnostic-unavailable"}', true) | from_json).path_count == 0
+          - (_agw_checkout_status.stdout | default('{"status":"error","counts":{},"untracked_categories":{},"path_count":0,"reason":"diagnostic-unavailable"}', true) | from_json).path_count == 0
         fail_msg: >-
           The gateway checkout has uncommitted or untracked source changes; the read-only
-          receipt requires a clean checkout. Safe status={{ _agw_checkout_status.stdout | default('{"status":"error","counts":{},"path_count":0,"reason":"diagnostic-unavailable"}', true) | from_json | to_json }}.
+          receipt requires a clean checkout. Safe status={{ _agw_checkout_status.stdout | default('{"status":"error","counts":{},"untracked_categories":{},"path_count":0,"reason":"diagnostic-unavailable"}', true) | from_json | to_json }}.
         quiet: true
 
     - name: Read safe metadata from rendered files before runtime comparison
@@ -258,16 +324,16 @@
       ansible.builtin.assert:
         that:
           - _agw_final_checkout_status.rc == 0
-          - (_agw_final_checkout_status.stdout | default('{"status":"error","counts":{},"path_count":0,"reason":"diagnostic-unavailable"}', true) | from_json).status == 'ok'
+          - (_agw_final_checkout_status.stdout | default('{"status":"error","counts":{},"untracked_categories":{},"path_count":0,"reason":"diagnostic-unavailable"}', true) | from_json).status == 'ok'
         fail_msg: "Could not safely reread the gateway checkout status; no read-only receipt was produced."
         quiet: true
 
     - name: Require the checkout to remain clean at receipt completion
       ansible.builtin.assert:
         that:
-          - (_agw_final_checkout_status.stdout | default('{"status":"error","counts":{},"path_count":0,"reason":"diagnostic-unavailable"}', true) | from_json).path_count == 0
+          - (_agw_final_checkout_status.stdout | default('{"status":"error","counts":{},"untracked_categories":{},"path_count":0,"reason":"diagnostic-unavailable"}', true) | from_json).path_count == 0
         fail_msg: >-
-          The checkout changed during the runtime receipt. Safe status={{ _agw_final_checkout_status.stdout | default('{"status":"error","counts":{},"path_count":0,"reason":"diagnostic-unavailable"}', true) | from_json | to_json }}.
+          The checkout changed during the runtime receipt. Safe status={{ _agw_final_checkout_status.stdout | default('{"status":"error","counts":{},"untracked_categories":{},"path_count":0,"reason":"diagnostic-unavailable"}', true) | from_json | to_json }}.
         quiet: true
 
     - name: Report the reviewed Dev runtime metadata

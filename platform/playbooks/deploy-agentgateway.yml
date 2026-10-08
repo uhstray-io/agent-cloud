@@ -576,6 +576,7 @@
           {{ {'rc': _agw_config_validation.rc | default(-1),
               'stdout': _agw_config_validation.stdout | default(''),
               'stderr': _agw_config_validation.stderr | default('')} | to_json | b64encode }}
+        stdin_add_newline: false
       register: _agw_validation_diagnostic
       changed_when: false
       failed_when: false
