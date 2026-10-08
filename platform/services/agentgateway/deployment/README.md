@@ -8,7 +8,13 @@ every identity's current token-budget window.
 
 Every real deploy runs the rendered `config.yaml` through the exact
 `cr.agentgateway.dev/agentgateway:v1.5.0 --validate-only -f /config.yaml`
-before `deploy.sh` can recreate containers. The validator receives `.env` by
+before `deploy.sh` can recreate containers. The playbook first asks `deploy.sh
+--pull-only` to resolve the effective Compose images, then the validator uses
+`--pull=never` and the actual lifecycle uses `deploy.sh --no-pull`. This keeps
+the validated local v1.5.0 image and the image Compose starts aligned within the
+workflow instead of resolving a mutable tag twice. The pull-only mode uses the
+same Compose file/overlay selection as deployment and exits before any container
+decision or change. The validator receives `.env` by
 file path and has no network. In local mode and when listener TLS is enabled it
 also receives the same read-only `/certs` mount and trust settings as Compose;
 the production TLS check uses the same keep-id mapping. Its output is suppressed

@@ -7,9 +7,10 @@
 #          per-client key per inventory identity, generated once into OpenBao
 #          and reused, rotated only by an explicit run) + render .env and
 #          config.yaml (identities as sha256 hashes, no plaintext key).
-# Phase 2: deploy.sh — container lifecycle (pull, then recreate ONLY when config.yaml,
-#          .env, the compose files in use, ./certs or the image changed since the running
-#          gateway started — otherwise in-flight streams are left alone; db healthy, ready).
+# Phase 2: deploy.sh — container lifecycle using the images pulled before validation;
+#          recreate ONLY when config.yaml, .env, the compose files in use, ./certs or
+#          the image changed since the running gateway started — otherwise in-flight
+#          streams are left alone; db healthy, ready.
 # Phase 3: Verify — readiness answers, an unenrolled request is 401 at the gateway,
 #          then the keyed round-trip as one enrolled identity: /v1/models lists every
 #          model it may use and one chat completion comes back from the upstream. The
@@ -434,7 +435,26 @@
         _ca_host: "{{ inventory_hostname if (local_mode | default(false) | bool) else (groups['step_ca_svc'] | first) }}"
       when: (local_mode | default(false) | bool) or _tls
 
-    # Task 5.7: exercise the exact pinned binary against the rendered config before
+    # Pull through deploy.sh's shared Compose resolver first; validation and deployment
+    # then use this same local image without either step pulling a mutable tag again.
+    # The pull-only mode verifies rendered files and uses the same Compose files/env as
+    # the real deploy, but exits before deciding or changing any container.
+    - name: "Pull the deployment images once before config validation"
+      ansible.builtin.shell: |
+        cd "{{ _deploy_dir }}"
+        bash deploy.sh --pull-only
+      environment:
+        CONTAINER_ENGINE: "{{ container_engine | default('podman') }}"
+        LOCAL_MODE: "{{ 'true' if (local_mode | default(false) | bool) else '' }}"
+        COMPOSE_CMD: "{{ local_compose_cmd | default('') }}"
+        COMPOSE_OVERLAYS: >-
+          {{ 'compose.tls.yml' if ((agw_listener_tls | default(false) | bool)
+             and not (local_mode | default(false) | bool)) else '' }}
+      register: _agw_image_pull
+      changed_when: false
+      when: not ansible_check_mode
+
+    # Task 5.7: exercise the exact pulled local binary against the rendered config before
     # deploy.sh can recreate either container. Run after certificate/trust preparation
     # because the validation container gets the same read-only ./certs mount as Compose.
     # The env file is passed by path (never expanded into argv); diagnostics are hidden
@@ -448,11 +468,11 @@
       when: not ansible_check_mode
 
     # Invocation follows the standalone CLI docs (`agentgateway --validate-only -f config.yaml`);
-    # the pinned release publishes cr.agentgateway.dev/agentgateway:v1.5.0.
+    # --pull=never makes the validator consume the local artifact prepared above.
     - name: "Validate the rendered config with the pinned v1.5.0 image before container recreation"
       ansible.builtin.command:
         argv: >-
-          {{ [container_engine | default('podman'), 'run', '--pull=missing', '--rm', '--network=none',
+          {{ [container_engine | default('podman'), 'run', '--pull=never', '--rm', '--network=none',
               '--env-file', _deploy_dir ~ '/.env', '--volume', _deploy_dir ~ '/config.yaml:/config.yaml:ro']
              + (['--volume', _deploy_dir ~ '/certs:/certs:ro'] if (_tls or (local_mode | default(false) | bool)) else [])
              + (['--env', 'SSL_CERT_FILE=/certs/step-ca-bundle.crt'] if (local_mode | default(false) | bool) else [])
@@ -487,7 +507,7 @@
     - name: "Run deploy.sh (container lifecycle)"
       ansible.builtin.shell: |
         cd "{{ _deploy_dir }}"
-        bash deploy.sh
+        bash deploy.sh --no-pull
       environment:
         CONTAINER_ENGINE: "{{ container_engine | default('podman') }}"
         LOCAL_MODE: "{{ 'true' if (local_mode | default(false) | bool) else '' }}"

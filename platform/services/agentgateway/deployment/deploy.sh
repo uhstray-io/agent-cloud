@@ -11,9 +11,9 @@
 # base with no shell or curl, so a compose healthcheck cannot run inside it.
 # Readiness is probed from the sibling db container over the compose network.
 #
-# Usage: ./deploy.sh [--no-pull]
-# Steps (idempotent): verify rendered files, pull, decide, up (only when needed),
-# wait db healthy, wait ready.
+# Usage: ./deploy.sh [--no-pull|--pull-only]
+# Steps (idempotent): verify rendered files, pull (unless --no-pull), decide, up
+# (only when needed), wait db healthy, wait ready. --pull-only prepares images and exits.
 #
 # Change-aware (gateway task 1.12, design decision 11): a recreate drops every in-flight
 # stream, and scheduled or imported runs call this deploy, so the gateway is recreated only
@@ -30,6 +30,7 @@
 set -euo pipefail
 
 SKIP_PULL=false
+PULL_ONLY=false
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIB_DIR="$(dirname "$(dirname "$(dirname "$SCRIPT_DIR")")")/lib"
 cd "${SCRIPT_DIR}"
@@ -40,9 +41,14 @@ source "${LIB_DIR}/common.sh"
 for arg in "$@"; do
   case "$arg" in
     --no-pull) SKIP_PULL=true ;;
-    *) echo "Unknown option: $arg"; echo "Usage: ./deploy.sh [--no-pull]"; exit 1 ;;
+    --pull-only) PULL_ONLY=true ;;
+    *) echo "Unknown option: $arg"; echo "Usage: ./deploy.sh [--no-pull|--pull-only]"; exit 1 ;;
   esac
 done
+[ "$SKIP_PULL" = false ] || [ "$PULL_ONLY" = false ] || {
+  echo "--no-pull and --pull-only cannot be combined." >&2
+  exit 1
+}
 
 step_verify_rendered() {
   info "Step 1: Verifying rendered .env + config.yaml are present..."
@@ -220,6 +226,11 @@ main() {
   info "Container engine: ${CONTAINER_ENGINE}"
   step_verify_rendered
   step_pull_image
+  if [ "$PULL_ONLY" = true ]; then
+    info "=== agentgateway image pull complete; no containers were changed ==="
+    echo "image-pull-result: complete"
+    return 0
+  fi
   step_decide
   step_start
   step_wait_db

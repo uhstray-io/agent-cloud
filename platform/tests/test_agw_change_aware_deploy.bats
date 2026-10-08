@@ -96,9 +96,31 @@ deploy() {
     LOCAL_MODE="" COMPOSE_OVERLAYS="${OVERLAYS:-}" "$D/deploy.sh" --no-pull
 }
 
+pull_only() {
+  run env STUB_STATE="$S" STUB_DIR="${STUB_DIR:-$D}" CONTAINER_ENGINE="$T/bin/engine" COMPOSE_CMD="$T/bin/compose" \
+    LOCAL_MODE="" COMPOSE_OVERLAYS="${OVERLAYS:-}" "$D/deploy.sh" --pull-only
+}
+
 recreates() { cat "$S/recreates"; }
 # The run's last output line (bash 3.2 has no negative array index).
 last() { printf '%s' "${lines[${#lines[@]}-1]}"; }
+
+@test "agw deploy: pull-only prepares compose images without changing containers" {
+  pull_only
+  [ "$status" -eq 0 ]
+  [ "$(last)" = "image-pull-result: complete" ]
+  assert_grep -q ' pull$' "$S/compose.log"
+  refute_grep -q ' up ' "$S/compose.log"
+  [ "$(recreates)" -eq 0 ]
+}
+
+@test "agw deploy: pull-only and no-pull cannot be combined" {
+  run env STUB_STATE="$S" STUB_DIR="$D" CONTAINER_ENGINE="$T/bin/engine" COMPOSE_CMD="$T/bin/compose" \
+    "$D/deploy.sh" --pull-only --no-pull
+  [ "$status" -ne 0 ]
+  assert_contains "$output" "cannot be combined"
+  [ ! -f "$S/compose.log" ]
+}
 
 @test "agw change-aware: first deploy creates the gateway and labels it with its inputs" {
   deploy

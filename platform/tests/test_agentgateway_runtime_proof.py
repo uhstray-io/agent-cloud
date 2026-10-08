@@ -9,7 +9,6 @@ from pathlib import Path
 import yaml
 from jinja2 import Environment
 
-
 ROOT = Path(__file__).resolve().parents[2]
 PLAYBOOK = ROOT / "platform/playbooks/deploy-agentgateway.yml"
 VERIFY_PLAYBOOK = ROOT / "platform/playbooks/verify-agentgateway-runtime.yml"
@@ -43,19 +42,31 @@ def test_config_validation_precedes_container_lifecycle_and_suppresses_diagnosti
     tasks = phase_one["tasks"]
     validate = next(task for task in tasks if task.get("name", "").startswith("Validate the rendered config"))
     task_names = [task.get("name", "") for task in tasks]
+    pull_index = task_names.index("Pull the deployment images once before config validation")
     validate_index = tasks.index(validate)
+    assert pull_index < validate_index
     assert task_names.index("Manage secrets and render env + config") < validate_index
     assert task_names.index("Read the issued server and verifier leaves") < validate_index
     assert task_names.index("Read the deploy account's uid:gid for the local key owner") < validate_index
     assert task_names.index("Distribute the step-ca trust bundle into ./certs") < validate_index
-    assert validate_index < task_names.index("Refuse container recreation when the pinned image rejects rendered config")
+    refuse_index = task_names.index(
+        "Refuse container recreation when the pinned image rejects rendered config"
+    )
+    assert validate_index < refuse_index
     argv = str(validate["ansible.builtin.command"]["argv"])
     assert "--validate-only" in argv and "/config.yaml" in argv
     assert "--volume" in argv and "/certs:/certs:ro" in argv
     assert "--userns=keep-id:uid=65532,gid=65532" in argv
     assert "SSL_CERT_FILE=/certs/step-ca-bundle.crt" in argv
     assert validate["no_log"] is True
-    assert "'run', '--pull=missing', '--rm', '--network=none'" in argv
+    assert "'run', '--pull=never', '--rm', '--network=none'" in argv
+    pull = tasks[pull_index]
+    assert "bash deploy.sh --pull-only" in pull["ansible.builtin.shell"]
+    assert pull["when"] == "not ansible_check_mode"
+
+    phase_two = next(play for play in plays if play.get("name", "").startswith("Phase 2:"))
+    lifecycle = next(task for task in phase_two["tasks"] if task.get("name") == "Run deploy.sh (container lifecycle)")
+    assert "bash deploy.sh --no-pull" in lifecycle["ansible.builtin.shell"]
 
     env = Environment()
     env.filters["bool"] = bool
@@ -182,11 +193,18 @@ def test_dev_template_is_read_only_and_requires_the_expected_revision():
     assert template["playbook"] == "platform/playbooks/verify-agentgateway-runtime.yml"
     assert template["survey_vars"][0]["name"] == "expected_repository_sha"
     plays = yaml.safe_load(VERIFY_PLAYBOOK.read_text())
-    assert all("ansible.builtin.command" not in task for play in plays for task in play.get("tasks", []) if task.get("name", "").lower().startswith("write"))
+    write_tasks = [
+        task
+        for play in plays
+        for task in play.get("tasks", [])
+        if task.get("name", "").lower().startswith("write")
+    ]
+    assert all("ansible.builtin.command" not in task for task in write_tasks)
 
 
 def test_provisioned_dashboard_has_access_signal_selector():
-    dashboard = json.loads((ROOT / "platform/services/o11y/deployment/config/grafana/dashboards/agentgateway-traffic.json").read_text())
+    dashboard_path = ROOT / "platform/services/o11y/deployment/config/grafana/dashboards/agentgateway-traffic.json"
+    dashboard = json.loads(dashboard_path.read_text())
     access_targets = [
         target["expr"]
         for panel in dashboard["panels"]
