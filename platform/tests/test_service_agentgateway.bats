@@ -151,8 +151,8 @@ setup() {
   assert_grep -qE '^\s*accessLog:$' "$CONFIG"
   refute_grep -qE '^\s*logging:$' "$CONFIG"
   [ "$(grep -c 'identity: apiKey.name' "$CONFIG")" -eq 3 ]
-  # Rendered-config assertion only: stdout, OTLP, and trace span path fields all
-  # select CEL's query-free request.path while preserving identity correlation.
+  # Source-template assertion only: config.yaml.j2 sets stdout, OTLP, and trace
+  # path expressions. It does not render config or inspect emitted telemetry.
   [ "$(grep -c 'http.path: request.path' "$CONFIG")" -eq 3 ]
   # Key form only: a comment may NAME the fields it forbids.
   refute_grep -qE ':\s*llm\.(prompt|completion)\b' "$CONFIG"
