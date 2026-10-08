@@ -34,7 +34,7 @@
         "x": 0,
         "y": 0
       },
-      "description": "Count of unique service and step pairs whose newest state in the last 16 minutes is fail. This is current recorded state, not a count of new failure events. A new-format collector snapshot with no step states shows zero; no new-format snapshot shows No recent data.",
+      "description": "Count of unique service and step pairs whose newest state in the last 16 minutes is fail. This is current recorded state, not a count of new failure events. When inventory markers exist but no step is currently failed, the fallback returns one unlabeled zero; with no recent inventory marker the panel shows No recent data.",
       "fieldConfig": {
         "defaults": {
           "noValue": "No recent data",
@@ -62,7 +62,7 @@
             "uid": "loki"
           },
           "queryType": "instant",
-          "expr": "sum(last_over_time({job=\"agent-cloud-conformance\", step!=\"none\"} | json state_code | unwrap state_code | __error__=\"\" [16m]) by (service, step) == bool 0) or (sum(last_over_time({job=\"agent-cloud-conformance\", step=\"none\"} | json inventory_code | unwrap inventory_code | __error__=\"\" [16m]) by (service)) * 0)"
+          "expr": "sum(last_over_time({job=\"agent-cloud-conformance\", step!=\"none\"} | json state_code | unwrap state_code | __error__=\"\" [16m]) by (service, step) == bool 0) or (sum(last_over_time({job=\"agent-cloud-conformance\", step=\"none\"} | json inventory_code | unwrap inventory_code | __error__=\"\" [16m]) by (service) * 0))"
         }
       ]
     },

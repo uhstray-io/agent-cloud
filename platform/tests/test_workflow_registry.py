@@ -114,7 +114,12 @@ def test_conformance_collection_and_dashboard_absence_are_explicit():
     assert "by (service, step) == bool 0" in failure_query
     assert "count_over_time" not in failure_query, "old records must not imply a healthy zero"
     assert "| json inventory_code | unwrap inventory_code" in failure_query
-    assert "no new-format snapshot" in stats["Current failed step states"]["description"]
+    current_failures, no_failures = failure_query.split(" or ", 1)
+    assert current_failures.startswith("sum(last_over_time(")
+    assert no_failures.startswith("(sum(last_over_time(")
+    assert "by (service) * 0))" in no_failures, "inventory fallback must collapse to one unlabeled zero"
+    assert "with no recent inventory marker" in stats["Current failed step states"]["description"]
+    assert "no recent inventory marker" in stats["Current failed step states"]["description"]
     assert "newest state" in stats["Current failed step states"]["description"]
     assert "not a count of new failure events" in stats["Current failed step states"]["description"]
 
