@@ -200,19 +200,24 @@ def test_validator_failure_diagnostics_use_only_fixed_exit_code_categories():
         if task.get("name") == "Classify the validator result without exposing its output"
     )
     program = classifier["ansible.builtin.command"]["argv"][2]
-    cases = {
-        0: ("accepted", "usage: a secret-shaped value must not affect an accepted result"),
-        125: ("container-runtime-error", "permission denied secret-path"),
-        126: ("validator-not-executable", ""),
-        127: ("validator-command-not-found", ""),
-        1: ("config-schema-error", "unknown field private-config-secret"),
-        2: ("file-mount-permission-error", "permission denied /private/secret"),
-        3: ("cli-argument-error", "unknown flag --secret-value"),
-        4: ("network-dependency-error", "connection refused https://secret.invalid"),
-        5: ("validator-nonzero-unclassified", "opaque-private-token-value"),
-        -1: ("validator-result-unavailable", ""),
-    }
-    for rc, (category, diagnostic) in cases.items():
+    cases = [
+        (0, "accepted", "usage: secret-shaped-token ABC123 must not affect an accepted result"),
+        (125, "container-runtime-error", "permission denied secret-path"),
+        (126, "validator-not-executable", ""),
+        (127, "validator-command-not-found", ""),
+        (1, "config-schema-error", "unknown field private-config-secret"),
+        (2, "file-mount-permission-error", "permission denied /private/secret"),
+        (3, "cli-argument-error", "unknown flag --secret-value"),
+        (4, "network-dependency-error", "connection refused https://secret.invalid"),
+        (5, "validator-nonzero-exit-other", "opaque-private-token-value"),
+        (1, "validator-nonzero-exit-1", "opaque private-token-ABC123.example.internal"),
+        (6, "config-type-variant-error", "expected a sequence for private-token-ABC123"),
+        (7, "environment-reference-error", "environment variable private-token-ABC123 is not set"),
+        (8, "invalid-endpoint-error", "invalid endpoint https://private-token-ABC123.invalid/path"),
+        (9, "resource-certificate-load-error", "failed to load certificate private-token-ABC123.pem"),
+        (-1, "validator-result-unavailable", ""),
+    ]
+    for rc, category, diagnostic in cases:
         encoded_input = base64.b64encode(
             json.dumps({"rc": rc, "stdout": diagnostic, "stderr": ""}).encode()
         ).decode()
@@ -226,7 +231,33 @@ def test_validator_failure_diagnostics_use_only_fixed_exit_code_categories():
         assert result.returncode == 0
         assert result.stdout.strip() == f"{category}|{rc}"
         if diagnostic:
-            assert diagnostic not in result.stdout
+            assert diagnostic not in result.stdout + result.stderr
+            assert "private-token-ABC123" not in result.stdout + result.stderr
+
+    invalid_exit_code = subprocess.run(
+        [sys.executable, "-c", program],
+        input=base64.b64encode(json.dumps({"rc": 256, "stdout": "secret"}).encode()).decode(),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert invalid_exit_code.returncode == 0
+    assert invalid_exit_code.stdout.strip() == "diagnostic-unavailable|-1"
+
+    oversized_diagnostic = "x" * 3_200_000
+    oversized_input = base64.b64encode(
+        json.dumps({"rc": 1, "stdout": oversized_diagnostic}).encode()
+    ).decode()
+    oversized_result = subprocess.run(
+        [sys.executable, "-c", program],
+        input=oversized_input,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert oversized_result.returncode == 0
+    assert oversized_result.stdout.strip() == "diagnostic-unavailable|-1"
+    assert oversized_diagnostic not in oversized_result.stdout + oversized_result.stderr
 
     invalid_input = subprocess.run(
         [sys.executable, "-c", program], input="not-base64-json", capture_output=True, text=True, check=False
@@ -282,31 +313,40 @@ variables['_agw_validation_diagnostic'] = {'stdout': classified.stdout.decode()}
 normalizer_template = normalizer['ansible.builtin.set_fact']['_agw_validation_safe_category']
 normalizer_template = AnsibleTagHelper.tag(normalizer_template, TrustedAsTemplate())
 category = templar.template(normalizer_template).strip()
-if category != 'accepted':
+if category != payload['expected_category']:
     raise SystemExit(3)
 print(category)
     '''
-    secret_shaped_output = "usage: private-token-ABC123.example.internal"
     ansible_temp_root = "/private/tmp" if Path("/private/tmp").is_dir() else tempfile.gettempdir()
     with tempfile.TemporaryDirectory(prefix="agw-ansible-templar-", dir=ansible_temp_root) as ansible_tmp:
         env = os.environ.copy() | {
             "ANSIBLE_LOCAL_TEMP": ansible_tmp,
             "ANSIBLE_REMOTE_TEMP": ansible_tmp,
         }
-        result = subprocess.run(
-            [ansible_python, "-c", harness, str(PLAYBOOK)],
-            cwd=tmp_path,
-            env=env,
-            input=json.dumps({"rc": 0, "stdout": secret_shaped_output, "stderr": ""}),
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
+        cases = (
+            (0, "usage: private-token-ABC123.example.internal", "accepted"),
+            (6, "expected a sequence for private-token-ABC123", "config-type-variant-error"),
         )
-    assert result.returncode == 0, "Ansible templar failed to classify validator metadata"
-    assert result.stdout.strip() == "accepted"
-    assert secret_shaped_output not in result.stdout + result.stderr
-    assert "private-token-ABC123" not in result.stdout + result.stderr
+        for rc, secret_shaped_output, expected_category in cases:
+            result = subprocess.run(
+                [ansible_python, "-c", harness, str(PLAYBOOK)],
+                cwd=tmp_path,
+                env=env,
+                input=json.dumps({
+                    "rc": rc,
+                    "stdout": secret_shaped_output,
+                    "stderr": "",
+                    "expected_category": expected_category,
+                }),
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+            assert result.returncode == 0, "Ansible templar failed to normalize validator metadata"
+            assert result.stdout.strip() == expected_category
+            assert secret_shaped_output not in result.stdout + result.stderr
+            assert "private-token-ABC123" not in result.stdout + result.stderr
 
 
 def test_checkout_diagnostics_report_only_fixed_status_categories_and_counts(tmp_path):
@@ -404,7 +444,8 @@ def test_checkout_diagnostics_report_only_fixed_status_categories_and_counts(tmp
                 "untracked": 4,
             },
             "untracked_categories": {
-                "gateway_deployment": 0,
+                "gateway_certificate_tree": 0,
+                "gateway_deployment_other": 0,
                 "other_service_deployment": 0,
                 "service_tree_other": 0,
                 "platform_other": 0,
@@ -493,6 +534,7 @@ def test_checkout_diagnostics_classify_untracked_locations_without_exposing_path
         "platform/services/agentgateway/deployment/config.yaml.previous",
         "platform/services/agentgateway/deployment/config.yaml.replaced",
         "platform/services/agentgateway/deployment/certs/private-hostname.pem",
+        "platform/services/agentgateway/deployment/certs/private-token-ABC123.key",
     )
     for relative_path in ignored_paths:
         destination = repo / relative_path
@@ -505,6 +547,12 @@ def test_checkout_diagnostics_classify_untracked_locations_without_exposing_path
         assert ignored.returncode == 0
     paths = {
         "platform/services/agentgateway/deployment/debug/private-token-ABC123.example.internal.py": (
+            "UNIQUE-GATEWAY-DEPLOYMENT-CONTENT"
+        ),
+        "platform/services/agentgateway/deployment/certs/private-hostname-ABC123.crt": (
+            "UNIQUE-GATEWAY-CERT-TREE-CONTENT"
+        ),
+        "platform/services/agentgateway/deployment/certs-escape/private-token-ABC123.crt": (
             "UNIQUE-GATEWAY-DEPLOYMENT-CONTENT"
         ),
         "platform/services/o11y/deployment/private-token-ABC123.example.internal.txt": (
@@ -532,7 +580,8 @@ def test_checkout_diagnostics_classify_untracked_locations_without_exposing_path
     assert report["status"] == "ok"
     assert report["counts"]["untracked"] == len(paths)
     assert report["untracked_categories"] == {
-        "gateway_deployment": 1,
+        "gateway_certificate_tree": 1,
+        "gateway_deployment_other": 2,
         "other_service_deployment": 1,
         "service_tree_other": 3,
         "platform_other": 1,
@@ -600,7 +649,8 @@ def test_checkout_diagnostics_bound_git_output_and_runtime_with_static_metadata(
             "untracked": 1,
         },
         "untracked_categories": {
-            "gateway_deployment": 0,
+            "gateway_certificate_tree": 0,
+            "gateway_deployment_other": 0,
             "other_service_deployment": 0,
             "service_tree_other": 0,
             "platform_other": 0,
@@ -702,7 +752,8 @@ def test_checkout_diagnostics_count_porcelain_renames_copies_and_other_statuses(
             "untracked": 0,
         },
         "untracked_categories": {
-            "gateway_deployment": 0,
+            "gateway_certificate_tree": 0,
+            "gateway_deployment_other": 0,
             "other_service_deployment": 0,
             "service_tree_other": 0,
             "platform_other": 0,
@@ -750,7 +801,8 @@ def test_checkout_diagnostics_skip_both_paths_in_porcelain_rename_and_copy_recor
             "untracked": 0,
         },
         "untracked_categories": {
-            "gateway_deployment": 0,
+            "gateway_certificate_tree": 0,
+            "gateway_deployment_other": 0,
             "other_service_deployment": 0,
             "service_tree_other": 0,
             "platform_other": 0,
