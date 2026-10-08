@@ -15,6 +15,7 @@ or merged before checks pass.
 | File | Target | Protects |
 |------|--------|----------|
 | [`protect-main.json`](./protect-main.json) | default branch (`main`) | no direct push / force-push / deletion; PR required; conversations resolved; merge-commit or squash merges; required status checks; **PRs into `main` must originate from `dev`** |
+| [`protect-dev.json`](./protect-dev.json) | `refs/heads/dev` | no deletion or force-push; direct fast-forward updates remain allowed for `sync-main-to-dev` |
 
 ### `protect-main` rules
 
@@ -25,6 +26,15 @@ or merged before checks pass.
 - **Required status checks** — `Static Analysis`, `Security Scan`, `Unit Tests` (the three jobs in `lint-and-test.yml` that run on **every** PR), plus `Promotion source (dev -> main)` (see next bullet). The path-gated `Go *` jobs are deliberately **not** required: they don't report on non-Go PRs and would deadlock the merge. Contexts are pinned to the GitHub Actions app (`integration_id: 15368`).
 - **Promotion source: only `dev` may PR into `main`.** GitHub rulesets can protect the *base* branch but cannot restrict a PR's *head* branch, so the `Promotion source (dev -> main)` required check ([`enforce-promotion-source.yml`](../workflows/enforce-promotion-source.yml)) is the enforcing half: it runs on every PR whose base is `main` and fails unless the head is exactly this repository's `dev` branch (`head_ref` is only a branch name, so a fork's branch called `dev` is refused by comparing the head repository with this one). It also fails unless the PR head already contains every commit on `main`: `sync-main-to-dev.yml` cannot push a `main`-only workflow-file change into `dev`, and a promotion from a `dev` that lacks it would revert it on `main` (`docs/MISTAKES.md` 10.23). Merge `main` into `dev` through a feature PR to clear that failure. Together the two halves make `feature -> dev -> main` a hard gate instead of a convention. Emergency-only: an Admin bypass actor (below) can merge a hotfix straight to `main` despite a failing check.
 - **Bypass actors** — Repository admin role only (`actor_id: 5`), break-glass. AI agents (NemoClaw / Claude Code) and any automation PAT are intentionally **off** the bypass list. Prefer flipping `enforcement` to `disabled` over using bypass, so bypass events stay rare and meaningful in the audit log.
+
+### `protect-dev` rules
+
+- **Exact target:** `refs/heads/dev`, independent of the default branch name.
+- **Restrict deletions** and **block force pushes**. The active deletion rule also prevents GitHub's automatic head-branch deletion after a merged PR, which removed `dev` when PR #447 merged.
+- **No bypass actors.** The deletion restriction applies to every actor, including automation, so merge-time cleanup cannot bypass it.
+- **Fast-forward pushes stay allowed.** The ruleset does not restrict updates or require pull requests, allowing `sync-main-to-dev` to push the ancestry-preserving update. The non-fast-forward rule blocks history rewrites without blocking those fast-forward updates.
+
+GitHub documents that repository rules can prevent automatic head-branch deletion ([automatic deletion](https://docs.github.com/en/enterprise-cloud@latest/repositories/configuring-branches-and-merges-in-your-repository/configuring-pull-request-merges/managing-the-automatic-deletion-of-branches)). Apply this declaration after it reaches `dev` through the normal branch workflow, then confirm it appears as active and targets only `refs/heads/dev`.
 
 ## Applying
 

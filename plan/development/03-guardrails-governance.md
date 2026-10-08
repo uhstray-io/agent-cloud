@@ -902,6 +902,10 @@ Two original assumptions were corrected against the live repo, and the open ques
 - **Artifacts built:** `.github/rulesets/protect-main.json` (canonical), `.github/rulesets/apply.sh` (idempotent create-or-update), `.github/rulesets/README.md`, `.coderabbit.yaml` (`request_changes_workflow`). The ruleset is **applied live in `evaluate`** (id `17752539`); the remaining step is the `evaluate → active` flip after Insights verification.
 - **Bonus finding:** CodeQL **default-setup** code scanning is already active (`Analyze (...)` checks from app 15368). Candidate additional required check once confirmed it reports unconditionally on every PR — see Open Questions.
 
+## Protect `dev` from merge-time auto-deletion (2026-10-07)
+
+GitHub's `delete_branch_on_merge` repository setting deleted the long-lived `dev` ref when PR #447 merged, even though the merge target was `main`. Add `.github/rulesets/protect-dev.json` as active config-as-code targeting only `refs/heads/dev`, with deletion and non-fast-forward restrictions and no bypass actors. Omit update restrictions and pull-request-only rules so `sync-main-to-dev.yml` can keep pushing fast-forward updates; GitHub documents that repository rules can prevent automatic head-branch deletion. Document the required protections and rollout in `.github/rulesets/README.md`. Applying the ruleset to GitHub remains an operator action after the declaration lands through the normal branch workflow.
+
 ---
 
 ## Problem
