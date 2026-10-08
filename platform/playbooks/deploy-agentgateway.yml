@@ -496,7 +496,7 @@
       ansible.builtin.assert:
         that:
           - _agw_validated_image_id.rc == 0
-          - _agw_validated_image_id.stdout | trim is match('^sha256:[0-9a-f]{64}$')
+          - (_agw_validated_image_id.stdout | trim | regex_replace('^sha256:', '')) is match('^[0-9a-f]{64}$')
         fail_msg: "The reviewed v1.5.0 image ID is unavailable after the pre-validation pull."
         quiet: true
       when: not ansible_check_mode
@@ -570,7 +570,7 @@
       ansible.builtin.assert:
         that:
           - _agw_deploy_image_id.rc == 0
-          - _agw_deploy_image_id.stdout | trim == _agw_validated_image_id.stdout | trim
+          - (_agw_deploy_image_id.stdout | trim | regex_replace('^sha256:', '')) == (_agw_validated_image_id.stdout | trim | regex_replace('^sha256:', ''))
         fail_msg: "The local v1.5.0 tag changed after validation; no gateway container was recreated."
         quiet: true
       when: not ansible_check_mode
@@ -596,6 +596,30 @@
       # image differ from what the running gateway started with, and says which on its last
       # line. A run that left the gateway alone is not a change.
       changed_when: "_deploy.stdout_lines | select('match', '^deploy-result: recreated') | list | length > 0"
+      when: not ansible_check_mode
+
+    - name: "Read the running gateway image ID after deployment"
+      ansible.builtin.command:
+        argv:
+          - "{{ container_engine | default('podman') }}"
+          - inspect
+          - --format
+          - "{{ '{{.Image}}' }}"
+          - agentgateway
+      register: _agw_deployed_image_id
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      when: not ansible_check_mode
+
+    - name: "Require the running gateway to use the image validated before recreation"
+      ansible.builtin.assert:
+        that:
+          - _agw_deployed_image_id.rc == 0
+          - (_agw_deployed_image_id.stdout | trim | regex_replace('^sha256:', '')) is match('^[0-9a-f]{64}$')
+          - (_agw_deployed_image_id.stdout | trim | regex_replace('^sha256:', '')) == (_agw_validated_image_id.stdout | trim | regex_replace('^sha256:', ''))
+        fail_msg: "The running gateway image ID does not match the image validated before recreation."
+        quiet: true
       when: not ansible_check_mode
 
     - name: "Show deploy.sh output"

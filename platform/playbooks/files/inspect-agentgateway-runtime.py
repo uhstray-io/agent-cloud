@@ -75,7 +75,7 @@ def main() -> int:
         data = json.load(sys.stdin)
         env = Path(data["env_path"]).read_text()
         config = Path(data["config_path"]).read_bytes()
-        revision = str(data["revision"]).strip()
+        checkout_revision = str(data["checkout_revision"]).strip()
     except (KeyError, OSError, ValueError, TypeError):
         print(json.dumps({"status": "refused", "reason": "runtime inputs unavailable"}))
         return 2
@@ -100,8 +100,8 @@ def main() -> int:
     ):
         print(json.dumps({"status": "refused", "reason": "rendered trace sampling is outside the reviewed range"}))
         return 2
-    if not REVISION.fullmatch(revision):
-        print(json.dumps({"status": "refused", "reason": "deployed revision is unavailable"}))
+    if not REVISION.fullmatch(checkout_revision):
+        print(json.dumps({"status": "refused", "reason": "checkout revision is unavailable"}))
         return 2
 
     print(json.dumps({
@@ -110,7 +110,7 @@ def main() -> int:
         "random_sampling": random_sampling,
         "client_sampling": client_sampling,
         "rendered_config_sha256": hashlib.sha256(config).hexdigest(),
-        "repository_revision": revision,
+        "checkout_revision": checkout_revision,
     }, sort_keys=True))
     return 0
 

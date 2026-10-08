@@ -25,7 +25,7 @@ setup() {
   cp "$REPO_ROOT/platform/services/agentgateway/deployment/deploy.sh" "$D/"
   cp "$REPO_ROOT/platform/services/agentgateway/deployment/compose.yml" \
      "$REPO_ROOT/platform/services/agentgateway/deployment/compose.tls.yml" "$D/"
-  printf 'VLLM_API_KEY=one\n' > "$D/.env"
+  printf 'AGW_IMAGE=cr.agentgateway.dev/agentgateway:v1.5.0\nVLLM_API_KEY=one\n' > "$D/.env"
   printf 'binds: []\n' > "$D/config.yaml"
   printf 'leaf-1\n' > "$D/certs/agw-server/serial-1/cert.pem"
   ln -s serial-1 "$D/certs/agw-server/current"
@@ -75,6 +75,7 @@ STUB
 #!/usr/bin/env bash
 S="$STUB_STATE"
 echo "$*" >> "$S/compose.log"
+echo "${AGW_IMAGE:-<unset>}" >> "$S/compose-images.log"
 case " $* " in *" up "*) ;; *) exit 0 ;; esac
 [ -f "$S/compose_fail" ] && exit 1
 prev="" overlay=""
@@ -111,13 +112,24 @@ recreates() { cat "$S/recreates"; }
 last() { printf '%s' "${lines[${#lines[@]}-1]}"; }
 
 @test "agw deploy: pull-only prepares compose images without changing containers" {
-  pull_only
+  run env STUB_STATE="$S" STUB_DIR="$D" CONTAINER_ENGINE="$T/bin/engine" COMPOSE_CMD="$T/bin/compose" \
+    AGW_IMAGE=cr.example/attacker:9 LOCAL_MODE="" "$D/deploy.sh" --pull-only
   [ "$status" -eq 0 ]
   [ "$(last)" = "image-pull-result: complete" ]
   assert_grep -q ' pull$' "$S/compose.log"
+  [ "$(cat "$S/compose-images.log")" = "cr.agentgateway.dev/agentgateway:v1.5.0" ]
   refute_grep -q ' up ' "$S/compose.log"
   refute_contains "$output" "Step 3: Comparing"
   [ "$(recreates)" -eq 0 ]
+}
+
+@test "agw deploy: lifecycle ignores an inherited AGW_IMAGE override" {
+  run env STUB_STATE="$S" STUB_DIR="$D" CONTAINER_ENGINE="$T/bin/engine" COMPOSE_CMD="$T/bin/compose" \
+    AGW_IMAGE=cr.example/attacker:9 LOCAL_MODE="" "$D/deploy.sh" --no-pull
+  [ "$status" -eq 0 ]
+  [ "$(last)" = "deploy-result: recreated (no gateway container)" ]
+  [ "$(cat "$S/compose-images.log")" = "cr.agentgateway.dev/agentgateway:v1.5.0" ]
+  assert_grep -q ' up -d --force-recreate' "$S/compose.log"
 }
 
 @test "agw deploy: pull-only and no-pull cannot be combined" {
@@ -143,6 +155,19 @@ last() { printf '%s' "${lines[${#lines[@]}-1]}"; }
   [ "$status" -ne 0 ]
   assert_contains "$output" "runtime-inputs-result: refused"
   assert_contains "$output" "inputs changed"
+  [ ! -s "$S/compose.log" ]
+  [ "$(recreates)" -eq 1 ]
+}
+
+@test "agw deploy: verify-only refuses a running gateway that does not answer readiness" {
+  deploy
+  [ "$status" -eq 0 ]
+  : > "$S/compose.log"
+  touch "$S/not_ready"
+  verify_only
+  [ "$status" -ne 0 ]
+  assert_contains "$output" "runtime-inputs-result: refused"
+  assert_contains "$output" "readiness not answering"
   [ ! -s "$S/compose.log" ]
   [ "$(recreates)" -eq 1 ]
 }

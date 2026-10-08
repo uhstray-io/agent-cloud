@@ -1,6 +1,6 @@
 ---
 # Read-only Dev receipt for agentgateway observability-estate task 5.7.
-# Sampling metadata is reported only when the exact checkout, rendered inputs,
+# Sampling metadata is reported only when the requested checkout, rendered inputs,
 # running input label, image ID, and readiness all match.
 - name: Refuse extra vars that set internal names
   ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
@@ -57,13 +57,13 @@
         that:
           - _agw_checkout_status.rc == 0
           - (_agw_checkout_status.stdout | default('') | trim) == '0'
-        fail_msg: "The gateway checkout has uncommitted or untracked source changes; runtime metadata is not attributed to the reviewed revision."
+        fail_msg: "The gateway checkout has uncommitted or untracked source changes; the read-only receipt requires a clean checkout."
         quiet: true
 
     - name: Read safe metadata from rendered files before runtime comparison
       ansible.builtin.command:
         argv: [python3, -c, "{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/inspect-agentgateway-runtime.py') }}"]
-        stdin: "{{ {'env_path': _deploy_dir ~ '/.env', 'config_path': _deploy_dir ~ '/config.yaml', 'revision': _agw_revision.stdout | trim} | to_json }}"
+        stdin: "{{ {'env_path': _deploy_dir ~ '/.env', 'config_path': _deploy_dir ~ '/config.yaml', 'checkout_revision': _agw_revision.stdout | trim} | to_json }}"
       register: _agw_metadata_before
       changed_when: false
       failed_when: false
@@ -97,7 +97,7 @@
     - name: Read safe metadata again after runtime comparison
       ansible.builtin.command:
         argv: [python3, -c, "{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/inspect-agentgateway-runtime.py') }}"]
-        stdin: "{{ {'env_path': _deploy_dir ~ '/.env', 'config_path': _deploy_dir ~ '/config.yaml', 'revision': _agw_revision.stdout | trim} | to_json }}"
+        stdin: "{{ {'env_path': _deploy_dir ~ '/.env', 'config_path': _deploy_dir ~ '/config.yaml', 'checkout_revision': _agw_revision.stdout | trim} | to_json }}"
       register: _agw_metadata_after
       changed_when: false
       failed_when: false
@@ -151,8 +151,8 @@
         that:
           - _agw_pinned_image_id.rc == 0
           - _agw_running_image_id.rc == 0
-          - _agw_pinned_image_id.stdout | trim is match('^sha256:[0-9a-f]{64}$')
-          - _agw_running_image_id.stdout | trim == _agw_pinned_image_id.stdout | trim
+          - (_agw_pinned_image_id.stdout | trim | regex_replace('^sha256:', '')) is match('^[0-9a-f]{64}$')
+          - (_agw_running_image_id.stdout | trim | regex_replace('^sha256:', '')) == (_agw_pinned_image_id.stdout | trim | regex_replace('^sha256:', ''))
         fail_msg: "The running gateway image ID differs from the locally resolved v1.5.0 image."
         quiet: true
 
@@ -196,5 +196,5 @@
           image: "{{ (_agw_metadata_after.stdout | from_json).image }}"
           random_sampling: "{{ (_agw_metadata_after.stdout | from_json).random_sampling }}"
           client_sampling: "{{ (_agw_metadata_after.stdout | from_json).client_sampling }}"
-          repository_revision: "{{ (_agw_metadata_after.stdout | from_json).repository_revision }}"
+          checkout_revision: "{{ (_agw_metadata_after.stdout | from_json).checkout_revision }}"
           running_image_id: "{{ _agw_running_image_id.stdout | trim }}"

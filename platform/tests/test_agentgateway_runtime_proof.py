@@ -96,8 +96,32 @@ def test_config_validation_precedes_container_lifecycle_and_suppresses_diagnosti
     assert phase_two_names.index("Refuse deployment if the validated image tag moved") < phase_two_names.index(
         "Run deploy.sh (container lifecycle)"
     )
-    lifecycle = next(task for task in phase_two["tasks"] if task.get("name") == "Run deploy.sh (container lifecycle)")
+    deploy_index = phase_two_names.index("Run deploy.sh (container lifecycle)")
+    read_image_index = phase_two_names.index("Read the running gateway image ID after deployment")
+    assert_index = phase_two_names.index(
+        "Require the running gateway to use the image validated before recreation"
+    )
+    assert deploy_index < read_image_index < assert_index
+    lifecycle = next(
+        task for task in phase_two["tasks"] if task.get("name") == "Run deploy.sh (container lifecycle)"
+    )
     assert "bash deploy.sh --no-pull" in lifecycle["ansible.builtin.shell"]
+    running_id = next(
+        task
+        for task in phase_two["tasks"]
+        if task.get("name") == "Read the running gateway image ID after deployment"
+    )
+    assert running_id["ansible.builtin.command"]["argv"][-1] == "agentgateway"
+    deployed_id_assert = next(
+        task
+        for task in phase_two["tasks"]
+        if task.get("name") == "Require the running gateway to use the image validated before recreation"
+    )
+    assert "_agw_validated_image_id.stdout" in str(deployed_id_assert["ansible.builtin.assert"]["that"])
+    assert "regex_replace('^sha256:', '')" in str(deployed_id_assert["ansible.builtin.assert"]["that"])
+
+    compose = yaml.safe_load((PLAYBOOK.parents[1] / "services/agentgateway/deployment/compose.yml").read_text())
+    assert compose["services"]["agentgateway"]["image"] == "${AGW_IMAGE:-cr.agentgateway.dev/agentgateway:v1.5.0}"
 
     env = Environment()
     env.filters["bool"] = bool
@@ -134,7 +158,7 @@ def test_rendered_config_inspector_emits_only_pinned_image_sampling_revision_and
     assert report["status"] == "pass"
     assert report["image"] == "cr.agentgateway.dev/agentgateway:v1.5.0"
     assert report["random_sampling"] == report["client_sampling"] == 0.05
-    assert report["repository_revision"] == "a" * 40
+    assert report["checkout_revision"] == "a" * 40
     assert "do-not-print-this" not in json.dumps(report)
     assert "config.yaml" not in json.dumps(report)
 
@@ -142,7 +166,7 @@ def test_rendered_config_inspector_emits_only_pinned_image_sampling_revision_and
 def open_json_input(env: Path, config: Path):
     import io
 
-    return io.StringIO(json.dumps({"env_path": str(env), "config_path": str(config), "revision": "a" * 40}))
+    return io.StringIO(json.dumps({"env_path": str(env), "config_path": str(config), "checkout_revision": "a" * 40}))
 
 
 def test_rendered_config_inspector_rejects_sampling_or_image_drift(tmp_path, capsys):
@@ -283,15 +307,23 @@ def test_dev_template_is_read_only_and_requires_the_expected_revision():
         if task.get("name") == "Compare rendered inputs to the running deployment without mutation"
     )
     assert verify["ansible.builtin.command"]["argv"] == ["bash", "deploy.sh", "--verify-only"]
+    assert "_ready_once" in (ROOT / "platform/services/agentgateway/deployment/deploy.sh").read_text()
     other_commands = [
         task["ansible.builtin.command"]["argv"]
         for task in receipt_tasks
         if "ansible.builtin.command" in task and task is not verify
     ]
     assert all("pull" not in str(argv) for argv in other_commands)
+    running_image_check = next(
+        task
+        for task in receipt_tasks
+        if task.get("name") == "Require the running gateway image ID to match the pinned local image"
+    )
+    assert "regex_replace('^sha256:', '')" in str(running_image_check["ansible.builtin.assert"]["that"])
+    assert "_agw_running_image_id.stdout" in str(running_image_check["ansible.builtin.assert"]["that"])
     report = next(task for task in receipt_tasks if task.get("name") == "Report the reviewed Dev runtime metadata")
     assert set(report["ansible.builtin.debug"]["msg"]) == {
-        "status", "image", "random_sampling", "client_sampling", "repository_revision", "running_image_id"
+        "status", "image", "random_sampling", "client_sampling", "checkout_revision", "running_image_id"
     }
     assert "rendered_config_sha256" not in report["ansible.builtin.debug"]["msg"]
 

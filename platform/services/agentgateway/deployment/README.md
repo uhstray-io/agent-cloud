@@ -14,7 +14,9 @@ can recreate containers. The validator uses `--pull=never`, and the actual
 lifecycle uses `deploy.sh --no-pull`; a second image-ID check immediately before
 deployment refuses a moved tag. The pull-only mode uses the same Compose
 file/overlay selection as deployment and exits before any container decision or
-change. The validator receives `.env` by
+change. Before invoking Compose, `deploy.sh` replaces any inherited `AGW_IMAGE`
+with the single value rendered in `.env`, because Compose otherwise gives the
+process environment precedence. The validator receives `.env` by
 file path and has no network. In local mode and when listener TLS is enabled it
 also receives the same read-only `/certs` mount and trust settings as Compose;
 the production TLS check uses the same keep-id mapping. Its output is suppressed
@@ -22,10 +24,13 @@ because parser errors may quote configuration. The invocation follows the
 [standalone validation command](https://agentgateway.dev/docs/standalone/latest/documentation/setup/update/)
 and the image comes from the [v1.5.0 release](https://github.com/agentgateway/agentgateway/releases/tag/v1.5.0).
 `Verify agentgateway Runtime (Dev)` is a separate,
-read-only receipt for a clean reviewed checkout SHA, the running input label and
-rendered files matching, readiness, the actual running image ID matching the
-resolved v1.5.0 image ID, and the two sampling values read from the rendered file.
-It reports only metadata; hashes and rendered file contents are not displayed.
+read-only receipt that requires the checkout to match the requested reviewed SHA,
+the running input label to match the current rendered files, readiness, and the
+running image ID to match the resolved v1.5.0 image ID. It reports the checkout
+revision and two sampling values read from the rendered file as separate metadata.
+Because `.env` and `config.yaml` are gitignored render outputs without a source
+revision stamp, this receipt does not prove which checkout produced them. It
+reports only metadata; hashes and rendered file contents are not displayed.
 It does not claim callback-marker absence from stored logs or spans. That runtime
 correlation gate remains incomplete until stdout and OTLP records and an exact
 callback span can be joined to each bounded synthetic request. Validator success

@@ -61,6 +61,15 @@ step_verify_rendered() {
   info "Step 1: Verifying rendered .env + config.yaml are present..."
   [ -f "${SCRIPT_DIR}/.env" ] || error "${SCRIPT_DIR}/.env not found. Run Ansible deploy-agentgateway.yml first."
   [ -f "${SCRIPT_DIR}/config.yaml" ] || error "${SCRIPT_DIR}/config.yaml not found. Run Ansible deploy-agentgateway.yml first."
+  [ -r "${SCRIPT_DIR}/.env" ] || error "Cannot read .env to resolve the Compose image."
+  local image_count image_value
+  image_count=$(awk 'index($0, "AGW_IMAGE=") == 1 { count++ } END { print count + 0 }' "${SCRIPT_DIR}/.env")
+  [ "$image_count" = 1 ] || error "Rendered .env must contain exactly one AGW_IMAGE entry."
+  image_value=$(awk 'index($0, "AGW_IMAGE=") == 1 { print substr($0, 11) }' "${SCRIPT_DIR}/.env")
+  [ -n "$image_value" ] || error "Rendered .env has an empty AGW_IMAGE entry."
+  # Compose gives the process environment precedence over .env. Replace any ambient
+  # AGW_IMAGE with the rendered value so pull, validation handoff, and lifecycle agree.
+  export AGW_IMAGE="$image_value"
   info "  both present."
 }
 
