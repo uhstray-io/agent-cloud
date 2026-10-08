@@ -133,9 +133,16 @@ def test_conformance_collection_and_dashboard_absence_are_explicit():
     step_table = next(panel for panel in conformance["panels"]
                       if panel["title"] == "Latest step status by service")
     assert [item["id"] for item in step_table["transformations"]] == [
-        "labelsToFields", "merge", "organize"
+        "labelsToFields", "merge", "organize", "renameByRegex"
     ]
     assert step_table["transformations"][1]["options"] == {}
+    rename = step_table["transformations"][3]["options"]
+    assert rename["regex"] == r"^Value(?: #.*)?$"
+    assert re.fullmatch(rename["regex"], "Value")
+    assert re.fullmatch(rename["regex"], "Value #A")
+    assert re.fullmatch(rename["regex"], "Value #B")
+    assert rename["renamePattern"] == "State"
+    assert "not joined to these current rows" in step_table["description"]
     assert step_table["fieldConfig"]["defaults"]["mappings"] == []
     value_style = next(item for item in step_table["fieldConfig"]["overrides"]
                        if item["matcher"]["options"] == "State")

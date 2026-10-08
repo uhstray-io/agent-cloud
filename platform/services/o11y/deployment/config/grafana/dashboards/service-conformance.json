@@ -160,7 +160,7 @@
         "x": 0,
         "y": 5
       },
-      "description": "One row per service and workflow step. State is the newest report in the last 16 minutes and is shown as fail, pass, or skip. An empty result means no step state was reported in that window. Services that have not run any step are listed in \"Services not yet run\", not here.",
+      "description": "One row per service and workflow step. State is the newest report in the last 16 minutes and is shown as fail, pass, or skip. An empty result means no step state was reported in that window. Services that have not run any step are listed in \"Services not yet run\", not here. Error and task context appears separately in historical failed task snapshots; those snapshots can repeat across collector runs and are not joined to these current rows.",
       "fieldConfig": {
         "defaults": {
           "custom": {},
@@ -239,10 +239,14 @@
           "options": {
             "excludeByName": {
               "Time": true
-            },
-            "renameByName": {
-              "Value": "State"
             }
+          }
+        },
+        {
+          "id": "renameByRegex",
+          "options": {
+            "regex": "^Value(?: #.*)?$",
+            "renamePattern": "State"
           }
         }
       ]
