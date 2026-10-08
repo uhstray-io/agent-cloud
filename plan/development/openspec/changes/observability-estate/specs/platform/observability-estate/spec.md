@@ -26,7 +26,7 @@ Metrics, logs, and traces for an instrumented container MUST carry one stable se
 Agentgateway stdout access logs, OTLP access records, and sampled trace spans MUST omit OIDC callback query parameters. Their `http.path` attribute MUST remain query-free; applicable status, identity, model, usage, and trace-correlation fields MUST remain available on representative model requests. Configuration alone MUST NOT count as runtime proof.
 
 #### Scenario: Callback query marker is absent from emitted telemetry
-- **WHEN** a synthetic query marker is sent to the agentgateway OIDC callback and a representative model request produces at least one sampled trace
+- **WHEN** a synthetic query marker is sent to the agentgateway OIDC callback and its callback trace is sampled, and a separate representative model request produces its own sampled trace
 - **THEN** the marker is absent from stdout access logs, OTLP access records, and sampled trace-span attributes
 - **AND** each emitted `http.path` contains only the callback path
 - **AND** applicable status, identity, model, usage, and trace correlation remain available for the representative model request
