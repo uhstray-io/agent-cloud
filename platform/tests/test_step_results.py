@@ -207,6 +207,40 @@ def test_otlp_logs_keep_payload_in_body_and_only_bounded_loki_labels():
     }
 
 
+def test_conformance_json_body_format_matches_loki_dashboard_extraction():
+    agg = step_results.aggregate(
+        REGISTRY, TEMPLATES,
+        [_task(8, "success", 1, _run_line(
+            {"service": "tududi", "step": "secrets-approle", "status": "pass"}))],
+        ["step-ca"], DEPLOYS)
+    payload = step_results.otlp_logs_payload(step_results.loki_streams(agg, 1700000000000000000))
+    records = payload["resourceLogs"][0]["scopeLogs"][0]["logRecords"]
+
+    def body_for(service: str, step: str) -> dict:
+        record = next(r for r in records
+                      if (attributes := {a["key"]: a["value"]["stringValue"]
+                                         for a in r["attributes"]})["service"] == service
+                      and attributes["step"] == step)
+        return json.loads(record["body"]["stringValue"])
+
+    assert body_for("tududi", "secrets-approle")["state_code"] == 1
+    assert body_for("step-ca", "none")["inventory_code"] == 0
+
+    alloy = (REPO / "platform/services/o11y/deployment/templates/config.alloy.j2").read_text()
+    processor = alloy.split('otelcol.processor.attributes "conformance_logs" {', 1)[1].split("\n}\n", 1)[0]
+    assert 'key    = "loki.format"' in processor
+    assert 'action = "upsert"' in processor
+    assert 'value  = "raw"' in processor
+    assert 'value  = "job,service,step,status"' in processor
+    assert 'logs = [otelcol.exporter.loki.conformance.input]' in processor
+
+    dashboard = json.loads((REPO / "platform/services/o11y/deployment/config/grafana/dashboards/"
+                            "service-conformance.json").read_text())
+    expressions = {panel["title"]: panel["targets"][0]["expr"] for panel in dashboard["panels"]}
+    assert '| json state_code | unwrap state_code' in expressions["Step status by service"]
+    assert '| json inventory_code | unwrap inventory_code' in expressions["Services not yet run"]
+
+
 def test_groups_map_to_their_hosts_service_name():
     groups = {"all": ["a", "b"], "tududi_svc": ["a"], "step_ca_svc": ["b"], "ungrouped": [], "misc": ["c"]}
     assert step_results.group_services(groups, {"a": "tududi", "b": "step-ca"}) == {

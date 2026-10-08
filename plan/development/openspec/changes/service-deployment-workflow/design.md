@@ -342,3 +342,17 @@ overlapping snapshots and a rendered Grafana matrix before calling the correctio
 
 - Which Postgres checkpointer package skynet adopts (skynet-repo choice; no spec impact).
 - The greenfield pilot service (operator picks in section 10).
+
+## Reviewed follow-up: conformance log body format (2026-10-07)
+
+PR #476 review (`963c1f73`) found that `otelcol.exporter.loki` wraps an OTLP record in a
+JSON envelope by default, so LogQL `| json state_code` and `| json inventory_code` cannot
+extract the collector's fields from the top-level line. Set the `loki.format` hint to
+`raw` only on the conformance pipeline: this sends the JSON string body as the Loki line,
+while the existing bounded labels remain stream labels. The collector serializes these
+payloads as JSON; the provisioned dashboard depends on parsing their top-level numeric
+state fields. Grafana's [`otelcol.exporter.loki` reference](https://grafana.com/docs/alloy/latest/reference/components/otelcol/otelcol.exporter.loki/)
+documents processor-generated hint attributes; the Alloy project's [behavior report](https://github.com/grafana/alloy/issues/1173)
+records the default JSON envelope and that `raw` sends the body as the Loki payload.
+The cross-file test establishes the static contract. Production read-back through
+Dev-bound Semaphore remains the runtime acceptance step.

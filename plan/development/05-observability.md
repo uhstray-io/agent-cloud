@@ -1466,3 +1466,14 @@ to select the newest numeric step and inventory states across overlapping collec
 Loki `last_over_time`; bounded labels and historical failure records remain available for
 drilldown. Empty collector windows remain no data. Live query behavior and rendered matrix
 remain unverified.
+
+## 2026-10-07 conformance log body format correction
+
+Review of PR #476 at `963c1f73` found that the pinned Alloy `otelcol.exporter.loki`
+default JSON envelope nests an OTLP log's body; the conformance dashboard's
+`| json state_code` and `| json inventory_code` therefore cannot read the collector's
+top-level JSON fields in production. Set the conformance record's `loki.format` hint to
+`raw`, preserving the JSON body line while keeping `job`, `service`, `step`, and `status`
+as bounded stream labels. A cross-file test ties the collector's emitted body, Alloy's
+format hint, and the dashboard extraction queries together. Production delivery and
+query read-back after a Dev-bound Semaphore deployment remain unverified.

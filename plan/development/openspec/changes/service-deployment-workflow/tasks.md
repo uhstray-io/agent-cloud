@@ -420,6 +420,11 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
       - [ ] Validate the latest-state conformance read model after a non-destructive Dev-bound
         o11y update: confirm overlapping collector snapshots select the newest state and verify
         the rendered Grafana matrix.
+      - [x] PR #476 review follow-up (2026-10-07): set `loki.format=raw` on the conformance
+        pipeline and add a cross-file contract test tying the collector's JSON body, Alloy
+        exporter format, and dashboard's `state_code` / `inventory_code` extraction together.
+      - [ ] Production acceptance: deploy the reviewed change through Dev-bound Semaphore and
+        query both step and inventory records to prove top-level JSON extraction in Loki.
 - [ ] 7.6 **[skynet]** Role packs, `service_onboarding` graph built from the registry, proposer
       wiring with the three schemas, eval harness with thresholds in CI
 - [x] 7.7 `agent-practices.md` for agentgateway
