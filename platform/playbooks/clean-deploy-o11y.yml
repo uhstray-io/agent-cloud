@@ -8,6 +8,28 @@
 #          (clean-service.yml branches on local_mode).
 #
 # Uses composable tasks/clean-service.yml then runs deploy-o11y.yml.
+#
+# It refuses BEFORE destroying anything unless the launch names the o11y host it resets
+# (-e confirm_o11y_reset=<inventory hostname>, the confirm pattern of clean-deploy-step-ca.yml
+# and destroy-vm.yml), in every mode. When the destroy reaches a REMOTE host it also requires
+# the controller checkout to be exactly the reviewed commit, clean (-e
+# expected_repository_sha=<40 hex>, the checks of require-reviewed-checkout.yml), and refuses
+# expanded retention. The imported deploy checks the same SHA, but only after the volumes are
+# gone.
+#
+# What waives the SHA and retention gates is where the destroy RUNS, not local_mode: local_mode
+# is a public variable an extra var can set, which would have waived them for production.
+# Local dev runs the o11y host with ansible_connection=local (its inventories, and
+# bootstrap-local-dev.yml's) against an uncommitted working tree, so the gates cannot apply
+# there. The waiver needs a local connection AND a host named <service>-local (the name every
+# local-dev inventory gives its hosts, read from ansible_play_hosts_all, which an extra var
+# cannot set), so forging ansible_connection on a production host waives nothing; and
+# tasks/clean-service.yml refuses a host that is not local-dev over any connection but ssh.
+
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
 
 - name: "Clean o11y deployment"
   hosts: o11y_svc
@@ -16,8 +38,75 @@
   vars:
     _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
   tasks:
+    - name: "Refuse a reset the launch did not name"
+      ansible.builtin.assert:
+        that: (confirm_o11y_reset | default('') | string) == inventory_hostname
+        fail_msg: >-
+          Refusing: pass -e confirm_o11y_reset={{ inventory_hostname }} to destroy every o11y
+          volume on this host (metrics, logs, Grafana state). Nothing was removed.
+        quiet: true
+
+    - name: "Decide whether this destroy is on a local-dev host"
+      # Waived only when the connection is local (spelled as the local plugin's own names) AND
+      # every host of the play is named <service>-local, as the local-dev inventories name theirs.
+      # ansible_play_hosts_all is not settable by an extra var, so no ansible_connection value, in
+      # any spelling or rendering, can waive the gates for a production host; the connection is
+      # only read to tighten the waiver for a local-dev host. tasks/clean-service.yml refuses such
+      # a production host that sets ansible_connection at all.
+      ansible.builtin.set_fact:
+        _o11y_gated: >-
+          {{ not (((ansible_connection | default('ssh')) in ['local', 'ansible.builtin.local', 'ansible.legacy.local'])
+          and (ansible_play_hosts_all | reject('match', '^[A-Za-z0-9._-]+-local\Z') | list | length == 0)) }}
+
+    - name: "Require the exact reviewed commit before destroying anything"
+      ansible.builtin.assert:
+        that: expected_repository_sha | default('') is match('^[0-9a-f]{40}$')
+        fail_msg: "Pass expected_repository_sha: the full 40-character commit the review approved. Nothing was removed."
+        quiet: true
+      when: _o11y_gated
+
+    - name: "Read the controller checkout's commit and uncommitted files"  # noqa: run-once[task]
+      ansible.builtin.command:
+        argv: "{{ item }}"
+        chdir: "{{ playbook_dir | dirname | dirname }}"
+      loop:
+        - [git, rev-parse, HEAD]
+        - [git, status, --porcelain, --untracked-files=all]
+      register: _clean_checkout
+      changed_when: false
+      check_mode: false
+      delegate_to: localhost
+      run_once: true
+      when: _o11y_gated
+
+    - name: "Refuse any other commit, or a checkout with uncommitted files"
+      ansible.builtin.assert:
+        that:
+          - _clean_checkout.results[0].stdout == expected_repository_sha
+          - _clean_checkout.results[1].stdout | length == 0
+        fail_msg: >-
+          The checkout is {{ _clean_checkout.results[0].stdout }}{{ ' with uncommitted files'
+          if _clean_checkout.results[1].stdout else '' }}, not the reviewed
+          {{ expected_repository_sha }}. Nothing was removed.
+        quiet: true
+      when: _o11y_gated
+
+    - name: Refuse expanded retention before destructive o11y cleanup
+      ansible.builtin.assert:
+        that:
+          - (o11y_prom_retention | default('15d') | string) == '15d'
+          - (o11y_loki_retention | default('7d') | string) == '7d'
+          - (o11y_tempo_retention | default('168h') | string) == '168h'
+        fail_msg: >-
+          Clean deploy cannot expand production retention because it would destroy
+          the existing data before capacity is verified. Use the normal deploy only
+          after the reviewed capacity receipt and nonzero Prometheus cap are present.
+      when: _o11y_gated
+
     - name: "Destroy existing deployment"
       ansible.builtin.include_tasks: tasks/clean-service.yml
 
 - name: "Fresh deploy"
   import_playbook: deploy-o11y.yml
+  vars:
+    _extra_var_guard_nested: true

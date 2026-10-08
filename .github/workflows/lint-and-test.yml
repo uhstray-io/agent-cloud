@@ -57,7 +57,7 @@ jobs:
           ignore_paths: netbox-docker
 
       - name: Ansible lint
-        run: pip install ansible-lint && ansible-lint platform/playbooks/
+        run: pip install ansible-lint && ansible-lint platform/playbooks/ platform/semaphore/
 
       - name: YAML lint
         run: pip install yamllint && yamllint -c .yamllint.yml .
@@ -109,17 +109,28 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Install pinned TruffleHog
+        run: |
+          curl --fail --location --silent --show-error \
+            --output "$RUNNER_TEMP/trufflehog.tar.gz" \
+            https://github.com/trufflesecurity/trufflehog/releases/download/v3.97.6/trufflehog_3.97.6_linux_amd64.tar.gz
+          echo "a547c44cf653a1c89213b52490f44fbb0f7ee1363f7950606f28d066eabd4962  $RUNNER_TEMP/trufflehog.tar.gz" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/trufflehog.tar.gz" -C "$RUNNER_TEMP" trufflehog
+          sudo install -m 0755 "$RUNNER_TEMP/trufflehog" /usr/local/bin/trufflehog
+
       - name: Secret scan - verified (trufflehog)
-        uses: trufflesecurity/trufflehog@main
-        with:
-          extra_args: --only-verified
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          trufflehog git file://. --since-commit "$BASE_SHA" --branch "$HEAD_SHA" --fail --no-update --github-actions --only-verified
 
       - name: Secret scan - all detectors (trufflehog)
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          curl -sSfL https://raw.githubusercontent.com/trufflesecurity/trufflehog/main/scripts/install.sh | sh -s -- -b /usr/local/bin
-          trufflehog git file://. --since-commit "$BASE_SHA" --fail --no-update
+          trufflehog git file://. --since-commit "$BASE_SHA" --branch "$HEAD_SHA" --fail --no-update
 
       - name: RFC1918 IP address audit
         run: |
@@ -141,6 +152,14 @@ jobs:
           ! git diff origin/main...HEAD | grep -iE '^\+.*password\s*[:=]\s*[A-Za-z0-9]{8}|^\+.*secret_id[:=]\s*[a-f0-9-]{30}'
           ! git diff origin/main...HEAD | grep -iE '^\+.*(api[_-]?key|token)\s*[:=]\s*[A-Za-z0-9_.-]{20,}' | grep -v '{{'
           ! git diff origin/main...HEAD | grep -iE '^\+.*BEGIN (RSA|EC|OPENSSH|DSA) PRIVATE KEY'
+
+      - name: Machine home-directory audit
+        # The no-machine-paths pre-commit gate (docs/MISTAKES.md 4.11) at merge time: a
+        # commit made with --no-verify, or through the GitHub API, never ran the hook.
+        # `shell: bash` adds pipefail (the default `bash -e {0}` has none), so a failed
+        # git diff fails the step instead of feeding the check an empty diff.
+        shell: bash
+        run: git diff origin/main...HEAD | sh scripts/check-machine-paths.sh -
 
       - name: Jinja2 template hardcoded value audit
         run: |
@@ -177,8 +196,55 @@ jobs:
             platform/services/inference-hunyuan3d/deployment/app/ \
             -s B101,B110 -q
 
-  test:
-    name: Unit Tests
+  python-core:
+    name: Python core
+    runs-on: ubuntu-latest
+    # Backstop, not the capacity fix. The suite runs in parallel (below), which is what
+    # keeps it well under this. 20 minutes was a serial-era cap that green runs reached
+    # 19.9 minutes against before one was cancelled at 20m5s (run 37048305528).
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      - name: Install test dependencies
+        run: |
+          # The one declaration of the suites' dependencies, each with its reason,
+          # including the pytest-xdist pin the run step's flags rely on. The pre-push
+          # hook reads the same file, so CI and a local push agree on the version.
+          pip install -r platform/requirements-test.txt
+          # cryptography: the BATS suite signs a real App assertion with a throwaway key
+          # and verifies it, which is the only check that the credential chain's signing
+          # is correct rather than merely well-formed. Declared for the orchestrator in
+          # platform/requirements-controller.txt.
+          pip install -r platform/requirements-controller.txt
+          # The playbooks' collections. Tests that run a whole playbook need its modules
+          # to resolve: an unresolved module (ansible.posix.authorized_key) aborts the run
+          # at parse time with empty stdout, before any play or step result is printed.
+          ansible-galaxy collection install -r collections/requirements.yml
+
+      # Keep pytest's configured root testpaths active so newly registered suites
+      # remain covered. Deselect only NetBox's node IDs; --ignore does not remove a
+      # directory listed directly in testpaths. NetBox has its own parallel job below.
+      #
+      # `-n auto`, one worker per core: the slow tests are independent ansible-playbook
+      # subprocesses, so they spread across cores instead of queueing behind each other.
+      # That is safe only because every test keeps its state in its own tmp_path and its
+      # own ephemeral-port fixture server — a new test must do the same. A fixture that
+      # flakes only under load fails here first: the scoped-publication server replied
+      # to a POST with its body unread, and the reset that caused failed a different
+      # test each parallel run until it was fixed. `worksteal` rebalances when one worker
+      # draws the 50-second tests; `-x` still stops at the first failure.
+      - name: Run Python core tests
+        env:
+          PYTHONPATH: platform/services/netbox/deployment/workers/proxmox_discovery:platform/services/netbox/deployment/workers/pfsense_sync
+        run: pytest -v -x -n auto --dist worksteal --durations=20 --deselect=platform/services/netbox/deployment/tests/
+
+  python-netbox:
+    name: Python NetBox
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -189,25 +255,71 @@ jobs:
 
       - name: Install test dependencies
         run: |
-          pip install pytest netboxlabs-diode-sdk proxmoxer requests
-          # cryptography: the BATS suite signs a real App assertion with a throwaway key
-          # and verifies it, which is the only check that the credential chain's signing
-          # is correct rather than merely well-formed. Declared for the orchestrator in
-          # platform/requirements-controller.txt.
+          pip install -r platform/requirements-test.txt
           pip install -r platform/requirements-controller.txt
 
-      - name: Run Python tests
-        working-directory: platform/services/netbox/deployment
+      - name: Run NetBox Python tests
         env:
-          PYTHONPATH: workers/proxmox_discovery:workers/pfsense_sync
-        run: pytest tests/ -v
+          PYTHONPATH: platform/services/netbox/deployment/workers/proxmox_discovery:platform/services/netbox/deployment/workers/pfsense_sync
+        run: pytest -v --durations=20 platform/services/netbox/deployment/tests
+
+  bats:
+    name: Bash Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      - name: Install test dependencies
+        run: |
+          pip install -r platform/requirements-test.txt
+          pip install -r platform/requirements-controller.txt
 
       - name: Install BATS
-        run: |
-          sudo apt-get install -y -qq bats > /dev/null 2>&1
+        run: sudo apt-get install -y -qq bats > /dev/null 2>&1
 
       - name: Run Bash tests
         run: bats platform/tests/
+
+  rego:
+    name: Rego Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # The Rego authorization policy had tests that ran only at deploy time
+      # (deploy-opa.yml) and on a workstation, so a rule could merge broken. Run them
+      # here in the image the OPA service pins (compose.yml OPA_IMAGE default). `check
+      # --strict` also catches a non-policy JSON file in the tree, which OPA loads as
+      # data and rejects with "merge error" (found 2026-09-22).
+      - name: Run Rego tests
+        run: |
+          img=openpolicyagent/opa:1.0.0-static
+          docker run --rm -v "$PWD/platform/services/opa/deployment/policies:/p:ro" "$img" check --strict /p
+          docker run --rm -v "$PWD/platform/services/opa/deployment/policies:/p:ro" "$img" test /p -v
+
+  test:
+    name: Unit Tests
+    if: always()
+    needs: [python-core, python-netbox, bats, rego]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every test group to succeed
+        env:
+          PYTHON_CORE_RESULT: ${{ needs.python-core.result }}
+          PYTHON_NETBOX_RESULT: ${{ needs.python-netbox.result }}
+          BATS_RESULT: ${{ needs.bats.result }}
+          REGO_RESULT: ${{ needs.rego.result }}
+        run: |
+          printf 'Python core: %s\nPython NetBox: %s\nBATS: %s\nRego: %s\n' \
+            "$PYTHON_CORE_RESULT" "$PYTHON_NETBOX_RESULT" "$BATS_RESULT" "$REGO_RESULT"
+          test "$PYTHON_CORE_RESULT" = success
+          test "$PYTHON_NETBOX_RESULT" = success
+          test "$BATS_RESULT" = success
+          test "$REGO_RESULT" = success
 
   # ── Go: UhhCraft (Go + templ + sqlc) ─────────────────────────────────
   # Path-gated: only fires when platform/services/uhhcraft/deployment/** changes.

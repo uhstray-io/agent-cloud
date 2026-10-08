@@ -1,0 +1,107 @@
+---
+# reboot-host.yml — reboot ONE declared host and wait for it to come back, as code.
+#
+#   -e target_service=<group of exactly one host> -e confirm_reboot=<that host's inventory name>
+#
+# The supported path for the boot proofs (production-internal-ca task 3.3, the onboarding
+# workflow's optional reboot test): before this, no template rebooted a host, so "does the
+# service come back?" was only ever answered by reading restart policies. Run Verify Service
+# Persistence before it and Verify Service Health after it; this play only reboots and waits.
+#
+# Refuses unless the group holds exactly one host and the launch names that host in
+# confirm_reboot (no default), so a mistyped or multi-host group can never reboot anything.
+# Under --check it reports what it would reboot and changes nothing.
+#
+# The refusal is made TWICE, and the second one is the one that binds. The localhost play
+# reads the whole inventory, but `--limit <host>` leaves localhost out, so Ansible skips that
+# play entirely and goes straight to the reboot. The reboot play therefore repeats the guard
+# as its first task, on every targeted host, before the sudo password is resolved: the group
+# must hold one host, that host must be the one named, and the play must be running on one
+# host. Limiting a two-host group to one member is still a two-host group, and is refused.
+# any_errors_fatal stops every host the moment one is refused.
+
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: "Refuse a reboot that is not of exactly one named host"
+  hosts: localhost
+  gather_facts: false
+  become: false
+  tasks:
+    - name: "Require one host in the group, named by the launch"
+      ansible.builtin.assert:
+        that:
+          - _hosts | length == 1
+          - (confirm_reboot | default('') | string) == (_hosts | first | default(''))
+        fail_msg: >-
+          Refusing: target_service '{{ target_service | default('') }}' holds {{ _hosts | length }} host(s)
+          ({{ _hosts | join(', ') }}); a reboot needs exactly one, named with
+          -e confirm_reboot=<that host>.
+        quiet: true
+      vars:
+        _hosts: "{{ groups.get(target_service | default(''), []) }}"
+
+- name: "Reboot the host and wait for it"
+  hosts: "{{ target_service }}"
+  gather_facts: false
+  become: false
+  any_errors_fatal: true
+  vars:
+    # An extra var overrides this; both guards refuse a run without one.
+    target_service: "ungrouped"
+  tasks:
+    # First, before anything can escalate: the play above does not run under --limit.
+    - name: "Refuse, on the host itself, a reboot that is not of exactly one named host"
+      ansible.builtin.assert:
+        that:
+          - _hosts | length == 1
+          - inventory_hostname == (confirm_reboot | default('') | string)
+          - ansible_play_hosts_all | length == 1
+        fail_msg: >-
+          Refusing on {{ inventory_hostname }}: target_service '{{ target_service }}' holds
+          {{ _hosts | length }} host(s) ({{ _hosts | join(', ') }}), this play targets
+          {{ ansible_play_hosts_all | length }} ({{ ansible_play_hosts_all | join(', ') }}) and
+          confirm_reboot is '{{ confirm_reboot | default('') }}'; a reboot needs exactly one host,
+          named with -e confirm_reboot=<that host>.
+        quiet: true
+      vars:
+        _hosts: "{{ groups.get(target_service, []) }}"
+
+    - name: "Resolve the sudo password through OpenBao"
+      ansible.builtin.include_tasks: tasks/resolve-become-password.yml
+
+    # The kernel's boot id changes on every boot, so a reboot faster than a minute still shows;
+    # `who -b` (minute resolution) only where there is no /proc.
+    - name: "Read the boot identity before"
+      ansible.builtin.shell: cat /proc/sys/kernel/random/boot_id 2>/dev/null || who -b
+      register: _boot_before
+      changed_when: false
+      check_mode: false
+
+    - name: "Report what this run reboots"
+      ansible.builtin.debug:
+        msg: >-
+          {{ inventory_hostname }} (boot {{ _boot_before.stdout | trim }});
+          {{ 'would be rebooted (check mode)' if ansible_check_mode else 'rebooting now' }}.
+
+    - name: "Reboot and wait for the host to answer again"
+      ansible.builtin.reboot:
+        reboot_timeout: "{{ reboot_timeout | default(900) }}"
+        test_command: uptime
+      become: true
+      when: not ansible_check_mode
+
+    - name: "Read the boot identity after"
+      ansible.builtin.shell: cat /proc/sys/kernel/random/boot_id 2>/dev/null || who -b
+      register: _boot_after
+      changed_when: false
+      when: not ansible_check_mode
+
+    - name: "Refuse a host that did not actually reboot"
+      ansible.builtin.assert:
+        that: (_boot_after.stdout | trim) != (_boot_before.stdout | trim)
+        fail_msg: "{{ inventory_hostname }} still reports the same boot ({{ _boot_after.stdout | trim }})."
+        quiet: true
+      when: not ansible_check_mode

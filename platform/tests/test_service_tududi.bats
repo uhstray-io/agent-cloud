@@ -98,7 +98,7 @@ setup() {
 @test "tududi: playbook enables reboot linger for rootless podman (prod-gated)" {
   # Rootless podman is daemonless — linger auto-starts the container after a
   # reboot. Gated to non-local so local-dev (podman machine) skips it.
-  grep -q 'tasks/enable-linger.yml' "$PLAYBOOK"
+  grep -q 'tasks/place-monorepo.yml' "$PLAYBOOK"  # the preamble enables linger
   # The prod gate lives inside the task (self-gating) — assert the contract, not
   # the exact expression: enable-linger references local_mode.
   grep -q 'local_mode' "$BATS_TEST_DIRNAME/../playbooks/tasks/enable-linger.yml"

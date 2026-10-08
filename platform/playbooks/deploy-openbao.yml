@@ -2,6 +2,12 @@
 # deploy-openbao.yml — Thin wrapper for deploy-service.yml
 # OpenBao bootstrap note: if OpenBao is not yet available to fetch the deploy key,
 # pass it manually: -e github_deploy_key="$(cat key)" or via Semaphore extra var.
+
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
 - name: "Deploy OpenBao"
   import_playbook: deploy-service.yml
   vars:

@@ -74,10 +74,11 @@ if running caddy; then
 else sk "caddy not deployed (make local-deploy-caddy)"; fi
 
 hdr "5. NetBox (app tier under podman)"
-if running netbox-netbox-1; then
-  ok "container netbox-netbox-1 running"
+NB_CTR=netbox-netbox-1; running netbox_netbox_1 && NB_CTR=netbox_netbox_1   # podman-compose uses _
+if running "$NB_CTR"; then
+  ok "container ${NB_CTR} running"
   http_is "http://127.0.0.1:8000/login/" "200" "NetBox UI (127.0.0.1:8000)"
-  vms=$(podman exec netbox-netbox-1 /opt/netbox/venv/bin/python /opt/netbox/netbox/manage.py shell -c \
+  vms=$(podman exec "$NB_CTR" /opt/netbox/venv/bin/python /opt/netbox/netbox/manage.py shell -c \
         "from virtualization.models import VirtualMachine; print(VirtualMachine.objects.filter(cluster__name='agent-cloud-local').count())" 2>/dev/null \
         | grep -oE '^[0-9]+$' | tail -1)
   [ -n "${vms:-}" ] && [ "$vms" -gt 0 ] 2>/dev/null \
@@ -110,7 +111,7 @@ if running authentik-server; then
     && ok "Authentik live behind Caddy (auth.${ZONE})" || no "Authentik behind Caddy (got ${code:-none})"
   # NetBox is gated by forward_auth: unauthenticated -> redirect to the Authentik
   # authorize endpoint at the public IdP URL (not the internal listen address).
-  if running netbox-netbox-1; then
+  if running "${NB_CTR:-netbox-netbox-1}"; then
     loc=$(curl -sk -o /dev/null -w '%{redirect_url}' --max-time 5 \
           --resolve "netbox.${ZONE}:8443:127.0.0.1" "https://netbox.${ZONE}:8443/" 2>/dev/null)
     case "$loc" in

@@ -5,22 +5,36 @@
 # human_approved, …) comes from the query `input`. deny takes precedence so a
 # destructive-template block can't be out-voted by a generic allow.
 # Query: POST /v1/data/agentcloud/decision  with {"input": {...}}.
+#
+# Workflow agents (change service-deployment-workflow): an identity that declares
+# `allowed_templates` is ROLE-SCOPED. For it, run_task also needs the template on its list
+# (or on its closed `service_deploy_templates` list), and the task must name the registry
+# STEP it executes. The step is checked against trusted data, never taken on the caller's
+# word: catalog.workflow_steps (pinned to platform/workflows/service-onboarding/registry.yml
+# by test_workflow_registry.py) says which role owns it, which templates execute it, which
+# reasoning step's proposal it acts on, and whether its review has passed. Extra input:
+#   git_branch     branch the task runs (Semaphore task `git_branch`); missing means main. It can
+#                  only add restriction: a base template runs from main whatever this says
+#   step           registry step id this task executes (fw-harden, service-deploy, ...)
+#   proposal       the proposal body of the reasoning step that feeds it, REQUIRED when it
+#                  has one (schemas beside platform/workflows/service-onboarding/)
+#   context        facts from the step's snapshot, never from the model:
+#                  controller_cidr, ssh_cidrs, tier_bounds {cores, memory_mb, disk_gb}
 package agentcloud
 
 import rego.v1
 
 default allow := false
 
+deny if count(deny_reasons) > 0
+
 # Hard block: destructive Semaphore templates require explicit human approval,
-# for ANY agent. Evaluated before allow (deny wins). Matching is by PREFIX
-# ("Clean Deploy ...") OR the explicit list — the prefix auto-covers every
-# clean-deploy template (prod names AND the "(Local)" variants) and any future
-# service, so the guardrail can't grow a hole when a service is added (the
+# for ANY agent. Matching is by PREFIX ("Clean Deploy ...") OR the explicit list — the
+# prefix auto-covers every clean-deploy template (prod names AND the "(Local)" variants)
+# and any future service, so the guardrail can't grow a hole when a service is added (the
 # data.json list alone once silently missed ERPNext, the financial system-of-record).
-deny if {
-	input.service == "semaphore"
-	input.action == "run_task"
-	not input.human_approved
+deny_reasons contains "blocked by destructive template policy" if {
+	_unapproved_run_task
 	_destructive(input.template_name)
 }
 
@@ -29,12 +43,21 @@ deny if {
 # for a missing/blank name) and still pass `allow`. object.get defaults a missing
 # key to "" so the same rule covers absent, null, and whitespace-only names —
 # forcing a real, checkable template name on any unapproved run_task.
-deny if {
-	input.service == "semaphore"
-	input.action == "run_task"
-	not input.human_approved
+deny_reasons contains "blocked by destructive template policy" if {
+	_unapproved_run_task
 	not _valid_template_name
 }
+
+_unapproved_run_task if {
+	input.service == "semaphore"
+	input.action == "run_task"
+	not _human_approved
+}
+
+# Approval is the boolean `true` and nothing else. A bare `not input.human_approved` treats
+# any defined non-false value as approval, so `"false"` or `"no"` from a caller that
+# serialised the flag as a string would bypass every gate below (docs/MISTAKES.md 8.4).
+_human_approved if input.human_approved == true
 
 _valid_template_name if {
 	t := object.get(input, "template_name", "")
@@ -45,6 +68,260 @@ _valid_template_name if {
 _destructive(t) if startswith(t, "Clean Deploy")
 
 _destructive(t) if t in data.agentcloud.catalog.semaphore.destructive_templates
+
+# --- Workflow agents: template allowlist ------------------------------------------------
+
+_role_scoped if data.agentcloud.catalog[input.agent].allowed_templates
+
+_role_run_task if {
+	_role_scoped
+	input.service == "semaphore"
+	input.action == "run_task"
+}
+
+deny_reasons contains "template is not on this agent's allowed_templates" if {
+	_role_run_task
+	not _template_allowed
+}
+
+# Template names are compared without the generated " (Dev)" / " (Local)" suffix, so the
+# allowlist names one template per playbook (spec: One template per playbook).
+_base_template := trim_suffix(trim_suffix(object.get(input, "template_name", ""), " (Dev)"), " (Local)")
+
+_template_allowed if _base_template in data.agentcloud.catalog[input.agent].allowed_templates
+
+# The registry step "Deploy {service}" is granted as a CLOSED list of application-service
+# deploys, not a "Deploy " prefix: the prefix also reached Deploy OpenBao, Deploy Semaphore
+# and Deploy All Services (OPA-evaluated, 2026-09-22). A new service is added by name.
+_template_allowed if _base_template in object.get(data.agentcloud.catalog[input.agent], "service_deploy_templates", [])
+
+# --- Workflow agents: the registry step ---------------------------------------------------
+
+_step := data.agentcloud.catalog.workflow_steps[input.step]
+
+deny_reasons contains "a workflow task must name its registry step" if {
+	_role_run_task
+	not _step
+}
+
+deny_reasons contains "the step belongs to another role" if {
+	_role_run_task
+	_step.owner != input.agent
+}
+
+deny_reasons contains "the template does not execute this step" if {
+	_role_run_task
+	_step
+	not _template_executes_step
+}
+
+_template_executes_step if _base_template in _step.templates
+
+_template_executes_step if {
+	_step.per_service
+	_base_template in object.get(data.agentcloud.catalog[input.agent], "service_deploy_templates", [])
+}
+
+# --- Workflow agents: branch ------------------------------------------------------------
+
+# Review state is the registry's, not a boolean the caller supplies. So is the branch: a
+# template runs from the repository record it is bound to, and only the generated " (Dev)" and
+# " (Local)" variants are bound off main (templates.yml; setup-templates.yml), so a base
+# template is main whatever `git_branch` the caller sends (PR 203 Codex review).
+_off_main_template if endswith(object.get(input, "template_name", ""), " (Dev)")
+
+_off_main_template if endswith(object.get(input, "template_name", ""), " (Local)")
+
+_runs_from_main if not _off_main_template
+
+_runs_from_main if object.get(input, "git_branch", "main") == "main"
+
+deny_reasons contains "an unreviewed step cannot run from main" if {
+	_role_run_task
+	_runs_from_main
+	not _step.reviewed
+}
+
+# --- Workflow agents: proposal required -------------------------------------------------
+
+# A step fed by a reasoning step acts on that step's proposal; running it without one would
+# skip every content rule below. The data OMITS proposal_from for other steps: a null would
+# be true here.
+_proposal_step := _step.proposal_from
+
+deny_reasons contains "the step acts on a proposal and none was given" if {
+	_role_run_task
+	_proposal_step
+	not is_object(object.get(input, "proposal", null))
+}
+
+# Only a `converge` verdict runs an executor. `change-required` means a declared value must
+# change, and that lands through a pull request, never through an executor (verdict.json;
+# spec "Existing declared state is the default outcome"). A missing verdict fails closed.
+deny_reasons contains "the proposal's verdict is not converge" if {
+	_role_run_task
+	_proposal_step
+	is_object(object.get(input, "proposal", null))
+	object.get(object.get(input.proposal, "verdict", {}), "decision", "") != "converge"
+}
+
+# --- Workflow agents: proposal content --------------------------------------------------
+
+# Firewall: SSH must stay open to the orchestrator (Semaphore reaches every host over SSH),
+# and must never be opened from a source outside the declared SSH sources.
+deny_reasons contains "firewall proposal drops SSH from the orchestrator" if {
+	_proposal_step == "fw-assess"
+	not _fw_keeps_controller_ssh
+}
+
+_fw_keeps_controller_ssh if {
+	some rule in input.proposal.allow
+	rule.port == 22
+	rule.proto == "tcp"
+	rule.source == input.context.controller_cidr
+}
+
+deny_reasons contains "firewall proposal allows SSH from an undeclared source" if {
+	_proposal_step == "fw-assess"
+	some rule in input.proposal.allow
+	rule.port == 22
+	not rule.source in object.get(object.get(input, "context", {}), "ssh_cidrs", [])
+}
+
+# Service assessment: never a destructive template as the runtime action, and a VM spec
+# within the service tier's bounds. Missing bounds fail closed.
+deny_reasons contains "service proposal names a destructive template" if {
+	_proposal_step == "service-assess"
+	_destructive(input.proposal.deploy_template)
+}
+
+# The deploy that runs is the one the assessment chose: otherwise an assessment of one service
+# licenses launching another (PR 203 Codex review). A missing deploy_template fails closed.
+deny_reasons contains "the launched template is not the proposal's deploy template" if {
+	_proposal_step == "service-assess"
+
+	# The assessment also feeds vm-rightsize (Resize VM); only the deploy step launches it.
+	input.step == "service-deploy"
+	is_object(object.get(input, "proposal", null))
+	_base_template != trim_suffix(trim_suffix(object.get(input.proposal, "deploy_template", ""), " (Dev)"), " (Local)")
+}
+
+deny_reasons contains "service proposal exceeds the tier's VM bounds" if {
+	_proposal_step == "service-assess"
+	not _within_tier_bounds
+}
+
+# Access: the proposed auth mode is the one the snapshot declares, and every Authentik group
+# the proposal names is one the snapshot declares. Missing context fails closed.
+deny_reasons contains "access proposal changes the declared auth mode" if {
+	_proposal_step == "access-assess"
+	not _access_mode_matches
+}
+
+_access_mode_matches if input.proposal.auth_mode == input.context.auth_mode
+
+deny_reasons contains "access proposal names an undeclared group" if {
+	_proposal_step == "access-assess"
+	not _access_groups_declared
+}
+
+_access_groups_declared if {
+	every group in _proposed_groups {
+		group in input.context.groups
+	}
+}
+
+# authentik_app is null for a service with no Authentik application.
+default _proposed_groups := []
+
+_proposed_groups := object.get(input.proposal.authentik_app, "groups", []) if is_object(input.proposal.authentik_app)
+
+# A helper negated as a whole, not `not a <= b`: with `b` undefined, OPA 1.0.0 evaluated
+# `some dim in [...]; not vm_spec[dim] <= tier_bounds[dim]` to NO result instead of true,
+# so missing bounds silently allowed the proposal (found by
+# test_service_proposal_without_bounds_fails_closed, 2026-09-22).
+_within_tier_bounds if {
+	every dim in ["cores", "memory_mb", "disk_gb"] {
+		input.proposal.vm_spec[dim] <= input.context.tier_bounds[dim]
+	}
+}
+
+# --- Ledger rules (docs/MISTAKES.md section 7) ------------------------------------------
+
+# Branch (MISTAKES 1.9). A task-level `git_branch` replaces the repository record's branch,
+# and on Semaphore v2.18.12 the API applies it whatever the template's override flag says, so
+# for an agent this rule is the only branch control. Every agent launch runs from `main` or
+# `dev` (catalog.semaphore.launch_branches). A missing `git_branch` means main, as above; one
+# that is present must be one of those exact strings, so null, blank, padded and non-string
+# values are denied rather than read as "not main" by `_runs_from_main`. No approval bypass:
+# the spec says the branch is chosen from main or dev, for every launch.
+deny_reasons contains "an agent task may run only from main or dev" if {
+	input.service == "semaphore"
+	input.action == "run_task"
+	not _launch_branch_allowed
+}
+
+# Negated as a helper, not inline: Rego evaluates a call inside `not` BEFORE the negation, so a
+# call that fails (object.get on missing catalog data) fails the whole rule and the deny never
+# fires. See _declared_as_code, where the inline form failed open.
+_launch_branch_allowed if object.get(input, "git_branch", "main") in data.agentcloud.catalog.semaphore.launch_branches
+
+# no-probe-writes (MISTAKES 3.1). A write to a secret store must not carry placeholder data.
+# The caller never sends the values: it sends `payload_markers`, the catalog placeholder
+# markers its own scan matched in the payload ([] when none matched). So the field is
+# required: "no markers" and "never scanned" are indistinguishable from here, and an absent,
+# null or non-array field is denied. An entry that is not a non-blank string, or not a
+# marker the catalog lists, is denied too: it means the caller scanned against a different
+# list. Matching is case- and whitespace-insensitive.
+_unapproved_secret_write if {
+	input.action == "write_secret"
+	not _human_approved
+}
+
+deny_reasons contains "a secret write must declare its payload markers" if {
+	_unapproved_secret_write
+	not is_array(object.get(input, "payload_markers", null))
+}
+
+deny_reasons contains "a secret write declares a malformed payload marker" if {
+	_unapproved_secret_write
+	some m in object.get(input, "payload_markers", [])
+	not _known_marker(m)
+}
+
+deny_reasons contains "a secret write carries a placeholder payload" if {
+	_unapproved_secret_write
+	some m in object.get(input, "payload_markers", [])
+	_known_marker(m)
+}
+
+_known_marker(m) if {
+	is_string(m)
+	lower(trim_space(m)) in data.agentcloud.catalog.placeholder_markers
+}
+
+# no-undeclared-shared-mutation (MISTAKES 3.2). A shared orchestrator object (a key-store
+# entry, an inventory record, a repository record) changed directly leaves no record in the
+# repo and changes behaviour for every other consumer. Without human approval it may be
+# mutated only when the repo declares it as code: catalog.semaphore.declared_objects, one
+# exact-name list per kind. `target` is the object's record name; a missing, blank or
+# non-string target is in no list and is denied (the bare `input.target` form failed open,
+# MISTAKES 8.4).
+_mutation_kind := {"update_key": "key", "update_inventory": "inventory", "update_repository": "repository"}
+
+deny_reasons contains "a shared orchestrator object not declared as code needs human approval" if {
+	input.service == "semaphore"
+	kind := _mutation_kind[input.action]
+	not _human_approved
+	not _declared_as_code(kind)
+}
+
+# A helper for the reason given at _launch_branch_allowed: written inline, a missing
+# declared_objects made object.get fail and the mutation was ALLOWED (found by
+# test_mutation_missing_declarations_fail_closed, OPA 1.0.0, 2026-10-02).
+_declared_as_code(kind) if object.get(input, "target", "") in data.agentcloud.catalog.semaphore.declared_objects[kind]
+
+# --- Allow ------------------------------------------------------------------------------
 
 # Allow when the agent's per-service action list (data.json) permits the action.
 # An unknown agent/service/action makes the lookup undefined -> rule fails ->
@@ -64,7 +341,7 @@ decision := {
 	"reason": reason,
 }
 
-reason := "blocked by destructive template policy" if deny
+reason := concat("; ", sort(deny_reasons)) if deny
 
 reason := "allowed by agent policy" if {
 	not deny

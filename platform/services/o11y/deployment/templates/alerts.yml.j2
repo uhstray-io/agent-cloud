@@ -1,0 +1,445 @@
+# Grafana-managed alerts. Inventory enables them only with the OpenBao-backed
+# Discord contact point; the notification drill is the rollout gate.
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: service-telemetry
+    folder: agent-cloud
+    interval: 60s
+    rules:
+      - uid: o11y_service_down
+        title: Service metrics endpoint down
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: prometheus
+            model:
+              editorMode: code
+{% if o11y_alert_canary_service is defined %}
+              expr: 'up{service="{{ o11y_alert_canary_service }}"}'
+{% else %}
+              expr: 'up{service!=""}'
+{% endif %}
+              instant: true
+              range: false
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              expression: A
+              type: threshold
+              conditions:
+                - evaluator: { type: lt, params: [0.5] }
+                  operator: { type: and }
+                  query: { params: [B] }
+                  reducer: { type: last, params: [] }
+                  type: query
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: B
+        noDataState: OK
+        execErrState: Alerting
+        for: 2m
+        annotations:
+          summary: A declared service metrics endpoint is unreachable.
+          dashboard_url: '/d/service-overview?var-service={% raw %}{{ $labels.service }}{% endraw %}'
+          description: Check the declared metrics target and its service onboarding receipt.
+        labels:
+          severity: critical
+          owner: platform-operations
+          environment: {{ o11y_environment | default('local' if local_mode | default(false) | bool else 'prod') | to_json }}
+          cluster: {{ o11y_cluster | default('agent-cloud-local') | to_json }}
+        isPaused: {{ 'false' if o11y_alerts_enabled | default(false) | bool else 'true' }}
+{% if o11y_alerts_enabled | default(false) | bool %}
+        notification_settings:
+          receiver: agent-cloud-ops
+          group_by: [service, environment, cluster, alertname]
+          group_wait: 30s
+          group_interval: 5m
+          repeat_interval: 4h
+{% endif %}
+      - uid: o11y_receiver_root_disk_low
+        title: Receiver host root filesystem below 10%
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: { from: 1200, to: 0 }
+            datasourceUid: prometheus
+            model:
+              editorMode: code
+              expr: '100 * node_filesystem_avail_bytes{job="receiver-host",service="o11y/receiver-host",mountpoint="/"} / node_filesystem_size_bytes{job="receiver-host",service="o11y/receiver-host",mountpoint="/"}'
+              instant: true
+              range: false
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              expression: A
+              type: threshold
+              conditions:
+                - evaluator: { type: lt, params: [10] }
+                  operator: { type: and }
+                  query: { params: [B] }
+                  reducer: { type: last, params: [] }
+                  type: query
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: B
+        noDataState: Alerting
+        execErrState: Alerting
+        for: 15m
+        annotations:
+          summary: The o11y receiver host root filesystem has less than 10% free space.
+          dashboard_url: /d/o11y-self-monitoring
+          description: Review guest root and named-volume backing capacity before retention or growth changes.
+        labels:
+          severity: warning
+          service: 'o11y/receiver-host'
+          owner: platform-operations
+          environment: {{ o11y_environment | default('local' if local_mode | default(false) | bool else 'prod') | to_json }}
+          cluster: {{ o11y_cluster | default('agent-cloud-local') | to_json }}
+        isPaused: {{ 'false' if o11y_alerts_enabled | default(false) | bool and not (local_mode | default(false) | bool) and o11y_alert_canary_service is not defined else 'true' }}
+{% if o11y_alerts_enabled | default(false) | bool and not (local_mode | default(false) | bool) %}
+        notification_settings:
+          receiver: agent-cloud-ops
+          group_by: [service, environment, cluster, alertname]
+          group_wait: 30s
+          group_interval: 5m
+          repeat_interval: 4h
+{% endif %}
+{# The local inventory generated before this rollout still needs the Caddy pilot
+   contract; a declared inventory list overrides this default. #}
+{% for target in o11y_expected_metrics_targets | default([{'uid': 'o11y_missing_caddy', 'service': 'caddy-reverse-proxy/caddy', 'instance': 'caddy:2021'}] if local_mode | default(false) | bool else []) %}
+      - uid: {{ target.uid }}
+        title: Missing telemetry for {{ target.service }} at {{ target.instance }}
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: prometheus
+            model:
+              editorMode: code
+              expr: 'absent_over_time(up{service="{{ target.service }}",instance="{{ target.instance }}"}[5m])'
+              instant: true
+              range: false
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              expression: A
+              type: threshold
+              conditions:
+                - evaluator: { type: gt, params: [0.5] }
+                  operator: { type: and }
+                  query: { params: [B] }
+                  reducer: { type: last, params: [] }
+                  type: query
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: B
+        noDataState: OK
+        execErrState: Alerting
+        for: 2m
+        annotations:
+          summary: Expected metrics have disappeared for {{ target.service }}.
+          dashboard_url: /d/service-overview?var-service={{ target.service }}
+          description: Check the declared metrics target and its service onboarding receipt.
+        labels:
+          severity: critical
+          service: '{{ target.service }}'
+          owner: platform-operations
+          environment: {{ o11y_environment | default('local' if local_mode | default(false) | bool else 'prod') | to_json }}
+          cluster: {{ o11y_cluster | default('agent-cloud-local') | to_json }}
+        isPaused: {{ 'false' if o11y_alerts_enabled | default(false) | bool and o11y_alert_canary_service is not defined else 'true' }}
+{% if o11y_alerts_enabled | default(false) | bool and o11y_alert_canary_service is not defined %}
+        notification_settings:
+          receiver: agent-cloud-ops
+          group_by: [service, environment, cluster, alertname]
+          group_wait: 30s
+          group_interval: 5m
+          repeat_interval: 4h
+{% endif %}
+{% endfor %}
+{# Loki-backed platform rules (change production-internal-ca, task 6.4, design
+   decision 10). Their producers push through tasks/push-loki-lines.yml; the line
+   schema they match is in the o11y README ("Scheduled jobs and internal CA expiry").
+   Each is ONE rule over every series, so a declaration change rewrites an expression
+   and never strands a provisioned rule. #}
+{% set _loki_active = o11y_alerts_enabled | default(false) | bool and o11y_alert_canary_service is not defined %}
+{% set _scheduled_jobs = o11y_scheduled_jobs | default([{'job': 'renew-internal-certs', 'max_silence_hours': 36}]) %}
+{% macro loki_rule(uid, title, expr, evaluator, threshold, from_, for_, severity, service, summary, description) %}
+      - uid: {{ uid }}
+        title: {{ title | to_json }}
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: { from: {{ from_ }}, to: 0 }
+            datasourceUid: loki
+            model:
+              editorMode: code
+              expr: {{ expr | to_json }}
+              queryType: instant
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              expression: A
+              type: threshold
+              conditions:
+                - evaluator: { type: {{ evaluator }}, params: [{{ threshold }}] }
+                  operator: { type: and }
+                  query: { params: [B] }
+                  reducer: { type: last, params: [] }
+                  type: query
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: B
+        noDataState: OK
+        execErrState: Alerting
+        for: {{ for_ }}
+        annotations:
+          summary: {{ summary | to_json }}
+          description: {{ description | to_json }}
+        labels:
+          severity: {{ severity }}
+          service: {{ service | to_json }}
+          owner: platform-operations
+          environment: {{ o11y_environment | default('local' if local_mode | default(false) | bool else 'prod') | to_json }}
+          cluster: {{ o11y_cluster | default('agent-cloud-local') | to_json }}
+        isPaused: {{ 'false' if _loki_active else 'true' }}
+{% if _loki_active %}
+        notification_settings:
+          receiver: agent-cloud-ops
+          group_by: [service, environment, cluster, alertname]
+          group_wait: 30s
+          group_interval: 5m
+          repeat_interval: 4h
+{% endif %}
+{% endmacro %}
+{# "Scheduled job silent": one absent_over_time per declared job, joined with `or`;
+   each series carries its own job label, and the rule's service label is that job.
+   Grafana interpolates environment variables in rule LABELS (not annotations or
+   query models), so the label template escapes its variable as $$labels; Grafana
+   stores it as $labels (v11.4.0 pkg/services/provisioning/values, interpolateValue).
+   Only a status="success" result line counts: a job that keeps failing stops
+   publishing what it measures (the renewal run's expiry lines), and a series that
+   stops reads as OK to the expiry rules below. An empty declaration drops the group
+   and deletes the rule (deleteRules at the end of this file). #}
+{% if _scheduled_jobs | length > 0 %}
+{% set _silent = namespace(parts=[], longest=0) %}
+{% for declared in _scheduled_jobs %}
+{% set _silent.parts = _silent.parts + ['absent_over_time({job="' ~ declared.job ~ '", kind="run", status="success"}[' ~ (declared.max_silence_hours | int) ~ 'h])'] %}
+{% set _silent.longest = [_silent.longest, declared.max_silence_hours | int] | max %}
+{% endfor %}
+  - orgId: 1
+    name: scheduled-jobs
+    folder: agent-cloud
+    interval: 5m
+    rules:
+{{ loki_rule('o11y_scheduled_job_silent', 'Scheduled job silent', _silent.parts | join(' or '),
+     'gt', 0.5, _silent.longest * 3600, '5m', 'warning', '{{ $$labels.job }}',
+     'A declared scheduled job has not pushed a successful result line within its declared silence.',
+     'Check the job Semaphore schedule and its newest runs; a failing run does not reset this alert. The declared jobs and their silences are o11y_scheduled_jobs.') }}
+{% endif %}
+{# Internal CA expiry: the newest remaining_seconds each leaf or intermediate stream
+   reported. It is the renewal run's snapshot, so it can be one run interval stale;
+   the 2d window outlasts the renewal job's 36h silence, so a stopped run raises the
+   silent alert before these series vanish. #}
+  - orgId: 1
+    name: internal-ca
+    folder: agent-cloud
+    interval: 5m
+    rules:
+{{ loki_rule('o11y_internal_ca_leaf_expiring', 'Internal CA leaf certificate expires within seven days',
+     'last_over_time({job="renew-internal-certs", kind="cert", role="leaf"} | json remaining_seconds="remaining_seconds" | unwrap remaining_seconds | __error__="" [2d])',
+     'lt', 604800, 172800, '5m', 'critical', 'step-ca',
+     'An internal CA leaf certificate has fewer than seven days left.',
+     'The leaf and its consumer host are the alert labels. Run Renew Internal Certs and read its per-leaf proof; a thirty-day leaf is normally renewed with ten days left.') }}
+{{ loki_rule('o11y_internal_ca_intermediate_expiring', 'Internal CA intermediate certificate expires within ninety days',
+     'last_over_time({job="renew-internal-certs", kind="cert", role="intermediate"} | json remaining_seconds="remaining_seconds" | unwrap remaining_seconds | __error__="" [2d])',
+     'lt', 7776000, 172800, '5m', 'warning', 'step-ca',
+     'The internal CA intermediate certificate has fewer than ninety days left.',
+     'Every leaf chains to the intermediate. Plan its re-issue from the root on the CA host before it lapses.') }}
+{# Inference groups (change inference-telemetry-production, task 3.2). They render
+   only with the DGX Spark scrape jobs, so every selector below has a producer.
+   Every metric name is in the recorded vLLM list or the pinned node-exporter
+   list (platform/tests/fixtures/). Rule uids use the inference_ prefix: the
+   deploy verify, the canary and the active drill own the o11y_ rules, and the
+   benchmark placeholder must stay paused without failing their checks. Routing
+   reuses the agent-cloud-ops Discord contact point above (OpenBao
+   secret/services/o11y:alert_discord_webhook_url); no second channel exists.
+   Thermal rules are deferred: no thermal series is scraped until the dgx-spark
+   GPU exporter passes its compatibility gate.
+   Grafana 11.4 provisioning keeps a rule whose group leaves the file, so turning
+   the scrape off must name every inference rule in deleteRules (the
+   deleteContactPoints pattern in alert-contact.yml.j2); keep this list in step
+   with the rules below. #}
+{# The synthetic probe rules read the probe's textfile samples, scraped by the
+   receiver-host job, so they follow o11y_inference_probe_enabled instead of the
+   DGX scrape; turning the probe off deletes them the same way. #}
+{% set _inference_uids = ['inference_queue_stalled', 'inference_target_down', 'inference_vllm_metrics_absent', 'inference_node_memavailable_low', 'inference_node_memfree_low', 'inference_benchmark_gate_placeholder'] %}
+{% set _probe_uids = ['inference_probe_failing', 'inference_probe_stale'] %}
+{% set _dgx_on = dgx_spark_scrape_enabled | default(false) | bool %}
+{% set _probe_on = o11y_inference_probe_enabled | default(false) | bool %}
+{% set _inference_active = o11y_alerts_enabled | default(false) | bool and o11y_alert_canary_service is not defined %}
+{% set _runbook = 'https://github.com/uhstray-io/dgx-spark/blob/main/docs/VLLM-BRINGUP.md' %}
+{% macro inference_rule(uid, title, expr, evaluator, threshold, for_, severity, service, summary, description, dashboard, from_=600, no_data='OK', paused=none) %}
+      - uid: {{ uid }}
+        title: {{ title | to_json }}
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: { from: {{ from_ }}, to: 0 }
+            datasourceUid: prometheus
+            model:
+              editorMode: code
+              expr: {{ expr | to_json }}
+              instant: true
+              range: false
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              expression: A
+              type: threshold
+              conditions:
+                - evaluator: { type: {{ evaluator }}, params: [{{ threshold }}] }
+                  operator: { type: and }
+                  query: { params: [B] }
+                  reducer: { type: last, params: [] }
+                  type: query
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: B
+        noDataState: {{ no_data }}
+        execErrState: Alerting
+        for: {{ for_ }}
+        annotations:
+          summary: {{ summary | to_json }}
+          description: {{ description | to_json }}
+          dashboard_url: {{ dashboard }}
+          runbook_url: {{ _runbook }}
+        labels:
+          severity: {{ severity }}
+          service: {{ service | to_json }}
+          owner: platform-operations
+          environment: "prod"
+          cluster: "dgx-spark"
+{% set _active = _inference_active if paused is none else not paused %}
+        isPaused: {{ 'false' if _active else 'true' }}
+{% if _active %}
+        notification_settings:
+          receiver: agent-cloud-ops
+          group_by: [service, environment, cluster, alertname]
+          group_wait: 30s
+          group_interval: 5m
+          repeat_interval: 4h
+{% endif %}
+{% endmacro %}
+{% if _dgx_on or _probe_on %}
+  - orgId: 1
+    name: inference-failing
+    folder: agent-cloud
+    interval: 60s
+    rules:
+{% if _dgx_on %}
+{{ inference_rule('inference_queue_stalled', 'vLLM requests waiting while no tokens are generated',
+     'sum by (model_name, node) (vllm:num_requests_waiting{job="dgx-spark-vllm",cluster="dgx-spark"}) and on (model_name, node) (sum by (model_name, node) (rate(vllm:generation_tokens_total{job="dgx-spark-vllm",cluster="dgx-spark"}[5m])) == 0)',
+     'gt', 0, '5m', 'critical', 'vllm',
+     'vLLM has queued requests and has generated no tokens for five minutes.',
+     'Health can still answer while inference is stuck. Check the head and worker ranks and the lifecycle state before restarting anything.',
+     '/d/inference-latency-capacity') }}
+{% endif %}
+{% if _probe_on %}
+{# The probe samples every five minutes and rewrites the same gauge, so 5m of
+   success==0 is at least one failed completion that the next run did not clear.
+   Staleness alerts on a sample older than three timer periods, and on no sample
+   at all (noDataState Alerting): a stopped timer leaves the last success value
+   standing, which the failing rule alone would read as healthy. #}
+{{ inference_rule('inference_probe_failing', 'Synthetic inference probe failing',
+     'max by (model_name) (inference_probe_success{job="receiver-host"})',
+     'lt', 0.5, '5m', 'critical', 'vllm',
+     'The synthetic chat completion through the public inference hostname has failed for five minutes.',
+     'Health can answer while completions fail. Check the gateway route, the upstream key and the served model name against the probe target.',
+     '/d/inference-latency-capacity') }}
+{{ inference_rule('inference_probe_stale', 'Synthetic inference probe has not reported',
+     'time() - max by (model_name) (inference_probe_last_run_timestamp_seconds{job="receiver-host"})',
+     'gt', 900, '5m', 'warning', 'o11y/receiver-host',
+     'The synthetic inference probe has not written a sample in fifteen minutes.',
+     'Check the inference-probe timer and service on the o11y host and the textfile collector on the receiver-host exporter.',
+     '/d/inference-latency-capacity', no_data='Alerting') }}
+{% endif %}
+{% endif %}
+{% if _dgx_on %}
+  - orgId: 1
+    name: telemetry-missing
+    folder: agent-cloud
+    interval: 60s
+    rules:
+{{ inference_rule('inference_target_down', 'DGX Spark scrape target down',
+     'up{cluster="dgx-spark"}',
+     'lt', 0.5, '5m', 'critical', 'dgx-spark',
+     'A DGX Spark node, GPU or vLLM scrape target has been unreachable for five minutes.',
+     'The job and node labels name the target. Without it the inference alerts above cannot fire; check the host and its exporter before trusting a quiet board.',
+     '/d/inference-fleet-health') }}
+{{ inference_rule('inference_vllm_metrics_absent', 'vLLM metric families absent',
+     'absent(vllm:num_requests_running{job="dgx-spark-vllm",cluster="dgx-spark"})',
+     'gt', 0.5, '5m', 'critical', 'vllm',
+     'The vLLM scrape has returned no request metrics for five minutes.',
+     'The endpoint can answer while serving is down or the metric names changed after an image bump. Compare the scrape against the recorded vLLM metric list.',
+     '/d/inference-latency-capacity') }}
+  - orgId: 1
+    name: memory-thermal
+    folder: agent-cloud
+    interval: 60s
+    rules:
+{{ inference_rule('inference_node_memavailable_low', 'DGX Spark node available memory below the memory guard stall line',
+     'node_memory_MemAvailable_bytes{job="dgx-spark-node",cluster="dgx-spark"}',
+     'lt', o11y_dgx_spark_memavailable_stall_bytes | default(536870912) | int, '5m', 'critical', 'dgx-spark',
+     'A DGX Spark node has stayed below the memory guard stall line for five minutes.',
+     'The memory guard kills the serving container after 120 seconds below this line, so five minutes means the guard has not recovered the node. Check the node journal for guard lines.',
+     '/d/inference-fleet-health') }}
+{{ inference_rule('inference_node_memfree_low', 'DGX Spark node free memory below the memory guard floor',
+     'node_memory_MemFree_bytes{job="dgx-spark-node",cluster="dgx-spark"}',
+     'lt', o11y_dgx_spark_memfree_floor_bytes | default(1073741824) | int, '5m', 'critical', 'dgx-spark',
+     'A DGX Spark node has stayed below the memory guard free-page floor for five minutes.',
+     'The memory guard kills the serving container after four seconds below this floor; the GPU allocates from host memory and the node can livelock. Check the node before restarting serving.',
+     '/d/inference-fleet-health') }}
+  - orgId: 1
+    name: benchmark-gate
+    folder: agent-cloud
+    interval: 60s
+    rules:
+{# Placeholder until the benchmark manifest writer exports a metric; it stays
+   paused and evaluates a constant, so it can never fire or name a metric that
+   does not exist. #}
+{{ inference_rule('inference_benchmark_gate_placeholder', 'Benchmark gate placeholder (disabled until the manifest metric exists)',
+     'vector(0)', 'gt', 0, '5m', 'warning', 'vllm',
+     'Placeholder for the benchmark gate; disabled.',
+     'Replace this rule when the dgx-spark benchmark manifest writer publishes a metric.',
+     '/d/inference-placement-comparison', paused=true) }}
+{% endif %}
+{# One deleteRules key for every withdrawn rule: the inference rules when the scrape
+   is off, the silent-job rule when no scheduled job is declared. #}
+{% set _deleted_uids = ([] if _dgx_on else _inference_uids)
+     + ([] if _probe_on else _probe_uids)
+     + ([] if _scheduled_jobs | length > 0 else ['o11y_scheduled_job_silent']) %}
+{% if _deleted_uids %}
+deleteRules:
+{% for uid in _deleted_uids %}
+  - orgId: 1
+    uid: {{ uid }}
+{% endfor %}
+{% endif %}

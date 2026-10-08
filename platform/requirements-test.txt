@@ -1,0 +1,25 @@
+# Python packages the TEST SUITES need. The one declaration of them: CI's Python core,
+# Python NetBox and Bash Tests jobs install this file
+# (.github/workflows/lint-and-test.yml), and the pre-push hook (.githooks/pre-push)
+# names it when something is missing. Before this file existed the list was repeated
+# inline in three CI jobs, and the hook could not tell which pytest-xdist version CI ran.
+#
+# Install with:  pip install -r platform/requirements-test.txt
+# (The controller's own runtime packages are separate: platform/requirements-controller.txt.)
+
+pytest
+# The Caddy playbook-structure suite asserts against the PARSED playbook rather than its
+# text. It was once absent from CI and present in the author's virtualenv, which is
+# exactly how an undeclared dependency passes locally and fails on a clean runner.
+pyyaml
+# NetBox discovery workers' unit tests.
+netboxlabs-diode-sdk
+proxmoxer
+requests
+# Runs the playbook suites, including the Tududi provisioning safety suite, against
+# disposable fixtures. A runner without it cannot prove rollback.
+ansible-core
+# Runs the suite across the runner's cores (`-n auto --dist worksteal`). Pinned because
+# the scheduler flags are its interface, not pytest's. The pre-push hook warns when the
+# installed version differs from this pin.
+pytest-xdist==3.8.0

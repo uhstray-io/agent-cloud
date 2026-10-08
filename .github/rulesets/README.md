@@ -23,7 +23,7 @@ or merged before checks pass.
 - **Require conversation resolution** — the enforceable CodeRabbit hook: unresolved review threads block the merge button.
 - **Allow merge commits (default) or squash; linear history NOT required** — `dev` → `main` promotions use merge commits so the long-lived `dev` branch shares ancestry with `main` and promotions never diverge (which is what used to force a manual back-merge). Squash a merge only to scrub a branch whose history accidentally contains sensitive content. (Superseded the 2026-06-16 squash-only+linear decision on 2026-06-26.)
 - **Required status checks** — `Static Analysis`, `Security Scan`, `Unit Tests` (the three jobs in `lint-and-test.yml` that run on **every** PR), plus `Promotion source (dev -> main)` (see next bullet). The path-gated `Go *` jobs are deliberately **not** required: they don't report on non-Go PRs and would deadlock the merge. Contexts are pinned to the GitHub Actions app (`integration_id: 15368`).
-- **Promotion source: only `dev` may PR into `main`.** GitHub rulesets can protect the *base* branch but cannot restrict a PR's *head* branch, so the `Promotion source (dev -> main)` required check ([`enforce-promotion-source.yml`](../workflows/enforce-promotion-source.yml)) is the enforcing half: it runs on every PR whose base is `main` and fails unless the head branch is exactly `dev`. Together the two halves make `feature -> dev -> main` a hard gate instead of a convention. Emergency-only: an Admin bypass actor (below) can merge a hotfix straight to `main` despite a failing check.
+- **Promotion source: only `dev` may PR into `main`.** GitHub rulesets can protect the *base* branch but cannot restrict a PR's *head* branch, so the `Promotion source (dev -> main)` required check ([`enforce-promotion-source.yml`](../workflows/enforce-promotion-source.yml)) is the enforcing half: it runs on every PR whose base is `main` and fails unless the head is exactly this repository's `dev` branch (`head_ref` is only a branch name, so a fork's branch called `dev` is refused by comparing the head repository with this one). It also fails unless the PR head already contains every commit on `main`: `sync-main-to-dev.yml` cannot push a `main`-only workflow-file change into `dev`, and a promotion from a `dev` that lacks it would revert it on `main` (`docs/MISTAKES.md` 10.23). Merge `main` into `dev` through a feature PR to clear that failure. Together the two halves make `feature -> dev -> main` a hard gate instead of a convention. Emergency-only: an Admin bypass actor (below) can merge a hotfix straight to `main` despite a failing check.
 - **Bypass actors** — Repository admin role only (`actor_id: 5`), break-glass. AI agents (NemoClaw / Claude Code) and any automation PAT are intentionally **off** the bypass list. Prefer flipping `enforcement` to `disabled` over using bypass, so bypass events stay rare and meaningful in the audit log.
 
 ## Applying
@@ -73,9 +73,42 @@ To (re)apply after editing:
 | Merge a PR before `Static Analysis` / `Security Scan` / `Unit Tests` report | Merge button blocked |
 | Open a PR into `main` from a `feature/*` branch (head != `dev`) | `Promotion source` check fails → merge blocked |
 | Open a `dev` → `main` PR | `Promotion source` check passes |
+| Open a `dev` → `main` PR while `main` has a commit `dev` lacks | `Promotion source` check fails → merge blocked until `main` is merged into `dev` |
 | Resolve threads + checks green + merge | Succeeds |
 | Semaphore deploy from `main` | Unaffected (read-only clone) |
 
 See [`plan/development/03-guardrails-governance.md`](../../plan/development/03-guardrails-governance.md)
 for the full design, decisions, and follow-up phases (release-tag protection,
 CodeQL as a required check, signed commits, `site-config` protection).
+
+## Drift check (live vs JSON)
+
+Applying is by hand, so a file can say one thing while GitHub enforces another —
+`docs/MISTAKES.md` 10.21 records `protect-main.json` declaring `active` while the live
+ruleset sat in `evaluate` with an extra rule, leaving `main` unprotected.
+[`check-drift.sh`](./check-drift.sh) is the read-back half of `apply.sh`: it matches each
+`*.json` here to the live ruleset by name, fetches it, and [`compare.py`](./compare.py)
+fails naming every difference in the updatable fields `name`, `target`, `enforcement`, `conditions`,
+`bypass_actors` and the rules (by type, with their parameters). The comparison runs both
+ways: a declared key must match, and a key set only live is drift unless its value is an
+empty default (`false`, `0`, `""`, `null`, `[]`, `{}`). Read-only response fields (ids,
+links, timestamps) are ignored, list order does not count, a duplicated rule type is drift,
+and a ruleset missing live is drift. Exit codes: `0` match, `1` drift, `2` API/auth/usage
+error (never reported as drift).
+
+```bash
+.github/rulesets/check-drift.sh            # read-only; exit 1 on any drift
+```
+
+[`ruleset-drift.yml`](../workflows/ruleset-drift.yml) runs it daily and on
+`workflow_dispatch`. Token: GitHub's fine-grained permission table lists reading
+repository rulesets under the **Metadata** (read) permission
+([docs](https://docs.github.com/en/rest/authentication/permissions-required-for-fine-grained-personal-access-tokens#repository-permissions-for-metadata)),
+and the workflow uses `GITHUB_TOKEN` unless the optional `RULESET_READ_TOKEN` secret is
+set. The API returns `bypass_actors` only to a caller with write access to the ruleset
+([docs](https://docs.github.com/en/rest/repos/rules#get-a-repository-ruleset)), so with
+`GITHUB_TOKEN` that field is reported as a warning (not compared). To compare it too,
+store a fine-grained token scoped to this repository with the Administration permission
+as `RULESET_READ_TOKEN`. Not yet verified: that `GITHUB_TOKEN` can read the endpoint at
+all — if the first run fails with 403/404, add the secret. The token is passed only via
+`GH_TOKEN` and is never printed. Tests: `platform/tests/test_ruleset_drift_compare.py`.

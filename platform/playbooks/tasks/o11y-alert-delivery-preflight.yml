@@ -1,0 +1,78 @@
+---
+# Validate delivery credentials and Discord history before temporary alert activation.
+- name: Require the declared Discord receipt channel
+  ansible.builtin.assert:
+    that:
+      - _channel_id is match('^[0-9]{17,21}$')
+      - _bao_url | length > 0
+    fail_msg: "Declare the Discord alert channel and OpenBao endpoint before the delivery drill."
+
+- name: Authenticate to OpenBao for the delivery drill
+  ansible.builtin.uri:
+    url: "{{ _bao_url }}/v1/auth/approle/login"
+    method: POST
+    body_format: json
+    body:
+      role_id: "{{ _bao_role_id }}"
+      secret_id: "{{ _bao_secret_id }}"
+    status_code: [200]
+  register: _bao_auth
+  delegate_to: localhost
+  no_log: true
+  changed_when: false
+  check_mode: false
+
+- name: Read the Discord bot credential for message receipt
+  ansible.builtin.uri:
+    url: "{{ _bao_url }}/v1/secret/data/services/discord"
+    headers:
+      X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
+    status_code: [200]
+  register: _discord_secret
+  delegate_to: localhost
+  no_log: true
+  check_mode: false
+
+- name: Read the provisioned alert webhook identity
+  ansible.builtin.uri:
+    url: "{{ _bao_url }}/v1/secret/data/services/o11y"
+    headers:
+      X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
+    status_code: [200]
+  register: _o11y_secret
+  delegate_to: localhost
+  no_log: true
+  check_mode: false
+
+- name: Require the bot token and a stored Discord webhook
+  ansible.builtin.assert:
+    that:
+      - _discord_secret.json.data.data.bot_token | default('') | length > 0
+      - not (_discord_secret.json.data.data.bot_token | default('')).startswith('REPLACE_WITH_')
+      - _o11y_secret.json.data.data.alert_discord_webhook_url | default('') | urlsplit('hostname') == 'discord.com'
+      - _o11y_secret.json.data.data.alert_discord_webhook_url | default('') | urlsplit('path') is match('^/api/webhooks/[0-9]{17,21}/[^/]+$')
+    fail_msg: "Seed the bot token and the declared Discord webhook before the delivery drill."
+  no_log: true
+
+- name: Extract the stored webhook identity without its token
+  ansible.builtin.set_fact:
+    _webhook_id: "{{ _o11y_secret.json.data.data.alert_discord_webhook_url | regex_search('(?<=/webhooks/)[0-9]+') }}"
+  no_log: true
+
+- name: Mark the last Discord message before the probe
+  ansible.builtin.uri:
+    url: "https://discord.com/api/v10/channels/{{ _channel_id }}/messages?limit=1"
+    headers:
+      Authorization: "Bot {{ _discord_secret.json.data.data.bot_token }}"
+      User-Agent: "DiscordBot (https://github.com/uhstray-io/agent-cloud, 1.0)"
+    status_code: [200]
+  register: _before_messages
+  delegate_to: localhost
+  no_log: true
+  ignore_errors: true
+  check_mode: false
+
+- name: Require Discord message-history access before the probe
+  ansible.builtin.assert:
+    that: _before_messages is succeeded
+    fail_msg: "Discord message-history read failed with HTTP {{ _before_messages.status | default('unknown') }}; no fault probe was started."

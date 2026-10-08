@@ -1,0 +1,163 @@
+{
+  "_comment": "Shape differences reported by production conformance run Semaphore task 2614 (commit 1f8057aa), per case: key paths only, as conformance.sh shape_diff printed them (type_changed reduced to its paths). No values. test_agw_conformance.py checks the committed allowlist against this record.",
+  "cases": {
+    "chat-template-kwargs": {
+      "only_gateway": [],
+      "only_direct": [
+        "service_tier",
+        "usage.prompt_tokens_details"
+      ],
+      "type_changed": []
+    },
+    "chat-thinking-off": {
+      "only_gateway": [],
+      "only_direct": [
+        "service_tier",
+        "usage.prompt_tokens_details"
+      ],
+      "type_changed": []
+    },
+    "effort-high": {
+      "only_gateway": [],
+      "only_direct": [
+        "service_tier",
+        "usage.prompt_tokens_details"
+      ],
+      "type_changed": []
+    },
+    "effort-low": {
+      "only_gateway": [],
+      "only_direct": [
+        "service_tier",
+        "usage.prompt_tokens_details"
+      ],
+      "type_changed": []
+    },
+    "effort-max": {
+      "only_gateway": [],
+      "only_direct": [
+        "service_tier",
+        "usage.prompt_tokens_details"
+      ],
+      "type_changed": []
+    },
+    "effort-medium": {
+      "only_gateway": [],
+      "only_direct": [
+        "service_tier",
+        "usage.prompt_tokens_details"
+      ],
+      "type_changed": []
+    },
+    "effort-minimal": {
+      "only_gateway": [],
+      "only_direct": [
+        "service_tier",
+        "usage.prompt_tokens_details"
+      ],
+      "type_changed": []
+    },
+    "effort-none": {
+      "only_gateway": [],
+      "only_direct": [
+        "service_tier",
+        "usage.prompt_tokens_details"
+      ],
+      "type_changed": []
+    },
+    "effort-xhigh": {
+      "only_gateway": [],
+      "only_direct": [
+        "service_tier",
+        "usage.prompt_tokens_details"
+      ],
+      "type_changed": []
+    },
+    "models": {
+      "only_gateway": [],
+      "only_direct": [
+        "data.[].max_model_len",
+        "data.[].parent",
+        "data.[].permission.[].allow_create_engine",
+        "data.[].permission.[].allow_fine_tuning",
+        "data.[].permission.[].allow_logprobs",
+        "data.[].permission.[].allow_sampling",
+        "data.[].permission.[].allow_search_indices",
+        "data.[].permission.[].allow_view",
+        "data.[].permission.[].group",
+        "data.[].permission.[].is_blocking",
+        "data.[].permission.[].object",
+        "data.[].permission.[].organization",
+        "data.[].root"
+      ],
+      "type_changed": []
+    },
+    "responses": {
+      "only_gateway": [],
+      "only_direct": [
+        "background",
+        "ec_transfer_params",
+        "frequency_penalty",
+        "incomplete_details",
+        "input_messages",
+        "instructions",
+        "kv_transfer_params",
+        "max_output_tokens",
+        "max_tool_calls",
+        "metadata",
+        "output.[].encrypted_content",
+        "output.[].phase",
+        "output.[].summary",
+        "output_messages",
+        "parallel_tool_calls",
+        "presence_penalty",
+        "previous_response_id",
+        "prompt",
+        "reasoning.context",
+        "reasoning.effort",
+        "reasoning.generate_summary",
+        "reasoning.mode",
+        "reasoning.summary",
+        "service_tier",
+        "temperature",
+        "text",
+        "tool_choice",
+        "tools",
+        "top_logprobs",
+        "top_p",
+        "truncation",
+        "usage.input_tokens_details.cached_tokens_per_turn",
+        "usage.input_tokens_details.input_tokens_per_turn",
+        "usage.output_tokens_details.output_tokens_per_turn",
+        "usage.output_tokens_details.tool_output_tokens",
+        "usage.output_tokens_details.tool_output_tokens_per_turn",
+        "user"
+      ],
+      "type_changed": [
+        "output.[].status"
+      ]
+    },
+    "stream-xhigh": {
+      "only_gateway": [
+        "choices",
+        "usage.completion_tokens",
+        "usage.completion_tokens_details.reasoning_tokens",
+        "usage.prompt_tokens",
+        "usage.total_tokens"
+      ],
+      "only_direct": [
+        "choices.[].delta"
+      ],
+      "type_changed": []
+    },
+    "tool-call": {
+      "only_gateway": [],
+      "only_direct": [
+        "choices.[].message.content",
+        "service_tier",
+        "usage.prompt_tokens_details"
+      ],
+      "type_changed": []
+    }
+  }
+}

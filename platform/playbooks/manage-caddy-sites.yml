@@ -25,8 +25,73 @@
 #   caddy_probe_host       a hostname from the block, to detect "already loaded"
 #   caddy_container        container name (default 'caddy')
 #   container_engine       default 'podman'
+#   caddy_retire_sites     optional list of hostnames whose HAND-MAINTAINED block
+#                          should be deleted so caddy_managed_sites can own them
+#
+# READ + UPDATE. Every run first REPORTS the site blocks the live file defines —
+# addresses, upstreams, and whether each sits inside the managed region. That
+# report is the point: routes arrived here by hand and the file became their only
+# record, which is how devlog.uhstray.io kept pointing at an address declared for
+# a different host long after the two machines started answering one IP.
+#
+# MIGRATING A HAND-MAINTAINED ROUTE. Caddy refuses a file that defines one
+# hostname twice, so adopting a route means deleting the old block in the same
+# pass that adds the new one: declare it in caddy_managed_sites AND list it in
+# caddy_retire_sites. One-way on purpose — the block moves into inventory, where
+# it is reviewable, rather than being edited in place where the next drift would
+# be just as invisible.
+#
+# STEP RESULT. Records workflow step edge-route (platform/workflows/service-onboarding/
+# registry.yml) last, in check mode too. From the executor it resolves the probe URL's host and
+# requests the URL — caddy_probe_url, default https://<caddy_probe_host>/ — so the route is judged by the path a client takes:
+# pass needs the name to resolve and an HTTP answer below 500 (a 5xx is Caddy answering for an
+# upstream that is down). No caddy_probe_host declared fails: the route cannot be checked. A
+# zero-diff Cloudflare plan is its own step, edge-dns, recorded by Apply Cloudflare Tofu,
+# not by this playbook. A dry run probes the live route, so a route not yet loaded records a fail
+# there: the criterion is not met yet. A host that fails before its verdict counts as failed.
+# The verdict is RECORDED here, not fatal, so the edit's own outcome stays its own: an importer
+# decides. rollback-inference-route.yml imports this playbook and FAILS on _edge_group_errors
+# (set on every host), so a broken route cannot leave a rollback green. Evidence is per host.
 #
 # Usage (via Semaphore): -e target_service=caddy_svc
+
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+# A play whose hosts: matches nothing exits 0 with no step result, which reads as a pass (D10
+# review 2026-10-03). This play refuses a target group that names no host, and records the
+# refusal as a failed edge-route result. A bare name (a group OR a single host) is resolved the
+# way `hosts:` resolves it, with the inventory_hostnames lookup. It checks only a bare name. A compound pattern,
+# such as rollback-inference-route.yml's deliberate 'caddy_svc:!caddy_svc' for gateway-config
+# mode, is an importer's own choice to skip the work, so it is not refused here.
+- name: "Refuse a target group that matches no hosts"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    _edge_target: "{{ target_service | default('caddy_svc') }}"
+    _edge_target_empty: >-
+      {{ (_edge_target is match('^[A-Za-z0-9_.-]+$'))
+         and (query('ansible.builtin.inventory_hostnames', _edge_target) | length == 0) }}
+  tasks:
+    - name: "Record the refusal as the step result"
+      ansible.builtin.include_tasks: tasks/emit-step-result.yml
+      vars:
+        step_result_service: ""
+        step_result_step: edge-route
+        step_result_status: fail
+        step_result_evidence:
+          resolves: {}
+          route_status: {}
+        step_result_error: "target_service '{{ _edge_target }}' matches no hosts in this inventory: nothing would be checked."
+      when: _edge_target_empty | bool
+
+    - name: "Fail on a target group that matches no hosts"
+      ansible.builtin.fail:
+        msg: "target_service '{{ _edge_target }}' matches no hosts in this inventory: nothing would be checked."
+      when: _edge_target_empty | bool
 
 - name: "Manage flat-Caddyfile site blocks on {{ target_service | default('caddy_svc') }}"
   hosts: "{{ target_service | default('caddy_svc') }}"
@@ -35,7 +100,9 @@
   vars:
     _engine: "{{ container_engine | default('podman') }}"
     _container: "{{ caddy_container | default('caddy') }}"
+    _edge_url: "{{ caddy_probe_url | default('https://' ~ caddy_probe_host | default('') ~ '/') }}"
     _caddyfile: "{{ caddy_caddyfile_path | default('/home/' ~ (ansible_user | default('uhstray')) ~ '/caddy/Caddyfile') }}"
+    _sites_tool: "{{ playbook_dir }}/../services/caddy/deployment/lib/caddyfile_sites.py"
 
   tasks:
     - name: "Require managed-sites content"
@@ -45,59 +112,137 @@
           - caddy_managed_sites | trim | length > 0
         fail_msg: "Set caddy_managed_sites (the site block[s]) in inventory for this host."
 
-    - name: "Insert/update the managed site block in the Caddyfile"
-      ansible.builtin.blockinfile:
-        path: "{{ _caddyfile }}"
-        marker: "# {mark} ANSIBLE MANAGED — agent-cloud extra sites"
-        block: "{{ caddy_managed_sites }}"
-        backup: true
-        create: false
-      register: _bi
-
-    - name: "Copy the updated Caddyfile into the container for validation"
-      # Validate the actual updated file, NOT /etc/caddy/Caddyfile (the stale
-      # file-mount inode) — otherwise validation passes against old content.
-      ansible.builtin.command: "{{ _engine }} cp {{ _caddyfile }} {{ _container }}:/tmp/Caddyfile.validate"
-      changed_when: false
-
-    - name: "Validate the updated Caddyfile"
-      ansible.builtin.command: "{{ _engine }} exec {{ _container }} caddy validate --adapter caddyfile --config /tmp/Caddyfile.validate"
-      register: _val
-      changed_when: false
-      failed_when: false
-
-    - name: "Restore the backup if the updated Caddyfile is invalid"
+    # Taken BEFORE any edit, and it is what a failed validation restores. The
+    # blockinfile backup is NOT sufficient once retirement exists: it is written
+    # after the retire, so restoring it would roll back the managed block while
+    # leaving a hand-maintained route deleted — the one outcome worse than either
+    # edit failing on its own.
+    - name: "Back up the Caddyfile before any edit"
       ansible.builtin.copy:
-        src: "{{ _bi.backup_file }}"
-        dest: "{{ _caddyfile }}"
+        src: "{{ _caddyfile }}"
+        dest: "{{ _caddyfile }}.pre-agent-cloud"
         remote_src: true
         mode: "0644"
-      when:
-        - _bi.changed
-        - _val.rc != 0
-        - _bi.backup_file is defined
+      changed_when: false
 
-    - name: "Fail when the updated Caddyfile is invalid (rolled back; running config intact)"
-      ansible.builtin.fail:
+    - name: "Read the site blocks the live Caddyfile defines"
+      ansible.builtin.script:
+        cmd: "{{ _sites_tool }} {{ _caddyfile }} list"
+        executable: python3
+      register: _sites_raw
+      changed_when: false
+      check_mode: false
+
+    - name: "Report the current routes"
+      ansible.builtin.debug:
         msg: >-
-          Caddy rejected the updated Caddyfile; rolled back. validate output:
-          {{ _val.stderr | default(_val.stdout) | default('(none)') }}
-      when: _val.rc != 0
+          {{ item.addresses | join(',') }}
+          [{{ 'managed by inventory' if item.managed else 'HAND-MAINTAINED' }}]
+          -> {{ item.upstreams | join(', ') | default('(no upstream)', true) }}
+      loop: "{{ _sites_raw.stdout | from_json }}"
+      loop_control:
+        label: "{{ item.addresses | join(',') }}"
+
+    # EVERY mutating step lives in this block so that ANY failure rolls the file
+    # back, not just a failed validation. Previously the restore was a task gated
+    # on the validate result: if `retire` succeeded and `blockinfile` then failed,
+    # the play aborted before the restore was ever reached, leaving the route
+    # deleted and nothing to put it back. A rescue cannot be skipped that way.
+    - name: "Edit the Caddyfile — any failure restores the pre-edit copy"
+      block:
+        # Deleting the hand-maintained block so caddy_managed_sites can define the
+        # same hostname. A name whose block already sits INSIDE the managed region
+        # is the steady state after an adoption and is left alone (reported as
+        # already_managed) — the same declaration must converge on every run. The
+        # tool still refuses a block that serves other hostnames too.
+        #
+        # changed_when is guarded on rc: the tool reports a refusal on stderr with
+        # an EMPTY stdout, and parsing that as JSON raised inside changed_when,
+        # which replaced the tool's own message with "Expecting value: line 1
+        # column 1" (seen on the first production re-run after an adoption).
+        - name: "Retire hand-maintained blocks that inventory now owns"
+          ansible.builtin.script:
+            cmd: >-
+              {{ _sites_tool }} {{ _caddyfile }} retire --write
+              {{ caddy_retire_sites | map('regex_replace', '^', '--address ') | join(' ') }}
+            executable: python3
+          register: _retired
+          changed_when: _retired.rc == 0 and ((_retired.stdout | from_json).changed | default(false))
+          when:
+            - not ansible_check_mode
+            - caddy_retire_sites | default([]) | length > 0
+
+        - name: "Insert/update the managed site block in the Caddyfile"
+          ansible.builtin.blockinfile:
+            path: "{{ _caddyfile }}"
+            marker: "# {mark} ANSIBLE MANAGED — agent-cloud extra sites"
+            block: "{{ caddy_managed_sites }}"
+            backup: true
+            create: false
+          register: _bi
+
+        - name: "Copy the updated Caddyfile into the container for validation"
+          # Validate the actual updated file, NOT /etc/caddy/Caddyfile (the stale
+          # file-mount inode) — otherwise validation passes against old content.
+          ansible.builtin.command: "{{ _engine }} cp {{ _caddyfile }} {{ _container }}:/tmp/Caddyfile.validate"
+          changed_when: false
+          # A write into the running container, and under --check the edit above was only
+          # simulated: validating would read the OLD file and give a false green for the
+          # proposed change. So copy and validate run only for real (PR 203 review).
+          when: not ansible_check_mode
+
+        - name: "Validate the updated Caddyfile"
+          ansible.builtin.command: "{{ _engine }} exec {{ _container }} caddy validate --adapter caddyfile --config /tmp/Caddyfile.validate"
+          register: _val
+          changed_when: false
+          failed_when: false
+          when: not ansible_check_mode
+
+        # Restores the PRE-EDIT copy, not blockinfile's, so a retire is undone too.
+        # Also no longer gated on _bi.changed: a retire alone can invalidate the file
+        # without blockinfile reporting a change, and that case previously fell
+        # through to the failure below with the broken file left in place.
+        - name: "Fail when the updated Caddyfile is invalid (rolled back; running config intact)"
+          ansible.builtin.fail:
+            msg: >-
+              Caddy rejected the updated Caddyfile; rolled back. validate output:
+              {{ _val.stderr | default(_val.stdout) | default('(none)') }}
+          when:
+            - not ansible_check_mode
+            - _val.rc != 0
+      rescue:
+        - name: "Roll the Caddyfile back to its pre-edit state"
+          ansible.builtin.copy:
+            src: "{{ _caddyfile }}.pre-agent-cloud"
+            dest: "{{ _caddyfile }}"
+            remote_src: true
+            mode: "0644"
+
+        - name: "Fail, having rolled back"
+          ansible.builtin.fail:
+            msg: >-
+              The Caddyfile edit failed and has been rolled back to its pre-edit
+              state; Caddy was not restarted, so the running config is untouched.
+              validate output: {{ _val.stderr | default(_val.stdout) | default('(validation not reached)', true) }}
 
     - name: "Read the running config (to detect whether the block is already loaded)"
       ansible.builtin.command: "{{ _engine }} exec {{ _container }} wget -qO- http://127.0.0.1:2019/config/"
       register: _running
       changed_when: false
       failed_when: false
+      check_mode: false
 
     - name: "Restart Caddy to load the updated Caddyfile (changed, or host not yet served)"
       ansible.builtin.command: "{{ _engine }} restart {{ _container }}"
       register: _restart
       changed_when: true
-      when: >-
-        _bi.changed
-        or (caddy_probe_host | default('') | length > 0
-            and caddy_probe_host not in (_running.stdout | default('')))
+      when:
+        - not ansible_check_mode
+        - >-
+          _bi.changed
+          or (_retired is defined and _retired is changed)
+          or (caddy_probe_host | default('') | length > 0
+              and caddy_probe_host not in (_running.stdout | default('')))
 
     # noqa: no-handler — a sequential post-restart readiness wait, not a handler.
     - name: "Wait for the Caddy admin API to answer after restart"  # noqa: no-handler
@@ -107,15 +252,93 @@
       retries: 10
       delay: 3
       until: _post.rc == 0
-      when: _restart is changed
+      when:
+        - not ansible_check_mode
+        - _restart is changed
 
     - name: "Confirm the managed host is now served"
       ansible.builtin.assert:
         that: caddy_probe_host in (_post.stdout | default(_running.stdout) | default(''))
         fail_msg: "{{ caddy_probe_host }} is not in Caddy's running config after load."
         success_msg: "{{ caddy_probe_host }} is served by Caddy."
-      when: caddy_probe_host | default('') | length > 0
+      # A dry run loaded nothing, so the live config can only show the OLD routes: asserting a
+      # newly proposed host against it would fail a valid change (PR 203 Codex review).
+      when:
+        - not ansible_check_mode
+        - caddy_probe_host | default('') | length > 0
+
+    - name: "Dry run: whether the managed host is served now, and what a real run would do"
+      ansible.builtin.debug:
+        msg: >-
+          check mode: {{ caddy_probe_host }} is
+          {{ 'already served' if caddy_probe_host in (_running.stdout | default('')) else 'not yet served; a real run would load it' }}.
+      when:
+        - ansible_check_mode
+        - caddy_probe_host | default('') | length > 0
 
     - name: "Report"
       ansible.builtin.debug:
         msg: "Caddy managed sites {{ 'changed' if _bi.changed else 'unchanged' }}; {{ 'restarted' if (_restart is changed) else 'no restart needed' }} ({{ _caddyfile }})."
+
+    # ── Step result (edge-route): judged from the executor, the side a client is on.
+    - name: "Edge route: does the probe host resolve?"
+      ansible.builtin.command:
+        argv: [python3, -c, "import socket, sys; socket.getaddrinfo(sys.argv[1], 443)", "{{ _edge_url | urlsplit('hostname') }}"]
+      delegate_to: localhost
+      register: _edge_dns
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      when: caddy_probe_host | default('') | length > 0
+
+    - name: "Edge route: does the route answer?"
+      ansible.builtin.uri:
+        url: "{{ _edge_url }}"
+        method: GET
+        follow_redirects: none
+        # internal-CA (local-dev) and edge-proxied hosts alike: the criterion is an answer
+        validate_certs: false
+        status_code: [-1]
+        timeout: 15
+      delegate_to: localhost
+      register: _edge_http
+      failed_when: false
+      check_mode: false
+      when: (_edge_dns.rc | default(1)) == 0
+
+    - name: "Edge route: decide this host's verdict"
+      ansible.builtin.set_fact:
+        _edge_resolves: "{{ (_edge_dns.rc | default(1)) == 0 }}"
+        _edge_status: "{{ _edge_http.status | default(none) }}"
+        _edge_errors: >-
+          {{ (['caddy_probe_host is not declared: the route cannot be checked']
+              if (caddy_probe_host | default('') | length == 0) else [])
+             + ([(_edge_url | urlsplit('hostname')) ~ ' does not resolve from the executor']
+                if (caddy_probe_host | default('') | length > 0 and (_edge_dns.rc | default(1)) != 0) else [])
+             + ([_edge_url ~ ' answered ' ~ (_edge_http.status | default('no response'))
+                 ~ ', expected an HTTP status below 500']
+                if ((_edge_dns.rc | default(1)) == 0
+                    and not (0 < (_edge_http.status | default(-1) | int) < 500)) else []) }}
+
+    # emit-step-result records ONE result per play (run_once), so the verdict covers every host.
+    - name: "Collect the verdict across the target group"
+      ansible.builtin.set_fact:
+        _edge_group_errors: >-
+          {%- set out = [] -%}
+          {%- for h in ansible_play_hosts_all -%}
+            {%- for e in hostvars[h]._edge_errors | default(['no edge-route verdict (the host failed before it)']) -%}
+              {%- set _ = out.append(h ~ ': ' ~ e) -%}
+            {%- endfor -%}
+          {%- endfor -%}
+          {{ out }}
+
+    - name: "Record the step result"
+      ansible.builtin.include_tasks: tasks/emit-step-result.yml
+      vars:
+        step_result_step: edge-route
+        step_result_status: "{{ 'pass' if (_edge_group_errors | length == 0) else 'fail' }}"
+        step_result_evidence:
+          # per host: one result covers the group
+          resolves: "{%- set out = {} -%}{%- for h in ansible_play_hosts_all -%}{%- set _ = out.update({h: hostvars[h]._edge_resolves | default(none)}) -%}{%- endfor -%}{{ out }}"
+          route_status: "{%- set out = {} -%}{%- for h in ansible_play_hosts_all -%}{%- set _ = out.update({h: hostvars[h]._edge_status | default(none)}) -%}{%- endfor -%}{{ out }}"
+        step_result_error: "{{ _edge_group_errors | join('; ') }}"

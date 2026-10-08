@@ -8,7 +8,30 @@
 #          worker, wait healthy; first boot migrates + applies blueprints).
 # Phase 3: Verify the server is healthy + the API answers.
 #
+# Step result: workflow step oidc-config (platform/workflows/service-onboarding/registry.yml),
+# in check mode too. Phase 3 decides it from the two live checks — every custom blueprint
+# applied successfully (verify-users) and every enabled OIDC provider's redirect URIs match
+# intent (verify-oidc). A failed check records `fail` at the end of Phase 3 and stops the run;
+# otherwise the result is recorded LAST, at the end of Phase 4, so a failed Caddy distribution
+# leaves no result (the collector then records the failure from the task output) rather than a
+# pass. Where the redirect check does not run with OIDC apps enabled (local-dev, unless
+# authentik_verify_oidc=true) the step records `skip`: that criterion was not evaluated.
+#
 # Plan: plan/development/AUTH-SSO-DEPLOYMENT.md.
+
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+# A play over no hosts exits 0 and records a deploy that did nothing as a success
+# (docs/MISTAKES.md 2.21), so refuse an absent or empty group first.
+- name: "Pre-flight: authentik_svc is real"
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: authentik_svc
+    # Paired so one `-e preflight_group=` cannot redirect the guard (MISTAKES 2.21).
+    preflight_group_expected: authentik_svc
 
 # ── Phase 1: Place repo + secrets + env ─────────────────────────────────────
 - name: "Phase 1: Place repo + manage authentik secrets"
@@ -41,6 +64,7 @@
       - { name: openbao_oidc_client_secret, type: random, length: 40 }
       - { name: tududi_oidc_client_secret, type: random, length: 40 }
       - { name: postiz_oidc_client_secret, type: random, length: 40 }
+      - { name: agentgateway_oidc_client_secret, type: random, length: 40 }
       # Day-to-day admin user (agent-cloud-admin.yaml blueprint), member of
       # platform-admins -> top role in every SSO'd app. Worker reads it via !Env.
       - { name: agent_cloud_admin_password, type: random, length: 32 }
@@ -52,6 +76,7 @@
       # once + reused (stable), OpenBao-owned; worker reads via !Env.
       - { name: wisward_password, type: random, length: 32 }
       - { name: andrew_password, type: random, length: 32 }
+      - { name: jacob_password, type: random, length: 32 }
     _env_templates:
       - { src: env.j2, dest: .env, mode: "0600" }
     # Blueprints always applied regardless of environment (groups, flows, admin
@@ -67,6 +92,71 @@
     _authentik_tpls: "{{ playbook_dir }}/../services/authentik/deployment"
 
   tasks:
+    # ── Retirement collision guard ───────────────────────────────────────────
+    # A `state: absent` entry DELETES. platform-users.yaml keeps active and
+    # retired accounts apart by using different variables, and a test refuses any
+    # blueprint where one entry names another's variable. That check cannot see
+    # the part that actually matters: two DIFFERENT variables can be set to the
+    # SAME username in site-config, which the public repo never sees. The
+    # blueprint would then create and delete one account in a single run, and
+    # which wins is entry order rather than intent.
+    #
+    # So it is resolved here, against the values in force, BEFORE anything is
+    # applied. Derived from the variable names rather than a hand-kept pairing,
+    # so a user added later is covered without editing this.
+    - name: "Read the username declarations out of env.j2"
+      # DERIVED from the template that actually renders them, because the template
+      # is where the DEFAULTS live and the defaults are the half that bites.
+      #
+      # `vars | dict2items` sees only variables that are DEFINED. With
+      # jacob_username unset, it does not contain "jacob" — but env.j2 renders
+      # JACOB_USERNAME={{ jacob_username | default('jacob') }} and the account
+      # created is called jacob. A retired entry set to "jacob" would then sail
+      # past a check built on defined variables and delete the account the same
+      # run creates. Caught in review; the guard compares EFFECTIVE values now.
+      #
+      # Each match is (ENV_NAME, inventory_var, default).
+      ansible.builtin.set_fact:
+        _uname_decls: >-
+          {{ lookup('file', playbook_dir ~ '/../services/authentik/deployment/templates/env.j2')
+             | regex_findall("([A-Z0-9_]*USERNAME)=\{\{\s*([a-z0-9_]+)\s*\|\s*default\('([^']*)'\)") }}
+
+    - name: "Resolve each declaration to the username that will actually exist"
+      ansible.builtin.set_fact:
+        _uname_effective: >-
+          {{ (_uname_effective | default([]))
+             + [{'env': item[0],
+                 'value': (lookup('vars', item[1], default=item[2]) | string | trim)}] }}
+      loop: "{{ _uname_decls }}"
+      loop_control:
+        label: "{{ item[0] }}"
+
+    - name: "Split them into the accounts being kept and the ones being deleted"
+      ansible.builtin.set_fact:
+        _active_usernames: >-
+          {{ _uname_effective | rejectattr('env', 'search', 'LEGACY_USERNAME$')
+             | map(attribute='value') | reject('equalto', '') | list }}
+        _retired_usernames: >-
+          {{ _uname_effective | selectattr('env', 'search', 'LEGACY_USERNAME$')
+             | map(attribute='value') | reject('equalto', '') | list }}
+
+    - name: "Refuse to both create and delete the same account"
+      ansible.builtin.assert:
+        that:
+          - _uname_decls | length > 0
+          - (_active_usernames | intersect(_retired_usernames)) | length == 0
+        fail_msg: >-
+          {{ 'No USERNAME declarations found in env.j2 — this guard would pass
+              vacuously, which is worse than failing.'
+             if (_uname_decls | length == 0)
+             else ('A retired username is also an ACTIVE username: '
+                   ~ (_active_usernames | intersect(_retired_usernames) | join(', '))
+                   ~ '. Applying the blueprints would create and delete that account
+                   in one run. Fix the *_legacy_username value in site-config.') }}
+        success_msg: >-
+          {{ _retired_usernames | length }} retired username(s), none colliding
+          with the {{ _active_usernames | length }} active one(s).
+
     - name: "Place the monorepo + ensure podman/compose"
       ansible.builtin.include_tasks: tasks/place-monorepo.yml
 
@@ -117,13 +207,20 @@
     # redirect_uri at deploy time instead of in the browser.
     - name: "Promotion guard (prod): OIDC prod URLs are set + not local-dev defaults"
       ansible.builtin.assert:
+        # lookup('vars'), not the vars magic dict indexed by name: that returns the RAW string, so
+        # a value that is itself a template ("{{ postiz_public_url }}/settings")
+        # passes both checks below with its braces intact and the bug surfaces one
+        # phase later in the verifier, where it did (2026-08-27). Resolving here
+        # means a broken reference fails at the guard, before anything is applied.
         that:
-          - "(vars[item] | default('')) | length > 0"
-          - "'agent-cloud.test' not in (vars[item] | default(''))"
+          - "(lookup('vars', item, default='')) | length > 0"
+          - "'agent-cloud.test' not in (lookup('vars', item, default=''))"
+          - "'{{ '{{' }}' not in (lookup('vars', item, default=''))"
         fail_msg: >-
-          Promotion guard: inventory var '{{ item }}' must be set to a prod URL (in
-          site-config) and not an agent-cloud.test default. Refusing to deploy a
-          local-dev URL to prod — set it, or drop the app from prod authentik_apps.
+          Promotion guard: inventory var '{{ item }}' must resolve to a prod URL (in
+          site-config), not an agent-cloud.test default and not an unresolved
+          template. Got: {{ lookup('vars', item, default='<unset>') }}. Refusing to
+          deploy — set it, or drop the app from prod authentik_apps.
         quiet: true
       loop: "{{ _oidc_prod_required }}"
       when: not (local_mode | default(false) | bool)
@@ -134,14 +231,21 @@
     # access policy, so they grant nothing). This is intentional for the prod prune
     # (see PROD-SSO-ROLLOUT-PLAN.md). Full deprovisioning (state: absent tombstones
     # per removed slug, like openbao-oidc's tombstone) is a tracked future enhancement.
-    - name: "Reset the active-blueprints dir (drop de-selected/removed apps)"
+    # Converged IN PLACE, never reset: a wholesale delete+recreate re-rendered every
+    # file and reported changed on every run even with identical content, so a
+    # second deploy could never report "no change". template/copy are idempotent;
+    # only files outside the active set are removed (the prune tasks below).
+    - name: "Ensure the active-blueprints dir exists"
       ansible.builtin.file:
         path: "{{ _deploy_dir }}/blueprints-active"
-        state: "{{ item }}"
+        state: directory
         mode: "0755"
-      loop: [absent, directory]
-      loop_control:
-        label: "{{ item }}"
+
+    - name: "Compute the active blueprint file set"
+      ansible.builtin.set_fact:
+        _active_blueprints: >-
+          {{ _shared_blueprints
+             + (_enabled_apps | map('extract', authentik_app_catalog, 'file') | list) }}
 
     # RENDERED (not copied) so environment-specific values (OIDC redirect_uris,
     # meta_launch_url) bake into the file content from inventory. Authentik gates
@@ -156,7 +260,7 @@
         src: "{{ _authentik_tpls }}/blueprints/{{ item }}"
         dest: "{{ _deploy_dir }}/blueprints-active/{{ item }}"
         mode: "0644"
-      loop: "{{ _shared_blueprints + (_enabled_apps | map('extract', authentik_app_catalog, 'file') | list) }}"
+      loop: "{{ _active_blueprints }}"
 
     - name: "Render zz-sso-bindings from the enabled set"
       ansible.builtin.template:
@@ -165,6 +269,23 @@
         mode: "0644"
       vars:
         authentik_apps: "{{ _enabled_apps }}"
+
+    # Read-only listing (find runs under --check too), so check mode reports which
+    # stale files WOULD be removed without removing them.
+    - name: "List files in the active-blueprints dir"
+      ansible.builtin.find:
+        paths: "{{ _deploy_dir }}/blueprints-active"
+        file_type: any
+        hidden: true
+      register: _bp_present
+
+    - name: "Remove blueprints no longer in the active set (de-selected/removed apps)"
+      ansible.builtin.file:
+        path: "{{ _deploy_dir }}/blueprints-active/{{ item }}"
+        state: absent
+      loop: >-
+        {{ _bp_present.files | map(attribute='path') | map('basename') | list
+           | difference(_active_blueprints + ['zz-sso-bindings.yaml']) }}
 
     - name: "Create convenience symlink ~/authentik -> deploy dir"
       # Satisfies "a folder for authentik at ~/authentik" while keeping the
@@ -201,8 +322,14 @@
         # Empty on the Semaphore path; detect_runtime derives ([ -z ]). NOT
         # default(omit) — omit leaks its placeholder into environment (rc 127).
         COMPOSE_CMD: "{{ local_compose_cmd | default('') }}"
+        # Operator lever (survey `deploy_force_recreate`, only the literal true): recreate even when every input
+        # and image matches — clears a stale bind mount a running container still holds.
+        FORCE_RECREATE: "{{ 'true' if ((deploy_force_recreate | default('false') | string | lower) == 'true') else '' }}"
       register: _deploy
-      changed_when: true
+      # deploy.sh recreates only when its inputs or images changed (common.sh
+      # compose_up_if_changed) and says which on its own line.
+      changed_when: "'DEPLOY_CHANGED=true' in _deploy.stdout_lines"
+      when: not ansible_check_mode
 
     - name: "Show deploy.sh output"
       ansible.builtin.debug:
@@ -229,6 +356,7 @@
       retries: 5
       delay: 6
       until: _ak_health.rc == 0
+      check_mode: false
 
     - name: "API answers (unauthenticated root config endpoint -> 200)"
       ansible.builtin.command: >-
@@ -240,6 +368,7 @@
       retries: 5
       delay: 6
       until: _ak_api.rc == 0
+      check_mode: false
 
     - name: "Wait for the embedded outpost to serve forward_auth (proxy-provider sync)"
       # `ak healthcheck` + the API go green BEFORE the embedded outpost finishes
@@ -266,6 +395,7 @@
       retries: 20
       delay: 6
       until: _ak_outpost.rc == 0
+      check_mode: false
 
     # ── Promotion VERIFY: live OIDC config matches intent ────────────────────
     # Query the live Authentik API and FAIL the deploy if any enabled OIDC
@@ -285,13 +415,82 @@
       ansible.builtin.shell: "{{ _engine }} exec -i authentik-server python - < /tmp/verify-oidc.py"
       register: _oidc_verify
       changed_when: false
-      failed_when: _oidc_verify.rc != 0
+      # Judged below with the blueprint check, so the step result records the failure.
+      failed_when: false
       when: _do_oidc_verify | bool
+      check_mode: false
 
     - name: "Promotion verify: result"
       ansible.builtin.debug:
         var: _oidc_verify.stdout_lines
       when: _do_oidc_verify | bool
+
+    # ── Blueprint + account verify (every environment) ───────────────────────
+    # Blueprint application is asynchronous in the worker. Placing the files and
+    # seeing a healthy server proves the files landed — not that a single account
+    # was created, which is what an operator is about to hand someone a password
+    # for. This reads the live state back: every custom blueprint applied
+    # successfully, every declared account present and active and in a group,
+    # every retired account gone. Not gated on prod: a local deploy that creates
+    # nobody is just as wrong. Runs inside the container, same as the OIDC check.
+    - name: "Blueprint verify: render the live-state checker"
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../services/authentik/deployment/templates/verify-users.py.j2"
+        dest: /tmp/verify-users.py
+        mode: "0644"
+
+    - name: "Blueprint verify: custom blueprints applied, declared accounts present/absent"
+      ansible.builtin.shell: "{{ _engine }} exec -i authentik-server python - < /tmp/verify-users.py"
+      register: _users_verify
+      changed_when: false
+      # Judged below with the OIDC check, so the step result records the failure.
+      failed_when: false
+      check_mode: false
+
+    - name: "Blueprint verify: result"
+      ansible.builtin.debug:
+        var: _users_verify.stdout_lines
+
+    - name: "OIDC configuration: decide this host's verdict"
+      ansible.builtin.set_fact:
+        _oidc_blueprint_status: "{{ 'successful' if _users_verify.rc == 0 else 'failed' }}"
+        _oidc_redirect_verified: >-
+          {{ (_oidc_verify.rc == 0) if (_do_oidc_verify | bool)
+             else ('not-applicable' if (_verify_apps | default([]) | length == 0) else 'not-checked') }}
+        _oidc_errors: >-
+          {{ (['custom blueprints not all applied, or declared accounts not as declared (verify-users exit '
+               ~ _users_verify.rc ~ ')'] if _users_verify.rc != 0 else [])
+             + (['live OIDC redirect_uris do not match intent (verify-oidc exit ' ~ _oidc_verify.rc ~ ')']
+                if ((_do_oidc_verify | bool) and _oidc_verify.rc != 0) else []) }}
+
+    # emit-step-result records ONE result per play (run_once), so the verdict covers every host.
+    - name: "OIDC configuration: collect the verdict across the target group"
+      ansible.builtin.set_fact:
+        _oidc_group_errors: >-
+          {%- set out = [] -%}
+          {%- for h in ansible_play_hosts_all -%}
+            {%- for e in hostvars[h]._oidc_errors | default(['no oidc-config verdict (the host failed before it)']) -%}
+              {%- set _ = out.append(h ~ ': ' ~ e) -%}
+            {%- endfor -%}
+          {%- endfor -%}
+          {{ out }}
+
+    - name: "Record the step result (verify failed)"
+      ansible.builtin.include_tasks: tasks/emit-step-result.yml
+      vars:
+        step_result_step: oidc-config
+        step_result_status: fail
+        step_result_evidence:
+          # per host: one result covers the group
+          blueprint_status: "{%- set out = {} -%}{%- for h in ansible_play_hosts_all -%}{%- set _ = out.update({h: hostvars[h]._oidc_blueprint_status | default(none)}) -%}{%- endfor -%}{{ out }}"
+          redirect_verified: "{%- set out = {} -%}{%- for h in ansible_play_hosts_all -%}{%- set _ = out.update({h: hostvars[h]._oidc_redirect_verified | default(none)}) -%}{%- endfor -%}{{ out }}"
+        step_result_error: "{{ _oidc_group_errors | join('; ') }}"
+      when: _oidc_group_errors | length > 0
+
+    - name: "Fail when the OIDC configuration did not verify"
+      ansible.builtin.fail:
+        msg: "{{ _oidc_errors | join('; ') if _oidc_errors else 'another authentik host failed its verify' }}"
+      when: _oidc_group_errors | length > 0
 
     - name: "Report"
       ansible.builtin.debug:
@@ -339,3 +538,16 @@
       ansible.builtin.debug:
         msg: "No caddy_svc host in inventory (or local_mode) — skipping central-Caddy fragment distribution."
       when: not (_has_caddy | bool)
+
+    # Last: Phase 3 passed on every host (a failure recorded its result and stopped there).
+    - name: "Record the step result"
+      ansible.builtin.include_tasks: tasks/emit-step-result.yml
+      vars:
+        step_result_step: oidc-config
+        step_result_status: >-
+          {{ 'skip' if (ansible_play_hosts_all | map('extract', hostvars, '_oidc_redirect_verified')
+                        | select('equalto', 'not-checked') | list | length > 0) else 'pass' }}
+        step_result_evidence:
+          # per host: one result covers the group
+          blueprint_status: "{%- set out = {} -%}{%- for h in ansible_play_hosts_all -%}{%- set _ = out.update({h: hostvars[h]._oidc_blueprint_status | default(none)}) -%}{%- endfor -%}{{ out }}"
+          redirect_verified: "{%- set out = {} -%}{%- for h in ansible_play_hosts_all -%}{%- set _ = out.update({h: hostvars[h]._oidc_redirect_verified | default(none)}) -%}{%- endfor -%}{{ out }}"

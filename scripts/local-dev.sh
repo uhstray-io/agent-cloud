@@ -117,19 +117,45 @@ _CURL_OPTS=(--connect-timeout 5 --max-time 30 --retry 2 --retry-delay 1 --retry-
 _api() { curl -sf "${_CURL_OPTS[@]}" -H "Authorization: Bearer ${SEMAPHORE_TOKEN}" "$@"; }
 
 # _run_template <playbook-rel-path> [extra-vars-json]
+# DRY_RUN=1 launches the task in Ansible check mode: Semaphore turns the task's
+# params.dry_run into --check (v2.18.12 LocalJob.go:438, v2.19.11 local_executor.go:516).
+# Standard: plan/architecture/08-ansible-automation-standards.md.
 _run_template() {
   local playbook="$1" extra="${2:-}"
   _load_state
   local base="${SEMAPHORE_URL}/api/project/${SEMAPHORE_PROJECT_ID}"
   local tid
-  tid=$(_api "${base}/templates" | python3 -c "
+  # PREFER the template bound to the WORKTREE repository record. Several
+  # templates can share one playbook path (shared/GitHub-main, (Dev)/GitHub-dev,
+  # (Local)/worktree); taking the first match dispatched the GitHub-main one, so
+  # "validated locally" ran code that was not the code being written
+  # (docs/MISTAKES.md 10.9, occurrence 2). The discriminator is structural —
+  # repository_id against the 'agent-cloud worktree' record — not a name
+  # suffix, which a renamed template would silently defeat. A playbook with NO
+  # worktree-bound template still dispatches (validate-all and friends exist
+  # only in the shared catalog), but says loudly that the run executes the
+  # bound branch's code, not the working tree.
+  local repos tpls pick
+  repos=$(_api "${base}/repositories")
+  tpls=$(_api "${base}/templates")
+  pick=$(python3 -c "
 import json, sys
-ts = json.load(sys.stdin)
+repos = json.loads(sys.argv[1]); ts = json.loads(sys.argv[2])
+wt = [r['id'] for r in repos if r.get('name') == 'agent-cloud worktree']
 m = [t for t in ts if t.get('playbook') == '$playbook']
-print(m[0]['id'] if m else '')")
+local = [t for t in m if wt and t.get('repository_id') == wt[0]]
+pick = (local or m)
+print(('' if local else 'FALLBACK ') + str(pick[0]['id']) if pick else '')" "$repos" "$tpls")
+  case "$pick" in
+    FALLBACK\ *)
+      tid="${pick#FALLBACK }"
+      info "WARN: no worktree-bound template for ${playbook} — dispatching a repo-bound one; this run executes that record's branch, NOT your working tree." ;;
+    *) tid="$pick" ;;
+  esac
   [ -n "$tid" ] || die "no template registered for playbook: $playbook"
   local body="{\"template_id\": ${tid}, \"project_id\": ${SEMAPHORE_PROJECT_ID}"
   [ -n "$extra" ] && body="${body}, \"environment\": $(python3 -c "import json,sys; print(json.dumps(sys.argv[1]))" "$extra")"
+  [ "${DRY_RUN:-0}" = "1" ] && body="${body}, \"params\": {\"dry_run\": true}" && info "DRY_RUN=1: check mode (--check), no changes"
   body="${body}}"
   local task
   task=$(curl -sf "${_CURL_OPTS[@]}" -X POST -H "Authorization: Bearer ${SEMAPHORE_TOKEN}" \
@@ -142,8 +168,7 @@ print(m[0]['id'] if m else '')")
     case "$status" in success|error|stopped) break ;; esac
     sleep 4; i=$((i + 1))
   done
-  _api "${base}/tasks/${task}/output" \
-    | python3 -c "import json,sys; [print(l['output']) for l in json.load(sys.stdin)]" | tail -40
+  _print_task_output "$task" | tail -40
   info "task ${task}: ${status}"
   [ "$status" = "success" ]
 }
@@ -167,6 +192,56 @@ clean_deploy() {
 validate() {
   guard "$INV"
   _run_template "platform/playbooks/validate-all.yml"
+}
+
+# Run ANY registered template by playbook name via LOCAL Semaphore — the same
+# worktree-bound dispatch deploy/validate use, so one-off operational playbooks
+# (backup-n8n-db, restore-n8n-db, store-*-api-key, ...) never need hand-crafted
+# curl against the API. Extra vars ride as a JSON object.
+run_playbook() {
+  local name="${1:-}" extra="${2:-}"
+  [ -n "$name" ] || die "usage: local-dev.sh run <playbook-basename> ['{\"k\":\"v\"}']"
+  guard "$INV"
+  _run_template "platform/playbooks/${name%.yml}.yml" "$extra"
+}
+
+# One task's log, colour codes stripped. /raw_output is plain text (Semaphore v2.18.12
+# GetTaskRawOutput), so there is no JSON to parse. State must already be loaded.
+_print_task_output() {
+  _api "${SEMAPHORE_URL}/api/project/${SEMAPHORE_PROJECT_ID}/tasks/$1/raw_output" \
+    | sed $'s/\x1b\\[[0-9;]*m//g'
+}
+
+# Print one LOCAL Semaphore task's whole log. _run_template shows only the last 40 lines; this
+# reads the rest with the same state file, so the token is never typed, printed or piped into
+# an interpreter (docs/MISTAKES.md 4.10).
+task_output() {
+  local task="${1:-}"
+  [[ "$task" =~ ^[0-9]+$ ]] || die "usage: local-dev.sh output <task-id>"
+  _load_state
+  _print_task_output "$task" || die "no output for task ${task} (not found, or local Semaphore is down)"
+}
+
+# Re-publish the template catalog (shared + local-only) to the LOCAL Semaphore, exactly as
+# bootstrap-local-dev.yml's "Register templates" step does, without re-running genesis. Use
+# after editing templates-local.yml or templates.yml. Resolves the same records by name
+# (inventory `local`, environment `local-openbao`) that the bootstrap creates.
+templates() {
+  _load_state
+  # Local-only by construction: the local-template flag must never reach production.
+  case "$SEMAPHORE_URL" in
+    http://127.0.0.1:*|http://localhost:*) ;;
+    *) die "refusing: SEMAPHORE_URL ${SEMAPHORE_URL} is not the local controller" ;;
+  esac
+  local base="${SEMAPHORE_URL}/api/project/${SEMAPHORE_PROJECT_ID}" inv env
+  inv=$(_api "${base}/inventory" | python3 -c "import json,sys; print(next(i['id'] for i in json.load(sys.stdin) if i['name'] == 'local'))") \
+    || die "no 'local' inventory record — run: make local-bootstrap"
+  env=$(_api "${base}/environment" | python3 -c "import json,sys; print(next(e['id'] for e in json.load(sys.stdin) if e['name'] == 'local-openbao'))") \
+    || die "no 'local-openbao' environment record — run: make local-bootstrap"
+  SEMAPHORE_URL="$SEMAPHORE_URL" SEMAPHORE_TOKEN="$SEMAPHORE_TOKEN" ansible-playbook \
+    "${REPO_ROOT}/platform/semaphore/setup-templates.yml" \
+    -e "semaphore_project_id=${SEMAPHORE_PROJECT_ID}" -e "semaphore_inventory_id=${inv}" \
+    -e "semaphore_environment_id=${env}" -e semaphore_include_local_templates=true
 }
 
 # Show the Authentik SSO logins so the developer can test login/access in the
@@ -482,6 +557,9 @@ case "${1:-}" in
   deploy)    shift; deploy "$@" ;;
   clean-deploy) shift; clean_deploy "$@" ;;
   validate)  validate ;;
+  run)       shift; run_playbook "$@" ;;
+  output)    shift; task_output "$@" ;;
+  templates) templates ;;
   creds)     creds ;;
   resolver)  shift; resolver "$@" ;;
   https)     shift; https "$@" ;;
@@ -499,6 +577,11 @@ usage: scripts/local-dev.sh <subcommand>
   deploy <service>   run the service's deploy template via LOCAL Semaphore
   clean-deploy <svc> DESTRUCTIVE: wipe the service's containers+volumes, redeploy
   validate           run Validate All via LOCAL Semaphore
+  templates          re-publish shared + local-only templates to LOCAL Semaphore
+  run <playbook> [json]  run any registered template by playbook basename via
+                     LOCAL Semaphore (worktree-bound dispatch; extra vars as JSON).
+                     DRY_RUN=1 runs it in check mode
+  output <task-id>   print a LOCAL Semaphore task's whole log (run shows the last 40 lines)
   creds              show the Authentik admin login (read from OpenBao) for browser testing
   resolver [--yes]   wire macOS /etc/resolver/<zone> to the local DNS (sudo;
                      idempotent — re-runnable, no-ops when already correct)

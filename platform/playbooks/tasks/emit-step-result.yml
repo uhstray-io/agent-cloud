@@ -1,0 +1,114 @@
+---
+# emit-step-result.yml — record one service-deployment-workflow step result. A run that
+# executes several workflow steps includes it once per step (provision-vm.yml records
+# provision-vm and cloud-init).
+#
+# The result is written with ansible.builtin.set_stats, which runs in check mode as well
+# as a normal run, and is printed as JSON under "CUSTOM STATS" because the repository's
+# ansible.cfg sets show_custom_stats. The conformance collector and the skynet graph read
+# it from Semaphore's task output. Contract: plan 15 "Step result"; schema
+# agentcloud/step-result/v1 (platform/workflows/service-onboarding/schemas/step-result.json).
+#
+# Include LAST in an executor or snapshot playbook:
+#
+#   - name: "Record the step result"
+#     ansible.builtin.include_tasks: tasks/emit-step-result.yml
+#     vars:
+#       step_result_step: fw-harden                # registry step id
+#       step_result_status: pass                   # pass | fail | skip
+#       step_result_evidence: { ufw_active: true } # the registry's evidence keys
+#       step_result_error: null                    # string when status is fail
+#
+# Two keys carry the result. `step_results` is a list set with aggregate: true, which
+# ansible-core concatenates across set_stats calls in one run (executor/stats.py
+# update_custom_stats: same-type non-mapping values are joined with +), so every include
+# in the run lands in it. `step_result` is the single result, non-aggregating, so the last
+# include wins: kept because every task output already in Semaphore history carries only
+# that key, and the collector (lib/step_results.py results_in) reads `step_results` when
+# present and falls back to `step_result`.
+#
+# Optional: step_result_service (default: service_name), step_result_undo (default: none),
+# workflow_id (extra var set by the orchestrator; empty for a human-launched run).
+# Tag the include `verify` in a playbook that has a verify-only run.
+#
+# Every input above (and the record built below) is refused when it arrives as an extra
+# var: an extra var outranks the include vars the executor passes (ansible-core variable
+# precedence, 21 include params against 22 extra vars,
+# https://docs.ansible.com/ansible/latest/playbook_guide/playbooks_variables.html#understanding-variable-precedence),
+# so `-e step_result_status=pass` would otherwise forge the result of a failed step.
+#
+# RESERVED NAMES. step_result_step, step_result_status, step_result_evidence,
+# step_result_error, step_result_service, step_result_undo and _step_result_record belong to
+# this task: a caller passes them ONLY as include vars. Nothing may define them as an extra
+# var, an inventory var (site-config included), a set_fact or a registered var; the task
+# refuses any of those, honest or not, because it cannot tell them apart.
+# test_emit_step_result.py holds the repository to it (no playbook or task sets or registers
+# them, no example inventory defines them).
+#
+# The check asks whether the NAME is in hostvars, never what it renders to. hostvars holds
+# extra vars, inventory vars, facts and registered vars but not include, block or task vars
+# (pinned by platform/tests/test_emit_step_result.py), so with the names reserved, a name
+# there came from outside the executor. An
+# extra var is a Jinja template rendered afresh in every task, so a check that compared its
+# VALUE could be shown one value and the record another (`{{ 'probe' if <check context> else
+# 'pass' }}`, PR #458 review); the presence of the key does not depend on the rendering.
+# workflow_id is not checked because the orchestrator sets it as an extra var by design.
+
+- name: "Step result: refuse inputs set as extra vars"
+  ansible.builtin.assert:
+    that:
+      - >-
+        ['step_result_step', 'step_result_status', 'step_result_evidence', 'step_result_error',
+        'step_result_service', 'step_result_undo', '_step_result_record']
+        | select('in', hostvars[inventory_hostname]) | list | length == 0
+    fail_msg: >-
+      Refusing to record a step result: {{ ['step_result_step', 'step_result_status',
+      'step_result_evidence', 'step_result_error', 'step_result_service', 'step_result_undo',
+      '_step_result_record'] | select('in', hostvars[inventory_hostname]) | join(', ') }} is
+      defined outside the executor. These names are reserved for emit-step-result's include
+      vars: an extra var would outrank the value the executor computes and forge the result,
+      and an inventory var, set_fact or register of the same name is refused alike, since the
+      task cannot tell them apart. Rename the colliding variable.
+    quiet: true
+  run_once: true
+
+- name: "Step result: validate the inputs"
+  ansible.builtin.assert:
+    that:
+      - step_result_step is defined and step_result_step | length > 0
+      - step_result_status in ['pass', 'fail', 'skip']
+      - step_result_status != 'fail' or (step_result_error | default('', true) | length > 0)
+    fail_msg: >-
+      emit-step-result needs step_result_step, a status of pass/fail/skip, and an
+      error message when the status is fail (got step={{ step_result_step | default('') }},
+      status={{ step_result_status | default('') }})
+    quiet: true
+  run_once: true
+
+- name: "Step result: record the result for {{ step_result_step }}"
+  ansible.builtin.set_stats:
+    data:
+      step_result: "{{ _step_result_record }}"
+    per_host: false
+    aggregate: false
+  run_once: true
+  vars: &step_result_vars
+    _step_result_record:
+      schema: agentcloud/step-result/v1
+      workflow_id: "{{ workflow_id | default('') }}"
+      service: "{{ step_result_service | default(service_name | default('')) }}"
+      step: "{{ step_result_step }}"
+      status: "{{ step_result_status }}"
+      check_mode: "{{ ansible_check_mode | bool }}"
+      evidence: "{{ step_result_evidence | default({}) }}"
+      error: "{{ step_result_error | default(none) }}"
+      undo: "{{ step_result_undo | default('none') }}"
+
+- name: "Step result: append to this run's list the result for {{ step_result_step }}"
+  ansible.builtin.set_stats:
+    data:
+      step_results: ["{{ _step_result_record }}"]
+    per_host: false
+    aggregate: true
+  run_once: true
+  vars: *step_result_vars

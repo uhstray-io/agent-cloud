@@ -1,0 +1,233 @@
+---
+# verify-service-persistence.yml — does the service come back after a reboot?
+#
+# Workflow step systemd-enablement (platform/workflows/service-onboarding/registry.yml),
+# change service-deployment-workflow task 7.2. Read-only: it changes nothing and runs
+# identically under --check.
+#
+# Proves, for every container of the service:
+#   - it restarts on its own: restart policy `always` (podman's boot unit starts nothing
+#     else), or "no" for a one-shot init container, or (rootful podman) named by the service's
+#     own enabled `agent-cloud-boot-<service>.service`, which ensure-service-persistence.yml
+#     installs for legacy containers whose policy the Ubuntu podman cannot change in place
+# and, on a Linux host running rootless podman:
+#   - the deploying user has systemd linger, so its containers start without a login
+#     (tasks/enable-linger.yml is what sets it)
+#
+# The service's containers come from tasks/list-service-containers.yml (the compose
+# working_dir label, which says why).
+#
+# One result for the whole target group: a populated-group guard runs first (an absent group
+# would exit 0 with no result), and every host's errors are folded into the one run_once
+# result, so a multi-host run cannot record only the first host's verdict (D10 review).
+#
+# Usage (Semaphore): -e target_service=tududi_svc
+
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: "Refuse a target group that matches no hosts"
+  # A play whose hosts: matches nothing exits 0 with no step result, which reads as a pass.
+  # preflight-target-group.yml refuses survey-driven groups because its subject could be
+  # redirected away from the work; here the guard and the work read the SAME target_service, so
+  # one override moves both, and the guard only proves the group is populated (as in
+  # check-secrets.yml and verify-service-health.yml).
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  # Tagged so a verify-only run (--tags verify) keeps the guard.
+  tags: [verify]
+  tasks:
+    - name: "Require target_service to name a populated inventory group"
+      ansible.builtin.assert:
+        that: (groups.get(target_service | default(''), []) | length) > 0
+        fail_msg: "target_service '{{ target_service | default('') }}' matches no hosts in this inventory: nothing would be checked."
+
+- name: "Verify the service survives a reboot: {{ target_service | default('(unset)') }}"
+  hosts: "{{ target_service | default('ungrouped') }}"
+  gather_facts: false
+  become: false
+  tags: [verify]
+  vars:
+    # podman-restart.service, rootful and rootless alike, starts only `always` containers at
+    # boot, so `unless-stopped` stays down after a reboot; Docker honours `always` too. The one
+    # exception the compose guard allows (test_restart_policy.bats) is "no" for a one-shot init
+    # container: accepted only from a container that DECLARES itself one-shot (label
+    # agent-cloud.one-shot=true, which the guard requires on every such service) and has
+    # exited 0. Neither alone is enough: a long-running "no" container can exit 0, and a
+    # labelled one that failed did not finish its job (PR 253 Codex reviews).
+    _restart_ok: [always]
+    _rootless_podman: >-
+      {{ _engine == 'podman' and not (local_mode | default(false) | bool)
+         and not (podman_rootful | default(false) | bool) }}
+
+  tasks:
+    - name: "List the service's containers (by compose working directory)"
+      ansible.builtin.include_tasks: tasks/list-service-containers.yml
+      vars:
+        _lsc_fields: [Names]
+        _lsc_all: true
+
+    - name: "Read each container's restart policy"
+      ansible.builtin.command:
+        argv:
+          - "{{ _engine }}"
+          - inspect
+          - --format
+          # policy, state, exit code and the one-shot label (Docker Engine API ContainerState and
+          # Config.Labels; podman the same). `index` prints "" for an absent label.
+          - >-
+            {{ '{{' }}.HostConfig.RestartPolicy.Name{{ '}}' }} {{ '{{' }}.State.Status{{ '}}' }}
+            {{ '{{' }}.State.ExitCode{{ '}}' }} {{ '{{' }}index .Config.Labels "agent-cloud.one-shot"{{ '}}' }}
+          - "{{ item }}"
+      loop: "{{ _lsc.stdout_lines }}"
+      become: "{{ podman_rootful | default(false) | bool }}"
+      register: _policies
+      changed_when: false
+      check_mode: false
+
+    - name: "Rootless podman on Linux: read the service account's linger"
+      # Same account rule as tasks/enable-linger.yml: linger_user when a service runs under a
+      # dedicated account, else the connecting user.
+      ansible.builtin.command:
+        argv: [loginctl, show-user, "{{ linger_user | default(ansible_user) | default(lookup('env', 'USER')) }}", --property=Linger]
+      register: _linger
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      when: _rootless_podman | bool
+
+    # Linger keeps the user's systemd running; podman's user boot unit is what starts the
+    # containers after a reboot (tasks/enable-linger.yml links it into default.target.wants).
+    # Linger without the unit leaves `restart: always` containers down (PR 195 Codex review).
+    - name: "Rootless podman on Linux: look up the service account's home"
+      ansible.builtin.getent:
+        database: passwd
+        key: "{{ linger_user | default(ansible_user) | default(lookup('env', 'USER')) }}"
+      check_mode: false
+      when: _rootless_podman | bool
+
+    - name: "Rootless podman on Linux: is podman's user boot unit enabled?"
+      ansible.builtin.stat:
+        path: >-
+          {{ ansible_facts.getent_passwd[linger_user | default(ansible_user) | default(lookup('env', 'USER'))][4]
+             }}/.config/systemd/user/default.target.wants/podman-restart.service
+      register: _boot_unit
+      check_mode: false
+      when: _rootless_podman | bool
+
+    - name: "Rootful podman: is the system boot unit enabled?"
+      ansible.builtin.command:
+        argv: [systemctl, is-enabled, podman-restart.service]
+      register: _system_unit
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      when:
+        - _engine == 'podman'
+        - podman_rootful | default(false) | bool
+        - not (local_mode | default(false) | bool)
+
+    # ensure-service-persistence.yml gives a rootful service whose containers are not on
+    # `always` one boot unit that `podman start`s them by name.
+    - name: "Rootful podman: is the service's own boot unit enabled?"
+      ansible.builtin.command:
+        argv: [systemctl, is-enabled, "agent-cloud-boot-{{ service_name | default(inventory_hostname) }}.service"]
+      register: _service_unit_enabled
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      when:
+        - _engine == 'podman'
+        - podman_rootful | default(false) | bool
+        - not (local_mode | default(false) | bool)
+
+    - name: "Rootful podman: which containers does it start?"
+      # The file ensure-service-persistence.yml wrote; its ExecStart= line is that playbook's.
+      ansible.builtin.slurp:
+        src: "/etc/systemd/system/agent-cloud-boot-{{ service_name | default(inventory_hostname) }}.service"
+      register: _service_unit_file
+      failed_when: false
+      check_mode: false
+      when: (_service_unit_enabled.stdout | default('') | trim) == 'enabled'
+
+    - name: "Decide the result"
+      ansible.builtin.set_fact:
+        _restart_policies: >-
+          {%- set out = {} -%}
+          {%- for r in _policies.results -%}{%- set _ = out.update({r.item: (r.stdout.split(' ') | first)}) -%}{%- endfor -%}
+          {{ out }}
+        # The names after "ExecStart=/usr/bin/podman start", only while the unit is enabled.
+        _unit_started: >-
+          {%- set text = ((_service_unit_file | default({})).content | default('')) | b64decode -%}
+          {%- set line = text.splitlines() | select('match', '^ExecStart=/usr/bin/podman start ') | first | default('') -%}
+          {{ line.split()[2:]
+             if ((_service_unit_enabled | default({})).stdout | default('') | trim) == 'enabled' else [] }}
+        _one_shot_done: "{{ _policies.results | selectattr('stdout', 'match', '^no exited 0 true$') | map(attribute='item') | list }}"
+        _linger_state: >-
+          {{ 'not-applicable' if (_linger is skipped)
+             else ('yes' if 'Linger=yes' in (_linger.stdout | default('')) else 'no') }}
+        _boot_unit_state: >-
+          {{ ('enabled' if (_boot_unit.stat.exists | default(false)) else 'disabled') if (_boot_unit is not skipped)
+             else ((('enabled' if (_system_unit.stdout | default('') | trim) == 'enabled' else 'disabled'))
+                   if ((_system_unit | default({'skipped': true})) is not skipped) else 'not-applicable') }}
+
+    - name: "Decide the failures"
+      ansible.builtin.set_fact:
+        _persistence_errors: >-
+          {{ (['no containers carry the compose working_dir label for ' ~ _deploy_dir
+               ~ ((' (engine: ' ~ _lsc.stderr ~ ')') if _lsc.rc != 0 else '')]
+              if (_lsc.stdout_lines | length == 0) else [])
+             + (_restart_policies | dict2items | rejectattr('value', 'in', _restart_ok + ['no'])
+                | map(attribute='key') | reject('in', _unit_started)
+                | map('regex_replace', '^', 'restart policy not ' ~ (_restart_ok | join('/')) ~ ': ') | list)
+             + (_restart_policies | dict2items | selectattr('value', 'equalto', 'no') | map(attribute='key')
+                | reject('in', _one_shot_done) | reject('in', _unit_started)
+                | map('regex_replace', '^', 'restart policy "no" but not a declared one-shot container (label agent-cloud.one-shot=true) that exited 0: ') | list)
+             + (['linger is off for the deploying user'] if _linger_state == 'no' else [])
+             + (['podman-restart.service is not enabled '
+                 ~ ('for the deploying user' if (_boot_unit is not skipped) else '(system unit)')
+                 ~ ': containers will not start at boot']
+                if _boot_unit_state == 'disabled' else []) }}
+
+    - name: "Report"
+      ansible.builtin.debug:
+        msg:
+          containers: "{{ _restart_policies }}"
+          linger: "{{ _linger_state }}"
+          boot_unit: "{{ _boot_unit_state }}"
+          container_units: "{{ _unit_started }}"
+          errors: "{{ _persistence_errors }}"
+
+    # emit-step-result records ONE result per play (run_once), so the recorded verdict covers the
+    # whole target group: every host's errors, prefixed with the host, and a host that failed
+    # before its verdict counts as a failure rather than vanishing from ansible_play_hosts.
+    - name: "Collect the verdict across the target group"
+      ansible.builtin.set_fact:
+        _group_errors: >-
+          {%- set out = [] -%}
+          {%- for h in ansible_play_hosts_all -%}
+            {%- for e in hostvars[h]._persistence_errors | default(['no persistence verdict (the host failed before it)']) -%}
+              {%- if out.append(h ~ ': ' ~ e) -%}{%- endif -%}
+            {%- endfor -%}
+          {%- endfor -%}
+          {{ out }}
+
+    - name: "Record the step result"
+      ansible.builtin.include_tasks: tasks/emit-step-result.yml
+      vars:
+        step_result_step: systemd-enablement
+        step_result_status: "{{ 'pass' if (_group_errors | length == 0) else 'fail' }}"
+        step_result_evidence:
+          # per host: one result covers the group (null for a host that failed before its verdict)
+          linger: "{%- set out = {} -%}{%- for h in ansible_play_hosts_all -%}{%- set _ = out.update({h: hostvars[h]._linger_state | default(none)}) -%}{%- endfor -%}{{ out }}"
+          boot_unit: "{%- set out = {} -%}{%- for h in ansible_play_hosts_all -%}{%- set _ = out.update({h: hostvars[h]._boot_unit_state | default(none)}) -%}{%- endfor -%}{{ out }}"
+          restart_policies: "{%- set out = {} -%}{%- for h in ansible_play_hosts_all -%}{%- set _ = out.update({h: hostvars[h]._restart_policies | default(none)}) -%}{%- endfor -%}{{ out }}"
+        step_result_error: "{{ _group_errors | join('; ') }}"
+
+    - name: "Fail when the service would not survive a reboot"
+      ansible.builtin.fail:
+        msg: "{{ _persistence_errors | join('; ') }}"
+      when: _persistence_errors | length > 0

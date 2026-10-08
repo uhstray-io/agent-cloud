@@ -17,7 +17,7 @@ services:
   openhands:
     image: ${OPENHANDS_IMAGE:-docker.openhands.dev/openhands/openhands:1.8}
     container_name: openhands
-    restart: unless-stopped
+    restart: always
     env_file:
       - .env
     ports:

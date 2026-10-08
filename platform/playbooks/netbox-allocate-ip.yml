@@ -26,10 +26,17 @@
 # apart reserve different addresses, and the declaration that follows would disagree with
 # the ledger. So the operator (or an earlier report run) names the addresses, and this
 # playbook records exactly those.
+# A reserve run reads the DHCP server on the configured pfSense interface and
+# refuses an unknown boundary or an address the router could assign.
 #
 # Auth: OpenBao AppRole -> secret/services/netbox:automation_api_token (provisioned by
 # provision-netbox-automation-token.yml). Only the credential tasks are no_log'd; the
 # address operations stay visible so a Semaphore run is diagnosable.
+
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
 
 - name: "Allocate addresses from the NetBox IPAM authority"
   hosts: localhost
@@ -42,14 +49,23 @@
     _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default(lookup('env', 'BAO_ADDR'), true) | default('', true) }}"
     _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
-    _netbox_url: "{{ netbox_url | default(service_url) | default('') }}"
+    _netbox_url: "{{ hostvars[groups['netbox_svc'][0]].service_url | default('') }}"
     _token_key: "{{ netbox_token_key | default('automation_api_token') }}"
     _prefix: "{{ prefix | default('') }}"
     _count: "{{ (count | default(2)) | int }}"
     _reserve: "{{ reserve | default(false) | bool }}"
     _assignments: "{{ (assignments | from_json) if (assignments is string) else (assignments | default([])) }}"
-
   tasks:
+    - name: "Require the inventory-owned NetBox endpoint"
+      ansible.builtin.assert:
+        that:
+          - groups.get('netbox_svc', []) | length == 1
+          - hostvars[groups['netbox_svc'][0]].service_url | default('') | length > 0
+          - netbox_url is not defined
+          - service_url is not defined
+          - _netbox_url == hostvars[groups['netbox_svc'][0]].service_url
+        fail_msg: "Declare one private NetBox host with service_url; launch-time endpoint overrides are refused."
+
     - name: "Validate inputs"
       ansible.builtin.assert:
         that:
@@ -65,10 +81,37 @@
           - (not _reserve) or (_assignments | length > 0)
           - _assignments | rejectattr('address', 'defined') | list | length == 0
         fail_msg: >-
-          Need the OpenBao address, -e netbox_url=<url>, -e prefix=<cidr> (with a mask),
+          Need the OpenBao address, private NetBox service_url, -e prefix=<cidr> (with a mask),
           0 < count <= 32, and — when -e reserve=true — a non-empty `assignments` list
           in which every entry has an `address`.
         success_msg: "Querying {{ _prefix }} for {{ _count }} free address(es); mode={{ 'reserve' if _reserve else 'report' }}."
+
+    - name: "Require the pfSense DHCP source before reserving"
+      ansible.builtin.assert:
+        that:
+          - groups.get('netbox_svc', []) | length == 1
+          - (hostvars[groups['netbox_svc'][0]].pfsense_dhcp_api_url | default('')) | length > 0
+          - (hostvars[groups['netbox_svc'][0]].pfsense_dhcp_interface | default('')) | length > 0
+          - hostvars[groups['netbox_svc'][0]].pfsense_dhcp_api_url is match('^https://')
+        fail_msg: "Declare one private NetBox host with an HTTPS pfsense_dhcp_api_url and pfsense_dhcp_interface before reserving."
+      when: _reserve
+
+    - name: "Require inventory-owned pfSense DHCP settings"
+      ansible.builtin.assert:
+        that:
+          - pfsense_dhcp_api_url is not defined
+          - pfsense_dhcp_interface is not defined
+          - pfsense_dhcp_validate_certs is not defined
+          - (hostvars[groups['netbox_svc'][0]].pfsense_dhcp_validate_certs | default(true)) is boolean
+        fail_msg: "Declare pfSense DHCP URL, interface, and boolean TLS setting on the private NetBox host; launch-time overrides are refused."
+      when: _reserve
+
+    - name: "Report a private pfSense TLS exception"
+      ansible.builtin.debug:
+        msg: "pfSense DHCP certificate validation is disabled by private NetBox inventory for this reservation."
+      when:
+        - _reserve
+        - not (hostvars[groups['netbox_svc'][0]].pfsense_dhcp_validate_certs | default(true) | bool)
 
     - name: "Refuse a cleartext OpenBao endpoint"
       ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
@@ -85,6 +128,13 @@
         _assert_bao_url: "{{ _netbox_url }}"
         _assert_url_label: "NetBox"
 
+    - name: "Refuse a cleartext pfSense endpoint"
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ hostvars[groups['netbox_svc'][0]].pfsense_dhcp_api_url }}"
+        _assert_url_label: "pfSense"
+      when: _reserve
+
     # ── credentials (no_log boundary) ──────────────────────────────────────
     - name: "Authenticate to OpenBao (AppRole)"
       ansible.builtin.uri:
@@ -97,6 +147,8 @@
         status_code: [200]
       register: _bao_auth
       no_log: true
+      changed_when: false
+      check_mode: false
 
     - name: "Read the NetBox automation token from OpenBao"
       ansible.builtin.uri:
@@ -107,6 +159,19 @@
         status_code: [200]
       register: _nb_secret
       no_log: true
+      check_mode: false
+
+    - name: "Read the pfSense discovery credential from OpenBao"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/secret/data/services/discovery/pfsense"
+        method: GET
+        headers:
+          X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
+        status_code: [200, 404]
+      register: _pfsense_secret
+      no_log: true
+      when: _reserve
+      check_mode: false
 
     # A no_log step that merely fails is undiagnosable, which is the failure mode
     # AGENTS.md calls out. The credential tasks above keep no_log; these two report only
@@ -118,6 +183,7 @@
         _auth_ok: "{{ (_bao_auth.json.auth.client_token | default('')) | length > 0 }}"
         _nb_keys: "{{ (_nb_secret.json.data.data | default({})).keys() | list | sort }}"
         _token_present: "{{ ((_nb_secret.json.data.data | default({}))[_token_key] | default('')) | length > 0 }}"
+        _pfsense_key_present: "{{ (((((_pfsense_secret.json | default({})).get('data') or {}).get('data') or {}).get('api_key') or '') | length > 0) if _reserve else false }}"
       no_log: true
 
     - name: "Report the credential outcome"
@@ -137,11 +203,56 @@
           If the key is absent, mint it with provision-netbox-automation-token.yml
           rather than by hand.
 
+    - name: "Require the pfSense API key for reservations"
+      ansible.builtin.assert:
+        that: _pfsense_key_present | bool
+        fail_msg: "secret/services/discovery/pfsense lacks api_key; reservation is refused."
+      when: _reserve
+
+    - name: "Read the live pfSense DHCP server configuration"
+      ansible.builtin.uri:
+        url: "{{ hostvars[groups['netbox_svc'][0]].pfsense_dhcp_api_url }}/api/v2/services/dhcp_server?id={{ hostvars[groups['netbox_svc'][0]].pfsense_dhcp_interface | urlencode }}"
+        method: GET
+        headers:
+          X-API-Key: "{{ _pfsense_secret.json.data.data.api_key }}"
+        status_code: [200]
+        validate_certs: "{{ hostvars[groups['netbox_svc'][0]].pfsense_dhcp_validate_certs | default(true) | bool }}"
+      register: _pfsense_dhcp
+      failed_when: false
+      no_log: true
+      when: _reserve
+      check_mode: false
+
+    - name: "Require a successful pfSense DHCP read"
+      ansible.builtin.assert:
+        that: (_pfsense_dhcp.status | default(-1)) == 200
+        fail_msg: "pfSense DHCP read failed with HTTP status {{ _pfsense_dhcp.status | default('unavailable') }}; reservation is refused."
+      when: _reserve
+
+    - name: "Check the live DHCP boundary before reserving"
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/netbox_dhcp_boundary.py"
+        stdin: "{{ {'prefix': _prefix, 'interface': hostvars[groups['netbox_svc'][0]].pfsense_dhcp_interface, 'assignments': _assignments, 'response': _pfsense_dhcp.json} | to_json }}"
+      register: _dhcp_check
+      changed_when: false
+      failed_when: false
+      no_log: true
+      when: _reserve
+      check_mode: false
+
+    - name: "Refuse an address pfSense could assign or an unknown boundary"
+      ansible.builtin.assert:
+        that: _dhcp_check.rc == 0
+        fail_msg: "DHCP boundary refused reservation: {{ _dhcp_check.stdout | default('invalid router response') }}"
+        success_msg: "{{ _dhcp_check.stdout }}"
+      when: _reserve
+
     - name: "Set the NetBox auth header"
-      ansible.builtin.set_fact:
-        _nb_headers:
-          Authorization: "Token {{ _nb_secret.json.data.data[_token_key] }}"
-          Accept: "application/json"
+      ansible.builtin.include_tasks: tasks/netbox-api-headers.yml
+      vars:
+        _netbox_api_token: "{{ _nb_secret.json.data.data[_token_key] }}"
       no_log: true
 
     # ── resolve the prefix ─────────────────────────────────────────────────
@@ -152,6 +263,7 @@
         headers: "{{ _nb_headers }}"
         status_code: [200]
       register: _pfx
+      check_mode: false
 
     - name: "Require the prefix to exist in the authority"
       ansible.builtin.assert:
@@ -170,6 +282,7 @@
         headers: "{{ _nb_headers }}"
         status_code: [200]
       register: _free
+      check_mode: false
 
     - name: "Report the free addresses"
       ansible.builtin.debug:
@@ -198,6 +311,7 @@
       loop_control:
         label: "{{ item.address }}"
       when: _reserve
+      check_mode: false
 
     - name: "Record each new address as allocated"
       ansible.builtin.uri:
@@ -206,17 +320,24 @@
         headers: "{{ _nb_headers }}"
         body_format: json
         body:
-          address: "{{ item.item.address }}"
-          status: "{{ item.item.status | default('active') }}"
-          dns_name: "{{ item.item.dns_name | default('') }}"
-          description: "{{ item.item.description | default('Allocated by netbox-allocate-ip.yml') }}"
+          address: "{{ item.address }}"
+          status: "{{ item.status | default('active') }}"
+          dns_name: "{{ item.dns_name | default('') }}"
+          description: "{{ item.description | default('Allocated by netbox-allocate-ip.yml') }}"
         status_code: [201]
-      loop: "{{ _existing.results | default([]) }}"
+      # Loops over the declared assignments and indexes into the reads, never over the reads
+      # themselves: a failed loop item is printed whole, and a registered read carries the
+      # NetBox token in its request headers (docs/MISTAKES.md 4.6).
+      vars:
+        _read: "{{ (_existing.results | default([]))[_i] }}"
+      loop: "{{ _assignments }}"
       loop_control:
-        label: "{{ item.item.address }}"
+        index_var: _i
+        label: "{{ item.address }}"
       when:
+        - not ansible_check_mode
         - _reserve
-        - (item.json.results | default([])) | length == 0
+        - (_read.json.results | default([])) | length == 0
 
     # RE-QUERY before reporting. The report used to iterate the pre-create GET results, so
     # an address this run had just created (HTTP 201) still printed "NOT recorded in the
@@ -234,33 +355,45 @@
       loop: "{{ _assignments }}"
       loop_control:
         label: "{{ item.address }}"
+      check_mode: false
 
     - name: "Report the recorded state of each named address"
       ansible.builtin.debug:
         msg: >-
-          {{ item.item.address }}:
-          {{ ('RECORDED as id=' ~ (item.json.results | first).id
-              ~ ' status=' ~ ((item.json.results | first).status.value | default('?'))
-              ~ ' dns_name=' ~ ((item.json.results | first).dns_name | default('') | default('(none)', true))
-              ~ ' description=' ~ ((item.json.results | first).description | default('') | default('(none)', true))
-              ~ ' tags=' ~ ((item.json.results | first).tags | default([]) | map(attribute='name') | list | join('/') | default('(none)', true)))
-             if ((item.json.results | default([])) | length > 0)
+          {{ item.address }}:
+          {{ ('RECORDED as id=' ~ (_read.json.results | first).id
+              ~ ' status=' ~ ((_read.json.results | first).status.value | default('?'))
+              ~ ' dns_name=' ~ ((_read.json.results | first).dns_name | default('') | default('(none)', true))
+              ~ ' description=' ~ ((_read.json.results | first).description | default('') | default('(none)', true))
+              ~ ' tags=' ~ ((_read.json.results | first).tags | default([]) | map(attribute='name') | list | join('/') | default('(none)', true)))
+             if ((_read.json.results | default([])) | length > 0)
              else 'NOT recorded in the authority' }}
-      loop: "{{ _final_state.results | default([]) }}"
+      vars:
+        _read: "{{ _final_state.results[_i] }}"
+      loop: "{{ _assignments }}"
       loop_control:
-        label: "{{ item.item.address }}"
+        index_var: _i
+        label: "{{ item.address }}"
 
     - name: "Refuse to report success for an address a reserve run failed to create"
       # A reserve run whose POST silently did nothing would otherwise end on a green
       # report. If we were asked to reserve, every named address must now exist.
       ansible.builtin.assert:
         that:
-          - (item.json.results | default([])) | length > 0
+          - (_read.json.results | default([])) | length > 0
         fail_msg: >-
-          {{ item.item.address }} is still not recorded after a reserve run. The create
+          {{ item.address }} is still not recorded after a reserve run. The create
           either did not run or did not take effect — check the task above rather than
           re-running, since a partial run may have created the others.
-      loop: "{{ _final_state.results | default([]) }}"
+      vars:
+        _read: "{{ _final_state.results[_i] }}"
+      loop: "{{ _assignments }}"
       loop_control:
-        label: "{{ item.item.address }}"
-      when: _reserve
+        index_var: _i
+        label: "{{ item.address }}"
+      # Under --check the create is skipped (`not ansible_check_mode` above), so the
+      # addresses are absent by design; asserting here made every reserve dry run fail
+      # after its DHCP boundary had already passed (Semaphore task 1729, 2026-09-28).
+      when:
+        - not ansible_check_mode
+        - _reserve

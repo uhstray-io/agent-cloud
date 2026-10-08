@@ -1,0 +1,64 @@
+---
+# The controller updates exact declared surveys; one missing Dev template may be
+# created only with explicit verified bindings.
+# No service deploy, repository rebind, inventory update or credential export.
+
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: "Require explicit controller publication scope"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: "Refuse a controller token destination override before authentication"
+      ansible.builtin.assert:
+        that: (_semaphore_url | default('http://127.0.0.1:3000')) == 'http://127.0.0.1:3000'
+        fail_msg: "The controller publisher may only use its fixed loopback API destination."
+
+    - name: "Require the exact template-name list"
+      ansible.builtin.assert:
+        that:
+          - semaphore_template_names_json is defined
+          - semaphore_template_names_json is string
+          - semaphore_template_names_json | length > 0
+        fail_msg: "Supply a JSON list of exact declared template names. Full-catalog publication is unavailable here."
+
+    - name: "Keep ordinary survey updates free of create-only bindings"
+      ansible.builtin.assert:
+        that:
+          - semaphore_project_id | default('') | string | trim | length == 0
+          - semaphore_inventory_id | default('') | string | trim | length == 0
+          - semaphore_environment_id | default('') | string | trim | length == 0
+        fail_msg: "Project, inventory, and variable-group IDs are accepted only for one-template creation."
+      when: not (semaphore_allow_scoped_create | default(false) | bool)
+
+    - name: "Limit controller-created templates to the Dev repository"
+      ansible.builtin.assert:
+        that:
+          - semaphore_template_names_json | from_json | length == 1
+          - (semaphore_template_names_json | from_json | first) is match('^.+ \(Dev\)$')
+        fail_msg: "The controller may create one declared (Dev) template per run."
+      when: semaphore_allow_scoped_create | default(false) | bool
+
+    - name: "Limit scoped schedule publication to one Dev template"
+      ansible.builtin.assert:
+        that:
+          - semaphore_template_names_json | from_json | length == 1
+          - (semaphore_template_names_json | from_json | first) is match('^.+ \(Dev\)$')
+          - not (semaphore_allow_scoped_create | default(false) | bool)
+          - semaphore_project_id | default('') | string | trim | length == 0
+          - semaphore_inventory_id | default('') | string | trim | length == 0
+          - semaphore_environment_id | default('') | string | trim | length == 0
+        fail_msg: "Scoped schedule publication requires one existing (Dev) template and accepts no create bindings."
+      when: semaphore_allow_scoped_schedule | default(false) | bool
+
+- name: "Publish the selected declared surveys using controller runtime access"
+  ansible.builtin.import_playbook: ../semaphore/setup-templates.yml
+  vars:
+    # The controller API listens here in the declared Semaphore container.
+    # No survey-controlled destination may receive the OpenBao-sourced token.
+    _semaphore_url: "http://127.0.0.1:3000"
+    semaphore_template_names: "{{ semaphore_template_names_json | from_json }}"

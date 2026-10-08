@@ -93,6 +93,7 @@
   changed_when: false
   failed_when: false
   when: _fragment_written.changed
+  check_mode: false
 
 - name: "Fail (without rollback) when Caddy is unreachable — fragment could not be validated"
   ansible.builtin.fail:
@@ -118,9 +119,22 @@
   register: _caddy_validate
   changed_when: false
   failed_when: false
+  # A dry run only simulated the fragment write, so this would validate the UNCHANGED config
+  # and pass an invalid proposed fragment (PR 203 Codex review).
   when:
+    - not ansible_check_mode
     - _fragment_written.changed
     - _caddy_reachable.rc == 0
+  check_mode: false
+
+- name: "Dry run: the proposed fragment is validated only in a real run"
+  ansible.builtin.debug:
+    msg: >-
+      check mode: {{ _fragment_name }} would change on {{ _caddy_target }}; Caddy validates the
+      full config with it, and rolls back if invalid, only in a real run.
+  when:
+    - ansible_check_mode
+    - _fragment_written.changed
 
 - name: "Roll back to the previous fragment when the config is invalid"
   ansible.builtin.copy:
@@ -164,7 +178,9 @@
   delegate_to: "{{ _caddy_target }}"
   register: _caddy_reload
   changed_when: _fragment_written.changed
-  when: _fragment_written.changed          # nothing to reload if the fragment didn't change
+  when:
+    - not ansible_check_mode
+    - _fragment_written.changed          # nothing to reload if the fragment didn't change
 
 - name: "Report"
   ansible.builtin.debug:

@@ -1,0 +1,451 @@
+# Design: agentgateway as the inference edge gateway
+
+Author: Joseph A. Wisneski IV <stray@uhstray.io>.
+
+## Context
+
+Verified 2026-09-14:
+
+- agentgateway: latest release `v1.5.0` (2026-08-27), Apache-2.0, default branch `main`;
+  release assets include `agentgateway-linux-amd64` and `agentgateway-linux-arm64`.
+  Docker install page: `cr.agentgateway.dev/agentgateway:v1.5.0`, `-p 4000:4000`,
+  config as a mounted file with `-f /config.yaml`, admin on the container's own
+  `localhost:15000`. README: LLM gateway with OpenAI-compatible routing, MCP and A2A
+  gateways, JWT and API-key auth, RBAC with CEL, rate limiting, OpenTelemetry;
+  Linux Foundation project.
+- Example `examples/llm-keyed-rate-limit/config.yaml`: `llm.port: 4000`;
+  `llm.policies.jwtAuth` with `issuer`, `audiences`, `jwks.file`;
+  `llm.policies.localRateLimit` entries of `type: requests|tokens`, `maxTokens`,
+  `tokensPerFill`, `fillInterval`, `key` (CEL over `jwt.sub`, `jwt.team`,
+  `llm.requestModel`); a vLLM model entry `provider: {custom: {formats: [{type:
+  completions}]}}` with `params.baseUrl: http://vllm.internal:8000/v1` and
+  `params.model`. Example `llm-basic`: `config.readinessAddr`, `config.statsAddr`,
+  `frontendPolicies.http.maxBufferSize`, model aliasing with `transformation.model`.
+  Example `traffic-ratelimiting-local`: `config.tracing.otlpEndpoint`,
+  `randomSampling`, `binds[].listeners[].routes[].policies.localRateLimit`.
+  Schema reference: policies `apiKey`, `basicAuth`, `oidc`, `authorization.rules`,
+  `timeout.requestTimeout`/`backendRequestTimeout`, `retry.attempts/backoff/codes`;
+  `config.metrics.fields`, `config.logging`.
+- Verified 2026-09-17 by running the v1.5.0 binary (the published schema at
+  agentgateway.dev tracks main and misled twice): `statsAddr` serves Prometheus text on
+  `/metrics`; readiness is `/healthz/ready`; the image is a Chainguard glibc-dynamic base
+  (no shell, runs non-root); `localRateLimit[].key` is unreleased; the `conditional`
+  rate-limit form is rejected under `llm.policies`; `budgets` require `config.database`;
+  API-key metadata is flattened onto the CEL `apiKey` object; `$VAR` references expand in
+  `params.apiKey` and `config.database.url`; the UI attaches to a named gateway via
+  `ui.gateways` and serves `/ui`, `/ui/assets`, `/ui/api` (config dump unauthenticated).
+  The `examples/llm-keyed-rate-limit` directory the previous Context cited does not exist
+  at the v1.5.0 tag.
+- Not verified: whether the `custom` provider passes `reasoning_effort`, `chat_template_kwargs`
+  and the Responses API through unchanged (task 2.3 tests each); streaming behaviour
+  with SSE keep-alive comments from vLLM (task 2.3).
+- agent-cloud: Caddy `inference_api` route shape and its BATS test; production block in
+  site-config with upstream the head node; `platform/services/inference/` is an empty
+  stub; onboarding checklist tiers and phases in
+  `plan/architecture/02-service-onboarding.md`; plan 06 states skynet is the `/v1`
+  gateway and reversed "no separate gateway".
+- Joe, 2026-09-14: skynet is its own custom model-serving gateway designed to interface
+  with agent-cloud and orchestrate across the platform; agentgateway does not replace it.
+- dgx-spark: vLLM `--api-key` covers `/v1`, `/v2`, `/inference` only; port 8000 admitted
+  from the LAN; served names `nvidia/Qwen3.8-Flash-Next-NVFP4` and `qwen3.8-flash-next`;
+  measured ceiling about six concurrent requests; the reliability change adds an SSE
+  keep-alive on chat and completions streams and a public-path verify play.
+
+## Goals / Non-Goals
+
+Goals: every inference request from outside the nodes passes one metered, authenticated
+gateway that the platform deploys and observes; each client has its own key and limit;
+client base URLs and request shapes are unchanged; the gateway is ready to front a
+second upstream; the skynet relationship is written down.
+
+Non-Goals: MCP or A2A routing (no consumer); replacing Cloudflare's edge controls;
+narrowing the node firewall (dgx-spark, after this proves out); moving vLLM into the
+estate; semantic routing, prompt guards, caching (features exist; none requested).
+
+## Decisions
+
+1. **agentgateway is the inference edge; skynet is the platform's orchestrating
+   gateway.** Two authorities, two concerns: agentgateway owns transport-level
+   identity, limits, routing to model backends and request telemetry for the vLLM API;
+   skynet owns placement and policy across the platform's model estate and acts as
+   the OPA-role-bearing orchestrator. skynet reaches the DGX Spark model through
+   agentgateway like any other client (open question 1 records the alternative).
+   Alternative rejected: agentgateway replaces skynet's gateway role, because Joe
+   states skynet is purpose-built for agent-cloud orchestration and is kept.
+   Alternative rejected: skynet fronts vLLM directly and agentgateway is skipped,
+   because skynet is not the surface OpenCode, pi and team SDK clients use today, and
+   the ecosystem document's request-telemetry and per-client-limit rows would stay
+   empty. Recorded as an architecture record that amends plan 06.
+
+2. **Own VM, Infrastructure tier — two containers.** The gateway is in the request path
+   and holds OpenBao-sourced credentials at runtime (the vLLM upstream key, client
+   keys), which the onboarding decision tree routes to a dedicated VM with its own
+   AppRole. Amended 2026-09-17: the VM also runs the gateway's own internal-only
+   Postgres for per-key budgets (decision 4); it publishes no host port and its
+   password is generated once by manage-secrets.
+   Alternative rejected: co-locate on the Caddy host, because Caddy is the front door
+   for every platform hostname and a gateway fault or upgrade must not touch it.
+   Alternative rejected: run on the head node, because the node's memory is the
+   binding constraint and the boundary rule keeps non-vLLM software off the nodes.
+
+3. **`custom` provider with `completions` format, one model entry per served name.**
+   The verified example shape. The gateway's model name equals vLLM's served short name
+   so clients change nothing. `maxBufferSize` set to 20 MiB to match Caddy's 16 MB body
+   cap with headroom. `timeout.requestTimeout` unset (streams run past any fixed
+   value; the upstream keep-alive handles idle), `backendRequestTimeout` unset for the
+   same reason; `retry` disabled for `/v1` (a retried partial stream repeats tool side
+   effects, per the ecosystem document). Alternative rejected: the `openAI` provider
+   with `hostOverride`, because the `custom` provider is the documented path for a
+   self-hosted OpenAI-compatible server and the example uses it for vLLM by name.
+
+4. **API keys, not JWT, for the first rollout.** Clients are SDKs and CLIs configured
+   with a bearer key today. `apiKey` policy with one key per person or agent role,
+   minted by a playbook into OpenBao and handed out through the existing secret
+   channel, enrolled as sha256 `keyHash` entries so the rendered config carries no
+   plaintext key. Limits, as v1.5.0 allows (verified against the binary 2026-09-17):
+   one GLOBAL `type: requests` bucket per minute derived from the measured ceiling, and
+   a per-key `budgets` entry (`Tokens`, rolling `1h` UTC-aligned, `Block`) as the
+   per-identity guard — which requires `config.database`, hence the Postgres (Joe's
+   choice over waiting for the unreleased bucket `key` or rewriting in the verbose
+   `binds/routes` shape). The budget is BEST-EFFORT by upstream design (charged after
+   the response; the crossing request completes; a response without usage, such as a
+   stream without a usage chunk, is not charged), so it is a spend guard and the global
+   request bucket is the hard admission control (PR 191 review). Whether forcing
+   `stream_options.include_usage` through a model `overrides` entry closes the stream
+   gap is a conformance question (task 2.3a). JWT via Authentik OIDC is the second step once the OIDC client for
+   machine identities exists (plan 02). Alternative rejected: keep the single shared
+   key at the gateway, because per-client limits are the reason the gateway exists.
+
+5. **Grace period for the shared key.** The gateway accepts the old shared key as one
+   more `apiKey` identity with the tightest limit for a dated period, then it is
+   removed from the gateway and rotated at vLLM. Clients migrate one at a time with no
+   flag day. Alternative rejected: a cut-over date with no overlap, because three
+   client types and several people share the key today.
+
+6. **Telemetry: traces to Alloy OTLP, metrics scraped, logs via container stdout.**
+   This change adds the OTLP receiver to the o11y host's Alloy (the first producer)
+   and a Tempo decision is deferred: traces are sampled at `randomSampling` low and go
+   to Loki as structured log lines until Tempo has an owner (plan 05 Phase 3).
+   Alternative rejected: deploy Tempo now, because one producer does not justify a
+   store with no retention owner. **Amended 2026-09-29: reversed.** The o11y session
+   added Tempo to the o11y stack (`platform/services/o11y/deployment/compose.yml`,
+   Tempo 2.10.8) and owns it; traces go to Tempo (`agentgateway-observability`).
+   Amended 2026-09-17 per upstream's LLM observability
+   page: the default access log already carries the `gen_ai.*` model and token fields;
+   the config adds `identity: apiKey.name` to BOTH metrics (bounded cardinality: the
+   enrolled identities) and logs; the default log already carries
+   `agw.ai.time_to_first_token` on streamed responses, so nothing else is added. `llm.prompt` / `llm.completion`
+   are never logged.
+
+7. **Caddy stays the TLS front door.** Caddy terminates TLS, keeps the path allowlist
+   and the Bearer 401, and proxies to the gateway over the LAN. The gateway does not
+   terminate TLS for the public hostname. Alternative rejected: expose the gateway's
+   own listener publicly, because the Cloudflare skip rule, the rate limit and the
+   origin lockdown are all written against the Caddy origin.
+
+   Authentication boundary: Caddy's 401 checks only the header's shape (`Authorization:
+   Bearer <non-empty>`, the existing `header_regexp`), so every enrolled client key passes
+   Caddy unchanged and reaches the gateway, which is the only component that decides
+   identity. The vLLM key is held by the gateway alone and is never sent by a client.
+
+8. **Health is the gateway's readiness plus a synthetic completion.** `readinessAddr`
+   (`/healthz/ready`) for the deploy's health check, probed from the sibling database
+   container over the compose network — the gateway image has no shell for a compose
+   healthcheck, and the host loopback is the wrong vantage when the play runs inside
+   the local control plane (found 2026-09-17); the o11y synthetic probe (telemetry change) continues
+   to go through the public hostname, so it now proves Cloudflare, Caddy, gateway and
+   vLLM together.
+
+9. **Operator UI: the gateway runs its own OIDC login against Authentik, on its own
+   listener (Joe, 2026-09-17; CORRECTED the same day).** v1.5.0 serves its built-in UI
+   on the admin interface by default and lets `ui.gateways` attach it to a named
+   gateway; upstream's "Secure the UI" page puts the login in `ui.policies` (oidc, jwt,
+   basic, apikey, authorization). The UI has no login of its own and
+   `/ui/api/config_dump` answers unauthenticated (verified on the binary), so it is an
+   admin surface: a dedicated listener on :4001, `ui.policies.oidc` against an
+   Authentik OAuth2 provider (`agentgateway-oidc.yaml`, catalog tier `admin`,
+   client secret owned by Authentik and shared-read by the gateway deploy), an
+   `authorization` rule requiring the platform admin group in the token's `groups`
+   claim, the session cookie key derived (sha256) from a stored seed, reached at
+   `admin.inference.<zone>` through Caddy as a PLAIN TLS proxy. Locally the gateway
+   trusts step-ca via `SSL_CERT_FILE` (rustls-native-certs) and the compose overlay
+   `!override`s the UI publish away, so the only path is through Caddy. The admin
+   interface itself stays on the container loopback (decision 2 unchanged).
+   *Playground (Joe, 2026-09-17):* the UI's LLM Playground calls `/v1` on its OWN
+   origin when the LLM routes share the UI's gateway (upstream `ui/src/gatewayUrls.ts`
+   `sameOrigin`), so `llm.gateways: [default, ui]` — the API stays on :4000 for clients
+   and is also served on :4001 for the playground through Caddy, no CORS and no second
+   browser-reachable port. Verified: `/v1` on the UI listener is still apiKey-gated (401
+   without a key) and not OIDC-redirected; the playground needs an enrolled client key
+   pasted in (the config holds hashes, so the UI has no saved key to offer). The UI's
+   own "Apply CORS" button writes to `/config.yaml`, which is mounted read-only on
+   purpose: configuration is code, rendered by the deploy, never edited from the UI.
+   *Retiring the first cut:* the forward_auth PROXY provider had the same name; deleting
+   its blueprint file retired nothing and the OIDC entry took the object over (empty JWKS,
+   gateway crash loop, task 613). The OIDC blueprint now carries a `state: absent`
+   tombstone for the proxy provider, ordered first (MISTAKES 6.5).
+   *Corrected:* the first cut gated the route with Caddy + Authentik forward_auth,
+   which authenticated the browser but is invisible to the gateway — the UI kept
+   warning "UI is exposed without authentication", because it only recognises its own
+   policies. Alternative rejected: keep forward_auth AND add native OIDC (two logins,
+   no gain). Alternative rejected: publish the admin port (carries more than the UI).
+
+10. **Virtual-key lifecycle is inventory-driven code, aligned with vLLM's single key
+    (Joe, 2026-09-17).** Upstream's cost-controls/virtual-keys page manages keys either in
+    the UI or in the config file for GitOps; the platform takes the GitOps path because the
+    config is rendered by the deploy and mounted read-only. WHO exists = `agw_clients` in
+    inventory; the deploy mints `client_<name>` once and reuses it (manage-secrets
+    `random`), enrols the sha256 hash, and renders per-identity `allowedModels` and
+    token-budget overrides from `agw_client_policies`. `manage-agentgateway-client-key.yml`
+    is the one place a key changes value: rotate (name must be declared) merges a new
+    value; revoke (name must already be removed from inventory, so the next deploy cannot
+    mint it back) removes the field with a KV-v2 merge-patch null (verified against the
+    local store); both end by importing the deploy, which is the reload. Handout is
+    `backup-credentials-to-site-config.yml` (branch, names only), never stdout. vLLM
+    itself has one static `--api-key` and no per-client concept, so it never sees virtual
+    keys; its key is the gateway's internal upstream credential (`params.apiKey:
+    $VLLM_API_KEY`, omitted when the upstream takes no key, as LM Studio does) and rotates
+    on its own schedule (task 5.1). Alternative rejected: keys kept in the gateway's
+    Postgres via the UI, because the config would then have two owners and the UI's write
+    path is disabled on purpose. Local-dev convenience (Joe, 2026-09-17): inventory flag
+    `agw_plaintext_keys: true` renders the key VALUES instead of hashes so the UI's
+    playground lists them as saved keys; default off, never set in prod inventory, and
+    the deploy playbook does not know the flag (it is template-only).
+
+   *Review 2026-09-22 (pre-PR security + quality pass):* the admin listener is pinned to
+   `127.0.0.1:15000` instead of trusting the upstream default; `agw_plaintext_keys` only
+   takes effect with `local_mode` and the deploy refuses it otherwise; identity and group
+   names are restricted to `^[a-z0-9][a-z0-9-]*$` because they land in YAML, JSON and a
+   CEL literal; the per-source edge rate limit now covers the admin host too, since its
+   playground serves the same `/v1`. The two-level hostname was checked against the zone:
+   Total TLS (Advanced Certificate Manager) is enabled and issues a per-hostname edge
+   certificate for every proxied record, so `admin.inference.uhstray.io` is covered.
+
+### Decisions recorded 2026-09-27
+
+Operator decisions from the planning session of 2026-09-27, after the operator UI's first
+production start failed (see the last item).
+
+- **Transport security end to end.** Caddy keeps the public certificate and re-encrypts to
+  HTTPS listeners on the gateway, API and UI alike; the gateway **requires Caddy's client
+  certificate** (a gateway `tls.root` makes client authentication mandatory in v1.5.0,
+  `types/agent.rs` 564-579 at tag v1.5.0). Refined in review: the gateway admits a
+  declared allowlist of client leaves by name, Caddy's by default plus the deploy's own
+  verifier and the benchmark runner (decision 12 and task 6.1 here; the leaves are
+  declared by `production-internal-ca` decision 4). vLLM serves HTTPS, and the gateway verifies it
+  with the model's `tls` block (`root`, `hostname`), which the simplified `llm:` config
+  supports directly (`types/local.rs` 819-826), so no move to routing-based config is
+  needed. An `https://` base URL adds a default TLS configuration only when `tls` is unset
+  (`types/local.rs` 1062-1064), so `tls` is set explicitly. Certificates come from a
+  production internal CA: change `production-internal-ca`. Certificate files are
+  hot-reloaded by the gateway; vLLM needs `--enable-ssl-refresh` or a restart. The vLLM
+  side is dgx-spark's, handled by the dgx-spark session.
+- **Token authority.** OpenBao holds every key value; the gateway alone accepts them and
+  meters budgets. Personal access through Authentik SSO is a personal API key per user,
+  rotated monthly (as one cohort on a fixed calendar day while a key change restarts the gateway, so a key lives at most 34 days; 30 days with hot reload) and readable only by its owner through an Authentik OIDC login to
+  OpenBao: change `inference-personal-keys`. Accepting Authentik JWTs directly at the
+  gateway is deferred there, because v1.5.0 attaches budgets only to API keys.
+- **UI read-only, explicitly.** The config file is mounted read-only, so a UI write already
+  fails at the file; `UI_READ_ONLY=true` makes the UI refuse writes itself (v1.5.0 reads it
+  at `crates/agentgateway/src/config.rs:390-392` and switches the config store to read-only;
+  `ui.rs:53` refuses writes in that mode), so no key or policy is ever managed there. Task
+  1.10 is the one place this is set (done in PR #303, merged into `dev` on 2026-09-28 (merge `255b251`); `templates/env.j2:38` renders it);
+  `inference-personal-keys` and `agentgateway-observability` decision 5 depend on it.
+- **Grace period.** `legacy-shared` stays valid through the gateway for 14 days after the
+  route switch (`legacy_shared_expires` = switch date + 14 days), then task 5.1 applies.
+- **Benchmarking** is its own change, `inference-benchmarking`, and runs before the budgets
+  of task 4.2 are set: its capacity ceiling is where those figures come from. Its direct-vLLM
+  baseline runs before vLLM's allowed range is narrowed to the gateway (task 5.1), or the
+  benchmark VM stays in that range.
+- **Authentik's OIDC endpoints behind Cloudflare.** The UI's first production start (Deploy
+  agentgateway (Dev), task 1622) failed: Cloudflare's managed challenge answered the
+  gateway's server-side fetch of Authentik's discovery document with an HTML 403, and v1.5.0
+  loads that document at startup. A Cloudflare skip rule for Authentik's machine endpoints
+  (discovery, JWKS, token, userinfo, revoke, introspect, device) fixes it (PR #289, now
+  `platform/infra/cloudflare/waf.tf:129-135` on `dev`); the browser endpoints stay
+  challenged. The same path serves any later JWKS validation. The skip rule is the interim
+  fix: server-side OIDC calls belong on the LAN, through a split-horizon record for the
+  IdP's hostname that answers with the Caddy host (task 7.1, waiting on hickory-dns in
+  production).
+
+### Decisions recorded 2026-09-28
+
+11. **The deploy restarts the gateway only when its inputs changed.** `deploy.sh:47-53`
+    recreates the container on every run because a changed bind-mounted file is not a
+    compose change. That was safe while a person ran the deploy; it stops being safe once
+    scheduled and imported runs call it (`inference-personal-keys` imports the deploy on
+    every hourly reconcile), because each recreate drops every in-flight stream. v1.5.0
+    watches a file config source and reloads it on change (`state_manager.rs:141-142`,
+    `150-180` at tag v1.5.0), but the single-file mount at `compose.yml:48` hides a
+    replaced file from the container, so whether a key change can apply without a restart
+    is settled by a drill (task 1.12) before either branch is built. If it can, the
+    config moves to a directory mount and only an environment change recreates; that
+    directory is mounted read-only and holds `config.yaml` only, never the deploy
+    directory or `.env` (`agentgateway-observability` decision 5 relies on it). If it
+    cannot, `deploy.sh` compares the sha256 of the rendered files with a label the running
+    container was started with and recreates only on a difference or when no container is
+    running. Alternative rejected: pass the template task's `changed` result to
+    `deploy.sh`, because a deploy that fails after the render leaves the files already
+    current, so the next run would see no change and leave the stale container serving;
+    the label records what the running container actually loaded. Alternative rejected:
+    a drift detector in each caller, because every caller would reimplement it and one
+    would drift.
+
+12. **The client allowlist is owned here.** Profiles alone do not identify the caller:
+    any client-profile leaf from the internal CA completes the handshake when `tls.root`
+    is set. So the gateway also checks which client it is, per request, against an
+    allowlist of declared client names. v1.5.0 supports this directly (source read at tag
+    `v1.5.0`, 2026-09-27):
+    - On a listener with a static certificate and `root` set, the listener records the
+      peer certificate's identity for every connection
+      (`crates/agentgateway/src/types/agent.rs:526-528` returns an identity mode unless
+      insecure mTLS is on; `crates/agentgateway/src/proxy/gateway.rs:1267-1270` passes it
+      to the socket; `crates/agentgateway/src/transport/stream.rs:241-245` parses it).
+    - The parsed identity carries every DNS, URI and IP subject alternative name
+      (`crates/agentgateway/src/transport/tls.rs:1256-1260`) and is exposed to CEL as
+      `source.subjectAltNames` (`schema/cel.md:117`; flattened into the source context at
+      `crates/agentgateway/src/cel/types.rs:288-291`).
+    - A gateway takes CEL authorization rules, `gateways.*.authorization.rules[]` with
+      `allow`, `deny` and `require` (`schema/config.md:51913-51917`).
+
+    Both gateway listeners therefore carry one `require` rule,
+    `source.subjectAltNames.exists(n, n in [<allowlist>])` (`exists` is among v1.5.0's
+    standard CEL functions, `schema/cel-functions.md:50`). The allowlist is the inventory
+    list `agw_client_cert_allowlist` on the gateway host, whose entries are leaf names from
+    `production-internal-ca` decision 4; the deploy resolves each to that leaf's DNS SAN,
+    so no name is typed twice, and refuses an entry that names no declared client-profile
+    leaf. The only default is `caddy`; `agw-verifier` and `bench` are added in inventory
+    where those leaves are declared. `require` is used rather than `deny`, because the
+    schema warns that a failing `deny` expression fails open (`schema/config.md:51916`).
+    Every probe of the gateway from outside Caddy goes through one shared task (6.1a), so
+    the allowlist, the leaf files and the name resolution are exercised the same way by
+    every change that needs a probe. Alternatives rejected: Caddy's name alone, because
+    the deploy's own probes and a direct benchmark run would then travel through Caddy,
+    which adds a hop to the benchmark's gateway-overhead A/B and ties the gateway's
+    verification to the edge's health; and a dedicated issuing hierarchy for the allowed
+    clients, with the gateway's `root` set to it alone, because it adds a second CA
+    hierarchy to back up, distribute and rotate. That hierarchy stays the fallback if task
+    6.1 finds the rule cannot be rendered beside the `llm` shortcut. Unverified: the HTTP
+    status the gateway returns when a `require` rule fails, and whether the rule is
+    evaluated before or after API-key authentication; task 6.1 records both.
+
+## Findings 2026-10-02: listener mutual TLS on v1.5.0 (task 6.1)
+
+Measured on throwaway containers of `cr.agentgateway.dev/agentgateway:v1.5.0` with a
+two-tier test CA (root, then intermediate, then leaves), mirroring the production chain:
+
+1. **The rule renders beside the `llm` shortcut and the gateway starts with it.** Each
+   gateway takes `tls: {cert, key, root}` and `authorization.rules: [{require: ...}]`. The
+   client certificate's SANs reach CEL as `source.subjectAltNames` (the v1.5.0 `schema/cel.md`,
+   exercised by `crates/agentgateway/src/cel/tests.rs`).
+2. **A failed rule is 403, and it runs before API-key authentication.** No client
+   certificate fails the TLS handshake. A certificate from the CA but outside the SAN list
+   is 403, with or without a valid key. An allowlisted certificate then needs its key: 401
+   without one or with a wrong one, 200 with an enrolled one. So the decision 12 fallback (a
+   dedicated client-issuing hierarchy) is not needed.
+3. **The key must be readable by the image's non-root user (uid 65532).** Under rootless
+   podman, run through podman-compose 1.0.6 (the version Ubuntu's apt installs), uid 65532
+   cannot read the deploy account's 0600 key ("Permission denied (os error 13)"). With
+   `userns_mode: keep-id:uid=65532,gid=65532` it can, and mutual TLS answers 200 (decided by
+   Joe 2026-10-02 over running the container as root or chowning keys at issuance). Local-dev
+   runs the gateway on a rootful socket, so its overlay runs the container as the key's owner
+   instead.
+
+The production deploy therefore renders listener TLS behind `agw_listener_tls` (default off)
+and adds `compose.tls.yml` (the `./certs` directory mount and keep-id) only outside local-dev.
+Before any render or restart it refuses an allowlist entry that names no declared client
+leaf, a server leaf not declared under `<deploy>/certs/`, a verifier outside the allowlist,
+and leaves not yet issued. Not yet run end to end in local-dev: the local Semaphore runs the
+main checkout, which another session holds.
+
+## Risks / Trade-offs
+
+- [Gateway strips or rewrites fields vLLM needs] → task 2.3 sends `reasoning_effort`,
+  `chat_template_kwargs`, tools, streaming and a Responses API request through the
+  gateway and diffs against direct vLLM; any loss blocks the Caddy re-route.
+- [Gateway buffers the stream and defeats the keep-alive] → the same task times first
+  token and inter-token gaps through the gateway against direct; a buffered stream is
+  a blocker.
+- [A new hop in the request path fails] → Caddy's upstream is one inventory value;
+  rollback is a Caddy redeploy. Health and the synthetic probe surface it.
+- [A rollback to the direct path leaves the vLLM key in every client's hands] → the
+  `direct` mode publishes it per client, so the way back must rotate it. The key is owned by
+  the dgx-spark repository, not this one (amended 2026-10-02, task 4.6): `restore` enforces
+  the rotation instead of performing it, keeping the published copies until the key they
+  hold is no longer live in OpenBao and the running gateway (read through the engine, not
+  only the rendered file) holds the new one. Performing the rotation in one step needs
+  dgx-spark to read its key from OpenBao, tracked in the dgx-spark handoff.
+- [Per-key limits trip a legitimate agent] → the global request bucket and the per-key
+  token budget are derived from the measured ceiling; no log-only mode exists in v1.5.0
+  (task 3.2, answered), so the first week runs with loose figures tightened from the
+  metrics and the budget rows.
+- [The operator UI leaks configuration] → it is reached only through the admin-tier
+  gateway-native OIDC login (`ui.policies.oidc`) plus the `platform-admins` authorization
+  rule; the listener is published for the Caddy host alone (firewall
+  auto-detect) and the admin interface stays on the container loopback (decision 9).
+- [Two gateways confuse the platform] → decision 1's record; agentgateway's config
+  carries no placement or policy logic, and skynet's docs gain a pointer to the record.
+- [A failed OIDC discovery stops the whole gateway, `/v1` included] → the UI's first
+  production start (task 1622) failed on Authentik's discovery document, and one process
+  serves both the UI and `/v1`: v1.5.0 resolves discovery while compiling the config
+  (`crates/agentgateway/src/http/oidc/local.rs:150`), and a first load that fails fails
+  the start (`state_manager.rs:140`); a later reload that fails keeps the running state
+  (`state_manager.rs:301-311`). So an IdP or edge fault at restart takes the inference API
+  down with the UI. Mitigations: the Cloudflare skip rule now; the internal-resolver split-horizon
+  record (task 7.1) next, so the fetch never transits Cloudflare; and decision 11, so the
+  gateway restarts only when its inputs change. `agw_ui_enabled: false` remains the
+  lever that renders no UI listener and no OIDC block, and with them no discovery fetch
+  (`config.yaml.j2:22-26`).
+- [Every deploy drops in-flight streams] → decision 11 (task 1.12).
+
+## Migration Plan
+
+1. Onboard the service (VM, AppRole, secrets, compose, playbook, BATS) with the
+   gateway on the LAN only; conformance test through the gateway against direct vLLM.
+   Done first in local-dev against LM Studio on the developer's Mac (2026-09-17), which
+   is where the v1.5.0 findings above surfaced.
+1a. Operator UI: Authentik app + Caddy block + Cloudflare record for
+   `admin.inference.uhstray.io`, proven locally at `admin.inference.agent-cloud.test`.
+2. Add OTLP receiver and scrape job on the o11y host; confirm gateway signals on the
+   inference dashboard.
+3. Mint per-client keys; enrol the shared key as one identity; document the client
+   change in dgx-spark `docs/TEAM-ENDPOINT.md` (the base URL stays; the key changes).
+4. Re-route the production Caddy block to the gateway; run dgx-spark's public-path
+   verify play; watch one week.
+5. Retire the shared key from the gateway; rotate at vLLM; hand dgx-spark the go for
+   narrowing the node API CIDR to the gateway host. Write the record; amend plan 06;
+   archive; retain the outcome into bank `agent-cloud-750a33b9`.
+6. Transport security (task group 6) after `production-internal-ca` has issued the leaves.
+   It has no ordering against the gateway's access-record export in
+   `agentgateway-observability`: no certificate proof in either change reads a Loki record.
+
+## Open Questions
+
+- Does skynet call the DGX Spark model through agentgateway, or directly over the LAN
+  with its own identity? Default if unanswered: through the gateway, so one place
+  meters every request and the node firewall can narrow to one source.
+- ~~VM id and address for the gateway (site-config `vm-specs.yml`).~~ Answered 2026-09-17:
+  2 cores / 4 GB / 20G, node and vmid in site-config; address picked from the inventory's declared
+  set because NetBox was down — to be reserved in NetBox before provisioning.
+- ~~Whether `localRateLimit` supports a log-only mode.~~ Answered 2026-09-17: no such
+  mode in v1.5.0; the first week runs with the figure set high and tightened from
+  observed rates.
+- **Per-identity limits (decision 4) do not exist in v1.5.0 without a database.**
+  Found 2026-09-17 by running the binary, not by reading the published schema (which
+  tracks main): `localRateLimit[].key` is unreleased, the `conditional` form is not
+  accepted under the `llm` shortcut, and per-key `budgets` require `config.database`
+  (Postgres). The example the Context cites (`examples/llm-keyed-rate-limit`) does not
+  exist at the v1.5.0 tag. Shipped for now: strict per-client keys (identity +
+  revocation) and one global request bucket. Options for fairness were (a) wait for the
+  release that ships `key` (present on main); (b) rewrite the template in the full
+  `binds/listeners/routes` shape where `conditional` per identity is accepted today;
+  (c) add a Postgres and use per-key token budgets. **Joe chose (c), 2026-09-17:** the
+  service gains its own internal-only Postgres (`agentgateway-db`), decision 2's "own
+  VM" now hosts two containers, and the gateway is no longer stateless — the state is
+  budget usage plus request metadata rows (no payloads by default). (a) remains the
+  path to a per-identity request bucket.
+- ~~Per-client key list.~~ Declared 2026-09-17 in site-config: four clients
+  (the operator's workstation, two coding agents, `skynet`; local-dev: `dev-local`). `legacy-shared` joins in task 4.1.
+- Streamed completions were not charged to the budget in the local test (only the
+  non-stream request's 93 tokens appeared in `budget_usage`); whether LM Studio omits
+  `usage` in stream mode or the gateway charges late is for task 2's conformance run.

@@ -19,8 +19,11 @@ the reason Postiz is *not* gated by `forward_auth` at Caddy — an edge gate wou
 redirect a key-bearing API call into a browser sign-in flow and the automation would
 break. See `deployment/CLAUDE.md`.
 
-Store the key at `secret/services/n8n` when the workflows are built, and inject it
-from there — never in a workflow node's literal fields.
+The key is captured by `store-postiz-api-key.yml` (Semaphore: `Store Postiz API
+Key`) into `secret/services/postiz:postiz_api_key` — postiz owns it, the same
+ownership convention as the OIDC client secret. When the n8n workflows are built,
+n8n reads it from there via a manage-secrets `_shared_read` — never a copy under
+`secret/services/n8n`, and never a workflow node's literal fields.
 
 ## Why the public host and not the LAN
 

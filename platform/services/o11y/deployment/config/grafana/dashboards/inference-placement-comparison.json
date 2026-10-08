@@ -1,0 +1,344 @@
+{
+  "uid": "inference-placement-comparison",
+  "title": "Inference placement comparison",
+  "description": "Compare vLLM latency, throughput and node load across benchmark windows; run manifests live in dgx-spark results/.",
+  "tags": [
+    "agent-cloud",
+    "inference",
+    "dgx-spark"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "links": [
+    {
+      "title": "dgx-spark benchmark results",
+      "type": "link",
+      "url": "https://github.com/uhstray-io/dgx-spark/tree/main/results",
+      "targetBlank": true,
+      "icon": "doc",
+      "tooltip": "Benchmark run manifests (placement, profile, image) in the dgx-spark repository"
+    }
+  ],
+  "templating": {
+    "list": [
+      {
+        "name": "model_alias",
+        "label": "Model alias",
+        "description": "vLLM labels its series with model_name, which carries the served model name (the alias dgx-spark ships as model_alias on Loki streams).",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "definition": "label_values(vllm:num_requests_running{job=\"dgx-spark-vllm\", cluster=\"dgx-spark\"}, model_name)",
+        "query": {
+          "query": "label_values(vllm:num_requests_running{job=\"dgx-spark-vllm\", cluster=\"dgx-spark\"}, model_name)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "refresh": 2,
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".*",
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        }
+      },
+      {
+        "name": "compare_offset",
+        "label": "Compare with",
+        "type": "custom",
+        "query": "1d,7d",
+        "options": [
+          {
+            "selected": true,
+            "text": "1d",
+            "value": "1d"
+          },
+          {
+            "selected": false,
+            "text": "7d",
+            "value": "7d"
+          }
+        ],
+        "current": {
+          "selected": true,
+          "text": "1d",
+          "value": "1d"
+        },
+        "multi": false,
+        "includeAll": false
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "How to compare placements",
+      "type": "text",
+      "gridPos": {
+        "h": 4,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "Each benchmark run records its placement, profile and image in a manifest under [dgx-spark `results/`](https://github.com/uhstray-io/dgx-spark/tree/main/results). Set the time range to a run's window, then compare it with the same window one day or one week earlier using **Compare with**."
+      }
+    },
+    {
+      "id": 2,
+      "title": "Time to first token p50: now vs earlier",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.5, sum by (le, model_name) (rate(vllm:time_to_first_token_seconds_bucket{job=\"dgx-spark-vllm\", cluster=\"dgx-spark\", model_name=~\"$model_alias\"}[5m])))",
+          "legendFormat": "now {{model_name}}"
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.50, sum by (le, model_name) (rate(vllm:time_to_first_token_seconds_bucket{job=\"dgx-spark-vllm\", cluster=\"dgx-spark\", model_name=~\"$model_alias\"}[5m] offset $compare_offset)))",
+          "legendFormat": "earlier {{model_name}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 3,
+      "title": "End-to-end latency p50: now vs earlier",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.5, sum by (le, model_name) (rate(vllm:e2e_request_latency_seconds_bucket{job=\"dgx-spark-vllm\", cluster=\"dgx-spark\", model_name=~\"$model_alias\"}[5m])))",
+          "legendFormat": "now {{model_name}}"
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.50, sum by (le, model_name) (rate(vllm:e2e_request_latency_seconds_bucket{job=\"dgx-spark-vllm\", cluster=\"dgx-spark\", model_name=~\"$model_alias\"}[5m] offset $compare_offset)))",
+          "legendFormat": "earlier {{model_name}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 4,
+      "title": "Generation tokens per second: now vs earlier",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 12
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (model_name) (rate(vllm:generation_tokens_total{job=\"dgx-spark-vllm\", cluster=\"dgx-spark\", model_name=~\"$model_alias\"}[5m]))",
+          "legendFormat": "now {{model_name}}"
+        },
+        {
+          "refId": "B",
+          "expr": "sum by (model_name) (rate(vllm:generation_tokens_total{job=\"dgx-spark-vllm\", cluster=\"dgx-spark\", model_name=~\"$model_alias\"}[5m] offset $compare_offset))",
+          "legendFormat": "earlier {{model_name}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 5,
+      "title": "Concurrent requests: now vs earlier",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 12
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (model_name) (vllm:num_requests_running{job=\"dgx-spark-vllm\", cluster=\"dgx-spark\", model_name=~\"$model_alias\"})",
+          "legendFormat": "now {{model_name}}"
+        },
+        {
+          "refId": "B",
+          "expr": "sum by (model_name) (vllm:num_requests_running{job=\"dgx-spark-vllm\", cluster=\"dgx-spark\", model_name=~\"$model_alias\"} offset $compare_offset)",
+          "legendFormat": "earlier {{model_name}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 6,
+      "title": "KV cache usage by model",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 20
+      },
+      "description": "The value vLLM reports in vllm:kv_cache_usage_perc, unscaled.",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max by (model_name) (vllm:kv_cache_usage_perc{job=\"dgx-spark-vllm\", cluster=\"dgx-spark\", model_name=~\"$model_alias\"})",
+          "legendFormat": "{{model_name}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      }
+    },
+    {
+      "id": 7,
+      "title": "Available memory by node",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 20
+      },
+      "description": "A two-node placement loads both nodes; a single-node placement leaves one idle.",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "node_memory_MemAvailable_bytes{job=\"dgx-spark-node\", cluster=\"dgx-spark\"}",
+          "legendFormat": "{{node}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 8,
+      "title": "CPU busy fraction by node",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 28
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "1 - avg by (node) (rate(node_cpu_seconds_total{job=\"dgx-spark-node\", cluster=\"dgx-spark\", mode=\"idle\"}[5m]))",
+          "legendFormat": "{{node}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "max": 1,
+          "unit": "percentunit"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 9,
+      "title": "Preemptions per second by model",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 28
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (model_name) (rate(vllm:num_preemptions_total{job=\"dgx-spark-vllm\", cluster=\"dgx-spark\", model_name=~\"$model_alias\"}[5m]))",
+          "legendFormat": "{{model_name}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      }
+    }
+  ]
+}

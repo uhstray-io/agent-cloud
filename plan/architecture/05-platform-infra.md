@@ -72,7 +72,7 @@ flowchart LR
 Key properties:
 - **All external traffic enters on port 443.** Port 80 redirects to 443 (Caddy default).
 - **TLS terminates at Caddy.** Backends receive plain HTTP -- no double-encryption overhead.
-- **CloudFlare is DNS only.** Traffic does not proxy through CloudFlare; Caddy handles TLS directly with DNS-01 certs.
+- **CloudFlare is DNS-only for most hostnames.** Caddy handles TLS directly with DNS-01 certs. The exceptions are the proxied (orange-cloud) hostnames — the platform records adopted into `platform/infra/cloudflare/dns.tf` and `inference.uhstray.io` — where Cloudflare sits in the request path; see "Cloudflare-proxied hostnames" below for what that decides.
 - **Internal services are not internet-exposed.** Only Caddy's ports 80/443 are forwarded through the router.
 
 ---
@@ -122,6 +122,29 @@ For services needing WebSocket support (e.g., collaborative editing, real-time d
     reverse_proxy @ws {$SERVICE_IP}:{$SERVICE_PORT_WS}
 }
 ```
+
+### Mutual-TLS Upstream Block
+
+A route in `caddy_routes` (rendered by `platform/services/caddy/deployment/templates/Caddyfile.local.j2`)
+may declare `upstream_tls: {server_name, client_leaf}`. The template then renders:
+
+```caddyfile
+reverse_proxy https://<upstream> {
+    transport http {
+        tls_server_name <server_name>
+        tls_trust_pool file /etc/caddy/certs/step-ca-bundle.crt
+        tls_client_auth /etc/caddy/certs/<client_leaf>/current/cert.pem /etc/caddy/certs/<client_leaf>/current/key.pem
+    }
+}
+```
+
+Caddy mounts the whole certificate tree read-only at `/etc/caddy/certs` (`./certs` in
+`compose.local.yml`; `caddy_certs_dir`, default `<caddy_compose_dir>/certs`, added by
+`mount-caddy-certs.yml` in production) and reads each leaf through its `current` link, so a
+renewal that repoints `current` is visible without changing the mount. Asserted
+by `platform/tests/test_service_caddy.bats` ("an upstream_tls route proxies over mutual TLS").
+Production blocks in `caddy_managed_sites` are raw Caddyfile text, so they write these
+directives directly.
 
 ### Variable Resolution
 
@@ -234,6 +257,225 @@ sequenceDiagram
 The CloudFlare API key needs **Zone:DNS:Edit** for the target zone -- no account-level access or anything beyond DNS record management. Use a scoped API token (not a Global API Key).
 
 ---
+
+## Cloudflare-proxied hostnames: the inference edge (decided 2026-09-14)
+
+`inference.uhstray.io` fronts vLLM on the DGX Spark pair and is proxied through
+Cloudflare on purpose: the zone's WAF block rules, the challenge bypass for machine
+clients (`waf.tf`), and the per-source rate limit (`ratelimit.tf`) all live there. Three
+consequences are settled and are not to be re-investigated on the next load test:
+
+1. **The 125 s Proxy Read Timeout is accepted.** Cloudflare severs a non-streamed
+   response, or an idle stream, after 125 s with HTTP 524; only the Enterprise plan can
+   raise it (to 6,000 s) and a 30 s write timeout is fixed on every plan. The zone is
+   Pro. The fix is origin-side: vLLM's SSE heartbeat resets the timer from behind the
+   edge (dgx-spark change `inference-endpoint-reliability`). Two ways to remove the timer
+   were rejected. **Enterprise plan:** not a plan this project is on, and the timeout is
+   the only thing it would buy here. **Grey-clouding the hostname (DNS-only):** removes
+   the timer, and with it the WAF rules, the challenge bypass and the rate limit, and
+   publishes the origin address in DNS — the exact exposure the origin lockdown exists
+   to close.
+2. **Rate limiting is Cloudflare's, keyed on source address, action block.** One shared
+   bearer key means the key cannot be the bucket; `ip.src` is the one characteristic
+   every plan offers. Caddy has no rate limiter without a third-party module.
+3. **The origin is NOT locked to Cloudflare's ranges (decided 2026-09-15).** A `remote_ip`
+   allowlist over Cloudflare's published ranges was landed once and failed closed: the
+   production Caddy container does not see a Cloudflare peer address for proxied traffic,
+   so every request answered 404 until the revert. The operator's decision is that no
+   Cloudflare-range lockdown of the origin is pursued in any form, per route or at the host
+   firewall. A caller that reaches the origin directly meets the same Bearer check at Caddy
+   and vLLM's own `--api-key`; that is the accepted control.
+
+Deliberation and measurements: OpenSpec change
+`plan/development/openspec/changes/archive/2026-09-15-inference-edge-cloudflare-controls`.
+
+## Inference gateway: agentgateway alongside skynet (PROPOSED 2026-09-17, awaiting operator confirmation)
+
+Status: **Proposed.** Becomes Accepted when the operator confirms this text; until then it
+binds nothing. Author: Joseph A. Wisneski IV <stray@uhstray.io>.
+
+**Decision.** Two gateways, two authorities, neither replaces the other:
+
+- **agentgateway is the inference edge** in front of the DGX Spark vLLM API (and any
+  later OpenAI-compatible upstream). It owns transport-level concerns for that API:
+  per-client identity (API keys today, OIDC/JWT later), per-identity request and token
+  limits, routing to one or more model backends, and request telemetry as the client
+  sees it. It runs as an Infrastructure-tier platform service on its own VM, behind
+  Caddy, which keeps TLS, the path allowlist and the Bearer shape check.
+- **skynet is the platform's own orchestrating model-serving gateway.** It is
+  purpose-built to interface with agent-cloud, owns placement and policy across the
+  model estate, and is the OPA-role-bearing orchestrator. skynet reaches the DGX Spark
+  model through agentgateway like any other client (default; open question in the
+  change), so every request is metered in one place and the node firewall can narrow
+  to one source.
+
+Plan 06 (`plan/development/06-inference-skynet.md`) is **amended, not superseded**: its
+"no separate gateway" line described the state before this decision and gains a dated
+pointer here when this record is accepted.
+
+**Alternatives rejected.**
+
+1. *agentgateway replaces skynet's gateway role.* Rejected: skynet is kept as the
+   platform's orchestration surface by operator decision (2026-09-14); agentgateway
+   carries no placement or policy logic.
+2. *skynet fronts vLLM directly and agentgateway is skipped.* Rejected: skynet is not
+   the surface OpenCode, pi and team SDK clients use today, and the ecosystem document's
+   request-telemetry and per-client-limit rows would stay empty.
+3. *Co-locate the gateway on the Caddy host.* Rejected: Caddy is the front door for every
+   platform hostname; a gateway fault or upgrade must not touch it.
+4. *Run the gateway on the head node.* Rejected: node memory is the binding constraint
+   and the boundary rule keeps non-vLLM software off the nodes.
+5. *Keep the single shared key at the gateway.* Rejected: per-client limits are the
+   reason the gateway exists. The shared key is enrolled as one identity for a dated
+   grace period, then retired and rotated at vLLM.
+
+**Consequences.** Client base URLs do not change; client keys do. The vLLM key becomes an
+internal credential the gateway alone holds. Rollback during the grace period is one
+inventory value (the Caddy upstream); after retirement it is the `rollback-inference-route`
+playbook, because vLLM cannot authenticate gateway-issued keys.
+
+Deliberation, verification log and the phased plan: OpenSpec change
+`plan/development/openspec/changes/inference-gateway-agentgateway` (design.md decisions 1–8).
+
+## Internal DNS naming (decided 2026-09-28)
+
+Status: **Proposed (decisions by Joe 2026-09-28).** Joe decided the scheme and the
+defaults of its open questions in conversation on 2026-09-28; as with the section above,
+it becomes Accepted when the operator confirms this text. Author: Joseph A. Wisneski IV
+<stray@uhstray.io>.
+
+The question Joe put: "we'll want to have DNS names that simplify routing/access to those
+resources. For example, dgx-spark can be dgx01.vllm-primary.<zone>. Think of a strong
+naming strategy that allows us to horizontally scale resources through our internal DNS."
+(The zone name in his message is replaced with `<zone>`; this repository is public.) His
+three answers that shaped it: the site label is in every name from day one; a
+service name resolves to the load balancer wherever one exists (agentgateway for
+inference, Caddy for HTTP), and to several address records only where there is none; the
+decision is recorded both here and as an OpenSpec change.
+
+In the names below `<zone>` is the internal zone and `<site>` is the site label. Both are
+declared in site-config, not in this repository.
+
+**Decision. Four name families, one tree per site.**
+
+| Family | Shape | Example | Record | TTL |
+|---|---|---|---|---|
+| Service | `<service>.<site>.<zone>` | `vllm-primary.<site>.<zone>` | CNAME to the load balancer's service name where one fronts it; otherwise one A record per serving member | 30–60 s |
+| Instance | `<class><NN>.<service>.<site>.<zone>` | `dgx01.vllm-primary.<site>.<zone>` | CNAME to the member's host name | 60 s |
+| Host | `<hostname>.host.<site>.<zone>` | a Proxmox VM or node by its hostname | A, plus the matching PTR | 3600 s |
+| Management | `<hostname>.mgmt.<site>.<zone>` | a BMC, or a hypervisor node's UI on its own address | A, plus the matching PTR; only for a management address distinct from the host address (otherwise the host name serves) | 3600 s |
+
+- **Clients use service names and nothing else.** Adding capacity adds an instance and,
+  for a pool, one more A record under the service name. No client configuration changes.
+- **Service names say what the thing does, never what it runs on:** `vllm-primary`,
+  `vllm-embed`, `openbao`, `gateway`. Hardware appears only in the instance class
+  (`dgx`, `vm`), so replacing the hardware changes an instance, not a service.
+- **Instance ordinals are two digits and never reused.** A retired `dgx02` stays retired;
+  its replacement is `dgx03`. Certificates, dashboards, logs and resolver caches that
+  still carry the old name can never point at a different machine.
+- **Health lives in the load balancer, not in DNS.** A pool of A records has no health
+  checks: a member that fails stays in the answer until its record is removed. That is
+  why a service with a load balancer resolves to the load balancer.
+- **Reserved labels.** The bare `<service>.<zone>` form is kept for future cross-site
+  names. `host`, `mgmt`, `ns`, any label starting with `_` (SRV owner names, RFC 2782
+  `_Service._Proto.Name`), and every declared site label cannot be service names.
+- **Label rules.** Lowercase `a-z`, `0-9` and `-`; a label starts with a letter, ends with
+  a letter or digit, and is at most 63 characters (RFC 1035 §2.3.1 and §2.3.4). No
+  underscores, except in SRV owner names.
+- **Records are code.** Names are declared in site-config inventory and rendered into the
+  zone by the DNS deploy (`platform/playbooks/deploy-dns.yml:43-47` renders the zone file
+  from `platform/services/dns/deployment/templates/zone.local-dev.j2`). NetBox, the IPAM
+  authority (`plan/development/03-guardrails-governance.md:1217`, `:1227`), records the
+  host name in each address's `dns_name`; a read-only reconcile check fails when the two
+  disagree. The direction stays NetBox → DNS → certificates
+  (`plan/development/03-guardrails-governance.md:1301-1303`, D8): the address is
+  allocated in NetBox first and the inventory carries the same value.
+- **Public names stay public.** `auth.uhstray.io` and the other Cloudflare-fronted
+  hostnames stay in the public zone. A LAN split-horizon answer for them is separate work
+  (`plan/development/openspec/changes/inference-gateway-agentgateway/tasks.md:349-363`,
+  group 7).
+- **Certificates follow the names.** Each member's leaf carries its instance name and its
+  service name as SANs; the gateway's model `tls.hostname` is the service name. A TLS
+  wildcard matches exactly one label (RFC 9525 §6.3), so the one-label local-dev wildcard
+  (`*.agent-cloud.test`, line 201 of this document) does not cover names under a site
+  label.
+
+**Applied example.** agent-cloud is a template to deploy on; which hosts, instances and
+addresses a site has is declared in that site's site-config, never here. The example uses
+role placeholders. `inference.<site>.<zone>` is a CNAME to `gateway.<site>.<zone>`, the
+agentgateway service, whose one instance is `vm01.gateway.<site>.<zone>`.
+`vllm-primary.<site>.<zone>` is the API-serving pool of a model split across two GPU
+nodes: `<gpu-head>` serves the API and is `dgx01.vllm-primary.<site>.<zone>`, the only
+member in the pool's A set; `<gpu-worker>` is its Ray worker, named
+`dgx02.vllm-primary.<site>.<zone>` because it is part of that deployment (losing it takes
+the service down), but with no API it is excluded from the pool's A set and from every
+load-balancer backend list. `dgx` is an illustrative instance class. Single-instance
+platform services (`openbao`, `semaphore`, `netbox`, `authentik`, `dns`, `ca`, `caddy`)
+each have instance `vm01`. An HTTP service's name becomes a CNAME to `caddy.<site>.<zone>`
+once Caddy carries a route for that internal name; until then it is the A record of its
+one member. Either way the change is one record and clients keep the name. A hypervisor
+node `<pve-node>` has a host name, and a management name where its management address is
+distinct from it. Machines the platform does not manage (GPU nodes, hypervisor nodes) are
+declared in a site-config variables list, not as inventory hosts, so no playbook can
+target them.
+
+**Alternatives rejected.**
+
+1. *No site label* (`<service>.<zone>`). Rejected: a second site would force every client
+   and every certificate to be renamed at the moment the platform is busiest. Adding the
+   label now costs one label.
+2. *Flat names* (`dgx01-vllm-primary.<site>.<zone>`). Rejected: a flat name cannot be
+   delegated, cannot carry a per-service subtree, and hides the service/instance
+   relationship that tooling reads from the name.
+3. *Always several A records, even behind a load balancer.* Rejected: DNS carries no
+   health, so a failed member keeps receiving traffic until its record is removed, and
+   resolver caches extend that by the TTL. Taking a failed member out of service is the
+   load balancer's job.
+4. *Hardware in service names* (`dgx-vllm`). Rejected: moving the model to other hardware
+   would rename the service and break every client that uses it.
+
+**Consequences.** Production renders no wildcard record: a mistyped name must answer
+NXDOMAIN, not resolve somewhere. (Once any name exists under `<site>.<zone>`, a
+zone-apex wildcard would not answer for that subtree anyway; RFC 4592 §2.2.1.) The zone
+gains CNAME, PTR and SRV records and a reverse zone; the pinned hickory-dns image parses
+all three record types from a zone file, and how it answers them is checked live before
+production depends on it (the change's tasks). The production internal CA's example SANs
+(`plan/development/openspec/changes/production-internal-ca/design.md:182-190`, decision 4)
+are updated to this scheme through that change, not by editing it here.
+
+Deliberation, rejected alternatives in full and the phased plan: OpenSpec change
+`plan/development/openspec/changes/internal-dns-naming`.
+
+## Internal DNS clients and split-horizon names (decided 2026-09-29)
+
+Two operator decisions that followed the naming decision above. The section above is left
+as written; where this one differs, this one holds.
+
+**Who resolves through the internal DNS.** Only declared clients: every agent-cloud host,
+the DGX Spark nodes, and a future Tailscale subnet router (SNAT on, a separate VM or
+device) that carries work laptops. They query the internal DNS directly. Each agent-cloud
+host's resolver list names it first and the router second, so a DNS outage costs internal
+names only. The host firewall admits :53 per source: one tagged rule per `agent_cloud`
+member, generated from `firewall_allow_groups`, plus static rules for machines outside the
+inventory. It was applied to the DNS host on 2026-09-29.
+
+- Rejected: **pfSense domain-override forwarding**, the local-dev plan's original shape. It
+  answers every LAN client that asks the router, which is wider than the declared set.
+- Rejected: **the whole LAN subnet as a source**. It was the first firewall declaration
+  (2026-09-28), and it was narrowed on 2026-09-29 for the same reason.
+- Consequence: a new client class is one more firewall source in site-config. LAN clients
+  outside the set keep using the public names.
+
+**Public names answered internally.** The naming section above refuses any name outside
+`<site>.<zone>`. Gateway task 7.1 needs the internal DNS to answer one public name, the
+IdP's, with the internal Caddy address. That name is declared in a separate site-config
+list of split-horizon names. Each entry renders as its own single-name zone, answered
+only to the declared clients. The naming guard refuses a public name that is not on
+that list.
+
+- Rejected: **a managed hosts-file line** on the gateway host. It works for one host, but
+  it is a second mechanism, and it would have to be repeated on every host that needs the
+  name.
 
 ## Adding a New Service to the Proxy
 
@@ -901,49 +1143,78 @@ Rootless Podman cannot grant `CAP_NET_RAW` even with `privileged: true`. This ca
 
 ### The problem
 
-Docker containers with `restart: always` auto-restart when the daemon starts at boot. Podman is daemonless, so containers do not auto-restart after a host reboot.
+Docker's daemon restarts containers at boot. Podman has no daemon, so a container
+comes back only if a systemd unit starts it.
 
-### systemd integration
+### The mechanism in use
 
-Podman containers need systemd management for restart-after-reboot:
+Podman ships `podman-restart.service` in two copies. Both run the same command, read
+from the unit on the production OpenBao host (podman 4.9.3, Ubuntu 24.04):
 
-```bash
-# Generate systemd unit from running container
-podman generate systemd --new --name workflow-nocodb > \
-  ~/.config/systemd/user/container-workflow-nocodb.service
-
-# Enable with lingering (survives logout)
-loginctl enable-linger $USER
-systemctl --user enable container-workflow-nocodb.service
+```
+ExecStart=/usr/bin/podman $LOGGING start --all --filter restart-policy=always
 ```
 
-### podman-compose + systemd
+| Containers | Unit | Enabled how |
+|------------|------|-------------|
+| Rootful (`sudo podman`) | system `podman-restart.service` | Shipped enabled on the image |
+| Rootless (the deploy user, or a dedicated account) | user `podman-restart.service` | Ships **disabled**. `tasks/enable-linger.yml` enables it and turns on linger so the user's systemd starts at boot |
 
-For compose-managed stacks, generate a systemd unit for the whole project:
+Two rules follow, and `platform/tests/test_restart_policy.bats` enforces both:
 
-```bash
-# Option A: systemd unit that runs compose up/down
-cat > ~/.config/systemd/user/nocodb-stack.service << 'EOF'
-[Unit]
-Description=NocoDB Stack (podman-compose)
-After=network-online.target
+1. **Every compose service declares `restart: always`**, or `"no"` for a one-shot
+   container that also carries the label `agent-cloud.one-shot: "true"`
+   (`verify-service-persistence.yml` accepts `"no"` only from a labelled container that
+   has exited 0, since a long-running `"no"` container can exit 0 too). On 4.9.3 the filter skips `unless-stopped`, whatever newer upstream
+   documentation says. Docker honours `always` as well, so one policy serves both engines.
+2. **Every composable deploy runs `tasks/enable-linger.yml`** through the shared
+   `tasks/place-monorepo.yml` preamble. Lingering alone is not enough: it starts an empty
+   user manager unless the user unit is enabled.
 
-[Service]
-Type=oneshot
-RemainAfterExit=true
-WorkingDirectory=/home/%u/services/nocodb
-ExecStart=/usr/bin/podman-compose -f compose.yml up -d
-ExecStop=/usr/bin/podman-compose -f compose.yml down
-TimeoutStartSec=300
+### Setting it up and proving it outside a deploy
 
-[Install]
-WantedBy=default.target
-EOF
-```
+`ensure-service-persistence.yml` applies the table above to a running service without
+restarting anything, which makes it safe on the orchestrator's own host. It enables linger
+plus the user unit (rootless), the system unit (rootful, `podman_rootful: true` in the
+inventory) or `docker.service`. `verify-service-persistence.yml` is the read-only proof
+recorded as the service deployment workflow's systemd-enablement step. Both select a service's
+containers by the compose `working_dir` label (`tasks/list-service-containers.yml`); a service
+still running from a directory outside the monorepo declares that directory as
+`compose_working_dir`.
 
-### Current state
+### Containers created under an older policy
 
-systemd integration is not yet automated in agent-cloud playbooks. After reboot, services restart by re-running the deploy playbook via Semaphore. A planned `configure-podman-systemd.yml` will automate systemd unit generation for all Podman services.
+The policy is fixed at create time, and the Ubuntu 24.04 podman (4.9.3) has no
+`podman update --restart`: its man page lists only resource flags, and CI's `ubuntu-24.04`
+runner rejects the flag as unknown. So a container created by a legacy compose file with
+`unless-stopped` or no policy cannot be moved to `always` in place.
+
+For a **rootful** service in that state, `ensure-service-persistence.yml` installs one unit per
+service, `/etc/systemd/system/agent-cloud-boot-<service>.service`. It is a oneshot
+`podman start <names>` with a graceful `ExecStop`, the shape of podman's own
+`podman-restart.service`, keyed by container name. It is enabled and never started, and removed
+once every container is on `always`. The container set is chosen by restart policy, never by
+whether a container happens to be running. Production openbao and semaphore have run this way
+since 2026-09-26. Rejected: `podman generate systemd` without `--new`, whose unit pins the
+container ID in `PIDFile` (a recreate under the same name leaves it failing) and which podman
+warns can hang shutdown for a container with its own restart policy. A **rootless** container
+in that state is refused by name; its deploy recreates it with `always`.
+
+The real fix is moving these services to the composable layout, whose deploys recreate every
+container from the repo compose.
+
+### What this does not cover
+
+- **OpenBao comes back sealed.** Production uses manual Shamir unseal, so a reboot still
+  needs a human. Transit auto-unseal is the planned fix
+  (`plan/development/01-secrets-credentials.md`, problem 2 and phase B2).
+- **Start order within a boot unit** is the container listing's order. `podman-compose`
+  v1.0.6's source passes `--requires` for `depends_on`, so for containers it created, starting
+  an app also starts its database; the podman-compose version that created the production
+  containers is unverified. "Started" is not "accepting connections", either: an app on no
+  restart policy that exits on a refused connection is not retried, and whether Semaphore
+  retries its database is unverified.
+- **No automation reboots a host to prove any of this.** See `docs/MISTAKES.md` 10.15.
 
 ---
 
@@ -990,9 +1261,9 @@ pip3 install --upgrade podman-compose>=1.3.0
 | Top-level `volumes: name:` | Yes | IGNORED | Yes | Use `--project-name` instead |
 | `container_name:` | Yes | Yes | Yes | Always set explicitly |
 | `healthcheck:` definition | Yes | Yes | Yes | Runs but not enforced for deps |
-| `restart: always` | Yes | Yes | Yes | But no daemon restart (see sec 11) |
-| `restart: unless-stopped` | Yes | Yes | Yes | |
-| `restart: "no"` | Yes | Yes | Yes | One-shot containers |
+| `restart: always` | Yes | Yes | Yes | Started at boot by `podman-restart.service` (see sec 11) |
+| `restart: unless-stopped` | Yes | Yes | Yes | Parses, but podman 4.9.3's boot unit skips it. No repo compose file uses it; a legacy container that carries it (production openbao) is started by its per-service boot unit (sec 11) |
+| `restart: "no"` | Yes | Yes | Yes | One-shot containers only, labelled `agent-cloud.one-shot: "true"` |
 | `env_file:` (simple KEY=VALUE) | Yes | Yes | Yes | |
 | `env_file:` (quoted values) | Yes | Partial | Partial | Avoid quotes |
 | `environment:` | Yes | Yes | Yes | |

@@ -56,5 +56,5 @@ agents/websmith/
 ## Related
 
 - [`platform/services/uhhcraft/`](../../platform/services/uhhcraft/) — first concrete site built with WebSmith.
-- [`plan/development/WEBSMITH-INTEGRATION-PLAN.md`](../../plan/development/WEBSMITH-INTEGRATION-PLAN.md) — full integration plan and "second site" recipe.
-- [`plan/architecture/WEBSITE-BUILDING-AGENT.md`](../../plan/architecture/WEBSITE-BUILDING-AGENT.md) — architecture doc (added in Phase 9 of the integration plan).
+- [`plan/development/07-websmith-uhhcraft.md`](../../plan/development/07-websmith-uhhcraft.md) — full integration plan and "second site" recipe.
+- [`plan/architecture/07-website-building-agent.md`](../../plan/architecture/07-website-building-agent.md) — architecture doc (added in Phase 9 of the integration plan).

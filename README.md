@@ -26,7 +26,7 @@ Guardrail Layer  OpenBao (secrets), Kyverno (k8s), OPA (policy), AppRole scoping
                  AI proposes -> guardrails validate -> automation runs
 Automation Layer Ansible playbooks, Bash deploy scripts, Semaphore orchestration
                  Deterministic, idempotent, auditable
-Platform Layer   Docker/Podman (dev), Kubernetes/k0s (prod), Proxmox VMs
+Platform Layer   Docker/Podman on Proxmox VMs; Kubernetes/k0s is the planned multi-site path
 ```
 
 ## Getting Started
@@ -37,18 +37,21 @@ is to run the whole platform locally first, then promote changes upstream.
 
 ### Quick start — run it locally
 
-A local control plane (OpenBao + Semaphore) deploys every service with the same
-playbooks as prod, behind real DNS + TLS and Authentik SSO. On macOS:
+A local control plane (OpenBao + Semaphore) deploys supported service profiles
+behind DNS, TLS and Authentik. Start with the foundation on macOS:
 
 ```bash
 # prerequisites (one time)
 brew bundle                          # toolchain: ansible, podman, podman-compose, jq, gh, ...
 podman machine init && podman machine start
 
-# stand up the whole stack + macOS DNS/TLS wiring (idempotent; asks for sudo once)
-make local-all
+# stand up the secure foundation, then wire macOS DNS/TLS
+make local-bootstrap
+make local-dns-resolver
+make local-tls-trust
 
-# `make local-all` prints your SSO login at the end (re-show with `make local-creds`):
+# show the local SSO login (this prints local credentials):
+make local-creds
 #   agent-cloud-admin  ->  full access to every app
 # then open any app in the browser, e.g.:
 #   https://semaphore.agent-cloud.test:8443
@@ -77,7 +80,7 @@ make local-validate                  # health-check everything deployed
 **Every service deploys the same way — through Semaphore:**
 
 1. Push changes to this repo
-2. Run the corresponding task template in Semaphore (e.g., "Deploy NocoDB")
+2. Run the corresponding task template in Semaphore (e.g., "Deploy tududi")
 3. Semaphore injects OpenBao credentials, SSHes to the target VM, and runs the composable playbook (`manage-secrets` → `deploy.sh` → verify)
 
 Production deploys always go through Semaphore so OpenBao credentials are injected and the run is auditable — never SSH into a VM and run `deploy.sh` directly.
@@ -106,24 +109,28 @@ deploy.sh does NOT generate secrets or interact with OpenBao. All credential man
 
 ## Platform Services
 
+This catalog describes integrations and recorded milestones, not current live
+health. Verify the selected environment before relying on a service.
+
 | Service | Purpose |
 |---------|---------|
 | **OpenBao** | Secrets management -- KV v2, AppRole auth, database engine |
-| **NocoDB** | Shared data layer -- structured tables, REST API, task queue |
+| **NocoDB** | Retired integration retained for decommissioning; tududi replaces its task-management role |
 | **n8n** | Workflow automation -- event-driven scheduling, webhooks, LLM nodes |
 | **Semaphore** | Deployment orchestration -- Ansible playbook execution |
 | **NetBox** | Infrastructure modeling -- IPAM/DCIM with Diode auto-discovery |
 | **Caddy** | Reverse proxy -- automatic TLS, CloudFlare DNS integration |
 | **DNS** | Internal name resolution -- hickory-dns, zones-as-code, authoritative + forward (local-dev live; prod planned) |
 | **step-ca** | Internal CA -- stable root, issues the `*.agent-cloud.test` wildcard Caddy serves (local-dev live; prod via ACME) |
-| **Authentik** | Central identity / SSO -- one login for every app: OIDC (Semaphore/Grafana/ERPNext) + Caddy forward_auth (NetBox/OpenBao/n8n), with `platform-admins`/`developers`/`user` RBAC tiers (local-dev live) |
+| **Authentik** | Central identity / SSO -- one login for every app: OIDC (Semaphore/Grafana/ERPNext) + Caddy forward_auth (NetBox/OpenBao/n8n), with `platform-admins`/`developers`/`user` RBAC tiers (local-dev live; production deployed at `auth.uhstray.io`) |
 | **skynet** | Local-first, policy-gated LLM inference backbone -- OpenAI-compatible `/v1` gateway with multi-backend placement scheduling + policy gates (supersedes WisAI's Ollama + Open WebUI LLM plane) |
 | **UhhCraft** | First WebSmith-built site -- AI-designed sticker + 3D-print storefront (Go + templ + HTMX) |
 | **inference-comfyui** | Image-generation sidecar -- Flux.1 Schnell behind a FastAPI wrapper, for UhhCraft and future generative sites |
 | **inference-hunyuan3d** | 3D mesh-generation sidecar -- Hunyuan3D-2-mini behind a FastAPI wrapper |
-| **tududi** | Self-hosted to-do app -- single rootless container (SQLite), native Authentik OIDC, `todo.uhstray.io`; the migration sink for NocoDB work data via weft (local-dev live) |
-| **honcho** | Memory API for agents (Plastic Labs) -- api + deriver + pgvector + redis, JWT `/v3`, Authentik-gated `/docs`, `memory.uhstray.io`; evolve's team-memory backend (local-dev live) |
-| **Postiz** | Social-media scheduling and publishing -- app + its Postgres/Redis + a Temporal workflow engine that executes scheduled posts, native Authentik OIDC, `postiz.uhstray.io`; driven by n8n over an API-key endpoint deliberately left ungated at the edge (code-complete, first bring-up pending) |
+| **tududi** | Self-hosted to-do app -- single rootless container (SQLite), native Authentik OIDC, `todo.uhstray.io`; the migration sink for NocoDB work data via weft (local-dev live; production deployed) |
+| **honcho** | Memory API for agents (Plastic Labs) -- api + deriver + pgvector + redis, JWT `/v3`, Authentik-gated `/docs`, `memory.uhstray.io`; evolve's team-memory backend (local-dev live; production deployed) |
+| **agentgateway** | Inference edge gateway (Linux Foundation agentgateway v1.5.0) -- OpenAI-compatible `/v1` with per-client API keys and per-key hourly token budgets (own Postgres) in front of the model API; local-dev fronts LM Studio, prod will front vLLM on the DGX Spark head behind `inference.uhstray.io` (local-dev proving) |
+| **Postiz** | Social-media scheduling and publishing -- app + its Postgres/Redis + a Temporal workflow engine that executes scheduled posts, native Authentik OIDC, `postiz.uhstray.io`; driven by n8n over an API-key endpoint deliberately left ungated at the edge (local bring-up recorded; production application rollout and publishing verification remain pending) |
 | **github-runner** | Self-hosted GitHub Actions runners -- two hosts forming one interchangeable pool, org-scoped to the five PRIVATE repos (`agent-cloud` excluded: it is public, and a fork can propose workflow code onto hosts inside the perimeter). For workflows that must originate from inside the network or its stable address (both live, serving jobs) |
 
 ## Repository Structure
@@ -133,7 +140,7 @@ agent-cloud/
   platform/
     services/             Per-service: deployment/ + context/ + templates/
       openbao/            Secrets backbone (AppRole, KV v2, policies)
-      nocodb/             Data layer
+      nocodb/             Retired (replaced by tududi); kept until its decommission
       n8n/                Workflow automation
       semaphore/          Deployment orchestration
       netbox/             Infrastructure modeling + Diode discovery + Orb Agent
@@ -141,15 +148,26 @@ agent-cloud/
       step-ca/            Internal CA (Smallstep; stable root, *.agent-cloud.test)
       caddy/              Reverse proxy
       authentik/          Central IdP / SSO (server+worker+Postgres+Redis)
-      inference-ollama/   Legacy WisAI workers (GPU, Ollama) -- superseded by skynet /v1
-      inference-webui/    Legacy WisAI coordinator (Open WebUI + Postgres) -- superseded by skynet /v1
-      inference-vllm/     Reserved (future 24 GB+ hardware; candidate skynet backend)
+      inference/          Placeholder only (.gitkeep); the LLM plane is skynet's /v1
       inference-comfyui/  UhhCraft image-gen sidecar (Flux.1, GPU)
       inference-hunyuan3d/ UhhCraft 3D-gen sidecar (Hunyuan3D, GPU)
       uhhcraft/           First WebSmith-built site (Go + templ + HTMX)
+      tududi/             To-do app (rootless podman, SQLite, Authentik OIDC)
+      honcho/             Memory API (api + deriver + pgvector + redis)
+      o11y/               Grafana + Prometheus + Loki + Alloy
+      postiz/             Social publishing (app + Temporal workflow engine)
+      agentgateway/       Inference edge gateway (per-client keys, token budgets)
+      github-runner/      Self-hosted GitHub Actions runners
+      opa/                Policy engine (Rego policy-as-code)
+      openhands/          Agent Canvas
+      erpnext/            ERP (composable slim local tier)
+      wikijs/ nextcloud/ a2a-registry/   Further service directories (see each one's docs)
     playbooks/            Ansible playbooks (see playbooks/README.md)
       tasks/              Composable tasks (manage-secrets, deploy-orb-agent, etc.)
     semaphore/            Semaphore template definitions + setup playbook
+    workflows/
+      service-onboarding/ Service deployment workflow: step registry, step-result and proposal schemas,
+                          NetBox custom fields, the collector's step-result parser
     lib/                  Shared bash libraries (common.sh, bao-client.sh)
     inventory/            Inventory templates (placeholders, no real IPs)
     hypervisor/proxmox/   VM provisioning and cloud-init
@@ -174,7 +192,10 @@ Each service directory uses the **deployment/ + context/** split:
 
 ## Credential Flow
 
-All secrets are managed by **OpenBao**. Services authenticate via AppRole at runtime -- no credentials are stored in environment files or committed to this repository:
+All secrets are managed by **OpenBao**. Ansible authenticates with AppRole at
+deploy time and renders credential-bearing env/config files for services. These
+generated, gitignored files are a runtime bridge, not the source of truth. Only
+specific consumers, such as Orb Agent, use scoped runtime OpenBao access:
 
 ```
 Semaphore environment (AppRole role-id + secret-id only)
@@ -184,6 +205,12 @@ Semaphore environment (AppRole role-id + secret-id only)
   -> Ansible manage-secrets.yml templates .env files
   -> deploy.sh starts containers (reads .env, no OpenBao interaction)
 ```
+
+A secret only an operator holds (a third-party API key) enters OpenBao the other way: a
+seed CLI stages it as an encrypted input in that seed template's own isolated Semaphore
+environment, runs one task that merges it into OpenBao, then removes the input. It is never
+a survey value or launch-time extra var, both of which Semaphore persists. See
+[the Semaphore operating guide](platform/semaphore/README.md).
 
 Private configuration (real IPs, production inventory, credential backups) lives in the separate **site-config** repository.
 
@@ -199,6 +226,9 @@ Deployments are orchestrated by **Semaphore** running composable Ansible playboo
 | `distribute-ssh-keys.yml` | Deploy SSH keys from OpenBao to VMs |
 | `harden-ssh.yml` | Lock down sshd (after key verification) |
 | `check-secrets.yml` | Read-only secret inventory from OpenBao |
+| `ensure-service-persistence.yml` | Make a service's containers start at boot (linger + podman's boot unit, the system unit for rootful podman, or a per-service boot unit for legacy containers); restarts nothing |
+| `verify-service-persistence.yml` / `verify-service-health.yml` | Read-only proof a service starts at boot and answers its declared health path |
+| `inspect-host-containers.yml` | Read-only list of the containers on one host that the connecting user, a declared `linger_user`, root and Docker can see, with engine version, state and restart policy |
 
 Playbooks use composable tasks from `platform/playbooks/tasks/` (manage-secrets, manage-diode-credentials, manage-approle, etc.). Semaphore templates are managed as code in `platform/semaphore/templates.yml`.
 
@@ -220,7 +250,7 @@ Start with [`ARCHITECTURE.md`](ARCHITECTURE.md) (the 5-minute map) and [`PRINCIP
 | `plan/architecture/05-platform-infra.md` | Caddy reverse proxy (TLS/DNS-01, routing), container runtime, platform infra |
 | `plan/architecture/06-observability-instrumentation.md` | Observability-by-declaration model (metrics/logs/traces) |
 | `plan/architecture/skills-recommendation.md` | Claude Code skills for development workflows |
-| `plan/development/` | Numbered `00–13` roadmap: local-dev, secrets, SSO, guardrails, NetBox discovery, observability, skynet, websmith, ERPNext, migrations, resilience, tududi/honcho, RBAC, Cloudflare IaC |
+| `plan/development/` | Numbered roadmap: local-dev, secrets, SSO, guardrails, NetBox discovery, observability, skynet, websmith, ERPNext, migrations, resilience, tududi/honcho, RBAC, Cloudflare IaC, Postiz |
 | `plan/archive/development/IMPLEMENTATION_PLAN.md` | Original full implementation plan (archived; phases, architecture, decisions) |
 
 For new services, start with `plan/architecture/02-service-onboarding.md`. For new features, create an implementation plan in `plan/development/` before coding begins.
@@ -228,14 +258,14 @@ For new services, start with `plan/architecture/02-service-onboarding.md`. For n
 ## CI/CD and Testing
 
 Every pull request runs these automated checks. The three below are the gates; a PR also
-runs change detection, CodeQL analysis per language, conditional Go jobs for uhhcraft, a
+runs change detection, conditional Go jobs for uhhcraft, a
 CodeRabbit review, and — on a `dev` → `main` PR — a promotion-source check:
 
 | Job | Tools | What it catches |
 |-----|-------|-----------------|
 | **Static Analysis** | Ruff, ShellCheck, ansible-lint, yamllint, hadolint, terraform fmt | Code style, bugs, Ansible best practices, YAML formatting, Dockerfile issues, HCL policy formatting |
 | **Security Scan** | TruffleHog, Bandit, IP/credential grep | Leaked secrets, Python security issues, hardcoded IPs and credentials |
-| **Unit Tests** | pytest (79 tests), BATS (452 tests) | Discovery worker logic, bash helpers, per-service deployment structure |
+| **Unit Tests** | pytest (100 tests), BATS (500+ tests; `bats -c platform/tests/*.bats` for the exact count) | Discovery worker logic, bash helpers, per-service deployment structure |
 
 `.githooks/pre-push` **attempts** the same suites before a push, with the same test paths,
 working directory and `PYTHONPATH` as CI. Live via the repo's `core.hooksPath` after
@@ -252,22 +282,26 @@ fails closed because a leaked secret is irreversible and a skipped test is not.
 
 Branch testing via Semaphore allows deploying feature branches to production VMs for validation before merging. See `plan/architecture/03-testing-ci-quality.md`.
 
-`main` is protected by the `protect-main` repository ruleset (config-as-code in `.github/rulesets/`): no direct or force pushes, no deletion, PR required, review conversations resolved, and the three checks above must pass before the merge button unlocks. Merges into `main` allow **merge commits (the default) or squash** — linear history is NOT required, so `dev` → `main` promotions land as merge commits (squash only to scrub accidental sensitive content). (The ruleset currently runs in `evaluate`/dry-run — logging, not yet blocking — and flips to `active` after verification.) See `plan/development/03-guardrails-governance.md`.
+`main` is protected by the `protect-main` repository ruleset (config-as-code in `.github/rulesets/`): no direct or force pushes, no deletion, PR required, review conversations resolved, and the three checks above must pass before the merge button unlocks. Merges into `main` allow **merge commits (the default) or squash** — linear history is NOT required, so `dev` → `main` promotions land as merge commits (squash only to scrub accidental sensitive content). (The checked-in ruleset declares `active`; this documentation review did not query remote enforcement.) See `plan/development/03-guardrails-governance.md`.
 
 For local setup and the full pre-PR checklist, see `plan/architecture/03-testing-ci-quality.md`.
 
 ## Technology Stack
 
-```
-INFRASTRUCTURE        Docker, Podman, Kubernetes (k0s), Proxmox
+```text
+INFRASTRUCTURE        Docker, Podman, Proxmox; Kubernetes (k0s) planned
 SECRETS & IDENTITY    OpenBao, AppRole auth, per-service SSH keys
 DEPLOYMENT & GITOPS   Semaphore, Ansible, OpenTofu (Cloudflare edge as code), ArgoCD (planned)
-DATA                  PostgreSQL, MinIO, DuckDB, NocoDB
+DATA                  PostgreSQL, SQLite, MinIO, DuckDB
 AI AGENTS             NemoClaw, NetClaw, Claude Cowork, WisBot
 INFERENCE             skynet (OpenAI-compatible /v1; placement + policy gates)
 AGENT PROTOCOLS       A2A (agent-to-agent), MCP (agent-to-tool)
 OBSERVABILITY         Grafana, Prometheus, Loki, Tempo (planned)
 ```
+
+Production DGX Spark scrape targets are rendered from private inventory by
+[`deploy-o11y.yml`](platform/playbooks/deploy-o11y.yml); see the
+[`o11y deployment notes`](platform/services/o11y/deployment/README.md).
 
 ## Related Repositories
 
@@ -276,7 +310,7 @@ OBSERVABILITY         Grafana, Prometheus, Loki, Tempo (planned)
 | [uhstray-io/agent-cloud](https://github.com/uhstray-io/agent-cloud) | Public | This repo -- platform monorepo |
 | [uhstray-io/WisBot](https://github.com/uhstray-io/WisBot) | Public | Discord bot (C#/.NET) |
 | [uhstray-io/skynet](https://github.com/uhstray-io/skynet) | Private | Inference backbone + agent framework — OpenAI-compatible `/v1` gateway (placement + policy gates); supersedes WisAI's LLM plane and the NemoClaw/OpenClaw framework |
-| [uhstray-io/WisAI](https://github.com/uhstray-io/WisAI) | Public | **Legacy** — Ollama + Open WebUI LLM plane (dirs `inference-ollama/` + `inference-webui/`), superseded by skynet `/v1`; non-LLM inference sidecars (ComfyUI, Hunyuan3D) are unaffected |
+| [uhstray-io/WisAI](https://github.com/uhstray-io/WisAI) | Public | **Legacy** — Ollama + Open WebUI LLM plane (its compose stack is in that repo's `infrastructure/`), superseded by skynet `/v1`; non-LLM inference sidecars (ComfyUI, Hunyuan3D) are unaffected |
 
 ## Contributing
 

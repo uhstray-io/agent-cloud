@@ -65,6 +65,24 @@ flowchart TD
 
 ## Onboarding Checklist
 
+### Observability signal contract
+
+For every deployed service, record its stable identity (`service` and
+`service.name`), owner, cluster and environment context, applicable signal
+methods, profile support, and the finite value set for each indexed label.
+`service`, `cluster`, and `environment` are the shared bounded dimensions;
+`owner` and `severity` are bounded alert labels. Container and instance identity
+are drill-down details. Do not index request or user identifiers, trace IDs,
+timestamps, raw paths, addresses, prompts, or secrets as metric labels or Loki
+stream labels. Keep them in log bodies or structured metadata when needed.
+
+Declare remote metrics targets in private inventory and verify their exact
+service and endpoint. A missing signal is a coverage gap, never a healthy
+default. Profile producers are opt-in and require a supported endpoint, privacy
+review, measured resource headroom, retention budget, and a successful sample
+receipt before wider rollout. Record the signal proof and capacity evidence
+without private addresses or credentials.
+
 ### Phase 0: Planning
 
 - [ ] Classify the service (infrastructure / automation / AI / auxiliary)
@@ -80,6 +98,13 @@ flowchart TD
 - [ ] Provision VM via Semaphore "Provision VM" template (clone VMID 9000, configure cloud-init)
 - [ ] Install container runtime via "Install Docker" template (if Docker needed)
 - [ ] Generate SSH key pair, store in OpenBao at `secret/services/ssh/<service>`
+- [ ] Back the pair up into site-config at `secrets/ssh/<service>/id_ed25519` —
+      `generate-service-ssh-key.yml` does this in the same run when passed
+      `site_config_dir`, or the `Back Up Service SSH Key` Semaphore template copies an
+      existing pair out onto a new site-config branch.
+      This is not filing: a pair that exists only in OpenBao means no operator holds a
+      key, so the workstation direction of the two-path access proof cannot be produced
+      and `harden-ssh.yml` must not run. Verified missing on a real host 2026-08-26
 - [ ] Distribute SSH keys via "Distribute SSH Keys" template
 - [ ] Verify SSH key auth works, then harden SSH via "Harden SSH" template
 
@@ -178,9 +203,10 @@ flowchart TD
   - IP/credential audit grep
   - CodeRabbit review
 - [ ] Address all review findings, confirm checks pass
-- [ ] Deploy from feature branch via Semaphore (set `Branch` survey var)
+- [ ] Merge the reviewed feature PR into `dev`, then deploy the `dev`-bound Semaphore template
 - [ ] Run validation templates (Validate All, Validate Secrets)
-- [ ] On pass: merge PR to main
+- [ ] Capture the Semaphore observability verification task ID and output: a fresh Loki line with the service's `service` label; for a metrics-enabled service, pass its declared `host:port` as `expected_instance` and require that exact Prometheus target at `up == 1`. An absent or unreachable expected target fails onboarding with the service and endpoint named; a healthy sibling target cannot mask it. Run the local unreachable-endpoint drill when changing the shared verification mechanism.
+- [ ] On pass: promote the reviewed change from `dev` to `main`
 - [ ] Re-deploy from main to confirm
 
 ### Phase 7: Documentation
@@ -332,3 +358,40 @@ For a fuller treatment of the WebSmith ↔ agent-cloud contract, read [`WEBSITE-
 5. **Template creation semi-manual** — Proxmox VM template from ISO requires manual serial console steps. Fully automated template provisioning not yet viable.
 6. **Credential rotation not wired** — `manage-approle.yml` hardcodes `secret_id_ttl: 0` despite the lifecycle plan requiring 90-day TTL.
 7. **Sparse checkout not implemented** — All services currently use full git clone. The sparse checkout + runtime directory separation pattern is designed but not yet implemented as reusable tasks.
+
+- **Provisioning does not consult IPAM for a free address (recorded 2026-09-17).** NetBox
+  is the address authority and `netbox-allocate-ip.yml` can report and reserve, but
+  Phase 1 still starts from a human reading `inventory/production.yml` and picking an
+  address that is not declared there. The agentgateway VM (first allocated as 216, which collided with a GitHub runner; provisioned as 218 on 2026-09-18) was addressed that way
+  because NetBox was unavailable at the time. The first address chosen that way
+  belonged to an undeclared GitHub runner (docs/MISTAKES.md 3.6); the VM now runs at a
+  network-swept address that carries an "ADDRESS PROVENANCE" note in site-config and is
+  still NOT reserved in NetBox, because the IPAM automation token cannot currently be
+  minted on the live instance. Reserve it when the IPAM is back. The
+  future feature: `provision-vm.yml` (or a preflight it imports) asks NetBox whether the
+  declared address is free or already reserved for this host, and refuses a declaration
+  the authority contradicts — so the ledger and the inventory cannot drift apart.
+
+- **Provisioning trusts vmid+name+node after its waits (recorded 2026-09-18).** `provision-vm.yml`
+  refuses a foreign VM at the declared vmid and re-checks name and node after the pre-migrate
+  wait (PR #188), but a concurrent actor that deleted and recreated the same vmid AND name on
+  the declared node during a wait would not be detected. The stronger form, raised in review
+  and deferred: capture the clone's `smbios1` UUID before the wait and require it after, and
+  send the config `digest` on every config PUT so a concurrent write is rejected. Deferred
+  because the platform has one sanctioned Proxmox writer (Semaphore) and the pair comes from a
+  committed declaration; revisit if a second writer ever exists.
+
+- **Proxmox API calls accept the cluster's self-signed certificate (recorded 2026-09-18).**
+  Every Proxmox play (`provision-vm.yml`, `destroy-vm.yml`, `proxmox-validate.yml`,
+  `resize-vm.yml`) sets `validate_certs: false`; the transport guard refuses cleartext but a
+  spoofed HTTPS endpoint on the path would not be detected. Raised in the PR #189 review. The
+  fix is platform-wide, not per play: pin the cluster CA (distribute it to the controller and
+  set `ca_path`), then flip `validate_certs` on everywhere at once.
+
+- **Compose `env_file` values reach the container runtime's argv (recorded 2026-09-22).**
+  podman-compose 1.6.0 expands `env_file` entries into `-e KEY=VALUE` arguments on the
+  `podman` command line, so every secret a service reads from its rendered `.env` is
+  briefly visible in the host's process table. It is not written to Semaphore output
+  (podman-compose logs the command only at verbose levels). Platform-wide, not
+  agentgateway-specific; the fix is a runtime-level one (a secrets mount or
+  `--env-file` passed through to podman) in one change for every service.

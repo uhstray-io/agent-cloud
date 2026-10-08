@@ -108,5 +108,32 @@ teardown() {
   rm compose.local.yml
   run compose up -d
   [ "$output" = "-f compose.yml up -d" ]
-  unset LOCAL_MODE
+}
+
+@test "compose: COMPOSE_OVERLAYS appends LAST, and a missing overlay file fails loudly" {
+  cd "$TEST_DIR"
+  touch compose.yml compose.local.yml compose.search.yml
+  detect_runtime() { COMPOSE_CMD="echo"; }
+
+  # Overlay named and present -> appended after the base (and after the local
+  # overlay, so a declared overlay always wins the merge).
+  export COMPOSE_OVERLAYS="compose.search.yml"
+  run compose up -d
+  [ "$output" = "-f compose.yml -f compose.search.yml up -d" ]
+  export LOCAL_MODE=true
+  run compose up -d
+  [ "$output" = "-f compose.yml -f compose.local.yml -f compose.search.yml up -d" ]
+
+  # Unset/empty -> byte-identical to before the mechanism existed.
+  export COMPOSE_OVERLAYS=""
+  run compose up -d
+  [ "$output" = "-f compose.yml -f compose.local.yml up -d" ]
+
+  # A named overlay that does NOT exist must FAIL, not silently degrade to the
+  # base topology — a gated topology that quietly vanishes reports success while
+  # deploying the wrong stack.
+  export COMPOSE_OVERLAYS="compose.search.yml compose.absent.yml"
+  run compose up -d
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"compose.absent.yml"* ]]
 }

@@ -11,7 +11,7 @@ service: compose `$`-interpolates what it reads, and a `$` inside any of the ~60
 client secrets would be silently corrupted. Upstream calls the mounted-file style
 "Option B" and marks the single-file style not-recommended.
 
-**Mounting `config/postiz.env` is not enough on its own — `command:` sources it.** The
+**Mounting `config/postiz.env` is not enough on its own — `command:` reads and exports each line literally.** The
 image's entrypoint is a generic node wrapper and never reads that path, so the mount
 alone leaves the app with no `DATABASE_URL`: it crash-loops on Prisma's "Environment
 variable not found", and `restart: always` presents that as a container perpetually
@@ -29,8 +29,9 @@ Two follow-on traps, both tried and both wrong:
   nothing, and the container exits 0 instantly — a silent no-op that looks identical to
   the crash loop you were fixing.
 
-`set -a` around the source is load-bearing: without it the values are shell-local and
-the app's child processes never see them. Because the CMD is copied, a test pins it.
+`export "$l"` makes each value available to child processes without evaluating it
+as shell code. Do not shell-quote rendered values: those quotes become credential
+characters. Because the CMD is copied, a test pins it.
 
 **Nothing may probe the workflow engine on `127.0.0.1:7233`.** The engine binds its
 frontend to the *container* IP; nothing listens on loopback inside it, so a loopback
@@ -50,11 +51,14 @@ bind-mounted file. Changing that file's *content* is not a compose-spec change, 
 plain `up -d` leaves the old container running with stale config — a redeploy that
 appears to succeed and changes nothing.
 
-**No Elasticsearch, no workflow UI, no admin tooling.** Five containers, not upstream's
-eight. The engine runs standard visibility on its own Postgres. Do not add the search
-node back because upstream's compose has it — add it back only if a scheduled post
-demonstrably fails to fire, and then via the inventory-gated path in `compose.yml`'s
-header.
+**No workflow UI, no admin tooling — and the Elasticsearch gate FIRED.** The trim's
+add-back condition was met on 2026-08-30: postiz v2.23.0's backend registers >3 `Text`
+search attributes at startup, SQL visibility caps at 3 (`INVALID_ARGUMENT` from the
+engine), and the backend never binds — pm2 keeps the frontend up, so the container sits
+"starting" forever and `podman exec` into it hangs. The search node ships as
+`compose.search.yml`, gated on `postiz_temporal_search` in inventory and applied through
+`COMPOSE_OVERLAYS` (common.sh). Do not fold it into the base compose: the base stays the
+honest five-container trim, and the gate stays declarative.
 
 **`temporal-postgresql` is pinned to Postgres 16 while `postiz-postgres` is 17.** Not an
 oversight — Temporal 1.28 supports up to 16. Do not "align" them.

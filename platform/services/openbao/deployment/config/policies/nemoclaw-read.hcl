@@ -9,6 +9,18 @@ path "secret/metadata/services/*" {
   capabilities = ["list", "read"]
 }
 
+# Never the Semaphore API token. Whoever holds it can launch any template with any extra var,
+# and a templated extra var runs code on the Semaphore runner, which holds the controller
+# AppRole (plan 01, "Launch permission is runner access"). deny always wins, and these exact
+# paths outrank the services/* globs above (openbao.org/docs/concepts/policies).
+path "secret/data/services/semaphore" {
+  capabilities = ["deny"]
+}
+
+path "secret/metadata/services/semaphore" {
+  capabilities = ["deny"]
+}
+
 # Allow token self-renewal
 path "auth/token/renew-self" {
   capabilities = ["update"]

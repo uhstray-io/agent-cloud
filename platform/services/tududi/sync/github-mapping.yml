@@ -1,0 +1,80 @@
+---
+# github-mapping.yml — THE declaration of tududi-project ↔ GitHub-repo sync
+# pairs (integrate-tududi-github-issue-sync, design D3).
+#
+# Provisioning (provision-tududi-github-sync.yml) renders this file into the
+# two n8n workflow definitions — the running system's mapping is exactly what
+# review approved here. Repo names are already public in this repository's
+# plan documents; nothing here is a credential or an address.
+#
+# Fields per entry:
+#   tududi_project  the tududi project NAME the sync watches (resolved to its
+#                   uid at runtime via /api/v1/projects — names survive
+#                   re-creations; uids do not belong in a committed file)
+#   github_repo     owner/name of the paired repository
+#   enabled         pairs are promoted one at a time (design Migration Plan
+#                   step 4 / task 6.1): huhhb first, the rest only after the
+#                   per-pair verification check (task 5.1) passes against it.
+#                   A real pair is enabled ONLY on the instance whose tududi
+#                   holds the paired project: since issues filed on GitHub
+#                   become tasks, a local-dev cycle against a real repo would
+#                   write markers whose uids exist only in local tududi — prod
+#                   then sees a dangling link (a recovery error) instead of
+#                   adopting the issue. dev-test is the sole pair every
+#                   instance may run.
+#
+# The sync control tag (the tududi tag that marks a task for syncing) and the
+# poll cadence live in inventory, not here — they are deployment tuning, not
+# pair declarations. The contract doc is
+# platform/services/tududi/context/github-sync-contract.md.
+
+# The org's native issue field carrying priority (GitHub Issues' single-select
+# "Priority": Urgent/High/Medium/Low). Declared here because WRITING a field
+# value requires its numeric id and the sync's GitHub App installation token
+# cannot enumerate field definitions to discover it — /orgs/{org}/issue-fields
+# answers 403 "Resource not accessible by integration" for an App, though the
+# values themselves read back fine on each issue. The id is org-level config,
+# not a credential. Set it to null to leave priority out of the sync entirely;
+# a wrong id is caught by a named recovery error the first time an issue in a
+# pair carries a Priority value under a different field id.
+github_priority_field_id: 22329653
+
+sync_pairs:
+  # First real pair; flips to true in task 6.1, on prod, after dev-test's
+  # battery is green there (see the `enabled` note above for why not before).
+  - tududi_project: huhhb
+    github_repo: uhstray-io/huhhb
+    enabled: false
+  - tududi_project: zerds
+    github_repo: uhstray-io/zerds
+    enabled: false
+  - tududi_project: atlas
+    github_repo: uhstray-io/atlas
+    enabled: false
+  - tududi_project: zerds-website
+    github_repo: uhstray-io/zerds-website
+    enabled: false
+  - tududi_project: weft
+    github_repo: uhstray-io/weft
+    enabled: false
+  - tududi_project: scientific-business
+    github_repo: uhstray-io/scientific-business
+    enabled: false
+  - tududi_project: Uhstray.io Website
+    github_repo: uhstray-io/www
+    enabled: false
+  # The STANDING validation pair: dev-test is the platform's sanctioned
+  # test landing zone, so the scenario battery (task 5.2) and any future
+  # regression validation write their test issues here — never into a real
+  # tracker. Enabled by design; its tududi project must exist under the
+  # same name on every instance the sync runs against.
+  - tududi_project: dev-test
+    github_repo: uhstray-io/dev-test
+    enabled: true
+  # agent-cloud is PUBLIC: anything the sync writes there is public issues.
+  # Enabling this pair is a publication decision, not just a rollout step —
+  # task titles, descriptions and audit comments from the paired tududi
+  # project become world-readable the cycle after it flips.
+  - tududi_project: agent-cloud
+    github_repo: uhstray-io/agent-cloud
+    enabled: false

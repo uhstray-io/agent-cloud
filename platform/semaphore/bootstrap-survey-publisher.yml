@@ -1,0 +1,23 @@
+---
+# One-time operator bootstrap. Installs ONLY the generated Dev publisher from
+# the shared declaration; never runs a service or publishes the whole catalog.
+- name: "Require explicit bootstrap target bindings"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: "Require reviewed project, inventory and environment IDs"
+      ansible.builtin.assert:
+        that:
+          - semaphore_project_id is defined and semaphore_project_id | int > 0
+          - semaphore_inventory_id is defined and semaphore_inventory_id | int > 0
+          - semaphore_environment_id is defined and semaphore_environment_id | int > 0
+        fail_msg: "Bootstrap requires explicit verified project, inventory and environment IDs."
+
+- name: "Install only the declared Dev survey publisher"
+  ansible.builtin.import_playbook: setup-templates.yml
+  vars:
+    _scoped: false
+    _bootstrap_survey_publisher: true
+    _all_templates: >-
+      {{ _dev_variants | selectattr('name', 'equalto', 'Publish Semaphore Template Surveys') | list }}

@@ -45,7 +45,9 @@ source "${SCRIPT_DIR}/lib/common.sh"
 
 # ─── Preflight checks ──────────────────────────────────────────────
 # Container runtime check is handled by lib/common.sh (CONTAINER_ENGINE)
-command -v openssl >/dev/null 2>&1 || error "openssl is not installed (needed for password generation)"
+# No openssl check: deploy.sh generates no secrets (Ansible templates them from OpenBao;
+# AGENTS.md Critical Deployment Rule 2), and the check stopped the local Semaphore runner,
+# which ships without openssl.
 command -v git >/dev/null 2>&1 || error "git is not installed"
 [ -f "docker-compose.yml" ] || error "docker-compose.yml not found. Run this script from the netbox/ directory."
 
@@ -66,6 +68,14 @@ if [ -d "${NETBOX_DOCKER_DIR}/.git" ]; then
     info "  Already up to date."
   fi
 else
+  # A directory without .git is a copy, not a clone (an older placement copied it on
+  # 2026-06-13), and `git clone` refuses a non-empty path. It holds only upstream content,
+  # regenerable from the repo, so move it ASIDE (never delete) and clone fresh.
+  if [ -e "${NETBOX_DOCKER_DIR}" ]; then
+    stale="${NETBOX_DOCKER_DIR}.stale-$(date +%Y%m%dT%H%M%S)"
+    warn "${NETBOX_DOCKER_DIR} is not a git clone; moving it to ${stale}"
+    mv "${NETBOX_DOCKER_DIR}" "${stale}"
+  fi
   info "Cloning netbox-docker upstream repository..."
   git clone --branch "${NETBOX_DOCKER_BRANCH}" "${NETBOX_DOCKER_REPO}" "${NETBOX_DOCKER_DIR}"
   info "  Cloned branch ${NETBOX_DOCKER_BRANCH}."
@@ -114,7 +124,7 @@ build_netbox_image
 info "Step 6/9: Stopping services..."
 stop_orb_agent 2>/dev/null || true
 compose down 2>&1 || true
-leftover=$($CONTAINER_ENGINE ps -a --format '{{.Names}}' 2>/dev/null | grep "^netbox${CONTAINER_SEP}" || true)
+leftover=$($CONTAINER_ENGINE ps -a --format '{{.Names}}' 2>/dev/null | grep -E "^netbox[-_]" || true)
 if [ -n "$leftover" ]; then
   warn "Stale containers remain after compose down — force-removing..."
   echo "$leftover" | xargs $CONTAINER_ENGINE rm -f 2>/dev/null || true

@@ -61,6 +61,7 @@
         status_code: [200]
       register: _repos
       no_log: true # bearer token rides in headers
+      check_mode: false
 
     - name: "Select the repository"
       ansible.builtin.set_fact:
@@ -88,6 +89,7 @@
               'ssh_key_id': (_repo.ssh_key_id | int)} | to_json }}
         status_code: [200, 204]
       no_log: true # token in headers
+      when: not ansible_check_mode
 
     - name: "Verify the branch was set"
       ansible.builtin.uri:
@@ -99,6 +101,7 @@
       # no_log: the request Authorization header carries the Semaphore token. Outcome stays
       # visible via the Assert+report task below — scoped-no_log pattern, not a hidden verify.
       no_log: true
+      check_mode: false
 
     - name: "Assert + report"
       ansible.builtin.assert:

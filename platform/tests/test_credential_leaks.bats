@@ -6,6 +6,8 @@
 
 REPO_ROOT=""
 
+load assert_helpers
+
 setup() {
   REPO_ROOT=$(git rev-parse --show-toplevel)
 }
@@ -263,7 +265,8 @@ _committed_files() {
   grep -qE "_bao_value:.*lookup\('env', *'BAO_VALUE'\) *\| *default\(bao_value" \
     "$pb/seed-openbao-key.yml"
   grep -qE "lookup\('env', *_env_name\) *$" "$pb/seed-postiz-secrets.yml"
-  grep -qE '_env_name: "SEED_\{\{ item \| upper \}\}"' "$pb/seed-postiz-secrets.yml"
+  grep -qE '_env_name: "\{\{ _seed_env\[item\] \}\}"' "$pb/seed-postiz-secrets.yml"
+  grep -qF "map('regex_replace', '^', 'SEED_')" "$pb/seed-postiz-secrets.yml"
 
   # The reverse order must not appear.
   ! grep -qE "_bao_value:.*bao_value *\| *default\(lookup" "$pb/seed-openbao-key.yml"
@@ -276,8 +279,15 @@ _committed_files() {
   # stored value against the RAW extra var while writing the resolved one would
   # misjudge whether a write is needed on every environment-supplied run.
   local f="$REPO_ROOT/platform/playbooks/seed-openbao-key.yml"
-  [ "$(grep -cE 'data: "\{\{ \{bao_key: _bao_value\} \}\}"' "$f")" -eq 2 ]
-  grep -qE '_existing_data\[bao_key\] \| default\(none\) != _bao_value' "$f"
+  # The write path is now tasks/bao-merge-keys.yml; the property this test owns
+  # is that the RESOLVED value (_bao_value — env-first) is what reaches it, and
+  # that change detection happens against that same dict inside the shared task.
+  grep -qE '_bm_data: "\{\{ \{bao_key: _bao_value\} \}\}"' "$f"
+  refute_grep -qE '_bm_data: "\{\{ \{bao_key: bao_value\} \}\}"' "$f"
+  # (_bm_set IS the caller's _bm_data; the shared task also accepts a _bm_remove list.)
+  local bm="$REPO_ROOT/platform/playbooks/tasks/bao-merge-keys.yml"
+  grep -qF '_bm_set: "{{ _bm_data | default({}) }}"' "$bm"
+  grep -qE 'combine\(_bm_set\)\) != _bm_current' "$bm"
   # The validation gate must test the resolved value too, or a run supplying only
   # the environment would fail the check it just satisfied.
   grep -qE '^\s+- _bao_value \| length > 0' "$f"
@@ -303,6 +313,10 @@ _committed_files() {
 # loopback/RFC1918 because the platform's OpenBao sits on an internal VLAN;
 # public cleartext is refused.
 
+@test "NetBox token bootstrap guards AppRole transport before login" {
+  assert_guard_precedes_first_uri "$REPO_ROOT/platform/playbooks/provision-netbox-automation-token.yml"
+}
+
 @test "every play that resolves an OpenBao URL includes the transport guard" {
   # Counted, not merely present: a playbook with three plays and one include
   # leaves two plays unguarded, and a file-wide grep cannot tell the difference.
@@ -319,24 +333,57 @@ _committed_files() {
   [ -z "$output" ]
   grep -q 'Refusing to send secret material' "$shared"
 
-  # The dots must be written `\\.` in the YAML. Jinja processes escapes in its
-  # string literals, so `\\.` arrives as `\.` — an escaped dot. A single `\.`
-  # happens to behave the same today only because Python passes an unrecognised
-  # escape through unchanged, which is deprecated. Pin the explicit form.
-  grep -qE '127\(\\\\\.\[0-9\]' "$shared"
-  ! grep -qE '127\(\\\.\[0-9\]' "$shared"
+  # ESCAPING PIN, updated for the var form. The pattern now lives in a YAML
+  # single-quoted VAR (_pat_strict), which Jinja passes to match() as a value —
+  # no string-literal escape processing — so a single `\.` IS the escaped dot
+  # and `\\.` would put a literal backslash into the regex. (The old inline
+  # `is match('...')` form was the opposite; runtime-proven 2026-08-30 across
+  # eight accept/refuse cases when this moved.)
+  grep -qE "_pat_strict: '.*127\(\\\.\[0-9\]" "$shared"
+  ! grep -qE "_pat_strict: '.*127\(\\\\\." "$shared"
 
   # Every playbook that reaches OpenBao, not just the ones the guard started in.
   # The two seed playbooks kept their own inline copies for one commit and were
   # therefore still bypassable in exactly the way the shared task now prevents.
-  local f n_url n_inc
-  for f in distribute-ssh-keys.yml store-ssh-password.yml \
-           seed-postiz-secrets.yml seed-openbao-key.yml; do
-    n_url=$(grep -cE '^    _bao_url:' "$pb/$f")
-    n_inc=$(grep -cE 'include_tasks: tasks/assert-bao-transport\.yml' "$pb/$f")
-    [ "$n_url" -gt 0 ]
-    [ "$n_inc" -eq "$n_url" ]
+  # Population selected by the CONDITION (the play resolves a store URL), never
+  # by a hand-kept list of names. The previous form of this test listed FOUR files
+  # under a comment claiming "every playbook that reaches OpenBao" — deriving the
+  # population found 40 of 52 unguarded (docs/MISTAKES.md 2.18).
+  #
+  # A RATCHET rather than a blanket assertion, because guarding 38 live-service
+  # deploys is its own change: every unguarded play must be named in the ratchet
+  # file, and every play named there must still be unguarded — so a gap cannot
+  # appear silently, and a fix cannot leave its exception behind.
+  local ratchet="$REPO_ROOT/platform/tests/known_unguarded_bao_plays.txt"
+  [ -f "$ratchet" ]
+  local f base n_url n_inc n_seen=0 unguarded="" bad=""
+  for f in "$pb"/*.yml; do
+    n_url=$(grep -cE '^    _bao_url:' "$f" || true)
+    [ "$n_url" -gt 0 ] || continue
+    n_seen=$((n_seen + 1))
+    base=$(basename "$f")
+    # >= not ==: a play may guard MORE endpoints than it resolves store URLs for
+    # (netbox-allocate-ip.yml guards the NetBox API too, via _assert_url_label).
+    n_inc=$(grep -cE 'include_tasks: tasks/assert-bao-transport\.yml' "$f" || true)
+    if [ "$n_inc" -lt "$n_url" ]; then
+      unguarded="${unguarded}${base}"$'\n'
+      grep -qxF "$base" "$ratchet" || bad="${bad}NEW unguarded play not in the ratchet: ${base}"$'\n'
+    fi
   done
+  # The other direction: a listed play that is now guarded must leave the list.
+  local listed
+  while read -r listed; do
+    case "$listed" in ''|'#'*) continue ;; esac
+    [ -f "$pb/$listed" ] || { bad="${bad}ratchet names a play that no longer exists: ${listed}"$'\n'; continue; }
+    printf '%s' "$unguarded" | grep -qxF "$listed" \
+      || bad="${bad}${listed} is now guarded — remove it from the ratchet"$'\n'
+  done < "$ratchet"
+  if [ -n "$bad" ]; then
+    printf '%s' "$bad" >&2
+    return 1
+  fi
+  # Not vacuous: the guard's original four plays, plus this change's, are in the set.
+  [ "$n_seen" -ge 8 ]
 }
 
 @test "the transport pattern accepts internal endpoints and refuses public ones" {
@@ -352,9 +399,15 @@ _committed_files() {
   run python3 -c "
 import re, codecs, sys
 src = open('$REPO_ROOT/platform/playbooks/tasks/assert-bao-transport.yml').read()
-m = re.search(r\"_assert_bao_url is match\\('(.*?)'\\)\", src, re.S)
-assert m, 'pattern not found in the shared task'
-pat = codecs.decode(m.group(1), 'unicode_escape')
+m = re.search(r\"_pat_strict: '(.*?)'\", src)
+ms = re.search(r\"_pat_single_label: '(.*?)'\", src)
+assert m and ms, 'patterns not found in the shared task'
+pat = m.group(1)
+pat_single = ms.group(1)
+# The single-label branch must be gated on local_mode in the assert expression —
+# unconditional single-label acceptance is what the resolver search-suffix
+# refusal below exists to prevent.
+assert re.search(r'local_mode \| default\(false\).*is match\(_pat_single_label\)', src, re.S), 'single-label branch not gated on local_mode'
 
 # Generic RFC1918 examples, deliberately NOT the platform's real endpoint —
 # that address is site data and lives in site-config, not here.
@@ -384,18 +437,36 @@ refuse = [
     'http://127.0.0.1@bao.evil.example/v1',                        # trufflehog:ignore
     'http://10.1.2.3:8200@bao.evil.example/v1',                    # trufflehog:ignore
     'http://192.168.0.1:8200@bao.evil.example/',                   # trufflehog:ignore
+    'http://local-openbao@bao.evil.example/',                      # trufflehog:ignore
+    'http://local-openbao.evil.example:8200/',  # dotted = public FQDN space, refused
+    'http://local-openbao:8200',           # single-label: allowed ONLY under local_mode, strict refuses
 ]
 bad = []
 for u in accept:
     if not re.match(pat, u): bad.append('should ACCEPT: ' + u)
 for u in refuse:
     if re.match(pat, u): bad.append('should REFUSE: ' + u)
+# The local_mode branch's own pattern: single-label only, same trailing anchor.
+sl_accept = ['http://local-openbao:8200', 'http://local-openbao:8200/v1',
+             'http://host.containers.internal:8000']   # podman's engine-host name, exact
+sl_refuse = [
+    'http://host.containers.internal.evil.example/',   # the exact name is not a prefix
+    'http://host.containers.internal@evil.example/',   # trufflehog:ignore — userinfo
+    'http://evil.containers.internal:8000',            # only the one host-gateway name
+    'http://local-openbao@bao.evil.example/',   # trufflehog:ignore — userinfo
+    'http://local-openbao.evil.example:8200/',  # dotted = public FQDN space
+    'https://anything',                          # wrong scheme for this branch
+]
+for u in sl_accept:
+    if not re.match(pat_single, u): bad.append('single-label should ACCEPT: ' + u)
+for u in sl_refuse:
+    if re.match(pat_single, u): bad.append('single-label should REFUSE: ' + u)
 if bad:
     print('\\n'.join(bad)); sys.exit(1)
-print('all %d cases correct' % (len(accept) + len(refuse)))
+print('all %d cases correct' % (len(accept) + len(refuse) + len(sl_accept) + len(sl_refuse)))
 "
   [ "$status" -eq 0 ]
-  [[ "$output" == *"all 18 cases correct"* ]]
+  [[ "$output" == *"all 30 cases correct"* ]]
 }
 
 @test "repo: no generated Python bytecode is tracked" {
@@ -409,4 +480,41 @@ print('all %d cases correct' % (len(accept) + len(refuse)))
   # And the ignore rule must be general, not per-service.
   grep -qE '^__pycache__/$' "$root/.gitignore"
   grep -qE '^\*\.py\[cod\]$' "$root/.gitignore"
+}
+
+@test "bao-merge-keys: creation is CAS-guarded, and losing the race falls back to a merge" {
+  # Without options.cas: 0 the create path can overwrite a concurrent creation,
+  # dropping its sibling keys — the same clobbering race merge-patch closes on
+  # the update path. Measured: cas:0 answers 400 on an existing path, 200 fresh.
+  local t="$REPO_ROOT/platform/playbooks/tasks/bao-merge-keys.yml"
+  local blk
+  blk=$(task_block "$t" "Create the new path")
+  [ -n "$blk" ]
+  assert_grep -qE '^        cas: 0' <<<"$blk"
+  assert_grep -qE 'status_code: \[200, 400\]' <<<"$blk"
+  # And the 400 (lost race) path merges instead of failing or clobbering.
+  blk=$(task_block "$t" "Losing the create race")
+  [ -n "$blk" ]
+  assert_grep -q 'method: PATCH' <<<"$blk"
+  assert_grep -q 'merge-patch' <<<"$blk"
+}
+
+@test "seed-openbao-key: the read-only access check ends the play before any write" {
+  # Run once after Provision Seed Environment, before the first real seed: it must
+  # prove the seed's own capabilities and stop, even when a value is staged.
+  local f="$REPO_ROOT/platform/playbooks/seed-openbao-key.yml"
+  local t="$REPO_ROOT/platform/playbooks/tasks/assert-bao-seed-access.yml"
+  assert_precedes "$f" 'include_tasks: tasks/assert-bao-seed-access.yml' 'include_tasks: tasks/bao-merge-keys.yml'
+  assert_precedes "$f" 'ansible.builtin.meta: end_play' 'include_tasks: tasks/bao-merge-keys.yml'
+  local blk
+  blk=$(task_block "$f" 'End read-only verification before every secret-store write')
+  assert_grep -qF 'when: bao_verify_access_only | default(false) | bool' <<<"$blk"
+  # The value check is skipped only in access-check mode.
+  blk=$(task_block "$f" 'Validate the secret value is present')
+  assert_grep -qF 'when: not (bao_verify_access_only | default(false) | bool)' <<<"$blk"
+  # Capabilities decide, never a GET status alone; every token-bearing call is no_log.
+  assert_grep -qF '/v1/sys/capabilities-self' "$t"
+  # The patch-vs-create rule lives in filter_plugins/seed_access.py (test_seed_access_rule.py).
+  assert_grep -qF '_missing: "{{ _caps | seed_access_missing(_exists | bool) }}"' "$t"
+  [ "$(grep -c 'no_log: true' "$t")" -eq 2 ]
 }

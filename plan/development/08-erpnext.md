@@ -264,7 +264,7 @@ name: erpnext
 
 x-frappe: &frappe
   image: ${ERPNEXT_IMAGE:-docker.io/frappe/erpnext}:${ERPNEXT_VERSION:?set in .env}
-  restart: unless-stopped
+  restart: always
   networks: [erpnext]
   volumes:
     - sites:/home/frappe/frappe-bench/sites
@@ -273,7 +273,7 @@ services:
   db:
     image: docker.io/library/mariadb:10.6
     container_name: erpnext-db
-    restart: unless-stopped
+    restart: always
     command:
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_unicode_ci
@@ -293,7 +293,7 @@ services:
   redis-cache:
     image: docker.io/library/redis:7-alpine
     container_name: erpnext-redis-cache
-    restart: unless-stopped
+    restart: always
     networks: [erpnext]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
@@ -304,7 +304,7 @@ services:
   redis-queue:
     image: docker.io/library/redis:7-alpine
     container_name: erpnext-redis-queue
-    restart: unless-stopped
+    restart: always
     volumes:
       - redis-queue-data:/data
     networks: [erpnext]
@@ -319,6 +319,9 @@ services:
     <<: *frappe
     container_name: erpnext-configurator
     restart: "no"
+    labels:
+      # Required with restart "no" by the compose guard (platform/tests/test_restart_policy.bats).
+      agent-cloud.one-shot: "true"
     entrypoint: ["bash", "-c"]
     command:
       - >
@@ -394,7 +397,7 @@ services:
   minio:
     image: docker.io/minio/minio:RELEASE.2024-01-16T16-07-38Z
     container_name: erpnext-minio
-    restart: unless-stopped
+    restart: always
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
@@ -933,7 +936,7 @@ No runtime AppRole: no container here authenticates to OpenBao; deploy-time acce
 |---|---|---|
 | Scripts contain no secret handling | `grep -E 'gen_secret\|put_secret\|get_secret\|bao_\|BAO_' platform/services/erpnext/deployment/*.sh` | No matches (scripts read `.env` only) |
 | CI green | PR checks | shellcheck/ansible-lint/yamllint/trufflehog/BATS all pass |
-| Templates registered | Semaphore UI / API | 7 ERPNext templates exist, wired to inventory 2 + env 2 |
+| Templates registered | Semaphore UI / API | 7 ERPNext templates exist, wired to the production inventory and environment records |
 | No real IPs/credentials in public repo | Pre-push audit + trufflehog | Clean |
 | Playbook syntax | `ansible-playbook --syntax-check` on all five | Valid |
 

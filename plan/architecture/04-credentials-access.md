@@ -290,6 +290,7 @@ All of the following MUST go through Semaphore; direct SSH execution is prohibit
 |--------------------|----------|-----------|
 | **Service deployment** | `deploy-netbox.yml`, `deploy-nocodb.yml`, `deploy-all.yml` | AppRole injected via Semaphore environment; deploy.sh has no vault access |
 | **Secret management** | `manage-secrets.yml`, `check-secrets.yml`, `validate-secrets.yml` | Secrets flow OpenBao -> Ansible memory -> Jinja2 templates; never on disk as intermediary files |
+| **Operator-held secret seeding** | `seed-openbao-key.yml`, `seed-postiz-secrets.yml` (provisioned by `provision-seed-environment.yml`) | The value is an encrypted input in the seed template's own isolated environment for one task, never a survey value or extra var (Semaphore persists both); see `plan/development/01-secrets-credentials.md` |
 | **SSH key distribution** | `distribute-ssh-keys.yml`, `harden-ssh.yml` | Keys fetched from OpenBao at runtime; verify-before-harden pattern |
 | **VM provisioning** | `provision-vm.yml`, `provision-template.yml` | Proxmox API calls require tokens stored in OpenBao |
 | **Branch testing** | Any template with `service_branch` survey var | Semaphore selects branch, deploys to target, validates health |
@@ -464,6 +465,11 @@ flowchart TD
 ```
 
 ### Emergency Access Procedure
+
+This is an explicitly authorized recovery procedure when normal Semaphore access
+is unavailable, not the routine runtime credential path. For existing automation
+and scoped publication, follow the [Semaphore operating guide](../../platform/semaphore/README.md).
+A failed workstation login alone does not establish a controller outage.
 
 1. **Attempt Semaphore UI** -- check task history for recent failures, re-run the template
 2. **Attempt Semaphore API** -- `curl -X POST` with API token from `site-config/secrets/semaphore/`

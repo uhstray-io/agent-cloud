@@ -10,7 +10,8 @@
 # no ad-hoc changes; config flows through code).
 #
 # Who becomes admin is DATA, not code: the inventory var `semaphore_admin_users`
-# (list of Semaphore usernames and/or emails — the platform-admins roster) is
+# (list of Semaphore USERNAMES — the platform-admins roster; see the matching task for why
+# email is not accepted) is
 # the source of truth. No names are hardcoded here.
 #
 # API creds: env first (SEMAPHORE_URL + SEMAPHORE_TOKEN, as setup-templates.yml
@@ -25,7 +26,12 @@
 #
 # Usage: via the "Promote Semaphore Admins" Semaphore template, or:
 #   ansible-playbook promote-semaphore-admins.yml \
-#     -e '{"semaphore_admin_users":["alice","bob@uhstray.io"]}'
+#     -e '{"semaphore_admin_users":["alice","bob"]}'
+
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
 
 - name: "Promote declared platform admins to Semaphore admins (closes task #37)"
   hosts: localhost
@@ -94,6 +100,7 @@
         status_code: [200]
       register: _sem_users
       no_log: true  # bearer token rides in headers — never dump it (failure/-vvv)
+      check_mode: false
 
     - name: "Report how many users Semaphore returned (safe — count + status only)"
       ansible.builtin.debug:
@@ -141,6 +148,7 @@
       register: _sem_promoted
       changed_when: true
       no_log: true  # bearer token rides in headers — never dump it (failure/-vvv)
+      when: not ansible_check_mode
 
     - name: "Report the promotion PUT statuses (safe — status codes only, no token)"
       ansible.builtin.debug:

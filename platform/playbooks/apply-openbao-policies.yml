@@ -6,6 +6,11 @@
 #
 # This is the ONLY way to modify OpenBao policies. Never use ad-hoc API calls.
 
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
 - name: "Apply OpenBao policies from code"
   hosts: localhost
   connection: local
@@ -17,6 +22,16 @@
     _policies_dir: "{{ playbook_dir }}/../services/openbao/deployment/config/policies"
 
   tasks:
+    - name: "Refuse a cleartext secret-store endpoint"
+      # The AppRole secret_id and the token cross this connection, and this play
+      # then WRITES policy — the most privileged thing the store accepts. It was
+      # the second OpenBao-reaching play without the shared guard, found the same
+      # way as the first: a coverage test that derives its population instead of
+      # keeping a list (2026-08-27).
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
     - name: "Authenticate to OpenBao"
       ansible.builtin.uri:
         url: "{{ _bao_url }}/v1/auth/approle/login"
@@ -28,6 +43,8 @@
         status_code: [200]
       register: _bao_auth
       no_log: true
+      changed_when: false
+      check_mode: false
 
     - name: "Find all .hcl policy files"
       ansible.builtin.find:
@@ -48,6 +65,7 @@
       loop: "{{ _policy_files.files }}"
       loop_control:
         label: "{{ item.path | basename }}"
+      when: not ansible_check_mode
 
     - name: "Report"
       ansible.builtin.debug:

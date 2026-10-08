@@ -10,7 +10,13 @@ import os, http.client, json, sys
 # {provider_name: intended_redirect_url} rendered from the catalog + inventory.
 EXPECT = {
 {% for a in _verify_apps %}
-    "{{ a.provider }}": "{{ vars[a.verify_redirect] | default('') }}",
+    {#- lookup('vars'), NOT vars[...]. The `vars` magic dict returns the RAW,
+        untemplated string, so an inventory value written as
+        "{{ postiz_public_url }}/settings" arrives here with its braces intact and
+        the verifier compares the live URL against a literal template. Measured
+        2026-08-27 on the first prod deploy after site-config derived the redirect
+        from one URL var. lookup('vars') resolves nested templates. -#}
+    "{{ a.provider }}": "{{ lookup('vars', a.verify_redirect, default='') }}",
 {% endfor %}
 }
 

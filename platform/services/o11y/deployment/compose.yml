@@ -1,4 +1,4 @@
-# Observability stack — Grafana + Prometheus + Loki + Grafana Alloy.
+# Observability stack — Grafana + Prometheus + Loki + Alloy + Tempo + Pyroscope.
 # Podman-compatible compose. Plan: plan/development/O11Y-DEPLOYMENT.md.
 #
 # Ansible's deploy-o11y.yml templates .env (the Grafana admin password from
@@ -12,16 +12,41 @@
 name: o11y
 
 services:
+  node-exporter:
+    image: ${O11Y_NODE_EXPORTER_IMAGE:-quay.io/prometheus/node-exporter:v1.12.1}
+    container_name: o11y-node-exporter
+    restart: always
+    # node_exporter reads host procfs and filesystem data through these
+    # read-only mounts. Keep its PID namespace private and its host access out of
+    # the externally reachable Alloy receiver.
+    command:
+      - --path.rootfs=/host
+      - --path.procfs=/host/proc
+      - --path.sysfs=/host/sys
+      - --collector.disable-defaults
+      - --collector.cpu
+      - --collector.meminfo
+      - --collector.filesystem
+      - --collector.filesystem.mount-points-include=^/$
+      - --collector.loadavg
+    volumes:
+      - /:/host:ro,rslave
+    networks: [o11y]
+
   prometheus:
     image: ${O11Y_PROM_IMAGE:-docker.io/prom/prometheus:v3.1.0}
     container_name: o11y-prometheus
-    restart: unless-stopped
+    restart: always
     command:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=${O11Y_PROM_RETENTION:-15d}
+      - --storage.tsdb.retention.size=${O11Y_PROM_RETENTION_SIZE:-0B}
       - --web.enable-lifecycle
+      - --web.enable-remote-write-receiver
     volumes:
       - ./config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./config/scrape.d:/etc/prometheus/scrape.d:ro
       - prometheus-data:/prometheus
     ports:
       - "${O11Y_PROM_BIND:-127.0.0.1}:${O11Y_PROM_PORT:-9090}:9090"
@@ -36,8 +61,10 @@ services:
   loki:
     image: ${O11Y_LOKI_IMAGE:-docker.io/grafana/loki:3.3.2}
     container_name: o11y-loki
-    restart: unless-stopped
-    command: ["-config.file=/etc/loki/config.yml"]
+    restart: always
+    command: ["-config.file=/etc/loki/config.yml", "-config.expand-env=true"]
+    environment:
+      O11Y_LOKI_RETENTION: ${O11Y_LOKI_RETENTION:-7d}
     volumes:
       - ./config/loki-config.yml:/etc/loki/config.yml:ro
       - loki-data:/loki
@@ -54,17 +81,28 @@ services:
   alloy:
     image: ${O11Y_ALLOY_IMAGE:-docker.io/grafana/alloy:v1.5.1}
     container_name: o11y-alloy
-    restart: unless-stopped
+    restart: always
     command:
       - run
       - --server.http.listen-addr=0.0.0.0:12345
       - /etc/alloy/config.alloy
+    environment:
+      O11Y_SCRAPE_SAMPLE_LIMIT: ${O11Y_SCRAPE_SAMPLE_LIMIT:-2000}
     volumes:
       - ./config/config.alloy:/etc/alloy/config.alloy:ro
     networks: [o11y]
     depends_on:
       loki:
         condition: service_healthy
+      tempo:
+        condition: service_started
+    ports:
+      # The production bind is a private interface declared in site-config;
+      # local defaults to loopback. Firewall policy admits only named senders.
+      - "${O11Y_OTLP_BIND:-127.0.0.1}:${O11Y_OTLP_PORT:-4317}:4317"
+      # Keep controller conformance OTLP/HTTP on its own port and pipeline;
+      # the existing gateway OTLP/gRPC listener remains independently bound above.
+      - "${O11Y_OTLP_BIND:-127.0.0.1}:4318:4318"
     healthcheck:
       # The alloy image ships no wget/curl/nc — only bash. A /dev/tcp connect to
       # the HTTP server port (12345, set via --server.http.listen-addr) proves the
@@ -75,16 +113,40 @@ services:
       retries: 8
       start_period: 20s
 
+  tempo:
+    image: ${O11Y_TEMPO_IMAGE:-docker.io/grafana/tempo:2.10.8}
+    container_name: o11y-tempo
+    restart: always
+    command: ["-target=all", "-config.file=/etc/tempo/config.yml", "-config.expand-env=true"]
+    environment:
+      O11Y_TEMPO_RETENTION: ${O11Y_TEMPO_RETENTION:-168h}
+      O11Y_TEMPO_METRIC_PROCESSORS: "${O11Y_TEMPO_METRIC_PROCESSORS:-[]}"
+    volumes:
+      - ./config/tempo-config.yml:/etc/tempo/config.yml:ro
+      - tempo-data:/var/tempo
+    networks: [o11y]
+
+  pyroscope:
+    image: ${O11Y_PYROSCOPE_IMAGE:-docker.io/grafana/pyroscope:2.2.0}
+    container_name: o11y-pyroscope
+    restart: always
+    command: ["-config.file=/etc/pyroscope/config.yml"]
+    volumes:
+      - ./config/pyroscope-config.yml:/etc/pyroscope/config.yml:ro
+      - pyroscope-data:/data
+    networks: [o11y]
+
   grafana:
     image: ${O11Y_GRAFANA_IMAGE:-docker.io/grafana/grafana:11.4.0}
     container_name: o11y-grafana
-    restart: unless-stopped
+    restart: always
     env_file:
       - .env
     environment:
       GF_USERS_ALLOW_SIGN_UP: "false"
       GF_ANALYTICS_REPORTING_ENABLED: "false"
       GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_METRICS_ENABLED: "true"
     volumes:
       - ./config/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./config/grafana/dashboards:/var/lib/grafana/dashboards:ro
@@ -97,6 +159,8 @@ services:
         condition: service_healthy
       loki:
         condition: service_healthy
+      tempo:
+        condition: service_started
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:3000/api/health || exit 1"]
       interval: 15s
@@ -112,3 +176,5 @@ volumes:
   prometheus-data:
   loki-data:
   grafana-data:
+  tempo-data:
+  pyroscope-data:

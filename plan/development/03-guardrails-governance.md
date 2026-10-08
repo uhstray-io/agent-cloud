@@ -254,7 +254,7 @@ services:
       - "${CLONE_DIR}/platform/services/opa/deployment/policies:/policies:ro"
     env_file:
       - env/opa.env
-    restart: unless-stopped
+    restart: always
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:8181/health"]
       interval: 15s

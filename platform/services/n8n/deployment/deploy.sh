@@ -41,10 +41,19 @@ main() {
   else
     compose pull || info "WARN: image pull failed (registry rate-limit/offline) — continuing with cached images."
   fi
-  compose up -d
-  # postgres + redis carry healthchecks; gate on postgres (n8n waits on it via
-  # depends_on). The deploy playbook verifies n8n's /healthz endpoint.
+  # The worker must NOT boot while the app is still running its DB migrations:
+  # two n8n processes racing one migration chain half-apply it (seen live in
+  # the prod cutover — a crash mid-chain left a column added but unrecorded,
+  # and every later boot failed on "already exists"). compose.yml declares the
+  # ordering (worker depends_on n8n: service_healthy), but depends_on
+  # conditions cannot be relied on across engines, so the serialization is
+  # ALSO enforced here: infrastructure + app first, gate on the app's
+  # readiness healthcheck (/healthz/readiness — migrations done), then the
+  # worker. 300s covers a long cross-version migration chain.
+  compose up -d n8n-postgres n8n-redis n8n
   wait_for_healthy workflow-n8n-postgres 120
+  wait_for_healthy workflow-n8n 300
+  compose up -d n8n-worker
   info "=== n8n container lifecycle complete ==="
 }
 

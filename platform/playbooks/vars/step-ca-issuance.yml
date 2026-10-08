@@ -1,0 +1,32 @@
+---
+# step-ca-issuance.yml — what the CA may issue: its issuing provisioners, one per leaf
+# profile, and the names it will sign (production-internal-ca design decisions 4 and 5,
+# findings 2026-09-30).
+#
+# Read by deploy-step-ca.yml's Phase 2.5, which creates each provisioner, fixes its extended
+# key usage with an x509 template and writes the name policy, and by Phase 3, which refuses
+# a CA that does not hold them. Each `secret` must also be declared in Phase 1's
+# _secret_definitions (platform/tests/test_step_ca_deploy.py holds the two together).
+_issuers:
+  - { name: issuer-server, secret: issuer_server_password, eku: serverAuth }
+  - { name: issuer-client, secret: issuer_client_password, eku: clientAuth }
+
+# The name policy is the exact SANs of every declared leaf (site-config `internal_leaves`),
+# never a pattern: step-ca 0.30.2 accepts a wildcard only as a whole first label matching
+# ONE label, and an entry it cannot parse fails the reload (the CA keeps serving its old
+# configuration) and then its next start. None in local_mode, whose admin wildcard it would
+# refuse.
+#
+# With no leaf declared the CA must still refuse every name. An absent policy, or an empty
+# allow list, is no restriction at all: step-ca 0.30.2 then issues any DNS name or IP
+# (measured 2026-10-01, review of site-config#57). So the allow list becomes one name under
+# the reserved `.invalid` TLD (RFC 2606), which no consumer can hold and the issuance guard
+# could never accept (it requires the site domain).
+_site_domain: "{{ (dns_site | default('')) ~ '.' ~ (dns_zone | default('')) }}"
+_policy_dns: >-
+  {{ [] if (local_mode | default(false) | bool)
+     else (internal_leaves | default([]) | map(attribute='sans') | flatten | unique | sort) }}
+_policy_closed: no-leaf-declared.invalid
+_policy: >-
+  {{ {} if (local_mode | default(false) | bool)
+     else {'x509': {'allow': {'dns': _policy_dns or [_policy_closed]}}} }}

@@ -5,6 +5,8 @@
 #
 # Run: bats platform/tests/test_service_caddy.bats
 
+load assert_helpers
+
 setup() {
   REPO_ROOT=$(git rev-parse --show-toplevel)
   DEPLOY_DIR="$REPO_ROOT/platform/services/caddy/deployment"
@@ -69,6 +71,79 @@ setup() {
   grep -qE 'request_header -X-authentik-username' "$f"
 }
 
+@test "caddy: inference_api route allowlists /v1 (Bearer required) + /health, 404s the rest, streams" {
+  local f="$DEPLOY_DIR/templates/Caddyfile.local.j2"
+  # Scope every assertion to the inference_api branch of the template, not the
+  # whole file: the forward_auth branch also carries matchers and a reverse_proxy.
+  sed -n '/r.inference_api/,/{% elif r.forward_auth/p' "$f" > "$BATS_TEST_TMPDIR/inference.j2"
+  local b="$BATS_TEST_TMPDIR/inference.j2"
+  [ -s "$b" ]
+  # The API allowlist is a named matcher on /v1/* consumed by a handle block —
+  # the 401 must sit INSIDE it (Caddy orders `handle` before a top-level `respond`).
+  # [[:space:]] rather than \s, and $'\t' rather than '\t': neither escape is
+  # portable ERE, and BSD grep on macOS reads '\t' as a literal t — which would
+  # turn the refute below into one that can never match.
+  assert_grep -qE '^[[:space:]]*@api path /v1/\*$' "$b"
+  assert_grep -qE '^[[:space:]]*handle @api \{' "$b"
+  # A regexp, not `header Authorization Bearer*`: the trailing * is a prefix
+  # match, so `BearerX` would pass. The scheme, one space, a non-empty credential.
+  assert_grep -qF '@noauth not header_regexp Authorization "^Bearer [^[:space:]]+$"' "$b"
+  refute_grep -qE 'header Authorization Bearer\*' "$b"
+  assert_grep -qE '^[[:space:]]*respond @noauth 401$' "$b"
+  # ...and NOT at site level (exactly one leading tab in this template).
+  refute_grep -qE $'^\trespond @noauth' "$b"
+  # Liveness passes through; everything else is a 404 from the bare handle.
+  assert_grep -qE '^[[:space:]]*handle /health \{' "$b"
+  assert_grep -qE '^[[:space:]]*handle \{$' "$b"
+  assert_grep -qE '^[[:space:]]*respond 404$' "$b"
+  # Token streaming and the prompt-size cap.
+  assert_grep -qE '^[[:space:]]*flush_interval -1$' "$b"
+  assert_grep -qE '^[[:space:]]*max_size 16MB$' "$b"
+  # The upstream comes from the route, never a literal (directly, or through the
+  # upstream() macro that adds mutual TLS for an `upstream_tls` route).
+  assert_grep -qE "reverse_proxy (\{\{ 'https://' if r\.upstream_tls is defined else '' \}\})?\{\{ r\.upstream \}\}" "$b"
+  assert_grep -qF 'reverse_proxy {{ upstream(r,' "$b"
+  refute_grep -qE 'reverse_proxy [0-9]' "$b"
+}
+
+_render_caddy() {  # renders $DEPLOY_DIR/templates/Caddyfile.local.j2 with the given routes YAML
+  command -v ansible-playbook >/dev/null || skip "ansible-playbook not installed"
+  cat >"$BATS_TEST_TMPDIR/render.yml" <<YML
+- hosts: localhost
+  gather_facts: false
+  vars:
+    caddy_tls_cert: /etc/caddy/certs/wildcard.crt
+    caddy_tls_key: /etc/caddy/certs/wildcard.key
+    caddy_routes: $1
+  tasks:
+    - ansible.builtin.template: {src: "$DEPLOY_DIR/templates/Caddyfile.local.j2", dest: "$BATS_TEST_TMPDIR/Caddyfile", mode: "0644"}
+YML
+  ansible-playbook -i localhost, -c local "$BATS_TEST_TMPDIR/render.yml" >/dev/null
+}
+
+@test "caddy: an upstream_tls route proxies over mutual TLS with the mounted client leaf (task 6.2)" {
+  _render_caddy '[{host: a.test, upstream: "gw:4001", upstream_tls: {server_name: gateway.dc1.example.internal, client_leaf: caddy}}, {host: i.test, upstream: "gw:4000", inference_api: true, upstream_tls: {server_name: gateway.dc1.example.internal, client_leaf: caddy}}]'
+  local c="$BATS_TEST_TMPDIR/Caddyfile"
+  # Every upstream to the gateway is https, never a plain dial (the /v1 handle, /health, the UI).
+  [ "$(grep -c 'reverse_proxy https://gw:400' "$c")" -eq 3 ]
+  refute_grep -qE 'reverse_proxy gw:' "$c"
+  [ "$(grep -c 'tls_server_name gateway.dc1.example.internal$' "$c")" -eq 3 ]
+  [ "$(grep -c 'tls_trust_pool file /etc/caddy/certs/step-ca-bundle.crt$' "$c")" -eq 3 ]
+  [ "$(grep -c 'tls_client_auth /etc/caddy/certs/caddy/current/cert.pem /etc/caddy/certs/caddy/current/key.pem$' "$c")" -eq 3 ]
+  # The /v1 route keeps its streaming transport settings beside the TLS ones.
+  assert_grep -qE '^[[:space:]]*dial_timeout 5s$' "$c"
+}
+
+@test "caddy: a route without upstream_tls renders exactly as before (plain proxy)" {
+  _render_caddy '[{host: p.test, upstream: "x:1"}]'
+  local c="$BATS_TEST_TMPDIR/Caddyfile"
+  # The upstream() macro adds no output of its own: the file still opens on the global block
+  # (review of 53b00ad8). head -n 1, not head -c 2: $(...) drops the trailing newline.
+  [ "$(head -n 1 "$c")" = "{" ]
+  assert_grep -qE $'^\treverse_proxy x:1$' "$c"
+  refute_grep -qE 'tls_client_auth|tls_trust_pool|https://x' "$c"
+}
+
 @test "caddy: env template prod defaults match the compose defaults" {
   local f="$DEPLOY_DIR/templates/env.j2"
   [ -f "$f" ]
@@ -85,4 +160,64 @@ setup() {
   # Ports/image/Caddyfile are env-param in the base — an overlay ports list
   # would APPEND (not replace), so it must not appear here.
   ! grep -qE '^[[:space:]]*ports:' "$f"
+}
+
+@test "caddy: reviewed revision gates the controller and production receiver" {
+  local pb="$BATS_TEST_DIRNAME/../playbooks/deploy-caddy.yml"
+  assert_grep -qF 'argv: [git, status, --porcelain, --untracked-files=all]' "$pb"
+  assert_precedes "$pb" 'Refuse a receiver checkout that differs from the reviewed candidate' 'Render compose .env'
+  python3 - "$pb" <<'PY'
+import sys, yaml
+plays = yaml.safe_load(open(sys.argv[1]))
+tasks = {task['name']: task for play in plays for task in play.get('tasks') or []}
+for name in ('Read the placed revision when a candidate SHA is required',
+             'Refuse a receiver checkout that differs from the reviewed candidate'):
+    assert 'expected_repository_sha is defined' in tasks[name]['when']
+    assert 'not (local_mode | default(false) | bool)' in tasks[name]['when']
+PY
+}
+
+@test "caddy: the internal cert gains a *.<parent> SAN for every nested route host" {
+  # A TLS wildcard matches ONE label: *.zone does not cover admin.inference.zone.
+  # EVALUATES the expression deploy-caddy.yml actually carries (extracted from the
+  # file, not re-typed here) against sample routes, so a broken regex fails.
+  command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
+  local pb="$BATS_TEST_DIRNAME/../playbooks/deploy-caddy.yml"
+  local mint="$BATS_TEST_DIRNAME/../playbooks/tasks/mint-internal-cert.yml"
+  python3 - "$pb" "$BATS_TEST_TMPDIR/sans.yml" <<'PY2'
+import sys, yaml
+plays = yaml.safe_load(open(sys.argv[1]))
+expr = None
+for play in plays:
+    for t in play.get('tasks', []) or []:
+        v = (t.get('vars') or {}).get('_mint_extra_sans')
+        if v: expr = v
+assert expr, "no _mint_extra_sans in deploy-caddy.yml"
+out = [{'hosts': 'localhost', 'connection': 'local', 'gather_facts': False,
+        'vars': {'_mint_zone': 'z.test', 'caddy_routes': [
+            {'host': 'semaphore.z.test'}, {'host': 'admin.inference.z.test'},
+            {'host': 'x.inference.z.test'}, {'host': 'a.b.c.z.test'}, {'host': 'z.test'}],
+            '_sans': expr},
+        'tasks': [{'ansible.builtin.copy': {'content': '{{ _sans | to_json }}', 'dest': sys.argv[2] + '.out'}}]}]
+yaml.safe_dump(out, open(sys.argv[2], 'w'))
+PY2
+  ansible-playbook "$BATS_TEST_TMPDIR/sans.yml" >/dev/null 2>&1
+  [ "$(cat "$BATS_TEST_TMPDIR/sans.yml.out")" = '["*.inference.z.test", "*.b.c.z.test"]' ]
+  # The mint task emits each SAN and refuses non-hostname characters first. Evaluate
+  # that refusal too: the derived wildcard passes, a shell metacharacter does not.
+  assert_grep -qF -- '--san "{{ san }}"' "$mint"
+  python3 - "$mint" "$BATS_TEST_TMPDIR/sancheck.yml" <<'PY2'
+import sys, yaml
+top = yaml.safe_load(open(sys.argv[1]))
+# The wildcard tasks sit in a block (a declared leaf goes to tasks/issue-internal-leaf.yml).
+tasks = top + [c for x in top for c in (x.get('block') or [])]
+t = [x for x in tasks if x.get('name') == 'Refuse an extra SAN outside hostname characters'][0]
+that = t['ansible.builtin.assert']['that']
+play = [{'hosts': 'localhost', 'connection': 'local', 'gather_facts': False,
+         'tasks': [{'ansible.builtin.assert': {'that': that}}]}]
+yaml.safe_dump(play, open(sys.argv[2], 'w'))
+PY2
+  ansible-playbook "$BATS_TEST_TMPDIR/sancheck.yml" -e '{"_mint_extra_sans":["*.inference.z.test","plain.z.test"]}' >/dev/null 2>&1
+  run ansible-playbook "$BATS_TEST_TMPDIR/sancheck.yml" -e '{"_mint_extra_sans":["x$(id).z.test"]}'
+  [ "$status" -ne 0 ]
 }

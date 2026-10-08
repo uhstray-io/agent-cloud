@@ -1,8 +1,8 @@
 # authentik service — architecture (context for agents)
 
 Authentik as the platform's central **IdP / SSO**. Read with the root
-[`CLAUDE.md`](../../../../CLAUDE.md) and the plan it implements:
-[`plan/development/AUTH-SSO-DEPLOYMENT.md`](../../../../plan/development/AUTH-SSO-DEPLOYMENT.md).
+[`AGENTS.md`](../../../../../AGENTS.md) and the plan it implements:
+[`plan/development/02-sso-auth.md`](../../../../../plan/development/02-sso-auth.md).
 
 ## What it is
 
@@ -34,15 +34,35 @@ the worker applies them idempotently on boot. The seed creates an `agent-cloud`
 group. Flows, OIDC providers, and per-app gating are added here as services are
 onboarded — never click-configured in the UI (that would drift from code).
 
+## Verify — the deploy reads the live state back
+
+Blueprint application is **asynchronous** in the worker: a deploy that placed the files
+and saw a healthy server has proven only that the files landed. So the last step of
+`deploy-authentik.yml` renders `templates/verify-users.py.j2` and runs it inside
+`authentik-server` (bootstrap token from the container env, same as the OIDC check).
+It fails the deploy unless:
+
+- every blueprint **this deploy assembled** (shared + enabled apps + `zz-sso-bindings`)
+  has an API record under `custom/` **and** its status is `successful` — a file the
+  worker never discovered has no record at all, which is why the expected set is
+  derived from what was placed, not from what the API lists;
+- every account the users blueprint declares present exists, is active, and is in at
+  least one group (a `!Find` that matched nothing leaves a user every gate refuses);
+- every account declared `state: absent` is gone.
+
+It prints usernames, group names and blueprint statuses — never a credential. Handing
+a new user their first login waits on this step passing.
+
 ## Files
 
 | File | Role |
 |---|---|
 | `deployment/compose.yml` | server + worker + postgres + redis; `ak healthcheck`; HTTP :9000 |
 | `deployment/compose.local.yml` | slim overlay (caps, `label=disable`, joins `local-dev` so Caddy reaches it) |
-| `deployment/deploy.sh` | container lifecycle only (verify .env, pull, up, wait healthy — long first boot) |
+| `deployment/deploy.sh` | container lifecycle only (verify .env, pull, up, wait healthy — long first boot). Recreates only on change: `compose_up_if_changed` (`platform/lib/common.sh`) hashes the compose files in effect, `.env`, `env/*.env` and `blueprints-active/` into a label on every container, and a re-run with identical inputs and images is a true no-op. Prints `DEPLOY_CHANGED=true\|false`, which sets the playbook task's changed status. Operator lever: the `Deploy Authentik` survey input `deploy_force_recreate=true` (default `false`; only the literal `true`, any case, forces — `yes` or `1` do not) passes `FORCE_RECREATE=true` and recreates every container regardless of the digest — the fix for a container still holding a stale `blueprints-active/` bind mount (the directory deleted and recreated under it, 2026-10-05: the worker saw an empty `/blueprints/custom`). Deploys converge that directory in place; `platform/tests/test_no_bind_mount_dir_delete.py` fails if a deploy task deletes it |
 | `deployment/templates/env.j2` | compose-subst vars + authentik runtime config + secrets from OpenBao |
 | `deployment/blueprints/*.yaml` | config-as-code applied by the worker (committed; non-secret) |
+| `deployment/templates/verify-users.py.j2` | post-apply live-state check (above); rendered per deploy, run inside the server container |
 
 `deployment/.env` is rendered per-deploy and gitignored. Local issuance/TLS is
 handled by Caddy + step-ca (`*.agent-cloud.test`); prod uses Caddy + Let's

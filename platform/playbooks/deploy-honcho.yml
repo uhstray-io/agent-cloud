@@ -16,6 +16,20 @@
 # internal IdP. Caddy + inventory are wired separately (see the plan).
 # Plan: plan/development/11-tududi-honcho-deployment.md (Service B — honcho).
 
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+# A play over no hosts exits 0 and records a deploy that did nothing as a success
+# (docs/MISTAKES.md 2.21), so refuse an absent or empty group first.
+- name: "Pre-flight: honcho_svc is real"
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: honcho_svc
+    # Paired so one `-e preflight_group=` cannot redirect the guard (MISTAKES 2.21).
+    preflight_group_expected: honcho_svc
+
 # ── Phase 1: Place repo + secrets + env ─────────────────────────────────────
 - name: "Phase 1: Place repo + manage honcho secrets"
   hosts: honcho_svc
@@ -47,11 +61,6 @@
     - name: "Place the monorepo + ensure podman/compose"
       ansible.builtin.include_tasks: tasks/place-monorepo.yml
 
-    # Rootless podman is daemonless — without user lingering the four containers
-    # stop for good on a VM reboot (05-platform-infra §11). enable-linger
-    # self-gates on local_mode (local-dev uses the developer's podman machine).
-    - name: "Enable rootless linger so honcho survives a reboot"
-      ansible.builtin.include_tasks: tasks/enable-linger.yml
 
     - name: "Manage secrets and template env file"
       ansible.builtin.include_tasks: tasks/manage-secrets.yml
@@ -104,7 +113,9 @@
       register: _honcho_pull
       changed_when: false
       failed_when: false
-      when: not (local_mode | default(false) | bool)
+      when:
+        - not ansible_check_mode
+        - not (local_mode | default(false) | bool)
 
     - name: "Pre-flight: fall back to the local image store when the pull failed"
       ansible.builtin.command: "{{ _engine }} image exists {{ _honcho_image }}"
@@ -114,6 +125,7 @@
       when:
         - not (local_mode | default(false) | bool)
         - _honcho_pull.rc | default(1) != 0
+      check_mode: false
 
     - name: "Pre-flight: require the pinned honcho image before deploying"
       ansible.builtin.assert:
@@ -140,6 +152,7 @@
         COMPOSE_CMD: "{{ local_compose_cmd | default('') }}"
       register: _deploy
       changed_when: true
+      when: not ansible_check_mode
 
     - name: "Show deploy.sh output"
       ansible.builtin.debug:
@@ -167,6 +180,7 @@
       retries: 10
       delay: 6
       until: _honcho_health.rc == 0
+      check_mode: false
 
     - name: "Report"
       ansible.builtin.debug:

@@ -1,0 +1,50 @@
+# Single-node Tempo. Bounded local trace retention; no port published from
+# Tempo itself. Alloy is the sole OTLP ingress and Grafana queries internally.
+server:
+  http_listen_port: 3200
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:4317
+storage:
+  trace:
+    backend: local
+    wal:
+      path: /var/tempo/wal
+    local:
+      path: /var/tempo/blocks
+compactor:
+  compaction:
+    block_retention: ${O11Y_TEMPO_RETENTION:-168h}
+metrics_generator:
+  # Keep the processor WAL on Tempo's existing persistent volume. It is
+  # separate from trace blocks but shares their capacity and backup boundary.
+  storage:
+    path: /var/tempo/generator/wal
+    remote_write:
+      - url: http://prometheus:9090/api/v1/write
+  processor:
+    service_graphs:
+      # Bound pending edges and work; do not add request-specific dimensions.
+      max_items: 1000
+      workers: 2
+    span_metrics:
+      # Keep only service and finite kind/status dimensions. Operation names can
+      # contain raw paths and would add unbounded label values.
+      intrinsic_dimensions:
+        service: true
+        span_name: false
+        span_kind: true
+        status_code: true
+        status_message: false
+      histogram_buckets: [0.05, 0.1, 0.25, 0.5, 1, 2, 5]
+overrides:
+  defaults:
+    metrics_generator:
+      # Ansible renders [] unless a reviewed rollout explicitly enables it.
+      processors: ${O11Y_TEMPO_METRIC_PROCESSORS:-[]}
+      max_active_series: 2000
+usage_report:
+  reporting_enabled: false

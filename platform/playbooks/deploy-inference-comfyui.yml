@@ -9,6 +9,20 @@
 # the wrapper can be redeployed without restarting the model. The wrapper
 # only talks to ComfyUI at COMFYUI_URL.
 
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+# A play over no hosts exits 0 and records a deploy that did nothing as a success
+# (docs/MISTAKES.md 2.21), so refuse an absent or empty group first.
+- name: "Pre-flight: inference_comfyui_svc is real"
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: inference_comfyui_svc
+    # Paired so one `-e preflight_group=` cannot redirect the guard (MISTAKES 2.21).
+    preflight_group_expected: inference_comfyui_svc
+
 # ── Phase 1: Prereqs + secrets + env ────────────────────────────────────────
 - name: "Phase 1: Clone + GPU toolkit + secrets"
   hosts: inference_comfyui_svc
@@ -87,6 +101,7 @@
         CONTAINER_ENGINE: "{{ container_engine | default('podman') }}"
       register: _deploy
       changed_when: true
+      when: not ansible_check_mode
 
     - name: "Show deploy.sh output"
       ansible.builtin.debug:
@@ -111,6 +126,7 @@
         CONTAINER_ENGINE: "{{ container_engine | default('podman') }}"
       register: _post
       changed_when: true
+      when: not ansible_check_mode
 
     - name: "Show post-deploy.sh output"
       ansible.builtin.debug:
@@ -126,6 +142,7 @@
       until: _health.status == 200
       retries: 5
       delay: 10
+      check_mode: false
 
     - name: "Deployed"
       ansible.builtin.debug:

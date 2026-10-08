@@ -3,7 +3,7 @@
 
 LOCAL_DEV := scripts/local-dev.sh
 
-.PHONY: help local-preflight local-init local-bootstrap local-up local-all local-creds local-validate local-dns local-dns-resolver local-https local-https-down local-tls-trust local-tls-untrust local-clean promote
+.PHONY: help local-preflight local-init local-bootstrap local-up local-all local-creds local-validate local-templates local-dns local-dns-resolver local-https local-https-down local-tls-trust local-tls-untrust local-clean local-o11y-render-proof promote
 .PHONY: local-deploy-% local-clean-deploy-% git-setup
 
 help: ## Show available targets
@@ -79,8 +79,14 @@ local-clean-deploy-%: ## DESTRUCTIVE: wipe a service's containers+volumes, then 
 local-validate: ## Run Validate All through the LOCAL Semaphore
 	@$(LOCAL_DEV) validate
 
+local-templates: ## Re-publish shared + local-only templates to the LOCAL Semaphore
+	@$(LOCAL_DEV) templates
+
 local-smoke: ## Smoke-test the live local stack (control plane, DNS, Caddy/TLS); --full adds lint+BATS
 	@bash scripts/local-smoke.sh $(ARGS)
+
+local-o11y-render-proof: ## Throwaway Grafana on an empty volume: every dashboard + alert rule renders from provisioning alone
+	@bash scripts/o11y-render-proof.sh
 
 local-netbox: ## Bring up the NetBox app tier under podman (NETBOX-LOCAL-ENGINE; idempotent)
 	@bash scripts/local-netbox-up.sh

@@ -1,0 +1,304 @@
+# Read-only detail survey for the one declared production o11y VM.
+# A protected flag and a non-PBS backup record do not establish immutability.
+
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: Pre-flight
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: o11y_svc
+    preflight_group_expected: o11y_svc
+
+- name: Survey o11y backup artifact details
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  module_defaults:
+    ansible.builtin.uri:
+      validate_certs: "{{ proxmox_validate_certs | default(false) | bool }}"
+      follow_redirects: none
+  vars:
+    _project_root: "{{ playbook_dir | dirname | dirname }}"
+    _inspector: "{{ playbook_dir }}/files/inspect_o11y_backup_artifact.py"
+    _feasibility_inspector: "{{ playbook_dir }}/files/inspect_o11y_restore_feasibility.py"
+    _bao_url: "{{ openbao_addr | default('') }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    _o11y_hosts: "{{ groups['o11y_svc'] | default([]) }}"
+    _o11y_host: "{{ _o11y_hosts | first | default('') }}"
+    _vmid: "{{ hostvars[_o11y_host].vm_vmid | default('') if _o11y_host else '' }}"
+    _node: "{{ hostvars[_o11y_host].vm_node | default('') if _o11y_host else '' }}"
+  tasks:
+    - name: Require an exact reviewed controller revision and production inventory declaration
+      ansible.builtin.assert:
+        that:
+          - expected_repository_sha | default('') is match('^[0-9a-f]{40}$')
+          - not ansible_check_mode
+          - not (local_mode | default(false) | bool)
+          - _o11y_hosts | length == 1
+          - _vmid | string is match('^[1-9][0-9]{0,8}$')
+          - _node | string is match('^[A-Za-z0-9._-]+$')
+          - _node not in ['.', '..']
+        fail_msg: "This read-only artifact survey requires one declared production o11y VM and an exact reviewed revision."
+
+    - name: Read controller checkout revision
+      ansible.builtin.command:
+        argv: [git, rev-parse, HEAD]
+        chdir: "{{ _project_root }}"
+      register: _controller_revision
+      changed_when: false
+      check_mode: false
+
+    - name: Require exact reviewed controller revision
+      ansible.builtin.assert:
+        that: _controller_revision.stdout == expected_repository_sha
+        fail_msg: "Semaphore checked out a different reviewed Dev revision."
+
+    - name: Read controller checkout changes
+      ansible.builtin.command:
+        argv: [git, status, --porcelain, --untracked-files=all]
+        chdir: "{{ _project_root }}"
+      register: _controller_changes
+      changed_when: false
+      check_mode: false
+
+    - name: Require a clean reviewed checkout
+      ansible.builtin.assert:
+        that: _controller_changes.stdout | length == 0
+        fail_msg: "The reviewed controller checkout contains uncommitted files."
+
+    - name: Refuse public cleartext OpenBao transport
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
+    - name: Read Proxmox API credentials from OpenBao
+      ansible.builtin.set_fact:
+        _pve_data: "{{ lookup('community.hashi_vault.hashi_vault',
+          'secret/data/services/proxmox', url=_bao_url, auth_method='approle',
+          role_id=_bao_role_id, secret_id=_bao_secret_id) }}"
+      no_log: true
+
+    - name: Derive Proxmox API connection values
+      ansible.builtin.set_fact:
+        _pve_host: "{{ _pve_data.url | default('') }}"
+        _pve_token_id: "{{ _pve_data.token_id | default('') }}"
+        _pve_secret: "{{ _pve_data.api_token }}"
+      no_log: true
+
+    - name: Require Proxmox API over HTTPS
+      ansible.builtin.assert:
+        that: _pve_host is match('^https://')
+        fail_msg: "The Proxmox API URL from OpenBao must use HTTPS."
+
+    # The token id names a real Proxmox user, so it comes from the store, never a default.
+    - name: Require the stored Proxmox token id
+      ansible.builtin.assert:
+        that: _pve_token_id | length > 0
+        fail_msg: >-
+          secret/services/proxmox has no token_id. Store the Proxmox API token id
+          (<user>@<realm>!<token-name>) beside api_token; there is no built-in default.
+
+    - name: Read target VM record from Proxmox
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/cluster/resources?type=vm"
+        method: GET
+        status_code: 200
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      register: _pve_vms
+      no_log: true
+      check_mode: false
+
+    - name: Read storage available to the declared Proxmox node
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/storage"
+        method: GET
+        status_code: 200
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      register: _node_storage
+      no_log: true
+      check_mode: false
+
+    - name: Select active backup-capable storage for inspection
+      ansible.builtin.set_fact:
+        _backup_storages: >-
+          {{ _node_storage.json.data
+             | selectattr('active', 'defined')
+             | selectattr('active', 'equalto', 1)
+             | selectattr('content', 'defined')
+             | selectattr('content', 'search', '(^|,)backup(,|$)')
+             | list }}
+      no_log: true
+
+    - name: Read candidate backup content from each declared node storage
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/storage/{{ item.storage | urlencode }}/content?content=backup&vmid={{ _vmid }}"
+        method: GET
+        status_code: 200
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      loop: "{{ _backup_storages }}"
+      loop_control:
+        label: "backup-content read"
+      register: _backup_content_reads
+      no_log: true
+      check_mode: false
+
+    - name: Read the declared VM disk configuration
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/config"
+        method: GET
+        status_code: 200
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      register: _vm_config
+      no_log: true
+      check_mode: false
+
+    - name: Build the sanitized artifact and disk-layout inspection
+      ansible.builtin.command:
+        argv: [python3, "{{ _inspector }}", inspect]
+        stdin: >-
+          {{ {'vmid': _vmid | string,
+              'node': _node,
+              'vms': _pve_vms.json.data,
+              'storages': _backup_storages,
+              'content_reads': _backup_content_reads.results,
+              'vm_config': {'status': _vm_config.status, 'data': _vm_config.json.data}}
+             | to_json }}
+      register: _artifact_inspection
+      failed_when: false
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Require valid sanitized artifact inspection
+      ansible.builtin.assert:
+        that: _artifact_inspection.rc == 0
+        fail_msg: >-
+          Backup artifact inspection refused:
+          {{ ((_artifact_inspection.stdout | from_json).refusal
+              | default('Proxmox returned invalid inspection data.')) }}
+
+    - name: Keep the sanitized artifact inspection receipt
+      ansible.builtin.set_fact:
+        _artifact_receipt: "{{ _artifact_inspection.stdout | from_json }}"
+      no_log: true
+
+    - name: Report private artifact decision facts without storage names or paths
+      ansible.builtin.debug:
+        msg: "{{ _artifact_receipt }}"
+
+    - name: Read the cluster node listing for restore feasibility
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/nodes"
+        method: GET
+        status_code: 200
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      register: _pve_nodes
+      no_log: true
+      check_mode: false
+
+    - name: Validate Proxmox node names before constructing storage URLs
+      ansible.builtin.command:
+        argv: [python3, "{{ _feasibility_inspector }}", validate-nodes]
+        stdin: "{{ _pve_nodes.json.data | to_json }}"
+      register: _validated_nodes_inspection
+      failed_when: false
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Require validated Proxmox node names
+      ansible.builtin.assert:
+        that: _validated_nodes_inspection.rc == 0
+        fail_msg: "Proxmox returned a malformed node listing; storage reads were not attempted."
+
+    - name: Keep validated Proxmox node listing
+      ansible.builtin.set_fact:
+        _validated_node_listing: "{{ _validated_nodes_inspection.stdout | from_json }}"
+      no_log: true
+
+    - name: Select online nodes for image-storage capacity reads
+      ansible.builtin.set_fact:
+        _online_storage_nodes: "{{ _validated_node_listing.online_nodes }}"
+      no_log: true
+
+    - name: Read active storage status from each online cluster node
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/nodes/{{ item | urlencode }}/storage"
+        method: GET
+        status_code: 200
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      loop: "{{ _online_storage_nodes }}"
+      loop_control:
+        label: "image-storage capacity read"
+      register: _restore_storage_reads
+      no_log: true
+      check_mode: false
+
+    - name: Keep only validated storage status fields for the inspector
+      ansible.builtin.set_fact:
+        _restore_storage_facts: >-
+          {{ _restore_storage_facts | default([]) + [{
+            'item': item,
+            'status': _restore_storage_reads.results[storage_index].status | default(0),
+            'data': _restore_storage_reads.results[storage_index].json.data | default(none)
+          }] }}
+      loop: "{{ _online_storage_nodes }}"
+      loop_control:
+        index_var: storage_index
+        label: "sanitized storage capacity facts"
+      no_log: true
+
+    - name: Read the current next cluster VMID candidate without reserving it
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/cluster/nextid"
+        method: GET
+        status_code: 200
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      register: _pve_nextid
+      no_log: true
+      check_mode: false
+
+    - name: Build sanitized restore-target feasibility facts
+      ansible.builtin.command:
+        argv: [python3, "{{ _feasibility_inspector }}", inspect]
+        stdin: >-
+          {{ {'artifact_receipt': _artifact_receipt,
+              'source_node': _node,
+              'nodes': _validated_node_listing.nodes,
+              'storage_reads': _restore_storage_facts,
+              'nextid': {'status': _pve_nextid.status,
+                         'json': {'data': _pve_nextid.json.data | default(none)}}}
+             | to_json }}
+      register: _restore_feasibility_inspection
+      failed_when: false
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Require valid sanitized restore-target feasibility inspection
+      ansible.builtin.assert:
+        that: _restore_feasibility_inspection.rc == 0
+        fail_msg: >-
+          Restore feasibility inspection refused:
+          {{ ((_restore_feasibility_inspection.stdout | from_json).refusal
+              | default('Proxmox returned invalid inspection data.')) }}
+
+    - name: Keep the sanitized restore-target feasibility receipt
+      ansible.builtin.set_fact:
+        _restore_feasibility_receipt: "{{ _restore_feasibility_inspection.stdout | from_json }}"
+      no_log: true
+
+    - name: Report aggregate restore feasibility without private identifiers
+      ansible.builtin.debug:
+        msg: "{{ _restore_feasibility_receipt }}"

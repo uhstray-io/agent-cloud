@@ -16,7 +16,7 @@
 #     ansible-playbook platform/semaphore/bootstrap-semaphore-repositories.yml
 #
 # (SEMAPHORE_URL via an SSH-local tunnel to the Semaphore host; token from
-# site-config/secrets/semaphore/semaphore_api_token.txt.)
+# an already injected runtime token or the existing controller AppRole; see README.md.)
 #
 # Idempotent: a declared record is created when missing, corrected when it
 # drifted from the declaration, and left untouched when it already matches.
@@ -31,18 +31,20 @@
   connection: local
   gather_facts: false
   vars:
-    _semaphore_url: "{{ lookup('env', 'SEMAPHORE_URL') }}"
-    _token: "{{ lookup('env', 'SEMAPHORE_TOKEN') }}"
+    _semaphore_url: "{{ semaphore_url | default(lookup('env', 'SEMAPHORE_URL'), true) }}"
     _project_id: "{{ semaphore_project_id | default(1) }}"
     _declared: "{{ (lookup('file', playbook_dir + '/repositories.yml') | from_yaml).repositories }}"
 
   tasks:
+    - name: "Resolve approved Semaphore runtime access"
+      ansible.builtin.include_tasks: tasks/runtime-access.yml
+
     - name: "Validate environment"
       ansible.builtin.assert:
         that:
           - _semaphore_url | length > 0
           - _token | length > 0
-        fail_msg: "Set SEMAPHORE_URL and SEMAPHORE_TOKEN environment variables"
+        fail_msg: "Semaphore endpoint or resolved runtime token is missing; see platform/semaphore/README.md."
 
     - name: "Refuse an SSH clone URL with no key attached"
       # An ssh:// or git@ URL paired with the `none` key cannot authenticate, so
@@ -64,14 +66,20 @@
         url: "{{ _semaphore_url }}/api/project/{{ _project_id }}/keys"
         headers:
           Authorization: "Bearer {{ _token }}"
+        unredirected_headers: [Authorization]
+        follow_redirects: none
       register: _keys
+      check_mode: false
 
     - name: "Read existing repository records"
       ansible.builtin.uri:
         url: "{{ _semaphore_url }}/api/project/{{ _project_id }}/repositories"
         headers:
           Authorization: "Bearer {{ _token }}"
+        unredirected_headers: [Authorization]
+        follow_redirects: none
       register: _repos
+      check_mode: false
 
     # The "no key attached" entry is named differently per instance: this
     # production project has `local-none`, the local-dev bootstrap creates
@@ -123,6 +131,8 @@
         method: POST
         headers:
           Authorization: "Bearer {{ _token }}"
+        unredirected_headers: [Authorization]
+        follow_redirects: none
         body_format: json
         body:
           name: "{{ item.name }}"
@@ -134,7 +144,9 @@
       loop: "{{ _declared }}"
       loop_control:
         label: "{{ item.name }} ({{ item.git_branch }})"
-      when: (_repos.json | selectattr('name', 'equalto', item.name) | list | length) == 0
+      when:
+        - not ansible_check_mode
+        - (_repos.json | selectattr('name', 'equalto', item.name) | list | length) == 0
 
     - name: "Correct records that drifted from the declaration"
       ansible.builtin.uri:
@@ -142,6 +154,8 @@
         method: PUT
         headers:
           Authorization: "Bearer {{ _token }}"
+        unredirected_headers: [Authorization]
+        follow_redirects: none
         body_format: json
         body:
           id: "{{ _existing.id | int }}"
@@ -160,6 +174,7 @@
       vars:
         _existing: "{{ (_repos.json | selectattr('name', 'equalto', item.name) | list | first) | default({}) }}"
       when:
+        - not ansible_check_mode
         - (_repos.json | selectattr('name', 'equalto', item.name) | list | length) > 0
         # ssh_key_id counts as drift too: if the declared key changes, or the
         # key-store entry is replaced and gets a new id, the record would keep a
@@ -176,8 +191,11 @@
         url: "{{ _semaphore_url }}/api/project/{{ _project_id }}/repositories"
         headers:
           Authorization: "Bearer {{ _token }}"
+        unredirected_headers: [Authorization]
+        follow_redirects: none
       register: _repos_after
       changed_when: false
+      check_mode: false
 
     - name: "Report"
       ansible.builtin.debug:

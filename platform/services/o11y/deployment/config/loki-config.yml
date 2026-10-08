@@ -31,9 +31,9 @@ schema_config:
         period: 24h
 
 limits_config:
-  retention_period: 168h
+  retention_period: ${O11Y_LOKI_RETENTION:-7d}
   reject_old_samples: true
-  reject_old_samples_max_age: 168h
+  reject_old_samples_max_age: ${O11Y_LOKI_RETENTION:-7d}
   volume_enabled: true
 
 compactor:

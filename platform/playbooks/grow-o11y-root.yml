@@ -1,0 +1,155 @@
+---
+# grow-o11y-root.yml — grow the o11y receiver's root filesystem into its virtual disk, online.
+#
+# The o11y VM's virtual disk is declared and allocated at 100 GiB, but its root sits on an
+# ~18 GiB partition holding a 10 GiB LVM root LV, so the ext4 root filled (task 2115: about
+# 9.75 GiB, zero bytes free) and every o11y deploy is blocked. Resize VM grows only the
+# Proxmox disk and says the guest must be grown separately (resize-vm.yml); this is that
+# step, as code: files/grow-root-lvm.py grows partition -> PV -> root LV and its ext4
+# filesystem, with no reboot and no unmount.
+#
+# Decided by Joe 2026-10-02, ahead of the o11y-signal-labeling 5.4 gate (immutable backup and
+# isolated restore), which this run does not satisfy.
+#
+# Safe under --check: the helper's plan mode reads the chain and runs growpart's own dry run
+# (-N), and refuses anything but ext4 on one LV in a one-PV VG on one partition of one disk.
+# A real run takes only the steps the plan lists; every step is idempotent, so a re-run
+# reports nothing to do. Ansible's remote temp lives on tmpfs because the root may be full.
+#
+# Bound to the reviewed commit: the template requires expected_repository_sha
+# (require-reviewed-checkout.yml). `--tags verify` changes nothing and fails unless the root
+# is fully grown: it re-reads the chain and requires an empty plan.
+
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: "Pre-flight"
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: o11y_svc
+    preflight_group_expected: o11y_svc
+  # Under --tags verify too: a verify run over no hosts would otherwise pass (MISTAKES 2.21).
+  tags: [always]
+
+- name: "Reviewed checkout"
+  ansible.builtin.import_playbook: require-reviewed-checkout.yml
+
+- name: "Grow the o11y root filesystem"
+  hosts: o11y_svc
+  gather_facts: false
+  become: false
+  environment:
+    TMPDIR: /dev/shm/ansible-tmp
+  vars:
+    ansible_remote_tmp: /dev/shm/ansible-tmp
+    _helper: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/grow-root-lvm.py') }}"
+  tasks:
+    - name: "Require writable tmpfs for Ansible's remote temp"
+      ansible.builtin.import_tasks: tasks/require-tmpfs-remote-tmp.yml
+      tags: [verify]
+
+    # A static import, so `verify` reaches every task inside it (a dynamic include's tags
+    # stop at the include, and --tags verify would then run without the password).
+    - name: "Resolve the sudo password through OpenBao"
+      ansible.builtin.import_tasks: tasks/resolve-become-password.yml
+      tags: [verify]
+
+    - name: "Plan the grow (reads only)"
+      ansible.builtin.command:
+        argv: [python3, -, plan]
+        stdin: "{{ _helper }}"
+      register: _grow_plan_raw
+      become: true
+      changed_when: false
+      check_mode: false
+      failed_when: false
+      tags: [verify]
+
+    - name: "Parse the plan"
+      ansible.builtin.set_fact:
+        _grow_plan: "{{ _grow_plan_raw.stdout | from_json }}"
+      tags: [verify]
+
+    - name: "Refuse a root the helper cannot grow safely"
+      ansible.builtin.assert:
+        that:
+          - _grow_plan_raw.rc == 0
+          - "'refused' not in _grow_plan"
+        fail_msg: "Not growing: {{ _grow_plan.refused | default('helper rc ' ~ _grow_plan_raw.rc) }}."
+        quiet: true
+      tags: [verify]
+
+    - name: "Report the plan"
+      ansible.builtin.debug:
+        msg: >-
+          root {{ (_grow_plan.before.root_fs_bytes / 1073741824) | round(2) }} GiB
+          ({{ (_grow_plan.before.root_fs_free_bytes / 1073741824) | round(2) }} GiB free) on an LV of
+          {{ (_grow_plan.before.lv_bytes / 1073741824) | round(2) }} GiB; partition
+          {{ (_grow_plan.before.partition_bytes / 1073741824) | round(2) }} GiB of a
+          {{ (_grow_plan.before.disk_bytes / 1073741824) | round(2) }} GiB disk; VG free
+          {{ (_grow_plan.before.vg_free_bytes / 1073741824) | round(2) }} GiB.
+          {{ ('Steps ' ~ (ansible_check_mode | ternary('planned: ', 'to take: ')) ~ (_grow_plan.steps | join(' -> ')))
+             if _grow_plan.steps else 'Nothing to grow.' }}
+      tags: [verify]
+
+    - name: "Grow partition, PV and root LV with its filesystem"
+      ansible.builtin.command:
+        argv: [python3, -, apply]
+        stdin: "{{ _helper }}"
+      register: _grow_apply_raw
+      become: true
+      changed_when: true
+      failed_when: false
+      when: not ansible_check_mode and (_grow_plan.steps | length > 0)
+
+    - name: "Parse the result"
+      ansible.builtin.set_fact:
+        _grow_result: "{{ _grow_apply_raw.stdout | from_json }}"
+      when: not ansible_check_mode and (_grow_plan.steps | length > 0)
+
+    - name: "Refuse a grow that did not enlarge the root filesystem"
+      ansible.builtin.assert:
+        that:
+          - _grow_apply_raw.rc == 0
+          - "'after' in _grow_result"
+          - _grow_result.after.root_fs_bytes > _grow_plan.before.root_fs_bytes
+          - _grow_result.after.vg_free_bytes < 4194304
+        fail_msg: >-
+          The grow did not complete: {{ _grow_result.refused | default('helper rc ' ~ _grow_apply_raw.rc) }}.
+          Re-run the dry run to see the chain as it is now.
+        quiet: true
+      when: not ansible_check_mode and (_grow_plan.steps | length > 0)
+
+    - name: "Report the result"
+      ansible.builtin.debug:
+        msg: >-
+          root now {{ (_grow_result.after.root_fs_bytes / 1073741824) | round(2) }} GiB
+          ({{ (_grow_result.after.root_fs_free_bytes / 1073741824) | round(2) }} GiB free).
+      when: not ansible_check_mode and (_grow_plan.steps | length > 0)
+
+    # Standalone verification: a fresh plan, after any grow, must have nothing left to do.
+    - name: "Re-read the chain"
+      ansible.builtin.command:
+        argv: [python3, -, plan]
+        stdin: "{{ _helper }}"
+      register: _grow_final_raw
+      become: true
+      changed_when: false
+      check_mode: false
+      failed_when: false
+      tags: [verify]
+
+    - name: "Refuse a root that still has room to grow"
+      ansible.builtin.assert:
+        that:
+          - _grow_final_raw.rc == 0
+          - (_grow_final_raw.stdout | from_json).steps | default(['unreadable']) | length == 0
+        fail_msg: >-
+          The root is not fully grown: {{ (_grow_final_raw.stdout | from_json).steps
+          | default((_grow_final_raw.stdout | from_json).refused | default('unreadable')) }}.
+        quiet: true
+      # Under --check the steps it plans have not been taken (MISTAKES 10.18).
+      when: not (ansible_check_mode and (_grow_plan.steps | length > 0))
+      tags: [verify]

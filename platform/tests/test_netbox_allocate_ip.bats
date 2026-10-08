@@ -38,7 +38,7 @@ setup() {
   # Reserving whatever is free AT RUN TIME is not reproducible: two runs a minute apart
   # reserve different addresses and the declaration that follows disagrees with the
   # ledger. The POST body must come from the operator's list, not from the free-IP query.
-  grep -qF 'address: "{{ item.item.address }}"' "$PLAYBOOK"
+  grep -qF 'address: "{{ item.address }}"' "$PLAYBOOK"
   ! grep -qE 'address: "\{\{ _free\.' "$PLAYBOOK"
 }
 
@@ -46,14 +46,65 @@ setup() {
   # NetBox permits duplicate addresses in some configurations, so a blind POST can
   # produce a second record and leave the ledger ambiguous about which is authoritative.
   grep -qF '/api/ipam/ip-addresses/?address=' "$PLAYBOOK"
-  grep -qF "(item.json.results | default([])) | length == 0" "$PLAYBOOK"
+  grep -qF "(_read.json.results | default([])) | length == 0" "$PLAYBOOK"
   # An address that already exists is left alone, not re-described.
-  grep -qF "(item.json.results | default([])) | length > 0" "$PLAYBOOK"
+  grep -qF "(_read.json.results | default([])) | length > 0" "$PLAYBOOK"
 }
 
 @test "netbox-allocate: the prefix must already exist in the authority" {
   # Inventing an address outside a declared prefix is how a ledger stops being one.
   grep -qF '(_pfx.json.results | default([])) | length == 1' "$PLAYBOOK"
+}
+
+@test "netbox-allocate: bootstrap token can view prefixes without adding them" {
+  local bootstrap="$BATS_TEST_DIRNAME/../playbooks/provision-netbox-automation-token.yml"
+  assert_precedes "$bootstrap" 'Ensure NetBox automation user and scoped permissions' 'Already provisioned'
+  # The device-writer profile views prefixes through a separate view-only permission, and
+  # never adds them (the profiles came from the service deployment workflow's collector and
+  # VM-recorder identities).
+  python3 - "$bootstrap" <<'PY'
+import sys, yaml
+profile = yaml.safe_load(open(sys.argv[1]))[1]["vars"]["_profiles"]["device-writer"]
+assert profile["view_permission"] == "skynet-ipam-prefix-view", profile
+assert profile["view_object_types"] == ["ipam.prefix"], profile
+assert "ipam.prefix" not in profile["object_types"], profile
+PY
+  assert_grep -qF 'scopes.append(("{{ _profile.view_permission' "$bootstrap"
+  assert_grep -qF '["view"]' "$bootstrap"
+  assert_grep -qF 'perm.enabled, perm.actions = True, actions' "$bootstrap"
+  assert_grep -qF 'perm.users.add(user)' "$bootstrap"
+}
+
+@test "netbox-allocate: token bootstrap has a dev-bound Semaphore template" {
+  local templates="$BATS_TEST_DIRNAME/../semaphore/templates.yml"
+  python3 - "$templates" <<'PY2'
+import sys, yaml
+tpl, = (t for t in yaml.safe_load(open(sys.argv[1], encoding="utf-8"))["templates"]
+        if t["name"] == "Provision NetBox Automation Token")
+assert tpl.get("dev_variant") is True, tpl
+PY2
+}
+
+@test "NetBox API consumers share version-aware credential headers" {
+  python3 - "$BATS_TEST_DIRNAME/../playbooks" <<'PY'
+import pathlib
+import sys
+import yaml
+from jinja2 import Environment
+
+root = pathlib.Path(sys.argv[1])
+helper = yaml.safe_load((root / "tasks/netbox-api-headers.yml").read_text())[0]
+header = helper["ansible.builtin.set_fact"]["_nb_headers"]["Authorization"]
+env = Environment()
+assert env.from_string(header).render(_netbox_api_token="nbt_key.value") == "Bearer nbt_key.value"
+assert env.from_string(header).render(_netbox_api_token="legacyvalue") == "Token legacyvalue"
+assert helper["no_log"] is True
+for name in ("netbox-allocate-ip.yml", "create-netbox-device.yml"):
+    tasks = yaml.safe_load((root / name).read_text())[1]["tasks"]  # [0] imports the extra-var guard
+    auth, = (task for task in tasks if task["name"] in ("Set the NetBox auth header", "Set NetBox auth header"))
+    assert auth["ansible.builtin.include_tasks"] == "tasks/netbox-api-headers.yml"
+    assert auth["no_log"] is True
+PY
 }
 
 @test "netbox-allocate: the OpenBao transport guard is included" {
@@ -65,16 +116,29 @@ setup() {
 
 @test "netbox-allocate: no_log is scoped to the credential boundary only" {
   # no_log on a deploy or a verification hides the failure and makes a Semaphore run
-  # undiagnosable. It belongs on auth, secret reads, and header construction — nowhere else.
-  # Four: OpenBao auth, the secret read, the header construction, and the
-  # classification step. The classification exists so that a no_log failure is still
-  # diagnosable — it emits key NAMES and verdicts, never a value — and it must itself be
-  # no_log because it touches the token to test whether the key is populated.
-  local nolog
-  nolog=$(grep -c 'no_log: true' "$PLAYBOOK")
-  [ "$nolog" -eq 4 ]
-  # The address operations must remain visible.
-  ! grep -A12 'available-ips' "$PLAYBOOK" | grep -q 'no_log: true'
+  # undiagnosable. Only tasks handling credentials or the raw router response are hidden.
+  python3 - "$PLAYBOOK" <<'PY'
+import sys
+import yaml
+
+tasks = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))[1]["tasks"]  # [0] imports the extra-var guard
+hidden = {task["name"] for task in tasks if task.get("no_log") is True}
+assert hidden == {
+    "Authenticate to OpenBao (AppRole)",
+    "Read the NetBox automation token from OpenBao",
+    "Read the pfSense discovery credential from OpenBao",
+    "Classify the credential outcome (names and verdicts only)",
+    "Read the live pfSense DHCP server configuration",
+    "Check the live DHCP boundary before reserving",
+    "Set the NetBox auth header",
+}
+PY
+}
+
+@test "netbox-allocate: reservations use the discovery-owned pfSense key" {
+  grep -qF '/v1/secret/data/services/discovery/pfsense' "$PLAYBOOK"
+  grep -qF 'X-API-Key: "{{ _pfsense_secret.json.data.data.api_key }}"' "$PLAYBOOK"
+  ! grep -qF '_nb_secret.json.data.data.pfsense_api_key' "$PLAYBOOK"
 }
 
 @test "netbox-allocate: a sane ceiling on how many addresses one run can take" {
@@ -92,7 +156,7 @@ setup() {
   # itself, and an operator reading that would retry a reservation that had succeeded.
   assert_grep -qF 'Re-read each named address after any writes' "$PLAYBOOK"
   assert_grep -qF 'register: _final_state' "$PLAYBOOK"
-  assert_grep -qF 'loop: "{{ _final_state.results | default([]) }}"' "$PLAYBOOK"
+  assert_grep -qF '_read: "{{ _final_state.results[_i] }}"' "$PLAYBOOK"
   # The report must NOT read the pre-create results any more.
   # Extract the report task to a file and assert on THAT. The previous form was a no-op
   # twice over: `grep -vq` succeeds when ANY line lacks the string, so it passed with
@@ -109,6 +173,24 @@ setup() {
   assert_grep -qF 'is still not recorded after a reserve run' "$PLAYBOOK"
 }
 
+@test "netbox-allocate: a reserve dry run does not fail on the create it skipped" {
+  # The create is skipped under --check, so the post-reserve refusal must be too, or a
+  # dry run can never pass once the DHCP boundary check has cleared. Parsed, not grepped:
+  # the guard has to be in the task's own `when`, not in its `that` or a comment.
+  python3 - "$PLAYBOOK" <<'PY'
+import sys
+import yaml
+
+play, = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))[1:]  # [0] imports the extra-var guard
+refuse, = (t for t in play["tasks"]
+           if t["name"] == "Refuse to report success for an address a reserve run failed to create")
+when = refuse["when"] if isinstance(refuse["when"], list) else [refuse["when"]]
+assert "not ansible_check_mode" in when and "_reserve" in when, when
+that = refuse["ansible.builtin.assert"]["that"]
+assert not any("check_mode" in str(c) for c in that), that
+PY
+}
+
 @test "netbox-allocate: a report run reads each address once, not twice" {
   # The pre-create read exists only to decide what needs creating, and the report re-reads
   # after the writes. Leaving the first read ungated made a plain report run query every
@@ -122,5 +204,13 @@ setup() {
   local create
   create=$(sed -n '/Record each new address as allocated/,/^$/p' "$PLAYBOOK")
   printf '%s' "$create" | grep -qF '_existing.results | default([])'
-  printf '%s' "$create" | grep -A2 'when:' | head -2 | grep -qF '_reserve'
+  # `_reserve` must come before any `.json` lookup in the condition (a check-mode guard may
+  # precede both: it reads no register).
+  local cond
+  cond=$(printf '%s' "$create" | sed -n '/^ *when:/,/^ *[a-z_]*:/p')
+  local r j
+  r=$(printf '%s\n' "$cond" | grep -nF '_reserve' | head -1 | cut -d: -f1)
+  j=$(printf '%s\n' "$cond" | grep -nF '.json' | head -1 | cut -d: -f1)
+  [ -n "$r" ]
+  [ -z "$j" ] || [ "$r" -lt "$j" ]
 }

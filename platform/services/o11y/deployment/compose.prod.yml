@@ -1,0 +1,6 @@
+# Production-only Grafana route to the central Caddy origin. The hostname stays
+# auth.<zone> so HTTPS verifies the same certificate as the browser redirect.
+services:
+  grafana:
+    extra_hosts:
+      - "auth.${O11Y_ZONE:?}:${O11Y_AUTHENTIK_EDGE_IP:?}"

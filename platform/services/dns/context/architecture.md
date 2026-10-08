@@ -4,8 +4,8 @@ hickory-dns (Rust; formerly trust-dns) serving the platform's **internal** name
 resolution. Read with the root [`CLAUDE.md`](../../../../CLAUDE.md) and the
 plans it implements:
 
-- Production: [`plan/development/DNS-SERVER-DEPLOYMENT.md`](../../../../plan/development/DNS-SERVER-DEPLOYMENT.md)
-- Local-dev: [`plan/development/LOCAL-DEV-DEPLOYMENT.md`](../../../../plan/development/LOCAL-DEV-DEPLOYMENT.md) §5.1
+- Production: [`plan/development/00-foundation-local-dev.md`](../../../../plan/development/00-foundation-local-dev.md)
+- Local-dev: [`plan/development/00-foundation-local-dev.md`](../../../../plan/development/00-foundation-local-dev.md) §5.1
 
 ## What it is
 
@@ -50,8 +50,23 @@ Caddy can solve ACME DNS-01 against the internal zone.
 - **Records are code.** Edit inventory vars (`dns_records`, `dns_wildcard_target`,
   `dns_zone`) and re-run the deploy — never hand-edit a running zone. The one
   exception is the Phase 2 dynamic challenge sub-zone (transient TXT records).
+- **Gateway leaf records are derived, not declared** (inference-gateway-agentgateway task 7.2).
+  `deploy-dns.yml` builds `_dns_agw_records`: for every `agentgateway_svc` host with
+  `agw_listener_tls`, one A record per SAN of its server leaf (`agw_server_leaf`, default
+  `agw-server`, from `internal_leaves`) that falls inside `dns_zone`, pointing at the
+  published bind (`agw_bind`, or the host's address when it binds every interface). The
+  deploy refuses a record whose value is not an IPv4 address, a loopback target outside
+  local-dev, or a name `dns_records` also declares. Probing hosts switch from their interim
+  `/etc/hosts` line to these records only when `agw_internal_dns_authoritative` is declared
+  (`tasks/agw-probe-resolution.yml`).
 - **No real zone in the public repo.** `dns_zone` defaults to the RFC 6761
   reserved `agent-cloud.test` locally; the real internal zone lives in the gitignored
   working inventory / site-config.
 - **One engine, two environments.** The laptop and prod run the same image and
   templates, parameterized by env/inventory — never forked.
+- **Clients are declared (prod, 2026-09-29).** Only agent-cloud hosts (one firewall
+  rule per `agent_cloud` member, from `firewall_allow_groups`), the DGX Spark nodes and a
+  future Tailscale subnet router query :53. They query it directly, with the router as
+  their second resolver; pfSense does not forward the zone. Add a client class as a
+  firewall source in site-config, never a subnet (`plan/architecture/05-platform-infra.md`,
+  "Internal DNS clients").

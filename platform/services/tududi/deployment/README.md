@@ -11,7 +11,7 @@ Browser ──> Caddy (TLS) ──todo.uhstray.io──> tududi :3002 (podman)
 
 ## How this deploys
 
-Composable pattern (same as every platform service):
+Composable pattern:
 
 ```text
 Semaphore "Deploy tududi"

@@ -1,0 +1,269 @@
+---
+# Production-only drill against the already-active alert/contact baseline. It
+# adds one uniquely labeled failed scrape, reuses the common firing/Discord
+# receipt probe, then removes only that scrape and reloads Prometheus.
+
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: Pre-flight
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: o11y_svc
+    preflight_group_expected: o11y_svc
+
+- name: Verify the reviewed Dev checkout before the production drill
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Read the controller checkout revision
+      ansible.builtin.command:
+        argv: [git, rev-parse, HEAD]
+        chdir: "{{ playbook_dir | dirname | dirname }}"
+      register: _controller_revision
+      changed_when: false
+      check_mode: false
+
+    - name: Require the exact reviewed revision
+      ansible.builtin.assert:
+        that:
+          - expected_repository_sha | default('') is match('^[0-9a-f]{40}$')
+          - expected_receiver_sha | default('') is match('^[0-9a-f]{40}$')
+          - _controller_revision.stdout == expected_repository_sha
+        fail_msg: "Semaphore checked out a different revision; no production drill was started."
+
+    - name: Read controller checkout changes
+      ansible.builtin.command:
+        argv: [git, status, --porcelain, --untracked-files=all]
+        chdir: "{{ playbook_dir | dirname | dirname }}"
+      register: _controller_changes
+      changed_when: false
+      check_mode: false
+
+    - name: Require a clean reviewed checkout
+      ansible.builtin.assert:
+        that: _controller_changes.stdout | length == 0
+        fail_msg: "Candidate checkout has uncommitted files; no production drill was started."
+
+- name: Prove production alert delivery while preserving active state
+  hosts: o11y_svc
+  gather_facts: false
+  become: false
+  vars:
+    _engine: "{{ container_engine | default('podman') }}"
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+    _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
+    _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    _channel_id: "{{ o11y_alert_discord_channel_id | default('') | string }}"
+    _delivery_marker: "o11y-delivery-status=firing service={{ _probe }}"
+    expected_service: "{{ _probe }}"
+    expected_instance: 127.0.0.1:65535
+  tasks:
+    - name: Require a real production delivery drill
+      ansible.builtin.assert:
+        that:
+          - not ansible_check_mode
+          - not (local_mode | default(false) | bool)
+          - o11y_alerts_enabled | default(false) | bool
+          - o11y_alert_discord_channel_id | default('') | string is match('^[0-9]{17,21}$')
+        fail_msg: "The active delivery drill requires a real production Semaphore run with alerts enabled and a declared Discord channel."
+
+    - name: Read the deployed production revision
+      ansible.builtin.command:
+        argv: [git, rev-parse, HEAD]
+        chdir: "{{ _monorepo_dir }}"
+      register: _deployed_revision
+      changed_when: false
+      check_mode: false
+
+    - name: Read tracked and untracked production checkout changes
+      ansible.builtin.command:
+        argv: [git, status, --porcelain, --untracked-files=all]
+        chdir: "{{ _monorepo_dir }}"
+      register: _deployed_changes
+      changed_when: false
+      check_mode: false
+
+    - name: Require the clean deployed reviewed revision
+      ansible.builtin.assert:
+        that:
+          - _deployed_revision.stdout == expected_receiver_sha
+          - _deployed_changes.stdout | length == 0
+        fail_msg: "Deploy the clean reviewed Dev revision before the active alert drill."
+
+    - name: Refuse an unfinished paused-canary recovery
+      ansible.builtin.stat:
+        path: "{{ _deploy_dir }}/config/.o11y-alert-canary-active"
+      register: _paused_canary_marker
+
+    - name: Require the paused-canary workflow to be settled
+      ansible.builtin.assert:
+        that: not _paused_canary_marker.stat.exists
+        fail_msg: "Paused-canary recovery is unfinished; run Restore o11y Alert Baseline (Dev) first."
+
+    - name: Refuse an existing active-drill marker
+      ansible.builtin.stat:
+        path: "{{ _deploy_dir }}/config/.o11y-active-alert-drill"
+      register: _active_drill_marker
+
+    - name: Require no active drill to be in progress
+      ansible.builtin.assert:
+        that: not _active_drill_marker.stat.exists
+        fail_msg: "An active alert drill is already marked in progress; use Recover o11y Active Alert Drill (Dev)."
+
+    - name: Refuse an existing active-drill scrape slot
+      ansible.builtin.stat:
+        path: "{{ _deploy_dir }}/config/scrape.d/o11y-prod-alert-drill.yml"
+      register: _active_drill_scrape
+
+    - name: Require the active-drill scrape slot to be unused
+      ansible.builtin.assert:
+        that: not _active_drill_scrape.stat.exists
+        fail_msg: "The active-drill scrape file already exists; use Recover o11y Active Alert Drill (Dev)."
+
+    - name: Read the active production service-down rule
+      ansible.builtin.command:
+        argv:
+          - "{{ _engine }}"
+          - exec
+          - o11y-grafana
+          - sh
+          - -c
+          - >-
+            printf 'user = "admin:%s"\n' "$GF_SECURITY_ADMIN_PASSWORD" |
+            curl -fsS --config - http://127.0.0.1:3000/api/v1/provisioning/alert-rules/o11y_service_down
+      register: _active_service_down_rule
+      changed_when: false
+      check_mode: false
+
+    - name: Require exactly one active service-down rule
+      ansible.builtin.assert:
+        that:
+          - (_active_service_down_rule.stdout | from_json).uid == 'o11y_service_down'
+          - not ((_active_service_down_rule.stdout | from_json).isPaused | bool)
+        fail_msg: "The production service-down alert must already be active; no fault was injected."
+
+    - name: Read every provisioned o11y alert rule before the drill
+      ansible.builtin.command:
+        argv:
+          - "{{ _engine }}"
+          - exec
+          - o11y-grafana
+          - sh
+          - -c
+          - >-
+            printf 'user = "admin:%s"\n' "$GF_SECURITY_ADMIN_PASSWORD" |
+            curl -fsS --config - http://127.0.0.1:3000/api/v1/provisioning/alert-rules
+      register: _active_o11y_rules
+      changed_when: false
+      check_mode: false
+
+    - name: Require all provisioned o11y rules to remain active
+      ansible.builtin.assert:
+        that:
+          - _drill_rules | length > 0
+          - _drill_rules | selectattr('isPaused', 'defined') | list | length == _drill_rules | length
+          - _drill_rules | selectattr('isPaused', 'equalto', false) | list | length == _drill_rules | length
+          - _drill_rules | selectattr('uid', 'equalto', 'o11y_service_down') | list | length == 1
+        fail_msg: "Every production o11y rule must be active before the drill; no fault was injected."
+      vars:
+        _drill_rules: "{{ _active_o11y_rules.stdout | from_json | selectattr('uid', 'match', '^o11y_') | list }}"
+
+    - name: Read active production contacts without displaying webhook settings
+      ansible.builtin.command:
+        argv:
+          - "{{ _engine }}"
+          - exec
+          - o11y-grafana
+          - sh
+          - -c
+          - >-
+            printf 'user = "admin:%s"\n' "$GF_SECURITY_ADMIN_PASSWORD" |
+            curl -fsS --config - http://127.0.0.1:3000/api/v1/provisioning/contact-points
+      register: _active_contacts
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Count the declared Discord contact point without retaining its settings
+      ansible.builtin.set_fact:
+        _active_contact_count: >-
+          {{ _active_contacts.stdout | from_json |
+             selectattr('uid', 'equalto', 'o11y_ops_discord') | list | length }}
+      no_log: true
+
+    - name: Require the declared Discord contact point exactly once
+      ansible.builtin.assert:
+        that: _active_contact_count | int == 1
+        fail_msg: "The production Discord contact point is absent or duplicated; no fault was injected."
+
+    - name: Name the failed scrape for this run
+      ansible.builtin.command:
+        argv: [python3, -c, "import uuid; print('o11y-active-alert-' + uuid.uuid4().hex[:12])"]
+      register: _active_probe
+      delegate_to: localhost
+      changed_when: false
+      check_mode: false
+
+    - name: Bind the existing alert and receipt checks to this run
+      ansible.builtin.set_fact:
+        _probe: "{{ _active_probe.stdout }}"
+
+    - name: Require a safe unique service label
+      ansible.builtin.assert:
+        that: _probe is match('^o11y-active-alert-[0-9a-f]{12}$')
+
+    - name: Refuse cleartext OpenBao before reading Discord credentials
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
+    - name: Verify Discord receipt credentials and history access
+      ansible.builtin.include_tasks: tasks/o11y-alert-delivery-preflight.yml
+
+    - name: Atomically claim the active-drill interruption marker
+      ansible.builtin.command:
+        argv: [mkdir, "{{ _deploy_dir }}/config/.o11y-active-alert-drill"]
+      changed_when: true
+      when: not ansible_check_mode
+
+    - name: Add one failed scrape and prove the active rule reaches Discord
+      block:
+        - name: Add only the unique production failed-scrape target
+          ansible.builtin.copy:
+            dest: "{{ _deploy_dir }}/config/scrape.d/o11y-prod-alert-drill.yml"
+            mode: "0644"
+            content: |
+              scrape_configs:
+                - job_name: o11y-production-active-alert-drill
+                  static_configs:
+                    - targets: ["127.0.0.1:65535"]
+                      labels:
+                        service: "{{ _probe }}"
+
+        - name: Reload Prometheus to include the failed-scrape target
+          ansible.builtin.command:
+            argv: ["{{ _engine }}", exec, o11y-grafana, curl, -fsS, -X, POST, http://prometheus:9090/-/reload]
+          changed_when: false
+          check_mode: false
+
+        - name: Run the shared named failure, active-rule, and Discord receipt checks
+          ansible.builtin.include_tasks: tasks/o11y-alert-probe.yml
+          vars:
+            o11y_production_static_probe: true
+            drill_expect_alert: true
+            o11y_alerts_enabled: true
+      always:
+        - name: Recover and verify the active alert baseline
+          ansible.builtin.include_tasks: tasks/o11y-recover-active-alert-drill.yml
+
+    - name: Report how to record the production alert delivery receipt
+      ansible.builtin.debug:
+        msg: >-
+          Production active alert delivery passed. Record this successful
+          Semaphore task's numeric ID as the alert delivery receipt.

@@ -8,6 +8,8 @@
 # Structural only (grep asserts) — no live Proxmox calls.
 # Run: bats platform/tests/test_resize_vm.bats
 
+load assert_helpers
+
 setup() {
   REPO_ROOT=$(git rev-parse --show-toplevel)
   PB="$REPO_ROOT/platform/playbooks/resize-vm.yml"
@@ -101,10 +103,7 @@ setup() {
 @test "resize-vm: reports the diff before any write" {
   # A run with allow_reboot unset is meant to be a safe preview, which only
   # works if the diff is printed before the first PUT.
-  local diff_line put_line
-  diff_line=$(grep -n 'Current vs desired' "$PB" | cut -d: -f1)
-  put_line=$(grep -n 'Apply cores/memory to the VM config' "$PB" | cut -d: -f1)
-  [ "$diff_line" -lt "$put_line" ]
+  assert_precedes "$PB" 'Current vs desired' 'Apply cores/memory/agent to the VM config'
 }
 
 @test "resize-vm: warns that a grown disk still needs the guest filesystem extended" {
@@ -122,8 +121,12 @@ setup() {
 }
 
 @test "resize-vm: reboot survey var defaults to false" {
-  run bash -c "awk '/^  - name: Resize VM\$/,/^  - name: [^R]/' '$TPL' | grep -A 5 'name: allow_reboot' | grep -c 'default_value: \"false\"'"
-  [ "$output" = "1" ]
+  python3 - "$TPL" <<'PY2'
+import sys, yaml
+tpl, = (t for t in yaml.safe_load(open(sys.argv[1], encoding="utf-8"))["templates"] if t["name"] == "Resize VM")
+var, = (v for v in tpl["survey_vars"] if v["name"] == "allow_reboot")
+assert var.get("default_value") == "false", var
+PY2
 }
 
 @test "resize-vm: requires HTTPS for the Proxmox API" {
@@ -139,7 +142,8 @@ setup() {
   grep -qE '^\s+rescue:' "$PB"
   grep -qE 'Recovery: bring a stopped guest back up' "$PB"
   # And it must only start a guest that is genuinely stopped.
-  grep -qE "when: \(_rescue_state\.json\.data\.status \| default\(''\)\) == 'stopped'" "$PB"
+  # (a `when:` line, or an item of a `when:` list once check mode joined it)
+  grep -qE "(when: |- )\(_rescue_state\.json\.data\.status \| default\(''\)\) == 'stopped'" "$PB"
 }
 
 @test "resize-vm: certificate verification is an inventory knob, not hardcoded" {
@@ -170,11 +174,11 @@ setup() {
   # the run reported "Config unchanged" while ignoring the requested size.
   grep -qE 'Refuse a requested disk change that cannot be made safely' "$PB"
   # Gated only on a size being requested — not on detection succeeding.
-  run bash -c "grep -A 20 'Refuse a requested disk change' '$PB' | grep -c 'when: (_want_disk_gb | string | length) > 0'"
-  [ "$output" = "1" ]
+  local refuse
+  refuse=$(task_block "$PB" 'Refuse a requested disk change')
+  [ "$(grep -c 'when: (_want_disk_gb | string | length) > 0' <<<"$refuse")" = "1" ]
   # And it asserts BOTH failure modes.
-  run bash -c "grep -A 6 'Refuse a requested disk change' '$PB' | grep -cE '_disk_device \| trim \| length\) > 0|_disk_parsed'"
-  [ "$output" -ge 2 ]
+  [ "$(grep -cE '^ +- \(_disk_device \| trim \| length\) > 0$|^ +- _disk_parsed' <<<"$refuse")" -ge 2 ]
 }
 
 @test "resize-vm: the restart decision compares RUNNING state, not this run's diff" {
@@ -188,10 +192,10 @@ setup() {
   # if _needs_restart is removed from the restart gate and only survives in a
   # report line.
   grep -qE 'Decide whether the guest needs a restart to pick up its config' "$PB"
-  run bash -c "awk '/Restart the guest so cores\/memory take effect/{f=1} f&&/^      block:/{exit} f' '$PB' | grep -c '_needs_restart | bool'"
+  run bash -c "awk '/Restart the guest so cores\/memory take effect/{f=1} f&&/^ +block:/{exit} f' '$PB' | grep -c '_needs_restart | bool'"
   [ "$output" = "1" ]
   # ...and that gate must NOT be the this-run-diff condition.
-  run bash -c "awk '/Restart the guest so cores\/memory take effect/{f=1} f&&/^      block:/{exit} f' '$PB' | grep -c '_cfg_changes'"
+  run bash -c "awk '/Restart the guest so cores\/memory take effect/{f=1} f&&/^ +block:/{exit} f' '$PB' | grep -c '_cfg_changes'"
   [ "$output" = "0" ]
 }
 

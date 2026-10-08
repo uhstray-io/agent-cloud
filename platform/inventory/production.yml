@@ -1,4 +1,10 @@
 ---
+# =============================================================================
+# TEMPLATE, not production. Production is site-config/inventory/production.yml
+# (the private repo Semaphore syncs). Group layout, variable placement and values
+# differ between the two: check a production fact there, never here
+# (docs/MISTAKES.md 1.14).
+# =============================================================================
 # Production inventory template — replace placeholders with actual values
 # Real IPs managed in private site-config repo (site-config/inventory/production.yml)
 # This file is committed to a PUBLIC repo — do not add real IPs or credentials
@@ -70,9 +76,10 @@ all:
         "{{ postiz_host }}":
           service_name: postiz
           service_url: "http://{{ postiz_host }}:5000"
-          # postiz has no unauthenticated health endpoint; / answers 200 or a
-          # redirect depending on session state.
-          health_path: "/"
+          # /api/, not /: nginx serves / from the frontend, so a probe on /
+          # stays green over a dead backend (MISTAKES 2.19). A 404 from /api/
+          # proves the backend bound; a 502 proves it did not.
+          health_path: "/api/"
           monorepo_deploy_path: platform/services/postiz/deployment
           container_engine: podman
 

@@ -12,7 +12,7 @@
 | # | Decision | Rationale |
 |---|---|---|
 | D1 | **Users are Authentik blueprints** (`authentik_core.user`), mirroring `stray-admin.yaml` | Blueprints are declarative — the worker reconciles them on every deploy, so "add a user" is idempotent by construction; no ad-hoc API calls (Critical Rule) |
-| D2 | **Initial password = OpenBao-generated** per user (`!Env` from a `*_password` in `deploy-authentik.yml`), retrieved out-of-band, changed on first login | Matches the `stray` precedent; needs no email infra. **Future:** migrate to Authentik enrollment/recovery-link (self-set password) once prod SMTP is configured — see Open items |
+| D2 | **Initial password = OpenBao-generated** per user (`!Env` from a `*_password` in `deploy-authentik.yml`), retrieved out-of-band, changed on first login | Matches the operator-admin precedent; needs no email infra. **Future:** migrate to Authentik enrollment/recovery-link (self-set password) once prod SMTP is configured — see Open items |
 | D3 | **Enforce per-service roles now**, not access-only | The access gate is binary (log-in-or-not); read-vs-write must be mapped service-side off the groups claim. The user asked for literal read/write, so we build those maps |
 | D4 | **New `platform-business` group** for ERPNext read/write | The existing tiers are admins/developers/user; "business user" (ERP rw without dev access) is a distinct capability that ERPNext maps to a role |
 | D5 | Emails live only in **site-config** (`!Env` `*_EMAIL`), never in this public repo | Repo rule: no real addresses/IPs in agent-cloud |
@@ -49,7 +49,7 @@ flowchart TD
 | OpenBao | forward_auth + oidc | admin (oidc, admin-tier) | access (forward_auth) | — | policy aliases (planned) |
 
 - **andrew** = `platform-developers` + `platform-business` → Grafana Editor, Semaphore read-only, ERPNext rw, tududi/n8n/OpenHands full use.
-- **wisward** = `platform-admins` → top role everywhere (identical to `stray`).
+- **wisward** = `platform-admins` → top role everywhere (identical to the operator admin).
 - **Groups claim:** VERIFIED — Authentik's default `profile` scope mapping emits `groups` (confirmed against the pinned 2024.12.3 blueprint; `[g.name for g in request.user.ak_groups.all()]`). The `openid email profile` scopes the providers already request are sufficient; no extra scope mapping needed.
 
 ## Build
@@ -71,7 +71,7 @@ Local-dev runs the same blueprints. `make local-deploy-authentik` → confirm: b
 ## Sequencing, gates, risks
 
 - **Order:** groups + users + gate (authentik-core) → per-service role maps → local validate → PR → prod.
-- **Risks:** (1) if the `groups` claim isn't emitted, service role maps silently fall back to the default (viewer/none) — verify the claim first. (2) ERPNext role assignment via Frappe social login is fiddly — validate the exact role profile locally. (3) rotating a user's `*_password` in OpenBao would reset their login — generate once + reuse (like stray).
+- **Risks:** (1) if the `groups` claim isn't emitted, service role maps silently fall back to the default (viewer/none) — verify the claim first. (2) ERPNext role assignment via Frappe social login is fiddly — validate the exact role profile locally. (3) rotating a user's `*_password` in OpenBao would reset their login — generate once + reuse (like the operator admin).
 
 ## Open items
 

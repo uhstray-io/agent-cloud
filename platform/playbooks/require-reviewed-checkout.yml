@@ -1,0 +1,55 @@
+---
+# require-reviewed-checkout.yml — refuse to run a Dev-bound playbook from any commit but the
+# one its reviewer approved, or from a checkout carrying uncommitted files.
+#
+# A `(Dev)` template checks out the moving `dev` branch, so between a review and a launch
+# the code that runs can change. Import this first in a playbook whose live change should be
+# bound to what was reviewed, and give its template a required `expected_repository_sha`:
+#
+#   - name: "Reviewed checkout"
+#     ansible.builtin.import_playbook: require-reviewed-checkout.yml
+#
+# Reads only, and runs under --check too. The o11y playbooks carry the same checks inline
+# (deploy-o11y.yml, the diagnostics); moving them onto this file is a follow-up.
+
+- name: "Require the reviewed checkout"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  tasks:
+    - name: "Require an exact reviewed commit"
+      ansible.builtin.assert:
+        that: expected_repository_sha | default('') is match('^[0-9a-f]{40}$')
+        fail_msg: "Pass expected_repository_sha: the full 40-character commit the review approved."
+        quiet: true
+      tags: [always]
+
+    - name: "Read the checkout's commit"
+      ansible.builtin.command:
+        argv: [git, rev-parse, HEAD]
+        chdir: "{{ playbook_dir | dirname | dirname }}"
+      register: _reviewed_head
+      changed_when: false
+      check_mode: false
+      tags: [always]
+
+    - name: "Read the checkout's uncommitted files"
+      ansible.builtin.command:
+        argv: [git, status, --porcelain, --untracked-files=all]
+        chdir: "{{ playbook_dir | dirname | dirname }}"
+      register: _reviewed_changes
+      changed_when: false
+      check_mode: false
+      tags: [always]
+
+    - name: "Refuse any other commit, or a checkout with uncommitted files"
+      ansible.builtin.assert:
+        that:
+          - _reviewed_head.stdout == expected_repository_sha
+          - _reviewed_changes.stdout | length == 0
+        fail_msg: >-
+          The checkout is {{ _reviewed_head.stdout }}{{ ' with uncommitted files' if _reviewed_changes.stdout else '' }},
+          not the reviewed {{ expected_repository_sha }}. Nothing was run.
+        quiet: true
+      tags: [always]

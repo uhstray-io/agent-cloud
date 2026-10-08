@@ -11,6 +11,50 @@
 # Source of truth: plan/development/LOCAL-DEV-DEPLOYMENT.md Phase 4 (Caddy local
 # profile); plan/architecture/CADDY-REVERSE-PROXY.md.
 
+- name: Verify a branch-bound Caddy candidate revision
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Read the checkout revision when required
+      ansible.builtin.command:
+        argv: [git, rev-parse, HEAD]
+        chdir: "{{ playbook_dir | dirname | dirname }}"
+      register: _controller_revision
+      changed_when: false
+      check_mode: false
+      when: expected_repository_sha is defined
+
+    - name: Require the exact candidate revision
+      ansible.builtin.assert:
+        that: _controller_revision.stdout == expected_repository_sha
+        fail_msg: "Semaphore checked out a different revision; Caddy was not deployed."
+      when: expected_repository_sha is defined
+
+    - name: Read candidate checkout changes
+      ansible.builtin.command:
+        argv: [git, status, --porcelain, --untracked-files=all]
+        chdir: "{{ playbook_dir | dirname | dirname }}"
+      register: _controller_changes
+      changed_when: false
+      check_mode: false
+      when: expected_repository_sha is defined
+
+    - name: Require a clean candidate checkout
+      ansible.builtin.assert:
+        that: _controller_changes.stdout | length == 0
+        fail_msg: "Candidate checkout has uncommitted files; Caddy was not deployed."
+      when: expected_repository_sha is defined
+
+# A play over no hosts exits 0 and records a deploy that did nothing as a success
+# (docs/MISTAKES.md 2.21), so refuse an absent or empty group first.
+- name: "Pre-flight: caddy_svc is real"
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: caddy_svc
+    # Paired so one `-e preflight_group=` cannot redirect the guard (MISTAKES 2.21).
+    preflight_group_expected: caddy_svc
+
 # ── Phase 1: Place repo + render config ─────────────────────────────────────
 - name: "Phase 1: Place repo + render Caddy config"
   hosts: caddy_svc
@@ -25,6 +69,28 @@
   tasks:
     - name: "Place the monorepo + ensure podman/compose"
       ansible.builtin.include_tasks: tasks/place-monorepo.yml
+
+    - name: Read the placed revision when a candidate SHA is required
+      ansible.builtin.command:
+        argv: [git, rev-parse, HEAD]
+        chdir: "{{ _monorepo_dir }}"
+      register: _placed_revision
+      changed_when: false
+      check_mode: false
+      # Proves what THIS run placed; a dry run places nothing.
+      when:
+        - not ansible_check_mode
+        - expected_repository_sha is defined
+        - not (local_mode | default(false) | bool)
+
+    - name: Refuse a receiver checkout that differs from the reviewed candidate
+      ansible.builtin.assert:
+        that: _placed_revision.stdout == expected_repository_sha
+        fail_msg: "Receiver checkout differs from the reviewed Caddy candidate; no config or containers were changed."
+      when:
+        - not ansible_check_mode
+        - expected_repository_sha is defined
+        - not (local_mode | default(false) | bool)
 
     - name: "Render compose .env"
       ansible.builtin.template:
@@ -44,6 +110,14 @@
       vars:
         _mint_zone: "{{ caddy_internal_zone | default('agent-cloud.test') }}"
         _mint_dest_dir: "{{ _deploy_dir }}"
+        # One `*.<parent>` SAN per route host nested more than one label under the
+        # zone (admin.inference.<zone> -> *.inference.<zone>): a TLS wildcard matches
+        # a single label, so `*.<zone>` alone would fail those routes. Derived from
+        # the route table, so a new nested host needs no cert change.
+        _mint_extra_sans: >-
+          {{ caddy_routes | default([]) | map(attribute='host')
+             | select('search', '\.[^.]+\.' ~ (_mint_zone | regex_escape) ~ '$')
+             | map('regex_replace', '^[^.]+', '*') | unique | list }}
         _mint_engine: "{{ container_engine | default('podman') }}"
       when:
         - local_mode | default(false) | bool
@@ -78,6 +152,7 @@
         COMPOSE_CMD: "{{ local_compose_cmd | default('') }}"
       register: _deploy
       changed_when: true
+      when: not ansible_check_mode
 
     - name: "Show deploy.sh output"
       ansible.builtin.debug:
@@ -102,6 +177,7 @@
       retries: 5
       delay: 3
       until: _cfg.rc == 0 and (_cfg.stdout | length) > 0
+      check_mode: false
 
     - name: "Assert each configured route is present in the running config"
       ansible.builtin.assert:
@@ -112,6 +188,17 @@
       loop_control:
         label: "{{ item.host }}"
       when: caddy_routes | default([]) | length > 0
+
+    - name: "Require the private local metrics listener"
+      ansible.builtin.command:
+        argv: ["{{ _engine }}", exec, caddy, wget, -q, -O, /dev/null, http://127.0.0.1:2021/metrics]
+      register: _metrics
+      changed_when: false
+      check_mode: false
+      retries: 5
+      delay: 3
+      until: _metrics.rc == 0
+      when: local_mode | default(false) | bool
 
     - name: "Report"
       ansible.builtin.debug:

@@ -1,0 +1,190 @@
+---
+# check-o11y-liveness.yml — the external liveness watcher for the o11y receiver
+# (inference-telemetry-production task 3.6).
+#
+# Grafana's own alerting cannot report that Grafana, or the Prometheus behind it, is
+# down. This play runs from the Semaphore host on a 10-minute schedule declared in
+# templates.yml and probes the receiver through its public front door, the same path
+# a person uses — never a VM port, so the firewall needs no exception for it:
+#
+#   1. GET <grafana>/api/health                      unauthenticated, no data
+#   2. GET <grafana>/api/datasources/uid/<uid>/health  Grafana asks Prometheus for
+#      readiness, authenticated with a read-only service-account token
+#      (secret/services/o11y:watcher_token, minted by provision-o11y-watcher-token.yml)
+#
+# On any failure it posts ONE Discord message through the existing alert webhook
+# (secret/services/o11y:alert_discord_webhook_url) naming what failed, then fails the
+# task so the schedule goes red as well. It deliberately does not push to Loki: a
+# watcher that reports through the system it watches goes quiet exactly when needed.
+#
+# Inventory:
+#   o11y_watch_url             Grafana's public base URL; default https://o11y.<o11y_zone>
+#                              with o11y_zone read from the first o11y_svc host
+#   o11y_watch_prometheus_uid  the provisioned Prometheus datasource uid (default
+#                              `prometheus`, as in grafana/provisioning/datasources)
+#
+# Check mode probes and reports but posts nothing.
+
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: Probe the o11y receiver through its front door
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    _o11y_first: "{{ (groups['o11y_svc'] | default([])) | first | default('') }}"
+    _derived_zone: "{{ hostvars[_o11y_first].o11y_zone | default('') if _o11y_first else (o11y_zone | default('')) }}"
+    _grafana: "{{ (o11y_watch_url | default('https://o11y.' ~ _derived_zone, true)) | regex_replace('/+$', '') }}"
+    _prom_uid: "{{ o11y_watch_prometheus_uid | default('prometheus') }}"
+    # Hosts a webhook URL may point at. Production is Discord only; the test suite
+    # substitutes a loopback fake through this variable.
+    _webhook_hosts: "{{ o11y_watch_webhook_hosts | default(['discord.com', 'discordapp.com']) }}"
+  tasks:
+    # Without o11y_watch_url the front door is derived from the o11y_svc group, which an
+    # unparsed inventory leaves empty; name that rather than "declare o11y_zone".
+    - name: Require the inventory to have parsed
+      ansible.builtin.include_tasks: tasks/require-parsed-inventory.yml
+      when: o11y_watch_url is not defined
+
+    - name: Require a declared Grafana front door and datasource uid
+      ansible.builtin.assert:
+        that:
+          - _grafana is match('^https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?$')
+          - _grafana is not match('^https?://o11y\.$')
+          - _prom_uid is match('^[A-Za-z0-9_-]+$')
+        fail_msg: "Declare o11y_zone on the o11y_svc host (or o11y_watch_url) and a plain datasource uid."
+
+    - name: Refuse a cleartext OpenBao endpoint
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
+    - name: Refuse a cleartext Grafana endpoint (the watcher token crosses it)
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _grafana }}"
+        _assert_url_label: "Grafana"
+
+    - name: Authenticate to OpenBao (AppRole)
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/auth/approle/login"
+        method: POST
+        body_format: json
+        body:
+          role_id: "{{ _bao_role_id }}"
+          secret_id: "{{ _bao_secret_id }}"
+        status_code: [200]
+      register: _bao_auth
+      changed_when: false
+      no_log: true
+      check_mode: false
+
+    - name: Read the watcher token and alert webhook
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/secret/data/services/o11y"
+        follow_redirects: none
+        headers:
+          X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
+        status_code: [200]
+      register: _o11y_secret
+      no_log: true
+      check_mode: false
+
+    - name: Hold the watcher credentials in memory
+      ansible.builtin.set_fact:
+        _watch_token: "{{ _o11y_secret.json.data.data.watcher_token | default('') }}"
+        _watch_webhook: "{{ _o11y_secret.json.data.data.alert_discord_webhook_url | default('') }}"
+      no_log: true
+
+    - name: Require a Discord webhook to report through
+      ansible.builtin.assert:
+        that:
+          - _watch_webhook | length > 0
+          - _watch_webhook | urlsplit('hostname') in _webhook_hosts
+          - >-
+            _watch_webhook | urlsplit('scheme') == 'https'
+            or _watch_webhook | urlsplit('hostname') in ['127.0.0.1', 'localhost']
+          - _watch_webhook | urlsplit('path') is match('^/api(/v[0-9]+)?/webhooks/')
+        fail_msg: "secret/services/o11y:alert_discord_webhook_url is missing or not a Discord webhook; run Seed o11y Alert Webhook."
+      no_log: true
+
+    - name: Probe Grafana liveness
+      ansible.builtin.uri:
+        url: "{{ _grafana }}/api/health"
+        follow_redirects: none
+        timeout: 15
+        status_code: [-1, 200]
+      register: _grafana_health
+      failed_when: false
+      check_mode: false
+
+    - name: Probe Prometheus readiness through Grafana's datasource health
+      ansible.builtin.uri:
+        url: "{{ _grafana }}/api/datasources/uid/{{ _prom_uid }}/health"
+        follow_redirects: none
+        timeout: 30
+        headers:
+          Authorization: "Bearer {{ _watch_token }}"
+      register: _prom_health_raw
+      failed_when: false
+      when: _watch_token | length > 0
+      no_log: true
+      check_mode: false
+
+    # Only the status and the datasource verdict leave the no_log boundary.
+    - name: Reduce the datasource probe to its verdict
+      ansible.builtin.set_fact:
+        _prom_status: "{{ _prom_health_raw.status | default(-1) }}"
+        _prom_verdict: "{{ (_prom_health_raw.json | default({})).status | default('') }}"
+      no_log: true
+
+    - name: Name every failure
+      ansible.builtin.set_fact:
+        _watch_failures: >-
+          {{
+            ([] if (_grafana_health.status | default(-1)) == 200
+                   and (_grafana_health.json | default({})).database | default('') == 'ok'
+             else ['grafana /api/health failed (status ' ~ (_grafana_health.status | default(-1)) ~ ')'])
+            + (['watcher_token is not in secret/services/o11y; run Provision o11y Watcher Token']
+               if _watch_token | length == 0
+               else (['watcher token rejected by Grafana (status ' ~ _prom_status ~ ')']
+                     if (_prom_status | int) in [401, 403]
+                     else ([] if (_prom_status | int) == 200 and _prom_verdict == 'OK'
+                           else ['prometheus datasource unhealthy (status ' ~ _prom_status ~ ')'])))
+          }}
+
+    - name: Report the probe result
+      ansible.builtin.debug:
+        msg: "o11y liveness {{ 'OK' if _watch_failures | length == 0 else 'FAIL: ' ~ (_watch_failures | join('; ')) }}"
+
+    # The webhook URL is the credential: no_log on this one request only. Check mode
+    # skips it explicitly, so a dry run never posts.
+    - name: Post the failure to Discord
+      ansible.builtin.uri:
+        url: "{{ _watch_webhook }}"
+        method: POST
+        follow_redirects: none
+        body_format: json
+        body:
+          content: "o11y liveness watcher: {{ _watch_failures | join('; ') }} ({{ _grafana }})"
+          allowed_mentions:
+            parse: []
+        status_code: [200, 204]
+      when: _watch_failures | length > 0 and not ansible_check_mode
+      no_log: true
+
+    - name: Report the post a real run would make
+      ansible.builtin.debug:
+        msg: "check mode: would post one Discord message for {{ _watch_failures | length }} failure(s)"
+      when: _watch_failures | length > 0 and ansible_check_mode
+
+    - name: Fail the scheduled run when the receiver is not live
+      ansible.builtin.fail:
+        msg: "o11y liveness failed: {{ _watch_failures | join('; ') }}"
+      when: _watch_failures | length > 0

@@ -17,7 +17,7 @@ services:
     # forward-store + TSIG format this service targets; multi-arch incl. arm64.
     image: ${DNS_IMAGE:-docker.io/hickorydns/hickory-dns:0.26.0}
     container_name: dns
-    restart: unless-stopped
+    restart: always
     # Args to the image's `hickory-dns` entrypoint. Config + zone root are mounts.
     command: ["-c", "/etc/named.toml", "-z", "/var/named"]
     environment:

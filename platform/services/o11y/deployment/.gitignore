@@ -1,3 +1,19 @@
 # Rendered per-deploy from OpenBao by deploy-o11y.yml. Never committed.
 # (config/ IS committed — config-as-code; only the Grafana admin pw stays out.)
 .env
+config/scrape.d/*.yml
+# Rendered from templates/config.alloy.j2 and templates/prometheus.yml.j2 by
+# deploy-o11y.yml. Keep them on local targets across shared rsync --delete runs.
+/config/config.alloy
+/config/prometheus.yml
+# These two Grafana alert files are rendered on the target, never committed.
+# Other alert rules in this directory may be committed as config-as-code.
+config/grafana/provisioning/alerting/observability.yml
+config/grafana/provisioning/alerting/contact.yml
+# The synthetic inference probe's key file, rendered from OpenBao by deploy-o11y.yml
+# when o11y_inference_probe_enabled is true. Never committed.
+probe/inference-probe.env
+# The probe's gateway client leaf (issued on the host by Issue Internal Leaf) and the CA
+# bundle deploy-o11y.yml places beside it, when o11y_inference_probe_client_leaf points the
+# probe at the gateway. Host state, never committed; also kept by local rsync --delete.
+/certs/

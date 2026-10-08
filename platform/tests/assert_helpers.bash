@@ -74,3 +74,37 @@ refute_contains() {
     *) return 0 ;;
   esac
 }
+
+# Extract one ansible task's body lines (everything after its `- name:` line,
+# until the next task at the same-or-shallower indent). Replaces the bespoke
+# per-file awk extractors, whose quoting was fragile in three copies.
+#   task_block <file> <task name>
+task_block() {
+  awk -v name="$2" '
+    f && /^[[:space:]]*- name:/ { cur = index($0, "-"); if (cur <= ind) exit }
+    f { print }
+    !f && index($0, "- name: \"" name) { f = 1; ind = index($0, "-") }
+  ' "$1"
+}
+
+# The first line matching <pattern_a> must come BEFORE the first line matching
+# <pattern_b>. Both patterns are ERE. Names the missing pattern or the two
+# line numbers on failure, instead of the bare `[ "" -lt "" ]` integer error a
+# hand-rolled comparison prints when a pattern stops matching.
+#   assert_precedes <file> <pattern_a> <pattern_b>
+assert_precedes() {
+  local a b
+  a=$(grep -nE "$2" "$1" | head -1 | cut -d: -f1)
+  b=$(grep -nE "$3" "$1" | head -1 | cut -d: -f1)
+  [ -n "$a" ] || { echo "assert_precedes: no match for '$2' in $1" >&2; return 1; }
+  [ -n "$b" ] || { echo "assert_precedes: no match for '$3' in $1" >&2; return 1; }
+  [ "$a" -lt "$b" ] || { echo "assert_precedes: '$2' (line $a) after '$3' (line $b) in $1" >&2; return 1; }
+}
+
+# The transport guard must run BEFORE the first request that carries a
+# credential — a guard placed after the AppRole login has already sent the
+# secret_id.
+#   assert_guard_precedes_first_uri <file>
+assert_guard_precedes_first_uri() {
+  assert_precedes "$1" 'include_tasks: tasks/assert-bao-transport\.yml' '^[[:space:]]+ansible\.builtin\.uri:'
+}

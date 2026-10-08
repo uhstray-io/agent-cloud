@@ -1,0 +1,167 @@
+{
+  "_comment": "Shape differences the inference gateway is ACCEPTED to introduce against direct vLLM (conformance.sh diff, change inference-gateway-agentgateway task 2.2). Each entry is a key path exactly as shape_diff prints it. The top-level lists apply to every case; `cases` adds lists for one named case only, so a difference seen in one case does not excuse it elsewhere. gateway_may_add: paths only the gateway's body has; gateway_may_drop: paths only vLLM's has; gateway_may_retype: paths whose JSON type differs. Operator decision 2026-10-03: every difference observed in production run Semaphore task 2614 (13/13 semantic match; record in conformance-shape-t2614.json) is accepted for the case it was seen in, and so is every difference observed in task 2698 (record in conformance-shape-t2698.json; the allowlist is the union of both records); each is still reported under shape_allowed. The client-visible ones are recorded in context/architecture.md. Add a path only after reading a run's shape_diff and recording the decision there.",
+  "gateway_may_add": [],
+  "gateway_may_drop": [],
+  "gateway_may_retype": [],
+  "cases": {
+    "chat-template-kwargs": {
+      "gateway_may_add": [],
+      "gateway_may_drop": [
+        "service_tier",
+        "usage.prompt_tokens_details"
+      ],
+      "gateway_may_retype": []
+    },
+    "chat-thinking-off": {
+      "gateway_may_add": [],
+      "gateway_may_drop": [
+        "service_tier",
+        "usage.prompt_tokens_details"
+      ],
+      "gateway_may_retype": []
+    },
+    "effort-high": {
+      "gateway_may_add": [],
+      "gateway_may_drop": [
+        "service_tier",
+        "usage.prompt_tokens_details"
+      ],
+      "gateway_may_retype": []
+    },
+    "effort-low": {
+      "gateway_may_add": [],
+      "gateway_may_drop": [
+        "service_tier",
+        "usage.prompt_tokens_details"
+      ],
+      "gateway_may_retype": []
+    },
+    "effort-max": {
+      "gateway_may_add": [],
+      "gateway_may_drop": [
+        "service_tier",
+        "usage.prompt_tokens_details"
+      ],
+      "gateway_may_retype": []
+    },
+    "effort-medium": {
+      "gateway_may_add": [],
+      "gateway_may_drop": [
+        "service_tier",
+        "usage.prompt_tokens_details"
+      ],
+      "gateway_may_retype": []
+    },
+    "effort-minimal": {
+      "gateway_may_add": [],
+      "gateway_may_drop": [
+        "service_tier",
+        "usage.prompt_tokens_details"
+      ],
+      "gateway_may_retype": []
+    },
+    "effort-none": {
+      "gateway_may_add": [],
+      "gateway_may_drop": [
+        "service_tier",
+        "usage.prompt_tokens_details"
+      ],
+      "gateway_may_retype": []
+    },
+    "effort-xhigh": {
+      "gateway_may_add": [],
+      "gateway_may_drop": [
+        "service_tier",
+        "usage.prompt_tokens_details"
+      ],
+      "gateway_may_retype": []
+    },
+    "models": {
+      "gateway_may_add": [],
+      "gateway_may_drop": [
+        "data.[].max_model_len",
+        "data.[].parent",
+        "data.[].permission.[].allow_create_engine",
+        "data.[].permission.[].allow_fine_tuning",
+        "data.[].permission.[].allow_logprobs",
+        "data.[].permission.[].allow_sampling",
+        "data.[].permission.[].allow_search_indices",
+        "data.[].permission.[].allow_view",
+        "data.[].permission.[].group",
+        "data.[].permission.[].is_blocking",
+        "data.[].permission.[].object",
+        "data.[].permission.[].organization",
+        "data.[].root"
+      ],
+      "gateway_may_retype": []
+    },
+    "responses": {
+      "gateway_may_add": [],
+      "gateway_may_drop": [
+        "background",
+        "ec_transfer_params",
+        "frequency_penalty",
+        "incomplete_details",
+        "input_messages",
+        "instructions",
+        "kv_transfer_params",
+        "max_output_tokens",
+        "max_tool_calls",
+        "metadata",
+        "output.[].encrypted_content",
+        "output.[].phase",
+        "output.[].summary",
+        "output_messages",
+        "parallel_tool_calls",
+        "presence_penalty",
+        "previous_response_id",
+        "prompt",
+        "reasoning.context",
+        "reasoning.effort",
+        "reasoning.generate_summary",
+        "reasoning.mode",
+        "reasoning.summary",
+        "service_tier",
+        "temperature",
+        "text",
+        "tool_choice",
+        "tools",
+        "top_logprobs",
+        "top_p",
+        "truncation",
+        "usage.input_tokens_details.cached_tokens_per_turn",
+        "usage.input_tokens_details.input_tokens_per_turn",
+        "usage.output_tokens_details.output_tokens_per_turn",
+        "usage.output_tokens_details.tool_output_tokens",
+        "usage.output_tokens_details.tool_output_tokens_per_turn",
+        "user"
+      ],
+      "gateway_may_retype": [
+        "output.[].status"
+      ]
+    },
+    "stream-xhigh": {
+      "gateway_may_add": [
+        "choices",
+        "choices.[].delta",
+        "usage.completion_tokens",
+        "usage.completion_tokens_details.reasoning_tokens",
+        "usage.prompt_tokens",
+        "usage.total_tokens"
+      ],
+      "gateway_may_drop": [
+        "choices.[].delta"
+      ],
+      "gateway_may_retype": []
+    },
+    "tool-call": {
+      "gateway_may_add": [],
+      "gateway_may_drop": [
+        "choices.[].message.content",
+        "service_tier",
+        "usage.prompt_tokens_details"
+      ],
+      "gateway_may_retype": []
+    }
+  }
+}

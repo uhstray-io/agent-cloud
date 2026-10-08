@@ -1,12 +1,22 @@
 # postiz — social-media scheduling and publishing
 
+> **Validation status — 2026-09-05:** local Semaphore task 288 restored all six containers.
+> Fresh logout → Authentik → calendar sign-in passed; backend TLS returned 200,
+> the retained API key returned 200, and absent/wrong keys returned 401.
+> Scheduled-publish verification remains open. The production
+> host's SSH hardening/firewall checks passed (Semaphore tasks 393/395/396),
+> which does not establish application deployment. The production secret check
+> reported no Postiz record (task 391); production deploy, sign-in, API-key
+> capture and publishing verification remain pending. Recheck current state
+> before operations; this is a dated result, not continuous monitoring.
+
 Self-hosted [Postiz](https://postiz.com). Composes and schedules social posts through
 an Authentik-authenticated web interface, and exposes an API-key endpoint that n8n
 drives to automate post creation, media upload, and scheduling.
 
 - **Public URL (prod):** `https://postiz.uhstray.io`
 - **Local:** `https://postiz.agent-cloud.test:8443`
-- **Runtime:** rootless podman, five containers
+- **Runtime:** rootless podman, five containers (six with the required search-node overlay — see below)
 - **Plan:** [`plan/development/14-postiz-social-publishing.md`](../../../../plan/development/14-postiz-social-publishing.md)
 - **Change:** `plan/development/openspec/changes/deploy-postiz-social-publishing/`
 
@@ -24,10 +34,13 @@ Only the app publishes a port, so the host firewall needs exactly one service ru
 `apply-firewall.yml` detects published ports, and there is nothing else to detect.
 
 Upstream's reference deployment runs eight containers, adding Elasticsearch, a workflow
-UI, and admin tooling. We omit all three: the engine runs standard visibility against
-its own Postgres (`ENABLE_ES=false`), which executes workflows fine — Elasticsearch
-powers advanced workflow *search*, which nothing here needs. To add it back, see
-`compose.yml`'s header.
+UI, and admin tooling. The UI and admin tooling stay out. Elasticsearch was originally
+trimmed too, but the gate scoped for that decision fired: as of v2.23.0 the backend
+registers more than 3 `Text` search attributes at startup, SQL visibility refuses that,
+and the backend never binds (measured 2026-08-30). The search node is therefore added
+back as `compose.search.yml`, applied when the inventory sets `postiz_temporal_search:
+true` — which every working deployment now needs. The base compose stays five containers
+with `ENABLE_ES=false` so the trim remains inspectable and the gate stays in inventory.
 
 ## Configuration — two files, two jobs
 
@@ -58,6 +71,63 @@ Through Semaphore only — never by SSH-ing in and running `deploy.sh`.
 secrets and talks to no vault. It refuses to start if either rendered file is missing,
 deliberately: a missing bind source would otherwise be created as a *directory* and the
 app would boot with no configuration at all.
+
+## Importing existing provider credentials
+
+Use `scripts/postiz-seed-input.py --env-file <private-file>` for a presence-only
+check. It reads the file as data and selects provider fields from the committed
+seed declaration. It never imports signing, database, OIDC or deployment settings.
+
+First run the declared **Provision Seed Environment (Dev)** controller workflow
+with `seed_template=Seed Postiz Secrets` and verified `semaphore_project_id`,
+`semaphore_inventory_id` and `semaphore_source_environment_id`; `seed_variant`
+selects `dev` or `main`.
+It creates the environment named in `templates.yml`, adds missing encrypted
+controller authentication inputs, and changes only the selected seed binding.
+Existing authentication is preserved, never rotated. The provisioner requires
+single-environment ownership metadata; newer multi-environment API records are
+refused until their binding semantics are implemented and tested. The main variant requires
+the reviewed seed code to have reached `main` first.
+
+First full catalog publication binds empty named environments: seeding remains
+unavailable until provisioning and verification finish for the selected variant.
+Run the resulting seed template with its **Verify access without writing secrets**
+survey set to `true` (`postiz_verify_access_only=true`) and require
+its **Read-only Postiz access verified** message. This verifies the actual runner
+can authenticate; configuration read-back alone cannot prove that. The mode
+exits before writes even if provider inputs are present. No provider credentials
+are imported by provisioning or this check.
+
+For seeding, reserve the dedicated environment against other work and add
+`--apply --url <https-origin> --inventory <approved id>`
+(`--variant main` for the main template; `dev` is the default). Supply the existing
+authorized operator API token on stdin; never put a token in an argument. The helper
+finds Seed Postiz Secrets and its isolated environment by name and runs the same
+read-only preflight as every seed CLI (`scripts/semaphore_seed.py`): the template must
+still run from its declared repository record and the approved inventory, and the
+environment must be clean. The seed task takes its OpenBao address from that inventory and
+refuses a different plain address (drift; a templated extra var is outside what that
+check stops, see `docs/MISTAKES.md` 1.15). It uses the controller AppRole. It stages encrypted `SEED_` inputs, waits for
+the seed task, and removes only its inputs after a terminal result. The seed
+playbook reads OpenBao back and compares every supplied value without logging it.
+
+A shared environment, existing seed inputs, changed bindings or concurrent users cause a
+refusal. A request timeout is an uncertain result: do not rerun blindly. Inspect
+the named seed task and encrypted input metadata first; inputs remain encrypted
+until the outcome is resolved. Semaphore's environment API has no compare-and-swap,
+so an external reservation remains required. No template bindings are changed.
+
+Full template publication resolves the declared `isolated_environment` name,
+including a distinct generated Dev name; it cannot silently reset the seed to
+the shared default. Scoped survey publication still changes surveys only.
+Partial authentication inputs or uncertain writes require reviewed reconciliation
+before another import; do not overwrite them or retry a task blindly. Initial
+installation of the provisioner uses the code-managed controller configuration
+entrypoint, never UI template creation or a repurposed service job.
+
+Provider values remain unquoted in the mounted app configuration. The container
+reads each line with literal assignment (`export "$l"`); it does not evaluate
+values as shell code. Adding shell quotes would change the credentials.
 
 ## Auth
 

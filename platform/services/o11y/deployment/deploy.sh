@@ -8,7 +8,8 @@
 # are provisioned on boot).
 #
 # Usage: ./deploy.sh [--no-pull]
-# Steps (idempotent): verify .env present, pull, up, wait healthy.
+# Steps (idempotent): verify .env present, pull, up (recreate only on input/image change),
+# wait healthy. Prints DEPLOY_CHANGED=true|false; the playbook reads it for changed status.
 
 set -euo pipefail
 
@@ -19,6 +20,12 @@ cd "${SCRIPT_DIR}"
 
 # shellcheck source=/dev/null
 source "${LIB_DIR}/common.sh"
+
+# Production Grafana must reach Authentik through the declared LAN Caddy host;
+# public DNS sends its token exchange through Cloudflare's browser challenge.
+if [ "${LOCAL_MODE:-}" != "true" ]; then
+  COMPOSE_OVERLAYS="compose.prod.yml ${COMPOSE_OVERLAYS:-}"
+fi
 
 for arg in "$@"; do
   case "$arg" in
@@ -40,13 +47,13 @@ step_pull_image() {
 }
 
 step_start() {
-  info "Step 3: Starting o11y (prometheus + loki + alloy + grafana)..."
-  # --force-recreate: Grafana reads runtime config (admin pw, OIDC client
-  # settings) from `env_file: .env`. An env_file content change is NOT a
-  # compose-spec change, so plain `up -d` keeps the stale env — force-recreate
-  # so re-rendered .env always applies. (Config files are bind-mounted ro and
-  # also picked up on recreate.)
-  compose up -d --force-recreate
+  info "Step 3: Starting o11y (prometheus + loki + alloy + grafana), recreating only on change..."
+  # Grafana reads runtime config (admin pw, OIDC client settings) from `env_file: .env`, and
+  # every service reads its config from ./config bind mounts at start. Neither is a
+  # compose-spec change, so compose_up_if_changed (common.sh) hashes them with the compose
+  # files in effect and recreates only when that digest or an image differs from what the
+  # running containers started with. A re-run with identical inputs touches nothing.
+  compose_up_if_changed config
 }
 
 step_wait_healthy() {

@@ -109,7 +109,9 @@ brew install shellcheck bats-core hadolint
 
 # Python 3.11 (required for tests)
 brew install python@3.11
-pip3.11 install pytest netboxlabs-diode-sdk proxmoxer requests
+# The test suites' dependencies, declared once and installed by CI from the same file.
+# It includes pytest-xdist, which the pre-push hook uses to run the suite in parallel.
+pip3.11 install -r platform/requirements-test.txt
 
 # Controller packages — cryptography is needed by the BATS suite, which signs a real
 # GitHub App assertion with a throwaway key and verifies it. Without it those tests SKIP
@@ -141,7 +143,7 @@ promotion-source check:
 | --- | ----- | -------- |
 | **Static Analysis** | ruff, shellcheck, ansible-lint, yamllint, hadolint, terraform fmt | Any lint error or warning |
 | **Security Scan** | trufflehog, bandit, IP/credential grep | Leaked secrets, security issues, hardcoded IPs |
-| **Unit Tests** | pytest (79 tests), BATS (452 tests) | Any test failure |
+| **Unit Tests** | pytest (`python3 -m pytest --collect-only -q` for the count), BATS (`bats -c platform/tests/*.bats` for the count) | Any test failure |
 
 All three must pass before merging. See `plan/architecture/03-testing-ci-quality.md` for
 full details.
@@ -165,6 +167,10 @@ the Python suite is not collectable because pytest or a test dependency is missi
 a branch-deletion push. Failing open like that is deliberate and the opposite of the
 pre-commit secret gate, which fails closed: a leaked secret is irreversible, a skipped test
 is not. Escape hatch, for a reason you can defend in review: `SKIP_TESTS=1 git push`.
+
+**One run per branch at a time:** a second push of a branch whose first push is still inside
+the hook is refused immediately, naming the push that holds it, while other branches proceed
+and a lock left by a push that has exited is reclaimed automatically (`docs/MISTAKES.md` §5.11).
 
 ---
 
@@ -211,7 +217,10 @@ goes red, restore, confirm green. This is the only step that distinguishes a rea
 assertion from a decorative one, and it is how every defect above was found.
 
 `platform/tests/test_assertions_are_real.bats` ratchets the count of assertions that cannot
-fail: it may go down and may not go up. It does not catch the `grep -v` form.
+fail: it may go down and may not go up. A second check in the same file keeps a ratchet
+list of the `grep -v ... -q` form (every spelling, including those flags handed to
+`assert_grep`/`refute_grep`) and of `<assertion> || true`, and fails on any new one
+("no new grep -v -q or || true assertions outside the ratchet").
 
 ## Code Standards
 

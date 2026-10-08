@@ -58,6 +58,8 @@
   delegate_to: localhost
   when: _cf_token is not defined
   no_log: true
+  changed_when: false
+  check_mode: false
 
 - name: "Fetch the Cloudflare token from OpenBao (secret/services/caddy)"
   ansible.builtin.uri:
@@ -70,6 +72,7 @@
   delegate_to: localhost
   when: _cf_token is not defined
   no_log: true
+  check_mode: false
 
 - name: "Cache the Cloudflare token (reused across the record loop)"
   ansible.builtin.set_fact:
@@ -97,6 +100,7 @@
   delegate_to: localhost
   when: _cf_zone_id is not defined
   no_log: true  # bearer token rides in headers — mask (asserts below surface failures)
+  check_mode: false
 
 - name: "Resolve + cache the zone id"
   ansible.builtin.set_fact:
@@ -124,6 +128,7 @@
   register: _cf_existing
   delegate_to: localhost
   no_log: true  # bearer token rides in headers — mask
+  check_mode: false
 
 - name: "Compute the desired record + existing match"
   ansible.builtin.set_fact:
@@ -146,7 +151,9 @@
     body: "{{ _cf_body | to_json }}"
     status_code: [200]
   delegate_to: localhost
-  when: (_cf_match | length) == 0
+  when:
+    - not ansible_check_mode
+    - (_cf_match | length) == 0
   changed_when: true
   no_log: true  # bearer token rides in headers — mask
 
@@ -162,6 +169,7 @@
     status_code: [200]
   delegate_to: localhost
   when:
+    - not ansible_check_mode
     - (_cf_match | length) > 0
     - (_cf_match[0].content != _cf_record_content)
       or ((_cf_match[0].proxied | bool) != (_cf_record_proxied | default(false) | bool))

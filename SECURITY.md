@@ -40,7 +40,7 @@ This policy covers the agent-cloud repository and its deployment configurations.
 The following are out of scope:
 
 - Vulnerabilities in upstream dependencies (report to the upstream project directly)
-- The vendored `netbox-docker/` directory (report to [netbox-community/netbox-docker](https://github.com/netbox-community/netbox-docker))
+- Bugs solely in the upstream `netbox-docker` source cloned at deployment time (report to [netbox-community/netbox-docker](https://github.com/netbox-community/netbox-docker)); first-party deployment and integration vulnerabilities remain in scope
 - Issues requiring physical access to infrastructure
 
 ## Security Practices

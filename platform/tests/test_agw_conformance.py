@@ -1,0 +1,1163 @@
+"""Gateway conformance against direct vLLM (change inference-gateway-agentgateway, tasks 2.1, 2.2).
+
+conformance.sh runs for real against two stub OpenAI-compatible servers on loopback, one standing
+in for the gateway and one for vLLM, both speaking JSON and SSE. The stubs answer every case the
+script sends, can be told to misbehave the ways a gateway could (strip a field, buffer a stream,
+not route the Responses API), and record every request so the test can see what arrived and which
+key it carried. A curl shim on PATH records every argv, so "no key on a command line" is asserted
+on what was executed, not on source text.
+
+run-agw-conformance.yml runs for real too, on localhost through harness_sandbox, against the same
+stubs and a synthetic OpenBao. All values are synthetic.
+"""
+
+import json
+import os
+import random
+import re
+import shutil
+import stat
+import subprocess
+import sys
+import threading
+import time
+from http.server import ThreadingHTTPServer
+from pathlib import Path
+
+import forgeries
+import harness_sandbox
+import playbook_yaml
+import pytest
+import seed_harness
+import yaml
+from fake_http import DrainingHandler
+
+REPO = playbook_yaml.REPO
+SCRIPT = REPO / "platform/services/agentgateway/deployment/tests/conformance.sh"
+PLAYBOOK = REPO / "platform/playbooks/run-agw-conformance.yml"
+GW_KEY = "synthetic-gateway-client-key-7f3a"
+UP_KEY = "synthetic-vllm-upstream-key-91c2"
+EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
+CASES = ["models", "chat-thinking-off", *[f"effort-{e}" for e in EFFORTS], "chat-template-kwargs",
+         "tool-call", "stream-xhigh", "stream-options-without-usage", "responses"]
+REAL_CURL = shutil.which("curl")
+
+
+def _reorder(value):
+    """Reverse every object's key order: a gateway that re-serialises JSON."""
+    if isinstance(value, dict):
+        return {k: _reorder(value[k]) for k in reversed(list(value))}
+    if isinstance(value, list):
+        return [_reorder(v) for v in value]
+    return value
+
+
+class Stub:
+    """One OpenAI-compatible server. Options:
+    key           the Bearer value it requires; None requires no Authorization header at all
+    drop_reasoning  strip `reasoning` from completions (a gateway losing a field)
+    buffer_stream   hold every stream chunk until the end (a buffering gateway)
+    responses_404   no route for the Responses API
+    reorder         reverse JSON key order
+    first_delay / gap  stream timing: seconds to the first token, seconds between chunks
+    models          the ids its models list returns (default ["m"])
+    cut_stream      end the stream cleanly right after the first token: no finish, no [DONE]
+    usage_chunk     the stream's final usage chunk (choices [], usage totals) before [DONE]: True
+                    always sends it (the gateway, which adds include_usage itself), False never,
+                    "requested" only when the request sets stream_options.include_usage (vLLM),
+                    "injects" also when the request has no stream_options (agentgateway v1.5.0
+                    WITHOUT the config.yaml.j2 transformation)
+    mutate          a function applied to every 2xx JSON body and every stream chunk before it is
+                    sent (a gateway adding, dropping or retyping fields)
+    """
+
+    def __init__(self, key=None, drop_reasoning=False, buffer_stream=False, responses_404=False,
+                 reorder=False, first_delay=0.4, gap=0.1, models=("m",), cut_stream=False,
+                 mutate=None, usage_chunk=True):
+        self.key, self.drop_reasoning, self.buffer_stream = key, drop_reasoning, buffer_stream
+        self.responses_404, self.reorder = responses_404, reorder
+        self.first_delay, self.gap = first_delay, gap
+        self.models = list(models)
+        self.cut_stream = cut_stream
+        self.mutate = mutate
+        self.usage_chunk = usage_chunk
+        self.seen = []
+        stub = self
+
+        class Handler(DrainingHandler):
+            protocol_version = "HTTP/1.1"
+
+            def log_message(self, *_a):
+                pass
+
+            def do_GET(self):
+                stub.handle(self, "GET", None)
+
+            def do_POST(self):
+                raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+                stub.handle(self, "POST", json.loads(raw or b"{}"))
+
+        class Server(ThreadingHTTPServer):
+            daemon_threads = True
+            request_queue_size = 64
+
+        self.server = Server(("127.0.0.1", 0), Handler)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        self.url = f"http://127.0.0.1:{self.server.server_port}/v1"
+        self.port = self.server.server_port
+
+    def stop(self):
+        self.server.shutdown()
+        self.server.server_close()
+
+    # ── responses ──
+    def send(self, h, status, body):
+        if self.mutate and 200 <= status < 300:
+            body = self.mutate(body)
+        data = json.dumps(_reorder(body) if self.reorder else body).encode()
+        h.send_response(status)
+        h.send_header("Content-Type", "application/json")
+        h.send_header("Content-Length", str(len(data)))
+        h.end_headers()
+        h.wfile.write(data)
+
+    def handle(self, h, method, body):
+        auth = h.headers.get("Authorization")
+        self.seen.append({"method": method, "path": h.path, "auth": auth, "body": body})
+        if (self.key is None and auth is not None) or (self.key is not None and auth != f"Bearer {self.key}"):
+            return self.send(h, 401, {"error": {"type": "invalid_request_error", "code": "invalid_api_key",
+                                                "message": "bad key"}})
+        rid = f"{random.randrange(10**9)}"
+        now = int(time.time()) + random.randrange(1000)
+        if method == "GET" and h.path == "/v1/models":
+            return self.send(h, 200, {"object": "list", "data": [
+                {"id": i, "object": "model", "created": now, "owned_by": "vllm", "root": i} for i in self.models]})
+        if method == "POST" and h.path == "/v1/responses":
+            if self.responses_404:
+                return self.send(h, 404, {"detail": "Not Found"})
+            return self.send(h, 200, {"id": "resp_" + rid, "object": "response", "created_at": now,
+                                      "status": "completed", "model": body["model"], "output": [
+                                          {"id": "rs_" + rid, "type": "reasoning", "summary": []},
+                                          {"id": "msg_" + rid, "type": "message", "role": "assistant",
+                                           "content": [{"type": "output_text", "text": "204"}]}]})
+        if method == "POST" and h.path == "/v1/chat/completions":
+            thinking = body.get("reasoning_effort") != "none" and \
+                (body.get("chat_template_kwargs") or {}).get("enable_thinking", True)
+            if body.get("stream"):
+                return self.stream(h, body, rid, now, thinking)
+            msg = {"role": "assistant", "content": "204", "reasoning": "12*17 is 204" if thinking else None}
+            finish = "stop"
+            if body.get("tools"):
+                msg["content"] = None
+                msg["tool_calls"] = [{"id": "call_" + rid, "type": "function", "function": {
+                    "name": "get_weather", "arguments": json.dumps({"city": "Newark, NJ"})}}]
+                finish = "tool_calls"
+            if self.drop_reasoning:
+                msg.pop("reasoning")
+            return self.send(h, 200, {"id": "chatcmpl-" + rid, "object": "chat.completion", "created": now,
+                                      "model": body["model"], "choices": [
+                                          {"index": 0, "message": msg, "finish_reason": finish}],
+                                      "usage": {"prompt_tokens": 9, "completion_tokens": 7,
+                                                "completion_tokens_details": {
+                                                    "reasoning_tokens": 5 if thinking else 0}}})
+        self.send(h, 404, {"detail": "Not Found"})
+
+    def stream(self, h, body, rid, now, thinking):
+        def chunk(delta, finish=None):
+            event = {"id": "chatcmpl-" + rid, "object": "chat.completion.chunk", "created": now,
+                     "model": body["model"], "choices": [{"index": 0, "delta": delta, "finish_reason": finish}]}
+            return ("data: " + json.dumps(self.mutate(event) if self.mutate else event) + "\n\n").encode()
+
+        parts = [(0.0, chunk({"role": "assistant", "content": ""})), (0.0, b": keep-alive\n\n")]
+        tokens = [{"reasoning": "think"}] * 3 if thinking else []
+        tokens += [{"content": "2"}, {"content": "04"}]
+        for i, delta in enumerate(tokens):
+            if self.drop_reasoning:
+                delta = {k: v for k, v in delta.items() if k != "reasoning"} or {"content": ""}
+            parts.append((self.first_delay if i == 0 else self.gap, chunk(delta)))
+        if self.cut_stream:
+            parts = parts[:3]  # role chunk, keep-alive, first token
+        else:
+            parts.append((self.gap, chunk({}, "stop")))
+            asked = (body.get("stream_options") or {}).get("include_usage") is True
+            injected = self.usage_chunk == "injects" and "stream_options" not in body
+            if self.usage_chunk is True or (self.usage_chunk in ("requested", "injects") and asked) or injected:
+                event = {"id": "chatcmpl-" + rid, "object": "chat.completion.chunk", "created": now,
+                         "model": body["model"], "choices": [],
+                         "usage": {"prompt_tokens": 9, "completion_tokens": 7, "total_tokens": 16}}
+                parts.append((0.0, ("data: " + json.dumps(event) + "\n\n").encode()))
+            parts.append((0.0, b"data: [DONE]\n\n"))
+        h.send_response(200)
+        h.send_header("Content-Type", "text/event-stream")
+        h.send_header("Connection", "close")
+        h.end_headers()
+        if self.buffer_stream:
+            time.sleep(sum(d for d, _ in parts))
+            h.wfile.write(b"".join(p for _, p in parts))
+            h.wfile.flush()
+            return
+        for delay, part in parts:
+            time.sleep(delay)
+            h.wfile.write(part)
+            h.wfile.flush()
+
+
+@pytest.fixture
+def stubs():
+    made = []
+
+    def make(**kw):
+        s = Stub(**kw)
+        made.append(s)
+        return s
+
+    yield make
+    for s in made:
+        s.stop()
+
+
+def _shim(tmp: Path, exit_code: int | None = None) -> Path:
+    """A curl on PATH that records each argv (one argument per line, `--` between calls), then
+    runs the real curl, or exits with `exit_code` (a connection failure) without running it."""
+    bindir = tmp / "bin"
+    bindir.mkdir(exist_ok=True)
+    tail = f"exit {exit_code}" if exit_code is not None else f'exec "{REAL_CURL}" "$@"'
+    (bindir / "curl").write_text(
+        "#!/bin/sh\n"
+        'for a in "$@"; do printf "%s\\n" "$a" >> "$SHIM_LOG"; done\n'
+        'printf -- "--\\n" >> "$SHIM_LOG"\n' + tail + "\n")
+    (bindir / "curl").chmod(0o755)
+    return bindir
+
+
+def _run(tmp: Path, gw: Stub, direct: Stub, *, direct_key=True, env=None, shim_exit=None, path_dirs=()):
+    out = tmp / "out"
+    out.mkdir(exist_ok=True)
+    (tmp / "gw.key").write_text(GW_KEY)
+    (tmp / "up.key").write_text(UP_KEY + "\n")
+    for f in ("gw.key", "up.key"):
+        (tmp / f).chmod(0o600)
+    bindir = _shim(tmp, shim_exit)
+    full_env = {
+        "PATH": os.pathsep.join([*map(str, path_dirs), str(bindir), os.environ["PATH"]]),
+        "SHIM_LOG": str(tmp / "argv.log"),
+        "AGW_CONF_OUT": str(out),
+        "AGW_CONF_GATEWAY_URL": gw.url,
+        "AGW_CONF_GATEWAY_KEY_FILE": str(tmp / "gw.key"),
+        "AGW_CONF_DIRECT_URL": direct.url,
+        "AGW_CONF_DIRECT_KEY_FILE": str(tmp / "up.key") if direct_key else "",
+        "AGW_CONF_MODEL": "m",
+        "AGW_CONF_TIMEOUT": "30",
+        **(env or {}),
+    }
+    r = subprocess.run(["bash", str(SCRIPT), "run"], env=full_env, capture_output=True, text=True, timeout=180)
+    results = out / "results.jsonl"
+    lines = [json.loads(x) for x in results.read_text().splitlines()] if results.exists() else []
+    return r, lines
+
+
+def _diff(tmp: Path, model_map: dict | None = None) -> dict:
+    extra = []
+    if model_map is not None:
+        (tmp / "model-map.json").write_text(json.dumps(model_map))
+        extra = [str(tmp / "model-map.json")]
+    r = subprocess.run(["bash", str(SCRIPT), "diff", str(tmp / "out" / "results.jsonl"), *extra],
+                       capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, r.stderr
+    return json.loads(r.stdout)
+
+
+def _case(report, name):
+    return next(c for c in report["cases"] if c["case"] == name)
+
+
+def _no_key_anywhere(tmp: Path, r: subprocess.CompletedProcess):
+    argv = (tmp / "argv.log").read_text()
+    for key in (GW_KEY, UP_KEY):
+        assert key not in argv, "a key reached curl's argv"
+        assert key not in r.stdout + r.stderr
+        assert key not in (tmp / "out" / "results.jsonl").read_text()
+
+
+# ── 2.1: the cases, the keys, the output ──────────────────────────────────────
+
+def test_identical_targets_match_every_case_and_ids_timestamps_and_key_order_are_ignored(tmp_path, stubs):
+    # Both stubs mint fresh ids and timestamps per response, and the "gateway" reverses key order.
+    gw, direct = stubs(key=GW_KEY, reorder=True), stubs(key=UP_KEY)
+    r, lines = _run(tmp_path, gw, direct)
+    assert r.returncode == 0, r.stderr
+    assert [(x["case"], x["target"]) for x in lines] == [(c, t) for c in CASES for t in ("gateway", "direct")]
+    assert all(x["status"] == 200 and x["curl_exit"] == 0 for x in lines), lines
+    report = _diff(tmp_path)
+    assert report["verdict"] == "pass" and report["matched"] == report["total"] == len(CASES), report
+    assert all(c["exact_body_match"] for c in report["cases"]), report
+    _no_key_anywhere(tmp_path, r)
+    # The output carries no body text: neither the stub's completion nor its reasoning.
+    text = (tmp_path / "out" / "results.jsonl").read_text()
+    assert "12*17 is 204" not in text and '"204"' not in text and "Newark" not in text
+
+
+def test_each_target_receives_its_own_key_from_a_file_never_from_argv(tmp_path, stubs):
+    gw, direct = stubs(key=GW_KEY), stubs(key=UP_KEY)
+    r, _ = _run(tmp_path, gw, direct)
+    assert r.returncode == 0, r.stderr
+    assert {s["auth"] for s in gw.seen} == {f"Bearer {GW_KEY}"}
+    assert {s["auth"] for s in direct.seen} == {f"Bearer {UP_KEY}"}  # the file's trailing newline is dropped
+    assert len(gw.seen) == len(direct.seen) == len(CASES)
+    _no_key_anywhere(tmp_path, r)
+
+
+def test_an_upstream_without_a_key_gets_no_authorization_header(tmp_path, stubs):
+    gw, direct = stubs(key=GW_KEY), stubs(key=None)
+    r, lines = _run(tmp_path, gw, direct, direct_key=False)
+    assert r.returncode == 0, r.stderr
+    assert {s["auth"] for s in direct.seen} == {None}
+    assert all(x["status"] == 200 for x in lines)
+
+
+def test_the_requests_carry_every_effort_the_kwargs_tools_stream_and_responses_shape(tmp_path, stubs):
+    gw, direct = stubs(key=GW_KEY), stubs(key=UP_KEY)
+    r, _ = _run(tmp_path, gw, direct)
+    assert r.returncode == 0, r.stderr
+    bodies = [s["body"] for s in direct.seen if s["path"] == "/v1/chat/completions"]
+    efforts = [b["reasoning_effort"] for b in bodies if "reasoning_effort" in b and not b.get("stream")
+               and not b.get("tools")]
+    assert efforts == EFFORTS
+    assert {"enable_thinking": False} in [b.get("chat_template_kwargs") for b in bodies]
+    assert {"reasoning_effort": "low"} in [b.get("chat_template_kwargs") for b in bodies]
+    assert any(b.get("tools") and b["tools"][0]["function"]["name"] == "get_weather" for b in bodies)
+    streamed = [b for b in bodies if b.get("stream")]
+    assert [b["reasoning_effort"] for b in streamed] == ["xhigh", "low"]
+    assert [b.get("stream_options") for b in streamed] == [
+        None, {"include_usage": True, "continuous_usage_stats": True}]
+    responses = [s["body"] for s in direct.seen if s["path"] == "/v1/responses"]
+    assert len(responses) == 1 and responses[0]["reasoning"] == {"effort": "low"}
+    assert "reasoning_effort" not in responses[0]
+    # The gateway and vLLM got the same request bodies, except that the opt-out stream reaches
+    # vLLM as the gateway should rewrite it.
+    def rewritten(b):
+        if b and b.get("stream_options") == {"include_usage": False}:
+            return {**b, "stream_options": {"include_usage": True, "continuous_usage_stats": True}}
+        return b
+    assert [rewritten(s["body"]) for s in gw.seen] == [s["body"] for s in direct.seen]
+
+
+def test_the_gateway_and_vllm_model_names_can_differ(tmp_path, stubs):
+    gw, direct = stubs(key=GW_KEY), stubs(key=UP_KEY)
+    r, _ = _run(tmp_path, gw, direct, env={"AGW_CONF_DIRECT_MODEL": "upstream-id"})
+    assert r.returncode == 0, r.stderr
+    posts = lambda s: {x["body"]["model"] for x in s.seen if x["method"] == "POST"}  # noqa: E731
+    assert posts(gw) == {"m"} and posts(direct) == {"upstream-id"}
+
+
+def test_stream_timing_measures_first_token_not_first_byte_and_the_chunk_gaps(tmp_path, stubs):
+    # The role chunk and a keep-alive arrive at once; the first token 0.4 s later; then 0.1 s gaps.
+    gw, direct = stubs(key=GW_KEY), stubs(key=UP_KEY, first_delay=0.4, gap=0.1, usage_chunk="requested")
+    r, lines = _run(tmp_path, gw, direct)
+    assert r.returncode == 0, r.stderr
+    d = next(x for x in lines if x["case"] == "stream-xhigh" and x["target"] == "direct")
+    assert 0.35 <= d["timing"]["ttft_s"] < 1.5, d
+    assert d["timing"]["keepalives"] == 1
+    gaps = d["timing"]["gaps"]
+    assert gaps["count"] == 5 and 0.07 <= gaps["p50_s"] <= 0.3, gaps
+    assert d["semantic"] == {"finish_reason": "stop", "has_content": True, "has_reasoning": True, "done": True,
+                             "error_event": False, "usage_chunk": False}
+
+
+def test_a_buffering_gateway_shows_in_the_timing_deltas(tmp_path, stubs):
+    gw, direct = stubs(key=GW_KEY, buffer_stream=True), stubs(key=UP_KEY)
+    r, lines = _run(tmp_path, gw, direct)
+    assert r.returncode == 0, r.stderr
+    g = next(x for x in lines if x["case"] == "stream-xhigh" and x["target"] == "gateway")
+    assert g["timing"]["gaps"]["max_s"] < 0.05, g  # every chunk arrived in one burst
+    delta = _case(_diff(tmp_path), "stream-xhigh")["timing_delta"]
+    assert delta["ttft_s"] > 0.3 and delta["gap_max_s"] < 0, delta
+
+
+# ── 2.2: the comparison ───────────────────────────────────────────────────────
+
+def test_a_gateway_that_strips_reasoning_fails_and_the_report_names_the_field(tmp_path, stubs):
+    gw, direct = stubs(key=GW_KEY, drop_reasoning=True), stubs(key=UP_KEY)
+    r, _ = _run(tmp_path, gw, direct)
+    assert r.returncode == 0, r.stderr
+    report = _diff(tmp_path)
+    assert report["verdict"] == "fail"
+    high = _case(report, "effort-high")
+    assert high["verdict"] == "differ" and high["status_match"] and not high["shape_match"]
+    assert {"key": "has_reasoning", "gateway": False, "direct": True} in high["semantic_diff"]
+    # Thinking off: no reasoning either way, so stripping it changes nothing the client sees.
+    assert _case(report, "effort-none")["semantic_match"]
+    assert "effort-high" in report["not_matched"] and "models" not in report["not_matched"]
+
+
+def test_a_gateway_without_the_responses_route_fails_on_status(tmp_path, stubs):
+    gw, direct = stubs(key=GW_KEY, responses_404=True), stubs(key=UP_KEY)
+    r, _ = _run(tmp_path, gw, direct)
+    assert r.returncode == 0, r.stderr
+    report = _diff(tmp_path)
+    c = _case(report, "responses")
+    assert c["status"] == {"gateway": 404, "direct": 200} and c["verdict"] == "error"
+    assert c["failure"] == "gateway HTTP 404, direct HTTP 200"
+    assert report["not_matched"] == ["responses"]
+    assert report["failures"] == ["responses: gateway HTTP 404, direct HTTP 200"]
+
+
+def test_identical_http_failures_on_both_sides_fail(tmp_path, stubs):
+    # Both targets refuse the key alike: the bodies match, the run must not (PR 409 review).
+    gw, direct = stubs(key="some-other-key"), stubs(key="some-other-key")
+    r, lines = _run(tmp_path, gw, direct)
+    assert r.returncode == 0, r.stderr
+    assert {x["status"] for x in lines} == {401}
+    report = _diff(tmp_path)
+    assert report["verdict"] == "fail" and report["matched"] == 0
+    for c in report["cases"]:
+        assert c["status_match"] and c["semantic_match"] and c["verdict"] == "error", c
+        assert c["failure"] == "gateway HTTP 401, direct HTTP 401"
+
+
+def _stream(lines, target):
+    return next(x for x in lines if x["case"] == "stream-xhigh" and x["target"] == target)
+
+
+def test_a_stream_the_gateway_ends_early_but_cleanly_fails_and_the_run_continues(tmp_path, stubs):
+    # curl sees a clean close (exit 0) and a 200: only the missing [DONE] tells. Under pipefail the
+    # run must neither abort on it nor let it pass.
+    gw, direct = stubs(key=GW_KEY, cut_stream=True), stubs(key=UP_KEY)
+    r, lines = _run(tmp_path, gw, direct)
+    assert r.returncode == 0, r.stderr
+    g = _stream(lines, "gateway")
+    assert g["curl_exit"] == 0 and g["status"] == 200 and g["semantic"]["done"] is False, g
+    assert lines[-1]["case"] == "responses"  # the cases after the stream still ran
+    c = _case(_diff(tmp_path), "stream-xhigh")
+    assert c["verdict"] == "error" and c["failure"] == "gateway HTTP 200, stream ended without [DONE], direct HTTP 200"
+
+
+def test_the_stream_request_leaves_usage_to_the_gateway(tmp_path, stubs):
+    # Task 2.3a: the client contract is unchanged, so conformance sends no stream_options; the
+    # gateway itself must add include_usage for the budget to charge the stream.
+    gw, direct = stubs(key=GW_KEY), stubs(key=UP_KEY)
+    r, _ = _run(tmp_path, gw, direct)
+    assert r.returncode == 0, r.stderr
+    streamed = [s["body"] for s in gw.seen + direct.seen if s["body"] and s["body"].get("stream")
+                and s["body"]["reasoning_effort"] == "xhigh"]
+    assert len(streamed) == 2 and all("stream_options" not in b for b in streamed), streamed
+    c = _case(_diff(tmp_path), "stream-xhigh")
+    assert c["verdict"] == "match" and c["stream_usage"] == {"gateway": True, "direct": True}, c
+
+
+@pytest.mark.parametrize("gw_usage", [False, "requested"])
+def test_a_gateway_stream_without_a_usage_chunk_fails_and_vllm_need_not_send_one(tmp_path, stubs, gw_usage):
+    # "requested": a gateway that only passes the client's stream_options through, i.e. does not
+    # add include_usage itself, charges a plain stream nothing.
+    gw, direct = stubs(key=GW_KEY, usage_chunk=gw_usage), stubs(key=UP_KEY, usage_chunk="requested")
+    r, _ = _run(tmp_path, gw, direct)
+    assert r.returncode == 0, r.stderr
+    report = _diff(tmp_path)
+    c = _case(report, "stream-xhigh")
+    assert c["verdict"] == "error" and c["stream_usage"] == {"gateway": False, "direct": False}, c
+    assert c["failure"] == ("gateway HTTP 200, stream carried no usage chunk "
+                            "(its tokens are not charged to the budget)"), c
+    assert report["verdict"] == "fail" and "stream-xhigh" in report["not_matched"]
+
+
+def test_a_gateway_usage_chunk_vllm_was_not_asked_for_is_not_a_semantic_difference(tmp_path, stubs):
+    # Production shape (tasks 2614/2698): only the gateway's stream carries usage. The flag is
+    # never compared, so the case turns on the shape allowlist alone.
+    gw, direct = stubs(key=GW_KEY), stubs(key=UP_KEY, usage_chunk="requested")
+    r, _ = _run(tmp_path, gw, direct)
+    assert r.returncode == 0, r.stderr
+    c = _case(_diff(tmp_path), "stream-xhigh")
+    assert c["semantic_match"] and c["stream_usage"] == {"gateway": True, "direct": False}, c
+    assert "usage.total_tokens" in c["shape_diff"]["only_gateway"], c
+
+
+def test_a_stream_cut_by_the_timeout_is_recorded_and_fails_without_aborting_the_run(tmp_path, stubs):
+    # Every stub answers its plain cases at once; only the stream waits 3 s for its first token,
+    # past the 1 s ceiling, so curl ends it with exit 28 mid-pipeline.
+    gw, direct = stubs(key=GW_KEY, first_delay=3), stubs(key=UP_KEY, first_delay=3)
+    r, lines = _run(tmp_path, gw, direct, env={"AGW_CONF_TIMEOUT": "1"})
+    assert r.returncode == 0, r.stderr
+    for t in ("gateway", "direct"):
+        assert _stream(lines, t)["curl_exit"] == 28, _stream(lines, t)
+    assert lines[-1]["case"] == "responses"
+    c = _case(_diff(tmp_path), "stream-xhigh")
+    assert c["verdict"] == "error" and c["failure"] == "gateway curl exit 28, direct curl exit 28"
+
+
+def test_a_failure_on_one_side_only_is_an_error(tmp_path):
+    out = tmp_path / "out"
+    out.mkdir()
+    base = {"case": "x", "status": 200, "curl_exit": 0, "body_sha256": "a", "shape_sha256": "s",
+            "semantic": {}, "timing": {}}
+    (out / "results.jsonl").write_text(
+        json.dumps({**base, "target": "gateway", "status": 0, "curl_exit": 28}) + "\n"
+        + json.dumps({**base, "target": "direct"}) + "\n")
+    c = _case(_diff(tmp_path), "x")
+    assert c["verdict"] == "error" and c["failure"] == "gateway curl exit 28, direct HTTP 200"
+
+
+REMAP = {"gpt-oss-20b": "openai/gpt-oss-20b"}
+
+
+def _remap_run(tmp_path, stubs, gateway_models):
+    # The gateway serves its declared name; vLLM serves the upstream id and one more model the
+    # gateway does not expose. Each stub echoes the model it was asked for, as both do.
+    gw = stubs(key=GW_KEY, models=gateway_models)
+    direct = stubs(key=UP_KEY, models=["openai/gpt-oss-20b", "undeclared-extra"])
+    r, _ = _run(tmp_path, gw, direct,
+                env={"AGW_CONF_MODEL": "gpt-oss-20b", "AGW_CONF_DIRECT_MODEL": "openai/gpt-oss-20b"})
+    assert r.returncode == 0, r.stderr
+
+
+def test_a_declared_model_remap_is_not_a_difference(tmp_path, stubs):
+    _remap_run(tmp_path, stubs, ["gpt-oss-20b"])
+    report = _diff(tmp_path, REMAP)
+    assert report["verdict"] == "pass", report
+
+
+def test_without_the_mapping_the_remap_shows_as_a_difference(tmp_path, stubs):
+    _remap_run(tmp_path, stubs, ["gpt-oss-20b"])
+    report = _diff(tmp_path)
+    assert report["verdict"] == "fail"
+    assert {"key": "model", "gateway": "gpt-oss-20b", "direct": "openai/gpt-oss-20b"} in \
+        _case(report, "effort-low")["semantic_diff"]
+
+
+@pytest.mark.parametrize("gateway_models, mapping", [
+    (["gpt-oss-20b", "not-declared"], REMAP),            # the gateway exposes an undeclared model
+    (["gpt-oss-20b"], {"gpt-oss-20b": "openai/other"}),  # the declared upstream is not what vLLM serves
+])
+def test_a_real_model_mismatch_still_fails(tmp_path, stubs, gateway_models, mapping):
+    _remap_run(tmp_path, stubs, gateway_models)
+    report = _diff(tmp_path, mapping)
+    assert report["verdict"] == "fail" and "models" in report["not_matched"], report
+
+
+def test_a_malformed_model_map_is_refused(tmp_path):
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "results.jsonl").write_text("")
+    (tmp_path / "bad.json").write_text('["not", "an", "object"]')
+    r = subprocess.run(["bash", str(SCRIPT), "diff", str(out / "results.jsonl"), str(tmp_path / "bad.json")],
+                       capture_output=True, text=True, timeout=60)
+    assert r.returncode == 2 and "must be a JSON object of strings" in r.stderr
+
+
+def test_a_shape_difference_alone_fails_the_case(tmp_path):
+    # Same status and semantics, different shape (a field added or removed that the semantic
+    # summary does not look at): still a difference.
+    base = {"case": "x", "status": 200, "curl_exit": 0, "body_sha256": "a", "shape_sha256": "s1",
+            "semantic": {"k": 1}, "timing": {"total_s": 1.0, "gaps": {}}}
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "results.jsonl").write_text(
+        json.dumps({**base, "target": "gateway"}) + "\n"
+        + json.dumps({**base, "target": "direct", "shape_sha256": "s2"}) + "\n")
+    c = _case(_diff(tmp_path), "x")
+    assert c["semantic_match"] and c["status_match"] and not c["shape_match"] and c["verdict"] == "differ"
+
+
+def test_a_case_missing_a_target_is_incomplete_and_fails(tmp_path):
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "results.jsonl").write_text(json.dumps(
+        {"case": "models", "target": "gateway", "status": 200, "curl_exit": 0, "body_sha256": "a",
+         "shape_sha256": "b", "semantic": {}, "timing": {}}) + "\n")
+    report = _diff(tmp_path)
+    assert report["verdict"] == "fail" and report["cases"] == [{"case": "models", "verdict": "incomplete"}]
+
+
+def test_unreachable_targets_are_an_error_even_when_both_fail_alike(tmp_path, stubs):
+    gw, direct = stubs(key=GW_KEY), stubs(key=UP_KEY)
+    r, lines = _run(tmp_path, gw, direct, shim_exit=7)
+    assert r.returncode == 0, r.stderr
+    assert lines and all(x["status"] == 0 and x["curl_exit"] == 7 for x in lines)
+    report = _diff(tmp_path)
+    assert report["verdict"] == "fail" and {c["verdict"] for c in report["cases"]} == {"error"}
+    assert {c["failure"] for c in report["cases"]} == {"gateway curl exit 7, direct curl exit 7"}
+
+
+# ── shape differences named, allowlist ────────────────────────────────────────
+# Values the stubs put in fields: none of them may appear in any output, only the key paths.
+SECRET = "SYNTHETIC-SECRET-CONTENT-5d1e"
+ALLOW = REPO / "platform/services/agentgateway/deployment/tests/conformance-shape-allow.json"
+
+
+def _adds_route(body):
+    """The gateway adds one object to every body and chunk; its value is a secret-looking string."""
+    return {**body, "x_route": {"trace": SECRET}}
+
+
+def _drops_prompt_tokens(body):
+    """The gateway drops usage.prompt_tokens from completions (no semantic field reads it)."""
+    if "usage" in body:
+        body = {**body, "usage": {k: v for k, v in body["usage"].items() if k != "prompt_tokens"}}
+    return body
+
+
+def _retypes_prompt_tokens(body):
+    if "usage" in body:
+        body = {**body, "usage": {**body["usage"], "prompt_tokens": str(body["usage"]["prompt_tokens"])}}
+    return body
+
+
+def _diff_allow(tmp: Path, allow: dict | None):
+    args = ["bash", str(SCRIPT), "diff", str(tmp / "out" / "results.jsonl"), ""]
+    if allow is not None:
+        # A complete file: the lists the test does not name are present and empty.
+        (tmp / "allow.json").write_text(json.dumps({**FULL_ALLOW, **allow}))
+        args.append(str(tmp / "allow.json"))
+    r = subprocess.run(args, capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, r.stderr
+    assert SECRET not in r.stdout
+    return json.loads(r.stdout)
+
+
+def test_a_shape_only_difference_is_named_by_path_and_no_value_is_printed(tmp_path, stubs):
+    gw, direct = stubs(key=GW_KEY, mutate=_adds_route), stubs(key=UP_KEY)
+    r, lines = _run(tmp_path, gw, direct)
+    assert r.returncode == 0, r.stderr
+    assert SECRET not in (tmp_path / "out" / "results.jsonl").read_text() + r.stdout + r.stderr
+    report = _diff_allow(tmp_path, None)
+    assert report["verdict"] == "fail" and report["matched"] == 0
+    for c in report["cases"]:
+        assert c["status_match"] and c["semantic_match"] and not c["shape_match"], c
+        assert c["shape_diff"] == {"only_gateway": ["x_route.trace"], "only_direct": [], "type_changed": []}, c
+        assert c["shape_unaccepted"] == c["shape_diff"] and c["verdict"] == "differ"
+    assert set(report["shape_differences"]) == set(CASES)
+    # Each result line carries the shape as paths and types, and nothing else of the body.
+    g = next(x for x in lines if x["case"] == "effort-low" and x["target"] == "gateway")
+    assert "x_route.trace:string" in g["shape"] and "choices.[].message.content:string" in g["shape"]
+    assert all(":" in e for e in g["shape"])
+
+
+def test_an_allowlisted_addition_passes_and_is_reported_as_allowed(tmp_path, stubs):
+    gw, direct = stubs(key=GW_KEY, mutate=_adds_route), stubs(key=UP_KEY)
+    _run(tmp_path, gw, direct)
+    report = _diff_allow(tmp_path, {"gateway_may_add": ["x_route.trace"]})
+    assert report["verdict"] == "pass", report
+    c = _case(report, "stream-xhigh")
+    assert not c["shape_match"] and c["shape_accepted"] and c["shape_allowed"]["only_gateway"] == ["x_route.trace"]
+
+
+def test_an_allowlisted_addition_does_not_excuse_an_unlisted_drop(tmp_path, stubs):
+    gw = stubs(key=GW_KEY, mutate=lambda b: _drops_prompt_tokens(_adds_route(b)))
+    direct = stubs(key=UP_KEY)
+    _run(tmp_path, gw, direct)
+    report = _diff_allow(tmp_path, {"gateway_may_add": ["x_route.trace"]})
+    assert report["verdict"] == "fail"
+    c = _case(report, "effort-low")
+    assert c["shape_unaccepted"] == {"only_gateway": [], "only_direct": ["usage.prompt_tokens"], "type_changed": []}
+    assert c["verdict"] == "differ" and _case(report, "models")["verdict"] == "match"
+    assert sorted(report["not_matched"]) == sorted(c for c in CASES if c.startswith(("effort-", "chat-", "tool-")))
+
+
+def test_a_type_change_is_named_and_only_its_own_allowlist_entry_accepts_it(tmp_path, stubs):
+    gw, direct = stubs(key=GW_KEY, mutate=_retypes_prompt_tokens), stubs(key=UP_KEY)
+    _run(tmp_path, gw, direct)
+    c = _case(_diff_allow(tmp_path, {"gateway_may_add": ["usage.prompt_tokens"]}), "effort-low")
+    assert c["shape_diff"]["type_changed"] == [{"path": "usage.prompt_tokens", "gateway": ["string"],
+                                                "direct": ["number"]}]
+    assert c["verdict"] == "differ"
+    retype_ok = _diff_allow(tmp_path, {"gateway_may_retype": ["usage.prompt_tokens"]})
+    assert _case(retype_ok, "effort-low")["verdict"] == "match"
+
+
+FULL_ALLOW = {"gateway_may_add": [], "gateway_may_drop": [], "gateway_may_retype": []}
+
+
+def test_a_per_case_entry_accepts_the_path_for_that_case_only(tmp_path, stubs):
+    # A path accepted for the stream must not excuse the same path appearing in a plain completion.
+    gw, direct = stubs(key=GW_KEY, mutate=_adds_route), stubs(key=UP_KEY)
+    _run(tmp_path, gw, direct)
+    report = _diff_allow(tmp_path, {"cases": {"stream-xhigh": {"gateway_may_add": ["x_route.trace"]}}})
+    s = _case(report, "stream-xhigh")
+    assert s["verdict"] == "match" and s["shape_allowed"]["only_gateway"] == ["x_route.trace"]
+    c = _case(report, "effort-low")
+    assert c["verdict"] == "differ" and c["shape_unaccepted"]["only_gateway"] == ["x_route.trace"]
+    assert report["verdict"] == "fail" and "stream-xhigh" not in report["not_matched"]
+
+
+@pytest.mark.parametrize("allow", [
+    {**FULL_ALLOW, "gateway_may_ad": ["x"]},           # a misspelt extra key
+    {**FULL_ALLOW, "gateway_may_add": "x_route"},      # not a list
+    {**FULL_ALLOW, "gateway_may_drop": [1]},           # not a list of strings
+    ["x_route.trace"],                                 # not an object
+    {},                                                # empty: every list missing
+    {"_comment": "only a comment"},                    # comment only
+    {"gateway_may_add": ["x"], "gateway_may_drop": []},  # partial: gateway_may_retype missing
+    {**FULL_ALLOW, "_comment": ["not", "a", "string"]},  # comment not a string
+    {**FULL_ALLOW, "cases": []},                                            # cases not an object
+    {**FULL_ALLOW, "cases": {"models": ["x"]}},                             # case entry not an object
+    {**FULL_ALLOW, "cases": {"models": {}}},                                # case entry empty
+    {**FULL_ALLOW, "cases": {"models": {"gateway_may_ad": ["x"]}}},         # misspelt list in a case
+    {**FULL_ALLOW, "cases": {"models": {"gateway_may_drop": "x"}}},         # case list not a list
+    {**FULL_ALLOW, "cases": {"models": {"gateway_may_drop": [1]}}},         # case list not strings
+    {**FULL_ALLOW, "cases": {"": {"gateway_may_drop": ["x"]}}},             # empty case name
+])
+def test_a_malformed_shape_allowlist_is_refused(tmp_path, allow):
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "results.jsonl").write_text("")
+    (tmp_path / "allow.json").write_text(json.dumps(allow))
+    r = subprocess.run(["bash", str(SCRIPT), "diff", str(out / "results.jsonl"), "", str(tmp_path / "allow.json")],
+                       capture_output=True, text=True, timeout=60)
+    assert r.returncode == 2 and "shape allowlist" in r.stderr, r.stderr
+
+
+def test_a_complete_empty_allowlist_with_a_comment_is_accepted(tmp_path):
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "results.jsonl").write_text("")
+    (tmp_path / "allow.json").write_text(json.dumps({**FULL_ALLOW, "_comment": "why"}))
+    r = subprocess.run(["bash", str(SCRIPT), "diff", str(out / "results.jsonl"), "", str(tmp_path / "allow.json")],
+                       capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, r.stderr
+
+
+def test_the_committed_shape_allowlist_passes_the_scripts_own_refusal_rules(tmp_path):
+    # The file the playbook hands to the diff must be one conformance.sh accepts.
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "results.jsonl").write_text("")
+    r = subprocess.run(["bash", str(SCRIPT), "diff", str(out / "results.jsonl"), "", str(ALLOW)],
+                       capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, r.stderr
+
+
+T2614 = REPO / "platform/services/agentgateway/deployment/tests/conformance-shape-t2614.json"
+T2698 = REPO / "platform/services/agentgateway/deployment/tests/conformance-shape-t2698.json"
+RECORDS = {"2614": T2614, "2698": T2698}
+_LISTS = (("gateway_may_add", "only_gateway"), ("gateway_may_drop", "only_direct"),
+          ("gateway_may_retype", "type_changed"))
+
+
+def test_the_committed_shape_allowlist_accepts_exactly_the_union_of_the_recorded_runs():
+    # Operator decision 2026-10-03: accept every difference a production run reported, for the case
+    # it was seen in. Each record is one run's shape_diff, paths only (tasks 2614 and 2698; the
+    # stream chunk-union shape varies run to run). The allowlist must equal their union exactly:
+    # nothing missing, and nothing extra in any case or at the top level.
+    allow = json.loads(ALLOW.read_text())
+    records = [json.loads(p.read_text())["cases"] for p in RECORDS.values()]
+    assert set(allow) == set(FULL_ALLOW) | {"_comment", "cases"}
+    assert all(task in allow["_comment"] for task in RECORDS)
+    cases = set().union(*records)
+    assert set(allow["cases"]) <= cases
+    for case in cases:
+        own = allow["cases"].get(case, {})
+        for name, key in _LISTS:
+            seen = set().union(*(set(r.get(case, {}).get(key, [])) for r in records))
+            assert sorted(set(allow[name]) | set(own.get(name, []))) == sorted(seen), (case, name)
+    for lists in [allow, *allow["cases"].values()]:
+        for name, _ in _LISTS:
+            paths = lists.get(name, [])
+            assert all(isinstance(p, str) and p for p in paths) and paths == sorted(set(paths)), name
+
+
+@pytest.mark.parametrize("task", sorted(RECORDS))
+def test_each_run_record_carries_paths_only(task):
+    record = json.loads(RECORDS[task].read_text())
+    assert set(record) == {"_comment", "cases"} and len(record["cases"]) == 13 and task in record["_comment"]
+    for seen in record["cases"].values():
+        assert set(seen) == {"only_gateway", "only_direct", "type_changed"}
+        assert all(isinstance(p, str) and p for v in seen.values() for p in v)
+
+
+# The playbook's own model-selection expressions, rendered by ansible's templar in a fresh
+# interpreter per PYTHONHASHSEED. `intersect` (a set operation) made `first` pick a different model
+# per process; the selection must follow allowed_models order, else agw_models order.
+_RENDER = """
+import json, sys, yaml
+from ansible.parsing.dataloader import DataLoader
+from ansible.template import Templar, trust_as_template
+play = next(p for p in yaml.safe_load(open(sys.argv[1])) if "_model" in p.get("vars", {}))
+v = json.loads(sys.argv[2])
+for k in ("_client", "_client_models", "_model"):
+    v[k] = Templar(loader=DataLoader(), variables=v).template(trust_as_template(play["vars"][k]))
+print(json.dumps(v["_model"]))
+"""
+
+
+def _ansible_python():
+    exe = shutil.which("ansible-playbook")
+    if not exe:
+        pytest.skip("ansible-playbook not installed")
+    first = Path(exe).read_text(errors="replace").splitlines()[0]
+    return first[2:].strip().split()[-1] if first.startswith("#!") else sys.executable
+
+
+_MODELS = [{"name": n} for n in ("a", "b", "c", "d", "e", "f")]
+
+
+@pytest.mark.parametrize("inputs,expected", [
+    ({"agw_clients": ["workstation"], "agw_models": _MODELS,
+      "agw_client_policies": {"workstation": {"allowed_models": ["e", "undeclared", "c", "a"]}}}, "e"),
+    ({"agw_clients": ["workstation"], "agw_models": _MODELS}, "a"),
+])
+def test_the_conformance_model_is_the_same_under_every_hash_seed(inputs, expected):
+    py = _ansible_python()
+    picked = set()
+    for seed in ("1", "2", "3", "4", "5", "6"):
+        r = subprocess.run([py, "-c", _RENDER, str(PLAYBOOK), json.dumps(inputs)], capture_output=True, text=True,
+                           timeout=120, env={**os.environ, "PYTHONHASHSEED": seed})
+        assert r.returncode == 0, r.stderr[-2000:]
+        picked.add(json.loads(r.stdout.strip().splitlines()[-1]))
+    assert picked == {expected}
+
+
+# ── listener TLS options and input checks ─────────────────────────────────────
+
+def test_listener_tls_options_go_to_the_gateway_only(tmp_path, stubs):
+    gw, direct = stubs(key=GW_KEY), stubs(key=UP_KEY)
+    tls = {"AGW_CONF_GATEWAY_CERT": "/leaf/cert.pem", "AGW_CONF_GATEWAY_CERT_KEY": "/leaf/key.pem",
+           "AGW_CONF_GATEWAY_CA": "/ca/bundle.crt"}
+    r, _ = _run(tmp_path, gw, direct, env=tls, shim_exit=7)
+    assert r.returncode == 0, r.stderr
+    calls = [c.strip("\n").split("\n") for c in (tmp_path / "argv.log").read_text().split("--\n") if c.strip()]
+    gw_calls = [c for c in calls if any(a.startswith(gw.url) for a in c)]
+    direct_calls = [c for c in calls if any(a.startswith(direct.url) for a in c)]
+    assert len(gw_calls) == len(direct_calls) == len(CASES)
+    for c in gw_calls:
+        for flag, value in (("--cert", "/leaf/cert.pem"), ("--key", "/leaf/key.pem"), ("--cacert", "/ca/bundle.crt")):
+            assert c[c.index(flag) + 1] == value
+    for c in direct_calls:
+        assert not {"--cert", "--key", "--cacert"} & set(c)
+    # The name resolves through the host resolver, as for every other gateway probe (task 6.1a).
+    assert not any("--resolve" in c for c in calls)
+
+
+@pytest.mark.parametrize("env, message", [
+    ({"AGW_CONF_GATEWAY_CERT": "/c.pem"}, "go together"),
+    ({"AGW_CONF_TIMEOUT": "x"}, "AGW_CONF_TIMEOUT must be a positive integer"),
+    ({"AGW_CONF_GATEWAY_KEY_FILE": "/nonexistent/key"}, "is not readable"),
+])
+def test_bad_inputs_stop_before_any_request(tmp_path, stubs, env, message):
+    gw, direct = stubs(key=GW_KEY), stubs(key=UP_KEY)
+    r, lines = _run(tmp_path, gw, direct, env=env)
+    assert r.returncode == 2 and message in r.stderr, r.stderr
+    assert gw.seen == [] and direct.seen == [] and lines == []
+
+
+def test_a_failure_mid_run_removes_the_bodies(tmp_path, stubs):
+    # A jq that dies while reading the stream: the script stops there, and the working directory
+    # holding every request and response body is gone, while the results so far remain.
+    real_jq = shutil.which("jq")
+    jqdir = tmp_path / "jqbin"
+    jqdir.mkdir()
+    (jqdir / "jq").write_text(
+        '#!/bin/sh\nfor a in "$@"; do [ "$a" = --unbuffered ] && { cat >/dev/null; exit 5; }; done\n'
+        f'exec "{real_jq}" "$@"\n')
+    (jqdir / "jq").chmod(0o755)
+    gw, direct = stubs(key=GW_KEY), stubs(key=UP_KEY)
+    r, lines = _run(tmp_path, gw, direct, path_dirs=[jqdir])
+    assert r.returncode == 2 and "jq failed while reading the gateway stream" in r.stderr, r.stderr
+    assert not list((tmp_path / "out").glob("work.*"))
+    assert lines and lines[-1]["case"] == "tool-call"
+
+
+def test_the_seven_efforts_match_the_dgx_spark_endpoint_contract():
+    # The seven values vLLM's request schema advertises, as dgx-spark records them
+    # (dgx-spark plans/development/openspec/specs/inference-endpoint/spec.md and
+    # vllm/public_probe.py EFFORTS). The script must send exactly these.
+    text = SCRIPT.read_text()
+    assert 'EFFORTS="none minimal low medium high xhigh max"' in text
+
+
+# ── run-agw-conformance.yml, for real ─────────────────────────────────────────
+
+class Bao(seed_harness.FakeBao):
+    store: dict = {}
+
+    def do_POST(self):
+        self.record("POST")
+        if self.path == "/v1/auth/approle/login":
+            return self.reply({"auth": {"client_token": seed_harness.LOGIN}})
+        self.reply({}, 404)
+
+    def do_GET(self):
+        self.record("GET")
+        if self.path == "/v1/secret/data/services/agentgateway":
+            return self.reply({"data": {"data": type(self).store, "metadata": {"version": 1}}})
+        self.reply({}, 404)
+
+
+def _playbook(tmp: Path, gw: Stub, direct: Stub, extra=None, check=False, host_vars=None):
+    Bao.requests = []
+    Bao.store = {"client_workstation": GW_KEY, "vllm_api_key": UP_KEY, "agw_db_password": "synthetic-db"}
+    with seed_harness.serve(Bao) as address:
+        host = {"ansible_connection": "local", "ansible_python_interpreter": sys.executable,
+                "service_name": "agentgateway", "agw_clients": ["workstation"], "agw_models": [{"name": "m"}],
+                "agw_upstream_base_url": direct.url, "agw_bind": "127.0.0.1", "agw_port": gw.port,
+                **(host_vars or {})}
+        inv = {"all": {"vars": {"openbao_addr": address},
+                       "children": {"agentgateway_svc": {"hosts": {"gw": host}}}}}
+        (tmp / "inv.yml").write_text(yaml.safe_dump(inv))
+        cmd = ["ansible-playbook", "-v", "-i", str(tmp / "inv.yml"), str(PLAYBOOK),
+               "-e", json.dumps({**seed_harness.ROLE, **(extra or {})}), *(["--check"] if check else [])]
+        env = {**harness_sandbox.env_for(tmp), "ANSIBLE_STDOUT_CALLBACK": "default"}
+        r = harness_sandbox.run(cmd, tmp, cwd=REPO, env=env, timeout=300)
+    out = r.stdout + r.stderr
+    for value in (GW_KEY, UP_KEY, "synthetic-db", *seed_harness.NEVER_PRINTED):
+        assert value not in out, f"{value} printed"
+    # -v prints the tempfile result; every directory it made must be gone after the run.
+    made = re.findall(r'"path": "([^"]*agw-conformance\.[^"]*)"', out)
+    return r.returncode, out, made
+
+
+def _left_behind(made):
+    return [p for p in dict.fromkeys(made) if os.path.exists(p)]
+
+
+def test_the_playbook_runs_reports_and_removes_its_directory(tmp_path, stubs):
+    gw, direct = stubs(key=GW_KEY), stubs(key=UP_KEY)
+    rc, out, made = _playbook(tmp_path, gw, direct)
+    assert rc == 0, out
+    assert f"Conformance as workstation for m: PASS, {len(CASES)}/{len(CASES)} cases match." in out
+    assert '"agw_conformance"' in out or "agw_conformance" in out  # CUSTOM STATS
+    # The one keyless probe through the shared probe path first, then every case with the key.
+    assert gw.seen[0]["path"] == "/v1/models" and gw.seen[0]["auth"] is None
+    assert len(gw.seen) - 1 == len(direct.seen) == len(CASES)
+    assert all(x["auth"] == f"Bearer {GW_KEY}" for x in gw.seen[1:])
+    assert made and not _left_behind(made), "working directory left behind"
+
+
+def test_a_failing_run_still_removes_the_keys(tmp_path, stubs):
+    gw, direct = stubs(key=GW_KEY), stubs(key=UP_KEY)
+    rc, out, made = _playbook(tmp_path, gw, direct, extra={"agw_conformance_timeout": "x"})
+    assert rc != 0 and "AGW_CONF_TIMEOUT must be a positive integer" in out, out
+    assert made and not _left_behind(made), "working directory (with keys) left behind"
+
+
+def test_a_difference_fails_the_playbook_with_the_case_named(tmp_path, stubs):
+    gw, direct = stubs(key=GW_KEY, responses_404=True), stubs(key=UP_KEY)
+    rc, out, made = _playbook(tmp_path, gw, direct)
+    assert rc != 0 and "The gateway did not match direct vLLM on: responses." in out, out
+    assert made and not _left_behind(made)
+
+
+def test_the_playbook_hands_the_declared_model_remap_to_the_comparison(tmp_path, stubs):
+    gw = stubs(key=GW_KEY, models=["gpt-oss-20b"])
+    direct = stubs(key=UP_KEY, models=["openai/gpt-oss-20b", "undeclared-extra"])
+    rc, out, made = _playbook(tmp_path, gw, direct, host_vars={
+        "agw_models": [{"name": "gpt-oss-20b", "upstream_model": "openai/gpt-oss-20b"}]})
+    assert rc == 0 and f"PASS, {len(CASES)}/{len(CASES)} cases match" in out, out
+    assert {x["body"]["model"] for x in direct.seen if x["method"] == "POST"} == {"openai/gpt-oss-20b"}
+    assert made and not _left_behind(made)
+
+
+# The run's first play refuses every underscore-prefixed extra var by name
+# (refuse-internal-extra-vars.yml), so a template that shows a check one value and the work
+# another (forgeries.py; docs/MISTAKES.md 1.15) is refused before anything renders it.
+def _refused_first(out: str, name: str) -> bool:
+    return f"Refusing to run: {name} set from outside the playbook" in out
+
+
+@pytest.mark.parametrize("name, forge", [
+    pytest.param(name, f.values[0], id=f"{name}-{f.id}")
+    for name in ["victim", "agw-conformance.evil"]
+    for f in forgeries.templated_forgeries("_agwc_tmpdir", {"path": "/tmp/agw-conformance.honest"},
+                                           lambda t, n=name: {"path": str(t / n)})
+])
+def test_an_extra_var_cannot_redirect_the_key_files_or_the_delete(tmp_path, stubs, name, forge):
+    # An extra var outranks the registered tempfile result. Aim it at a directory holding a canary:
+    # nothing is written into it and it is not deleted, whether or not its name has the prefix
+    # (the second is not directly under the temp root).
+    target = tmp_path / name
+    target.mkdir()
+    (target / "canary").write_text("keep")
+    gw, direct = stubs(key=GW_KEY), stubs(key=UP_KEY)
+    rc, out, _ = _playbook(tmp_path, gw, direct, extra=json.loads(forge(tmp_path)))
+    assert rc != 0 and _refused_first(out, "_agwc_tmpdir"), out
+    assert sorted(p.name for p in target.iterdir()) == ["canary"]
+    assert [x for x in gw.seen if x["auth"]] == [] and direct.seen == []
+
+
+def test_the_playbook_prints_the_shape_differences_by_path_only(tmp_path, stubs):
+    gw, direct = stubs(key=GW_KEY, mutate=_adds_route), stubs(key=UP_KEY)
+    rc, out, made = _playbook(tmp_path, gw, direct)
+    assert rc != 0 and "shape differences (paths only)" in out, out
+    assert '"x_route.trace"' in out and SECRET not in out
+    assert made and not _left_behind(made)
+
+
+def test_a_dry_run_sends_nothing(tmp_path, stubs):
+    gw, direct = stubs(key=GW_KEY), stubs(key=UP_KEY)
+    rc, out, _ = _playbook(tmp_path, gw, direct, check=True)
+    assert rc == 0 and "nothing was sent" in out, out
+    assert gw.seen == [] and direct.seen == [] and Bao.requests == []
+
+
+def test_a_gateway_that_answers_a_keyless_request_stops_the_run_before_any_key_is_read(tmp_path, stubs):
+    # The shared probe's keyless /v1/models must be refused (401). A gateway that serves it has no
+    # key check in front of the upstream, so the run stops there: OpenBao is never read, no key file
+    # is written and no completion is spent on either side.
+    gw, direct = stubs(key=None), stubs(key=UP_KEY)
+    rc, out, made = _playbook(tmp_path, gw, direct)
+    assert rc != 0 and "the gateway must refuse it with 401 before conformance spends a key" in out, out
+    assert [(x["method"], x["path"], x["auth"]) for x in gw.seen] == [("GET", "/v1/models", None)]
+    assert direct.seen == [] and Bao.requests == [] and made == []
+
+
+def _tls_host(tmp: Path):
+    """Listener TLS host vars whose leaf and bundle files exist (placeholder bytes: the run must stop
+    before a handshake). The resolution step reads this machine's /etc/hosts, which carries no
+    interim marker line for the example name."""
+    leaf = tmp / "leaves" / "agw-verifier"
+    (leaf / "current").mkdir(parents=True)
+    for f in ("cert.pem", "key.pem"):
+        (leaf / "current" / f).write_text("placeholder\n")
+    certs = tmp / "mono" / "platform/services/agentgateway/deployment/certs"
+    certs.mkdir(parents=True)
+    (certs / "step-ca-bundle.crt").write_text("placeholder\n")
+    return {"agw_listener_tls": True, "agw_tls_server_name": "gateway.dc1.example.internal",
+            "internal_leaves": [{"name": "agw-verifier", "dir": str(leaf)}],
+            "local_monorepo_dir": str(tmp / "mono")}
+
+
+def test_with_listener_tls_a_name_the_deploy_has_not_mapped_stops_the_run_before_any_request(tmp_path, stubs):
+    # The cases' curl resolves the SAN through this host's resolver, so the playbook first requires
+    # the one resolution step's mapping, read-only (Deploy agentgateway writes it): without it,
+    # nothing is probed, read or sent. (A line mapped to another address is the shared task's own
+    # test, platform/tests/test_agw_internal_dns_records.py.)
+    gw, direct = stubs(key=GW_KEY), stubs(key=UP_KEY)
+    rc, out, made = _playbook(tmp_path, gw, direct, host_vars=_tls_host(tmp_path))
+    assert rc != 0 and "Run Deploy agentgateway to converge the probe name's resolution" in out, out
+    assert gw.seen == [] and direct.seen == [] and Bao.requests == [] and made == []
+
+
+# Every input the two shared includes take (refused by this playbook), and every name the shared
+# tasks write (refused inside them, for every caller).
+PROBE_INPUTS = ["_agwr_check_only", "_agwr_name", "_agwr_ip", "_agwr_expect", "_agwr_hosts_file",
+                "_agwp_base", "_agwp_path", "_agwp_status", "_agwp_key", "_agwp_method", "_agwp_timeout",
+                "_agwp_leaf_dir", "_agwp_ca"]
+# The one gateway URL the gate probes and the cases use, set after the refusal.
+GATEWAY_URLS = ["_gateway_base", "_gateway_url"]
+PROBE_INTERNALS = {"_agwp_raw": {"status": 401}, "_agwp_out": {"status": 401, "msg": "", "content": "", "json": {}}}
+
+
+@pytest.mark.parametrize("name, forge", [
+    pytest.param(n, f.values[0], id=f"{n}-{f.id}")
+    for n, value in [*[(n, "/forged") for n in PROBE_INPUTS + GATEWAY_URLS], *PROBE_INTERNALS.items()]
+    for f in forgeries.templated_forgeries(n, "__override_probe__", value)
+])
+def test_an_extra_var_cannot_aim_or_forge_the_keyless_gate(tmp_path, stubs, name, forge):
+    # The gateway here serves a keyless request: only a redirected or forged gate could pass it.
+    # Each name is refused before any request, any OpenBao read and any key file.
+    gw, direct = stubs(key=None), stubs(key=UP_KEY)
+    rc, out, made = _playbook(tmp_path, gw, direct, extra=json.loads(forge(tmp_path)))
+    assert rc != 0 and _refused_first(out, name), out
+    assert gw.seen == [] and direct.seen == [] and Bao.requests == [] and made == []
+
+
+@pytest.mark.parametrize("name, forge", [
+    pytest.param(n, f.values[0], id=f"{n}-{f.id}")
+    for n, value in [("_agwr_hosts", {"content": "MTI3LjAuMC4xIGdhdGV3YXk="}),
+                     ("_agwr_getent", {"rc": 0, "stdout_lines": ["127.0.0.1"]})]
+    for f in forgeries.templated_forgeries(n, "__override_probe__", value)
+])
+def test_an_extra_var_cannot_forge_the_resolution_verdict(tmp_path, stubs, name, forge):
+    gw, direct = stubs(key=GW_KEY), stubs(key=UP_KEY)
+    rc, out, made = _playbook(tmp_path, gw, direct, host_vars=_tls_host(tmp_path), extra=json.loads(forge(tmp_path)))
+    assert rc != 0 and _refused_first(out, name), out
+    assert gw.seen == [] and direct.seen == [] and Bao.requests == [] and made == []
+
+
+def test_a_body_extra_var_does_not_turn_the_keyless_probe_into_a_write(tmp_path, stubs):
+    # The value probe could not refuse _agwp_body (refusing leaves it defined), so the shared
+    # probe also sends a body only with POST and pins the method to GET. The run's first play
+    # now refuses it by name before anything is sent.
+    gw, direct = stubs(key=GW_KEY), stubs(key=UP_KEY)
+    rc, out, made = _playbook(tmp_path, gw, direct, extra={"_agwp_body": {"model": "m"}})
+    assert rc != 0 and _refused_first(out, "_agwp_body"), out
+    assert gw.seen == [] and direct.seen == [] and Bao.requests == [] and made == []
+
+
+def test_with_listener_tls_the_keyless_probe_names_the_san_and_presents_the_verifier_leaf():
+    # Structure the stub run cannot reach without a CA: the probe goes through tasks/agw-probe.yml
+    # with the verifier leaf and bundle the TLS precheck stats, and the resolution step it relies on
+    # is read-only; both run before OpenBao is authenticated to.
+    tasks = playbook_yaml.plays(PLAYBOOK)[1]["tasks"]
+    run = next(t for t in tasks if t.get("name") == "Run the cases")["block"]
+    names = [t["name"] for t in run]
+    res = next(t for t in run if t.get("ansible.builtin.include_tasks") == "tasks/agw-probe-resolution.yml")
+    probe = next(t for t in run if t.get("ansible.builtin.include_tasks") == "tasks/agw-probe.yml")
+    assert res["vars"] == {"_agwr_check_only": True, "_agwr_name": "{{ _server_name }}", "_agwr_ip": "{{ _probe_ip }}",
+                           "_agwr_expect": "", "_agwr_hosts_file": "/etc/hosts"}
+    assert res["when"] == "_tls and agw_verify_base_url is not defined"
+    assert probe["vars"] == {"_agwp_base": "{{ _gateway_base }}", "_agwp_path": "/v1/models", "_agwp_status": [401],
+                             "_agwp_key": "", "_agwp_method": "GET", "_agwp_timeout": 10,
+                             "_agwp_leaf_dir": "{{ _leaf_dir }}", "_agwp_ca": "{{ _ca }}"}
+    # Every refused input is passed explicitly, so the refusal's probe value never reaches the include,
+    # and the refusal is the play's first task.
+    guard = tasks[0]
+    assert guard["ansible.builtin.include_tasks"] == "tasks/refuse-var-overrides.yml"
+    assert guard["loop_control"] == {"loop_var": "_rvo_name"}
+    assert sorted(guard["loop"]) == sorted(PROBE_INPUTS + GATEWAY_URLS)
+    assert set(PROBE_INPUTS) == set(res["vars"]) | set(probe["vars"])
+    # One source: the cases' URL is the gate's base plus /v1, both set after the refusal, never play vars.
+    play = playbook_yaml.plays(PLAYBOOK)[1]
+    assert not set(GATEWAY_URLS) & set(play["vars"])
+    facts = [t["ansible.builtin.set_fact"] for t in tasks[1:3]]
+    assert list(facts[0]) == ["_gateway_base"] and facts[1] == {"_gateway_url": "{{ _gateway_base }}/v1"}
+    env = next(t for t in run if "Run on the VM" in t["name"])["block"]
+    cases = next(t for t in env if t.get("name") == "Send every case to the gateway and to vLLM")
+    assert cases["environment"]["AGW_CONF_GATEWAY_URL"] == "{{ _gateway_url }}"
+    auth = names.index("Authenticate to OpenBao")
+    assert names.index(res["name"]) < names.index(probe["name"]) < names.index("Require the keyless refusal") < auth
+    assert "--resolve" not in PLAYBOOK.read_text() and "--resolve" not in SCRIPT.read_text()
+
+
+def test_the_key_files_are_0600_in_a_private_directory():
+    plays = playbook_yaml.plays(PLAYBOOK)
+    tasks = json.dumps(plays[1]["tasks"])
+    assert '"dest": "{{ _agwc_tmpdir.path }}/gateway.key", "mode": "0600"' in tasks
+    assert '"dest": "{{ _agwc_tmpdir.path }}/direct.key", "mode": "0600"' in tasks
+
+
+# ── wiring ────────────────────────────────────────────────────────────────────
+
+def test_the_semaphore_template_follows_manage_client_key():
+    names = [t["name"] for t in yaml.safe_load((REPO / "platform/semaphore/templates.yml").read_text())["templates"]]
+    i = names.index("Manage agentgateway Client Key")
+    assert names[i + 1] == "Run agentgateway Conformance"
+    t = yaml.safe_load((REPO / "platform/semaphore/templates.yml").read_text())["templates"][i + 1]
+    assert t["playbook"] == "platform/playbooks/run-agw-conformance.yml"
+
+
+def test_agents_md_lists_the_workflow():
+    assert "| Run agentgateway Conformance | `run-agw-conformance.yml` |" in (REPO / "AGENTS.md").read_text()
+
+
+def test_script_is_executable():
+    assert SCRIPT.stat().st_mode & stat.S_IXUSR
+
+
+def test_a_client_cannot_opt_its_stream_out_of_usage(tmp_path, stubs):
+    # The gateway is sent include_usage false as the client wrote it; vLLM directly is sent the
+    # request as the gateway should rewrite it. A gateway that only injects when stream_options is
+    # absent (v1.5.0 without the transformation) passes stream-xhigh and fails this case.
+    gw, direct = stubs(key=GW_KEY, usage_chunk="injects"), stubs(key=UP_KEY, usage_chunk="requested")
+    r, _ = _run(tmp_path, gw, direct)
+    assert r.returncode == 0, r.stderr
+    opts = lambda s: [x["body"].get("stream_options") for x in s.seen  # noqa: E731
+                      if x["body"] and x["body"].get("stream")]
+    assert opts(gw) == [None, {"include_usage": False}]
+    assert opts(direct) == [None, {"include_usage": True, "continuous_usage_stats": True}]
+    report = _diff(tmp_path)
+    # stream-xhigh differs only on the usage-chunk shape (no allowlist here), never on usage.
+    assert _case(report, "stream-xhigh")["stream_usage"]["gateway"] is True
+    assert "failure" not in _case(report, "stream-xhigh")
+    c = _case(report, "stream-options-without-usage")
+    assert c["verdict"] == "error" and c["stream_usage"] == {"gateway": False, "direct": True}, c
+    assert report["failures"] == ["stream-options-without-usage: gateway HTTP 200, stream carried no usage "
+                                  "chunk (its tokens are not charged to the budget)"], report
+
+
+def test_a_gateway_forcing_usage_on_every_stream_matches_both_stream_cases(tmp_path, stubs):
+    gw, direct = stubs(key=GW_KEY), stubs(key=UP_KEY, usage_chunk="requested")
+    r, _ = _run(tmp_path, gw, direct)
+    assert r.returncode == 0, r.stderr
+    c = _case(_diff(tmp_path), "stream-options-without-usage")
+    assert c["verdict"] == "match" and c["shape_match"], c
+    assert c["stream_usage"] == {"gateway": True, "direct": True}, c

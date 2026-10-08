@@ -39,6 +39,21 @@ compose merges `ports` lists append-only, so an overlay can't remove a base publ
 ## Related
 
 - Deploy playbooks: [`../../../playbooks/deploy-tududi.yml`](../../../playbooks/deploy-tududi.yml), [`../../../playbooks/clean-deploy-tududi.yml`](../../../playbooks/clean-deploy-tududi.yml)
+- **GitHub issue sync** — the automation contract, and the only place the
+  per-user visibility rules are written down:
+  [`../context/github-sync-contract.md`](../context/github-sync-contract.md).
+  Read it before changing anything about tasks, tags or projects: tududi
+  scopes every list per user, a project GRANTEE sees every task in that
+  project while the project OWNER sees only tasks they created themselves,
+  and a task's `user_id` is fixed to its creator. The service account remains
+  configured independently of project ownership; task 6.0 must prove both the
+  operator and sync can see new work before production enablement.
+  Store Token's `tududi_token_validate_only=true` proves existing access without
+  minting or writing OpenBao; failed proof never rotates access. Provisioning
+  preserves objects and deactivates obsolete workflows with read-back.
+  Declaration:
+  [`../sync/github-mapping.yml`](../sync/github-mapping.yml); engine:
+  [`../sync/lib/sync-core.js`](../sync/lib/sync-core.js)
 - Authentik OIDC blueprint: [`../../authentik/deployment/blueprints/tududi-oidc.yaml`](../../authentik/deployment/blueprints/tududi-oidc.yaml)
 - Plan: [`../../../../plan/development/11-tududi-honcho-deployment.md`](../../../../plan/development/11-tududi-honcho-deployment.md)
 - Root conventions: [`../../../../CLAUDE.md`](../../../../CLAUDE.md)

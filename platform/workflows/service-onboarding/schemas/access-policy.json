@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://uhstray.io/agent-cloud/schemas/access-policy.json",
+  "title": "Role and access proposal body (step access-assess)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["auth_mode", "authentik_app", "openbao_policy_paths", "opa_actions", "findings", "verdict"],
+  "properties": {
+    "auth_mode": {"enum": ["oidc", "forward_auth", "api_key", "none"]},
+    "authentik_app": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["slug", "groups"],
+      "properties": {
+        "slug": {"type": "string", "minLength": 1},
+        "groups": {"type": "array", "items": {"type": "string", "minLength": 1}}
+      }
+    },
+    "openbao_policy_paths": {"type": "array", "items": {"type": "string", "minLength": 1}},
+    "opa_actions": {"type": "object", "additionalProperties": {"type": "array", "items": {"type": "string"}}},
+    "findings": {"type": "array", "items": {"type": "string", "minLength": 1}},
+    "verdict": {"$ref": "verdict.json"}
+  }
+}

@@ -1,0 +1,294 @@
+---
+# Read-only production budget receipt. Run as a Dev-bound Semaphore task after
+# deployment; copy its numeric ID from the successful Semaphore task record to
+# private inventory for both budget receipts. No config is changed.
+
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: Pre-flight
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: o11y_svc
+    preflight_group_expected: o11y_svc
+
+- name: Verify the reviewed Dev checkout
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Read the controller checkout revision
+      ansible.builtin.command:
+        argv: [git, rev-parse, HEAD]
+        chdir: "{{ playbook_dir | dirname | dirname }}"
+      register: _controller_revision
+      changed_when: false
+      check_mode: false
+
+    - name: Require the exact reviewed revision and a real production run
+      ansible.builtin.assert:
+        that:
+          - expected_repository_sha | default('') is match('^[0-9a-f]{40}$')
+          - expected_receiver_sha | default('') is match('^[0-9a-f]{40}$')
+          - _controller_revision.stdout == expected_repository_sha
+          - not ansible_check_mode
+          - not (local_mode | default(false) | bool)
+        fail_msg: "Budget receipts require a real production run from the exact reviewed Dev revision."
+
+    - name: Read controller checkout changes
+      ansible.builtin.command:
+        argv: [git, status, --porcelain, --untracked-files=all]
+        chdir: "{{ playbook_dir | dirname | dirname }}"
+      register: _controller_changes
+      changed_when: false
+      check_mode: false
+
+    - name: Require a clean reviewed checkout
+      ansible.builtin.assert:
+        that: _controller_changes.stdout | length == 0
+        fail_msg: "Controller checkout has uncommitted files; no budget receipt was issued."
+
+- name: Read production retention and cardinality settings
+  hosts: o11y_svc
+  gather_facts: false
+  become: false
+  vars:
+    _engine: "{{ container_engine | default('podman') }}"
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+    _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
+  tasks:
+    - name: Require the supported container engine for the read-only volume survey
+      ansible.builtin.assert:
+        that: _engine == 'podman'
+        fail_msg: "The read-only o11y volume receipt currently requires rootless Podman."
+
+    - name: Require explicit production budget declarations
+      ansible.builtin.assert:
+        that:
+          - o11y_prom_retention is defined
+          - o11y_prom_retention_size is defined
+          - o11y_loki_retention is defined
+          - o11y_tempo_retention is defined
+          - o11y_scrape_sample_limit is defined
+          - o11y_scrape_sample_limit | int > 0
+        fail_msg: "Declare production Prometheus, Loki, Tempo, and scrape sample budgets in private inventory."
+
+    - name: Read the deployed receiver revision
+      ansible.builtin.command:
+        argv: [git, rev-parse, HEAD]
+        chdir: "{{ _monorepo_dir }}"
+      register: _receiver_revision
+      changed_when: false
+      check_mode: false
+
+    - name: Require the receiver to run the reviewed revision
+      ansible.builtin.assert:
+        that: _receiver_revision.stdout == expected_receiver_sha
+        fail_msg: "The production receiver differs from the explicitly reviewed deployed revision."
+
+    - name: Read Prometheus runtime retention flags
+      ansible.builtin.command:
+        argv:
+          - "{{ _engine }}"
+          - exec
+          - o11y-grafana
+          - curl
+          - -fsS
+          - http://prometheus:9090/api/v1/status/flags
+      register: _prom_flags
+      changed_when: false
+      check_mode: false
+
+    - name: Read Loki runtime configuration
+      ansible.builtin.command:
+        argv: ["{{ _engine }}", exec, o11y-grafana, curl, -fsS, http://loki:3100/config]
+      register: _loki_config
+      changed_when: false
+      check_mode: false
+
+    - name: Read Tempo runtime configuration
+      ansible.builtin.command:
+        argv: ["{{ _engine }}", exec, o11y-grafana, curl, -fsS, http://tempo:3200/status/config]
+      register: _tempo_config
+      changed_when: false
+      check_mode: false
+
+    - name: Read the live Alloy sample limit
+      ansible.builtin.command:
+        argv:
+          - "{{ _engine }}"
+          - exec
+          - o11y-alloy
+          - sh
+          - -c
+          - 'printf "%s\n" "$O11Y_SCRAPE_SAMPLE_LIMIT"'
+      register: _sample_limit
+      changed_when: false
+      check_mode: false
+
+    - name: Read current Prometheus head series count
+      ansible.builtin.command:
+        argv:
+          - "{{ _engine }}"
+          - exec
+          - o11y-grafana
+          - curl
+          - -fsSG
+          - --data-urlencode
+          - 'query=prometheus_tsdb_head_series{job="prometheus"}'
+          - http://prometheus:9090/api/v1/query
+      register: _head_series
+      changed_when: false
+      check_mode: false
+
+    - name: Read current guest root filesystem capacity
+      ansible.builtin.command:
+        argv: [df, --block-size=1, "--output=size,avail", /]
+      register: _guest_root_disk
+      changed_when: false
+      check_mode: false
+
+    - name: Read current guest memory headroom
+      ansible.builtin.command:
+        argv:
+          - awk
+          - '/^MemTotal:/ {total=$2} /^MemAvailable:/ {available=$2} END {if (total > 0) printf "%.2f", 100 * available / total; else exit 1}'
+          - /proc/meminfo
+      register: _guest_memory_headroom
+      changed_when: false
+      check_mode: false
+
+    - name: Read exact named o11y volume mountpoints and backing filesystem capacity
+      ansible.builtin.script:
+        cmd: "{{ playbook_dir }}/files/inspect-o11y-volume-capacity.py {{ _engine }}"
+      register: _volume_capacity
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Require every o11y data volume to resolve to a readable backing filesystem
+      ansible.builtin.assert:
+        that: _volume_capacity.rc == 0
+        fail_msg: >-
+          The read-only volume receipt is unavailable; at least one expected o11y
+          named volume is missing, ambiguous, unreadable, or has an unresolved mount.
+          Sanitized result: {{ _volume_capacity.stdout | trim }}
+
+    - name: Require all five resolved named-volume observations
+      ansible.builtin.assert:
+        that:
+          - (_volume_capacity.stdout | from_json).status == 'observed'
+          - (_volume_capacity.stdout | from_json).volumes | length == 5
+        fail_msg: "The volume readback was not a complete observation; no capacity receipt was issued."
+
+    - name: List the o11y compose project's containers
+      ansible.builtin.include_tasks: tasks/list-service-containers.yml
+      vars:
+        _lsc_fields: [Names, State]
+        _lsc_all: true
+
+    # ContainerStats.MemUsage is podman's raw cgroup byte count (the documented
+    # .ContainerStats placeholder); the JSON format only carries human-rounded sizes.
+    # --no-reset: without it podman clears the screen even under --no-stream.
+    - name: Read one-shot per-container memory usage
+      ansible.builtin.command:
+        argv: >-
+          {{ [_engine, 'stats', '--no-stream', '--no-reset', '--format',
+              '{{.Name}} {{.ContainerStats.MemUsage}}']
+             + (_lsc.stdout_lines | map('split') | map('first') | list) }}
+      become: "{{ podman_rootful | default(false) | bool }}"
+      register: _container_stats
+      when: _lsc.rc == 0 and _lsc.stdout_lines | length > 0
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Reduce per-container memory to names and MiB
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/files/summarize-o11y-container-memory.py"]
+        stdin: >-
+          {{ {'listing_rc': _lsc.rc,
+              'containers': _lsc.stdout_lines,
+              'stats_rc': _container_stats.rc | default(None),
+              'stats': _container_stats.stdout | default('')} | to_json }}
+      register: _container_memory
+      delegate_to: localhost
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Require a memory reading for every running o11y container
+      ansible.builtin.assert:
+        that: _container_memory.rc == 0
+        fail_msg: >-
+          The per-container memory receipt is unavailable; no budget receipt was issued.
+          Sanitized result: {{ _container_memory.stdout | trim }}
+
+    - name: Read Loki runtime retention
+      ansible.builtin.set_fact:
+        _loki_retention: "{{ (_loki_config.stdout | from_yaml_all | select('mapping') | selectattr('limits_config.retention_period', 'defined') | list | first).limits_config.retention_period }}"
+
+    - name: Read Tempo runtime retention
+      ansible.builtin.set_fact:
+        _tempo_retention: "{{ (_tempo_config.stdout | from_yaml_all | select('mapping') | selectattr('compactor.compaction.block_retention', 'defined') | list | first).compactor.compaction.block_retention }}"
+
+    - name: Compare equivalent live and declared retention units
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/files/compare-o11y-budgets.py"]
+        stdin: >-
+          {{ {'declared': {'prom_time': o11y_prom_retention,
+                          'prom_size': o11y_prom_retention_size,
+                          'loki_time': o11y_loki_retention,
+                          'tempo_time': o11y_tempo_retention},
+              'live': {'prom_time': (_prom_flags.stdout | from_json).data['storage.tsdb.retention.time'],
+                       'prom_size': (_prom_flags.stdout | from_json).data['storage.tsdb.retention.size'],
+                       'loki_time': _loki_retention,
+                       'tempo_time': _tempo_retention}} | to_json }}
+      register: _retention_comparison
+      delegate_to: localhost
+      changed_when: false
+      check_mode: false
+
+    - name: Calculate sanitized sample-limit and series diagnostics
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/files/diagnose-o11y-budget-readback.py"]
+        stdin: >-
+          {{ {'sample_limit': _sample_limit.stdout,
+              'expected_sample_limit': o11y_scrape_sample_limit,
+              'head_series': _head_series.stdout} | to_json }}
+      register: _budget_readback_diagnostics
+      delegate_to: localhost
+      changed_when: false
+      check_mode: false
+
+    - name: Report sanitized sample-limit and series diagnostics
+      ansible.builtin.debug:
+        msg: "{{ _budget_readback_diagnostics.stdout | from_json }}"
+
+    - name: Require matching live budgets and measurable cardinality
+      ansible.builtin.assert:
+        that:
+          - _retention_comparison.rc == 0
+          - (_budget_readback_diagnostics.stdout | from_json).sample_limit_matches
+          - (_budget_readback_diagnostics.stdout | from_json).head_series_count_matches
+          - (_budget_readback_diagnostics.stdout | from_json).positive_head_series
+        fail_msg: "A live retention/sample setting differs from inventory or active-series readback is absent."
+
+    - name: Report the sanitized production budget receipt
+      ansible.builtin.debug:
+        msg:
+          status: verified
+          receipt_instruction: "Record this successful Semaphore task's numeric ID"
+          prometheus_retention: "{{ o11y_prom_retention }}"
+          prometheus_retention_size: "{{ o11y_prom_retention_size }}"
+          loki_retention: "{{ o11y_loki_retention }}"
+          tempo_retention: "{{ o11y_tempo_retention }}"
+          scrape_sample_limit: "{{ o11y_scrape_sample_limit | int }}"
+          active_prometheus_series: "{{ (_head_series.stdout | from_json).data.result[0].value[1] | int }}"
+          guest_root_filesystem_total_bytes: "{{ _guest_root_disk.stdout_lines[1].split()[0] | int }}"
+          guest_root_filesystem_available_bytes: "{{ _guest_root_disk.stdout_lines[1].split()[1] | int }}"
+          guest_memory_headroom_percent: "{{ _guest_memory_headroom.stdout | float }}"
+          o11y_volume_capacity: "{{ _volume_capacity.stdout | from_json }}"
+          o11y_container_memory_mib: "{{ (_container_memory.stdout | from_json).containers }}"

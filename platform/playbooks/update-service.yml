@@ -20,12 +20,12 @@
     - name: Check compose.yml exists
       ansible.builtin.stat:
         path: "{{ _deploy_dir }}/compose.yml"
-      register: compose_file
+      register: _compose_file
 
     - name: Skip non-compose services
       ansible.builtin.debug:
         msg: "{{ service_name }} has no compose.yml — update via its deploy.sh"
-      when: not compose_file.stat.exists
+      when: not _compose_file.stat.exists
 
     - name: Detect container runtime
       ansible.builtin.shell: |
@@ -36,25 +36,30 @@
         else
           echo none
         fi
-      register: runtime
+      register: _runtime
       changed_when: false
-      when: compose_file.stat.exists
+      when: _compose_file.stat.exists
+      check_mode: false
 
     - name: Pull latest images
       ansible.builtin.shell: |
         cd "{{ _deploy_dir }}"
-        {{ runtime.stdout }} compose -f compose.yml pull
-      register: pull_result
-      changed_when: "'Pull complete' in pull_result.stdout or 'Downloaded' in pull_result.stdout"
-      when: compose_file.stat.exists
+        {{ _runtime.stdout }} compose -f compose.yml pull
+      register: _pull_result
+      changed_when: "'Pull complete' in _pull_result.stdout or 'Downloaded' in _pull_result.stdout"
+      when:
+        - not ansible_check_mode
+        - _compose_file.stat.exists
 
     - name: Restart with new images
       ansible.builtin.shell: |
         cd "{{ _deploy_dir }}"
-        {{ runtime.stdout }} compose -f compose.yml up -d
-      register: restart_result
+        {{ _runtime.stdout }} compose -f compose.yml up -d
+      register: _restart_result
       changed_when: true
-      when: compose_file.stat.exists
+      when:
+        - not ansible_check_mode
+        - _compose_file.stat.exists
 
     - name: Wait for service health
       ansible.builtin.uri:
@@ -62,15 +67,16 @@
         method: GET
         status_code: [200]
         timeout: 10
-      register: health
+      register: _health
       retries: 30
       delay: 4
-      until: health is succeeded
+      until: _health is succeeded
       when:
-        - compose_file.stat.exists
+        - _compose_file.stat.exists
         - service_url is defined
+      check_mode: false
 
     - name: Report update status
       ansible.builtin.debug:
-        msg: "{{ service_name }}: Updated and {{ 'healthy' if health is succeeded else 'pending' }}"
-      when: compose_file.stat.exists
+        msg: "{{ service_name }}: Updated and {{ 'healthy' if _health is succeeded else 'pending' }}"
+      when: _compose_file.stat.exists

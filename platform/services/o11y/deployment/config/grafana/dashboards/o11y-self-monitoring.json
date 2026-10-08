@@ -1,0 +1,177 @@
+{
+  "annotations": { "list": [] },
+  "editable": false,
+  "panels": [
+    {
+      "id": 1,
+      "title": "O11y components up (expected 7)",
+      "type": "stat",
+      "description": "Prometheus, Grafana, Loki, Alloy, Tempo, Pyroscope, and the private receiver-host exporter. A missing target lowers the count.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 5, "w": 8, "x": 0, "y": 0 },
+      "fieldConfig": { "defaults": { "min": 0, "max": 7, "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "yellow", "value": 6 }, { "color": "green", "value": 7 }] } }, "overrides": [] },
+      "targets": [{ "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum(up{job=~\"prometheus|grafana|loki|alloy|tempo|pyroscope|receiver-host\"})", "instant": true }]
+    },
+    {
+      "id": 2,
+      "title": "Active Prometheus series",
+      "type": "stat",
+      "description": "Current head series count; growth indicates increasing metrics volume and cardinality.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 5, "w": 8, "x": 8, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "options": { "colorMode": "none" },
+      "targets": [{ "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "prometheus_tsdb_head_series{job=\"prometheus\"}", "instant": true }]
+    },
+    {
+      "id": 3,
+      "title": "Loki log bytes / sec",
+      "type": "stat",
+      "description": "Incoming log payload rate; zero is expected until a sender is enabled.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 5, "w": 8, "x": 16, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "Bps" }, "overrides": [] },
+      "options": { "colorMode": "none" },
+      "targets": [{ "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum(rate(loki_distributor_bytes_received_total{job=\"loki\"}[5m])) or vector(0)", "instant": true }]
+    },
+    {
+      "id": 4,
+      "title": "Component scrape status",
+      "type": "timeseries",
+      "description": "Each o11y process must remain at 1. Gaps indicate missing samples; zero indicates a failed scrape.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 5 },
+      "fieldConfig": { "defaults": { "min": 0, "max": 1 }, "overrides": [] },
+      "targets": [{ "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "up{job=~\"prometheus|grafana|loki|alloy|tempo|pyroscope|receiver-host\"}", "legendFormat": "{{job}}" }]
+    },
+    {
+      "id": 5,
+      "title": "Samples per scrape",
+      "type": "timeseries",
+      "description": "How many metrics each o11y component exposes on every Prometheus scrape.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 5 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [{ "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "scrape_samples_scraped{job=~\"prometheus|grafana|loki|alloy|tempo|pyroscope|receiver-host\"}", "legendFormat": "{{job}}" }]
+    },
+    {
+      "id": 6,
+      "title": "Loki log lines / sec",
+      "type": "timeseries",
+      "description": "Incoming log line rate from all senders; use alongside log bytes to spot surges.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 13 },
+      "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] },
+      "targets": [{ "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum(rate(loki_distributor_lines_received_total{job=\"loki\"}[5m])) or vector(0)" }]
+    },
+    {
+      "id": 7,
+      "title": "Alloy component health",
+      "type": "timeseries",
+      "description": "Running Alloy components by health class; unhealthy components expose collector failures beyond process liveness.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 13 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [{ "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "alloy_component_controller_running_components{job=\"alloy\"}", "legendFormat": "{{health_type}}" }]
+    },
+    {
+      "id": 8,
+      "title": "O11y process memory",
+      "type": "timeseries",
+      "description": "Resident memory for the six o11y processes that expose process metrics; compare trends with data volume.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 21 },
+      "fieldConfig": { "defaults": { "unit": "bytes" }, "overrides": [] },
+      "targets": [{ "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "process_resident_memory_bytes{job=~\"prometheus|grafana|loki|alloy|tempo|pyroscope\"}", "legendFormat": "{{job}}" }]
+    },
+    {
+      "id": 9,
+      "title": "Tempo spans / sec",
+      "type": "timeseries",
+      "description": "Incoming trace volume at Tempo's distributor. A quiet gateway can legitimately leave this at zero.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 29 },
+      "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] },
+      "targets": [{ "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum(rate(tempo_distributor_spans_received_total{job=\"tempo\"}[5m])) or vector(0)" }]
+    },
+    {
+      "id": 10,
+      "title": "Tempo trace bytes / sec",
+      "type": "timeseries",
+      "description": "Received span payload volume; compare with retention and available receiver disk.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 29 },
+      "fieldConfig": { "defaults": { "unit": "Bps" }, "overrides": [] },
+      "targets": [{ "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum(rate(tempo_distributor_bytes_received_total{job=\"tempo\"}[5m])) or vector(0)" }]
+    },
+    {
+      "id": 11,
+      "title": "Prometheus uptime",
+      "type": "stat",
+      "description": "Adapted from the original o11y Docker/Prometheus dashboard; time since the current Prometheus process started.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 5, "w": 8, "x": 0, "y": 37 },
+      "fieldConfig": { "defaults": { "unit": "s", "min": 0 }, "overrides": [] },
+      "options": { "colorMode": "none" },
+      "targets": [{ "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "time() - process_start_time_seconds{job=\"prometheus\"}", "instant": true }]
+    },
+    {
+      "id": 12,
+      "title": "Profile samples written / sec",
+      "type": "timeseries",
+      "description": "Alloy to Pyroscope profile writes. No series means the opt-in pilot is disabled or has not produced a sample; it is not zero-cost proof.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 37 },
+      "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] },
+      "targets": [{ "refId": "A", "expr": "sum(rate(pyroscope_write_sent_profiles_total{job=\"alloy\"}[5m]))" }]
+    },
+    {
+      "id": 13,
+      "title": "Receiver-host CPU busy",
+      "type": "timeseries",
+      "description": "Host CPU busy percentage from the private node_exporter source.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 45 },
+      "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100 }, "overrides": [] },
+      "targets": [{ "refId": "A", "expr": "100 * (1 - avg(rate(node_cpu_seconds_total{job=\"receiver-host\",mode=\"idle\"}[5m])))" }]
+    },
+    {
+      "id": 14,
+      "title": "Receiver-host available memory",
+      "type": "timeseries",
+      "description": "Available host memory as a percentage of total memory.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 45 },
+      "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100 }, "overrides": [] },
+      "targets": [{ "refId": "A", "expr": "100 * node_memory_MemAvailable_bytes{job=\"receiver-host\"} / node_memory_MemTotal_bytes{job=\"receiver-host\"}" }]
+    },
+    {
+      "id": 15,
+      "title": "Receiver-host root free bytes",
+      "type": "timeseries",
+      "description": "Free bytes on the host root filesystem; deployment verification checks this matches guest-visible `/`.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 53 },
+      "fieldConfig": { "defaults": { "unit": "bytes" }, "overrides": [] },
+      "targets": [{ "refId": "A", "expr": "node_filesystem_avail_bytes{job=\"receiver-host\",mountpoint=\"/\"}" }]
+    },
+    {
+      "id": 16,
+      "title": "Receiver-host load average (1m)",
+      "type": "timeseries",
+      "description": "One-minute host load average; compare with the CPU trend above.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 53 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [{ "refId": "A", "expr": "node_load1{job=\"receiver-host\"}" }]
+    }
+  ],
+  "schemaVersion": 39,
+  "tags": ["agent-cloud", "o11y", "self-monitoring"],
+  "templating": { "list": [] },
+  "time": { "from": "now-6h", "to": "now" },
+  "timezone": "",
+  "title": "Observability estate health",
+  "uid": "o11y-self-monitoring",
+  "version": 1
+}

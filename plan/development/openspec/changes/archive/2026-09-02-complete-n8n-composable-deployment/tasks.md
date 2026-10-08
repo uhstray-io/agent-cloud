@@ -1,0 +1,142 @@
+# Tasks: complete-n8n-composable-deployment
+
+## 1. Community node as code
+
+- [x] 1.1 Pin `n8n-nodes-postiz` 0.2.17: fetch its `dist.integrity` checksum from the
+      npm registry and add `N8N_COMMUNITY_PACKAGES_ENABLED`,
+      `N8N_COMMUNITY_PACKAGES_MANAGED_BY_ENV=true`, and the `N8N_COMMUNITY_PACKAGES`
+      JSON declaration to `n8n.env.j2` (values parameterized through inventory vars,
+      no fork between local and prod)
+- [x] 1.2 Confirm both n8n containers (app + worker) see the reconciled package via the
+      shared `n8n_data` volume; wire any env var the worker needs into `compose.yml`
+      anchors rather than duplicating
+- [x] 1.3 Extend `platform/tests/test_service_n8n.bats`: the template declares the
+      managed-package variables, pins name+version+checksum, and contains no literal
+      secrets
+- [x] 1.4 Validation gate: BATS suite green; scenario "Declared node present after
+      redeploy" holds on local-dev — clean deploy, node installed at 0.2.17, UI
+      install disabled
+
+## 2. API-key capture into OpenBao
+
+- [x] 2.1 Verify (against the deployed n8n 2.25.7 schema) the table/column holding
+      public-API keys; record it in the playbook header comment with the version it
+      was verified against
+- [x] 2.2 Write `store-n8n-api-key.yml` on the `store-postiz-api-key.yml` pattern:
+      read the key from n8n's own Postgres, KV-v2 merge-patch into
+      `secret/services/n8n:n8n_api_key`, every key-bearing step `no_log`, output
+      restricted to field names and counts; assert-and-fail with a named error when
+      the schema or key is absent
+- [x] 2.3 Add BATS coverage: all key-bearing tasks carry `no_log: true` (scoped to
+      those tasks only), no `debug` task can render the key
+- [x] 2.4 Validation gate: scenario "Key capture leaves no trace in the run record"
+      holds — local run stores the key, Semaphore task output shows names/counts only
+
+## 3. Postiz credential provisioned in n8n
+
+- [x] 3.1 Verify the n8n public-API credential endpoints (list/create/update shapes)
+      against the docs for the pinned version; record the verified routes in the
+      playbook header
+- [x] 3.2 Write `provision-n8n-postiz-credential.yml`: authenticate with
+      `secret/services/n8n:n8n_api_key`, shared-read
+      `secret/services/postiz:postiz_api_key` (never copied to another path),
+      upsert one `postizApi` credential with `Host` from inventory
+      (`https://postiz.uhstray.io/api` prod, local Postiz host in local-dev);
+      list-then-upsert so a re-run never duplicates; secret-bearing steps `no_log`;
+      the report restates the 90/hour creation ceiling from the Postiz contract
+- [x] 3.3 Validation gate: scenarios "Credential works against the self-hosted
+      instance" and "Provisioning is idempotent" hold on local-dev — `is-connected`
+      test passes (or, if local Postiz is down, the credential exists with the right
+      host and the degraded check is noted), second run creates nothing new
+
+## 4. Semaphore templates
+
+- [x] 4.1 Add `Seed n8n Secrets`, `Clean Deploy n8n` (marked destructive in its
+      description), `Store n8n API Key`, and `Provision n8n Postiz Credential` to
+      `platform/semaphore/templates.yml` with `dev_variant` where the local flow
+      needs them; run `setup-templates.yml` locally
+- [x] 4.2 Validation gate: scenario "Pre-seed and clean deploy exist as orchestrator
+      tasks" holds — both templates visible in Semaphore, destructive one labeled
+
+## 5. Local-dev end-to-end proof
+
+- [x] 5.1 Greenfield local run of the full chain via the `(Dev)` templates: deploy →
+      healthz → forward_auth gate → owner seeded → node reconciled → key minted +
+      captured by `Store n8n API Key` (no manual step; D2) → credential provisioned
+- [x] 5.2 Validation gate: scenario "Idempotent redeploy after cutover" holds locally —
+      second deploy run reports no stateful change
+
+## 6. Production cutover (the HELD migration)
+
+- [x] 6.1 Add the mechanical cutover guard to the prod path (design D4): compare the
+      three stateful values in the newly rendered env against the live
+      `config/n8n.env` and fail before any container restart on mismatch, printing
+      key names only
+- [x] 6.2 Alias-aware extraction (design D4 amendment, D6 context): teach
+      `seed-n8n-secrets.yml` and the shared `tasks/guard-stateful-cutover.yml` a
+      per-key live-name alias (live `ENCRYPTION_KEY` ↔ rendered
+      `N8N_ENCRYPTION_KEY`, default = same name), preserving fail-closed,
+      names-only, and all-occurrences semantics; BATS coverage for both
+- [x] 6.3 Standing upgrade tooling (design D7): write `backup-n8n-db.yml`
+      (timestamped `pg_dump` from a parameterized Postgres container, owner-only
+      0700 dump dir, report names the artifact) and `restore-n8n-db.yml` (stop app
+      containers → restore named dump → start; n8n re-runs migrations at boot);
+      Semaphore templates for both; BATS coverage (no_log scoping, destructive
+      labeling on restore)
+- [x] 6.4 Run `Seed n8n Secrets` against the live host with
+      `-e live_n8n_env=/home/<ansible_user>/n8n/.env`; verify with `Check Secrets` that
+      `encryption_key`, `db_admin_password`, `db_user_password` all resolve as
+      pre-existing
+- [x] 6.5 Cutover, each step independently retryable: `Back Up n8n DB` (legacy
+      `n8n_postgres_1`) → GATE: operator go → stop the legacy `/home/<ansible_user>/n8n`
+      project (stopped, not destroyed) → guarded `Deploy n8n` → `Restore n8n DB`
+      → operator confirms existing workflows execute and stored credentials
+      decrypt (2.8.3→2.25.7 migrations watched, not assumed). Executed
+      2026-09-01/02: two live findings fixed en route (cross-schema restore →
+      staging swap; app/worker migration race → readiness gating), operator
+      verified login + all 4 workflows on 2.25.7
+- [ ] 6.6 Run the Postiz-substrate sequence in prod: node reconciliation (same deploy —
+      DONE, n8n-nodes-postiz@0.2.17 installed from env), then `Store n8n API Key`
+      (DONE 2026-09-02, task 360: minted via the owner's MFA login — TOTP computed
+      from OpenBao — and captured), then `Provision n8n Postiz Credential`
+      (BLOCKED: prod Postiz is not deployed — secret/services/postiz is empty and
+      postiz.uhstray.io unreachable; the provisioning runs as soon as the
+      deploy-postiz change's prod rollout lands its API key)
+- [x] 6.7 Validation gate: scenarios "Pre-seed makes the first composable deploy a
+      fetch" (tasks 344/352: encryption key fetched, owner + credential survived),
+      "Cutover refuses to proceed on a stateful mismatch" (proven by the
+      guard's behavioural test, not by breaking prod), and "Idempotent redeploy
+      after cutover" (task 355: re-run converged, zero container churn) hold on
+      the production host
+
+## 7. Cleanup and close-out
+
+- [x] 7.1 Remove `generate_n8n_env()` from `platform/lib/common.sh` (DONE — with a
+      BATS guard that it stays deleted; `generate_nocodb_env()` left for the
+      separate NocoDB decommission change). Retirement executed 2026-09-02 on
+      the operator's call: legacy project deleted (containers, volumes, dir),
+      cutover dump deleted — superseded by a fresh composable-stack dump
+      (task 363) and a full credential backup to site-config
+      (branch backup/n8n-20260902T135450Z-eff2ab, 11 fields incl. the
+      encryption key, owner login and TOTP seed)
+- [x] 7.2 Update docs: CLAUDE.md workflow table rows + Completed/In-Progress status,
+      the n8n half of `plan/development/09-service-migrations-tooling.md` marked
+      EXECUTED with a completion note (NocoDB half marked RETIRED — the separate
+      decommission change owns that section now), and a deployment README
+      (`platform/services/n8n/deployment/README.md`: stateful secrets, startup
+      ordering, upgrade runbook)
+- [x] 7.3 Close PR #15 as superseded (USER-GATED — closed 2026-09-01 on the
+      operator's explicit instruction, ahead of prod validation), with a comment
+      recording what superseded each n8n part. Scope change recorded in the same
+      comment: the NocoDB half is RETIRED, not paused — NocoDB is being removed
+      from the platform, replaced by tududi; its decommission gets its own change
+- [x] 7.4 Retain one outcome memory into the repo's experience bank: whether the
+      cutover preserved live state, labelled worked / dead end / corrected, with the
+      root cause of anything that failed (retained 2026-09-02: WORKED — all state
+      preserved; three premises corrected live, each into a durable mechanism)
+- [x] 7.5 Validation gate: scenario "Re-running a completed sequence changes nothing"
+      holds — `Deploy n8n` re-run against finished prod reports no change (task
+      355: zero container churn); 540 BATS + 100 pytest green; change validates.
+      READY TO ARCHIVE once the close-out PR lands — with 6.6's last step
+      (Postiz credential provisioning) carried by the deploy-postiz change's
+      prod rollout, where the blocker lives

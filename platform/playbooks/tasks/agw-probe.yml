@@ -1,0 +1,70 @@
+---
+# agw-probe.yml — the one gateway probe path (inference-gateway-agentgateway task 6.1a).
+#
+# Every check that sends a request to the gateway from outside Caddy goes through here: the
+# deploy's own verify (keyless 401, keyed listing, keyed completion), and later the personal-key
+# 401 gates, the client-leaf renewal proof and the access-record verify. One `uri` call from the
+# host this runs on to the gateway's published port.
+#
+# With listener TLS (agw_listener_tls), the call presents a client leaf from the internal CA
+# (default the `agw-verifier` leaf, which the gateway's SAN allowlist must hold) and verifies the
+# gateway's server leaf against the internal bundle; `validate_certs: false` is never used. The
+# URL names the server leaf's SAN, because `uri` has no server-name override; the caller resolves
+# that name through tasks/agw-probe-resolution.yml first: the interim hosts line, or, once
+# `agw_internal_dns_authoritative` is declared, the internal zone's record for the leaf (task 7.2),
+# with every interim marker line removed. Without TLS it is a plain call.
+#
+# Inputs:
+#   _agwp_base      base URL (https://<server SAN>:<port> with TLS, else the plain verify URL)
+#   _agwp_path      request path, e.g. /v1/models
+#   _agwp_status    accepted statuses (list); the call never fails itself, the caller asserts
+#   _agwp_key       optional API key; absent or empty means keyless. Never printed.
+#   _agwp_method    GET (default) or POST
+#   _agwp_body      JSON body for POST; ignored for any other method
+#   _agwp_timeout   seconds (default 10)
+#   _agwp_leaf_dir  client leaf directory (TLS only); `current/` holds cert.pem and key.pem
+#   _agwp_ca        trust bundle path (TLS only)
+# Output: `_agwp_out` = {status, content, json, msg}. The raw result carries the request,
+# Authorization header included, so it is copied field by field under no_log and never kept.
+#
+# Extra vars outrank register and set_fact, so `-e _agwp_out=...` would hand every caller's
+# gate a forged status. The two names this file writes are refused here, for every caller
+# (tasks/refuse-var-overrides.yml). The INPUTS above cannot be checked here: they arrive as
+# include vars, which outrank set_fact, so that check would refuse every honest caller. A
+# caller whose gate must not be redirected refuses its input names itself, before the include,
+# and passes every one of them explicitly (run-agw-conformance.yml).
+
+- name: "Gateway probe: refuse extra-var overrides of its internal names"
+  ansible.builtin.include_tasks: refuse-var-overrides.yml
+  loop: [_agwp_raw, _agwp_out]
+  loop_control:
+    loop_var: _rvo_name
+
+- name: "Gateway probe: {{ _agwp_path }}"
+  ansible.builtin.uri:
+    url: "{{ _agwp_base }}{{ _agwp_path }}"
+    method: "{{ _agwp_method | default('GET') }}"
+    headers: "{{ {'Authorization': 'Bearer ' ~ _agwp_key} if (_agwp_key | default('') | length > 0) else {} }}"
+    body_format: "{{ 'json' if (_agwp_body is defined and (_agwp_method | default('GET')) == 'POST') else omit }}"
+    body: "{{ _agwp_body if (_agwp_body is defined and (_agwp_method | default('GET')) == 'POST') else omit }}"
+    client_cert: "{{ (_agwp_leaf_dir ~ '/current/cert.pem') if (agw_listener_tls | default(false) | bool) else omit }}"
+    client_key: "{{ (_agwp_leaf_dir ~ '/current/key.pem') if (agw_listener_tls | default(false) | bool) else omit }}"
+    ca_path: "{{ _agwp_ca if (agw_listener_tls | default(false) | bool) else omit }}"
+    timeout: "{{ _agwp_timeout | default(10) }}"
+    status_code: "{{ _agwp_status }}"
+    return_content: true
+  register: _agwp_raw
+  failed_when: false
+  no_log: true
+  # A POST probe is a write: it never runs in a dry run (the check-mode contract,
+  # platform/tests/test_check_mode_contract.py), and every caller skips the probes there too.
+  when: not ansible_check_mode
+
+- name: "Gateway probe: keep the response, never the request"
+  ansible.builtin.set_fact:
+    _agwp_out:
+      status: "{{ _agwp_raw.status | default(-1) }}"
+      content: "{{ _agwp_raw.content | default('') }}"
+      json: "{{ _agwp_raw.json | default({}) }}"
+      msg: "{{ _agwp_raw.msg | default('') }}"
+  no_log: true

@@ -1,0 +1,336 @@
+---
+# issue-internal-leaf.yml — issue, or remove, ONE leaf certificate declared in site-config's
+# `internal_leaves`, on the consumer host the declaration names (openspec
+# production-internal-ca task 4.7; the issuance itself is tasks/issue-internal-leaf.yml).
+#
+#   -e target_service=<consumer group> -e leaf_name=<declared leaf> [-e leaf_action=issue|remove|inspect]
+#   [-e leaf_reissue=true]
+#
+# The CA is the one host of `step_ca_svc`; the key is generated on the consumer and never
+# leaves it. `issue` keeps a leaf that already has a current certificate unless
+# `leaf_reissue`. `remove` deletes only what issuance creates (the `current` link, the
+# serial directories, pending directories and the placement lock) and then the directory if
+# it is empty, and only for a leaf declared for that host: it is how a throwaway leaf is
+# taken away before its declaration is. `inspect` changes nothing: it reports the current
+# certificate (serial, expiry, SANs, key usage), proves its key matches and that it verifies
+# for its profile and not the other one against the CA's root, checks the key is 0600, and
+# counts the issuance's temporary files left in the CA container (none expected). Every step
+# is safe under --check. Verification is tagged `verify` (plan/architecture/08, standard 3):
+# `--tags verify` runs the inspection, whatever the action, and changes nothing.
+
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+# Without this a missing or empty group would match no hosts and the run would pass.
+- name: "Refuse a target group that matches no hosts"
+  hosts: localhost
+  gather_facts: false
+  become: false
+  tasks:
+    - name: "Require target_service to name a populated inventory group"
+      tags: [verify]
+      ansible.builtin.assert:
+        that: (groups.get(target_service | default(''), []) | length) > 0
+        fail_msg: "Pass -e target_service=<the inventory group holding the leaf's host>; '{{ target_service | default('') }}' matches no hosts."
+        quiet: true
+
+- name: "Issue or remove a declared internal leaf"
+  hosts: "{{ target_service }}"
+  gather_facts: false
+  become: false
+  vars:
+    # An extra var overrides this; the play above refuses a run without one.
+    target_service: "ungrouped"
+    _leaf_action: "{{ leaf_action | default('issue') }}"
+    # Read-only. The root arrives on stdin; the key is read only by `openssl pkey -pubout`,
+    # whose output is the public half. Prints one JSON object.
+    _leaf_inspector: |
+      import json, os, re, stat, subprocess, sys, threading
+      d = sys.argv[1]
+      root = sys.stdin.read()
+      NOFOLLOW_DIR = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+      # Every file is read ONCE through descriptors opened without following links: from /
+      # down to the leaf directory, then the serial directory `current` names (one hex name
+      # beside it), then cert.pem and key.pem. openssl only ever sees those bytes, so nothing
+      # swapped in afterwards can change what is inspected (reviews of #370).
+      def walk(path):
+          fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
+          for part in [p for p in path.split("/") if p]:
+              nxt = os.open(part, NOFOLLOW_DIR, dir_fd=fd)
+              os.close(fd)
+              fd = nxt
+          return fd
+      def read(at, name):
+          f = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=at)
+          try:
+              if not stat.S_ISREG(os.fstat(f).st_mode):
+                  raise OSError(name + " is not a regular file")
+              return os.read(f, 1 << 20), stat.S_IMODE(os.fstat(f).st_mode)
+          finally:
+              os.close(f)
+      out = {"current": False}
+      try:
+          leaf = walk(d)
+          target = os.readlink("current", dir_fd=leaf)
+          if re.fullmatch("[0-9A-F]+", target):
+              serial = os.open(target, NOFOLLOW_DIR, dir_fd=leaf)
+              cert, _ = read(serial, "cert.pem")
+              key, key_mode = read(serial, "key.pem")
+              out["current"] = True
+      except OSError as e:
+          out["missing"] = str(e)
+      if out["current"]:
+          # Nothing is written on the host, not even under --check (review of #370): each
+          # input reaches openssl through a pipe named /dev/fd/N, or stdin for the key.
+          def feed(w, data):
+              try:
+                  with os.fdopen(w, "wb") as f:
+                      f.write(data)
+              except BrokenPipeError:
+                  pass  # openssl stopped reading; its exit status says why
+          def ossl(*args, data=None, **files):
+              reads, writers, argv = [], [], []
+              for a in args:
+                  if isinstance(a, str) and a.startswith("@"):
+                      r, w = os.pipe()
+                      reads.append(r)
+                      writers.append(threading.Thread(target=feed, args=(w, files[a[1:]])))
+                      a = "/dev/fd/%d" % r
+                  argv.append(a)
+              proc = subprocess.Popen(["openssl", *argv], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                      stderr=subprocess.PIPE, pass_fds=reads)
+              for r in reads:
+                  os.close(r)
+              # Each input is written by its own thread once openssl exists, so one larger than
+              # the pipe's buffer cannot block before its reader starts (review of #370).
+              for t in writers:
+                  t.start()
+              out_b, _ = proc.communicate(data)
+              for t in writers:
+                  t.join()
+              return subprocess.CompletedProcess(proc.args, proc.returncode, out_b, b"")
+          rootb = root.encode()
+          def x509(*args):
+              return ossl("x509", "-in", "@cert", "-noout", *args, cert=cert).stdout.decode().strip()
+          out["serial"] = x509("-serial").split("=", 1)[-1]
+          out["not_after"] = x509("-enddate").split("=", 1)[-1]
+          text = x509("-text").splitlines()
+          def after(label):
+              for i, line in enumerate(text):
+                  if line.strip().startswith(label):
+                      return text[i + 1].strip()
+              return ""
+          out["san"] = after("X509v3 Subject Alternative Name")
+          out["eku"] = after("X509v3 Extended Key Usage")
+          out["key_mode"] = oct(key_mode)
+          # The key reaches openssl on stdin only; its output is the public half.
+          pub_key = ossl("pkey", "-pubout", data=key).stdout
+          out["key_matches"] = bool(pub_key) and pub_key == ossl("x509", "-in", "@cert", "-pubkey", "-noout",
+                                                                 cert=cert).stdout
+          for purpose in ("sslclient", "sslserver"):
+              r = ossl("verify", "-CAfile", "@root", "-untrusted", "@chain", "-purpose", purpose, "@cert",
+                       root=rootb, chain=cert, cert=cert)
+              out["verifies_" + purpose] = r.returncode == 0
+      print(json.dumps(out))
+    _leaf_remover: |
+      import os, re, stat, sys
+      d, mode = sys.argv[1], sys.argv[2]
+      DIR = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+      # Walk from / one component at a time, each opened without following a link, so no
+      # link at the directory or any ancestor, swapped in at any moment, can redirect this
+      # (reviews of #369). Every later step is relative to these descriptors.
+      parent, fd = None, os.open("/", os.O_RDONLY | os.O_DIRECTORY)
+      for part in [p for p in d.split("/") if p]:
+          try:
+              nxt = os.open(part, DIR, dir_fd=fd)
+          except FileNotFoundError:
+              print("nothing (no issued files)")
+              sys.exit(0)
+          except OSError:
+              sys.exit(d + " resolves through a symbolic link; declare the real directory")
+          if parent is not None:
+              os.close(parent)
+          parent, fd = fd, nxt
+      leaf = os.path.basename(d)
+      def kind(at, name):
+          return stat.S_IFMT(os.stat(name, dir_fd=at, follow_symlinks=False).st_mode)
+      def ours(name):
+          k = kind(fd, name)
+          if name in ("current", ".current.new"):
+              return k == stat.S_IFLNK
+          if name == ".placement.lock":
+              return k == stat.S_IFREG
+          if name.startswith(".pending.") or re.fullmatch("[0-9A-F]+", name):
+              return k == stat.S_IFDIR
+          return False
+      def rm(at, name):
+          if kind(at, name) == stat.S_IFDIR:
+              sub = os.open(name, DIR, dir_fd=at)
+              try:
+                  for entry in os.listdir(sub):
+                      rm(sub, entry)
+              finally:
+                  os.close(sub)
+              os.rmdir(name, dir_fd=at)
+          else:
+              os.unlink(name, dir_fd=at)
+      targets = sorted(e for e in os.listdir(fd) if ours(e))
+      print(" ".join(targets) or "nothing (no issued files)")
+      if mode == "remove":
+          for entry in targets:
+              rm(fd, entry)
+          empty = not os.listdir(fd)
+          if empty:
+              # Relative to the parent's descriptor: never resolved by path again.
+              os.rmdir(leaf, dir_fd=parent)
+          if targets or empty:
+              print("CHANGED")
+  tasks:
+    - name: "Refuse an incomplete or unknown request"
+      tags: [verify]
+      ansible.builtin.assert:
+        that:
+          - leaf_name | default('') | length > 0
+          - _leaf_action in ['issue', 'remove', 'inspect']
+          - (groups['step_ca_svc'] | default([]) | length) == 1
+          - (internal_leaves | default([]) | selectattr('name', 'equalto', leaf_name | default('')) | list | length) == 1
+          # inspect compares against the profile, and issue/remove assume it (review of #370).
+          - (internal_leaves | default([]) | selectattr('name', 'equalto', leaf_name | default('')) | map(attribute='profile') | first | default('')) in ['client', 'server']
+        fail_msg: >-
+          Pass -e leaf_name=<a leaf declared once in internal_leaves> and leaf_action issue,
+          remove or inspect; the inventory must hold exactly one step_ca_svc host
+          (it holds {{ groups['step_ca_svc'] | default([]) | length }}).
+        quiet: true
+
+    - name: "Name the declared leaf"
+      tags: [verify]
+      ansible.builtin.set_fact:
+        _leaf_decl: "{{ internal_leaves | selectattr('name', 'equalto', leaf_name) | first }}"
+
+    - name: "Refuse a target group that does not hold the leaf's host"
+      tags: [verify]
+      ansible.builtin.assert:
+        that:
+          - _leaf_decl.host in ansible_play_hosts_all
+          # The issuance task's own directory rule, so removal matches the paths find returns.
+          # No `.` or `..` component: the walk below would follow `..` out of the tree.
+          - _leaf_decl.dir is match('^(/(?!\\.\\.?(/|$))[A-Za-z0-9._-]+)+$')
+        fail_msg: >-
+          {{ leaf_name }} must be declared for a host in {{ target_service }} (it names
+          {{ _leaf_decl.host }}) with an absolute directory of plain names and no trailing slash.
+        quiet: true
+
+    # The directory must resolve to itself: a symlink at the leaf OR at any ancestor would
+    # send issuance and removal into another tree (reviews of #369). The removal below also
+    # works through a descriptor opened without following links, so a link swapped in after
+    # this check cannot redirect it.
+    - name: "Resolve the leaf's directory"
+      tags: [verify]
+      ansible.builtin.command:
+        argv: [python3, -c, "import os, sys; print(os.path.realpath(sys.argv[1]))", "{{ _leaf_decl.dir }}"]
+      register: _leaf_dir_real
+      changed_when: false
+      check_mode: false
+      when: inventory_hostname == _leaf_decl.host
+
+    - name: "Refuse a leaf directory reached through a symbolic link"
+      tags: [verify]
+      ansible.builtin.assert:
+        that:
+          - _leaf_dir_real.stdout == _leaf_decl.dir
+        fail_msg: "{{ _leaf_decl.dir }} on {{ inventory_hostname }} resolves through a symbolic link; declare the real directory."
+        quiet: true
+      when: inventory_hostname == _leaf_decl.host
+
+    - name: "Issue the leaf"
+      ansible.builtin.include_tasks: tasks/mint-internal-cert.yml
+      vars:
+        _mint_name: "{{ leaf_name }}"
+        _mint_ca_host: "{{ groups['step_ca_svc'] | first }}"
+        _mint_reissue: "{{ leaf_reissue | default(false) | bool }}"
+      when: _leaf_action == 'issue' and inventory_hostname == _leaf_decl.host
+
+    # Read-only on the CA host: the root (public) for the verification, and how many of the
+    # temporary names the CA-side tasks use remain in the container's /tmp (each removes its
+    # own; `pw` and `ipw` would hold a password). platform/tests/test_issue_internal_leaf_playbook.py
+    # holds this list to every /tmp name those tasks write.
+    - name: "Read the CA root and the issuance's leftovers on the CA host"
+      tags: [verify]
+      ansible.builtin.command:
+        argv:
+          - "{{ hostvars[groups['step_ca_svc'] | first].container_engine | default('podman') }}"
+          - exec
+          - step-ca
+          - sh
+          - -c
+          - >-
+            set -e; cat /home/step/certs/root_ca.crt;
+            names=$(ls -A /tmp) || { echo "cannot read /tmp in the CA container" >&2; exit 1; };
+            echo "LEFTOVERS=$(printf '%s\n' "$names" | grep -cE '^(pw|ipw|x509[.]tpl|mint[.](crt|key))$|^(ipw|req|crt|err)[.]' || true)"
+      delegate_to: "{{ groups['step_ca_svc'] | first }}"
+      register: _leaf_ca_read
+      changed_when: false
+      check_mode: false
+      when: (_leaf_action == 'inspect' or 'verify' in ansible_run_tags) and inventory_hostname == _leaf_decl.host
+
+    - name: "Inspect the leaf on its host"
+      tags: [verify]
+      ansible.builtin.command:
+        argv: [python3, -c, "{{ _leaf_inspector }}", "{{ _leaf_decl.dir }}"]
+        stdin: "{{ _leaf_ca_read.stdout | regex_replace('\\nLEFTOVERS=[0-9]+\\s*$', '') }}"
+      register: _leaf_inspected
+      changed_when: false
+      check_mode: false
+      when: (_leaf_action == 'inspect' or 'verify' in ansible_run_tags) and inventory_hostname == _leaf_decl.host
+
+    - name: "Report the leaf"
+      tags: [verify]
+      ansible.builtin.debug:
+        msg: "{{ {'leaf': leaf_name, 'profile': _leaf_decl.profile,
+                  'ca_leftovers': (_leaf_ca_read.stdout | regex_findall('LEFTOVERS=([0-9]+)') | first | int)}
+                 | combine(_leaf_inspected.stdout | from_json) }}"
+      when: (_leaf_action == 'inspect' or 'verify' in ansible_run_tags) and inventory_hostname == _leaf_decl.host
+
+    # The proof: the key matches, is 0600, the certificate verifies for its profile and NOT
+    # for the other one, and nothing of the issuance is left on the CA host.
+    - name: "Refuse a leaf that is not what its declaration says"
+      tags: [verify]
+      ansible.builtin.assert:
+        that:
+          - _leaf_i.current
+          - _leaf_i.key_matches
+          - _leaf_i.key_mode == '0o600'
+          - _leaf_i.verifies_sslclient == (_leaf_decl.profile == 'client')
+          - _leaf_i.verifies_sslserver == (_leaf_decl.profile == 'server')
+          - (_leaf_ca_read.stdout | regex_findall('LEFTOVERS=([0-9]+)') | first | int) == 0
+        fail_msg: "{{ leaf_name }} does not match its {{ _leaf_decl.profile }} declaration: {{ _leaf_i }}"
+        quiet: true
+      vars:
+        _leaf_i: "{{ _leaf_inspected.stdout | from_json }}"
+      when: (_leaf_action == 'inspect' or 'verify' in ansible_run_tags) and inventory_hostname == _leaf_decl.host
+
+    # Only what issuance makes, each by its kind: serial and pending directories, the two
+    # links, the lock file. Everything goes through a descriptor opened with O_NOFOLLOW, and
+    # nothing is followed below it. `list` only reports; `remove` also deletes, then removes
+    # the directory if it is empty.
+    - name: "List what issuance created in the leaf's directory"
+      ansible.builtin.command:
+        argv: [python3, -c, "{{ _leaf_remover }}", "{{ _leaf_decl.dir }}", list]
+      register: _leaf_listed
+      changed_when: false
+      check_mode: false
+      when: _leaf_action == 'remove' and inventory_hostname == _leaf_decl.host
+
+    - name: "Report what the removal takes away"
+      ansible.builtin.debug:
+        msg: "{{ leaf_name }}: {{ 'would remove' if ansible_check_mode else 'removing' }} {{ _leaf_listed.stdout_lines | first | default('nothing') }} in {{ _leaf_decl.dir }}"
+      when: _leaf_action == 'remove' and inventory_hostname == _leaf_decl.host
+
+    - name: "Remove the leaf's issued files"
+      ansible.builtin.command:
+        argv: [python3, -c, "{{ _leaf_remover }}", "{{ _leaf_decl.dir }}", remove]
+      register: _leaf_removed
+      changed_when: "'CHANGED' in _leaf_removed.stdout_lines"
+      when: not ansible_check_mode and _leaf_action == 'remove' and inventory_hostname == _leaf_decl.host

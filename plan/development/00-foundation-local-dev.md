@@ -295,7 +295,7 @@ Boundaries revisit (§11): after a sustained run of local-pass→prod-pass agree
 
 | Item | Status | Resolution path |
 |---|---|---|
-| Semaphore-environment detection marker | Verify at P0A | Confirm against a real prod Semaphore task before wiring `assert-orchestrated.yml` |
+| Semaphore-environment detection marker | Unverified; task 1701 had no `SEMAPHORE_TASK_ID` | Find and verify a marker unique to a real production Semaphore task before wiring `assert-orchestrated.yml`; AppRole injection alone does not prove origin |
 | Owned-image inventory for multi-arch | P0B start | Audit which GHCR images exist + which build workflows need the manifest change |
 | Risk-class boundaries | Ratified (stricter) | Revisit after sustained local-pass→prod-pass agreement; relax medium to exclude app code |
 | Local data persistence | **Persistent by default** — file-backed OpenBao + named service volumes; survives a podman-machine restart | `make local-clean` is the only intentional wipe (removes the vault volume + init material); deeper resilience (snapshot, self-heal unseal, single-node Raft) in OPENBAO-HA-DEPLOYMENT.md Track A |
@@ -1226,7 +1226,9 @@ Caddy then orders `*.agent-cloud.test` leaves from step-ca via ACME. The **ACME 
 
 **Goal:** Internal name resolution becomes a versioned, Semaphore-deployed platform service instead of hand-maintained pfSense host overrides — with a path to RFC 2136 dynamic updates so Caddy can solve ACME DNS-01 for internal zones.
 
-**Architecture:** One hickory-dns container on a minimal VM, deployed by `deploy-dns.yml` (manage-secrets → zone templating → deploy.sh → `dig` verify). Zone files are Jinja2-templated RFC 1035 master files rendered from inventory vars; pfSense forwards the internal zones to it via domain overrides (Phase 1) and may later hand it full LAN resolution (Phase 3, optional).
+**Architecture:** One hickory-dns container on a minimal VM, deployed by `deploy-dns.yml` (manage-secrets → zone templating → deploy.sh → `dig` verify). Zone files are Jinja2-templated RFC 1035 master files rendered from inventory vars. Declared clients query it directly: each agent-cloud host's resolver is repointed at it (the router stays as the second entry), and the DGX Spark nodes and a future Tailscale subnet router are admitted by per-source firewall rules. pfSense does not forward the internal zone and is not an admitted client (decision 2026-09-29, "Direct, no pfSense"); whole-LAN resolution is out of scope.
+
+> **Amended 2026-09-29.** This plan first had pfSense forward the internal zones through domain overrides, so every LAN client reached them through the router. The operator narrowed resolution to declared clients querying directly. The firewall side is live on the DNS host (one tagged rule per `agent_cloud` member plus the DGX nodes, `apply-firewall.yml`); the service itself is not deployed yet. The sections below are rewritten to match; the pfSense host overrides other LAN clients use today are out of scope here.
 
 **Tech stack:** hickory-dns (Rust; formerly trust-dns) via the official `docker.io/hickorydns/hickory-dns` image, podman + podman-compose, composable Ansible tasks, OpenBao (TSIG key material), Semaphore templates-as-code.
 
@@ -1236,7 +1238,7 @@ Caddy then orders `*.agent-cloud.test` leaves from step-ca via ACME. The **ACME 
 
 1. **DNS sits below everything — keep it dependency-free at runtime.** The container reads rendered files only; no OpenBao, NetBox, or Semaphore calls after deploy. A platform outage must not take name resolution down with it.
 2. **Records are code.** Zone content is inventory vars rendered through versioned templates; the running server is never the editable source of truth (the one scoped exception: the Phase 2 dynamic challenge zone, whose records are transient by design).
-3. **Degrade, don't gate.** pfSense remains the clients' resolver; this service answers only the zones delegated to it. Its failure mode is "internal names unresolvable," never "LAN offline" — until a future phase consciously revisits that.
+3. **Declared clients, stated blast radius.** Only admitted clients (agent-cloud hosts, the DGX Spark nodes, a future subnet router) resolve through this service; the rest of the LAN keeps its existing resolver and is unaffected. A repointed host lists the router second (operator decision 2026-09-29), so a dead dns-svc costs it the internal names only, never external resolution.
 4. **Prove the production-grade subset only.** Authoritative serving + forwarding are hickory's mature components; recursion stays disabled, HA waits for upstream maturity.
 5. **One engine, two environments.** The laptop's local DNS (`LOCAL-DEV-DEPLOYMENT.md` §5.1) and this service share image, config shape, and zone templates — parameterized by env/inventory, never forked.
 
@@ -1248,7 +1250,7 @@ When Phase 2's gate passes:
 
 - **Zones are code.** Every internal record is a line in a versioned `.j2` zone template rendered from inventory vars; a record change is a PR + a Semaphore template run, not a pfSense UI session.
 - **One engine, two environments.** The laptop (`LOCAL-DEV-DEPLOYMENT.md` §5.1) and prod run the same image, the same `named.toml` shape, and the same zone-template structure — drift between "how dev names resolve" and "how prod names resolve" is structural, not policy.
-- **Internal ACME has a decided path.** Phase 2 resolves the ACME-CA decision (public challenge delegation vs internal CA — see §5) and, if either hickory-backed option is chosen, wires Caddy's RFC 2136 + TSIG updates (hickory ≥0.26) to it. Until then, the existing Cloudflare DNS-01 wildcard path keeps issuing publicly-trusted certs.
+- **Internal ACME has a decided path.** Decided by `production-internal-ca` (§8): option (c), a step-ca internal CA signing leaves over SSH, with no ACME in production. Phase 2's RFC 2136 + TSIG work has no consumer and is deferred.
 - **Resolution keeps working when the platform doesn't.** DNS sits below every other service; the design accepts zero runtime dependencies on OpenBao, NetBox, or Semaphore once deployed.
 
 ## 1. Problem
@@ -1260,32 +1262,29 @@ Internal names (`<erpnext-dev-domain>` and friends) are resolved today by pfSens
 | Decision | Chosen | Alternatives — and why they lost |
 |---|---|---|
 | DNS engine | **hickory-dns** [1][2] — owner-directed; memory-safe Rust, ~12 MiB official multi-arch image, TOML config + standard RFC 1035 zone files, authoritative + forwarding are production-grade per maintainers [3], TSIG/RFC 2136 dynamic updates since 0.26 | BIND9 — battle-tested but C, heavyweight config, the platform gains nothing it needs; CoreDNS — Go, plugin-chain config diverges from zone-file convention; dnsmasq — C, no real zone authority model; staying on pfSense overrides — unversioned, the problem itself |
-| Topology | **One instance on a minimal dedicated VM**, pfSense forwards internal zones to it (domain overrides) | Replacing pfSense's resolver outright on day one — makes a new, unproven service the LAN's single point of failure; HA pair — premature, hickory's secondary/AXFR story is weak [1] and the failure mode (pfSense override falls through) is tolerable |
+| Topology | **One instance on a minimal dedicated VM**; declared clients query it directly (resolver repointed, router second) | pfSense domain-override forwarding — it would answer every LAN client through the router, wider than the declared clients (decision 2026-09-29, "Direct, no pfSense"); replacing the LAN's resolver outright — makes a new, unproven service everyone's single point of failure; HA pair — premature, hickory's secondary/AXFR story is weak [1] and the failure mode (the router answers external names, internal ones fail) is tolerable |
 | Recursion | **Forward-only**: `.` zone forwards to upstream resolvers (inventory-var); hickory's recursor stays off | Full recursion — explicitly experimental upstream [1][3]; forwarding rides hickory-resolver, the production-grade component |
 | Zone management | **Jinja2-templated RFC 1035 zone files** rendered at deploy; records are inventory vars in site-config | Dynamic-updates-as-primary-workflow — sqlite journal becomes the live state and the flat zone file silently stops being the truth [1]; hand-edited files on the VM — unversioned again |
-| ACME DNS-01 for internal zones | **Decision deferred to Phase 2 start** — a public ACME CA must be able to *resolve* `_acme-challenge.<name>` from the internet, so a LAN-only hickory cannot back Let's Encrypt issuance by itself. Options on the table: (a) publicly delegate only the challenge sub-zone to this service (scoped :53 exposure for that zone alone) + RFC 2136/TSIG [1][4]; (b) keep Cloudflare DNS-01 with **wildcard certs** (status quo — already proven for LAN-only names in ERPNext §8.1; wildcards also mitigate the CT-log hostname disclosure that exists for *any* publicly-trusted per-host cert); (c) internal ACME CA (e.g. step-ca) doing DNS-01 against hickory — trusted only on managed devices | Pretending RFC 2136 alone unblocks public ACME — it only writes the TXT; it does not make the zone resolvable to the CA. The defensible argument against (b) long-term is SaaS-token coupling, not "hostname leakage" — CT logs disclose certified names regardless of DNS provider |
+| ACME DNS-01 for internal zones | **Decided: a variant of option (c), by `production-internal-ca`** (§8): an internal CA, but signing leaves over SSH with no ACME, so none of the DNS-01 work below is needed (originally deferred to Phase 2 start) — a public ACME CA must be able to *resolve* `_acme-challenge.<name>` from the internet, so a LAN-only hickory cannot back Let's Encrypt issuance by itself. Options on the table: (a) publicly delegate only the challenge sub-zone to this service (scoped :53 exposure for that zone alone) + RFC 2136/TSIG [1][4]; (b) keep Cloudflare DNS-01 with **wildcard certs** (status quo — already proven for LAN-only names in ERPNext §8.1; wildcards also mitigate the CT-log hostname disclosure that exists for *any* publicly-trusted per-host cert); (c) internal ACME CA (e.g. step-ca) doing DNS-01 against hickory — trusted only on managed devices | Pretending RFC 2136 alone unblocks public ACME — it only writes the TXT; it does not make the zone resolvable to the CA. The defensible argument against (b) long-term is SaaS-token coupling, not "hostname leakage" — CT logs disclose certified names regardless of DNS provider |
 | Container engine | **podman, with the privileged-port caveat handled at deploy**: binding :53 needs `net.ipv4.ip_unprivileged_port_start=53` (sysctl task in `deploy-dns.yml`) or a rootful service unit — recorded, not assumed away | Docker — reserved for services that need root engine features (NetBox); DNS needs a port sysctl, not Docker |
-| Port exposure | **VM binds :53 udp+tcp on the LAN interface** (the service IS the name server), via **env-parameterized compose bindings** (`${DNS_LISTEN:-0.0.0.0}:${DNS_PORT:-53}:53/udp` …) — compose overlays merge `ports` by *appending*, they can never remove a base binding, so port shifts must be env-driven in the base file (the NocoDB/UhhCraft pattern); `allow_networks` ACL limits queries to LAN CIDRs | High-port + pfSense port-forward — needless indirection on a dedicated VM; hardcoded `53:53` + overlay "override" — structurally impossible with compose merge semantics |
+| Port exposure | **VM binds :53 udp+tcp on the LAN interface** (the service IS the name server), via **env-parameterized compose bindings** (`${DNS_LISTEN:-0.0.0.0}:${DNS_PORT:-53}:53/udp` …) — compose overlays merge `ports` by *appending*, they can never remove a base binding, so port shifts must be env-driven in the base file (the NocoDB/UhhCraft pattern); the host firewall admits :53 per source (one tagged rule per `agent_cloud` member plus declared static sources, pruned by `apply-firewall.yml`), with `allow_networks` as optional defence in depth | High-port + pfSense port-forward — needless indirection on a dedicated VM; hardcoded `53:53` + overlay "override" — structurally impossible with compose merge semantics |
 
 ## 3. Architecture
 
-The service slots into the platform layer like any other composable service; the only unusual property is that pfSense (the LAN's existing resolver) delegates the internal zones to it, so clients keep using pfSense as their resolver and never need reconfiguration:
+The service slots into the platform layer like any other composable service. Its clients are declared: agent-cloud hosts point their resolver at it (router second), and the host firewall admits only them, the DGX Spark nodes and a future subnet router:
 
 ```mermaid
 flowchart TB
   subgraph LAN
-    CL[LAN clients<br/>resolver = pfSense, unchanged]
-    PF[pfSense DNS resolver<br/>domain overrides:<br/>internal zones -> dns-svc]
+    AC[agent-cloud hosts + DGX nodes<br/>resolver = dns-svc, router second]
     subgraph VM["VM: dns-svc (1 vCPU / 1 GB / 20 GB)"]
-      HD[hickory-dns container<br/>:53 udp+tcp, allow_networks=LAN<br/>named.toml + rendered zone files]
+      HD[hickory-dns container<br/>:53 udp+tcp, host firewall admits declared sources<br/>named.toml + rendered zone files]
     end
     CAD[Central Caddy<br/>Phase 2: RFC 2136 + TSIG<br/>_acme-challenge updates]
   end
   UP[Upstream resolvers<br/>inventory-var]
 
-  CL --> PF
-  PF -- "<internal-zone>, <local-dev-zone>" --> HD
-  PF -- everything else --> UP
+  AC -- "all queries" --> HD
   HD -- "zone '.' forward (container's own egress)" --> UP
   CAD -- "TXT updates (TSIG)" --> HD
 ```
@@ -1320,12 +1319,12 @@ platform/services/dns/
                                 #   rendered ONLY by the laptop deploy — prod serves
                                 #   <internal-zone> alone (a second authority for the
                                 #   dev zone, answering 127.0.0.1 LAN-wide, would be
-                                #   wrong and rebind-scrubbed by pfSense anyway)
+                                #   wrong for every client that is not the laptop)
   context/
     architecture.md             # how agents reason about/query the DNS service
 ```
 
-`compose.yml` sketch (final form at Phase 0): image `docker.io/hickorydns/hickory-dns:<pinned>`, `container_name: dns`, ports `"${DNS_LISTEN:-0.0.0.0}:${DNS_PORT:-53}:53/udp"` + the tcp twin (env-parameterized — see §2 port-exposure row; local-dev sets `DNS_LISTEN=127.0.0.1 DNS_PORT=5300`, never an overlay port "override"), read-only bind of the rendered config/zone dir, `restart: unless-stopped`. Healthcheck: prefer a query-based probe (`dig SOA <internal-zone> @127.0.0.1` via the image's bundled bind-tools) over `hickory-dns --validate` — validate proves config parses, not that the daemon answers; record the final form at Phase 0.
+`compose.yml` sketch (final form at Phase 0): image `docker.io/hickorydns/hickory-dns:<pinned>`, `container_name: dns`, ports `"${DNS_LISTEN:-0.0.0.0}:${DNS_PORT:-53}:53/udp"` + the tcp twin (env-parameterized — see §2 port-exposure row; local-dev sets `DNS_LISTEN=127.0.0.1 DNS_PORT=5300`, never an overlay port "override"), read-only bind of the rendered config/zone dir, `restart: always`. Healthcheck: prefer a query-based probe (`dig SOA <internal-zone> @127.0.0.1` via the image's bundled bind-tools) over `hickory-dns --validate` — validate proves config parses, not that the daemon answers; record the final form at Phase 0.
 
 ## 4. OpenBao layout additions
 
@@ -1340,7 +1339,7 @@ No runtime AppRole: the container never talks to OpenBao (deploy-time access use
 
 ### Phase 0 — Scaffolding (service onboarding checklist)
 
-- [ ] `platform/services/dns/deployment/` per §3 structure; `deploy.sh` container-only; lint (shellcheck, yamllint, ansible-lint) + BATS `test_service_dns.bats` (image pinned, no secrets in scripts, compose valid)
+- [ ] `platform/services/dns/deployment/` per §3 structure (partly done: `deploy.sh`, `compose.yml`, `named.toml.j2`, `zone.local-dev.j2` and `test_service_dns.bats` exist; `zone.internal.j2` does not yet); `deploy.sh` container-only; lint (shellcheck, yamllint, ansible-lint) + BATS `test_service_dns.bats` (image pinned, no secrets in scripts, compose valid)
 - [ ] `deploy-dns.yml` + `clean-deploy-dns.yml` using composable tasks; `dig`-based verify phase (SOA, a known A record, a wildcard miss→hit pair, and one forwarded external name)
 - [ ] Semaphore templates **Deploy DNS** / **Clean Deploy DNS** in `platform/semaphore/templates.yml`; local variant in `templates-local.yml`
 - [ ] site-config: `dns_svc` host group (VM IP), zone vars (`internal_zone`, `local_dev_zone`, record maps, upstream resolvers), `secret/services/ssh/dns` keypair
@@ -1350,20 +1349,22 @@ No runtime AppRole: the container never talks to OpenBao (deploy-time access use
 
 ### Phase 1 — Authoritative for internal zones (prod live)
 
-- [ ] Provision the `dns-svc` VM (1 vCPU / 1 GB / 20 GB — hickory's in-memory footprint is tens of MB [1]); SSH keys → distribute → verify → harden (rule #5 order)
+- [x] Provision the `dns-svc` VM (1 vCPU / 1 GB / 20 GB — hickory's in-memory footprint is tens of MB [1]); SSH keys → distribute → verify → harden (rule #5 order). **Done 2026-09-28/29** through Semaphore (as run: Verify Host Access on the cloud-init key before Distribute SSH Keys, then Harden SSH, so verify still preceded hardening); firewalled to its declared clients 2026-09-29
 - [ ] Privileged-port handling in `deploy-dns.yml`: persist `net.ipv4.ip_unprivileged_port_start=53` (sysctl.d) before the container starts — rootless podman cannot publish :53 otherwise; document the alternative (rootful unit) if the sysctl is rejected
-- [ ] **Deploy DNS** via Semaphore; `allow_networks` restricted to LAN CIDRs; AXFR stays default-deny
-- [ ] pfSense: domain override for `<internal-zone>` → dns-svc IP, **plus** `private-domain: "<internal-zone>"` in unbound's custom options — without it, pfSense's DNS-rebinding protection scrubs every RFC 1918 answer this service returns (manual UI step today; record in the site-config runbook — pfSense API automation is a future enhancement). The `<local-dev-zone>` is **not** delegated on prod (laptop-only authority, §3)
-- [ ] Migrate existing host overrides (ERPNext dev, service names) into the zone templates; remove the pfSense per-host entries **only after** parallel verification (rule #5 applied to DNS)
-- [ ] Add a DNS block to `validate-all.yml` (`dig` checks through pfSense and direct)
+- [ ] **Deploy DNS** via Semaphore; the host firewall admits only declared sources (in place); AXFR stays default-deny
+- [ ] Repoint admitted hosts' resolver at dns-svc, router second, through `configure-host-network.yml` (site-config `net_nameservers`, and `vm_nameserver` for new VMs); one host first with a parallel `dig` check (rule #5). The DGX nodes are the dgx-spark session's to repoint
+- [ ] Put the names agent-cloud hosts need into the zone templates. The pfSense host overrides other LAN clients use stay as they are (out of scope, 2026-09-29)
+- [ ] Add a DNS block to `validate-all.yml` (`dig` from an admitted host, and a refusal check from a host that is not admitted)
 
-**Gate 1:** every migrated name resolves identically via pfSense and via dns-svc directly; a record change lands as PR → template run → live answer; VM survives reboot with resolution intact; external names still resolve for LAN clients (forward path).
+**Gate 1:** every declared name resolves from an admitted host; a host that is not admitted is refused at :53; a record change lands as PR → template run → live answer; VM survives reboot with resolution intact; external names still resolve for admitted hosts (forward path).
 
 ### Phase 2 — ACME for internal zones (decision-gated)
 
+> **Deferred 2026-09-29.** The decision is made (§8): option (c) issues over SSH and needs no RFC 2136 challenge zone, so the dynamic-update items below have no consumer. They stay for the record; the decision item is ticked.
+
 **Preconditions (blocking):** (1) the ACME-CA decision in §2 is made — public challenge-sub-zone delegation (a), Cloudflare wildcard status quo (b), or internal CA (c); options (a)/(c) require everything below, option (b) ends this phase at the decision record. (2) **Caddy composable automation exists** — today Caddy has no playbook, no Semaphore template, no manage-secrets flow, and runs an unpinned third-party image (`CADDY-REVERSE-PROXY.md` gaps; `LOCAL-DEV-DEPLOYMENT.md` Phase 4 builds `deploy-caddy.yml` local-first); an owned Caddy image build is required to add the `caddy-dns/rfc2136` module.
 
-- [ ] Record the ACME-CA decision + rationale here (§2 row updated, §8 row closed)
+- [x] Record the ACME-CA decision + rationale here (§2 row updated, §8 row closed) — 2026-09-29
 - [ ] Carve the dynamic challenge zone (shape per the decision: publicly-delegated `_acme-challenge.<internal-zone>` or an internal-CA-queried zone) backed by hickory's **sqlite store** with `allow_update = true` — the template-rendered primary zones stay static (journal-vs-zonefile truth split is the known trap [1])
 - [ ] TSIG key: generate, store in `secret/services/dns`, render into hickory's `key_file` (raw decoded bytes) and into Caddy's `rfc2136` provider config via each side's manage-secrets flow
 - [ ] Caddy: `caddy-dns/rfc2136` module in the owned image build; internal-zone sites switch to DNS-01 against hickory [4]
@@ -1371,16 +1372,16 @@ No runtime AppRole: the container never talks to OpenBao (deploy-time access use
 
 **Gate 2:** decision recorded; if (a)/(c): one internal-zone certificate issued end-to-end via DNS-01 against hickory, TSIG-less update attempts refused, journal-backed zone survives container restart, static zones still render-only.
 
-### Phase 3 — Optional: primary LAN resolver
+### Phase 3 — Withdrawn: primary LAN resolver
 
-Only after sustained Gate-1/2 stability: point pfSense DHCP at dns-svc (or run hickory as pfSense's sole forwarder). Explicitly **not** required by any other plan; revisit when operational confidence and the HA question (secondary instance, AXFR maturity [1]) are both answered.
+**Not planned (2026-09-29).** Whole-LAN resolution is out of scope: the service answers declared clients only. A new client class is one more firewall source in site-config, never a subnet. The HA question (secondary instance, AXFR maturity [1]) stays open under §8.
 
 ## 6. Security considerations
 
-- **Query surface:** `allow_networks` limits to LAN CIDRs; AXFR default-deny; no public exposure of internal zones at any phase. The recursor feature stays disabled (experimental upstream [1][3]).
+- **Query surface:** the host firewall admits :53 from declared sources only (per-host rules, tagged and pruned by `apply-firewall.yml`); AXFR default-deny; no public exposure of internal zones at any phase. The recursor feature stays disabled (experimental upstream [1][3]).
 - **Update surface:** dynamic updates exist only in the Phase 2 sub-zone, TSIG-authenticated (HMAC-SHA256), key stored in OpenBao and templated at deploy — never on-disk in the repo. Static zones cannot be modified at runtime.
 - **Secrets hygiene:** zone names and record IPs are inventory vars in site-config; this repo holds `<placeholders>` only. TSIG material flows OpenBao → Ansible memory → rendered key file (0600, gitignored path) per rule #4.
-- **Blast radius:** pfSense override fall-through means a dead dns-svc degrades to "internal names unresolvable," not "LAN offline" (until/unless Phase 3 changes that calculus — recorded there).
+- **Blast radius:** a dead dns-svc costs the repointed hosts their internal names; external names still resolve through the router listed second. Clients outside the declared set are unaffected.
 - **Known upstream issues watched:** query-loss report hickory-dns#2613 (open, unconfirmed) — Gate 1 includes a sustained-resolution soak; wildcard NSEC behavior #3034 is irrelevant for unsigned internal zones [1].
 
 ## 7. Validation criteria (master)
@@ -1388,20 +1389,19 @@ Only after sustained Gate-1/2 stability: point pfSense DHCP at dns-svc (or run h
 | Phase | Critical check | Pass |
 |---|---|---|
 | 0 | Render + lint | Zone templates validate via `hickory-dns --validate`; CI green; templates registered |
-| 1 | Authoritative + forward | Migrated names answer via pfSense and direct; record-change-as-PR proven; external resolution intact; 24 h soak without query loss |
+| 1 | Authoritative + forward | Declared names answer admitted hosts; a non-admitted host is refused; record-change-as-PR proven; external resolution intact; 24 h soak without query loss |
 | 2 | ACME decision + (if hickory-backed) dynamic updates | Decision recorded; for options (a)/(c): internal-zone cert via DNS-01, unauthenticated updates refused, static zones unaffected |
-| 3 (opt) | Resolver promotion | Defined when the phase is picked up |
+| 3 | Withdrawn | Whole-LAN resolution out of scope (2026-09-29) |
 
 ## 8. Open decisions & risks
 
 | Item | Status | Resolution path |
 |---|---|---|
 | Pinned image tag | Phase 0 | Pin the newest tag the official image publishes (0.26.x line; 0.26.1 binary released 2026-05-01 [2]) and record it in inventory |
-| **ACME-CA choice for internal zones** | **Open — blocks Phase 2 work items** | Decide (a) public challenge-sub-zone delegation, (b) Cloudflare wildcard status quo, (c) internal CA (step-ca); §2 records the trade-offs honestly (CT logs disclose per-host names under every option; wildcards mitigate under (a) and (b) alike) |
+| **ACME-CA choice for internal zones** | **Decided by `production-internal-ca`** | Option (c): a step-ca internal CA that signs leaves over SSH, with ACME issuance in production a non-goal (that change's design, Non-Goals). RFC 2136/TSIG (Phase 2) has no consumer and stays deferred |
 | Caddy automation precondition | Open — tracked in LOCAL-DEV Phase 4 + CADDY-REVERSE-PROXY gaps | `deploy-caddy.yml`, Semaphore template, owned image build land before (or with) Phase 2 |
 | `_acme-challenge` zone shape | Phase 2 start (after the CA decision) | Spike against caddy-dns/rfc2136; pick the shape that keeps the static zones journal-free |
-| pfSense override automation | Manual at Phase 1 | pfSense API/Ansible module evaluation — separate enhancement, not load-bearing |
-| HA / secondary | Deferred | hickory AXFR/secondary maturity is the blocker [1]; revisit at Phase 3 |
+| HA / secondary | Deferred | hickory AXFR/secondary maturity is the blocker [1]; the router listed second covers external names meanwhile |
 | hickory#2613 query-loss report | Watch | Gate 1 soak measures; if observed, evaluate 0.27 line or revisit engine choice with evidence |
 
 ## 9. Convention compliance map
@@ -1412,7 +1412,7 @@ Only after sustained Gate-1/2 stability: point pfSense DHCP at dns-svc (or run h
 | deploy.sh containers-only (rule #2) | Zone rendering is Ansible's job; deploy.sh pulls/starts/waits |
 | Independent workflows (rule #3) | DNS deploy, clean-deploy, and the Phase 2 Caddy change are separate playbooks/PRs |
 | No intermediary secret files (rule #4) | TSIG: OpenBao → Ansible memory → rendered 0600 key file (the compose-readable minimum) |
-| Verify before hardening (rule #5) | Parallel-resolution verification before pfSense overrides are removed; SSH harden only after key auth verified |
+| Verify before hardening (rule #5) | Parallel `dig` verification on one admitted host before its resolver is repointed; SSH harden only after key auth verified |
 | No real values in public repo | Zones/IPs/TSIG in site-config; placeholders here |
 | Local-dev parity | Same image/config/zone templates; `compose.local.yml` overlay only (LOCAL-DEV-DEPLOYMENT §5.1) |
 
@@ -1433,3 +1433,4 @@ Only after sustained Gate-1/2 stability: point pfSense DHCP at dns-svc (or run h
 |---|---|
 | 2026-06-12 | Initial plan: hickory-dns chosen (owner-directed; criteria + rejected alternatives recorded), forward-only posture, three phases (authoritative → RFC 2136 ACME → optional resolver promotion), shared-engine parity with local-dev §5.1 |
 | 2026-06-12 | Architecture-review pass: ACME story corrected (LAN-only authority can't back public DNS-01 — Phase 2 is now decision-gated across delegation/Cloudflare-wildcard/internal-CA, CT-log rationale fixed); env-parameterized port bindings mandated (compose overlays append `ports`, never replace); rootless-:53 sysctl step added; pfSense `private-domain` rebind-protection step added; prod no longer serves the dev zone; Caddy-automation precondition made explicit; design-principles section + query-based healthcheck note + architecture-reference index item added |
+| 2026-09-29 | Direct resolution for declared clients replaces pfSense domain-override forwarding (operator decision "Direct, no pfSense"; router kept as the second resolver). Phase 3 withdrawn; the ACME-CA choice recorded as decided by `production-internal-ca`; the VM provisioning and scaffolding items ticked |

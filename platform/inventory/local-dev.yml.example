@@ -1,4 +1,11 @@
 ---
+# =============================================================================
+# TEMPLATE for the local-dev inventory, not production. Production is
+# site-config/inventory/production.yml. Local dev runs from the gitignored copy
+# `make local-init` writes (platform/inventory/local-dev.yml), which can carry
+# local overrides; nothing here says what production is configured with
+# (docs/MISTAKES.md 1.14).
+# =============================================================================
 # Local-dev inventory TEMPLATE — committed, localhost-only by construction.
 # `make local-init` copies this to platform/inventory/local-dev.yml (gitignored)
 # and substitutes __REPO_DIR__ / __GENESIS_DIR__. No real IPs, domains, or
@@ -119,6 +126,16 @@ all:
             # An edge gate would also gate /api/public/v1, breaking n8n's
             # API-key calls; postiz authenticates interactively in-app instead.
             - { host: "postiz.agent-cloud.test", upstream: "postiz:5000" }
+            # inference — the OpenAI-compatible vLLM edge (the DGX Spark pair in
+            # prod). inference_api renders the /v1 + /health allowlist with an edge
+            # 401 and 404-for-everything-else; the upstream is a stand-in on the Mac
+            # host (scripts/fake-inference-upstream.py) so the edge rules can be
+            # exercised without a GPU box. Prod points the same shape at spark-1 via
+            # site-config's caddy_managed_sites.
+            - { host: "inference.agent-cloud.test", upstream: "host.containers.internal:8001", inference_api: true }
+            # agentgateway operator UI — the gateway runs its own OIDC login against
+            # Authentik (ui.policies), so this is a plain proxy to its UI listener.
+            - { host: "admin.inference.agent-cloud.test", upstream: "agentgateway:4001" }
 
     # Authentik — central IdP / SSO. Server+worker+Postgres+Redis; serves HTTP
     # on :9000 behind Caddy (TLS). Deploy: make local-deploy-authentik. The
@@ -148,6 +165,11 @@ all:
           container_engine: podman
           o11y_grafana_port: 3002
           o11y_prom_port: 9090
+          o11y_prom_retention_size: 1GB  # local cap; production must size its own disk first
+          o11y_scrape_sample_limit: 2000
+          o11y_expected_metrics_targets:
+            - { uid: o11y_missing_caddy, service: caddy-reverse-proxy/caddy, instance: "caddy:2021" }
+          o11y_alerts_enabled: false  # enable only after the OpenBao webhook is approved and seeded
           o11y_loki_port: 3100
 
     # OPA — Guardrail-layer policy engine. Agents/control-plane reach it as
@@ -177,6 +199,11 @@ all:
           # docker.n8n.io rate-limits unauthenticated pulls; the Docker Hub
           # mirror is the same image. Base compose default stays docker.n8n.io.
           n8n_image: docker.io/n8nio/n8n:2.25.7
+          # Postiz credential host for provision-n8n-postiz-credential.yml —
+          # the n8n app container shares the local-dev network with postiz, so
+          # the in-container test reaches it directly (no .test DNS / CA trust
+          # inside the container). Same /api path shape as the public route.
+          n8n_postiz_credential_host: "http://postiz:5000/api"
 
     # tududi - self-hosted to-do app (single rootless container, SQLite). Native
     # OIDC to Authentik (blueprints/tududi-oidc.yaml). Behind Caddy at
@@ -191,6 +218,46 @@ all:
           container_engine: podman
           tududi_bind: 127.0.0.1
           tududi_port: 3402   # host debug port; Caddy reaches the container :3002 by name
+          # The tududi user the GitHub sync acts AS (Store tududi API Token mints
+          # its token). It must be the user who OWNS the mapped projects: tududi
+          # scopes lists per user, and a task the token creates is invisible to
+          # a project owner who is not the token's user. Locally the mapped
+          # dev-test project belongs to the deploy's break-glass account, which
+          # is also the default — set this only if you map a project you own
+          # through your OIDC login instead.
+          tududi_sync_user_email: admin@agent-cloud.test
+    # agentgateway — the inference edge gateway (OpenAI-compatible /v1 with
+    # per-client API keys + limits) in front of the model API. Locally the
+    # upstream is LM Studio on the Mac host (host.containers.internal:1234, no
+    # key); prod points the same shape at vLLM on the DGX Spark head node via
+    # site-config. Deploy: make local-deploy-agentgateway.
+    # Change: plan/development/openspec/changes/inference-gateway-agentgateway
+    agentgateway_svc:
+      hosts:
+        agentgateway-local:
+          ansible_host: 127.0.0.1
+          ansible_connection: local
+          service_name: agentgateway
+          monorepo_deploy_path: platform/services/agentgateway/deployment
+          container_engine: podman
+          # Local debug publishes (127.0.0.1:4400 api, :4401 readiness, :4402 metrics) are
+          # literals in compose.local.yml; the UI is reachable only via Caddy + SSO.
+          agw_upstream_base_url: http://host.containers.internal:1234/v1
+          agw_models:
+            # The name clients send -> the model id LM Studio serves.
+            - { name: gpt-oss-20b, upstream_model: openai/gpt-oss-20b }
+          # One API-key identity each; manage-secrets mints client_<name> once
+          # into secret/services/agentgateway and reuses it on every deploy.
+          agw_clients:
+            - dev-local
+          # LOCAL-DEV ONLY: render key VALUES (not hashes) into config.yaml so the UI's
+          # playground lists them as saved keys. Never set in prod inventory.
+          agw_plaintext_keys: true
+          # The upstream key is OPTIONAL here, not forbidden: the deploy stops requiring it,
+          # and a key present in OpenBao is still sent (LM Studio with auth on needs it).
+          # Prod leaves this unset (true = refuse an empty key).
+          agw_upstream_requires_key: false
+
 
     # honcho - memory API (api + deriver on the CI-built GHCR image, own
     # pgvector Postgres + redis, all internal but the api). /v3 is JWT; /docs
@@ -224,6 +291,10 @@ all:
           # Host debug port; Caddy reaches the container :5000 by name. Shifted
           # off 5000 because macOS AirPlay Receiver squats that port by default.
           postiz_port: 5001
+          # Search node (Elasticsearch) for the workflow engine — REQUIRED as
+          # of postiz v2.23.0 and defaulted true; kept here as the documented
+          # opt-out knob. Full account: services/postiz/deployment/CLAUDE.md.
+          postiz_temporal_search: true
           # MUST match the URL the browser actually uses — postiz derives its
           # OIDC redirect from this, so a mismatch is rejected by Authentik as an
           # unregistered destination. Includes :8443 unless `make local-https`
@@ -284,12 +355,33 @@ all:
     #       monorepo_deploy_path: platform/services/nocodb/deployment
     #       container_engine: podman
     #
-    # netbox_svc:   # root-requiring: Docker Desktop profile, app tier only
-    #   hosts:
-    #     netbox-local:
-    #       ansible_host: 127.0.0.1
-    #       ansible_connection: local
-    #       service_name: netbox
-    #       service_url: "http://127.0.0.1:8000"
-    #       monorepo_deploy_path: platform/services/netbox/deployment
-    #       container_engine: docker
+    # NetBox — IPAM authority, under PODMAN through the local Semaphore (plan 04 "NetBox
+    # Local Engine"; change service-deployment-workflow section 6). The forward_auth
+    # overlay makes Caddy's Authentik gate the only way in, and the app publishes on
+    # loopback only, because the overlay trusts X-authentik-* headers.
+    # Deploy: make local-deploy-netbox.
+    netbox_svc:
+      hosts:
+        netbox-local:
+          ansible_host: 127.0.0.1
+          ansible_connection: local
+          service_name: netbox
+          service_url: "http://127.0.0.1:8000"
+          monorepo_deploy_path: platform/services/netbox/deployment
+          container_engine: podman
+          netbox_host_ip: 127.0.0.1
+          netbox_compose_overlays: [docker-compose.local-auth.yml]
+          # Discovery on local-dev only (platform/netbox-local): the pfSense/Proxmox
+          # workers reach real infrastructure APIs, so they are off here, and the scans
+          # run only on discovery_target_subnet / discovery_targets, each of which the
+          # deploy refuses unless it lies inside a network on the local engine. Unset
+          # means discovery is disabled. Set the subnet in local-dev.yml, never in the
+          # committed example (no private addresses in this repo).
+          discovery_workers_enabled: false
+          # The engine's seccomp profile for image builds (lib/common.sh build_netbox_image).
+          netbox_build_seccomp_profile: /usr/share/containers/seccomp.json
+          # podman-compose names containers project_service_N (Docker Compose uses "-").
+          netbox_app_container: netbox_netbox_1
+          # The orb agent runs with host networking on the engine host: it reaches the local
+          # OpenBao on that host's loopback, not by the controller's container network name.
+          orb_agent_openbao_addr: "http://127.0.0.1:8200"

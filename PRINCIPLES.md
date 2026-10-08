@@ -45,8 +45,8 @@ the private repo (`site-config`). A second site is added as configuration (`vaul
 A service is `platform/services/<name>/` with `deployment/` (compose.yml, deploy.sh, templates/*.j2,
 README.md) and, for AI/website tiers, `context/`. The required shape is parameterized by **tier**:
 auxiliary tier is the minimal set; infrastructure/AI/automation tiers add the full ceremony. A
-service that genuinely cannot fit (NetBox needs Docker for `CAP_NET_RAW`) declares
-`shape: bespoke` with a one-line justification - a *forced* exception, not debt.
+service that genuinely cannot fit (NetBox needs Docker for `CAP_NET_RAW`) documents
+a one-line justification; a machine-readable `shape: bespoke` declaration is **[TARGET]** - a *forced* exception, not debt.
 *Why: uniformity is what makes 20+ services AI-navigable under one onboarding checklist. But "exactly
 one shape" and "tier drives integration weight" only coexist if tier is the input to the shape, not a
 competing rule. As-built: several service dirs are still empty scaffolds or non-conformant; the
@@ -65,7 +65,7 @@ task library and `platform/lib/` first; a recurring need is promoted to a reusab
 site/AppRole/service/user inherits the first's recipe.
 *Why: the shared `/var/lib/agent-cloud-deploy` dir fixed bind-mounts for every local service at once
 - that leverage is the whole point. A hand-grant doesn't survive a redeploy and can't be repeated at
-scale - e.g. hand-setting Semaphore user `stray` to admin is a stopgap; the foundational fix is
+scale - e.g. hand-setting the operator's Semaphore user to admin is a stopgap; the foundational fix is
 role-based provisioning ("Human access is provisioned by role", Section 3). Introduce a new
 abstraction only when the same fact has provably been hand-copied into 4+ places, not in anticipation.*
 
@@ -137,8 +137,8 @@ verify env files exist, pull/build images, run `compose up`, wait for health, an
 may **not** call OpenBao, generate/resolve secrets, manage AppRoles, write policy, or touch
 Semaphore. Every credential takes exactly one path: OpenBao -> Ansible memory -> Jinja2 -> `.env`.
 *Why: the keystone seam all lenses converge on. It bounds blast radius (a compromised deploy script
-can't reach OpenBao), keeps redeploys idempotent, and keeps the imperative residue thin. CI-enforced
-by grepping `deploy.sh` for `gen_secret`/`put_secret`/`get_secret`/`bao-client`.*
+can't reach OpenBao), keeps redeploys idempotent, and keeps the imperative residue thin. **[TARGET]** A repository-wide credential-boundary lint is not implemented; current
+service-specific BATS checks cover selected scripts only.*
 
 **Bootstrap (genesis) services manage their own credentials; anything provisioned from a running
 instance does not.** OpenBao and Semaphore are the genesis layer - the secret store and the
@@ -151,7 +151,8 @@ local deployment** they generate and manage their own credentials (committed as 
 *Why: the chicken-and-egg of trust is real and must be named, not smuggled in per-service. As-built:
 `semaphore` deploy.sh sourcing `bao-client.sh` is defensible as genesis; `nocodb` deploy.sh doing so
 is NOT - it is a normal service provisioned from a running instance, so refactor it to the strict
-boundary. The CI grep above carries an allowlist naming only the genesis services (OpenBao, Semaphore).*
+boundary. The proposed repository-wide lint must allowlist only the genesis services (OpenBao, Semaphore);
+that blanket lint and allowlist are not implemented.*
 
 **One authority per concern; reflections are read-only and never invert authority.** Each
 cross-cutting concern has a single source of truth: OpenBao (secrets), NetBox (network/IPAM), Git
@@ -162,15 +163,16 @@ Systems that reflect another's state are read-only consumers and never write bac
 "what does this claim authority over, and is anything already authoritative there?" It is what
 prevents the slow drift that kills config-as-code platforms.*
 
-**Every credential is bounded in time and uses; `TTL=0` is a defect.** Every AppRole `secret_id`
-carries a finite `secret_id_ttl` (default 90d / 2160h) and `token_num_uses` (25). The **only**
-unlimited-TTL exception is the Semaphore orchestrator, documented and singular - never silently
-copied to a second AppRole.
-*Why: a `secret_id` with TTL 0 grants indefinite access from one leaked string. As-built defect:
-`manage-approle.yml` hardcodes `secret_id_ttl: 0` / `token_num_uses: 0` and mints a fresh orphaned
-secret-id every run. This is the highest-severity, lowest-effort fix on the platform - fix it first,
-with a CI guard that fails on `secret_id_ttl: 0` / `token_num_uses: 0` unless the line carries an
-allow-comment naming the orchestrator.*
+**AppRole SecretIDs and issued tokens have separate limits.** The shared task defaults to a
+90-day (`2160h`) SecretID TTL, unlimited SecretID logins within that window
+(`secret_id_num_uses: 0`), and 25 uses per issued token (`token_num_uses: 25`).
+The bounded-credential rule remains the target: every credential must be limited in time
+and uses. A zero SecretID TTL grants indefinite lifetime; the only unlimited-TTL
+exception is the documented Semaphore orchestrator, never a second service.
+*Why: token-use limits do not bound how often a SecretID can authenticate. As-built:
+`manage-approle.yml` reuses stored credentials and only mints when absent; it does not rotate an
+expired stored SecretID automatically. Finite SecretID use limits and scheduled
+Create -> Verify -> Retire rotation remain targets, not guarantees of the shared task.*
 
 **Verify the new credential before retiring the old - always Create -> Verify -> Retire.** Rotating
 any credential (AppRole secret_id, Diode OAuth2, SSH key, DB password) is three phases with a
@@ -199,8 +201,8 @@ per-service hand-grant.
 *Why: provisioning is the only way user management scales across many tenants/projects without drift;
 it is the no-monkey-patch rule (Section 2) applied to people. Decomposing identity (vs one opaque
 "user type") lets access be derived from real org structure instead of bespoke per-person grants.
-**[TARGET]** the provisioning automation + the group schema are not built yet - Semaphore user `stray`
-was hand-set to admin (a stopgap), and `platform-admins` is today's sole admin group, being renamed
+**[TARGET]** the provisioning automation + the group schema are not built yet - the operator's Semaphore user
+was hand-set to admin (a stopgap), and `platform-admins` is today's sole admin group, with a proposed rename to
 `uhstray-admins` (the uhstray-org Admin tier). The exact group-naming + (identity -> per-service role)
 mapping table lives in `plan/architecture/04-credentials-access.md`. Do not reason as if role-based
 provisioning already holds.*
@@ -216,7 +218,8 @@ non-credential task carries no_log, and when a credential task lacks it), not a 
 callback, when built and verified, is additive defense-in-depth, never a replacement.*
 
 **Leak prevention for the public repo is defense-in-depth, automated.** A pre-commit hook (local) +
-a CI gate (trufflehog + RFC1918 + credential-pattern grep) + log-value redaction. The manual pre-push
+a CI gate (trufflehog + RFC1918 + credential-pattern grep). Log-value redaction is
+**[TARGET]**; credential tasks currently depend on scoped `no_log`. The manual pre-push
 grep is a human backstop, never the primary control. A new service without leak tests cannot merge.
 *Why: on a public repo a leaked credential is exposed the instant it's pushed; one skippable gate is
 not enough. Note: commit `aecd47d` committed dev-test `.env` files to public history; **verified
@@ -302,10 +305,10 @@ as the final deploy phase - **not** inside deploy.sh (lifecycle-only boundary); 
 engine-parameterized (Quadlet/systemd for Podman, native `restart` + systemd wrapper for
 Docker/NetBox); and it ships **after** the runtime-dir split.*
 
-**Branch deploys to prod are classified reversible vs irreversible.** Each deploy playbook carries a
+**[TARGET] Branch deploys to prod are classified reversible vs irreversible.** Each deploy playbook carries a
 `reversible: true|false` flag. When `service_branch != main` and `reversible == false` (migrations,
 destructive ops, schema changes), Semaphore surfaces a confirmation gate and pairs the run with a
-volume/Proxmox snapshot.
+volume/Proxmox snapshot. These flags and the automatic launch gate are not implemented.
 *Why: the branch-testing workflow promises "instant rollback by re-deploying main," but migrations
 persist. Tagging reversibility makes the one-way risk visible at launch, not after corruption.*
 
@@ -364,7 +367,8 @@ first** - the liveness loop and every honest secret-isolation claim depend on it
 
 **Observability is opt-in by declaration, never bespoke per service.** Logs are free (Alloy socket
 discovery); metrics are two compose labels (`prometheus.io/scrape`, `prometheus.io/port`) consumed by
-Prometheus docker_sd; traces are two env vars (`OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_SERVICE_NAME`).
+Alloy's socket discovery and forwarded to Prometheus over the private o11y network; traces are two
+env vars (`OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_SERVICE_NAME`).
 The container name is the canonical `service.name` joining all three. No per-service `prometheus.yml`
 edits; dashboards and alerts are provisioned as code.
 *Why: a new service must not land observability-blind. The single correlation key is what makes
@@ -381,8 +385,9 @@ inverts the value-to-cost order and risks the o11y stack eating the disk it's me
 
 **Every signal path is self-hosted, least-privilege, and free of secrets-in-labels.** Telemetry
 never leaves the platform (analytics disabled). The Grafana MCP token is OpenBao-managed and
-read-only; metrics endpoints sit behind Caddy + Authentik; never put secrets or PII in metric names
-or labels.
+read-only; human metrics access goes through Caddy + Authentik, while collector-only scrape
+listeners stay on private container networks and are never published publicly. Never put secrets
+or PII in metric names or labels.
 *Why: socket access for Alloy/Prometheus is the same trust surface already accepted - a deliberate,
 bounded decision keeps observability from quietly becoming an exfiltration channel.*
 
@@ -392,14 +397,14 @@ bounded decision keeps observability from quietly becoming an exfiltration chann
 
 A CI gate ships only **after** the mechanism it enforces exists and is verified, and gates are
 ordered by **blast-radius of the defect they prevent**, not by ease of writing the grep. The
-foundation order is: (1) fix `manage-approle.yml` TTL=0 + its regression guard; (2) reconcile
-`deploy-all.yml` against the 21 on-disk plays - the canonical full-deploy currently covers ~4
-services, a correctness bug a recovery relies on; (3) wire `assert-orchestrated.yml` (verify-then-
+foundation order is: (1) complete expiry-aware AppRole rotation and its regression guard; (2) reconcile
+`deploy-all.yml` against the service catalog - the legacy aggregate covers only five groups,
+so it is not a complete recovery entrypoint; (3) wire `assert-orchestrated.yml` (verify-then-
 harden); (4) compose structural validation + the `service_healthy`/wait-pairing lint +
 deploy.sh-secret-free grep; (5) build & verify the `redact_secrets` callback, *then* reconcile the
 no_log scope check. Defer the service manifest, `make new-service` scaffold, domain-collision
 registry, and reversibility tags until the foundation gates prove stable - they are real but not yet
-load-bearing at 21 services.
+load-bearing for the current service catalog.
 
 ---
 
@@ -424,5 +429,5 @@ load-bearing at 21 services.
   fallback and NetBox's chosen path even after.
 - **Dependency ordering: one DAG vs. two.** Steady-state inter-service dependencies (declarative,
   consumed by `deploy-all.yml`) and genesis trust-ordering (irreducibly imperative,
-  `bootstrap-local-dev.yml`) are different concerns. They are cross-checked for consistency in CI
-  rather than forced into a single artifact - revisit if that check proves insufficient.
+  `bootstrap-local-dev.yml`) are different concerns. Cross-checking them for consistency in CI
+  remains a target; do not assume the legacy aggregate encodes the full dependency graph.

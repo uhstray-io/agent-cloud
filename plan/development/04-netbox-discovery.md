@@ -109,7 +109,13 @@ Cluster   -> Cluster (type: "Proxmox VE", scope_site from inventory)
 
 **Key behaviors:**
 - `_build_node()` uses first IPv4 from management bridge interfaces for `primary_ip4`
-- `_build_vm()` uses first guest agent IPv4 (falls back gracefully without agent)
+- `_build_vm()` uses the first usable guest agent IPv4. If none is available,
+  it may use a validated static IPv4 from Proxmox cloud-init `ipconfig0` or
+  `ipconfig1`, keeping the matched configuration key as the synthetic
+  VMInterface name. DHCP, malformed, loopback, and link-local values are skipped.
+  After promotion from the older worker that named every fallback interface
+  `eth0`, audit for stale `eth0` VMInterfaces; do not delete records without
+  checking current guest-agent data and Diode reconciliation.
 - `_build_lxc()` uses first container IPv4
 - `_pick_primary_ipv4()` skips loopback, link-local, and IPv6 addresses
 - `_sanitize_description()` strips lines containing credential keywords before ingestion
@@ -323,6 +329,29 @@ The following phases were completed during initial development and are documente
 | 2c-iii. GPS coordinates | 2026-04-21 | Site entity always emitted with lat/lon |
 | 2c-iv. Description sanitization | 2026-04-21 | Credential keyword stripping before Diode ingestion |
 
+### Existing VM guest-agent repair (PR #186 follow-up)
+
+**Status:** ACTIVE — playbook prepared; live check-mode and installation proof pending.
+Newly provisioned VMs receive `qemu-guest-agent` through the
+cloud-init template. Older VMs may lack it, so their interface addresses cannot be
+read through the Proxmox guest-agent API. The validated cloud-init address fallback
+already lives in the discovery worker; the old PR's coordinate repair and duplicate
+fallback must not be ported over it.
+
+1. Add a Semaphore playbook that selects one explicit `<name>_svc` group (refusing
+   an empty group or a host pattern), refuses a VM without the guest-agent virtio
+   port, resolves sudo access, ensures the package is present, and starts the
+   service. A package state check must use `apt` directly rather than the return
+   code of `dpkg -l`.
+2. Publish a Dev template with a required `target_service` survey field so the
+   operator chooses the target group before the task runs.
+3. Validate playbook syntax, template parsing, and a check-mode run before a live
+   Semaphore run. Check mode is expected to refuse each VM without the port; enable
+   that VM's Proxmox `agent` option first by running **Resize VM** for the service with
+   `allow_reboot=true`. It converges `agent=1`, as `provision-vm.yml` sets for new VMs,
+   and restarts the guest while the change is pending. Production installation remains
+   pending that live verification.
+
 ---
 
 ## Operational Lessons
@@ -372,7 +401,7 @@ flowchart LR
 ```
 
 **Evidence (2026-06-12):**
-- Docker daemon socket: `unix:///Users/stray/.docker/run/docker.sock`.
+- Docker daemon socket: `unix://$HOME/.docker/run/docker.sock`.
 - That path **is** visible in the podman VM (under the `/Users` virtiofs share) — but virtiofs shares the *file node*, not the live socket endpoint. The listening daemon is in a different VM/kernel, so `connect()` from the podman VM fails. A unix socket is not usable across a file share.
 - Docker Desktop exposes **no TCP daemon** (`tcp://localhost:2375` is off by default, and enabling it is insecure + manual).
 - Net: the podman-VM Semaphore has exactly one engine it can drive — podman.

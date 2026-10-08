@@ -64,3 +64,13 @@ services:
     mem_limit: 256m
     security_opt:
       - label=disable
+
+  # Declared in compose.search.yml (the gated search-node overlay); these are
+  # the same local-only knobs every sibling gets. NOTE: if the search overlay is
+  # opted OUT locally (postiz_temporal_search=false), this fragment describes a
+  # service with no image and compose fails LOUDLY naming it — remove this
+  # stanza together with the opt-out, an edge deliberately left noisy.
+  temporal-elasticsearch:
+    mem_limit: 768m
+    security_opt:
+      - label=disable

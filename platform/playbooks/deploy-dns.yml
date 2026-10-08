@@ -11,6 +11,15 @@
 # Source of truth: plan/development/DNS-SERVER-DEPLOYMENT.md
 # (local half: plan/development/LOCAL-DEV-DEPLOYMENT.md §5.1).
 
+# A play over no hosts exits 0 and records a deploy that did nothing as a success
+# (docs/MISTAKES.md 2.21), so refuse an absent or empty group first.
+- name: "Pre-flight: dns_svc is real"
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: dns_svc
+    # Paired so one `-e preflight_group=` cannot redirect the guard (MISTAKES 2.21).
+    preflight_group_expected: dns_svc
+
 # ── Phase 1: Place repo + render config ─────────────────────────────────────
 - name: "Phase 1: Place repo + render DNS config"
   hosts: dns_svc
@@ -39,6 +48,53 @@
         src: "{{ _templates }}/named.toml.j2"
         dest: "{{ _deploy_dir }}/config/named.toml"
         mode: "0644"
+
+    # The gateway server leaf's SANs (inference-gateway-agentgateway task 7.2). Every
+    # agentgateway_svc host with listener TLS publishes one A record per SAN of its server leaf
+    # that falls inside dns_zone, pointing at the published bind — the gateway's address when it
+    # binds every interface. This replaces the probing hosts' interim /etc/hosts lines once
+    # agw_internal_dns_authoritative is declared (tasks/agw-probe-resolution.yml).
+    - name: "Derive the gateway server leaf records"
+      ansible.builtin.set_fact:
+        _dns_agw_records: >-
+          {%- set out = [] -%}
+          {%- for gw in groups.get('agentgateway_svc', []) -%}
+            {%- set hv = hostvars[gw] -%}
+            {%- if hv.agw_listener_tls | default(false) | bool -%}
+              {%- set leaf = hv.internal_leaves | default([])
+                    | selectattr('name', 'equalto', hv.agw_server_leaf | default('agw-server')) | list -%}
+              {%- set bind = hv.agw_bind | default('127.0.0.1') -%}
+              {%- set target = (hv.ansible_host | default(gw)) if bind in ['0.0.0.0', '::', ''] else bind -%}
+              {%- for san in (leaf[0].sans | default([]) if leaf else []) -%}
+                {%- if san.endswith('.' ~ dns_zone) -%}
+                  {%- set _ = out.append({'name': san[:-(dns_zone | length + 1)], 'type': 'A',
+                                          'value': target, 'host': gw, 'fqdn': san}) -%}
+                {%- endif -%}
+              {%- endfor -%}
+            {%- endif -%}
+          {%- endfor -%}
+          {{ out }}
+
+    # A record nobody can reach is worse than none: it moves the failure from the deploy to
+    # the first probe. A loopback target (a gateway bound to 127.0.0.1) only serves its own
+    # host; a non-IPv4 value (an inventory name, an IPv6 bind) cannot be an A record; a name
+    # dns_records already declares would give one name two answers. Each octet is 0-255
+    # with no leading zero: dig prints the canonical form, so 01.2.3.4 could never pass
+    # the Phase 3 string comparison.
+    - name: "Refuse a gateway record the zone cannot serve"
+      ansible.builtin.assert:
+        that:
+          - _dns_agw_records | rejectattr('value', 'match', '^(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])(\\.(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])){3}$') | list | length == 0
+          - (local_mode | default(false) | bool)
+            or (_dns_agw_records | selectattr('value', 'match', '^127\\.') | list | length == 0)
+          - _dns_agw_records | map(attribute='name')
+            | intersect(dns_records | default([]) | map(attribute='name') | list) | list | length == 0
+        fail_msg: >-
+          Gateway server leaf records {{ _dns_agw_records | map(attribute='fqdn') | join(', ') }}
+          -> {{ _dns_agw_records | map(attribute='value') | join(', ') }}: each must be an IPv4
+          address other than loopback (set agw_bind to the gateway's address, or bind 0.0.0.0
+          with an IPv4 ansible_host), and no name may also be in dns_records.
+        quiet: true
 
     - name: "Render zone file"
       ansible.builtin.template:
@@ -79,6 +135,7 @@
         COMPOSE_CMD: "{{ local_compose_cmd | default('') }}"
       register: _deploy
       changed_when: true
+      when: not ansible_check_mode
 
     - name: "Show deploy.sh output"
       ansible.builtin.debug:
@@ -105,6 +162,7 @@
       retries: 5
       delay: 3
       until: _dig_wild.stdout | trim | length > 0
+      check_mode: false
 
     - name: "Assert the wildcard resolves to the configured target"
       ansible.builtin.assert:
@@ -114,6 +172,24 @@
           probe.{{ dns_zone }} resolved to '{{ _dig_wild.stdout | trim }}',
           expected '{{ dns_wildcard_target | default('127.0.0.1') }}'
         success_msg: "*.{{ dns_zone }} -> {{ _dig_wild.stdout | trim }}"
+      # Under --check the zone is not re-rendered or reloaded, so live DNS still serves the
+      # previous wildcard; comparing it to a changed dns_wildcard_target would fail falsely.
+      when: not ansible_check_mode
+
+    - name: "Resolve each gateway server leaf record"
+      ansible.builtin.command: >-
+        {{ _engine }} exec dns
+        dig +short +tcp +time=2 +tries=1 @127.0.0.1 {{ item.fqdn }} A
+      loop: "{{ _dns_agw_records | default([]) }}"
+      loop_control:
+        label: "{{ item.fqdn }}"
+      register: _dig_agw
+      changed_when: false
+      check_mode: false
+      failed_when: (_dig_agw.stdout | trim) != item.value
+      # Under --check the zone is not re-rendered or reloaded, so live DNS still serves
+      # the previous records; comparing them to the new declaration would fail falsely.
+      when: not ansible_check_mode
 
     - name: "Verify forwarding of an external name"
       ansible.builtin.command: >-
@@ -122,6 +198,7 @@
       register: _dig_fwd
       changed_when: false
       failed_when: false
+      check_mode: false
 
     - name: "Report"
       ansible.builtin.debug:

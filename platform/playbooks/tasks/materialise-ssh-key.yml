@@ -1,0 +1,156 @@
+---
+# materialise-ssh-key.yml — put ONE SSH private key on the RUNNER so `ssh -i` can use it.
+#
+# The one implementation of "write the key to a temp file, probe with it, delete it".
+# distribute-ssh-keys, harden-ssh and verify-host-access each used to hand-roll it, and
+# none of the three could pass a dry run: ansible.builtin.tempfile has no check-mode
+# support (`ansible-doc --json ansible.builtin.tempfile`: check_mode support `none`), so
+# under --check it is skipped, registers no `path`, and the copy that writes the key
+# aborts templating its `dest` (the same class as Semaphore task 1756 in the keygen).
+#
+# Inputs:
+#   ssh_key_content      private key material the caller already read from OpenBao
+#   ssh_key_result_var   name of the fact this sets for the caller:
+#                          materialised  true when a key file exists
+#                          dir           runner-local 0700 scratch directory ('' if none)
+#                          key           <dir>/id, the key at 0600 ('' if none)
+#                          known_hosts   <dir>/known_hosts, for the caller's ssh
+#                                        UserKnownHostsFile (a pinned key, or what
+#                                        accept-new records); NOT written here. Anything
+#                                        the caller puts under `dir` is wiped with it, so
+#                                        no run touches the runner's ~/.ssh/known_hosts.
+#   ssh_key_allow_empty  default false: empty material fails here, naming the problem,
+#                        instead of reaching ssh as a confusing argument error. true
+#                        (verify-host-access, which REPORTS a missing key) writes nothing
+#                        and sets materialised=false.
+#
+# WIPING IS THE CALLER'S JOB, and it must be unconditional. include_tasks cannot carry an
+# `always`, so include this file from a block and tasks/remove-ssh-key.yml from that
+# block's `always:`, with the same ssh_key_result_var:
+#
+#   - name: "Probe with a runner-local copy of the key"
+#     block:
+#       - ansible.builtin.include_tasks: tasks/materialise-ssh-key.yml
+#         vars: { ssh_key_content: "{{ _k }}", ssh_key_result_var: _probe_key }
+#       - ... ssh -i "{{ _probe_key.key }}" ...
+#     always:
+#       - ansible.builtin.include_tasks: tasks/remove-ssh-key.yml
+#         vars: { ssh_key_result_var: _probe_key }
+#
+# The directory is recorded in the result BEFORE the key is written, so a failed write
+# still leaves the wipe something to remove.
+#
+# CHECK MODE. Every write here carries `check_mode: false`, deliberately: the dry run then
+# still TESTS key auth, read-only, before the real run relies on it. This is the
+# runner-scratch class of plan/architecture/08-ansible-automation-standards.md (decision
+# 2026-09-28): a task may write under --check only inside a runner-local temp directory
+# created in the same run and removed in `always`, and nothing outside it.
+# platform/tests/test_check_mode_contract.py enforces it: a forced write here carries no
+# `vars:` and hits exactly its pinned target, and the names in that target (`_msk_dir`, the
+# tempfile's root) have one pinned definition in the repository. The task below also checks
+# the directory at runtime before writing into it. The wipe carries `check_mode: false` too;
+# a simulated delete would leave the key behind.
+# The scratch tasks report `changed_when: false`: they leave nothing behind, so a dry run
+# that reported them as changes would misstate what the real run would do.
+#
+# Credential handling (AGENTS.md "Credential Handling"): only the task that writes the
+# material is no_log; it also sets `diff: false`, since --diff would otherwise print it.
+# The result fact holds paths, never material.
+
+- name: "Materialise SSH key: validate the inputs"
+  ansible.builtin.assert:
+    that:
+      - ssh_key_result_var is defined
+      - ssh_key_result_var is string
+      - ssh_key_result_var is match('^[A-Za-z_][A-Za-z0-9_]*$')
+      - ssh_key_content is defined
+    fail_msg: >-
+      materialise-ssh-key.yml needs ssh_key_content and ssh_key_result_var (a plain
+      variable name).
+    quiet: true
+
+# Every name below decides what is written or wiped; an extra var outranks register and
+# set_fact, so refuse one (tasks/refuse-var-overrides.yml). The result var is named by
+# the caller and so passed through the same loop variable.
+- name: "Materialise SSH key: refuse extra-var overrides of its internal names"
+  ansible.builtin.include_tasks: refuse-var-overrides.yml
+  loop: "{{ ['_msk_dir', '_rsk_dir', ssh_key_result_var] }}"
+  loop_control:
+    loop_var: _rvo_name
+
+- name: "Materialise SSH key: refuse empty key material"
+  ansible.builtin.assert:
+    that:
+      - (ssh_key_content | default('') | string | length) > 0
+    fail_msg: >-
+      No private key material to materialise for {{ ssh_key_result_var }}. The OpenBao
+      read returned nothing; check the secret path holds `private_key`.
+    quiet: true
+  when: not (ssh_key_allow_empty | default(false) | bool)
+
+- name: "Materialise SSH key: start from 'nothing materialised'"
+  ansible.builtin.set_fact:
+    "{{ ssh_key_result_var }}":
+      materialised: false
+      dir: ""
+      key: ""
+      known_hosts: ""
+
+- name: "Materialise SSH key: create the runner-local scratch directory (0700)"
+  # tempfile(state=directory) creates it owner-only, like mkdtemp; the tests assert the mode.
+  # The parent is named explicitly, so remove-ssh-key.yml can require the directory it
+  # deletes to sit directly under the same root, computed by the same expression.
+  ansible.builtin.tempfile:
+    state: directory
+    prefix: ".sshkey_"
+    path: "{{ lookup('ansible.builtin.env', 'TMPDIR') | default('/tmp', true) | realpath }}"
+  register: _msk_dir
+  delegate_to: localhost
+  become: false
+  check_mode: false
+  changed_when: false
+  when: (ssh_key_content | default('') | string | length) > 0
+
+# Belt and braces for the static pin on tempfile's `path` (test_check_mode_contract.py): the
+# directory must sit directly under the temp root with this task's prefix, or nothing is
+# written into it. Checked at runtime because a guard that only reads the source can be
+# routed around by indirection (PR #319 review).
+- name: "Materialise SSH key: refuse a scratch directory outside the temp root"
+  ansible.builtin.assert:
+    that:
+      - (_msk_dir.path | realpath | dirname) == (lookup('ansible.builtin.env', 'TMPDIR') | default('/tmp', true) | realpath)
+      - (_msk_dir.path | basename) is match('^\.sshkey_')
+    fail_msg: "The SSH key scratch directory is not under the runner's temp root; refusing to write the key."
+    quiet: true
+  when: _msk_dir.path is defined
+
+- name: "Materialise SSH key: record the directory before anything is written into it"
+  ansible.builtin.set_fact:
+    "{{ ssh_key_result_var }}":
+      materialised: false
+      dir: "{{ _msk_dir.path }}"
+      key: ""
+      known_hosts: ""
+  when: _msk_dir.path is defined
+
+- name: "Materialise SSH key: write the key material (0600)"
+  ansible.builtin.copy:
+    content: "{{ ssh_key_content }}\n"
+    dest: "{{ _msk_dir.path }}/id"
+    mode: "0600"
+  delegate_to: localhost
+  become: false
+  check_mode: false
+  changed_when: false
+  diff: false
+  no_log: true
+  when: _msk_dir.path is defined
+
+- name: "Materialise SSH key: publish the paths"
+  ansible.builtin.set_fact:
+    "{{ ssh_key_result_var }}":
+      materialised: true
+      dir: "{{ _msk_dir.path }}"
+      key: "{{ _msk_dir.path }}/id"
+      known_hosts: "{{ _msk_dir.path }}/known_hosts"
+  when: _msk_dir.path is defined

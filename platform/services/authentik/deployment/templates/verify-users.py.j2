@@ -1,0 +1,122 @@
+#jinja2: trim_blocks: True, lstrip_blocks: True
+# Rendered by deploy-authentik.yml (post-apply VERIFY). Confirms that the blueprints
+# the deploy placed were actually APPLIED, and that the accounts they declare exist
+# in the state declared — present and active, or absent. Fails the deploy otherwise.
+#
+# Why this exists: blueprint application is asynchronous in the worker. A deploy
+# that placed the files and saw a healthy server has proven only that the files
+# landed. It has not proven that a single user was created, which is the thing an
+# operator is about to hand someone a password for. Measured 2026-08-27: a deploy
+# reached Phase 3 with the user blueprints assembled and NOTHING in the run able to
+# say whether the accounts existed.
+#
+# Run inside the authentik-server container so it reads the bootstrap token from
+# the container env, exactly as verify-oidc.py does:
+#   <engine> exec -i authentik-server python - < verify-users.py
+#
+# Prints usernames, group NAMES and blueprint statuses. Never a credential.
+import http.client, json, os, sys, time, urllib.parse
+
+# Effective usernames, resolved in Phase 1 against the inventory AND the env.j2
+# defaults (the same lists the create/delete collision guard compared).
+EXPECT_PRESENT = {{ (_active_usernames | default([])) | to_json }}
+EXPECT_ABSENT = {{ (_retired_usernames | default([])) | to_json }}
+# blueprints-active/ is mounted at /blueprints/custom; every instance under that
+# prefix is one this deploy is responsible for.
+CUSTOM_PREFIX = "custom/"
+# The files THIS deploy assembled, by name — the same expression the assemble task
+# loops over, plus the rendered bindings file. Asserted against the API by exact
+# path: an instance the worker never discovered has no API record at all, so
+# "every instance under custom/ is successful" is silently true of a file that was
+# never picked up. Measured in review, 2026-08-28.
+EXPECT_BLUEPRINTS = {{ ((_shared_blueprints | default([]))
+                        + ((_enabled_apps | default([])) | map('extract', authentik_app_catalog | default({}), 'file') | list)
+                        + ['zz-sso-bindings.yaml']) | map('regex_replace', '^', 'custom/') | list | to_json }}
+SETTLE_SECONDS = {{ authentik_blueprint_settle_seconds | default(120) | int }}
+
+tok = os.environ.get("AUTHENTIK_BOOTSTRAP_TOKEN")
+if not tok:
+    print("VERIFY: AUTHENTIK_BOOTSTRAP_TOKEN not in the server env")
+    sys.exit(3)
+
+
+def get(path):
+    conn = http.client.HTTPConnection("localhost", 9000, timeout=10)
+    conn.request("GET", path, headers={"Authorization": "Bearer " + tok})
+    resp = conn.getresponse()
+    if resp.status != 200:
+        print("VERIFY: %s returned %s" % (path, resp.status))
+        sys.exit(3)
+    return json.load(resp)
+
+
+# ── 1. Every custom blueprint has settled, and settled SUCCESSFULLY ────────────
+# Poll rather than assert once: the worker applies on its own schedule after a
+# restart, and "unknown" a few seconds in is normal. "unknown" after the settle
+# window is not.
+deadline = time.time() + SETTLE_SECONDS
+while True:
+    instances = [b for b in get("/api/v3/managed/blueprints/?page_size=200")["results"]
+                 if (b.get("path") or "").startswith(CUSTOM_PREFIX)]
+    unsettled = [b["path"] for b in instances if b.get("status") in (None, "unknown")]
+    if not unsettled or time.time() >= deadline:
+        break
+    time.sleep(5)
+
+bad = []
+if not instances:
+    bad.append("no blueprint instances under %s — the assembled files were not picked up" % CUSTOM_PREFIX)
+# Every file this deploy placed must have an API record — a missing one is a file
+# the worker never discovered, and no amount of "successful" siblings covers it.
+seen_paths = {b.get("path") for b in instances}
+for p in EXPECT_BLUEPRINTS:
+    if p not in seen_paths:
+        bad.append("blueprint %s: placed by this deploy but the worker never discovered it (no instance)" % p)
+for b in sorted(instances, key=lambda x: x.get("path") or ""):
+    status = b.get("status")
+    if status == "successful":
+        print("OK   blueprint %-40s %s" % (b["path"], status))
+    else:
+        bad.append("blueprint %s: status %s (last_applied %s)" % (b["path"], status, b.get("last_applied")))
+
+# ── 2. The accounts declared present exist and are active ─────────────────────
+def find_user(username):
+    q = urllib.parse.quote(username, safe="")
+    # The filter's match semantics are not specified in the schema; compare exactly
+    # on this side so a superstring can never satisfy a check for its prefix.
+    return [u for u in get("/api/v3/core/users/?username=%s&page_size=50" % q)["results"]
+            if u.get("username") == username]
+
+
+for name in EXPECT_PRESENT:
+    found = find_user(name)
+    if len(found) != 1:
+        bad.append("user %s: expected exactly 1 account, found %d" % (name, len(found)))
+        continue
+    u = found[0]
+    if not u.get("is_active"):
+        bad.append("user %s: exists but is_active is false" % name)
+        continue
+    groups = sorted(g.get("name", "?") for g in (u.get("groups_obj") or []))
+    if not groups:
+        # Present but stranded: !Find matched no group, so every access gate
+        # refuses this account. It looks like a broken login and is not.
+        bad.append("user %s: active but in NO groups — a !Find in the blueprint matched nothing" % name)
+        continue
+    print("OK   user      %-40s active, groups=%s" % (name, groups))
+
+# ── 3. The accounts declared retired are gone ─────────────────────────────────
+for name in EXPECT_ABSENT:
+    found = find_user(name)
+    if found:
+        bad.append("retired user %s: still exists (%d account(s))" % (name, len(found)))
+    else:
+        print("OK   absent    %-40s" % name)
+
+if bad:
+    print("VERIFY FAILED (declared state and live state disagree):")
+    for line in bad:
+        print("  - " + line)
+    sys.exit(2)
+print("VERIFY OK: %d blueprint(s) applied, %d account(s) present, %d retired"
+      % (len(instances), len(EXPECT_PRESENT), len(EXPECT_ABSENT)))

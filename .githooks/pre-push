@@ -34,28 +34,178 @@
 # WHAT DOES NOT: local execution, and therefore the result. CI pins Python 3.11 via
 # actions/setup-python and installs the test dependencies; this hook uses whatever
 # `python3` is on the developer's PATH, with whatever is installed there. The pytest
-# command also differs — `-q` here versus CI's `-v`, because a hook printing 79 passing
+# command also differs — `-q` here versus CI's `-v`, because a hook printing 95 passing
 # test names on every push is noise people learn to scroll past, and `python3 -m pytest`
 # rather than bare `pytest` so it uses this interpreter's pytest instead of whatever is
 # first on PATH. And pytest may be skipped here entirely when collection fails.
+# Parallelism follows CI (`-n auto --dist worksteal`) only when pytest-xdist is
+# importable; without it the suite runs serially rather than refusing the push, and the
+# hook names platform/requirements-test.txt to install. An installed version other than
+# that file's pin is run anyway, with a warning. Neither way changes which tests run.
 #
 # So a green push means the suites passed ON THIS MACHINE, or were skipped. It is not
 # evidence they pass in CI, and CI remains the authority. `bats platform/tests/` is the
 # one command that is byte-identical to CI's.
+#
+# ONE RUN PER BRANCH AT A TIME. A second push of a branch whose first push is still
+# inside this hook is REFUSED at once, naming the push that holds the branch
+# (docs/MISTAKES.md §5.11). The lock is a hard-linked file under the shared git dir, so
+# every worktree of the repository sees it; different branches never block each other.
+# A lock whose owner process is gone is reclaimed automatically. If the lock itself
+# cannot be taken (unwritable git dir, no hard links), the hook warns and proceeds — the
+# same fail-open contract as above, but loud: the warning says a concurrent push of the
+# branch would not be refused.
 
+remote_name=${1:-}
 root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
 cd "$root" || exit 0
+
+# Git exports its repository variables to hooks. Left set, they point every git command
+# a TEST runs at THIS repository, even from a scratch directory: on 2026-09-23 a BATS
+# setup's `git init` + `git config` wrote core.bare=true and a fake user.email into the
+# shared .git/config, breaking every checkout (docs/MISTAKES.md 3.7). The suites run with
+# a clean git environment, exactly as they do in CI. `root` is resolved above, first.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY \
+  GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_PREFIX GIT_NAMESPACE
 
 # A branch deletion pushes an all-zero local sha and has no code to test. Reading stdin
 # also drains it, which git expects.
 only_deletions=1
-while read -r _local_ref local_sha _remote_ref _remote_sha; do
+push_refs=""
+while read -r _local_ref local_sha remote_ref _remote_sha; do
   case "$local_sha" in
     "" ) ;;
-    *[!0]* ) only_deletions=0 ;;
+    *[!0]* ) only_deletions=0; push_refs="$push_refs $remote_ref" ;;
   esac
 done
 [ "$only_deletions" = "1" ] && exit 0
+
+# ── One test run per branch at a time (docs/MISTAKES.md §5.11) ─────────────
+# A backgrounded push's buffered output once read as "finished" and a second push of
+# the same branch started while the first was still running its suites. The fix is a
+# per-branch lock, taken BEFORE the SKIP_TESTS escape hatch: skipping the tests does
+# not make a concurrent push of the same branch any less of a race.
+#
+# `flock` is not on macOS by default, so the lock is POSIX: write the owner record to a
+# private temp file, then hard-link it to the lock name. link(2) fails when the name
+# exists, so acquiring is atomic and the lock is never seen without its owner's pid.
+# A lock whose pid is no longer alive (kill -0) is stale and is reclaimed under a
+# separate mkdir mutex, so two pushes reclaiming the same stale lock cannot both win.
+# Residual limits, stated: a reused pid makes a stale lock look live until that process
+# exits, and a push killed with SIGKILL inside the few-line reclaim step leaves the
+# mutex directory behind. Both refusals print the exact path to remove.
+lock_dir=""
+held_locks=""
+reclaiming=""
+pp_release_locks() {
+  for _name in $held_locks; do
+    # Only a lock this process still owns: never remove another push's lock.
+    if [ "$(sed -n 1p "$lock_dir/$_name.lock" 2>/dev/null)" = "$$" ]; then
+      rm -f "$lock_dir/$_name.lock"
+    fi
+  done
+  held_locks=""
+  if [ -n "$reclaiming" ]; then rmdir "$reclaiming" 2>/dev/null; reclaiming=""; fi
+}
+trap 'pp_release_locks' EXIT
+trap 'pp_release_locks; exit 129' HUP
+trap 'pp_release_locks; exit 130' INT
+trap 'pp_release_locks; exit 143' TERM
+
+# Print $1 as ONE single-quoted shell word ('\'' for each embedded quote), so a printed
+# recovery command stays correct for a path with spaces or quotes. POSIX sh has no %q.
+pp_shquote() {
+  printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
+}
+
+pp_refuse() {  # $1 ref, $2 lock path, $3 reason
+  printf '\n' >&2
+  printf 'PUSH REFUSED: %s\n' "$3" >&2
+  printf '  Branch: %s\n' "$1" >&2
+  if [ -f "$2" ]; then
+    _holder=$(sed -n 1p "$2" 2>/dev/null)
+    printf '  Held by: pid %s  %s\n' "$_holder" "$(sed -n 2p "$2" 2>/dev/null)" >&2
+    _cmd=$(ps -o command= -p "$_holder" 2>/dev/null)
+    [ -n "$_cmd" ] && printf '  Process: %s\n' "$_cmd" >&2
+  fi
+  printf '\n' >&2
+  printf '  This is docs/MISTAKES.md §5.11. Wait for that push to EXIT — check its exit\n' >&2
+  printf '  status or the process table, never how its output looks — then push again.\n' >&2
+  printf '  If no such push is running, remove the lock:  rm -rf %s\n' "$(pp_shquote "$2")" >&2
+  printf '\n' >&2
+}
+
+# Returns 0 when held, 1 when another live push holds it (refusal printed), 2 when the
+# lock could not be taken for a reason other than another push holding it.
+pp_acquire() {  # $1 lock name, $2 ref
+  _lock="$lock_dir/$1.lock"
+  _tmp="$lock_dir/$1.$$.tmp"
+  { printf '%s\nref=%s remote=%s started=%s\n' "$$" "$2" "$remote_name" \
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$_tmp"; } 2>/dev/null || { rm -f "$_tmp"; return 2; }
+  if ln "$_tmp" "$_lock" 2>/dev/null; then
+    rm -f "$_tmp"; held_locks="$held_locks $1"; return 0
+  fi
+  # ln failed. Only an EXISTING lock means another push: with no lock there, either the
+  # holder released it a moment ago, or linking itself fails (no hard links on this
+  # filesystem, a permission problem). One retry tells the two apart; a link that still
+  # fails with no lock present is a lock-infrastructure failure, not contention.
+  if [ ! -e "$_lock" ]; then
+    if ln "$_tmp" "$_lock" 2>/dev/null; then
+      rm -f "$_tmp"; held_locks="$held_locks $1"; return 0
+    fi
+    if [ ! -e "$_lock" ]; then rm -f "$_tmp"; return 2; fi
+  fi
+  _owner=$(sed -n 1p "$_lock" 2>/dev/null)
+  # Two refs of this push that sanitize to one name: already ours.
+  if [ "$_owner" = "$$" ]; then rm -f "$_tmp"; return 0; fi
+  case "$_owner" in
+    ''|*[!0-9]*) ;;  # no readable owner: treat as stale
+    *) if kill -0 "$_owner" 2>/dev/null; then
+         rm -f "$_tmp"
+         pp_refuse "$2" "$_lock" 'another push of this branch is already running its test suites.'
+         return 1
+       fi ;;
+  esac
+  # Stale: its owner is gone. Reclaim under a mutex so only one push removes it; while
+  # the mutex is held nothing else can remove the lock, so a re-read that still shows
+  # the dead owner proves it is safe to delete.
+  if ! mkdir "$lock_dir/$1.reclaim" 2>/dev/null; then
+    rm -f "$_tmp"
+    pp_refuse "$2" "$lock_dir/$1.reclaim" 'another push is reclaiming a stale lock on this branch.'
+    return 1
+  fi
+  reclaiming="$lock_dir/$1.reclaim"
+  if [ "$(sed -n 1p "$_lock" 2>/dev/null)" = "$_owner" ]; then rm -f "$_lock"; fi
+  if ln "$_tmp" "$_lock" 2>/dev/null; then
+    held_locks="$held_locks $1"; _rc=0
+    printf 'pre-push: reclaimed a stale lock on %s (pid %s is gone).\n' "$2" "${_owner:-unknown}" >&2
+  else
+    _rc=1
+    pp_refuse "$2" "$_lock" 'another push of this branch took the lock first.'
+  fi
+  rm -f "$_tmp"; rmdir "$reclaiming" 2>/dev/null; reclaiming=""
+  return "$_rc"
+}
+
+_gcd=$(git rev-parse --git-common-dir 2>/dev/null)
+if [ -n "$_gcd" ] && _gcd=$(cd "$_gcd" 2>/dev/null && pwd -P) \
+    && mkdir -p "$_gcd/pre-push-locks" 2>/dev/null; then
+  lock_dir="$_gcd/pre-push-locks"
+fi
+for _ref in $push_refs; do
+  # Ref names cannot contain spaces or glob characters; the readable part keeps a safe
+  # subset, which is lossy (feature/a and feature_a both become feature_a), so the name
+  # also carries a checksum of the EXACT ref and distinct branches never share a lock.
+  _name=$(printf '%s' "$_ref" | sed 's#^refs/heads/##; s/[^A-Za-z0-9._-]/_/g')-$(printf '%s' "$_ref" | cksum | awk '{print $1}')
+  _rc=2
+  [ -n "$lock_dir" ] && { pp_acquire "$_name" "$_ref"; _rc=$?; }
+  case "$_rc" in
+    0) ;;
+    1) exit 1 ;;  # the EXIT trap releases any lock this push already took
+    *) printf 'pre-push WARNING: could not take the per-branch lock for %s under the git dir.\n' "$_ref" >&2
+       printf '  Continuing WITHOUT it: a concurrent push of this branch would NOT be refused.\n' >&2 ;;
+  esac
+done
 
 if [ "${SKIP_TESTS:-}" = "1" ]; then
   printf '\n!! TESTS SKIPPED via SKIP_TESTS=1 — the suites did NOT run before this push.\n\n' >&2
@@ -81,27 +231,71 @@ if [ -d platform/tests ]; then
 fi
 
 # ── pytest ──────────────────────────────────────────────────────────────────
-# Same working directory and PYTHONPATH as CI. Its dependencies (pytest,
-# netboxlabs-diode-sdk, proxmoxer, requests) are frequently absent locally, so absence
-# is a warning rather than a failure — the import error would otherwise read as a broken
-# test rather than a missing dependency.
-py_dir=platform/services/netbox/deployment
-if [ -d "$py_dir/tests" ]; then
-  # COLLECTION decides whether to run, not `import pytest`. pytest can be installed while
-  # the suite's other dependencies are not, and collection then fails — which under a
-  # blocking hook would refuse the push for a missing dependency, contradicting the
-  # fail-open contract above. Asking pytest to collect also needs no dependency list here
-  # to drift out of step with what the tests actually import.
-  if ( cd "$py_dir" && PYTHONPATH=workers/proxmox_discovery:workers/pfsense_sync \
-         python3 -m pytest tests/ -q --collect-only ) >/dev/null 2>&1; then
-    printf 'pre-push: running Python suite...\n' >&2
-    if ! ( cd "$py_dir" && PYTHONPATH=workers/proxmox_discovery:workers/pfsense_sync \
-             python3 -m pytest tests/ -q ); then
+# Run from the REPO ROOT so pyproject's `testpaths` selects the suites, exactly as
+# CI does. Passing an explicit path overrides testpaths, so a suite added to that
+# list ran nowhere — and running nowhere is indistinguishable from passing.
+#
+# Its dependencies (declared once, in platform/requirements-test.txt) are
+# frequently absent locally, so a MISSING DEPENDENCY is a warning rather than a
+# failure: refusing the push because a library is not installed would contradict
+# the fail-open contract above, and the import error would read as a broken test.
+#
+# But fail-open applies to that case ONLY. A collection failure also happens when a
+# test file has a syntax error, a bad import of its own, or pytest config is
+# invalid — and those are defects, not environment gaps. Treating every collection
+# failure as "dependency missing" skipped the suite silently and let a genuinely
+# broken test module reach CI: exactly how an undeclared `yaml` import took the
+# whole Unit Tests job down on PR #136 while nothing locally objected.
+#
+# RESIDUAL LIMIT, stated rather than papered over: a typo'd import and a genuinely
+# missing dependency both raise ModuleNotFoundError and cannot be distinguished from
+# the message alone — that would need a dependency manifest to compare against. So
+# that case still skips, but it now PRINTS the module it could not import and says
+# to declare it. Syntax errors and invalid config, which are unambiguous defects,
+# now fail. Verified all four cases: clean+deps runs, missing dep skips, a syntax
+# error fails, a bogus import skips with the module named.
+py_pp=platform/services/netbox/deployment/workers/proxmox_discovery:platform/services/netbox/deployment/workers/pfsense_sync
+if [ -f pyproject.toml ]; then
+  # COLLECTION decides whether to run, not `import pytest` — and its OUTPUT decides
+  # whether a failure is forgivable. Keeping the output means no dependency list has
+  # to be maintained here to drift out of step with what the tests actually import.
+  collect_out=$(PYTHONPATH="$py_pp" python3 -m pytest -q --collect-only 2>&1)
+  collect_rc=$?
+  if [ "$collect_rc" -eq 0 ]; then
+    # Parallel when available, as CI runs it (.github/workflows/lint-and-test.yml).
+    # Optional, so a missing pytest-xdist is not a new reason to block a push. The pin
+    # comes from the manifest CI installs, so the two cannot name different versions.
+    py_par=""
+    xdist_pin=$(sed -n 's/^pytest-xdist==\([^[:space:]#]*\).*/\1/p' platform/requirements-test.txt 2>/dev/null)
+    xdist_have=$(python3 -c 'import importlib.metadata as m; print(m.version("pytest-xdist"))' 2>/dev/null)
+    if [ -n "$xdist_have" ] && python3 -c 'import xdist' >/dev/null 2>&1; then
+      py_par="-n auto --dist worksteal"
+      if [ -n "$xdist_pin" ] && [ "$xdist_have" != "$xdist_pin" ]; then
+        printf 'pre-push WARNING: pytest-xdist %s is installed; CI pins %s.\n' "$xdist_have" "$xdist_pin" >&2
+        printf '  Running anyway. To match CI:  python3 -m pip install -r platform/requirements-test.txt\n' >&2
+      fi
+    else
+      printf 'pre-push: pytest-xdist is not installed, so the Python suite runs serially (slower).\n' >&2
+      printf '  To run it in parallel as CI does:  python3 -m pip install -r platform/requirements-test.txt\n' >&2
+    fi
+    printf 'pre-push: running Python suite%s...\n' "${py_par:+ in parallel}" >&2
+    # shellcheck disable=SC2086 # py_par is deliberately word-split into flags.
+    if ! ( PYTHONPATH="$py_pp" python3 -m pytest -q $py_par ); then
       failed=1
     fi
+  elif printf '%s' "$collect_out" | grep -qE 'ModuleNotFoundError|No module named|ImportError: cannot import name'; then
+    printf 'pre-push: Python suite not collectable here — a dependency is missing:\n' >&2
+    printf '%s\n' "$collect_out" | grep -E 'ModuleNotFoundError|No module named|ImportError' | sed 's/^/          /' >&2
+    printf '          Skipped. CI installs the dependencies and runs it.\n' >&2
+    printf '          Install the declared set:  python3 -m pip install -r platform/requirements-test.txt\n' >&2
+    printf '          If this names a module the tests legitimately need and it is not\n' >&2
+    printf '          there, DECLARE it in platform/requirements-test.txt before pushing.\n' >&2
   else
-    printf 'pre-push: Python suite not collectable here (pytest or a test dependency\n' >&2
-    printf '          is missing) — skipped. CI installs them and runs it.\n' >&2
+    printf 'pre-push: Python collection FAILED for a reason that is not a missing\n' >&2
+    printf '          dependency — a syntax error, a bad import, or invalid config.\n' >&2
+    printf '          That is a defect, not an environment gap, so this does not skip:\n' >&2
+    printf '%s\n' "$collect_out" | tail -15 | sed 's/^/          /' >&2
+    failed=1
   fi
 fi
 

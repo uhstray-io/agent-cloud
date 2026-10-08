@@ -14,6 +14,13 @@ locals {
     "auth",   # Authentik IdP
     "canvas", # OpenHands
     "devlog",
+    "inference", # vLLM on the DGX Spark pair (adopted 2026-09-15; waf.tf + ratelimit.tf govern it)
+    # agentgateway operator UI — NEW record (created by apply, not imported), proxied like
+    # every browser UI; the inference API's WAF skip does not extend to it, so the managed
+    # challenge applies. The gateway itself runs the admin-only OIDC login; Caddy is a plain
+    # proxy. Two-level name: covered at the edge by the zone's Total TLS (ACM), which issues
+    # a per-hostname certificate for every proxied record (read from the API 2026-09-22).
+    "admin.inference",
     "memory", # honcho
     "mixpost",
     "n8n",

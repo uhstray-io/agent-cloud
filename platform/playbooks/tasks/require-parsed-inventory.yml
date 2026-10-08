@@ -1,0 +1,27 @@
+---
+# require-parsed-inventory.yml — refuse to run group-dependent work against no inventory.
+#
+# WHY THIS EXISTS. When Ansible cannot parse the inventory it warns ("Unable to parse
+# ... as an inventory source", "No inventory was parsed") and carries on with only the
+# implicit localhost, so every group is empty. Semaphore task 2858 (Collect Service
+# Conformance) did exactly that and then failed a later guard with a misleading
+# "collector_otlp_url does not match" message, while task 2853 — same template, same
+# inputs — had parsed its inventory and passed. Name the real cause first.
+#
+# Usage, as the first task of a play whose work depends on inventory groups:
+#
+#   - name: "Require the inventory to have parsed"
+#     ansible.builtin.include_tasks: tasks/require-parsed-inventory.yml
+#
+# Optional: require_parsed_inventory_group names the group the caller needs.
+# The caller owns the condition (e.g. `when: not (local_mode | default(false) | bool)`).
+
+- name: "Require the inventory to have parsed and hold hosts"
+  ansible.builtin.assert:
+    that:
+      - groups.get('all', []) | length > 0
+    fail_msg: >-
+      The inventory could not be parsed or contained no hosts, so every inventory group
+      is empty; refusing to evaluate group-dependent guards against it{{
+      (' (target group: ' ~ require_parsed_inventory_group ~ ')') if require_parsed_inventory_group is defined else '' }}.
+    quiet: true

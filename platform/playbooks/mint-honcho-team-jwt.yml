@@ -25,6 +25,11 @@
 #
 # Usage (Semaphore): no survey vars; run against the honcho_svc group.
 
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
 - name: "Mint team workspace JWT for Honcho ({{ honcho_workspace | default('uhstray') }})"
   hosts: honcho_svc
   gather_facts: false
@@ -62,6 +67,7 @@
       register: _mint
       changed_when: true
       no_log: true
+      when: not ansible_check_mode
 
     - name: "Capture token + length (value never logged)"
       ansible.builtin.set_fact:
@@ -89,6 +95,8 @@
           secret_id: "{{ _bao_secret_id }}"
       register: _bao_auth
       no_log: true
+      changed_when: false
+      check_mode: false
 
     - name: "Write team JWT to secret/{{ honcho_token_bao_path }}"
       delegate_to: localhost
@@ -105,6 +113,7 @@
             expiry: "none"
         status_code: [200]
       no_log: true
+      when: not ansible_check_mode
 
     # ---- verify against the public edge (proves the key authorizes the workspace) ----
     - name: "Verify: POST /v3/workspaces with the minted token"
@@ -123,6 +132,7 @@
       # no_log: the request Authorization header carries the minted JWT. Outcome stays visible
       # via the Report task below (HTTP status only) — scoped-no_log pattern, not a hidden verify.
       no_log: true
+      when: not ansible_check_mode
 
     - name: "Report (path + status only; token never shown)"
       ansible.builtin.debug:

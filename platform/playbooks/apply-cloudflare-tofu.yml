@@ -6,8 +6,8 @@
 # where config lives alongside secrets (e.g. secret/services/semaphore:url).
 # This makes it a self-contained `hosts: localhost` orchestration task: no
 # inventory group vars (which a localhost play cannot read) and no laptop-run
-# tofu. Secrets exist only in the task process env (not echoed); plan/apply
-# output stays visible.
+# tofu. Secrets exist only in the task process env. Every tofu command is a
+# no_log task; the run reports exit codes and change counts only (PR 436).
 #
 # OpenBao secret/services/cloudflare keys:
 #   api_token, r2_access_key_id, r2_secret_access_key   (secrets)
@@ -22,6 +22,11 @@
 # Usage (Semaphore): survey var tofu_action = plan (default, read-only) |
 # apply (gated change; run after reviewing the plan).
 
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
 - name: "Cloudflare OpenTofu — {{ tofu_action | default('plan') }}"
   hosts: localhost
   connection: local
@@ -33,6 +38,8 @@
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
     _tf_dir: "{{ playbook_dir }}/../infra/cloudflare"
     _cf_api: "https://api.cloudflare.com/client/v4"
+    _tf_planfile: .terraform/edge-dns.tfplan
+    _tf_verify_planfile: .terraform/edge-dns-verify.tfplan
 
   tasks:
     - name: "Pre-flight validation"
@@ -41,6 +48,15 @@
           - tofu_action in ['plan', 'apply']
           - _bao_url | length > 0
         fail_msg: "Pass tofu_action=plan|apply and ensure openbao_addr (or OPENBAO_ADDR) + AppRole creds are set."
+
+    - name: "Refuse a cleartext secret-store endpoint"
+      # The AppRole secret_id, the token, and the Cloudflare API token all cross
+      # this connection. This was the one OpenBao-reaching play without the shared
+      # guard — hidden by a hand-kept list in the coverage test, found the moment
+      # that test derived its population instead (2026-08-27).
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
 
     - name: "Authenticate to OpenBao (AppRole)"
       ansible.builtin.uri:
@@ -52,6 +68,8 @@
           secret_id: "{{ _bao_secret_id }}"
       register: _bao_auth
       no_log: true
+      changed_when: false
+      check_mode: false
 
     - name: "Read Cloudflare secrets + config from OpenBao"
       ansible.builtin.uri:
@@ -62,6 +80,7 @@
         status_code: [200]
       register: _cf_secret
       no_log: true
+      check_mode: false
 
     - name: "Resolve config (launch override -> OpenBao -> default)"
       ansible.builtin.set_fact:
@@ -92,6 +111,7 @@
         status_code: [200]
       register: _cf_zone
       no_log: true
+      check_mode: false
 
     - name: "Assert the zone was found (guard the index below)"
       ansible.builtin.assert:
@@ -117,36 +137,308 @@
           bucket = "{{ _bucket }}"
           key    = "cloudflare/terraform.tfstate"
           endpoints = { s3 = "{{ _r2_endpoint }}" }
+      register: _backend_write
       no_log: true
 
-    - name: "OpenTofu init (R2 backend)"
-      ansible.builtin.command:
-        chdir: "{{ _tf_dir }}"
-        argv:
-          - tofu
-          - init
-          - -input=false
-          - -reconfigure
-          - -backend-config=backend.hcl
-      environment:
-        AWS_ACCESS_KEY_ID: "{{ _cf.r2_access_key_id }}"
-        AWS_SECRET_ACCESS_KEY: "{{ _cf.r2_secret_access_key }}"
-      register: _tf_init
-      changed_when: false
-
-    - name: "OpenTofu {{ tofu_action }}"
-      ansible.builtin.command:
-        chdir: "{{ _tf_dir }}"
-        argv: "{{ ['tofu', tofu_action, '-input=false'] + (['-auto-approve'] if tofu_action == 'apply' else []) }}"
-      environment:
-        AWS_ACCESS_KEY_ID: "{{ _cf.r2_access_key_id }}"
-        AWS_SECRET_ACCESS_KEY: "{{ _cf.r2_secret_access_key }}"
-        CLOUDFLARE_API_TOKEN: "{{ _cf.api_token }}"
-        TF_VAR_zone_id: "{{ _zone_id }}"
-        TF_VAR_caddy_origin_ip: "{{ _caddy_ip }}"
-      register: _tf_run
-      changed_when: "tofu_action == 'apply' and 'Apply complete' in (_tf_run.stdout | default(''))"
-
-    - name: "Show OpenTofu output for action {{ tofu_action }}"
+    # A dry run only simulates this write, and copy reports it as a change when backend.hcl is
+    # missing OR differs from the configured bucket and endpoint. Either way `tofu init` would read
+    # the wrong file, or none (PR 203 Codex review), so the dry run stops rather than plan against
+    # stale state. A real run with tofu_action=plan is the read-only preview.
+    - name: "Dry run with a missing or stale backend config: point at the read-only plan"
       ansible.builtin.debug:
-        var: _tf_run.stdout_lines
+        msg: >-
+          check mode: this workspace's backend.hcl is missing or differs from the configured R2
+          backend, so a dry-run plan would read the wrong state. Run with tofu_action=plan instead:
+          it writes only the runner's backend config and changes nothing in Cloudflare.
+      when:
+        - ansible_check_mode
+        - _backend_write is changed
+
+    - name: "Dry run with a missing or stale backend config: record edge-dns as not run"
+      ansible.builtin.include_tasks: tasks/emit-step-result.yml
+      vars:
+        step_result_step: edge-dns
+        step_result_status: skip
+        step_result_service: ""
+        step_result_evidence: {plan_changes: null}
+      when:
+        - ansible_check_mode
+        - _backend_write is changed
+
+    - name: "Dry run with a missing or stale backend config: stop"
+      ansible.builtin.meta: end_play
+      when:
+        - ansible_check_mode
+        - _backend_write is changed
+
+    # CREDENTIAL BOUNDARY. Every tofu command runs with the R2 keys and the Cloudflare token in
+    # its environment, so each is its own no_log task (AGENTS.md "Credential Handling —
+    # discrete functions, scoped no_log"; PR 436 Codex review). Each registers its result
+    # with failed_when: false; the visible tasks after the block report ONLY exit codes and
+    # the parsed change counts, and fail on them. The plan text is not printed: it carries
+    # the declared origin address, which is private configuration.
+    #
+    # A dry run writes nothing (plan/architecture/08). `tofu init` writes its working data
+    # (.terraform/: providers, backend config), so under --check init, plan and show run as
+    # ONE command inside its own `mktemp -d` root, removed on exit, with TF_DATA_DIR pointed
+    # into it. OpenTofu keeps that per-working-directory data where TF_DATA_DIR says, and it
+    # must be the same for every command from init on
+    # (https://opentofu.org/docs/cli/config/environment-variables/#tf_data_dir), which is why
+    # the three cannot be separate tasks. That command shape is the one
+    # test_check_mode_contract.py already accepts as a read (`_sandboxed`); an Ansible-made
+    # temp directory is not, because a forced tempfile/file write belongs to the
+    # runner-scratch shared tasks alone (D10 review 2026-10-04). init also takes
+    # -lockfile=readonly, so the committed .terraform.lock.hcl is verified, never rewritten
+    # (https://opentofu.org/docs/cli/commands/init/). The plan takes no state lock: the s3
+    # backend locks only with dynamodb_table or use_lockfile, and versions.tf sets neither.
+    # A real run is unchanged: the separate tasks below, in the tofu root's own .terraform/.
+
+    - name: "Build the tofu environment"
+      ansible.builtin.set_fact:
+        _tf_env: >-
+          {{ {'AWS_ACCESS_KEY_ID': _cf.r2_access_key_id,
+              'AWS_SECRET_ACCESS_KEY': _cf.r2_secret_access_key,
+              'CLOUDFLARE_API_TOKEN': _cf.api_token,
+              'TF_VAR_zone_id': _zone_id,
+              'TF_VAR_caddy_origin_ip': _caddy_ip} }}
+      no_log: true
+
+    - name: "OpenTofu run"
+      block:
+        # A dry run (--check, Semaphore "Dry run") is a `tofu plan` whatever tofu_action says,
+        # in a throwaway data directory (see above). It prints one JSON object holding what the
+        # three real tasks below would have registered, as {rc, stdout} or a skip result.
+        - name: "Dry run: OpenTofu init, plan and show in a throwaway data directory"
+          ansible.builtin.shell:
+            chdir: "{{ _tf_dir }}"
+            cmd: |
+              root=$(mktemp -d) || exit 1
+              trap 'rm -rf "$root"' EXIT
+              export TF_DATA_DIR="$root/data"
+              plan= show=
+              tofu init -input=false -no-color -reconfigure -lockfile=readonly -backend-config=backend.hcl \
+                >"$root/init.out" 2>&1
+              init=$?
+              if [ "$init" -eq 0 ]; then
+                tofu plan -input=false -no-color -detailed-exitcode -out="$root/edge-dns.tfplan" \
+                  >"$root/plan.out" 2>&1
+                plan=$?
+                if [ "$plan" -eq 0 ] || [ "$plan" -eq 2 ]; then
+                  tofu show -json -no-color "$root/edge-dns.tfplan" >"$root/show.out" 2>/dev/null
+                  show=$?
+                fi
+              fi
+              '{{ ansible_playbook_python }}' - "$root" "$init" "$plan" "$show" <<'PY'
+              import json, os, sys
+              root, rcs = sys.argv[1], sys.argv[2:]
+              def result(rc, name):
+                  if rc == "":
+                      return {"skipped": True, "changed": False}
+                  with open(os.path.join(root, name)) as f:
+                      return {"rc": int(rc), "stdout": f.read()}
+              print(json.dumps({"init": result(rcs[0], "init.out"), "plan": result(rcs[1], "plan.out"),
+                                "show": result(rcs[2], "show.out")}))
+              PY
+          environment: "{{ _tf_env }}"
+          register: _tf_dry
+          changed_when: false
+          failed_when: false
+          check_mode: false
+          no_log: true
+          when: ansible_check_mode
+
+        # Unpacked inside the boundary: the plan text and JSON carry the origin address. A
+        # command that printed no result (it could not start, or the interpreter failed)
+        # counts as a failed init, so the visible assert below fails the run.
+        - name: "Dry run: unpack the throwaway run's results"
+          ansible.builtin.set_fact:
+            _tf_dry_result: >-
+              {{ (_tf_dry.stdout | from_json) if (_tf_dry.rc | default(1)) == 0
+                 else {'init': {'rc': _tf_dry.rc | default(1)}, 'plan': {'skipped': true},
+                       'show': {'skipped': true}} }}
+          no_log: true
+          when: ansible_check_mode
+
+        - name: "OpenTofu init (R2 backend)"
+          ansible.builtin.command:
+            chdir: "{{ _tf_dir }}"
+            argv: [tofu, init, -input=false, -no-color, -reconfigure, -backend-config=backend.hcl]
+          environment: "{{ _tf_env }}"
+          register: _tf_init
+          changed_when: false
+          failed_when: false
+          no_log: true
+          when: not ansible_check_mode
+
+        # Apply runs only in a real run. Separate registers, because a skipped task overwrites a
+        # shared register with its skip result (docs/MISTAKES.md 10.10).
+        # -detailed-exitcode: 0 = no changes, 1 = error, 2 = changes present (OpenTofu plan
+        # docs). The exit code is what the edge-dns step result is judged on; -no-color keeps
+        # the "Plan: N to add, ..." summary parseable for the evidence count.
+        - name: "OpenTofu plan"
+          ansible.builtin.command:
+            chdir: "{{ _tf_dir }}"
+            argv: [tofu, plan, -input=false, -no-color, -detailed-exitcode, "-out={{ _tf_planfile }}"]
+          environment: "{{ _tf_env }}"
+          register: _tf_plan
+          changed_when: false
+          failed_when: false
+          check_mode: false
+          no_log: true
+          when:
+            - not ansible_check_mode
+            - _tf_init.rc == 0
+            - tofu_action == 'plan'
+
+        # The saved plan as JSON, for the resource addresses and actions the visible report
+        # shows. The JSON also holds every before/after value (the origin address among them),
+        # so it stays inside this no_log boundary; only address and actions leave it.
+        - name: "OpenTofu show the plan (JSON)"
+          ansible.builtin.command:
+            chdir: "{{ _tf_dir }}"
+            argv: [tofu, show, -json, -no-color, "{{ _tf_planfile }}"]
+          environment: "{{ _tf_env }}"
+          register: _tf_show_plan
+          changed_when: false
+          failed_when: false
+          check_mode: false
+          no_log: true
+          when:
+            - _tf_plan is not skipped
+            - _tf_plan.rc in [0, 2]
+
+        - name: "OpenTofu apply"
+          ansible.builtin.command:
+            chdir: "{{ _tf_dir }}"
+            argv: [tofu, apply, -input=false, -no-color, -auto-approve]
+          environment: "{{ _tf_env }}"
+          register: _tf_apply
+          changed_when: "'Apply complete' in (_tf_apply.stdout | default(''))"
+          failed_when: false
+          no_log: true
+          when:
+            - not ansible_check_mode
+            - _tf_init.rc == 0
+            - tofu_action == 'apply'
+
+        # The edge-dns proof after an apply: a fresh plan must show no changes, so a resource
+        # that apply cannot converge (drift re-created each run, a provider that never settles)
+        # fails the step instead of passing on "Apply complete".
+        - name: "OpenTofu plan after apply (zero-diff proof)"
+          ansible.builtin.command:
+            chdir: "{{ _tf_dir }}"
+            argv: [tofu, plan, -input=false, -no-color, -detailed-exitcode, "-out={{ _tf_verify_planfile }}"]
+          environment: "{{ _tf_env }}"
+          register: _tf_verify
+          changed_when: false
+          failed_when: false
+          check_mode: false
+          no_log: true
+          when:
+            - _tf_apply is not skipped
+            - _tf_apply.rc == 0
+
+        - name: "OpenTofu show the post-apply plan (JSON)"
+          ansible.builtin.command:
+            chdir: "{{ _tf_dir }}"
+            argv: [tofu, show, -json, -no-color, "{{ _tf_verify_planfile }}"]
+          environment: "{{ _tf_env }}"
+          register: _tf_show_verify
+          changed_when: false
+          failed_when: false
+          check_mode: false
+          no_log: true
+          when:
+            - _tf_verify is not skipped
+            - _tf_verify.rc in [0, 2]
+      # The real run's plan files sit in tofu's own .terraform/ (gitignored), which init
+      # already writes. A dry run saves its plan inside the throwaway root instead, so this
+      # removal is only simulated under --check and there is nothing for it to remove.
+      always:
+        - name: "Remove the saved plan files"
+          ansible.builtin.file:
+            path: "{{ _tf_dir }}/{{ item }}"
+            state: absent
+          loop:
+            - "{{ _tf_planfile }}"
+            - "{{ _tf_verify_planfile }}"
+
+    # Visible and credential-free: exit codes and counts only, extracted from the protected
+    # registers by value (never the register itself, never a loop over it).
+    - name: "Summarise the tofu run (exit codes and change counts only)"
+      ansible.builtin.set_fact:
+        _tf_report:
+          init_rc: "{{ _init.rc | default(none) }}"
+          plan_rc: "{{ none if (_plan is skipped) else _plan.rc | default(none) }}"
+          apply_rc: "{{ none if (_tf_apply is skipped) else _tf_apply.rc | default(none) }}"
+          apply_changed: "{{ (_tf_apply is not skipped) and (_tf_apply is changed) }}"
+          verify_rc: "{{ none if (_tf_verify is skipped) else _tf_verify.rc | default(none) }}"
+          # A show that fails leaves plan_actions empty, so its exit code is judged too: a run
+          # must not pass without the resource and action evidence (PR 454 Codex review).
+          show_rc: "{{ none if (_show_plan is skipped) else _show_plan.rc | default(none) }}"
+          verify_show_rc: "{{ none if (_tf_show_verify is skipped) else _tf_show_verify.rc | default(none) }}"
+          plan_changes: >-
+            {{ none if (_plan is skipped or _plan.rc | default(1) not in [0, 2]) else (0 if _plan.rc == 0
+               else (((_plan.stdout | default('') | regex_findall(_re)) | first | map('int') | sum)
+                     if (_plan.stdout | default('') | regex_findall(_re)) else none)) }}
+          verify_changes: >-
+            {{ none if (_tf_verify is skipped or _tf_verify.rc | default(1) not in [0, 2]) else (0 if _tf_verify.rc == 0
+               else (((_tf_verify.stdout | default('') | regex_findall(_re)) | first | map('int') | sum)
+                     if (_tf_verify.stdout | default('') | regex_findall(_re)) else none)) }}
+          # "address: action" per changed resource and nothing else. Schema (OpenTofu JSON
+          # output format, https://opentofu.org/docs/internals/json-format/): resource_changes[]
+          # .address and .change.actions, ["no-op"] for an unchanged resource.
+          plan_actions: >-
+            {%- if (_show_plan is skipped) or (_show_plan.rc | default(1)) != 0 -%}{{ none }}
+            {%- else -%}{%- set out = [] -%}
+            {%- for rc in ((_show_plan.stdout | from_json).resource_changes | default([])) -%}
+            {%- if rc.change.actions != ['no-op'] -%}
+            {%- set _ = out.append(rc.address ~ ': ' ~ (rc.change.actions | join('/'))) -%}
+            {%- endif -%}{%- endfor -%}{{ out }}{%- endif -%}
+          verify_actions: >-
+            {%- if (_tf_show_verify is skipped) or (_tf_show_verify.rc | default(1)) != 0 -%}{{ none }}
+            {%- else -%}{%- set out = [] -%}
+            {%- for rc in ((_tf_show_verify.stdout | from_json).resource_changes | default([])) -%}
+            {%- if rc.change.actions != ['no-op'] -%}
+            {%- set _ = out.append(rc.address ~ ': ' ~ (rc.change.actions | join('/'))) -%}
+            {%- endif -%}{%- endfor -%}{{ out }}{%- endif -%}
+      # A dry run's results come from the throwaway run; a real run's from its own tasks.
+      vars:
+        _re: 'Plan: (\d+) to add, (\d+) to change, (\d+) to destroy'
+        _init: "{{ _tf_dry_result.init if ansible_check_mode else _tf_init }}"
+        _plan: "{{ _tf_dry_result.plan if ansible_check_mode else _tf_plan }}"
+        _show_plan: "{{ _tf_dry_result.show if ansible_check_mode else _tf_show_plan }}"
+
+    - name: "Show the tofu result for action {{ tofu_action }}"
+      ansible.builtin.debug:
+        var: _tf_report
+
+    - name: "Fail on a tofu error (details withheld: the commands carry credentials)"
+      ansible.builtin.assert:
+        that:
+          - _tf_report.init_rc | int == 0
+          - _tf_report.plan_rc in [none, '', 0, 2] or (_tf_report.plan_rc | int) in [0, 2]
+          - _tf_report.apply_rc in [none, ''] or (_tf_report.apply_rc | int) == 0
+          - _tf_report.verify_rc in [none, ''] or (_tf_report.verify_rc | int) in [0, 2]
+          - _tf_report.show_rc in [none, ''] or (_tf_report.show_rc | int) == 0
+          - _tf_report.verify_show_rc in [none, ''] or (_tf_report.verify_show_rc | int) == 0
+        fail_msg: >-
+          tofu failed: {{ _tf_report }}. Its output is withheld because the commands run with
+          the Cloudflare and R2 credentials; reproduce with the same plan from the controller.
+
+    - name: "Judge edge-dns on the last plan"
+      ansible.builtin.set_fact:
+        _edge_dns_rc: "{{ _tf_report.verify_rc if (_tf_verify is not skipped) else _tf_report.plan_rc }}"
+        _edge_dns_changes: "{{ _tf_report.verify_changes if (_tf_verify is not skipped) else _tf_report.plan_changes }}"
+
+    - name: "Record the edge-dns step result"
+      ansible.builtin.include_tasks: tasks/emit-step-result.yml
+      vars:
+        step_result_step: edge-dns
+        step_result_status: "{{ 'pass' if (_edge_dns_rc | int) == 0 else 'fail' }}"
+        step_result_service: ""
+        step_result_evidence: {plan_changes: "{{ _edge_dns_changes }}"}
+        step_result_error: >-
+          {{ none if (_edge_dns_rc | int) == 0 else
+             'the Cloudflare plan is not zero-diff' ~ (' after apply' if tofu_action == 'apply' and not ansible_check_mode else '')
+             ~ ': ' ~ (_edge_dns_changes if _edge_dns_changes not in [none, ''] else 'an unparsed number of') ~ ' pending change(s)' }}

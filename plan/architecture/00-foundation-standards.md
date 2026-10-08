@@ -139,6 +139,7 @@ Documents in `plan/architecture/` define cross-cutting patterns and standards. A
 | [PODMAN-VS-DOCKER-COMPOSE.md](PODMAN-VS-DOCKER-COMPOSE.md) | ACTIVE | Compatibility guide for Podman vs Docker across all services. |
 | [SECURITY-TESTING-STANDARDS.md](SECURITY-TESTING-STANDARDS.md) | ACTIVE | Security testing standards for code, playbooks, templates, and configuration. |
 | [skills-recommendation.md](skills-recommendation.md) | ACTIVE | Maps Claude Code skills to agent-cloud development activities. |
+| [08-ansible-automation-standards.md](08-ansible-automation-standards.md) | ACTIVE | Ansible standards from the official docs, each rule linked: check mode as the dry run, the three check-mode task classes, `--tags verify`, `set_stats` for machine-read results, recorded deviations. |
 | [WEBSITE-BUILDING-AGENT.md](WEBSITE-BUILDING-AGENT.md) | ACTIVE | WebSmith agent integration: position in 4-layer model, SPEC → service handoff, agent-cloud preset, second-site recipe. |
 
 ---
@@ -160,7 +161,7 @@ Documents in `plan/development/` define service-specific implementation plans.
 | [NETBOX-DISCOVERY-EXPANSION.md](../development/NETBOX-DISCOVERY-EXPANSION.md) | IMPLEMENTED | NetBox discovery pipeline architecture (Diode, proxmox_discovery, pfsense_sync). |
 | [OPENSSF-SCORECARD-PLAN.md](../development/OPENSSF-SCORECARD-PLAN.md) | TODO | OpenSSF Scorecard integration for supply chain security. |
 | [SNMPV3-UPGRADE-PLAN.md](../development/SNMPV3-UPGRADE-PLAN.md) | DEFERRED | Migration from SNMPv2c to SNMPv3 for discovery agents. |
-| [ANSIBLE-CREDENTIAL-REDACTION-PLAN.md](../development/ANSIBLE-CREDENTIAL-REDACTION-PLAN.md) | PLANNING | Ansible callback plugin for credential redaction in Semaphore logs. |
+| [01-secrets-credentials.md, "Solution: Custom Callback Plugin"](../development/01-secrets-credentials.md#solution-custom-callback-plugin) | PARTLY BUILT | Ansible callback plugin for credential redaction in Semaphore logs. Request stripping shipped as `callback_plugins/redact_requests.py`; value-pattern redaction still planned. (The standalone `ANSIBLE-CREDENTIAL-REDACTION-PLAN.md` was merged into plan 01.) |
 | [APPROLE-TTL-ENFORCEMENT-PLAN.md](../development/APPROLE-TTL-ENFORCEMENT-PLAN.md) | PROPOSED | Enforce 90-day TTL and bounded token_num_uses on all AppRoles. |
 | [DISASTER-RECOVERY-PLAN.md](../development/DISASTER-RECOVERY-PLAN.md) | PLANNING | Disaster recovery procedures for critical infrastructure failures. |
 | [PODMAN-UPGRADE-PLAN.md](../development/PODMAN-UPGRADE-PLAN.md) | PLANNING | Podman-compose upgrade strategy for services using Podman. |
@@ -178,6 +179,8 @@ Documents in `plan/development/` define service-specific implementation plans.
 | [LOCAL-DEV-TLS-TRUST.md](../development/LOCAL-DEV-TLS-TRUST.md) | SUPERSEDED | `make local-tls-trust` built + working; the CA *source* is now step-ca (INTERNAL-CA-DEPLOYMENT), and tls-trust extracts the step-ca root. |
 | [INTERNAL-CA-DEPLOYMENT.md](../development/INTERNAL-CA-DEPLOYMENT.md) | IMPLEMENTED | step-ca internal CA deployed via local Semaphore: stable root, serves the `*.agent-cloud.test` wildcard Caddy presents (token-mint locally; ACME dns-01 is the prod path). |
 | [O11Y-DEPLOYMENT.md](../development/O11Y-DEPLOYMENT.md) | PROPOSED | Minimal local observability stack (Grafana + Prometheus + Loki + Alloy), composable + local-first; OpenBao-audit→Loki + orb-agent OTel consumers; Mimir/Tempo/MinIO/Alertmanager are prod additions. |
+
+| [15-service-deployment-workflow-agents.md](../development/15-service-deployment-workflow-agents.md) | PROPOSED | The 22-step service deployment workflow as code: step registry, step-result and proposal contracts, four skynet agent roles (OPA identities), OPA-only gate, collector + NetBox custom fields + Loki + Grafana tracking; agentgateway backfill → estate sweep → greenfield pilot. |
 
 ### Archived Plans
 

@@ -1,10 +1,18 @@
 # NemoClaw Deployment — Claude Guidance
 
+> **Legacy standalone reference:** the scripts and examples below predate the
+> platform credential/orchestration boundary. They describe that interface, not
+> an authorized deployment procedure. Use the declared Semaphore **Deploy NemoClaw**
+> workflow; verify its inventory and legacy wrapper wiring before rollout. Any
+> missing integration must be fixed in code. Do not copy secret files or run a
+> server-local deploy as a workaround for Semaphore.
+
+
 Deployment configuration for [NemoClaw](https://github.com/uhstray-io/NemoClaw) (our fork) — an AI agent sandbox powered by NVIDIA OpenShell and OpenClaw.
 
 ## Rules
 
-- **NemoClaw uses Docker, not Podman** — OpenShell requires Docker. All other agent-cloud services use Podman.
+- **NemoClaw uses Docker, not Podman** — OpenShell requires Docker. NetBox and OpenHands also have Docker deployment paths.
 - **Never hardcode IPs or credentials** — deploy.sh reads from environment variables. Site-specific values live in `site-config`, secrets in OpenBao.
 - **Default to update, not reinstall** — `./deploy.sh` preserves sandbox state. Only `--onboard` is destructive.
 - **Fork is the source** — always use `uhstray-io/NemoClaw`, not upstream NVIDIA.
@@ -23,15 +31,17 @@ agents/nemoclaw/deployment/
 └── README.md               # Full deployment guide
 ```
 
-Site-specific files (NOT in this repo — stored in site-config):
+Historical standalone inputs (not instructions to copy credentials):
 - `config/credentials.json` — NVIDIA API key for inference
 - `config/sandboxes.json` — Sandbox name and policy assignments
 - `config/discord.json` — Discord guild and user IDs
 - `secrets/*.txt` — API keys and tokens (NVIDIA, Gemini, Discord, Google Search)
 
-## Environment Variables
+## Historical wrapper interface
 
-deploy.sh requires these (set via `.env` or export):
+The legacy script reads these inputs. Supply platform configuration through
+Semaphore/private inventory and credentials through OpenBao-backed Ansible tasks;
+do not create a local credential source to satisfy this legacy interface:
 
 | Variable | Purpose |
 |----------|---------|
@@ -41,22 +51,18 @@ deploy.sh requires these (set via `.env` or export):
 | `NEMOCLAW_SECRETS_DIR` | Path to secrets directory (default: `./secrets`) |
 | `NEMOCLAW_REPO` | Fork URL (default: `https://github.com/uhstray-io/NemoClaw`) |
 
-## Deploy Modes
+## Platform deployment
 
-```bash
-# Update existing deployment (preserves sandbox)
-NEMOCLAW_HOST=<ip> NEMOCLAW_USER=<user> ./deploy.sh
-
-# Fresh install (destructive — rebuilds sandbox)
-NEMOCLAW_HOST=<ip> NEMOCLAW_USER=<user> ./deploy.sh --onboard
-
-# Already on the target machine
-./deploy.sh --local
-```
+Use Semaphore **Deploy NemoClaw** via
+[`deploy-nemoclaw.yml`](../../../platform/playbooks/deploy-nemoclaw.yml).
+Verify the legacy wrapper wiring before rollout; fix missing integration in the
+shared playbook/task path. Direct remote or server-local script commands are not
+platform entrypoints. The legacy `--onboard` mode is destructive; routine updates
+must preserve sandbox state.
 
 ## Known Issues
 
-- **Gateway crash on image push** — Colima (macOS) has intermittent gateway crashes during Docker image builds. Workaround: deploy locally on the server with `--local`.
+- **Gateway crash on image push** — Colima (macOS) has intermittent gateway crashes during Docker image builds. Historical workaround used server-local `--local`; this bypasses current orchestration rules and is not an approved platform fix.
 - **DNS proxy required** — sandbox DNS resolution requires the DNS proxy script after onboard.
 - **OpenShell sandbox ssh** — uses `openshell ssh-proxy` ProxyCommand, not standard SSH.
 

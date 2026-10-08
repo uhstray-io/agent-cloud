@@ -19,6 +19,11 @@ setup() {
   OLD="$REPO_ROOT/platform/playbooks/set-semaphore-branch.yml"
 }
 
+@test "scoped controller publication: real playbook preserves scope, credentials and bindings" {
+  run python3 "$REPO_ROOT/platform/semaphore/tests/test_scoped_publication.py"
+  [ "$status" -eq 0 ] || { echo "$output"; false; }
+}
+
 @test "repositories: both main and dev records are declared" {
   [ -f "$DECL" ]
   grep -qE '^\s+- name: agent-cloud$' "$DECL"
@@ -122,8 +127,7 @@ print('\n'.join(bad) if bad else 'OK')
 @test "repositories: PUT accepts 200 as success" {
   # Semaphore answers 200 on this endpoint in some versions; treating a
   # successful update as a failure is worse than accepting both.
-  run bash -c "grep -A 30 'Correct records that drifted' '$BOOT' | grep -c 'status_code: \\[200, 201, 204\\]'"
-  [ "$output" = "1" ]
+  [ "$(task_block "$BOOT" 'Correct records that drifted' | grep -c 'status_code: \[200, 201, 204\]')" = "1" ]
 }
 
 @test "repositories: ssh_key_id drift triggers an update" {
@@ -179,7 +183,7 @@ print('\n'.join(bad) if bad else 'OK')
   local f="$REPO_ROOT/platform/semaphore/sync-inventory.yml"
   [ -f "$f" ]
   # The Bearer token crosses the wire on every request.
-  grep -qE 'Require a non-cleartext transport to Semaphore' "$f"
+  assert_grep -qF 'ansible.builtin.include_tasks: tasks/runtime-access.yml' "$f"
   # `{}` is non-empty AND parses as a mapping, so it cleared both earlier checks
   # while still being hostless — a push would blank the orchestrator.
   grep -qE 'Refuse a hostless inventory' "$f"
@@ -205,4 +209,20 @@ print('\n'.join(bad) if bad else 'OK')
   # PUT-or-POST and no DELETE. A reader who assumes otherwise leaves undeclared templates
   # running against records that may no longer exist.
   grep -qF 'IT DOES NOT DELETE' "$SETUP"
+}
+
+@test "templates: local templates are bound to the worktree record STRUCTURALLY, not per entry" {
+  # One map-combine at the load site binds every local template to the
+  # working-tree record. Per-template repository: lines are how a new entry
+  # silently falls through default('agent-cloud') to GitHub main and validates
+  # code that is not the code being written (docs/MISTAKES.md 10.9).
+  local setup="$BATS_TEST_DIRNAME/../semaphore/setup-templates.yml"
+  local locals="$BATS_TEST_DIRNAME/../semaphore/templates-local.yml"
+  # Scoped to the _templates_local ASSIGNMENT (2.15: the same string in a
+  # comment must not satisfy this); mutation-tested by dropping the combine.
+  local blk
+  blk=$(awk '/^    _templates_local: >-/{f=1;next} f&&/^    [_a-z]/{exit} f{print}' "$setup")
+  [ -n "$blk" ]
+  assert_grep -qE "map\('combine', \{'repository': _local_repo_name\}\)" <<<"$blk"
+  refute_grep -qE '^    repository:' "$locals"
 }

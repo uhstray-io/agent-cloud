@@ -27,6 +27,196 @@
 
 templates:
   # ── Deployment ─────────────────────────────────────────────────
+  - name: Audit o11y Containers
+    playbook: platform/playbooks/audit-o11y-containers.yml
+    dev_variant: true
+
+  - name: Diagnose Grafana OAuth Failure (Dev)
+    playbook: platform/playbooks/diagnose-o11y-grafana-auth.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact Dev commit required on the Semaphore controller"
+        type: string
+        required: true
+
+  # The receiver rollout clones the reviewed revision onto the target and refuses
+  # before rendering secrets or starting containers unless controller and receiver
+  # both sit at expected_repository_sha. A main-bound base plus its generated
+  # "Deploy o11y (Dev)" twin (main/dev twins kept by operator decision 2026-10-04);
+  # the twin keeps the name of the directly Dev-bound template it replaces, so
+  # publication updates that live template rather than creating a second one.
+  - name: Deploy o11y
+    playbook: platform/playbooks/deploy-o11y.yml
+    dev_variant: true
+    survey_vars:
+      - name: service_branch
+        title: "Target branch"
+        description: "Branch cloned onto the receiver"
+        type: string
+        required: true
+        default_value: "main"
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact commit of the template's branch required on controller and receiver"
+        type: string
+        required: true
+      - name: deploy_force_recreate
+        title: "Force container recreate"
+        description: "true to recreate every container even when inputs and images match (clears a stale bind mount)"
+        type: string
+        required: false
+        default_value: "false"
+
+  - name: Verify o11y Service
+    playbook: platform/playbooks/verify-o11y-service.yml
+    dev_variant: true
+    survey_vars:
+      - name: expected_service
+        title: "Service label"
+        description: "Lowercase service identity whose fresh logs and metrics must be present"
+        type: string
+        required: true
+      - name: expected_instance
+        title: "Metrics endpoint"
+        description: "Declared host:port to verify for a metrics-enabled service"
+        type: string
+        required: false
+      - name: expect_metrics
+        title: "Expect metrics"
+        description: "true for a metrics-enabled service; false for a log-only service"
+        type: string
+        required: false
+        default_value: "true"
+      - name: expect_logs
+        title: "Expect recent logs"
+        description: "true when this service ships a named Loki log stream"
+        type: string
+        required: false
+        default_value: "true"
+      - name: expect_traces
+        title: "Expect recent traces"
+        description: "true to require a service.name trace in Tempo from the last hour"
+        type: string
+        required: false
+        default_value: "false"
+      - name: emit_agentgateway_canary
+        title: "Emit agentgateway trace canary"
+        description: "true to send 100 anonymous 401 requests directly to agentgateway before checking Tempo"
+        type: string
+        required: false
+        default_value: "false"
+
+  # External liveness watcher (inference-telemetry-production 3.6): probes Grafana and,
+  # through Grafana's datasource health API, Prometheus via the public front door every
+  # 10 minutes; one Discord message per failing run, never Loki. Dev-bound like the
+  # conformance collector: a schedule on the main-bound base would run `main`, which has
+  # no watcher until promotion.
+  - name: Check o11y Liveness (Dev)
+    playbook: platform/playbooks/check-o11y-liveness.yml
+    repository: agent-cloud dev
+    schedule:
+      cron: "*/10 * * * *"
+
+  # Mints the watcher's read-only Grafana service-account token into
+  # secret/services/o11y:watcher_token; reuses a stored token Grafana still accepts.
+  - name: Provision o11y Watcher Token
+    playbook: platform/playbooks/provision-o11y-watcher-token.yml
+    dev_variant: true
+
+  - name: Verify o11y Metrics Target (Dev)
+    playbook: platform/playbooks/verify-o11y-metrics-target.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_service
+        title: "Service label"
+        description: "Prometheus service label to verify"
+        type: string
+        required: true
+      - name: expected_instance
+        title: "Metrics endpoint"
+        description: "Exact scraped host:port"
+        type: string
+        required: true
+      - name: expected_metric
+        title: "Metric name"
+        description: "One metric family expected from the exporter"
+        type: string
+        required: true
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact dev revision required on the Semaphore controller"
+        type: string
+        required: true
+
+  # Read-only: evaluates selected Prometheus panels and explicitly named Loki panels from one
+  # provisioned dashboard. Prints titles and counts, never labels, samples, logs or queries.
+  - name: Verify o11y Dashboard Data (Dev)
+    playbook: platform/playbooks/verify-o11y-dashboard-data.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: dashboard_uid
+        title: "Dashboard uid"
+        description: "uid of one provisioned dashboard, e.g. agentgateway-client-view"
+        type: string
+        required: true
+      - name: lookback
+        title: "Lookback"
+        description: "Dashboard time range, one duration unit (30m, 1h, 2d)"
+        type: string
+        required: false
+        default_value: "1h"
+      - name: panel_titles
+        title: "Panel titles (JSON list)"
+        description: "Exact panel titles to verify; empty verifies all Prometheus panels. Name Loki panels explicitly."
+        type: string
+        required: false
+      - name: dashboard_variables
+        title: "Template variables (JSON object)"
+        description: "Overrides for template variables, e.g. {\"compare_offset\": \"7d\"}"
+        type: string
+        required: false
+
+  - name: Probe o11y DGX Exporter (Dev)
+    playbook: platform/playbooks/probe-o11y-dgx-exporter.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact Dev checkout revision required before probing"
+        type: string
+        required: true
+      - name: probe_node_name
+        title: "Declared DGX node"
+        description: "Name of one node declared in the private receiver inventory"
+        type: string
+        required: true
+      - name: probe_expect_reachable
+        title: "Expect HTTP 200"
+        description: "false before the source-scoped firewall rule; true after it"
+        type: string
+        required: false
+        default_value: "false"
+
+  - name: Probe o11y Metrics Endpoint (Dev)
+    playbook: platform/playbooks/probe-o11y-metrics-endpoint.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact Dev checkout revision required before probing"
+        type: string
+        required: true
+      - name: probe_target
+        title: "Metrics target"
+        description: "One fixed private-inventory endpoint: dgx-vllm or agentgateway"
+        type: enum
+        required: true
+        values:
+          - { name: "DGX vLLM", value: "dgx-vllm" }
+          - { name: "agentgateway", value: "agentgateway" }
+
   - name: Deploy All Services
     playbook: platform/playbooks/deploy-all.yml
     survey_vars:
@@ -59,6 +249,7 @@ templates:
 
   - name: Deploy n8n
     playbook: platform/playbooks/deploy-n8n.yml
+    dev_variant: true
     survey_vars:
       - name: service_branch
         title: "Branch"
@@ -87,10 +278,81 @@ templates:
         required: false
         default_value: "main"
 
+  - name: Audit NetBox Runtime
+    playbook: platform/playbooks/audit-netbox-runtime.yml
+    dev_variant: true
+
+  - name: Recover NetBox Runtime (Dev)
+    playbook: platform/playbooks/recover-netbox-runtime.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: netbox_source_apply
+        title: Place reviewed Dev source
+        description: "false = require the host to already run the reviewed Dev commit; true = place that exact commit before container preflight"
+        type: string
+        required: false
+        default_value: "false"
+      - name: expected_host_revision
+        title: Audited host commit
+        description: "Required when placing source; copy the full host commit SHA from Audit NetBox Runtime (Dev)"
+        type: string
+        required: false
+        default_value: ""
+      - name: netbox_runtime_apply
+        title: Apply recovery
+        description: "false = inspect and report each core container's start/recreate/noop action without changing it; true = also apply those actions"
+        type: string
+        required: false
+        default_value: "false"
+
   # Build #1 (netbox-device-add): skynet requests "Create NetBox Device"; agent-cloud
   # executes it under the scoped automation token minted by the provision template.
   - name: Provision NetBox Automation Token
     playbook: platform/playbooks/provision-netbox-automation-token.yml
+    dev_variant: true
+    survey_vars:
+      - name: replace_unrecoverable_token
+        title: Replace unrecoverable token
+        description: "Default false. Only when NetBox has the dedicated token but OpenBao lost its value, revoke exactly one match and mint a replacement."
+        type: string
+        required: false
+        default_value: "false"
+      # A template passes no arguments, so the identity to mint is a survey choice, a closed
+      # list of the playbook's profiles.
+      - name: netbox_token_profile
+        title: Token profile
+        description: "device-writer (skynet device create), workflow-collector (the conformance collector), or vm-recorder (validate-address)."
+        type: enum
+        required: false
+        default_value: device-writer
+        values:
+          - { name: "device-writer", value: "device-writer" }
+          - { name: "workflow-collector", value: "workflow-collector" }
+          - { name: "vm-recorder", value: "vm-recorder" }
+
+  - name: Ensure NetBox Prefix
+    playbook: platform/playbooks/ensure-netbox-prefix.yml
+    dev_variant: true
+    survey_vars:
+      - name: prefix
+        title: IPv4 prefix (CIDR)
+        description: "Exact management network from private site configuration"
+        type: string
+        required: true
+      - name: prefix_apply
+        title: Create missing prefix
+        description: "false = report only; true = create exactly this active global prefix if absent"
+        type: string
+        required: false
+        default_value: "false"
+
+  # Converge the conformance collector's NetBox custom fields to their declaration
+  # (platform/workflows/service-onboarding/netbox-custom-fields.yml). Idempotent;
+  # "Dry run" reports without writing.
+  - name: Provision NetBox Custom Fields
+    playbook: platform/playbooks/provision-netbox-custom-fields.yml
+    # The playbook is on dev only until promotion; the (Dev) copy runs it from there.
+    dev_variant: true
 
   # IPAM allocation. Default run is READ-ONLY: it reports the next free addresses in a
   # prefix so a VM's address comes from the authority rather than from the inventory
@@ -115,7 +377,7 @@ templates:
         default_value: "2"
       - name: reserve
         title: "Reserve"
-        description: "true = also CREATE the address records named in assignments"
+        description: "true = CREATE explicit static addresses after a live pfSense DHCP check (HTTPS router source required)"
         type: string
         required: false
         default_value: "false"
@@ -152,6 +414,13 @@ templates:
 
   - name: Deploy Authentik
     playbook: platform/playbooks/deploy-authentik.yml
+    # The IdP's blueprints change on `dev` — new users, retired accounts, OIDC
+    # clients — and every one of those is a change to who can log in where. A
+    # generated "(Dev)" copy is how such a change is exercised against the live
+    # instance BEFORE it is promoted, rather than promoted on the strength of a
+    # green test suite alone (docs/MISTAKES.md 2.13, 2.17, 10.8: three entries,
+    # one lesson — a playbook that has only been linted has never run).
+    dev_variant: true
     survey_vars:
       - name: service_branch
         title: "Branch"
@@ -159,6 +428,176 @@ templates:
         type: string
         required: false
         default_value: "main"
+      - name: deploy_force_recreate
+        title: "Force container recreate"
+        description: "true to recreate every container even when inputs and images match (clears a stale bind mount)"
+        type: string
+        required: false
+        default_value: "false"
+
+  - name: Audit Authentik Retirements
+    playbook: platform/playbooks/audit-authentik-retirements.yml
+    dev_variant: true
+
+  - name: Recover Authentik Audit Runtime (Dev)
+    playbook: platform/playbooks/recover-authentik-audit-runtime.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: authentik_runtime_apply
+        title: Start existing audit dependencies
+        description: "false = inspect only; true = start the existing database, cache, and server while leaving the blueprint worker stopped"
+        type: string
+        required: false
+        default_value: "false"
+
+  # Read-only: compares declared vs running blueprint mounts, the host and worker
+  # blueprint listings, and the API's blueprint instances. Names/statuses only.
+  - name: Inspect Authentik Blueprints (Dev)
+    playbook: platform/playbooks/inspect-authentik-blueprints.yml
+    repository: agent-cloud dev
+
+  - name: Print User Credentials
+    playbook: platform/playbooks/print-platform-user-credentials.yml
+    # GATED, and it PRINTS a live credential into this task's output. Exists so an
+    # operator can hand a new platform user their first login — initial passwords
+    # are OpenBao-generated and otherwise never seen. Refuses without the
+    # acknowledgement var; prints only <user>_password fields the users blueprint
+    # declares; the store path is fixed. Semaphore keeps task output until the
+    # task is deleted, so this is a deliberate, bounded exposure — not a pattern.
+    # It cannot be restricted to operators here: Semaphore v2.17's Template schema
+    # carries no permission field, and roles are project-wide (owner/manager/
+    # task_runner/guest) — anyone who may run templates may run this one and read
+    # its output. The project holds only its owner today; the durable fix is
+    # backup-credentials-to-site-config.yml, which never emits a value at all.
+    dev_variant: true
+    survey_vars:
+      - name: credential_users
+        title: "Users (comma-separated blueprint names, e.g. jacob,andrew)"
+        type: string
+        required: true
+      - name: i_understand_this_prints_secrets
+        title: "Type true to confirm: this writes live passwords into the task output"
+        type: string
+        required: true
+        default_value: "false"
+
+  - name: Store Postiz API Key
+    playbook: platform/playbooks/store-postiz-api-key.yml
+    # Reads the org's API key from postiz's own Postgres (the app mints it on the
+    # first authenticated request — the stored value IS the bearer token) and
+    # places it at secret/services/postiz:postiz_api_key. Never printed; all
+    # key-bearing steps no_log. Automation (n8n) shared-reads it from there.
+    dev_variant: true
+
+  - name: Store n8n API Key
+    playbook: platform/playbooks/store-n8n-api-key.yml
+    # Mints (via the seeded owner's session — no manual UI step) AND captures
+    # n8n's public-API key into secret/services/n8n:n8n_api_key. Idempotent:
+    # re-runs recapture the key from n8n's own Postgres instead of re-minting.
+    # Never printed; all key-bearing steps no_log.
+    dev_variant: true
+
+  - name: Store tududi API Token
+    playbook: platform/playbooks/store-tududi-api-token.yml
+    # DB-side initial mint only; existing access is never revoked/replaced.
+    # Validation-only proves the stored identity/token without writing OpenBao.
+    dev_variant: true
+    survey_vars:
+      - name: tududi_token_validate_only
+        title: "Validate existing token only"
+        description: "true = prove stored token and stop; never mint, replace or revoke"
+        type: string
+        required: false
+        default_value: "true"
+
+  - name: Refresh tududi-sync GitHub Token
+    playbook: platform/playbooks/refresh-tududi-sync-github-token.yml
+    # GitHub App installation tokens live ONE HOUR: this mints a fresh one on
+    # the controller (App key from OpenBao via stdin, scope preflight against
+    # github-mapping.yml) and PATCHes the n8n github-sync-api credential in
+    # place. Update-only: creation belongs to the sync provisioning. The
+    # The cadence below is the reviewed cadence — schedules are code. Cron has
+    # no true 45-minute period: `*/45` fires at :00 and :45, so the gaps
+    # alternate 45 and 15 minutes — both inside the token's hour, which is
+    # the property that matters.
+    dev_variant: true
+    schedule:
+      cron: "*/45 * * * *"
+
+  - name: Provision tududi-github Sync
+    playbook: platform/playbooks/provision-tududi-github-sync.yml
+    # Places the whole sync: live-validates BOTH provider credentials (named
+    # failure before the engine changes), upserts the two named credentials,
+    # renders the cycle workflow from the committed nine-pair mapping
+    # (enabled entries), upserts + activates it, deactivates obsolete owned
+    # workflows and preserves every workflow and credential. The kill switch (-e sync_enabled=false)
+    # deactivates owned workflows BEFORE any validation — it works with a
+    # broken mapping and dead credentials by design.
+    dev_variant: true
+    survey_vars:
+      - name: sync_enabled
+        title: "Sync enabled"
+        description: "false = kill switch: deactivate the sync's workflows and stop (no validation, no render)"
+        type: string
+        required: false
+        # A BLANK survey value renders as the empty string, and `'' | bool` is
+        # FALSE — without this default, leaving the field untouched would
+        # silently trip the kill switch. The playbook preserves blank-as-default
+        # while also accepting an actual boolean false as a kill switch.
+        default_value: "true"
+
+  - name: Verify tududi-github Sync
+    playbook: platform/playbooks/verify-tududi-github-sync.yml
+    # The per-pair promotion gate (read-only, exit pass/fail per enabled
+    # pair): last cycle green + the exact embedded engine reports convergence
+    # + zero sync trace outside the declaration. A pair is enabled or kept
+    # enabled only while this passes.
+    dev_variant: true
+
+  - name: Provision n8n Postiz Credential
+    playbook: platform/playbooks/provision-n8n-postiz-credential.yml
+    # Upserts the ONE postizApi credential in n8n: authenticates with
+    # secret/services/n8n:n8n_api_key, shared-reads
+    # secret/services/postiz:postiz_api_key (single custody — never copied), and
+    # tests is-connected against the self-hosted Postiz host. Idempotent and
+    # self-healing on key rotation. Local-dev without a live Postiz runs with
+    # -e allow_degraded_test=true.
+    dev_variant: true
+
+  - name: Back Up Credentials to site-config
+    playbook: platform/playbooks/backup-credentials-to-site-config.yml
+    # Copies named fields out of OpenBao into the private repo on a NEW BRANCH per
+    # run; the task output carries field NAMES, counts and the branch — never a
+    # value. The deploy key is read from secret/services/ssh/site-config in the
+    # same run (seeded once with Seed OpenBao Key) and lives on the runner only
+    # inside the scratch dir the play always wipes.
+    dev_variant: true
+    survey_vars:
+      - name: credential_service
+        title: "Service (OpenBao path segment under secret/services/, e.g. authentik)"
+        type: string
+        required: true
+      - name: credential_fields
+        title: "Fields (comma-separated; empty = every field at the path)"
+        type: string
+        required: false
+
+  - name: Back Up Service SSH Key
+    playbook: platform/playbooks/backup-service-ssh-key.yml
+    # Copies one per-service keypair out of OpenBao into site-config's
+    # secrets/ssh/<name>/ on a new branch, with the same deploy key. Refuses a
+    # mismatched pair and a differing existing file (force_overwrite to replace).
+    dev_variant: true
+    survey_vars:
+      - name: service_name
+        title: "Service (key lives at secret/services/ssh/<service>)"
+        type: string
+        required: true
+      - name: force_overwrite
+        title: "Type true to replace a DIFFERING pair already in the repo"
+        type: string
+        required: false
+        default_value: "false"
 
   - name: Deploy OpenHands
     playbook: platform/playbooks/deploy-openhands.yml
@@ -182,6 +621,7 @@ templates:
 
   - name: Deploy tududi
     playbook: platform/playbooks/deploy-tududi.yml
+    dev_variant: true
     survey_vars:
       - name: service_branch
         title: "Branch"
@@ -190,8 +630,155 @@ templates:
         required: false
         default_value: "main"
 
+  - name: Deploy agentgateway
+    playbook: platform/playbooks/deploy-agentgateway.yml
+    # Introduced on dev (PR #191); main has no agentgateway code until promotion, so
+    # the main-bound template cannot run. The "(Dev)" variant can, launched with
+    # service_branch=dev so the VM checkout matches the playbook.
+    dev_variant: true
+    survey_vars:
+      - name: service_branch
+        title: "Branch"
+        description: "Git branch to deploy (leave as 'main' for production)"
+        type: string
+        required: false
+        default_value: "main"
+
+  # The production internal CA (openspec production-internal-ca). Dev-bound until the
+  # step-ca guards are promoted: main's deploy-step-ca.yml has no first-boot guard and main's
+  # clean-deploy-step-ca.yml no reset confirmation, so a main-bound twin would first-boot a
+  # CA with ACME on, or destroy the root unconfirmed. Add the main-bound entries with the
+  # promotion.
+  - name: Deploy step-ca (Dev)
+    playbook: platform/playbooks/deploy-step-ca.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: service_branch
+        title: "Branch"
+        description: "Git branch the CA host checks out (dev until promotion)"
+        type: string
+        required: false
+        default_value: "dev"
+
+  - name: Clean Deploy step-ca (Dev)
+    playbook: platform/playbooks/clean-deploy-step-ca.yml
+    repository: agent-cloud dev
+    # DESTRUCTIVE: deletes the CA root and intermediate; the redeploy issues a new root
+    # every client must trust again. Refuses unless confirm_ca_reset names the host.
+    survey_vars:
+      - name: confirm_ca_reset
+        title: "Confirm: host whose CA is reset"
+        description: "Type the step-ca inventory hostname. Anything else refuses. No default on purpose."
+        type: string
+        required: true
+      - name: service_branch
+        title: "Branch"
+        description: "Git branch the CA host checks out after the reset (dev until promotion)"
+        type: string
+        required: false
+        default_value: "dev"
+
+  # Copy the CA's certificates, encrypted keys and configuration out of the step-ca container
+  # into site-config's secrets/step-ca/volume/ on a new branch per run; the task output
+  # carries file names, counts and the branch only. The key password is NOT copied here:
+  # follow with Back Up Credentials to site-config, credential_service=step-ca (openspec
+  # production-internal-ca task 7.2). Dev-bound with the CA templates above.
+  - name: Back Up step-ca to site-config (Dev)
+    playbook: platform/playbooks/backup-step-ca-to-site-config.yml
+    repository: agent-cloud dev
+
+  # Issue (or remove) one leaf declared in site-config's internal_leaves, key generated on
+  # its consumer, signed on the step_ca_svc host. Dev-bound with the CA templates above.
+  - name: Issue Internal Leaf (Dev)
+    playbook: platform/playbooks/issue-internal-leaf.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: target_service
+        title: "Consumer group"
+        description: "Inventory group holding the leaf's host (e.g. agentgateway_svc)"
+        type: string
+        required: true
+      - name: leaf_name
+        title: "Leaf"
+        description: "A name declared once in internal_leaves"
+        type: string
+        required: true
+      - name: leaf_action
+        title: "Action"
+        description: "issue; inspect (read-only proof of the current certificate); or remove the leaf's issued files (before removing its declaration)"
+        type: enum
+        required: false
+        default_value: issue
+        values:
+          - { name: "issue", value: "issue" }
+          - { name: "inspect", value: "inspect" }
+          - { name: "remove", value: "remove" }
+      - name: leaf_reissue
+        title: "Reissue"
+        description: "true replaces a leaf that already has a current certificate"
+        type: enum
+        required: false
+        default_value: "false"
+        values:
+          - { name: "false", value: "false" }
+          - { name: "true", value: "true" }
+
+  # Daily: re-issue every declared leaf on a host once any of them has less than a third of
+  # its lifetime left, reload each host once, prove every renewed leaf in use, and push the
+  # expiry and run-result lines the o11y alerts read (openspec production-internal-ca tasks
+  # 6.1 and 6.2). The schedule is code. Dev-bound with the CA templates above. The rotation
+  # drill (task 6.3) launches it by hand with renew_threshold=1; left empty, the playbook's
+  # default third applies.
+  - name: Renew Internal Certs (Dev)
+    playbook: platform/playbooks/renew-internal-certs.yml
+    repository: agent-cloud dev
+    schedule:
+      cron: "17 4 * * *"
+    survey_vars:
+      - name: renew_threshold
+        title: "Renewal threshold"
+        description: "Fraction of a leaf's lifetime left below which its host renews, above 0 and at most 1; empty = one third; 1 renews every leaf (rotation drill)"
+        type: string
+        required: false
+
+  - name: Manage agentgateway Client Key
+    playbook: platform/playbooks/manage-agentgateway-client-key.yml
+    # Introduced on dev (PR #191); main has no agentgateway code until promotion, so
+    # the main-bound template cannot run. The "(Dev)" variant can, launched with
+    # service_branch=dev so the VM checkout matches the playbook.
+    dev_variant: true
+    survey_vars:
+      - name: client
+        title: "Client identity"
+        description: "Name from agw_clients (rotate) or a name already removed from it (revoke)"
+        type: string
+        required: true
+      - name: action
+        title: "Action"
+        description: "rotate = new key for a declared identity; revoke = remove a retired identity's key"
+        type: enum
+        required: true
+        values:
+          - { name: "rotate", value: "rotate" }
+          - { name: "revoke", value: "revoke" }
+      - name: service_branch
+        title: "Branch"
+        description: "Git branch to deploy (leave as 'main' for production)"
+        type: string
+        required: false
+        default_value: "main"
+
+  # Conformance against direct vLLM (change inference-gateway-agentgateway, tasks 2.1/2.2):
+  # the same cases to the gateway and to vLLM from the gateway VM, then the comparison. Keys are
+  # read from OpenBao by the runner and placed as 0600 files for the run only; no survey, because
+  # every input is inventory. Introduced on dev, so the (Dev) variant runs before promotion.
+  - name: Run agentgateway Conformance
+    playbook: platform/playbooks/run-agw-conformance.yml
+    dev_variant: true
+
   - name: Deploy honcho
     playbook: platform/playbooks/deploy-honcho.yml
+    dev_variant: true
     survey_vars:
       - name: service_branch
         title: "Branch"
@@ -311,6 +898,31 @@ templates:
         required: false
         default_value: "main"
 
+  - name: Clean Deploy o11y
+    playbook: platform/playbooks/clean-deploy-o11y.yml
+    # DESTRUCTIVE: removes every o11y container and volume (metrics, logs, Grafana
+    # state), then imports deploy-o11y.yml. Refuses BEFORE removing anything unless the
+    # launch names the host and, for a remote host, the controller checkout is the
+    # reviewed commit, clean.
+    dev_variant: true
+    survey_vars:
+      - name: confirm_o11y_reset
+        title: "Confirm: host whose o11y data is destroyed"
+        description: "Type the o11y inventory hostname. Anything else refuses. No default on purpose."
+        type: string
+        required: true
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "The exact commit the clean deploy was reviewed at; any other checkout, or uncommitted files, refuses before anything is removed"
+        type: string
+        required: true
+      - name: service_branch
+        title: "Branch"
+        description: "Git branch to deploy (leave as 'main' for production)"
+        type: string
+        required: false
+        default_value: "main"
+
   - name: Clean Deploy Authentik
     playbook: platform/playbooks/clean-deploy-authentik.yml
     survey_vars:
@@ -331,6 +943,20 @@ templates:
         required: false
         default_value: "main"
 
+  - name: Clean Deploy agentgateway
+    playbook: platform/playbooks/clean-deploy-agentgateway.yml
+    # Introduced on dev (PR #191); main has no agentgateway code until promotion, so
+    # the main-bound template cannot run. The "(Dev)" variant can, launched with
+    # service_branch=dev so the VM checkout matches the playbook.
+    dev_variant: true
+    survey_vars:
+      - name: service_branch
+        title: "Branch"
+        description: "Git branch to deploy (leave as 'main' for production)"
+        type: string
+        required: false
+        default_value: "main"
+
   - name: Clean Deploy honcho
     playbook: platform/playbooks/clean-deploy-honcho.yml
     survey_vars:
@@ -342,6 +968,23 @@ templates:
         default_value: "main"
 
   # ── Updates ────────────────────────────────────────────────────
+  - name: Clean Deploy n8n
+    playbook: platform/playbooks/clean-deploy-n8n.yml
+    # DESTRUCTIVE: wipes n8n's containers AND volumes — the Postgres holding
+    # every workflow + execution, and the n8n_data volume. Stored workflow
+    # credentials only survive if the SAME N8N_ENCRYPTION_KEY is fetched back
+    # from OpenBao on the rebuild (it is, unless the secret was deleted there).
+    # Not a routine recovery step; for the prod cutover use Deploy n8n, never
+    # this.
+    dev_variant: true
+    survey_vars:
+      - name: service_branch
+        title: "Branch"
+        description: "Git branch to deploy (leave as 'main' for production)"
+        type: string
+        required: false
+        default_value: "main"
+
   - name: Clean Deploy Postiz
     playbook: platform/playbooks/clean-deploy-postiz.yml
     # DESTRUCTIVE: wipes postiz's Postgres, Redis, uploads, AND the workflow
@@ -384,14 +1027,230 @@ templates:
   - name: Validate All Services
     playbook: platform/playbooks/validate-all.yml
 
+  # Workflow step fw-assess: the read-only snapshot that is the firewall assessment's only
+  # model input.
+  - name: Snapshot Firewall
+    playbook: platform/playbooks/snapshot-firewall.yml
+    # Not on main until the service deployment workflow is promoted; dev-bound meanwhile.
+    dev_variant: true
+    survey_vars:
+      - name: target_service
+        title: Target group
+        description: Inventory group of the service to snapshot (e.g. tududi_svc)
+        type: string
+        required: true
+
+  # Workflow steps service-assess and access-assess: the read-only snapshots that are each
+  # assessment's only model input.
+  - name: Snapshot Service Assessment
+    playbook: platform/playbooks/snapshot-service-assessment.yml
+    # Not on main until the service deployment workflow is promoted; dev-bound meanwhile.
+    dev_variant: true
+    survey_vars:
+      - name: target_service
+        title: Target group
+        description: Inventory group of the service to snapshot for the service assessment (e.g. tududi_svc)
+        type: string
+        required: true
+
+  - name: Snapshot Access
+    playbook: platform/playbooks/snapshot-access.yml
+    # Not on main until the service deployment workflow is promoted; dev-bound meanwhile.
+    dev_variant: true
+    survey_vars:
+      - name: target_service
+        title: Target group
+        description: Inventory group of the service to snapshot for the access assessment (e.g. tududi_svc)
+        type: string
+        required: true
+
+  # The workflow conformance collector: runs from Dev, writes each service's step status to
+  # NetBox, and writes Loki only when its private ingestion path is declared. The only writer.
+  - name: Collect Service Conformance (Dev)
+    playbook: platform/playbooks/collect-service-conformance.yml
+    # Keep this live Dev template's name so full-catalog publication updates it in place. Its
+    # declared schedule attaches here; no main-bound base or generated second copy is published.
+    repository: agent-cloud dev
+    schedule:
+      cron: "*/15 * * * *"
+
+  # Workflow step systemd-enablement: every container of the service restarts on its own and,
+  # for rootless podman, the deploying user has linger. Read-only.
+  - name: Verify Service Persistence
+    playbook: platform/playbooks/verify-service-persistence.yml
+    dev_variant: true
+    survey_vars:
+      - name: target_service
+        title: Target group
+        description: Inventory group of the service to check (e.g. tududi_svc)
+        type: string
+        required: true
+
+  # Workflow step instrument-host: the receiver's bounded node exporter on every host of one
+  # service group (host network, declared private address), declared to the o11y receiver's
+  # Prometheus only after the receiver reaches it, then series proven. Check mode writes nothing.
+  - name: Instrument Host Observability
+    playbook: platform/playbooks/instrument-host-o11y.yml
+    dev_variant: true
+    survey_vars:
+      - name: target_service
+        title: Target group
+        description: Inventory group of the service hosts to instrument (e.g. tududi_svc)
+        type: string
+        required: true
+
+  # Reboot ONE host and wait for it (production-internal-ca task 3.3; the workflow's optional
+  # reboot test). Refuses unless the group holds exactly one host and confirm_reboot names it.
+  # Run Verify Service Persistence before and Verify Service Health after.
+  - name: Reboot Host (Dev)
+    playbook: platform/playbooks/reboot-host.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: target_service
+        title: Target group
+        description: Inventory group holding exactly the one host to reboot (e.g. step_ca_svc)
+        type: string
+        required: true
+      - name: confirm_reboot
+        title: Confirm host
+        description: The inventory name of that host; anything else is refused
+        type: string
+        required: true
+
+  # Reachability FROM a LAN host that is not the controller (production-internal-ca task 3.4):
+  # one TCP connect per declared port, each expected open or closed. Read-only.
+  - name: Probe Reachability (Dev)
+    playbook: platform/playbooks/probe-reachability.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: probe_from
+        title: Probing group
+        description: Inventory group of the host the probe runs on (not the target)
+        type: string
+        required: true
+      - name: probe_to
+        title: Target host
+        description: Inventory host whose address is probed
+        type: string
+        required: true
+      - name: probe_ports_json
+        title: Ports
+        description: 'JSON list of {"port": N, "expect": "open"|"closed"}'
+        type: string
+        required: true
+
+  # The setup half of systemd-enablement: linger + podman's user boot unit (rootless), the
+  # system podman-restart.service (rootful) or docker.service (Docker). Boot settings only;
+  # restarts nothing, so it is safe on a running service. Verify Service Persistence checks it.
+  - name: Ensure Service Persistence
+    playbook: platform/playbooks/ensure-service-persistence.yml
+    dev_variant: true
+    survey_vars:
+      - name: target_service
+        title: Target group
+        description: Inventory group of the service (e.g. tududi_svc)
+        type: string
+        required: true
+
+  # Read-only: the containers on exactly one host, per engine (rootless podman for the
+  # connecting user and any declared linger_user, rootful podman, Docker), with restart policy
+  # and compose working directory. For onboarding a host that has no service group yet.
+  - name: Inspect Host Containers
+    playbook: platform/playbooks/inspect-host-containers.yml
+    dev_variant: true
+    survey_vars:
+      - name: target_host
+        title: Target host
+        description: Inventory host to inspect, exactly one (e.g. devlog)
+        type: string
+        required: true
+
+  # Read-only service diagnostics, including stopped containers. The Dev
+  # variant runs reviewed Dev playbook code against the production inventory.
+  - name: Inspect Service Runtime
+    playbook: platform/playbooks/inspect-service-runtime.yml
+    dev_variant: true
+    survey_vars:
+      - name: target_service
+        title: Target group
+        description: Inventory group of the service to inspect (e.g. authentik_svc)
+        type: string
+        required: true
+
+  # Workflow step service-validate: the service answers on its inventory-declared health
+  # path (service_url + health_path) with HTTP 200. Read-only.
+  - name: Verify Service Health
+    playbook: platform/playbooks/verify-service-health.yml
+    dev_variant: true
+    survey_vars:
+      - name: target_service
+        title: Target group
+        description: Inventory group of the service to check (e.g. tududi_svc)
+        type: string
+        required: true
+
+  # Workflow step lookup-inventory: the declared VM spec is complete, NetBox records the
+  # declared address as reserved or active, and no other host claims it. Read-only.
+  - name: Lookup Service Inventory
+    playbook: platform/playbooks/lookup-service-inventory.yml
+    # main has no copy of this playbook yet (service deployment workflow, not promoted),
+    # so the dev-bound variant is the only runnable form before promotion.
+    dev_variant: true
+    survey_vars:
+      - name: target_service
+        title: Target service
+        description: Service whose declared VM to check (its <service>_svc group declares vm_*)
+        type: string
+        required: true
+
+  # Workflow step validate-address: the address is not live in pfSense ARP (unless it is the
+  # service's own running VM), and the NetBox VM record exists (created planned if absent).
+  - name: Validate Address Free
+    playbook: platform/playbooks/validate-address-free.yml
+    # main has no copy of this playbook yet (service deployment workflow, not promoted),
+    # so the dev-bound variant is the only runnable form before promotion.
+    dev_variant: true
+    survey_vars:
+      - name: target_service
+        title: Target service
+        description: Service whose declared VM to check (its <service>_svc group declares vm_*)
+        type: string
+        required: true
+
   - name: Check Discovery Pipeline
     playbook: platform/playbooks/check-discovery.yml
+    survey_vars:
+      - name: discovery_expected_revision
+        title: "Reviewed diagnostic revision"
+        description: "Full 40-character commit SHA; must match the executing controller checkout"
+        type: string
+        required: true
+      - name: discovery_log_since
+        title: "Log window start"
+        description: "ISO timestamp with explicit zone, e.g. 2026-08-01T00:00:00Z"
+        type: string
+        required: true
+      - name: discovery_log_until
+        title: "Log window end"
+        description: "ISO timestamp with explicit zone; collect historical evidence before redeployment"
+        type: string
+        required: true
+
+  - name: Inspect Discovery Metadata
+    playbook: platform/playbooks/inspect-discovery-metadata.yml
+    survey_vars:
+      - name: discovery_project_id
+        title: "Semaphore project ID"
+        description: "Explicit numeric project ID for read-only discovery binding inspection"
+        type: string
+        required: true
 
   - name: Cleanup NetBox
     playbook: platform/playbooks/cleanup-netbox.yml
 
   - name: Validate Proxmox Cluster
     playbook: platform/playbooks/proxmox-validate.yml
+    dev_variant: true
 
   # ── Secrets ────────────────────────────────────────────────────
   - name: Check Secrets
@@ -409,6 +1268,13 @@ templates:
 
   - name: Validate Secrets
     playbook: platform/playbooks/validate-secrets.yml
+    # The playbook falls back to target_service "ungrouped" (no host) without this field.
+    survey_vars:
+      - name: target_service
+        title: "Target group"
+        description: "Inventory group to run against (e.g. dns_svc)"
+        type: string
+        required: true
 
   - name: Seed Discovery Credentials
     playbook: platform/playbooks/seed-discovery-credentials.yml
@@ -418,6 +1284,13 @@ templates:
 
   - name: Sync Secrets to OpenBao
     playbook: platform/playbooks/sync-secrets-to-openbao.yml
+    # The playbook falls back to target_service "ungrouped" (no host) without this field.
+    survey_vars:
+      - name: target_service
+        title: "Target group"
+        description: "Inventory group to run against (e.g. dns_svc)"
+        type: string
+        required: true
 
   - name: Store SSH Password
     playbook: platform/playbooks/store-ssh-password.yml
@@ -489,6 +1362,7 @@ templates:
 
   - name: Seed OpenBao Key
     playbook: platform/playbooks/seed-openbao-key.yml
+    dev_variant: true
     # Merges ONE key into an existing secret path (siblings preserved), for
     # code-managed placement of a shared secret a reader deploy needs (e.g.
     # honcho reads secret/services/nemoclaw:gemini_api_key).
@@ -500,6 +1374,16 @@ templates:
     # **environment secret** — encrypted at rest, value not returned by the API,
     # the same channel the AppRole credentials already use. The playbook prefers
     # the environment, so a stray -e bao_value= cannot override it.
+    #
+    # ISOLATED ENVIRONMENT: BAO_VALUE is staged only in this template's own
+    # environment, never in the shared one every template runs in, so no other
+    # task can receive it. scripts/semaphore-seed-input.py stages it, runs one
+    # task, and removes it; seed_inputs is its allowlist. First installation:
+    # run Provision Seed Environment for this template, then
+    # `scripts/semaphore-seed-input.py --verify-only` (the read-only access check).
+    isolated_environment: OpenBao key seed inputs
+    seed_inputs: [BAO_VALUE]
+    seed_access_check: bao_verify_access_only
     survey_vars:
       - name: bao_path
         title: "Secret path"
@@ -511,10 +1395,114 @@ templates:
         description: "Field to set/update at that path (e.g. gemini_api_key)"
         type: string
         required: true
+      - name: bao_verify_access_only
+        title: "Verify access without writing"
+        description: "true = log in and read the path, then stop before any write"
+        type: string
+        default_value: "false"
+
+  - name: Reconcile pfSense API Key
+    playbook: platform/playbooks/reconcile-pfsense-api-key.yml
+    dev_variant: true
+    # Reads the fixed private site-config backup on the runner through the
+    # OpenBao-backed deploy key. A different live key is never overwritten.
+    # No credential-bearing survey or launch-time parameter is accepted.
+
+  - name: Seed n8n Secrets
+    playbook: platform/playbooks/seed-n8n-secrets.yml
+    # dev_variant because the cutover RUNS FROM dev (promotion to main comes
+    # after prod validation): the alias-aware seed only exists on dev, and the
+    # main-record template would run the old playbook, which refuses the
+    # standalone layout's ENCRYPTION_KEY spelling.
+    dev_variant: true
+    # Migration Task 0 for the EXISTING prod n8n: reads the live env file on
+    # the host (default config/n8n.env; the standalone prod layout passes
+    # -e live_n8n_env=/home/<user>/n8n/.env) and pre-seeds the STATEFUL
+    # secrets (encryption_key + both Postgres passwords) into
+    # secret/services/n8n, so the first composable Deploy n8n FETCHES them
+    # instead of generating — re-keying N8N_ENCRYPTION_KEY makes every stored
+    # workflow credential permanently undecryptable. Accepts the legacy
+    # ENCRYPTION_KEY spelling; refuses a file carrying both. Non-destructive:
+    # never touches the running service. Skip for greenfield hosts (nothing
+    # to preserve).
+
+  - name: Back Up n8n DB
+    playbook: platform/playbooks/backup-n8n-db.yml
+    # Timestamped pg_dump of an n8n Postgres container into an owner-only
+    # backup dir on the VM — the rollback artifact for n8n's one-way startup
+    # schema migrations. Run before EVERY n8n version bump; the cutover points
+    # it at the legacy project's container via the survey var. Read-only
+    # against the database; each run writes a NEW file, never overwrites.
+    # Neither value is secret, so the "survey values persist" prohibition
+    # does not apply.
+    dev_variant: true
+    survey_vars:
+      - name: n8n_pg_container
+        title: "Postgres container"
+        description: "Container to dump (default workflow-n8n-postgres; the cutover uses the legacy project's n8n_postgres_1)"
+        type: string
+        required: false
+
+  - name: Restore n8n DB
+    playbook: platform/playbooks/restore-n8n-db.yml
+    # DESTRUCTIVE: overwrites the composable stack's n8n database with a named
+    # dump. The play hard-requires n8n_dump_file, so without this survey var
+    # every UI launch would fail on task 1. Restores under --single-transaction
+    # with ON_ERROR_STOP (a failed restore rolls back); the app containers are
+    # restarted in an always: block, so a failed restore never also leaves the
+    # service down. n8n re-runs migrations at boot. The cutover's import step
+    # AND the standing upgrade rollback tool. The path is not a secret.
+    dev_variant: true
+    survey_vars:
+      - name: n8n_dump_file
+        title: "Dump file path"
+        description: "Explicit dump to restore (named in Back Up n8n DB's report). Never 'the latest'."
+        type: string
+        required: true
+
+  - name: Provision Seed Environment
+    playbook: platform/playbooks/provision-seed-environment.yml
+    # Gives ONE declared seed template (isolated_environment in this file) its own
+    # environment with an encrypted copy of the controller AppRole, then binds it.
+    dev_variant: true
+    survey_vars:
+      - name: seed_template
+        title: "Seed template"
+        description: "Declared base name, e.g. Seed OpenBao Key or Seed Postiz Secrets"
+        type: string
+        required: true
+      - name: semaphore_project_id
+        title: "Verified project ID"
+        type: string
+        required: true
+      - name: semaphore_inventory_id
+        title: "Verified seed inventory ID"
+        type: string
+        required: true
+      - name: semaphore_source_environment_id
+        title: "Verified current seed environment ID"
+        type: string
+        required: true
+      - name: seed_variant
+        title: "Seed variant (dev or main)"
+        description: "Use dev until the seed access-verification code is promoted to main."
+        type: string
+        default_value: dev
+        required: true
 
   - name: Seed Postiz Secrets
     playbook: platform/playbooks/seed-postiz-secrets.yml
     dev_variant: true
+    isolated_environment: Postiz seed inputs
+    seed_access_check: postiz_verify_access_only
+    survey_vars:
+      - name: postiz_verify_access_only
+        title: "Verify access without writing secrets"
+        type: string
+        description: "Set true to authenticate and read the fixed path without writing secrets."
+        default_value: "false"
+    # Full publication binds an empty environment on first installation.
+    # Run the provisioner, then the read-only survey check, before importing.
     # Places the operator's social-platform application credentials at
     # secret/services/postiz, additively (KV-v2 merge-patch), so the three
     # generated secrets already there survive. deploy-postiz.yml declares these
@@ -522,9 +1510,8 @@ templates:
     # generates them, because they are the operator's own credentials from each
     # platform's developer console.
     #
-    # NO survey_vars, deliberately: Semaphore PERSISTS survey values in its
-    # database, so a credential typed into a survey field would be stored there
-    # indefinitely.
+    # The only survey is a non-secret read-only switch. Semaphore PERSISTS survey
+    # values, so credentials must never be declared as survey fields.
     #
     # LAUNCH-TIME EXTRA VARS ARE NOT THE ANSWER EITHER, and this comment used to
     # say they were. Semaphore persists a task's extra-var JSON the same way and
@@ -541,8 +1528,8 @@ templates:
     #   SEED_DISCORD_CLIENT_ID    SEED_DISCORD_CLIENT_SECRET
     #   SEED_DISCORD_BOT_TOKEN_ID
     #
-    #   Project -> Environment -> (the environment this template uses)
-    #     -> Secrets -> add each as type "environment variable"
+    # Use scripts/postiz-seed-input.py after provisioning and access verification;
+    # it stages encrypted inputs and removes only its own inputs after completion.
     #
     # The playbook prefers the environment over the matching seed_* extra var, so
     # a stray -e cannot override a configured secret. The extra-var form remains
@@ -550,6 +1537,236 @@ templates:
     # persists it.
     # Re-running with unchanged values writes nothing. Verify with Check
     # Secrets, then run Deploy Postiz.
+
+  - name: Seed o11y Alert Webhook
+    playbook: platform/playbooks/seed-o11y-alert-webhook.yml
+    dev_variant: true
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact checkout revision required before Discord or OpenBao access"
+        type: string
+        required: true
+    # Reconciles a named webhook in the text channel declared by private
+    # o11y_alert_discord_guild_id/o11y_alert_discord_channel_id inventory vars.
+    # Reads the bot token from OpenBao and stores the webhook URL under o11y.
+    # Run before enabling o11y alerts in inventory.
+
+  - name: Drill o11y Unreachable
+    playbook: platform/playbooks/drill-o11y-unreachable.yml
+    dev_variant: true
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact Dev checkout revision required before the drill"
+        type: string
+        required: true
+      - name: drill_expect_alert
+        title: "Verify alert delivery"
+        description: "Set true after the OpenBao-backed Discord contact point is enabled"
+        type: string
+        required: false
+        default_value: "false"
+
+  - name: Drill o11y Alert Canary (Dev)
+    playbook: platform/playbooks/drill-o11y-alert-canary.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact Dev revision required before temporary alert activation"
+        type: string
+        required: true
+    # Local uses a disposable container; production uses a generated static
+    # scrape. Both restore paused provisioning in an always block. If the
+    # controller is interrupted, run Restore o11y Alert Baseline (Dev).
+
+  - name: o11y Fault Drill (Dev)
+    playbook: platform/playbooks/o11y-fault-drill.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact Dev revision required before any fault is induced"
+        type: string
+        required: true
+      - name: drill
+        title: "Drill mode"
+        description: "exporter | probe | grafana"
+        type: string
+        required: true
+      - name: confirm_fault_drill
+        title: "Confirm mode"
+        description: "Type the drill mode again; anything else refuses"
+        type: string
+        required: true
+      - name: drill_node
+        title: "DGX node (exporter mode)"
+        description: "A node declared in o11y_fault_drill_exporters"
+        type: string
+        required: false
+      - name: drill_window_confirmed
+        title: "dgx-spark window agreed (exporter mode)"
+        description: "true only inside an agreed dgx-spark operator window"
+        type: string
+        required: false
+        default_value: "false"
+      - name: drill_restore_only
+        title: "Restore only"
+        description: "true after an interrupted run: restore and prove, induce nothing"
+        type: string
+        required: false
+        default_value: "false"
+    # inference-telemetry-production 2.5 (exporter), 3.5 (probe), 3.6 (grafana).
+    # One bounded fault, alert proof, restore in an always block. Dry run induces nothing.
+
+  - name: Restore o11y Alert Baseline (Dev)
+    playbook: platform/playbooks/restore-o11y-alert-baseline.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact Dev revision required for interruption recovery"
+        type: string
+        required: true
+
+  - name: Drill o11y Active Alert Delivery (Dev)
+    playbook: platform/playbooks/drill-o11y-active-alert-delivery.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for the controller playbook"
+        type: string
+        required: true
+      - name: expected_receiver_sha
+        title: "Deployed receiver SHA"
+        description: "Exact current receiver revision, checked before the drill"
+        type: string
+        required: true
+    # Exercises an already-active production rule/contact with one failed
+    # scrape. Recovery removes only its generated scrape and reloads Prometheus.
+
+  - name: Recover o11y Active Alert Drill (Dev)
+    playbook: platform/playbooks/recover-o11y-active-alert-drill.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for the recovery playbook"
+        type: string
+        required: true
+      - name: expected_receiver_sha
+        title: "Deployed receiver SHA"
+        description: "Exact receiver revision recorded for the interrupted drill"
+        type: string
+        required: true
+
+  - name: Verify o11y Production Budgets (Dev)
+    playbook: platform/playbooks/verify-o11y-production-budgets.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for the read-only receipt"
+        type: string
+        required: true
+      - name: expected_receiver_sha
+        title: "Deployed receiver SHA"
+        description: "Exact current receiver revision to measure"
+        type: string
+        required: true
+
+  - name: Diagnose o11y Host Storage (Dev)
+    playbook: platform/playbooks/diagnose-o11y-host-storage.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for the read-only diagnostic"
+        type: string
+        required: true
+      - name: expected_receiver_sha
+        title: "Deployed receiver SHA"
+        description: "Exact current receiver revision to inspect"
+        type: string
+        required: true
+    # Read-only exporter isolation and storage layout diagnostics. No secrets,
+    # configuration writes, image pulls, or deployment tasks are involved.
+
+  # Grow the o11y receiver's full root filesystem into its 100 GiB disk, online
+  # (partition -> PV -> root LV + ext4). Dev-bound; dry run shows the chain and steps.
+  - name: Grow o11y Root (Dev)
+    playbook: platform/playbooks/grow-o11y-root.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "The exact dev commit the grow was reviewed at; any other checkout is refused"
+        type: string
+        required: true
+
+  - name: Survey o11y Backup Readiness (Dev)
+    playbook: platform/playbooks/survey-o11y-backup-readiness.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for the read-only Proxmox survey"
+        type: string
+        required: true
+    # Reports sanitized backup-capable storage and candidate artifact counts.
+    # It does not mutate Proxmox or prove immutability or restore success.
+
+  - name: Survey o11y Backup Artifact Details (Dev)
+    playbook: platform/playbooks/survey-o11y-backup-artifact.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for the read-only artifact detail survey"
+        type: string
+        required: true
+    # Reports allow-listed artifact facts, source disk layout, single supported-
+    # candidate status, and aggregate off-source non-shared image-capacity/VMID
+    # feasibility only. No names, IDs, hashes, capacities, or free-form data
+    # are shown. A VMID is not reserved;
+    # missing protection stays unknown, and this task never writes PVE.
+
+  - name: Survey o11y PBS Physical Storage (Dev)
+    playbook: platform/playbooks/survey-o11y-pbs-physical-storage.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for the read-only physical-storage survey"
+        type: string
+        required: true
+    # Uses the private proxmox_pbs_storage_node declaration on the sole o11y_svc
+    # host. Reports coarse aggregate counts/bands only; no node, device, storage,
+    # capacity value, or private identifier is visible. No selection or writes.
+
+  - name: Reconcile o11y Backup Job (Dev)
+    playbook: platform/playbooks/reconcile-o11y-backup-job.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for backup-job reconciliation"
+        type: string
+        required: true
+      - name: inspect_only
+        title: "Inspect backup jobs only"
+        description: "true lists sanitized candidates and stops before any write; false uses the private inventory job ID"
+        type: enum
+        required: true
+        default_value: "true"
+        values:
+          - { name: "Inspect only", value: "true" }
+          - { name: "Apply declared job membership", value: "false" }
+    # Inspect-only mode lists sanitized candidates for private inventory selection.
+    # Apply mode uses the selected existing job ID and VM identity from inventory;
+    # check mode previews the narrow membership change before a write.
 
   - name: Mint Honcho Team JWT
     playbook: platform/playbooks/mint-honcho-team-jwt.yml
@@ -574,11 +1791,49 @@ templates:
         required: false
         default_value: "plan"
 
+  - name: Publish Semaphore Template Surveys
+    playbook: platform/playbooks/publish-semaphore-templates.yml
+    dev_variant: true
+    survey_vars:
+      - name: semaphore_template_names_json
+        title: "Exact declared template names (JSON list)"
+        description: "Updates existing surveys; with scoped create enabled, creates one missing declared template."
+        type: string
+        required: true
+      - name: semaphore_allow_scoped_create
+        title: "Create one missing template"
+        description: "Default false. Requires one exact name and verified project, inventory, and variable-group IDs."
+        type: string
+        required: false
+        default_value: "false"
+      - name: semaphore_allow_scoped_schedule
+        title: "Publish one declared Dev schedule"
+        description: "Default false. Requires one existing scheduled (Dev) template; no template creation or binding changes."
+        type: string
+        required: false
+        default_value: "false"
+      - name: semaphore_project_id
+        title: "Verified project ID for create"
+        type: string
+        required: false
+      - name: semaphore_inventory_id
+        title: "Verified inventory ID for create"
+        type: string
+        required: false
+      - name: semaphore_environment_id
+        title: "Verified variable-group ID for create"
+        type: string
+        required: false
+
+  # Initial installation remains an operator bootstrap. Once installed, the
+  # publisher above uses the controller AppRole without exporting credentials.
+  # Repository/inventory management remains operator-side; it is not exposed
+  # by this narrowly scoped survey publisher.
   # NOTE: bootstrap-semaphore-repositories.yml (and the deprecated
   # set-semaphore-branch.yml it replaces) are OPERATOR-SIDE tools — run from a
   # workstation with SEMAPHORE_URL/SEMAPHORE_TOKEN, like setup-templates.yml.
-  # Deliberately NOT Semaphore templates: managing Semaphore's own config from
-  # inside a Semaphore job is avoided by convention.
+  # These broader tools are NOT exposed as Semaphore templates. The scoped
+  # controller publisher above is the bounded exception; see README.md.
   #
   # To run a template against `dev` instead of `main`, give it
   # `repository: agent-cloud dev` here — do NOT flip a shared record's branch.
@@ -597,6 +1852,9 @@ templates:
 
   - name: Apply Policy - NemoClaw
     playbook: platform/playbooks/apply-policy-nemoclaw.yml
+    # The (Dev) copy applies the policy as dev has it, so the Semaphore-token deny lands
+    # before promotion (plan 01, "Launch permission is runner access").
+    dev_variant: true
 
   - name: Apply Policy - UhhCraft
     playbook: platform/playbooks/apply-policy-uhhcraft.yml
@@ -618,6 +1876,16 @@ templates:
     # back null and the run still fetches main — so the variant is the only way to
     # run the fixed code.
     dev_variant: true
+    # Without this field the play falls back to target_service "ungrouped" and reaches no
+    # host, and the launcher refuses a non-survey extra var; production grew one-off
+    # "SSH Distribute: <group> (temp)" templates by hand instead (found onboarding the
+    # internal DNS and CA VMs, 2026-09-28).
+    survey_vars:
+      - name: target_service
+        title: "Target group"
+        description: "Inventory group to receive the keys (e.g. dns_svc)"
+        type: string
+        required: true
 
   - name: Harden SSH
     playbook: platform/playbooks/harden-ssh.yml
@@ -625,6 +1893,13 @@ templates:
     # it — verifying dev's code and then hardening with main's would mean the thing
     # checked is not the thing run, on the one action that can lock the host out.
     dev_variant: true
+    # The playbook falls back to target_service "ungrouped" (no host) without this field.
+    survey_vars:
+      - name: target_service
+        title: "Target group"
+        description: "Inventory group to run against (e.g. dns_svc)"
+        type: string
+        required: true
 
   - name: Apply Firewall
     playbook: platform/playbooks/apply-firewall.yml
@@ -653,6 +1928,10 @@ templates:
 
   - name: Manage Caddy Sites
     playbook: platform/playbooks/manage-caddy-sites.yml
+    # The read-report + retire + rescue version of this playbook lives on dev; main
+    # still carries the insert-only one. The (Dev) variant is how a prod route lands
+    # through the current code before promotion (same pattern as Seed n8n Secrets).
+    dev_variant: true
     survey_vars:
       - name: target_service
         title: "Caddy group"
@@ -660,6 +1939,26 @@ templates:
         type: string
         required: false
         default_value: "caddy_svc"
+
+  # The inference route's rollback as code (change inference-gateway-agentgateway, task
+  # 4.6). Its Caddy step IS Manage Caddy Sites, imported with the route mode set for the
+  # run, so it inherits that playbook's validation and rollback. No group survey: both
+  # groups are fixed and checked by the pre-flight. Introduced on dev, so the (Dev)
+  # variant is the one that can run before promotion.
+  - name: Rollback Inference Route
+    playbook: platform/playbooks/rollback-inference-route.yml
+    dev_variant: true
+    survey_vars:
+      - name: mode
+        title: "Mode"
+        description: "gateway-config = previous gateway config, gateway stays; direct = publish the vLLM key per client, route to vLLM; restore = route to the gateway, retire the copies once rotated"
+        type: enum
+        required: false
+        default_value: gateway-config
+        values:
+          - { name: "gateway-config", value: "gateway-config" }
+          - { name: "direct", value: "direct" }
+          - { name: "restore", value: "restore" }
 
   - name: Wire Caddy Cloudflare Token
     playbook: platform/playbooks/wire-caddy-cloudflare-token.yml
@@ -670,6 +1969,13 @@ templates:
         type: string
         required: false
         default_value: "caddy_svc"
+
+  # Read-only certificate directory for the central Caddy (production-internal-ca task 5.1):
+  # establishes which compose project Caddy runs from, adds the mount to it as code and
+  # recreates Caddy only when the file changed. Dev-bound with the internal-CA templates.
+  - name: Mount Caddy Certs (Dev)
+    playbook: platform/playbooks/mount-caddy-certs.yml
+    repository: agent-cloud dev
 
   # Converge the Cloudflare DNS records public services need (A/CNAME), declared
   # per group as the `cloudflare_records` inventory var — encodes 05's manual
@@ -690,18 +1996,74 @@ templates:
   - name: Promote Semaphore Admins
     playbook: platform/playbooks/promote-semaphore-admins.yml
 
+  # Launch rights are runner rights (plan 01, "Launch permission is runner access"): hold the
+  # project team, the system admins and the integrations to the private declarations
+  # semaphore_project_members and semaphore_admin_users. Run under check mode first.
+  - name: Manage Semaphore Access
+    playbook: platform/playbooks/manage-semaphore-access.yml
+    dev_variant: true
+
   # ── Infrastructure ─────────────────────────────────────────────
   - name: Install Docker
     playbook: platform/playbooks/install-docker.yml
+    # The playbook falls back to target_service "ungrouped" (no host) without this field.
+    survey_vars:
+      - name: target_service
+        title: "Target group"
+        description: "Inventory group to run against (e.g. dns_svc)"
+        type: string
+        required: true
+
+  - name: Install QEMU Guest Agent
+    playbook: platform/playbooks/install-qemu-guest-agent.yml
+    dev_variant: true
+    survey_vars:
+      - name: target_service
+        title: "Target VM group"
+        description: "One <name>_svc inventory group of existing QEMU VMs (e.g. netbox_svc)"
+        type: string
+        required: true
 
   - name: Install Podman
     playbook: platform/playbooks/install-podman.yml
     # Variant for the same reason as Generate Service SSH Key: one branch for the
     # whole phase, rather than a guarantee that depends on files staying identical.
     dev_variant: true
+    # The playbook falls back to target_service "ungrouped" (no host) without this field.
+    survey_vars:
+      - name: target_service
+        title: "Target group"
+        description: "Inventory group to run against (e.g. dns_svc)"
+        type: string
+        required: true
 
   - name: Create VM Template
     playbook: platform/playbooks/provision-template.yml
+    # main's copy predates the workflow step result (vm-template) and the cloud-init
+    # drive match; the (Dev) variant runs the current code before promotion.
+    dev_variant: true
+
+  - name: Destroy VM
+    playbook: platform/playbooks/destroy-vm.yml
+    # DESTRUCTIVE. Inventory-first like Provision VM; refuses unless the live VM matches
+    # the declaration on vmid+name+node AND the launch names the vmid in confirm_destroy.
+    dev_variant: true
+    survey_vars:
+      - name: target_service
+        title: "Target service"
+        description: "Service whose <name>_svc group holds the declaration (e.g. agentgateway)"
+        type: string
+        required: true
+      - name: target_host
+        title: "Target host"
+        description: "Which declared host — REQUIRED when the group declares more than one"
+        type: string
+        required: false
+      - name: confirm_destroy
+        title: "Confirm: vmid to destroy"
+        description: "Type the declared vm_vmid. Anything else refuses. No default on purpose."
+        type: string
+        required: true
 
   - name: Provision VM
     playbook: platform/playbooks/provision-vm.yml
@@ -723,6 +2085,39 @@ templates:
 
   # Pre-upgrade safety: snapshot a VM (create -> wait -> validate) before any
   # production upgrade. Creds from OpenBao (secret/services/proxmox).
+  - name: Configure Host Network
+    playbook: platform/playbooks/configure-host-network.yml
+    dev_variant: true
+    # Converges a host's IPv4 configuration to what the inventory declares. Built
+    # after `devlog` was found holding `postiz`'s declared address: two machines
+    # answered one IP, different ARP caches resolved it differently, and an
+    # orchestrated deploy authenticated against the wrong host for hours while
+    # every credential check passed.
+    #
+    # DRY RUN BY DEFAULT. Without `net_confirm=true` it renders, validates with
+    # `netplan generate`, prints the before/after and changes nothing.
+    #
+    # Two safety properties, both mutation-tested:
+    #  - an IDENTITY GUARD refuses to proceed unless the host states a name
+    #    matching the inventory entry being converged, so a contested address
+    #    cannot cause the wrong guest to be reconfigured
+    #  - a REVERT IS ARMED before the apply (a transient systemd timer restoring
+    #    the previous config) and disarmed only after the CONTROLLER confirms the
+    #    new address answers. An address that does not work undoes itself; the
+    #    exposure is bounded by net_revert_seconds rather than by someone noticing.
+    survey_vars:
+      - name: target_service
+        title: "Service"
+        description: "Inventory group whose host to converge (e.g. devlog_svc)"
+        type: string
+        required: true
+      - name: net_confirm
+        title: "Apply"
+        description: "false (default) renders and validates only; true applies the change"
+        type: string
+        required: false
+        default_value: "false"
+
   # ── Self-hosted GitHub Actions runners ─────────────────────────────────────
   # Runner-group access control. Converges the org's group to its declaration, so the
   # exclusion of public repositories is a reviewable diff rather than a console setting.
@@ -746,6 +2141,12 @@ templates:
     # only way to exercise it before promotion (setup-templates.yml emits "<name> (Dev)").
     dev_variant: true
     survey_vars:
+      - name: service_branch
+        title: "Target branch"
+        description: "Branch cloned onto the runner host (leave as 'main' for production)"
+        type: string
+        required: true
+        default_value: "main"
       - name: target_service
         title: "Target group"
         description: "Inventory group holding the runner hosts (github_runner_svc)"
@@ -785,6 +2186,9 @@ templates:
 
   - name: Snapshot VM
     playbook: platform/playbooks/snapshot-vm.yml
+    # main's copy predates the dry-run (check mode) support and the no-redirect bearer
+    # header; the (Dev) variant runs the current code before promotion.
+    dev_variant: true
     survey_vars:
       - name: pve_vmid
         title: "VM ID"

@@ -14,6 +14,20 @@
 # containers via the host socket), which is why this is a Docker, not podman,
 # service (the NetBox-style exception).
 
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+# A play over no hosts exits 0 and records a deploy that did nothing as a success
+# (docs/MISTAKES.md 2.21), so refuse an absent or empty group first.
+- name: "Pre-flight: openhands_svc is real"
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: openhands_svc
+    # Paired so one `-e preflight_group=` cannot redirect the guard (MISTAKES 2.21).
+    preflight_group_expected: openhands_svc
+
 # ── Phase 1: Clone + render env + symlink ───────────────────────────────────
 - name: "Phase 1: Clone repo + render OpenHands env"
   hosts: openhands_svc
@@ -44,6 +58,7 @@
       register: _docker_check
       changed_when: false
       failed_when: _docker_check.rc != 0
+      check_mode: false
 
     - name: "Render compose .env"
       ansible.builtin.template:
@@ -81,6 +96,7 @@
         CONTAINER_ENGINE: docker
       register: _deploy
       changed_when: true
+      when: not ansible_check_mode
 
     - name: "Show deploy.sh output"
       ansible.builtin.debug:
@@ -103,6 +119,7 @@
       retries: 12
       delay: 6
       until: _oh.status is defined and _oh.status > 0
+      check_mode: false
 
     - name: "Report"
       ansible.builtin.debug:

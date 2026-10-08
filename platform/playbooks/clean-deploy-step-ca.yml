@@ -9,6 +9,34 @@
 #          (clean-service.yml branches on local_mode).
 #
 # Uses composable tasks/clean-service.yml then runs deploy-step-ca.yml.
+#
+# Refuses unless the launch names the host it resets: -e confirm_ca_reset=<inventory
+# hostname>, the confirm_destroy pattern of destroy-vm.yml. Every template that runs this
+# asks for it with no default (openspec production-internal-ca, task 2.3).
+
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: "Refuse a CA reset the launch did not name"
+  hosts: step_ca_svc
+  gather_facts: false
+  become: false
+  any_errors_fatal: true
+  tasks:
+    - name: "Require the run to NAME the host whose CA it destroys"
+      ansible.builtin.assert:
+        that: (confirm_ca_reset | default('') | string) == inventory_hostname
+        fail_msg: >-
+          Refusing: pass -e confirm_ca_reset={{ inventory_hostname }} to destroy this CA's
+          root and intermediate. A reset issues a new root that every client must trust
+          again, so a destructive template must be told which host, in its own launch.
+
+    # The redeploy below refuses without these; checked here so a confirmed reset with
+    # incomplete inventory refuses before the root is destroyed, not after.
+    - name: "Refuse a reset whose redeploy would refuse"
+      ansible.builtin.include_tasks: tasks/assert-step-ca-first-boot.yml
 
 - name: "Clean step-ca deployment"
   hosts: step_ca_svc
@@ -22,3 +50,5 @@
 
 - name: "Fresh deploy"
   import_playbook: deploy-step-ca.yml
+  vars:
+    _extra_var_guard_nested: true

@@ -12,6 +12,20 @@
 #
 # Plan: plan/development/nocodb-n8n-composable-migration.md (Migration Safety).
 
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+# A play over no hosts exits 0 and records a deploy that did nothing as a success
+# (docs/MISTAKES.md 2.21), so refuse an absent or empty group first.
+- name: "Pre-flight: n8n_svc is real"
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: n8n_svc
+    # Paired so one `-e preflight_group=` cannot redirect the guard (MISTAKES 2.21).
+    preflight_group_expected: n8n_svc
+
 # ── Phase 1: Place repo + secrets + env ─────────────────────────────────────
 - name: "Phase 1: Place repo + manage n8n secrets"
   hosts: n8n_svc
@@ -49,11 +63,35 @@
   hosts: n8n_svc
   gather_facts: false
   become: false
+  # THE declaration of the stateful keys, their live-name aliases (the
+  # standalone prod layout spells the encryption key ENCRYPTION_KEY — design
+  # D6), and their OpenBao fields. Shared with seed-n8n-secrets.yml so the
+  # pre-seed and the guard can never disagree on a spelling.
+  vars_files:
+    - vars/n8n-stateful-keys.yml
   vars:
     _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
     _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
+    # The legacy path's env file. Present only on a host that ran the old
+    # secret-generating deploy.sh — i.e. exactly the in-place prod migration.
+    _live_env: "{{ live_n8n_env | default(_deploy_dir + '/config/n8n.env') }}"
+    _stateful_keys: "{{ n8n_stateful_keys }}"
 
   tasks:
+    # ── Cutover guard (design D4) ────────────────────────────────────────────
+    # Shared fail-closed diff of the stateful values between the live legacy
+    # env and the rendered one, BEFORE any container is (re)started. Names
+    # only, never values; greenfield hosts (no legacy file) skip it entirely.
+    - name: "Guard the in-place cutover (stateful values must match)"
+      ansible.builtin.include_tasks: tasks/guard-stateful-cutover.yml
+      vars:
+        _gsc_live_env: "{{ _live_env }}"
+        _gsc_rendered_env: "{{ _deploy_dir }}/.env"
+        _gsc_keys: "{{ _stateful_keys }}"
+        _gsc_fix_hint: >-
+          Pre-seed the live values with Seed n8n Secrets, verify with
+          Check Secrets, then re-run.
+
     - name: "Run deploy.sh (container lifecycle)"
       ansible.builtin.shell: |
         cd "{{ _deploy_dir }}"
@@ -64,6 +102,7 @@
         N8N_LISTEN: "{{ n8n_bind | default('127.0.0.1') }}"
       register: _deploy
       changed_when: true
+      when: not ansible_check_mode
 
     - name: "Show deploy.sh output"
       ansible.builtin.debug:
@@ -92,6 +131,7 @@
       retries: 12
       delay: 5
       until: _n8n.status == 200
+      check_mode: false
 
     # Community n8n has no SSO: forward_auth gates ACCESS, then n8n needs its own
     # owner account or it serves /setup. Seed agent-cloud-admin as the owner so an
@@ -102,6 +142,7 @@
         url: "{{ _n8n_base }}/rest/settings"
         status_code: [200]
       register: _n8n_settings
+      check_mode: false
 
     - name: "Seed the n8n owner account (agent-cloud-admin)"
       when: _n8n_settings.json.data.userManagement.showSetupOnFirstLoad | default(false) | bool
@@ -114,6 +155,8 @@
             body: { role_id: "{{ _bao_role_id }}", secret_id: "{{ _bao_secret_id }}" }
           register: _bao_login
           no_log: true
+          changed_when: false
+          check_mode: false
 
         - name: "Read the n8n owner password from OpenBao"
           ansible.builtin.uri:
@@ -122,6 +165,7 @@
               X-Vault-Token: "{{ _bao_login.json.auth.client_token }}"
           register: _n8n_secret
           no_log: true
+          check_mode: false
 
         - name: "Create the n8n owner via the setup endpoint"
           ansible.builtin.uri:
@@ -135,6 +179,7 @@
               password: "{{ _n8n_secret.json.data.data.owner_password }}"
             status_code: [200]
           no_log: true
+          when: not ansible_check_mode
 
         - name: "Owner seeded"
           ansible.builtin.debug:

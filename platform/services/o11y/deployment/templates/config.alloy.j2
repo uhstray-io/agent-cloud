@@ -1,0 +1,261 @@
+// Grafana Alloy config (River) — committed config-as-code. Plan: O11Y-DEPLOYMENT.md.
+//
+// Phase 0/1: discover local containers over the mounted engine socket and ship
+// their stdout/stderr to Loki. The socket is mounted at /var/run/docker.sock by
+// compose.local.yml (the podman API is docker-API-compatible).
+//
+// Gateway traces and access logs arrive over OTLP/gRPC. Tempo receives spans;
+// Loki receives labeled access records alongside the local container logs.
+
+discovery.docker "containers" {
+  host = "unix:///var/run/docker.sock"
+}
+
+// Relabel: expose the container name as a `container` label on every line.
+discovery.relabel "containers" {
+  targets = discovery.docker.containers.targets
+
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/?(.*)"
+    target_label  = "container"
+  }
+
+  // Keep the historical container label for existing dashboards while adding
+  // the canonical service identity used by metrics and future traces.
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/?(.*)"
+    target_label  = "service"
+  }
+
+  // Compose project and service together distinguish reused names such as
+  // redis across stacks. Retain the container fallback for unmanaged targets.
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_project", "__meta_docker_container_label_com_docker_compose_service"]
+    separator     = "/"
+    regex         = "(.+/.+)"
+    target_label  = "service"
+  }
+}
+
+loki.source.docker "default" {
+  host       = "unix:///var/run/docker.sock"
+  targets    = discovery.relabel.containers.output
+  forward_to = [loki.write.default.receiver]
+}
+
+loki.write "default" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+  external_labels = {
+    cluster = {{ o11y_cluster | default('agent-cloud-local') | to_json }},
+    environment = {{ o11y_environment | default('local' if local_mode | default(false) | bool else 'prod') | to_json }},
+  }
+}
+
+// Reuse Alloy's socket discovery for opted-in metrics. Prometheus has no socket.
+discovery.relabel "metrics" {
+  targets = discovery.docker.containers.targets
+
+  rule {
+    source_labels = ["__meta_docker_container_label_prometheus_io_scrape"]
+    action        = "keep"
+    regex         = "true"
+  }
+
+  rule {
+    source_labels = ["__meta_docker_container_label_prometheus_io_port"]
+    action        = "keep"
+    regex         = "[0-9]+"
+  }
+
+  rule {
+    source_labels = ["__meta_docker_container_label_prometheus_io_high_churn"]
+    action        = "drop"
+    regex         = "true"
+  }
+
+  rule {
+    source_labels = ["__meta_docker_container_name", "__meta_docker_container_label_prometheus_io_port"]
+    regex         = "/?(.+);([0-9]+)"
+    replacement   = "$1:$2"
+    target_label  = "__address__"
+  }
+
+  rule {
+    source_labels = ["__meta_docker_container_label_prometheus_io_path"]
+    regex         = "(.+)"
+    target_label  = "__metrics_path__"
+  }
+
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/?(.*)"
+    target_label  = "service"
+  }
+
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_project", "__meta_docker_container_label_com_docker_compose_service"]
+    separator     = "/"
+    regex         = "(.+/.+)"
+    target_label  = "service"
+  }
+
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+    target_label  = "component"
+  }
+}
+
+prometheus.scrape "local_containers" {
+  targets         = discovery.relabel.metrics.output
+  scrape_interval = "15s"
+  sample_limit    = encoding.from_json(sys.env("O11Y_SCRAPE_SAMPLE_LIMIT"))
+  forward_to      = [prometheus.relabel.bounded_labels.receiver]
+}
+
+prometheus.relabel "bounded_labels" {
+  forward_to = [prometheus.remote_write.local.receiver]
+
+  // These request-specific dimensions are investigation detail, not indexed
+  // series labels. Keep bounded service and component labels intact.
+  rule {
+    action = "labeldrop"
+    regex  = {{ _o11y_forbidden_metric_label_names_regex | to_json }}
+  }
+}
+
+prometheus.remote_write "local" {
+  endpoint {
+    url = "http://prometheus:9090/api/v1/write"
+  }
+}
+
+otelcol.receiver.otlp "traces" {
+  grpc {
+    endpoint = "0.0.0.0:4317"
+  }
+  output {
+    logs   = [otelcol.processor.attributes.gateway_logs.input]
+{% if o11y_gateway_span_logs_enabled | default(false) | bool %}
+    traces = [otelcol.processor.batch.traces.input, otelcol.connector.spanlogs.gateway.input]
+{% else %}
+    traces = [otelcol.processor.batch.traces.input]
+{% endif %}
+  }
+}
+
+{% if o11y_gateway_span_logs_enabled | default(false) | bool %}
+// Inventory-gated (o11y_gateway_span_logs_enabled, default off): one structured
+// Loki line per received span, so span timing is searchable beside the access
+// records while Tempo remains the trace store. Only span name, status, duration
+// and trace id are written; no span attributes are copied into the line.
+otelcol.connector.spanlogs "gateway" {
+  spans = true
+  output {
+    logs = [otelcol.processor.attributes.gateway_span_logs.input]
+  }
+}
+
+otelcol.processor.attributes "gateway_span_logs" {
+  action {
+    key    = "service"
+    action = "upsert"
+    value  = "agentgateway"
+  }
+  action {
+    key    = "signal"
+    action = "upsert"
+    value  = "span"
+  }
+  action {
+    key    = "loki.attribute.labels"
+    action = "upsert"
+    value  = "service,signal"
+  }
+  output {
+    logs = [otelcol.exporter.loki.gateway.input]
+  }
+}
+
+{% endif %}
+otelcol.processor.attributes "gateway_logs" {
+  action {
+    key    = "loki.attribute.labels"
+    action = "insert"
+    value  = "service,signal"
+  }
+  output {
+    logs = [otelcol.exporter.loki.gateway.input]
+  }
+}
+
+otelcol.exporter.loki "gateway" {
+  forward_to = [loki.write.default.receiver]
+}
+
+// Controller conformance uses OTLP/HTTP on a separate receiver from gateway gRPC.
+// Conformance-specific labels are fixed to the bounded dimensions validated by the collector.
+// The shared loki.write adds the external cluster and environment labels.
+otelcol.receiver.otlp "conformance" {
+  http {
+    endpoint = "0.0.0.0:4318"
+  }
+  output {
+    logs = [otelcol.processor.attributes.conformance_logs.input]
+  }
+}
+
+otelcol.processor.attributes "conformance_logs" {
+  action {
+    key    = "loki.attribute.labels"
+    action = "upsert"
+    value  = "job,service,step,status"
+  }
+  output {
+    logs = [otelcol.exporter.loki.conformance.input]
+  }
+}
+
+otelcol.exporter.loki "conformance" {
+  forward_to = [loki.write.default.receiver]
+}
+
+otelcol.processor.batch "traces" {
+  output {
+    traces = [otelcol.exporter.otlp.tempo.input]
+  }
+}
+
+otelcol.exporter.otlp "tempo" {
+  client {
+    endpoint = "tempo:4317"
+    tls {
+      insecure = true
+    }
+  }
+}
+
+{% if o11y_alloy_profile_pilot_enabled | default(false) | bool %}
+// The sole profile pilot is Alloy's own documented pprof endpoint. Keep it
+// disabled until the pinned collector, privacy, and resource gates are proven.
+pyroscope.write "private" {
+  endpoint {
+    url = "http://pyroscope:4040"
+  }
+  external_labels = {
+    cluster = {{ o11y_cluster | default('agent-cloud-local') | to_json }},
+    environment = {{ o11y_environment | default('local' if local_mode | default(false) | bool else 'prod') | to_json }},
+  }
+}
+
+pyroscope.scrape "alloy_self_profile" {
+  targets = [
+    { "__address__" = "alloy:12345", "service_name" = "o11y/alloy" },
+  ]
+  scrape_interval = "60s"
+  forward_to = [pyroscope.write.private.receiver]
+}
+{% endif %}

@@ -1,0 +1,127 @@
+{
+  "_comment": "Shape differences reported by production conformance run Semaphore task 2698 (commit 79a8eb76, after the /v1/responses passthrough deploy task 2696), per case: key paths only, as conformance.sh shape_diff printed them (type_changed reduced to its paths). No values. test_agw_conformance.py requires the committed allowlist to equal the union of this record and conformance-shape-t2614.json.",
+  "cases": {
+    "chat-template-kwargs": {
+      "only_gateway": [],
+      "only_direct": [
+        "service_tier",
+        "usage.prompt_tokens_details"
+      ],
+      "type_changed": []
+    },
+    "chat-thinking-off": {
+      "only_gateway": [],
+      "only_direct": [
+        "service_tier",
+        "usage.prompt_tokens_details"
+      ],
+      "type_changed": []
+    },
+    "effort-high": {
+      "only_gateway": [],
+      "only_direct": [
+        "service_tier",
+        "usage.prompt_tokens_details"
+      ],
+      "type_changed": []
+    },
+    "effort-low": {
+      "only_gateway": [],
+      "only_direct": [
+        "service_tier",
+        "usage.prompt_tokens_details"
+      ],
+      "type_changed": []
+    },
+    "effort-max": {
+      "only_gateway": [],
+      "only_direct": [
+        "service_tier",
+        "usage.prompt_tokens_details"
+      ],
+      "type_changed": []
+    },
+    "effort-medium": {
+      "only_gateway": [],
+      "only_direct": [
+        "service_tier",
+        "usage.prompt_tokens_details"
+      ],
+      "type_changed": []
+    },
+    "effort-minimal": {
+      "only_gateway": [],
+      "only_direct": [
+        "service_tier",
+        "usage.prompt_tokens_details"
+      ],
+      "type_changed": []
+    },
+    "effort-none": {
+      "only_gateway": [],
+      "only_direct": [
+        "service_tier",
+        "usage.prompt_tokens_details"
+      ],
+      "type_changed": []
+    },
+    "effort-xhigh": {
+      "only_gateway": [],
+      "only_direct": [
+        "service_tier",
+        "usage.prompt_tokens_details"
+      ],
+      "type_changed": []
+    },
+    "models": {
+      "only_gateway": [],
+      "only_direct": [
+        "data.[].max_model_len",
+        "data.[].parent",
+        "data.[].permission.[].allow_create_engine",
+        "data.[].permission.[].allow_fine_tuning",
+        "data.[].permission.[].allow_logprobs",
+        "data.[].permission.[].allow_sampling",
+        "data.[].permission.[].allow_search_indices",
+        "data.[].permission.[].allow_view",
+        "data.[].permission.[].group",
+        "data.[].permission.[].is_blocking",
+        "data.[].permission.[].object",
+        "data.[].permission.[].organization",
+        "data.[].root"
+      ],
+      "type_changed": []
+    },
+    "responses": {
+      "only_gateway": [],
+      "only_direct": [
+        "output.[].encrypted_content",
+        "output.[].phase"
+      ],
+      "type_changed": [
+        "output.[].status"
+      ]
+    },
+    "stream-xhigh": {
+      "only_gateway": [
+        "choices",
+        "choices.[].delta",
+        "usage.completion_tokens",
+        "usage.completion_tokens_details.reasoning_tokens",
+        "usage.prompt_tokens",
+        "usage.total_tokens"
+      ],
+      "only_direct": [],
+      "type_changed": []
+    },
+    "tool-call": {
+      "only_gateway": [],
+      "only_direct": [
+        "choices.[].message.content",
+        "service_tier",
+        "usage.prompt_tokens_details"
+      ],
+      "type_changed": []
+    }
+  }
+}

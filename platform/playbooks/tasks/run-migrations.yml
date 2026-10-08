@@ -35,7 +35,9 @@
     cmd: goose -dir {{ _migrations_dir }} postgres "{{ _migration_dsn }}" up
   register: _goose_host
   changed_when: "'OK' in _goose_host.stdout or 'applied' in (_goose_host.stdout | lower)"
-  when: (_migration_engine | default('container')) == 'host'
+  when:
+    - not ansible_check_mode
+    - (_migration_engine | default('container')) == 'host'
   no_log: true
 
 - name: "Run goose migrations inside container"
@@ -48,7 +50,9 @@
     executable: /bin/bash   # `set -o pipefail` needs bash (Ubuntu /bin/sh is dash)
   register: _goose_container
   changed_when: "'OK' in _goose_container.stdout or 'applied' in (_goose_container.stdout | lower)"
-  when: (_migration_engine | default('container')) == 'container'
+  when:
+    - not ansible_check_mode
+    - (_migration_engine | default('container')) == 'container'
   no_log: true
 
 - name: "Migration report"

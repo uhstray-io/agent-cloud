@@ -6,6 +6,68 @@
 > Part of the dependency-ordered `plan/architecture/` set (00–07). Source docs
 > merged verbatim below under provenance dividers to preserve all detail.
 
+> **As-built correction, 2026-09-22:** The "deployed" statements below are
+> historical design context, not a current deployment claim. On this branch,
+> `platform/services/o11y/deployment/compose.yml` defines the four containers;
+> `config/prometheus.yml` scrapes only itself; `config/config.alloy` ships
+> container logs and has no OTLP receiver. The generic Service Overview JSON
+> includes a `service` selector; alert rules remain absent. A read-only local check on
+> 2026-09-22 found all four containers healthy and their health/ready endpoints
+> returning HTTP 200. Grafana's chain-verified TLS route completed an Authentik
+> OIDC login and returned to the provisioned overview dashboard. The dashboard
+> showed local container logs and only the Prometheus self-target. Local
+> Semaphore candidate task 1065 later verified commit
+> `653758c6a89cec76b0b8e703b3ca7f3b68e759a6` before deploying o11y;
+> its Grafana, Prometheus, and Loki checks passed, and the signed-in dashboard
+> loaded after a browser reload. The merged DGX scrape declarations
+> are production groundwork, not evidence that a production receiver exists
+> or receives telemetry.
+
+> **Collection design amendment, 2026-09-23:** Preserve the two-label opt-in
+> contract below, but use the existing Alloy Podman discovery for local metrics.
+> Alloy joins the service network, scrapes the declared port, and forwards
+> samples to Prometheus's remote-write receiver on the private o11y network.
+> Prometheus does not mount the engine socket. The historical `docker_sd_configs`
+> snippets below record the original design and are superseded for local
+> collection. Remote VM targets still come from inventory-rendered Prometheus
+> scrape fragments. This amendment is proposed on the observability feature
+> branch; live pilot evidence and PR review remain required. Collector-only
+> scrape listeners remain private to their service network; human queries go
+> through Grafana behind Caddy and Authentik.
+
+> **Local collection gate, 2026-09-23:** The feature branch now has the Alloy
+> opt-in metrics pilot. Exact-head Semaphore task 1127 found a fresh Caddy log
+> in Loki and one healthy `caddy:2021` scrape in Prometheus. Task 1118 had
+> already shown an opted-in but unreachable endpoint with `up=0` and a named
+> refusal from the shared onboarding verifier. Grafana read-back at the same
+> deployed revision found a Service Overview with Loki and Prometheus panels,
+> plus two provisioned alert rules kept paused until an OpenBao-backed contact
+> point and notification drill are complete. These are local receipts only.
+
+> **Alert rollout guard, 2026-09-23:** `o11y_alerts_enabled` defaults off.
+> Enabling it requires a pre-existing
+> `secret/services/o11y:alert_discord_webhook_url`, validates a Discord HTTPS
+> webhook, and renders only the environment reference into Grafana's contact
+> point file. Rules route directly to that contact point when enabled, so the
+> shared notification policy tree is not replaced. A local Semaphore deploy
+> with the switch off verified two paused rules and zero o11y contact points;
+> no notification delivery has been claimed.
+
+> **Production receiver correction, 2026-10-04:** The 2026-09-22 note above that
+> no production receiver exists is no longer current. A dedicated production o11y
+> VM was provisioned by Semaphore task 1353 and first deployed by task 1359
+> (2026-09-26; `plan/development/05-observability.md`, "Production receiver
+> receipt, 2026-09-26"). DGX Spark node targets were confirmed up by tasks
+> 1634-1636, and alert delivery to Discord by tasks 1395 and 1701. The most
+> recent deploy, Dev-bound `Deploy o11y (Dev)` task 2671 at `bd76f29c`
+> (2026-10-04), succeeded with the DGX scrape and the agentgateway scrape
+> rendered, Grafana, Prometheus, Loki, Tempo and Pyroscope ready, the `o11y_`
+> alert rules active and routed, and the Discord contact point active. Its
+> readback does not cover the `inference_` rules or the three `inference-*`
+> dashboards. Task 2115 earlier read the receiver's guest root filesystem as
+> full; this note does not record whether it has been grown since. The
+> receiver decision is recorded below as a Proposed section.
+
 
 <!-- ======================= source: OBSERVABILITY-INSTRUMENTATION.md ======================= -->
 
@@ -132,11 +194,22 @@ services:
 
 ## Tracing (Tempo) — the third pillar
 
-Traces answer "where did the latency/error happen across services?" — the question logs and metrics can't. Grafana **Tempo** is the backend; it "only requires object storage to operate" and runs as a single binary for our scale.
+Traces answer "where did the latency/error happen across services?" — the question logs and metrics can't. Grafana **Tempo** is the backend and runs as a single binary for our scale.
+
+> **2026-09-27 implementation decision:** The first receiver uses Tempo's
+> documented monolithic local backend on its own persistent volume, with
+> inventory-controlled seven-day retention and a private Alloy ingress. This
+> keeps the telemetry path self-hosted and avoids introducing MinIO's archived
+> upstream as a new production dependency. It does not provide replication or
+> restore for traces; capacity and disk health must be observed before widening
+> sampling. Move to a maintained object store when trace volume or durability
+> requirements exceed a single receiver. Prometheus, Loki, and Grafana volumes
+> are preserved during this addition. The S3 sketch below records the earlier
+> target design; it is not the deployed configuration.
 
 ### Deployment — monolithic Tempo, no Kafka
 
-Run `grafana/tempo` in **monolithic mode** (`-target=all`) — all components (distributor/ingester/querier/compactor/metrics-generator) in one process, **no Kafka** (Kafka is only required for *microservices* mode as of Tempo v3.0). Storage is the local filesystem locally, MinIO/S3 in prod — a single config param, no fork (matches the compose-overlay convention).
+Run `grafana/tempo` in **monolithic mode** (`-target=all`) — all required components in one process, with no Kafka. The first receiver uses local storage in both environments as recorded above. An object-store migration will be a separate reviewed change with a tested data path.
 
 ```yaml
 # platform/services/tempo/deployment/compose.yml (sketch) — local tier
@@ -374,9 +447,54 @@ Querying Prometheus (metrics) and Loki (logs) via their datasource UIDs (`promet
 
 ---
 
+## Production telemetry receiver: dedicated o11y VM and static node scrape (PROPOSED 2026-10-04)
+
+Status: **Proposed.** Becomes Accepted when the operator confirms this text; until then it
+binds nothing. Author: Joseph A. Wisneski IV <stray@uhstray.io>.
+
+**Decision.**
+
+- **A dedicated small VM holds the production telemetry store.** Prometheus, Loki,
+  Grafana and Alloy (with Tempo and Pyroscope added later) run as one rootless-Podman
+  compose stack on their own Auxiliary-tier VM (`o11y_svc`), not on a host that serves
+  requests or runs the control plane. The store has to survive a GPU-host failure and
+  stay apart from load generation; Caddy is the front door and Semaphore the control
+  plane, so a disk-filling Loki or a stress test on either would be a platform outage.
+- **The DGX Spark nodes are static Prometheus scrape targets.** The nodes are remote
+  hosts running systemd units, not containers on the receiver's engine socket, so the
+  contract's zero-touch socket discovery does not apply to them. One `dgx-spark` scrape
+  file is rendered from private inventory (no node addresses in this repo) and included
+  through `scrape_config_files`; it renders only when `dgx_spark_scrape_enabled` is set
+  after a reviewed reachability probe. The nodes push their journal to Loki.
+
+**Alternatives rejected.**
+
+1. *Run Alloy on the nodes as a remote-write agent, so Prometheus sees one target.*
+   Rejected: the companion dgx-spark design chose pull for the lowest node overhead, and
+   the ecosystem document allows either.
+2. *Co-locate the store with Caddy or Semaphore.* Rejected: either host failing or
+   filling its disk would take down the front door or the control plane.
+3. *Co-locate the store with the inference gateway host.* Rejected: the gateway is in
+   the request path and the telemetry store must not be.
+
+**Consequences.** A dead receiver cannot alert on itself, so an external liveness check
+from the Semaphore host is required (`check-o11y-liveness.yml`); until its first scheduled
+run is recorded, a receiver failure has no timely alert. Each node exporter and the Loki
+push need source-scoped firewall rules on both ends, declared in site-config. Retention
+starts at Prometheus 15d and Loki 7d and changes only on measured ingestion. The
+guest root filesystem the stack shares has been read as full
+(task 2115), which blocks the retention review.
+
+Deliberation, receipts and the phased plan: OpenSpec change
+`plan/development/openspec/changes/inference-telemetry-production` (design.md decisions
+1, 2 and 7).
+
+---
+
 ## Revision History
 
 | Date | Summary |
 |------|---------|
 | 2026-06-14 | Initial draft — instrumentation contract, socket-SD metrics auto-discovery, Grafana MCP triage workflow, phased rollout. |
 | 2026-06-14 | Added the tracing pillar — Tempo (monolithic, local→MinIO), OTLP via the existing Alloy, metrics-generator RED/service-graph, trace↔logs↔metrics correlation by `service.name`; Phase 4 (tracing) + Phase 5 (prod). |
+| 2026-10-04 | Production receiver correction callout (dated, appended); Proposed record for the dedicated o11y VM and static DGX Spark node scrape. |

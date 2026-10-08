@@ -1,0 +1,66 @@
+---
+# assert-bao-addr-declared.yml — refuse, before the AppRole login, an OpenBao address that is
+# not the one the run's inventory declares under top-level all.vars.
+#
+# What it catches: DRIFT. A plain address set where it should not be (an isolated environment
+# edited after binding, a stray -e) makes the login address differ from the inventory's
+# declaration, and the run stops before the AppRole login. The binding-time rule refuses an
+# environment carrying one, but the environment stays editable; this is the run-time net.
+#
+# How. The declaration is read from the inventory FILE the run was given:
+# ansible_inventory_sources is a magic variable an extra var cannot replace (checked on
+# ansible-core 2.16.18, 2.20.8, 2.21.0), and Semaphore v2.17.31 passes a static-yaml inventory
+# as -i <project tmp>/inventory_<id>.yml. It is read INLINE in each expression, never through
+# a named intermediate, so a supplied variable of the same name cannot stand in for it.
+#
+# What it does NOT stop: a deliberate override. An extra var may be a template, and a
+# template is re-rendered in every task, so a value can resolve to the declared address inside
+# this task and to another address in the login task (reproduced 2026-09-25 on 2.16.18 and
+# 2.20.8); the same holds for the predefined-URL checks below. And Semaphore v2.17.31 merges
+# EVERY key of a task's `environment` JSON into the extra vars, with no survey filter
+# (services/tasks/TaskRunner.go populateTaskEnvironment; db/Task.go ValidateNewTask checks
+# only branch and params). So whoever may launch a template controls its extra vars, and with
+# them any OpenBao login in any playbook. That boundary is Semaphore's launch and edit
+# permissions (plan 01-secrets-credentials, "Open gap: launch permission is extra-var control"), not a
+# run-time check.
+#
+# The caller's login URL must be `_bao_url` (both seed playbooks).
+
+- name: "Refuse an OpenBao address that is not the inventory's"
+  vars:
+    # For the message only; the assertion below reads the file inline.
+    _ba_seen: >-
+      {{ query('ansible.builtin.file', *(ansible_inventory_sources | select('file') | list))
+         | map('from_yaml') | select('mapping') | map(attribute='all', default={}) | select('mapping')
+         | map(attribute='vars', default={}) | select('mapping')
+         | map(attribute='openbao_addr', default='') | select | unique | list }}
+  ansible.builtin.assert:
+    that:
+      # Exactly one literal declaration across the inventory sources.
+      - >-
+        (query('ansible.builtin.file', *(ansible_inventory_sources | select('file') | list))
+         | map('from_yaml') | select('mapping') | map(attribute='all', default={}) | select('mapping')
+         | map(attribute='vars', default={}) | select('mapping')
+         | map(attribute='openbao_addr', default='') | select | unique
+         | reject('search', '[{][{]') | list | length) == 1
+      # The login address is that declaration.
+      - >-
+        _bao_url == (query('ansible.builtin.file', *(ansible_inventory_sources | select('file') | list))
+         | map('from_yaml') | select('mapping') | map(attribute='all', default={}) | select('mapping')
+         | map(attribute='vars', default={}) | select('mapping')
+         | map(attribute='openbao_addr', default='') | select | unique | first)
+      # Set by the seed playbook at each include, so defined here only if supplied as a plain
+      # extra var (drift); a template can evade this, see the header.
+      - _bm_url is not defined
+      - _sa_url is not defined
+    fail_msg: >-
+      {{ 'The inventory this run was given declares no single all.vars.openbao_addr, so the
+      address cannot be verified; declare it there.' if _ba_seen | length != 1
+      else ('The inventory declares a templated all.vars.openbao_addr; declare a literal address
+      so the run can compare it.' if '{{' in (_ba_seen | first)
+      else ('A downstream OpenBao URL variable was supplied before its task set it (an extra
+      var); refusing.' if (_bm_url is defined or _sa_url is defined)
+      else 'This run would log in to ' ~ _bao_url ~ ', but its inventory declares '
+      ~ (_ba_seen | first) ~ '. An extra var overrode it (the seed environment or a -e); remove
+      it (Provision Seed Environment removes an environment pin).')) }}
+    quiet: true

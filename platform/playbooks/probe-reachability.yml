@@ -1,0 +1,161 @@
+---
+# probe-reachability.yml — check, FROM a LAN host that is not the controller, which ports of a
+# target answer, against what is declared (production-internal-ca task 3.4; any host-firewall
+# gate of the same shape).
+#
+#   -e probe_from=<group of the probing host> -e probe_to=<target inventory host>
+#   -e 'probe_ports_json=[{"port": 9000, "expect": "closed"}, {"port": 22, "expect": "closed"}]'
+#
+# Each port gets a TCP connect from the probing host to every address the target's inventory
+# address (ansible_host) resolves to, IPv4 or IPv6, each bounded by probe_timeout (default
+# 5 s). `open` means some address accepted the connection; `closed` means every address
+# refused it or timed out, which is what a default-deny firewall (ufw drops: a timeout) or a
+# loopback-only bind (a refusal) looks like from the LAN. Anything else is a PROBE ERROR, never
+# `closed`: a name that does not resolve, an unreachable host or network, a refused socket
+# permission. Counting those as closed would pass an `expect: closed` gate against a typo or a
+# host that is not on the network at all. The run fails naming every port that errored or
+# differs from its declaration. Read-only: it sends a TCP handshake and nothing else, and runs
+# the same under --check.
+
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: "Refuse an incomplete probe"
+  hosts: localhost
+  gather_facts: false
+  become: false
+  tasks:
+    - name: "Require a populated probing group, a declared target and declared ports"
+      ansible.builtin.assert:
+        that:
+          - (groups.get(probe_from | default(''), []) | length) > 0
+          - (probe_to | default('')) in hostvars
+          - (probe_to | default('')) not in groups.get(probe_from | default(''), [])
+          - _ports is sequence and _ports is not string and _ports is not mapping
+          - _ports | length > 0
+          - _ports | rejectattr('expect', 'in', ['open', 'closed']) | list | length == 0
+          # A port is a decimal 1-65535: the string form rejects true, 22.0 and "0022" alike.
+          - _ports | map(attribute='port', default='') | map('string')
+            | reject('match', '^[1-9][0-9]{0,4}$') | list | length == 0
+          - _ports | map(attribute='port', default='') | map('string')
+            | select('match', '^[1-9][0-9]{0,4}$') | map('int') | select('gt', 65535) | list | length == 0
+          - (probe_timeout | default(5) | string) is match('^[0-9]*[.]?[0-9]+$')
+          - (probe_timeout | default(5) | float) > 0
+        fail_msg: >-
+          Pass -e probe_from=<group of the probing host>, -e probe_to=<a different inventory host>
+          and probe_ports_json, a list of {port: 1-65535, expect: open|closed}; probe_timeout, if
+          given, is a positive number of seconds.
+        quiet: true
+      vars:
+        _ports: "{{ probe_ports_json | default('[]') | from_json }}"
+
+- name: "Probe the target's ports from this host"
+  hosts: "{{ probe_from }}"
+  gather_facts: false
+  become: false
+  vars:
+    # An extra var overrides this; the play above refuses a run without one.
+    probe_from: "ungrouped"
+    _ports: "{{ probe_ports_json | from_json }}"
+    _target: "{{ hostvars[probe_to].ansible_host | default(probe_to) }}"
+  tasks:
+    # One probe per port, its verdict read from the exit code: 0 an address accepted, 1 every
+    # address refused or timed out, 2 the probe could not decide (stderr says why). A
+    # registered `wait_for` cannot tell these apart: `failed_when: false` resets the very flag
+    # that would, and it cannot separate "closed" from "did not resolve".
+    - name: "Connect to each declared port"
+      ansible.builtin.command:
+        argv:
+          - python3
+          - -c
+          - "{{ _probe_script }}"
+          - "{{ _target }}"
+          - "{{ item.port }}"
+          - "{{ probe_timeout | default(5) }}"
+      vars:
+        # Exit 1 is ALSO what Python returns for an uncaught exception, so `closed` is
+        # believed only with its stdout marker, and everything else is caught into exit 2.
+        _probe_script: |
+          import socket, sys
+          def probe(host, port, timeout):
+              try:
+                  port, timeout = int(port), float(timeout)
+              except ValueError as e:
+                  return 2, str(e)
+              if not (1 <= port <= 65535 and timeout > 0):
+                  return 2, "port %r or timeout %r out of range" % (port, timeout)
+              try:
+                  addrs = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+              except (OSError, UnicodeError) as e:
+                  return 2, "cannot resolve %r: %s" % (host, e)
+              errors = []
+              for family, kind, proto, _, addr in addrs:
+                  try:
+                      with socket.socket(family, kind, proto) as s:
+                          s.settimeout(timeout)
+                          s.connect(addr)
+                      return 0, "open"
+                  except (ConnectionRefusedError, socket.timeout, TimeoutError):
+                      pass
+                  except OSError as e:
+                      errors.append("%s: %s" % (addr[0], e))
+              return (2, "; ".join(errors)) if errors else (1, "closed")
+          try:
+              rc, out = probe(*sys.argv[1:4])
+          except Exception as e:
+              rc, out = 2, "%s: %s" % (type(e).__name__, e)
+          (sys.stdout if rc < 2 else sys.stderr).write(out if rc < 2 else "probe error: " + out)
+          sys.exit(rc)
+      loop: "{{ _ports }}"
+      loop_control:
+        label: "{{ probe_to }}:{{ item.port }} (expect {{ item.expect }})"
+      register: _probe
+      failed_when: false
+      changed_when: false
+      check_mode: false
+
+    - name: "Name what each port did"
+      ansible.builtin.set_fact:
+        _probe_results: >-
+          {{ _probe_results | default([]) + [{'port': item.port, 'expect': item.expect, 'got': _got,
+             'ok': _got == item.expect, 'error': _error}] }}
+      vars:
+        _r: "{{ _probe.results[idx] }}"
+        # Only the script's own verdicts count; any other rc or output (python3 missing, a
+        # traceback) is an error.
+        _rc: "{{ _r.rc | default(-1) | int }}"
+        _out: "{{ _r.stdout | default('') | trim }}"
+        _got: >-
+          {{ 'open' if (_rc | int == 0 and _out == 'open') else
+             'closed' if (_rc | int == 1 and _out == 'closed') else 'error' }}
+        _error: >-
+          {{ (_r.stderr | default('') | trim) or (_r.msg | default('') | trim) or ('rc %s' | format(_r.rc | default('none'))) }}
+      loop: "{{ _ports }}"
+      loop_control:
+        index_var: idx
+        label: "{{ item.port }}"
+
+    - name: "Report the probe"
+      ansible.builtin.debug:
+        msg: >-
+          {{ inventory_hostname }} -> {{ probe_to }}:
+          {% for r in _probe_results %}{{ r.port }} {{ r.got }} (expected {{ r.expect }}){{ '; ' if not loop.last }}{% endfor %}
+
+    - name: "Refuse a probe that could not decide"
+      ansible.builtin.assert:
+        that: _probe_results | selectattr('got', 'eq', 'error') | list | length == 0
+        fail_msg: >-
+          From {{ inventory_hostname }} to {{ probe_to }}, these ports could not be probed (an
+          error is neither open nor closed):
+          {% for r in _probe_results | selectattr('got', 'eq', 'error') %}{{ r.port }}: {{ r.error }}{{ '; ' if not loop.last }}{% endfor %}.
+        quiet: true
+
+    - name: "Refuse a port that does not match its declaration"
+      ansible.builtin.assert:
+        that: _probe_results | rejectattr('ok') | list | length == 0
+        fail_msg: >-
+          From {{ inventory_hostname }} to {{ probe_to }}, these ports did not match:
+          {% for r in _probe_results | rejectattr('ok') %}{{ r.port }} was {{ r.got }}, expected {{ r.expect }}{{ '; ' if not loop.last }}{% endfor %}.
+        quiet: true

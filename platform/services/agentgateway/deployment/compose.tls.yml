@@ -1,0 +1,19 @@
+# Listener TLS overlay — appended through COMPOSE_OVERLAYS by deploy-agentgateway.yml when
+# agw_listener_tls is on outside local-dev (production-internal-ca task 5.2, gateway task 6.1).
+#
+# ./certs holds the step-ca-issued server leaf (certs/<agw_server_leaf>/current/, swapped by
+# renewal, so it is mounted as a DIRECTORY: a single-file mount pins the inode a renewal
+# replaces) and the trust bundle the gateway uses as `tls.root`.
+#
+# userns keep-id: the image runs as uid 65532, and under rootless podman that uid cannot read the
+# deploy account's 0600 key. keep-id maps the deploy account to 65532 inside the container, so
+# the process stays non-root and owns the files it reads. Measured 2026-10-02 with podman-compose
+# 1.0.6 (rootless): without it the gateway exits "Permission denied (os error 13)"; with it it
+# serves mutual TLS. Needs podman 4.3 or later (the deploy checks). Local-dev runs rootful and
+# uses compose.local.yml's `user:` instead.
+
+services:
+  agentgateway:
+    userns_mode: "keep-id:uid=65532,gid=65532"
+    volumes:
+      - ./certs:/certs:ro

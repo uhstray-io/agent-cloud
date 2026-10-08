@@ -1,0 +1,294 @@
+"""The service deployment workflow's NetBox calls keep their tokens out of task output.
+
+PR 195 Codex review: the collector copied whole registered uri results (which can carry the
+request headers) into a visible fact, and validate-address's token-bearing lookup could print
+its headers on failure. Also covers two local-dev defects from the same review.
+"""
+
+import json
+import os
+import shutil
+import subprocess
+from pathlib import Path
+
+import playbook_yaml
+import pytest
+import yaml
+
+REPO = Path(__file__).resolve().parents[2]
+PLAYBOOKS = REPO / "platform/playbooks"
+
+
+def _tasks(path: Path) -> list[dict]:
+    out = []
+
+    def walk(tasks):
+        for t in tasks or []:
+            if isinstance(t, dict):
+                out.append(t)
+                for k in ("block", "rescue", "always"):
+                    walk(t.get(k))
+
+    doc = yaml.safe_load(path.read_text())
+    for play in doc if isinstance(doc, list) else []:
+        walk(play.get("tasks") if isinstance(play, dict) and "hosts" in play else [play])
+    return out
+
+
+def _named(path: Path, name: str) -> dict:
+    return next(t for t in _tasks(path) if t.get("name") == name)
+
+
+@pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="needs ansible-playbook")
+def test_the_collector_keeps_only_service_and_vm_id(tmp_path):
+    sort = _named(PLAYBOOKS / "collect-service-conformance.yml", "NetBox: sort the lookups")
+    results = [
+        {"item": "svc-a", "status": 200,
+         "json": {"count": 1, "results": [{"id": 7, "custom_fields": {"ac_workflow_status": {"fw-harden": "pass"}}}]},
+         "invocation": {"module_args": {"headers": {"Authorization": "Bearer nbt_secret.value"}}}},
+        {"item": "svc-b", "status": 200, "json": {"count": 0, "results": []}},
+        # a record whose status field was never written reads as {}, not null
+        {"item": "svc-d", "status": 200,
+         "json": {"count": 1, "results": [{"id": 4, "custom_fields": {"ac_workflow_status": None}}]}},
+        # same-named VMs in two clusters: never write the first (PR 195 Codex review)
+        {"item": "svc-c", "status": 200, "json": {"count": 2, "results": [{"id": 8}, {"id": 9}]}},
+    ]
+    harness = [{
+        "hosts": "localhost", "connection": "local", "gather_facts": False,
+        "vars": {"_vms": {"results": results}},
+        "tasks": [sort, {"ansible.builtin.debug": {"msg": "FOUND {{ _vm_found | to_json }}"}},
+                  {"ansible.builtin.debug": {"msg": "AMBIGUOUS {{ _vm_ambiguous | to_json }}"}}],
+    }]
+    path = tmp_path / "sort.yml"
+    path.write_text(yaml.safe_dump(harness))
+    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
+    env["ANSIBLE_NOCOLOR"] = "1"
+    out = subprocess.run(["ansible-playbook", "-i", "localhost,", str(path)], cwd=REPO, env=env,
+                         text=True, capture_output=True, check=True).stdout
+    line = next(ln for ln in out.splitlines() if "FOUND " in ln)
+    found = json.loads(json.loads(line.split('"msg": ', 1)[1]).split("FOUND ", 1)[1])
+    # the name, the id and the status NetBox already holds, which the write merges into
+    assert found == [{"item": "svc-a", "id": 7, "status": {"fw-harden": "pass"}},
+                     {"item": "svc-d", "id": 4, "status": {}}]
+    assert '"AMBIGUOUS [\\"svc-c\\"]"' in out, out[-600:]
+    assert "nbt_secret" not in out
+
+
+def test_validate_address_hides_its_token_bearing_requests():
+    path = PLAYBOOKS / "validate-address-free.yml"
+    for name in ("NetBox: find the service's VM record and the Proxmox clusters",
+                 "NetBox: create the VM record (planned, in the Proxmox cluster)"):
+        task = _named(path, name)
+        assert task.get("no_log") is True and task.get("failed_when") is False, name
+    assert _named(path, "Require both NetBox reads to answer").get("no_log") is not True
+
+
+def test_token_minting_uses_the_configured_engine():
+    play = playbook_yaml.plays(PLAYBOOKS / "provision-netbox-automation-token.yml")[0]
+    manage = play["vars"]["_manage"]
+    assert "container_engine" in manage and "netbox_app_container" in manage, manage
+
+
+def test_local_discovery_requires_the_subnet_its_scans_render():
+    names = [t.get("name") for t in yaml.safe_load((PLAYBOOKS / "tasks/assert-local-discovery-scope.yml").read_text())]
+    assert "Local discovery: extra targets need the subnet the scans cover" in names
+
+
+def _run_tasks(tmp_path, tasks, variables, probe):
+    harness = [{"hosts": "localhost", "connection": "local", "gather_facts": False, "vars": variables,
+                "tasks": [*tasks, {"ansible.builtin.debug": {"msg": "PROBE {{ " + probe + " | to_json }}"}}]}]
+    path = tmp_path / "h.yml"
+    path.write_text(yaml.safe_dump(harness))
+    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
+    env["ANSIBLE_NOCOLOR"] = "1"
+    out = subprocess.run(["ansible-playbook", "-i", "localhost,", str(path)], cwd=REPO, env=env,
+                         text=True, capture_output=True, check=True).stdout
+    line = next(ln for ln in out.splitlines() if "PROBE " in ln)
+    return json.loads(json.loads(line.split('"msg": ', 1)[1]).split("PROBE ", 1)[1]), out
+
+
+@pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="needs ansible-playbook")
+def test_the_aggregate_input_carries_no_request_headers(tmp_path):
+    # PR 195 Codex review: the aggregate command's stdin held whole registered uri results,
+    # the Semaphore token among their request headers, and a failed command prints its stdin.
+    task = _named(PLAYBOOKS / "collect-service-conformance.yml", "Aggregate: latest result per service and step")
+    outputs = {"results": [{"item": {"id": 5}, "content": "RUN: {}", "status": 200,
+                            "invocation": {"module_args": {"headers": {"Authorization": "Bearer sem-token"}}}}]}
+    probe = {"ansible.builtin.set_fact": {"_got": "{{ _fetched }}"}, "vars": task["vars"]}
+    got, out = _run_tasks(tmp_path, [probe], {"_outputs": outputs}, "_got")
+    assert got == [{"item": {"id": 5}, "content": "RUN: {}", "status": 200}]
+    assert "sem-token" not in out
+
+
+PVE_CLUSTER = {"id": 3, "name": "pve", "type": {"name": "Proxmox VE"}}
+
+
+@pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="needs ansible-playbook")
+@pytest.mark.parametrize("records,errors", [
+    ([], []),                                                    # none yet: created in the cluster
+    ([{"id": 7, "cluster": {"id": 3, "name": "pve"}}], []),      # ours, in discovery's cluster
+    ([{"id": 7, "cluster": {"id": 9, "name": "other"}}], ["the NetBox VM record svc is in cluster other"]),
+    ([{"id": 7, "cluster": {"id": 3}}, {"id": 8, "cluster": {"id": 9}}], ["2 NetBox VM records are named svc"]),
+])
+def test_validate_address_reaches_a_verdict(tmp_path, records, errors):
+    # PR 195 Codex reviews: _address_errors read _clusters inside the set_fact assigning it, and
+    # any same-named record, in any cluster or one of several, passed as the service's own.
+    path = PLAYBOOKS / "validate-address-free.yml"
+    tasks = [_named(path, "Decide"), _named(path, "Decide: judge the address and the record placement")]
+    variables = {"_arp_hits": [], "_own_vm": False, "_ip": "192.0.2.10", "_vmid": 1, "_name": "svc",
+                 "_nb": {"results": [{"json": {"count": len(records), "results": records}},
+                                     {"json": {"results": [PVE_CLUSTER]}}]}}
+    got, _ = _run_tasks(tmp_path, tasks, variables, "_address_errors")
+    assert [e for e in got if not any(e.startswith(w) for w in errors)] == [] and len(got) == len(errors), got
+
+
+@pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="needs ansible-playbook")
+@pytest.mark.parametrize("enabled,expect_error", [(True, False), (False, True)])
+def test_persistence_requires_the_podman_user_boot_unit(tmp_path, enabled, expect_error):
+    # PR 195 Codex review: linger without podman-restart.service passed, and the containers stay
+    # down after a reboot.
+    path = PLAYBOOKS / "verify-service-persistence.yml"
+    tasks = [_named(path, "Decide the result"), _named(path, "Decide the failures")]
+    variables = {"_policies": {"results": [{"item": "c1", "stdout": "always"}]},
+                 "_linger": {"stdout": "Linger=yes"}, "_boot_unit": {"stat": {"exists": enabled}},
+                 "_lsc": {"stdout_lines": ["c1"], "rc": 0, "stderr": ""},
+                 "_restart_ok": ["always", "unless-stopped"], "_deploy_dir": "/d"}
+    got, _ = _run_tasks(tmp_path, tasks, variables, "_persistence_errors")
+    assert any("podman-restart.service" in e for e in got) is expect_error, got
+
+
+@pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="needs ansible-playbook")
+def test_persistence_accepts_only_what_boots(tmp_path):
+    # podman-restart.service, rootful and rootless, starts only `restart: always` containers
+    # (test_restart_policy.bats). "no" is accepted only from a one-shot init container that has
+    # exited 0, never from a running one (PR review, Codex). Rootful podman once kept accepting
+    # unless-stopped (PR 195 grounding review).
+    path = PLAYBOOKS / "verify-service-persistence.yml"
+    play = playbook_yaml.plays(path)[1]  # [0] is the populated-group guard
+    tasks = [_named(path, "Decide the result"), _named(path, "Decide the failures")]
+    inspected = {"a": "always running 0 ", "b": "no exited 0 true", "c": "unless-stopped running 0 ",
+                 "d": "on-failure running 0 ", "e": "no running 0 true", "f": "no exited 1 true",
+                 "g": "no exited 0 "}  # g: exited 0 but never declared one-shot (PR 253 Codex review)
+    variables = {**play["vars"], "_engine": "podman", "podman_rootful": True, "_deploy_dir": "/d",
+                 "_policies": {"results": [{"item": k, "stdout": v} for k, v in inspected.items()]},
+                 "_linger": {"skipped": True}, "_boot_unit": {"skipped": True},
+                 "_lsc": {"stdout_lines": list(inspected), "rc": 0, "stderr": ""}}
+    got, _ = _run_tasks(tmp_path, tasks, variables, "[_persistence_errors, _restart_policies]")
+    errors, policies = got
+    assert errors == ["restart policy not always: c", "restart policy not always: d",
+                      *(f'restart policy "no" but not a declared one-shot container '
+                        f'(label agent-cloud.one-shot=true) that exited 0: {c}' for c in "efg")]
+    # the evidence keeps the policy alone
+    assert policies == {k: v.split()[0] for k, v in inspected.items()}
+
+
+@pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="needs ansible-playbook")
+def test_persistence_accepts_a_rootful_container_named_by_the_enabled_service_unit(tmp_path):
+    # PR 284: the Ubuntu 24.04 podman cannot change a legacy container's policy in place, so
+    # ensure-service-persistence.yml installs agent-cloud-boot-<service>.service; a container
+    # passes only when that unit is ENABLED and names it. The system podman-restart.service is
+    # still required for the containers on always.
+    import base64
+    path = PLAYBOOKS / "verify-service-persistence.yml"
+    play = playbook_yaml.plays(path)[1]  # [0] is the populated-group guard
+    tasks = [_named(path, "Decide the result"), _named(path, "Decide the failures")]
+    # worker: long-running on "no", which Ensure puts in the unit (PR 284 re-review).
+    inspected = {"app": "unless-stopped running 0 ", "db": " running 0 ", "run": "always running 0 ",
+                 "worker": "no running 0 "}
+    unit = ("[Service]\nType=oneshot\nExecStart=/usr/bin/podman start app worker\n"
+            "ExecStop=/usr/bin/podman stop app worker\n")
+
+    def run(enabled, system_unit="enabled"):
+        variables = {**play["vars"], "_engine": "podman", "podman_rootful": True, "_deploy_dir": "/d",
+                     "_policies": {"results": [{"item": k, "stdout": v} for k, v in inspected.items()]},
+                     "_service_unit_enabled": {"stdout": enabled},
+                     "_service_unit_file": {"content": base64.b64encode(unit.encode()).decode()},
+                     "_system_unit": {"stdout": system_unit},
+                     "_linger": {"skipped": True}, "_boot_unit": {"skipped": True},
+                     "_lsc": {"stdout_lines": list(inspected), "rc": 0, "stderr": ""}}
+        return _run_tasks(tmp_path, tasks, variables, "[_persistence_errors, _unit_started]")[0]
+
+    errors, started = run("enabled")
+    assert started == ["app", "worker"]
+    assert errors == ["restart policy not always: db"]
+    errors, started = run("disabled")
+    assert started == []
+    assert errors == ["restart policy not always: app", "restart policy not always: db",
+                      'restart policy "no" but not a declared one-shot container (label agent-cloud.one-shot=true) '
+                      'that exited 0: worker']
+    errors, _ = run("enabled", system_unit="disabled")
+    assert any("podman-restart.service is not enabled (system unit)" in e for e in errors), errors
+
+
+@pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="needs ansible-playbook")
+def test_ensure_units_by_policy_the_containers_a_boot_unit_would_miss(tmp_path):
+    # PR 284 reviews: `always` and a declared one-shot on "no" need no unit; a long-running
+    # container on "no" does; a stopped one STAYS in the unit (policy, not momentary state) and
+    # is reported as not running.
+    # The rendered ExecStart= is the line verify-service-persistence.yml parses.
+    path = PLAYBOOKS / "ensure-service-persistence.yml"
+    pick = _named(path, "Podman: the containers podman's boot unit would not start")
+    content = _named(path, "Rootful podman: install the service's boot unit")["ansible.builtin.copy"]["content"]
+    inspected = {"app": "unless-stopped|running|", "db": "|running|", "run": "always|running|",
+                 "init": "no|exited|true", "worker": "no|running|", "old": "unless-stopped|exited|"}
+    variables = {"service_name": "demo",
+                 "_ensure_policies": {"results": [{"item": k, "stdout": v} for k, v in inspected.items()]}}
+    render = {"ansible.builtin.set_fact": {"_unit_text": content}}
+    got, _ = _run_tasks(tmp_path, [pick, render], variables,
+                        "[_needs_unit, _boot_unit_name, _unit_text, _not_running]")
+    needs, name, text, not_running = got
+    assert needs == ["app", "db", "worker", "old"]
+    assert not_running == ["init", "old"]
+    assert name == "agent-cloud-boot-demo.service"
+    assert "ExecStart=/usr/bin/podman start app db worker old\n" in text
+    assert "Type=oneshot" in text and "PIDFile" not in text
+
+
+@pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="needs ansible-playbook")
+def test_the_aggregate_retains_what_each_vm_already_holds(tmp_path):
+    # PR 258 Codex review: the parser merges NetBox's statuses so the report and Loki agree
+    # with the write; the collector hands it exactly {service: status} from the lookup.
+    task = _named(PLAYBOOKS / "collect-service-conformance.yml", "Aggregate: latest result per service and step")
+    probe = {"ansible.builtin.set_fact": {"_got": "{{ _retained }}"}, "vars": task["vars"]}
+    found = [{"item": "svc-a", "id": 7, "status": {"fw-harden": "fail"}}, {"item": "svc-d", "id": 4, "status": {}}]
+    got, _ = _run_tasks(tmp_path, [probe], {"_vm_found": found, "_outputs": {"results": []}}, "_got")
+    assert got == {"svc-a": {"fw-harden": "fail"}, "svc-d": {}}
+    write = _named(PLAYBOOKS / "collect-service-conformance.yml", "NetBox: write each service's workflow status")
+    fields = write["ansible.builtin.uri"]["body"]["custom_fields"]
+    assert fields["ac_workflow_status"] == "{{ _agg.status_by_service[item.item] }}"
+
+
+@pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="needs ansible-playbook")
+@pytest.mark.parametrize("value,field", [("", "automation_api_token"), ("  ", "automation_api_token"),
+                                         ("workflow-collector", "collector_api_token"), ("bogus", None)])
+def test_the_token_profile_is_a_survey_choice_blank_meaning_the_default(tmp_path, value, field):
+    # A Semaphore template passes no arguments, so the profile arrives from the survey, where a
+    # field left empty is "", not absent; an unknown name is refused before anything is minted.
+    path = PLAYBOOKS / "provision-netbox-automation-token.yml"
+    play = playbook_yaml.plays(path)[0]
+    variables = {k: play["vars"][k] for k in ("_profiles", "_profile_name", "_profile")}
+    variables["netbox_token_profile"] = value
+    probe = {"ansible.builtin.set_fact": {"_got": "{{ _profile.field }}"}}
+    tasks = [_named(path, "Refuse an unknown token profile"), probe]
+    if field:
+        got, _ = _run_tasks(tmp_path, tasks, variables, "_got")
+        assert got == field
+    else:
+        with pytest.raises(subprocess.CalledProcessError) as err:
+            _run_tasks(tmp_path, tasks, variables, "_got")
+        assert "is not one of" in err.value.stdout
+
+
+def test_the_token_profile_survey_field_is_the_playbooks_closed_list():
+    # A closed list catches a typo at launch, not at run time. Its values are exactly the
+    # playbook's profiles, and its default is one of them: "false" once landed here by an edit
+    # that split the neighbouring field's keys, and every launch would have refused.
+    templates = yaml.safe_load((REPO / "platform/semaphore/templates.yml").read_text())["templates"]
+    tpl = next(t for t in templates if t["name"] == "Provision NetBox Automation Token")
+    fields = {s["name"]: s for s in tpl["survey_vars"]}
+    field = fields["netbox_token_profile"]
+    profiles = playbook_yaml.plays(PLAYBOOKS / "provision-netbox-automation-token.yml")[0]["vars"]["_profiles"]
+    assert field["type"] == "enum"
+    assert [v["value"] for v in field["values"]] == list(profiles)
+    assert field["default_value"] == "device-writer"
+    assert fields["replace_unrecoverable_token"]["default_value"] == "false"

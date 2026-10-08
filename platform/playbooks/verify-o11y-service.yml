@@ -1,0 +1,146 @@
+---
+# Run after generating a fresh log line for the named service. The optional
+# agentgateway canary emits credential-free traffic to prove trace intake.
+
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: Require a declared o11y receiver and a service identity
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Read the candidate checkout revision when required
+      ansible.builtin.command:
+        argv: [git, rev-parse, HEAD]
+        chdir: "{{ playbook_dir | dirname | dirname }}"
+      register: _controller_revision
+      changed_when: false
+      check_mode: false
+      when: expected_repository_sha is defined
+
+    - name: Require the exact candidate revision
+      ansible.builtin.assert:
+        that: _controller_revision.stdout == expected_repository_sha
+        fail_msg: "Semaphore checked out a different revision; service collection was not verified."
+        success_msg: "Semaphore checkout matches {{ expected_repository_sha }}."
+      when: expected_repository_sha is defined
+
+    - name: Validate verification inputs
+      ansible.builtin.assert:
+        that:
+          - groups.get('o11y_svc', []) | length > 0
+          - expected_service | default('') is match('^[a-z][a-z0-9_-]*(/[a-z][a-z0-9_-]*)?$')
+          - expected_instance | default('') | length == 0 or expected_instance is match('^[a-zA-Z0-9.-]+:[0-9]+$')
+          - expect_metrics | default('true') | string | lower in ['true', 'false']
+          - expect_logs | default('true') | string | lower in ['true', 'false']
+          - expect_traces | default('false') | string | lower in ['true', 'false']
+          - emit_agentgateway_canary | default('false') | string | lower in ['true', 'false']
+          - (expect_metrics | default('true') | bool) or (expect_logs | default('true') | bool) or (expect_traces | default('false') | bool)
+          - not (emit_agentgateway_canary | default('false') | bool) or expected_service | default('') == 'agentgateway'
+          - not (emit_agentgateway_canary | default('false') | bool) or expect_traces | default('false') | bool
+          - not (emit_agentgateway_canary | default('false') | bool) or groups.get('agentgateway_svc', []) | length == 1
+        fail_msg: "Declare a lowercase service and at least one expected signal; the canary requires exactly one agentgateway_svc host and Tempo traces."
+
+- name: Emit an optional gateway trace canary
+  hosts: agentgateway_svc
+  gather_facts: false
+  vars:
+    _canary_bind: "{{ '127.0.0.1' if (agw_bind | default('127.0.0.1')) in ['0.0.0.0', '::', ''] else agw_bind | default('127.0.0.1') }}"
+  tasks:
+    - name: Mark the canary start on the Tempo receiver clock
+      ansible.builtin.command: date +%s
+      delegate_to: "{{ groups['o11y_svc'][0] }}"
+      register: _canary_started
+      changed_when: false
+      check_mode: false
+      when: emit_agentgateway_canary | default('false') | bool
+
+    - name: Send anonymous requests directly to the gateway listener
+      ansible.builtin.uri:
+        url: "http://{{ _canary_bind }}:{{ agw_port | default(4000) }}/v1/models"
+        method: GET
+        status_code: 401
+        timeout: 5
+        use_netrc: false
+        use_proxy: false
+      loop: "{{ range(100) | list }}"
+      loop_control:
+        label: "request {{ item + 1 }}/100"
+      changed_when: false
+      check_mode: false
+      when: emit_agentgateway_canary | default('false') | bool
+
+- name: Verify the named service is collected
+  hosts: o11y_svc
+  gather_facts: false
+  vars:
+    _engine: "{{ container_engine | default('podman') }}"
+  tasks:
+    - name: Query recent Loki logs for the service
+      ansible.builtin.command:
+        argv:
+          - "{{ _engine }}"
+          - exec
+          - o11y-grafana
+          - wget
+          - -q
+          - -O
+          - "-"
+          - "http://loki:3100/loki/api/v1/query_range?query={{ ('{service=\"' ~ expected_service ~ '\"}') | urlencode }}&since=15m&limit=1"
+      register: _service_logs
+      changed_when: false
+      check_mode: false
+      when: expect_logs | default('true') | bool
+
+    - name: Require a recent service log line
+      ansible.builtin.assert:
+        that:
+          - _logs_json.status == 'success'
+          - _logs_json.data.result | length > 0
+        fail_msg: "Loki has no {{ expected_service }} log in the last 15 minutes; emit a fresh service log and check Alloy collection."
+      vars:
+        _logs_json: "{{ _service_logs.stdout | from_json }}"
+      when: expect_logs | default('true') | bool
+
+    - name: Verify the service's Prometheus scrape results
+      ansible.builtin.include_tasks: tasks/verify-o11y-metrics.yml
+      when: expect_metrics | default('true') | bool
+
+    - name: Search recent Tempo traces for the service
+      ansible.builtin.command:
+        argv:
+          - "{{ _engine }}"
+          - exec
+          - o11y-grafana
+          - wget
+          - -q
+          - -O
+          - "-"
+          - "http://tempo:3200/api/search?tags={{ ('service.name=' ~ expected_service) | urlencode }}&start={{ (hostvars[groups['agentgateway_svc'][0]]._canary_started.stdout | int) - 60 if emit_agentgateway_canary | default('false') | bool else (now(utc=true).timestamp() | int) - 3600 }}&end={{ (now(utc=true).timestamp() | int) + 60 }}&limit=20"
+      register: _service_traces
+      changed_when: false
+      check_mode: false
+      retries: 12
+      delay: 5
+      until: _service_traces.rc == 0 and (_service_traces.stdout | from_json).traces | default([]) | length > 0
+      ignore_errors: true
+      when: expect_traces | default('false') | bool
+
+    - name: Require a recent trace returned by Tempo
+      ansible.builtin.assert:
+        that:
+          - _service_traces.rc == 0
+          - (_service_traces.stdout | default('{}') | from_json).traces | default([]) | length > 0
+        fail_msg: "Tempo has no {{ expected_service }} trace in the requested window; check source sampling, Alloy ingress, and Tempo intake."
+      when: expect_traces | default('false') | bool
+
+    - name: Report verified signals
+      ansible.builtin.debug:
+        msg: >-
+          {{ expected_service }} verified:
+          {{ 'recent Loki log' if (expect_logs | default('true') | bool) else 'logs not requested' }},
+          {{ 'healthy Prometheus scrape' if (expect_metrics | default('true') | bool) else 'metrics not requested' }},
+          {{ 'recent Tempo trace' if (expect_traces | default('false') | bool) else 'traces not requested' }}.

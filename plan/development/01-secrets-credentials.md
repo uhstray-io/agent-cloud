@@ -40,6 +40,156 @@
 | 7 | **Init/secret escrow gaps** | root token never revoked (`IMPLEMENTATION_PLAN.md:1666`); `site-config/secrets/openbao/` referenced but **absent**; no audit device (`:1670`) | Long-lived root token on VM; no audit trail; manual key backup |
 | 8 | **Storage-backend fork local↔prod** | local-dev = `file`; prod = `raft` | Local never exercises the Raft path prod runs (init/unseal/snapshot untested) |
 
+### Operator-held secrets reach OpenBao through isolated seed environments
+
+Some secrets are held by an operator, not generated: an upstream API key another
+system owns, a provider credential. They enter through a seed template that runs in
+its own Semaphore environment (`isolated_environment` in `templates.yml`), with the
+value staged as an encrypted input by `scripts/semaphore-seed-input.py` and removed
+after one task. Procedure: `platform/semaphore/README.md`, "Seed a secret through an
+isolated environment".
+
+**Rollout, 2026-09-25.** Dev: **Provision Seed Environment (Dev)** is installed, and **Seed
+OpenBao Key (Dev)** and **Seed Postiz Secrets (Dev)** are each bound to their own isolated
+environment, which holds only the encrypted `BAO_ROLE_ID` and `BAO_SECRET_ID` and no extra vars
+(read back from the Semaphore API on 2026-09-25). Main: not rolled out; it follows the
+`dev` → `main` promotion of the seed code.
+
+Why: on 2026-09-23 the agentgateway upstream key was seeded by staging it in the
+environment every template shares, driven by a one-off script. It worked, and it
+left no reusable path: the next seed would have needed another script, and any task
+launched in that window could have received the value.
+
+**Open gap found on the way:** the shared environments hold the controller AppRole's
+`bao_role_id` and `bao_secret_id` as plain extra variables, which Semaphore returns
+over its API to anyone who can read the environment. Isolated seed environments
+already store their copy encrypted. Moving the shared environments to encrypted
+inputs is the follow-up; it touches every template and needs its own change.
+
+**Checked at run time too (2026-09-25).** The clean-environment rule runs when an
+environment is bound, and the environment stays editable after that. Each seed playbook now
+also refuses, before its AppRole login, any seed input its template does not declare
+(`tasks/assert-seed-inputs-declared.yml`): a leftover from another seed's interrupted run.
+
+**Gap as found (closed the same day, see "Drift closed" below): the endpoint was not
+re-checked at run time.** The seed task took its OpenBao address from the isolated
+environment's `openbao_addr` extra var. The production inventory then declared the address
+under the `agent_cloud` group's vars, not `all.vars` (the public template inventory in this
+repo does use `all.vars`; the private one Semaphore runs did not). A seed runs on implicit
+`localhost`, which is in no group, so it received no inventory value at all:
+verified on ansible-core 2.16.18, 2.20.8 and 2.21.0, where `localhost` gets `all.vars` but not
+another group's vars. That was why the environment pinned the address, and why the run had
+nothing to compare the pin against: an environment edited after binding to point elsewhere
+was caught by the next publication, provisioning or seed CLI preflight, not by the seed task.
+
+**Drift closed 2026-09-25.** The run uses the inventory value, with no pin in the environment:
+
+1. site-config#22 moved `openbao_addr` to the production inventory's top-level `all.vars`
+   (every `agent_cloud` host resolves the same value as before; `localhost` now resolves it),
+   and the inventory was re-synced to Semaphore record 2.
+2. The clean-environment rule refuses any extra var in an isolated environment, a pin
+   included; the provisioner alone accepts an earlier version's pin, and removes it.
+3. The seed CLIs no longer take `--openbao-addr`: the approved inventory, pinned by
+   `--inventory`, is where the address comes from.
+4. Each seed playbook, before its AppRole login, reads `all.vars.openbao_addr` from the
+   inventory file it was given (`ansible_inventory_sources`; Semaphore v2.17.31 passes a
+   static-yaml inventory as `-i <project tmp>/inventory_<id>.yml`) and refuses any other
+   address (`tasks/assert-bao-addr-declared.yml`). The declaration is read inline, never
+   through a named variable, because extra vars outrank every variable; the check also
+   refuses the downstream store URLs being supplied before their tasks set them.
+
+What that check guarantees, corrected 2026-09-25 by a grounding review: it catches DRIFT, a
+plain address set where it should not be. It does not stop a deliberate override. An extra
+var may be a Jinja template, re-rendered in every task, so a value can resolve to the declared
+address inside the check and to another address in the login task (reproduced on ansible-core
+2.16.18 and 2.20.8). The first version of this note said the check closed "the obvious
+overrides"; that was not true of a templated one (`docs/MISTAKES.md` 1.15).
+
+**Launch permission is runner access (corrected 2026-09-26).** Semaphore v2.17.31 merges every
+key of a task's `environment` JSON into the run's extra vars with no survey filter
+(`services/tasks/TaskRunner.go` `populateTaskEnvironment`; `db/Task.go` `ValidateNewTask`
+checks only the git branch, playbook path and task params); the latest release, v2.19.12, is
+unchanged. An extra var may be a Jinja template, and a template may call a lookup: a launch
+with `-e 'x={{ lookup("pipe", "...") }}'` runs that command on the Semaphore runner when any
+task renders `x` (reproduced on ansible-core 2.16.18, 2.17.14, 2.18.12, 2.19.6, 2.20.8 and
+2.21.0). Every playbook renders dozens of variables, so whoever can launch a template can run
+code on the runner, which holds the controller AppRole and the SSH keys. The note this replaces
+said the gap was a redirected OpenBao login and offered building request URLs inline as a
+mitigation; that does nothing against a templated extra var (`docs/MISTAKES.md` 1.15,
+occurrence 2).
+
+Four identities can put keys into a task's environment (read from the v2.17.31 source):
+
+| Path | Where | Why it reaches extra vars |
+|------|-------|---------------------------|
+| System admin | `api/projects/project.go` | Bypasses project membership and every permission check |
+| Project member whose role can run tasks | `db/ProjectUser.go` | `owner`, `manager`, `task_runner` and any custom role granting `CanRunProjectTasks`; `task_runner` is meant to be launch-only |
+| A user's API token | `/api/user/tokens` | Carries its user's rights; the controller's token is at `secret/services/semaphore:api_token`, which the NemoClaw AppRole's `services/*` read grant also covers |
+| Integration (incoming webhook) | `api/integration.go` | Copies header or payload values into the task environment |
+
+### Decision: every identity that can launch is runner-trusted, and held to a declaration
+
+Nothing a playbook checks at run time can stop this (Ansible exposes no list of the extra vars
+it was given, and any referenced variable can be replaced by a template), so the fix is who
+can launch:
+
+1. **NemoClaw cannot read the Semaphore token.** `nemoclaw-read.hcl` gains a `deny` on
+   `secret/data/services/semaphore` and `secret/metadata/services/semaphore`. `deny` always
+   wins and the exact path outranks the `services/*` glob (openbao.org/docs/concepts/policies).
+   Applied by `apply-policy-nemoclaw.yml`.
+2. **Membership as code: `manage-semaphore-access.yml`** (template "Manage Semaphore Access").
+   It reads the project's members, the system admins and the project's integrations through
+   the controller's loopback API, and compares them with two private inventory declarations:
+   `semaphore_project_members` (username to role) and the existing `semaphore_admin_users`.
+   It refuses, before any write, a declaration it cannot apply as written (absent, or naming
+   an account that does not exist), so a typo never removes working access first. Under `--check` it only
+   reports, names and roles only. A real run converges project membership: it sets a declared
+   member's role and removes an undeclared member. An undeclared system admin or any
+   integration fails the run by name; each needs an operator decision, not a silent delete.
+   The comparison is one filter (`filter_plugins/semaphore_access.py`), tested directly.
+3. **Documented as a trust boundary.** The Semaphore operating guide and `AGENTS.md` state
+   that launch rights are runner rights, so `task_runner` is granted only to someone trusted
+   with the controller.
+
+Rejected: building OpenBao URLs inline (no effect against a templated extra var); a per-playbook
+extra-var allowlist (no list of extra vars exists to check); patching Semaphore to filter by
+survey (a fork, and upstream is unchanged through v2.19.12); an OPA-gated launch gateway for
+machine callers (deferred by operator decision 2026-09-26; it is the next step if an automated
+caller needs to launch).
+
+Live order after merge: `apply-policy-nemoclaw.yml` → `Manage Semaphore Access` under
+`--check` to read the current roster → declare `semaphore_project_members` in site-config →
+a real run. Each live step is operator-approved.
+
+The shared OpenBao login task (a separate change) no longer closes this gap. It still earns
+its place: 43 sites repeat address resolution and the transport guard, and only the two seed
+playbooks carry the drift check.
+
+### Measured cost of problem 2 — the 2026-09-19 reboot
+
+The production OpenBao host rebooted on 2026-09-19. The outage ran in two stages, and
+only the first is fixed:
+
+| Stage | Cause | Status |
+|-------|-------|--------|
+| Container stayed stopped for three days | Compose declared `restart: unless-stopped`; podman 4.9.3's boot unit starts only `always` | **Fixed** (`docs/MISTAKES.md` 10.15; guarded by `platform/tests/test_restart_policy.bats`) |
+| Started container was sealed | Manual Shamir unseal, no auto-unseal (problem 2) | **Open gap.** Unsealed by hand on 2026-09-22 from the on-VM init file (problem 7) |
+
+While OpenBao is sealed, every Semaphore deploy that reads a secret fails, including the
+ones that would repair other services. Auto-unseal is therefore the one remaining step
+between "a host rebooted" and "the platform is down until someone notices". Two things
+follow for phase B2:
+
+- **B2 can now be accepted on a real reboot.** The container comes back on its own, so
+  "restart a node, and it auto-unseals" tests the seal, not the restart policy.
+- **The live container keeps its old policy until it is recreated.** The restart policy
+  is fixed at create time. The fix reaches production OpenBao only when its deploy
+  recreates the container. Phase B1 replaces that legacy deploy path.
+
+Until B2 lands, recovery after a reboot is: confirm the container is running, then unseal.
+That recovery needs the unseal key, which today lives only in the on-VM init file, so the
+escrow work in problem 7 blocks any runbook that avoids SSH.
+
 ---
 
 ## Design Principles
@@ -285,6 +435,12 @@ flowchart LR
 | Date | Summary |
 |------|---------|
 | 2026-06-14 | Initial draft. A1 (persistent local file backend) landed; Tracks A/B and decision criteria authored from OpenBao docs + repo current-state assessment. |
+| 2026-09-22 | Recorded the 2026-09-19 reboot outage as the measured cost of problem 2. Its restart-policy stage is fixed; the sealed-after-restart stage stays open until B2. |
+| 2026-09-23 | Operator-held secrets move to isolated seed environments (generic provisioner and seed CLI); recorded the plaintext AppRole in shared environments as an open gap. |
+| 2026-09-25 | Seed playbooks refuse undeclared seed inputs at run time; recorded the run-time endpoint check as an open gap needing a design decision. |
+| 2026-09-25 | Corrected the endpoint gap: production declares `openbao_addr` under `agent_cloud`, not `all.vars`, so `localhost` gets no inventory value; recorded the chosen direction and its ordering. |
+| 2026-09-25 | Closed the endpoint gap: the address comes from the inventory's `all.vars`, the environment carries no pin, and the seed run refuses any other address. |
+| 2026-09-25 | Corrected: the run-time check catches drift, not a templated override; recorded launch permission as extra-var control (Semaphore accepts any task-environment key) as an open gap covering every OpenBao login. |
 
 <!-- ======================= source: OPENBAO-KV-MOUNT-PARAMETERIZATION.md ======================= -->
 
@@ -1019,6 +1175,12 @@ The codebase uses `no_log: true` on 41 Ansible tasks to prevent secrets from app
 4. **No audit trail** -- there is no indication in logs that redaction occurred or what was redacted
 
 ## Solution: Custom Callback Plugin
+
+> **Status 2026-09-25 — partly built.** The narrower piece shipped as
+> `callback_plugins/redact_requests.py` (repository root, selected by `ansible.cfg`, because
+> Semaphore runs from the clone root): the default callback minus the `invocation` of every nested
+> result, which closes the request-header leak in `docs/MISTAKES.md` 4.6. The value-pattern
+> redaction designed below is still planned; it would also cover secrets in response bodies.
 
 A callback plugin named `redact_secrets` will intercept all Ansible output events, scan for values that match known sensitive variable patterns, and replace them with `***REDACTED***`. The actual values remain in Ansible memory for use by subsequent tasks.
 

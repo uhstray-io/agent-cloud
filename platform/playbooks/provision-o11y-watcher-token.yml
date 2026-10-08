@@ -1,0 +1,253 @@
+---
+# provision-o11y-watcher-token.yml — mint the liveness watcher's read-only Grafana
+# token as code and store it at secret/services/o11y:watcher_token
+# (inference-telemetry-production task 3.6).
+#
+# Runs against the o11y host and talks to Grafana on its loopback inside the
+# container, authenticated by the admin password Grafana already holds in its own
+# environment, so no admin credential crosses the network or a process argument.
+#
+# Decision on the stored token, by the Prometheus datasource health status it gets:
+#   200        reused; nothing is written
+#   401 / 403  (or no token stored) rotated: a new token is minted
+#   anything else  the run FAILS naming the status and mints nothing — an outage
+#              must not mint a token every run and pile up superseded ones
+#
+# Rotation uses the dedicated `o11y-watcher` service account. An existing account
+# is used only when it is enabled and has the Viewer role; anything else is refused
+# by name rather than minting an over-privileged token or editing the account. After
+# the new token is stored and proven, every other token on that account is deleted
+# (Grafana v11.4 API: GET/DELETE /api/serviceaccounts/:id/tokens[/:tokenId]).
+#
+# Check mode reports the decision and changes nothing.
+
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: Pre-flight
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: o11y_svc
+    preflight_group_expected: o11y_svc
+
+- name: Provision the o11y watcher token
+  hosts: o11y_svc
+  gather_facts: false
+  become: false
+  vars:
+    _engine: "{{ container_engine | default('podman') }}"
+    _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    _prom_uid: "{{ o11y_watch_prometheus_uid | default('prometheus') }}"
+    # Grafana as seen from inside its own container.
+    _gf: "{{ o11y_grafana_local_url | default('http://127.0.0.1:3000') }}"
+    _sa_name: o11y-watcher
+    # Admin basic auth from the container's own environment, written to curl's stdin
+    # config; the password never appears in argv. $1 is always the Grafana base URL.
+    _admin_curl: >-
+      printf 'user = "admin:%s"\n' "$GF_SECURITY_ADMIN_PASSWORD" |
+      curl -fsS --config - -H 'Content-Type: application/json'
+    # Token on stdin, status code on stdout.
+    _token_check: >-
+      read -r t; printf 'header = "Authorization: Bearer %s"\n' "$t" |
+      curl -sS -o /dev/null -w '%{http_code}' --config -
+      "$1/api/datasources/uid/$2/health"
+  tasks:
+    - name: Require a plain datasource uid
+      ansible.builtin.assert:
+        that: _prom_uid is match('^[A-Za-z0-9_-]+$')
+        fail_msg: "o11y_watch_prometheus_uid must be a plain datasource uid."
+
+    - name: Refuse a cleartext OpenBao endpoint
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
+    - name: Authenticate to OpenBao (AppRole)
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/auth/approle/login"
+        method: POST
+        body_format: json
+        body:
+          role_id: "{{ _bao_role_id }}"
+          secret_id: "{{ _bao_secret_id }}"
+        status_code: [200]
+      register: _bao_auth
+      changed_when: false
+      delegate_to: localhost
+      no_log: true
+      check_mode: false
+
+    - name: Read the stored watcher token
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/secret/data/services/o11y"
+        follow_redirects: none
+        headers:
+          X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
+        status_code: [200]
+      register: _o11y_secret
+      delegate_to: localhost
+      no_log: true
+      check_mode: false
+
+    - name: Test the stored token against the Prometheus datasource health
+      ansible.builtin.command:
+        argv: ["{{ _engine }}", exec, -i, o11y-grafana, sh, -c, "{{ _token_check }}", token-check, "{{ _gf }}", "{{ _prom_uid }}"]
+        stdin: "{{ _o11y_secret.json.data.data.watcher_token | default('') }}"
+      register: _stored_check
+      changed_when: false
+      failed_when: false
+      when: (_o11y_secret.json.data.data.watcher_token | default('')) | length > 0
+      no_log: true
+      check_mode: false
+
+    - name: Reduce the stored-token check to its status
+      ansible.builtin.set_fact:
+        _stored_status: "{{ (_stored_check.stdout | default('none')) if _stored_check is not skipped else 'none' }}"
+      no_log: true
+
+    - name: Refuse to rotate on anything but an authentication rejection
+      ansible.builtin.assert:
+        that: _stored_status in ['200', '401', '403', 'none']
+        fail_msg: >-
+          Grafana answered the stored watcher token with status {{ _stored_status }}, which
+          is not an authentication rejection. Nothing was minted; fix Grafana or Prometheus
+          and re-run.
+
+    - name: Decide whether a mint is needed
+      ansible.builtin.set_fact:
+        _need_mint: "{{ _stored_status != '200' }}"
+
+    - name: Report the decision
+      ansible.builtin.debug:
+        msg: >-
+          {{ 'stored watcher token is valid; reusing it' if not _need_mint
+             else 'stored watcher token ' ~ ('absent' if _stored_status == 'none' else 'rejected (' ~ _stored_status ~ ')')
+                  ~ '; a new one ' ~ ('would be' if ansible_check_mode else 'will be') ~ ' minted' }}
+
+    - name: Mint, store and prove a new token
+      when: _need_mint | bool and not ansible_check_mode
+      block:
+        - name: Find the watcher service account
+          ansible.builtin.command:
+            argv: ["{{ _engine }}", exec, o11y-grafana, sh, -c, '{{ _admin_curl }} "$1/api/serviceaccounts/search?query=$2"', sa-search, "{{ _gf }}", "{{ _sa_name }}"]
+          register: _sa_search
+          changed_when: false
+
+        - name: Select the exact-named account
+          ansible.builtin.set_fact:
+            _sa_id: "{{ ((_sa_search.stdout | from_json).serviceAccounts | default([])
+                         | selectattr('name', 'equalto', _sa_name) | map(attribute='id') | list
+                         | first) | default('') }}"
+
+        - name: Read the existing account
+          ansible.builtin.command:
+            argv: ["{{ _engine }}", exec, o11y-grafana, sh, -c, '{{ _admin_curl }} "$1/api/serviceaccounts/$2"', sa-get, "{{ _gf }}", "{{ _sa_id }}"]
+          register: _sa_get
+          changed_when: false
+          when: _sa_id | string | length > 0
+
+        - name: Refuse an account that is not an enabled Viewer
+          ansible.builtin.assert:
+            that:
+              - (_sa_get.stdout | from_json).role == 'Viewer'
+              - not ((_sa_get.stdout | from_json).isDisabled | bool)
+            fail_msg: >-
+              Grafana service account {{ _sa_name }} (id {{ _sa_id }}) has role
+              {{ (_sa_get.stdout | from_json).role }} and isDisabled
+              {{ (_sa_get.stdout | from_json).isDisabled }}; the watcher needs an enabled
+              Viewer. Nothing was minted. Set it to Viewer and enable it, or delete it so
+              this playbook recreates it, then re-run.
+          when: _sa_id | string | length > 0
+
+        - name: Create the watcher service account (Viewer)
+          ansible.builtin.command:
+            argv:
+              - "{{ _engine }}"
+              - exec
+              - o11y-grafana
+              - sh
+              - -c
+              - >-
+                {{ _admin_curl }} -X POST
+                -d "{\"name\":\"$2\",\"role\":\"Viewer\",\"isDisabled\":false}"
+                "$1/api/serviceaccounts"
+              - sa-create
+              - "{{ _gf }}"
+              - "{{ _sa_name }}"
+          register: _sa_create
+          changed_when: true
+          when: _sa_id | string | length == 0
+
+        - name: Record the account id
+          ansible.builtin.set_fact:
+            _sa_id: "{{ (_sa_create.stdout | from_json).id if _sa_create is changed else _sa_id }}"
+
+        - name: Mint one watcher token
+          ansible.builtin.command:
+            argv:
+              - "{{ _engine }}"
+              - exec
+              - o11y-grafana
+              - sh
+              - -c
+              - >-
+                {{ _admin_curl }} -X POST -d "{\"name\":\"watcher-$(date -u +%Y%m%dT%H%M%SZ)\"}"
+                "$1/api/serviceaccounts/$2/tokens"
+              - sa-token
+              - "{{ _gf }}"
+              - "{{ _sa_id }}"
+          register: _sa_token
+          changed_when: true
+          no_log: true
+
+        - name: Hold the new token in memory
+          ansible.builtin.set_fact:
+            _new_key: "{{ (_sa_token.stdout | from_json).key }}"
+            _new_token_id: "{{ (_sa_token.stdout | from_json).id }}"
+          no_log: true
+
+        - name: Merge the token into secret/services/o11y
+          ansible.builtin.include_tasks: tasks/bao-merge-keys.yml
+          vars:
+            _bm_url: "{{ _bao_url }}"
+            _bm_token: "{{ _bao_auth.json.auth.client_token }}"
+            _bm_path: services/o11y
+            _bm_data:
+              watcher_token: "{{ _new_key }}"
+            _bm_on_missing: fail
+            _bm_missing_msg: "secret/services/o11y does not exist; deploy o11y first."
+
+        - name: Test the new token against the Prometheus datasource health
+          ansible.builtin.command:
+            argv: ["{{ _engine }}", exec, -i, o11y-grafana, sh, -c, "{{ _token_check }}", token-check, "{{ _gf }}", "{{ _prom_uid }}"]
+            stdin: "{{ _new_key }}"
+          register: _new_check
+          changed_when: false
+          failed_when: false
+          no_log: true
+
+        - name: Reduce the new-token check to its status
+          ansible.builtin.set_fact:
+            _new_status: "{{ _new_check.stdout | default('none') }}"
+          no_log: true
+
+        - name: Require the new token to read Prometheus datasource health
+          ansible.builtin.assert:
+            that: _new_status == '200'
+            fail_msg: "The new watcher token got status {{ _new_status }} from datasource health; superseded tokens were kept."
+
+        - name: List the account's tokens
+          ansible.builtin.command:
+            argv: ["{{ _engine }}", exec, o11y-grafana, sh, -c, '{{ _admin_curl }} "$1/api/serviceaccounts/$2/tokens"', sa-tokens, "{{ _gf }}", "{{ _sa_id }}"]
+          register: _sa_tokens
+          changed_when: false
+
+        - name: Delete the superseded tokens
+          ansible.builtin.command:
+            argv: ["{{ _engine }}", exec, o11y-grafana, sh, -c, '{{ _admin_curl }} -X DELETE "$1/api/serviceaccounts/$2/tokens/$3"', sa-token-delete, "{{ _gf }}", "{{ _sa_id }}", "{{ item }}"]
+          loop: "{{ _sa_tokens.stdout | from_json | map(attribute='id') | map('string') | reject('equalto', _new_token_id | string) | list }}"
+          changed_when: true

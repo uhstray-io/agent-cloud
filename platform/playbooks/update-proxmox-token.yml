@@ -7,6 +7,15 @@
 #
 # Pass the token value via extra-vars:
 #   ansible-playbook update-proxmox-token.yml -e proxmox_api_token=<value>
+#
+# token_id is written too when proxmox_token_id is set (inventory or
+# -e proxmox_token_id=<user>@<realm>!<token-name>); otherwise the stored id is
+# left as it is. There is no built-in token id.
+
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
 
 - name: "Update Proxmox API token in OpenBao"
   hosts: netbox_svc
@@ -42,6 +51,8 @@
       register: _bao_auth
       delegate_to: localhost
       no_log: true
+      changed_when: false
+      check_mode: false
 
     - name: "Read and update each path"
       ansible.builtin.include_tasks: tasks/update-vault-field.yml

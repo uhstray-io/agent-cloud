@@ -197,8 +197,28 @@ setup() {
 }
 
 @test "inventory example: caddy_routes auth entry exposes internal_https_port 8443" {
-  grep -qE 'auth\.agent-cloud\.test.*internal_https_port' "$INVENTORY" ||
-    grep -A2 'auth.agent-cloud.test' "$INVENTORY" | grep -q 'internal_https_port'
+  # The route is one flow mapping; scope to that entry, not to the lines after it.
+  grep -qE '\{[^}]*host: "auth\.agent-cloud\.test"[^}]*internal_https_port: 8443[^}]*\}' "$INVENTORY"
+}
+
+@test "inventory example: caddy_routes inference entry opts into the inference_api edge, same list as the bootstrap INI" {
+  # The route must carry the flag — a plain reverse_proxy here would expose the
+  # upstream's unauthenticated paths in the shape that gets promoted to prod.
+  grep -qE 'inference\.agent-cloud\.test.*inference_api: true' "$INVENTORY"
+  # bootstrap-local-dev.yml emits its OWN copy of the route table into the local
+  # Semaphore inventory; the two lists drift silently when only one is edited.
+  grep -qE "inference\.\{\{ _dev_zone \}\}.*'inference_api': true" \
+    "$(git rev-parse --show-toplevel)/platform/playbooks/bootstrap-local-dev.yml"
+}
+
+@test "bootstrap: the INI route table is emitted as a Python literal, not JSON" {
+  # ansible's ini plugin reads a value with ast.literal_eval; JSON parses only
+  # while it contains no boolean/null. The first `true` left caddy_routes a
+  # STRING and deploy-caddy failed with "'str object' has no attribute 'host'".
+  local pb="$(git rev-parse --show-toplevel)/platform/playbooks/bootstrap-local-dev.yml"
+  grep -qF 'caddy_routes={{ _caddy_routes | string }}' "$pb"
+  run grep -cF 'caddy_routes={{ _caddy_routes | to_json }}' "$pb"
+  [ "$output" = "0" ]
 }
 
 # ── DNS-specific checks ────────────────────────────────────────────────────────
