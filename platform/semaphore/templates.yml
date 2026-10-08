@@ -108,6 +108,19 @@ templates:
         required: false
         default_value: "false"
 
+  # Read-only first-stage receipt for agentgateway task 5.7. Request-level marker
+  # correlation is intentionally not inferred from config facts and remains an
+  # explicit follow-up gate.
+  - name: Verify agentgateway Runtime (Dev)
+    playbook: platform/playbooks/verify-agentgateway-runtime.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision required on the gateway checkout"
+        type: string
+        required: true
+
   # External liveness watcher (inference-telemetry-production 3.6): probes Grafana and,
   # through Grafana's datasource health API, Prometheus via the public front door every
   # 10 minutes; one Discord message per failing run, never Loki. Dev-bound like the

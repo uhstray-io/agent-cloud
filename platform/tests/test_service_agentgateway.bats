@@ -262,7 +262,23 @@ assert "_agwp_key" not in str({k: v for k, v in call["ansible.builtin.uri"].item
 keep = next(t for t in probe if "ansible.builtin.set_fact" in t)
 assert keep.get("no_log") is True and set(keep["ansible.builtin.set_fact"]["_agwp_out"]) == {"status", "content", "json", "msg"}
 PY
-  refute_grep -qF 'no_log: true' "$PLAYBOOK"
+  python3 - "$PLAYBOOK" <<'PY'
+import sys
+import yaml
+plays = yaml.safe_load(open(sys.argv[1], encoding='utf-8'))
+def walk(tasks):
+    for task in tasks or []:
+        yield task
+        for key in ('block', 'rescue', 'always'):
+            yield from walk(task.get(key))
+tasks = [task for play in plays for task in walk(play.get('tasks'))]
+validation = next(task for task in tasks if task.get('name', '').startswith('Validate the rendered config'))
+no_log_tasks = {task.get('name') for task in tasks if task.get('no_log') is True}
+assert no_log_tasks == {
+    'Require the rendered Compose image to match the reviewed pin',
+    validation.get('name'),
+}
+PY
   refute_grep -qE "secrets\['client_" "$PLAYBOOK"
   refute_grep -qF 'read -r k' "$PLAYBOOK"
   # The identity is checked against, and asks for, only the models it may use; a 429 from the
