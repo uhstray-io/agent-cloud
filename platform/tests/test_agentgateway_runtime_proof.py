@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
 
+import pytest
 import yaml
 from jinja2 import Environment
 
@@ -15,6 +17,7 @@ VERIFY_PLAYBOOK = ROOT / "platform/playbooks/verify-agentgateway-runtime.yml"
 TEMPLATES = ROOT / "platform/semaphore/templates.yml"
 HELPER = ROOT / "platform/playbooks/files/inspect-agentgateway-runtime.py"
 IMAGE_HELPER = ROOT / "platform/playbooks/files/check-agentgateway-rendered-image.py"
+CONFIG_TEMPLATE = ROOT / "platform/services/agentgateway/deployment/templates/config.yaml.j2"
 RENDERED_CONFIG = (
     'apiKey: "do-not-print-this"\n'
     "frontendPolicies:\n"
@@ -183,6 +186,74 @@ def test_rendered_config_inspector_rejects_sampling_or_image_drift(tmp_path, cap
     report = json.loads(capsys.readouterr().out)
     assert report["status"] == "refused"
     assert "v1.5.1" not in json.dumps(report)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("randomSampling", "0"),
+        ("randomSampling", "0.2"),
+        ("randomSampling", "true"),
+        ("clientSampling", "0.2"),
+        ("clientSampling", "0.03"),
+    ],
+)
+def test_rendered_config_inspector_rejects_invalid_sampling_values(tmp_path, capsys, field, value):
+    helper = _load_helper()
+    env = tmp_path / ".env"
+    config = tmp_path / "config.yaml"
+    env.write_text("AGW_IMAGE=cr.agentgateway.dev/agentgateway:v1.5.0\n")
+    config.write_text(RENDERED_CONFIG.replace(f"{field}: 0.05", f"{field}: {value}"))
+    import sys
+    from unittest.mock import patch
+
+    with patch.object(sys, "stdin", open_json_input(env, config)):
+        assert helper.main() == 2
+    report = json.loads(capsys.readouterr().out)
+    assert report["status"] == "refused"
+    assert "do-not-print-this" not in json.dumps(report)
+
+
+def test_actual_config_template_render_passes_sampling_inspector(tmp_path, capsys):
+    env = Environment(trim_blocks=True, lstrip_blocks=True)
+    env.filters.update(
+        bool=bool,
+        flatten=lambda values: [item for group in values for item in group],
+        unique=lambda values: list(dict.fromkeys(values)),
+        hash=lambda value, algorithm="sha256": hashlib.new(algorithm, str(value).encode()).hexdigest(),
+        to_json=lambda value: json.dumps(value),
+    )
+    rendered = env.from_string(CONFIG_TEMPLATE.read_text()).render(
+        agw_ui_enabled=False,
+        agw_listener_tls=False,
+        internal_leaves=[],
+        agw_otlp_host="alloy.example:4317",
+        agw_trace_sampling=0.05,
+        agw_clients=["test-client"],
+        agw_client_policies={},
+        agw_plaintext_keys=False,
+        local_mode=False,
+        secrets={"client_test-client": "test-only-client-key", "vllm_api_key": "test-only-upstream-key"},
+        agw_rate_requests_per_minute_total=120,
+        agw_models=[{"name": "test-model"}],
+        agw_upstream_base_url="https://model.example/v1",
+    )
+    yaml.safe_load(rendered)
+    env_file = tmp_path / ".env"
+    config = tmp_path / "config.yaml"
+    env_file.write_text("AGW_IMAGE=cr.agentgateway.dev/agentgateway:v1.5.0\n")
+    config.write_text(rendered)
+    helper = _load_helper()
+    import sys
+    from unittest.mock import patch
+
+    with patch.object(sys, "stdin", open_json_input(env_file, config)):
+        assert helper.main() == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["status"] == "pass"
+    assert report["random_sampling"] == report["client_sampling"] == 0.05
+    assert "test-only-client-key" not in json.dumps(report)
+    assert "test-only-upstream-key" not in json.dumps(report)
 
 
 def test_rendered_config_inspector_accepts_disabled_client_sampling(tmp_path, capsys):
