@@ -151,9 +151,9 @@ setup() {
   assert_grep -qE '^\s*accessLog:$' "$CONFIG"
   refute_grep -qE '^\s*logging:$' "$CONFIG"
   [ "$(grep -c 'identity: apiKey.name' "$CONFIG")" -eq 3 ]
-  # v1.5.0 emits http.path in both stdout and OTLP records; each source replaces
-  # it with CEL's query-free request.path while retaining identity correlation.
-  [ "$(grep -c 'http.path: request.path' "$CONFIG")" -eq 2 ]
+  # Rendered-config assertion only: stdout, OTLP, and trace span path fields all
+  # select CEL's query-free request.path while preserving identity correlation.
+  [ "$(grep -c 'http.path: request.path' "$CONFIG")" -eq 3 ]
   # Key form only: a comment may NAME the fields it forbids.
   refute_grep -qE ':\s*llm\.(prompt|completion)\b' "$CONFIG"
 }
@@ -363,7 +363,7 @@ YML
   ansible-playbook -i localhost, -c local "$play" >/dev/null
 }
 
-@test "agentgateway: optional OTLP policy has bounded sampling and stable service identity" {
+@test "agentgateway: optional OTLP policy renders query-free path fields and bounded sampling" {
   _render_ui false receiver.test:4317
   python3 - "$BATS_TEST_TMPDIR/config.yaml" <<'PY'
 import sys
@@ -375,15 +375,17 @@ tracing = config['frontendPolicies']['tracing']
 assert tracing['host'] == 'receiver.test:4317'
 assert tracing['randomSampling'] == tracing['clientSampling'] == 0.05
 assert tracing['resources']['service.name'] == '"agentgateway"'
+assert tracing['attributes']['http.path'] == 'request.path'
 access = config['frontendPolicies']['accessLog']['otlp']
 assert config['frontendPolicies']['accessLog']['add']['identity'] == 'apiKey.name'
 assert access['host'] == 'receiver.test:4317'
 assert access['fields']['add']['service'] == '"agentgateway"'
 assert access['fields']['add']['identity'] == 'apiKey.name'
-assert config['frontendPolicies']['accessLog']['add']['http.path'] == 'request.path'
-assert access['fields']['add']['http.path'] == 'request.path'
-assert config['frontendPolicies']['accessLog']['add']['http.path'] != 'request.pathAndQuery'
-assert access['fields']['add']['http.path'] != 'request.pathAndQuery'
+stdout_add = config['frontendPolicies']['accessLog']['add']
+otlp_add = access['fields']['add']
+assert stdout_add['http.path'] == otlp_add['http.path'] == tracing['attributes']['http.path'] == 'request.path'
+configured_expressions = list(stdout_add.values()) + list(otlp_add.values()) + list(tracing['attributes'].values())
+assert all('request.pathAndQuery' not in expression and 'request.uri' not in expression for expression in configured_expressions if isinstance(expression, str))
 PY
   _render_ui false
   refute_grep -qE '^  tracing:' "$BATS_TEST_TMPDIR/config.yaml"
@@ -391,9 +393,11 @@ PY
 import sys
 import yaml
 config = yaml.safe_load(open(sys.argv[1], encoding='utf-8'))
-assert config['frontendPolicies']['accessLog']['add']['identity'] == 'apiKey.name'
-assert config['frontendPolicies']['accessLog']['add']['http.path'] == 'request.path'
-assert config['frontendPolicies']['accessLog']['add']['http.path'] != 'request.pathAndQuery'
+access = config['frontendPolicies']['accessLog']
+stdout_add = access['add']
+assert stdout_add['identity'] == 'apiKey.name'
+assert stdout_add['http.path'] == 'request.path'
+assert all('request.pathAndQuery' not in expression and 'request.uri' not in expression for expression in stdout_add.values() if isinstance(expression, str))
 assert 'otlp' not in config['frontendPolicies']['accessLog']
 PY
 }

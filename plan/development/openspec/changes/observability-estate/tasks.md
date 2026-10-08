@@ -34,8 +34,8 @@
 - [ ] 5.3 Implement a pinned, persistent Tempo backend and an Alloy OTLP traces pipeline with bounded retention, private ingress, and a fail-closed trace gate. Provision and health-check Tempo as a Grafana data source. The backend, pipeline, data source, and production trace receipt passed; the fail-closed gate remains open under 3.1 and 3.4.
 - [ ] 5.4 Configure agentgateway's sampled trace export with stable `service.name` and no prompt/completion capture; deploy gateway and receiver from reviewed `dev` through Semaphore and prove a real trace in Tempo plus metrics/log correlation.
 - [ ] 5.5 Modernize and provision the original host/container dashboard only after its node-exporter and cAdvisor inputs have named live receipts. Keep the seven Mimir dashboards deferred until Mimir and their queries are migrated to the current Grafana schema.
-- [x] 5.6 Replace agentgateway's query-bearing `http.path` in stdout and OTLP access records with CEL `request.path`; retain identity and the other default correlation fields.
-- [ ] 5.7 After a reviewed Dev-bound Semaphore deploy, verify with a synthetic callback query marker that neither stdout nor OTLP records contain the query while status, identity, model, usage, and trace correlation remain. Assess previously emitted records against the declared retention and handling path; source changes do not sanitize stored history.
+- [x] 5.6 Configure agentgateway stdout and OTLP access-log fields to set `http.path` from CEL `request.path`, retaining identity and the other default correlation fields. This records the source configuration only; it does not claim runtime verification.
+- [ ] 5.7 After a reviewed Dev-bound Semaphore deploy, send a synthetic callback query marker and verify its absence from stdout access logs, OTLP access records, and sampled trace-span attributes while status, identity, model, usage, and trace correlation remain. Assess previously emitted records against the declared retention and handling path; source changes do not sanitize stored history.
 
 ## 6. Bounded service graph and correlation coverage
 
