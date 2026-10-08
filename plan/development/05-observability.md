@@ -1453,4 +1453,27 @@ provisioned dashboard JSON and evaluates Loki panels only when their exact title
 explicitly selected. Whole-dashboard runs skip Loki because a healthy log panel can be
 empty. Loki stream queries use a bounded range and result limit; metric LogQL results use
 the vector/matrix counters. Reports contain panel titles, target statuses, and counts only.
-Dev-bound Semaphore validation of the Service Overview's two Loki panels remains pending.
+The Service Overview keeps UID `service-overview` and its existing four panel queries; it
+also shows the current count of reported scrape targets separately from scrape availability
+over the selected time range. The target count includes down targets, while missing telemetry
+remains no data rather than a healthy zero.
+
+Sanitized read-only Dev-bound Semaphore receipts 3350 and 3352 verified both Service
+Overview Loki panels (`Service log lines per second` and `Recent service logs`) for
+`agentgateway` over 6h. Receipt 3351 checked `Services tracked` and `Step status by service`
+at 24h, but did not prove Grafana table rendering. The dashboard query has since been changed
+to select the newest numeric step and inventory states across overlapping collector runs with
+Loki `last_over_time`; bounded labels and historical failure records remain available for
+drilldown. Empty collector windows remain no data. Live query behavior and rendered matrix
+remain unverified.
+
+## 2026-10-07 conformance log body format correction
+
+Review of PR #476 at `963c1f73` found that the pinned Alloy `otelcol.exporter.loki`
+default JSON envelope nests an OTLP log's body; the conformance dashboard's
+`| json state_code` and `| json inventory_code` therefore cannot read the collector's
+top-level JSON fields in production. Set the conformance record's `loki.format` hint to
+`raw`, preserving the JSON body line while keeping `job`, `service`, `step`, and `status`
+as bounded stream labels. A cross-file test ties the collector's emitted body, Alloy's
+format hint, and the dashboard extraction queries together. Production delivery and
+query read-back after a Dev-bound Semaphore deployment remain unverified.

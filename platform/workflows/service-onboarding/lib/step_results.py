@@ -73,6 +73,8 @@ HISTORY_WINDOW = 1000
 # Python, not per row in Jinja, which measured slower than piping the rows whole (PR 274).
 PICKED_KEYS = ("id", "status", "template_id", "end", "params")
 RETAINED_ERROR = "last run is older than the collector's history window; status kept from NetBox"
+STATE_CODES = {"fail": 0, "pass": 1, "skip": 2}
+INVENTORY_CODES = {"no_history": 0, "has_history": 1, "history_incomplete": 2}
 
 
 def results_in(lines: list[str]) -> list[dict]:
@@ -305,22 +307,23 @@ def report(agg: dict, registry: list[dict], inventory_services: list[str] = ()) 
 
 
 def loki_streams(agg: dict, now_ns: int) -> list[dict]:
-    """One Loki stream per (service, step), labelled so the dashboard can filter on them, and
-    one `no_history` stream for a tracked service that has not run a step yet. A service a full
-    history window can affect gets a `history_incomplete` stream instead: its missing steps may
-    be older than the window, not absent. A retained status streams like any other, flagged."""
+    """One stream per (service, step) plus one current inventory marker per tracked service.
+
+    Numeric body codes let Grafana select the newest state across streams whose bounded status
+    labels differ. Detailed failures remain in their original log records for drilldown."""
     incomplete = set(agg.get("history_incomplete", []))
     streams = []
     for service in agg.get("tracked", []):
         marker = "history_incomplete" if service in incomplete else (
-            "no_history" if service not in agg["services"] else None)
-        if marker:
-            streams.append({"stream": {"job": "agent-cloud-conformance", "service": service, "step": "none",
-                                       "status": marker},
-                            "values": [[str(now_ns), json.dumps({marker: True})]]})
+            "has_history" if service in agg["services"] else "no_history")
+        streams.append({"stream": {"job": "agent-cloud-conformance", "service": service, "step": "none",
+                                   "status": marker},
+                        "values": [[str(now_ns), json.dumps({marker: True,
+                                                              "inventory_code": INVENTORY_CODES[marker]})]]})
     for service, steps in sorted(agg["services"].items()):
         for step, result in sorted(steps.items()):
-            payload = {"task_id": result["task_id"], "error": result["error"], "check_mode": result["check_mode"]}
+            payload = {"task_id": result["task_id"], "error": result["error"],
+                       "check_mode": result["check_mode"], "state_code": STATE_CODES[result["status"]]}
             if result.get("retained"):
                 payload["retained"] = True
             line = json.dumps(payload, sort_keys=True)
@@ -345,7 +348,7 @@ def otlp_logs_payload(streams: list[dict]) -> dict:
             raise ValueError("conformance labels do not match the fixed label contract")
         if labels["job"] != "agent-cloud-conformance":
             raise ValueError("conformance log job label is not bounded")
-        if labels["status"] not in {"pass", "fail", "skip", "no_history", "history_incomplete"}:
+        if labels["status"] not in {"pass", "fail", "skip", "no_history", "has_history", "history_incomplete"}:
             raise ValueError("conformance log status label is not bounded")
         attributes = [
             {"key": key, "value": {"stringValue": str(labels[key])}}
