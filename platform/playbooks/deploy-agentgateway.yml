@@ -562,16 +562,16 @@
                 categories = (
                     (
                         "invalid-endpoint-error",
-                        r"invalid (?:url|uri|endpoint|host:port)|malformed (?:url|uri|endpoint)|"
-                        r"(?:url|uri|endpoint).{0,80}(?:invalid|malformed|not valid)|"
-                        r"(?:url|uri|endpoint) parse error|failed to parse (?:url|uri|endpoint)",
+                        r"\binvalid (?:url|uri|endpoint|host:port)\b|\bmalformed (?:url|uri|endpoint)\b|"
+                        r"\b(?:url|uri|endpoint)\b.{0,80}(?:invalid|malformed|not valid)|"
+                        r"\b(?:url|uri|endpoint)\b parse error|"
+                        r"failed to parse \b(?:url|uri|endpoint)\b",
                     ),
                     (
-                        "config-schema-error",
-                        r"unknown field|unknown key|failed to parse (?:yaml|configuration|config)|"
-                        r"parse error|schema validation|invalid (?:yaml|configuration|config)",
+                        "config-type-variant-error",
+                        r"invalid type|wrong type|expected (?:a |an )?(?:sequence|mapping|scalar)|"
+                        r"unknown variant|expected (?:one of|variant)",
                     ),
-                    ("config-type-variant-error", r"invalid type|wrong type|expected (?:a |an )?(?:sequence|mapping|scalar)|unknown variant|expected (?:one of|variant)"),
                     (
                         "environment-reference-error",
                         r"missing environment variable|environment variable.{0,80}(?:not found|not set|undefined|missing)|"
@@ -588,6 +588,11 @@
                     ("file-mount-permission-error", r"permission denied|operation not permitted|access denied|read-only file system"),
                     ("cli-argument-error", r"unknown (?:flag|option)|unrecognized (?:flag|option)|flag provided but not defined|unexpected argument|requires an argument|usage:"),
                     ("network-dependency-error", r"connection refused|connection reset|no route to host|temporary failure in name resolution|no such host|deadline exceeded|i/o timeout"),
+                    (
+                        "config-schema-error",
+                        r"unknown field|unknown key|failed to parse (?:yaml|configuration|config)|"
+                        r"parse error|schema validation|invalid (?:yaml|configuration|config)",
+                    ),
                 )
                 if rc == 125:
                     category = "container-runtime-error"
