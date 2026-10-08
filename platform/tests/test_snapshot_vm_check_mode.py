@@ -83,6 +83,7 @@ class FakeProxmoxTLS:
 
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.minimum_version = ssl.TLSVersion.TLSv1_2
         ctx.load_cert_chain(*_self_signed(tmp_path))
         self.server.socket = ctx.wrap_socket(self.server.socket, server_side=True)
         self.url = f"https://127.0.0.1:{self.server.server_port}"
