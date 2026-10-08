@@ -434,6 +434,46 @@
         _ca_host: "{{ inventory_hostname if (local_mode | default(false) | bool) else (groups['step_ca_svc'] | first) }}"
       when: (local_mode | default(false) | bool) or _tls
 
+    # Task 5.7: exercise the exact pinned binary against the rendered config before
+    # deploy.sh can recreate either container. Run after certificate/trust preparation
+    # because the validation container gets the same read-only ./certs mount as Compose.
+    # The env file is passed by path (never expanded into argv); diagnostics are hidden
+    # because parser errors may contain configuration text.
+    - name: "Require the reviewed agentgateway v1.5.0 image pin"
+      ansible.builtin.assert:
+        that:
+          - agw_image | default('cr.agentgateway.dev/agentgateway:v1.5.0') == 'cr.agentgateway.dev/agentgateway:v1.5.0'
+        fail_msg: "Observability-estate task 5.7 validates only cr.agentgateway.dev/agentgateway:v1.5.0; review an image-pin change separately."
+        quiet: true
+      when: not ansible_check_mode
+
+    # Invocation follows the standalone CLI docs (`agentgateway --validate-only -f config.yaml`);
+    # the pinned release publishes cr.agentgateway.dev/agentgateway:v1.5.0.
+    - name: "Validate the rendered config with the pinned v1.5.0 image before container recreation"
+      ansible.builtin.command:
+        argv: >-
+          {{ [container_engine | default('podman'), 'run', '--pull=missing', '--rm', '--network=none',
+              '--env-file', _deploy_dir ~ '/.env', '--volume', _deploy_dir ~ '/config.yaml:/config.yaml:ro']
+             + (['--volume', _deploy_dir ~ '/certs:/certs:ro'] if (_tls or (local_mode | default(false) | bool)) else [])
+             + (['--env', 'SSL_CERT_FILE=/certs/step-ca-bundle.crt'] if (local_mode | default(false) | bool) else [])
+             + (['--security-opt', 'label=disable'] if (local_mode | default(false) | bool) else [])
+             + (['--userns=keep-id:uid=65532,gid=65532'] if (_tls and not (local_mode | default(false) | bool)) else [])
+             + (['--user', _key_owner.stdout] if (_tls and (local_mode | default(false) | bool)) else [])
+             + ['cr.agentgateway.dev/agentgateway:v1.5.0', '--validate-only', '-f', '/config.yaml'] }}
+      register: _agw_config_validation
+      changed_when: false
+      failed_when: false
+      no_log: true
+      when: not ansible_check_mode
+
+    - name: "Refuse container recreation when the pinned image rejects rendered config"
+      ansible.builtin.assert:
+        that: _agw_config_validation.rc == 0
+        fail_msg: "The rendered agentgateway config was rejected by cr.agentgateway.dev/agentgateway:v1.5.0; no gateway container was recreated. Validator output is suppressed because it may include configuration values."
+        success_msg: "Pinned agentgateway v1.5.0 accepted rendered config before container lifecycle."
+        quiet: true
+      when: not ansible_check_mode
+
 # ── Phase 2: Container lifecycle ────────────────────────────────────────────
 - name: "Phase 2: Start agentgateway"
   hosts: agentgateway_svc

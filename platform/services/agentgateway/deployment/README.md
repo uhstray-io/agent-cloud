@@ -6,6 +6,25 @@ agentgateway** — removes both containers (gateway + its own Postgres) and the 
 volume, then redeploys. Keys come back from OpenBao unchanged; the only state lost is
 every identity's current token-budget window.
 
+Every real deploy runs the rendered `config.yaml` through the exact
+`cr.agentgateway.dev/agentgateway:v1.5.0 --validate-only -f /config.yaml`
+before `deploy.sh` can recreate containers. The validator receives `.env` by
+file path and has no network. In local mode and when listener TLS is enabled it
+also receives the same read-only `/certs` mount and trust settings as Compose;
+the production TLS check uses the same keep-id mapping. Its output is suppressed
+because parser errors may quote configuration. The invocation follows the
+[standalone validation command](https://agentgateway.dev/docs/standalone/latest/documentation/setup/update/)
+and the image comes from the [v1.5.0 release](https://github.com/agentgateway/agentgateway/releases/tag/v1.5.0).
+`Verify agentgateway Runtime (Dev)` is a separate,
+read-only receipt for the reviewed checkout SHA, image pin, and the two sampling
+values read from the rendered file. It records configuration acceptance inputs;
+it does not claim callback-marker absence from stored logs or spans. That runtime
+correlation gate remains incomplete until stdout and OTLP records and an exact
+callback span can be joined to each bounded synthetic request. Validator success
+is necessary config evidence, not proof of runtime callback behavior. OTLP access
+record separation with `signal: "access-log"` remains pending in gateway-owned
+configuration; this source-side verifier does not claim that field has landed.
+
 `deploy.sh` is container lifecycle only. Both files the container reads (`.env`,
 `config.yaml`) are rendered by `deploy-agentgateway.yml` from OpenBao + inventory and
 are gitignored. Operational reference: `../context/architecture.md`. When a deploy's render changes `config.yaml`, the file it replaced is kept

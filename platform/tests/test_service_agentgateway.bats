@@ -262,7 +262,16 @@ assert "_agwp_key" not in str({k: v for k, v in call["ansible.builtin.uri"].item
 keep = next(t for t in probe if "ansible.builtin.set_fact" in t)
 assert keep.get("no_log") is True and set(keep["ansible.builtin.set_fact"]["_agwp_out"]) == {"status", "content", "json", "msg"}
 PY
-  refute_grep -qF 'no_log: true' "$PLAYBOOK"
+  python3 - "$PLAYBOOK" <<'PY'
+import sys
+import yaml
+plays = yaml.safe_load(open(sys.argv[1], encoding='utf-8'))
+tasks = [task for play in plays for task in play.get('tasks', [])]
+validation = next(task for task in tasks if task.get('name', '').startswith('Validate the rendered config'))
+deploy = next(task for play in plays if play.get('name') == 'Phase 2: Start agentgateway' for task in play['tasks'] if task.get('name') == 'Run deploy.sh (container lifecycle)')
+assert validation.get('no_log') is True
+assert deploy.get('no_log') is not True
+PY
   refute_grep -qE "secrets\['client_" "$PLAYBOOK"
   refute_grep -qF 'read -r k' "$PLAYBOOK"
   # The identity is checked against, and asks for, only the models it may use; a 429 from the

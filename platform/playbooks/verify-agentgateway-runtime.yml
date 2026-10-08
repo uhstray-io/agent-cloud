@@ -1,0 +1,84 @@
+---
+# Read-only Dev receipt for agentgateway observability-estate task 5.7.
+# This first stage confirms the exact reviewed revision, deployed image, and sampling
+# value from rendered files. Request-level marker correlation remains a separate runtime
+# gate and is not inferred from these configuration facts.
+- name: Refuse extra vars that set internal names
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: Require one gateway and an explicit expected Dev revision
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Validate the read-only receipt inputs
+      ansible.builtin.assert:
+        that:
+          - groups.get('agentgateway_svc', []) | length == 1
+          - expected_repository_sha | default('') is match('^[0-9a-f]{40}$')
+        fail_msg: "Require one agentgateway_svc host and expected_repository_sha from the reviewed Dev revision."
+        quiet: true
+
+- name: Read deployed agentgateway metadata without changing the service
+  hosts: agentgateway_svc
+  gather_facts: false
+  become: false
+  any_errors_fatal: true
+  vars:
+    _engine: "{{ container_engine | default('podman') }}"
+    _repo: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+    _deploy_dir: "{{ _repo }}/{{ monorepo_deploy_path }}"
+  tasks:
+    - name: Read the exact deployed repository revision
+      ansible.builtin.command:
+        argv: [git, rev-parse, HEAD]
+        chdir: "{{ _repo }}"
+      register: _agw_revision
+      changed_when: false
+      check_mode: false
+
+    - name: Require the reviewed Dev revision
+      ansible.builtin.assert:
+        that: _agw_revision.stdout | trim == expected_repository_sha
+        fail_msg: "The gateway checkout is not the exact reviewed Dev revision supplied to this read-only receipt."
+        quiet: true
+
+    - name: Read safe metadata from rendered config and environment files
+      ansible.builtin.command:
+        argv: [python3, -c, "{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/inspect-agentgateway-runtime.py') }}"]
+        stdin: "{{ {'env_path': _deploy_dir ~ '/.env', 'config_path': _deploy_dir ~ '/config.yaml', 'revision': _agw_revision.stdout | trim} | to_json }}"
+      register: _agw_metadata
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Require a safe rendered-runtime metadata receipt
+      ansible.builtin.assert:
+        that:
+          - _agw_metadata.rc == 0
+          - (_agw_metadata.stdout | default('')) is match('^\s*\{')
+          - (_agw_metadata.stdout | from_json).status == 'pass'
+        fail_msg: "Rendered agentgateway image or sampling metadata did not satisfy the v1.5.0 runtime receipt."
+        quiet: true
+
+    - name: Read the running container image reference
+      ansible.builtin.command:
+        argv: ["{{ _engine }}", inspect, --format, "{{ '{{.Config.Image}}' }}", agentgateway]
+      register: _agw_running_image
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Require the running container to use the validated image
+      ansible.builtin.assert:
+        that:
+          - _agw_running_image.rc == 0
+          - _agw_running_image.stdout | trim == 'cr.agentgateway.dev/agentgateway:v1.5.0'
+        fail_msg: "The running gateway image does not match the validated v1.5.0 pin."
+        quiet: true
+
+    - name: Report the reviewed Dev runtime metadata
+      ansible.builtin.debug:
+        msg: "{{ _agw_metadata.stdout | from_json }}"
