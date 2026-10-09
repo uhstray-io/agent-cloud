@@ -25,12 +25,17 @@ def test_recovery_starts_only_existing_audit_dependencies():
         # The run's first play, imported by name next to the playbook.
         guard = PLAYBOOK.parent / "refuse-internal-extra-vars.yml"
         (playbook.parent / guard.name).write_bytes(guard.read_bytes())
+        # Its filter, found as a filter_plugins directory next to the playbook (the repository's
+        # ansible.cfg, which also names it, is not part of this fixture).
+        plugin = PLAYBOOK.parent / "filter_plugins/extra_var_names.py"
+        (playbook.parent / "filter_plugins").mkdir()
+        (playbook.parent / "filter_plugins" / plugin.name).write_bytes(plugin.read_bytes())
         inventory = root / "inventory.yml"
         inventory.write_text(
             "all:\n  children:\n    authentik_svc:\n      hosts:\n"
             "        localhost:\n          ansible_connection: local\n"
         )
-        (root / ".gitignore").write_text("inventory.yml\nbin/\nstate.json\nremote-tmp/\n")
+        (root / ".gitignore").write_text("inventory.yml\nbin/\nstate.json\nremote-tmp/\n__pycache__/\n")
         state_file = root / "state.json"
         state_file.write_text(json.dumps(dict.fromkeys(NAMES, "created")))
         bin_dir = root / "bin"
