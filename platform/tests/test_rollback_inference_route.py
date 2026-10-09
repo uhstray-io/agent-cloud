@@ -631,6 +631,29 @@ def test_gateway_config_reads_apikey_enrolments_outside_the_llm_policy(env):
     _refused(env, "sneaky")
 
 
+@pytest.mark.parametrize(("which", "text", "reason"), [
+    ("config.yaml.previous", "llm: [unclosed\n  keyHash: sha256:aaaa1111\n", "not YAML"),
+    ("config.yaml.previous", "- keyHash: sha256:aaaa1111\n", "not a mapping"),
+    ("config.yaml.previous", "sha256:aaaa1111\n", "not a mapping"),
+    ("config.yaml", "llm: [unclosed\n  keyHash: sha256:bbbb2222\n", "not YAML"),
+    ("config.yaml", "- keyHash: sha256:bbbb2222\n", "not a mapping"),
+])
+def test_gateway_config_refuses_a_config_it_cannot_read_naming_the_file_and_never_its_content(env, which, text, reason):
+    """An unreadable config cannot be compared, so it fails closed with the file and the class of
+    the problem only (a parser error quotes the line it stopped at, which holds a key hash)."""
+    tmp = env[0]
+    good = _cfg(("workstation", "aaaa1111"))
+    (tmp / "gw" / "config.yaml").write_text(good)
+    (tmp / "gw" / "config.yaml.previous").write_text(good)
+    (tmp / "gw" / which).write_text(text)
+    live = (tmp / "gw" / "config.yaml").read_text()
+    rc, out = _run(env, mode="gateway-config")
+    assert rc != 0 and f"cannot read the enrolled identities of {which}: {reason}." in out, out
+    _hash_never_printed(out)
+    assert "unclosed" not in out
+    assert (tmp / "gw" / "config.yaml").read_text() == live and not _calls(tmp, "deploy")
+
+
 TEMPLATE = playbook_yaml.REPO / "platform/services/agentgateway/deployment/templates/config.yaml.j2"
 
 

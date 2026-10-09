@@ -369,9 +369,9 @@
 
     # ── Render + upsert + activate the cycle workflow ────────────────────────
     - name: "Render the cycle workflow from the committed mapping"
-      # ansible-core 2.16 (the runner image) native-evaluates the rendered
-      # JSON into a dict inside the lookup; newer cores hand back a string —
-      # the mapping test makes the parse version-proof.
+      # ansible-core 2.16 native-evaluates the rendered JSON into a dict
+      # inside the lookup; newer cores (the runner image ships 2.20) hand
+      # back a string — the mapping test makes the parse version-proof.
       ansible.builtin.set_fact:
         _workflow_json: "{{ _rendered if _rendered is mapping else (_rendered | from_json) }}"
       vars:
