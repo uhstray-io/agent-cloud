@@ -26,6 +26,17 @@ ZONE="$(ansible-inventory -i "$INV" --host dns-local 2>/dev/null \
         | python3 -c 'import json,sys; print(json.load(sys.stdin).get("dns_zone",""))' 2>/dev/null)"
 [ -n "$ZONE" ] || ZONE="agent-cloud.test"
 
+# The local Semaphore's URL is whatever bootstrap published (local_semaphore_port in the
+# inventory), recorded in the state file. Read the one line instead of sourcing the file,
+# which also holds credentials. Same local-only rule as local-dev.sh: anything that is not
+# loopback is not the local controller, so it is never probed.
+SEM_URL="$(grep -m1 '^SEMAPHORE_URL=' "$STATE" 2>/dev/null | cut -d= -f2-)"
+[ -n "$SEM_URL" ] || SEM_URL="http://127.0.0.1:3000"
+case "$SEM_URL" in
+  http://127.0.0.1:*|http://localhost:*) SEM_LOCAL=true ;;
+  *) SEM_LOCAL=false ;;
+esac
+
 pass=0 fail=0 skip=0
 ok()   { printf '  \033[32mPASS\033[0m %s\n' "$1"; pass=$((pass+1)); }
 no()   { printf '  \033[31mFAIL\033[0m %s\n' "$1"; fail=$((fail+1)); }
@@ -51,7 +62,11 @@ for c in local-openbao local-semaphore; do
   running "$c" && ok "container $c running" || no "container $c running"
 done
 http_is "http://127.0.0.1:8200/v1/sys/health" "200" "OpenBao health (127.0.0.1:8200)"
-http_is "http://127.0.0.1:3000/api/ping"      "200" "Semaphore ping (127.0.0.1:3000)"
+if $SEM_LOCAL; then
+  http_is "${SEM_URL}/api/ping" "200" "Semaphore ping (${SEM_URL#http://})"
+else
+  no "Semaphore URL ${SEM_URL} in the state file is not the local controller; not probed"
+fi
 
 hdr "3. DNS (hickory)"
 if running dns; then
