@@ -154,6 +154,12 @@ that must answer 401 before any key is read or any completion is spent. The case
 contract lists), a `chat_template_kwargs` override (`reasoning_effort: low`), a tool call, a
 streamed `xhigh` request and one Responses API request.
 
+How the TLS listener treats a client it must refuse (tasks 6.1, 6.4): the Semaphore template
+`Probe agentgateway Client TLS (Dev)` (`platform/playbooks/probe-agentgateway-client-tls.yml`) sends
+`GET /v1/models` through `tasks/agw-probe.yml` with no client certificate, then presenting a declared
+client leaf that is on no allowlist, once with no key and once with an invalid one, and reports
+statuses and failure classes only (no body, header or key).
+
 A case **matches** when both targets succeeded (curl exit 0, a 2xx status, and for the stream
 an ending `[DONE]` with no error event) and returned the
 same status, the same body shape (every leaf path and its JSON type) and the same semantic fields:

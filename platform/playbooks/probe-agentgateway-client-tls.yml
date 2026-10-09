@@ -1,0 +1,300 @@
+---
+# probe-agentgateway-client-tls.yml — record how the gateway's TLS listener treats a client it
+# must refuse (change inference-gateway-agentgateway, tasks 6.1 and 6.4).
+#
+# The listener requires a client certificate from the internal CA and carries a SAN rule over
+# the certificates on `agw_client_cert_allowlist` (config.yaml.j2). Measured once on v1.5.0
+# (2026-10-02, local): no client certificate fails the handshake, and a certificate outside the
+# list is 403 even with a valid key, because the rule runs before key authentication. This
+# playbook records the same three facts against the production gateway, from the gateway VM,
+# through the one probe path every other check uses (tasks/agw-probe.yml):
+#
+#   1. no client certificate        GET /v1/models, the server leaf verified, nothing presented
+#   2. the named leaf, no API key   GET /v1/models
+#   3. the named leaf, a literal    GET /v1/models, `Authorization: Bearer drill-invalid-key`
+#      key that is no credential
+#
+# The leaf is a client-profile leaf declared in site-config's `internal_leaves` for this host
+# and issued by Issue Internal Leaf (Dev), whose SANs are on NO allowlist: the probe exists for
+# a client that must be refused, so the run refuses a leaf that is on the allowlist, by name or
+# by a SAN it shares with one that is.
+#
+#   -e probe_leaf=<declared client leaf>      (Semaphore survey, required)
+#
+# Pass: no certificate is stopped in the handshake (a TLS handshake refusal or a closed connection;
+# an HTTP answer there is a finding and fails the run), and each leaf probe is answered by the
+# gateway's policy: HTTP 401 or 403, or a handshake refusal. A 2xx is admission and fails. Any other
+# status (3xx, 404, 429, 5xx: an unhealthy gateway) and any transport failure that says nothing about
+# the policy (the server leaf did not verify, the name did not resolve, a timeout, a refused
+# connection) fail the run as inconclusive instead of passing it.
+#
+# Reading, reported and not asserted, only when probes 2 and 3 were both answered 401 or 403: both 403
+# means the SAN rule ran before the API-key check and 403 is what a failed rule answers; probe 2
+# answered 401 means the key check was reached first. Otherwise: no reading.
+#
+# Nothing here prints a response body, a header or a key: the report carries statuses, failure
+# classes and the reading. Read-only on the gateway; the resolution step is its read-only mode
+# (Deploy agentgateway is its one writer). A dry run (--check) runs the refusals, which read
+# files only, and sends nothing.
+#
+# Inventory (agentgateway_svc host), all read by the deploy too:
+#   agw_listener_tls (must be true), agw_client_cert_allowlist, internal_leaves, agw_tls_server_name,
+#   agw_bind, agw_port, agw_verify_base_url, agw_internal_dns_authoritative, monorepo_deploy_path
+
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: "Pre-flight"
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: agentgateway_svc
+    preflight_group_expected: agentgateway_svc
+
+- name: "Probe how the gateway's TLS listener treats a client that is on no allowlist"
+  hosts: agentgateway_svc
+  gather_facts: false
+  become: false
+  vars:
+    _tls: "{{ agw_listener_tls | default(false) | bool }}"
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+    _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path | default('platform/services/agentgateway/deployment') }}"
+    _port: "{{ agw_port | default('4000') }}"
+    _probe_ip: "{{ '127.0.0.1' if (agw_bind | default('127.0.0.1')) in ['0.0.0.0', '::', ''] else agw_bind | default('127.0.0.1') }}"
+    _server_name: "{{ agw_tls_server_name | default('gateway.' ~ (dns_site | default('')) ~ '.' ~ (dns_zone | default(''))) }}"
+    _ca: "{{ _deploy_dir }}/certs/step-ca-bundle.crt"
+    _leaf_name: "{{ probe_leaf | default('') | string }}"
+    _allowlist: "{{ agw_client_cert_allowlist | default(['caddy']) }}"
+    _declared: "{{ internal_leaves | default([]) | selectattr('name', 'equalto', _leaf_name) | list }}"
+    # The SANs the gateway's rule admits: config.yaml.j2's own derivation.
+    _allow_sans: >-
+      {{ internal_leaves | default([]) | selectattr('profile', 'equalto', 'client')
+         | selectattr('name', 'in', _allowlist) | map(attribute='sans') | flatten | unique | list }}
+    # Not a credential. Sent only to prove a key the gateway does not hold changes nothing.
+    _invalid_key: drill-invalid-key
+    _no_cert_probe: "no client certificate"
+    _leaf_probe: "the leaf, no API key"
+    _bad_key_probe: "the leaf, an invalid API key"
+
+  tasks:
+    - name: "Require listener TLS, one gateway host and a leaf name"
+      ansible.builtin.assert:
+        that:
+          - groups['agentgateway_svc'] | length == 1
+          - _tls
+          - _leaf_name is match('^[A-Za-z0-9][A-Za-z0-9._-]*$')
+        fail_msg: >-
+          Pass -e probe_leaf=<a client-profile leaf declared for this host in internal_leaves>, on one
+          agentgateway_svc host with agw_listener_tls true: without TLS there is no client certificate
+          to refuse.
+        quiet: true
+
+    - name: "Refuse a leaf that internal_leaves does not declare for this host as a client leaf"
+      ansible.builtin.assert:
+        that:
+          - _declared | length == 1
+          - _declared[0].profile == 'client'
+          - _declared[0].host == inventory_hostname
+          - _declared[0].dir | default('') | length > 0
+        fail_msg: >-
+          '{{ _leaf_name }}' must be declared once in internal_leaves as a client-profile leaf of host
+          {{ inventory_hostname }} with a dir; found {{ _declared | length }} declaration(s)
+          {{ ('(profile ' ~ _declared[0].profile | default('unset') ~ ', host ' ~ _declared[0].host | default('unset') ~ ')')
+             if (_declared | length == 1) else '' }}.
+        quiet: true
+
+    - name: "Refuse a leaf the gateway would admit"
+      ansible.builtin.assert:
+        that:
+          - _leaf_name not in _allowlist
+          - _declared[0].sans | default([]) | intersect(_allow_sans) | length == 0
+        fail_msg: >-
+          '{{ _leaf_name }}' is admitted by the SAN rule (named on agw_client_cert_allowlist, or sharing a SAN
+          with a leaf that is); this probe is for a leaf the gateway must refuse. Declare a separate client
+          leaf whose SANs are on no allowlist.
+        quiet: true
+
+    - name: "Read the leaf and the trust bundle"
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - "{{ _declared[0].dir }}/current/cert.pem"
+        - "{{ _declared[0].dir }}/current/key.pem"
+        - "{{ _ca }}"
+      register: _files
+
+    - name: "Refuse a leaf that is not issued on this host"
+      ansible.builtin.assert:
+        that: _files.results | rejectattr('stat.exists') | list | length == 0
+        fail_msg: >-
+          Issue the leaf first (Issue Internal Leaf (Dev), target_service=agentgateway_svc,
+          leaf_name={{ _leaf_name }}); missing: {{ _files.results | rejectattr('stat.exists') | map(attribute='item') | join(', ') }}.
+        quiet: true
+
+    - name: "Dry run: report (the probes are requests to the gateway)"
+      ansible.builtin.debug:
+        msg: >-
+          check mode: the leaf '{{ _leaf_name }}' is declared, not admitted and issued; the run would send
+          three GET /v1/models requests to {{ agw_verify_base_url | default('https://' ~ _server_name ~ ':' ~ _port) }}
+          ({{ _no_cert_probe }}; {{ _leaf_probe }}; {{ _bad_key_probe }}). Nothing was sent.
+      when: ansible_check_mode
+
+    - name: "Probe the listener"
+      when: not ansible_check_mode
+      block:
+        # The same resolution the deploy converges, read-only: a hosts file the deploy has not
+        # converged, or a name the internal zone does not answer, stops the run here, by name.
+        - name: "Probe path: resolve the server leaf's name (task 7.2)"
+          ansible.builtin.include_tasks: tasks/agw-probe-resolution.yml
+          vars:
+            _agwr_check_only: true
+            _agwr_name: "{{ _server_name }}"
+            _agwr_ip: "{{ _probe_ip }}"
+            _agwr_expect: ""
+            _agwr_hosts_file: /etc/hosts
+          when: agw_verify_base_url is not defined
+
+        - name: "The gateway base URL the probes use"
+          ansible.builtin.set_fact:
+            _gateway_base: >-
+              {{ agw_verify_base_url if (agw_verify_base_url is defined) else ('https://' ~ _server_name ~ ':' ~ _port) }}
+
+        - name: "Probe 1: no client certificate"
+          ansible.builtin.include_tasks: tasks/agw-probe.yml
+          vars:
+            _agwp_base: "{{ _gateway_base }}"
+            _agwp_path: /v1/models
+            _agwp_status: [200]
+            _agwp_key: ""
+            _agwp_method: GET
+            _agwp_timeout: 10
+            _agwp_leaf_dir: "{{ _declared[0].dir }}"
+            _agwp_ca: "{{ _ca }}"
+            _agwp_no_client_cert: true
+
+        - name: "Probe 1: keep the status and the failure text"
+          ansible.builtin.set_fact:
+            _tp_r1: "{{ {'status': _agwp_out.status | int, 'msg': _agwp_out.msg | string} }}"
+
+        - name: "Probe 2: the leaf, no API key"
+          ansible.builtin.include_tasks: tasks/agw-probe.yml
+          vars:
+            _agwp_base: "{{ _gateway_base }}"
+            _agwp_path: /v1/models
+            _agwp_status: [200]
+            _agwp_key: ""
+            _agwp_method: GET
+            _agwp_timeout: 10
+            _agwp_leaf_dir: "{{ _declared[0].dir }}"
+            _agwp_ca: "{{ _ca }}"
+            _agwp_no_client_cert: false
+
+        - name: "Probe 2: keep the status and the failure text"
+          ansible.builtin.set_fact:
+            _tp_r2: "{{ {'status': _agwp_out.status | int, 'msg': _agwp_out.msg | string} }}"
+
+        - name: "Probe 3: the leaf, an invalid API key"
+          ansible.builtin.include_tasks: tasks/agw-probe.yml
+          vars:
+            _agwp_base: "{{ _gateway_base }}"
+            _agwp_path: /v1/models
+            _agwp_status: [200]
+            _agwp_key: "{{ _invalid_key }}"
+            _agwp_method: GET
+            _agwp_timeout: 10
+            _agwp_leaf_dir: "{{ _declared[0].dir }}"
+            _agwp_ca: "{{ _ca }}"
+            _agwp_no_client_cert: false
+
+        - name: "Probe 3: keep the status and the failure text"
+          ansible.builtin.set_fact:
+            _tp_r3: "{{ {'status': _agwp_out.status | int, 'msg': _agwp_out.msg | string} }}"
+
+        # One class per probe. `refused` classes mean the gateway's own policy answered;
+        # `inconclusive` ones mean the probe never reached it, which proves nothing either way.
+        # A status above zero is the gateway's answer (no body is kept); status -1 is a
+        # transport failure, classified from the text of the error alone.
+        - name: "Classify each probe's outcome"
+          ansible.builtin.set_fact:
+            _tp_classes: >-
+              {%- set out = {} -%}
+              {%- for key, r in {'p1': _tp_r1, 'p2': _tp_r2, 'p3': _tp_r3}.items() -%}
+              {%- set m = r.msg | lower -%}
+              {%- if r.status > 0 -%}{%- set c = 'http-' ~ r.status -%}
+              {%- elif m is search('certificate verify failed|self.signed|local issuer|doesn.t match|has expired') -%}{%- set c = 'server-certificate-not-trusted' -%}
+              {%- elif m is search('certificate required|bad certificate|handshake failure|alert certificate|alert unknown ca|alert handshake') -%}{%- set c = 'tls-handshake-refused' -%}
+              {%- elif m is search('connection refused') -%}{%- set c = 'connection-refused' -%}
+              {%- elif m is search('connection reset|connection aborted|eof occurred|remote end closed|broken pipe|closed connection|unexpected eof') -%}{%- set c = 'connection-closed' -%}
+              {%- elif m is search('timed out|timeout') -%}{%- set c = 'timeout' -%}
+              {%- elif m is search('name or service not known|nodename nor servname|temporary failure in name resolution|getaddrinfo') -%}{%- set c = 'name-not-resolved' -%}
+              {%- else -%}{%- set c = 'other-transport-failure' -%}
+              {%- endif -%}
+              {%- set _ = out.update({key: c}) -%}
+              {%- endfor -%}
+              {{ out | to_json }}
+
+        - name: "Work out the verdict and the reading"
+          ansible.builtin.set_fact:
+            _tp_verdict: "{{ _tp_verdict_dict | to_json }}"
+          vars:
+            _c: "{{ _tp_classes | from_json }}"
+            _leaf_probes: "{{ {'p2': _c.p2, 'p3': _c.p3} }}"
+            # What the gateway's own policy answers. Probe 1 has no HTTP answer to give: a client
+            # with no certificate is stopped in the handshake, so any status there is a finding.
+            _no_cert_refusals: [tls-handshake-refused, connection-closed]
+            _leaf_refusals: [http-401, http-403, tls-handshake-refused, connection-closed]
+            _answered: "{{ ['p1'] if (_c.p1 is match('^http-')) else [] }}"
+            _admitted: "{{ _leaf_probes.items() | selectattr('1', 'match', '^http-2') | map(attribute='0') | list }}"
+            # Neither a policy answer nor a 2xx: a 3xx, 404, 429 or 5xx from an unhealthy gateway,
+            # or a transport failure that says nothing about the policy.
+            _inconclusive_1: "{{ [] if (_c.p1 is match('^http-') or _c.p1 in _no_cert_refusals) else ['p1'] }}"
+            _inconclusive_leaf: >-
+              {{ _leaf_probes.items() | rejectattr('1', 'match', '^http-2') | rejectattr('1', 'in', _leaf_refusals)
+                 | map(attribute='0') | list }}
+            _s2: "{{ _tp_r2.status }}"
+            _s3: "{{ _tp_r3.status }}"
+            _reading_raw: >-
+              {% if _s2 not in [401, 403] or _s3 not in [401, 403] %}
+              no reading: probes 2 and 3 were not both answered by the gateway's policy (401 or 403)
+              {% elif _s2 == 403 and _s3 == 403 %}
+              the SAN rule ran before the API-key check: a leaf on no allowlist is answered HTTP 403 with or without a key
+              {% elif _s2 == 401 %}
+              the API-key check was reached first: the leaf with no key was answered 401, so the SAN rule did not refuse it before the key check
+              {% else %}
+              no single reading: the leaf answered {{ _c.p2 }} with no key and {{ _c.p3 }} with an invalid key
+              {% endif %}
+            _tp_verdict_dict:
+              answered: "{{ _answered }}"
+              admitted: "{{ _admitted }}"
+              inconclusive: "{{ _inconclusive_1 + _inconclusive_leaf }}"
+              reading: "{{ _reading_raw | trim }}"
+
+        # Statuses, classes and the reading only: no body, no header, no key, and the error text
+        # appears only for a transport failure, where it is the finding.
+        - name: "Report"
+          ansible.builtin.debug:
+            msg:
+              - "gateway: {{ _gateway_base }}"
+              - "1. {{ _no_cert_probe }}: {{ (_tp_classes | from_json).p1 }}{{ (' (' ~ (_tp_r1.msg | truncate(160, true)) ~ ')') if _tp_r1.status < 0 else '' }}"
+              - "2. {{ _leaf_probe }} ({{ _leaf_name }}): {{ (_tp_classes | from_json).p2 }}{{ (' (' ~ (_tp_r2.msg | truncate(160, true)) ~ ')') if _tp_r2.status < 0 else '' }}"
+              - "3. {{ _bad_key_probe }} ({{ _leaf_name }}): {{ (_tp_classes | from_json).p3 }}{{ (' (' ~ (_tp_r3.msg | truncate(160, true)) ~ ')') if _tp_r3.status < 0 else '' }}"
+              - "reading: {{ (_tp_verdict | from_json).reading }}"
+
+        - name: "Require three refusals the gateway itself answered"
+          ansible.builtin.assert:
+            that:
+              - (_tp_verdict | from_json).answered | length == 0
+              - (_tp_verdict | from_json).admitted | length == 0
+              - (_tp_verdict | from_json).inconclusive | length == 0
+            fail_msg: >-
+              {{ 'The listener answered without a client certificate (HTTP ' ~ _tp_r1.status ~ ').'
+                 if ((_tp_verdict | from_json).answered | length > 0) else '' }}
+              {{ 'The gateway ADMITTED probe(s) ' ~ ((_tp_verdict | from_json).admitted | join(', ')) ~ ' (a 2xx).'
+                 if ((_tp_verdict | from_json).admitted | length > 0) else '' }}
+              {{ 'Probe(s) ' ~ ((_tp_verdict | from_json).inconclusive | join(', ')) ~ ' were not a policy answer
+                 (a status other than 401 or 403, a server certificate not trusted, a name not resolved, a timeout,
+                 a refused connection or an unclassified failure): inconclusive.'
+                 if ((_tp_verdict | from_json).inconclusive | length > 0) else '' }}
+              See the report above for each probe's class.
+            quiet: true

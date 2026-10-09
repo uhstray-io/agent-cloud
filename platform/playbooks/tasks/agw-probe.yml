@@ -24,6 +24,9 @@
 #   _agwp_timeout   seconds (default 10)
 #   _agwp_leaf_dir  client leaf directory (TLS only); `current/` holds cert.pem and key.pem
 #   _agwp_ca        trust bundle path (TLS only)
+#   _agwp_no_client_cert  optional, default false. true presents NO client certificate (TLS only):
+#                   the server leaf is still verified against _agwp_ca. Used to record how the
+#                   listener treats a client with no certificate (probe-agentgateway-client-tls.yml).
 # Output: `_agwp_out` = {status, content, json, msg}. The raw result carries the request,
 # Authorization header included, so it is copied field by field under no_log and never kept.
 #
@@ -47,12 +50,14 @@
     headers: "{{ {'Authorization': 'Bearer ' ~ _agwp_key} if (_agwp_key | default('') | length > 0) else {} }}"
     body_format: "{{ 'json' if (_agwp_body is defined and (_agwp_method | default('GET')) == 'POST') else omit }}"
     body: "{{ _agwp_body if (_agwp_body is defined and (_agwp_method | default('GET')) == 'POST') else omit }}"
-    client_cert: "{{ (_agwp_leaf_dir ~ '/current/cert.pem') if (agw_listener_tls | default(false) | bool) else omit }}"
-    client_key: "{{ (_agwp_leaf_dir ~ '/current/key.pem') if (agw_listener_tls | default(false) | bool) else omit }}"
+    client_cert: "{{ (_agwp_leaf_dir ~ '/current/cert.pem') if _agwp_present_leaf else omit }}"
+    client_key: "{{ (_agwp_leaf_dir ~ '/current/key.pem') if _agwp_present_leaf else omit }}"
     ca_path: "{{ _agwp_ca if (agw_listener_tls | default(false) | bool) else omit }}"
     timeout: "{{ _agwp_timeout | default(10) }}"
     status_code: "{{ _agwp_status }}"
     return_content: true
+  vars:
+    _agwp_present_leaf: "{{ (agw_listener_tls | default(false) | bool) and not (_agwp_no_client_cert | default(false) | bool) }}"
   register: _agwp_raw
   failed_when: false
   no_log: true
