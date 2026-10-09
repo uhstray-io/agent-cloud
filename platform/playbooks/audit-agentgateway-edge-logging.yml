@@ -80,6 +80,34 @@
     _edge_audit_engine: "{{ container_engine | default('podman') }}"
     _edge_audit_gateway_host: "{{ groups['agentgateway_svc'][0] }}"
   tasks:
+    - name: Read whether the Caddy container is running
+      ansible.builtin.command:
+        argv:
+          - "{{ _edge_audit_engine }}"
+          - inspect
+          - --format
+          - "{{ '{{.State.Running}}' }}"
+          - caddy
+      register: _edge_audit_container_state
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Require Caddy container inspection and running state
+      ansible.builtin.assert:
+        that:
+          - _edge_audit_container_state.rc == 0
+          - _edge_audit_container_state.stdout | trim == 'true'
+        fail_msg: >-
+          Caddy edge audit refused; category={{
+            'container-inspection-unavailable'
+            if _edge_audit_container_state.rc != 0
+            or (_edge_audit_container_state.stdout | trim not in ['true', 'false'])
+            else 'container-not-running'
+          }}.
+        quiet: true
+
     - name: Read Caddy's effective admin API configuration
       ansible.builtin.command:
         argv:
@@ -102,7 +130,12 @@
         that:
           - _edge_audit_runtime_config.rc == 0
           - _edge_audit_runtime_config.stdout | length > 0
-        fail_msg: "Caddy's effective admin API configuration could not be read."
+        fail_msg: >-
+          Caddy edge audit refused; category={{
+            'admin-api-unavailable'
+            if _edge_audit_runtime_config.rc != 0
+            else 'empty-config'
+          }}.
         quiet: true
 
     - name: Read the Caddy container log driver configuration
