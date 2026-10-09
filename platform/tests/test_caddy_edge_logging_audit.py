@@ -73,6 +73,34 @@ def test_live_logger_and_writer_are_classified_with_container_retention():
     assert report["marker_in_bounded_container_logs"] == "yes"
 
 
+def test_matched_vars_handler_that_can_set_log_skip_refuses_classification():
+    config = runtime(logs={"logger_names": {HOST: "edge"}})
+    config["logging"]["logs"] = {"edge": {"writer": {"output": "stdout"}}}
+    outer = config["apps"]["http"]["servers"]["srv0"]["routes"][0]
+    outer["handle"].insert(0, {"handler": "vars", "root": {"log_skip": True}})
+    report = audit.audit(data(config))
+    assert report["status"] == "refused"
+    assert report["reason"] == "runtime_route_logging_override_ambiguous"
+    assert report["access_logging"] == "unknown"
+
+
+def test_exact_logger_name_precedes_matching_wildcard():
+    config = runtime(logs={"logger_names": {
+        "*.example.test": "wildcard",
+        HOST: "exact",
+    }})
+    config["logging"]["logs"] = {
+        "exact": {"writer": {"output": "stdout"}},
+        "wildcard": {"writer": {"output": "stderr"},
+                     "include": ["http.log.access.wildcard"]},
+        "default": {"writer": {"output": "discard"},
+                    "exclude": ["http.log.access"]},
+    }
+    report = audit.audit(data(config))
+    assert report["access_logging"] == "enabled"
+    assert report["sink_class"] == "container_stdout"
+
+
 def test_ambiguous_live_route_fails_closed():
     config = runtime()
     config["apps"]["http"]["servers"]["srv1"] = config["apps"]["http"]["servers"]["srv0"]

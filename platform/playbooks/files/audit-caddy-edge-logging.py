@@ -36,7 +36,8 @@ def _path_matches(pattern, path):
     return pattern == path
 
 
-def _route_branches(routes, host, path):
+def _route_branches(routes, host, path, parent_handlers=None):
+    parent_handlers = parent_handlers or []
     branches = []
     ambiguous = False
     if not isinstance(routes, list):
@@ -72,15 +73,24 @@ def _route_branches(routes, host, path):
             if set(matcher) - {"host", "path", "method"}:
                 ambiguous = True
                 continue
-            child_routes = [h.get("routes") for h in route.get("handle", [])
-                           if isinstance(h, dict) and h.get("handler") == "subroute"]
+            route_handlers = route.get("handle", [])
+            if not isinstance(route_handlers, list) or not all(
+                isinstance(handler, dict) for handler in route_handlers
+            ):
+                ambiguous = True
+                continue
+            matched_handlers = parent_handlers + route_handlers
+            child_routes = [handler.get("routes") for handler in route_handlers
+                            if handler.get("handler") == "subroute"]
             if child_routes:
                 for children in child_routes:
-                    child, child_ambiguous = _route_branches(children, host, path)
+                    child, child_ambiguous = _route_branches(
+                        children, host, path, matched_handlers
+                    )
                     branches.extend(child)
                     ambiguous = ambiguous or child_ambiguous
             else:
-                branches.append(route)
+                branches.append((route, matched_handlers))
     return branches, ambiguous
 
 
@@ -102,6 +112,18 @@ def _host_match(pattern, host):
 
 def _logger_matches(logger, pattern):
     return logger == pattern or logger.startswith(pattern + ".")
+
+
+def _mapped_logger(names_map, host):
+    if any(not isinstance(name, str) for name in names_map):
+        return None, True
+    exact = [value for name, value in names_map.items() if name.lower() == host]
+    if exact:
+        return exact[0], len(exact) != 1
+    wildcard = [value for name, value in names_map.items() if _host_match(name.lower(), host)]
+    if len(wildcard) > 1:
+        return None, True
+    return (wildcard[0], False) if wildcard else (None, False)
 
 
 def _normalize_upstream(target):
@@ -250,7 +272,12 @@ def audit(data):
                         declared_log_directives=source_log_directives,
                         route_candidates=sum(len(branches) for _, branches in candidates))
     server, matching_branches = candidates[0]
-    runtime_upstreams = _runtime_upstreams(matching_branches[0])
+    matching_route, matched_handlers = matching_branches[0]
+    if any(handler.get("handler") == "vars" for handler in matched_handlers):
+        return _unknown("runtime_route_logging_override_ambiguous", source_blocks=1,
+                        declared_log_directives=source_log_directives,
+                        route_candidates=1)
+    runtime_upstreams = _runtime_upstreams(matching_route)
     if not runtime_upstreams or sorted(runtime_upstreams) != sorted(declared_upstreams):
         return _unknown("runtime_upstream_mismatch", source_blocks=1,
                         declared_log_directives=source_log_directives,
@@ -265,8 +292,11 @@ def audit(data):
         if not isinstance(names_map, dict):
             access_logging, sink, retention = "unknown", "unknown", "unknown"
         else:
-            mapped = next((value for name, value in names_map.items()
-                           if _host_match(name.lower(), host)), None)
+            mapped, mapping_ambiguous = _mapped_logger(names_map, host)
+            if mapping_ambiguous:
+                return _unknown("runtime_logger_mapping_ambiguous", source_blocks=1,
+                                declared_log_directives=source_log_directives,
+                                route_candidates=1)
             if mapped is None and access_logs.get("skip_unmapped_hosts") is True:
                 access_logging, sink, retention = "disabled", "none", "not_applicable"
             else:
