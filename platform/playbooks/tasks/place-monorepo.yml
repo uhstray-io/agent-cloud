@@ -87,6 +87,8 @@
       --exclude platform/services/o11y/deployment/config/grafana/provisioning/alerting/observability.yml \
       --exclude platform/services/o11y/deployment/config/grafana/provisioning/alerting/contact.yml \
       "{{ playbook_dir | dirname | dirname }}/" "{{ _monorepo_dir }}/"
+  args:
+    executable: /bin/bash   # `set -o pipefail` needs bash (Ubuntu /bin/sh is dash)
   when:
     - not ansible_check_mode
     - local_mode | default(false) | bool
