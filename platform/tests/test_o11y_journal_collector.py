@@ -26,6 +26,591 @@ SURVEY_HELPER = ROOT / "platform/playbooks/files/survey-o11y-journal-directory.p
 SURVEY_SPEC = importlib.util.spec_from_file_location("o11y_journal_survey", SURVEY_HELPER)
 SURVEY = importlib.util.module_from_spec(SURVEY_SPEC)
 SURVEY_SPEC.loader.exec_module(SURVEY)
+POSITIONS_HELPER = ROOT / "platform/playbooks/files/o11y-journal-positions.py"
+POSITIONS_SPEC = importlib.util.spec_from_file_location("o11y_journal_positions", POSITIONS_HELPER)
+POSITIONS = importlib.util.module_from_spec(POSITIONS_SPEC)
+POSITIONS_SPEC.loader.exec_module(POSITIONS)
+
+
+def _positions_state(
+    owner=(88, 88), mode=0o700, children=(), acl=False,
+    root_mount=False, child_mount=False, component_layout=True,
+):
+    return {
+        "status": "observed",
+        "root": {"uid": owner[0], "gid": owner[1], "mode": mode, "dev": 7, "ino": 11},
+        "children": list(children),
+        "child_count": len(children),
+        "acl": acl,
+        "root_is_mount": root_mount,
+        "child_mount": child_mount,
+        "component_layout": component_layout,
+    }
+
+
+def _positions_found(metadata=None, users=0):
+    return {
+        "status": "observed",
+        "volume_name": "o11y_journal-collector-state",
+        "mountpoint": "/private/podman/volume/_data",
+        "volume_use_count": users,
+        "mount_count": users,
+        "collector_present": bool(users),
+        "project": "o11y",
+        "metadata": metadata or _positions_state(),
+    }
+
+
+def test_positions_survey_returns_only_bounded_metadata_categories():
+    report = POSITIONS.survey(
+        lambda: _positions_found(_positions_state(owner=(9001, 9001), children=[
+            {"kind": "file", "uid": 0, "gid": 0, "nlink": 1, "mode": 0o600}
+        ]))
+    )
+
+    assert report == {
+        "status": "observed",
+        "volume_use_count": 0,
+        "collector_present": False,
+        "entry_count": 1,
+        "root_owner": "mismatch",
+        "root_mode_access": "blocked",
+        "acl": "absent",
+        "mount": "clear",
+        "children": "safe_regular_files",
+    }
+    assert "/private" not in json.dumps(report)
+    assert "9001" not in json.dumps(report)
+
+
+def test_positions_discovery_requires_exact_compose_labels_and_unused_volume(monkeypatch):
+    volume = {
+        "Name": "o11y_journal-collector-state",
+        "Driver": "local",
+        "Scope": "local",
+        "Options": {},
+        "Mountpoint": "/private/podman/volume/_data",
+        "Labels": {
+            "com.docker.compose.project": "o11y",
+            "com.docker.compose.volume": "journal-collector-state",
+        },
+        "MountCount": 0,
+        "NeedsChown": False,
+        "NeedsCopyUp": False,
+    }
+    calls = []
+
+    def run(argv, **_kwargs):
+        calls.append(argv)
+        if argv[:2] == ["podman", "info"]:
+            return SimpleNamespace(returncode=0, stdout="true")
+        if argv[:3] == ["podman", "inspect", "--type"]:
+            return SimpleNamespace(returncode=0, stdout=json.dumps([{"Config": {"Labels": {
+                "com.docker.compose.project": "o11y", "com.docker.compose.service": "alloy"
+            }}}]))
+        if argv[:3] == ["podman", "volume", "inspect"]:
+            return SimpleNamespace(returncode=0, stdout=json.dumps([volume]))
+        if argv[:2] == ["podman", "ps"]:
+            return SimpleNamespace(returncode=0, stdout="[]")
+        raise AssertionError("unexpected discovery command")
+
+    monkeypatch.setattr(POSITIONS, "_inspect_metadata", lambda path, run: _positions_state(owner=(0, 0)))
+    found = POSITIONS.discover(run=run)
+    assert found["status"] == "observed"
+    assert found["volume_use_count"] == 0
+    assert all(argv[0:2] != ["podman", "run"] for argv in calls)
+    assert all("volume create" not in " ".join(argv) and "chown" not in " ".join(argv) for argv in calls)
+
+    volume["Labels"].pop("com.docker.compose.volume")
+    assert POSITIONS.discover(run=run)["status"] == "volume_missing"
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [("NeedsChown", True), ("NeedsCopyUp", True), ("NeedsChown", None), ("NeedsCopyUp", None)],
+)
+def test_positions_discovery_refuses_volume_initialization_flags(field, value, monkeypatch):
+    volume = {
+        "Name": "o11y_journal-collector-state",
+        "Driver": "local",
+        "Scope": "local",
+        "Options": {},
+        "Mountpoint": "/private/podman/volume/_data",
+        "Labels": {
+            "com.docker.compose.project": "o11y",
+            "com.docker.compose.volume": "journal-collector-state",
+        },
+        "MountCount": 0,
+        "NeedsChown": False,
+        "NeedsCopyUp": False,
+    }
+    if value is None:
+        volume.pop(field)
+    else:
+        volume[field] = value
+
+    def run(argv, **_kwargs):
+        if argv[:2] == ["podman", "info"]:
+            return SimpleNamespace(returncode=0, stdout="true")
+        if argv[:3] == ["podman", "inspect", "--type"]:
+            return SimpleNamespace(returncode=0, stdout=json.dumps([{"Config": {"Labels": {
+                "com.docker.compose.project": "o11y", "com.docker.compose.service": "alloy"
+            }}}]))
+        if argv[:3] == ["podman", "volume", "inspect"]:
+            return SimpleNamespace(returncode=0, stdout=json.dumps([volume]))
+        if argv[:2] == ["podman", "ps"]:
+            return SimpleNamespace(returncode=0, stdout="[]")
+        raise AssertionError("initialization refusal must happen before a container mount")
+
+    monkeypatch.setattr(POSITIONS, "_inspect_metadata", lambda path, run: _positions_state(owner=(0, 0)))
+    assert POSITIONS.discover(run=run)["status"] == "volume_initialization_unverified"
+
+
+@pytest.mark.parametrize("source_matches", [True, False])
+def test_positions_discovery_verifies_live_collector_volume_source(source_matches, monkeypatch):
+    volume = {
+        "Name": "o11y_journal-collector-state", "Driver": "local", "Scope": "local",
+        "Options": {}, "Mountpoint": "/private/podman/volume/_data", "MountCount": 1,
+        "NeedsChown": False, "NeedsCopyUp": False,
+        "Labels": {"com.docker.compose.project": "o11y", "com.docker.compose.volume": "journal-collector-state"},
+    }
+
+    def run(argv, **_kwargs):
+        if argv[:2] == ["podman", "info"]:
+            return SimpleNamespace(returncode=0, stdout="true")
+        if argv[:3] == ["podman", "inspect", "--type"] and argv[-1] == POSITIONS.RECEIVER:
+            return SimpleNamespace(returncode=0, stdout=json.dumps([{"Config": {"Labels": {
+                "com.docker.compose.project": "o11y", "com.docker.compose.service": "alloy"
+            }}}]))
+        if argv[:3] == ["podman", "volume", "inspect"]:
+            return SimpleNamespace(returncode=0, stdout=json.dumps([volume]))
+        if argv[:2] == ["podman", "ps"]:
+            return SimpleNamespace(returncode=0, stdout=json.dumps([{"Names": [POSITIONS.COLLECTOR]}]))
+        if argv[:3] == ["podman", "inspect", "--type"] and argv[-1] == POSITIONS.COLLECTOR:
+            mount_source = volume["Mountpoint"] if source_matches else "/private/other-volume/_data"
+            return SimpleNamespace(returncode=0, stdout=json.dumps([{
+                "Mounts": [{
+                    "Destination": POSITIONS.DATA_PATH, "Name": volume["Name"], "Type": "volume",
+                    "Source": mount_source, "RW": True,
+                }],
+                "Config": {"User": "0:0"},
+            }]))
+        raise AssertionError("unexpected live positions discovery command")
+
+    monkeypatch.setattr(POSITIONS, "_inspect_metadata", lambda _path, run: _positions_state(owner=(0, 0)))
+    assert POSITIONS.discover(run=run)["status"] == (
+        "observed" if source_matches else "collector_mount_unverified"
+    )
+
+
+def test_positions_repair_is_idempotent_and_refuses_volume_in_use():
+    already = _positions_found(_positions_state(owner=(0, 0)))
+    assert POSITIONS.repair_positions(lambda: already, lambda _found: pytest.fail("must not chown")) == {
+        "status": "already_correct", "reason": "owner_matches"
+    }
+    in_use = _positions_found(users=1)
+    assert POSITIONS.repair_positions(lambda: in_use, lambda _found: pytest.fail("must not chown")) == {
+        "status": "refused", "reason": "volume_in_use"
+    }
+
+
+@pytest.mark.parametrize(
+    ("metadata", "reason"),
+    [
+        (_positions_state(acl=True), "metadata_ambiguous"),
+        (_positions_state(root_mount=True), "metadata_ambiguous"),
+        (_positions_state(children=[{"kind": "symlink", "uid": 0, "gid": 0, "nlink": 1}]), "metadata_ambiguous"),
+        (_positions_state(mode=0o500), "unsupported_ownership_state"),
+        (
+            _positions_state(children=[{"kind": "file", "uid": 8, "gid": 0, "nlink": 1, "mode": 0o600}]),
+            "metadata_ambiguous",
+        ),
+    ],
+)
+def test_positions_repair_refuses_ambiguous_or_unsupported_state(metadata, reason):
+    assert POSITIONS.repair_positions(
+        lambda: _positions_found(metadata),
+        lambda _found: pytest.fail("refusal must precede mutation"),
+    ) == {"status": "refused", "reason": reason}
+
+
+def test_positions_repair_rechecks_fresh_evidence_before_chown_and_verifies_access():
+    original = _positions_found(_positions_state(owner=(88, 88), mode=0o700))
+    changed = _positions_found(_positions_state(owner=(0, 0), mode=0o700))
+    observations = iter((original, original, changed, changed))
+    calls = []
+    result = POSITIONS.repair_positions(
+        lambda: next(observations),
+        lambda found: calls.append(("chown", found["volume_name"])) or True,
+        lambda name: calls.append(("access-test", name)) or True,
+        image_available_fn=lambda: True,
+    )
+
+    assert result == {"status": "repaired", "reason": "verified"}
+    assert calls == [
+        ("chown", "o11y_journal-collector-state"),
+        ("access-test", "o11y_journal-collector-state"),
+    ]
+
+
+def test_positions_repair_stops_when_fresh_metadata_changes():
+    original = _positions_found(_positions_state(owner=(88, 88)))
+    changed = _positions_found(_positions_state(owner=(88, 88), mode=0o710))
+    observations = iter((original, changed))
+    result = POSITIONS.repair_positions(
+        lambda: next(observations),
+        lambda _found: pytest.fail("stale survey must not chown"),
+        image_available_fn=lambda: True,
+    )
+    assert result == {"status": "refused", "reason": "evidence_changed"}
+
+
+def test_positions_repair_refuses_before_chown_when_probe_image_is_not_cached():
+    found = _positions_found(_positions_state(owner=(88, 88)))
+    assert POSITIONS.repair_positions(
+        lambda: found,
+        lambda _found: pytest.fail("an uncached image must refuse before mutation"),
+        image_available_fn=lambda: False,
+    ) == {"status": "refused", "reason": "probe_unavailable"}
+
+
+def test_positions_repair_restores_original_root_owner_after_failed_access_test():
+    original = _positions_found(_positions_state(owner=(88, 88), mode=0o700))
+    corrected = _positions_found(_positions_state(owner=(0, 0), mode=0o700))
+    observations = iter((original, original, corrected, corrected, corrected, original))
+    restored = []
+    result = POSITIONS.repair_positions(
+        lambda: next(observations),
+        lambda _found: True,
+        lambda _name: False,
+        restore_fn=lambda _found, uid, gid: restored.append((uid, gid)) or True,
+        image_available_fn=lambda: True,
+    )
+    assert result == {"status": "refused", "reason": "access_test_failed"}
+    assert restored == [(88, 88)]
+
+
+def test_positions_repair_restores_when_change_command_reports_failure_after_mutating():
+    original = _positions_found(_positions_state(owner=(88, 88), mode=0o700))
+    corrected = _positions_found(_positions_state(owner=(0, 0), mode=0o700))
+    observations = iter((original, original, corrected, original))
+    restored = []
+    result = POSITIONS.repair_positions(
+        lambda: next(observations),
+        lambda _found: False,
+        restore_fn=lambda _found, uid, gid: restored.append((uid, gid)) or True,
+        image_available_fn=lambda: True,
+    )
+    assert result == {"status": "refused", "reason": "root_change_not_verified"}
+    assert restored == [(88, 88)]
+
+
+def test_positions_repair_reports_uncertain_when_post_mutation_identity_cannot_be_read():
+    original = _positions_found(_positions_state(owner=(88, 88), mode=0o700))
+    observations = iter((original, original, {"status": "unavailable"}))
+    result = POSITIONS.repair_positions(
+        lambda: next(observations),
+        lambda _found: False,
+        restore_fn=lambda *_args: pytest.fail("must not mutate when current identity is unknown"),
+        image_available_fn=lambda: True,
+    )
+    assert result == {"status": "uncertain", "reason": "rollback_identity_unverified"}
+
+
+def test_positions_repair_does_not_restore_an_unexpected_post_mutation_owner():
+    original = _positions_found(_positions_state(owner=(88, 88), mode=0o700))
+    unexpected = _positions_found(_positions_state(owner=(77, 77), mode=0o700))
+    observations = iter((original, original, unexpected))
+    result = POSITIONS.repair_positions(
+        lambda: next(observations),
+        lambda _found: False,
+        restore_fn=lambda *_args: pytest.fail("unexpected ownership must not be overwritten"),
+        image_available_fn=lambda: True,
+    )
+    assert result == {"status": "uncertain", "reason": "rollback_owner_unexpected"}
+
+
+def test_positions_repair_reports_uncertain_when_restore_readback_fails():
+    original = _positions_found(_positions_state(owner=(88, 88), mode=0o700))
+    corrected = _positions_found(_positions_state(owner=(0, 0), mode=0o700))
+    observations = iter((original, original, corrected, corrected, corrected, corrected))
+    restored = []
+    result = POSITIONS.repair_positions(
+        lambda: next(observations),
+        lambda _found: True,
+        lambda _name: False,
+        restore_fn=lambda _found, uid, gid: restored.append((uid, gid)) or False,
+        image_available_fn=lambda: True,
+    )
+    assert result == {"status": "uncertain", "reason": "rollback_unverified"}
+    assert restored == [(88, 88)]
+
+
+def test_positions_verify_returns_ready_and_matches_successful_playbook_contract():
+    ready = POSITIONS.verify(lambda: _positions_found(_positions_state(owner=(0, 0))))
+    assert ready["status"] == "ready"
+    assert ready["reason"] == "positions_identity_verified"
+
+    source = PLAYBOOK.read_text()
+    assert "(_journal_positions_gate.stdout | default('{}') | from_json).status == 'ready'" in source
+    assert "(_journal_positions_pre_mount.stdout | default('{}') | from_json).status == 'ready'" in source
+    assert '"children": "alloy_component_layout"' in POSITIONS_HELPER.read_text()
+
+
+def test_positions_verify_accepts_the_bounded_journal_component_directory_but_repair_refuses_it():
+    component = _positions_found(_positions_state(owner=(0, 0), children=[{
+        "name": "component-hash", "kind": "dir", "uid": 0, "gid": 0,
+        "mode": 0o700, "nlink": 2, "dev": 7, "ino": 12,
+    }]))
+
+    ready = POSITIONS.verify(lambda: component)
+    assert ready["status"] == "ready"
+    assert ready["children"] == "alloy_component_layout"
+    assert POSITIONS.repair_positions(
+        lambda: component,
+        lambda _found: pytest.fail("component directories must never be repaired"),
+    ) == {"status": "refused", "reason": "metadata_ambiguous"}
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        _positions_state(owner=(0, 0), acl=True),
+        _positions_state(owner=(0, 0), root_mount=True),
+        _positions_state(owner=(0, 0), child_mount=True),
+        _positions_state(owner=(0, 0), component_layout=False, children=[{
+            "name": "symlink-hash", "kind": "symlink", "uid": 0, "gid": 0,
+            "mode": 0o777, "nlink": 1, "dev": 7, "ino": 12,
+        }]),
+    ],
+)
+def test_positions_verify_refuses_ambiguous_live_layout(metadata):
+    assert POSITIONS.verify(lambda: _positions_found(metadata)) == {
+        "status": "refused", "reason": "metadata_ambiguous"
+    }
+
+
+def test_embedded_positions_metadata_retries_only_the_expected_rename_race(tmp_path):
+    def inspect(component, disappearance=None):
+        root = component.parent
+        mountpoint = root.parent
+        temp = component / ".positions.yml123456789"
+        positions = component / "positions.yml"
+        prelude = f'''import builtins,io,os,types
+original_open=builtins.open
+def fake_open(path,*args,**kwargs):
+    if path=="/proc/self/mountinfo":
+        return io.StringIO("1 0 0:1 / {mountpoint} rw - testfs /dev/test rw\\n")
+    return original_open(path,*args,**kwargs)
+builtins.open=fake_open
+os.listxattr=lambda *_args,**_kwargs: []
+original_lstat=os.lstat
+disappeared={{"done":False}}
+def fake_lstat(path):
+    if path=={str(temp)!r} and {disappearance!r}:
+        if {disappearance!r}=="always" or not disappeared["done"]:
+            disappeared["done"]=True
+            if {disappearance!r}=="once": os.rename({str(temp)!r},{str(positions)!r})
+            raise FileNotFoundError(path)
+    if path=={str(positions)!r} and {disappearance!r}=="unexpected":
+        raise FileNotFoundError(path)
+    st=original_lstat(path)
+    if path in ({str(component)!r},{str(temp)!r},{str(positions)!r}):
+        return types.SimpleNamespace(st_mode=st.st_mode,st_uid=0,st_gid=0,
+            st_nlink=2 if path=={str(component)!r} else st.st_nlink,
+            st_dev=st.st_dev,st_ino=st.st_ino)
+    return st
+os.lstat=fake_lstat
+exec({POSITIONS._METADATA_SCRIPT!r})
+'''
+        result = subprocess.run(
+            [sys.executable, "-c", prelude, str(root)],
+            check=False, capture_output=True, text=True,
+        )
+        assert result.returncode == 0, result.stderr
+        return json.loads(result.stdout)
+
+    def make_component(name):
+        root = tmp_path / name
+        component = root / "loki.source.journal.o11y_alloy"
+        component.mkdir(mode=0o700, parents=True)
+        os.chmod(root, 0o700)
+        os.chmod(component, 0o700)
+        return component
+
+    component = make_component("race")
+    temp = component / ".positions.yml123456789"
+    with temp.open("w") as writer:
+        writer.write("partial positions")
+        writer.flush()
+        os.chmod(temp, 0o600)
+        accepted = inspect(component, disappearance="once")
+        assert accepted["status"] == "observed"
+        assert accepted["component_layout"] is True, json.dumps(accepted, indent=2)
+        assert accepted["root_is_mount"] is False
+        assert accepted["child_mount"] is False
+        assert accepted["acl"] is False
+    assert (component / "positions.yml").read_text() == "partial positions"
+
+    for name, disappearance, expected in (
+        ("persistent", "always", "unavailable"),
+        ("unexpected", "unexpected", "unavailable"),
+    ):
+        component = make_component(name)
+        temp = component / ".positions.yml123456789"
+        if disappearance == "unexpected":
+            (component / "positions.yml").write_text("unexpected")
+            os.chmod(component / "positions.yml", 0o600)
+        else:
+            temp.write_text("pending")
+            os.chmod(temp, 0o600)
+        report = inspect(component, disappearance=disappearance)
+        assert report["status"] == expected, (name, report)
+
+    component = make_component("pending")
+    temp = component / ".positions.yml123456789"
+    temp.write_text("still pending")
+    os.chmod(temp, 0o600)
+    refused = inspect(component)
+    assert refused["status"] == "observed"
+    assert refused["component_layout"] is False
+
+    component = make_component("multiple")
+    for suffix in ("123", "456"):
+        temp = component / f".positions.yml{suffix}"
+        temp.write_text("pending")
+        os.chmod(temp, 0o600)
+    multiple = inspect(component)
+    assert multiple["status"] == "observed"
+    assert multiple["component_layout"] is False
+
+
+def test_embedded_positions_metadata_refuses_public_files_and_writable_directories(tmp_path):
+    def inspect(component):
+        root = component.parent
+        mountpoint = root.parent
+        prelude = f'''import builtins,io,os
+original_open=builtins.open
+def fake_open(path,*args,**kwargs):
+    if path=="/proc/self/mountinfo":
+        return io.StringIO("1 0 0:1 / {mountpoint} rw - testfs /dev/test rw\\n")
+    return original_open(path,*args,**kwargs)
+builtins.open=fake_open
+os.listxattr=lambda *_args,**_kwargs: []
+exec({POSITIONS._METADATA_SCRIPT!r})
+'''
+        result = subprocess.run(
+            [sys.executable, "-c", prelude, str(root)],
+            check=False, capture_output=True, text=True,
+        )
+        assert result.returncode == 0, result.stderr
+        return json.loads(result.stdout)
+
+    for name, target, mode in (
+        ("positions-0644", "positions", 0o644),
+        ("temp-0644", "temp", 0o644),
+        ("root-0777", "root", 0o777),
+        ("component-0777", "component", 0o777),
+    ):
+        root = tmp_path / name
+        component = root / "loki.source.journal.o11y_alloy"
+        component.mkdir(mode=0o700, parents=True)
+        os.chmod(root, 0o700)
+        os.chmod(component, 0o700)
+        if target == "root":
+            os.chmod(root, mode)
+        elif target == "component":
+            os.chmod(component, mode)
+        else:
+            file = component / ("positions.yml" if target == "positions" else ".positions.yml123")
+            file.write_text("positions")
+            os.chmod(file, mode)
+        report = inspect(component)
+        assert report["status"] == "observed"
+        assert report["component_layout"] is False, f"{name}: {report}"
+
+
+def test_positions_access_test_uses_isolated_collector_restrictions_and_cleans_container():
+    calls = []
+
+    def run(argv, **_kwargs):
+        calls.append(argv)
+        if argv[:3] == ["podman", "run", "--pull=never"]:
+            return SimpleNamespace(returncode=0, stdout="")
+        if argv[:2] == ["podman", "ps"]:
+            return SimpleNamespace(returncode=0, stdout="[]")
+        raise AssertionError("unexpected access-test command")
+
+    assert POSITIONS._access_test("o11y_journal-collector-state", run=run)
+    probe = calls[0]
+    assert probe[probe.index("--entrypoint") + 1] == "/bin/bash"
+    assert "--network" in probe and probe[probe.index("--network") + 1] == "none"
+    assert "--read-only" in probe and "--cap-drop" in probe and probe[probe.index("--cap-drop") + 1] == "ALL"
+    assert "--security-opt" in probe and "no-new-privileges" in probe
+    assert "--user" in probe and probe[probe.index("--user") + 1] == "0:0"
+    script = probe[-1]
+    assert all(step in script for step in ("printf x", "mv --", "rm --", "trap"))
+    assert "--pull=always" not in probe
+
+
+def test_positions_helper_mutates_only_root_and_fails_closed_on_inner_recheck():
+    assert "os.chown(root_fd,target_uid,target_gid)" in POSITIONS_HELPER.read_text()
+    assert "os.open(root,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC)" in POSITIONS_HELPER.read_text()
+    assert "os.fstat(root_fd)" in POSITIONS_HELPER.read_text()
+    assert "str(target_uid), str(target_gid)" in POSITIONS_HELPER.read_text()
+    assert "chown -R" not in POSITIONS_HELPER.read_text()
+    assert "chmod" not in POSITIONS_HELPER.read_text()
+    assert "listxattr" in POSITIONS_HELPER.read_text()
+    assert "os.listdir(root_fd)" in POSITIONS_HELPER.read_text()
+    assert "open(os.path.join" not in POSITIONS_HELPER.read_text()
+
+
+def test_positions_chown_pins_the_checked_inode_when_mountpoint_path_is_replaced(tmp_path):
+    root = tmp_path / "positions"
+    moved = tmp_path / "pinned-positions"
+    root.mkdir(mode=0o700)
+    (root / "positions.db").write_text("not-read")
+    stat = root.stat()
+    child = (root / "positions.db").stat()
+    metadata = _positions_state(owner=(stat.st_uid, stat.st_gid), mode=0o700, children=[{
+        "name": __import__("hashlib").sha256(b"positions.db").hexdigest(),
+        "kind": "file", "uid": child.st_uid, "gid": child.st_gid,
+        "mode": child.st_mode & 0o777, "nlink": child.st_nlink,
+        "dev": child.st_dev, "ino": child.st_ino,
+    }])
+    metadata["root"].update(dev=stat.st_dev, ino=stat.st_ino)
+    expected = json.dumps(metadata)
+    prelude = f'''import builtins,io,os
+original_open=os.open
+original_builtin_open=builtins.open
+triggered={{"value":False}}
+def fake_open(path,*args,**kwargs):
+    if path.startswith("/proc/self/fdinfo/"):
+        return io.StringIO("mnt_id:\\t1\\n")
+    if path=="/proc/self/mountinfo":
+        return io.StringIO("1 0 0:1 / / rw - testfs /dev/test rw\\n")
+    return original_builtin_open(path,*args,**kwargs)
+builtins.open=fake_open
+os.listxattr=lambda *_args,**_kwargs: []
+def race_open(path,flags,*args,**kwargs):
+    fd=original_open(path,flags,*args,**kwargs)
+    if path=={str(root)!r} and not triggered["value"]:
+        os.rename(path,{str(moved)!r})
+        os.mkdir(path)
+        triggered["value"]=True
+    return fd
+os.open=race_open
+'''
+    script = prelude + "exec(" + repr(POSITIONS._CHOWN_SCRIPT) + ")"
+    result = subprocess.run(
+        [sys.executable, "-c", script, str(root), expected, str(stat.st_uid), str(stat.st_gid)],
+        check=False, capture_output=True, text=True,
+    )
+    assert result.returncode == 0
+    assert json.loads(result.stdout) == {"status": "changed"}
+    assert moved.stat().st_ino == stat.st_ino
+    assert root.stat().st_ino != stat.st_ino
+    assert (root / "positions.db").exists() is False
 
 
 def test_journal_probe_reports_only_a_sanitized_exact_target_count():
@@ -342,10 +927,20 @@ def test_playbook_guards_validation_delivery_and_non_destructive_rollback():
     apply = source.index("Start only the journal collector service")
     verify = source.index("Verify the exact bounded journal stream reached Loki")
     stop = source.index("Force-remove only the failed collector while retaining positions")
+    positions_gate = source.index("Verify positions volume identity and access before apply")
 
-    assert guard < reviewed < place < validate < apply < verify < stop
+    assert guard < reviewed < place < positions_gate < validate < apply < verify < stop
     assert "groups.get('o11y_svc', []) | length == 1" in source
-    assert "journal_collector_action | default('apply') in ['survey', 'apply', 'stop']" in source
+    assert "journal_collector_action | default('apply') in ['survey', 'repair-positions', 'apply', 'stop']" in source
+    assert source.index("Verify positions volume identity and access before apply") < apply
+    assert "check_mode_unverified" in source
+    assert "no_log: true" in source[source.index("Verify positions volume identity and access before apply"):apply]
+    apply_play = next(play for play in plays if play.get("hosts") == "o11y_svc")
+    pre_apply_gate = next(
+        task for task in apply_play["tasks"]
+        if task.get("name") == "Verify positions volume identity and access before apply"
+    )
+    assert pre_apply_gate["ansible.builtin.command"]["argv"] == ["python3", "-", "verify"]
     assert "Require the actual runtime to be rootless" in source
     assert "read -r -N 1 _ < \"$file\"" in source
     assert "expected_repository_sha" in source
@@ -361,13 +956,52 @@ def test_playbook_guards_validation_delivery_and_non_destructive_rollback():
     assert "_journal_image: docker.io/grafana/alloy:v1.9.2" in source
     assert 'IMAGE = "docker.io/grafana/alloy:v1.5.1"' in SURVEY_HELPER.read_text()
 
-    apply_play = next(play for play in plays if play.get("hosts") == "o11y_svc")
+    survey_play = next(
+        play for play in plays
+        if play.get("name") == "Survey fixed standard journal directory candidates"
+    )
+    positions_survey = next(
+        task for task in survey_play["tasks"]
+        if task.get("name") == "Survey existing positions volume metadata without mounting it"
+    )
+    assert positions_survey["no_log"] is True
+    assert positions_survey["when"] == "not ansible_check_mode"
+    assert not any("volume create" in str(task) or "chown" in str(task) for task in survey_play["tasks"])
+
+    repair_play = next(
+        play for play in plays
+        if play.get("name") == "Repair only the journal positions volume root ownership"
+    )
+    repair_task = next(
+        task for task in repair_play["tasks"]
+        if task.get("name") == "Run the separately selected guarded positions repair"
+    )
+    assert repair_task["no_log"] is True
+    assert repair_task["when"] == "not ansible_check_mode"
+    assert repair_task["ansible.builtin.command"]["argv"] == ["python3", "-", "repair-positions"]
+
     apply_block = next(
         task
         for task in apply_play["tasks"]
         if task.get("name") == "Apply the collector and require exact-target Loki delivery"
     )
     assert apply_block["when"] == "not ansible_check_mode"
+    apply_task_names = [task.get("name") for task in apply_block["block"]]
+    before_mount = apply_task_names.index("Recheck positions volume initialization flags immediately before mount")
+    start_collector = apply_task_names.index("Start only the journal collector service")
+    assert before_mount < start_collector
+    assert apply_task_names.index("Start only the journal collector service") < apply_task_names.index(
+        "Verify the live collector positions mount and access"
+    ) < apply_task_names.index("Read the Podman rootless UID mapping") < apply_task_names.index(
+        "Verify effective write and rename access in the live collector namespace"
+    )
+    live_write_probe = next(
+        task for task in apply_block["block"]
+        if task.get("name") == "Verify effective write and rename access in the live collector namespace"
+    )
+    live_probe_script = " ".join(live_write_probe["ansible.builtin.command"]["argv"])
+    assert "uid_map" in live_probe_script and "mv -n" in live_probe_script and "printf x" in live_probe_script
+    assert "_journal_collector_uid_map.stdout | trim == _journal_host_uid_map.stdout | trim" in source
     image_exists = next(
         task
         for task in apply_play["tasks"]
@@ -692,6 +1326,41 @@ def test_survey_check_mode_skips_container_probe_and_reports_unverified():
     assert "entry_count=" in diagnostic["ansible.builtin.debug"]["msg"]
     assert "permission_denied_target=" in diagnostic["ansible.builtin.debug"]["msg"]
     assert ".MESSAGE" not in diagnostic["ansible.builtin.debug"]["msg"]
+
+
+def test_positions_repair_check_mode_preserves_unverified_result_after_skipped_command():
+    plays = yaml.safe_load(PLAYBOOK.read_text())
+    repair_play = next(
+        play
+        for play in plays
+        if play.get("name") == "Repair only the journal positions volume root ownership"
+    )
+    tasks = repair_play["tasks"]
+    repair_command = next(
+        task for task in tasks
+        if task.get("name") == "Run the separately selected guarded positions repair"
+    )
+    check_mode_result = next(
+        task for task in tasks
+        if task.get("name") == "Record positions repair as unverified in check mode"
+    )
+    assertion = next(
+        task for task in tasks
+        if task.get("name") == "Require repair completion or explicit check-mode unverified state"
+    )
+
+    assert tasks.index(repair_command) < tasks.index(check_mode_result) < tasks.index(assertion)
+    assert repair_command["register"] == "_journal_positions_repair"
+    assert repair_command["when"] == "not ansible_check_mode"
+    assert check_mode_result["when"] == "ansible_check_mode"
+    assert check_mode_result["ansible.builtin.set_fact"]["_journal_positions_repair"] == {
+        "rc": 0,
+        "stdout": '{"status":"check_mode_unverified","reason":"not_run"}',
+    }
+    assert assertion["ansible.builtin.assert"]["that"] == [
+        "_journal_positions_repair.rc | default(1) == 0",
+        "(_journal_positions_repair.stdout | default('{}') | from_json).status in ['repaired', 'already_correct', 'check_mode_unverified']",
+    ]
 
 
 def test_rollback_health_diagnostic_is_allowlisted_and_fixed_probe_is_gated():
@@ -1065,6 +1734,7 @@ def test_semaphore_template_is_dev_bound_and_requires_exact_sha():
     assert variables["journal_collector_action"]["default_value"] == "survey"
     assert variables["journal_collector_action"]["values"] == [
         {"name": "Survey journal paths", "value": "survey"},
+        {"name": "Repair positions root ownership", "value": "repair-positions"},
         {"name": "Apply pilot", "value": "apply"},
         {"name": "Stop pilot", "value": "stop"},
     ]

@@ -26,6 +26,22 @@ Every deployed target SHALL declare applicable logs, metrics, health, and traces
 - **WHEN** automatic tracing is incompatible with a target runtime or would violate its security boundary
 - **THEN** the declaration records the reason and an approved alternative signal or manual instrumentation plan, without claiming trace coverage
 
+### Requirement: Receiver journal positions state is surveyed and repaired safely
+The receiver-host journal collector SHALL retain its existing Compose named positions volume. A survey SHALL identify only the unique existing local volume whose Compose project matches the receiver and whose Compose volume label is `journal-collector-state`; it SHALL inspect bounded root and direct-child metadata in the rootless Podman user namespace without mounting the volume or reading file contents. A separate repair action MAY change only the volume-root owner and group to the collector's configured `0:0` identity after fresh evidence proves a root ownership mismatch is the supported access failure. Repair SHALL refuse shared or in-use volumes, initialization-required volumes, ACLs, mount boundaries, symlinks, non-regular or multiply linked children, child ownership ambiguity, and modes that cannot provide collector access after the root-only change. It SHALL recheck the volume identity and metadata immediately before mutation, preserve mode and child metadata, verify ownership by readback, and run an isolated create/write/rename/delete probe under the collector's rootless UID and filesystem restrictions. Check mode SHALL perform no mutation and report the result as unverified. Raw Podman, path, ACL, and filesystem diagnostics SHALL remain hidden; operator output SHALL use fixed categories and bounded counts.
+
+#### Scenario: Positions survey runs without collector initialization
+- **WHEN** the explicit positions survey runs and the journal collector container is absent
+- **THEN** it resolves one existing locally scoped named volume from receiver Compose labels, reports bounded ownership, mode-access, ACL, mount, child-type, and use-count categories, and does not create, mount, initialize, or read positions content
+
+#### Scenario: Positions repair is limited to a proven root ownership mismatch
+- **WHEN** the operator selects `repair-positions` and fresh evidence proves the unused volume root owner alone blocks the configured collector identity while all supported safety checks pass
+- **THEN** the workflow changes only that root's owner and group, verifies the preserved mode and child metadata, and requires the restricted isolated access test before reporting success
+- **AND** any changed evidence, shared use, ACL, mount, symlink, child ambiguity, failed readback, or failed access test refuses success without recursive ownership/permission changes or volume deletion
+
+#### Scenario: Positions check mode remains unverified
+- **WHEN** survey, repair, or apply runs in Ansible check mode
+- **THEN** the positions-specific result is `check_mode_unverified`, and the positions helper performs no Podman or filesystem operation
+
 ### Requirement: Telemetry is private and bounded
 Collection SHALL use declared private network paths and source-scoped firewall rules, protect credentials and sensitive content, and enforce per-signal retention and ingestion/cardinality budgets before broadening the rollout. Remote logs and traces SHALL enter through receiver Alloy; remote metrics SHALL use declared private scrapes unless another reviewed path is established. The receiver SHALL surface dropped or refused telemetry and low disk headroom as observable failures.
 

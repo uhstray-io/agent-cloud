@@ -56,6 +56,34 @@ stack and waits for Grafana to report healthy. Outside local mode it adds
   The playbook
   passes `--no-deps` too, while the dependency-free service and receiver readback keep
   older podman-compose releases safe if they ignore that flag.
+  The same explicit `survey` action also resolves the existing positions volume
+  from the receiver Compose project and `journal-collector-state` labels, including
+  when the pilot container is absent. It reads bounded owner/mode and direct-child
+  metadata in the rootless Podman namespace; it does not mount or initialize the
+  volume and never reads positions-file content. Review this survey before choosing
+  `repair-positions`, which is a separate action. Repair requires an unused unique
+  local volume, no ACL or mount ambiguity, only direct regular single-link files
+  owned by collector identity `0:0`, a root owner mismatch, and owner mode bits
+  sufficient for access after the root-only change. It rechecks evidence, pins the
+  root directory by file descriptor, changes only that directory's owner/group with
+  rootless `podman unshare`, and verifies the result. Every post-attempt failure
+  re-reads the volume identity and metadata before any guarded restoration; an
+  unverified outcome is reported as uncertain. It runs a temporary
+  create/write/rename/delete test using the cached Alloy v1.9.2 image with the
+  collector UID and filesystem restrictions.
+  It never recurses, changes mode, or removes/recreates the volume. Survey, repair,
+  and apply report the positions-specific result as `check_mode_unverified` in
+  check mode. Apply independently rechecks positions volume identity and access
+  before rendering collector config, accepts only the bounded Alloy journal-source
+  component layout, and repeats the initialization check immediately before Compose
+  mounts it. The bounded layout permits the optional `alloy_seed.json` and the source's
+  `loki.source.journal.o11y_alloy/` directory with its optional `positions.yml` file,
+  while the separate repair action still refuses directory children. After startup, apply verifies the live
+  volume source, destination and RW mode, collector user namespace mapping, and
+  effective write/rename access.
+  Health, seven-container preservation, Loki receipt, and rollback gates still apply.
+  Neither survey nor repair proves collector health or Loki delivery, so OpenSpec
+  task 1.2 stays open until the exact production Loki receipt is recorded.
 
 ## Switches that change what renders
 
