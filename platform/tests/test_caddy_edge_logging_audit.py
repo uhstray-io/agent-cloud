@@ -7,8 +7,8 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
-from jinja2 import Environment
 import yaml
+from jinja2 import Environment
 
 SCRIPT = Path(__file__).resolve().parents[1] / "playbooks/files/audit-caddy-edge-logging.py"
 PLAYBOOK = Path(__file__).resolve().parents[1] / "playbooks/audit-agentgateway-edge-logging.yml"
