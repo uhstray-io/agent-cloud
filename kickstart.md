@@ -50,7 +50,7 @@ You don't need all of these to read or contribute docs, but you'll want them for
 - A reasonable shell (zsh, bash 5.x)
 
 **For running playbooks locally / linting / testing:**
-- Python 3.11+ (`brew install python@3.11`)
+- Python 3.12+ (`brew install python@3.12`)
 - Ansible (`pip install ansible ansible-lint`)
 - `ruff`, `yamllint`, `bandit` (`pip install ruff yamllint bandit`)
 - `shellcheck`, `bats-core`, `hadolint` (`brew install shellcheck bats-core hadolint`)

@@ -31,7 +31,7 @@
 # deliberate — a hook that tests something subtly different from CI teaches people to
 # distrust it.
 #
-# WHAT DOES NOT: local execution, and therefore the result. CI pins Python 3.11 via
+# WHAT DOES NOT: local execution, and therefore the result. CI pins Python 3.12 via
 # actions/setup-python and installs the test dependencies; this hook uses whatever
 # `python3` is on the developer's PATH, with whatever is installed there. The pytest
 # command also differs — `-q` here versus CI's `-v`, because a hook printing 95 passing
@@ -268,6 +268,14 @@ if [ -f pyproject.toml ]; then
     py_par=""
     xdist_pin=$(sed -n 's/^pytest-xdist==\([^[:space:]#]*\).*/\1/p' platform/requirements-test.txt 2>/dev/null)
     xdist_have=$(python3 -c 'import importlib.metadata as m; print(m.version("pytest-xdist"))' 2>/dev/null)
+    # Same warn-only check for ansible-core: the playbook suites behave differently across
+    # cores, and CI pins the version the production runner executes.
+    ansible_pin=$(sed -n 's/^ansible-core==\([^[:space:]#]*\).*/\1/p' platform/requirements-test.txt 2>/dev/null)
+    ansible_have=$(python3 -c 'import importlib.metadata as m; print(m.version("ansible-core"))' 2>/dev/null)
+    if [ -n "$ansible_pin" ] && [ -n "$ansible_have" ] && [ "$ansible_have" != "$ansible_pin" ]; then
+      printf 'pre-push WARNING: ansible-core %s is installed; CI pins %s.\n' "$ansible_have" "$ansible_pin" >&2
+      printf '  Running anyway. To match CI:  python3 -m pip install -r platform/requirements-test.txt\n' >&2
+    fi
     if [ -n "$xdist_have" ] && python3 -c 'import xdist' >/dev/null 2>&1; then
       py_par="-n auto --dist worksteal"
       if [ -n "$xdist_pin" ] && [ "$xdist_have" != "$xdist_pin" ]; then
