@@ -87,6 +87,9 @@ def test_the_guard_covers_what_ansible_reads_a_connection_from():
         "print(' '.join(sorted(names)))")
     python = Path(shutil.which("ansible-playbook")).read_text().splitlines()[0].removeprefix("#!").strip()
     read = subprocess.run([python, "-c", script], text=True, capture_output=True, check=True).stdout.split()
+    # ansible-core 2.19 also lists expressions such as "delegated_vars['ansible_host']" as host
+    # sources. They read a name already listed here, so only plain variable names are judged.
+    read = [n for n in read if re.fullmatch(r"[A-Za-z_]\w*", n)]
     assert set(CONNECTION_NAMES) - set(read) <= PLAY_CONTEXT, sorted(set(CONNECTION_NAMES) - set(read))
     password = re.compile(r"ansible_(password|\w+_pass|\w+_password)$")  # the guard's own pattern
     unlisted = sorted(n for n in read if n not in CONNECTION_NAMES and not password.match(n))
