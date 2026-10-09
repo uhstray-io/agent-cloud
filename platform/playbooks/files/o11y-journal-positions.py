@@ -12,6 +12,7 @@ COLLECTOR = "o11y-journal-collector"
 VOLUME_KEY = "journal-collector-state"
 DATA_PATH = "/var/lib/alloy/data"
 MAX_VOLUMES = 256
+MAX_CONTAINERS = 1024
 MAX_CHILDREN = 32
 MAX_JSON_BYTES = 1_048_576
 
@@ -279,20 +280,48 @@ def discover(run=subprocess.run):
     volume_rows = _rows(_json(_call(["podman", "volume", "inspect", "--all"], run=run)))
     if volume_rows is None or len(volume_rows) > MAX_VOLUMES:
         return {"status": "volume_inventory_unavailable"}
-    matches = []
+    all_containers = _rows(_json(_call(["podman", "ps", "--all", "--format", "json"], run=run)))
+    container_names = _container_names(all_containers)
+    if container_names is None or len(container_names) > MAX_CONTAINERS:
+        return {"status": "container_inventory_unavailable"}
+    collector_present = COLLECTOR in container_names
+    expected_name = f"{project}_{VOLUME_KEY}"
+    named = []
+    labelled = []
     for volume in volume_rows:
+        if volume.get("Name") == expected_name:
+            named.append(volume)
         volume_labels = volume.get("Labels")
         if (
             isinstance(volume_labels, dict)
             and volume_labels.get("com.docker.compose.project") == project
             and volume_labels.get("com.docker.compose.volume") == VOLUME_KEY
         ):
-            matches.append(volume)
-    if not matches:
-        return {"status": "volume_missing"}
-    if len(matches) != 1:
+            labelled.append(volume)
+    if len(named) > 1 or len(labelled) > 1:
         return {"status": "volume_ambiguous"}
-    volume = matches[0]
+    if not named and not labelled:
+        return {
+            "status": "volume_missing",
+            "project": project,
+            "volume_name": expected_name,
+            "volume_inventory_complete": True,
+            "name_collision": False,
+            "collector_present": collector_present,
+        }
+    volume_labels = named[0].get("Labels") if len(named) == 1 else None
+    if (
+        len(named) != 1
+        or not isinstance(volume_labels, dict)
+        or volume_labels.get("com.docker.compose.project") != project
+        or (
+            "com.docker.compose.volume" in volume_labels
+            and volume_labels.get("com.docker.compose.volume") != VOLUME_KEY
+        )
+        or (labelled and labelled[0] is not named[0])
+    ):
+        return {"status": "volume_identity_unsupported"}
+    volume = named[0]
     name = volume.get("Name")
     mountpoint = volume.get("Mountpoint")
     if (
@@ -341,28 +370,35 @@ def discover(run=subprocess.run):
         config = collector[0].get("Config")
         if not isinstance(config, dict) or config.get("User") != "0:0":
             return {"status": "collector_identity_unverified", "volume_use_count": 1, "collector_present": True}
+    elif collector_present:
+        return {"status": "collector_mount_unverified", "volume_use_count": 0, "collector_present": True}
 
     metadata = _inspect_metadata(mountpoint, run=run)
     if metadata is None or metadata.get("status") != "observed":
         return {"status": "metadata_unavailable", "volume_use_count": len(names), "collector_present": bool(names)}
-    if volume.get("NeedsChown") is not False or volume.get("NeedsCopyUp") is not False:
+    needs_chown = volume.get("NeedsChown")
+    needs_copy_up = volume.get("NeedsCopyUp")
+    if type(needs_chown) is not bool or type(needs_copy_up) is not bool:
         return {
             "status": "volume_initialization_unverified",
             "volume_use_count": len(names),
-            "collector_present": bool(names),
+            "collector_present": collector_present,
             "metadata": metadata,
         }
-    return {
-        "status": "observed",
+    found = {
+        "status": "volume_initialization_pending" if needs_chown or needs_copy_up else "observed",
         "volume_name": name,
         "mountpoint": mountpoint,
         "volume_use_count": len(names),
         "mount_count": mount_count,
-        "collector_present": bool(names),
+        "collector_present": collector_present,
         "project": project,
         "volume": volume,
+        "volume_inventory_complete": True,
+        "name_collision": False,
         "metadata": metadata,
     }
+    return found
 
 
 def _access(metadata, uid=0, gid=0):
@@ -641,6 +677,56 @@ def repair_positions(
 def verify(discover_fn=discover):
     found = discover_fn()
     summary = _summary(found)
+    if found.get("status") in {"volume_missing", "volume_initialization_pending"}:
+        volume = found.get("volume")
+        metadata = found.get("metadata")
+        root = metadata.get("root") if isinstance(metadata, dict) else None
+        bootstrap_safe = (
+            found.get("volume_inventory_complete") is True
+            and found.get("collector_present") is False
+            and found.get("name_collision") is False
+        )
+        if found.get("status") == "volume_initialization_pending":
+            mode = root.get("mode") if isinstance(root, dict) else None
+            bootstrap_safe = bootstrap_safe and (
+                isinstance(volume, dict)
+                and type(volume.get("NeedsChown")) is bool
+                and type(volume.get("NeedsCopyUp")) is bool
+                and found.get("volume_use_count") == 0
+                and found.get("mount_count") == 0
+                and isinstance(metadata, dict)
+                and metadata.get("status") == "observed"
+                and metadata.get("child_count") == 0
+                and metadata.get("children") == []
+                and metadata.get("acl") is False
+                and metadata.get("root_is_mount") is False
+                and metadata.get("child_mount") is False
+                and isinstance(root, dict)
+                and root.get("uid") == 0
+                and root.get("gid") == 0
+                and isinstance(mode, int)
+                and mode & 0o700 == 0o700
+                and mode & (0o022 | 0o7000) == 0
+            )
+        if bootstrap_safe:
+            return {
+                **summary,
+                "status": "bootstrap_allowed",
+                "reason": "collector_absent_and_volume_safe_to_initialize",
+            }
+        if (
+            found.get("status") == "volume_initialization_pending"
+            and isinstance(volume, dict)
+            and type(volume.get("NeedsChown")) is bool
+            and type(volume.get("NeedsCopyUp")) is bool
+            and volume["NeedsChown"] is False
+            and volume["NeedsCopyUp"] is False
+            and found.get("collector_present") is True
+            and found.get("volume_use_count") == 1
+            and found.get("mount_count") == 1
+        ):
+            found = {**found, "status": "observed"}
+            summary = _summary(found)
     if found.get("status") != "observed":
         return {"status": "refused", "reason": found.get("status", "unavailable")}
     if not _live_safe_metadata(found):
@@ -661,7 +747,10 @@ def main():
     try:
         result = actions[action]() if action in actions else {"status": "refused", "reason": "invalid_action"}
     except Exception:
-        result = {"status": "unavailable", "reason": "survey_failed"}
+        result = {**_summary({"status": "unavailable"}), "reason": "survey_failed"} if action == "survey" else {
+            "status": "unavailable",
+            "reason": "survey_failed",
+        }
     print(json.dumps(result, sort_keys=True))
 
 

@@ -43,3 +43,5 @@ services:
 
 volumes:
   journal-collector-state:
+    labels:
+      com.docker.compose.volume: journal-collector-state

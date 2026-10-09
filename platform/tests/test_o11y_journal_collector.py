@@ -122,14 +122,63 @@ def test_positions_discovery_requires_exact_compose_labels_and_unused_volume(mon
     assert all("volume create" not in " ".join(argv) and "chown" not in " ".join(argv) for argv in calls)
 
     volume["Labels"].pop("com.docker.compose.volume")
-    assert POSITIONS.discover(run=run)["status"] == "volume_missing"
+    assert POSITIONS.discover(run=run)["status"] == "observed"
 
 
 @pytest.mark.parametrize(
-    "field,value",
-    [("NeedsChown", True), ("NeedsCopyUp", True), ("NeedsChown", None), ("NeedsCopyUp", None)],
+    ("volumes", "containers", "expected"),
+    [
+        ([], [], "bootstrap_allowed"),
+        ([{"Name": "o11y_journal-collector-state", "Labels": {"com.docker.compose.project": "other"}}], [], "refused"),
+        ([{"Name": "old_volume", "Labels": {
+            "com.docker.compose.project": "o11y", "com.docker.compose.volume": "journal-collector-state"
+        }}], [], "refused"),
+        ([], [{"Names": [POSITIONS.COLLECTOR]}], "refused"),
+        ([], None, "refused"),
+    ],
 )
-def test_positions_discovery_refuses_volume_initialization_flags(field, value, monkeypatch):
+def test_positions_missing_volume_requires_complete_inventory_no_collision_and_no_stopped_collector(
+    volumes, containers, expected, monkeypatch
+):
+    calls = []
+
+    def run(argv, **_kwargs):
+        calls.append(argv)
+        if argv[:2] == ["podman", "info"]:
+            return SimpleNamespace(returncode=0, stdout="true")
+        if argv[:3] == ["podman", "inspect", "--type"]:
+            return SimpleNamespace(returncode=0, stdout=json.dumps([{"Config": {"Labels": {
+                "com.docker.compose.project": "o11y", "com.docker.compose.service": "alloy"
+            }}}]))
+        if argv[:3] == ["podman", "volume", "inspect"]:
+            return SimpleNamespace(returncode=0, stdout=json.dumps(volumes))
+        if argv[:2] == ["podman", "ps"]:
+            output = "invalid json" if containers is None else json.dumps(containers)
+            return SimpleNamespace(returncode=0, stdout=output)
+        raise AssertionError(f"unexpected command: {argv}")
+
+    monkeypatch.setattr(
+        POSITIONS,
+        "_inspect_metadata",
+        lambda *_args, **_kwargs: pytest.fail("missing volume has no metadata"),
+    )
+    result = POSITIONS.verify(lambda: POSITIONS.discover(run=run))
+    assert result["status"] == expected
+    assert ["podman", "ps", "--all", "--format", "json"] in calls
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "expected"),
+    [
+        ("NeedsChown", True, "volume_initialization_pending"),
+        ("NeedsCopyUp", True, "volume_initialization_pending"),
+        ("NeedsChown", None, "volume_initialization_unverified"),
+        ("NeedsCopyUp", None, "volume_initialization_unverified"),
+        ("NeedsChown", "true", "volume_initialization_unverified"),
+        ("NeedsCopyUp", 0, "volume_initialization_unverified"),
+    ],
+)
+def test_positions_discovery_requires_boolean_initialization_flags(field, value, expected, monkeypatch):
     volume = {
         "Name": "o11y_journal-collector-state",
         "Driver": "local",
@@ -163,7 +212,190 @@ def test_positions_discovery_refuses_volume_initialization_flags(field, value, m
         raise AssertionError("initialization refusal must happen before a container mount")
 
     monkeypatch.setattr(POSITIONS, "_inspect_metadata", lambda path, run: _positions_state(owner=(0, 0)))
-    assert POSITIONS.discover(run=run)["status"] == "volume_initialization_unverified"
+    assert POSITIONS.discover(run=run)["status"] == expected
+
+
+def test_positions_discovery_allows_repair_of_initialized_empty_volume(monkeypatch):
+    volume = {
+        "Name": "o11y_journal-collector-state",
+        "Driver": "local",
+        "Scope": "local",
+        "Options": {},
+        "Mountpoint": "/private/podman/volume/_data",
+        "Labels": {
+            "com.docker.compose.project": "o11y",
+            "com.docker.compose.volume": "journal-collector-state",
+        },
+        "MountCount": 0,
+        "NeedsChown": False,
+        "NeedsCopyUp": False,
+    }
+    owner = {"uid": 88, "gid": 88}
+    calls = []
+
+    def run(argv, **_kwargs):
+        calls.append(argv)
+        if argv[:2] == ["podman", "info"]:
+            return SimpleNamespace(returncode=0, stdout="true")
+        if argv[:3] == ["podman", "inspect", "--type"]:
+            return SimpleNamespace(returncode=0, stdout=json.dumps([{"Config": {"Labels": {
+                "com.docker.compose.project": "o11y", "com.docker.compose.service": "alloy"
+            }}}]))
+        if argv[:3] == ["podman", "volume", "inspect"]:
+            return SimpleNamespace(returncode=0, stdout=json.dumps([volume]))
+        if argv[:2] == ["podman", "ps"]:
+            return SimpleNamespace(returncode=0, stdout="[]")
+        raise AssertionError(f"unexpected discovery command: {argv}")
+
+    monkeypatch.setattr(
+        POSITIONS,
+        "_inspect_metadata",
+        lambda _path, run: _positions_state(owner=(owner["uid"], owner["gid"]), mode=0o700, children=[]),
+    )
+
+    def change_root(found):
+        assert found["status"] == "observed"
+        owner.update(uid=0, gid=0)
+        return True
+
+    result = POSITIONS.repair_positions(
+        discover_fn=lambda: POSITIONS.discover(run=run),
+        change_fn=change_root,
+        access_test_fn=lambda _name: True,
+        image_available_fn=lambda: True,
+    )
+
+    assert result == {"status": "repaired", "reason": "verified"}
+    assert len([argv for argv in calls if argv[:3] == ["podman", "volume", "inspect"]]) == 4
+
+
+def test_positions_survey_allowlist_accepts_helper_initialization_status(monkeypatch):
+    volume = {
+        "Name": "o11y_journal-collector-state",
+        "Driver": "local",
+        "Scope": "local",
+        "Options": {},
+        "Mountpoint": "/private/podman/volume/_data",
+        "Labels": {
+            "com.docker.compose.project": "o11y",
+            "com.docker.compose.volume": "journal-collector-state",
+        },
+        "MountCount": 0,
+        "NeedsChown": True,
+        "NeedsCopyUp": False,
+    }
+
+    def run(argv, **_kwargs):
+        if argv[:2] == ["podman", "info"]:
+            return SimpleNamespace(returncode=0, stdout="true")
+        if argv[:3] == ["podman", "inspect", "--type"]:
+            return SimpleNamespace(returncode=0, stdout=json.dumps([{"Config": {"Labels": {
+                "com.docker.compose.project": "o11y", "com.docker.compose.service": "alloy"
+            }}}]))
+        if argv[:3] == ["podman", "volume", "inspect"]:
+            return SimpleNamespace(returncode=0, stdout=json.dumps([volume]))
+        if argv[:2] == ["podman", "ps"]:
+            return SimpleNamespace(returncode=0, stdout="[]")
+        raise AssertionError(f"unexpected discovery command: {argv}")
+
+    monkeypatch.setattr(POSITIONS, "_inspect_metadata", lambda _path, run: _positions_state())
+    report = POSITIONS.discover(run=run)
+    assert report["status"] == "volume_initialization_pending"
+
+    plays = yaml.safe_load(PLAYBOOK.read_text())
+    assertion = next(
+        task["ansible.builtin.assert"]
+        for play in plays
+        for task in play.get("tasks", [])
+        if task.get("name") == "Require bounded positions-volume survey fields"
+    )
+    accepted = next(condition for condition in assertion["that"] if ".status in " in condition)
+    accepted_statuses = yaml.safe_load(accepted.split(" in ", 1)[1])
+    assert report["status"] in accepted_statuses
+
+
+def _missing_volume_found(**overrides):
+    return {
+        "status": "volume_missing",
+        "project": "o11y",
+        "volume_name": "o11y_journal-collector-state",
+        "volume_inventory_complete": True,
+        "name_collision": False,
+        "collector_present": False,
+        **overrides,
+    }
+
+
+def _empty_pending_volume_found(needs_chown=False, needs_copy_up=False, **overrides):
+    return {
+        "status": "volume_initialization_pending",
+        "project": "o11y",
+        "volume_name": "o11y_journal-collector-state",
+        "volume_inventory_complete": True,
+        "name_collision": False,
+        "collector_present": False,
+        "volume_use_count": 0,
+        "mount_count": 0,
+        "volume": {
+            "Name": "o11y_journal-collector-state",
+            "Labels": {
+                "com.docker.compose.project": "o11y",
+                "com.docker.compose.volume": "journal-collector-state",
+            },
+            "NeedsChown": needs_chown,
+            "NeedsCopyUp": needs_copy_up,
+        },
+        "metadata": _positions_state(owner=(0, 0), mode=0o700, children=[]),
+        **overrides,
+    }
+
+
+def test_positions_bootstrap_allows_only_proven_missing_volume_without_collision_or_collector():
+    assert POSITIONS.verify(lambda: _missing_volume_found())["status"] == "bootstrap_allowed"
+    for found in (
+        _missing_volume_found(volume_inventory_complete=False),
+        _missing_volume_found(name_collision=True),
+        _missing_volume_found(collector_present=True),
+    ):
+        assert POSITIONS.verify(lambda found=found: found)["status"] == "refused"
+
+
+@pytest.mark.parametrize("needs_chown,needs_copy_up", [(False, False), (True, False), (False, True), (True, True)])
+def test_positions_bootstrap_allows_empty_unique_volume_with_boolean_flags(needs_chown, needs_copy_up):
+    found = _empty_pending_volume_found(needs_chown, needs_copy_up)
+    assert POSITIONS.verify(lambda: found)["status"] == "bootstrap_allowed"
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"volume_use_count": 1},
+        {"mount_count": 1},
+        {"collector_present": True},
+        {"metadata": _positions_state(owner=(88, 0))},
+        {"metadata": _positions_state(mode=0o722)},
+        {"metadata": _positions_state(mode=0o2700)},
+        {"metadata": _positions_state(acl=True)},
+        {"metadata": _positions_state(root_mount=True)},
+        {"metadata": _positions_state(child_mount=True)},
+        {"metadata": _positions_state(children=[{"kind": "file"}])},
+        {"volume": {"NeedsChown": "false", "NeedsCopyUp": False}},
+    ],
+)
+def test_positions_bootstrap_refuses_shared_changed_or_ambiguous_empty_volume(change):
+    found = _empty_pending_volume_found(**change)
+    assert POSITIONS.verify(lambda: found)["status"] == "refused"
+
+
+def test_positions_post_start_empty_volume_with_initialized_flags_stays_strict_ready():
+    found = _empty_pending_volume_found(
+        needs_chown=False,
+        needs_copy_up=False,
+        collector_present=True,
+        volume_use_count=1,
+        mount_count=1,
+    )
+    assert POSITIONS.verify(lambda: found)["status"] == "ready"
 
 
 @pytest.mark.parametrize("source_matches", [True, False])
@@ -352,8 +584,14 @@ def test_positions_verify_returns_ready_and_matches_successful_playbook_contract
     assert ready["reason"] == "positions_identity_verified"
 
     source = PLAYBOOK.read_text()
-    assert "(_journal_positions_gate.stdout | default('{}') | from_json).status == 'ready'" in source
-    assert "(_journal_positions_pre_mount.stdout | default('{}') | from_json).status == 'ready'" in source
+    assert (
+        "(_journal_positions_gate.stdout | default('{}') | from_json).status in "
+        "['ready', 'bootstrap_allowed']"
+    ) in source
+    assert (
+        "(_journal_positions_pre_mount.stdout | default('{}') | from_json).status in "
+        "['ready', 'bootstrap_allowed']"
+    ) in source
     assert '"children": "alloy_component_layout"' in POSITIONS_HELPER.read_text()
 
 
@@ -901,6 +1139,31 @@ def test_compose_mount_is_read_only_and_state_is_separate():
     assert journal["bind"]["create_host_path"] is False
     assert "journal-collector-state:/var/lib/alloy/data" in service["volumes"]
     assert "journal-collector-state" in compose["volumes"]
+    assert compose["volumes"]["journal-collector-state"]["labels"] == {
+        "com.docker.compose.volume": "journal-collector-state"
+    }
+
+
+def test_positions_survey_exception_keeps_bounded_receipt_schema(monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", [str(POSITIONS_HELPER), "survey"])
+    monkeypatch.setattr(POSITIONS, "survey", lambda: (_ for _ in ()).throw(RuntimeError("private detail")))
+
+    POSITIONS.main()
+
+    report = json.loads(capsys.readouterr().out)
+    assert report == {
+        "status": "unavailable",
+        "reason": "survey_failed",
+        "volume_use_count": 0,
+        "collector_present": False,
+        "entry_count": 0,
+        "root_owner": "unavailable",
+        "root_mode_access": "unavailable",
+        "acl": "unavailable",
+        "mount": "unavailable",
+        "children": "unavailable",
+    }
+    assert "private detail" not in json.dumps(report)
 
 
 def test_alloy_config_uses_only_the_fixed_bounded_selector_and_otlp():
@@ -934,6 +1197,7 @@ def test_playbook_guards_validation_delivery_and_non_destructive_rollback():
     assert "journal_collector_action | default('apply') in ['survey', 'repair-positions', 'apply', 'stop']" in source
     assert source.index("Verify positions volume identity and access before apply") < apply
     assert "check_mode_unverified" in source
+    assert "container_inventory_unavailable" in source
     assert "no_log: true" in source[source.index("Verify positions volume identity and access before apply"):apply]
     apply_play = next(play for play in plays if play.get("hosts") == "o11y_svc")
     pre_apply_gate = next(
@@ -980,6 +1244,10 @@ def test_playbook_guards_validation_delivery_and_non_destructive_rollback():
     assert repair_task["when"] == "not ansible_check_mode"
     assert repair_task["ansible.builtin.command"]["argv"] == ["python3", "-", "repair-positions"]
 
+    pre_mount = next(
+        task for task in apply_play["tasks"]
+        if task.get("name") == "Recheck positions volume initialization immediately before mount"
+    )
     apply_block = next(
         task
         for task in apply_play["tasks"]
@@ -987,9 +1255,12 @@ def test_playbook_guards_validation_delivery_and_non_destructive_rollback():
     )
     assert apply_block["when"] == "not ansible_check_mode"
     apply_task_names = [task.get("name") for task in apply_block["block"]]
-    before_mount = apply_task_names.index("Recheck positions volume initialization flags immediately before mount")
-    start_collector = apply_task_names.index("Start only the journal collector service")
-    assert before_mount < start_collector
+    assert apply_play["tasks"].index(pre_mount) + 2 == apply_play["tasks"].index(apply_block)
+    assert apply_play["tasks"][apply_play["tasks"].index(pre_mount) + 1]["name"] == (
+        "Require positions volume remains safe to mount"
+    )
+    assert pre_mount["register"] == "_journal_positions_pre_mount"
+    assert pre_mount["no_log"] is True
     assert apply_task_names.index("Start only the journal collector service") < apply_task_names.index(
         "Verify the live collector positions mount and access"
     ) < apply_task_names.index("Read the Podman rootless UID mapping") < apply_task_names.index(

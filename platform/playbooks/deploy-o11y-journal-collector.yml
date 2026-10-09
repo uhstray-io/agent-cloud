@@ -293,7 +293,7 @@
       ansible.builtin.assert:
         that:
           - _journal_positions_gate.rc | default(1) == 0
-          - (_journal_positions_gate.stdout | default('{}') | from_json).status == 'ready'
+          - (_journal_positions_gate.stdout | default('{}') | from_json).status in ['ready', 'bootstrap_allowed']
         fail_msg: >-
           Positions-volume identity/access gate refused
           ({{ (_journal_positions_gate.stdout | default('{}') | from_json).get('reason', 'unverified') }}).
@@ -389,6 +389,29 @@
       no_log: true
       when: not ansible_check_mode
 
+    - name: Recheck positions volume initialization immediately before mount
+      ansible.builtin.command:
+        argv: [python3, "-", verify]
+        stdin: "{{ _journal_positions_helper }}"
+        stdin_add_newline: false
+      register: _journal_positions_pre_mount
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+      when: not ansible_check_mode
+
+    - name: Require positions volume remains safe to mount
+      ansible.builtin.assert:
+        that:
+          - _journal_positions_pre_mount.rc | default(1) == 0
+          - (_journal_positions_pre_mount.stdout | default('{}') | from_json).status in ['ready', 'bootstrap_allowed']
+        fail_msg: >-
+          Positions volume identity or initialization state changed before the
+          collector mount; no container start was requested.
+        quiet: true
+      when: not ansible_check_mode
+
     - name: Apply the collector and require exact-target Loki delivery
       when: not ansible_check_mode
       block:
@@ -398,27 +421,6 @@
           register: _journal_verification_start
           changed_when: false
           check_mode: false
-
-        - name: Recheck positions volume initialization flags immediately before mount
-          ansible.builtin.command:
-            argv: [python3, "-", verify]
-            stdin: "{{ _journal_positions_helper }}"
-            stdin_add_newline: false
-          register: _journal_positions_pre_mount
-          changed_when: false
-          failed_when: false
-          check_mode: false
-          no_log: true
-
-        - name: Require positions volume remains safe to mount
-          ansible.builtin.assert:
-            that:
-              - _journal_positions_pre_mount.rc | default(1) == 0
-              - (_journal_positions_pre_mount.stdout | default('{}') | from_json).status == 'ready'
-            fail_msg: >-
-              Positions volume identity or initialization state changed before the
-              collector mount; no container start was requested.
-            quiet: true
 
         - name: Start only the journal collector service
           ansible.builtin.command:
@@ -949,7 +951,7 @@
       ansible.builtin.assert:
         that:
           - _journal_positions_survey.rc | default(1) == 0
-          - (_journal_positions_survey.stdout | default('{}') | from_json).status in ['observed', 'unavailable', 'not_rootless', 'receiver_unavailable', 'receiver_identity_unverified', 'volume_inventory_unavailable', 'volume_missing', 'volume_ambiguous', 'volume_identity_unsupported', 'volume_users_unavailable', 'volume_shared', 'mount_count_unverified', 'collector_mount_unverified', 'collector_identity_unverified', 'metadata_unavailable', 'volume_initialization_unverified', 'check_mode_unverified']
+          - (_journal_positions_survey.stdout | default('{}') | from_json).status in ['observed', 'unavailable', 'not_rootless', 'receiver_unavailable', 'receiver_identity_unverified', 'volume_inventory_unavailable', 'container_inventory_unavailable', 'volume_missing', 'volume_ambiguous', 'volume_identity_unsupported', 'volume_users_unavailable', 'volume_shared', 'mount_count_unverified', 'collector_mount_unverified', 'collector_identity_unverified', 'metadata_unavailable', 'volume_initialization_unverified', 'volume_initialization_pending', 'check_mode_unverified']
           - (_journal_positions_survey.stdout | from_json).volume_use_count | int >= 0
           - (_journal_positions_survey.stdout | from_json).volume_use_count | int <= 33
           - (_journal_positions_survey.stdout | from_json).entry_count | int >= 0
