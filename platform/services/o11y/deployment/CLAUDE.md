@@ -31,6 +31,18 @@ stack and waits for Grafana to report healthy. Outside local mode it adds
 - **Private values** (addresses, binds, enable flags) live in site-config inventory. The
   production Semaphore inventory is a copy of it; sync it before a deploy relies on a new
   value (README, "production Semaphore inventory").
+- **Receiver-host journal pilot:** `Deploy o11y Journal Collector (Dev)` runs independently
+  of `Deploy o11y`. Private `o11y_svc` inventory must declare `o11y_journal_directory` as
+  the actual, readable systemd journal directory available to the rootless Podman user.
+  The playbook checks that directory and a recent exact `CONTAINER_NAME=o11y-alloy` entry,
+  then mounts only that directory read-only. It sends only `service=o11y/alloy` and
+  `signal=container` through the existing private OTLP receiver. It does not read the
+  engine socket or alter receiver volumes. The Compose service has no dependencies;
+  after apply, the playbook hashes IDs and states for all seven existing receiver
+  containers and refuses success if any changed. The collector state lives in the
+  separate `journal-collector-state` volume; selecting `stop` preserves it. The playbook
+  passes `--no-deps` too, while the dependency-free service and receiver readback keep
+  older podman-compose releases safe if they ignore that flag.
 
 ## Switches that change what renders
 

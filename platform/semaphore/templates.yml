@@ -69,6 +69,25 @@ templates:
         required: false
         default_value: "false"
 
+  - name: Deploy o11y Journal Collector (Dev)
+    playbook: platform/playbooks/deploy-o11y-journal-collector.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact Dev commit required on controller and receiver"
+        type: string
+        required: true
+      - name: journal_collector_action
+        title: "Collector action"
+        description: "Apply the reviewed pilot or stop only its collector while preserving positions"
+        type: enum
+        required: true
+        default_value: apply
+        values:
+          - { name: "Apply pilot", value: "apply" }
+          - { name: "Stop pilot", value: "stop" }
+
   - name: Verify o11y Service
     playbook: platform/playbooks/verify-o11y-service.yml
     dev_variant: true

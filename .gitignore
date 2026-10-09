@@ -7,6 +7,8 @@ secrets/
 # Runtime-generated env files (deploy.sh creates these from OpenBao)
 **/config/*.env
 !**/.env.example
+platform/services/o11y/deployment/config/journal.alloy
+platform/services/o11y/deployment/config/.journal.alloy.candidate
 
 # Container data volumes
 data/

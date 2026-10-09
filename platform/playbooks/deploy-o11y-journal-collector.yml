@@ -1,0 +1,464 @@
+---
+# Independently deploy the bounded receiver-host journald pilot.
+
+- name: Refuse extra vars that set internal names
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: Require the reviewed checkout
+  ansible.builtin.import_playbook: require-reviewed-checkout.yml
+
+- name: Pre-flight
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: o11y_svc
+    preflight_group_expected: o11y_svc
+
+- name: Validate the reviewed Dev-bound action
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Require exactly one receiver and the Dev branch
+      ansible.builtin.assert:
+        that:
+          - groups.get('o11y_svc', []) | length == 1
+          - service_branch | default('dev') == 'dev'
+          - journal_collector_action | default('apply') in ['apply', 'stop']
+        fail_msg: >-
+          This workflow requires one o11y_svc host, service_branch=dev, and
+          journal_collector_action=apply|stop.
+        quiet: true
+      tags: [always]
+
+- name: "Deploy the bounded journal collector"
+  hosts: o11y_svc
+  gather_facts: false
+  become: false
+  any_errors_fatal: true
+  vars:
+    _journal_directory: "{{ o11y_journal_directory | default('') | string }}"
+    _journal_mount: /var/log/journal
+    _journal_image: docker.io/grafana/alloy:v1.5.1
+    _journal_loki_query_url: >-
+      {{ [
+        'http://loki:3100/loki/api/v1/query_range?query=%7Bservice%3D%22o11y%2Falloy%22%2Csignal%3D%22container%22%7D',
+        '&start=', _journal_verification_start.stdout | default('') | trim,
+        '&end=', _journal_verification_end.stdout | default('') | trim,
+        '&limit=1&direction=backward'
+      ] | join('') }}
+    _journal_monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+    _journal_deploy_dir: "{{ _journal_monorepo_dir }}/platform/services/o11y/deployment"
+    _journal_probe: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/probe-o11y-journal-directory.py') }}"
+    _journal_candidate_path: "{{ _journal_deploy_dir }}/config/.journal.alloy.candidate"
+    _journal_image_probe_argv:
+      - podman
+      - run
+      - --rm
+      - --network
+      - none
+      - --read-only
+      - --user
+      - "0:0"
+      - --mount
+      - "type=bind,src={{ _journal_directory }},dst={{ _journal_mount }},ro"
+      - --entrypoint
+      - bash
+      - "{{ _journal_image }}"
+      - -c
+      - >-
+        shopt -s globstar nullglob;
+        files=(/var/log/journal/**/*.journal);
+        for file in "${files[@]}"; do
+          if [[ -r "$file" ]] && read -r -N 1 _ < "$file"; then exit 0; fi;
+        done;
+        exit 1
+    _journal_config_path: "{{ _journal_deploy_dir }}/config/journal.alloy"
+
+  tasks:
+    - name: Leave the apply play when the reviewed action is stop
+      ansible.builtin.meta: end_host
+      when: journal_collector_action | default('apply') != 'apply'
+      tags: [always]
+
+    - name: Require the declared rootless Podman host and exact receiver endpoint
+      ansible.builtin.assert:
+        that:
+          - not (local_mode | default(false) | bool)
+          - container_engine | default('podman') == 'podman'
+          - _journal_directory is match('^/(var/log|run/log|run/user/[0-9]+)/journal$')
+          - o11y_otlp_bind | default('') is match('^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.)')
+          - o11y_otlp_port | default(4317) | int == 4317
+        fail_msg: >-
+          Declare the actual readable journal directory and private OTLP bind on
+          the single production o11y_svc host; this pilot requires rootless Podman.
+        quiet: true
+      tags: [always]
+
+    - name: Read the Podman rootless runtime mode
+      ansible.builtin.command:
+        argv: [podman, info, --format, "{{ '{{' }}.Host.Security.Rootless{{ '}}' }}"]
+      register: _journal_rootless_mode
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+      tags: [always]
+
+    - name: Require the actual runtime to be rootless
+      ansible.builtin.assert:
+        that:
+          - _journal_rootless_mode.rc | default(1) == 0
+          - _journal_rootless_mode.stdout | default('') | trim == 'true'
+        fail_msg: "The journal pilot requires the target's actual Podman runtime to be rootless."
+        quiet: true
+      tags: [always]
+
+    - name: Read the selected host journal directory
+      ansible.builtin.stat:
+        path: "{{ _journal_directory }}"
+      register: _journal_directory_stat
+      changed_when: false
+      check_mode: false
+      no_log: true
+      tags: [always]
+
+    - name: Require an existing readable journal directory before Compose can mount it
+      ansible.builtin.assert:
+        that:
+          - _journal_directory_stat.stat.exists | default(false)
+          - _journal_directory_stat.stat.isdir | default(false)
+          - _journal_directory_stat.stat.readable | default(false)
+          - _journal_directory_stat.stat.executable | default(false)
+        fail_msg: >-
+          The declared host journal directory is absent or unreadable. No bind mount
+          was created and the collector was not started.
+        quiet: true
+      tags: [always]
+
+    - name: Require a recent exact-name entry in the selected journal
+      ansible.builtin.command:
+        argv: [python3, "-", "{{ _journal_directory }}"]
+        stdin: "{{ _journal_probe }}"
+        stdin_add_newline: false
+      register: _journal_probe_result
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+      tags: [always]
+
+    - name: Require the sanitized journal probe to pass
+      ansible.builtin.assert:
+        that:
+          - _journal_probe_result.rc | default(1) == 0
+          - (_journal_probe_result.stdout | default('{}') | from_json).status == 'observed'
+          - (_journal_probe_result.stdout | default('{}') | from_json).matching_entries | int > 0
+        fail_msg: >-
+          The selected journal has no readable recent CONTAINER_NAME=o11y-alloy entry;
+          collector preflight failed without reporting journal content.
+        quiet: true
+      tags: [always]
+
+    - name: Require the pinned rootless Alloy process to read the journal bind
+      ansible.builtin.command:
+        argv: "{{ _journal_image_probe_argv }}"
+      register: _journal_uid_probe
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+      tags: [always]
+
+    - name: Require the rootless Compose UID to read a journal file
+      ansible.builtin.assert:
+        that: _journal_uid_probe.rc | default(1) == 0
+        fail_msg: >-
+          The rootless Compose UID cannot read a journal file from the selected bind.
+          No collector was started.
+        quiet: true
+      tags: [always]
+
+    - name: Require the existing o11y Alloy receiver container to be running
+      ansible.builtin.command:
+        argv:
+          - podman
+          - inspect
+          - --format
+          - "{{ '{{' }}.State.Status{{ '}}' }}"
+          - o11y-alloy
+      register: _journal_receiver_status
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      tags: [always]
+
+    - name: Require the existing receiver listener on its private host bind
+      ansible.builtin.wait_for:
+        host: "{{ o11y_otlp_bind }}"
+        port: "{{ o11y_otlp_port | default(4317) }}"
+        timeout: 5
+        state: started
+      register: _journal_receiver_listener
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      when: not ansible_check_mode
+      tags: [always]
+
+    - name: Refuse to continue unless receiver readiness is proven
+      ansible.builtin.assert:
+        that:
+          - _journal_receiver_status.rc | default(1) == 0
+          - _journal_receiver_status.stdout | default('') | trim == 'running'
+          - ansible_check_mode or not (_journal_receiver_listener.failed | default(true))
+        fail_msg: >-
+          The existing receiver is not running on its declared private OTLP/gRPC
+          listener. The journal collector was not started.
+        quiet: true
+      when: not ansible_check_mode
+      tags: [always]
+
+    - name: Place the reviewed monorepo on the receiver through the shared mechanism
+      ansible.builtin.include_tasks: tasks/place-monorepo.yml
+      vars:
+        _monorepo_dir: "{{ _journal_monorepo_dir }}"
+        _branch: "{{ service_branch | default('dev') }}"
+
+    - name: Read the receiver checkout revision
+      ansible.builtin.command:
+        argv: [git, rev-parse, HEAD]
+        chdir: "{{ _journal_monorepo_dir }}"
+      register: _journal_target_revision
+      changed_when: false
+      check_mode: false
+
+    - name: Require receiver checkout at the exact reviewed revision
+      ansible.builtin.assert:
+        that: _journal_target_revision.stdout | trim == expected_repository_sha
+        fail_msg: >-
+          The receiver checkout does not match the reviewed SHA; collector files
+          were not rendered or applied.
+        quiet: true
+
+    - name: Read back the seven existing receiver container identities and states
+      ansible.builtin.shell:
+        cmd: >-
+          set -o pipefail &&
+          podman inspect --format '{{ '{{' }}.Id {{ '}}' }} {{ '{{' }}.State.Status {{ '}}' }} {{ '{{' }}.State.StartedAt {{ '}}' }}'
+          o11y-prometheus o11y-loki o11y-alloy o11y-tempo o11y-pyroscope
+          o11y-grafana o11y-node-exporter | LC_ALL=C sort | sha256sum
+        executable: /bin/bash
+      register: _journal_receiver_snapshot
+      changed_when: false
+      check_mode: false
+      when: not ansible_check_mode
+
+    - name: Require a complete receiver container snapshot before applying
+      ansible.builtin.assert:
+        that:
+          - _journal_receiver_snapshot.rc | default(1) == 0
+          - _journal_receiver_snapshot.stdout.split() | length == 2
+          - _journal_receiver_snapshot.stdout.split()[0] is match('^[0-9a-f]{64}$')
+        fail_msg: >-
+          The seven existing receiver containers could not be read before apply;
+          the journal collector was not started.
+        quiet: true
+      when: not ansible_check_mode
+
+    - name: Render a candidate journal config with the private receiver endpoint
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../services/o11y/deployment/templates/journal.alloy.j2"
+        dest: "{{ _journal_candidate_path }}"
+        mode: "0644"
+      diff: false
+      no_log: true
+      when: not ansible_check_mode
+
+    - name: Validate the candidate config with the pinned Alloy image before any collector recreation
+      ansible.builtin.command:
+        argv:
+          - podman
+          - run
+          - --rm
+          - --network
+          - none
+          - --read-only
+          - --mount
+          - "type=bind,src={{ _journal_candidate_path }},dst=/etc/alloy/journal.alloy,ro"
+          - "{{ _journal_image }}"
+          - validate
+          - --stability.level=generally-available
+          - /etc/alloy/journal.alloy
+      register: _journal_config_validation
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+      when: not ansible_check_mode
+
+    - name: Refuse to start a collector with an invalid Alloy config
+      ansible.builtin.assert:
+        that: _journal_config_validation.rc | default(1) == 0
+        fail_msg: >-
+          The candidate journal collector config failed validation with the pinned
+          Alloy image; the running collector and its positions were left untouched.
+        quiet: true
+      when: not ansible_check_mode
+
+    - name: Read the validated candidate config digest
+      ansible.builtin.stat:
+        path: "{{ _journal_candidate_path }}"
+        checksum_algorithm: sha256
+      register: _journal_candidate_stat
+      changed_when: false
+      no_log: true
+      when: not ansible_check_mode
+
+    - name: Promote the validated candidate config for the collector
+      ansible.builtin.copy:
+        src: "{{ _journal_candidate_path }}"
+        dest: "{{ _journal_config_path }}"
+        remote_src: true
+        mode: "0644"
+      diff: false
+      no_log: true
+      when: not ansible_check_mode
+
+    - name: Apply the collector and require exact-target Loki delivery
+      block:
+        - name: Capture the pre-start lower bound for this run's Loki receipt
+          ansible.builtin.command:
+            argv: [date, +%s%N]
+          register: _journal_verification_start
+          changed_when: false
+          check_mode: false
+
+        - name: Start only the journal collector service
+          ansible.builtin.command:
+            argv: [podman-compose, -f, compose.yml, -f, compose.journal.yml, up, --no-deps, -d, journal-collector]
+            chdir: "{{ _journal_deploy_dir }}"
+          environment:
+            O11Y_JOURNAL_DIRECTORY: "{{ _journal_directory }}"
+            O11Y_JOURNAL_CONFIG_SHA: "{{ _journal_candidate_stat.stat.checksum }}"
+          register: _journal_up
+          changed_when: _journal_up.stdout | length > 0 or _journal_up.stderr | length > 0
+          check_mode: false
+
+        - name: Read the collector state
+          ansible.builtin.command:
+            argv: [podman, inspect, --format, "{{ '{{' }}.State.Health.Status{{ '}}' }}", o11y-journal-collector]
+          register: _journal_collector_status
+          changed_when: false
+          check_mode: false
+          retries: 20
+          delay: 3
+          until: _journal_collector_status.rc == 0 and _journal_collector_status.stdout | trim == 'healthy'
+
+        - name: Require the collector healthcheck to pass
+          ansible.builtin.assert:
+            that: _journal_collector_status.stdout | trim == 'healthy'
+            fail_msg: "The journal collector healthcheck failed; its state volume was preserved."
+            quiet: true
+
+        - name: Read back the seven receiver container identities and states
+          ansible.builtin.shell:
+            cmd: >-
+              set -o pipefail &&
+              podman inspect --format '{{ '{{' }}.Id {{ '}}' }} {{ '{{' }}.State.Status {{ '}}' }} {{ '{{' }}.State.StartedAt {{ '}}' }}'
+              o11y-prometheus o11y-loki o11y-alloy o11y-tempo o11y-pyroscope
+              o11y-grafana o11y-node-exporter | LC_ALL=C sort | sha256sum
+            executable: /bin/bash
+          register: _journal_receiver_snapshot_after
+          changed_when: false
+          check_mode: false
+
+        - name: Require all existing receiver containers to remain unchanged
+          ansible.builtin.assert:
+            that:
+              - _journal_receiver_snapshot_after.rc | default(1) == 0
+              - _journal_receiver_snapshot_after.stdout.split()[0] == _journal_receiver_snapshot.stdout.split()[0]
+            fail_msg: >-
+              At least one existing receiver container changed during collector apply;
+              the collector will be stopped and its positions volume preserved.
+            quiet: true
+
+        - name: Capture the query upper bound on the receiver host
+          ansible.builtin.command:
+            argv: [date, +%s%N]
+          register: _journal_verification_end
+          changed_when: false
+          check_mode: false
+
+        - name: Verify the exact bounded journal stream reached Loki
+          ansible.builtin.command:
+            argv:
+              - podman
+              - exec
+              - o11y-grafana
+              - wget
+              - -q
+              - --timeout=5
+              - --tries=1
+              - -O
+              - -
+              - "{{ _journal_loki_query_url }}"
+          register: _journal_loki_result
+          changed_when: false
+          failed_when: false
+          check_mode: false
+          no_log: true
+
+        - name: Require an exact service and signal stream in Loki
+          ansible.builtin.assert:
+            that:
+              - _journal_loki_result.rc | default(1) == 0
+              - (_journal_loki_result.stdout | default('{}') | from_json).status == 'success'
+              - (_journal_loki_result.stdout | default('{}') | from_json).data.result | length > 0
+              - (_journal_loki_result.stdout | default('{}') | from_json).data.result[0].stream.service == 'o11y/alloy'
+              - (_journal_loki_result.stdout | default('{}') | from_json).data.result[0].stream.signal == 'container'
+              - (_journal_loki_result.stdout | default('{}') | from_json).data.result[0].values | length > 0
+              - (_journal_loki_result.stdout | default('{}') | from_json).data.result[0].values[0][0] | int >= _journal_verification_start.stdout | trim | int
+            fail_msg: >-
+              Loki has no exact o11y/alloy container stream in the last 15 minutes;
+              the collector will be stopped and its positions volume preserved.
+            quiet: true
+
+      rescue:
+        - name: Stop only the journal collector after a failed delivery gate
+          ansible.builtin.command:
+            argv: [podman, stop, --time, "10", o11y-journal-collector]
+          register: _journal_rollback
+          changed_when: _journal_rollback.rc == 0
+          failed_when: false
+          check_mode: false
+
+        - name: Fail closed after stopping the journal collector
+          ansible.builtin.fail:
+            msg: >-
+              The journal collector failed its exact-target delivery gate. Only that
+              collector was stopped; its positions volume and all receiver data remain.
+
+- name: Stop only the journal collector while preserving its positions volume
+  hosts: o11y_svc
+  gather_facts: false
+  become: false
+  tasks:
+    - name: Leave the stop play when the reviewed action is apply
+      ansible.builtin.meta: end_host
+      when: journal_collector_action | default('apply') != 'stop'
+      tags: [always]
+
+    - name: Read the pilot collector state
+      ansible.builtin.command:
+        argv: [podman, inspect, --format, "{{ '{{' }}.State.Status{{ '}}' }}", o11y-journal-collector]
+      register: _journal_stop_status
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Stop only the pilot collector if it is running
+      ansible.builtin.command:
+        argv: [podman, stop, --time, "10", o11y-journal-collector]
+      register: _journal_stop
+      changed_when: _journal_stop.rc == 0
+      when: _journal_stop_status.rc == 0 and _journal_stop_status.stdout | trim == 'running'
