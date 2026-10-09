@@ -17,8 +17,11 @@ netboxlabs-diode-sdk
 proxmoxer
 requests
 # Runs the playbook suites, including the Tududi provisioning safety suite, against
-# disposable fixtures. A runner without it cannot prove rollback.
-ansible-core
+# disposable fixtures. A runner without it cannot prove rollback. Exact pin: matches the
+# prod Semaphore runner image v2.19.11 (ansible-core 2.20.8, Python 3.12) -- bump both
+# together. 2.20.x requires Python >=3.12; on 3.11 an unpinned install silently resolved
+# an older core, so CI never tested what prod runs.
+ansible-core==2.20.8
 # Runs the suite across the runner's cores (`-n auto --dist worksteal`). Pinned because
 # the scheduler flags are its interface, not pytest's. The pre-push hook warns when the
 # installed version differs from this pin.

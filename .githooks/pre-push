@@ -31,7 +31,7 @@
 # deliberate — a hook that tests something subtly different from CI teaches people to
 # distrust it.
 #
-# WHAT DOES NOT: local execution, and therefore the result. CI pins Python 3.11 via
+# WHAT DOES NOT: local execution, and therefore the result. CI pins Python 3.12 via
 # actions/setup-python and installs the test dependencies; this hook uses whatever
 # `python3` is on the developer's PATH, with whatever is installed there. The pytest
 # command also differs — `-q` here versus CI's `-v`, because a hook printing 95 passing
