@@ -155,6 +155,18 @@ def build_report(repo, inventory, repository_sha, now=None):
     for kind, dirname in (("service", "platform/services"), ("agent", "agents")):
         for name in candidate_names(repo, dirname):
             identity = name
+            if identity in conflicts:
+                entries.append({
+                    "target_id": f"candidate:{kind}:{name}",
+                    "source_candidate": f"{dirname}/{name}",
+                    "target_type": kind,
+                    "lifecycle": "unclassified",
+                    "service_identity": identity,
+                    "coverage": "unverified",
+                    "identity_conflict": True,
+                    "signals": dict.fromkeys(sorted(SIGNALS), "identity_conflict"),
+                })
+                continue
             matches = [target for target in declared.get(identity, []) if target["target_type"] == kind]
             if len(matches) != 1:
                 entries.append({

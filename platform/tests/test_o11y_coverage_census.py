@@ -148,9 +148,26 @@ class CoverageCensusTests(unittest.TestCase):
         rows = self.report([target(), target("service:other", "alpha")])
         self.assertEqual(rows["duplicate_identity_count"], 1)
         self.assertEqual(rows["duplicate_identity_targets"], ["service:alpha", "service:other"])
-        conflicts = [row for row in rows["targets"] if row.get("identity_conflict")]
+        conflicts = [
+            row for row in rows["targets"]
+            if row.get("identity_conflict") and row["source_candidate"] is None
+        ]
         self.assertEqual(len(conflicts), 2)
         self.assertTrue(all(row["coverage"] == "unverified" for row in conflicts))
+
+    def test_duplicate_identity_across_target_types_keeps_candidate_unverified(self):
+        rows = self.report([
+            target(),
+            target(target_id="vm:alpha", identity="alpha", target_type="vm"),
+        ])
+        candidate = next(row for row in rows["targets"] if row["source_candidate"] == "platform/services/alpha")
+        declarations = [row for row in rows["targets"] if row["target_id"] in {"service:alpha", "vm:alpha"}]
+        self.assertEqual(rows["duplicate_identity_count"], 1)
+        self.assertTrue(candidate["identity_conflict"])
+        self.assertEqual(candidate["coverage"], "unverified")
+        self.assertEqual(len(declarations), 2)
+        self.assertTrue(all(row["identity_conflict"] for row in declarations))
+        self.assertTrue(all(row["coverage"] == "unverified" for row in declarations))
 
     def test_private_endpoint_values_do_not_enter_report(self):
         declaration = target()
