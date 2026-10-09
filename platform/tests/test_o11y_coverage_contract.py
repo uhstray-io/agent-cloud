@@ -121,6 +121,57 @@ class CoverageContractTests(unittest.TestCase):
                                              for task in play.get("tasks", [])))
         self.assertLess(digest_play_index, first_query_play_index)
 
+    def test_receiver_host_inventory_override_is_refused_before_signal_queries(self):
+        plays = yaml.safe_load((ROOT / "platform/playbooks/verify-o11y-service.yml").read_text())
+        receiver = next(play for play in plays if play.get("name") == "Verify one exact target signal receipt")
+        tasks = receiver["tasks"]
+        recompute_index = next(i for i, task in enumerate(tasks)
+                               if task.get("name") == "Recompute the receiver host's canonical inventory revision")
+        assert_index = next(i for i, task in enumerate(tasks)
+                            if task.get("name") == "Require the receiver host's reviewed inventory digest")
+        selection_index = next(i for i, task in enumerate(tasks)
+                               if task.get("name") == "Require the unique declared target")
+        first_signal_query_index = next(i for i, task in enumerate(tasks)
+                                        if task.get("name") == "Check the exact signal receipt")
+        self.assertLess(recompute_index, assert_index)
+        self.assertLess(assert_index, selection_index)
+        self.assertLess(selection_index, first_signal_query_index)
+
+        check = tasks[assert_index]["ansible.builtin.assert"]["that"]
+        original_targets = [{
+            "target_id": "service:alpha", "target_type": "service", "lifecycle": "deployed",
+            "owner": "platform", "runtime": "podman", "service_identity": "alpha",
+            "environment": "production", "signals": {}, "collection_method": "alloy",
+            "budget": {"samples_per_scrape": 1000}, "receipt_reference": {},
+            "template_references": [], "inventory_host": "collector-a",
+        }]
+        host_override_targets = [{
+            **original_targets[0], "target_id": "service:beta", "service_identity": "beta",
+            "inventory_host": "collector-b",
+        }]
+
+        def digest(targets):
+            encoded = json.dumps(
+                {"targets": targets}, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+            ).encode("utf-8")
+            return hashlib.sha256(encoded).hexdigest()
+
+        expected = digest(original_targets)
+        override_revision = digest(host_override_targets)
+        environment = jinja2.Environment()
+
+        def passes(targets, declared_revision, actual_revision):
+            values = {
+                "_coverage_inventory": {"revision": declared_revision, "targets": targets},
+                "expected_inventory_revision": expected,
+                "_receiver_inventory_revision": {"rc": 0, "stdout": actual_revision},
+            }
+            return all(environment.from_string("{{ " + condition + " }}").render(**values) == "True"
+                       for condition in check)
+
+        self.assertTrue(passes(original_targets, expected, expected))
+        self.assertFalse(passes(host_override_targets, override_revision, override_revision))
+
     def test_strict_signal_observation_uses_the_query_and_is_unattributed(self):
         tasks = yaml.safe_load((ROOT / "platform/playbooks/tasks/o11y-coverage-target-receipt.yml").read_text())
         registers = [task.get("register") for task in tasks if task.get("register")]

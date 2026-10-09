@@ -197,6 +197,29 @@
     _engine: "{{ container_engine | default('podman') }}"
     _coverage_inventory: "{{ estate_coverage_inventory | default({}) }}"
   tasks:
+    - name: Recompute the receiver host's canonical inventory revision
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/files/o11y-coverage-census.py"
+          - --inventory-revision
+        stdin: "{{ {'targets': _coverage_inventory.get('targets', [])} | to_json(sort_keys=True, separators=(',', ':'), ensure_ascii=True) }}"
+      delegate_to: localhost
+      register: _receiver_inventory_revision
+      changed_when: false
+      check_mode: false
+      failed_when: false
+      when: o11y_verification_mode | default('legacy') == 'strict'
+
+    - name: Require the receiver host's reviewed inventory digest
+      ansible.builtin.assert:
+        that:
+          - _coverage_inventory.get('revision', '') == expected_inventory_revision
+          - _receiver_inventory_revision.rc == 0
+          - _receiver_inventory_revision.stdout == expected_inventory_revision
+        fail_msg: "Strict signal observation refused: the receiver host inventory does not match the reviewed revision."
+      when: o11y_verification_mode | default('legacy') == 'strict'
+
     - name: Require the unique declared target
       ansible.builtin.assert:
         that:
