@@ -321,10 +321,10 @@ def test_playbook_guards_validation_delivery_and_non_destructive_rollback():
         for task in apply_block["rescue"]
         if task.get("name") == "Capture collector health failure action before rollback"
     )
-    rollback_startup = next(
+    rollback_logs = next(
         task
         for task in apply_block["rescue"]
-        if task.get("name") == "Capture collector startup healthcheck presence before rollback"
+        if task.get("name") == "Capture at most 80 collector log lines before rollback"
     )
     rollback_failure = next(
         task
@@ -340,20 +340,30 @@ def test_playbook_guards_validation_delivery_and_non_destructive_rollback():
     assert start_task["when"] == "not ansible_check_mode"
     evidence_formats = [
         " ".join(task["ansible.builtin.command"]["argv"])
-        for task in (rollback_state, rollback_config, rollback_action, rollback_startup)
+        for task in (rollback_state, rollback_config, rollback_action)
     ]
     assert all(
         task["check_mode"] is False
-        for task in (rollback_state, rollback_config, rollback_action, rollback_startup)
+        for task in (rollback_state, rollback_config, rollback_action)
     )
     assert ".State.Health" in evidence_formats[0]
+    assert ".RestartCount" in evidence_formats[0]
     assert ".FailingStreak" in evidence_formats[0]
     assert ".ExitCode" in evidence_formats[0]
     assert ".Output" not in " ".join(evidence_formats)
     assert ".Config.Healthcheck" in evidence_formats[1]
     assert ".Interval" in evidence_formats[1]
     assert ".Config.HealthcheckOnFailureAction" in evidence_formats[2]
-    assert ".Config.StartupHealthCheck" in evidence_formats[3]
+    assert rollback_logs["ansible.builtin.command"]["argv"] == [
+        "podman",
+        "logs",
+        "--tail",
+        "80",
+        "o11y-journal-collector",
+    ]
+    assert rollback_logs["no_log"] is True
+    assert rollback_logs["failed_when"] is False
+    assert rollback_logs["check_mode"] is False
     failure_message = rollback_failure["ansible.builtin.fail"]["msg"]
     classifications = rollback_classifier["ansible.builtin.set_fact"]
     assert "container_missing" in classifications["_journal_rollback_state_class"]
@@ -363,14 +373,22 @@ def test_playbook_guards_validation_delivery_and_non_destructive_rollback():
     assert "healthcheck_absent" in classifications["_journal_rollback_health_config_class"]
     assert "action_probe_failed" in classifications["_journal_rollback_health_action_class"]
     assert "action_unknown" in classifications["_journal_rollback_health_action_class"]
-    assert "startup_probe_failed" in classifications["_journal_rollback_startup_health_class"]
-    assert "state/config/action/startup classification=" in failure_message
-    assert "Podman state/config/action/startup rc=" in failure_message
+    assert "permission_denied" in classifications["_journal_rollback_log_class"]
+    assert "config_error" in classifications["_journal_rollback_log_class"]
+    assert "missing_file" in classifications["_journal_rollback_log_class"]
+    assert "connection_refused" in classifications["_journal_rollback_log_class"]
+    assert "other" in classifications["_journal_rollback_log_class"]
+    assert "unavailable" in classifications["_journal_rollback_log_class"]
+    assert "empty" in classifications["_journal_rollback_log_class"]
+    assert "_journal_rollback_logs.stdout" not in failure_message
+    assert "collector logs classification/count=" in failure_message
+    assert "state/config/action classification=" in failure_message
+    assert "Podman state/config/action rc=" in failure_message
     assert "_journal_rollback_state_evidence.stdout" in failure_message
     assert "_journal_rollback_health_config.stdout" in failure_message
     assert "_journal_rollback_health_action.stdout" in failure_message
-    assert "_journal_rollback_startup_health.stdout" in failure_message
     assert ".stderr" not in failure_message
+    assert "startup_check" not in failure_message
     rollback_remove = next(
         task
         for task in apply_block["rescue"]
@@ -402,7 +420,7 @@ def test_playbook_guards_validation_delivery_and_non_destructive_rollback():
     assert "when" not in rollback_remove
     assert all(
         apply_block["rescue"].index(task) < apply_block["rescue"].index(rollback_volume_capture)
-        for task in (rollback_state, rollback_config, rollback_action, rollback_startup)
+        for task in (rollback_state, rollback_logs, rollback_config, rollback_action)
     )
     assert apply_block["rescue"].index(rollback_volume_capture) < apply_block["rescue"].index(rollback_remove)
     assert apply_block["rescue"].index(rollback_remove) < apply_block["rescue"].index(rollback_volume_readback)
@@ -539,7 +557,7 @@ def test_rollback_health_diagnostic_is_allowlisted_and_fixed_probe_is_gated():
         {
             "rc": 0,
             "stderr": "",
-            "stdout": "state=running health=starting failing_streak=0 log_count=0 exit_codes=",
+            "stdout": "state=running restart_count=0 health=starting failing_streak=0 log_count=0 exit_codes=",
             "expected": "fields_available",
         },
     ]
@@ -569,11 +587,14 @@ def test_rollback_health_diagnostic_is_allowlisted_and_fixed_probe_is_gated():
         {"rc": 0, "stdout": "on_failure=unknown", "expected": "action_unknown"},
         {"rc": 0, "stdout": "on_failure=none", "expected": "fields_available"},
     ]
-    startup_cases = [
-        {"rc": 125, "stdout": "", "expected": "startup_probe_failed"},
-        {"rc": 0, "stdout": "", "expected": "empty_formatted_fields"},
-        {"rc": 0, "stdout": "startup_check=absent", "expected": "fields_available"},
-        {"rc": 0, "stdout": "startup_check=present", "expected": "fields_available"},
+    log_cases = [
+        {"rc": 125, "stdout": "private stderr", "expected": "unavailable"},
+        {"rc": 0, "stdout": "", "expected": "empty"},
+        {"rc": 0, "stdout": "permission denied at /private/path token=secret", "expected": "permission_denied"},
+        {"rc": 0, "stdout": "failed to load config /private/path token=secret", "expected": "config_error"},
+        {"rc": 0, "stdout": "no such file or directory: /private/path", "expected": "missing_file"},
+        {"rc": 0, "stdout": "connection refused to 203.0.113.7 header=Bearer secret", "expected": "connection_refused"},
+        {"rc": 0, "stdout": "unrecognized startup issue /private/path token=secret", "expected": "other"},
     ]
     gate_cases = [
         {
@@ -640,9 +661,9 @@ action = next(
     task for task in apply["rescue"]
     if task.get("name") == "Capture collector health failure action before rollback"
 )
-startup = next(
+logs = next(
     task for task in apply["rescue"]
-    if task.get("name") == "Capture collector startup healthcheck presence before rollback"
+    if task.get("name") == "Capture at most 80 collector log lines before rollback"
 )
 classifier = next(
     task for task in apply["rescue"]
@@ -671,8 +692,9 @@ rendered_formats = {
     "state": render_format(state),
     "config": render_format(config),
     "action": render_format(action),
-    "startup": render_format(startup),
 }
+rendered_logs = logs["ansible.builtin.command"]["argv"]
+logs_no_log = logs.get("no_log")
 expressions = classifier["ansible.builtin.set_fact"]
 gate_expression = next(
     task for task in apply["rescue"]
@@ -712,13 +734,20 @@ for case in data["action_cases"]:
         trust_as_template(expressions["_journal_rollback_health_action_class"])
     ).strip()
     action_classes.append(result)
-startup_classes = []
-for case in data["startup_cases"]:
-    variables = {"_journal_rollback_startup_health": case}
+log_classes = []
+log_counts = []
+for case in data["log_cases"]:
+    variables = {
+        "_journal_rollback_logs": case | {"stdout_lines": case["stdout"].splitlines()},
+    }
     result = Templar(loader=DataLoader(), variables=variables).template(
-        trust_as_template(expressions["_journal_rollback_startup_health_class"])
+        trust_as_template(expressions["_journal_rollback_log_class"])
     ).strip()
-    startup_classes.append(result)
+    log_classes.append(result)
+    count = str(Templar(loader=DataLoader(), variables=variables).template(
+        trust_as_template(expressions["_journal_rollback_log_count"])
+    )).strip()
+    log_counts.append(int(count))
 gate_results = []
 for case in data["gate_cases"]:
     variables = {
@@ -738,10 +767,13 @@ for case in data["readiness_cases"]:
     readiness_results.append(result)
 print(json.dumps({
     "formats": rendered_formats,
+    "logs": rendered_logs,
+    "logs_no_log": logs_no_log,
     "classes": classes,
     "config_classes": config_classes,
     "action_classes": action_classes,
-    "startup_classes": startup_classes,
+    "log_classes": log_classes,
+    "log_counts": log_counts,
     "gate_results": gate_results,
     "readiness_results": readiness_results,
     "readiness_argv": readiness_argv,
@@ -765,7 +797,7 @@ print(json.dumps({
                     "classifier_cases": state_cases,
                     "config_cases": config_cases,
                     "action_cases": action_cases,
-                    "startup_cases": startup_cases,
+                    "log_cases": log_cases,
                     "gate_cases": gate_cases,
                     "readiness_cases": readiness_cases,
                 }
@@ -779,7 +811,7 @@ print(json.dumps({
     rendered = json.loads(result.stdout)
     assert rendered["formats"] == {
         "state": (
-        '{{printf "state=%s " .State.Status}}'
+        '{{printf "state=%s restart_count=%d " .State.Status .RestartCount}}'
         "{{with .State.Health}}health={{.Status}} failing_streak={{.FailingStreak}} "
         "log_count={{len .Log}} exit_codes={{range .Log}}{{.ExitCode}},{{end}}"
         "{{else}}health=unavailable failing_streak=unavailable log_count=0 exit_codes=unavailable{{end}}"
@@ -802,12 +834,18 @@ print(json.dumps({
         "{{else if eq .Config.HealthcheckOnFailureAction \"kill\"}}on_failure=kill"
         "{{else}}on_failure=unknown{{end}}"
         ),
-        "startup": "{{if .Config.StartupHealthCheck}}startup_check=present{{else}}startup_check=absent{{end}}",
     }
     assert rendered["classes"] == [case["expected"] for case in state_cases]
     assert rendered["config_classes"] == [case["expected"] for case in config_cases]
     assert rendered["action_classes"] == [case["expected"] for case in action_cases]
-    assert rendered["startup_classes"] == [case["expected"] for case in startup_cases]
+    assert rendered["log_classes"] == [case["expected"] for case in log_cases]
+    assert rendered["log_counts"] == [0, 0, 1, 1, 1, 1, 1]
+    assert rendered["logs"] == ["podman", "logs", "--tail", "80", "o11y-journal-collector"]
+    assert rendered["logs_no_log"] is True
+    assert not any(
+        secret in json.dumps(rendered)
+        for secret in ("/private/path", "203.0.113.7", "Bearer secret", "token=secret")
+    )
     assert rendered["gate_results"] == [case["expected"] for case in gate_cases]
     assert rendered["readiness_results"] == [case["expected"] for case in readiness_cases]
     assert rendered["readiness_argv"] == [

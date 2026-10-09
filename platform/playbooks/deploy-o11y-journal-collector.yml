@@ -457,12 +457,21 @@
               - podman
               - inspect
               - --format
-              - "{{ '{{' }}printf \"state=%s \" .State.Status{{ '}}' }}{{ '{{' }}with .State.Health{{ '}}' }}health={{ '{{' }}.Status{{ '}}' }} failing_streak={{ '{{' }}.FailingStreak{{ '}}' }} log_count={{ '{{' }}len .Log{{ '}}' }} exit_codes={{ '{{' }}range .Log{{ '}}' }}{{ '{{' }}.ExitCode{{ '}}' }},{{ '{{' }}end{{ '}}' }}{{ '{{' }}else{{ '}}' }}health=unavailable failing_streak=unavailable log_count=0 exit_codes=unavailable{{ '{{' }}end{{ '}}' }}"
+              - "{{ '{{' }}printf \"state=%s restart_count=%d \" .State.Status .RestartCount{{ '}}' }}{{ '{{' }}with .State.Health{{ '}}' }}health={{ '{{' }}.Status{{ '}}' }} failing_streak={{ '{{' }}.FailingStreak{{ '}}' }} log_count={{ '{{' }}len .Log{{ '}}' }} exit_codes={{ '{{' }}range .Log{{ '}}' }}{{ '{{' }}.ExitCode{{ '}}' }},{{ '{{' }}end{{ '}}' }}{{ '{{' }}else{{ '}}' }}health=unavailable failing_streak=unavailable log_count=0 exit_codes=unavailable{{ '{{' }}end{{ '}}' }}"
               - o11y-journal-collector
           register: _journal_rollback_state_evidence
           changed_when: false
           failed_when: false
           check_mode: false
+
+        - name: Capture at most 80 collector log lines before rollback
+          ansible.builtin.command:
+            argv: [podman, logs, --tail, "80", o11y-journal-collector]
+          register: _journal_rollback_logs
+          changed_when: false
+          failed_when: false
+          check_mode: false
+          no_log: true
 
         - name: Capture collector effective health schedule before rollback
           ansible.builtin.command:
@@ -486,19 +495,6 @@
               - "{{ '{{' }}if eq .Config.HealthcheckOnFailureAction \"none\"{{ '}}' }}on_failure=none{{ '{{' }}else if eq .Config.HealthcheckOnFailureAction \"restart\"{{ '}}' }}on_failure=restart{{ '{{' }}else if eq .Config.HealthcheckOnFailureAction \"stop\"{{ '}}' }}on_failure=stop{{ '{{' }}else if eq .Config.HealthcheckOnFailureAction \"kill\"{{ '}}' }}on_failure=kill{{ '{{' }}else{{ '}}' }}on_failure=unknown{{ '{{' }}end{{ '}}' }}"
               - o11y-journal-collector
           register: _journal_rollback_health_action
-          changed_when: false
-          failed_when: false
-          check_mode: false
-
-        - name: Capture collector startup healthcheck presence before rollback
-          ansible.builtin.command:
-            argv:
-              - podman
-              - inspect
-              - --format
-              - "{{ '{{' }}if .Config.StartupHealthCheck{{ '}}' }}startup_check=present{{ '{{' }}else{{ '}}' }}startup_check=absent{{ '{{' }}end{{ '}}' }}"
-              - o11y-journal-collector
-          register: _journal_rollback_startup_health
           changed_when: false
           failed_when: false
           check_mode: false
@@ -540,14 +536,25 @@
                 if 'on_failure=unknown' in (_journal_rollback_health_action.stdout | default('', true) | split())
                 else 'fields_available'
               }}
-            _journal_rollback_startup_health_class: >-
+            _journal_rollback_log_class: >-
               {{
-                'startup_probe_failed'
-                if _journal_rollback_startup_health.rc | default(1) | int != 0
-                else 'empty_formatted_fields'
-                if _journal_rollback_startup_health.stdout | default('', true) | trim | length == 0
-                else 'fields_available'
+                'unavailable'
+                if _journal_rollback_logs.rc | default(1) | int != 0
+                else 'empty'
+                if _journal_rollback_logs.stdout | default('', true) | trim | length == 0
+                else 'permission_denied'
+                if 'permission denied' in (_journal_rollback_logs.stdout | default('', true) | lower)
+                else 'config_error'
+                if ('failed to load config' in (_journal_rollback_logs.stdout | default('', true) | lower) or
+                    'failed to parse config' in (_journal_rollback_logs.stdout | default('', true) | lower) or
+                    'invalid config' in (_journal_rollback_logs.stdout | default('', true) | lower))
+                else 'missing_file'
+                if 'no such file or directory' in (_journal_rollback_logs.stdout | default('', true) | lower)
+                else 'connection_refused'
+                if 'connection refused' in (_journal_rollback_logs.stdout | default('', true) | lower)
+                else 'other'
               }}
+            _journal_rollback_log_count: "{{ 0 if (_journal_rollback_logs.rc | default(1) | int != 0) else (_journal_rollback_logs.stdout_lines | default([]) | length) }}"
 
         - name: Decide whether one fixed readiness probe is safe as diagnostic evidence
           ansible.builtin.set_fact:
@@ -677,12 +684,12 @@
             msg: >-
               The journal collector failed its exact-target delivery gate. Only that
               collector was removed from the boot-restart set when present. Sanitized
-              state/config/action/startup classification={{ _journal_rollback_state_class | default('unavailable') }}/{{ _journal_rollback_health_config_class | default('unavailable') }}/{{ _journal_rollback_health_action_class | default('unavailable') }}/{{ _journal_rollback_startup_health_class | default('unavailable') }};
-              Podman state/config/action/startup rc={{ _journal_rollback_state_evidence.rc | default('unavailable') }}/{{ _journal_rollback_health_config.rc | default('unavailable') }}/{{ _journal_rollback_health_action.rc | default('unavailable') }}/{{ _journal_rollback_startup_health.rc | default('unavailable') }};
+              state/config/action classification={{ _journal_rollback_state_class | default('unavailable') }}/{{ _journal_rollback_health_config_class | default('unavailable') }}/{{ _journal_rollback_health_action_class | default('unavailable') }};
+              Podman state/config/action rc={{ _journal_rollback_state_evidence.rc | default('unavailable') }}/{{ _journal_rollback_health_config.rc | default('unavailable') }}/{{ _journal_rollback_health_action.rc | default('unavailable') }};
               allow-listed state/automatic health results={{ _journal_rollback_state_evidence.stdout | default('') | trim | default('unavailable', true) }};
               allow-listed effective health schedule={{ _journal_rollback_health_config.stdout | default('') | trim | default('unavailable', true) }};
               allow-listed health failure action={{ _journal_rollback_health_action.stdout | default('') | trim | default('unavailable', true) }};
-              allow-listed startup healthcheck={{ _journal_rollback_startup_health.stdout | default('') | trim | default('unavailable', true) }};
+              collector logs classification/count={{ _journal_rollback_log_class | default('unavailable') }}/{{ _journal_rollback_log_count | default(0) }};
               one-shot fixed readiness probe diagnostic={{ _journal_readiness_probe_class | default('unavailable') }};
               post-check state/health/log-count={{ _journal_readiness_probe_readback.stdout | default('not_run') | trim | default('unavailable', true) }}.
               The fixed probe only opens Alloy's local TCP listener and is diagnostic; it does not run the configured health command, mutate Podman health, or satisfy automatic health or Loki delivery.
