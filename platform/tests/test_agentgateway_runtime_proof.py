@@ -92,7 +92,10 @@ def test_config_validation_precedes_container_lifecycle_and_suppresses_diagnosti
     assert include["ansible.builtin.include_tasks"] == "tasks/agw-validate-config.yml"
     assert include["vars"]["_agw_vc_config"] == "config.yaml"
     assert "_agw_vc_in_check_mode" not in include["vars"]  # the deploy's check mode still skips it
-    assert "rendered agentgateway config validator failed; no gateway container was recreated" in include["vars"]["_agw_vc_refusal"]
+    assert (
+        "rendered agentgateway config validator failed; no gateway container was recreated"
+        in include["vars"]["_agw_vc_refusal"]
+    )
     include_index = deploy_tasks.index(include)
     image_check_index = deploy_names.index("Require the rendered Compose image to match the reviewed pin")
     pull_index = deploy_names.index("Pull the deployment images once before config validation")
@@ -107,7 +110,8 @@ def test_config_validation_precedes_container_lifecycle_and_suppresses_diagnosti
     validate = next(task for task in tasks if task.get("name", "").startswith("Validate the rendered config"))
     image_id_index = task_names.index("Read the resolved local v1.5.0 image ID for validation")
     validate_index = tasks.index(validate)
-    assert image_id_index < task_names.index("Require an exact local image ID before config validation") < validate_index
+    exact_id_index = task_names.index("Require an exact local image ID before config validation")
+    assert image_id_index < exact_id_index < validate_index
     assert validate["check_mode"] is False
     refuse_index = task_names.index(
         "Refuse container recreation when the pinned image rejects rendered config"
