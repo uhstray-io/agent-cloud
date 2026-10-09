@@ -2418,8 +2418,14 @@ on 2.19+, so no result-shaped guard could see it. The callback now hides the err
 any failed `no_log` task (`_handle_exception`, the one method every success, failure, item and
 unreachable display passes through) and prints one line naming the task;
 `test_no_log_error_redaction.py` runs real plays on every ansible-core it is given
-(`NOLOG_ANSIBLE_BINS`) and fails on a value anywhere in the output. Warnings and deprecations
-of a `no_log` task are still displayed, unaudited.
+(`NOLOG_ANSIBLE_BINS`) and fails on a value anywhere in the output. Review of PR #511 found the
+same preservation one method over: censoring also keeps `warnings` and `deprecations`, so a
+module that words a warning around a value it was handed printed it on 2.19 and 2.20.8 (two
+occurrences each, none on 2.18.15). `_handle_warnings` now replaces them for a `no_log` task with
+one line giving the count, and the test's `noisy` module warns and deprecates around the value on
+a succeeding and a failing task. Each way of recognising a `no_log` result (the `censored` marker,
+`_ansible_no_log`, the task's own declaration) is tested alone, since a real run always carries
+the first and would not notice the other two failing.
 
 ### 4.7 An address edit replaced every matching line, and a second host's declaration moved with it
 
