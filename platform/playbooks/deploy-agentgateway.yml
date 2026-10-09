@@ -547,15 +547,55 @@
             import sys
 
             try:
-                payload = base64.b64decode(sys.stdin.buffer.read(), validate=True)
+                encoded_payload = sys.stdin.buffer.read(4_194_305)
+                if len(encoded_payload) > 4_194_304:
+                    raise ValueError
+                payload = base64.b64decode(encoded_payload, validate=True)
                 result = json.loads(payload)
-                rc = int(result.get("rc", -1))
-                output = "\n".join(str(result.get(key, "")) for key in ("stdout", "stderr")).lower()
+                raw_rc = result.get("rc", -1)
+                if type(raw_rc) is not int or not -255 <= raw_rc <= 255:
+                    raise ValueError
+                rc = raw_rc
+                output = "\n".join(
+                    str(result.get(key, ""))[:65536] for key in ("stdout", "stderr")
+                ).lower()
                 categories = (
-                    ("config-schema-error", r"unknown field|unknown key|failed to parse|parse error|schema validation|invalid (?:yaml|configuration|config)"),
+                    (
+                        "invalid-endpoint-error",
+                        r"\binvalid (?:url|uri|endpoint|host:port)\b|"
+                        r"\bmalformed (?:url|uri|endpoint)\b|"
+                        r"\b(?:url|uri|endpoint) parse error\b|"
+                        r"\bfailed to parse (?:url|uri|endpoint)\b",
+                    ),
+                    (
+                        "config-type-variant-error",
+                        r"invalid type|wrong type|expected (?:a |an )?(?:sequence|mapping|scalar)|"
+                        r"unknown variant",
+                    ),
+                    (
+                        "environment-reference-error",
+                        r"\bmissing environment variable\b|"
+                        r"\benvironment variable(?:\s+['\"`]?[a-z_][\w.$/-]*['\"`]?)?\s+"
+                        r"(?:is\s+)?(?:not found|not set|undefined|missing)\b|"
+                        r"\b(?:not found|not set|undefined|missing) environment variable\b",
+                    ),
                     ("file-mount-permission-error", r"permission denied|operation not permitted|access denied|read-only file system"),
+                    (
+                        "resource-certificate-load-error",
+                        r"(?:failed|unable|cannot|could not) (?:to )?(?:load|open|read) "
+                        r"(?:the )?(?:resource|certificate|cert|key|file|trust|ca)\b|"
+                        r"(?:failed|unable|cannot|could not) (?:to )?parse "
+                        r"(?:the )?(?:resource|certificate|cert|private key|trust bundle|ca)\b|"
+                        r"\b(?:certificate|cert file|private key|trust bundle) "
+                        r"(?:load|read|parse) (?:failed|error)\b",
+                    ),
                     ("cli-argument-error", r"unknown (?:flag|option)|unrecognized (?:flag|option)|flag provided but not defined|unexpected argument|requires an argument|usage:"),
                     ("network-dependency-error", r"connection refused|connection reset|no route to host|temporary failure in name resolution|no such host|deadline exceeded|i/o timeout"),
+                    (
+                        "config-schema-error",
+                        r"unknown field|unknown key|failed to parse (?:yaml|configuration|config)|"
+                        r"schema validation|invalid (?:yaml|configuration|config)",
+                    ),
                 )
                 if rc == 125:
                     category = "container-runtime-error"
@@ -568,7 +608,26 @@
                 elif rc == 0:
                     category = "accepted"
                 else:
-                    category = next((name for name, pattern in categories if re.search(pattern, output)), "validator-nonzero-unclassified")
+                    clauses = tuple(
+                        clause
+                        for clause in re.split(r"[;\r\n]+|(?<=[.!?])\s+", output)
+                        if clause
+                    )
+                    category = next(
+                        (
+                            name
+                            for name, pattern in categories
+                            if any(re.search(pattern, clause) for clause in clauses)
+                        ),
+                        None,
+                    )
+                    if category is None:
+                        category = {
+                            1: "validator-nonzero-exit-1",
+                            2: "validator-nonzero-exit-2",
+                            3: "validator-nonzero-exit-3",
+                            4: "validator-nonzero-exit-4",
+                        }.get(rc, "validator-nonzero-exit-other")
                 print(f"{category}|{rc}")
             except Exception:
                 print("diagnostic-unavailable|-1")
@@ -591,8 +650,12 @@
           {{ candidate if candidate in [
             'container-runtime-error', 'validator-not-executable', 'validator-command-not-found',
             'validator-result-unavailable', 'accepted', 'config-schema-error',
+            'config-type-variant-error', 'environment-reference-error',
+            'invalid-endpoint-error', 'resource-certificate-load-error',
             'file-mount-permission-error', 'cli-argument-error', 'network-dependency-error',
-            'validator-nonzero-unclassified', 'diagnostic-unavailable'
+            'validator-nonzero-exit-1', 'validator-nonzero-exit-2',
+            'validator-nonzero-exit-3', 'validator-nonzero-exit-4',
+            'validator-nonzero-exit-other', 'diagnostic-unavailable'
           ] else 'diagnostic-unavailable' }}
       changed_when: false
       no_log: true

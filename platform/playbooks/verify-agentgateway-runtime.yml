@@ -68,7 +68,8 @@
                 raise ValueError
             fields = b"".join(output_chunks).split(b"\0")
             untracked_categories = {
-                "gateway_deployment": 0,
+                "gateway_certificate_tree": 0,
+                "gateway_deployment_other": 0,
                 "other_service_deployment": 0,
                 "service_tree_other": 0,
                 "platform_other": 0,
@@ -87,6 +88,7 @@
             path_count = 0
             index = 0
             gateway_deploy_prefix = b"platform/services/agentgateway/deployment/"
+            gateway_certificate_prefix = gateway_deploy_prefix + b"certs/"
             services_prefix = b"platform/services/"
             while index < len(fields) - 1:
                 entry = fields[index]
@@ -101,8 +103,10 @@
                     category = "untracked"
                     path = entry[3:]
                     path_parts = path.split(b"/")
-                    if path.startswith(gateway_deploy_prefix):
-                        untracked_category = "gateway_deployment"
+                    if path.startswith(gateway_certificate_prefix):
+                        untracked_category = "gateway_certificate_tree"
+                    elif path.startswith(gateway_deploy_prefix):
+                        untracked_category = "gateway_deployment_other"
                     elif (
                         path.startswith(services_prefix)
                         and len(path_parts) >= 5
