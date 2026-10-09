@@ -939,7 +939,7 @@
       ansible.builtin.set_fact:
         _journal_positions_survey:
           rc: 0
-          stdout: '{"status":"check_mode_unverified","volume_use_count":0,"collector_present":false,"entry_count":0,"root_owner":"unavailable","root_mode_access":"unavailable","acl":"unavailable","mount":"unavailable","children":"unavailable"}'
+          stdout: '{"status":"check_mode_unverified","volume_use_count":0,"collector_present":false,"entry_count":0,"root_owner":"unavailable","root_mode_access":"unavailable","acl":"unavailable","mount":"unavailable","children":"unavailable","survey_diagnostics":{"inventory_fields":{"NeedsChown":{"presence":"unverified","type":"unverified","value":"unavailable"},"NeedsCopyUp":{"presence":"unverified","type":"unverified","value":"unavailable"}},"named_volume":{"outcome":"unverified","identity":"unverified","inventory_identity":"unverified","fields":{"NeedsChown":{"presence":"unverified","type":"unverified","value":"unavailable"},"NeedsCopyUp":{"presence":"unverified","type":"unverified","value":"unavailable"}}},"podman_version":{"client":"unavailable","server":"unavailable"}}}'
       when: ansible_check_mode
 
     - name: Require bounded positions-volume survey fields
@@ -956,6 +956,23 @@
           - (_journal_positions_survey.stdout | from_json).acl in ['present', 'absent', 'unavailable']
           - (_journal_positions_survey.stdout | from_json).mount in ['clear', 'ambiguous', 'unavailable']
           - (_journal_positions_survey.stdout | from_json).children in ['safe_regular_files', 'ambiguous', 'unavailable']
+          - (_journal_positions_survey.stdout | from_json).survey_diagnostics.named_volume.outcome in ['observed', 'unavailable', 'malformed', 'duplicate', 'missing', 'unverified']
+          - (_journal_positions_survey.stdout | from_json).survey_diagnostics.named_volume.identity in ['match', 'mismatch', 'unverified']
+          - (_journal_positions_survey.stdout | from_json).survey_diagnostics.named_volume.inventory_identity in ['match', 'mismatch', 'unverified']
+          - (_journal_positions_survey.stdout | from_json).survey_diagnostics.inventory_fields.NeedsChown.presence in ['present', 'missing', 'unverified']
+          - (_journal_positions_survey.stdout | from_json).survey_diagnostics.inventory_fields.NeedsChown.type in ['boolean', 'null', 'string', 'number', 'array', 'object', 'other', 'missing', 'unverified']
+          - (_journal_positions_survey.stdout | from_json).survey_diagnostics.inventory_fields.NeedsChown.value is sameas true or (_journal_positions_survey.stdout | from_json).survey_diagnostics.inventory_fields.NeedsChown.value is sameas false or (_journal_positions_survey.stdout | from_json).survey_diagnostics.inventory_fields.NeedsChown.value == 'unavailable'
+          - (_journal_positions_survey.stdout | from_json).survey_diagnostics.inventory_fields.NeedsCopyUp.presence in ['present', 'missing', 'unverified']
+          - (_journal_positions_survey.stdout | from_json).survey_diagnostics.inventory_fields.NeedsCopyUp.type in ['boolean', 'null', 'string', 'number', 'array', 'object', 'other', 'missing', 'unverified']
+          - (_journal_positions_survey.stdout | from_json).survey_diagnostics.inventory_fields.NeedsCopyUp.value is sameas true or (_journal_positions_survey.stdout | from_json).survey_diagnostics.inventory_fields.NeedsCopyUp.value is sameas false or (_journal_positions_survey.stdout | from_json).survey_diagnostics.inventory_fields.NeedsCopyUp.value == 'unavailable'
+          - (_journal_positions_survey.stdout | from_json).survey_diagnostics.named_volume.fields.NeedsChown.presence in ['present', 'missing', 'unverified']
+          - (_journal_positions_survey.stdout | from_json).survey_diagnostics.named_volume.fields.NeedsChown.type in ['boolean', 'null', 'string', 'number', 'array', 'object', 'other', 'missing', 'unverified']
+          - (_journal_positions_survey.stdout | from_json).survey_diagnostics.named_volume.fields.NeedsChown.value is sameas true or (_journal_positions_survey.stdout | from_json).survey_diagnostics.named_volume.fields.NeedsChown.value is sameas false or (_journal_positions_survey.stdout | from_json).survey_diagnostics.named_volume.fields.NeedsChown.value == 'unavailable'
+          - (_journal_positions_survey.stdout | from_json).survey_diagnostics.named_volume.fields.NeedsCopyUp.presence in ['present', 'missing', 'unverified']
+          - (_journal_positions_survey.stdout | from_json).survey_diagnostics.named_volume.fields.NeedsCopyUp.type in ['boolean', 'null', 'string', 'number', 'array', 'object', 'other', 'missing', 'unverified']
+          - (_journal_positions_survey.stdout | from_json).survey_diagnostics.named_volume.fields.NeedsCopyUp.value is sameas true or (_journal_positions_survey.stdout | from_json).survey_diagnostics.named_volume.fields.NeedsCopyUp.value is sameas false or (_journal_positions_survey.stdout | from_json).survey_diagnostics.named_volume.fields.NeedsCopyUp.value == 'unavailable'
+          - (_journal_positions_survey.stdout | from_json).survey_diagnostics.podman_version.client == 'unavailable' or (((_journal_positions_survey.stdout | from_json).survey_diagnostics.podman_version.client | string) is match('^[0-9]+[.][0-9]+[.][0-9]+([-+][A-Za-z0-9.-]{1,32})?$') and ((_journal_positions_survey.stdout | from_json).survey_diagnostics.podman_version.client | string | length) <= 64)
+          - (_journal_positions_survey.stdout | from_json).survey_diagnostics.podman_version.server == 'unavailable' or (((_journal_positions_survey.stdout | from_json).survey_diagnostics.podman_version.server | string) is match('^[0-9]+[.][0-9]+[.][0-9]+([-+][A-Za-z0-9.-]{1,32})?$') and ((_journal_positions_survey.stdout | from_json).survey_diagnostics.podman_version.server | string | length) <= 64)
         fail_msg: "The positions-volume survey failed without reporting filesystem details."
         quiet: true
 

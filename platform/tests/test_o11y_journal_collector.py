@@ -32,6 +32,24 @@ POSITIONS = importlib.util.module_from_spec(POSITIONS_SPEC)
 POSITIONS_SPEC.loader.exec_module(POSITIONS)
 
 
+def _assert_positions_survey_diagnostics_schema(report, has_reason=False):
+    top_level = {
+        "status", "volume_use_count", "collector_present", "entry_count", "root_owner",
+        "root_mode_access", "acl", "mount", "children", "survey_diagnostics",
+    }
+    assert set(report) == top_level | ({"reason"} if has_reason else set())
+    diagnostics = report["survey_diagnostics"]
+    assert set(diagnostics) == {"inventory_fields", "named_volume", "podman_version"}
+    assert set(diagnostics["inventory_fields"]) == {"NeedsChown", "NeedsCopyUp"}
+    assert set(diagnostics["named_volume"]) == {
+        "outcome", "identity", "inventory_identity", "fields",
+    }
+    assert set(diagnostics["named_volume"]["fields"]) == {"NeedsChown", "NeedsCopyUp"}
+    assert set(diagnostics["podman_version"]) == {"client", "server"}
+    for field in (*diagnostics["inventory_fields"].values(), *diagnostics["named_volume"]["fields"].values()):
+        assert set(field) == {"presence", "type", "value"}
+
+
 def _positions_state(
     owner=(88, 88), mode=0o700, children=(), acl=False,
     root_mount=False, child_mount=False, component_layout=True,
@@ -83,6 +101,304 @@ def test_positions_survey_returns_only_bounded_metadata_categories():
     assert "9001" not in json.dumps(report)
 
 
+@pytest.mark.parametrize("field", ["NeedsChown", "NeedsCopyUp"])
+@pytest.mark.parametrize(
+    ("value", "expected_type", "expected_value"),
+    [
+        ("missing", "missing", "unavailable"),
+        (None, "null", "unavailable"),
+        (False, "boolean", False),
+        (True, "boolean", True),
+        ("PRIVATE_MARKER_STRING", "string", "unavailable"),
+        (9001, "number", "unavailable"),
+        (["PRIVATE_MARKER_ARRAY"], "array", "unavailable"),
+        ({"secret": "PRIVATE_MARKER_OBJECT"}, "object", "unavailable"),
+    ],
+)
+def test_survey_initialization_diagnostics_expose_only_type_and_real_boolean(
+    field, value, expected_type, expected_value, monkeypatch
+):
+    volume = {
+        "Name": "o11y_journal-collector-state",
+        "Driver": "local",
+        "Scope": "local",
+        "Options": {},
+        "Mountpoint": "/private/podman/volume/_data",
+        "Labels": {
+            "com.docker.compose.project": "o11y",
+            "com.docker.compose.volume": "journal-collector-state",
+        },
+        "MountCount": 0,
+        "NeedsChown": False,
+        "NeedsCopyUp": False,
+    }
+    if value == "missing":
+        volume.pop(field)
+    else:
+        volume[field] = value
+    if expected_type == "boolean":
+        volume["NeedsCopyUp" if field == "NeedsChown" else "NeedsChown"] = None
+    calls = []
+
+    def run(argv, **_kwargs):
+        calls.append(argv)
+        if argv[:2] == ["podman", "info"]:
+            return SimpleNamespace(returncode=0, stdout="true")
+        if argv[:4] == ["podman", "inspect", "--type", "container"]:
+            return SimpleNamespace(returncode=0, stdout=json.dumps([{"Config": {"Labels": {
+                "com.docker.compose.project": "o11y", "com.docker.compose.service": "alloy"
+            }}}]))
+        if argv[:3] == ["podman", "volume", "inspect"] and "--all" in argv:
+            return SimpleNamespace(returncode=0, stdout=json.dumps([volume]))
+        if argv[:3] == ["podman", "volume", "inspect"]:
+            return SimpleNamespace(returncode=0, stdout=json.dumps([volume]))
+        if argv[:2] == ["podman", "version"]:
+            return SimpleNamespace(returncode=0, stdout=json.dumps({
+                "Client": {"Version": "5.4.2"}, "Server": {"Version": "5.4.2"}
+            }))
+        if argv[:2] == ["podman", "ps"]:
+            return SimpleNamespace(returncode=0, stdout="[]")
+        raise AssertionError(f"unexpected diagnostic command: {argv}")
+
+    monkeypatch.setattr(POSITIONS, "_inspect_metadata", lambda *_args, **_kwargs: _positions_state(owner=(0, 0)))
+    report = POSITIONS.survey(lambda: POSITIONS.discover(run=run, diagnostics=True))
+    assert report["status"] == "volume_initialization_unverified"
+    if value is True:
+        assert expected_value is True
+    diagnostic = report["survey_diagnostics"]
+    actual = diagnostic["inventory_fields"][field]
+    assert actual == {
+        "presence": "missing" if value == "missing" else "present",
+        "type": expected_type,
+        "value": expected_value,
+    }
+    assert diagnostic["named_volume"]["identity"] == "match"
+    assert diagnostic["named_volume"]["fields"][field] == actual
+    assert diagnostic["podman_version"] == {"client": "5.4.2", "server": "5.4.2"}
+    assert [argv for argv in calls if argv[:2] == ["podman", "version"]] == [
+        ["podman", "version", "--format", "json"]
+    ]
+    named_calls = [argv for argv in calls if argv[:3] == ["podman", "volume", "inspect"] and "--all" not in argv]
+    assert named_calls == [["podman", "volume", "inspect", "o11y_journal-collector-state"]]
+    assert "PRIVATE_MARKER" not in json.dumps(report)
+    assert "/private/" not in json.dumps(report)
+
+
+@pytest.mark.parametrize(
+    ("named_result", "expected_outcome", "expected_identity"),
+    [
+        ("PRIVATE_MARKER_MALFORMED", "malformed", "unverified"),
+        (["duplicate", "duplicate"], "duplicate", "unverified"),
+        (["mismatch"], "observed", "mismatch"),
+    ],
+)
+def test_survey_named_volume_diagnostic_is_categorical_and_redacted(
+    named_result, expected_outcome, expected_identity, monkeypatch
+):
+    volume = {
+        "Name": "o11y_journal-collector-state",
+        "Driver": "local",
+        "Scope": "local",
+        "Options": {},
+        "Mountpoint": "/private/podman/volume/_data",
+        "Labels": {
+            "com.docker.compose.project": "o11y",
+            "com.docker.compose.volume": "journal-collector-state",
+        },
+        "MountCount": 0,
+        "NeedsChown": "PRIVATE_MARKER_FIELD",
+        "NeedsCopyUp": False,
+    }
+
+    def run(argv, **_kwargs):
+        if argv[:2] == ["podman", "info"]:
+            return SimpleNamespace(returncode=0, stdout="true")
+        if argv[:4] == ["podman", "inspect", "--type", "container"]:
+            return SimpleNamespace(returncode=0, stdout=json.dumps([{"Config": {"Labels": {
+                "com.docker.compose.project": "o11y", "com.docker.compose.service": "alloy"
+            }}}]))
+        if argv[:3] == ["podman", "volume", "inspect"] and "--all" in argv:
+            return SimpleNamespace(returncode=0, stdout=json.dumps([volume]))
+        if argv[:3] == ["podman", "volume", "inspect"]:
+            if named_result == "PRIVATE_MARKER_MALFORMED":
+                return SimpleNamespace(returncode=0, stdout='"PRIVATE_MARKER_MALFORMED"')
+            if named_result[0] == "duplicate":
+                return SimpleNamespace(returncode=0, stdout=json.dumps([volume, volume]))
+            mismatch = {**volume, "Name": "PRIVATE_MARKER_NAME", "Labels": {
+                "com.docker.compose.project": "PRIVATE_MARKER_PROJECT"
+            }}
+            return SimpleNamespace(returncode=0, stdout=json.dumps([mismatch]))
+        if argv[:2] == ["podman", "version"]:
+            return SimpleNamespace(returncode=0, stdout="{}")
+        if argv[:2] == ["podman", "ps"]:
+            return SimpleNamespace(returncode=0, stdout="[]")
+        raise AssertionError(f"unexpected diagnostic command: {argv}")
+
+    monkeypatch.setattr(POSITIONS, "_inspect_metadata", lambda *_args, **_kwargs: _positions_state(owner=(0, 0)))
+    report = POSITIONS.survey(lambda: POSITIONS.discover(run=run, diagnostics=True))
+    named = report["survey_diagnostics"]["named_volume"]
+    assert named["outcome"] == expected_outcome
+    assert named["identity"] == expected_identity
+    assert named["inventory_identity"] == ("mismatch" if expected_identity == "mismatch" else "unverified")
+    if expected_outcome != "observed":
+        assert named["fields"]["NeedsChown"] == {
+            "presence": "unverified", "type": "unverified", "value": "unavailable"
+        }
+    assert "PRIVATE_MARKER" not in json.dumps(report)
+    assert report["survey_diagnostics"]["podman_version"] == {
+        "client": "unavailable", "server": "unavailable"
+    }
+
+
+def test_survey_named_volume_version_queries_run_only_after_exact_identity(monkeypatch):
+    volume = {
+        "Name": "o11y_journal-collector-state",
+        "Driver": "local",
+        "Scope": "local",
+        "Options": {},
+        "Mountpoint": "/private/podman/volume/_data",
+        "Labels": {
+            "com.docker.compose.project": "o11y",
+            "com.docker.compose.volume": "journal-collector-state",
+        },
+        "MountCount": 0,
+        "NeedsChown": "invalid",
+        "NeedsCopyUp": False,
+    }
+    calls = []
+
+    def run(argv, **_kwargs):
+        calls.append(argv)
+        if argv[:2] == ["podman", "info"]:
+            return SimpleNamespace(returncode=0, stdout="true")
+        if argv[:4] == ["podman", "inspect", "--type", "container"]:
+            return SimpleNamespace(returncode=0, stdout=json.dumps([{"Config": {"Labels": {
+                "com.docker.compose.project": "o11y", "com.docker.compose.service": "alloy"
+            }}}]))
+        if argv[:3] == ["podman", "volume", "inspect"] and "--all" in argv:
+            return SimpleNamespace(returncode=0, stdout=json.dumps([volume]))
+        if argv[:3] == ["podman", "volume", "inspect"]:
+            return SimpleNamespace(returncode=0, stdout=json.dumps([volume]))
+        if argv[:2] == ["podman", "version"]:
+            return SimpleNamespace(returncode=0, stdout=json.dumps({
+                "Client": {"Version": "5.4.2"}, "Server": {"Version": "PRIVATE_MARKER_VERSION"}
+            }))
+        if argv[:2] == ["podman", "ps"]:
+            return SimpleNamespace(returncode=0, stdout="[]")
+        raise AssertionError(f"unexpected diagnostic command: {argv}")
+
+    monkeypatch.setattr(POSITIONS, "_inspect_metadata", lambda *_args, **_kwargs: _positions_state(owner=(0, 0)))
+    report = POSITIONS.survey(lambda: POSITIONS.discover(run=run, diagnostics=True))
+    query_names = [argv for argv in calls if argv[:3] == ["podman", "volume", "inspect"] and "--all" not in argv]
+    assert query_names == [["podman", "volume", "inspect", "o11y_journal-collector-state"]]
+    assert report["status"] == "volume_initialization_unverified"
+    assert report["survey_diagnostics"]["podman_version"] == {
+        "client": "5.4.2", "server": "unavailable"
+    }
+    assert "PRIVATE_MARKER" not in json.dumps(report)
+    assert [argv for argv in calls if argv[:2] == ["podman", "version"]] == [
+        ["podman", "version", "--format", "json"]
+    ]
+
+
+def test_survey_default_discovery_has_exact_diagnostic_schema(monkeypatch):
+    volume = {
+        "Name": "o11y_journal-collector-state", "Driver": "local", "Scope": "local",
+        "Options": {}, "Mountpoint": "/private/podman/volume/_data", "MountCount": 0,
+        "NeedsChown": False, "NeedsCopyUp": True,
+        "Labels": {
+            "com.docker.compose.project": "o11y",
+            "com.docker.compose.volume": "journal-collector-state",
+        },
+    }
+    calls = []
+
+    def call(argv, **_kwargs):
+        calls.append(argv)
+        if argv[:2] == ["podman", "info"]:
+            return SimpleNamespace(returncode=0, stdout="true")
+        if argv[:3] == ["podman", "inspect", "--type"]:
+            return SimpleNamespace(returncode=0, stdout=json.dumps([{"Config": {"Labels": {
+                "com.docker.compose.project": "o11y", "com.docker.compose.service": "alloy"
+            }}}]))
+        if argv[:4] == ["podman", "volume", "inspect", "--all"]:
+            return SimpleNamespace(returncode=0, stdout=json.dumps([volume]))
+        if argv[:2] == ["podman", "ps"]:
+            return SimpleNamespace(returncode=0, stdout="[]")
+        if argv[:3] == ["podman", "volume", "inspect"]:
+            return SimpleNamespace(returncode=0, stdout=json.dumps([volume]))
+        if argv[:2] == ["podman", "version"]:
+            return SimpleNamespace(returncode=0, stdout=json.dumps({
+                "Client": {"Version": "5.4.2"}, "Server": {"Version": "5.4.2"}
+            }))
+        raise AssertionError(f"unexpected default survey command: {argv}")
+
+    monkeypatch.setattr(POSITIONS, "_call", call)
+    monkeypatch.setattr(POSITIONS, "_inspect_metadata", lambda *_args, **_kwargs: _positions_state(owner=(0, 0)))
+    report = POSITIONS.survey()
+
+    _assert_positions_survey_diagnostics_schema(report)
+    assert report["status"] == "volume_initialization_pending"
+    assert [argv for argv in calls if argv[:2] == ["podman", "version"]] == [
+        ["podman", "version", "--format", "json"]
+    ]
+
+
+def test_survey_early_refusal_keeps_exact_unverified_diagnostic_schema(monkeypatch):
+    calls = []
+
+    def call(argv, **_kwargs):
+        calls.append(argv)
+        return SimpleNamespace(returncode=0, stdout="false")
+
+    monkeypatch.setattr(POSITIONS, "_call", call)
+    report = POSITIONS.survey()
+
+    _assert_positions_survey_diagnostics_schema(report)
+    assert report["status"] == "not_rootless"
+    assert not any(argv[:3] == ["podman", "volume", "inspect"] for argv in calls)
+    assert not any(argv[:2] == ["podman", "version"] for argv in calls)
+
+
+def test_survey_flag_assertions_require_literal_booleans():
+    plays = yaml.safe_load(PLAYBOOK.read_text())
+    assertion = next(
+        task["ansible.builtin.assert"]
+        for play in plays
+        for task in play.get("tasks", [])
+        if task.get("name") == "Require bounded positions-volume survey fields"
+    )
+    conditions = [condition for condition in assertion["that"] if ".value " in condition]
+
+    assert len(conditions) == 4
+    assert all("is sameas true or" in condition for condition in conditions)
+    assert all("is sameas false or" in condition for condition in conditions)
+    environment = Environment()
+    environment.filters["from_json"] = json.loads
+    inputs = (0, 1, True, False, "unavailable")
+    for condition in conditions:
+        field_path = condition.split("survey_diagnostics.", 1)[1].split(".value", 1)[0]
+        for value, expected in zip(inputs, ("False", "False", "True", "True", "True"), strict=True):
+            diagnostics = {
+                "inventory_fields": {
+                    "NeedsChown": {"value": "unavailable"},
+                    "NeedsCopyUp": {"value": "unavailable"},
+                },
+                "named_volume": {"fields": {
+                    "NeedsChown": {"value": "unavailable"},
+                    "NeedsCopyUp": {"value": "unavailable"},
+                }},
+            }
+            target = diagnostics
+            for part in field_path.split("."):
+                target = target[part]
+            target["value"] = value
+            result = environment.from_string("{{ " + condition + " }}").render(
+                _journal_positions_survey={"stdout": json.dumps({"survey_diagnostics": diagnostics})}
+            )
+            assert result == expected
+
+
 def test_positions_discovery_requires_exact_compose_labels_and_unused_volume(monkeypatch):
     volume = {
         "Name": "o11y_journal-collector-state",
@@ -120,6 +436,10 @@ def test_positions_discovery_requires_exact_compose_labels_and_unused_volume(mon
     assert found["volume_use_count"] == 0
     assert all(argv[0:2] != ["podman", "run"] for argv in calls)
     assert all("volume create" not in " ".join(argv) and "chown" not in " ".join(argv) for argv in calls)
+    assert not any(argv[:2] == ["podman", "version"] for argv in calls)
+    assert [argv for argv in calls if argv[:3] == ["podman", "volume", "inspect"]] == [
+        ["podman", "volume", "inspect", "--all"]
+    ]
 
     volume["Labels"].pop("com.docker.compose.volume")
     assert POSITIONS.discover(run=run)["status"] == "observed"
@@ -1162,7 +1482,9 @@ def test_positions_survey_exception_keeps_bounded_receipt_schema(monkeypatch, ca
         "acl": "unavailable",
         "mount": "unavailable",
         "children": "unavailable",
+        "survey_diagnostics": POSITIONS._unverified_diagnostics(),
     }
+    _assert_positions_survey_diagnostics_schema(report, has_reason=True)
     assert "private detail" not in json.dumps(report)
 
 
@@ -1617,6 +1939,16 @@ def test_survey_check_mode_skips_container_probe_and_reports_unverified():
         for task in survey_play["tasks"]
         if task.get("name") == "Survey rootless journal path and exact-name file readability"
     )
+    positions_command = next(
+        task
+        for task in survey_play["tasks"]
+        if task.get("name") == "Survey existing positions volume metadata without mounting it"
+    )
+    positions_check_mode = next(
+        task
+        for task in survey_play["tasks"]
+        if task.get("name") == "Record positions-volume survey as unverified in check mode"
+    )
     check_mode_result = next(
         task
         for task in survey_play["tasks"]
@@ -1625,6 +1957,17 @@ def test_survey_check_mode_skips_container_probe_and_reports_unverified():
 
     assert survey_command["when"] == "not ansible_check_mode"
     assert "check_mode" not in survey_command
+    assert positions_command["when"] == "not ansible_check_mode"
+    assert "check_mode" not in positions_command
+    assert positions_check_mode["when"] == "ansible_check_mode"
+    positions_result = json.loads(
+        positions_check_mode["ansible.builtin.set_fact"]["_journal_positions_survey"]["stdout"]
+    )
+    assert positions_result["status"] == "check_mode_unverified"
+    assert positions_result["survey_diagnostics"]["named_volume"]["identity"] == "unverified"
+    assert positions_result["survey_diagnostics"]["podman_version"] == {
+        "client": "unavailable", "server": "unavailable"
+    }
     assert survey_play["become"] is False
     assert check_mode_result["when"] == "ansible_check_mode"
     assert check_mode_result["ansible.builtin.set_fact"]["_journal_directory_survey"] == {
