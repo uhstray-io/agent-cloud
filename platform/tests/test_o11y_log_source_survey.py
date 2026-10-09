@@ -131,6 +131,30 @@ def test_zero_running_o11y_containers_fails_closed(monkeypatch):
     assert report == {"status": "unavailable", "reason": "no_running_o11y_containers"}
 
 
+@pytest.mark.parametrize(
+    "malformed",
+    [
+        "malformed-container-row",
+        {"Names": None},
+        {"Names": ["private-container-id", None]},
+    ],
+    ids=["malformed-row", "missing-name-field", "malformed-name-list"],
+)
+def test_malformed_running_container_rows_fail_closed_without_partial_counts(monkeypatch, malformed):
+    def mixed_rows(argv, timeout=8):
+        if argv[:3] == ["podman", "info", "--format"]:
+            return 0, '{"host":{"logDriver":"journald"}}'
+        if argv[:2] == ["podman", "ps"]:
+            return 0, json.dumps([{"Names": ["o11y-loki"]}, malformed])
+        raise AssertionError("unexpected command")
+
+    monkeypatch.setattr(SURVEY, "run", mixed_rows)
+    report = SURVEY.survey()
+    assert report == {"status": "unavailable", "reason": "container_metadata_unavailable"}
+    assert "o11y-loki" not in json.dumps(report)
+    assert "private-container-id" not in json.dumps(report)
+
+
 def test_malformed_journal_json_is_unverified_and_never_reported(monkeypatch):
     def malformed(argv, timeout=8):
         if argv[0] == "journalctl":

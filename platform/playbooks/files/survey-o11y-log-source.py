@@ -68,12 +68,17 @@ def running_containers():
     names = []
     for item in data:
         if not isinstance(item, dict):
-            continue
-        values = item.get("Names", [])
+            return None
+        values = item.get("Names")
         if isinstance(values, str):
             values = [values]
-        if isinstance(values, list):
-            names.extend(value for value in values if isinstance(value, str) and value.startswith(O11Y_PREFIX))
+        if (
+            not isinstance(values, list)
+            or not values
+            or any(not isinstance(value, str) or not value for value in values)
+        ):
+            return None
+        names.extend(value for value in values if value.startswith(O11Y_PREFIX))
     return sorted(set(names))
 
 
