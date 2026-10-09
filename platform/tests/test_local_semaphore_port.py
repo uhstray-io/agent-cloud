@@ -161,6 +161,13 @@ def _recreate(tmp_path: Path, *, exists: bool, ports: str, want: int = 3000):
     return result, (log.read_text() if log.exists() else "")
 
 
+def test_the_recreate_task_runs_under_bash():
+    """`set -o pipefail` is rejected by dash, the /bin/sh on Linux (CI); macOS's sh is bash and hides it."""
+    task = next(t for t in _play()["tasks"] if str(t.get("name", "")).startswith("Recreate Semaphore if"))
+    assert "set -o pipefail" in task["ansible.builtin.shell"]
+    assert task["args"]["executable"] == "/bin/bash"
+
+
 def _bindings(port: str) -> str:
     return '{"3000/tcp":[{"HostIp":"127.0.0.1","HostPort":"' + port + '"}]}'
 

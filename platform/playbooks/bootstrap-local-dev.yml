@@ -736,6 +736,9 @@
           fi
         fi
         echo ok
+      args:
+        # pipefail is not POSIX: dash (the /bin/sh on Linux) rejects `set -o pipefail`.
+        executable: /bin/bash
       environment:
         WANT_OIDC: "{{ _oidc_ready | bool | lower }}"
       register: _sem_recreate
