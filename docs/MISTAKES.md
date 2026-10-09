@@ -98,7 +98,7 @@ and why.
 | 4.3 | Used a real internal IP address as a test vector | Data leak | 1 | Pre-commit (existing) |
 | 4.4 | Arithmetic on a fleet API response without defaulting fields absent on offline members | Data handling | 1 | Convention |
 | 4.5 | Truncated a live inventory by opening it for writing in the expression that computed its content | Live-state damage | 1 | Convention |
-| 4.6 | **x2** — A failure-path diagnostic printed the very values the success path was built to keep out of stdout | Secret in transcript | 2 | Test (static guard, `test_no_request_in_loop_items.py`) + stdout callback (`callback_plugins/redact_requests.py`) |
+| 4.6 | **x3** — A failure-path diagnostic printed the very values the success path was built to keep out of stdout | Secret in transcript | 3 | Test (static guard, `test_no_request_in_loop_items.py`; `test_no_log_error_redaction.py`) + stdout callback (`callback_plugins/redact_requests.py`) |
 | 4.7 | An address edit replaced every matching line and left a production runner declared at the new VM's address | Data handling | 1 | Playbook guard + test (provision-vm address-claim check) |
 | 4.8 | A credential-shaped test fixture was pushed; CI's unscoped all-detectors scan let it fail other PRs | Data handling | 1 | CI (scan scoped to the PR's commits) |
 | 4.9 | **x2** — Private site data in public code: Discord destination IDs in a fixture; the operator's account in a Proxmox token fallback, gateway fixtures and path-derived ids | Data handling | 2 | Test (`test_no_site_identity.py`, the three account shapes); other private values Convention |
@@ -2337,7 +2337,7 @@ first.
 
 ### 4.6 The error branch printed what the happy path protected
 
-**Occurrences: 2** — 2026-09-18, 2026-09-24
+**Occurrences: 3** — 2026-09-18, 2026-09-24, 2026-10-09
 
 **What happened.** A one-off script pulled two freshly generated passwords out of a
 Semaphore task's output to write them into site-config. Its regex did not match
@@ -2404,6 +2404,28 @@ Semaphore sets no stdout callback of its own (v2.17.31 `db_lib/AnsiblePlaybook.g
 2.16.18 and 2.20.8: the same play prints the token under `default` and not under the repository
 callback. The guard now protects any `no_log` source and whole-register debug prints, the rule as
 stated above; it found one more loop, the Proxmox VM health check, converted the same way.
+
+**Occurrence 3 — 2026-10-09.** The same class on a third surface: the error display of a failed
+`no_log` task. ansible-core 2.19 moved a task's exception out of the result dict into an object
+beside it, and the censoring that empties the result preserves that object, so on 2.20.8 a
+`no_log` task that failed printed "[ERROR]: Task failed", the exception message (a filter's
+input quoted in its own error, an assert's rendered `fail_msg`), the "caused by" chain and the
+source context. The censored result itself was clean, which is where both earlier fixes and the
+tests looked; 2.18.15 printed none of it, so the controller upgrade to 2.20.8 would have
+introduced it. Why the rule did not fire: it was worded for results and request headers, and
+the callback's own docstring claimed only nested `invocation`. The error is not a result field
+on 2.19+, so no result-shaped guard could see it. The callback now hides the error detail of
+any failed `no_log` task (`_handle_exception`, the one method every success, failure, item and
+unreachable display passes through) and prints one line naming the task;
+`test_no_log_error_redaction.py` runs real plays on every ansible-core it is given
+(`NOLOG_ANSIBLE_BINS`) and fails on a value anywhere in the output. Review of PR #511 found the
+same preservation one method over: censoring also keeps `warnings` and `deprecations`, so a
+module that words a warning around a value it was handed printed it on 2.19 and 2.20.8 (two
+occurrences each, none on 2.18.15). `_handle_warnings` now replaces them for a `no_log` task with
+one line giving the count, and the test's `noisy` module warns and deprecates around the value on
+a succeeding and a failing task. Each way of recognising a `no_log` result (the `censored` marker,
+`_ansible_no_log`, the task's own declaration) is tested alone, since a real run always carries
+the first and would not notice the other two failing.
 
 ### 4.7 An address edit replaced every matching line, and a second host's declaration moved with it
 
