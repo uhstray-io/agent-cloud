@@ -310,19 +310,28 @@ jobs:
   rego:
     name: Rego Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
 
-      # The Rego authorization policy had tests that ran only at deploy time
-      # (deploy-opa.yml) and on a workstation, so a rule could merge broken. Run them
-      # here in the image the OPA service pins (compose.yml OPA_IMAGE default). `check
-      # --strict` also catches a non-policy JSON file in the tree, which OPA loads as
-      # data and rejects with "merge error" (found 2026-09-22).
+      - name: Install verified OPA 1.0.0
+        env:
+          OPA_SHA256: 3985fb4814b3860511beac516f59c5509eee9fdc83dbe910b67f3999f743b901
+        run: |
+          opa="$RUNNER_TEMP/opa"
+          curl --fail --location --silent --show-error \
+            --retry 3 --retry-all-errors --retry-delay 2 \
+            --connect-timeout 10 --max-time 60 \
+            --output "$opa" \
+            https://openpolicyagent.org/downloads/v1.0.0/opa_linux_amd64_static
+          echo "$OPA_SHA256  $opa" | sha256sum --check
+          chmod 755 "$opa"
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+
       - name: Run Rego tests
         run: |
-          img=openpolicyagent/opa:1.0.0-static
-          docker run --rm -v "$PWD/platform/services/opa/deployment/policies:/p:ro" "$img" check --strict /p
-          docker run --rm -v "$PWD/platform/services/opa/deployment/policies:/p:ro" "$img" test /p -v
+          opa check --strict platform/services/opa/deployment/policies
+          opa test platform/services/opa/deployment/policies -v
 
   test:
     name: Unit Tests
