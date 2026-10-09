@@ -132,7 +132,9 @@
           - _edge_audit_runtime_config.stdout | length > 0
         fail_msg: >-
           Caddy edge audit refused; category={{
-            'admin-api-unavailable'
+            'exec-unavailable'
+            if _edge_audit_runtime_config.rc in [125, 126, 127]
+            else 'admin-api-unavailable'
             if _edge_audit_runtime_config.rc != 0
             else 'empty-config'
           }}.
