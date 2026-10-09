@@ -106,30 +106,18 @@ def validate(targets):
     return ids, {key: values for key, values in identities.items() if len(values) > 1}
 
 
-def receipt_status(target, signal, declaration, inventory_revision, repository_sha, now):
-    if not declaration["applicable"]:
-        return "excepted"
-    receipt = declaration.get("receipt")
-    if not inventory_revision or not repository_sha or not isinstance(receipt, dict):
-        return "incomplete"
-    if (
-        receipt.get("status") != "verified"
-        or receipt.get("target_id") != target["target_id"]
-        or receipt.get("signal") != signal
-        or receipt.get("receipt_reference") != declaration.get("receipt_reference")
-        or receipt.get("repository_sha") != repository_sha
-        or receipt.get("inventory_revision") != inventory_revision
-    ):
-        return "incomplete"
-    try:
-        observed = datetime.fromisoformat(receipt["observed_at"].replace("Z", "+00:00"))
-        freshness = int(declaration["freshness_seconds"])
-    except (KeyError, TypeError, ValueError):
-        return "incomplete"
-    if observed.tzinfo is None or observed.utcoffset() is None:
-        return "incomplete"
-    age = (now - observed.astimezone(UTC)).total_seconds()
-    return "verified" if 0 <= age <= freshness else "stale"
+def receipt_status(_target, _signal, _declaration, _inventory_revision, _repository_sha, _now):
+    """Fail closed until census independently reads back the Semaphore task record."""
+    return "incomplete"
+
+
+def template_reference_summary(references, template_names):
+    present_count = sum(1 for reference in references if reference in template_names)
+    return {
+        "declared_count": len(references),
+        "present_count": present_count,
+        "missing_count": len(references) - present_count,
+    }
 
 
 def build_report(repo, inventory, repository_sha, now=None):
@@ -183,8 +171,9 @@ def build_report(repo, inventory, repository_sha, now=None):
             matched_target_ids.add(target["target_id"])
             statuses = {
                 signal: (
+                    "undeclared" if signal not in target["signals"] else
+                    "excepted" if not target["signals"][signal]["applicable"] else
                     receipt_status(target, signal, target["signals"][signal], inventory_revision, repository_sha, now)
-                    if signal in target["signals"] else "undeclared"
                 )
                 for signal in sorted(SIGNALS)
             }
@@ -204,15 +193,7 @@ def build_report(repo, inventory, repository_sha, now=None):
                 "service_identity": identity,
                 "coverage": coverage,
                 "signals": statuses,
-                "receipt_references": {
-                    signal: target["signals"].get(signal, {}).get("receipt_reference")
-                    for signal in sorted(SIGNALS)
-                },
-                "template_references": {
-                    "declared": references,
-                    "present": [ref for ref in references if ref in template_names],
-                    "missing": [ref for ref in references if ref not in template_names],
-                },
+                "template_references": template_reference_summary(references, template_names),
             })
     for target in targets:
         if target["service_identity"] not in conflicts:
@@ -226,19 +207,16 @@ def build_report(repo, inventory, repository_sha, now=None):
             "coverage": "unverified",
             "identity_conflict": True,
             "signals": dict.fromkeys(sorted(SIGNALS), "identity_conflict"),
-            "receipt_references": {
-                signal: target["signals"].get(signal, {}).get("receipt_reference")
-                for signal in sorted(SIGNALS)
-            },
-            "template_references": {"declared": target.get("template_references", []), "present": [], "missing": []},
+            "template_references": template_reference_summary(target.get("template_references", []), template_names),
         })
     for target in targets:
         if target["target_id"] in matched_target_ids or target["service_identity"] in conflicts:
             continue
         statuses = {
             signal: (
+                "undeclared" if signal not in target["signals"] else
+                "excepted" if not target["signals"][signal]["applicable"] else
                 receipt_status(target, signal, target["signals"][signal], inventory_revision, repository_sha, now)
-                if signal in target["signals"] else "undeclared"
             )
             for signal in sorted(SIGNALS)
         }
@@ -256,15 +234,7 @@ def build_report(repo, inventory, repository_sha, now=None):
             "service_identity": target["service_identity"],
             "coverage": coverage,
             "signals": statuses,
-            "receipt_references": {
-                signal: target["signals"].get(signal, {}).get("receipt_reference")
-                for signal in sorted(SIGNALS)
-            },
-            "template_references": {
-                "declared": references,
-                "present": [ref for ref in references if ref in template_names],
-                "missing": missing_templates,
-            },
+            "template_references": template_reference_summary(references, template_names),
         })
     conflicting_ids = sorted(target_id for values in conflicts.values() for target_id in values)
     return {

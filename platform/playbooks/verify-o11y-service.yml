@@ -17,7 +17,7 @@
         that: o11y_verification_mode | default('legacy') in ['legacy', 'strict']
         fail_msg: "o11y_verification_mode must be legacy or strict."
 
-    - name: Validate strict receipt inputs
+    - name: Validate strict signal observation inputs
       ansible.builtin.assert:
         that:
           - expected_repository_sha is defined and expected_repository_sha is match('^[0-9a-f]{40}$')
@@ -28,8 +28,7 @@
           - signal_selector is defined and signal_selector | length <= 512
           - freshness_seconds is defined and freshness_seconds | int >= 60 and freshness_seconds | int <= 86400
           - observation_window_seconds is defined and observation_window_seconds | int >= 60 and observation_window_seconds | int <= 3600 and observation_window_seconds | int <= freshness_seconds | int
-          - receipt_reference is defined and receipt_reference is match('^semaphore/task/[1-9][0-9]*$')
-        fail_msg: "Strict receipt requires reviewed repository and inventory revisions, one exact target/signal selector, bounded freshness, and a receipt reference."
+        fail_msg: "Strict signal observation requires reviewed repository and inventory revisions, one exact target/signal selector, and bounded freshness."
       when: o11y_verification_mode | default('legacy') == 'strict'
 
     - name: Read the candidate checkout revision when required
@@ -194,13 +193,12 @@
         fail_msg: "unverifiable_target: this signal is not declared for the exact target."
       when: o11y_verification_mode | default('legacy') == 'strict'
 
-    - name: Require the exact declared selector and receipt reference
+    - name: Require the exact declared selector
       ansible.builtin.assert:
         that:
           - _coverage_target.signals[expected_signal].applicable | bool
           - _coverage_target.signals[expected_signal].selector == signal_selector
-          - _coverage_target.signals[expected_signal].receipt_reference == receipt_reference
-        fail_msg: "unverifiable_target: this signal selector or receipt reference is not declared for the exact target."
+        fail_msg: "unverifiable_target: this signal selector is not declared for the exact target."
       when: o11y_verification_mode | default('legacy') == 'strict'
 
     - name: Refuse selectors without the bounded target identity label

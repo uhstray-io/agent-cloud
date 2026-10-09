@@ -64,20 +64,48 @@ class CoverageContractTests(unittest.TestCase):
         self.assertLessEqual({
             "expected_repository_sha", "expected_inventory_revision", "expected_target_id",
             "expected_signal", "signal_selector", "freshness_seconds",
-            "observation_window_seconds", "receipt_reference",
+            "observation_window_seconds",
         }, strict_names)
+        self.assertNotIn("receipt_reference", strict_names)
 
-    def test_strict_receipt_uses_the_query_for_the_selected_signal(self):
+    def test_strict_inventory_revision_refuses_a_mismatched_declaration(self):
+        plays = yaml.safe_load((ROOT / "platform/playbooks/verify-o11y-service.yml").read_text())
+        task = next(
+            task
+            for play in plays
+            for task in play.get("tasks", [])
+            if task.get("name") == "Require the exact inventory revision and unique target"
+        )
+        condition = task["ansible.builtin.assert"]["that"][0]
+        environment = jinja2.Environment()
+
+        def matches(actual, expected):
+            rendered = environment.from_string("{{ " + condition + " }}").render(
+                _coverage_inventory={"revision": actual},
+                expected_inventory_revision=expected,
+            )
+            return rendered == "True"
+
+        self.assertTrue(matches("a" * 40, "a" * 40))
+        self.assertFalse(matches("b" * 40, "a" * 40))
+
+    def test_strict_signal_observation_uses_the_query_and_is_unattributed(self):
         tasks = yaml.safe_load((ROOT / "platform/playbooks/tasks/o11y-coverage-target-receipt.yml").read_text())
         registers = [task.get("register") for task in tasks if task.get("register")]
         self.assertEqual(registers, ["_exact_logs", "_exact_prometheus", "_exact_traces"])
-        assertion = next(task for task in tasks if task.get("name") == "Require a fresh exact-target receipt")
+        assertion_name = "Require a fresh exact-target signal observation"
+        assertion = next(task for task in tasks if task.get("name") == assertion_name)
         exact_receipt = assertion["vars"]["_exact_receipt"]
         self.assertIn("_exact_logs.stdout", exact_receipt)
         self.assertIn("_exact_prometheus.stdout", exact_receipt)
         self.assertIn("_exact_traces.stdout", exact_receipt)
+        output = next(task for task in tasks if task.get("name") == "Emit sanitized unattributed observation metadata")
+        observation = output["ansible.builtin.set_stats"]["data"]["o11y_coverage_observation"]
+        self.assertEqual(observation["status"], "observed")
+        self.assertIs(observation["task_reference_unattributed"], True)
+        self.assertNotIn("receipt_reference", observation)
 
-    def test_health_receipt_rejects_generic_up_and_requires_exact_healthy_metric(self):
+    def test_health_observation_rejects_generic_up_and_requires_exact_healthy_metric(self):
         verify = (ROOT / "platform/playbooks/verify-o11y-service.yml").read_text()
         self.assertIn("expected_signal != 'health' or signal_selector is not match", verify)
         receipt = (ROOT / "platform/playbooks/tasks/o11y-coverage-target-receipt.yml").read_text()

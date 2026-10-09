@@ -135,13 +135,13 @@ class CoverageCensusTests(unittest.TestCase):
         })
         row = self.report([deployed])["targets"][0]
         self.assertEqual(row["signals"], {
-            "health": "excepted", "logs": "verified", "metrics": "incomplete", "traces": "excepted",
+            "health": "excepted", "logs": "incomplete", "metrics": "incomplete", "traces": "excepted",
         })
         self.assertEqual(row["coverage"], "incomplete")
 
-    def test_stale_receipt_is_not_coverage(self):
-        row = self.report([target(signals={"logs": signal(receipt(observed_at="2026-10-09T10:00:00Z"))})])["targets"][0]
-        self.assertEqual(row["signals"]["logs"], "stale")
+    def test_spoofed_task_reference_cannot_produce_verified_coverage(self):
+        row = self.report([target(signals={"logs": signal(receipt())})])["targets"][0]
+        self.assertEqual(row["signals"]["logs"], "incomplete")
         self.assertEqual(row["coverage"], "incomplete")
 
     def test_duplicate_identity_is_reported_as_unverified_conflict(self):
@@ -169,13 +169,31 @@ class CoverageCensusTests(unittest.TestCase):
         self.assertTrue(all(row["identity_conflict"] for row in declarations))
         self.assertTrue(all(row["coverage"] == "unverified" for row in declarations))
 
-    def test_private_endpoint_values_do_not_enter_report(self):
-        declaration = target()
-        declaration["inventory_host"] = "private-host.example"
-        declaration["endpoint"] = "192.0.2.10:9090"
-        rendered = str(self.report([declaration]))
+    def test_private_references_are_redacted_for_matched_unmatched_and_duplicate_rows(self):
+        private = "private.example.test"
+        matched = target()
+        matched["inventory_host"] = "private-host.example"
+        matched["endpoint"] = "192.0.2.10:9090"
+        unmatched = target(target_id="vm:beta", identity="beta", target_type="vm")
+        duplicate_service = target(target_id="service:gamma", identity="gamma")
+        duplicate_vm = target(target_id="vm:gamma", identity="gamma", target_type="vm")
+        for declaration in (matched, unmatched, duplicate_service, duplicate_vm):
+            declaration["signals"]["health"]["receipt_reference"] = private
+            declaration["receipt_reference"]["health"] = private
+            declaration["template_references"] = [private]
+        (self.repo / "platform/services/gamma").mkdir()
+
+        report = self.report([matched, unmatched, duplicate_service, duplicate_vm])
+        rendered = str(report)
         self.assertNotIn("private-host.example", rendered)
         self.assertNotIn("192.0.2.10", rendered)
+        self.assertNotIn(private, rendered)
+        self.assertTrue(all("receipt_references" not in row for row in report["targets"]))
+        self.assertEqual(
+            next(row for row in report["targets"] if row["target_id"] == "vm:beta")["source_candidate"],
+            None,
+        )
+        self.assertTrue(any(row.get("identity_conflict") for row in report["targets"]))
 
     def test_missing_template_reference_keeps_target_incomplete(self):
         declaration = target()
@@ -183,18 +201,7 @@ class CoverageCensusTests(unittest.TestCase):
         declaration["signals"]["logs"] = signal(receipt("service:alpha", "logs"))
         row = self.report([declaration])["targets"][0]
         self.assertEqual(row["coverage"], "incomplete")
-        self.assertEqual(row["template_references"]["missing"], ["Missing Template"])
-
-    def test_mismatched_inventory_revision_invalidates_receipt(self):
-        row = self.report([target(signals={"logs": signal(receipt(inventory_revision="c" * 40))})])["targets"][0]
-        self.assertEqual(row["signals"]["logs"], "incomplete")
-
-    def test_timezone_naive_receipt_is_not_freshness_evidence(self):
-        row = self.report([target(signals={
-            "logs": signal(receipt(observed_at="2026-10-09T11:30:00")),
-        })])["targets"][0]
-        self.assertEqual(row["signals"]["logs"], "incomplete")
-
+        self.assertEqual(row["template_references"]["missing_count"], 1)
 
 if __name__ == "__main__":
     unittest.main()

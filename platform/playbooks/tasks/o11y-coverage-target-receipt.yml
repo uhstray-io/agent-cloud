@@ -46,7 +46,7 @@
   check_mode: false
   when: expected_signal == 'traces'
 
-- name: Require a fresh exact-target receipt
+- name: Require a fresh exact-target signal observation
   ansible.builtin.assert:
     that:
       - _exact_receipt.status == 'success' if expected_signal != 'traces' else _exact_receipt.traces | default([]) | length > 0
@@ -67,16 +67,16 @@
         _exact_traces.stdout
       ) | default('{}') | from_json }}
 
-- name: Emit sanitized coverage receipt metadata
+- name: Emit sanitized unattributed observation metadata
   ansible.builtin.set_stats:
     data:
-      o11y_coverage_receipt:
-        status: verified
+      o11y_coverage_observation:
+        status: observed
         target_id: "{{ expected_target_id }}"
         signal: "{{ expected_signal }}"
         repository_sha: "{{ expected_repository_sha }}"
         inventory_revision: "{{ expected_inventory_revision }}"
         observation_window_seconds: "{{ observation_window_seconds | int }}"
         freshness_seconds: "{{ freshness_seconds | int }}"
-        receipt_reference: "{{ receipt_reference }}"
+        task_reference_unattributed: true
         observed_at: "{{ now(utc=true, fmt='%Y-%m-%dT%H:%M:%SZ') }}"

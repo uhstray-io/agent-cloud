@@ -45,7 +45,6 @@ o11y_coverage_schema:
     - collection_method
     - receipt_reference
     - freshness_seconds
-    - receipt
   exception_fields:
     - reason
     - reference
@@ -55,9 +54,13 @@ o11y_coverage_schema:
     - endpoint
     - network_path
 
-# site-config supplies this object as an inventory group variable.
-# A signal receipt has the same target_id, signal, revisions, reference, and
-# observed_at values emitted by Verify o11y Target Receipt.
+# site-config supplies this object as an inventory group variable. A declared
+# receipt_reference is an intended audit link, not proof that the referenced
+# task verified this target/signal. The strict verifier can observe an exact
+# signal, but its current Semaphore task ID is unavailable during the run.
+# Coverage Census therefore ignores nested self-reported receipts and keeps an
+# applicable signal incomplete until it independently reads back the successful
+# Semaphore task and binds that task ID to the declaration.
 #
 # estate_coverage_inventory:
 #   revision: <site-config commit SHA>
@@ -80,4 +83,3 @@ o11y_coverage_schema:
 #           collection_method: alloy
 #           receipt_reference: semaphore/task/123
 #           freshness_seconds: 3600
-#           receipt: {status: verified, target_id: service:example, signal: logs, ...}
