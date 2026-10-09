@@ -5,8 +5,13 @@ import io
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
+
+import yaml
+from jinja2 import Environment
 
 SCRIPT = Path(__file__).resolve().parents[1] / "playbooks/files/audit-caddy-edge-logging.py"
+PLAYBOOK = Path(__file__).resolve().parents[1] / "playbooks/audit-agentgateway-edge-logging.yml"
 spec = importlib.util.spec_from_file_location("caddy_edge_logging_audit", SCRIPT)
 audit = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(audit)
@@ -324,3 +329,56 @@ def test_malformed_runtime_config_emits_only_a_fixed_refusal(monkeypatch, capsys
                       '"retention":"unknown","https_probe":"unverified",'
                       '"marker_in_bounded_container_logs":"unknown"}\n')
     assert "Traceback" not in output
+
+
+def test_runtime_read_refusals_distinguish_only_fixed_safe_categories():
+    plays = yaml.safe_load(PLAYBOOK.read_text(encoding="utf-8"))
+    caddy = next(play for play in plays if play.get("hosts") == "caddy_svc")
+    tasks = {task["name"]: task for task in caddy["tasks"]}
+    inspect = tasks["Read whether the Caddy container is running"]
+    inspect_running = tasks["Require Caddy container inspection and running state"]
+    runtime_config = tasks["Read Caddy's effective admin API configuration"]
+    require_config = tasks["Require the runtime config read to succeed"]
+
+    assert inspect["no_log"] is True
+    assert inspect["failed_when"] is False and inspect["check_mode"] is False
+    assert inspect_running["ansible.builtin.assert"]["that"] == [
+        "_edge_audit_container_state.rc == 0",
+        "_edge_audit_container_state.stdout | trim == 'true'",
+    ]
+    assert inspect_running["ansible.builtin.assert"]["fail_msg"].count(
+        "container-inspection-unavailable"
+    ) == 1
+    assert "container-not-running" in inspect_running["ansible.builtin.assert"]["fail_msg"]
+    assert runtime_config["no_log"] is True
+    assert runtime_config["failed_when"] is False and runtime_config["check_mode"] is False
+    assert "admin-api-unavailable" in require_config["ansible.builtin.assert"]["fail_msg"]
+    assert "exec-unavailable" in require_config["ansible.builtin.assert"]["fail_msg"]
+    assert "empty-config" in require_config["ansible.builtin.assert"]["fail_msg"]
+    fail_msg = require_config["ansible.builtin.assert"]["fail_msg"]
+    assert "_edge_audit_runtime_config.rc in [125, 126, 127]" in fail_msg
+    assert not any(key in fail_msg for key in (".stdout", ".stderr", "stdout_lines", "hostvars"))
+
+    render = Environment().from_string
+    inspect_message = inspect_running["ansible.builtin.assert"]["fail_msg"]
+    config_message = require_config["ansible.builtin.assert"]["fail_msg"]
+    for rc, stdout, expected in ((127, "private-output-fixture", "container-inspection-unavailable"),
+                                 (0, "false", "container-not-running"),
+                                 (0, "private-output-fixture", "container-inspection-unavailable")):
+        assert render(inspect_message).render(
+            _edge_audit_container_state=SimpleNamespace(rc=rc, stdout=stdout)
+        ) == f"Caddy edge audit refused; category={expected}."
+    for rc, stdout, expected in ((125, "private-output-fixture", "exec-unavailable"),
+                                 (126, "", "exec-unavailable"),
+                                 (127, "", "exec-unavailable"),
+                                 (1, "private-output-fixture", "admin-api-unavailable"),
+                                 (0, "", "empty-config")):
+        assert render(config_message).render(
+            _edge_audit_runtime_config=SimpleNamespace(rc=rc, stdout=stdout)
+        ) == f"Caddy edge audit refused; category={expected}."
+    names = [task["name"] for task in caddy["tasks"]]
+    assert names.index("Read whether the Caddy container is running") < names.index(
+        "Require Caddy container inspection and running state"
+    ) < names.index("Read Caddy's effective admin API configuration") < names.index(
+        "Require the runtime config read to succeed"
+    )
