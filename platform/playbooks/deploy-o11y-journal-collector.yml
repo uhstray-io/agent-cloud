@@ -492,14 +492,16 @@
                 'on_failure=none' in (_journal_rollback_health_evidence.stdout | default('', true) | split())
               }}
 
-        - name: Run one hidden-output manual healthcheck for bounded diagnosis
+        - name: Run one output-discarded manual healthcheck for bounded diagnosis
           ansible.builtin.command:
-            argv: [podman, healthcheck, run, o11y-journal-collector]
+            argv:
+              - /bin/bash
+              - -c
+              - podman healthcheck run o11y-journal-collector >/dev/null 2>&1
           register: _journal_manual_healthcheck
           changed_when: false
           failed_when: false
           check_mode: false
-          no_log: true
           when: _journal_rollback_manual_healthcheck_allowed | bool
 
         - name: Classify the one-shot manual healthcheck result

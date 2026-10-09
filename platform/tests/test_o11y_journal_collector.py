@@ -565,7 +565,7 @@ classifier = next(
 )
 manual = next(
     task for task in apply["rescue"]
-    if task.get("name") == "Run one hidden-output manual healthcheck for bounded diagnosis"
+    if task.get("name") == "Run one output-discarded manual healthcheck for bounded diagnosis"
 )
 manual_classifier = next(
     task for task in apply["rescue"]
@@ -662,9 +662,13 @@ print(json.dumps({
     assert rendered["classes"] == [case["expected"] for case in cases]
     assert rendered["gate_results"] == [case["expected"] for case in gate_cases]
     assert rendered["manual_results"] == [case["expected"] for case in manual_cases]
-    assert rendered["manual_argv"] == ["podman", "healthcheck", "run", "o11y-journal-collector"]
+    assert rendered["manual_argv"] == [
+        "/bin/bash",
+        "-c",
+        "podman healthcheck run o11y-journal-collector >/dev/null 2>&1",
+    ]
     assert rendered["manual_settings"] == {
-        "no_log": True,
+        "no_log": None,
         "failed_when": False,
         "check_mode": False,
         "when": "_journal_rollback_manual_healthcheck_allowed | bool",
