@@ -15,6 +15,10 @@ HELPER = ROOT / "platform/playbooks/files/probe-o11y-journal-directory.py"
 SPEC = importlib.util.spec_from_file_location("o11y_journal_probe", HELPER)
 PROBE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(PROBE)
+SURVEY_HELPER = ROOT / "platform/playbooks/files/survey-o11y-journal-directory.py"
+SURVEY_SPEC = importlib.util.spec_from_file_location("o11y_journal_survey", SURVEY_HELPER)
+SURVEY = importlib.util.module_from_spec(SURVEY_SPEC)
+SURVEY_SPEC.loader.exec_module(SURVEY)
 
 
 def test_journal_probe_reports_only_a_sanitized_exact_target_count():
@@ -32,7 +36,7 @@ def test_journal_probe_reports_only_a_sanitized_exact_target_count():
         )
     )
 
-    report = PROBE.probe("/run/user/1000/journal", run=runner)
+    report = PROBE.probe("/var/log/journal", run=runner)
 
     assert report == {"status": "observed", "matching_entries": 1}
     assert "private" not in json.dumps(report)
@@ -48,12 +52,62 @@ def test_journal_probe_fails_closed_for_unmatched_or_malformed_entries():
     malformed = Mock(return_value=SimpleNamespace(returncode=0, stdout='not-json\n'))
     failed = Mock(return_value=SimpleNamespace(returncode=1, stdout=""))
 
-    assert PROBE.probe("/run/user/1000/journal", run=unmatched) == {
+    assert PROBE.probe("/var/log/journal", run=unmatched) == {
         "status": "unavailable",
         "matching_entries": 0,
     }
-    assert PROBE.probe("/run/user/1000/journal", run=malformed)["status"] == "unavailable"
-    assert PROBE.probe("/run/user/1000/journal", run=failed)["status"] == "unavailable"
+    assert PROBE.probe("/var/log/journal", run=malformed)["status"] == "unavailable"
+    assert PROBE.probe("/var/log/journal", run=failed)["status"] == "unavailable"
+
+
+def _journal_survey_runner(viable_paths, rootless="true"):
+    def run(argv, **_kwargs):
+        if argv[:2] == ["podman", "info"]:
+            return SimpleNamespace(returncode=0, stdout=rootless)
+        if argv[0] == "journalctl":
+            directory = argv[1].split("=", 1)[1]
+            stdout = '{"CONTAINER_NAME":"o11y-alloy","MESSAGE":"private"}\n'
+            return SimpleNamespace(returncode=0 if directory in viable_paths else 1, stdout=stdout)
+        if argv[:2] == ["podman", "run"]:
+            directory = next(arg.split("src=", 1)[1].split(",", 1)[0] for arg in argv if arg.startswith("type=bind,"))
+            return SimpleNamespace(returncode=0 if directory in viable_paths else 1, stdout="")
+        raise AssertionError("unexpected survey command")
+
+    return run
+
+
+def test_standard_journal_survey_reports_only_single_ambiguous_or_none():
+    fixed = {"/var/log/journal", "/run/log/journal"}
+
+    def isdir(path):
+        return path in fixed
+
+    def access(path, _mode):
+        return path in fixed
+
+    one = SURVEY.survey(
+        run=_journal_survey_runner({"/var/log/journal"}), isdir=isdir, access=access
+    )
+    both = SURVEY.survey(
+        run=_journal_survey_runner(fixed), isdir=isdir, access=access
+    )
+    none = SURVEY.survey(
+        run=_journal_survey_runner(fixed, rootless="false"), isdir=isdir, access=access
+    )
+
+    assert one == {"result": "/var/log/journal"}
+    assert both == {"result": "ambiguous"}
+    assert none == {"result": "none"}
+    assert "private" not in json.dumps(one)
+
+
+def test_standard_journal_survey_uses_only_fixed_paths_and_no_image_pull():
+    source = SURVEY_HELPER.read_text()
+
+    assert 'DIRECTORIES = ("/var/log/journal", "/run/log/journal")' in source
+    assert '"--pull=never"' in source
+    assert '"--output-fields=CONTAINER_NAME"' in source
+    assert "MESSAGE" not in source
 
 
 def test_compose_mount_is_read_only_and_state_is_separate():
@@ -104,7 +158,7 @@ def test_playbook_guards_validation_delivery_and_non_destructive_rollback():
 
     assert guard < reviewed < place < validate < apply < verify < stop
     assert "groups.get('o11y_svc', []) | length == 1" in source
-    assert "journal_collector_action | default('apply') in ['apply', 'stop']" in source
+    assert "journal_collector_action | default('apply') in ['survey', 'apply', 'stop']" in source
     assert "Require the actual runtime to be rootless" in source
     assert "read -r -N 1 _ < \"$file\"" in source
     assert "expected_repository_sha" in source
@@ -130,6 +184,7 @@ def test_semaphore_template_is_dev_bound_and_requires_exact_sha():
     variables = {item["name"]: item for item in template["survey_vars"]}
     assert variables["expected_repository_sha"]["required"] is True
     assert variables["journal_collector_action"]["values"] == [
+        {"name": "Survey journal paths", "value": "survey"},
         {"name": "Apply pilot", "value": "apply"},
         {"name": "Stop pilot", "value": "stop"},
     ]

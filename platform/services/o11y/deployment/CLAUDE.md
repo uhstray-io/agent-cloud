@@ -32,8 +32,11 @@ stack and waits for Grafana to report healthy. Outside local mode it adds
   production Semaphore inventory is a copy of it; sync it before a deploy relies on a new
   value (README, "production Semaphore inventory").
 - **Receiver-host journal pilot:** `Deploy o11y Journal Collector (Dev)` runs independently
-  of `Deploy o11y`. Private `o11y_svc` inventory must declare `o11y_journal_directory` as
-  the actual, readable systemd journal directory available to the rootless Podman user.
+  of `Deploy o11y`. Run its `survey` action first: it checks only `/var/log/journal` and
+  `/run/log/journal`, requiring a recent exact-name record and file readability by the
+  pinned rootless Alloy UID; it reports one viable path, `ambiguous`, or `none`. Private
+  `o11y_svc` inventory must then declare the reviewed `o11y_journal_directory` as that
+  actual directory.
   The playbook checks that directory and a recent exact `CONTAINER_NAME=o11y-alloy` entry,
   then mounts only that directory read-only. It sends only `service=o11y/alloy` and
   `signal=container` through the existing private OTLP receiver. It does not read the

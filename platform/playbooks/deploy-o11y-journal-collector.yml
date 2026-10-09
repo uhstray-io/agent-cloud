@@ -23,10 +23,10 @@
         that:
           - groups.get('o11y_svc', []) | length == 1
           - service_branch | default('dev') == 'dev'
-          - journal_collector_action | default('apply') in ['apply', 'stop']
+          - journal_collector_action | default('apply') in ['survey', 'apply', 'stop']
         fail_msg: >-
           This workflow requires one o11y_svc host, service_branch=dev, and
-          journal_collector_action=apply|stop.
+          journal_collector_action=survey|apply|stop.
         quiet: true
       tags: [always]
 
@@ -85,7 +85,7 @@
         that:
           - not (local_mode | default(false) | bool)
           - container_engine | default('podman') == 'podman'
-          - _journal_directory is match('^/(var/log|run/log|run/user/[0-9]+)/journal$')
+          - _journal_directory in ['/var/log/journal', '/run/log/journal']
           - o11y_otlp_bind | default('') is match('^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.)')
           - o11y_otlp_port | default(4317) | int == 4317
         fail_msg: >-
@@ -443,7 +443,7 @@
   gather_facts: false
   become: false
   tasks:
-    - name: Leave the stop play when the reviewed action is apply
+    - name: Leave the stop play when the reviewed action is survey or apply
       ansible.builtin.meta: end_host
       when: journal_collector_action | default('apply') != 'stop'
       tags: [always]
@@ -462,3 +462,36 @@
       register: _journal_stop
       changed_when: _journal_stop.rc == 0
       when: _journal_stop_status.rc == 0 and _journal_stop_status.stdout | trim == 'running'
+
+- name: Survey fixed standard journal directory candidates
+  hosts: o11y_svc
+  gather_facts: false
+  become: false
+  tasks:
+    - name: Leave the survey play when the reviewed action is apply or stop
+      ansible.builtin.meta: end_host
+      when: journal_collector_action | default('apply') != 'survey'
+      tags: [always]
+
+    - name: Survey rootless journal path and exact-name file readability
+      ansible.builtin.command:
+        argv: [python3, "-"]
+        stdin: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/survey-o11y-journal-directory.py') }}"
+        stdin_add_newline: false
+      register: _journal_directory_survey
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Require a valid sanitized standard-path survey result
+      ansible.builtin.assert:
+        that:
+          - _journal_directory_survey.rc | default(1) == 0
+          - (_journal_directory_survey.stdout | default('{}') | from_json).result in ['/var/log/journal', '/run/log/journal', 'ambiguous', 'none']
+        fail_msg: "The standard journal directory survey failed without exposing journal data."
+        quiet: true
+
+    - name: Report only the viable fixed path or a bounded ambiguity result
+      ansible.builtin.debug:
+        msg: "Journal directory survey result: {{ (_journal_directory_survey.stdout | from_json).result }}"

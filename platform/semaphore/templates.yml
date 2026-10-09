@@ -80,11 +80,12 @@ templates:
         required: true
       - name: journal_collector_action
         title: "Collector action"
-        description: "Apply the reviewed pilot or stop only its collector while preserving positions"
+        description: "Survey standard journal paths, apply the pilot, or stop only its collector while preserving positions"
         type: enum
         required: true
         default_value: apply
         values:
+          - { name: "Survey journal paths", value: "survey" }
           - { name: "Apply pilot", value: "apply" }
           - { name: "Stop pilot", value: "stop" }
 
