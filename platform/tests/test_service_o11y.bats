@@ -1316,7 +1316,15 @@ for metric in ('up{job="agentgateway"}', 'agentgateway_config_synchronized',
                'identity, gen_ai_request_model, gen_ai_token_type',
                'status="429"', 'agentgateway_build_info'):
     assert metric in queries, metric
-assert 'or vector(0)' not in queries
+error_ratio = next(panel for panel in dashboard['panels'] if panel['title'] == 'Server error ratio')
+error_ratio_expr = error_ratio['targets'][0]['expr']
+assert 'status=~"5.."' in error_ratio_expr
+assert 'or vector(0)' in error_ratio_expr.split(' / ', 1)[0]
+denominator = error_ratio_expr.split(' / ', 1)[1]
+assert 'agentgateway_requests_total{job="agentgateway", identity=~"$identity"}' in denominator
+assert 'or vector(0)' not in denominator
+assert sum(target.get('expr', '').count('or vector(0)')
+           for panel in dashboard['panels'] for target in panel['targets']) == 1
 rejections = next(panel for panel in dashboard['panels'] if panel['title'] == 'Rejected access records (reason pending sample)')
 assert rejections['type'] == 'logs'
 assert rejections['datasource']['uid'] == 'loki'
