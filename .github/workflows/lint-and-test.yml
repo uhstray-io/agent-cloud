@@ -63,25 +63,25 @@ jobs:
         run: pip install yamllint && yamllint -c .yamllint.yml .
 
       - name: Dockerfile lint (netbox)
-        uses: hadolint/hadolint-action@v3.3.0
+        uses: hadolint/hadolint-action@v3.5.0
         with:
           dockerfile: platform/services/netbox/deployment/Dockerfile-Plugins
           failure-threshold: warning
 
       - name: Dockerfile lint (uhhcraft)
-        uses: hadolint/hadolint-action@v3.3.0
+        uses: hadolint/hadolint-action@v3.5.0
         with:
           dockerfile: platform/services/uhhcraft/deployment/Dockerfile
           failure-threshold: warning
 
       - name: Dockerfile lint (inference-comfyui)
-        uses: hadolint/hadolint-action@v3.3.0
+        uses: hadolint/hadolint-action@v3.5.0
         with:
           dockerfile: platform/services/inference-comfyui/deployment/Dockerfile
           failure-threshold: warning
 
       - name: Dockerfile lint (inference-hunyuan3d)
-        uses: hadolint/hadolint-action@v3.3.0
+        uses: hadolint/hadolint-action@v3.5.0
         with:
           dockerfile: platform/services/inference-hunyuan3d/deployment/Dockerfile
           failure-threshold: warning
