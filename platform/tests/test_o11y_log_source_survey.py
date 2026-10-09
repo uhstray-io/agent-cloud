@@ -245,13 +245,21 @@ def test_playbook_is_dev_bound_guarded_exact_head_and_read_only_in_check_mode():
     assert play["hosts"] == "o11y_svc"
     assert play["become"] is False
     tasks = play["tasks"]
-    scope_guard = next(task["ansible.builtin.assert"] for task in tasks if task.get("name") == "Require one receiver and production mode")
+    scope_guard = next(
+        task["ansible.builtin.assert"]
+        for task in tasks
+        if task.get("name") == "Require one receiver and production mode"
+    )
     assert scope_guard["that"] == ["groups['o11y_svc'] | length == 1", "not (local_mode | default(false) | bool)"]
     reviewed_checkout = yaml.safe_load((ROOT / "platform/playbooks/require-reviewed-checkout.yml").read_text())
     reviewed_tasks = reviewed_checkout[0]["tasks"]
     sha_guard = reviewed_tasks[0]["ansible.builtin.assert"]
     assert sha_guard["that"] == "expected_repository_sha | default('') is match('^[0-9a-f]{40}$')"
-    assert [task["ansible.builtin.command"]["argv"] for task in reviewed_tasks if "ansible.builtin.command" in task] == [
+    assert [
+        task["ansible.builtin.command"]["argv"]
+        for task in reviewed_tasks
+        if "ansible.builtin.command" in task
+    ] == [
         ["git", "rev-parse", "HEAD"],
         ["git", "status", "--porcelain", "--untracked-files=all"],
     ]
