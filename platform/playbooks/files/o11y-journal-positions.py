@@ -811,6 +811,7 @@ def survey(discover_fn=None):
         summary["survey_diagnostics"] = found["survey_diagnostics"]
     elif default_discovery:
         summary["survey_diagnostics"] = _unverified_diagnostics()
+    summary["pending_repair_diagnostic"] = _pending_diagnostic(found)
     return summary
 
 
@@ -898,6 +899,125 @@ def _space_is_sufficient(found, require_storage=False):
     )
 
 
+_PENDING_CHECK_NAMES = (
+    "status_pending", "volume_inventory_complete", "name_collision_clear", "project_valid",
+    "volume_object", "volume_name_matches", "mountpoint_absolute", "labels_object",
+    "project_label_matches", "volume_label_matches", "needs_chown_false", "needs_copy_up_true",
+    "volume_unused", "mount_count_zero", "collector_absent", "metadata_object",
+    "metadata_observed", "children_empty", "child_count_zero", "acl_absent",
+    "root_not_mount", "child_not_mount", "root_object", "owner_rwx",
+    "group_other_write_or_special_absent", "owner_mismatch", "collector_access_blocked",
+    "volume_free_bytes", "volume_free_inodes", "graphroot_free_bytes", "graphroot_free_inodes",
+)
+
+
+def _pending_checks(found):
+    metadata = found.get("metadata")
+    root = metadata.get("root") if isinstance(metadata, dict) else None
+    volume = found.get("volume")
+    labels = volume.get("Labels") if isinstance(volume, dict) else None
+    project = found.get("project")
+    mode = root.get("mode") if isinstance(root, dict) else None
+    observed_metadata = isinstance(metadata, dict) and metadata.get("status") == "observed"
+    root_mode_known = isinstance(root, dict) and isinstance(mode, int)
+    storage_space = found.get("storage_space")
+    return {
+        "status_pending": found.get("status") == "volume_initialization_pending",
+        "volume_inventory_complete": found.get("volume_inventory_complete") is True,
+        "name_collision_clear": found.get("name_collision") is False,
+        "project_valid": isinstance(project, str),
+        "volume_object": isinstance(volume, dict),
+        "volume_name_matches": isinstance(project, str) and isinstance(volume, dict)
+        and volume.get("Name") == f"{project}_{VOLUME_KEY}",
+        "mountpoint_absolute": isinstance(found.get("mountpoint"), str)
+        and found["mountpoint"].startswith("/"),
+        "labels_object": isinstance(labels, dict),
+        "project_label_matches": isinstance(labels, dict)
+        and labels.get("com.docker.compose.project") == project,
+        "volume_label_matches": isinstance(labels, dict)
+        and labels.get("com.docker.compose.volume", VOLUME_KEY) == VOLUME_KEY,
+        "needs_chown_false": found.get("needs_chown") is False,
+        "needs_copy_up_true": found.get("needs_copy_up") is True,
+        "volume_unused": found.get("volume_use_count") == 0,
+        "mount_count_zero": found.get("mount_count") == 0,
+        "collector_absent": found.get("collector_present") is False,
+        "metadata_object": isinstance(metadata, dict),
+        "metadata_observed": observed_metadata,
+        "children_empty": observed_metadata and metadata.get("children") == [],
+        "child_count_zero": observed_metadata and metadata.get("child_count") == 0,
+        "acl_absent": observed_metadata and metadata.get("acl") is False,
+        "root_not_mount": observed_metadata and metadata.get("root_is_mount") is False,
+        "child_not_mount": observed_metadata and metadata.get("child_mount") is False,
+        "root_object": isinstance(root, dict),
+        "owner_rwx": root_mode_known and mode & 0o700 == 0o700,
+        "group_other_write_or_special_absent": root_mode_known and mode & (0o022 | 0o7000) == 0,
+        "owner_mismatch": isinstance(root, dict) and (root.get("uid"), root.get("gid")) != (0, 0),
+        "collector_access_blocked": observed_metadata and root_mode_known
+        and isinstance(root, dict) and "uid" in root and "gid" in root and not _access(metadata),
+        "volume_free_bytes": isinstance(metadata, dict)
+        and type(metadata.get("free_bytes")) is int
+        and metadata["free_bytes"] >= MIN_FREE_BYTES,
+        "volume_free_inodes": isinstance(metadata, dict)
+        and type(metadata.get("free_inodes")) is int
+        and metadata["free_inodes"] >= MIN_FREE_INODES,
+        "graphroot_free_bytes": isinstance(storage_space, dict)
+        and type(storage_space.get("free_bytes")) is int
+        and storage_space["free_bytes"] >= MIN_FREE_BYTES,
+        "graphroot_free_inodes": isinstance(storage_space, dict)
+        and type(storage_space.get("free_inodes")) is int
+        and storage_space["free_inodes"] >= MIN_FREE_INODES,
+    }
+
+
+def _capacity_category(space, field, threshold):
+    value = space.get(field) if isinstance(space, dict) else None
+    if type(value) is not int:
+        return "unverified"
+    return "sufficient" if value >= threshold else "low"
+
+
+def _mode_bit_category(mode, mask, verified):
+    if not verified or type(mode) is not int or not 0 <= mode <= 0o7777:
+        return "unverified"
+    return "present" if mode & mask else "absent"
+
+
+def _pending_diagnostic(found):
+    checks = _pending_checks(found)
+    metadata = found.get("metadata")
+    root = metadata.get("root") if isinstance(metadata, dict) else None
+    mode = root.get("mode") if isinstance(root, dict) else None
+    mode_verified = isinstance(metadata, dict) and metadata.get("status") == "observed" and isinstance(mode, int)
+    return {
+        "owner_rwx": "unverified" if not mode_verified else (
+            "complete" if checks["owner_rwx"] else "incomplete"
+        ),
+        "group_other_write_or_special_bits": "unverified" if not mode_verified else (
+            "absent" if checks["group_other_write_or_special_absent"] else "present"
+        ),
+        "group_write": _mode_bit_category(mode, 0o020, mode_verified),
+        "other_write": _mode_bit_category(mode, 0o002, mode_verified),
+        "setuid": _mode_bit_category(mode, 0o4000, mode_verified),
+        "setgid": _mode_bit_category(mode, 0o2000, mode_verified),
+        "sticky": _mode_bit_category(mode, 0o1000, mode_verified),
+        "volume_free_bytes": _capacity_category(
+            metadata if isinstance(metadata, dict) and metadata.get("status") == "observed" else None,
+            "free_bytes", MIN_FREE_BYTES,
+        ),
+        "volume_free_inodes": _capacity_category(
+            metadata if isinstance(metadata, dict) and metadata.get("status") == "observed" else None,
+            "free_inodes", MIN_FREE_INODES,
+        ),
+        "graphroot_free_bytes": _capacity_category(
+            found.get("storage_space"), "free_bytes", MIN_FREE_BYTES
+        ),
+        "graphroot_free_inodes": _capacity_category(
+            found.get("storage_space"), "free_inodes", MIN_FREE_INODES
+        ),
+        "failed_checks": [name for name in _PENDING_CHECK_NAMES if not checks[name]],
+    }
+
+
 def _cursorless_prestart_safe(found):
     metadata = found.get("metadata")
     volume = found.get("volume")
@@ -943,49 +1063,21 @@ def _stable_metadata(metadata):
 
 
 def _pending_empty(found, owner_mismatch=False):
-    metadata = found.get("metadata")
-    root = metadata.get("root") if isinstance(metadata, dict) else None
-    volume = found.get("volume")
-    labels = volume.get("Labels") if isinstance(volume, dict) else None
-    project = found.get("project")
-    return (
-        found.get("status") == "volume_initialization_pending"
-        and found.get("volume_inventory_complete") is True
-        and found.get("name_collision") is False
-        and isinstance(project, str)
-        and isinstance(volume, dict)
-        and volume.get("Name") == f"{project}_{VOLUME_KEY}"
-        and isinstance(found.get("mountpoint"), str)
-        and found["mountpoint"].startswith("/")
-        and isinstance(labels, dict)
-        and labels.get("com.docker.compose.project") == project
-        and labels.get("com.docker.compose.volume", VOLUME_KEY) == VOLUME_KEY
-        and found.get("needs_chown") is False
-        and found.get("needs_copy_up") is True
-        and found.get("volume_use_count") == 0
-        and found.get("mount_count") == 0
-        and found.get("collector_present") is False
-        and isinstance(metadata, dict)
-        and metadata.get("status") == "observed"
-        and metadata.get("children") == []
-        and metadata.get("child_count") == 0
-        and metadata.get("acl") is False
-        and metadata.get("root_is_mount") is False
-        and metadata.get("child_mount") is False
-        and isinstance(root, dict)
-        and isinstance(root.get("mode"), int)
-        and root["mode"] & 0o700 == 0o700
-        and root["mode"] & (0o022 | 0o7000) == 0
-        and (not owner_mismatch or (
-            (root.get("uid"), root.get("gid")) != (0, 0)
-            and not _access(metadata)
-        ))
+    checks = _pending_checks(found)
+    required = _PENDING_CHECK_NAMES if owner_mismatch else tuple(
+        name for name in _PENDING_CHECK_NAMES
+        if name not in {"owner_mismatch", "collector_access_blocked"}
     )
+    return all(checks[name] for name in required)
 
 
 def _repair_pending_positions(first, discover_fn, change_fn):
     if not _pending_empty(first, owner_mismatch=True) or not _space_is_sufficient(first, require_storage=True):
-        return {"status": "refused", "reason": "pending_volume_unsupported"}
+        return {
+            "status": "refused",
+            "reason": "pending_volume_unsupported",
+            "pending_repair_diagnostic": _pending_diagnostic(first),
+        }
     original = first["metadata"]["root"]
     original_volume = _volume_identity_tuple(first.get("volume"))
     if original_volume is None or not _valid_created_at(first["volume"].get("CreatedAt")):
@@ -1288,6 +1380,7 @@ def main():
             **_summary({"status": "unavailable"}),
             "reason": "survey_failed",
             "survey_diagnostics": _unverified_diagnostics(),
+            "pending_repair_diagnostic": _pending_diagnostic({}),
         } if action == "survey" else {
             "status": "unavailable",
             "reason": "survey_failed",

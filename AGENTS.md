@@ -569,7 +569,7 @@ and pytest, with the same test paths, working directory and `PYTHONPATH` as CI. 
 step; live as soon as `make git-setup` has been run.
 
 `bats platform/tests/` is byte-identical to CI's; the pytest run is not — CI pins Python
-3.11 and installs the test dependencies, while the hook uses whatever `python3` is on your
+3.12 and installs the test dependencies, while the hook uses whatever `python3` is on your
 `PATH`.
 
 **Two different gates, on two different things.** The hook blocks *your push* when a suite
@@ -652,7 +652,7 @@ Every PR into `dev` or `main` is gated by GitHub Actions CI (`.github/workflows/
 
 - **Static Analysis**: ruff (Python), shellcheck (Bash, warning severity), ansible-lint (playbooks), yamllint (YAML), hadolint (Dockerfiles), terraform fmt (HCL policies)
 - **Security Scan**: trufflehog (secrets), bandit (Python security), IP/credential grep
-- **Unit Tests**: pytest (Python 3.11 — collected from `testpaths` in `pyproject.toml`, run from the repo root so adding a suite is one line there), BATS (Bash — `bats -c platform/tests/*.bats` prints the current count; the number is deliberately not written here, because a hardcoded count conflicted on every branch merge)
+- **Unit Tests**: pytest (Python 3.12 — collected from `testpaths` in `pyproject.toml`, run from the repo root so adding a suite is one line there), BATS (Bash — `bats -c platform/tests/*.bats` prints the current count; the number is deliberately not written here, because a hardcoded count conflicted on every branch merge)
 
 Config files: `pyproject.toml` (ruff, pytest), `.ansible-lint`, `.yamllint.yml`
 

@@ -78,9 +78,9 @@ yamllint -c .yamllint.yml .
 # HCL format check (if modifying OpenBao policies)
 find platform/services/openbao -name '*.hcl' -exec terraform fmt -check {} +
 
-# Python tests (requires Python 3.11+)
+# Python tests (requires Python 3.12+)
 cd platform/services/netbox/deployment
-PYTHONPATH=workers/proxmox_discovery:workers/pfsense_sync python3.11 -m pytest tests/ -v
+PYTHONPATH=workers/proxmox_discovery:workers/pfsense_sync python3.12 -m pytest tests/ -v
 cd -
 
 # Bash tests
@@ -107,16 +107,16 @@ git diff --staged | grep -iE '^\+.*password\s*[:=]\s*[A-Za-z0-9]{8}|^\+.*secret_
 pip install ruff ansible-lint yamllint bandit
 brew install shellcheck bats-core hadolint
 
-# Python 3.11 (required for tests)
-brew install python@3.11
+# Python 3.12 (required for tests)
+brew install python@3.12
 # The test suites' dependencies, declared once and installed by CI from the same file.
 # It includes pytest-xdist, which the pre-push hook uses to run the suite in parallel.
-pip3.11 install -r platform/requirements-test.txt
+pip3.12 install -r platform/requirements-test.txt
 
 # Controller packages — cryptography is needed by the BATS suite, which signs a real
 # GitHub App assertion with a throwaway key and verifies it. Without it those tests SKIP
 # with a reason rather than failing, but they are then not verifying anything.
-pip3.11 install -r platform/requirements-controller.txt
+pip3.12 install -r platform/requirements-controller.txt
 
 # HCL formatting (optional, for OpenBao policy changes)
 brew install terraform
@@ -154,7 +154,7 @@ via the repo's `core.hooksPath` with no install step — the commands below are 
 so you do not need to remember them.
 
 `bats platform/tests/` is byte-identical to CI's; the pytest run is not — CI pins Python
-3.11 and installs the test dependencies, while the hook uses whatever `python3` is on your
+3.12 and installs the test dependencies, while the hook uses whatever `python3` is on your
 `PATH`.
 
 **Two different gates, on two different things.** The hook blocks *your push* when a suite

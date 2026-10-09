@@ -773,6 +773,21 @@ own Podman or filesystem operations; the surrounding playbook may still run
 other checks. Survey exceptions produce a bounded unavailable receipt
 with fixed reason `survey_failed`.
 
+The positions survey also emits a bounded `pending_repair_diagnostic` derived
+from the same conjuncts as the pending repair gate. It classifies owner RWX,
+the combined group/other write or special-bit result, each of group write,
+other write, setuid, setgid, and sticky independently, and volume and GraphRoot
+bytes/inodes; it lists failed checks from a fixed allowlist. Missing mode or
+counters are `unverified`; no
+paths, ownership IDs, modes, or counter values are emitted. A pending repair
+refusal keeps `status=refused` and `reason=pending_volume_unsupported`; its
+receipt carries the diagnostic categories and the refusal message lists the
+bounded `failed_checks`. This snapshot
+does not cover the repair's later identity rechecks and does not authorize a
+repair. Check mode and survey exceptions use the same keys with unverified
+categories. No additional Podman call, mount, content read, or ownership change
+is part of this diagnostic.
+
 The live Dev survey 3865 (user-provided evidence; not rerun by this source-only
 change) reported Podman client 4.9.3 with server unavailable, exact all/named
 volume identity, omitted `NeedsChown` and `NeedsCopyUp` JSON fields, effective

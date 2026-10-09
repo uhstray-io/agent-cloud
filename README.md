@@ -270,7 +270,7 @@ CodeRabbit review, and — on a `dev` → `main` PR — a promotion-source check
 `.githooks/pre-push` **attempts** the same suites before a push, with the same test paths,
 working directory and `PYTHONPATH` as CI. Live via the repo's `core.hooksPath` after
 `make git-setup`, no install step. `bats platform/tests/` is byte-identical to CI's; the
-pytest run is not — CI pins Python 3.11 and installs the test dependencies, while the hook
+pytest run is not — CI pins Python 3.12 and installs the test dependencies, while the hook
 uses whatever `python3` is on your `PATH`.
 
 **Two different gates, on two different things.** The hook blocks *your push* when a suite
