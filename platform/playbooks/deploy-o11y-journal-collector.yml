@@ -457,7 +457,7 @@
               - podman
               - inspect
               - --format
-              - "{{ '{{' }}.State.Status{{ '}}' }} {{ '{{' }}with .State.Health{{ '}}' }}{{ '{{' }}.Status{{ '}}' }} {{ '{{' }}.FailingStreak{{ '}}' }}{{ '{{' }}range .Log{{ '}}' }} {{ '{{' }}.ExitCode{{ '}}' }}{{ '{{' }}end{{ '{{' }}end{{ '}}' }}"
+              - "{{ '{{' }}.State.Status{{ '}}' }} {{ '{{' }}with .State.Health{{ '}}' }}{{ '{{' }}.Status{{ '}}' }} {{ '{{' }}.FailingStreak{{ '}}' }}{{ '{{' }}range .Log{{ '}}' }} {{ '{{' }}.ExitCode{{ '}}' }}{{ '{{' }}end{{ '}}' }}{{ '{{' }}end{{ '}}' }}"
               - o11y-journal-collector
           register: _journal_rollback_health_evidence
           changed_when: false
