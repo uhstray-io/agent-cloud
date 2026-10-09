@@ -227,6 +227,8 @@
         else
           echo running
         fi
+      args:
+        executable: /bin/bash   # `set -o pipefail` needs bash (Ubuntu /bin/sh is dash)
       register: _bao_start
       changed_when: "(_bao_start.stdout | trim) != 'running'"
       when: not ansible_check_mode
@@ -664,6 +666,8 @@
           podman exec {{ _stepca_name }} cat /etc/ssl/certs/ca-certificates.crt
           podman exec {{ _stepca_name }} cat /home/step/certs/root_ca.crt
         } > {{ _state_dir }}/step-ca-bundle.crt
+      args:
+        executable: /bin/bash   # `set -o pipefail` needs bash (Ubuntu /bin/sh is dash)
       register: _bundle
       changed_when: true
       when:
