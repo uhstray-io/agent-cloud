@@ -343,6 +343,30 @@ def test_alloy_unrelated_read_only_source_is_unverified_and_refuses_survey(monke
     assert report == {"status": "unavailable", "reason": "alloy_source_unverified"}
 
 
+@pytest.mark.parametrize(
+    "destination",
+    ["/var/log", "/run", None, {"malformed": "destination"}],
+    ids=["var-log-ancestor", "run-ancestor", "missing-destination", "malformed-destination"],
+)
+def test_alloy_ancestor_or_malformed_destination_is_unverified(monkeypatch, destination):
+    monkeypatch.setattr(
+        SURVEY,
+        "inspect",
+        lambda name: {
+            "State": {"Running": True},
+            "Mounts": [
+                {"Source": "/var/log/journal", "Destination": destination, "RW": False}
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        SURVEY,
+        "run",
+        lambda argv, timeout=8: pytest.fail("uncertain destinations must not be probed"),
+    )
+    assert SURVEY.alloy_source() is None
+
+
 @pytest.mark.parametrize("probe", ["missing", "unreadable"], ids=["directory-absent", "directory-unreadable"])
 def test_alloy_absent_mount_and_unreadable_directory_are_known_false(monkeypatch, probe):
     monkeypatch.setattr(

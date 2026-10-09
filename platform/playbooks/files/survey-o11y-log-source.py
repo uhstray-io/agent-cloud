@@ -2,6 +2,7 @@
 """Return bounded receiver-host container log-source metadata only."""
 
 import json
+import posixpath
 import subprocess
 import sys
 
@@ -150,7 +151,18 @@ def alloy_source():
         if not isinstance(mount, dict):
             return None
         destination = mount.get("Destination")
+        if (
+            not isinstance(destination, str)
+            or not destination.startswith("/")
+            or posixpath.normpath(destination) != destination
+        ):
+            return None
         if destination not in JOURNAL_DESTINATIONS:
+            if any(
+                posixpath.commonpath((destination, journal_path)) == destination
+                for journal_path in JOURNAL_DESTINATIONS
+            ):
+                uncertain = True
             continue
         writable = mount.get("RW")
         if writable is True:
