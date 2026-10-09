@@ -34,6 +34,7 @@ flowchart LR
 2. Add an `always()` aggregate `Unit Tests` job that succeeds only if all four result values are `success`. Acceptance: a failed or cancelled group makes the aggregate fail.
 3. Run the PR's normal CI and compare job durations with the measured serial baseline. Acceptance: all groups and the aggregate pass; report actual wall time rather than a projected saving.
 4. Bound every child process launched through `platform/tests/harness_sandbox.py` to 120 seconds, run Python core with pytest fail-fast (`-x`), and cap the Python core job at 20 minutes. A completed PR #342 Python core job took 12m06s, but PR #338 adds tests, so that measurement is context rather than an equivalent baseline or proof of runner variance. The two PR #338 attempts exceeded 30 and 45 minutes. The per-process cap leaves room for a slow playbook test while ending a stuck harness promptly; fail-fast stops the suite after the first failure. A timeout raises a sanitized error with captured stdout and stderr suppressed, so a hang cannot satisfy a negative test and fixture credentials stay out of the error. These safeguards bound execution and improve diagnosis; they do not identify the cause of the earlier stalls.
+5. Replace Docker-based OPA acquisition with the official OPA 1.0.0 Linux amd64 static release binary. Bound curl retries and timeouts, verify the reviewed SHA-256 before `chmod` or execution, set a Rego job timeout, and preserve `opa check --strict` plus `opa test -v`. The `Unit Tests` aggregate continues to require Rego success.
 
 ## Validation Criteria
 
@@ -41,7 +42,7 @@ flowchart LR
 |---|---|
 | Python collection | Split collections are disjoint and their union equals the existing root collection |
 | BATS | Existing `bats platform/tests/` command remains covered |
-| Rego | Both pinned-image `check --strict` and `test` remain covered |
+| Rego | The official OPA 1.0.0 Linux amd64 static binary passes the pinned SHA-256 check before execution; both `check --strict` and `test -v` remain covered |
 | Gate | Aggregate fails for any non-success dependency |
 | CI | Every required group and the aggregate are green on the PR head |
 | Harness timeout | A timed-out child raises a sanitized failure within the configured limit |
