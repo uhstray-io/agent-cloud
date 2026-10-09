@@ -549,9 +549,9 @@
                 else 'fields_available'
               }}
 
-        - name: Decide whether one manual healthcheck is safe as diagnostic evidence
+        - name: Decide whether one fixed readiness probe is safe as diagnostic evidence
           ansible.builtin.set_fact:
-            _journal_rollback_manual_healthcheck_allowed: >-
+            _journal_rollback_readiness_probe_allowed: >-
               {{
                 _journal_rollback_state_evidence.rc | default(1) | int == 0 and
                 'state=running' in (_journal_rollback_state_evidence.stdout | default('', true) | split()) and
@@ -561,34 +561,40 @@
                 'on_failure=none' in (_journal_rollback_health_action.stdout | default('', true) | split())
               }}
 
-        - name: Run one output-discarded manual healthcheck for bounded diagnosis
+        - name: Run one fixed output-discarded readiness probe for bounded diagnosis
           ansible.builtin.command:
             argv:
               - /bin/bash
               - -c
-              - podman healthcheck run o11y-journal-collector >/dev/null 2>&1
-          register: _journal_manual_healthcheck
+              - >-
+                /usr/bin/timeout --signal=KILL 3s
+                podman exec o11y-journal-collector /bin/bash -c
+                'exec 2>/dev/null 3<>/dev/tcp/127.0.0.1/12345 >/dev/null'
+                >/dev/null 2>&1
+          register: _journal_readiness_probe
           changed_when: false
           failed_when: false
           check_mode: false
-          when: _journal_rollback_manual_healthcheck_allowed | bool
+          when: _journal_rollback_readiness_probe_allowed | bool
 
-        - name: Classify the one-shot manual healthcheck result
+        - name: Classify the one-shot fixed readiness probe result
           ansible.builtin.set_fact:
-            _journal_manual_healthcheck_class: >-
+            _journal_readiness_probe_class: >-
               {{
                 'not_run'
-                if not (_journal_rollback_manual_healthcheck_allowed | bool)
+                if not (_journal_rollback_readiness_probe_allowed | bool)
                 else 'passed'
-                if _journal_manual_healthcheck.rc | default(125) | int == 0
+                if _journal_readiness_probe.rc | default(125) | int == 0
                 else 'failed'
-                if _journal_manual_healthcheck.rc | default(125) | int == 1
-                else 'podman_error'
-                if _journal_manual_healthcheck.rc | default(125) | int == 125
+                if _journal_readiness_probe.rc | default(125) | int == 1
+                else 'probe_error'
+                if _journal_readiness_probe.rc | default(125) | int == 125
+                else 'timeout'
+                if _journal_readiness_probe.rc | default(125) | int == 137
                 else 'unexpected_error'
               }}
 
-        - name: Capture sanitized state and health log count after the manual check
+        - name: Capture sanitized state and health log count after the readiness probe
           ansible.builtin.command:
             argv:
               - podman
@@ -596,11 +602,11 @@
               - --format
               - "{{ '{{' }}.State.Status{{ '}}' }} {{ '{{' }}with .State.Health{{ '}}' }}{{ '{{' }}.Status{{ '}}' }} {{ '{{' }}len .Log{{ '}}' }}{{ '{{' }}else{{ '}}' }}unavailable 0{{ '{{' }}end{{ '}}' }}"
               - o11y-journal-collector
-          register: _journal_manual_healthcheck_readback
+          register: _journal_readiness_probe_readback
           changed_when: false
           failed_when: false
           check_mode: false
-          when: _journal_rollback_manual_healthcheck_allowed | bool
+          when: _journal_rollback_readiness_probe_allowed | bool
 
         - name: Capture the positions volume name before rollback
           ansible.builtin.command:
@@ -677,9 +683,9 @@
               allow-listed effective health schedule={{ _journal_rollback_health_config.stdout | default('') | trim | default('unavailable', true) }};
               allow-listed health failure action={{ _journal_rollback_health_action.stdout | default('') | trim | default('unavailable', true) }};
               allow-listed startup healthcheck={{ _journal_rollback_startup_health.stdout | default('') | trim | default('unavailable', true) }};
-              one-shot manual healthcheck diagnostic={{ _journal_manual_healthcheck_class | default('unavailable') }};
-              post-check state/health/log-count={{ _journal_manual_healthcheck_readback.stdout | default('not_run') | trim | default('unavailable', true) }}.
-              The manual result is diagnostic only and does not satisfy automatic health or Loki delivery.
+              one-shot fixed readiness probe diagnostic={{ _journal_readiness_probe_class | default('unavailable') }};
+              post-check state/health/log-count={{ _journal_readiness_probe_readback.stdout | default('not_run') | trim | default('unavailable', true) }}.
+              The fixed probe only opens Alloy's local TCP listener and is diagnostic; it does not run the configured health command, mutate Podman health, or satisfy automatic health or Loki delivery.
               All receiver data remains; positions-volume preservation was asserted
               when a collector with that mount existed.
 

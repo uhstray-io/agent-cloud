@@ -515,7 +515,7 @@ def test_survey_check_mode_skips_container_probe_and_reports_unverified():
     assert "check_mode_unverified" in PLAYBOOK.read_text()
 
 
-def test_rollback_health_diagnostic_is_allowlisted_and_manual_check_is_gated():
+def test_rollback_health_diagnostic_is_allowlisted_and_fixed_probe_is_gated():
     ansible_playbook = shutil.which("ansible-playbook")
     if not ansible_playbook:
         pytest.skip("ansible-playbook is unavailable")
@@ -613,10 +613,11 @@ def test_rollback_health_diagnostic_is_allowlisted_and_manual_check_is_gated():
             "expected": False,
         },
     ]
-    manual_cases = [
+    readiness_cases = [
         {"allowed": True, "rc": 0, "expected": "passed"},
         {"allowed": True, "rc": 1, "expected": "failed"},
-        {"allowed": True, "rc": 125, "expected": "podman_error"},
+        {"allowed": True, "rc": 125, "expected": "probe_error"},
+        {"allowed": True, "rc": 137, "expected": "timeout"},
         {"allowed": True, "rc": 42, "expected": "unexpected_error"},
         {"allowed": False, "expected": "not_run"},
     ]
@@ -647,17 +648,17 @@ classifier = next(
     task for task in apply["rescue"]
     if task.get("name") == "Classify collector health probes without exposing stderr"
 )
-manual = next(
+readiness_probe = next(
     task for task in apply["rescue"]
-    if task.get("name") == "Run one output-discarded manual healthcheck for bounded diagnosis"
+    if task.get("name") == "Run one fixed output-discarded readiness probe for bounded diagnosis"
 )
-manual_classifier = next(
+readiness_classifier = next(
     task for task in apply["rescue"]
-    if task.get("name") == "Classify the one-shot manual healthcheck result"
+    if task.get("name") == "Classify the one-shot fixed readiness probe result"
 )
 postcheck = next(
     task for task in apply["rescue"]
-    if task.get("name") == "Capture sanitized state and health log count after the manual check"
+    if task.get("name") == "Capture sanitized state and health log count after the readiness probe"
 )
 remove = next(
     task for task in apply["rescue"]
@@ -675,19 +676,19 @@ rendered_formats = {
 expressions = classifier["ansible.builtin.set_fact"]
 gate_expression = next(
     task for task in apply["rescue"]
-    if task.get("name") == "Decide whether one manual healthcheck is safe as diagnostic evidence"
-)["ansible.builtin.set_fact"]["_journal_rollback_manual_healthcheck_allowed"]
-manual_expression = manual_classifier["ansible.builtin.set_fact"]["_journal_manual_healthcheck_class"]
+    if task.get("name") == "Decide whether one fixed readiness probe is safe as diagnostic evidence"
+)["ansible.builtin.set_fact"]["_journal_rollback_readiness_probe_allowed"]
+readiness_expression = readiness_classifier["ansible.builtin.set_fact"]["_journal_readiness_probe_class"]
 postcheck_format_expression = postcheck["ansible.builtin.command"]["argv"][3]
 rendered_postcheck_format = Templar(loader=DataLoader(), variables={}).template(
     trust_as_template(postcheck_format_expression)
 )
-manual_argv = manual["ansible.builtin.command"]["argv"]
-manual_settings = {
-    "no_log": manual.get("no_log"),
-    "failed_when": manual.get("failed_when"),
-    "check_mode": manual.get("check_mode"),
-    "when": manual.get("when"),
+readiness_argv = readiness_probe["ansible.builtin.command"]["argv"]
+readiness_settings = {
+    "no_log": readiness_probe.get("no_log"),
+    "failed_when": readiness_probe.get("failed_when"),
+    "check_mode": readiness_probe.get("check_mode"),
+    "when": readiness_probe.get("when"),
 }
 data = json.loads(sys.stdin.read())
 classes = []
@@ -727,14 +728,14 @@ for case in data["gate_cases"]:
     }
     result = Templar(loader=DataLoader(), variables=variables).template(trust_as_template(gate_expression))
     gate_results.append(str(result).lower() == "true")
-manual_results = []
-for case in data["manual_cases"]:
+readiness_results = []
+for case in data["readiness_cases"]:
     variables = {
-        "_journal_rollback_manual_healthcheck_allowed": case["allowed"],
-        "_journal_manual_healthcheck": {"rc": case.get("rc", 125)},
+        "_journal_rollback_readiness_probe_allowed": case["allowed"],
+        "_journal_readiness_probe": {"rc": case.get("rc", 125)},
     }
-    result = Templar(loader=DataLoader(), variables=variables).template(trust_as_template(manual_expression)).strip()
-    manual_results.append(result)
+    result = Templar(loader=DataLoader(), variables=variables).template(trust_as_template(readiness_expression)).strip()
+    readiness_results.append(result)
 print(json.dumps({
     "formats": rendered_formats,
     "classes": classes,
@@ -742,11 +743,11 @@ print(json.dumps({
     "action_classes": action_classes,
     "startup_classes": startup_classes,
     "gate_results": gate_results,
-    "manual_results": manual_results,
-    "manual_argv": manual_argv,
-    "manual_settings": manual_settings,
+    "readiness_results": readiness_results,
+    "readiness_argv": readiness_argv,
+    "readiness_settings": readiness_settings,
     "postcheck_format": rendered_postcheck_format,
-    "manual_precedes_removal": apply["rescue"].index(manual) < apply["rescue"].index(remove),
+    "readiness_probe_precedes_removal": apply["rescue"].index(readiness_probe) < apply["rescue"].index(remove),
 }))
 '''
     temp_root = "/private/tmp" if Path("/private/tmp").is_dir() else tempfile.gettempdir()
@@ -766,7 +767,7 @@ print(json.dumps({
                     "action_cases": action_cases,
                     "startup_cases": startup_cases,
                     "gate_cases": gate_cases,
-                    "manual_cases": manual_cases,
+                    "readiness_cases": readiness_cases,
                 }
             ),
             capture_output=True,
@@ -808,23 +809,26 @@ print(json.dumps({
     assert rendered["action_classes"] == [case["expected"] for case in action_cases]
     assert rendered["startup_classes"] == [case["expected"] for case in startup_cases]
     assert rendered["gate_results"] == [case["expected"] for case in gate_cases]
-    assert rendered["manual_results"] == [case["expected"] for case in manual_cases]
-    assert rendered["manual_argv"] == [
+    assert rendered["readiness_results"] == [case["expected"] for case in readiness_cases]
+    assert rendered["readiness_argv"] == [
         "/bin/bash",
         "-c",
-        "podman healthcheck run o11y-journal-collector >/dev/null 2>&1",
+        "/usr/bin/timeout --signal=KILL 3s podman exec o11y-journal-collector "
+        "/bin/bash -c 'exec 2>/dev/null 3<>/dev/tcp/127.0.0.1/12345 >/dev/null' "
+        ">/dev/null 2>&1",
     ]
-    assert rendered["manual_settings"] == {
+    assert "podman healthcheck run" not in rendered["readiness_argv"]
+    assert rendered["readiness_settings"] == {
         "no_log": None,
         "failed_when": False,
         "check_mode": False,
-        "when": "_journal_rollback_manual_healthcheck_allowed | bool",
+        "when": "_journal_rollback_readiness_probe_allowed | bool",
     }
     assert rendered["postcheck_format"] == (
         "{{.State.Status}} {{with .State.Health}}{{.Status}} {{len .Log}}"
         "{{else}}unavailable 0{{end}}"
     )
-    assert rendered["manual_precedes_removal"] is True
+    assert rendered["readiness_probe_precedes_removal"] is True
     assert result.stderr == ""
 
 
