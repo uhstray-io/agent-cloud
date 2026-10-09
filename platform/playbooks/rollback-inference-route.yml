@@ -410,82 +410,121 @@
     # shared vLLM key after its grace period ended. Putting it back would re-admit that key, so
     # the rollback refuses before any write. The files hold key hashes (or, under local-dev's
     # agw_plaintext_keys, keys), so they are read and compared in no_log tasks that keep only
-    # identity NAMES; the visible assert below prints those names and nothing else.
-    - name: "Read both configs' enrolled identities (credential-adjacent)"
-      # A missing live config counts as enrolling nobody: the check fails closed.
-      ansible.builtin.slurp:
-        src: "{{ _deploy_dir }}/{{ item }}"
-      loop: [config.yaml, config.yaml.previous]
-      loop_control:
-        index_var: _i
-      register: _rb_cfg_text
-      no_log: true
-      when:
-        - _rb_mode == 'gateway-config'
-        - _rb_cfg.results[_i].stat.exists
-
-    - name: "Parse both configs' enrolments (credential-adjacent)"
-      # The filter does the parse and the walk in Python (filter_plugins/agw_apikey_entries.py):
-      # native lists come back, with no JSON text built and re-read in Jinja, which behaved
-      # differently across ansible-core versions. Only the file name and the class of a
-      # parse failure ever leave this task, through _rb_cfg_problems.
-      vars:
-        _names: [config.yaml, config.yaml.previous]
-        _none: {entries: [], problem: ''}
-      ansible.builtin.set_fact:
-        _rb_parsed: >-
-          {%- set ns = namespace(out=[]) -%}
-          {%- for r in _rb_cfg_text.results -%}
-          {%- set ns.out = ns.out + [(r.content | agw_apikey_entries) if r.content is defined else _none] -%}
-          {%- endfor -%}
-          {{ ns.out }}
-        _rb_cfg_problems: >-
-          {%- set ns = namespace(out=[]) -%}
-          {%- for r in _rb_cfg_text.results -%}
-          {%- set p = (r.content | agw_apikey_entries).problem if r.content is defined else '' -%}
-          {%- if p -%}{%- set ns.out = ns.out + [_names[loop.index0] ~ ': ' ~ p] -%}{%- endif -%}
-          {%- endfor -%}
-          {{ ns.out }}
-      no_log: true
+    # identity NAMES; the visible assert below prints those names and nothing else. A failure
+    # inside those tasks is reported by name and exception class only.
+    - name: "Read, compare and refuse on the two configs' enrolments"
       when: _rb_mode == 'gateway-config'
+      block:
+        - name: "Read and parse both configs' enrolments (credential-adjacent)"
+          block:
+            - name: "Read both configs' enrolled identities (credential-adjacent)"
+              # A missing live config counts as enrolling nobody: the check fails closed.
+              ansible.builtin.slurp:
+                src: "{{ _deploy_dir }}/{{ item }}"
+              loop: [config.yaml, config.yaml.previous]
+              loop_control:
+                index_var: _i
+              register: _rb_cfg_text
+              no_log: true
+              when: _rb_cfg.results[_i].stat.exists
 
-    - name: "Refuse a config that cannot be read as the gateway's YAML mapping"
-      # Visible on purpose: _rb_cfg_problems holds file names and failure classes, never content.
-      ansible.builtin.assert:
-        that: _rb_cfg_problems | length == 0
-        fail_msg: >-
-          cannot read the enrolled identities of {{ _rb_cfg_problems | join('; ') }}. A config
-          that cannot be read cannot be compared with the live one, so nothing was changed. Fix
-          forward with deploy-agentgateway.yml, or roll back in direct mode.
-        quiet: true
-      when: _rb_mode == 'gateway-config'
+            - name: "Name any config that cannot be parsed (credential-adjacent)"
+              # The filter does the parse and the walk in Python
+              # (filter_plugins/agw_apikey_entries.py): no JSON text is built and re-read in
+              # Jinja, which behaved differently across ansible-core versions. Only the file
+              # name and the class of a parse failure leave this task, through _rb_cfg_problems.
+              vars:
+                _names: [config.yaml, config.yaml.previous]
+              ansible.builtin.set_fact:
+                _rb_cfg_problems: >-
+                  {%- set ns = namespace(out=[]) -%}
+                  {%- for r in _rb_cfg_text.results -%}
+                  {%- set p = (r.content | agw_apikey_entries).problem if r.content is defined else '' -%}
+                  {%- if p -%}{%- set ns.out = ns.out + [_names[loop.index0] ~ ': ' ~ p] -%}{%- endif -%}
+                  {%- endfor -%}
+                  {{ ns.out }}
+              no_log: true
+          rescue:
+            - name: "Report which credential task failed (its name and kind of error only)"
+              # no_log hides the whole result, which would leave a template error undiagnosable.
+              # The message can quote config content, so it is never shown: it is sorted into a
+              # fixed set of kinds and only the kind is printed.
+              vars:
+                _rb_msg: "{{ ansible_failed_result.msg | default('') | string }}"
+                _rb_kind: >-
+                  {{ 'an undefined variable' if (_rb_msg is search('undefined variable|is undefined'))
+                     else 'a filter plugin error' if (_rb_msg is search('[Ff]ilter'))
+                     else 'a template error' if (_rb_msg is search('emplat|Finalization of task args'))
+                     else 'an unclassified error' }}
+              ansible.builtin.fail:
+                msg: >-
+                  '{{ ansible_failed_task.name }}' failed with {{ _rb_kind }}; its output is hidden
+                  because it handles key material. Nothing was changed.
 
-    - name: "Name every identity the previous config enrols that the live one does not"
-      vars:
-        # _rb_parsed[i].entries: every enrolment of file i, wherever it sits. The template
-        # renders one apiKey policy (llm.policies), but a kept file is whatever was on disk, so
-        # the filter takes the `keys` list of EVERY `apiKey` mapping at any depth.
-        _keys_of: "{{ _rb_parsed | map(attribute='entries') | list }}"
-        _live_creds: >-
-          {{ (_keys_of[0] | selectattr('keyHash', 'defined') | map(attribute='keyHash') | list)
-             + (_keys_of[0] | selectattr('key', 'defined') | map(attribute='key') | list) }}
-        _live_names: "{{ _keys_of[0] | map(attribute='metadata.name', default='') | list }}"
-        _today: "{{ agw_today | default(now(utc=true).strftime('%Y-%m-%d')) | string }}"
-        _expires: "{{ legacy_shared_expires | default('', true) | string }}"
-      ansible.builtin.set_fact:
-        _rb_readmitted: >-
-          {%- set ns = namespace(out=[]) -%}
-          {%- for k in _keys_of[1] -%}
-          {%- set n = (k.metadata | default({})).name | default('(unnamed)') -%}
-          {%- set c = k.keyHash | default(k.key | default('')) -%}
-          {%- if c not in _live_creds or n not in _live_names -%}{%- set ns.out = ns.out + [n] -%}{%- endif -%}
-          {%- endfor -%}
-          {{ ns.out | unique | sort }}
-        _rb_legacy_expired: >-
-          {{ ('legacy-shared' in (_keys_of[1] | map(attribute='metadata.name', default='') | list))
-             and (_expires | length > 0) and (_today >= _expires) }}
-      no_log: true
-      when: _rb_mode == 'gateway-config'
+        - name: "Refuse a config that cannot be read as the gateway's YAML mapping"
+          # Visible on purpose: _rb_cfg_problems holds file names and failure classes, never content.
+          ansible.builtin.assert:
+            that: _rb_cfg_problems | length == 0
+            fail_msg: >-
+              cannot read the enrolled identities of {{ _rb_cfg_problems | join('; ') }}. A config
+              that cannot be read cannot be compared with the live one, so nothing was changed. Fix
+              forward with deploy-agentgateway.yml, or roll back in direct mode.
+            quiet: true
+
+        - name: "Name every identity the previous config enrols that the live one does not"
+          block:
+            - name: "Compare the previous config's enrolments with the live one's (credential-adjacent)"
+              vars:
+                # Parsed here, task-local, so no hash or key outlives this task as a fact. Each
+                # entry list is every enrolment of its file, wherever it sits: the template renders
+                # one apiKey policy (llm.policies), but a kept file is whatever was on disk, so the
+                # filter takes the `keys` list of EVERY `apiKey` mapping at any depth.
+                _none: {entries: [], problem: ''}
+                _parsed: >-
+                  {%- set ns = namespace(out=[]) -%}
+                  {%- for r in _rb_cfg_text.results -%}
+                  {%- set ns.out = ns.out + [(r.content | agw_apikey_entries) if r.content is defined else _none] -%}
+                  {%- endfor -%}
+                  {{ ns.out }}
+                _keys_of: "{{ _parsed | map(attribute='entries') | list }}"
+                _live_creds: >-
+                  {{ (_keys_of[0] | selectattr('keyHash', 'defined') | map(attribute='keyHash') | list)
+                     + (_keys_of[0] | selectattr('key', 'defined') | map(attribute='key') | list) }}
+                _live_names: "{{ _keys_of[0] | map(attribute='metadata.name', default='') | map('string') | list }}"
+                _today: "{{ agw_today | default(now(utc=true).strftime('%Y-%m-%d')) | string }}"
+                _expires: "{{ legacy_shared_expires | default('', true) | string }}"
+              ansible.builtin.set_fact:
+                _rb_readmitted: >-
+                  {%- set ns = namespace(out=[]) -%}
+                  {%- for k in _keys_of[1] -%}
+                  {%- set n = (k.metadata | default({})).name | default('(unnamed)') | string -%}
+                  {%- set c = k.keyHash | default(k.key | default('')) -%}
+                  {%- if c not in _live_creds or n not in _live_names -%}{%- set ns.out = ns.out + [n] -%}{%- endif -%}
+                  {%- endfor -%}
+                  {{ ns.out | unique | sort }}
+                _rb_legacy_expired: >-
+                  {{ ('legacy-shared' in (_keys_of[1] | map(attribute='metadata.name', default='') | list))
+                     and (_expires | length > 0) and (_today >= _expires) }}
+              no_log: true
+          rescue:
+            - name: "Report which credential task failed (its name and kind of error only)"
+              vars:
+                _rb_msg: "{{ ansible_failed_result.msg | default('') | string }}"
+                _rb_kind: >-
+                  {{ 'an undefined variable' if (_rb_msg is search('undefined variable|is undefined'))
+                     else 'a filter plugin error' if (_rb_msg is search('[Ff]ilter'))
+                     else 'a template error' if (_rb_msg is search('emplat|Finalization of task args'))
+                     else 'an unclassified error' }}
+              ansible.builtin.fail:
+                msg: >-
+                  '{{ ansible_failed_task.name }}' failed with {{ _rb_kind }}; its output is hidden
+                  because it handles key material. Nothing was changed.
+      always:
+        - name: "Drop the slurped config text from the run's facts"
+          # The register holds both files base64-encoded; nothing after this reads it.
+          ansible.builtin.set_fact:
+            _rb_cfg_text: {}
+          no_log: true
 
     - name: "Refuse a previous config that would re-admit a rotated, revoked or expired key"
       ansible.builtin.assert:

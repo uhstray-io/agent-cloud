@@ -413,14 +413,17 @@
       `gateway-config` no longer refuses) merged. The live `direct`/`restore` drill is not run
       2026-10-09: the prod dry run of "Rollback Inference Route (Dev)" in `gateway-config` mode
       (Semaphore task 3762, at e2ad8305) failed at the task that names the identities the
-      previous config enrols, with its output censored by `no_log`. The runner image carries
-      ansible-core 2.20.8. Root-cause work: with the censoring off, ansible-core 2.16 fails in
-      that task because the JSON text built in a Jinja macro is auto-converted to a Python
-      tuple before `from_json` reads it; 2.19 and 2.20 passed every fixture, so the prod
-      failure is data-shape specific and its exact cause stays unknown. The extraction now runs
-      in a filter plugin (`agw_apikey_entries.py`) that returns native lists with no JSON text
-      step, and an unreadable or non-mapping config is refused by a visible task naming the
-      file and the class of problem, never its content. The 4.6 drill is still owed
+      previous config enrols, with its output censored by `no_log`. Root cause: the Jinja macro
+      in that task built JSON text and re-read it with `from_json`, and the prod runner's
+      ansible-core 2.18.15 (read from the running Semaphore containers on the prod host,
+      2026-10-09; Semaphore v2.17.31) turns that text into a Python tuple first, so the parse
+      fails with `JSONDecodeError` (reproduced on 2.16.18 and 2.18.15 with the standard
+      fixtures; 2.19 and 2.20 pass the same fixtures). The extraction now runs in a filter
+      plugin (`agw_apikey_entries.py`) that returns native lists with no JSON text step, and the
+      `gateway-config` tests pass on 2.18.15, 2.19.14 and 2.20.8. An unreadable or non-mapping
+      config is refused by a visible task naming the file and the class of problem, never its
+      content. The prod Semaphore upgrade to v2.19.11 (ansible-core 2.20.8) is planned. The 4.6
+      drill is still owed
 
 - [ ] 4.7 `legacy_shared_expires` = the route-switch date + 14 days (operator decision
       2026-09-27), set in site-config in the same change that switches the route

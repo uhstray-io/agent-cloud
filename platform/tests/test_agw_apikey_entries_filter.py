@@ -101,6 +101,11 @@ def test_a_structure_nested_too_deeply_is_named_not_crashed():
     assert run(text)["problem"] in {"nested too deeply", "not YAML"}
 
 
+def test_a_cyclic_alias_is_named_nested_too_deeply():
+    """`a: &a [*a]` is a list holding itself: valid YAML, an endless walk."""
+    assert run("a: &a [*a]\n") == {"problem": "nested too deeply", "entries": []}
+
+
 def test_a_key_that_json_cannot_carry_is_named_not_crashed():
     out = run("apiKey:\n  keys:\n    - {keyHash: h1, 2026-10-01: dated-key}\n")
     assert out == {"problem": "unreadable structure", "entries": []}

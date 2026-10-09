@@ -654,6 +654,39 @@ def test_gateway_config_refuses_a_config_it_cannot_read_naming_the_file_and_neve
     assert (tmp / "gw" / "config.yaml").read_text() == live and not _calls(tmp, "deploy")
 
 
+def test_a_failure_inside_the_credential_tasks_names_the_task_and_kind_of_error_only(env):
+    """no_log hides a failed result entirely, which made a template error undiagnosable. The
+    rescue shows which task failed and a fixed-vocabulary kind; the message (which can quote
+    config) and the config itself never reach the rescue's output. The failure is forced with
+    a gateway variable that renders through a filter that does not exist."""
+    tmp = env[0]
+    live = _cfg(("workstation", "aaaa1111"))
+    (tmp / "gw" / "config.yaml").write_text(live)
+    # legacy-shared is what makes the comparison read legacy_shared_expires.
+    (tmp / "gw" / "config.yaml.previous").write_text(
+        _cfg(("legacy-shared", "cccc3333"), ("sneaky-name-xyz", "dddd4444")))
+    rc, out = _run(env, mode="gateway-config", gateway={"legacy_shared_expires": "{{ 1 | no_such_filter_zzz }}"})
+    assert rc != 0, out
+    assert ("'Compare the previous config's enrolments with the live one's (credential-adjacent)' "
+            "failed with a filter plugin error; its output is hidden because it handles key material. "
+            "Nothing was changed.") in out, out
+    _hash_never_printed(out)
+    assert "sneaky-name-xyz" not in out, out
+    assert (tmp / "gw" / "config.yaml").read_text() == live and not _calls(tmp, "deploy")
+
+
+def test_identity_names_of_different_types_are_compared_as_text(env):
+    """A name that is an int in one file and a string in another used to make the sort raise."""
+    tmp = env[0]
+    (tmp / "gw" / "config.yaml").write_text(yaml.safe_dump({"llm": {"policies": {"apiKey": {"keys": [
+        {"keyHash": "sha256:aaaa1111", "metadata": {"name": 7}}]}}}}))
+    (tmp / "gw" / "config.yaml.previous").write_text(yaml.safe_dump({"llm": {"policies": {"apiKey": {"keys": [
+        {"keyHash": "sha256:aaaa1111", "metadata": {"name": 7}},
+        {"keyHash": "sha256:cccc3333", "metadata": {"name": "ghost"}},
+        {"keyHash": "sha256:dddd4444", "metadata": {"name": 9}}]}}}}))
+    _refused(env, "9", "ghost")
+
+
 TEMPLATE = playbook_yaml.REPO / "platform/services/agentgateway/deployment/templates/config.yaml.j2"
 
 
