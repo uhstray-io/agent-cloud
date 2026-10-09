@@ -595,6 +595,12 @@ def test_rollback_health_diagnostic_is_allowlisted_and_fixed_probe_is_gated():
         {"rc": 0, "stdout": "no such file or directory: /private/path", "expected": "missing_file"},
         {"rc": 0, "stdout": "connection refused to 203.0.113.7 header=Bearer secret", "expected": "connection_refused"},
         {"rc": 0, "stdout": "unrecognized startup issue /private/path token=secret", "expected": "other"},
+        {
+            "rc": 0,
+            "stdout": "",
+            "stderr": "failed to parse config /private/path token=secret",
+            "expected": "config_error",
+        },
     ]
     gate_cases = [
         {
@@ -736,9 +742,13 @@ for case in data["action_cases"]:
     action_classes.append(result)
 log_classes = []
 log_counts = []
+failure_outputs = []
 for case in data["log_cases"]:
     variables = {
-        "_journal_rollback_logs": case | {"stdout_lines": case["stdout"].splitlines()},
+        "_journal_rollback_logs": case | {
+            "stdout_lines": case["stdout"].splitlines(),
+            "stderr_lines": case.get("stderr", "").splitlines(),
+        },
     }
     result = Templar(loader=DataLoader(), variables=variables).template(
         trust_as_template(expressions["_journal_rollback_log_class"])
@@ -748,6 +758,14 @@ for case in data["log_cases"]:
         trust_as_template(expressions["_journal_rollback_log_count"])
     )).strip()
     log_counts.append(int(count))
+    failure_message = next(
+        task for task in apply["rescue"]
+        if task.get("name") == "Fail closed after stopping the journal collector"
+    )["ansible.builtin.fail"]["msg"]
+    variables.update({"_journal_rollback_log_class": result, "_journal_rollback_log_count": int(count)})
+    failure_outputs.append(Templar(loader=DataLoader(), variables=variables).template(
+        trust_as_template(failure_message)
+    ))
 gate_results = []
 for case in data["gate_cases"]:
     variables = {
@@ -774,6 +792,7 @@ print(json.dumps({
     "action_classes": action_classes,
     "log_classes": log_classes,
     "log_counts": log_counts,
+    "failure_outputs": failure_outputs,
     "gate_results": gate_results,
     "readiness_results": readiness_results,
     "readiness_argv": readiness_argv,
@@ -839,7 +858,8 @@ print(json.dumps({
     assert rendered["config_classes"] == [case["expected"] for case in config_cases]
     assert rendered["action_classes"] == [case["expected"] for case in action_cases]
     assert rendered["log_classes"] == [case["expected"] for case in log_cases]
-    assert rendered["log_counts"] == [0, 0, 1, 1, 1, 1, 1]
+    assert rendered["log_counts"] == [0, 0, 1, 1, 1, 1, 1, 1]
+    assert "collector logs classification/count=config_error/1" in rendered["failure_outputs"][-1]
     assert rendered["logs"] == ["podman", "logs", "--tail", "80", "o11y-journal-collector"]
     assert rendered["logs_no_log"] is True
     assert not any(

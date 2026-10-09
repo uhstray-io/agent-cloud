@@ -541,20 +541,27 @@
                 'unavailable'
                 if _journal_rollback_logs.rc | default(1) | int != 0
                 else 'empty'
-                if _journal_rollback_logs.stdout | default('', true) | trim | length == 0
+                if (_journal_rollback_logs.stdout | default('', true) | trim | length == 0 and
+                    _journal_rollback_logs.stderr | default('', true) | trim | length == 0)
                 else 'permission_denied'
-                if 'permission denied' in (_journal_rollback_logs.stdout | default('', true) | lower)
+                if ('permission denied' in (_journal_rollback_logs.stdout | default('', true) | lower) or
+                    'permission denied' in (_journal_rollback_logs.stderr | default('', true) | lower))
                 else 'config_error'
                 if ('failed to load config' in (_journal_rollback_logs.stdout | default('', true) | lower) or
+                    'failed to load config' in (_journal_rollback_logs.stderr | default('', true) | lower) or
                     'failed to parse config' in (_journal_rollback_logs.stdout | default('', true) | lower) or
-                    'invalid config' in (_journal_rollback_logs.stdout | default('', true) | lower))
+                    'failed to parse config' in (_journal_rollback_logs.stderr | default('', true) | lower) or
+                    'invalid config' in (_journal_rollback_logs.stdout | default('', true) | lower) or
+                    'invalid config' in (_journal_rollback_logs.stderr | default('', true) | lower))
                 else 'missing_file'
-                if 'no such file or directory' in (_journal_rollback_logs.stdout | default('', true) | lower)
+                if ('no such file or directory' in (_journal_rollback_logs.stdout | default('', true) | lower) or
+                    'no such file or directory' in (_journal_rollback_logs.stderr | default('', true) | lower))
                 else 'connection_refused'
-                if 'connection refused' in (_journal_rollback_logs.stdout | default('', true) | lower)
+                if ('connection refused' in (_journal_rollback_logs.stdout | default('', true) | lower) or
+                    'connection refused' in (_journal_rollback_logs.stderr | default('', true) | lower))
                 else 'other'
               }}
-            _journal_rollback_log_count: "{{ 0 if (_journal_rollback_logs.rc | default(1) | int != 0) else (_journal_rollback_logs.stdout_lines | default([]) | length) }}"
+            _journal_rollback_log_count: "{{ 0 if (_journal_rollback_logs.rc | default(1) | int != 0) else ((_journal_rollback_logs.stdout_lines | default([]) | length) + (_journal_rollback_logs.stderr_lines | default([]) | length)) }}"
 
         - name: Decide whether one fixed readiness probe is safe as diagnostic evidence
           ansible.builtin.set_fact:
