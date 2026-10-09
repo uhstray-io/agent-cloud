@@ -235,6 +235,34 @@ def test_playbook_guards_validation_delivery_and_non_destructive_rollback():
     assert rollback_task["when"] == "not ansible_check_mode"
 
 
+def test_survey_check_mode_skips_container_probe_and_reports_unverified():
+    plays = yaml.safe_load(PLAYBOOK.read_text())
+    survey_play = next(
+        play
+        for play in plays
+        if play.get("name") == "Survey fixed standard journal directory candidates"
+    )
+    survey_command = next(
+        task
+        for task in survey_play["tasks"]
+        if task.get("name") == "Survey rootless journal path and exact-name file readability"
+    )
+    check_mode_result = next(
+        task
+        for task in survey_play["tasks"]
+        if task.get("name") == "Record check-mode survey as unverified without probing the container runtime"
+    )
+
+    assert survey_command["when"] == "not ansible_check_mode"
+    assert "check_mode" not in survey_command
+    assert check_mode_result["when"] == "ansible_check_mode"
+    assert check_mode_result["ansible.builtin.set_fact"]["_journal_directory_survey"] == {
+        "rc": 0,
+        "stdout": '{"result":"check_mode_unverified"}',
+    }
+    assert "check_mode_unverified" in PLAYBOOK.read_text()
+
+
 def test_semaphore_template_is_dev_bound_and_requires_exact_sha():
     templates = yaml.safe_load((ROOT / "platform/semaphore/templates.yml").read_text())["templates"]
     template = next(

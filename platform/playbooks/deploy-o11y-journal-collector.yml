@@ -490,14 +490,21 @@
       register: _journal_directory_survey
       changed_when: false
       failed_when: false
-      check_mode: false
       no_log: true
+      when: not ansible_check_mode
+
+    - name: Record check-mode survey as unverified without probing the container runtime
+      ansible.builtin.set_fact:
+        _journal_directory_survey:
+          rc: 0
+          stdout: '{"result":"check_mode_unverified"}'
+      when: ansible_check_mode
 
     - name: Require a valid sanitized standard-path survey result
       ansible.builtin.assert:
         that:
           - _journal_directory_survey.rc | default(1) == 0
-          - (_journal_directory_survey.stdout | default('{}') | from_json).result in ['/var/log/journal', '/run/log/journal', 'ambiguous', 'none']
+          - (_journal_directory_survey.stdout | default('{}') | from_json).result in ['/var/log/journal', '/run/log/journal', 'ambiguous', 'none', 'check_mode_unverified']
         fail_msg: "The standard journal directory survey failed without exposing journal data."
         quiet: true
 
