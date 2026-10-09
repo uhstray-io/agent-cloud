@@ -2,6 +2,7 @@
 """Survey or narrowly repair the root of the journal collector state volume."""
 
 import json
+import re
 import subprocess
 import sys
 import uuid
@@ -15,6 +16,7 @@ MAX_VOLUMES = 256
 MAX_CONTAINERS = 1024
 MAX_CHILDREN = 32
 MAX_JSON_BYTES = 1_048_576
+_VERSION_RE = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.-]{1,32})?\Z")
 
 
 def _call(argv, timeout=15, run=subprocess.run):
@@ -262,7 +264,135 @@ def _inspect_metadata(path, run=subprocess.run):
     return value
 
 
-def discover(run=subprocess.run):
+def _field_diagnostics(value):
+    fields = {}
+    for name in ("NeedsChown", "NeedsCopyUp"):
+        if not isinstance(value, dict) or name not in value:
+            fields[name] = {"presence": "missing", "type": "missing", "value": "unavailable"}
+            continue
+        item = value[name]
+        if item is None:
+            kind = "null"
+        elif type(item) is bool:
+            kind = "boolean"
+        elif isinstance(item, str):
+            kind = "string"
+        elif isinstance(item, (int, float)):
+            kind = "number"
+        elif isinstance(item, list):
+            kind = "array"
+        elif isinstance(item, dict):
+            kind = "object"
+        else:
+            kind = "other"
+        fields[name] = {
+            "presence": "present",
+            "type": kind,
+            "value": item if type(item) is bool else "unavailable",
+        }
+    return fields
+
+
+def _unverified_fields():
+    return {
+        name: {"presence": "unverified", "type": "unverified", "value": "unavailable"}
+        for name in ("NeedsChown", "NeedsCopyUp")
+    }
+
+
+def _unverified_diagnostics():
+    fields = _unverified_fields()
+    return {
+        "inventory_fields": fields,
+        "named_volume": {
+            "outcome": "unverified",
+            "identity": "unverified",
+            "inventory_identity": "unverified",
+            "fields": fields.copy(),
+        },
+        "podman_version": {"client": "unavailable", "server": "unavailable"},
+    }
+
+
+def _volume_identity(value, name, project):
+    if not isinstance(value, dict):
+        return "unverified"
+    if "Name" in value and value["Name"] != name:
+        return "mismatch"
+    labels = value.get("Labels")
+    if not isinstance(labels, dict) or not isinstance(value.get("Name"), str):
+        return "unverified"
+    if "com.docker.compose.project" in labels and labels["com.docker.compose.project"] != project:
+        return "mismatch"
+    if "com.docker.compose.volume" in labels and labels["com.docker.compose.volume"] != VOLUME_KEY:
+        return "mismatch"
+    if (
+        value["Name"] != name
+        or labels.get("com.docker.compose.project") != project
+    ):
+        return "unverified"
+    return "match"
+
+
+def _named_volume_diagnostics(name, project, inventory_volume, run):
+    result = _call(["podman", "volume", "inspect", name], run=run)
+    value = _json(result)
+    if result is None or result.returncode != 0:
+        return {
+            "outcome": "unavailable", "identity": "unverified",
+            "inventory_identity": "unverified", "fields": _unverified_fields(),
+        }
+    rows = _rows(value)
+    if rows is None:
+        return {
+            "outcome": "malformed", "identity": "unverified",
+            "inventory_identity": "unverified", "fields": _unverified_fields(),
+        }
+    if len(rows) > 1:
+        return {
+            "outcome": "duplicate", "identity": "unverified",
+            "inventory_identity": "unverified", "fields": _unverified_fields(),
+        }
+    if not rows:
+        return {
+            "outcome": "missing", "identity": "unverified",
+            "inventory_identity": "unverified", "fields": _unverified_fields(),
+        }
+
+    row = rows[0]
+    identity = _volume_identity(row, name, project)
+    inventory_identity = _volume_identity(inventory_volume, name, project)
+    if "mismatch" in (identity, inventory_identity):
+        identity_comparison = "mismatch"
+    elif identity == inventory_identity == "match":
+        identity_comparison = "match"
+    else:
+        identity_comparison = "unverified"
+    return {
+        "outcome": "observed",
+        "identity": identity,
+        "inventory_identity": identity_comparison,
+        "fields": _field_diagnostics(row),
+    }
+
+
+def _version_diagnostics(run):
+    result = _call(["podman", "version", "--format", "json"], run=run)
+    value = _json(result)
+    if result is None or result.returncode != 0 or not isinstance(value, dict):
+        return {"client": "unavailable", "server": "unavailable"}
+
+    def version(section):
+        section_value = value.get(section)
+        raw = section_value.get("Version") if isinstance(section_value, dict) else None
+        if isinstance(raw, str) and len(raw) <= 64 and _VERSION_RE.fullmatch(raw):
+            return raw
+        return "unavailable"
+
+    return {"client": version("Client"), "server": version("Server")}
+
+
+def discover(run=subprocess.run, diagnostics=False):
     rootless = _call(["podman", "info", "--format={{.Host.Security.Rootless}}"], run=run)
     if rootless is None or rootless.returncode != 0 or rootless.stdout.strip().lower() != "true":
         return {"status": "not_rootless"}
@@ -336,24 +466,41 @@ def discover(run=subprocess.run):
     ):
         return {"status": "volume_identity_unsupported"}
 
+    survey_diagnostics = None
+    if diagnostics:
+        survey_diagnostics = {
+            "inventory_fields": _field_diagnostics(volume),
+            "named_volume": _named_volume_diagnostics(name, project, volume, run),
+            "podman_version": _version_diagnostics(run),
+        }
+
+    def finish(found):
+        if survey_diagnostics is not None:
+            found["survey_diagnostics"] = survey_diagnostics
+        return found
+
     users = _rows(_json(_call(["podman", "ps", "--all", "--filter", f"volume={name}", "--format", "json"], run=run)))
     if users is None:
-        return {"status": "volume_users_unavailable"}
+        return finish({"status": "volume_users_unavailable"})
     names = _container_names(users)
     if names is None or len(names) > 32 or any(item != COLLECTOR for item in names) or len(names) > 1:
-        return {
+        return finish({
             "status": "volume_shared",
             "volume_use_count": min(len(users), 33),
             "collector_present": COLLECTOR in (names or []),
-        }
+        })
     mount_count = volume.get("MountCount")
     if not isinstance(mount_count, int) or mount_count not in (0, 1) or (not names and mount_count != 0):
-        return {"status": "mount_count_unverified", "volume_use_count": len(names), "collector_present": bool(names)}
+        return finish({
+            "status": "mount_count_unverified",
+            "volume_use_count": len(names),
+            "collector_present": bool(names),
+        })
     if names:
         inspect_collector = ["podman", "inspect", "--type", "container", "--format", "json", COLLECTOR]
         collector = _rows(_json(_call(inspect_collector, run=run)))
         if collector is None or len(collector) != 1:
-            return {"status": "collector_mount_unverified", "volume_use_count": 1, "collector_present": True}
+            return finish({"status": "collector_mount_unverified", "volume_use_count": 1, "collector_present": True})
         mounts = collector[0].get("Mounts")
         exact = (
             [item for item in mounts if isinstance(item, dict) and item.get("Destination") == DATA_PATH]
@@ -366,25 +513,29 @@ def discover(run=subprocess.run):
             or exact[0].get("Source") != mountpoint
             or exact[0].get("RW") is not True
         ):
-            return {"status": "collector_mount_unverified", "volume_use_count": 1, "collector_present": True}
+            return finish({"status": "collector_mount_unverified", "volume_use_count": 1, "collector_present": True})
         config = collector[0].get("Config")
         if not isinstance(config, dict) or config.get("User") != "0:0":
-            return {"status": "collector_identity_unverified", "volume_use_count": 1, "collector_present": True}
+            return finish({"status": "collector_identity_unverified", "volume_use_count": 1, "collector_present": True})
     elif collector_present:
-        return {"status": "collector_mount_unverified", "volume_use_count": 0, "collector_present": True}
+        return finish({"status": "collector_mount_unverified", "volume_use_count": 0, "collector_present": True})
 
     metadata = _inspect_metadata(mountpoint, run=run)
     if metadata is None or metadata.get("status") != "observed":
-        return {"status": "metadata_unavailable", "volume_use_count": len(names), "collector_present": bool(names)}
+        return finish({
+            "status": "metadata_unavailable",
+            "volume_use_count": len(names),
+            "collector_present": bool(names),
+        })
     needs_chown = volume.get("NeedsChown")
     needs_copy_up = volume.get("NeedsCopyUp")
     if type(needs_chown) is not bool or type(needs_copy_up) is not bool:
-        return {
+        return finish({
             "status": "volume_initialization_unverified",
             "volume_use_count": len(names),
             "collector_present": collector_present,
             "metadata": metadata,
-        }
+        })
     found = {
         "status": "volume_initialization_pending" if needs_chown or needs_copy_up else "observed",
         "volume_name": name,
@@ -398,7 +549,7 @@ def discover(run=subprocess.run):
         "name_collision": False,
         "metadata": metadata,
     }
-    return found
+    return finish(found)
 
 
 def _access(metadata, uid=0, gid=0):
@@ -484,8 +635,15 @@ def _summary(found):
     }
 
 
-def survey(discover_fn=discover):
-    return _summary(discover_fn())
+def survey(discover_fn=None):
+    default_discovery = discover_fn is None
+    found = discover(diagnostics=True) if default_discovery else discover_fn()
+    summary = _summary(found)
+    if isinstance(found.get("survey_diagnostics"), dict):
+        summary["survey_diagnostics"] = found["survey_diagnostics"]
+    elif default_discovery:
+        summary["survey_diagnostics"] = _unverified_diagnostics()
+    return summary
 
 
 def _change_root(found, target_uid=0, target_gid=0, run=subprocess.run):
@@ -747,7 +905,11 @@ def main():
     try:
         result = actions[action]() if action in actions else {"status": "refused", "reason": "invalid_action"}
     except Exception:
-        result = {**_summary({"status": "unavailable"}), "reason": "survey_failed"} if action == "survey" else {
+        result = {
+            **_summary({"status": "unavailable"}),
+            "reason": "survey_failed",
+            "survey_diagnostics": _unverified_diagnostics(),
+        } if action == "survey" else {
             "status": "unavailable",
             "reason": "survey_failed",
         }

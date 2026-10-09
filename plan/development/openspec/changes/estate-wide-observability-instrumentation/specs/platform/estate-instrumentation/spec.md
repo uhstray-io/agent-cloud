@@ -42,6 +42,14 @@ The receiver-host journal collector SHALL retain its existing Compose named posi
 - **WHEN** survey, repair, or apply runs in Ansible check mode
 - **THEN** the positions-specific result is `check_mode_unverified`, and the positions helper performs no Podman or filesystem operation
 
+#### Scenario: Initialization schema diagnostics remain survey-only
+- **WHEN** a unique exact positions volume identity has been established during the explicit survey
+- **THEN** the survey may inspect that exact named volume a second time and query Podman client/server versions
+- **AND** it emits only fixed presence/type categories, genuine boolean flag values, bounded named-query and identity categories, and validated bounded version strings
+- **AND** malformed values, failed queries, malformed/duplicate named results, or invalid versions are represented only by fixed categories or `unavailable`; raw values, names, paths, labels, stderr, and exceptions are never emitted
+- **AND** the additional queries do not run for verify, repair, or apply, and their results never alter any gate decision
+- **AND** check mode performs no Podman calls and reports the diagnostic fields as unverified/unavailable
+
 ### Requirement: First collector start is gated by safe positions-volume bootstrap
 The collector SHALL allow first initialization only through its declared Compose `up`. Before start, the positions gate MAY return `bootstrap_allowed` for a missing expected volume only when bounded volume inventory is complete, no expected-name collision exists, and a bounded all-container query proves the journal collector absent, including stopped containers. For an existing volume awaiting initialization, the gate SHALL prove one exact local project volume, zero consumers and mounts, exact boolean initialization flags, and an observed empty root owned by `0:0` with owner read/write/execute access, no group/other write or special bits, no ACL or nested mount, and no metadata ambiguity. A legacy volume-key label may be absent only when the exact expected name and project identity match; a conflicting label SHALL refuse. `bootstrap_allowed` SHALL be accepted only by the pre-apply and immediately-before-start gates; the latter SHALL run outside rollback handling. Post-start verification SHALL require `ready` and the existing live mount/access, health, receiver-preservation, and exact-target Loki checks. Unexpected survey exceptions SHALL return a bounded unavailable summary with fixed reason `survey_failed`; this receipt SHALL NOT be treated as a successful survey.
 

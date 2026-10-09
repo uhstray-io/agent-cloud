@@ -727,6 +727,17 @@ container preservation, and fresh exact-target Loki delivery. Check mode stays
 `check_mode_unverified` and does not mount or mutate the volume. Survey exceptions
 produce a bounded unavailable receipt with fixed reason `survey_failed`.
 
+Dev positions survey 3856 reported `volume_initialization_unverified`, zero
+consumers and entries, root owner mismatch, blocked access, no ACL, a clear
+mount, and safe direct children. The journal source was available, but access
+to the target positions path was denied. The explicit survey adds sanitized
+initialization field presence/type and genuine boolean values, an exact-name
+volume inspection for identity comparison, and bounded Podman client/server
+versions. Invalid values, malformed or duplicate results, and unavailable
+commands appear only as fixed categories; raw Podman output is never reported.
+These diagnostics do not change verify, repair, bootstrap, or apply decisions.
+Check mode reports the diagnostic shape as unverified without querying Podman.
+
 OpenSpec task 1.2 remains unchecked until the reviewed Semaphore run records the
 production runtime and Loki evidence. Unit tests and metadata-only survey results
 do not close that task.
