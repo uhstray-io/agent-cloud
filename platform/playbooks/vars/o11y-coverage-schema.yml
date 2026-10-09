@@ -1,0 +1,83 @@
+# Public declaration contract. Concrete hostnames, endpoints, and network paths
+# are supplied by site-config through estate_coverage_inventory.
+o11y_coverage_schema:
+  version: 1
+  required_target_fields:
+    - target_id
+    - template_references
+    - target_type
+    - lifecycle
+    - owner
+    - runtime
+    - service_identity
+    - environment
+    - signals
+    - collection_method
+    - budget
+    - receipt_reference
+  target_types:
+    - service
+    - agent
+    - vm
+    - guest
+    - runner
+    - network
+    - dgx
+  lifecycle_states:
+    - deployed
+    - planned
+    - retired
+    - excluded
+  signal_names:
+    - logs
+    - metrics
+    - traces
+    - health
+  deployed_target_signal_declarations:
+    - logs
+    - metrics
+    - health
+    - traces
+  signal_fields:
+    - applicable
+    - selector
+    - exception
+    - collection_method
+    - receipt_reference
+    - freshness_seconds
+    - receipt
+  exception_fields:
+    - reason
+    - reference
+    - alternative_or_manual_plan_for_excluded_traces
+  private_fields_site_config_only:
+    - inventory_host
+    - endpoint
+    - network_path
+
+# site-config supplies this object as an inventory group variable.
+# A signal receipt has the same target_id, signal, revisions, reference, and
+# observed_at values emitted by Verify o11y Target Receipt.
+#
+# estate_coverage_inventory:
+#   revision: <site-config commit SHA>
+#   targets:
+#     - target_id: service:example
+#       target_type: service
+#       lifecycle: deployed
+#       owner: platform-team
+#       runtime: podman
+#       service_identity: example
+#       environment: production
+#       inventory_host: <private inventory hostname>
+#       collection_method: alloy
+#       budget: {samples_per_scrape: 1000}
+#       receipt_reference: {logs: semaphore/task/123}
+#       signals:
+#         logs:
+#           applicable: true
+#           selector: '{target_id="service:example"}'
+#           collection_method: alloy
+#           receipt_reference: semaphore/task/123
+#           freshness_seconds: 3600
+#           receipt: {status: verified, target_id: service:example, signal: logs, ...}

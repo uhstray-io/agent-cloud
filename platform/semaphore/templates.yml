@@ -134,6 +134,72 @@ templates:
         required: false
         default_value: "false"
 
+  - name: Verify o11y Coverage Census
+    playbook: platform/playbooks/census-o11y-coverage.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact Dev commit required on the Semaphore controller"
+        type: string
+        required: true
+
+  - name: Verify o11y Target Receipt
+    playbook: platform/playbooks/verify-o11y-service.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: o11y_verification_mode
+        title: "Verification mode"
+        description: "Use the strict per-target receipt path"
+        type: string
+        required: true
+        default_value: "strict"
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact Dev commit required on the Semaphore controller"
+        type: string
+        required: true
+      - name: expected_inventory_revision
+        title: "Private inventory revision"
+        description: "Exact revision declared by site-config estate_coverage_inventory"
+        type: string
+        required: true
+      - name: expected_target_id
+        title: "Stable target ID"
+        description: "Declared target identifier; no host or endpoint value"
+        type: string
+        required: true
+      - name: expected_signal
+        title: "Signal"
+        description: "One declared signal to verify"
+        type: enum
+        required: true
+        values:
+          - { name: "Logs", value: "logs" }
+          - { name: "Metrics", value: "metrics" }
+          - { name: "Health", value: "health" }
+          - { name: "Traces", value: "traces" }
+      - name: signal_selector
+        title: "Exact signal selector"
+        description: "Selector declared in private inventory and containing the bounded target_id label"
+        type: string
+        required: true
+      - name: freshness_seconds
+        title: "Maximum signal age in seconds"
+        description: "Bounded freshness limit (60 to 86400 seconds)"
+        type: integer
+        required: true
+      - name: observation_window_seconds
+        title: "Observation window in seconds"
+        description: "Bounded query interval (60 to 3600 seconds)"
+        type: integer
+        required: true
+      - name: receipt_reference
+        title: "Expected receipt reference"
+        description: "Per-target, per-signal receipt reference from private inventory"
+        type: string
+        required: true
+
   # Read-only first-stage receipt for agentgateway task 5.7. Request-level marker
   # correlation is intentionally not inferred from config facts and remains an
   # explicit follow-up gate.

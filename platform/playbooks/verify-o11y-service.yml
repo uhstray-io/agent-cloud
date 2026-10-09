@@ -12,6 +12,26 @@
   connection: local
   gather_facts: false
   tasks:
+    - name: Validate the verification mode
+      ansible.builtin.assert:
+        that: o11y_verification_mode | default('legacy') in ['legacy', 'strict']
+        fail_msg: "o11y_verification_mode must be legacy or strict."
+
+    - name: Validate strict receipt inputs
+      ansible.builtin.assert:
+        that:
+          - expected_repository_sha is defined and expected_repository_sha is match('^[0-9a-f]{40}$')
+          - expected_inventory_revision is defined and expected_inventory_revision is match('^[0-9a-f]{7,64}$')
+          - groups.get('o11y_svc', []) | length == 1
+          - expected_target_id is defined and expected_target_id is match('^(service|agent|vm|guest|runner|network|dgx):[a-z][a-z0-9_-]{1,63}$')
+          - expected_signal is defined and expected_signal in ['logs', 'metrics', 'health', 'traces']
+          - signal_selector is defined and signal_selector | length <= 512
+          - freshness_seconds is defined and freshness_seconds | int >= 60 and freshness_seconds | int <= 86400
+          - observation_window_seconds is defined and observation_window_seconds | int >= 60 and observation_window_seconds | int <= 3600 and observation_window_seconds | int <= freshness_seconds | int
+          - receipt_reference is defined and receipt_reference is match('^semaphore/task/[1-9][0-9]*$')
+        fail_msg: "Strict receipt requires reviewed repository and inventory revisions, one exact target/signal selector, bounded freshness, and a receipt reference."
+      when: o11y_verification_mode | default('legacy') == 'strict'
+
     - name: Read the candidate checkout revision when required
       ansible.builtin.command:
         argv: [git, rev-parse, HEAD]
@@ -43,6 +63,7 @@
           - not (emit_agentgateway_canary | default('false') | bool) or expect_traces | default('false') | bool
           - not (emit_agentgateway_canary | default('false') | bool) or groups.get('agentgateway_svc', []) | length == 1
         fail_msg: "Declare a lowercase service and at least one expected signal; the canary requires exactly one agentgateway_svc host and Tempo traces."
+      when: o11y_verification_mode | default('legacy') == 'legacy'
 
 - name: Emit an optional gateway trace canary
   hosts: agentgateway_svc
@@ -56,7 +77,7 @@
       register: _canary_started
       changed_when: false
       check_mode: false
-      when: emit_agentgateway_canary | default('false') | bool
+      when: (o11y_verification_mode | default('legacy') == 'legacy') and (emit_agentgateway_canary | default('false') | bool)
 
     - name: Send anonymous requests directly to the gateway listener
       ansible.builtin.uri:
@@ -71,7 +92,7 @@
         label: "request {{ item + 1 }}/100"
       changed_when: false
       check_mode: false
-      when: emit_agentgateway_canary | default('false') | bool
+      when: (o11y_verification_mode | default('legacy') == 'legacy') and (emit_agentgateway_canary | default('false') | bool)
 
 - name: Verify the named service is collected
   hosts: o11y_svc
@@ -93,7 +114,7 @@
       register: _service_logs
       changed_when: false
       check_mode: false
-      when: expect_logs | default('true') | bool
+      when: (o11y_verification_mode | default('legacy') == 'legacy') and (expect_logs | default('true') | bool)
 
     - name: Require a recent service log line
       ansible.builtin.assert:
@@ -103,11 +124,11 @@
         fail_msg: "Loki has no {{ expected_service }} log in the last 15 minutes; emit a fresh service log and check Alloy collection."
       vars:
         _logs_json: "{{ _service_logs.stdout | from_json }}"
-      when: expect_logs | default('true') | bool
+      when: (o11y_verification_mode | default('legacy') == 'legacy') and (expect_logs | default('true') | bool)
 
     - name: Verify the service's Prometheus scrape results
       ansible.builtin.include_tasks: tasks/verify-o11y-metrics.yml
-      when: expect_metrics | default('true') | bool
+      when: (o11y_verification_mode | default('legacy') == 'legacy') and (expect_metrics | default('true') | bool)
 
     - name: Search recent Tempo traces for the service
       ansible.builtin.command:
@@ -127,7 +148,7 @@
       delay: 5
       until: _service_traces.rc == 0 and (_service_traces.stdout | from_json).traces | default([]) | length > 0
       ignore_errors: true
-      when: expect_traces | default('false') | bool
+      when: (o11y_verification_mode | default('legacy') == 'legacy') and (expect_traces | default('false') | bool)
 
     - name: Require a recent trace returned by Tempo
       ansible.builtin.assert:
@@ -135,7 +156,7 @@
           - _service_traces.rc == 0
           - (_service_traces.stdout | default('{}') | from_json).traces | default([]) | length > 0
         fail_msg: "Tempo has no {{ expected_service }} trace in the requested window; check source sampling, Alloy ingress, and Tempo intake."
-      when: expect_traces | default('false') | bool
+      when: (o11y_verification_mode | default('legacy') == 'legacy') and (expect_traces | default('false') | bool)
 
     - name: Report verified signals
       ansible.builtin.debug:
@@ -144,3 +165,53 @@
           {{ 'recent Loki log' if (expect_logs | default('true') | bool) else 'logs not requested' }},
           {{ 'healthy Prometheus scrape' if (expect_metrics | default('true') | bool) else 'metrics not requested' }},
           {{ 'recent Tempo trace' if (expect_traces | default('false') | bool) else 'traces not requested' }}.
+      when: o11y_verification_mode | default('legacy') == 'legacy'
+
+- name: Verify one exact target signal receipt
+  hosts: o11y_svc
+  gather_facts: false
+  vars:
+    _engine: "{{ container_engine | default('podman') }}"
+    _coverage_inventory: "{{ estate_coverage_inventory | default({}) }}"
+  tasks:
+    - name: Require the exact inventory revision and unique target
+      ansible.builtin.assert:
+        that:
+          - _coverage_inventory.get('revision', '') == expected_inventory_revision
+          - (_coverage_inventory.get('targets', []) | selectattr('target_id', 'equalto', expected_target_id) | list | length) == 1
+        fail_msg: "unverifiable_target: target declaration is absent, duplicated, or uses a different private inventory revision."
+      when: o11y_verification_mode | default('legacy') == 'strict'
+
+    - name: Read the declared target signal contract
+      ansible.builtin.set_fact:
+        _coverage_target: "{{ _coverage_inventory.targets | selectattr('target_id', 'equalto', expected_target_id) | first }}"
+      no_log: true
+      when: o11y_verification_mode | default('legacy') == 'strict'
+
+    - name: Require the declared signal
+      ansible.builtin.assert:
+        that: expected_signal in _coverage_target.signals
+        fail_msg: "unverifiable_target: this signal is not declared for the exact target."
+      when: o11y_verification_mode | default('legacy') == 'strict'
+
+    - name: Require the exact declared selector and receipt reference
+      ansible.builtin.assert:
+        that:
+          - _coverage_target.signals[expected_signal].applicable | bool
+          - _coverage_target.signals[expected_signal].selector == signal_selector
+          - _coverage_target.signals[expected_signal].receipt_reference == receipt_reference
+        fail_msg: "unverifiable_target: this signal selector or receipt reference is not declared for the exact target."
+      when: o11y_verification_mode | default('legacy') == 'strict'
+
+    - name: Refuse selectors without the bounded target identity label
+      ansible.builtin.assert:
+        that:
+          - expected_signal == 'traces' or ('target_id="' ~ expected_target_id ~ '"') in signal_selector
+          - expected_signal != 'traces' or ('resource.target_id = "' ~ expected_target_id ~ '"') in signal_selector
+          - expected_signal != 'health' or signal_selector is not match('^\\s*up(?:\\s|\\{|\\[|$)')
+        fail_msg: "unverifiable_target: current service-only labels cannot prove this exact target; declare and emit the bounded target_id label first."
+      when: o11y_verification_mode | default('legacy') == 'strict'
+
+    - name: Check the exact signal receipt
+      ansible.builtin.include_tasks: tasks/o11y-coverage-target-receipt.yml
+      when: o11y_verification_mode | default('legacy') == 'strict'

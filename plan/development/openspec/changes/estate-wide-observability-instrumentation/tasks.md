@@ -16,10 +16,10 @@
 
 ## 2. Declare and reconcile estate coverage
 
-- [ ] 2.1 Implement the coverage declaration schema and read-only report using existing service/agent definitions plus private inventory; include lifecycle, owner, runtime, signal applicability, method, identity, budget, and receipt fields.
-- [ ] 2.2 Generate the candidate set from every current platform service and agent directory, including empty scaffolds; reconcile it and declared Proxmox/guest/runner/network/DGX targets against Semaphore templates and live readback. Record deployed, planned, retired, and excluded states without guessing from a directory.
-- [ ] 2.3 Extend onboarding and the shared o11y verifier so a stale or missing exact-target signal fails with its target name and a receipt; keep private endpoint values in site-config.
-- [ ] 2.4 Validation gate — exercise a missing deployed signal and a scaffolded directory, proving **Scenario: Deployed target lacks a signal** and **Scenario: Scaffold is not counted as deployed**.
+- [x] 2.1 Implement the public coverage declaration schema and read-only report using source candidates plus private inventory fields for lifecycle, owner, runtime, four-signal applicability, method, identity, budget, and per-signal receipt references. Private hosts/endpoints/network paths are omitted from the report.
+- [ ] 2.2 Generate the candidate set from every immediate platform service and agent directory, including scaffolds; reconcile private declared infrastructure targets against named Semaphore templates and exact-revision, per-signal live receipts. Missing declarations/receipts, duplicate identities, undeclared signals, and missing templates stay unverified or incomplete. The public census implementation and fixture tests are complete; its empty-inventory dry run reported 31 source candidates, all unclassified. Dev-bound private inventory/host reconciliation remains open.
+- [x] 2.3 Extend onboarding and the shared o11y verifier with opt-in strict exact-target receipts while preserving legacy inputs and shared metrics includes. Strict receipts bind target, signal, reviewed repository SHA, inventory revision, selector, freshness, observation window, and receipt reference; ambiguous service-only labels and generic `up` health checks return `unverifiable_target`.
+- [x] 2.4 Public fixture validation gate — focused tests exercise a missing signal on a declared deployed target and a scaffolded directory, proving they remain incomplete/unclassified; tests also cover sibling-signal isolation, stale receipts, duplicate identity, mismatched inventory revision, missing templates, and private endpoint redaction. Live Dev-bound private inventory validation remains open under 2.2.
 
 ## 3. Bound collection and pilot the reusable methods
 
