@@ -49,6 +49,7 @@ test_branch_absent_means_main if {
 	agentcloud.allow with input as inp
 		with data.agentcloud.catalog.workflow_steps["access-harden"].reviewed as true
 	d := agentcloud.decision with input as inp
+		with data.agentcloud.catalog.workflow_steps["access-harden"].reviewed as false
 	not d.allowed
 	not contains(d.reason, _branch_reason)
 	contains(d.reason, "an unreviewed step cannot run from main")

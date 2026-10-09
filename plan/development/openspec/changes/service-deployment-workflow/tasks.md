@@ -287,6 +287,13 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
         `init_rc` 0, `plan_rc` 0, `show_rc` 0, `plan_changes` 0 and an edge-dns `pass` with
         `check_mode` true (after #454). edge-dns passes D10 with no pending proof. No stamp, for
         the same `main` hazard; service-deploy is still not re-reviewed, so 7.1 stays open.
+      - 2026-10-08: seventeen passing steps stamped `reviewed` (`d10-review.md`, "Stamped —
+        2026-10-08"), in the registry and in OPA `data.json`. The hazard is gone: `dev` was
+        promoted to `main` on 2026-10-07 (`origin/main` c81ada2a), and at `origin/dev` a2224685
+        every executor playbook is byte-identical on `main` and `dev`, includes
+        `tasks/emit-step-result.yml` on `main`, and none of its included tasks differs. Not
+        stamped: service-deploy (still not re-reviewed), and the reasoning and planned steps.
+        7.1 stays open for service-deploy. OPA must be redeployed to pick up `data.json`.
 - [x] 7.2 `provision-vm.yml` sets `onboot`; restart-policy check beside `enable-linger`.
       2026-09-22: onboot with per-host opt-out; `verify-service-persistence.yml` (step
       systemd-enablement) passes on local tududi, normal and check mode (tasks 977, 978)
