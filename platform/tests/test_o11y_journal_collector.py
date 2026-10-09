@@ -1198,7 +1198,6 @@ def test_playbook_guards_validation_delivery_and_non_destructive_rollback():
     assert source.index("Verify positions volume identity and access before apply") < apply
     assert "check_mode_unverified" in source
     assert "container_inventory_unavailable" in source
-    assert "no_log: true" in source[source.index("Verify positions volume identity and access before apply"):apply]
     apply_play = next(play for play in plays if play.get("hosts") == "o11y_svc")
     pre_apply_gate = next(
         task for task in apply_play["tasks"]
@@ -1228,7 +1227,7 @@ def test_playbook_guards_validation_delivery_and_non_destructive_rollback():
         task for task in survey_play["tasks"]
         if task.get("name") == "Survey existing positions volume metadata without mounting it"
     )
-    assert positions_survey["no_log"] is True
+    assert positions_survey.get("no_log") is not True
     assert positions_survey["when"] == "not ansible_check_mode"
     assert not any("volume create" in str(task) or "chown" in str(task) for task in survey_play["tasks"])
 
@@ -1240,7 +1239,7 @@ def test_playbook_guards_validation_delivery_and_non_destructive_rollback():
         task for task in repair_play["tasks"]
         if task.get("name") == "Run the separately selected guarded positions repair"
     )
-    assert repair_task["no_log"] is True
+    assert repair_task.get("no_log") is not True
     assert repair_task["when"] == "not ansible_check_mode"
     assert repair_task["ansible.builtin.command"]["argv"] == ["python3", "-", "repair-positions"]
 
@@ -1260,7 +1259,7 @@ def test_playbook_guards_validation_delivery_and_non_destructive_rollback():
         "Require positions volume remains safe to mount"
     )
     assert pre_mount["register"] == "_journal_positions_pre_mount"
-    assert pre_mount["no_log"] is True
+    assert pre_mount.get("no_log") is not True
     assert apply_task_names.index("Start only the journal collector service") < apply_task_names.index(
         "Verify the live collector positions mount and access"
     ) < apply_task_names.index("Read the Podman rootless UID mapping") < apply_task_names.index(
@@ -1270,6 +1269,17 @@ def test_playbook_guards_validation_delivery_and_non_destructive_rollback():
         task for task in apply_block["block"]
         if task.get("name") == "Verify effective write and rename access in the live collector namespace"
     )
+    live_mount = next(
+        task for task in apply_block["block"]
+        if task.get("name") == "Verify the live collector positions mount and access"
+    )
+    host_uid_map = next(
+        task for task in apply_block["block"]
+        if task.get("name") == "Read the Podman rootless UID mapping"
+    )
+    assert live_mount.get("no_log") is not True
+    assert host_uid_map["no_log"] is True
+    assert live_write_probe["no_log"] is True
     live_probe_script = " ".join(live_write_probe["ansible.builtin.command"]["argv"])
     assert "uid_map" in live_probe_script and "mv -n" in live_probe_script and "printf x" in live_probe_script
     assert "_journal_collector_uid_map.stdout | trim == _journal_host_uid_map.stdout | trim" in source
@@ -1537,6 +1547,62 @@ def test_playbook_guards_validation_delivery_and_non_destructive_rollback():
         "_journal_rollback_volume_name.stdout | default('') | trim | length > 0",
         "_journal_rollback_volume_readback.rc | default(1) == 0",
     ]
+
+
+def test_positions_visibility_is_limited_to_bounded_helper_and_uid_probe_results():
+    plays = yaml.safe_load(PLAYBOOK.read_text())
+
+    def walk(tasks):
+        for task in tasks or []:
+            yield task
+            for key in ("block", "rescue", "always"):
+                yield from walk(task.get(key))
+
+    tasks = [task for play in plays for task in walk(play.get("tasks"))]
+    by_name = {task.get("name"): task for task in tasks}
+    visible = {
+        "Verify positions volume identity and access before apply",
+        "Recheck positions volume initialization immediately before mount",
+        "Verify the live collector positions mount and access",
+        "Survey existing positions volume metadata without mounting it",
+        "Run the separately selected guarded positions repair",
+    }
+    protected = {
+        "Read the Podman rootless UID mapping",
+        "Verify effective write and rename access in the live collector namespace",
+        "Require a recent exact-name entry in the selected journal",
+        "Require the pinned rootless Alloy process to read the journal bind",
+        "Survey rootless journal path and exact-name file readability",
+        "Render a candidate journal config with the private receiver endpoint",
+        "Validate the candidate config with the pinned Alloy image before any collector recreation",
+        "Read the validated candidate config digest",
+        "Promote the validated candidate config for the collector",
+    }
+
+    assert visible | protected <= by_name.keys()
+    assert all(by_name[name].get("no_log") is not True for name in visible)
+    assert all(by_name[name].get("no_log") is True for name in protected)
+    helper_actions = {
+        "Verify positions volume identity and access before apply": "verify",
+        "Recheck positions volume initialization immediately before mount": "verify",
+        "Verify the live collector positions mount and access": "verify",
+        "Survey existing positions volume metadata without mounting it": "survey",
+        "Run the separately selected guarded positions repair": "repair-positions",
+    }
+    for name, action in helper_actions.items():
+        assert by_name[name]["ansible.builtin.command"]["argv"] == ["python3", "-", action]
+
+    found = _positions_found(_positions_state(owner=(0, 0)))
+    survey = POSITIONS.survey(lambda: found)
+    verified = POSITIONS.verify(lambda: found)
+    repair = POSITIONS.repair_positions(lambda: found)
+    assert set(survey) == {
+        "status", "volume_use_count", "collector_present", "entry_count", "root_owner",
+        "root_mode_access", "acl", "mount", "children",
+    }
+    assert set(verified) == set(survey) | {"reason"}
+    assert repair == {"status": "already_correct", "reason": "owner_matches"}
+    assert not any(value in str((survey, verified, repair)) for value in ("mountpoint", "positions.yml", "/private/"))
 
 
 def test_survey_check_mode_skips_container_probe_and_reports_unverified():

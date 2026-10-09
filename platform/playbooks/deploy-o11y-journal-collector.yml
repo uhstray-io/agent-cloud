@@ -279,7 +279,6 @@
       changed_when: false
       failed_when: false
       check_mode: false
-      no_log: true
       when: not ansible_check_mode
 
     - name: Record the positions apply gate as unverified in check mode
@@ -398,7 +397,6 @@
       changed_when: false
       failed_when: false
       check_mode: false
-      no_log: true
       when: not ansible_check_mode
 
     - name: Require positions volume remains safe to mount
@@ -460,7 +458,6 @@
           changed_when: false
           failed_when: false
           check_mode: false
-          no_log: true
 
         - name: Read the Podman rootless UID mapping
           ansible.builtin.command:
@@ -936,7 +933,6 @@
       register: _journal_positions_survey
       changed_when: false
       failed_when: false
-      no_log: true
       when: not ansible_check_mode
 
     - name: Record positions-volume survey as unverified in check mode
@@ -1023,7 +1019,6 @@
       register: _journal_positions_repair
       changed_when: (_journal_positions_repair.stdout | default('{}') | from_json).status == 'repaired'
       failed_when: false
-      no_log: true
       when: not ansible_check_mode
 
     - name: Record positions repair as unverified in check mode
