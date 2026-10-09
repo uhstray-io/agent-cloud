@@ -52,6 +52,7 @@ and why.
 | 1.20 | Assumed Semaphore injected a task-id environment variable; the first production drill printed a blank receipt ID | Unverified runtime assumption | 1 | Test (o11y receipt checks) |
 | 1.21 | Said the live alert readback proved the inference alert groups; it filtered rule uids to `o11y_` and never read them, and no dashboard check covered the inference boards | Unverified claim | 1 | Test (`test_service_o11y.bats` readback mirror) |
 | 1.22 | Stated the runner's ansible-core version twice (2.16 from a relayed comment, then 2.20.8 from a compose default); the live server runs v2.17.31, whose image ships 2.18.15 | Unverified claim | 1 | Convention (version-report template + pinned CI proposed) |
+| 1.23 | Named an incident's cause (a config the pinned image would reject) without reading the failing task's own stderr, which printed the real one: the rollback recreated the gateway without the TLS compose overlay | Unverified claim | 1 | Convention |
 | 2.1 | Test compiled a pattern as raw file text, not as the runtime decodes it | False-green test | 1 | Test |
 | 2.2 | Test pinned the vulnerable form of a security check in place | False-green test | 1 | Test |
 | 2.3 | Negative assertion aborted under `set -e` because a no-match grep exits 1 | False-green test | 1 | Convention |
@@ -912,6 +913,38 @@ itself, which 1.14 did not mention, so it did not fire.
 **Enforced by.** Convention. Proposed (not built): a read-only Semaphore template that reports the
 runner's `ansible_version`, and a CI job pinned to that version (CI installs an unpinned
 ansible-core, 2.19 at the time, while the runner image ships 2.18).
+
+### 1.23 Incident cause asserted without reading the failing task's own diagnostics
+
+**Occurrences: 1** — 2026-10-09
+
+**What happened.** The `gateway-config` rollback failed twice on production (Semaphore tasks 3844 and
+3904): the gateway was recreated, readiness never answered, and each failed task's own stderr printed
+`Error: failed to watch configured file paths: /certs/agw-server/current/cert.pem ... No path was found`.
+The failure was attributed, without reading that output, to the previous config being something the
+pinned image would reject, and a fix was built on that (PR #517: validate the previous config first,
+restore the replaced one on a failed readiness). The real cause: the production gateway gets `./certs`
+only from the `compose.tls.yml` overlay, which `deploy-agentgateway.yml` selects through the
+`COMPOSE_OVERLAYS` environment variable it passes to `deploy.sh`; both of the rollback's `deploy.sh`
+calls spelled the environment out themselves and left it off, so the rollback recreated the gateway
+with no certificate files and it exited at start. The restore failed for the same reason.
+
+**Root cause.** A cause was named from the shape of the failure ("readiness did not answer after a
+config change") instead of from the failing task's own error text, which was available in the task
+output. The rollback's environment was also a hand-copied subset of the deploy's, so nothing tied the
+two together.
+
+**The rule.** Before naming a cause for a failed run, read the failing task's own output (stderr, the
+log tail the script prints) and quote the line that establishes it. A hypothesis that the output does
+not contain is labelled `unverified:` and is not built on. The environment a script runs under is
+defined once and shared by every caller (`platform/playbooks/vars/agw-deploy-env.yml`), never copied.
+
+**Enforced by.** For the environment half: `platform/tests/test_agw_deploy_env.py` (every task in a
+gateway play that runs `deploy.sh` must set `environment` to exactly `{{ _agw_deploy_env }}`, parsed
+from the YAML) and `platform/tests/test_rollback_inference_route.py` (both rollback recreates run under
+the deploy's environment, `compose.tls.yml` included). Mutation-checked: dropping `COMPOSE_OVERLAYS`
+from the shared mapping, or inlining the environment on a rollback task, fails them. The reading habit
+(read the failing output before naming a cause) is Convention.
 
 ## 2. Tests that would have passed for the wrong reason
 
@@ -2245,6 +2278,13 @@ gateway that is not ready on the previous config gets the replaced config back a
 saying so; a restore that is not ready either fails naming Deploy agentgateway; a replaced config
 holding a raw key is never kept. Mutation-checked: skipping the validation fails the first set,
 skipping the restore fails the second, and treating a raw-key copy as restorable fails the last.
+
+**Correction — 2026-10-09.** The cause of tasks 3844 and 3904 is now established, and it is not the one
+this entry's root cause names: the rollback's `deploy.sh` calls omitted `COMPOSE_OVERLAYS`, so the
+gateway was recreated without `compose.tls.yml` and its `./certs` mount and exited with "failed to
+watch configured file paths: /certs/agw-server/current/cert.pem" (see 1.23). Validating the previous
+config first and restoring the replaced one are kept as defence, but neither addressed this failure:
+the previous config was not the problem, and the restore failed the same way.
 
 ## 4. Data handling
 

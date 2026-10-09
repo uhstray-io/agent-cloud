@@ -1,0 +1,28 @@
+---
+# agw-deploy-env.yml — THE single definition of the environment agentgateway's deploy.sh runs
+# under, as the `_agw_deploy_env` mapping.
+#
+# Every task that runs the gateway's deploy.sh takes `environment: "{{ _agw_deploy_env }}"`, so
+# the callers cannot drift apart: the deploy (--pull-only and --no-pull), the inference-route
+# rollback (put-back and restore) and the runtime verify (--verify-only). A caller that spelled
+# the environment out itself once left COMPOSE_OVERLAYS off, so the rollback recreated the
+# gateway without compose.tls.yml: no ./certs mount, and the gateway exited with "failed to
+# watch configured file paths: /certs/agw-server/current/cert.pem" (Semaphore tasks 3844, 3904).
+# platform/tests/test_agw_deploy_env.py asserts every such task uses this mapping.
+#
+# Load it with `vars_files: [vars/agw-deploy-env.yml]` on the play. Values are templated when
+# used, from the host's inventory (container_engine, local_mode, local_compose_cmd,
+# agw_listener_tls).
+
+_agw_deploy_env:
+  CONTAINER_ENGINE: "{{ container_engine | default('podman') }}"
+  LOCAL_MODE: "{{ 'true' if (local_mode | default(false) | bool) else '' }}"
+  # Force the compose provider on the Mac-direct genesis path; empty on the
+  # Semaphore path (detect_runtime derives it). NOT default(omit) — omit
+  # leaks its placeholder into environment (rc 127).
+  COMPOSE_CMD: "{{ local_compose_cmd | default('') }}"
+  # Listener TLS outside local-dev: mount ./certs and run under userns keep-id
+  # (compose.tls.yml). Local-dev's overlay already mounts ./certs.
+  COMPOSE_OVERLAYS: >-
+    {{ 'compose.tls.yml' if ((agw_listener_tls | default(false) | bool)
+       and not (local_mode | default(false) | bool)) else '' }}

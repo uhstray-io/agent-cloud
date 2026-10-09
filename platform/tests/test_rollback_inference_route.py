@@ -124,6 +124,7 @@ else:
 DEPLOY = """#!/usr/bin/env bash
 echo deploy >> "$STUB_DIR/calls"
 head -n1 "$STUB_DIR/gw/config.yaml" >> "$STUB_DIR/deploy_configs"
+echo "LOCAL_MODE=$LOCAL_MODE COMPOSE_CMD=$COMPOSE_CMD COMPOSE_OVERLAYS=$COMPOSE_OVERLAYS" >> "$STUB_DIR/deploy_env"
 python3 - <<'PY'
 import json, os, re, sys
 from pathlib import Path
@@ -541,6 +542,12 @@ def _deploy_configs(tmp):
     return path.read_text().splitlines() if path.exists() else []
 
 
+def _deploy_envs(tmp):
+    """The deploy.sh environment (the variables the deploy sets) at each run, in order."""
+    path = tmp / "deploy_env"
+    return path.read_text().splitlines() if path.exists() else []
+
+
 def _no_kept_copy(tmp):
     assert not (tmp / "gw" / "config.yaml.rollback-from").exists()
 
@@ -592,6 +599,20 @@ def test_a_gateway_that_is_not_ready_on_the_previous_config_gets_the_replaced_on
     assert (tmp / "gw" / "config.yaml.previous").read_text() == "config: previous BROKEN\n"
     _no_kept_copy(tmp)
     assert not _calls(tmp, "logs")
+
+
+@pytest.mark.parametrize(("tls", "overlay"), [(True, "compose.tls.yml"), (False, "")])
+def test_both_rollback_recreates_run_deploy_sh_under_the_deploys_environment(env, tls, overlay):
+    """With listener TLS the deploy selects compose.tls.yml, which mounts ./certs; a recreate
+    without it leaves the gateway with no certificate files and it exits at start (tasks 3844
+    and 3904). The put-back and the restore both take the deploy's environment."""
+    tmp = env[0]
+    (tmp / "gw" / "config.yaml.previous").write_text("config: previous BROKEN\n")
+    rc, out = _run(env, gateway={"agw_listener_tls": tls})
+    assert rc != 0 and "was restored and is serving" in out, out
+    assert _deploy_configs(tmp) == ["config: previous BROKEN", "config: current"]
+    expected = f"LOCAL_MODE= COMPOSE_CMD= COMPOSE_OVERLAYS={overlay}"
+    assert _deploy_envs(tmp) == [expected, expected]
 
 
 def test_a_restore_that_does_not_become_ready_fails_naming_the_deploy_playbook(env):
