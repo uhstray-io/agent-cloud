@@ -574,16 +574,20 @@
                     ),
                     (
                         "environment-reference-error",
-                        r"missing environment variable|environment variable.{0,80}(?:not found|not set|undefined|missing)|"
-                        r"(?:not found|not set|undefined).{0,80}environment variable|"
-                        r"error looking key.{0,80} up: environment variable not found",
+                        r"\bmissing environment variable\b|"
+                        r"\benvironment variable(?:\s+['\"`]?[a-z_][\w.$/-]*['\"`]?)?\s+"
+                        r"(?:is\s+)?(?:not found|not set|undefined|missing)\b|"
+                        r"\b(?:not found|not set|undefined|missing) environment variable\b|"
+                        r"\berror looking key\b[^;\r\n.!?]*?\bup: environment variable not found\b",
                     ),
                     (
                         "resource-certificate-load-error",
                         r"(?:failed|unable|cannot|could not) (?:to )?(?:load|open|read) "
-                        r"(?:the )?(?:resource|certificate|cert|key|file|trust|ca)|"
-                        r"(?:certificate|cert file|private key|trust bundle).{0,80}"
-                        r"(?:load|read|parse|not found|missing|invalid)|no such file or directory",
+                        r"(?:the )?(?:resource|certificate|cert|key|file|trust|ca)\b|"
+                        r"(?:failed|unable|cannot|could not) (?:to )?parse "
+                        r"(?:the )?(?:resource|certificate|cert|private key|trust bundle|ca)\b|"
+                        r"\b(?:certificate|cert file|private key|trust bundle) "
+                        r"(?:load|read|parse) (?:failed|error)\b",
                     ),
                     ("file-mount-permission-error", r"permission denied|operation not permitted|access denied|read-only file system"),
                     ("cli-argument-error", r"unknown (?:flag|option)|unrecognized (?:flag|option)|flag provided but not defined|unexpected argument|requires an argument|usage:"),
@@ -591,7 +595,7 @@
                     (
                         "config-schema-error",
                         r"unknown field|unknown key|failed to parse (?:yaml|configuration|config)|"
-                        r"parse error|schema validation|invalid (?:yaml|configuration|config)",
+                        r"schema validation|invalid (?:yaml|configuration|config)",
                     ),
                 )
                 if rc == 125:
@@ -605,7 +609,19 @@
                 elif rc == 0:
                     category = "accepted"
                 else:
-                    category = next((name for name, pattern in categories if re.search(pattern, output)), None)
+                    clauses = tuple(
+                        clause
+                        for clause in re.split(r"[;\r\n]+|(?<=[.!?])\s+", output)
+                        if clause
+                    )
+                    category = next(
+                        (
+                            name
+                            for name, pattern in categories
+                            if any(re.search(pattern, clause) for clause in clauses)
+                        ),
+                        None,
+                    )
                     if category is None:
                         category = {
                             1: "validator-nonzero-exit-1",
