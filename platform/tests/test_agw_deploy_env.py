@@ -10,10 +10,12 @@ file. The behavioural half is in test_rollback_inference_route.py (the recorded 
 both rollback recreates).
 
 The structural guard cannot see a caller in an included task file, in a play whose `hosts:` is a
-variable, or one that uses `ansible.builtin.script`. The text backstop covers them: every `*.yml`
-under platform/playbooks (tasks/ and vars/ included) that runs a deploy.sh and is recognisably the
-gateway's is counted, and the (file, count) set must equal KNOWN, so a new caller anywhere fails
-until it is added to KNOWN, where the structural check then covers it.
+variable, or one that uses `ansible.builtin.script`. The text backstop covers them: in every
+`*.yml` under platform/playbooks (tasks/ and vars/ included) that is recognisably the gateway's,
+each non-comment line that names a deploy.sh to run is counted (the name preceded by whitespace, a
+slash, a quote, a bracket or a comma; lines keyed `name:` or `msg:` only describe it), and the
+(file, count) set must equal KNOWN, so a new caller anywhere fails until it is added to KNOWN,
+where the structural check then covers it.
 """
 
 import copy
@@ -39,8 +41,11 @@ KNOWN = {
 
 
 PLAYBOOKS = REPO / "platform/playbooks"
-# A line that RUNS a deploy.sh (not one that names it in a task title or a comment).
-RUNS = re.compile(r"(?:\b(?:bash|sh|source|exec)[ ,\]]+|^\s*-?\s*|script:\s*)(?:\./)?(?:\S*/)?deploy\.sh\b")
+# A line that names a deploy.sh as something to run: the name preceded by whitespace, a slash, a
+# quote, a bracket or a comma (`bash deploy.sh`, `./deploy.sh`, `"{{ d }}/deploy.sh"`, an argv
+# list), however it is invoked. Lines whose key is a task title or a message only describe it.
+RUNS = re.compile(r"(?<=[\s/\"'\[,])deploy\.sh\b")
+DESCRIBES = re.compile(r"^\s*(?:-\s*)?\w*(?:name|msg):")
 # What makes a file the gateway's: its name, a play that targets the gateway host group, or a
 # reference to the gateway's deployment directory. Other services' playbooks run an identical
 # `bash deploy.sh`; the text alone cannot tell them apart, these markers can.
@@ -54,7 +59,8 @@ def _text_callers(root: Path, base: Path) -> dict[str, int]:
     found: dict[str, int] = {}
     for path in sorted(root.rglob("*.yml")):
         text = path.read_text()
-        runs = sum(1 for line in text.splitlines() if not line.lstrip().startswith("#") and RUNS.search(line))
+        lines = [ln for ln in text.splitlines() if not ln.lstrip().startswith("#") and not DESCRIBES.match(ln)]
+        runs = sum(1 for line in lines if RUNS.search(line))
         if not runs:
             continue
         if GATEWAY_NAME.search(path.name) or GATEWAY_HOSTS.search(text) or GATEWAY_DIR.search(text):
@@ -111,6 +117,14 @@ def test_the_text_backstop_finds_callers_in_included_files_variable_hosts_and_sc
     (root / "tasks").mkdir()
     cases = {
         "tasks/agw-fake-restart.yml": "- shell: |\n    cd /x\n    bash deploy.sh --no-pull\n",  # name
+        "tasks/agw-quoted.yml": (
+            '- shell: |\n    bash "{{ _deploy_dir }}/deploy.sh" --no-pull\n'
+            "- shell: ./deploy.sh --x\n"
+            '- command:\n    argv: ["{{ d }}/deploy.sh"]\n'
+            "- command: /abs/deploy.sh\n"
+            '- name: "Run bash deploy.sh"\n'
+            '- ansible.builtin.debug:\n    msg: "then bash deploy.sh runs"\n'
+        ),
         "uses-hosts.yml": "- hosts: agentgateway_svc\n  tasks:\n    - command:\n        argv: [bash, deploy.sh]\n",
         "variable-hosts.yml": (
             '- hosts: "{{ t }}"\n  tasks:\n    - shell: cd services/agentgateway/deployment && bash deploy.sh\n'
@@ -125,6 +139,7 @@ def test_the_text_backstop_finds_callers_in_included_files_variable_hosts_and_sc
         (root / name).write_text(text)
     assert _text_callers(root, root) == {
         "tasks/agw-fake-restart.yml": 1,
+        "tasks/agw-quoted.yml": 4,
         "uses-hosts.yml": 1,
         "variable-hosts.yml": 1,
         "tasks/runs-script.yml": 1,
