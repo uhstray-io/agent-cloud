@@ -52,7 +52,7 @@
       offers no `expected_repository_sha`: the imported deploy checks it only after
       the destroy. Not published and not dry run; site-config's `templates-prod` entry is still
       open. Left unticked.
-      2026-10-08: the `templates-prod` clause is stale: no file or key of that name exists in
+      2026-10-08: the `templates-prod` clause is stale: no other file or key of that name exists in
       this repository at `origin/dev`, and none in the local site-config checkout (searched
       2026-10-08; the checkout may differ from site-config's `origin`). `Deploy o11y` and
       `Clean Deploy o11y` are main-bound with `dev_variant`, as recorded above. Publication of
@@ -77,6 +77,7 @@
       (the 2026-10-04 restatement above) rather than left to archive. Re-read: the retention
       defaults are `O11Y_PROM_RETENTION` 15d (`templates/env.j2:26`) and `O11Y_LOKI_RETENTION`
       7d (`templates/env.j2:29`), and compose reads both (`compose.yml:43`, `compose.yml:67`).
+      The Loki and Grafana VM-address binds rest on site-config #24/#36, not re-read here.
 - [ ] 1.3 Caddy route `o11y.uhstray.io` to the Grafana port in site-config
       `caddy_managed_sites`, `forward_auth` to Authentik per the existing route shape,
       with two paths exempted from `forward_auth`: `/api/health` (unauthenticated liveness,

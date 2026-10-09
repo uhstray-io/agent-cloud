@@ -210,7 +210,9 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
         in the 2026-10-04 line above (Joseph A. Wisneski IV): the `main`/`dev` twins stay and
         `allow_override_branch_in_task` is not enabled, so there is no launch by branch to
         make. The decision text is the one in that line; nothing new is asserted here. The
-        spec delta "One template per playbook" is amended to match (see 5.3)
+        spec delta "One template per playbook" is amended to match (see 5.3). Ticking a
+        not-applicable item is a new convention for this file (the 2026-10-04 line found no
+        precedent); it is the coordinating session's call, flagged for the operator to reverse.
 - [x] 5.2 Test that no `templates-local.yml` entry reaches the production catalog
       (`platform/tests/test_local_templates_isolation.py`, mutated once: red)
 - [x] 5.3 Validation gate: spec scenarios "Integration run without a twin" and "Local template

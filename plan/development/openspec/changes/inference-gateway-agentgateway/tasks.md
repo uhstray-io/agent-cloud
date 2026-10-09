@@ -169,6 +169,10 @@
       listener (task 6.1). `agw_ui_enabled: true` (site-config #35) is as quoted in the
       task text above; it was not re-read in site-config here. Gate 1.9 stays open: its
       browser half (login as `agent-cloud-admin`, the UI rendering) is still the operator's to do
+      2026-10-08 (review of PR #488): the skip rule is APPLIED, not only declared. Apply
+      Cloudflare Tofu (Dev) task 3006 (2026-10-05) ran at `9edcd9ec`, which contains the rule's
+      commit `ef115877`, and its plan reported `plan_changes: "0"`, `plan_actions: []`: the
+      live zone already matched the declared rule. Output read from Semaphore on 2026-10-08.
 - [ ] 1.12 Change-aware deploy (design decision 11). Today `deploy.sh:47-53` runs
       `compose up -d --force-recreate` on every run, so every deploy, and every playbook
       that imports it, drops in-flight streams. First settle hot reload: v1.5.0 watches a
