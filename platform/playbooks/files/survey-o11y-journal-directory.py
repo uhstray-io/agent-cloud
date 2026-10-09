@@ -38,6 +38,15 @@ def _call(run, argv):
         return None
 
 
+def _unique_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON object key")
+        result[key] = value
+    return result
+
+
 def permission_diagnostic(run=subprocess.run):
     unavailable = {"entry_count": 0, "permission_denied_target": "unavailable"}
     result = _call(
@@ -63,8 +72,8 @@ def permission_diagnostic(run=subprocess.run):
     permission_targets = set()
     for line in lines:
         try:
-            entry = json.loads(line)
-        except json.JSONDecodeError:
+            entry = json.loads(line, object_pairs_hook=_unique_object)
+        except ValueError:
             return unavailable
         if (
             not isinstance(entry, dict)

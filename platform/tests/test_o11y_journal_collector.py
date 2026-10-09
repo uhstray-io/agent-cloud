@@ -197,15 +197,26 @@ def test_permission_diagnostic_emits_only_fixed_target_category(message, expecte
         '{"CONTAINER_NAME":"other","MESSAGE":"permission denied /private/path"}\n',
         '{"CONTAINER_NAME":"o11y-journal-collector","MESSAGE":3}\n',
         '{"CONTAINER_NAME":"o11y-journal-collector"}\n',
+        (
+            '{"CONTAINER_NAME":"other","CONTAINER_NAME":"o11y-journal-collector",'
+            '"MESSAGE":"permission denied /private/path token=secret"}\n'
+        ),
+        (
+            '{"CONTAINER_NAME":"o11y-journal-collector","MESSAGE":"collector started",'
+            '"MESSAGE":"permission denied /private/path token=secret"}\n'
+        ),
     ],
 )
 def test_permission_diagnostic_refuses_malformed_or_wrong_identity(stdout):
     runner = Mock(return_value=SimpleNamespace(returncode=0, stdout=stdout, stderr="raw error"))
 
-    assert SURVEY.permission_diagnostic(run=runner) == {
+    report = SURVEY.permission_diagnostic(run=runner)
+    assert report == {
         "entry_count": 0,
         "permission_denied_target": "unavailable",
     }
+    assert "private/path" not in json.dumps(report)
+    assert "secret" not in json.dumps(report)
 
 
 def test_permission_diagnostic_caps_records_and_hides_command_errors():
