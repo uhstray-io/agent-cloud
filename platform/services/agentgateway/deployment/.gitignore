@@ -8,3 +8,4 @@ config.yaml
 # rsync --delete (tasks/place-monorepo.yml honours .gitignore) leaves them in the deploy dir.
 config.yaml.previous
 config.yaml.replaced
+certs/
