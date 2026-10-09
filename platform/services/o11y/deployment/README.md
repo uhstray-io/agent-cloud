@@ -775,8 +775,10 @@ with fixed reason `survey_failed`.
 
 The positions survey also emits a bounded `pending_repair_diagnostic` derived
 from the same conjuncts as the pending repair gate. It classifies owner RWX,
-group/other write or special bits, volume and GraphRoot bytes/inodes, and lists
-failed checks from a fixed allowlist. Missing counters are `unverified`; no
+the combined group/other write or special-bit result, each of group write,
+other write, setuid, setgid, and sticky independently, and volume and GraphRoot
+bytes/inodes; it lists failed checks from a fixed allowlist. Missing mode or
+counters are `unverified`; no
 paths, ownership IDs, modes, or counter values are emitted. A pending repair
 refusal keeps `status=refused` and `reason=pending_volume_unsupported`; its
 receipt carries the diagnostic categories and the refusal message lists the
