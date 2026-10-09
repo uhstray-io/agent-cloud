@@ -61,7 +61,7 @@
       "type": "timeseries",
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
-      "targets": [{"refId": "A", "expr": "sum(rate(agentgateway_requests_total{job=\"agentgateway\", status=~\"4..\", identity=~\"$identity\"}[5m])) / clamp_min(sum(rate(agentgateway_requests_total{job=\"agentgateway\", identity=~\"$identity\"}[5m])), 1e-9)"}],
+      "targets": [{"refId": "A", "expr": "(sum(rate(agentgateway_requests_total{job=\"agentgateway\", status=~\"4..\", identity=~\"$identity\"}[5m])) or vector(0)) / clamp_min(sum(rate(agentgateway_requests_total{job=\"agentgateway\", identity=~\"$identity\"}[5m])), 1e-9)"}],
       "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1}, "overrides": []}
     },
     {
@@ -70,7 +70,7 @@
       "type": "timeseries",
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16},
-      "targets": [{"refId": "A", "expr": "sum(rate(agentgateway_requests_total{job=\"agentgateway\", status=~\"5..\", identity=~\"$identity\"}[5m])) / clamp_min(sum(rate(agentgateway_requests_total{job=\"agentgateway\", identity=~\"$identity\"}[5m])), 1e-9)"}],
+      "targets": [{"refId": "A", "expr": "(sum(rate(agentgateway_requests_total{job=\"agentgateway\", status=~\"5..\", identity=~\"$identity\"}[5m])) or vector(0)) / clamp_min(sum(rate(agentgateway_requests_total{job=\"agentgateway\", identity=~\"$identity\"}[5m])), 1e-9)"}],
       "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1}, "overrides": []}
     },
     {

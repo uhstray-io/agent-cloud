@@ -139,3 +139,20 @@ def test_panel_inside_a_collapsed_row_is_reported(copies):
     f.write_text(json.dumps(d))
     found, _ = problems(pb, dash)
     assert len(found) == 1 and "collapsed row 'Build'" in found[0], found
+
+
+@pytest.mark.parametrize("title, status", [("4xx request ratio", "4.."), ("5xx request ratio", "5..")])
+def test_client_view_error_ratio_numerator_is_zero_when_no_error_series(title, status):
+    # With no 4xx/5xx series the numerator is an empty vector and the division returns
+    # nothing, so the panel stays empty however much traffic arrives (Semaphore task 3302
+    # failed "Panels without data" on the 5xx ratio). The numerator must fall back to 0.
+    d = json.loads((DASHBOARDS / "agentgateway-client-view.json").read_text())
+    (panel,) = [p for p in d["panels"] if p["title"] == title]
+    (target,) = panel["targets"]
+    # Concatenated, not formatted: the PromQL braces would collide with format placeholders.
+    numerator = (
+        'sum(rate(agentgateway_requests_total{job="agentgateway", status=~"'
+        + status
+        + '", identity=~"$identity"}[5m]))'
+    )
+    assert target["expr"].startswith(f"({numerator} or vector(0)) / "), target["expr"]
