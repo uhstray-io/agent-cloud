@@ -570,16 +570,16 @@
                     (
                         "config-type-variant-error",
                         r"invalid type|wrong type|expected (?:a |an )?(?:sequence|mapping|scalar)|"
-                        r"unknown variant|expected (?:one of|variant)",
+                        r"unknown variant",
                     ),
                     (
                         "environment-reference-error",
                         r"\bmissing environment variable\b|"
                         r"\benvironment variable(?:\s+['\"`]?[a-z_][\w.$/-]*['\"`]?)?\s+"
                         r"(?:is\s+)?(?:not found|not set|undefined|missing)\b|"
-                        r"\b(?:not found|not set|undefined|missing) environment variable\b|"
-                        r"\berror looking key\b[^;\r\n.!?]*?\bup: environment variable not found\b",
+                        r"\b(?:not found|not set|undefined|missing) environment variable\b",
                     ),
+                    ("file-mount-permission-error", r"permission denied|operation not permitted|access denied|read-only file system"),
                     (
                         "resource-certificate-load-error",
                         r"(?:failed|unable|cannot|could not) (?:to )?(?:load|open|read) "
@@ -589,7 +589,6 @@
                         r"\b(?:certificate|cert file|private key|trust bundle) "
                         r"(?:load|read|parse) (?:failed|error)\b",
                     ),
-                    ("file-mount-permission-error", r"permission denied|operation not permitted|access denied|read-only file system"),
                     ("cli-argument-error", r"unknown (?:flag|option)|unrecognized (?:flag|option)|flag provided but not defined|unexpected argument|requires an argument|usage:"),
                     ("network-dependency-error", r"connection refused|connection reset|no route to host|temporary failure in name resolution|no such host|deadline exceeded|i/o timeout"),
                     (

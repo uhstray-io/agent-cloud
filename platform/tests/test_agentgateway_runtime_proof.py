@@ -226,6 +226,7 @@ def test_validator_failure_diagnostics_use_only_fixed_exit_code_categories():
         (8, "invalid-endpoint-error", "malformed URI private-token-ABC123.invalid/path"),
         (8, "invalid-endpoint-error", "URL parse error: private-token-ABC123.invalid/path"),
         (9, "config-type-variant-error", "unknown field uri; invalid type for tracing"),
+        (9, "config-schema-error", "unknown field x, expected one of a,b,c"),
         (9, "config-schema-error", "unknown field certificate; invalid configuration"),
         (9, "config-schema-error", "unknown field trust bundle; failed to parse configuration"),
         (9, "config-schema-error", "unknown field URI; invalid configuration"),
@@ -234,6 +235,11 @@ def test_validator_failure_diagnostics_use_only_fixed_exit_code_categories():
         (9, "config-schema-error", "failed to parse YAML private-config-secret"),
         (9, "config-type-variant-error", "failed to parse config: invalid type for private-token-ABC123"),
         (10, "resource-certificate-load-error", "failed to load certificate private-token-ABC123.pem"),
+        (
+            10,
+            "file-mount-permission-error",
+            "failed to open file /certs/private-token-ABC123/key: permission denied",
+        ),
         (10, "validator-nonzero-exit-other", "no such file or directory"),
         (-1, "validator-result-unavailable", ""),
     ]
