@@ -173,7 +173,7 @@
       Cloudflare Tofu (Dev) task 3006 (2026-10-05) ran at `9edcd9ec`, which contains the rule's
       commit `ef115877`, and its plan reported `plan_changes: "0"`, `plan_actions: []`: the
       live zone already matched the declared rule. Output read from Semaphore on 2026-10-08.
-- [ ] 1.12 Change-aware deploy (design decision 11). Today `deploy.sh:47-53` runs
+- [x] 1.12 Change-aware deploy (design decision 11). Today `deploy.sh:47-53` runs
       `compose up -d --force-recreate` on every run, so every deploy, and every playbook
       that imports it, drops in-flight streams. First settle hot reload: v1.5.0 watches a
       file config source and reloads it on change (`crates/agentgateway/src/state_manager.rs:141-142`
@@ -217,6 +217,33 @@
       2026-10-05: `Deploy agentgateway (Dev)` task 2880 recreated the gateway for a real input
       change (the stream-usage transformation, #437), the changed-deploy half. The legs above are
       still not done; not ticked.
+      2026-10-09: ticked. The four validation legs ran on local-dev (local Semaphore, `dev` at
+      `8c441f8d` plus the local Semaphore port fix), each through `scripts/local-dev.sh` and the
+      worktree-bound (Local) templates, output read from the local Semaphore:
+      - unchanged deploy, local task 5324: the gateway's start time was identical before and after;
+      - removed container, 5325: `podman rm -f agentgateway`, then a plain deploy recreated and
+        verified it; the input-hash label was the same value as before;
+      - failed deploy converged: `deploy.sh` was made to fail after the render (a temporary
+        `exit 1` on its first line, restored byte-exact after, `cmp` and a clean `git diff`)
+        while `Manage agentgateway Client Key` rotated `dev-local`, 5328: the rotation was
+        recorded, `deploy.sh` failed, the running gateway kept its start time and its old label
+        (`dce56b02…`). The next plain deploy, 5329, reported "deploy-result: recreated (inputs
+        changed)", the label moved to `fa0eea35…`, and the keyed probes as `dev-local` passed;
+      - rotated key served after one run, 5330: a normal rotate re-rendered, recreated
+        (label `fa0eea35…` to `097bf61f…`) and its verify passed with the new key.
+      An inventory-only change could not serve as the leg-C input: the local Semaphore runs from
+      the bootstrap's own static inventory (`bootstrap-local-dev.yml`, `agw_models` in the INI),
+      not from `local-dev.yml`. The hot-reload experiment (directory mount, change one `apiKey`,
+      watch for a reload without restart) was NOT run; the "not confirmed" branch is the one taken
+      by default and built (PR #382), so `inference-personal-keys` takes its cohort-rotation branch.
+      The text's "unverified: plain `compose up -d` starts a stopped container" is moot: `deploy.sh`
+      never takes that path; a missing or stopped gateway sets a recreate reason and runs
+      `up -d --force-recreate` (`deploy.sh`, the RECREATE_REASON branch), which leg B exercised.
+      Between the cited runs, local task 5326 was the first leg-C attempt (an inventory-only model
+      alias plus the failing `deploy.sh`; it failed as forced) and 5327 its follow-up, which changed
+      nothing because that inventory edit never reached the local Semaphore's static inventory;
+      leg C was then redone with a key rotation (5328/5329). The local Semaphore ran on a
+      non-default host port through the fix in PR #498 (`local_semaphore_port`).
 
 ## 2. Conformance against direct vLLM
       Added 2026-09-22 (security review): the gateway's `platform-admins in jwt.groups` rule
