@@ -375,7 +375,9 @@
           register: _journal_collector_status
           changed_when: false
           check_mode: false
-          retries: 20
+          # The Compose check allows 20s startup + eight 15s intervals. Keep
+          # polling long enough to observe that full health window before rollback.
+          retries: 60
           delay: 3
           until: _journal_collector_status.rc == 0 and _journal_collector_status.stdout | trim == 'healthy'
 
@@ -449,24 +451,20 @@
             quiet: true
 
       rescue:
-        - name: Read the journal collector state before rollback
+        - name: Capture allow-listed collector health evidence before rollback
           ansible.builtin.command:
-            argv: [podman, inspect, --format, "{{ '{{' }}.State.Status{{ '}}' }}", o11y-journal-collector]
-          register: _journal_rollback_status
+            argv:
+              - podman
+              - inspect
+              - --format
+              - "{{ '{{' }}.State.Status{{ '}}' }} {{ '{{' }}with .State.Health{{ '}}' }}{{ '{{' }}.Status{{ '}}' }} {{ '{{' }}.FailingStreak{{ '}}' }}{{ '{{' }}range .Log{{ '}}' }} {{ '{{' }}.ExitCode{{ '}}' }}{{ '{{' }}end{{ '{{' }}end{{ '}}' }}"
+              - o11y-journal-collector
+          register: _journal_rollback_health_evidence
           changed_when: false
           failed_when: false
+          check_mode: false
 
-        - name: Stop only the running journal collector after a failed delivery gate
-          ansible.builtin.command:
-            argv: [podman, stop, --time, "10", o11y-journal-collector]
-          register: _journal_rollback
-          changed_when: _journal_rollback.rc == 0
-          failed_when: false
-          when:
-            - _journal_rollback_status.rc == 0
-            - _journal_rollback_status.stdout | trim in ['running', 'paused']
-
-        - name: Capture the positions volume name after stopping rollback target
+        - name: Capture the positions volume name before rollback
           ansible.builtin.command:
             argv:
               - podman
@@ -479,20 +477,14 @@
           failed_when: false
           check_mode: false
           no_log: true
-          when: _journal_rollback_status.rc == 0
 
-        - name: Remove the stopped journal collector container but retain positions
+        - name: Force-remove only the failed collector while retaining positions
           ansible.builtin.command:
-            # Do not pass -v: the named journal-collector-state volume must survive.
-            argv: [podman, rm, o11y-journal-collector]
+            # Exact container name; intentionally omit -v so positions survive.
+            argv: [podman, rm, --force, --time, "10", o11y-journal-collector]
           register: _journal_rollback_remove
           changed_when: _journal_rollback_remove.rc == 0
           failed_when: false
-          when:
-            - _journal_rollback_status.rc == 0
-            - >-
-              _journal_rollback_status.stdout | trim in ['created', 'exited'] or
-              (_journal_rollback.rc | default(1)) == 0
 
         - name: Read back the collector after delivery rollback
           ansible.builtin.command:
@@ -520,7 +512,7 @@
           failed_when: false
           check_mode: false
           when:
-            - _journal_rollback_status.rc == 0
+            - _journal_rollback_volume_name.rc == 0
             - _journal_rollback_volume_name.stdout | default('') | trim | length > 0
 
         - name: Require the positions volume to survive collector rollback
@@ -534,15 +526,16 @@
             quiet: true
           when:
             - not ansible_check_mode
-            - _journal_rollback_status.rc == 0
+            - _journal_rollback_volume_name.rc == 0
 
         - name: Fail closed after stopping the journal collector
           ansible.builtin.fail:
             msg: >-
               The journal collector failed its exact-target delivery gate. Only that
-              collector was stopped and removed from the boot-restart set when
-              present. All receiver data remains; positions-volume preservation was
-              asserted when a collector with that mount existed.
+              collector was removed from the boot-restart set when present. Sanitized
+              state/health/failing-streak/exit-code evidence: {{ _journal_rollback_health_evidence.stdout | default('unavailable') | trim }}.
+              All receiver data remains; positions-volume preservation was asserted
+              when a collector with that mount existed.
 
 
 - name: Stop only the journal collector while preserving its positions volume
@@ -563,27 +556,7 @@
       failed_when: false
       check_mode: false
 
-    - name: Stop only the pilot collector if it is running
-      ansible.builtin.command:
-        argv: [podman, stop, --time, "10", o11y-journal-collector]
-      register: _journal_stop
-      changed_when: _journal_stop.rc == 0
-      when:
-        - not ansible_check_mode
-        - _journal_stop_status.rc == 0
-        - _journal_stop_status.stdout | trim == 'running'
-
-    - name: Stop only the pilot collector if it is paused
-      ansible.builtin.command:
-        argv: [podman, stop, --time, "10", o11y-journal-collector]
-      register: _journal_stop_paused
-      changed_when: _journal_stop_paused.rc == 0
-      when:
-        - not ansible_check_mode
-        - _journal_stop_status.rc == 0
-        - _journal_stop_status.stdout | trim == 'paused'
-
-    - name: Read the positions volume state after stopping collector
+    - name: Read the positions volume state before removing collector
       ansible.builtin.command:
         argv:
           - podman
@@ -598,19 +571,15 @@
       no_log: true
       when: _journal_stop_status.rc == 0
 
-    - name: Remove the stopped pilot container while preserving positions
+    - name: Force-remove only the pilot container while preserving positions
       ansible.builtin.command:
-        # Do not pass -v: the named journal-collector-state volume must survive.
-        argv: [podman, rm, o11y-journal-collector]
+        # Exact container name; intentionally omit -v so positions survive.
+        argv: [podman, rm, --force, --time, "10", o11y-journal-collector]
       register: _journal_stop_remove
       changed_when: _journal_stop_remove.rc == 0
       when:
         - not ansible_check_mode
         - _journal_stop_status.rc == 0
-        - >-
-          _journal_stop_status.stdout | trim in ['created', 'exited'] or
-          (_journal_stop.rc | default(1)) == 0 or
-          (_journal_stop_paused.rc | default(1)) == 0
 
     - name: Read back the stopped pilot container
       ansible.builtin.command:
