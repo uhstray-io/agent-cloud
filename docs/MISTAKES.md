@@ -2224,7 +2224,7 @@ put `config.yaml.previous` in place and `deploy.sh --no-pull` recreated the gate
 database container was healthy and `ERROR: agentgateway readiness did not respond within 90s`
 failed the run. The gateway stayed down for about six minutes, until Deploy agentgateway (Dev)
 (task 3846) restored the current config. The public route was unaffected: it went direct to
-vLLM. Why the previous config failed is unknown, because no gateway logs were captured.
+vLLM. Why the previous config failed is not established.
 
 **Root cause.** The dry run was read as evidence for the real run, but check mode skips exactly
 the steps that could fail: the recreate and the readiness wait. The rollback also never asked

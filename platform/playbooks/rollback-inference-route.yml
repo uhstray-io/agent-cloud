@@ -670,8 +670,10 @@
               check_mode: false
               when: not ansible_check_mode
           rescue:
-            # No logs: a config error can echo the value it rejected. The state and exit code
-            # are the whole diagnostic, and only a fixed shape of them is shown.
+            # This rescue reads no logs: a config error can echo the value it rejected. Its whole
+            # diagnostic is the container's state and exit code, and only a fixed shape of them is
+            # shown. (deploy.sh itself prints a redacted log tail when its readiness wait fails,
+            # one task above; that output is its own and is not repeated here.)
             - name: "Read the gateway container's state and exit code (nothing else)"
               ansible.builtin.command:
                 argv: ["{{ _engine }}", inspect, --format, "{{ '{{.State.Status}} {{.State.ExitCode}}' }}", agentgateway]
@@ -729,7 +731,7 @@
               ansible.builtin.fail:
                 msg: >-
                   gateway-config: the previous config did not become ready (gateway container:
-                  {{ _rb_container }}; logs are not printed because a config error can echo a value).
+                  {{ _rb_container }}; this step reads state and exit code only, not logs).
                   {% if _rb_restore_ready is defined and (_rb_restore_ready.rc | default(1)) == 0 %}The config it replaced was restored and is serving.
                   Fix forward with deploy-agentgateway.yml; the previous config is still kept as
                   config.yaml.previous.

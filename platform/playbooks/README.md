@@ -162,7 +162,7 @@ and launches each with a forged internal name.
 | `recover-authentik-audit-runtime.yml` | Dev-bound recovery | Default read-only preflight checks existing container identity, restart policy, and exact Postgres/Redis data volumes; explicit apply starts only the existing database, cache, and server, leaving the blueprint worker stopped for the retirement audit |
 | `clean-deploy-netbox.yml` | Composable | Destructive: wipe volumes + fresh NetBox deploy. Every `clean-deploy-*.yml` requires `-e confirm_reset=<host name>` (required, no-default survey field on its template); the gate also refuses under `--check`, so a dry run names its host too. Locally: `make local-clean-deploy-<svc> CONFIRM_RESET=<svc>-local` |
 | `clean-deploy-uhhcraft.yml` | Composable | Destructive: wipe volumes + fresh UhhCraft deploy |
-| `rollback-inference-route.yml` | Composable | Take the inference gateway out of the public path or put it back, as code (`-e mode=gateway-config\|direct\|restore`): the previous gateway config, or `direct_<name>` copies of the current vLLM key published before Caddy is pointed at vLLM, then withdrawn on restore |
+| `rollback-inference-route.yml` | Composable | Take the inference gateway out of the public path or put it back, as code (`-e mode=gateway-config\|direct\|restore`): the previous gateway config (validated with the pinned image first, also under `--check`; the config it replaces is kept for the run and put back, with the run still failing, if the gateway is not ready on the previous one), or `direct_<name>` copies of the current vLLM key published before Caddy is pointed at vLLM, then withdrawn on restore |
 
 ### Updates
 | Playbook | Purpose |
@@ -372,6 +372,7 @@ used to live in `AUTOMATION-COMPOSABILITY.md`, which is now under `plan/archive/
 | `tasks/require-tmpfs-remote-tmp.yml` | Implemented | Prove a writable tmpfs for Ansible's remote temp with `raw` only, before any module is copied to a host whose root may be full |
 | `tasks/agw-probe.yml` | Implemented | The one gateway probe path: a `uri` call to the gateway's published port, presenting a client leaf when listener TLS is on |
 | `tasks/agw-probe-resolution.yml` | Implemented | Resolve the gateway server leaf's SAN on the probing host: the interim marked hosts line, or the internal zone once `agw_internal_dns_authoritative` is declared |
+| `tasks/agw-validate-config.yml` | Implemented | Validate one gateway config file (`_agw_vc_config`) with the pinned image's `--validate-only` before any container is recreated; shared by the deploy and the inference-route rollback; output hidden (it can echo config values), only an allowlisted failure category is shown; `_agw_vc_in_check_mode` also runs it under `--check` |
 | `tasks/agw-legacy-key-check.yml` | Implemented | Shared-key retirement check: record the shared vLLM key's fingerprint once at `legacy_shared_key_sha256` and compute whether it has been rotated away; prints nothing |
 | `tasks/assert-orchestrated.yml` | Implemented (unwired) | Critical Rule #1 as code: refuse deploys outside a Semaphore environment; bootstrap exemption requires `_bootstrap_play: true` + `--tags bootstrap`. Wiring blocked on marker verification (`plan/archive/development/LOCAL-DEV-DEPLOYMENT.md` §11) |
 
