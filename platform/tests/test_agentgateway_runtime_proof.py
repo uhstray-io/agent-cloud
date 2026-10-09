@@ -20,6 +20,8 @@ from jinja2 import Environment
 
 ROOT = Path(__file__).resolve().parents[2]
 PLAYBOOK = ROOT / "platform/playbooks/deploy-agentgateway.yml"
+# The pinned-image config validation, shared with rollback-inference-route.yml.
+SHARED_VALIDATION = ROOT / "platform/playbooks/tasks/agw-validate-config.yml"
 VERIFY_PLAYBOOK = ROOT / "platform/playbooks/verify-agentgateway-runtime.yml"
 TEMPLATES = ROOT / "platform/semaphore/templates.yml"
 HELPER = ROOT / "platform/playbooks/files/inspect-agentgateway-runtime.py"
@@ -83,18 +85,30 @@ def test_config_validation_precedes_container_lifecycle_and_suppresses_diagnosti
     phase_one = next(play for play in plays if play.get("name", "").startswith("Phase 1:"))
     phase_two_index = next(i for i, play in enumerate(plays) if play.get("name", "").startswith("Phase 2:"))
     assert plays.index(phase_one) < phase_two_index
-    tasks = phase_one["tasks"]
-    validate = next(task for task in tasks if task.get("name", "").startswith("Validate the rendered config"))
+    deploy_tasks = phase_one["tasks"]
+    deploy_names = [task.get("name", "") for task in deploy_tasks]
+    # The deploy includes the shared validation after everything it validates against is ready.
+    include = next(task for task in deploy_tasks if "tasks/agw-validate-config.yml" in task.get("name", ""))
+    assert include["ansible.builtin.include_tasks"] == "tasks/agw-validate-config.yml"
+    assert include["vars"]["_agw_vc_config"] == "config.yaml"
+    assert "_agw_vc_in_check_mode" not in include["vars"]  # the deploy's check mode still skips it
+    assert "rendered agentgateway config validator failed; no gateway container was recreated" in include["vars"]["_agw_vc_refusal"]
+    include_index = deploy_tasks.index(include)
+    image_check_index = deploy_names.index("Require the rendered Compose image to match the reviewed pin")
+    pull_index = deploy_names.index("Pull the deployment images once before config validation")
+    assert image_check_index < pull_index < include_index
+    assert deploy_names.index("Manage secrets and render env + config") < include_index
+    assert deploy_names.index("Read the issued server and verifier leaves") < include_index
+    assert deploy_names.index("Read the deploy account's uid:gid for the local key owner") < include_index
+    assert deploy_names.index("Distribute the step-ca trust bundle into ./certs") < include_index
+    # The validation itself lives in the shared task file, in this order.
+    tasks = yaml.safe_load(SHARED_VALIDATION.read_text())
     task_names = [task.get("name", "") for task in tasks]
-    image_check_index = task_names.index("Require the rendered Compose image to match the reviewed pin")
-    pull_index = task_names.index("Pull the deployment images once before config validation")
+    validate = next(task for task in tasks if task.get("name", "").startswith("Validate the rendered config"))
     image_id_index = task_names.index("Read the resolved local v1.5.0 image ID for validation")
     validate_index = tasks.index(validate)
-    assert image_check_index < pull_index < image_id_index < validate_index
-    assert task_names.index("Manage secrets and render env + config") < validate_index
-    assert task_names.index("Read the issued server and verifier leaves") < validate_index
-    assert task_names.index("Read the deploy account's uid:gid for the local key owner") < validate_index
-    assert task_names.index("Distribute the step-ca trust bundle into ./certs") < validate_index
+    assert image_id_index < task_names.index("Require an exact local image ID before config validation") < validate_index
+    assert validate["check_mode"] is False
     refuse_index = task_names.index(
         "Refuse container recreation when the pinned image rejects rendered config"
     )
@@ -130,13 +144,13 @@ def test_config_validation_precedes_container_lifecycle_and_suppresses_diagnosti
     assert "'--network=none'" not in argv
     assert "_agw_validated_image_id.stdout | trim" in argv
     assert "Require an exact local image ID before config validation" in task_names
-    assert "check-agentgateway-rendered-image.py" in str(tasks[image_check_index])
-    assert tasks[image_check_index]["no_log"] is True
+    assert "check-agentgateway-rendered-image.py" in str(deploy_tasks[image_check_index])
+    assert deploy_tasks[image_check_index]["no_log"] is True
     for overlay in ("compose.local.yml", "compose.tls.yml"):
         compose_path = PLAYBOOK.parents[1] / "services/agentgateway/deployment" / overlay
         compose = yaml.load(compose_path.read_text(), Loader=_ComposeLoader)
         assert all("image" not in service for service in compose.get("services", {}).values())
-    pull = tasks[pull_index]
+    pull = deploy_tasks[pull_index]
     assert "bash deploy.sh --pull-only" in pull["ansible.builtin.shell"]
     assert pull["when"] == "not ansible_check_mode"
 
@@ -179,6 +193,7 @@ def test_config_validation_precedes_container_lifecycle_and_suppresses_diagnosti
         command = yaml.safe_load(template.render(
             container_engine="podman",
             _deploy_dir="/srv/agentgateway",
+            _agw_vc_config="config.yaml",
             _tls=tls,
             local_mode=local,
             _key_owner={"stdout": "1000:1000"},
@@ -199,11 +214,9 @@ def test_config_validation_precedes_container_lifecycle_and_suppresses_diagnosti
 
 
 def test_validator_failure_diagnostics_use_only_fixed_exit_code_categories():
-    plays = yaml.safe_load(PLAYBOOK.read_text())
-    phase_one = next(play for play in plays if play.get("name", "").startswith("Phase 1:"))
     classifier = next(
         task
-        for task in phase_one["tasks"]
+        for task in yaml.safe_load(SHARED_VALIDATION.read_text())
         if task.get("name") == "Classify the validator result without exposing its output"
     )
     program = classifier["ansible.builtin.command"]["argv"][2]
@@ -316,10 +329,7 @@ from ansible.template import Templar
 playbook_path = sys.argv[1]
 payload = json.loads(sys.stdin.read())
 loader = DataLoader()
-plays = loader.load_from_file(playbook_path)
-tasks = next(
-    play for play in plays if play.get('name', '').startswith('Phase 1:')
-)['tasks']
+tasks = loader.load_from_file(playbook_path)
 classifier = next(
     task for task in tasks
     if task.get('name') == 'Classify the validator result without exposing its output'
@@ -362,7 +372,7 @@ print(category)
         )
         for rc, secret_shaped_output, expected_category in cases:
             result = subprocess.run(
-                [ansible_python, "-c", harness, str(PLAYBOOK)],
+                [ansible_python, "-c", harness, str(SHARED_VALIDATION)],
                 cwd=tmp_path,
                 env=env,
                 input=json.dumps({

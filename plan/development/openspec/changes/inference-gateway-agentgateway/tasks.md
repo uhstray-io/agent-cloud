@@ -451,6 +451,20 @@
       config is refused by a visible task naming the file and the class of problem, never its
       content. The prod Semaphore upgrade to v2.19.11 (ansible-core 2.20.8) is planned. The 4.6
       drill is still owed
+      2026-10-09: after PR #508 (root cause of 3762 confirmed) the `gateway-config` dry run
+      (Semaphore task 3843) passed, but the real run (task 3844) failed: the previous config
+      was put back, `deploy.sh --no-pull` recreated the gateway, and readiness did not answer
+      within 90 s, so the run failed and left the gateway down for about 6 minutes until
+      Deploy agentgateway (Dev) (task 3846) restored the current config (readiness OK, keyless
+      401, keyed models OK). The public route was unaffected (it went direct to vLLM). Why the
+      previous config failed is unknown: no gateway logs were captured. The dry run could not
+      have shown it, because check mode skips the recreate. This change closes both gaps:
+      the previous config is now validated with the pinned gateway image before anything is
+      moved (the deploy's own check, extracted to `tasks/agw-validate-config.yml` and shared;
+      it also runs under `--check`), and if the recreated gateway is not ready the config it
+      replaced is put back, the gateway recreated on it, and the run still fails, naming
+      whether the restore held (container state and exit code only, no logs, because a config
+      error can echo a value). The drill is to be re-run
 
 - [ ] 4.7 `legacy_shared_expires` = the route-switch date + 14 days (operator decision
       2026-09-27), set in site-config in the same change that switches the route
