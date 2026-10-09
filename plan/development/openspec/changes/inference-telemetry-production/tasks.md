@@ -52,7 +52,12 @@
       offers no `expected_repository_sha`: the imported deploy checks it only after
       the destroy. Not published and not dry run; site-config's `templates-prod` entry is still
       open. Left unticked.
-- [ ] 1.2 `templates/env.j2`: `O11Y_PROM_RETENTION` default `15d`, `O11Y_LOKI_RETENTION`
+      2026-10-08: the `templates-prod` clause is stale: no file or key of that name exists in
+      this repository at `origin/dev`, and none in the local site-config checkout (searched
+      2026-10-08; the checkout may differ from site-config's `origin`). `Deploy o11y` and
+      `Clean Deploy o11y` are main-bound with `dev_variant`, as recorded above. Publication of
+      the main-bound pair waits for promotion of `dev` to `main`. Left unticked.
+- [x] 1.2 `templates/env.j2`: `O11Y_PROM_RETENTION` default `15d`, `O11Y_LOKI_RETENTION`
       default `7d`, binds loopback for Prometheus and Alloy, Loki and Grafana bound to the
       VM address; compose reads the retention vars
       2026-10-02 rescope: PARTIAL — the retention defaults are 15d/7d from 884e565b (PR #198),
@@ -68,6 +73,10 @@
       differs from the gateway's `agw_otlp_host`, when gateway tracing is enabled. Prometheus stays
       loopback by default (`compose.yml:52`, `env.j2:20`). The remaining text is met; this box
       stays unticked because its text as written is not, and closes as superseded at archive.
+      2026-10-08: ticked, with the "Alloy on loopback" clause closed as SUPERSEDED by design
+      (the 2026-10-04 restatement above) rather than left to archive. Re-read: the retention
+      defaults are `O11Y_PROM_RETENTION` 15d (`templates/env.j2:26`) and `O11Y_LOKI_RETENTION`
+      7d (`templates/env.j2:29`), and compose reads both (`compose.yml:43`, `compose.yml:67`).
 - [ ] 1.3 Caddy route `o11y.uhstray.io` to the Grafana port in site-config
       `caddy_managed_sites`, `forward_auth` to Authentik per the existing route shape,
       with two paths exempted from `forward_auth`: `/api/health` (unauthenticated liveness,
@@ -175,6 +184,13 @@
       2026-10-02 rescope: OPEN — no `o11y-fault-drill.yml`. The generic production drill (task
       1701) and canary (1395) proved failed-scrape → firing → Discord on a synthetic target
       only. Needs a dgx-spark window.
+      2026-10-08: the playbook now exists: `platform/playbooks/o11y-fault-drill.yml` with
+      `drill=exporter` (PR #433, merged into `dev`; the header documents the mode and its
+      `drill_window_confirmed=true` refusal). Remaining: site-config must declare the
+      `o11y_fault_drill_exporters` map (node name to inventory host and node-exporter systemd
+      unit; the drill refuses an undeclared node). That map was not found in the local
+      site-config checkout, and the unit names are unverified. Then one run in a dgx-spark
+      window. Left unticked.
 - [ ] 2.6 Validation gate: 2.4 proves scenario "All node targets up" and scenario "Boot
       journal is queryable"; 2.5 proves scenario "Missing scrape is a telemetry failure"
       including the alert firing;
@@ -356,7 +372,7 @@
       operator-scheduled, not run), so "Dashboards render from provisioning alone" is not
       proven; and the inference dashboard showing the model as not serving during the fault,
       the rest of "Health up, inference down". Not ticked.
-- [ ] 3.6 External liveness watcher on a path the firewall permits: a Semaphore schedule
+- [x] 3.6 External liveness watcher on a path the firewall permits: a Semaphore schedule
       runs `check-o11y-liveness.yml` from the Semaphore host every 10 min against the
       Caddy front door, not the VM: Grafana `https://o11y.uhstray.io/api/health` (exempt
       from `forward_auth`, task 1.3) and Prometheus readiness through Grafana's datasource
@@ -375,6 +391,15 @@
       `drill-o11y-active-alert-delivery.yml`, `drill-o11y-alert-canary.yml` and
       `drill-o11y-unreachable.yml`; none implements the `drill=exporter|probe|grafana` modes.
       2026-10-03: the code is PR #410 (merged). Runtime pending: inventory values, the watcher-token provisioning run and the first scheduled run
+      2026-10-08: ticked on live runs (Semaphore task ids as reported by the operator session;
+      not re-read from Semaphore here). `Provision o11y Watcher Token (Dev)` published as 3512;
+      dry run 3513 reported "absent; would mint", real run 3514 minted the token, re-dry run
+      3515 reported "valid; reusing it". `Check o11y Liveness (Dev)` and its `*/10` schedule were
+      published (3517, schedule 3520); manual run 3522 reported "o11y liveness OK"; scheduled
+      run 3526 (20:30Z) ended in error because the watcher caught Grafana down during the
+      drill; scheduled run 3532 (20:40Z) succeeded. Drill `o11y Fault Drill (Dev)` with
+      `drill=grafana`: dry run 3523, real run 3524 reported "fault induced, the liveness
+      watcher's Grafana-health failure reached Discord; restored and verified."
 
 ## 4. Retention, thresholds, records
 - [ ] 4.1 After seven days: read Prometheus TSDB size and Loki ingestion per day; set
@@ -383,6 +408,13 @@
       2026-10-02 rescope: OPEN, blocked — retention stays 15d/7d/168h with a 0B cap. Reaching
       the 90d/45d/1080h target needs a seven-day forecast, ≥30% free space and an
       isolated-restore receipt (estate-wide 4.2/4.6e). The root disk is full (task 2115).
+      2026-10-08: baseline partly read; NOT ticked. `Verify o11y Production Budgets (Dev)`
+      task 3531 at a2224685 (as reported by the operator session; not re-read from Semaphore
+      here): 12998 active series against the 2000 `sample_limit` match, memory headroom 86.58%,
+      root filesystem about 84% free, retention Loki 7d and Prometheus 15d, container memory
+      in MiB: alloy 49.5, grafana 69.2, loki 99.9, node-exporter 7.7, prometheus 99.9.
+      Remaining: per-day ingestion and the alert thresholds from the baseline week; the
+      retention increase stays blocked on the estate-wide 4.6e isolated-restore receipt.
 - [x] 4.2 Append dated status lines to `plan/development/05-observability.md` and
       `plan/architecture/06-observability-instrumentation.md`
       2026-10-02 rescope: PARTIAL — 05-observability.md carries the dated production lines

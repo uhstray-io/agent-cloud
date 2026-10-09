@@ -1,19 +1,25 @@
 ## Purpose
 
 Simplifies how Semaphore separates production, integration and local-dev execution while
-keeping each boundary enforced: one template catalog, the branch as a gated launch choice,
-and separate controllers per environment.
+keeping each boundary enforced: one template catalog, a base template bound to `main` with a
+`(Dev)` variant bound to `dev`, and separate controllers per environment.
 
 ## ADDED Requirements
 
-### Requirement: One template per playbook
-The shared template catalog SHALL declare one template per playbook. The branch a task runs
-from MUST be chosen at launch from `main` or `dev`, defaulting to `main`, and MUST NOT be
-expressed by a duplicated template.
+### Requirement: One base template per playbook, with a dev-bound variant
+The shared template catalog SHALL declare one base template per playbook, bound to `main`.
+A playbook that must run from `dev` before promotion SHALL be given a generated `(Dev)`
+variant of that base, bound to `dev`. The branch a task runs from MUST be fixed by the template
+it launches. A template MUST NOT set `allow_override_branch_in_task`, and a launch MUST NOT name
+a different branch for the task. The registry and OPA name base templates only.
 
-#### Scenario: Integration run without a twin
-- **WHEN** an operator or agent launches a template on `dev`
-- **THEN** the task runs the `dev` tree of that same template
+#### Scenario: Integration run on the dev variant
+- **WHEN** an operator or agent launches the `(Dev)` variant of a template
+- **THEN** the task runs the `dev` tree of the same playbook the base template runs from `main`
+
+#### Scenario: A task cannot choose its own branch
+- **WHEN** a launch names a branch other than the one its template is bound to
+- **THEN** the template does not honour it, because no template sets `allow_override_branch_in_task`
 
 ### Requirement: Branch choice is policed
 OPA SHALL receive the requested branch on every agent launch, and agent launches on `main`
