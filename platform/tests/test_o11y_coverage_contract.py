@@ -1,3 +1,4 @@
+import ast
 import json
 import re
 import subprocess
@@ -131,10 +132,15 @@ class CoverageContractTests(unittest.TestCase):
         env = jinja2.Environment()
         env.tests["match"] = lambda value, pattern: re.match(pattern, value) is not None
         env.tests["search"] = lambda value, pattern: re.search(pattern, value) is not None
+        env.tests["string"] = lambda value: isinstance(value, str)
         env.filters["unique"] = lambda values: list(dict.fromkeys(values))
         env.filters["float"] = float
         epoch = 1791547200
         env.globals["now"] = lambda utc=True: datetime.fromtimestamp(epoch, UTC)
+        latest_template = env.from_string(assertion["vars"]["_exact_latest_samples"])
+
+        def latest_samples(receipt):
+            return ast.literal_eval(latest_template.render(_exact_receipt=receipt))
 
         def passes(expression, receipt, signal_name="metrics"):
             template = env.from_string("{{ " + expression + " }}")
@@ -142,10 +148,7 @@ class CoverageContractTests(unittest.TestCase):
                 expected_signal=signal_name,
                 expected_target_id="service:alpha",
                 _exact_receipt=receipt,
-                _exact_latest_samples=[
-                    max(series["values"], key=lambda sample: sample[0])
-                    for series in receipt["data"]["result"]
-                ],
+                _exact_latest_samples=latest_samples(receipt),
                 freshness_seconds=600,
             )
             return rendered == "True"
@@ -173,6 +176,19 @@ class CoverageContractTests(unittest.TestCase):
         self.assertFalse(passes(target_check, sibling_response))
         self.assertTrue(passes(health_check, response(sample_value="1"), "health"))
         self.assertFalse(passes(health_check, response(sample_value="0"), "health"))
+
+        histogram = {
+            "status": "success",
+            "data": {
+                "resultType": "matrix",
+                "result": [{
+                    "metric": {"target_id": "service:alpha"},
+                    "histograms": [[epoch - 30, {"count": "4", "sum": "8"}]],
+                }],
+            },
+        }
+        self.assertTrue(passes(freshness, histogram))
+        self.assertFalse(passes(health_check, histogram, "health"))
 
     def test_health_observation_rejects_generic_up_and_requires_exact_healthy_metric(self):
         plays = yaml.safe_load((ROOT / "platform/playbooks/verify-o11y-service.yml").read_text())
