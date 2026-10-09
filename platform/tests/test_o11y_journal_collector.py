@@ -313,12 +313,12 @@ def test_playbook_guards_validation_delivery_and_non_destructive_rollback():
     rollback_volume_capture = next(
         task
         for task in apply_block["rescue"]
-        if task.get("name") == "Capture the positions volume name before rollback"
+        if task.get("name") == "Capture the positions volume name after stopping rollback target"
     )
     rollback_volume_precheck = next(
         task
         for task in apply_block["rescue"]
-        if task.get("name") == "Verify the positions volume exists before rollback"
+        if task.get("name") == "Verify the positions volume exists before rollback removal"
     )
     rollback_volume_readback = next(
         task
@@ -336,6 +336,8 @@ def test_playbook_guards_validation_delivery_and_non_destructive_rollback():
         "o11y-journal-collector",
     ]
     assert "_journal_rollback.rc" in " ".join(rollback_remove["when"])
+    assert apply_block["rescue"].index(rollback_task) < apply_block["rescue"].index(rollback_volume_capture)
+    assert apply_block["rescue"].index(rollback_task) < apply_block["rescue"].index(rollback_volume_precheck)
     assert ".Name" in " ".join(rollback_volume_capture["ansible.builtin.command"]["argv"])
     assert "_journal_rollback_volume_name.stdout" in rollback_volume_precheck["ansible.builtin.command"]["argv"][3]
     assert "_journal_rollback_volume_name.stdout" in rollback_volume_readback["ansible.builtin.command"]["argv"][3]
@@ -367,15 +369,17 @@ def test_playbook_guards_validation_delivery_and_non_destructive_rollback():
     stop_volume_capture = next(
         task
         for task in stop_play["tasks"]
-        if task.get("name") == "Read the positions volume state before stop"
+        if task.get("name") == "Read the positions volume state after stopping collector"
     )
     stop_volume_precheck = next(
         task
         for task in stop_play["tasks"]
-        if task.get("name") == "Verify the positions volume exists before stop"
+        if task.get("name") == "Verify the positions volume exists before removal"
     )
     assert ".Name" in " ".join(stop_volume_capture["ansible.builtin.command"]["argv"])
     assert "_journal_stop_volume_name.stdout" in stop_volume_precheck["ansible.builtin.command"]["argv"][3]
+    assert stop_play["tasks"].index(stop_action) < stop_play["tasks"].index(stop_volume_capture)
+    assert stop_play["tasks"].index(stop_action) < stop_play["tasks"].index(stop_volume_precheck)
     assert stop_readback["ansible.builtin.command"]["argv"][:3] == ["podman", "ps", "--all"]
     assert stop_readback["when"] == "not ansible_check_mode"
     stop_verify = next(
