@@ -160,6 +160,7 @@ test_network_agent_denied_other_steps_templates if {
 
 test_edge_dns_unreviewed_denied_on_main if {
 	d := agentcloud.decision with input as object.union(_run("network-agent", "Apply Cloudflare Tofu", "edge-dns"), {"template_name": "Apply Cloudflare Tofu", "git_branch": "main"})
+		with data.agentcloud.catalog.workflow_steps["edge-dns"].reviewed as false
 	not d.allowed
 	d.reason == "an unreviewed step cannot run from main"
 }
@@ -170,6 +171,7 @@ test_edge_route_no_longer_executes_the_tofu_plan if {
 
 test_unreviewed_step_denied_on_main if {
 	d := agentcloud.decision with input as object.union(_run("security-agent", "Harden SSH", "access-harden"), {"template_name": "Harden SSH", "git_branch": "main"})
+		with data.agentcloud.catalog.workflow_steps["access-harden"].reviewed as false
 	not d.allowed
 	d.reason == "an unreviewed step cannot run from main"
 }
@@ -179,6 +181,7 @@ test_caller_supplied_review_state_is_ignored if {
 		_run("security-agent", "Harden SSH", "access-harden"),
 		{"template_name": "Harden SSH", "git_branch": "main", "step_reviewed": true},
 	)
+		with data.agentcloud.catalog.workflow_steps["access-harden"].reviewed as false
 }
 
 test_missing_branch_means_main if {
@@ -186,6 +189,7 @@ test_missing_branch_means_main if {
 		object.union(_run("security-agent", "Harden SSH", "access-harden"), {"template_name": "Harden SSH"}),
 		["git_branch"],
 	)
+		with data.agentcloud.catalog.workflow_steps["access-harden"].reviewed as false
 }
 
 test_reviewed_step_allowed_on_main if {
@@ -193,9 +197,17 @@ test_reviewed_step_allowed_on_main if {
 		with data.agentcloud.catalog.workflow_steps["access-harden"].reviewed as true
 }
 
+# A stamped step lets the main-bound base template run (the 2026-10-08 stamps); the fixture sets
+# the stamp so the test does not depend on which steps data.json currently carries.
+test_stamped_edge_dns_allows_the_base_template_on_main if {
+	agentcloud.allow with input as object.union(_run("network-agent", "Apply Cloudflare Tofu", "edge-dns"), {"template_name": "Apply Cloudflare Tofu", "git_branch": "main"})
+		with data.agentcloud.catalog.workflow_steps["edge-dns"].reviewed as true
+}
+
 # PR 203 Codex review: a base template runs from main even when the caller claims dev.
 test_a_base_template_is_main_whatever_branch_is_claimed if {
 	d := agentcloud.decision with input as object.union(_run("security-agent", "Harden SSH", "access-harden"), {"template_name": "Harden SSH", "git_branch": "dev"})
+		with data.agentcloud.catalog.workflow_steps["access-harden"].reviewed as false
 	not d.allowed
 	contains(d.reason, "an unreviewed step cannot run from main")
 }

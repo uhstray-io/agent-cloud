@@ -202,7 +202,7 @@
           "Create VM Template"
         ],
         "per_service": false,
-        "reviewed": false
+        "reviewed": true
       },
       "lookup-inventory": {
         "owner": "infra-agent",
@@ -210,7 +210,7 @@
           "Lookup Service Inventory"
         ],
         "per_service": false,
-        "reviewed": false
+        "reviewed": true
       },
       "validate-address": {
         "owner": "infra-agent",
@@ -218,7 +218,7 @@
           "Validate Address Free"
         ],
         "per_service": false,
-        "reviewed": false
+        "reviewed": true
       },
       "provision-vm": {
         "owner": "infra-agent",
@@ -226,7 +226,7 @@
           "Provision VM"
         ],
         "per_service": false,
-        "reviewed": false
+        "reviewed": true
       },
       "cloud-init": {
         "owner": "infra-agent",
@@ -234,7 +234,7 @@
           "Provision VM"
         ],
         "per_service": false,
-        "reviewed": false
+        "reviewed": true
       },
       "ssh-keys": {
         "owner": "infra-agent",
@@ -242,7 +242,7 @@
           "Distribute SSH Keys"
         ],
         "per_service": false,
-        "reviewed": false
+        "reviewed": true
       },
       "ssh-key-backup": {
         "owner": "infra-agent",
@@ -250,7 +250,7 @@
           "Back Up Service SSH Key"
         ],
         "per_service": false,
-        "reviewed": false
+        "reviewed": true
       },
       "access-harden": {
         "owner": "security-agent",
@@ -258,7 +258,7 @@
           "Harden SSH"
         ],
         "per_service": false,
-        "reviewed": false
+        "reviewed": true
       },
       "service-assess": {
         "owner": "service-agent",
@@ -275,7 +275,7 @@
         ],
         "per_service": false,
         "proposal_from": "service-assess",
-        "reviewed": false
+        "reviewed": true
       },
       "secrets-approle": {
         "owner": "service-agent",
@@ -283,7 +283,7 @@
           "Check Secrets"
         ],
         "per_service": false,
-        "reviewed": false
+        "reviewed": true
       },
       "instrument-host": {
         "owner": "o11y-agent",
@@ -306,7 +306,7 @@
           "Verify Service Health"
         ],
         "per_service": false,
-        "reviewed": false
+        "reviewed": true
       },
       "edge-route": {
         "owner": "service-agent",
@@ -314,7 +314,7 @@
           "Manage Caddy Sites"
         ],
         "per_service": false,
-        "reviewed": false
+        "reviewed": true
       },
       "edge-dns": {
         "owner": "network-agent",
@@ -322,7 +322,7 @@
           "Apply Cloudflare Tofu"
         ],
         "per_service": false,
-        "reviewed": false
+        "reviewed": true
       },
       "fw-assess": {
         "owner": "security-agent",
@@ -339,7 +339,7 @@
         ],
         "per_service": false,
         "proposal_from": "fw-assess",
-        "reviewed": false
+        "reviewed": true
       },
       "instrument-service": {
         "owner": "o11y-agent",
@@ -353,7 +353,7 @@
           "Verify Service Persistence"
         ],
         "per_service": false,
-        "reviewed": false
+        "reviewed": true
       },
       "access-assess": {
         "owner": "service-agent",
@@ -370,7 +370,7 @@
         ],
         "per_service": false,
         "proposal_from": "access-assess",
-        "reviewed": false
+        "reviewed": true
       },
       "credential-backup": {
         "owner": "security-agent",
@@ -378,7 +378,7 @@
           "Back Up Credentials to site-config"
         ],
         "per_service": false,
-        "reviewed": false
+        "reviewed": true
       }
     },
     "placeholder_markers": [

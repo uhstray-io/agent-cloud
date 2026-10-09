@@ -381,3 +381,61 @@ proven by the fake-tofu tests only.
 
 Verdict: edge-dns **passes** D10, with no pending proof. Not stamped, for the `main` hazard
 recorded on 2026-10-04. Remaining gap: service-deploy, not yet re-reviewed.
+
+## Stamped — 2026-10-08
+
+Author: Joseph A. Wisneski IV — 2026-10-08
+
+The sections above stay as written. Operator decision 2026-10-04, "Stamp every passing step",
+was held only by the `main` hazard recorded the same day. `dev` was promoted to `main` on
+2026-10-07 (PR #447, `origin/main` c81ada2a). This pass checks the hazard step by step on
+`origin/dev` a2224685 against `origin/main` c81ada2a, then stamps.
+
+Checks, per step. (a) The registry `review_gap` said the only remaining gap was the wait on
+`main`, and no later section above records a new gap. (b) `git diff origin/main origin/dev --
+<executor playbook>` is empty. (c) Every task file the playbook includes, followed through
+`include_tasks`, `import_tasks` and `import_playbook`, is absent from the list of files that
+differ between `main` and `dev`; so is every deploy script, template and infra file these
+executors use. (d) The playbook includes `tasks/emit-step-result.yml` on `main`, and that task
+file is identical on both branches. The files that do differ between the branches are the
+agentgateway, o11y, clean-deploy and local-dev work, the collector library
+(`lib/step_results.py`, not an executor), the Semaphore template files, tests and docs. In
+`templates.yml` the changed entries are the Clean Deploy templates, Verify o11y Service and one
+new `Verify agentgateway Runtime (Dev)`; none is an executor of these steps, and each executor
+template (and Destroy VM, the undo) exists on `main` unchanged.
+
+| Step | Executor | main == dev (diff empty) | Stamped |
+|------|----------|--------------------------|---------|
+| vm-template | provision-template.yml | yes | yes |
+| lookup-inventory | lookup-service-inventory.yml | yes | yes |
+| validate-address | validate-address-free.yml | yes | yes |
+| provision-vm | provision-vm.yml | yes | yes |
+| cloud-init | provision-vm.yml | yes | yes |
+| ssh-keys | distribute-ssh-keys.yml | yes | yes |
+| ssh-key-backup | backup-service-ssh-key.yml | yes | yes |
+| access-harden | harden-ssh.yml | yes | yes |
+| vm-rightsize | resize-vm.yml | yes | yes |
+| secrets-approle | check-secrets.yml | yes | yes |
+| service-validate | verify-service-health.yml | yes | yes |
+| edge-route | manage-caddy-sites.yml | yes | yes |
+| edge-dns | apply-cloudflare-tofu.yml | yes | yes, see note |
+| fw-harden | apply-firewall.yml | yes | yes |
+| systemd-enablement | verify-service-persistence.yml | yes | yes |
+| oidc-config | deploy-authentik.yml | yes | yes |
+| credential-backup | backup-credentials-to-site-config.yml | yes | yes |
+| service-deploy | Deploy {service} | not checked | no: no per-service deploy emits, second-run no-change unproven, not re-reviewed |
+| instrument-host | Instrument Host Observability | not checked | no: never run (registry `review_gap`) |
+| instrument-service | none (planned) | n/a | no: no executor |
+| service-assess, fw-assess, access-assess | none (reasoning) | n/a | no: out of scope |
+
+edge-dns note: the registry `review_gap` still carried "a dry run against real tofu is not yet
+verified", which the 2026-10-06 section above records as done (Apply Cloudflare Tofu (Dev) task
+3006, reported by the coordinator; its output was not read for that note). That gap is resolved,
+so the step is stamped. The 2026-10-06 limit stands: a read-back that the runner's checkout of
+the tofu root was left unchanged is not in the reported evidence.
+
+What the stamps change. The registry carries `reviewed: "2026-10-08"` and no `review_gap` for
+the seventeen steps, and `catalog.workflow_steps.<id>.reviewed` in OPA `data.json` is `true`
+for the same seventeen (the registry test pins the two together). OPA then allows the base,
+`main`-bound template for these steps. The change reaches the running OPA only when OPA is
+redeployed.
