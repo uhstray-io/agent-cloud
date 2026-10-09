@@ -51,6 +51,7 @@ and why.
 | 1.19 | A negative claim about a host's state from evidence that cannot establish it (widens 1.6) | Unverified claim | 1 | Convention |
 | 1.20 | Assumed Semaphore injected a task-id environment variable; the first production drill printed a blank receipt ID | Unverified runtime assumption | 1 | Test (o11y receipt checks) |
 | 1.21 | Said the live alert readback proved the inference alert groups; it filtered rule uids to `o11y_` and never read them, and no dashboard check covered the inference boards | Unverified claim | 1 | Test (`test_service_o11y.bats` readback mirror) |
+| 1.22 | Stated the runner's ansible-core version twice (2.16 from a relayed comment, then 2.20.8 from a compose default); the live server runs v2.17.31, whose image ships 2.18.15 | Unverified claim | 1 | Convention (version-report template + pinned CI proposed) |
 | 2.1 | Test compiled a pattern as raw file text, not as the runtime decodes it | False-green test | 1 | Test |
 | 2.2 | Test pinned the vulnerable form of a security check in place | False-green test | 1 | Test |
 | 2.3 | Negative assertion aborted under `set -e` because a no-match grep exits 1 | False-green test | 1 | Convention |
@@ -881,6 +882,35 @@ stated past what its tests exercised); this is the live-verification form.
 live rule and contact state", "real deploy verifies every provisioned dashboard is live") —
 renders the alert file with the inference scrape and probe enabled and fails when an
 `inference_*` rule is missing or unrouted live, or a dashboard file's uid is not live.
+
+### 1.22 A runner's tool version stated twice without reading the running system
+
+**What happened.** While diagnosing why a production dry run of `Rollback Inference Route (Dev)`
+(Semaphore task 3762, 2026-10-09) failed inside a `no_log` task, the gateway-config rollback tests
+were run on ansible-core 2.16.18 and 12 failed with a JSON decode error. The operator was told "the
+Semaphore runner uses 2.16". That figure came from a PR reviewer quoting a comment in
+`provision-tududi-github-sync.yml`. The claim was then "corrected" to 2.20.8 by running
+`ansible --version` in `docker.io/semaphoreui/semaphore:v2.19.11`, the DEFAULT in
+`platform/services/semaphore/deployment/compose.yml` (`${SEMAPHORE_IMAGE:-...}`), and the same 2.20.8
+was written into a playbook comment and a PR description. Both were wrong: the live server's
+`/api/info` reports `v2.17.31`, and the stock image of that tag ships ansible-core 2.18.15. Both
+claims had to be withdrawn; the playbook comment and the PR text were fixed before they merged.
+
+**Root cause.** Twice, a property of the running system was taken from an artifact that only
+describes an intended state: first a comment relayed by another agent, then a compose default that
+production was not running (the pin is what a deploy would start, not what is running now). The
+"correction" repeated the first mistake one level down.
+
+**The rule.** A claim about what a running system uses (tool version, image, flag) is read from that
+system: its own API (`/api/info` for Semaphore), the running container, or a task that reports it.
+A comment, a document, another agent's report, or a configuration default is evidence of intent,
+never of the running state. Related to 1.14, whose widened rule reads values from the system of
+record; 1.14 names site-config and the Semaphore API, and this is the same rule for the runtime
+itself, which 1.14 did not mention, so it did not fire.
+
+**Enforced by.** Convention. Proposed (not built): a read-only Semaphore template that reports the
+runner's `ansible_version`, and a CI job pinned to that version (CI installs an unpinned
+ansible-core, 2.19 at the time, while the runner image ships 2.18).
 
 ## 2. Tests that would have passed for the wrong reason
 
