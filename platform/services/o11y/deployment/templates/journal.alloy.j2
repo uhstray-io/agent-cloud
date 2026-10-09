@@ -1,0 +1,31 @@
+// Reads one explicitly allowlisted user-journal container and sends it over
+// the receiver's existing private OTLP/gRPC listener.
+loki.source.journal "o11y_alloy" {
+  path       = "/var/log/journal"
+  matches    = "CONTAINER_NAME=o11y-alloy"
+  max_age    = "15m"
+  labels     = { service = "o11y/alloy", signal = "container" }
+  forward_to = [otelcol.receiver.loki.journal.receiver]
+}
+
+otelcol.receiver.loki "journal" {
+  output {
+    logs = [otelcol.exporter.otlp.journal.input]
+  }
+}
+
+otelcol.exporter.otlp "journal" {
+  client {
+    endpoint = {{ (o11y_otlp_bind ~ ':' ~ (o11y_otlp_port | default(4317) | string)) | to_json }}
+    tls {
+      insecure = true
+    }
+  }
+  retry_on_failure {
+    enabled = true
+  }
+  sending_queue {
+    enabled = true
+    queue_size = 100
+  }
+}
