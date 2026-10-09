@@ -279,7 +279,7 @@ def test_alloy_source_requires_read_only_mount_and_container_read_access(monkeyp
                     {
                         "State": {"Running": True},
                         "Mounts": [
-                            {"Source": "/private/journal", "Destination": "/run/log/journal", "RW": False}
+                            {"Source": "/var/log/journal", "Destination": "/run/log/journal", "RW": False}
                         ],
                     }
                 ]
@@ -310,7 +310,7 @@ def test_alloy_source_requires_read_only_mount_and_container_read_access(monkeyp
                     {
                         "State": {"Running": True},
                         "Mounts": [
-                            {"Source": "/private/journal", "Destination": "/run/log/journal", "RW": True}
+                            {"Source": "/var/log/journal", "Destination": "/run/log/journal", "RW": True}
                         ],
                     }
                 ]
@@ -319,6 +319,28 @@ def test_alloy_source_requires_read_only_mount_and_container_read_access(monkeyp
 
     monkeypatch.setattr(SURVEY, "run", writable)
     assert SURVEY.alloy_source() is False
+
+
+def test_alloy_unrelated_read_only_source_is_unverified_and_refuses_survey(monkeypatch):
+    container = {
+        "State": {"Running": True},
+        "Mounts": [
+            {"Source": "/srv/unrelated", "Destination": "/run/log/journal", "RW": False}
+        ],
+    }
+    monkeypatch.setattr(SURVEY, "inspect", lambda name: container)
+    monkeypatch.setattr(
+        SURVEY,
+        "run",
+        lambda argv, timeout=8: pytest.fail("unverified source provenance must not be probed"),
+    )
+    assert SURVEY.alloy_source() is None
+
+    monkeypatch.setattr(SURVEY, "default_driver", lambda: "journald")
+    monkeypatch.setattr(SURVEY, "running_containers", lambda: ["o11y-loki"])
+    monkeypatch.setattr(SURVEY, "journal_status", lambda names, drivers: ("no_entries", 0))
+    report = SURVEY.survey()
+    assert report == {"status": "unavailable", "reason": "alloy_source_unverified"}
 
 
 @pytest.mark.parametrize("probe", ["missing", "unreadable"], ids=["directory-absent", "directory-unreadable"])
@@ -335,7 +357,7 @@ def test_alloy_absent_mount_and_unreadable_directory_are_known_false(monkeypatch
         "inspect",
         lambda name: {
             "State": {"Running": True},
-            "Mounts": [{"Source": "/private/journal", "Destination": "/run/log/journal", "RW": False}],
+            "Mounts": [{"Source": "/var/log/journal", "Destination": "/run/log/journal", "RW": False}],
         },
     )
     monkeypatch.setattr(SURVEY, "run", lambda argv, timeout=8: (0, probe))
@@ -355,7 +377,7 @@ def test_alloy_missing_stopped_or_uninspectable_is_unverified(monkeypatch, conta
 def test_alloy_exec_invocation_failure_is_unverified_and_fails_survey_closed(monkeypatch):
     container = {
         "State": {"Running": True},
-        "Mounts": [{"Source": "/private/journal", "Destination": "/run/log/journal", "RW": False}],
+        "Mounts": [{"Source": "/var/log/journal", "Destination": "/run/log/journal", "RW": False}],
     }
     monkeypatch.setattr(SURVEY, "inspect", lambda name: container)
     monkeypatch.setattr(SURVEY, "run", lambda argv, timeout=8: (None, "private diagnostic"))

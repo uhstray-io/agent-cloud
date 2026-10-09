@@ -10,6 +10,8 @@ JOURNAL_WINDOW = "-15min"
 O11Y_PREFIX = "o11y-"
 # shortcut: only the pinned Alloy journal destinations count; extend when config adopts another target.
 JOURNAL_DESTINATIONS = {"/var/log/journal", "/run/log/journal"}
+# Mounts from other host paths have unknown provenance and cannot establish a journal source.
+JOURNAL_SOURCES = {"/var/log/journal", "/run/log/journal"}
 
 
 def run(argv, timeout=8):
@@ -157,7 +159,7 @@ def alloy_source():
             uncertain = True
             continue
         source = mount.get("Source")
-        if not isinstance(source, str) or not source:
+        if not isinstance(source, str) or source not in JOURNAL_SOURCES:
             uncertain = True
             continue
         rc, output = run(
