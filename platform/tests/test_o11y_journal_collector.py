@@ -482,7 +482,7 @@ def test_survey_check_mode_skips_container_probe_and_reports_unverified():
     assert "check_mode_unverified" in PLAYBOOK.read_text()
 
 
-def test_rollback_inspect_classifier_maps_results_through_ansible_templar():
+def test_rollback_health_diagnostic_is_allowlisted_and_manual_check_is_gated():
     ansible_playbook = shutil.which("ansible-playbook")
     if not ansible_playbook:
         pytest.skip("ansible-playbook is unavailable")
@@ -503,7 +503,50 @@ def test_rollback_inspect_classifier_maps_results_through_ansible_templar():
         },
         {"rc": 1, "stderr": "unexpected inspect failure", "stdout": "", "expected": "inspect_failed"},
         {"rc": 0, "stderr": "", "stdout": "", "expected": "empty_formatted_fields"},
-        {"rc": 0, "stderr": "", "stdout": "running healthy 0 0", "expected": "fields_available"},
+        {
+            "rc": 0,
+            "stderr": "",
+            "stdout": (
+                "state=running health=starting failing_streak=0 log_count=0 exit_codes= "
+                "healthcheck_present=present test_kind=CMD-SHELL interval=30s timeout=10s "
+                "retries=3 start_period=20s startup_check=absent on_failure=none max_log_count=5"
+            ),
+            "expected": "fields_available",
+        },
+    ]
+    gate_cases = [
+        {
+            "rc": 0,
+            "stdout": "state=running health=starting healthcheck_present=present on_failure=none",
+            "expected": True,
+        },
+        {
+            "rc": 0,
+            "stdout": "state=running health=starting healthcheck_present=present on_failure=restart",
+            "expected": False,
+        },
+        {
+            "rc": 0,
+            "stdout": "state=stopped health=starting healthcheck_present=present on_failure=none",
+            "expected": False,
+        },
+        {
+            "rc": 0,
+            "stdout": "state=running health=starting healthcheck_present=absent on_failure=none",
+            "expected": False,
+        },
+        {
+            "rc": 125,
+            "stdout": "state=running health=starting healthcheck_present=present on_failure=none",
+            "expected": False,
+        },
+    ]
+    manual_cases = [
+        {"allowed": True, "rc": 0, "expected": "passed"},
+        {"allowed": True, "rc": 1, "expected": "failed"},
+        {"allowed": True, "rc": 125, "expected": "podman_error"},
+        {"allowed": True, "rc": 42, "expected": "unexpected_error"},
+        {"allowed": False, "expected": "not_run"},
     ]
     harness = r'''
 import json, sys, yaml
@@ -520,15 +563,70 @@ classifier = next(
     task for task in apply["rescue"]
     if task.get("name") == "Classify collector inspect outcome without exposing stderr"
 )
+manual = next(
+    task for task in apply["rescue"]
+    if task.get("name") == "Run one hidden-output manual healthcheck for bounded diagnosis"
+)
+manual_classifier = next(
+    task for task in apply["rescue"]
+    if task.get("name") == "Classify the one-shot manual healthcheck result"
+)
+postcheck = next(
+    task for task in apply["rescue"]
+    if task.get("name") == "Capture sanitized state and health log count after the manual check"
+)
+remove = next(
+    task for task in apply["rescue"]
+    if task.get("name") == "Force-remove only the failed collector while retaining positions"
+)
 format_expression = evidence["ansible.builtin.command"]["argv"][3]
 rendered_format = Templar(loader=DataLoader(), variables={}).template(trust_as_template(format_expression))
 expression = classifier["ansible.builtin.set_fact"]["_journal_rollback_health_evidence_class"]
+gate_expression = next(
+    task for task in apply["rescue"]
+    if task.get("name") == "Decide whether one manual healthcheck is safe as diagnostic evidence"
+)["ansible.builtin.set_fact"]["_journal_rollback_manual_healthcheck_allowed"]
+manual_expression = manual_classifier["ansible.builtin.set_fact"]["_journal_manual_healthcheck_class"]
+postcheck_format_expression = postcheck["ansible.builtin.command"]["argv"][3]
+rendered_postcheck_format = Templar(loader=DataLoader(), variables={}).template(
+    trust_as_template(postcheck_format_expression)
+)
+manual_argv = manual["ansible.builtin.command"]["argv"]
+manual_settings = {
+    "no_log": manual.get("no_log"),
+    "failed_when": manual.get("failed_when"),
+    "check_mode": manual.get("check_mode"),
+    "when": manual.get("when"),
+}
+data = json.loads(sys.stdin.read())
 classes = []
-for case in json.loads(sys.stdin.read()):
+for case in data["classifier_cases"]:
     variables = {"_journal_rollback_health_evidence": {key: case[key] for key in ("rc", "stderr", "stdout")}}
     result = Templar(loader=DataLoader(), variables=variables).template(trust_as_template(expression)).strip()
     classes.append(result)
-print(json.dumps({"format": rendered_format, "classes": classes}))
+gate_results = []
+for case in data["gate_cases"]:
+    variables = {"_journal_rollback_health_evidence": case}
+    result = Templar(loader=DataLoader(), variables=variables).template(trust_as_template(gate_expression))
+    gate_results.append(str(result).lower() == "true")
+manual_results = []
+for case in data["manual_cases"]:
+    variables = {
+        "_journal_rollback_manual_healthcheck_allowed": case["allowed"],
+        "_journal_manual_healthcheck": {"rc": case.get("rc", 125)},
+    }
+    result = Templar(loader=DataLoader(), variables=variables).template(trust_as_template(manual_expression)).strip()
+    manual_results.append(result)
+print(json.dumps({
+    "format": rendered_format,
+    "classes": classes,
+    "gate_results": gate_results,
+    "manual_results": manual_results,
+    "manual_argv": manual_argv,
+    "manual_settings": manual_settings,
+    "postcheck_format": rendered_postcheck_format,
+    "manual_precedes_removal": apply["rescue"].index(manual) < apply["rescue"].index(remove),
+}))
 '''
     temp_root = "/private/tmp" if Path("/private/tmp").is_dir() else tempfile.gettempdir()
     with tempfile.TemporaryDirectory(prefix="o11y-journal-templar-", dir=temp_root) as ansible_tmp:
@@ -540,7 +638,7 @@ print(json.dumps({"format": rendered_format, "classes": classes}))
             [ansible_python, "-c", harness, str(PLAYBOOK)],
             cwd=ROOT,
             env=env,
-            input=json.dumps(cases),
+            input=json.dumps({"classifier_cases": cases, "gate_cases": gate_cases, "manual_cases": manual_cases}),
             capture_output=True,
             text=True,
             check=False,
@@ -549,10 +647,33 @@ print(json.dumps({"format": rendered_format, "classes": classes}))
     assert result.returncode == 0, result.stderr
     rendered = json.loads(result.stdout)
     assert rendered["format"] == (
-        "{{.State.Status}} {{with .State.Health}}{{.Status}} {{.FailingStreak}}"
-        "{{range .Log}} {{.ExitCode}}{{end}}{{end}}"
+        '{{printf "state=%s " .State.Status}}'
+        "{{with .State.Health}}health={{.Status}} failing_streak={{.FailingStreak}} "
+        "log_count={{len .Log}} exit_codes={{range .Log}}{{.ExitCode}},{{end}}"
+        "{{else}}health=unavailable failing_streak=unavailable log_count=0 exit_codes=unavailable{{end}} "
+        "{{with .Config.Healthcheck}}healthcheck_present=present "
+        "test_kind={{if .Test}}{{index .Test 0}}{{else}}none{{end}} "
+        "interval={{.Interval}} timeout={{.Timeout}} retries={{.Retries}} start_period={{.StartPeriod}}"
+        "{{else}}healthcheck_present=absent test_kind=none interval=unavailable timeout=unavailable "
+        "retries=unavailable start_period=unavailable{{end}} "
+        "startup_check={{if .Config.StartupHealthCheck}}present{{else}}absent{{end}} "
+        "on_failure={{.Config.HealthcheckOnFailureAction}} max_log_count={{.Config.HealthMaxLogCount}}"
     )
     assert rendered["classes"] == [case["expected"] for case in cases]
+    assert rendered["gate_results"] == [case["expected"] for case in gate_cases]
+    assert rendered["manual_results"] == [case["expected"] for case in manual_cases]
+    assert rendered["manual_argv"] == ["podman", "healthcheck", "run", "o11y-journal-collector"]
+    assert rendered["manual_settings"] == {
+        "no_log": True,
+        "failed_when": False,
+        "check_mode": False,
+        "when": "_journal_rollback_manual_healthcheck_allowed | bool",
+    }
+    assert rendered["postcheck_format"] == (
+        "{{.State.Status}} {{with .State.Health}}{{.Status}} {{len .Log}}"
+        "{{else}}unavailable 0{{end}}"
+    )
+    assert rendered["manual_precedes_removal"] is True
     assert result.stderr == ""
 
 

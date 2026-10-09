@@ -457,7 +457,7 @@
               - podman
               - inspect
               - --format
-              - "{{ '{{' }}.State.Status{{ '}}' }} {{ '{{' }}with .State.Health{{ '}}' }}{{ '{{' }}.Status{{ '}}' }} {{ '{{' }}.FailingStreak{{ '}}' }}{{ '{{' }}range .Log{{ '}}' }} {{ '{{' }}.ExitCode{{ '}}' }}{{ '{{' }}end{{ '}}' }}{{ '{{' }}end{{ '}}' }}"
+              - "{{ '{{' }}printf \"state=%s \" .State.Status{{ '}}' }}{{ '{{' }}with .State.Health{{ '}}' }}health={{ '{{' }}.Status{{ '}}' }} failing_streak={{ '{{' }}.FailingStreak{{ '}}' }} log_count={{ '{{' }}len .Log{{ '}}' }} exit_codes={{ '{{' }}range .Log{{ '}}' }}{{ '{{' }}.ExitCode{{ '}}' }},{{ '{{' }}end{{ '}}' }}{{ '{{' }}else{{ '}}' }}health=unavailable failing_streak=unavailable log_count=0 exit_codes=unavailable{{ '{{' }}end{{ '}}' }} {{ '{{' }}with .Config.Healthcheck{{ '}}' }}healthcheck_present=present test_kind={{ '{{' }}if .Test{{ '}}' }}{{ '{{' }}index .Test 0{{ '}}' }}{{ '{{' }}else{{ '}}' }}none{{ '{{' }}end{{ '}}' }} interval={{ '{{' }}.Interval{{ '}}' }} timeout={{ '{{' }}.Timeout{{ '}}' }} retries={{ '{{' }}.Retries{{ '}}' }} start_period={{ '{{' }}.StartPeriod{{ '}}' }}{{ '{{' }}else{{ '}}' }}healthcheck_present=absent test_kind=none interval=unavailable timeout=unavailable retries=unavailable start_period=unavailable{{ '{{' }}end{{ '}}' }} startup_check={{ '{{' }}if .Config.StartupHealthCheck{{ '}}' }}present{{ '{{' }}else{{ '}}' }}absent{{ '{{' }}end{{ '}}' }} on_failure={{ '{{' }}.Config.HealthcheckOnFailureAction{{ '}}' }} max_log_count={{ '{{' }}.Config.HealthMaxLogCount{{ '}}' }}"
               - o11y-journal-collector
           register: _journal_rollback_health_evidence
           changed_when: false
@@ -481,6 +481,55 @@
                 if (_journal_rollback_health_evidence.stdout | default('', true) | trim | length == 0)
                 else 'fields_available'
               }}
+
+        - name: Decide whether one manual healthcheck is safe as diagnostic evidence
+          ansible.builtin.set_fact:
+            _journal_rollback_manual_healthcheck_allowed: >-
+              {{
+                _journal_rollback_health_evidence.rc | default(1) | int == 0 and
+                'state=running' in (_journal_rollback_health_evidence.stdout | default('', true) | split()) and
+                'healthcheck_present=present' in (_journal_rollback_health_evidence.stdout | default('', true) | split()) and
+                'on_failure=none' in (_journal_rollback_health_evidence.stdout | default('', true) | split())
+              }}
+
+        - name: Run one hidden-output manual healthcheck for bounded diagnosis
+          ansible.builtin.command:
+            argv: [podman, healthcheck, run, o11y-journal-collector]
+          register: _journal_manual_healthcheck
+          changed_when: false
+          failed_when: false
+          check_mode: false
+          no_log: true
+          when: _journal_rollback_manual_healthcheck_allowed | bool
+
+        - name: Classify the one-shot manual healthcheck result
+          ansible.builtin.set_fact:
+            _journal_manual_healthcheck_class: >-
+              {{
+                'not_run'
+                if not (_journal_rollback_manual_healthcheck_allowed | bool)
+                else 'passed'
+                if _journal_manual_healthcheck.rc | default(125) | int == 0
+                else 'failed'
+                if _journal_manual_healthcheck.rc | default(125) | int == 1
+                else 'podman_error'
+                if _journal_manual_healthcheck.rc | default(125) | int == 125
+                else 'unexpected_error'
+              }}
+
+        - name: Capture sanitized state and health log count after the manual check
+          ansible.builtin.command:
+            argv:
+              - podman
+              - inspect
+              - --format
+              - "{{ '{{' }}.State.Status{{ '}}' }} {{ '{{' }}with .State.Health{{ '}}' }}{{ '{{' }}.Status{{ '}}' }} {{ '{{' }}len .Log{{ '}}' }}{{ '{{' }}else{{ '}}' }}unavailable 0{{ '{{' }}end{{ '}}' }}"
+              - o11y-journal-collector
+          register: _journal_manual_healthcheck_readback
+          changed_when: false
+          failed_when: false
+          check_mode: false
+          when: _journal_rollback_manual_healthcheck_allowed | bool
 
         - name: Capture the positions volume name before rollback
           ansible.builtin.command:
@@ -553,7 +602,10 @@
               collector was removed from the boot-restart set when present. Sanitized
               inspect classification={{ _journal_rollback_health_evidence_class | default('unavailable') }};
               Podman inspect rc={{ _journal_rollback_health_evidence.rc | default('unavailable') }};
-              state/health/failing-streak/exit-code evidence: {{ _journal_rollback_health_evidence.stdout | default('') | trim | default('unavailable', true) }}.
+              allow-listed health evidence: {{ _journal_rollback_health_evidence.stdout | default('') | trim | default('unavailable', true) }};
+              one-shot manual healthcheck diagnostic={{ _journal_manual_healthcheck_class | default('unavailable') }};
+              post-check state/health/log-count={{ _journal_manual_healthcheck_readback.stdout | default('not_run') | trim | default('unavailable', true) }}.
+              The manual result is diagnostic only and does not satisfy automatic health or Loki delivery.
               All receiver data remains; positions-volume preservation was asserted
               when a collector with that mount existed.
 
