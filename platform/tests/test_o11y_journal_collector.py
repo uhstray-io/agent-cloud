@@ -13,6 +13,7 @@ from unittest.mock import Mock
 
 import pytest
 import yaml
+from jinja2 import Environment
 
 ROOT = Path(__file__).resolve().parents[2]
 O11Y = ROOT / "platform/services/o11y/deployment"
@@ -655,8 +656,22 @@ def test_survey_check_mode_skips_container_probe_and_reports_unverified():
         for task in survey_play["tasks"]
         if task.get("name") == "Report only the fixed journal source status"
     )
-    assert "/var/log/journal" not in report["ansible.builtin.debug"]["msg"]
-    assert "/run/log/journal" not in report["ansible.builtin.debug"]["msg"]
+    template_environment = Environment()
+    template_environment.filters["from_json"] = json.loads
+    status_template = template_environment.from_string(report["ansible.builtin.debug"]["msg"])
+    for result in (
+        "/var/log/journal",
+        "/run/log/journal",
+        "ambiguous",
+        "none",
+        "probe_unavailable",
+        "check_mode_unverified",
+    ):
+        rendered = status_template.render(
+            _journal_directory_survey={"stdout": json.dumps({"result": result})}
+        )
+        assert "/var/log/journal" not in rendered
+        assert "/run/log/journal" not in rendered
 
     diagnostic = next(
         task
