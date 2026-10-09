@@ -16,6 +16,10 @@ all:
     local_mode: true
     monorepo_repo: "https://github.com/uhstray-io/agent-cloud.git"
     openbao_addr: "http://127.0.0.1:8200"
+    # Mac-side port the local Semaphore is published on (container side stays 3000).
+    # Change it in the gitignored working copy when another local app holds
+    # 127.0.0.1:3000; an integer 1024-65535. Re-run `make local-bootstrap` to apply.
+    local_semaphore_port: 3000
     # Genesis (Mac-direct) foundation deploys (§12A) place the repo like every
     # composable deploy: rsync local_workspace_dir (the working tree) into a
     # SEPARATE writable copy at local_monorepo_dir, then run deploy.sh from
