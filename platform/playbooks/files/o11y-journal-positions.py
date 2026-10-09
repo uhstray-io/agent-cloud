@@ -254,12 +254,12 @@ def fd_mount_id(fd):
             if line.startswith("mnt_id:"): return int(line.split()[1])
     raise ValueError
 def mount_ids():
-    found={}
+    found=set()
     with open("/proc/self/mountinfo",encoding="utf-8") as stream:
         for line in stream:
             left=line.split(" - ",1)[0].split()
             mount=re.sub(r"\\([0-7]{3})",lambda m:chr(int(m.group(1),8)),left[4])
-            found[mount]=int(left[0])
+            found.add(mount)
     return found
 root_fd=None
 try:
@@ -275,7 +275,7 @@ try:
     if root_state != expected["root"]: raise ValueError
     root_mount=fd_mount_id(root_fd)
     mounts=mount_ids()
-    if mounts.get(root)==root_mount: raise ValueError
+    if root in mounts: raise ValueError
     names=os.listdir(root_fd)
     if len(names)>32 or len(names)!=len(expected["children"]): raise ValueError
     for name,want in zip(sorted(names),expected["children"]):
@@ -296,6 +296,15 @@ try:
         if (got!=want or not stat.S_ISREG(item.st_mode) or item.st_nlink!=1
                 or child_mount!=root_mount or child_acl): raise ValueError
     if any("acl" in x.lower() for x in os.listxattr(root_fd)): raise ValueError
+    path_state=os.lstat(root)
+    pinned=os.fstat(root_fd)
+    expected_root=expected["root"]
+    path_root={"uid":path_state.st_uid,"gid":path_state.st_gid,"mode":stat.S_IMODE(path_state.st_mode),
+               "dev":path_state.st_dev,"ino":path_state.st_ino}
+    pinned_root={"uid":pinned.st_uid,"gid":pinned.st_gid,"mode":stat.S_IMODE(pinned.st_mode),
+                 "dev":pinned.st_dev,"ino":pinned.st_ino}
+    if path_root!=expected_root or pinned_root!=expected_root: raise ValueError
+    if os.path.realpath(root)!=root: raise ValueError
     os.chown(root_fd,target_uid,target_gid)
     after=os.fstat(root_fd)
     after_state=(after.st_uid,after.st_gid,stat.S_IMODE(after.st_mode),after.st_dev,after.st_ino)
@@ -304,6 +313,52 @@ try:
     print(json.dumps({"status":"changed"}))
 except (OSError,ValueError,IndexError):
     print(json.dumps({"status":"refused"}))
+finally:
+    if root_fd is not None: os.close(root_fd)
+'''
+
+_CHMOD_PENDING_SCRIPT = r'''import json,os,re,stat,sys
+root=sys.argv[1]
+expected=json.loads(sys.argv[2])
+target_mode=int(sys.argv[3])
+root_fd=None
+mutation_started=False
+try:
+    before=os.lstat(root)
+    if not stat.S_ISDIR(before.st_mode) or os.path.realpath(root)!=root: raise ValueError
+    root_fd=os.open(root,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC)
+    st=os.fstat(root_fd)
+    if (st.st_dev,st.st_ino)!=(before.st_dev,before.st_ino): raise ValueError
+    state={"uid":st.st_uid,"gid":st.st_gid,"mode":stat.S_IMODE(st.st_mode),
+           "dev":st.st_dev,"ino":st.st_ino}
+    if state!=expected["root"] or os.listdir(root_fd): raise ValueError
+    if target_mode != (state["mode"] & ~0o022) or target_mode == state["mode"]: raise ValueError
+    if state["mode"] & 0o700 != 0o700 or state["mode"] & 0o7000: raise ValueError
+    if any("acl" in name.lower() for name in os.listxattr(root_fd)): raise ValueError
+    mounts=set()
+    with open("/proc/self/mountinfo",encoding="utf-8") as stream:
+        for line in stream:
+            left=line.split(" - ",1)[0].split()
+            mount=re.sub(r"\\([0-7]{3})",lambda m:chr(int(m.group(1),8)),left[4])
+            mounts.add(mount)
+    if root in mounts: raise ValueError
+    path_state=os.lstat(root)
+    pinned=os.fstat(root_fd)
+    path_state={"uid":path_state.st_uid,"gid":path_state.st_gid,"mode":stat.S_IMODE(path_state.st_mode),
+                "dev":path_state.st_dev,"ino":path_state.st_ino}
+    pinned_state={"uid":pinned.st_uid,"gid":pinned.st_gid,"mode":stat.S_IMODE(pinned.st_mode),
+                  "dev":pinned.st_dev,"ino":pinned.st_ino}
+    if path_state!=expected["root"] or pinned_state!=expected["root"]: raise ValueError
+    if os.path.realpath(root)!=root: raise ValueError
+    mutation_started=True
+    os.fchmod(root_fd,target_mode)
+    after=os.fstat(root_fd)
+    expected_after=(state["uid"],state["gid"],target_mode,state["dev"],state["ino"])
+    actual_after=(after.st_uid,after.st_gid,stat.S_IMODE(after.st_mode),after.st_dev,after.st_ino)
+    if actual_after!=expected_after: raise ValueError
+    print(json.dumps({"status":"changed"}))
+except Exception:
+    print(json.dumps({"status":"uncertain" if mutation_started else "refused"}))
 finally:
     if root_fd is not None: os.close(root_fd)
 '''
@@ -833,6 +888,25 @@ def _change_root(found, target_uid=0, target_gid=0, run=subprocess.run):
     )
 
 
+def _reduce_pending_root_mode(found, target_mode, run=subprocess.run):
+    expected = found["metadata"]
+    result = _call(
+        ["podman", "unshare", "python3", "-c", _CHMOD_PENDING_SCRIPT,
+         found["mountpoint"], json.dumps(expected, sort_keys=True), str(target_mode)],
+        timeout=20,
+        run=run,
+    )
+    value = _json(result)
+    if (
+        result is not None
+        and result.returncode == 0
+        and isinstance(value, dict)
+        and value.get("status") in {"changed", "refused", "uncertain"}
+    ):
+        return value["status"]
+    return "uncertain"
+
+
 def _image_is_available(run=subprocess.run):
     result = _call(["podman", "image", "exists", IMAGE], run=run)
     return result is not None and result.returncode == 0
@@ -1071,8 +1145,36 @@ def _pending_empty(found, owner_mismatch=False):
     return all(checks[name] for name in required)
 
 
-def _repair_pending_positions(first, discover_fn, change_fn):
-    if not _pending_empty(first, owner_mismatch=True) or not _space_is_sufficient(first, require_storage=True):
+def _repair_pending_positions(first, discover_fn, change_fn, mode_change_fn):
+    first_metadata = first.get("metadata") if isinstance(first, dict) else None
+    if not isinstance(first_metadata, dict):
+        return {"status": "refused", "reason": "evidence_changed"}
+    first_root = first_metadata.get("root")
+    first_root = first_root if isinstance(first_root, dict) else {}
+    if (
+        (first_root.get("uid"), first_root.get("gid")) == (0, 0)
+        and _pending_empty(first)
+        and _space_is_sufficient(first, require_storage=True)
+    ):
+        return {"status": "already_correct", "reason": "owner_matches"}
+
+    checks = _pending_checks(first)
+    mode = first_root.get("mode")
+    mode_exception = (
+        type(mode) is int
+        and 0 <= mode <= 0o7777
+        and not checks["group_other_write_or_special_absent"]
+        and mode & 0o700 == 0o700
+        and mode & 0o7000 == 0
+        and mode & 0o022 != 0
+        and all(value for name, value in checks.items()
+                if name != "group_other_write_or_special_absent")
+        and _space_is_sufficient(first, require_storage=True)
+    )
+    if (
+        (not _pending_empty(first, owner_mismatch=True) and not mode_exception)
+        or not _space_is_sufficient(first, require_storage=True)
+    ):
         return {
             "status": "refused",
             "reason": "pending_volume_unsupported",
@@ -1083,16 +1185,29 @@ def _repair_pending_positions(first, discover_fn, change_fn):
     if original_volume is None or not _valid_created_at(first["volume"].get("CreatedAt")):
         return {"status": "refused", "reason": "volume_identity_unverified"}
 
-    def fresh_matches(current, owner):
-        root = current.get("metadata", {}).get("root", {})
+    def fresh_matches(current, owner, expected_mode=original["mode"], allow_mode_exception=False):
+        metadata = current.get("metadata") if isinstance(current, dict) else None
+        if not isinstance(metadata, dict) or metadata.get("status") != "observed":
+            return False
+        root = metadata.get("root")
+        if not isinstance(root, dict):
+            return False
+        current_checks = _pending_checks(current)
+        pending_safe = _pending_empty(current, owner_mismatch=owner != (0, 0))
+        if allow_mode_exception:
+            pending_safe = (
+                not current_checks["group_other_write_or_special_absent"]
+                and all(value for name, value in current_checks.items()
+                        if name != "group_other_write_or_special_absent")
+            )
         return (
-            _pending_empty(current, owner_mismatch=owner != (0, 0))
+            pending_safe
             and _space_is_sufficient(current, require_storage=True)
             and _volume_identity_tuple(current.get("volume")) == original_volume
             and current.get("volume_name") == first.get("volume_name")
             and current.get("mountpoint") == first.get("mountpoint")
             and current.get("project") == first.get("project")
-            and current.get("metadata", {}).get("root", {}).get("mode") == original["mode"]
+            and root.get("mode") == expected_mode
             and root.get("dev") == original["dev"]
             and root.get("ino") == original["ino"]
             and (root.get("uid"), root.get("gid")) == owner
@@ -1100,25 +1215,52 @@ def _repair_pending_positions(first, discover_fn, change_fn):
 
     fresh = discover_fn()
     owner = (original["uid"], original["gid"])
-    if not fresh_matches(fresh, owner) or _stable_metadata(fresh["metadata"]) != _stable_metadata(first["metadata"]):
+    if (
+        not fresh_matches(fresh, owner, allow_mode_exception=mode_exception)
+            or _stable_metadata(fresh["metadata"]) != _stable_metadata(first_metadata)
+    ):
         return {"status": "refused", "reason": "evidence_changed"}
 
     def recover():
         return {"status": "uncertain", "reason": "first_mount_history_unproven"}
 
     try:
-        if not change_fn(fresh):
+        owner_change_input = fresh
+        expected_mode = original["mode"]
+        if mode_exception:
+            target_mode = original["mode"] & ~0o022
+            mode_result = mode_change_fn(fresh, target_mode)
+            if mode_result == "refused":
+                return {"status": "refused", "reason": "evidence_changed"}
+            if mode_result != "changed":
+                return recover()
+            mode_verified = discover_fn()
+            expected_metadata = {
+                **fresh["metadata"],
+                "root": {**fresh["metadata"]["root"], "mode": target_mode},
+                "component_layout": target_mode & (0o022 | 0o7000) == 0,
+            }
+            if (
+                not fresh_matches(mode_verified, owner, expected_mode=target_mode)
+                or _stable_metadata(mode_verified["metadata"]) != _stable_metadata(expected_metadata)
+                or mode_verified["metadata"]["children"] != []
+            ):
+                return recover()
+            owner_change_input = mode_verified
+            expected_mode = target_mode
+
+        if not change_fn(owner_change_input):
             return recover()
         verified = discover_fn()
         if (
-            not fresh_matches(verified, (0, 0))
-            or verified["metadata"]["root"]["mode"] != original["mode"]
+            not fresh_matches(verified, (0, 0), expected_mode=expected_mode)
+            or verified["metadata"]["root"]["mode"] != expected_mode
             or verified["metadata"]["children"] != []
         ):
             return recover()
         mount_gate = discover_fn()
         if (
-            not fresh_matches(mount_gate, (0, 0))
+            not fresh_matches(mount_gate, (0, 0), expected_mode=expected_mode)
             or _stable_metadata(mount_gate["metadata"]) != _stable_metadata(verified["metadata"])
         ):
             return recover()
@@ -1133,10 +1275,11 @@ def repair_positions(
     access_test_fn=_access_test,
     restore_fn=lambda found, uid, gid: _change_root(found, uid, gid),
     image_available_fn=_image_is_available,
+    mode_change_fn=_reduce_pending_root_mode,
 ):
     first = discover_fn()
     if first.get("status") == "volume_initialization_pending":
-        return _repair_pending_positions(first, discover_fn, change_fn)
+        return _repair_pending_positions(first, discover_fn, change_fn, mode_change_fn)
     if first.get("status") != "observed":
         return {"status": "refused", "reason": first.get("status", "unavailable")}
     if not _space_is_sufficient(first):
