@@ -61,7 +61,7 @@ def test_unique_live_route_without_server_logging_is_classified_disabled():
 
 
 def test_live_logger_and_writer_are_classified_with_container_retention():
-    config = runtime(logs={"logger_names": {HOST: ["edge"]}})
+    config = runtime(logs={"logger_names": {HOST: "edge"}})
     config["logging"]["logs"] = {"edge": {"writer": {"output": "stdout"}}}
     config["logging"]["logs"]["default"] = {"writer": {"output": "discard"},
                                                 "exclude": ["http.log.access"]}
@@ -86,7 +86,7 @@ def test_matched_vars_handler_that_can_set_log_skip_refuses_classification():
 
 def test_exact_logger_name_precedes_matching_wildcard():
     config = runtime(logs={"logger_names": {
-        "*.example.test": "wildcard",
+        "*.inference.example.test": "wildcard",
         HOST: "exact",
     }})
     config["logging"]["logs"] = {
@@ -99,6 +99,81 @@ def test_exact_logger_name_precedes_matching_wildcard():
     report = audit.audit(data(config))
     assert report["access_logging"] == "enabled"
     assert report["sink_class"] == "container_stdout"
+
+
+def test_matching_wildcard_logger_precedes_exact_skip_host():
+    config = runtime(logs={"logger_names": {"*.inference.example.test": "edge"},
+                           "skip_hosts": [HOST]})
+    config["logging"]["logs"] = {
+        "edge": {"writer": {"output": "stdout"}},
+        "default": {"writer": {"output": "discard"},
+                    "exclude": ["http.log.access"]},
+    }
+    report = audit.audit(data(config, container_log_config='{"Type":"k8s-file","Config":{"max-size":"10m"}}'))
+    assert report["status"] == "classified"
+    assert report["access_logging"] == "enabled"
+    assert report["sink_class"] == "container_stdout"
+
+
+def test_caddy_logger_names_array_aggregates_all_configured_names():
+    config = runtime(logs={"logger_names": {HOST: ["edge", "audit"]}})
+    config["logging"]["logs"] = {
+        "edge": {"writer": {"output": "stdout"}},
+        "audit": {"writer": {"output": "stdout"}},
+        "default": {"writer": {"output": "discard"},
+                    "exclude": ["http.log.access"]},
+    }
+    report = audit.audit(data(config, container_log_config='{"Type":"k8s-file","Config":{"max-size":"10m"}}'))
+    assert report["status"] == "classified"
+    assert report["access_logging"] == "enabled"
+    assert report["sink_class"] == "container_stdout"
+
+
+def test_exact_access_logger_filter_can_disable_logging():
+    config = runtime(logs={"logger_names": {HOST: "edge"}})
+    config["logging"]["logs"] = {
+        "default": {"writer": {"output": "stderr"},
+                    "exclude": ["http.log.access"]}
+    }
+    report = audit.audit(data(config))
+    assert report["status"] == "classified"
+    assert report["access_logging"] == "disabled"
+    assert report["sink_class"] == "none"
+
+
+def test_discard_sink_is_reported_as_disabled_access_logging():
+    config = runtime(logs={"logger_names": {HOST: "edge"}})
+    config["logging"]["logs"] = {
+        "edge": {"writer": {"output": "discard"}},
+        "default": {"writer": {"output": "discard"},
+                    "exclude": ["http.log.access"]},
+    }
+    report = audit.audit(data(config))
+    assert report["status"] == "classified"
+    assert report["access_logging"] == "disabled"
+    assert report["sink_class"] == "discard"
+    assert report["finding"] == "access_logging_discarded"
+
+
+def test_missing_explicit_default_logger_includes_implicit_stderr_sink():
+    config = runtime(logs={"logger_names": {HOST: "edge"}})
+    config["logging"]["logs"] = {"edge": {"writer": {"output": "stdout"}}}
+    report = audit.audit(data(config))
+    assert report["status"] == "refused"
+    assert report["sink_class"] == "multiple"
+
+
+def test_logger_level_or_sampling_refuses_marker_classification():
+    for key, value in (("level", "ERROR"), ("sampling", {"interval": "1m"})):
+        config = runtime(logs={"logger_names": {HOST: "edge"}})
+        config["logging"]["logs"] = {
+            "edge": {"writer": {"output": "stdout"}, key: value},
+            "default": {"writer": {"output": "discard"},
+                        "exclude": ["http.log.access"]},
+        }
+        report = audit.audit(data(config))
+        assert report["status"] == "refused"
+        assert report["access_logging"] == "unknown"
 
 
 def test_ambiguous_live_route_fails_closed():
@@ -121,6 +196,72 @@ def test_conflicting_child_path_does_not_match_parent_callback_path():
     assert report["route_candidates"] == 0
 
 
+def test_unsupported_caddy_path_glob_refuses_instead_of_nonmatching():
+    config = runtime()
+    child = config["apps"]["http"]["servers"]["srv0"]["routes"][0]["handle"][0]["routes"][0]
+    child["match"][0]["path"] = ["*/callback"]
+    report = audit.audit(data(config))
+    assert report["status"] == "refused"
+    assert report["reason"] == "runtime_route_ambiguous"
+
+
+def test_caddy_path_matching_is_case_insensitive_for_canonical_paths():
+    config = runtime()
+    child = config["apps"]["http"]["servers"]["srv0"]["routes"][0]["handle"][0]["routes"][0]
+    child["match"][0]["path"] = ["/OIDC/CALLBACK"]
+    report = audit.audit(data(config))
+    assert report["status"] == "classified"
+    assert report["runtime_route_matches"] == 1
+
+
+def test_percent_escaped_callback_path_refuses_classification():
+    report = audit.audit(data(callback_uri=f"https://{HOST}/oidc/%63allback"))
+    assert report["status"] == "refused"
+    assert report["reason"] == "callback_path_unsupported"
+
+
+def test_file_sink_marker_is_not_applicable_even_if_seen_in_container_logs():
+    config = runtime(logs={"logger_names": {HOST: "edge"}})
+    config["logging"]["logs"] = {
+        "edge": {"writer": {"output": "file", "filename": "/private/logs/access.jsonl",
+                             "roll_keep": 4}},
+        "default": {"writer": {"output": "discard"},
+                    "exclude": ["http.log.access"]},
+    }
+    report = audit.audit(data(config, marker="synthetic-marker",
+                              container_log_tail="incidental synthetic-marker text"))
+    assert report["status"] == "classified"
+    assert report["sink_class"] == "file"
+    assert report["marker_in_bounded_container_logs"] == "not_applicable"
+
+
+def test_network_sink_does_not_claim_marker_absence_from_container_logs():
+    config = runtime(logs={"logger_names": {HOST: "edge"}})
+    config["logging"]["logs"] = {
+        "edge": {"writer": {"output": "net", "address": "logs.example.test:1234"}},
+        "default": {"writer": {"output": "discard"},
+                    "exclude": ["http.log.access"]},
+    }
+    report = audit.audit(data(config))
+    assert report["status"] == "classified"
+    assert report["sink_class"] == "network"
+    assert report["marker_in_bounded_container_logs"] == "not_applicable"
+
+
+def test_journald_null_config_is_explicitly_unverified_retention():
+    config = runtime(logs={"logger_names": {HOST: "edge"}})
+    config["logging"]["logs"] = {
+        "edge": {"writer": {"output": "stderr"}},
+        "default": {"writer": {"output": "discard"},
+                    "exclude": ["http.log.access"]},
+    }
+    report = audit.audit(data(config, container_log_config='{"Type":"journald","Config":null,"Size":"-1B"}'))
+    assert report["status"] == "refused"
+    assert report["access_logging"] == "enabled"
+    assert report["sink_class"] == "container_stderr"
+    assert report["retention"] == "host_retention_unverified"
+
+
 def test_runtime_route_to_a_different_upstream_fails_closed():
     config = runtime()
     route = config["apps"]["http"]["servers"]["srv0"]["routes"][0]
@@ -131,7 +272,7 @@ def test_runtime_route_to_a_different_upstream_fails_closed():
 
 
 def test_unknown_writer_fails_closed():
-    config = runtime(logs={"logger_names": {HOST: ["edge"]}})
+    config = runtime(logs={"logger_names": {HOST: "edge"}})
     config["logging"]["logs"] = {"edge": {"writer": {"output": "plugin"}}}
     report = audit.audit(data(config))
     assert report["status"] == "refused"
@@ -139,7 +280,7 @@ def test_unknown_writer_fails_closed():
 
 
 def test_missing_container_retention_read_fails_closed():
-    config = runtime(logs={"logger_names": {HOST: ["edge"]}})
+    config = runtime(logs={"logger_names": {HOST: "edge"}})
     config["logging"]["logs"] = {"edge": {"writer": {"output": "stderr"}}}
     report = audit.audit(data(config, container_log_config="unavailable"))
     assert report["status"] == "refused"
@@ -148,7 +289,14 @@ def test_missing_container_retention_read_fails_closed():
 
 
 def test_unverified_https_probe_does_not_claim_marker_absence():
-    report = audit.audit(data(probe_status=0, logs_read_ok=True))
+    config = runtime(logs={"logger_names": {HOST: "edge"}})
+    config["logging"]["logs"] = {
+        "edge": {"writer": {"output": "stdout"}},
+        "default": {"writer": {"output": "discard"},
+                    "exclude": ["http.log.access"]},
+    }
+    report = audit.audit(data(config, probe_status=0, logs_read_ok=True,
+                              container_log_config='{"Type":"k8s-file","Config":{"max-size":"10m"}}'))
     assert report["status"] == "classified"
     assert report["https_probe"] == "unverified"
     assert report["marker_in_bounded_container_logs"] == "unknown"

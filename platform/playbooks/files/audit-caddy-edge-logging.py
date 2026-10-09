@@ -27,13 +27,24 @@ def _source_blocks(source, host):
 
 
 def _path_matches(pattern, path):
+    if not isinstance(pattern, str) or not _literal_path_supported(path):
+        return None
     if pattern == "*":
         return True
-    if not isinstance(pattern, str):
+    if not _literal_path_supported(pattern) or "*" in pattern:
         return None
-    if pattern.endswith("*"):
-        return path.startswith(pattern[:-1])
-    return pattern == path
+    # Caddy v2.11.4 lower-cases ordinary path patterns and the request path.
+    return pattern.lower() == path.lower()
+
+
+def _literal_path_supported(path):
+    if not isinstance(path, str) or not path.startswith("/"):
+        return False
+    if not path.isascii() or any(char in path for char in ("%", "\\", "*", "?")):
+        return False
+    if "//" in path or any(part in {".", ".."} for part in path.split("/")):
+        return False
+    return re.fullmatch(r"/[A-Za-z0-9._~!$&'()+,;=:@/-]*", path) is not None
 
 
 def _route_branches(routes, host, path, parent_handlers=None):
@@ -62,7 +73,17 @@ def _route_branches(routes, host, path, parent_handlers=None):
                 continue
             if methods and "GET" not in methods:
                 continue
-            if hosts and not any(_host_match(h.lower(), host) for h in hosts):
+            host_results = []
+            for matcher_host in hosts:
+                if not isinstance(matcher_host, str):
+                    ambiguous = True
+                    host_results.append(None)
+                else:
+                    host_results.append(_host_match(matcher_host.lower(), host))
+            if any(result is None for result in host_results):
+                ambiguous = True
+                continue
+            if hosts and not any(host_results):
                 continue
             path_results = [_path_matches(p, path) for p in paths]
             if any(result is None for result in path_results):
@@ -106,21 +127,58 @@ def _host_match(pattern, host):
     if pattern == host:
         return True
     if pattern.startswith("*."):
+        if pattern.count("*") != 1 or not pattern[2:] or any(c in pattern[2:] for c in "{}?"):
+            return None
         return host.endswith(pattern[1:]) and host.count(".") == pattern.count(".")
+    if any(char in pattern for char in "*{}?"):
+        return None
     return False
 
 
-def _logger_matches(logger, pattern):
-    return logger == pattern or logger.startswith(pattern + ".")
+def _logger_allowed(logger, includes, excludes):
+    if not includes and not excludes:
+        return True
+    name = logger if logger in {"", "*", "."} else logger + "."
+    longest_accept = 0
+    if includes:
+        for namespace in includes:
+            if name.startswith(namespace + "."):
+                longest_accept = max(longest_accept, len(namespace))
+        if longest_accept == 0:
+            return False
+    longest_reject = 0
+    for namespace in excludes:
+        if (namespace == "*" and name != ".") or (namespace == "." and name == "."):
+            return False
+        if name.startswith(namespace + "."):
+            longest_reject = max(longest_reject, len(namespace))
+    if longest_reject > longest_accept:
+        return False
+    return longest_accept > longest_reject or (not includes and longest_reject == 0)
 
 
 def _mapped_logger(names_map, host):
+    def valid_names(value):
+        if isinstance(value, str):
+            return True
+        return (isinstance(value, list) and bool(value)
+                and all(isinstance(name, str) for name in value)
+                and len(set(value)) == len(value))
+
     if any(not isinstance(name, str) for name in names_map):
         return None, True
     exact = [value for name, value in names_map.items() if name.lower() == host]
     if exact:
-        return exact[0], len(exact) != 1
-    wildcard = [value for name, value in names_map.items() if _host_match(name.lower(), host)]
+        return exact[0], len(exact) != 1 or not valid_names(exact[0])
+    wildcard = []
+    for name, value in names_map.items():
+        matched = _host_match(name.lower(), host)
+        if matched is None:
+            return None, True
+        if matched:
+            if not valid_names(value):
+                return None, True
+            wildcard.append(value)
     if len(wildcard) > 1:
         return None, True
     return (wildcard[0], False) if wildcard else (None, False)
@@ -176,49 +234,46 @@ def _sink_summary(config, logger_names, podman_log_config):
     logs = logging.get("logs", {}) if isinstance(logging, dict) else None
     if not isinstance(logs, dict):
         return "unknown", "unknown"
+    if isinstance(logger_names, str):
+        logger_names = [logger_names]
+    if (not isinstance(logger_names, list) or not logger_names
+            or not all(isinstance(name, str) for name in logger_names)
+            or len(set(logger_names)) != len(logger_names)):
+        return "unknown", "unknown"
     targets = {"http.log.access" if name == "" else f"http.log.access.{name}"
                for name in logger_names}
-    writers = []
-    unknown_filter = False
-    for log in logs.values():
+    writer_records = []
+    for _, log in logs.items():
         if not isinstance(log, dict):
-            unknown_filter = True
-            continue
+            return "unknown", "unknown"
         includes, excludes = log.get("include", []), log.get("exclude", [])
-        if not isinstance(includes, list) or not isinstance(excludes, list):
-            unknown_filter = True
-            continue
-        admitted = not includes or any(_logger_matches(target, rule)
-                                       for target in targets for rule in includes)
-        rejected = any(_logger_matches(target, rule)
-                       for target in targets for rule in excludes)
-        if admitted and not rejected:
+        if (not isinstance(includes, list) or not isinstance(excludes, list)
+                or not all(isinstance(rule, str) for rule in includes + excludes)):
+            return "unknown", "unknown"
+        if any(_logger_allowed(target, includes, excludes) for target in targets):
+            # Level and sampling controls can suppress a particular callback.
+            if "level" in log or "sampling" in log:
+                return "unknown", "unknown"
             writer = log.get("writer")
             output = writer.get("output") if isinstance(writer, dict) else None
             if output not in {"stdout", "stderr", "file", "net", "discard"}:
-                unknown_filter = True
-            else:
-                writers.append(output)
-    if not writers and not logs:
-        # Caddy always has a default logger; its default writer is stderr.
-        writers = ["stderr"]
-    if unknown_filter:
-        return "unknown", "unknown"
-    if not writers:
-        return ("unknown", "unknown") if unknown_filter else ("none", "not_applicable")
+                return "unknown", "unknown"
+            writer_records.append((output, writer))
+    # Caddy always creates the structured default log when the config omits it.
+    if "default" not in logs:
+        writer_records.append(("stderr", {"output": "stderr", "implicit_default": True}))
+    if not writer_records:
+        return "none", "not_applicable"
     classes = {"stdout": "container_stdout", "stderr": "container_stderr",
                "file": "file", "net": "network", "discard": "discard"}
-    sinks = {classes[w] for w in writers}
+    sinks = {classes[output] for output, _ in writer_records}
     sink = next(iter(sinks)) if len(sinks) == 1 else "multiple"
     if len(sinks) > 1:
         return sink, "unknown"
     retention = "not_declared"
-    if "file" in writers:
-        if any(isinstance(log, dict)
-               and isinstance(log.get("writer"), dict)
-               and log["writer"].get("output") == "file"
-               and any(key in log["writer"] for key in ("roll_keep", "roll_keep_for", "roll_disabled"))
-               for log in logs.values()):
+    if sink == "file":
+        if all(any(key in writer for key in ("roll_keep", "roll_keep_for", "roll_disabled"))
+               for _, writer in writer_records):
             retention = "caddy_file_policy_declared"
     elif sink in {"container_stdout", "container_stderr"}:
         if isinstance(podman_log_config, str):
@@ -228,15 +283,27 @@ def _sink_summary(config, logger_names, podman_log_config):
                 return sink, "unknown"
         if not isinstance(podman_log_config, dict):
             return sink, "unknown"
-        options = podman_log_config.get("Config", {}) if isinstance(podman_log_config, dict) else {}
+        options = podman_log_config.get("Config")
+        if options is None:
+            options = {}
         if not isinstance(options, dict):
             return sink, "unknown"
         retention = ("container_limit_declared"
                      if any(k in options for k in ("max-size", "max-file"))
+                     else "host_retention_unverified"
+                     if podman_log_config.get("Type") == "journald"
                      else "not_declared")
     elif sink in {"network", "discard"}:
         retention = "sink_external_or_discarded"
     return sink, retention
+
+
+def _access_logging_status(sink):
+    if sink in {"none", "discard"}:
+        return "disabled"
+    if sink in {"unknown", "multiple"}:
+        return "unknown"
+    return "enabled"
 
 
 def audit(data):
@@ -244,6 +311,8 @@ def audit(data):
     if callback.scheme != "https" or not callback.hostname or callback.query or callback.fragment:
         return _unknown("invalid_callback_uri")
     host, path, port = callback.hostname.lower(), callback.path or "/", callback.port or 443
+    if not _literal_path_supported(path):
+        return _unknown("callback_path_unsupported")
     source = data.get("declared_sites", "")
     source_blocks = _source_blocks(source, host)
     if len(source_blocks) != 1:
@@ -297,24 +366,35 @@ def audit(data):
                 return _unknown("runtime_logger_mapping_ambiguous", source_blocks=1,
                                 declared_log_directives=source_log_directives,
                                 route_candidates=1)
-            if mapped is None and access_logs.get("skip_unmapped_hosts") is True:
-                access_logging, sink, retention = "disabled", "none", "not_applicable"
-            else:
-                if mapped is None:
-                    mapped = access_logs.get("default_logger_name", "")
-                names = [mapped] if isinstance(mapped, str) else mapped
-                if not isinstance(names, list) or not all(isinstance(name, str) for name in names):
+            if mapped is None:
+                skip_hosts = access_logs.get("skip_hosts", [])
+                skip_unmapped = access_logs.get("skip_unmapped_hosts", False)
+                if (not isinstance(skip_hosts, list)
+                        or not all(isinstance(skipped, str) for skipped in skip_hosts)
+                        or not isinstance(skip_unmapped, bool)):
                     access_logging, sink, retention = "unknown", "unknown", "unknown"
                 else:
-                    skip_hosts = access_logs.get("skip_hosts", [])
-                    if not isinstance(skip_hosts, list):
+                    skip_results = [_host_match(skipped.lower(), host) for skipped in skip_hosts]
+                    if any(result is None for result in skip_results):
                         access_logging, sink, retention = "unknown", "unknown", "unknown"
-                    elif any(_host_match(skipped.lower(), host) for skipped in skip_hosts):
+                    elif any(skip_results) or skip_unmapped:
                         access_logging, sink, retention = "disabled", "none", "not_applicable"
                     else:
-                        sink, retention = _sink_summary(config, names, data.get("container_log_config", {}))
-                        access_logging = ("enabled" if sink not in {"unknown", "none"}
-                                          else "disabled" if sink == "none" else "unknown")
+                        mapped = access_logs.get("default_logger_name", "")
+                        if not isinstance(mapped, str):
+                            access_logging, sink, retention = "unknown", "unknown", "unknown"
+                        else:
+                            sink, retention = _sink_summary(
+                                config, mapped, data.get("container_log_config", {})
+                            )
+                            access_logging = _access_logging_status(sink)
+            else:
+                # Caddy checks a matching logger_names host before skip_hosts;
+                # an explicit mapping therefore keeps access logging active.
+                sink, retention = _sink_summary(
+                    config, mapped, data.get("container_log_config", {})
+                )
+                access_logging = _access_logging_status(sink)
     marker = data.get("marker", "")
     log_tail = data.get("container_log_tail", "")
     marker_in_logs = bool(marker and marker in log_tail)
@@ -322,10 +402,12 @@ def audit(data):
     # HTTP status confirms a response; server headers are implementation detail.
     probe_ok = (isinstance(data.get("probe_status"), int)
                 and data.get("probe_status") in range(100, 600))
-    marker_status = ("yes" if marker_in_logs else
+    marker_status = ("not_applicable" if sink in {"file", "network", "multiple", "discard", "none"}
+                     else "yes" if marker_in_logs else
                      "no" if probe_ok and data.get("logs_read_ok") is True else "unknown")
+    retention_unverified = retention in {"unknown", "host_retention_unverified"}
     report = {
-        "status": "classified" if access_logging != "unknown" and retention != "unknown" else "refused",
+        "status": "classified" if access_logging != "unknown" and not retention_unverified else "refused",
         "source_site_blocks": 1,
         "declared_log_directives": source_log_directives,
         "runtime_servers": 1,
@@ -338,9 +420,10 @@ def audit(data):
         "marker_in_bounded_container_logs": marker_status,
     }
     if access_logging == "disabled":
-        report["finding"] = "access_logging_disabled"
+        report["finding"] = ("access_logging_discarded" if sink == "discard"
+                              else "access_logging_disabled")
     if report["status"] == "refused":
-        report["reason"] = ("retention_unavailable" if retention == "unknown"
+        report["reason"] = ("retention_unavailable" if retention_unverified
                              else "runtime_or_sink_unavailable")
     return report
 
