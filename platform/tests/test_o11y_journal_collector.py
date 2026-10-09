@@ -512,15 +512,23 @@ from ansible.parsing.dataloader import DataLoader
 plays = yaml.safe_load(open(sys.argv[1]))
 tasks = next(play for play in plays if play.get("name") == "Deploy the bounded journal collector")["tasks"]
 apply = next(task for task in tasks if task.get("name") == "Apply the collector and require exact-target Loki delivery")
+evidence = next(
+    task for task in apply["rescue"]
+    if task.get("name") == "Capture allow-listed collector health evidence before rollback"
+)
 classifier = next(
     task for task in apply["rescue"]
     if task.get("name") == "Classify collector inspect outcome without exposing stderr"
 )
+format_expression = evidence["ansible.builtin.command"]["argv"][3]
+rendered_format = Templar(loader=DataLoader(), variables={}).template(trust_as_template(format_expression))
 expression = classifier["ansible.builtin.set_fact"]["_journal_rollback_health_evidence_class"]
+classes = []
 for case in json.loads(sys.stdin.read()):
     variables = {"_journal_rollback_health_evidence": {key: case[key] for key in ("rc", "stderr", "stdout")}}
     result = Templar(loader=DataLoader(), variables=variables).template(trust_as_template(expression)).strip()
-    print(result)
+    classes.append(result)
+print(json.dumps({"format": rendered_format, "classes": classes}))
 '''
     temp_root = "/private/tmp" if Path("/private/tmp").is_dir() else tempfile.gettempdir()
     with tempfile.TemporaryDirectory(prefix="o11y-journal-templar-", dir=temp_root) as ansible_tmp:
@@ -539,7 +547,12 @@ for case in json.loads(sys.stdin.read()):
         )
 
     assert result.returncode == 0, result.stderr
-    assert result.stdout.splitlines() == [case["expected"] for case in cases]
+    rendered = json.loads(result.stdout)
+    assert rendered["format"] == (
+        "{{.State.Status}} {{with .State.Health}}{{.Status}} {{.FailingStreak}}"
+        "{{range .Log}} {{.ExitCode}}{{end}}{{end}}"
+    )
+    assert rendered["classes"] == [case["expected"] for case in cases]
     assert result.stderr == ""
 
 
