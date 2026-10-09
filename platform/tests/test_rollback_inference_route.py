@@ -631,6 +631,62 @@ def test_gateway_config_reads_apikey_enrolments_outside_the_llm_policy(env):
     _refused(env, "sneaky")
 
 
+@pytest.mark.parametrize(("which", "text", "reason"), [
+    ("config.yaml.previous", "llm: [unclosed\n  keyHash: sha256:aaaa1111\n", "not YAML"),
+    ("config.yaml.previous", "- keyHash: sha256:aaaa1111\n", "not a mapping"),
+    ("config.yaml.previous", "sha256:aaaa1111\n", "not a mapping"),
+    ("config.yaml", "llm: [unclosed\n  keyHash: sha256:bbbb2222\n", "not YAML"),
+    ("config.yaml", "- keyHash: sha256:bbbb2222\n", "not a mapping"),
+])
+def test_gateway_config_refuses_a_config_it_cannot_read_naming_the_file_and_never_its_content(env, which, text, reason):
+    """An unreadable config cannot be compared, so it fails closed with the file and the class of
+    the problem only (a parser error quotes the line it stopped at, which holds a key hash)."""
+    tmp = env[0]
+    good = _cfg(("workstation", "aaaa1111"))
+    (tmp / "gw" / "config.yaml").write_text(good)
+    (tmp / "gw" / "config.yaml.previous").write_text(good)
+    (tmp / "gw" / which).write_text(text)
+    live = (tmp / "gw" / "config.yaml").read_text()
+    rc, out = _run(env, mode="gateway-config")
+    assert rc != 0 and f"cannot read the enrolled identities of {which}: {reason}." in out, out
+    _hash_never_printed(out)
+    assert "unclosed" not in out
+    assert (tmp / "gw" / "config.yaml").read_text() == live and not _calls(tmp, "deploy")
+
+
+def test_a_failure_inside_the_credential_tasks_names_the_task_and_kind_of_error_only(env):
+    """no_log hides a failed result entirely, which made a template error undiagnosable. The
+    rescue shows which task failed and a fixed-vocabulary kind; the message (which can quote
+    config) and the config itself never reach the rescue's output. The failure is forced with
+    a gateway variable that renders through a filter that does not exist."""
+    tmp = env[0]
+    live = _cfg(("workstation", "aaaa1111"))
+    (tmp / "gw" / "config.yaml").write_text(live)
+    # legacy-shared is what makes the comparison read legacy_shared_expires.
+    (tmp / "gw" / "config.yaml.previous").write_text(
+        _cfg(("legacy-shared", "cccc3333"), ("sneaky-name-xyz", "dddd4444")))
+    rc, out = _run(env, mode="gateway-config", gateway={"legacy_shared_expires": "{{ 1 | no_such_filter_zzz }}"})
+    assert rc != 0, out
+    assert ("'Compare the previous config's enrolments with the live one's (credential-adjacent)' "
+            "failed with a filter plugin error; its output is hidden because it handles key material. "
+            "Nothing was changed.") in out, out
+    _hash_never_printed(out)
+    assert "sneaky-name-xyz" not in out, out
+    assert (tmp / "gw" / "config.yaml").read_text() == live and not _calls(tmp, "deploy")
+
+
+def test_identity_names_of_different_types_are_compared_as_text(env):
+    """A name that is an int in one file and a string in another used to make the sort raise."""
+    tmp = env[0]
+    (tmp / "gw" / "config.yaml").write_text(yaml.safe_dump({"llm": {"policies": {"apiKey": {"keys": [
+        {"keyHash": "sha256:aaaa1111", "metadata": {"name": 7}}]}}}}))
+    (tmp / "gw" / "config.yaml.previous").write_text(yaml.safe_dump({"llm": {"policies": {"apiKey": {"keys": [
+        {"keyHash": "sha256:aaaa1111", "metadata": {"name": 7}},
+        {"keyHash": "sha256:cccc3333", "metadata": {"name": "ghost"}},
+        {"keyHash": "sha256:dddd4444", "metadata": {"name": 9}}]}}}}))
+    _refused(env, "9", "ghost")
+
+
 TEMPLATE = playbook_yaml.REPO / "platform/services/agentgateway/deployment/templates/config.yaml.j2"
 
 
@@ -705,3 +761,35 @@ def test_the_gateway_upstream_defaults_to_the_gateway_bind_and_port(env):
     rc, out = _run(env, mode="restore", caddy={"caddy_managed_sites": sites, "inference_route_gateway_upstream": None},
                    gateway={"agw_bind": "gw-bind.example.test", "agw_port": "4100"})
     assert rc == 0 and f"{ADDRESS} dials gw-bind.example.test:4100 only (running config)." in out, out
+
+
+@pytest.mark.parametrize("mode", ["direct", "restore"])
+@pytest.mark.parametrize("bind", [None, "0.0.0.0", "::", ""])
+def test_an_undialable_gateway_bind_without_a_declared_upstream_is_refused_before_any_write(env, bind, mode):
+    tmp = env[0]
+    before = _route(tmp)
+    rc, out = _run(env, mode=mode, caddy={"inference_route_gateway_upstream": None},
+                   gateway={"agw_bind": bind})
+    assert rc != 0 and "inference_route_gateway_upstream is not declared" in out, out
+    assert "nothing was changed" in out and _route(tmp) == before and not _calls(tmp, "restart")
+
+
+@pytest.mark.parametrize("bind", [None, "0.0.0.0"])
+def test_a_declared_gateway_upstream_is_used_whatever_the_bind(env, bind):
+    rc, out = _run(env, mode="restore", gateway={"agw_bind": bind})
+    assert rc == 0 and f"{ADDRESS} dials {GATEWAY} only (running config)." in out, out
+
+
+@pytest.mark.parametrize("bind", [None, "0.0.0.0", "::", ""])
+@pytest.mark.parametrize("tags", [None, "verify"])
+def test_gateway_config_does_not_need_a_dialable_gateway_upstream_because_it_never_touches_caddy(env, bind, tags):
+    """The gateway-config drill runs where site-config declares no gateway upstream and the
+    gateway binds every interface: the route report names what it cannot recognise."""
+    tmp = env[0]
+    before = _route(tmp)
+    (tmp / "gw" / "config.yaml.previous").write_text("config: current\n")
+    rc, out = _run(env, mode="gateway-config", tags=tags, caddy={"inference_route_gateway_upstream": None},
+                   gateway={"agw_bind": bind})
+    assert rc == 0 and "inference_route_gateway_upstream is not declared" not in out, out
+    assert "the gateway upstream is undeclared" in out, out
+    assert _route(tmp) == before and not _calls(tmp, "restart")
