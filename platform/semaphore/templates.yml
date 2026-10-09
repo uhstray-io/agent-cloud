@@ -1821,6 +1821,18 @@ templates:
     # host. Reports coarse aggregate counts/bands only; no node, device, storage,
     # capacity value, or private identifier is visible. No selection or writes.
 
+  - name: Survey o11y Log Source (Dev)
+    playbook: platform/playbooks/survey-o11y-log-source.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for the read-only log-source survey"
+        type: string
+        required: true
+    # Reports fixed driver/source categories and counts only; no logs, paths,
+    # addresses, container identities, or stderr are exposed.
+
   - name: Reconcile o11y Backup Job (Dev)
     playbook: platform/playbooks/reconcile-o11y-backup-job.yml
     repository: agent-cloud dev

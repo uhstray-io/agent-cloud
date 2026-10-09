@@ -1502,3 +1502,37 @@ step. Static dashboard JSON and focused repository checks are the available
 evidence for this change; Grafana 11.4 rendering, Loki variable results, and
 current-state-to-error/task context correlation remain unverified until the
 Dev-bound Semaphore readback and dashboard inspection gate in OpenSpec task 7.4.
+
+2026-10-08 production Service Overview inspection over 6h showed Span and
+Conformance log-volume lines for `agentgateway`, while Recent container logs and
+Recent gateway access records were empty. This narrows the observed gap to those
+streams/selectors; it does not establish a Loki-wide outage. The Dev-bound
+`Survey o11y Log Source` workflow is a metadata-only receiver survey: it classifies
+the rootless Podman default and running o11y container log drivers, checks whether
+the current deploying user can read bounded metadata-only journald entries, and
+checks for a read-only Alloy journal-source mount. Journald readability is counted
+from the latest at most 100 matching metadata-only entries per container within
+the 15-minute query window; it is not a full-window volume count. A read-only
+mount and readable directory do not prove Alloy has a configured or working
+journal pipeline. Journal categories and counts cover only the current deploying
+user's user journal, not the system journal or a host-wide view. Any unknown
+running-container log driver makes the journal result unverified with a zero
+count; only known non-journald drivers produce unsupported. A zero-container
+listing, malformed or failed container inspect, or uncertain Alloy state refuses
+the survey with a fixed category rather than issuing a partial result. For
+verified journald containers, a failed read is unreadable, while timeout or
+malformed metadata is unverified. The implementation and focused tests are source
+evidence only; no Semaphore survey run or receiver result is claimed. Keep task 7.4 open until
+the reviewed Dev source survey and dashboard readback establish container-log
+source support or document its limitation. The survey does not explain or fix
+gateway OTLP access records: their `signal="access-log"` discriminator remains
+owned by the separate gateway change and must be verified there.
+
+The separate 24h conformance-table browser readback showed 18 tracked services
+and five current failed workflow-step states; task 3635 is a conformance
+dashboard receipt, not a receiver log-source survey run. These are latest step
+snapshots, not live service health; prior task failures can recur in later
+snapshots and long error bodies dominate the separate history panel. Keep that
+workflow-context/dashboard correction separate from the container log-source
+survey. Operator-confirmed Grafana Authentik sign-in succeeds; this narrows the
+authentication symptom but does not establish a cause for the missing streams.
