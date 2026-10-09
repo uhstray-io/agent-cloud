@@ -464,6 +464,24 @@
           failed_when: false
           check_mode: false
 
+        - name: Classify collector inspect outcome without exposing stderr
+          ansible.builtin.set_fact:
+            _journal_rollback_health_evidence_class: >-
+              {{
+                'container_missing'
+                if (_journal_rollback_health_evidence.rc | default(1) | int != 0 and
+                    ('no such container' in (_journal_rollback_health_evidence.stderr | default('', true) | lower) or
+                     'no container with name or id' in (_journal_rollback_health_evidence.stderr | default('', true) | lower)))
+                else 'permission_denied'
+                if (_journal_rollback_health_evidence.rc | default(1) | int != 0 and
+                    'permission denied' in (_journal_rollback_health_evidence.stderr | default('', true) | lower))
+                else 'inspect_failed'
+                if _journal_rollback_health_evidence.rc | default(1) | int != 0
+                else 'empty_formatted_fields'
+                if (_journal_rollback_health_evidence.stdout | default('', true) | trim | length == 0)
+                else 'fields_available'
+              }}
+
         - name: Capture the positions volume name before rollback
           ansible.builtin.command:
             argv:
@@ -533,7 +551,9 @@
             msg: >-
               The journal collector failed its exact-target delivery gate. Only that
               collector was removed from the boot-restart set when present. Sanitized
-              state/health/failing-streak/exit-code evidence: {{ _journal_rollback_health_evidence.stdout | default('unavailable') | trim }}.
+              inspect classification={{ _journal_rollback_health_evidence_class | default('unavailable') }};
+              Podman inspect rc={{ _journal_rollback_health_evidence.rc | default('unavailable') }};
+              state/health/failing-streak/exit-code evidence: {{ _journal_rollback_health_evidence.stdout | default('') | trim | default('unavailable', true) }}.
               All receiver data remains; positions-volume preservation was asserted
               when a collector with that mount existed.
 
