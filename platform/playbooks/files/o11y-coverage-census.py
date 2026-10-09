@@ -4,7 +4,7 @@
 import json
 import re
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 TARGET_ID = re.compile(r"^(service|agent|vm|guest|runner|network|dgx):[a-z][a-z0-9_-]{1,63}$")
@@ -50,14 +50,20 @@ def validate(targets):
             fail("target_id prefix must match target_type")
         if not isinstance(target["owner"], str) or not re.fullmatch(r"[a-z][a-z0-9_-]{1,63}", target["owner"]):
             fail("owner must be a bounded team label, not a person or address")
-        if not isinstance(target["environment"], str) or not re.fullmatch(r"[a-z][a-z0-9_-]{1,31}", target["environment"]):
+        environment_pattern = r"[a-z][a-z0-9_-]{1,31}"
+        if not isinstance(target["environment"], str) or not re.fullmatch(environment_pattern, target["environment"]):
             fail("environment must be a bounded inventory label")
         if not isinstance(identity, str) or not SERVICE_ID.fullmatch(identity):
             fail("service_identity must use the canonical service identity format")
         identities.setdefault(identity, []).append(target_id)
         if not isinstance(target["signals"], dict) or set(target["signals"]) - SIGNALS:
             fail("signals must be a mapping of supported signal names")
-        if not isinstance(target["runtime"], str) or not target["runtime"] or not isinstance(target["collection_method"], str) or not target["collection_method"]:
+        if (
+            not isinstance(target["runtime"], str)
+            or not target["runtime"]
+            or not isinstance(target["collection_method"], str)
+            or not target["collection_method"]
+        ):
             fail("runtime and collection_method are required labels")
         if not isinstance(target["budget"], dict) or not target["budget"]:
             fail("budget must be a non-empty mapping")
@@ -71,7 +77,9 @@ def validate(targets):
                 fail(f"{signal} must declare applicability")
             if not declaration["applicable"]:
                 exception = declaration.get("exception")
-                if not isinstance(exception, dict) or not all(exception.get(field) for field in ("reason", "reference")):
+                if not isinstance(exception, dict) or not all(
+                    exception.get(field) for field in ("reason", "reference")
+                ):
                     fail(f"{signal} requires a reviewed exception reason and reference when not applicable")
                 if not isinstance(exception["reference"], str) or not re.fullmatch(
                     r"(?:review/[1-9][0-9]*|semaphore/task/[1-9][0-9]*)", exception["reference"]
@@ -120,7 +128,7 @@ def receipt_status(target, signal, declaration, inventory_revision, repository_s
         return "incomplete"
     if observed.tzinfo is None or observed.utcoffset() is None:
         return "incomplete"
-    age = (now - observed.astimezone(timezone.utc)).total_seconds()
+    age = (now - observed.astimezone(UTC)).total_seconds()
     return "verified" if 0 <= age <= freshness else "stale"
 
 
@@ -138,7 +146,7 @@ def build_report(repo, inventory, repository_sha, now=None):
     if not isinstance(inventory.get("template_names", []), list):
         fail("template_names must be a list")
     ids, conflicts = validate(targets)
-    now = now or datetime.now(timezone.utc)
+    now = now or datetime.now(UTC)
     declared = {}
     for target in targets:
         declared.setdefault(target["service_identity"], []).append(target)
@@ -203,7 +211,7 @@ def build_report(repo, inventory, repository_sha, now=None):
             "service_identity": target["service_identity"],
             "coverage": "unverified",
             "identity_conflict": True,
-            "signals": {signal: "identity_conflict" for signal in sorted(SIGNALS)},
+            "signals": dict.fromkeys(sorted(SIGNALS), "identity_conflict"),
             "receipt_references": {
                 signal: target["signals"].get(signal, {}).get("receipt_reference")
                 for signal in sorted(SIGNALS)

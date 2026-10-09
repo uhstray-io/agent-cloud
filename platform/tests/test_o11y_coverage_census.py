@@ -1,7 +1,7 @@
 import importlib.util
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 SCRIPT = Path(__file__).parents[1] / "playbooks/files/o11y-coverage-census.py"
@@ -9,7 +9,7 @@ SPEC = importlib.util.spec_from_file_location("o11y_coverage_census", SCRIPT)
 CENSUS = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(CENSUS)
 
-NOW = datetime(2026, 10, 9, 12, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 10, 9, 12, 0, tzinfo=UTC)
 REPO_SHA = "a" * 40
 INVENTORY_REVISION = "b" * 40
 
