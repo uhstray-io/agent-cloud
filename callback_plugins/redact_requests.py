@@ -10,11 +10,21 @@ verbosity on ansible-core 2.16.18, 2.19.13 and 2.20.8 (docs/MISTAKES.md 4.6).
 This strips `invocation` from every nested result, at every verbosity, and leaves the top level
 to ansible-core's own rule; an unlabeled loop item, which is displayed as its label, is stripped
 the same way. Output is otherwise the default callback's, byte for byte.
+
+It also hides the error detail of a failed `no_log` task. ansible-core 2.19 moved the error
+out of the result dict into an object beside it, and the censoring that empties the result
+keeps that object: the default callback then prints "[ERROR]: Task failed", the exception's
+message, its whole "caused by" chain and the source context, all of which can carry a
+run-time value (a filter's input quoted in its own error, an assert's rendered `fail_msg`,
+a rendered argument quoted by the "Finalization of task args" failure). 2.18 printed nothing
+of the sort for a censored result. Reproduced on 2.20.8 with the fake secret of
+platform/tests/test_no_log_error_redaction.py; the same play on 2.18.15 prints none.
 Enabled for every run from the repository root by ansible.cfg (Semaphore runs from there).
 """
 
 from collections.abc import Mapping
 
+from ansible import constants as C
 from ansible.plugins.callback.default import CallbackModule as DefaultCallback
 
 DOCUMENTATION = """
@@ -43,6 +53,19 @@ def strip_nested_invocations(value, top=True):
     return value
 
 
+def is_no_log_result(result, task_result):
+    """True when `result` (a result dict) or its task is no_log.
+
+    `censored` is what ansible-core's own censoring leaves in a no_log result, including one that
+    failed before the module ran and so never carried `_ansible_no_log`.
+    """
+    return (
+        "censored" in result
+        or bool(result.get("_ansible_no_log"))
+        or getattr(task_result.task, "no_log", None) is True
+    )
+
+
 class CallbackModule(DefaultCallback):
     CALLBACK_VERSION = 2.0
     CALLBACK_TYPE = "stdout"
@@ -55,3 +78,19 @@ class CallbackModule(DefaultCallback):
         # A loop with no loop_control.label shows the item itself as its label, and that item
         # can be a registered result carrying its request (Codex review of PR #247).
         return strip_nested_invocations(super()._get_item_label(result), top=False)
+
+    def _handle_exception(self, result, use_stderr=False):
+        # ansible-core 2.19+ keeps the exception on the callback's current task result, beside
+        # the result dict; 2.18 has no such attribute and never displayed it for a censored
+        # result, so it is left to the parent there.
+        current = getattr(self, "_current_task_result", None)
+        if current is not None and current.exception and is_no_log_result(result, current):
+            result.pop("exception", None)
+            self._display.display(
+                f"[ERROR]: Task failed: '{current.task.get_name()}' "
+                "(details hidden: the task is no_log)",
+                color=C.COLOR_ERROR,
+                stderr=use_stderr,
+            )
+            return
+        super()._handle_exception(result, use_stderr=use_stderr)
