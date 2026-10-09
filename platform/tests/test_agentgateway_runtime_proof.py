@@ -190,6 +190,12 @@ def test_config_validation_precedes_container_lifecycle_and_suppresses_diagnosti
         assert ("--userns=keep-id:uid=65532,gid=65532" in command) == (tls and not local)
         assert ("1000:1000" in command) == (tls and local)
         assert ("SSL_CERT_FILE=/certs/step-ca-bundle.crt" in command) == local
+        network_args = [
+            arg for arg in command if arg == "--network" or arg.startswith("--network=")
+        ]
+        assert network_args == (["--network"] if local else [])
+        if local:
+            assert command[command.index("--network") + 1] == "local-dev"
 
 
 def test_validator_failure_diagnostics_use_only_fixed_exit_code_categories():
