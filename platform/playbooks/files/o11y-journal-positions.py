@@ -976,6 +976,12 @@ def _capacity_category(space, field, threshold):
     return "sufficient" if value >= threshold else "low"
 
 
+def _mode_bit_category(mode, mask, verified):
+    if not verified or type(mode) is not int or not 0 <= mode <= 0o7777:
+        return "unverified"
+    return "present" if mode & mask else "absent"
+
+
 def _pending_diagnostic(found):
     checks = _pending_checks(found)
     metadata = found.get("metadata")
@@ -989,6 +995,11 @@ def _pending_diagnostic(found):
         "group_other_write_or_special_bits": "unverified" if not mode_verified else (
             "absent" if checks["group_other_write_or_special_absent"] else "present"
         ),
+        "group_write": _mode_bit_category(mode, 0o020, mode_verified),
+        "other_write": _mode_bit_category(mode, 0o002, mode_verified),
+        "setuid": _mode_bit_category(mode, 0o4000, mode_verified),
+        "setgid": _mode_bit_category(mode, 0o2000, mode_verified),
+        "sticky": _mode_bit_category(mode, 0o1000, mode_verified),
         "volume_free_bytes": _capacity_category(
             metadata if isinstance(metadata, dict) and metadata.get("status") == "observed" else None,
             "free_bytes", MIN_FREE_BYTES,

@@ -52,11 +52,14 @@ def _assert_positions_survey_diagnostics_schema(report, has_reason=False):
     assert set(diagnostics["podman_version"]) == {"client", "server"}
     pending = report["pending_repair_diagnostic"]
     assert set(pending) == {
-        "owner_rwx", "group_other_write_or_special_bits", "volume_free_bytes",
+        "owner_rwx", "group_other_write_or_special_bits", "group_write", "other_write",
+        "setuid", "setgid", "sticky", "volume_free_bytes",
         "volume_free_inodes", "graphroot_free_bytes", "graphroot_free_inodes", "failed_checks",
     }
     assert pending["owner_rwx"] in {"complete", "incomplete", "unverified"}
     assert pending["group_other_write_or_special_bits"] in {"absent", "present", "unverified"}
+    for key in ("group_write", "other_write", "setuid", "setgid", "sticky"):
+        assert pending[key] in {"absent", "present", "unverified"}
     for key in ("volume_free_bytes", "volume_free_inodes", "graphroot_free_bytes", "graphroot_free_inodes"):
         assert pending[key] in {"sufficient", "low", "unverified"}
     assert len(pending["failed_checks"]) <= len(POSITIONS._PENDING_CHECK_NAMES)
@@ -993,14 +996,70 @@ def test_pending_diagnostic_distinguishes_mode_failures(mode, owner_rwx, unsafe_
     assert diagnostic["group_other_write_or_special_bits"] == unsafe_bits
 
 
+@pytest.mark.parametrize(
+    ("field", "mask"),
+    [("group_write", 0o020), ("other_write", 0o002), ("setuid", 0o4000), ("setgid", 0o2000), ("sticky", 0o1000)],
+)
+def test_pending_diagnostic_classifies_each_mode_bit(field, mask):
+    clear = POSITIONS._pending_diagnostic(_pending_case())
+    present = POSITIONS._pending_diagnostic(_pending_case(**{"metadata.root.mode": 0o700 | mask}))
+
+    assert clear[field] == "absent"
+    assert present[field] == "present"
+
+
+def test_individual_mode_bits_preserve_the_combined_failed_check():
+    diagnostic = POSITIONS._pending_diagnostic(_pending_case(**{"metadata.root.mode": 0o722}))
+
+    assert diagnostic["group_write"] == "present"
+    assert diagnostic["other_write"] == "present"
+    assert diagnostic["setuid"] == "absent"
+    assert diagnostic["setgid"] == "absent"
+    assert diagnostic["sticky"] == "absent"
+    assert diagnostic["failed_checks"] == ["group_other_write_or_special_absent"]
+
+
+@pytest.mark.parametrize("mode", [False, True, -1, 4096])
+def test_pending_diagnostic_marks_malformed_individual_mode_bits_unverified(mode):
+    found = _pending_case(**{"metadata.root.mode": mode})
+    legacy_found = _pending_case(**{"metadata.root.mode": int(mode)})
+    diagnostic = POSITIONS._pending_diagnostic(found)
+    legacy_diagnostic = POSITIONS._pending_diagnostic(legacy_found)
+
+    assert all(diagnostic[key] == "unverified" for key in (
+        "group_write", "other_write", "setuid", "setgid", "sticky",
+    ))
+    assert diagnostic["owner_rwx"] == legacy_diagnostic["owner_rwx"]
+    assert diagnostic["group_other_write_or_special_bits"] == legacy_diagnostic[
+        "group_other_write_or_special_bits"
+    ]
+    assert diagnostic["failed_checks"] == legacy_diagnostic["failed_checks"]
+    assert POSITIONS._pending_checks(found) == POSITIONS._pending_checks(legacy_found)
+    assert POSITIONS._pending_empty(found, owner_mismatch=True) == POSITIONS._pending_empty(
+        legacy_found, owner_mismatch=True
+    )
+
+
 def test_pending_diagnostic_keeps_unobserved_metadata_unverified():
     found = _pending_case(**{"metadata.status": "unavailable"})
     diagnostic = POSITIONS._pending_diagnostic(found)
     assert diagnostic["owner_rwx"] == "unverified"
     assert diagnostic["group_other_write_or_special_bits"] == "unverified"
+    assert all(diagnostic[key] == "unverified" for key in ("group_write", "other_write", "setuid", "setgid", "sticky"))
     assert diagnostic["volume_free_bytes"] == "unverified"
     assert diagnostic["volume_free_inodes"] == "unverified"
     assert "metadata_observed" in diagnostic["failed_checks"]
+
+
+def test_pending_diagnostic_marks_each_mode_bit_unverified_when_mode_is_missing():
+    found = _pending_case()
+    found["metadata"]["root"].pop("mode")
+
+    diagnostic = POSITIONS._pending_diagnostic(found)
+
+    assert all(diagnostic[key] == "unverified" for key in (
+        "group_write", "other_write", "setuid", "setgid", "sticky",
+    ))
 
 
 @pytest.mark.parametrize("filesystem", ["volume", "graphroot"])
@@ -1031,7 +1090,8 @@ def test_pending_diagnostic_is_read_only_and_sanitized(monkeypatch):
     report = POSITIONS.survey(lambda: found)
     diagnostic = report["pending_repair_diagnostic"]
     assert set(diagnostic) == {
-        "owner_rwx", "group_other_write_or_special_bits", "volume_free_bytes",
+        "owner_rwx", "group_other_write_or_special_bits", "group_write", "other_write",
+        "setuid", "setgid", "sticky", "volume_free_bytes",
         "volume_free_inodes", "graphroot_free_bytes", "graphroot_free_inodes", "failed_checks",
     }
     rendered = json.dumps(diagnostic)
@@ -2353,6 +2413,24 @@ def test_positions_survey_exception_keeps_bounded_receipt_schema(monkeypatch, ca
     }
     _assert_positions_survey_diagnostics_schema(report, has_reason=True)
     assert "private detail" not in json.dumps(report)
+
+
+def test_positions_check_mode_receipt_keeps_new_mode_fields_unverified():
+    plays = yaml.safe_load(PLAYBOOK.read_text())
+    survey_play = next(
+        play for play in plays
+        if play.get("name") == "Survey fixed standard journal directory candidates"
+    )
+    task = next(
+        task for task in survey_play["tasks"]
+        if task.get("name") == "Record positions-volume survey as unverified in check mode"
+    )
+    report = json.loads(task["ansible.builtin.set_fact"]["_journal_positions_survey"]["stdout"])
+
+    assert report["status"] == "check_mode_unverified"
+    assert all(report["pending_repair_diagnostic"][key] == "unverified" for key in (
+        "group_write", "other_write", "setuid", "setgid", "sticky",
+    ))
 
 
 def test_alloy_config_uses_only_the_fixed_bounded_selector_and_otlp():
