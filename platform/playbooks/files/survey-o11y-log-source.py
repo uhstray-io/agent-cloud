@@ -134,21 +134,52 @@ def journal_status(names, drivers):
 def alloy_source():
     container = inspect("o11y-alloy")
     if container is None:
-        return False
+        return None
+    state = container.get("State")
+    if not isinstance(state, dict) or state.get("Running") is not True:
+        return None
     mounts = container.get("Mounts")
     if not isinstance(mounts, list):
-        return False
+        return None
+    uncertain = False
     for mount in mounts:
         if not isinstance(mount, dict):
-            continue
+            return None
         destination = mount.get("Destination")
+        if destination not in JOURNAL_DESTINATIONS:
+            continue
+        writable = mount.get("RW")
+        if writable is True:
+            continue
+        if writable is not False:
+            uncertain = True
+            continue
         source = mount.get("Source")
-        if destination in JOURNAL_DESTINATIONS and isinstance(source, str) and source and mount.get("RW") is False:
-            rc, _ = run(
-                ["podman", "exec", "o11y-alloy", "sh", "-c", f"test -d {destination} && test -r {destination}"]
-            )
-            if rc == 0:
-                return True
+        if not isinstance(source, str) or not source:
+            uncertain = True
+            continue
+        rc, output = run(
+            [
+                "podman",
+                "exec",
+                "o11y-alloy",
+                "sh",
+                "-c",
+                f'if [ ! -d {destination} ]; then printf missing; '
+                f'elif [ ! -r {destination} ]; then printf unreadable; '
+                "else printf readable; fi",
+            ]
+        )
+        if rc is None or rc != 0:
+            uncertain = True
+            continue
+        probe = output.strip()
+        if probe == "readable":
+            return True
+        if probe not in {"missing", "unreadable"}:
+            uncertain = True
+    if uncertain:
+        return None
     return False
 
 
@@ -163,10 +194,15 @@ def survey():
     drivers = {}
     for name in names:
         container = inspect(name)
-        value = log_driver(container) if container is not None else "unknown"
+        if container is None:
+            return {"status": "unavailable", "reason": "container_metadata_unavailable"}
+        value = log_driver(container)
         drivers[name] = value
         counts[value] += 1
     journal, journal_count = journal_status(names, drivers)
+    alloy_mounted = alloy_source()
+    if alloy_mounted is None:
+        return {"status": "unavailable", "reason": "alloy_source_unverified"}
     return {
         "status": "observed",
         "rootless_default_log_driver": default,
@@ -174,7 +210,7 @@ def survey():
         "running_log_driver_counts": counts,
         "journald_metadata_read": journal,
         "journald_metadata_entry_count": journal_count,
-        "alloy_read_only_journal_source_mounted": alloy_source(),
+        "alloy_read_only_journal_source_mounted": alloy_mounted,
     }
 
 

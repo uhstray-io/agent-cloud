@@ -26,6 +26,8 @@ def test_reports_only_driver_counts_and_bounded_journal_metadata(monkeypatch):
         if argv[:2] == ["podman", "ps"]:
             return 0, json.dumps([{"Names": ["o11y-loki", "private-container-id"]}])
         if argv[:5] == ["podman", "inspect", "--type", "container", "--format"]:
+            if argv[-1] == "o11y-alloy":
+                return 0, json.dumps([{"State": {"Running": True}, "Mounts": []}])
             return 0, json.dumps(
                 [{"HostConfig": {"LogConfig": {"Type": "journald"}}, "Mounts": []}]
             )
@@ -90,6 +92,8 @@ def test_journald_denial_is_a_fixed_category_and_non_journald_is_unsupported(mon
         if argv[:2] == ["podman", "ps"]:
             return 0, '[{"Names":["o11y-loki"]}]'
         if argv[:5] == ["podman", "inspect", "--type", "container", "--format"]:
+            if argv[-1] == "o11y-alloy":
+                return 0, '[{"State":{"Running":true},"Mounts":[]}]'
             return 0, '[{"HostConfig":{"LogConfig":{"Type":"journald"}},"Mounts":[]}]'
         if argv[0] == "journalctl":
             return 1, "secret token /private/path"
@@ -155,6 +159,27 @@ def test_malformed_running_container_rows_fail_closed_without_partial_counts(mon
     assert "private-container-id" not in json.dumps(report)
 
 
+@pytest.mark.parametrize(
+    ("inspect_rc", "inspect_output"),
+    [(1, "private inspect failure"), (0, "malformed private inspect JSON")],
+    ids=["inspect-failed", "inspect-malformed"],
+)
+def test_running_container_inspect_failure_fails_closed(monkeypatch, inspect_rc, inspect_output):
+    def failed_inspect(argv, timeout=8):
+        if argv[:3] == ["podman", "info", "--format"]:
+            return 0, '{"host":{"logDriver":"journald"}}'
+        if argv[:2] == ["podman", "ps"]:
+            return 0, '[{"Names":["o11y-loki"]}]'
+        if argv[:5] == ["podman", "inspect", "--type", "container", "--format"]:
+            return inspect_rc, inspect_output
+        raise AssertionError("unexpected command")
+
+    monkeypatch.setattr(SURVEY, "run", failed_inspect)
+    report = SURVEY.survey()
+    assert report == {"status": "unavailable", "reason": "container_metadata_unavailable"}
+    assert "private" not in json.dumps(report)
+
+
 def test_malformed_journal_json_is_unverified_and_never_reported(monkeypatch):
     def malformed(argv, timeout=8):
         if argv[0] == "journalctl":
@@ -208,28 +233,99 @@ def test_alloy_source_requires_read_only_mount_and_container_read_access(monkeyp
     def mounted(argv, timeout=8):
         if argv[:5] == ["podman", "inspect", "--type", "container", "--format"]:
             return 0, json.dumps(
-                [{"Mounts": [{"Source": "/private/journal", "Destination": "/run/log/journal", "RW": False}]}]
+                [
+                    {
+                        "State": {"Running": True},
+                        "Mounts": [
+                            {"Source": "/private/journal", "Destination": "/run/log/journal", "RW": False}
+                        ],
+                    }
+                ]
             )
         if argv[:4] == ["podman", "exec", "o11y-alloy", "sh"]:
             calls.append(argv)
-            return 0, ""
+            return 0, "readable"
         raise AssertionError("unexpected command")
 
     monkeypatch.setattr(SURVEY, "run", mounted)
     assert SURVEY.alloy_source() is True
     assert calls == [
-        ["podman", "exec", "o11y-alloy", "sh", "-c", "test -d /run/log/journal && test -r /run/log/journal"]
+        [
+            "podman",
+            "exec",
+            "o11y-alloy",
+            "sh",
+            "-c",
+            "if [ ! -d /run/log/journal ]; then printf missing; elif [ ! -r /run/log/journal ]; "
+            "then printf unreadable; else printf readable; fi",
+        ]
     ]
 
     def writable(argv, timeout=8):
         if argv[:5] == ["podman", "inspect", "--type", "container", "--format"]:
             return 0, json.dumps(
-                [{"Mounts": [{"Source": "/private/journal", "Destination": "/run/log/journal", "RW": True}]}]
+                [
+                    {
+                        "State": {"Running": True},
+                        "Mounts": [
+                            {"Source": "/private/journal", "Destination": "/run/log/journal", "RW": True}
+                        ],
+                    }
+                ]
             )
         raise AssertionError("writable mounts must not be probed")
 
     monkeypatch.setattr(SURVEY, "run", writable)
     assert SURVEY.alloy_source() is False
+
+
+@pytest.mark.parametrize("probe", ["missing", "unreadable"], ids=["directory-absent", "directory-unreadable"])
+def test_alloy_absent_mount_and_unreadable_directory_are_known_false(monkeypatch, probe):
+    monkeypatch.setattr(
+        SURVEY,
+        "inspect",
+        lambda name: {"State": {"Running": True}, "Mounts": []},
+    )
+    assert SURVEY.alloy_source() is False
+
+    monkeypatch.setattr(
+        SURVEY,
+        "inspect",
+        lambda name: {
+            "State": {"Running": True},
+            "Mounts": [{"Source": "/private/journal", "Destination": "/run/log/journal", "RW": False}],
+        },
+    )
+    monkeypatch.setattr(SURVEY, "run", lambda argv, timeout=8: (0, probe))
+    assert SURVEY.alloy_source() is False
+
+
+@pytest.mark.parametrize(
+    "container",
+    [None, {"State": {"Running": False}, "Mounts": []}, {"State": {"Running": True}, "Mounts": None}],
+    ids=["missing-or-uninspectable", "stopped", "malformed-mounts"],
+)
+def test_alloy_missing_stopped_or_uninspectable_is_unverified(monkeypatch, container):
+    monkeypatch.setattr(SURVEY, "inspect", lambda name: container)
+    assert SURVEY.alloy_source() is None
+
+
+def test_alloy_exec_invocation_failure_is_unverified_and_fails_survey_closed(monkeypatch):
+    container = {
+        "State": {"Running": True},
+        "Mounts": [{"Source": "/private/journal", "Destination": "/run/log/journal", "RW": False}],
+    }
+    monkeypatch.setattr(SURVEY, "inspect", lambda name: container)
+    monkeypatch.setattr(SURVEY, "run", lambda argv, timeout=8: (None, "private diagnostic"))
+    assert SURVEY.alloy_source() is None
+
+    monkeypatch.setattr(SURVEY, "default_driver", lambda: "journald")
+    monkeypatch.setattr(SURVEY, "running_containers", lambda: ["o11y-loki"])
+    monkeypatch.setattr(SURVEY, "journal_status", lambda names, drivers: ("no_entries", 0))
+    monkeypatch.setattr(SURVEY, "alloy_source", lambda: None)
+    report = SURVEY.survey()
+    assert report == {"status": "unavailable", "reason": "alloy_source_unverified"}
+    assert "private" not in json.dumps(report)
 
 
 def test_playbook_is_dev_bound_guarded_exact_head_and_read_only_in_check_mode():
