@@ -1,8 +1,11 @@
 import ast
 import hashlib
 import json
+import os
 import re
+import shutil
 import subprocess
+import tempfile
 import unittest
 from datetime import UTC, datetime
 from pathlib import Path
@@ -137,7 +140,6 @@ class CoverageContractTests(unittest.TestCase):
         self.assertLess(assert_index, selection_index)
         self.assertLess(selection_index, first_signal_query_index)
 
-        check = tasks[assert_index]["ansible.builtin.assert"]["that"]
         original_targets = [{
             "target_id": "service:alpha", "target_type": "service", "lifecycle": "deployed",
             "owner": "platform", "runtime": "podman", "service_identity": "alpha",
@@ -158,19 +160,64 @@ class CoverageContractTests(unittest.TestCase):
 
         expected = digest(original_targets)
         override_revision = digest(host_override_targets)
-        environment = jinja2.Environment()
-
-        def passes(targets, declared_revision, actual_revision):
-            values = {
-                "_coverage_inventory": {"revision": declared_revision, "targets": targets},
-                "expected_inventory_revision": expected,
-                "_receiver_inventory_revision": {"rc": 0, "stdout": actual_revision},
+        ansible_playbook = shutil.which("ansible-playbook")
+        self.assertIsNotNone(ansible_playbook, "ansible-playbook is required for delegated inventory coverage")
+        with tempfile.TemporaryDirectory(prefix="o11y-inventory-override-") as directory:
+            temp = Path(directory)
+            local_tmp, remote_tmp = temp / "local", temp / "remote"
+            local_tmp.mkdir()
+            remote_tmp.mkdir()
+            inventory = {
+                "all": {
+                    "vars": {"estate_coverage_inventory": {
+                        "revision": expected, "targets": original_targets,
+                    }},
+                    "children": {"o11y_svc": {"hosts": {"receiver": {
+                        "ansible_connection": "local",
+                        "estate_coverage_inventory": {
+                            "revision": override_revision, "targets": host_override_targets,
+                        },
+                    }}}},
+                },
             }
-            return all(environment.from_string("{{ " + condition + " }}").render(**values) == "True"
-                       for condition in check)
-
-        self.assertTrue(passes(original_targets, expected, expected))
-        self.assertFalse(passes(host_override_targets, override_revision, override_revision))
+            receiver_tasks = [tasks[recompute_index], tasks[assert_index]]
+            receiver_tasks[0]["ansible.builtin.command"]["argv"][1] = str(
+                ROOT / "platform/playbooks/files/o11y-coverage-census.py"
+            )
+            playbook = [{
+                "name": "Verify delegated receiver inventory digest",
+                "hosts": "o11y_svc",
+                "gather_facts": False,
+                "vars": {
+                    "_coverage_inventory": "{{ estate_coverage_inventory | default({}) }}",
+                    "o11y_verification_mode": "strict",
+                },
+                "tasks": receiver_tasks,
+            }]
+            inventory_path, playbook_path = temp / "inventory.yml", temp / "verify.yml"
+            inventory_path.write_text(yaml.safe_dump(inventory, sort_keys=False))
+            playbook_path.write_text(yaml.safe_dump(playbook, sort_keys=False))
+            environment = os.environ.copy()
+            environment.update(
+                ANSIBLE_LOCAL_TEMP=str(local_tmp),
+                ANSIBLE_REMOTE_TEMP=str(remote_tmp),
+                ANSIBLE_STDOUT_CALLBACK="default",
+                ANSIBLE_NOCOLOR="1",
+            )
+            result = subprocess.run(
+                [
+                    ansible_playbook,
+                    "-i", str(inventory_path),
+                    str(playbook_path),
+                    "-e", json.dumps({"expected_inventory_revision": override_revision}),
+                ],
+                cwd=ROOT,
+                env=environment,
+                capture_output=True,
+                text=True,
+                timeout=45,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout[-1200:] + result.stderr[-1200:])
 
     def test_strict_signal_observation_uses_the_query_and_is_unattributed(self):
         tasks = yaml.safe_load((ROOT / "platform/playbooks/tasks/o11y-coverage-target-receipt.yml").read_text())
