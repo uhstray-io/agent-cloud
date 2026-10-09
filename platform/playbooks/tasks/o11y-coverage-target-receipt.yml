@@ -24,7 +24,7 @@
       - -q
       - -O
       - "-"
-      - "http://prometheus:9090/api/v1/query?query={{ signal_selector | urlencode }}"
+      - "http://prometheus:9090/api/v1/query?query={{ (signal_selector ~ '[' ~ (observation_window_seconds | int) ~ 's]') | urlencode }}"
   register: _exact_prometheus
   changed_when: false
   check_mode: false
@@ -50,12 +50,13 @@
   ansible.builtin.assert:
     that:
       - _exact_receipt.status == 'success' if expected_signal != 'traces' else _exact_receipt.traces | default([]) | length > 0
-      - _exact_receipt.data.result | default([]) | length > 0 if expected_signal != 'traces' else _exact_receipt.traces | default([]) | length > 0
-      - expected_signal != 'health' or (_exact_receipt.data.result | map(attribute='value.1') | list | unique == ['1'])
-      - expected_signal not in ['metrics', 'health'] or (_exact_receipt.data.result | map(attribute='value.0') | map('float') | select('ge', (now(utc=true).timestamp() | int) - (freshness_seconds | int)) | list | length > 0)
-      - expected_signal != 'logs' or (_exact_receipt.data.result | map(attribute='stream.target_id') | list | unique == [expected_target_id])
+      - _exact_receipt.traces | default([]) | length > 0 if expected_signal == 'traces' else _exact_receipt.data.result | default([]) | length > 0
+      - expected_signal not in ['metrics', 'health'] or _exact_receipt.data.resultType == 'matrix'
       - expected_signal not in ['metrics', 'health'] or (_exact_receipt.data.result | map(attribute='metric.target_id') | list | unique == [expected_target_id])
-      - expected_signal != 'traces' or (_exact_receipt.traces | map(attribute='rootServiceName') | list | unique == [_coverage_target.service_identity])
+      - expected_signal not in ['metrics', 'health'] or (_exact_latest_samples | length > 0 and (_exact_latest_samples | selectattr('0', 'ge', (now(utc=true).timestamp() | int) - (freshness_seconds | int)) | list | length == _exact_latest_samples | length) and (_exact_latest_samples | selectattr('0', 'le', now(utc=true).timestamp() | int) | list | length == _exact_latest_samples | length))
+      - expected_signal != 'health' or (_exact_latest_samples | map(attribute='1') | list | unique == ['1'])
+      - expected_signal != 'logs' or (_exact_receipt.data.result | map(attribute='stream.target_id') | list | unique == [expected_target_id])
+      - expected_signal != 'traces' or _exact_receipt.traces | default([]) | length > 0
     fail_msg: >-
       {{ expected_target_id }} has no fresh verified {{ expected_signal }} signal in the declared observation window;
       sibling service labels do not count as an exact-target receipt.
@@ -66,6 +67,7 @@
         _exact_prometheus.stdout if expected_signal in ['metrics', 'health'] else
         _exact_traces.stdout
       ) | default('{}') | from_json }}
+    _exact_latest_samples: "{{ _exact_receipt.data.result | map(attribute='values') | map('sort', attribute='0') | map('last') | list }}"
 
 - name: Emit sanitized unattributed observation metadata
   ansible.builtin.set_stats:

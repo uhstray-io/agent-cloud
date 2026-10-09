@@ -256,6 +256,8 @@ def main():
         inventory = json.load(sys.stdin)
     except (json.JSONDecodeError, UnicodeDecodeError):
         fail("inventory input must be JSON")
+    if not isinstance(inventory, dict):
+        fail("inventory input must be a JSON object")
     report = build_report(Path(sys.argv[1]).resolve(), inventory, inventory.get("repository_sha", ""))
     print(json.dumps(report, sort_keys=True))
 
