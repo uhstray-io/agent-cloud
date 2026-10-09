@@ -216,6 +216,21 @@ def test_zero_journal_entries_are_distinct_from_unsupported(monkeypatch):
     assert SURVEY.journal_status(["o11y-loki"], {"o11y-loki": "json-file"}) == ("unsupported", 0)
 
 
+def test_unknown_container_driver_makes_journal_status_unverified_without_partial_counts(monkeypatch):
+    def must_not_query_journal(argv, timeout=8):
+        raise AssertionError("unknown drivers must prevent a partial journald count")
+
+    monkeypatch.setattr(SURVEY, "run", must_not_query_journal)
+    assert SURVEY.journal_status(
+        ["o11y-loki", "o11y-agentgateway"],
+        {"o11y-loki": "journald", "o11y-agentgateway": "unknown"},
+    ) == ("unverified", 0)
+    assert SURVEY.journal_status(
+        ["o11y-loki", "o11y-agentgateway"],
+        {"o11y-loki": "unknown", "o11y-agentgateway": "unknown"},
+    ) == ("unverified", 0)
+
+
 def test_command_helper_discards_stderr_from_its_return_value(monkeypatch):
     monkeypatch.setattr(
         SURVEY.subprocess,

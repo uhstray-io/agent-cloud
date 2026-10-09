@@ -100,6 +100,8 @@ def journal_entry_count(output, expected_name):
 
 
 def journal_status(names, drivers):
+    if any(drivers.get(name, "unknown") == "unknown" for name in names):
+        return "unverified", 0
     journal_names = [name for name in names if drivers.get(name) == "journald"]
     if not journal_names:
         return "unsupported", 0
