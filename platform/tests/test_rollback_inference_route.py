@@ -101,6 +101,15 @@ elif a[:2] == ["exec", "caddy"]:
     print((tmp / "live.json").read_text())
 elif a[:2] == ["exec", "agentgateway-db"]:
     sys.exit(0 if state.get("gateway_ready") else 1)
+elif a[:2] == ["image", "inspect"]:
+    print("sha256:" + "a" * 64)
+elif a[0] == "run" and "--validate-only" in a:
+    # The pinned image's validator: it reads the file mounted as /config.yaml and refuses a
+    # config carrying the marker INVALID (its diagnostics are never shown by the playbook).
+    mount = next(x for x in a if x.endswith(":/config.yaml:ro"))
+    sys.exit(1 if "INVALID" in Path(mount.split(":")[0]).read_text() else 0)
+elif a[0] == "inspect" and any("State.Status" in x for x in a) and a[-1] == "agentgateway":
+    print(state.get("container_state", "exited 1"))
 elif a[0] == "inspect" and a[-1] == "agentgateway":
     if not state.get("gateway_key"):
         sys.exit("no such container")
@@ -109,17 +118,23 @@ else:
     sys.exit("unexpected engine call: " + " ".join(a))
 """
 
-# deploy.sh recreates the gateway: its running environment becomes the rendered one.
+# deploy.sh recreates the gateway: its running environment becomes the rendered one. A config
+# carrying the marker BROKEN validates but never becomes ready: deploy.sh then fails as the real
+# one does ("readiness did not respond"), and each recreate records the config it ran on.
 DEPLOY = """#!/usr/bin/env bash
 echo deploy >> "$STUB_DIR/calls"
+head -n1 "$STUB_DIR/gw/config.yaml" >> "$STUB_DIR/deploy_configs"
 python3 - <<'PY'
-import json, os, re
+import json, os, re, sys
 from pathlib import Path
 d = Path(os.environ["STUB_DIR"])
 s = json.loads((d / "stub.json").read_text())
-s["gateway_ready"] = True
+s["gateway_ready"] = "BROKEN" not in (d / "gw" / "config.yaml").read_text()
 s["gateway_key"] = re.search(r"(?m)^VLLM_API_KEY=(.*)$", (d / "gw" / ".env").read_text()).group(1)
 (d / "stub.json").write_text(json.dumps(s))
+if not s["gateway_ready"]:
+    print("ERROR: agentgateway readiness did not respond within 90s")
+    sys.exit(1)
 PY
 """
 
@@ -518,6 +533,99 @@ def test_gateway_config_without_a_previous_config_is_refused(env):
     rc, out = _run(env, mode="gateway-config")
     assert rc != 0 and "config.yaml.previous does not exist" in out, out
     assert (tmp / "gw" / "config.yaml").read_text() == "config: current\n" and not _calls(tmp, "deploy")
+
+
+def _deploy_configs(tmp):
+    """The first line of config.yaml at each deploy.sh run, in order."""
+    path = tmp / "deploy_configs"
+    return path.read_text().splitlines() if path.exists() else []
+
+
+def _no_kept_copy(tmp):
+    assert not (tmp / "gw" / "config.yaml.rollback-from").exists()
+
+
+def test_gateway_config_validates_the_previous_config_with_the_pinned_image_before_recreating(env):
+    tmp = env[0]
+    (tmp / "gw" / "config.yaml.previous").write_text("config: previous\n")
+    rc, out = _run(env)
+    assert rc == 0, out
+    calls = (tmp / "calls").read_text().splitlines()
+    validate = [i for i, c in enumerate(calls) if c.startswith("run ") and "--validate-only" in c]
+    assert len(validate) == 1 and "config.yaml.previous:/config.yaml:ro" in calls[validate[0]], calls
+    assert validate[0] < calls.index("deploy"), calls
+
+
+@pytest.mark.parametrize("check", [False, True])
+def test_gateway_config_refuses_a_previous_the_pinned_image_rejects_and_changes_nothing(env, check):
+    tmp = env[0]
+    (tmp / "gw" / "config.yaml.previous").write_text("config: INVALID\n")
+    rc, out = _run(env, mode="gateway-config", check=check)
+    assert rc != 0, out
+    assert "The previous config does not validate against the pinned image; nothing was changed" in out, out
+    assert (tmp / "gw" / "config.yaml").read_text() == "config: current\n"
+    assert not _calls(tmp, "deploy") and not _deploy_configs(tmp)
+    _no_kept_copy(tmp)
+
+
+def test_a_dry_run_validates_the_previous_config_too_and_recreates_nothing(env):
+    tmp = env[0]
+    (tmp / "gw" / "config.yaml.previous").write_text("config: previous\n")
+    rc, out = _run(env, mode="gateway-config", check=True)
+    assert rc == 0, out
+    assert [c for c in _calls(tmp, "run ") if "--validate-only" in c]
+    assert not _calls(tmp, "deploy") and (tmp / "gw" / "config.yaml").read_text() == "config: current\n"
+    _no_kept_copy(tmp)
+
+
+def test_a_gateway_that_is_not_ready_on_the_previous_config_gets_the_replaced_one_back_and_the_run_fails(env):
+    tmp = env[0]
+    (tmp / "gw" / "config.yaml.previous").write_text("config: previous BROKEN\n")
+    rc, out = _run(env)
+    assert rc != 0, out
+    assert "the previous config did not become ready" in out and "was restored and is serving" in out, out
+    assert "gateway container: exited 1" in out, out
+    assert (tmp / "gw" / "config.yaml").read_text() == "config: current\n"
+    assert _deploy_configs(tmp) == ["config: previous BROKEN", "config: current"]
+    assert json.loads((tmp / "stub.json").read_text())["gateway_ready"] is True
+    # The previous config stays kept for the operator, the temporary copy is gone, and no logs were read.
+    assert (tmp / "gw" / "config.yaml.previous").read_text() == "config: previous BROKEN\n"
+    _no_kept_copy(tmp)
+    assert not _calls(tmp, "logs")
+
+
+def test_a_restore_that_does_not_become_ready_fails_naming_the_deploy_playbook(env):
+    tmp = env[0]
+    (tmp / "gw" / "config.yaml").write_text("config: current BROKEN\n")  # the replaced one is down too
+    (tmp / "gw" / "config.yaml.previous").write_text("config: previous BROKEN\n")
+    rc, out = _run(env)
+    assert rc != 0, out
+    assert "The restore ALSO failed: run Deploy agentgateway" in out and "is serving" not in out, out
+    assert _deploy_configs(tmp) == ["config: previous BROKEN", "config: current BROKEN"]
+    _no_kept_copy(tmp)
+
+
+def test_a_replaced_config_holding_a_raw_key_is_never_kept_so_no_restore_is_attempted(env):
+    tmp = env[0]
+    (tmp / "gw" / "config.yaml").write_text("config: current\nkeys:\n  - key: synthetic-raw-key-9\n")
+    (tmp / "gw" / "config.yaml.previous").write_text("config: previous BROKEN\n")
+    rc, out = _run(env)
+    assert rc != 0, out
+    assert "No earlier config could be restored" in out and "run Deploy agentgateway" in out, out
+    assert "synthetic-raw-key-9" not in out
+    assert _deploy_configs(tmp) == ["config: previous BROKEN"]
+    _no_kept_copy(tmp)
+
+
+def test_a_gateway_left_down_with_the_previous_config_already_in_place_fails_without_a_restore(env):
+    tmp = env[0]
+    (tmp / "gw" / "config.yaml").write_text("config: previous BROKEN\n")
+    (tmp / "gw" / "config.yaml.previous").write_text("config: previous BROKEN\n")
+    _state(tmp, gateway_ready=False)
+    rc, out = _run(env)
+    assert rc != 0 and "No earlier config could be restored" in out, out
+    assert _deploy_configs(tmp) == ["config: previous BROKEN"]
+    _no_kept_copy(tmp)
 
 
 def _cfg(*keys) -> str:

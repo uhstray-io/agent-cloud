@@ -13,6 +13,13 @@
 #   gateway-config  The gateway stays in the path. The rendered config that was live before
 #                   the last change (`config.yaml.previous` in the deploy directory) goes back
 #                   into place and the gateway is recreated on it. Caddy is not touched.
+#                   The previous config is first validated with the pinned gateway image
+#                   (tasks/agw-validate-config.yml, the deploy's own check, also under --check):
+#                   one that does not validate is refused with nothing changed. The config it
+#                   replaces is kept for the run as config.yaml.rollback-from (never when it
+#                   holds a raw key); if the gateway does not become ready on the previous
+#                   config, that one is put back, the gateway recreated on it, and the run
+#                   still FAILS, naming whether the restore held.
 #   direct          Publish the CURRENT vLLM key into each enrolled client's field in the
 #                   gateway's OpenBao path (`direct_<name>` beside `client_<name>`, handed out
 #                   through the same channel: backup-credentials-to-site-config.yml), THEN
@@ -387,6 +394,11 @@
     _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
     _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
     _probe: "{{ _engine }} exec agentgateway-db wget -q -O - -T 5"
+    _tls: "{{ agw_listener_tls | default(false) | bool }}"
+    # The config the put-back replaced was kept (a copy that holds hashes only) and can be
+    # restored. False under --check, when nothing differed, and when the copy held a raw key.
+    _rb_can_restore: >-
+      {{ _rb_kept is defined and _rb_kept is not skipped and (_rb_kept_raw.rc | default(-1)) == 1 }}
   tasks:
     - name: "Read the live and the previous rendered config"
       ansible.builtin.stat:
@@ -541,67 +553,200 @@
         quiet: true
       when: _rb_mode == 'gateway-config'
 
-    - name: "Put the previous config in place (only when it differs)"
-      # 0644 as the deploy renders it: the gateway runs as a non-root user, and the file
-      # holds hashes and names only (deploy-agentgateway.yml, _env_templates).
-      ansible.builtin.copy:
-        src: "{{ _deploy_dir }}/config.yaml.previous"
-        dest: "{{ _deploy_dir }}/config.yaml"
-        remote_src: true
-        mode: "0644"
-      register: _rb_cfg_copy
-      when:
-        - _rb_mode == 'gateway-config'
-        - _rb_cfg.results[0].stat.checksum | default('') != _rb_cfg.results[1].stat.checksum
-
-    # A run whose copy landed but whose recreate failed leaves the files equal and the gateway
-    # down; probing first makes the re-run recreate it rather than report "nothing to do".
-    - name: "Is the gateway ready now?"
-      ansible.builtin.shell: |
-        set -o pipefail
-        addr=$(CONTAINER_ENGINE="{{ _engine }}" "{{ _deploy_dir }}/gateway-addr.sh") || exit 1
-        {{ _probe }} "http://${addr}:19001/healthz/ready" >/dev/null
-      args:
-        executable: /bin/bash
-      register: _rb_ready_before
+    # Task 5.7's check, shared with the deploy: the pinned image must accept the config before
+    # any container is recreated on it. Runs under --check too (it only reads: a throwaway
+    # `run --rm` on a read-only mount), because the recreate it protects cannot be dry-run and
+    # a dry run that skips the step that failed proves nothing about it (docs/MISTAKES.md 3.14).
+    - name: "Read the deploy account's uid:gid for the local key owner"
+      ansible.builtin.command:
+        argv: [sh, -c, 'printf "%s:%s" "$(id -u)" "$(id -g)"']
+      register: _key_owner
       changed_when: false
-      failed_when: false
       check_mode: false
+      when: _rb_mode == 'gateway-config' and _tls and (local_mode | default(false) | bool)
+
+    - name: "Validate the previous config against the pinned image (tasks/agw-validate-config.yml)"
+      ansible.builtin.include_tasks: tasks/agw-validate-config.yml
+      vars:
+        _agw_vc_config: config.yaml.previous
+        _agw_vc_refusal: >-
+          The previous config does not validate against the pinned image; nothing was changed
+        _agw_vc_in_check_mode: true
       when: _rb_mode == 'gateway-config'
 
-    - name: "Recreate the gateway on the restored config (deploy.sh, container lifecycle only)"
-      ansible.builtin.shell: |
-        cd "{{ _deploy_dir }}"
-        bash deploy.sh --no-pull
-      environment:
-        CONTAINER_ENGINE: "{{ _engine }}"
-        LOCAL_MODE: "{{ 'true' if (local_mode | default(false) | bool) else '' }}"
-        COMPOSE_CMD: "{{ local_compose_cmd | default('') }}"
-      register: _rb_redeploy
-      changed_when: true
-      when:
-        - not ansible_check_mode
-        - _rb_mode == 'gateway-config'
-        - (_rb_cfg_copy is changed) or (_rb_ready_before.rc != 0)
+    - name: "Put the previous config back and recreate the gateway; restore what it replaced if it is not ready"
+      when: _rb_mode == 'gateway-config'
+      block:
+        # The config this run replaces, kept for the run only so a gateway that does not come
+        # ready on the previous one can be put back on it. Raw client keys are never kept
+        # (the deploy's rule for config.yaml.previous): a copy that holds one is dropped, and the
+        # failure then says no restore was possible.
+        - name: "Keep the config this run replaces (only when it differs and is about to be replaced)"
+          ansible.builtin.copy:
+            src: "{{ _deploy_dir }}/config.yaml"
+            dest: "{{ _deploy_dir }}/config.yaml.rollback-from"
+            remote_src: true
+            mode: "0644"
+          register: _rb_kept
+          when:
+            - not ansible_check_mode
+            - _rb_cfg.results[0].stat.exists
+            - _rb_cfg.results[0].stat.checksum | default('') != _rb_cfg.results[1].stat.checksum
 
-    - name: "Show deploy.sh output"
-      ansible.builtin.debug:
-        var: _rb_redeploy.stdout_lines
-      when: _rb_redeploy is not skipped
+        - name: "Does the kept copy carry a raw client key?"
+          ansible.builtin.command:
+            argv: [grep, -qE, '^[[:space:]]*- key:', "{{ _deploy_dir }}/config.yaml.rollback-from"]
+          register: _rb_kept_raw
+          changed_when: false
+          failed_when: false
+          check_mode: false
+          when: _rb_kept is not skipped
 
-    - name: "The gateway answers readiness on the restored config"
-      tags: [verify]
-      ansible.builtin.shell: |
-        set -o pipefail
-        addr=$(CONTAINER_ENGINE="{{ _engine }}" "{{ _deploy_dir }}/gateway-addr.sh") || exit 1
-        {{ _probe }} "http://${addr}:19001/healthz/ready" >/dev/null
-      args:
-        executable: /bin/bash
-      changed_when: false
-      check_mode: false
-      when:
-        - not ansible_check_mode
-        - _rb_mode == 'gateway-config'
+        - name: "Drop a kept copy that holds a raw key (rc 1 is no match; a read error counts as one)"
+          ansible.builtin.file:
+            path: "{{ _deploy_dir }}/config.yaml.rollback-from"
+            state: absent
+          changed_when: false
+          when: _rb_kept is not skipped and _rb_kept_raw.rc != 1
+
+        - name: "Put the previous config in place (only when it differs)"
+          # 0644 as the deploy renders it: the gateway runs as a non-root user, and the file
+          # holds hashes and names only (deploy-agentgateway.yml, _env_templates).
+          ansible.builtin.copy:
+            src: "{{ _deploy_dir }}/config.yaml.previous"
+            dest: "{{ _deploy_dir }}/config.yaml"
+            remote_src: true
+            mode: "0644"
+          register: _rb_cfg_copy
+          when:
+            - _rb_cfg.results[0].stat.checksum | default('') != _rb_cfg.results[1].stat.checksum
+
+        # From here the live config is the previous one: any failure below restores the kept one.
+        - name: "Recreate the gateway on the previous config and require it ready"
+          block:
+            # A run whose copy landed but whose recreate failed leaves the files equal and the
+            # gateway down; probing first makes the re-run recreate it rather than report
+            # "nothing to do".
+            - name: "Is the gateway ready now?"
+              ansible.builtin.shell: |
+                set -o pipefail
+                addr=$(CONTAINER_ENGINE="{{ _engine }}" "{{ _deploy_dir }}/gateway-addr.sh") || exit 1
+                {{ _probe }} "http://${addr}:19001/healthz/ready" >/dev/null
+              args:
+                executable: /bin/bash
+              register: _rb_ready_before
+              changed_when: false
+              failed_when: false
+              check_mode: false
+
+            - name: "Recreate the gateway on the restored config (deploy.sh, container lifecycle only)"
+              ansible.builtin.shell: |
+                cd "{{ _deploy_dir }}"
+                bash deploy.sh --no-pull
+              environment:
+                CONTAINER_ENGINE: "{{ _engine }}"
+                LOCAL_MODE: "{{ 'true' if (local_mode | default(false) | bool) else '' }}"
+                COMPOSE_CMD: "{{ local_compose_cmd | default('') }}"
+              register: _rb_redeploy
+              changed_when: true
+              when:
+                - not ansible_check_mode
+                - (_rb_cfg_copy is changed) or (_rb_ready_before.rc != 0)
+
+            - name: "Show deploy.sh output"
+              ansible.builtin.debug:
+                var: _rb_redeploy.stdout_lines
+              when: _rb_redeploy is not skipped
+
+            - name: "The gateway answers readiness on the restored config"
+              tags: [verify]
+              ansible.builtin.shell: |
+                set -o pipefail
+                addr=$(CONTAINER_ENGINE="{{ _engine }}" "{{ _deploy_dir }}/gateway-addr.sh") || exit 1
+                {{ _probe }} "http://${addr}:19001/healthz/ready" >/dev/null
+              args:
+                executable: /bin/bash
+              changed_when: false
+              check_mode: false
+              when: not ansible_check_mode
+          rescue:
+            # This rescue reads no logs: a config error can echo the value it rejected. Its whole
+            # diagnostic is the container's state and exit code, and only a fixed shape of them is
+            # shown. (deploy.sh itself prints a redacted log tail when its readiness wait fails,
+            # one task above; that output is its own and is not repeated here.)
+            - name: "Read the gateway container's state and exit code (nothing else)"
+              ansible.builtin.command:
+                argv: ["{{ _engine }}", inspect, --format, "{{ '{{.State.Status}} {{.State.ExitCode}}' }}", agentgateway]
+              register: _rb_state
+              changed_when: false
+              failed_when: false
+              check_mode: false
+
+            - name: "Put the config this run replaced back"
+              ansible.builtin.copy:
+                src: "{{ _deploy_dir }}/config.yaml.rollback-from"
+                dest: "{{ _deploy_dir }}/config.yaml"
+                remote_src: true
+                mode: "0644"
+              register: _rb_restore_copy
+              ignore_errors: true
+              when: _rb_can_restore | bool
+
+            - name: "Recreate the gateway on the config it replaced (deploy.sh, container lifecycle only)"
+              ansible.builtin.shell: |
+                cd "{{ _deploy_dir }}"
+                bash deploy.sh --no-pull
+              environment:
+                CONTAINER_ENGINE: "{{ _engine }}"
+                LOCAL_MODE: "{{ 'true' if (local_mode | default(false) | bool) else '' }}"
+                COMPOSE_CMD: "{{ local_compose_cmd | default('') }}"
+              register: _rb_restore_deploy
+              changed_when: true
+              failed_when: false
+              when:
+                - not ansible_check_mode
+                - _rb_can_restore | bool
+                - _rb_restore_copy is succeeded
+
+            - name: "Is the gateway ready on the config it replaced?"
+              ansible.builtin.shell: |
+                set -o pipefail
+                addr=$(CONTAINER_ENGINE="{{ _engine }}" "{{ _deploy_dir }}/gateway-addr.sh") || exit 1
+                {{ _probe }} "http://${addr}:19001/healthz/ready" >/dev/null
+              args:
+                executable: /bin/bash
+              register: _rb_restore_ready
+              changed_when: false
+              failed_when: false
+              check_mode: false
+              when:
+                - _rb_can_restore | bool
+                - _rb_restore_copy is succeeded
+
+            - name: "Fail the rollback, naming both outcomes"
+              vars:
+                _rb_shape: "{{ _rb_state.stdout | default('') | trim }}"
+                _rb_container: >-
+                  {{ _rb_shape if (_rb_shape is match('^[a-z]+ -?[0-9]+$')) else 'unavailable' }}
+              ansible.builtin.fail:
+                msg: >-
+                  gateway-config: the previous config did not become ready (gateway container:
+                  {{ _rb_container }}; this step reads state and exit code only, not logs).
+                  {% if _rb_restore_ready is defined and (_rb_restore_ready.rc | default(1)) == 0 %}The config it replaced was restored and is serving.
+                  Fix forward with deploy-agentgateway.yml; the previous config is still kept as
+                  config.yaml.previous.
+                  {% elif _rb_can_restore | bool %}The restore ALSO failed: run Deploy agentgateway
+                  (deploy-agentgateway.yml) to put the gateway back.
+                  {% else %}No earlier config could be restored (it was already the one in place, or it
+                  held a raw key): run Deploy agentgateway (deploy-agentgateway.yml) to put the gateway
+                  back.{% endif %}
+      always:
+        - name: "Remove the kept copy (it only ever lives for one run)"
+          ansible.builtin.file:
+            path: "{{ _deploy_dir }}/config.yaml.rollback-from"
+            state: absent
+          changed_when: false
+          when: not ansible_check_mode
 
     - name: "Report"
       ansible.builtin.debug:

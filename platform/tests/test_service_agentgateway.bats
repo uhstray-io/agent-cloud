@@ -263,6 +263,7 @@ keep = next(t for t in probe if "ansible.builtin.set_fact" in t)
 assert keep.get("no_log") is True and set(keep["ansible.builtin.set_fact"]["_agwp_out"]) == {"status", "content", "json", "msg"}
 PY
   python3 - "$PLAYBOOK" <<'PY'
+import os
 import sys
 import yaml
 plays = yaml.safe_load(open(sys.argv[1], encoding='utf-8'))
@@ -272,6 +273,9 @@ def walk(tasks):
         for key in ('block', 'rescue', 'always'):
             yield from walk(task.get(key))
 tasks = [task for play in plays for task in walk(play.get('tasks'))]
+# The pinned-image validation lives in the task file the deploy and the rollback share.
+shared = os.path.join(os.path.dirname(sys.argv[1]), 'tasks', 'agw-validate-config.yml')
+tasks += list(walk(yaml.safe_load(open(shared, encoding='utf-8'))))
 validation = next(task for task in tasks if task.get('name', '').startswith('Validate the rendered config'))
 no_log_tasks = {task.get('name') for task in tasks if task.get('no_log') is True}
 assert no_log_tasks == {

@@ -93,6 +93,7 @@ and why.
 | 3.11 | Made a deploy stop recreating containers without auditing a step that relied on it; a directory reset under a live bind mount emptied Authentik's custom blueprints in prod | Live state | 1 | Test (`test_no_bind_mount_dir_delete.py` + FORCE_RECREATE case in `test_compose_up_if_changed.bats`) |
 | 3.12 | Launched two `(Dev)` deploys through the API without `service_branch`; Semaphore applies survey defaults only in its form, so both hosts checked out `main` under Dev playbooks | Live state | 1 | Playbook guard (`assert-placement-branch.yml`) + launcher default fill + tests (`test_placement_branch_guard.py`, `test_semaphore_launch.py`, mutation-checked) |
 | 3.13 | The `dev` -> `main` promotion merge let the repo's delete-head-branch-on-merge setting delete `dev`, the long-lived integration branch; the main -> dev sync then failed | Live state | 1 | Ruleset (`protect-dev.json`, deletion rule) + test (`test_ruleset_protect_dev.py`); live since 2026-10-08 |
+| 3.14 | Ran a real rollback drill on the strength of a dry run that skips the step that failed; the gateway came up broken and stayed down ~6 minutes | Live state | 1 | Test (`test_rollback_inference_route.py`: validation before recreate, auto-restore on a failed readiness) |
 | 4.1 | `while read` silently dropped an unterminated final line | Data handling | 1 | Convention |
 | 4.2 | Stored `.env` values without stripping surrounding quotes | Data handling | 1 | Convention |
 | 4.3 | Used a real internal IP address as a test vector | Data leak | 1 | Pre-commit (existing) |
@@ -2212,6 +2213,38 @@ repos/uhstray-io/agent-cloud/rules/branches/dev` returns `deletion` and `non_fas
 and `.github/rulesets/check-drift.sh` reports `OK [protect-dev] live ruleset matches`. Still
 unverified: that it blocks the automatic head-branch deletion in practice; the next
 `dev` -> `main` promotion is the test.
+
+### 3.14 Ran a real rollback drill on the strength of a dry run that skips the step that failed
+
+**Occurrences: 1** — 2026-10-09
+
+**What happened.** On 2026-10-09 the `gateway-config` mode of "Rollback Inference Route (Dev)" was
+run for real on production (Semaphore task 3844) after its dry run (task 3843) passed. The run
+put `config.yaml.previous` in place and `deploy.sh --no-pull` recreated the gateway; the
+database container was healthy and `ERROR: agentgateway readiness did not respond within 90s`
+failed the run. The gateway stayed down for about six minutes, until Deploy agentgateway (Dev)
+(task 3846) restored the current config. The public route was unaffected: it went direct to
+vLLM. Why the previous config failed is not established.
+
+**Root cause.** The dry run was read as evidence for the real run, but check mode skips exactly
+the steps that could fail: the recreate and the readiness wait. The rollback also never asked
+the pinned gateway image whether it accepts the config it was about to start (the deploy does,
+before it recreates), and when the recreate failed nothing put the working config back, so
+recovery was a manual second run.
+
+**The rule.** A dry run proves only the steps check mode executes. Before a real run of a
+destructive step, list what the dry run skipped and cover each with a check that does run under
+`--check` (here: the pinned image's `--validate-only` on the config about to be started) or with
+a recovery that runs by itself (here: restore the replaced config and recreate on it). A step that
+replaces a working config keeps the old one for the run and puts it back when readiness fails,
+then still fails the run, naming whether the restore held.
+
+**Enforced by.** `platform/tests/test_rollback_inference_route.py`: a previous config the pinned
+image rejects is refused with nothing moved and no `deploy.sh` call, also under `--check`; a
+gateway that is not ready on the previous config gets the replaced config back and the run fails
+saying so; a restore that is not ready either fails naming Deploy agentgateway; a replaced config
+holding a raw key is never kept. Mutation-checked: skipping the validation fails the first set,
+skipping the restore fails the second, and treating a raw-key copy as restorable fails the last.
 
 ## 4. Data handling
 
