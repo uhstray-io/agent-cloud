@@ -51,7 +51,7 @@ and why.
 | 1.19 | A negative claim about a host's state from evidence that cannot establish it (widens 1.6) | Unverified claim | 1 | Convention |
 | 1.20 | Assumed Semaphore injected a task-id environment variable; the first production drill printed a blank receipt ID | Unverified runtime assumption | 1 | Test (o11y receipt checks) |
 | 1.21 | Said the live alert readback proved the inference alert groups; it filtered rule uids to `o11y_` and never read them, and no dashboard check covered the inference boards | Unverified claim | 1 | Test (`test_service_o11y.bats` readback mirror) |
-| 1.22 | Stated the runner's ansible-core version twice (2.16 from a relayed comment, then 2.20.8 from a compose default); the live server runs v2.17.31, whose image ships 2.18.15 | Unverified claim | 1 | Convention (version-report template + pinned CI proposed) |
+| 1.22 | Stated the runner's ansible-core version twice (2.16 from a relayed comment, then 2.20.8 from a compose default); the live server runs v2.17.31, whose image ships 2.18.15 | Unverified claim | 1 | CI pin (requirements-test.txt) + Convention |
 | 2.1 | Test compiled a pattern as raw file text, not as the runtime decodes it | False-green test | 1 | Test |
 | 2.2 | Test pinned the vulnerable form of a security check in place | False-green test | 1 | Test |
 | 2.3 | Negative assertion aborted under `set -e` because a no-match grep exits 1 | False-green test | 1 | Convention |
@@ -911,6 +911,10 @@ itself, which 1.14 did not mention, so it did not fire.
 **Enforced by.** Convention. Proposed (not built): a read-only Semaphore template that reports the
 runner's `ansible_version`, and a CI job pinned to that version (CI installs an unpinned
 ansible-core, 2.19 at the time, while the runner image ships 2.18).
+
+**Occurrence note, 2026-10-09 -- guard built.** CI now pins `ansible-core==2.20.8`
+(`platform/requirements-test.txt`) on Python 3.12, read live from the prod runner after the
+v2.19.11 upgrade (PR #519). The bump-together rule (runner image and CI pin) stays Convention.
 
 ## 2. Tests that would have passed for the wrong reason
 
