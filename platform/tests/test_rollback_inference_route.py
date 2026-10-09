@@ -730,11 +730,12 @@ def test_the_gateway_upstream_defaults_to_the_gateway_bind_and_port(env):
     assert rc == 0 and f"{ADDRESS} dials gw-bind.example.test:4100 only (running config)." in out, out
 
 
+@pytest.mark.parametrize("mode", ["direct", "restore"])
 @pytest.mark.parametrize("bind", [None, "0.0.0.0", "::", ""])
-def test_an_undialable_gateway_bind_without_a_declared_upstream_is_refused_before_any_write(env, bind):
+def test_an_undialable_gateway_bind_without_a_declared_upstream_is_refused_before_any_write(env, bind, mode):
     tmp = env[0]
     before = _route(tmp)
-    rc, out = _run(env, mode="restore", caddy={"inference_route_gateway_upstream": None},
+    rc, out = _run(env, mode=mode, caddy={"inference_route_gateway_upstream": None},
                    gateway={"agw_bind": bind})
     assert rc != 0 and "inference_route_gateway_upstream is not declared" in out, out
     assert "nothing was changed" in out and _route(tmp) == before and not _calls(tmp, "restart")
@@ -744,3 +745,18 @@ def test_an_undialable_gateway_bind_without_a_declared_upstream_is_refused_befor
 def test_a_declared_gateway_upstream_is_used_whatever_the_bind(env, bind):
     rc, out = _run(env, mode="restore", gateway={"agw_bind": bind})
     assert rc == 0 and f"{ADDRESS} dials {GATEWAY} only (running config)." in out, out
+
+
+@pytest.mark.parametrize("bind", [None, "0.0.0.0", "::", ""])
+@pytest.mark.parametrize("tags", [None, "verify"])
+def test_gateway_config_does_not_need_a_dialable_gateway_upstream_because_it_never_touches_caddy(env, bind, tags):
+    """The gateway-config drill runs where site-config declares no gateway upstream and the
+    gateway binds every interface: the route report names what it cannot recognise."""
+    tmp = env[0]
+    before = _route(tmp)
+    (tmp / "gw" / "config.yaml.previous").write_text("config: current\n")
+    rc, out = _run(env, mode="gateway-config", tags=tags, caddy={"inference_route_gateway_upstream": None},
+                   gateway={"agw_bind": bind})
+    assert rc == 0 and "inference_route_gateway_upstream is not declared" not in out, out
+    assert "the gateway upstream is undeclared" in out, out
+    assert _route(tmp) == before and not _calls(tmp, "restart")
