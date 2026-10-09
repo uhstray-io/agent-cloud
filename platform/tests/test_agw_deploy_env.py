@@ -8,9 +8,17 @@ a task in a play that targets the gateway host group, whose shell or command run
 must set `environment` to exactly "{{ _agw_deploy_env }}" and its play must load the vars
 file. The behavioural half is in test_rollback_inference_route.py (the recorded environment of
 both rollback recreates).
+
+The structural guard cannot see a caller in an included task file, in a play whose `hosts:` is a
+variable, or one that uses `ansible.builtin.script`. The text backstop covers them: every `*.yml`
+under platform/playbooks (tasks/ and vars/ included) that runs a deploy.sh and is recognisably the
+gateway's is counted, and the (file, count) set must equal KNOWN, so a new caller anywhere fails
+until it is added to KNOWN, where the structural check then covers it.
 """
 
 import copy
+import re
+from pathlib import Path
 
 import playbook_yaml
 import pytest
@@ -28,6 +36,30 @@ KNOWN = {
     "platform/playbooks/rollback-inference-route.yml": 2,  # the put-back and the restore
     "platform/playbooks/verify-agentgateway-runtime.yml": 1,  # --verify-only
 }
+
+
+PLAYBOOKS = REPO / "platform/playbooks"
+# A line that RUNS a deploy.sh (not one that names it in a task title or a comment).
+RUNS = re.compile(r"(?:\b(?:bash|sh|source|exec)[ ,\]]+|^\s*-?\s*|script:\s*)(?:\./)?(?:\S*/)?deploy\.sh\b")
+# What makes a file the gateway's: its name, a play that targets the gateway host group, or a
+# reference to the gateway's deployment directory. Other services' playbooks run an identical
+# `bash deploy.sh`; the text alone cannot tell them apart, these markers can.
+GATEWAY_NAME = re.compile(r"agentgateway|agw")
+GATEWAY_HOSTS = re.compile(r"^\s*-?\s*hosts:.*" + GROUP, re.M)
+GATEWAY_DIR = re.compile(r"^[^#\n]*agentgateway/deployment", re.M)
+
+
+def _text_callers(root: Path, base: Path) -> dict[str, int]:
+    """{path relative to base: deploy.sh runs} for the gateway's files under root."""
+    found: dict[str, int] = {}
+    for path in sorted(root.rglob("*.yml")):
+        text = path.read_text()
+        runs = sum(1 for line in text.splitlines() if not line.lstrip().startswith("#") and RUNS.search(line))
+        if not runs:
+            continue
+        if GATEWAY_NAME.search(path.name) or GATEWAY_HOSTS.search(text) or GATEWAY_DIR.search(text):
+            found[str(path.relative_to(base))] = runs
+    return found
 
 
 def _runs_deploy_sh(task) -> bool:
@@ -64,6 +96,39 @@ def test_the_known_gateway_deploy_sh_callers_are_all_found():
         counts[rel] = counts.get(rel, 0) + 1
     for rel, expected in KNOWN.items():
         assert counts.get(rel) == expected, f"{rel}: expected {expected} deploy.sh task(s), found {counts.get(rel)}"
+
+
+def test_no_gateway_deploy_sh_caller_exists_outside_the_known_set():
+    """The backstop: a new caller in any file under platform/playbooks, structural guard blind
+    spots included, changes this set and fails until it is added to KNOWN."""
+    assert _text_callers(PLAYBOOKS, REPO) == KNOWN
+
+
+def test_the_text_backstop_finds_callers_in_included_files_variable_hosts_and_scripts(tmp_path):
+    """The backstop itself, on synthetic playbooks: each way a caller can hide is counted, other
+    services' deploy.sh runs and mere mentions are not."""
+    root = tmp_path
+    (root / "tasks").mkdir()
+    cases = {
+        "tasks/agw-fake-restart.yml": "- shell: |\n    cd /x\n    bash deploy.sh --no-pull\n",  # name
+        "uses-hosts.yml": "- hosts: agentgateway_svc\n  tasks:\n    - command:\n        argv: [bash, deploy.sh]\n",
+        "variable-hosts.yml": (
+            '- hosts: "{{ t }}"\n  tasks:\n    - shell: cd services/agentgateway/deployment && bash deploy.sh\n'
+        ),
+        "tasks/runs-script.yml": "- hosts: agentgateway_svc\n  tasks:\n    - ansible.builtin.script: ./deploy.sh --x\n",
+        "deploy-other.yml": "- hosts: other_svc\n  tasks:\n    - shell: bash deploy.sh\n",
+        "comment-only.yml": (
+            "- hosts: agentgateway_svc\n  tasks:\n    # bash deploy.sh\n    - name: Show deploy.sh output\n"
+        ),
+    }
+    for name, text in cases.items():
+        (root / name).write_text(text)
+    assert _text_callers(root, root) == {
+        "tasks/agw-fake-restart.yml": 1,
+        "uses-hosts.yml": 1,
+        "variable-hosts.yml": 1,
+        "tasks/runs-script.yml": 1,
+    }
 
 
 def _violations(rel, play, task) -> list[str]:
