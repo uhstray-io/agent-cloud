@@ -47,9 +47,13 @@ stack and waits for Grafana to report healthy. Outside local mode it adds
   engine socket or alter receiver volumes. The Compose service has no dependencies;
   after apply, the playbook hashes IDs and states for all seven existing receiver
   containers and refuses success if any changed. The collector state lives in the
-  Compose named `journal-collector-state` volume; selecting `stop` stops and
-  removes only the pilot container, verifies it is absent from Podman's reboot restart
-  set, and verifies the volume remains. The playbook
+  Compose named `journal-collector-state` volume. Apply observes health for up to
+  three minutes, matching the Compose startup grace/retry window. A failed apply or
+  explicit `stop` force-removes only the exact pilot container without `-v`, then
+  verifies it is absent from Podman's reboot restart set and that its positions
+  volume remains. Failure output includes only container state, health state,
+  failing streak, and health-check exit codes; it excludes arbitrary check output.
+  The playbook
   passes `--no-deps` too, while the dependency-free service and receiver readback keep
   older podman-compose releases safe if they ignore that flag.
 

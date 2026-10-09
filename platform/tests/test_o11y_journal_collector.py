@@ -206,7 +206,7 @@ def test_playbook_guards_validation_delivery_and_non_destructive_rollback():
     validate = source.index("Validate the candidate config")
     apply = source.index("Start only the journal collector service")
     verify = source.index("Verify the exact bounded journal stream reached Loki")
-    stop = source.index("Stop only the running journal collector after a failed delivery gate")
+    stop = source.index("Force-remove only the failed collector while retaining positions")
 
     assert guard < reviewed < place < validate < apply < verify < stop
     assert "groups.get('o11y_svc', []) | length == 1" in source
@@ -214,7 +214,7 @@ def test_playbook_guards_validation_delivery_and_non_destructive_rollback():
     assert "Require the actual runtime to be rootless" in source
     assert "read -r -N 1 _ < \"$file\"" in source
     assert "expected_repository_sha" in source
-    assert "argv: [podman, stop" in source
+    assert "argv: [podman, rm, --force, --time, \"10\", o11y-journal-collector]" in source
     assert "podman rm -v" not in source
     assert "compose down" not in source
     assert "up, --no-deps, -d, journal-collector" in source
@@ -261,6 +261,10 @@ def test_playbook_guards_validation_delivery_and_non_destructive_rollback():
     assert loki_query["delay"] == 5
     assert "'&start='" in source  # keep freshness bound part of the Loki range request
 
+    health_poll = next(task for task in apply_block["block"] if task.get("name") == "Read the collector state")
+    assert health_poll["retries"] == 60
+    assert health_poll["delay"] == 3
+
     placement = next(
         task
         for task in apply_play["tasks"]
@@ -285,35 +289,40 @@ def test_playbook_guards_validation_delivery_and_non_destructive_rollback():
     stop_play = next(
         play for play in plays if play.get("name", "").startswith("Stop only the journal collector")
     )
-    stop_action = next(
+    stop_gate = next(
         task
         for task in stop_play["tasks"]
-        if task.get("name") == "Stop only the pilot collector if it is running"
+        if task.get("name") == "Leave the stop play when the reviewed action is survey or apply"
     )
-    assert "not ansible_check_mode" in stop_action["when"]
 
     start_task = next(
         task
         for task in apply_block["block"]
         if task.get("name") == "Start only the journal collector service"
     )
-    rollback_task = next(
+    rollback_evidence = next(
         task
         for task in apply_block["rescue"]
-        if task.get("name") == "Stop only the running journal collector after a failed delivery gate"
+        if task.get("name") == "Capture allow-listed collector health evidence before rollback"
     )
     assert "check_mode" not in start_task
     assert start_task["when"] == "not ansible_check_mode"
-    assert "check_mode" not in rollback_task
+    assert rollback_evidence["check_mode"] is False
+    evidence_format = " ".join(rollback_evidence["ansible.builtin.command"]["argv"])
+    assert ".State.Health" in evidence_format
+    assert ".State.Healthcheck" not in evidence_format
+    assert ".FailingStreak" in evidence_format
+    assert ".ExitCode" in evidence_format
+    assert ".Output" not in evidence_format
     rollback_remove = next(
         task
         for task in apply_block["rescue"]
-        if task.get("name") == "Remove the stopped journal collector container but retain positions"
+        if task.get("name") == "Force-remove only the failed collector while retaining positions"
     )
     rollback_volume_capture = next(
         task
         for task in apply_block["rescue"]
-        if task.get("name") == "Capture the positions volume name after stopping rollback target"
+        if task.get("name") == "Capture the positions volume name before rollback"
     )
     rollback_volume_readback = next(
         task
@@ -328,13 +337,18 @@ def test_playbook_guards_validation_delivery_and_non_destructive_rollback():
     assert rollback_remove["ansible.builtin.command"]["argv"] == [
         "podman",
         "rm",
+        "--force",
+        "--time",
+        "10",
         "o11y-journal-collector",
     ]
-    assert "_journal_rollback.rc" in " ".join(rollback_remove["when"])
-    assert apply_block["rescue"].index(rollback_task) < apply_block["rescue"].index(rollback_volume_capture)
+    assert "when" not in rollback_remove
+    assert apply_block["rescue"].index(rollback_evidence) < apply_block["rescue"].index(rollback_volume_capture)
+    assert apply_block["rescue"].index(rollback_volume_capture) < apply_block["rescue"].index(rollback_remove)
     assert apply_block["rescue"].index(rollback_remove) < apply_block["rescue"].index(rollback_volume_readback)
     assert ".Name" in " ".join(rollback_volume_capture["ansible.builtin.command"]["argv"])
     assert "_journal_rollback_volume_name.stdout" in rollback_volume_readback["ansible.builtin.command"]["argv"][3]
+    assert rollback_volume_readback["when"][0] == "_journal_rollback_volume_name.rc == 0"
     rollback_verify = next(
         task
         for task in apply_block["rescue"]
@@ -347,7 +361,7 @@ def test_playbook_guards_validation_delivery_and_non_destructive_rollback():
     stop_remove = next(
         task
         for task in stop_play["tasks"]
-        if task.get("name") == "Remove the stopped pilot container while preserving positions"
+        if task.get("name") == "Force-remove only the pilot container while preserving positions"
     )
     stop_readback = next(
         task
@@ -357,13 +371,16 @@ def test_playbook_guards_validation_delivery_and_non_destructive_rollback():
     assert stop_remove["ansible.builtin.command"]["argv"] == [
         "podman",
         "rm",
+        "--force",
+        "--time",
+        "10",
         "o11y-journal-collector",
     ]
     assert "not ansible_check_mode" in stop_remove["when"]
     stop_volume_capture = next(
         task
         for task in stop_play["tasks"]
-        if task.get("name") == "Read the positions volume state after stopping collector"
+        if task.get("name") == "Read the positions volume state before removing collector"
     )
     volume_readback = next(
         task
@@ -371,7 +388,8 @@ def test_playbook_guards_validation_delivery_and_non_destructive_rollback():
         if task.get("name") == "Read back the positions volume after stop"
     )
     assert ".Name" in " ".join(stop_volume_capture["ansible.builtin.command"]["argv"])
-    assert stop_play["tasks"].index(stop_action) < stop_play["tasks"].index(stop_volume_capture)
+    assert stop_play["tasks"].index(stop_gate) < stop_play["tasks"].index(stop_volume_capture)
+    assert stop_play["tasks"].index(stop_volume_capture) < stop_play["tasks"].index(stop_remove)
     assert stop_play["tasks"].index(stop_remove) < stop_play["tasks"].index(volume_readback)
     assert stop_readback["ansible.builtin.command"]["argv"][:3] == ["podman", "ps", "--all"]
     assert stop_readback["when"] == "not ansible_check_mode"
