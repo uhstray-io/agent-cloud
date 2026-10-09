@@ -99,7 +99,15 @@
     # type", pro Terraform-store factory); sqlite is the supported embedded
     # store. The -ansible variant ships ansible for task execution.
     _sem_image: "{{ local_semaphore_image | default('docker.io/semaphoreui/semaphore:v2.18.12-ansible2.16.5') }}"
-    _sem_url: "http://127.0.0.1:3000"
+    # Mac-side port Semaphore is published on. The container side stays 3000 (the
+    # Caddy route and every in-network caller name local-semaphore:3000); only the
+    # host publish moves. An inventory value lets the stack come up when another
+    # local app already holds 127.0.0.1:3000, the same way caddy_http_port does for
+    # 8088. Validated by the first Stage 0 task, before anything is started. No `true`
+    # on the default: it would also replace a set-but-falsy value (0, false, "") with
+    # 3000, and the validation would never see the mistake.
+    _sem_port: "{{ local_semaphore_port | default(3000) }}"
+    _sem_url: "http://127.0.0.1:{{ _sem_port }}"
     _sem_admin: localadmin
     _sem_admin_password: LOCAL_FAKE_semaphore_admin
     # The Semaphore repository points at the WORKING TREE, not GitHub — local
@@ -121,6 +129,21 @@
 
   tasks:
     # ── Stage 0: preflight ──────────────────────────────────────────────
+    - name: "Assert the local Semaphore host port is a usable unprivileged port"
+      # `| int | string` round-trips only a canonical decimal integer: int gives 0 for
+      # text, truncates 3100.5, and drops leading zeros, so each of those compares
+      # unequal to the original. A bad value is refused here, not after OpenBao is up.
+      ansible.builtin.assert:
+        that:
+          - (_sem_port | int | string) == (_sem_port | string)
+          - (_sem_port | int) >= 1024
+          - (_sem_port | int) <= 65535
+        fail_msg: >-
+          local_semaphore_port must be an integer from 1024 to 65535 (got
+          '{{ _sem_port }}'). It is the Mac-side port for Semaphore; set it in the
+          gitignored platform/inventory/local-dev.yml under all.vars.
+        quiet: true
+
     - name: "Assert podman machine is running"
       ansible.builtin.command: podman machine inspect --format '{{ "{{" }}.State{{ "}}" }}'
       register: _machine
@@ -204,6 +227,8 @@
         else
           echo running
         fi
+      args:
+        executable: /bin/bash   # `set -o pipefail` needs bash (Ubuntu /bin/sh is dash)
       register: _bao_start
       changed_when: "(_bao_start.stdout | trim) != 'running'"
       when: not ansible_check_mode
@@ -641,6 +666,8 @@
           podman exec {{ _stepca_name }} cat /etc/ssl/certs/ca-certificates.crt
           podman exec {{ _stepca_name }} cat /home/step/certs/root_ca.crt
         } > {{ _state_dir }}/step-ca-bundle.crt
+      args:
+        executable: /bin/bash   # `set -o pipefail` needs bash (Ubuntu /bin/sh is dash)
       register: _bundle
       changed_when: true
       when:
@@ -679,13 +706,21 @@
       # A write (sudo mkdir + chmod 1777 on the VM): skipped under --check.
       when: not ansible_check_mode
 
-    - name: "Recreate Semaphore if any required mount or label=disable is missing"
+    - name: "Recreate Semaphore if a required mount, label=disable or the host port is missing"
       ansible.builtin.shell: |
         set -o pipefail
         if podman container exists {{ _sem_name }}; then
           MOUNTS=$(podman inspect {{ _sem_name }} --format '{{ "{{" }}range .Mounts{{ "}}" }}{{ "{{" }}.Destination{{ "}}" }} {{ "{{" }}end{{ "}}" }}')
           SECOPT=$(podman inspect {{ _sem_name }} --format '{{ "{{" }}.HostConfig.SecurityOpt{{ "}}" }}')
           ENV=$(podman inspect {{ _sem_name }} --format '{{ "{{" }}json .Config.Env{{ "}}" }}')
+          PORTS=$(podman inspect {{ _sem_name }} --format '{{ "{{" }}json .HostConfig.PortBindings{{ "}}" }}')
+          # The host publish is fixed at container creation, so a changed
+          # local_semaphore_port only takes effect on a recreated container.
+          if ! echo "$PORTS" | grep -q '"HostPort":"{{ _sem_port }}"'; then
+            podman rm -f {{ _sem_name }}
+            echo recreated
+            exit 0
+          fi
           if ! echo "$MOUNTS" | grep -q '/run/podman/podman.sock' || \
              ! echo "$MOUNTS" | grep -q '{{ _repo_mount }}' || \
              ! echo "$MOUNTS" | grep -q '{{ _deploy_share }}' || \
@@ -705,6 +740,9 @@
           fi
         fi
         echo ok
+      args:
+        # pipefail is not POSIX: dash (the /bin/sh on Linux) rejects `set -o pipefail`.
+        executable: /bin/bash
       environment:
         WANT_OIDC: "{{ _oidc_ready | bool | lower }}"
       register: _sem_recreate
@@ -716,7 +754,7 @@
         if ! podman container exists {{ _sem_name }}; then
           podman volume exists local-semaphore-data || podman volume create local-semaphore-data
           podman run -d --name {{ _sem_name }} --network {{ _net }} \
-            -p 127.0.0.1:3000:3000 \
+            -p 127.0.0.1:{{ _sem_port }}:3000 \
             -v local-semaphore-data:/var/lib/semaphore \
             -v /run/podman/podman.sock:/run/podman/podman.sock \
             -v {{ _repo_host_dir }}:{{ _repo_mount }}:ro \

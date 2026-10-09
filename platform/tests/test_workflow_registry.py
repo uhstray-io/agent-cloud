@@ -106,22 +106,81 @@ def test_conformance_collection_and_dashboard_absence_are_explicit():
 
     conformance = json.loads(CONFORMANCE_DASHBOARD.read_text())
     stats = {panel["title"]: panel for panel in conformance["panels"] if panel["type"] == "stat"}
-    assert stats["Recent failed step reports"]["fieldConfig"]["defaults"]["noValue"] == "No recent data"
+    assert stats["Current failed step states"]["fieldConfig"]["defaults"]["noValue"] == "No recent data"
     assert stats["Services tracked"]["fieldConfig"]["defaults"]["noValue"] == "No recent data"
-    failure_query = stats["Recent failed step reports"]["targets"][0]["expr"]
-    assert 'status="fail"' in failure_query
-    assert 'or (sum(count_over_time({job="agent-cloud-conformance"} [16m])) * 0)' in failure_query
-    assert "No conformance records in the window" in stats["Recent failed step reports"]["description"]
-    assert "latest recorded result" not in stats["Recent failed step reports"]["description"]
+    failure_query = stats["Current failed step states"]["targets"][0]["expr"]
+    assert "last_over_time" in failure_query
+    assert '| json state_code | unwrap state_code' in failure_query
+    assert "by (service, step) == bool 0" in failure_query
+    assert "count_over_time" not in failure_query, "old records must not imply a healthy zero"
+    assert "| json inventory_code | unwrap inventory_code" in failure_query
+    current_failures, no_failures = failure_query.split(" or ", 1)
+    assert current_failures.startswith("sum(last_over_time(")
+    assert no_failures.startswith("(sum(last_over_time(")
+    assert "by (service) * 0))" in no_failures, "inventory fallback must collapse to one unlabeled zero"
+    assert "with no recent inventory marker" in stats["Current failed step states"]["description"]
+    assert "no recent inventory marker" in stats["Current failed step states"]["description"]
+    assert "newest state" in stats["Current failed step states"]["description"]
+    assert "not a count of new failure events" in stats["Current failed step states"]["description"]
+
+    historical_failures = next(panel for panel in conformance["panels"]
+                               if panel["title"] == "Recent failed task snapshots")
+    assert 'status="fail"' in historical_failures["targets"][0]["expr"]
+    assert historical_failures["targets"][0]["maxLines"] == 100
+    assert "not new-event counts" in historical_failures["description"]
+    assert historical_failures["options"]["wrapLogMessage"] is False
+
+    step_table = next(panel for panel in conformance["panels"]
+                      if panel["title"] == "Latest step status by service")
+    assert [item["id"] for item in step_table["transformations"]] == [
+        "labelsToFields", "merge", "organize", "renameByRegex"
+    ]
+    assert step_table["transformations"][1]["options"] == {}
+    rename = step_table["transformations"][3]["options"]
+    assert rename["regex"] == r"^Value(?: #.*)?$"
+    assert re.fullmatch(rename["regex"], "Value")
+    assert re.fullmatch(rename["regex"], "Value #A")
+    assert re.fullmatch(rename["regex"], "Value #B")
+    assert rename["renamePattern"] == "State"
+    assert "not joined to these current rows" in step_table["description"]
+    assert step_table["fieldConfig"]["defaults"]["mappings"] == []
+    value_style = next(item for item in step_table["fieldConfig"]["overrides"]
+                       if item["matcher"]["options"] == "State")
+    assert {prop["id"] for prop in value_style["properties"]} >= {"custom.cellOptions", "mappings"}
+    marker_panels = {panel["title"]: panel for panel in conformance["panels"]
+                     if panel["title"] in {"Services not yet run", "History incomplete"}}
+    no_history = marker_panels["Services not yet run"]["targets"][0]["expr"]
+    incomplete = marker_panels["History incomplete"]["targets"][0]["expr"]
+    for query, code in ((no_history, 0), (incomplete, 2)):
+        assert "last_over_time" in query
+        assert '| json inventory_code | unwrap inventory_code' in query
+        assert f"by (service) == {code}" in query
+        assert " or " not in query, "empty collector data must stay no data"
 
     overview = json.loads(SERVICE_OVERVIEW_DASHBOARD.read_text())
     health = next(panel for panel in overview["panels"] if panel["title"] == "Scrape target health")
     assert health["targets"][0]["expr"] == 'min by (service) (up{service=~"$service"})'
     failed = next(panel for panel in overview["panels"] if panel["title"] == "Unhealthy scrape targets")
     assert failed["targets"][0]["expr"] == 'up{service=~"$service"} == 0'
+    variables = {item["name"]: item for item in overview["templating"]["list"]}
+    assert variables["service"]["label"] == "Metrics service"
+    assert variables["service"]["datasource"]["uid"] == "prometheus"
+    assert variables["log_service"]["label"] == "Logs service"
+    assert variables["log_service"]["datasource"]["uid"] == "loki"
+    assert "label_values" in variables["log_service"]["query"]
     loki_panels = [panel for panel in overview["panels"] if panel["datasource"]["type"] == "loki"]
-    assert len(loki_panels) == 2
-    assert all("does not indicate service health" in panel["description"] for panel in loki_panels)
+    assert len(loki_panels) == 6
+    assert all("selected Logs service" in panel["description"] for panel in loki_panels)
+    source_panels = {panel["title"]: panel for panel in loki_panels}
+    assert '{service=~"$log_service", container=~".+"}' in source_panels["Recent container logs"]["targets"][0]["expr"]
+    assert 'signal="access-log"' in source_panels["Recent gateway access records"]["targets"][0]["expr"]
+    assert 'signal="span"' in source_panels["Recent optional span logs"]["targets"][0]["expr"]
+    assert 'job="agent-cloud-conformance"' in source_panels["Recent workflow conformance records"]["targets"][0]["expr"]
+    all_streams = source_panels["All Loki streams (mixed-source drill-down)"]
+    assert all_streams["targets"][0]["expr"] == '{service=~"$log_service"}'
+    assert all_streams["targets"][0]["maxLines"] == 100
+    assert all("$service" not in target["expr"] and "$log_service" in target["expr"]
+               for panel in loki_panels for target in panel["targets"])
 
 
 def test_drawn_steps_match_the_drawing():

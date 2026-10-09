@@ -157,11 +157,23 @@
       unconditionally, plus a BATS assertion on the rendered env). Merged into `dev` on
       2026-09-28 (merge `255b251`). `agentgateway-observability`
       decision 5 makes it a prerequisite for `agw_content_logging: full`
-- [ ] 1.11 Operator UI in production: Cloudflare record `admin.inference` (applied
+- [x] 1.11 Operator UI in production: Cloudflare record `admin.inference` (applied
       2026-09-27, Apply Cloudflare Tofu (Dev) task 1616, zero-diff 1617), the Authentik skip
       rule (PR #289) applied, `agw_ui_enabled: true` (site-config #35), then Deploy
       agentgateway (Dev); proves gate 1.9
-- [ ] 1.12 Change-aware deploy (design decision 11). Today `deploy.sh:47-53` runs
+      2026-10-08: ticked; the evidence is already recorded in this change: Cloudflare record
+      `admin.inference` applied and zero-diff (tasks 1616/1617, above); the skip rule
+      `authentik-oidc-bypass-challenge` is declared in `platform/infra/cloudflare/waf.tf:135`;
+      the `admin.inference` Caddy block applied through Manage Caddy Sites (Dev) tasks
+      2463/2464 (task 6.2); `Deploy agentgateway (Dev)` tasks 2460/2462 ran with the UI
+      listener (task 6.1). `agw_ui_enabled: true` (site-config #35) is as quoted in the
+      task text above; it was not re-read in site-config here. Gate 1.9 stays open: its
+      browser half (login as `agent-cloud-admin`, the UI rendering) is still the operator's to do
+      2026-10-08 (review of PR #488): the skip rule is APPLIED, not only declared. Apply
+      Cloudflare Tofu (Dev) task 3006 (2026-10-05) ran at `9edcd9ec`, which contains the rule's
+      commit `ef115877`, and its plan reported `plan_changes: "0"`, `plan_actions: []`: the
+      live zone already matched the declared rule. Output read from Semaphore on 2026-10-08.
+- [x] 1.12 Change-aware deploy (design decision 11). Today `deploy.sh:47-53` runs
       `compose up -d --force-recreate` on every run, so every deploy, and every playbook
       that imports it, drops in-flight streams. First settle hot reload: v1.5.0 watches a
       file config source and reloads it on change (`crates/agentgateway/src/state_manager.rs:141-142`
@@ -205,6 +217,33 @@
       2026-10-05: `Deploy agentgateway (Dev)` task 2880 recreated the gateway for a real input
       change (the stream-usage transformation, #437), the changed-deploy half. The legs above are
       still not done; not ticked.
+      2026-10-09: ticked. The four validation legs ran on local-dev (local Semaphore, `dev` at
+      `8c441f8d` plus the local Semaphore port fix), each through `scripts/local-dev.sh` and the
+      worktree-bound (Local) templates, output read from the local Semaphore:
+      - unchanged deploy, local task 5324: the gateway's start time was identical before and after;
+      - removed container, 5325: `podman rm -f agentgateway`, then a plain deploy recreated and
+        verified it; the input-hash label was the same value as before;
+      - failed deploy converged: `deploy.sh` was made to fail after the render (a temporary
+        `exit 1` on its first line, restored byte-exact after, `cmp` and a clean `git diff`)
+        while `Manage agentgateway Client Key` rotated `dev-local`, 5328: the rotation was
+        recorded, `deploy.sh` failed, the running gateway kept its start time and its old label
+        (`dce56b02…`). The next plain deploy, 5329, reported "deploy-result: recreated (inputs
+        changed)", the label moved to `fa0eea35…`, and the keyed probes as `dev-local` passed;
+      - rotated key served after one run, 5330: a normal rotate re-rendered, recreated
+        (label `fa0eea35…` to `097bf61f…`) and its verify passed with the new key.
+      An inventory-only change could not serve as the leg-C input: the local Semaphore runs from
+      the bootstrap's own static inventory (`bootstrap-local-dev.yml`, `agw_models` in the INI),
+      not from `local-dev.yml`. The hot-reload experiment (directory mount, change one `apiKey`,
+      watch for a reload without restart) was NOT run; the "not confirmed" branch is the one taken
+      by default and built (PR #382), so `inference-personal-keys` takes its cohort-rotation branch.
+      The text's "unverified: plain `compose up -d` starts a stopped container" is moot: `deploy.sh`
+      never takes that path; a missing or stopped gateway sets a recreate reason and runs
+      `up -d --force-recreate` (`deploy.sh`, the RECREATE_REASON branch), which leg B exercised.
+      Between the cited runs, local task 5326 was the first leg-C attempt (an inventory-only model
+      alias plus the failing `deploy.sh`; it failed as forced) and 5327 its follow-up, which changed
+      nothing because that inventory edit never reached the local Semaphore's static inventory;
+      leg C was then redone with a key rotation (5328/5329). The local Semaphore ran on a
+      non-default host port through the fix in PR #498 (`local_semaphore_port`).
 
 ## 2. Conformance against direct vLLM
       Added 2026-09-22 (security review): the gateway's `platform-admins in jwt.groups` rule
@@ -343,6 +382,13 @@
       coordinator named is the five-minute non-streaming synthetic probe, and task 3142 saw
       `time_to_first_token_bucket` series exist; streaming client traffic arrives with the
       route switch (task 4.3). Not ticked.
+      2026-10-08: cause (1) is fixed: panels 4 (4xx ratio) and 5 (5xx ratio) of
+      `agentgateway-client-view.json` now wrap the numerator in `( ... ) or vector(0)`, the
+      denominator unchanged, so each panel returns 0 instead of an empty vector while the
+      gateway returns no such status. Pinned by
+      `platform/tests/test_o11y_dashboard_asserts.py::test_client_view_error_ratio_numerator_is_zero_when_no_error_series`
+      (mutated: red without the fallback). Not re-run live. Cause (2), the two first-token
+      panels, still needs streaming traffic (task 4.3). Not ticked.
 
 ## 4. Identities, limits, re-route
 - [ ] 4.1 Virtual-key lifecycle (design §10). DONE 2026-09-17 in code: the deploy mints
@@ -392,6 +438,19 @@
       `config.yaml.previous`; until it does, that mode refuses
       2026-10-02: PRs #385 (playbook) and #386 (the deploy keeps `config.yaml.previous`, so
       `gateway-config` no longer refuses) merged. The live `direct`/`restore` drill is not run
+      2026-10-09: the prod dry run of "Rollback Inference Route (Dev)" in `gateway-config` mode
+      (Semaphore task 3762, at e2ad8305) failed at the task that names the identities the
+      previous config enrols, with its output censored by `no_log`. Root cause: the Jinja macro
+      in that task built JSON text and re-read it with `from_json`, and the prod runner's
+      ansible-core 2.18.15 (read from the running Semaphore containers on the prod host,
+      2026-10-09; Semaphore v2.17.31) turns that text into a Python tuple first, so the parse
+      fails with `JSONDecodeError` (reproduced on 2.16.18 and 2.18.15 with the standard
+      fixtures; 2.19 and 2.20 pass the same fixtures). The extraction now runs in a filter
+      plugin (`agw_apikey_entries.py`) that returns native lists with no JSON text step, and the
+      `gateway-config` tests pass on 2.18.15, 2.19.14 and 2.20.8. An unreadable or non-mapping
+      config is refused by a visible task naming the file and the class of problem, never its
+      content. The prod Semaphore upgrade to v2.19.11 (ansible-core 2.20.8) is planned. The 4.6
+      drill is still owed
 
 - [ ] 4.7 `legacy_shared_expires` = the route-switch date + 14 days (operator decision
       2026-09-27), set in site-config in the same change that switches the route
@@ -428,7 +487,7 @@
       `agent-cloud-750a33b9`
 
 ## 6. Transport security (decisions of 2026-09-27; needs `production-internal-ca`)
-- [ ] 6.1 Gateway API and UI listeners serve HTTPS from step-ca-issued certificates in a
+- [x] 6.1 Gateway API and UI listeners serve HTTPS from step-ca-issued certificates in a
       mounted directory (`current/`; the image has no shell); `tls.root` = the step-ca
       root, so a client certificate is required. This task is the single owner of the
       client allowlist (design decision 12): both gateways carry the `require` rule
@@ -456,6 +515,27 @@
       undeclared entry is refused naming it
       (`test_a_declaration_the_gateway_cannot_serve_is_refused_naming_it`, case `undeclared`).
       The local-dev records the task names are still not re-verified here
+      2026-10-08: wording correction. The assertions this task and gate 6.4 call BATS are
+      pytest: `platform/tests/test_agw_listener_tls.py` (see the 2026-10-03 note); the
+      original text is left as written. Still open as before: the local-dev records the task
+      names are not re-verified here
+      2026-10-09: ticked, on production records (task ids reported by the coordinator; the task
+      output was not read by the author of this note). The task asked for local-dev first;
+      that was not possible: the local-dev listener TLS is not applied in local mode
+      (`deploy-agentgateway.yml` adds `COMPOSE_OVERLAYS` only outside local mode), so
+      production was used. A client leaf on no allowlist (`agw-drill`, its SAN on no
+      allowlisted leaf, declared in site-config #68, issued by `Issue Internal Leaf (Dev)`
+      task 3831) was probed by `Probe agentgateway Client TLS (Dev)` task 3834: HTTP 403 with
+      no API key and HTTP 403 with an invalid key. Answers the two open questions: a failed
+      SAN rule answers 403, and it is evaluated BEFORE API-key authentication (a key-first
+      gateway would have answered the keyless request 401). The remaining clauses are
+      covered elsewhere: the rule rendering beside `llm` and the gateway starting with it is
+      the 2026-10-03 pytest (`platform/tests/test_agw_listener_tls.py`) plus the 2026-10-02
+      production deploys that ran with listener TLS, and the drill's 403 is the rule live in the
+      running gateway (a completed handshake refused with 403 comes from no other rule). The
+      drill's first reading line was wrong ("no reading") on the runner's ansible-core 2.18.15
+      because the statuses compared as strings; the class lines and the verdict were right,
+      and the reading is fixed in the probe playbook
 - [ ] 6.1a The one gateway probe path. Every check that sends a request to the gateway
       from outside Caddy uses it: this deploy's own verify, the personal-key 401 gates
       (`inference-personal-keys`), the renewal proof for the client leaves that are probed
@@ -516,6 +596,12 @@
       then 3012 (real) reported "PASS, 14/14 cases match" through the shared probe path (#456).
       Still NOT ticked, for the same reason: the personal-key gates, the benchmark VM's
       attribution check and the access-record verify do not exist yet
+      2026-10-08: the probe callers still missing belong to other
+      changes: the personal-key 401 gates (`inference-personal-keys`), the benchmark VM's
+      attribution check (`inference-benchmarking`) and the access-record verify
+      (`agentgateway-observability`). Recorded, not ticked: this task stays open until
+      each of those checks exists and sends through `tasks/agw-probe.yml`, or its text is
+      restated.
 - [ ] 6.2 Caddy's `inference` and `admin.inference` blocks proxy to `https://` with
       `transport http { tls_server_name <gateway SAN>; tls_trust_pool file <root>;
       tls_client_auth <cert> <key> }` (Caddy 2.11.4), the leaf files read from the Caddy
@@ -543,6 +629,19 @@
       after group 6 (readiness, the keyless 401, the keyed `/v1/models` and chat
       round-trip, all through 6.1a); the gateway refuses a vLLM certificate not issued by
       the internal CA; the public path works end to end with every hop encrypted
+      2026-10-09 (task ids reported by the coordinator; the task output was not read by the
+      author of this note): two scenarios proven in production by `Probe agentgateway Client
+      TLS (Dev)` task 3834. "A request without a client certificate is refused": probe 1
+      failed the TLS handshake (`TLSV13_ALERT_CERTIFICATE_REQUIRED`). "Another client leaf is
+      refused at the gateway": the throwaway leaf `agw-drill` completed the handshake and was
+      answered HTTP 403 with no key and with an invalid key (see the 6.1 note of the same
+      date). Remaining legs, not ticked: the allowlisted `agw-verifier` leaf served through
+      6.1a, the refusal of a vLLM certificate not issued by the internal CA, and the public
+      path end to end. Cleanup recorded: the leaf removed (task
+      3836), its declaration removed in site-config #69, inventory re-synced, `Deploy
+      step-ca (Dev)` tasks 3829 (8 names while the leaf existed) and 3838 (back to 7), and the
+      renewal dry run task 3839 passes classification. The drill also found the probe's
+      reading bug, fixed on branch `fix/tls-probe-reading-types`
 
 ## 7. Internal name resolution (follow-up; needs hickory-dns in production)
 - [ ] 7.1 Server-side OIDC off the Cloudflare path: a split-horizon record for

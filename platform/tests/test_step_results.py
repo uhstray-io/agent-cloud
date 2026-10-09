@@ -177,12 +177,13 @@ def test_report_lists_failed_steps_with_their_context_and_unreviewed_steps():
 def test_loki_streams_label_every_result():
     out = _run_line({"service": "tududi", "step": "secrets-approle", "status": "pass"})
     streams = step_results.loki_streams(_agg(_task(8, "success", 1, out)), 1700000000000000000)
-    assert streams == [{
+    result = next(stream for stream in streams if stream["stream"]["step"] != "none")
+    assert result == {
         "stream": {"job": "agent-cloud-conformance", "service": "tududi",
                    "step": "secrets-approle", "status": "pass"},
         "values": [["1700000000000000000", json.dumps(
-            {"check_mode": False, "error": None, "task_id": 8}, sort_keys=True)]],
-    }]
+            {"check_mode": False, "error": None, "state_code": 1, "task_id": 8}, sort_keys=True)]],
+    }
 
 
 def test_otlp_logs_keep_payload_in_body_and_only_bounded_loki_labels():
@@ -191,7 +192,9 @@ def test_otlp_logs_keep_payload_in_body_and_only_bounded_loki_labels():
     agg = _agg(_task(8, "error", 1, out))
     streams = step_results.loki_streams(agg, 1700000000000000000)
     payload = step_results.otlp_logs_payload(streams)
-    (record,) = payload["resourceLogs"][0]["scopeLogs"][0]["logRecords"]
+    record = next(r for r in payload["resourceLogs"][0]["scopeLogs"][0]["logRecords"]
+                  if next(a for a in r["attributes"] if a["key"] == "step")["value"]["stringValue"]
+                  == "secrets-approle")
     attributes = {entry["key"]: entry["value"]["stringValue"] for entry in record["attributes"]}
     assert {key: attributes[key] for key in ("job", "service", "step", "status")} == {
         "job": "agent-cloud-conformance", "service": "tududi",
@@ -200,8 +203,42 @@ def test_otlp_logs_keep_payload_in_body_and_only_bounded_loki_labels():
     assert set(attributes) == {"job", "service", "step", "status"}
     assert record["timeUnixNano"] == "1700000000000000000"
     assert json.loads(record["body"]["stringValue"]) == {
-        "check_mode": False, "error": "task output detail", "task_id": 8,
+        "check_mode": False, "error": "task output detail", "state_code": 0, "task_id": 8,
     }
+
+
+def test_conformance_json_body_format_matches_loki_dashboard_extraction():
+    agg = step_results.aggregate(
+        REGISTRY, TEMPLATES,
+        [_task(8, "success", 1, _run_line(
+            {"service": "tududi", "step": "secrets-approle", "status": "pass"}))],
+        ["step-ca"], DEPLOYS)
+    payload = step_results.otlp_logs_payload(step_results.loki_streams(agg, 1700000000000000000))
+    records = payload["resourceLogs"][0]["scopeLogs"][0]["logRecords"]
+
+    def body_for(service: str, step: str) -> dict:
+        record = next(r for r in records
+                      if (attributes := {a["key"]: a["value"]["stringValue"]
+                                         for a in r["attributes"]})["service"] == service
+                      and attributes["step"] == step)
+        return json.loads(record["body"]["stringValue"])
+
+    assert body_for("tududi", "secrets-approle")["state_code"] == 1
+    assert body_for("step-ca", "none")["inventory_code"] == 0
+
+    alloy = (REPO / "platform/services/o11y/deployment/templates/config.alloy.j2").read_text()
+    processor = alloy.split('otelcol.processor.attributes "conformance_logs" {', 1)[1].split("\n}\n", 1)[0]
+    assert 'key    = "loki.format"' in processor
+    assert 'action = "upsert"' in processor
+    assert 'value  = "raw"' in processor
+    assert 'value  = "job,service,step,status"' in processor
+    assert 'logs = [otelcol.exporter.loki.conformance.input]' in processor
+
+    dashboard = json.loads((REPO / "platform/services/o11y/deployment/config/grafana/dashboards/"
+                            "service-conformance.json").read_text())
+    expressions = {panel["title"]: panel["targets"][0]["expr"] for panel in dashboard["panels"]}
+    assert '| json state_code | unwrap state_code' in expressions["Latest step status by service"]
+    assert '| json inventory_code | unwrap inventory_code' in expressions["Services not yet run"]
 
 
 def test_groups_map_to_their_hosts_service_name():
@@ -227,7 +264,7 @@ def test_main_runs_the_three_modes_as_the_collector_calls_them():
                 "deploy_templates": deploys,
                 "fetched": [{"item": picked[0], "content": out, "status": 200}]})
     assert agg["status_by_service"] == {"tududi": {"secrets-approle": "pass"}}
-    assert len(agg["loki_streams"]) == 1
+    assert len(agg["loki_streams"]) == 2  # one inventory marker plus one step record
 
 
 def test_pick_passes_on_only_the_fields_the_later_steps_read():
@@ -332,8 +369,59 @@ def test_a_no_history_service_reaches_netbox_and_the_dashboard():
     assert agg["status_by_service"] == {"step-ca": {}}
     assert agg["failed_steps"] == {"step-ca": []}
     streams = step_results.loki_streams(agg, 1)
-    assert streams == [{"stream": {"job": "agent-cloud-conformance", "service": "step-ca", "step": "none",
-                                   "status": "no_history"}, "values": [["1", '{"no_history": true}']]}]
+    assert len(streams) == 1
+    assert streams[0]["stream"] == {"job": "agent-cloud-conformance", "service": "step-ca",
+                                     "step": "none", "status": "no_history"}
+    assert json.loads(streams[0]["values"][0][1]) == {"inventory_code": 0, "no_history": True}
+
+
+def test_inventory_markers_transition_to_the_newest_bounded_state_each_run():
+    no_history = step_results.aggregate(REGISTRY, TEMPLATES, [], ["tududi"])
+    has_history = step_results.aggregate(
+        REGISTRY, TEMPLATES,
+        [_task(50, "success", 2, _run_line({"service": "tududi", "step": "fw-harden", "status": "pass"}))],
+        ["tududi"], DEPLOYS)
+    incomplete = step_results.aggregate(REGISTRY, TEMPLATES, [], ["tududi"], DEPLOYS,
+                                        window_full=[3], incomplete={"tududi"})
+
+    def inventory_record(agg):
+        records = [stream for stream in step_results.loki_streams(agg, 1)
+                   if stream["stream"]["step"] == "none"]
+        assert len(records) == 1
+        return records[0]["stream"]["status"], json.loads(records[0]["values"][0][1])["inventory_code"]
+
+    assert inventory_record(no_history) == ("no_history", 0)
+    assert inventory_record(has_history) == ("has_history", 1)
+    assert inventory_record(incomplete) == ("history_incomplete", 2)
+    # A later complete collector snapshot emits has_history, so old marker streams are
+    # collapsed by the dashboard query rather than remaining an active current state.
+    assert inventory_record(has_history) != inventory_record(no_history)
+    assert inventory_record(has_history) != inventory_record(incomplete)
+
+
+def test_step_records_carry_numeric_state_codes_and_otlp_accepts_has_history():
+    for status, code in (("fail", 0), ("pass", 1), ("skip", 2)):
+        agg = step_results.aggregate(
+            REGISTRY, TEMPLATES,
+            [_task(60 + code, "success", 2,
+                   _run_line({"service": "tududi", "step": "fw-harden", "status": status}))],
+            ["tududi"], DEPLOYS)
+        stream = next(s for s in step_results.loki_streams(agg, 1) if s["stream"]["step"] == "fw-harden")
+        assert stream["stream"]["status"] == status
+        assert json.loads(stream["values"][0][1])["state_code"] == code
+
+    agg = step_results.aggregate(
+        REGISTRY, TEMPLATES,
+        [_task(70, "success", 2,
+               _run_line({"service": "tududi", "step": "fw-harden", "status": "pass"}))],
+        ["tududi"], DEPLOYS)
+    streams = step_results.loki_streams(agg, 1)
+    payload = step_results.otlp_logs_payload(streams)
+    records = payload["resourceLogs"][0]["scopeLogs"][0]["logRecords"]
+    assert len(records) == 2  # the new inventory status is accepted by the bounded allowlist
+    step_record = next(r for r in records if next(a for a in r["attributes"] if a["key"] == "step")
+                       ["value"]["stringValue"] == "fw-harden")
+    assert json.loads(step_record["body"]["stringValue"])["state_code"] == 1
 
 
 def test_a_retained_snapshot_failure_clears_when_the_snapshot_succeeds():
@@ -423,6 +511,11 @@ def test_the_step_table_excludes_the_no_history_marker_and_a_panel_lists_it():
     dash = json.loads((REPO / "platform/services/o11y/deployment/config/grafana/dashboards/"
                                "service-conformance.json").read_text())
     exprs = {p["title"]: p["targets"][0]["expr"] for p in dash["panels"]}
-    assert 'step!="none"' in exprs["Step status by service"]
-    assert 'status="no_history"' in exprs["Services not yet run"]
-    assert 'status="history_incomplete"' in exprs["History incomplete"]
+    assert 'step!="none"' in exprs["Latest step status by service"]
+    assert "last_over_time" in exprs["Latest step status by service"]
+    assert '| json state_code | unwrap state_code' in exprs["Latest step status by service"]
+    assert 'by (service, step)' in exprs["Latest step status by service"]
+    assert '| json inventory_code | unwrap inventory_code' in exprs["Services not yet run"]
+    assert "by (service) == 0" in exprs["Services not yet run"]
+    assert '| json inventory_code | unwrap inventory_code' in exprs["History incomplete"]
+    assert "by (service) == 2" in exprs["History incomplete"]

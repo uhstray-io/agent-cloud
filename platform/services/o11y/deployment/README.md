@@ -702,3 +702,42 @@ fails. Alloy applies `job`, `service`, `step`, and `status` as the conformance-
 specific Loki labels. The shared Loki writer also adds `cluster` and
 `environment` labels; task identifiers and error details stay in the log body.
 Local development keeps the loopback direct-Loki path.
+
+## Receiver-host journal collector positions volume
+
+The `Deploy o11y Journal Collector (Dev)` apply action gates the named
+`journal-collector-state` volume before it starts the collector. A missing volume
+can bootstrap only after bounded volume inventory proves the exact expected
+project name is unused and an all-container query proves
+`o11y-journal-collector` absent, including stopped containers. A pre-existing
+empty local volume can bootstrap only with exact project/name identity, zero
+consumers and mounts, boolean `NeedsChown` and `NeedsCopyUp` fields, and a
+read-only root observation proving owner `0:0`, owner RWX, no group/other write
+or special bits, no ACL or nested mount, and no contents. Unknown labels, flags,
+ownership, consumers, mounts, or metadata refuse the start.
+
+Compose `up` is the only volume create/initialization action. Compose declares
+the volume-key label for new volumes. An existing volume without that label is
+accepted only when its exact expected name and project label match; a conflicting
+label refuses. The immediate pre-start check runs outside rollback handling, so
+an existing collector cannot be removed when that check refuses before startup.
+After startup, helper status must be `ready`, and the playbook separately checks
+the actual RW mount, UID mapping, effective write/rename access, health, receiver
+container preservation, and fresh exact-target Loki delivery. Check mode stays
+`check_mode_unverified` and does not mount or mutate the volume. Survey exceptions
+produce a bounded unavailable receipt with fixed reason `survey_failed`.
+
+Dev positions survey 3856 reported `volume_initialization_unverified`, zero
+consumers and entries, root owner mismatch, blocked access, no ACL, a clear
+mount, and safe direct children. The journal source was available, but access
+to the target positions path was denied. The explicit survey adds sanitized
+initialization field presence/type and genuine boolean values, an exact-name
+volume inspection for identity comparison, and bounded Podman client/server
+versions. Invalid values, malformed or duplicate results, and unavailable
+commands appear only as fixed categories; raw Podman output is never reported.
+These diagnostics do not change verify, repair, bootstrap, or apply decisions.
+Check mode reports the diagnostic shape as unverified without querying Podman.
+
+OpenSpec task 1.2 remains unchecked until the reviewed Semaphore run records the
+production runtime and Loki evidence. Unit tests and metadata-only survey results
+do not close that task.

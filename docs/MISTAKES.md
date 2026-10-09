@@ -51,6 +51,7 @@ and why.
 | 1.19 | A negative claim about a host's state from evidence that cannot establish it (widens 1.6) | Unverified claim | 1 | Convention |
 | 1.20 | Assumed Semaphore injected a task-id environment variable; the first production drill printed a blank receipt ID | Unverified runtime assumption | 1 | Test (o11y receipt checks) |
 | 1.21 | Said the live alert readback proved the inference alert groups; it filtered rule uids to `o11y_` and never read them, and no dashboard check covered the inference boards | Unverified claim | 1 | Test (`test_service_o11y.bats` readback mirror) |
+| 1.22 | Stated the runner's ansible-core version twice (2.16 from a relayed comment, then 2.20.8 from a compose default); the live server runs v2.17.31, whose image ships 2.18.15 | Unverified claim | 1 | Convention (version-report template + pinned CI proposed) |
 | 2.1 | Test compiled a pattern as raw file text, not as the runtime decodes it | False-green test | 1 | Test |
 | 2.2 | Test pinned the vulnerable form of a security check in place | False-green test | 1 | Test |
 | 2.3 | Negative assertion aborted under `set -e` because a no-match grep exits 1 | False-green test | 1 | Convention |
@@ -91,12 +92,13 @@ and why.
 | 3.10 | A test wrote scratch playbooks into the tracked tree and raced parallel tests that glob it | Working-tree damage | 1 | Convention (session-end tree check proposed) |
 | 3.11 | Made a deploy stop recreating containers without auditing a step that relied on it; a directory reset under a live bind mount emptied Authentik's custom blueprints in prod | Live state | 1 | Test (`test_no_bind_mount_dir_delete.py` + FORCE_RECREATE case in `test_compose_up_if_changed.bats`) |
 | 3.12 | Launched two `(Dev)` deploys through the API without `service_branch`; Semaphore applies survey defaults only in its form, so both hosts checked out `main` under Dev playbooks | Live state | 1 | Playbook guard (`assert-placement-branch.yml`) + launcher default fill + tests (`test_placement_branch_guard.py`, `test_semaphore_launch.py`, mutation-checked) |
+| 3.13 | The `dev` -> `main` promotion merge let the repo's delete-head-branch-on-merge setting delete `dev`, the long-lived integration branch; the main -> dev sync then failed | Live state | 1 | Ruleset (`protect-dev.json`, deletion rule) + test (`test_ruleset_protect_dev.py`); live since 2026-10-08 |
 | 4.1 | `while read` silently dropped an unterminated final line | Data handling | 1 | Convention |
 | 4.2 | Stored `.env` values without stripping surrounding quotes | Data handling | 1 | Convention |
 | 4.3 | Used a real internal IP address as a test vector | Data leak | 1 | Pre-commit (existing) |
 | 4.4 | Arithmetic on a fleet API response without defaulting fields absent on offline members | Data handling | 1 | Convention |
 | 4.5 | Truncated a live inventory by opening it for writing in the expression that computed its content | Live-state damage | 1 | Convention |
-| 4.6 | **x2** — A failure-path diagnostic printed the very values the success path was built to keep out of stdout | Secret in transcript | 2 | Test (static guard, `test_no_request_in_loop_items.py`) + stdout callback (`callback_plugins/redact_requests.py`) |
+| 4.6 | **x3** — A failure-path diagnostic printed the very values the success path was built to keep out of stdout | Secret in transcript | 3 | Test (static guard, `test_no_request_in_loop_items.py`; `test_no_log_error_redaction.py`) + stdout callback (`callback_plugins/redact_requests.py`) |
 | 4.7 | An address edit replaced every matching line and left a production runner declared at the new VM's address | Data handling | 1 | Playbook guard + test (provision-vm address-claim check) |
 | 4.8 | A credential-shaped test fixture was pushed; CI's unscoped all-detectors scan let it fail other PRs | Data handling | 1 | CI (scan scoped to the PR's commits) |
 | 4.9 | **x2** — Private site data in public code: Discord destination IDs in a fixture; the operator's account in a Proxmox token fallback, gateway fixtures and path-derived ids | Data handling | 2 | Test (`test_no_site_identity.py`, the three account shapes); other private values Convention |
@@ -880,6 +882,35 @@ stated past what its tests exercised); this is the live-verification form.
 live rule and contact state", "real deploy verifies every provisioned dashboard is live") —
 renders the alert file with the inference scrape and probe enabled and fails when an
 `inference_*` rule is missing or unrouted live, or a dashboard file's uid is not live.
+
+### 1.22 A runner's tool version stated twice without reading the running system
+
+**What happened.** While diagnosing why a production dry run of `Rollback Inference Route (Dev)`
+(Semaphore task 3762, 2026-10-09) failed inside a `no_log` task, the gateway-config rollback tests
+were run on ansible-core 2.16.18 and 12 failed with a JSON decode error. The operator was told "the
+Semaphore runner uses 2.16". That figure came from a PR reviewer quoting a comment in
+`provision-tududi-github-sync.yml`. The claim was then "corrected" to 2.20.8 by running
+`ansible --version` in `docker.io/semaphoreui/semaphore:v2.19.11`, the DEFAULT in
+`platform/services/semaphore/deployment/compose.yml` (`${SEMAPHORE_IMAGE:-...}`), and the same 2.20.8
+was written into a playbook comment and a PR description. Both were wrong: the live server's
+`/api/info` reports `v2.17.31`, and the stock image of that tag ships ansible-core 2.18.15. Both
+claims had to be withdrawn; the playbook comment and the PR text were fixed before they merged.
+
+**Root cause.** Twice, a property of the running system was taken from an artifact that only
+describes an intended state: first a comment relayed by another agent, then a compose default that
+production was not running (the pin is what a deploy would start, not what is running now). The
+"correction" repeated the first mistake one level down.
+
+**The rule.** A claim about what a running system uses (tool version, image, flag) is read from that
+system: its own API (`/api/info` for Semaphore), the running container, or a task that reports it.
+A comment, a document, another agent's report, or a configuration default is evidence of intent,
+never of the running state. Related to 1.14, whose widened rule reads values from the system of
+record; 1.14 names site-config and the Semaphore API, and this is the same rule for the runtime
+itself, which 1.14 did not mention, so it did not fire.
+
+**Enforced by.** Convention. Proposed (not built): a read-only Semaphore template that reports the
+runner's `ansible_version`, and a CI job pinned to that version (CI installs an unpinned
+ansible-core, 2.19 at the time, while the runner image ships 2.18).
 
 ## 2. Tests that would have passed for the wrong reason
 
@@ -2149,6 +2180,39 @@ the shared ones (`deploy-openhands.yml`, `deploy-wisbot.yml`, `deploy-inference-
 `deploy-inference-hunyuan3d.yml`). None has a Dev-bound template today, and the guard does not
 cover them.
 
+### 3.13 The dev -> main promotion merge deleted `dev`, because the repository auto-deletes a merged PR's head branch
+
+**Occurrences: 1** — 2026-10-08
+
+**What happened.** PR #447 (`dev` -> `main`, head `dev`) merged at 2026-10-08T00:41Z as
+`c81ada2a`. The repository setting `delete_branch_on_merge` is `true`
+(`gh api repos/uhstray-io/agent-cloud --jq .delete_branch_on_merge`), so GitHub deleted the
+head branch `dev`. The `sync-main-to-dev.yml` run for that push then failed with "A branch or
+tag with the name 'dev' could not be found". `dev`'s last head was `74f81ee5`, already
+contained in `main`, so no commit was lost.
+
+**Root cause.** `dev` is the permanent integration branch, but it was the head of a PR, and
+nothing marked it as exempt from the repository-wide auto-delete, and the promotion flow
+did not account for the setting. Unverified: why earlier promotions did not delete `dev`
+(not investigated).
+
+**The rule.** A long-lived branch must be protected against deletion by a committed ruleset,
+never by the way a merge happens to be run. Do not rely on a merge command's default branch
+handling.
+
+**Enforced by.** `.github/rulesets/protect-dev.json` (`deletion` and `non_fast_forward`
+rules on `refs/heads/dev`, no bypass actor) and `platform/tests/test_ruleset_protect_dev.py`
+(mutation-checked: removing the `deletion` rule fails it). The ruleset takes effect only once
+an admin runs `.github/rulesets/apply.sh`; until then this is `Convention`, and
+`ruleset-drift.yml` reports the missing live ruleset as drift.
+
+**Status — 2026-10-08.** Applied live: ruleset `protect-dev` is `active`
+(`gh api repos/uhstray-io/agent-cloud/rulesets`), `gh api
+repos/uhstray-io/agent-cloud/rules/branches/dev` returns `deletion` and `non_fast_forward`,
+and `.github/rulesets/check-drift.sh` reports `OK [protect-dev] live ruleset matches`. Still
+unverified: that it blocks the automatic head-branch deletion in practice; the next
+`dev` -> `main` promotion is the test.
+
 ## 4. Data handling
 
 ### 4.1 `while read` dropping an unterminated final line
@@ -2273,7 +2337,7 @@ first.
 
 ### 4.6 The error branch printed what the happy path protected
 
-**Occurrences: 2** — 2026-09-18, 2026-09-24
+**Occurrences: 3** — 2026-09-18, 2026-09-24, 2026-10-09
 
 **What happened.** A one-off script pulled two freshly generated passwords out of a
 Semaphore task's output to write them into site-config. Its regex did not match
@@ -2340,6 +2404,28 @@ Semaphore sets no stdout callback of its own (v2.17.31 `db_lib/AnsiblePlaybook.g
 2.16.18 and 2.20.8: the same play prints the token under `default` and not under the repository
 callback. The guard now protects any `no_log` source and whole-register debug prints, the rule as
 stated above; it found one more loop, the Proxmox VM health check, converted the same way.
+
+**Occurrence 3 — 2026-10-09.** The same class on a third surface: the error display of a failed
+`no_log` task. ansible-core 2.19 moved a task's exception out of the result dict into an object
+beside it, and the censoring that empties the result preserves that object, so on 2.20.8 a
+`no_log` task that failed printed "[ERROR]: Task failed", the exception message (a filter's
+input quoted in its own error, an assert's rendered `fail_msg`), the "caused by" chain and the
+source context. The censored result itself was clean, which is where both earlier fixes and the
+tests looked; 2.18.15 printed none of it, so the controller upgrade to 2.20.8 would have
+introduced it. Why the rule did not fire: it was worded for results and request headers, and
+the callback's own docstring claimed only nested `invocation`. The error is not a result field
+on 2.19+, so no result-shaped guard could see it. The callback now hides the error detail of
+any failed `no_log` task (`_handle_exception`, the one method every success, failure, item and
+unreachable display passes through) and prints one line naming the task;
+`test_no_log_error_redaction.py` runs real plays on every ansible-core it is given
+(`NOLOG_ANSIBLE_BINS`) and fails on a value anywhere in the output. Review of PR #511 found the
+same preservation one method over: censoring also keeps `warnings` and `deprecations`, so a
+module that words a warning around a value it was handed printed it on 2.19 and 2.20.8 (two
+occurrences each, none on 2.18.15). `_handle_warnings` now replaces them for a `no_log` task with
+one line giving the count, and the test's `noisy` module warns and deprecates around the value on
+a succeeding and a failing task. Each way of recognising a `no_log` result (the `censored` marker,
+`_ansible_no_log`, the task's own declaration) is tested alone, since a real run always carries
+the first and would not notice the other two failing.
 
 ### 4.7 An address edit replaced every matching line, and a second host's declaration moved with it
 

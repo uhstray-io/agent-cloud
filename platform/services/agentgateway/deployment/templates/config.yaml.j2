@@ -114,6 +114,23 @@ frontendPolicies:
   accessLog:
     add:
       identity: apiKey.name
+      # v1.5.0 emits built-in http.path (telemetry/log.rs:1516). Its same-name
+      # add overrides the default: LoggingFields::has checks additions, then each
+      # stdout/OTLP emitter clears that key before appending CEL results
+      # (log.rs:429-430, 1822-1834, 1842-1856). Default request fields include
+      # http.host and http.path; mcp.resource.uri is a distinct resource URI
+      # (log.rs:1514-1516, 1579-1583), not a full request URL.
+      # CEL RequestRef distinguishes query-free path from URI/path-and-query
+      # (types.rs:905-910); its mapping uses URI.path() for path (types.rs:1104-1109).
+      # Pinned v1.5.0 sources:
+      # https://github.com/agentgateway/agentgateway/blob/v1.5.0/crates/agentgateway/src/telemetry/log.rs#L429-L430
+      # https://github.com/agentgateway/agentgateway/blob/v1.5.0/crates/agentgateway/src/telemetry/log.rs#L1514-L1516
+      # https://github.com/agentgateway/agentgateway/blob/v1.5.0/crates/agentgateway/src/telemetry/log.rs#L1579-L1583
+      # https://github.com/agentgateway/agentgateway/blob/v1.5.0/crates/agentgateway/src/telemetry/log.rs#L1822-L1834
+      # https://github.com/agentgateway/agentgateway/blob/v1.5.0/crates/agentgateway/src/telemetry/log.rs#L1842-L1856
+      # https://github.com/agentgateway/agentgateway/blob/v1.5.0/crates/agentgateway/src/cel/types.rs#L905-L910
+      # https://github.com/agentgateway/agentgateway/blob/v1.5.0/crates/agentgateway/src/cel/types.rs#L1104-L1109
+      http.path: request.path
 {% if agw_otlp_host | default('') %}
     # Access logs share Alloy's OTLP receiver with traces. The service field
     # becomes Loki's bounded service label; stdout logging stays available.
@@ -123,6 +140,8 @@ frontendPolicies:
         add:
           service: '"agentgateway"'
           identity: apiKey.name
+          # OTLP has its own field overrides; keep the same-name replacement explicit.
+          http.path: request.path
 {% endif %}
 {% if agw_otlp_host | default('') %}
   tracing:
@@ -133,6 +152,14 @@ frontendPolicies:
     clientSampling: {{ agw_trace_sampling | default(0.05) }}
     resources:
       service.name: '"agentgateway"'
+    # Spans filter same-name defaults, then append CEL attributes (trc.rs:288-294,
+    # 318-332); v1.5.0 exposes these under TracingConfig.attributes
+    # (types/agent.rs:2452-2460).
+    # https://github.com/agentgateway/agentgateway/blob/v1.5.0/crates/agentgateway/src/telemetry/trc.rs#L288-L294
+    # https://github.com/agentgateway/agentgateway/blob/v1.5.0/crates/agentgateway/src/telemetry/trc.rs#L318-L332
+    # https://github.com/agentgateway/agentgateway/blob/v1.5.0/crates/agentgateway/src/types/agent.rs#L2452-L2460
+    attributes:
+      http.path: request.path
 {% endif %}
   http:
     # 20 MiB: Caddy caps request bodies at 16 MB; headroom so the edge, not the

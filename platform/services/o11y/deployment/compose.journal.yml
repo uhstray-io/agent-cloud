@@ -1,0 +1,47 @@
+services:
+  journal-collector:
+    # Keep this service dependency-free: applying it must never reconcile an
+    # existing receiver service. The playbook verifies all seven receiver IDs
+    # and states are unchanged after `up`.
+    image: docker.io/grafana/alloy:v1.9.2
+    container_name: o11y-journal-collector
+    # Explicit stop and failed-delivery rollback remove this container to keep
+    # podman-restart.service from reviving it; the named positions volume stays.
+    restart: always
+    user: "0:0"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    command:
+      - run
+      - --storage.path=/var/lib/alloy/data
+      - --server.http.listen-addr=127.0.0.1:12345
+      - /etc/alloy/journal.alloy
+    environment:
+      O11Y_JOURNAL_DIRECTORY: ${O11Y_JOURNAL_DIRECTORY:?declare o11y_journal_directory in private inventory}
+    labels:
+      agent-cloud.journal-config-sha: ${O11Y_JOURNAL_CONFIG_SHA:?rendered collector config digest required}
+    volumes:
+      - type: bind
+        source: ${O11Y_JOURNAL_DIRECTORY:?declare o11y_journal_directory in private inventory}
+        target: /var/log/journal
+        read_only: true
+        bind:
+          create_host_path: false
+      - journal-collector-state:/var/lib/alloy/data
+      - ./config/journal.alloy:/etc/alloy/journal.alloy:ro
+    networks:
+      - o11y
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/12345' || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 20s
+
+volumes:
+  journal-collector-state:
+    labels:
+      com.docker.compose.volume: journal-collector-state

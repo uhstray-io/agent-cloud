@@ -69,6 +69,33 @@ templates:
         required: false
         default_value: "false"
 
+  - name: Deploy o11y Journal Collector (Dev)
+    playbook: platform/playbooks/deploy-o11y-journal-collector.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: service_branch
+        title: "Target branch"
+        description: "The journal collector workflow is Dev-bound"
+        type: string
+        required: true
+        default_value: dev
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact Dev commit required on controller and receiver"
+        type: string
+        required: true
+      - name: journal_collector_action
+        title: "Collector action"
+        description: "Survey journal and positions metadata, repair only a proven positions-root owner mismatch, apply the pilot, or stop only its collector"
+        type: enum
+        required: true
+        default_value: survey
+        values:
+          - { name: "Survey journal paths", value: "survey" }
+          - { name: "Repair positions root ownership", value: "repair-positions" }
+          - { name: "Apply pilot", value: "apply" }
+          - { name: "Stop pilot", value: "stop" }
+
   - name: Verify o11y Service
     playbook: platform/playbooks/verify-o11y-service.yml
     dev_variant: true
@@ -107,6 +134,92 @@ templates:
         type: string
         required: false
         default_value: "false"
+
+  - name: Verify o11y Coverage Census
+    playbook: platform/playbooks/census-o11y-coverage.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact Dev commit required on the Semaphore controller"
+        type: string
+        required: true
+
+  - name: Verify o11y Target Receipt
+    playbook: platform/playbooks/verify-o11y-service.yml
+    repository: agent-cloud dev
+    description: "Checks one exact target signal. Its assigned task ID is not available inside the run, so the result remains unattributed until Coverage Census reads back the successful Semaphore task."
+    survey_vars:
+      - name: o11y_verification_mode
+        title: "Verification mode"
+        description: "Use the strict per-target receipt path"
+        type: string
+        required: true
+        default_value: "strict"
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact Dev commit required on the Semaphore controller"
+        type: string
+        required: true
+      - name: expected_inventory_revision
+        title: "Private inventory revision"
+        description: "Exact revision declared by site-config estate_coverage_inventory"
+        type: string
+        required: true
+      - name: expected_target_id
+        title: "Stable target ID"
+        description: "Declared target identifier; no host or endpoint value"
+        type: string
+        required: true
+      - name: expected_signal
+        title: "Signal"
+        description: "One declared signal to verify"
+        type: enum
+        required: true
+        values:
+          - { name: "Logs", value: "logs" }
+          - { name: "Metrics", value: "metrics" }
+          - { name: "Health", value: "health" }
+          - { name: "Traces", value: "traces" }
+      - name: signal_selector
+        title: "Exact signal selector"
+        description: "Selector declared in private inventory and containing the bounded target_id label"
+        type: string
+        required: true
+      - name: freshness_seconds
+        title: "Maximum signal age in seconds"
+        description: "Bounded freshness limit (60 to 86400 seconds)"
+        type: integer
+        required: true
+      - name: observation_window_seconds
+        title: "Observation window in seconds"
+        description: "Bounded query interval (60 to 3600 seconds)"
+        type: integer
+        required: true
+  # Read-only first-stage receipt for agentgateway task 5.7. Request-level marker
+  # correlation is intentionally not inferred from config facts and remains an
+  # explicit follow-up gate.
+  - name: Verify agentgateway Runtime (Dev)
+    playbook: platform/playbooks/verify-agentgateway-runtime.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision required on the gateway checkout"
+        type: string
+        required: true
+
+  # Read-only proof of the callback edge route, its effective access-log sink,
+  # and a bounded synthetic query marker. Runtime JSON and log bytes stay hidden.
+  - name: Audit agentgateway Caddy Edge Logging (Dev)
+    playbook: platform/playbooks/audit-agentgateway-edge-logging.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision required on the Semaphore controller"
+        type: string
+        required: true
 
   # External liveness watcher (inference-telemetry-production 3.6): probes Grafana and,
   # through Grafana's datasource health API, Prometheus via the public front door every
@@ -360,8 +473,8 @@ templates:
   # AND takes explicit addresses, so two runs cannot quietly allocate different ones.
   - name: Allocate NetBox IP
     playbook: platform/playbooks/netbox-allocate-ip.yml
-    # Introduced by this change, so main has no copy yet — a dev-bound variant is the
-    # only way to exercise it before promotion (setup-templates.yml emits "<name> (Dev)").
+    # Before the 2026-10-07 promotion (PR #447), main had no copy of this playbook, so a
+    # dev-bound variant was the only way to exercise it (setup-templates.yml emits "<name> (Dev)").
     dev_variant: true
     survey_vars:
       - name: prefix
@@ -664,11 +777,11 @@ templates:
     playbook: platform/playbooks/clean-deploy-step-ca.yml
     repository: agent-cloud dev
     # DESTRUCTIVE: deletes the CA root and intermediate; the redeploy issues a new root
-    # every client must trust again. Refuses unless confirm_ca_reset names the host.
+    # every client must trust again. Refuses unless confirm_reset names the host.
     survey_vars:
-      - name: confirm_ca_reset
-        title: "Confirm: host whose CA is reset"
-        description: "Type the step-ca inventory hostname. Anything else refuses. No default on purpose."
+      - name: confirm_reset
+        title: "Confirm: host whose data is destroyed"
+        description: "Type the target host name to confirm destroying its data. Anything else refuses. No default on purpose."
         type: string
         required: true
       - name: service_branch
@@ -776,6 +889,19 @@ templates:
     playbook: platform/playbooks/run-agw-conformance.yml
     dev_variant: true
 
+  # Read-only drill for gateway tasks 6.1 and 6.4: how the production TLS listener treats a client
+  # with no certificate and a client leaf that is on no allowlist, with no key and with an invalid
+  # one. Records statuses and failure classes only. Dev-bound: the playbook is on dev until promotion.
+  - name: Probe agentgateway Client TLS (Dev)
+    playbook: platform/playbooks/probe-agentgateway-client-tls.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: probe_leaf
+        title: "Client leaf"
+        description: "A client-profile leaf declared for the gateway host in internal_leaves whose SANs are on no allowlist (issue it with Issue Internal Leaf (Dev) first)"
+        type: string
+        required: true
+
   - name: Deploy honcho
     playbook: platform/playbooks/deploy-honcho.yml
     dev_variant: true
@@ -806,6 +932,11 @@ templates:
   - name: Clean Deploy NetBox
     playbook: platform/playbooks/clean-deploy-netbox.yml
     survey_vars:
+      - name: confirm_reset
+        title: "Confirm: host whose data is destroyed"
+        description: "Type the target host name to confirm destroying its data. Anything else refuses. No default on purpose."
+        type: string
+        required: true
       - name: service_branch
         title: "Branch"
         description: "Git branch to deploy (leave as 'main' for production)"
@@ -871,6 +1002,11 @@ templates:
   - name: Clean Deploy UhhCraft
     playbook: platform/playbooks/clean-deploy-uhhcraft.yml
     survey_vars:
+      - name: confirm_reset
+        title: "Confirm: host whose data is destroyed"
+        description: "Type the target host name to confirm destroying its data. Anything else refuses. No default on purpose."
+        type: string
+        required: true
       - name: service_branch
         title: "Branch"
         description: "Git branch to deploy (leave as 'main' for production)"
@@ -881,6 +1017,11 @@ templates:
   - name: Clean Deploy WisBot
     playbook: platform/playbooks/clean-deploy-wisbot.yml
     survey_vars:
+      - name: confirm_reset
+        title: "Confirm: host whose data is destroyed"
+        description: "Type the target host name to confirm destroying its data. Anything else refuses. No default on purpose."
+        type: string
+        required: true
       - name: service_branch
         title: "Branch"
         description: "Git branch to deploy (leave as 'main' for production)"
@@ -891,6 +1032,11 @@ templates:
   - name: Clean Deploy OpenHands
     playbook: platform/playbooks/clean-deploy-openhands.yml
     survey_vars:
+      - name: confirm_reset
+        title: "Confirm: host whose data is destroyed"
+        description: "Type the target host name to confirm destroying its data. Anything else refuses. No default on purpose."
+        type: string
+        required: true
       - name: service_branch
         title: "Branch"
         description: "Git branch to deploy (leave as 'main' for production)"
@@ -906,9 +1052,9 @@ templates:
     # reviewed commit, clean.
     dev_variant: true
     survey_vars:
-      - name: confirm_o11y_reset
-        title: "Confirm: host whose o11y data is destroyed"
-        description: "Type the o11y inventory hostname. Anything else refuses. No default on purpose."
+      - name: confirm_reset
+        title: "Confirm: host whose data is destroyed"
+        description: "Type the target host name to confirm destroying its data. Anything else refuses. No default on purpose."
         type: string
         required: true
       - name: expected_repository_sha
@@ -926,6 +1072,11 @@ templates:
   - name: Clean Deploy Authentik
     playbook: platform/playbooks/clean-deploy-authentik.yml
     survey_vars:
+      - name: confirm_reset
+        title: "Confirm: host whose data is destroyed"
+        description: "Type the target host name to confirm destroying its data. Anything else refuses. No default on purpose."
+        type: string
+        required: true
       - name: service_branch
         title: "Branch"
         description: "Git branch to deploy (leave as 'main' for production)"
@@ -936,6 +1087,11 @@ templates:
   - name: Clean Deploy tududi
     playbook: platform/playbooks/clean-deploy-tududi.yml
     survey_vars:
+      - name: confirm_reset
+        title: "Confirm: host whose data is destroyed"
+        description: "Type the target host name to confirm destroying its data. Anything else refuses. No default on purpose."
+        type: string
+        required: true
       - name: service_branch
         title: "Branch"
         description: "Git branch to deploy (leave as 'main' for production)"
@@ -950,6 +1106,11 @@ templates:
     # service_branch=dev so the VM checkout matches the playbook.
     dev_variant: true
     survey_vars:
+      - name: confirm_reset
+        title: "Confirm: host whose data is destroyed"
+        description: "Type the target host name to confirm destroying its data. Anything else refuses. No default on purpose."
+        type: string
+        required: true
       - name: service_branch
         title: "Branch"
         description: "Git branch to deploy (leave as 'main' for production)"
@@ -960,6 +1121,11 @@ templates:
   - name: Clean Deploy honcho
     playbook: platform/playbooks/clean-deploy-honcho.yml
     survey_vars:
+      - name: confirm_reset
+        title: "Confirm: host whose data is destroyed"
+        description: "Type the target host name to confirm destroying its data. Anything else refuses. No default on purpose."
+        type: string
+        required: true
       - name: service_branch
         title: "Branch"
         description: "Git branch to deploy (leave as 'main' for production)"
@@ -978,6 +1144,11 @@ templates:
     # this.
     dev_variant: true
     survey_vars:
+      - name: confirm_reset
+        title: "Confirm: host whose data is destroyed"
+        description: "Type the target host name to confirm destroying its data. Anything else refuses. No default on purpose."
+        type: string
+        required: true
       - name: service_branch
         title: "Branch"
         description: "Git branch to deploy (leave as 'main' for production)"
@@ -995,6 +1166,11 @@ templates:
     # re-registering. Set postiz_disable_registration back to false first, or
     # nobody can sign in to the rebuilt stack.
     survey_vars:
+      - name: confirm_reset
+        title: "Confirm: host whose data is destroyed"
+        description: "Type the target host name to confirm destroying its data. Anything else refuses. No default on purpose."
+        type: string
+        required: true
       - name: service_branch
         title: "Branch"
         description: "Git branch to deploy (leave as 'main' for production)"
@@ -1193,8 +1369,8 @@ templates:
   # declared address as reserved or active, and no other host claims it. Read-only.
   - name: Lookup Service Inventory
     playbook: platform/playbooks/lookup-service-inventory.yml
-    # main has no copy of this playbook yet (service deployment workflow, not promoted),
-    # so the dev-bound variant is the only runnable form before promotion.
+    # Before the 2026-10-07 promotion (PR #447), main had no copy of this playbook (service
+    # deployment workflow), so the dev-bound variant was the only runnable form.
     dev_variant: true
     survey_vars:
       - name: target_service
@@ -1207,8 +1383,8 @@ templates:
   # service's own running VM), and the NetBox VM record exists (created planned if absent).
   - name: Validate Address Free
     playbook: platform/playbooks/validate-address-free.yml
-    # main has no copy of this playbook yet (service deployment workflow, not promoted),
-    # so the dev-bound variant is the only runnable form before promotion.
+    # Before the 2026-10-07 promotion (PR #447), main had no copy of this playbook (service
+    # deployment workflow), so the dev-bound variant was the only runnable form.
     dev_variant: true
     survey_vars:
       - name: target_service
@@ -1746,6 +1922,18 @@ templates:
     # host. Reports coarse aggregate counts/bands only; no node, device, storage,
     # capacity value, or private identifier is visible. No selection or writes.
 
+  - name: Survey o11y Log Source (Dev)
+    playbook: platform/playbooks/survey-o11y-log-source.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for the read-only log-source survey"
+        type: string
+        required: true
+    # Reports fixed driver/source categories and counts only; no logs, paths,
+    # addresses, container identities, or stderr are exposed.
+
   - name: Reconcile o11y Backup Job (Dev)
     playbook: platform/playbooks/reconcile-o11y-backup-job.yml
     repository: agent-cloud dev
@@ -2124,8 +2312,8 @@ templates:
   # Read-only unless dry_run=false.
   - name: Manage GitHub Runner Group
     playbook: platform/playbooks/manage-github-runner-group.yml
-    # Introduced by this change, so main has no copy yet — a dev-bound variant is the
-    # only way to exercise it before promotion (setup-templates.yml emits "<name> (Dev)").
+    # Before the 2026-10-07 promotion (PR #447), main had no copy of this playbook, so a
+    # dev-bound variant was the only way to exercise it (setup-templates.yml emits "<name> (Dev)").
     dev_variant: true
     survey_vars:
       - name: dry_run
@@ -2137,8 +2325,8 @@ templates:
 
   - name: Deploy GitHub Runner
     playbook: platform/playbooks/deploy-github-runner.yml
-    # Introduced by this change, so main has no copy yet — a dev-bound variant is the
-    # only way to exercise it before promotion (setup-templates.yml emits "<name> (Dev)").
+    # Before the 2026-10-07 promotion (PR #447), main had no copy of this playbook, so a
+    # dev-bound variant was the only way to exercise it (setup-templates.yml emits "<name> (Dev)").
     dev_variant: true
     survey_vars:
       - name: service_branch

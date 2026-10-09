@@ -46,8 +46,12 @@
 # rollback that must outlast the next Caddy run is also written into inventory.
 #   inference_route_address           the inference site's address, e.g. inference.<zone>
 #   inference_route_mode              the inventory default ('gateway' after the switch)
-#   inference_route_gateway_upstream  optional; host:port Caddy dials for the gateway
-#                                     (default: the gateway host's agw_bind:agw_port)
+#   inference_route_gateway_upstream  host:port Caddy dials for the gateway. Optional only when
+#                                     the gateway host's agw_bind is a specific address (then
+#                                     agw_bind:agw_port); a wildcard or unset agw_bind is not
+#                                     dialable, so direct and restore (which write Caddy)
+#                                     refuse until this is declared. gateway-config never
+#                                     touches Caddy and runs without it
 #   inference_route_direct_upstream   optional; host:port Caddy dials for vLLM
 #                                     (default: the host:port of the gateway's
 #                                     agw_upstream_base_url, the head node)
@@ -112,6 +116,10 @@
     _engine: "{{ container_engine | default('podman') }}"
     _container: "{{ caddy_container | default('caddy') }}"
     _gw: "{{ groups['agentgateway_svc'][0] }}"
+    # The gateway upstream is dialable when it is declared, or when agw_bind names one address.
+    _rb_gw_dialable: >-
+      {{ ((inference_route_gateway_upstream | default('', true) | length > 0)
+          or (hostvars[_gw].agw_bind | default('') not in ['', '0.0.0.0', '::'])) | bool }}
     # The upstreams Caddy is DIALLING, from its running config (admin API inside the
     # container, as manage-caddy-sites.yml reads it): the file can be right while the process
     # still serves the old route. Every `dial` under the routes matching the inference host;
@@ -139,6 +147,23 @@
           - inference_route_address | default('') | length > 0
         fail_msg: "caddy_svc must hold exactly one host, and it must declare inference_route_address (the inference site's address)."
 
+    - name: "Require a dialable gateway upstream"
+      # A wildcard bind (0.0.0.0, ::) or none says where the gateway LISTENS, not where Caddy
+      # dials it, and the read-back could never match it. ansible_host is not assumed to be the
+      # dialable address (local-dev's is a container), so the dial address is declared. Only the
+      # modes that write Caddy need it: gateway-config never touches Caddy, so there an
+      # undeclared upstream only leaves the route report unable to name the gateway hop.
+      tags: [verify]
+      ansible.builtin.assert:
+        that: _rb_gw_dialable | bool
+        fail_msg: >-
+          inference_route_gateway_upstream is not declared and the gateway host's agw_bind
+          ('{{ hostvars[_gw].agw_bind | default('') }}') is unset or a wildcard, which Caddy cannot
+          dial. Declare inference_route_gateway_upstream (host:port of the gateway as Caddy
+          reaches it); nothing was changed.
+        quiet: true
+      when: _rb_mode in ['direct', 'restore']
+
     - name: "Name the upstream each mode dials"
       tags: [verify]
       ansible.builtin.set_fact:
@@ -146,8 +171,8 @@
           {{ inference_route_direct_upstream
              | default(hostvars[_gw].agw_upstream_base_url | default('') | urlsplit('netloc')) }}
         _rb_gateway_upstream: >-
-          {{ inference_route_gateway_upstream
-             | default((hostvars[_gw].agw_bind | default('127.0.0.1')) ~ ':' ~ (hostvars[_gw].agw_port | default('4000'))) }}
+          {{ '' if not (_rb_gw_dialable | bool) else (inference_route_gateway_upstream | default('', true)
+             or ((hostvars[_gw].agw_bind | default('')) ~ ':' ~ (hostvars[_gw].agw_port | default('4000')))) }}
 
     - name: "Require two distinct upstreams"
       tags: [verify]
@@ -172,7 +197,8 @@
       ansible.builtin.debug:
         msg: >-
           {{ inference_route_address }} is dialling {{ _rb_running_dials | join(', ') | default('(no upstream)', true) }}:
-          {% if _rb_running_dials == [_rb_direct_upstream] %}direct to vLLM{% elif _rb_running_dials == [_rb_gateway_upstream] %}through
+          {% if _rb_running_dials == [_rb_direct_upstream] %}direct to vLLM{% elif not (_rb_gw_dialable | bool) %}not vLLM
+          direct (the gateway upstream is undeclared, so a route through the gateway cannot be recognised){% elif _rb_running_dials == [_rb_gateway_upstream] %}through
           the gateway{% else %}NEITHER the gateway ({{ _rb_gateway_upstream }}) nor vLLM ({{ _rb_direct_upstream }}){% endif %}.
           {% if _rb_mode != 'gateway-config' %}Mode {{ _rb_mode }} routes it {{ inference_route_mode }}.{% endif %}
 
@@ -384,64 +410,121 @@
     # shared vLLM key after its grace period ended. Putting it back would re-admit that key, so
     # the rollback refuses before any write. The files hold key hashes (or, under local-dev's
     # agw_plaintext_keys, keys), so they are read and compared in no_log tasks that keep only
-    # identity NAMES; the visible assert below prints those names and nothing else.
-    - name: "Read both configs' enrolled identities (credential-adjacent)"
-      # A missing live config counts as enrolling nobody: the check fails closed.
-      ansible.builtin.slurp:
-        src: "{{ _deploy_dir }}/{{ item }}"
-      loop: [config.yaml, config.yaml.previous]
-      loop_control:
-        index_var: _i
-      register: _rb_cfg_text
-      no_log: true
-      when:
-        - _rb_mode == 'gateway-config'
-        - _rb_cfg.results[_i].stat.exists
-
-    - name: "Name every identity the previous config enrols that the live one does not"
-      vars:
-        # Every enrolment, wherever it sits: the template renders one apiKey policy (llm.policies),
-        # but a kept file is whatever was on disk, so the walk takes the `keys` list of EVERY
-        # `apiKey` mapping at any depth (from_yaml resolves anchors, aliases and merge keys).
-        _keys_of: >-
-          {%- macro walk(n) -%}
-          {%- if n is mapping -%}
-          {%- for k, v in n.items() -%}
-          {%- if k == 'apiKey' and v is mapping and v.get('keys') is sequence and v.get('keys') is not string -%}
-          {%- for e in v.get('keys') -%}{{ (e if e is mapping else {}) | to_json }},{%- endfor -%}
-          {%- endif -%}
-          {{- walk(v) -}}
-          {%- endfor -%}
-          {%- elif n is sequence and n is not string -%}
-          {%- for v in n -%}{{- walk(v) -}}{%- endfor -%}
-          {%- endif -%}
-          {%- endmacro -%}
-          {%- set ns = namespace(out=[]) -%}
-          {%- for r in _rb_cfg_text.results -%}
-          {%- set doc = (r.content | b64decode | from_yaml) if r.content is defined else {} -%}
-          {%- set ns.out = ns.out + [('[' ~ (walk(doc) | default('', true)) ~ 'null]') | from_json | select | list] -%}
-          {%- endfor -%}
-          {{ ns.out }}
-        _live_creds: >-
-          {{ (_keys_of[0] | selectattr('keyHash', 'defined') | map(attribute='keyHash') | list)
-             + (_keys_of[0] | selectattr('key', 'defined') | map(attribute='key') | list) }}
-        _live_names: "{{ _keys_of[0] | map(attribute='metadata.name', default='') | list }}"
-        _today: "{{ agw_today | default(now(utc=true).strftime('%Y-%m-%d')) | string }}"
-        _expires: "{{ legacy_shared_expires | default('', true) | string }}"
-      ansible.builtin.set_fact:
-        _rb_readmitted: >-
-          {%- set ns = namespace(out=[]) -%}
-          {%- for k in _keys_of[1] -%}
-          {%- set n = (k.metadata | default({})).name | default('(unnamed)') -%}
-          {%- set c = k.keyHash | default(k.key | default('')) -%}
-          {%- if c not in _live_creds or n not in _live_names -%}{%- set ns.out = ns.out + [n] -%}{%- endif -%}
-          {%- endfor -%}
-          {{ ns.out | unique | sort }}
-        _rb_legacy_expired: >-
-          {{ ('legacy-shared' in (_keys_of[1] | map(attribute='metadata.name', default='') | list))
-             and (_expires | length > 0) and (_today >= _expires) }}
-      no_log: true
+    # identity NAMES; the visible assert below prints those names and nothing else. A failure
+    # inside those tasks is reported by name and exception class only.
+    - name: "Read, compare and refuse on the two configs' enrolments"
       when: _rb_mode == 'gateway-config'
+      block:
+        - name: "Read and parse both configs' enrolments (credential-adjacent)"
+          block:
+            - name: "Read both configs' enrolled identities (credential-adjacent)"
+              # A missing live config counts as enrolling nobody: the check fails closed.
+              ansible.builtin.slurp:
+                src: "{{ _deploy_dir }}/{{ item }}"
+              loop: [config.yaml, config.yaml.previous]
+              loop_control:
+                index_var: _i
+              register: _rb_cfg_text
+              no_log: true
+              when: _rb_cfg.results[_i].stat.exists
+
+            - name: "Name any config that cannot be parsed (credential-adjacent)"
+              # The filter does the parse and the walk in Python
+              # (filter_plugins/agw_apikey_entries.py): no JSON text is built and re-read in
+              # Jinja, which behaved differently across ansible-core versions. Only the file
+              # name and the class of a parse failure leave this task, through _rb_cfg_problems.
+              vars:
+                _names: [config.yaml, config.yaml.previous]
+              ansible.builtin.set_fact:
+                _rb_cfg_problems: >-
+                  {%- set ns = namespace(out=[]) -%}
+                  {%- for r in _rb_cfg_text.results -%}
+                  {%- set p = (r.content | agw_apikey_entries).problem if r.content is defined else '' -%}
+                  {%- if p -%}{%- set ns.out = ns.out + [_names[loop.index0] ~ ': ' ~ p] -%}{%- endif -%}
+                  {%- endfor -%}
+                  {{ ns.out }}
+              no_log: true
+          rescue:
+            - name: "Report which credential task failed (its name and kind of error only)"
+              # no_log hides the whole result, which would leave a template error undiagnosable.
+              # The message can quote config content, so it is never shown: it is sorted into a
+              # fixed set of kinds and only the kind is printed.
+              vars:
+                _rb_msg: "{{ ansible_failed_result.msg | default('') | string }}"
+                _rb_kind: >-
+                  {{ 'an undefined variable' if (_rb_msg is search('undefined variable|is undefined'))
+                     else 'a filter plugin error' if (_rb_msg is search('[Ff]ilter'))
+                     else 'a template error' if (_rb_msg is search('emplat|Finalization of task args'))
+                     else 'an unclassified error' }}
+              ansible.builtin.fail:
+                msg: >-
+                  '{{ ansible_failed_task.name }}' failed with {{ _rb_kind }}; its output is hidden
+                  because it handles key material. Nothing was changed.
+
+        - name: "Refuse a config that cannot be read as the gateway's YAML mapping"
+          # Visible on purpose: _rb_cfg_problems holds file names and failure classes, never content.
+          ansible.builtin.assert:
+            that: _rb_cfg_problems | length == 0
+            fail_msg: >-
+              cannot read the enrolled identities of {{ _rb_cfg_problems | join('; ') }}. A config
+              that cannot be read cannot be compared with the live one, so nothing was changed. Fix
+              forward with deploy-agentgateway.yml, or roll back in direct mode.
+            quiet: true
+
+        - name: "Name every identity the previous config enrols that the live one does not"
+          block:
+            - name: "Compare the previous config's enrolments with the live one's (credential-adjacent)"
+              vars:
+                # Parsed here, task-local, so no hash or key outlives this task as a fact. Each
+                # entry list is every enrolment of its file, wherever it sits: the template renders
+                # one apiKey policy (llm.policies), but a kept file is whatever was on disk, so the
+                # filter takes the `keys` list of EVERY `apiKey` mapping at any depth.
+                _none: {entries: [], problem: ''}
+                _parsed: >-
+                  {%- set ns = namespace(out=[]) -%}
+                  {%- for r in _rb_cfg_text.results -%}
+                  {%- set ns.out = ns.out + [(r.content | agw_apikey_entries) if r.content is defined else _none] -%}
+                  {%- endfor -%}
+                  {{ ns.out }}
+                _keys_of: "{{ _parsed | map(attribute='entries') | list }}"
+                _live_creds: >-
+                  {{ (_keys_of[0] | selectattr('keyHash', 'defined') | map(attribute='keyHash') | list)
+                     + (_keys_of[0] | selectattr('key', 'defined') | map(attribute='key') | list) }}
+                _live_names: "{{ _keys_of[0] | map(attribute='metadata.name', default='') | map('string') | list }}"
+                _today: "{{ agw_today | default(now(utc=true).strftime('%Y-%m-%d')) | string }}"
+                _expires: "{{ legacy_shared_expires | default('', true) | string }}"
+              ansible.builtin.set_fact:
+                _rb_readmitted: >-
+                  {%- set ns = namespace(out=[]) -%}
+                  {%- for k in _keys_of[1] -%}
+                  {%- set n = (k.metadata | default({})).name | default('(unnamed)') | string -%}
+                  {%- set c = k.keyHash | default(k.key | default('')) -%}
+                  {%- if c not in _live_creds or n not in _live_names -%}{%- set ns.out = ns.out + [n] -%}{%- endif -%}
+                  {%- endfor -%}
+                  {{ ns.out | unique | sort }}
+                _rb_legacy_expired: >-
+                  {{ ('legacy-shared' in (_keys_of[1] | map(attribute='metadata.name', default='') | list))
+                     and (_expires | length > 0) and (_today >= _expires) }}
+              no_log: true
+          rescue:
+            - name: "Report which credential task failed (its name and kind of error only)"
+              vars:
+                _rb_msg: "{{ ansible_failed_result.msg | default('') | string }}"
+                _rb_kind: >-
+                  {{ 'an undefined variable' if (_rb_msg is search('undefined variable|is undefined'))
+                     else 'a filter plugin error' if (_rb_msg is search('[Ff]ilter'))
+                     else 'a template error' if (_rb_msg is search('emplat|Finalization of task args'))
+                     else 'an unclassified error' }}
+              ansible.builtin.fail:
+                msg: >-
+                  '{{ ansible_failed_task.name }}' failed with {{ _rb_kind }}; its output is hidden
+                  because it handles key material. Nothing was changed.
+      always:
+        - name: "Drop the slurped config text from the run's facts"
+          # The register holds both files base64-encoded; nothing after this reads it.
+          ansible.builtin.set_fact:
+            _rb_cfg_text: {}
+          no_log: true
 
     - name: "Refuse a previous config that would re-admit a rotated, revoked or expired key"
       ansible.builtin.assert:

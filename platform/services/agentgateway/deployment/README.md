@@ -6,6 +6,41 @@ agentgateway** — removes both containers (gateway + its own Postgres) and the 
 volume, then redeploys. Keys come back from OpenBao unchanged; the only state lost is
 every identity's current token-budget window.
 
+Every real deploy checks that rendered `AGW_IMAGE` equals the reviewed
+`cr.agentgateway.dev/agentgateway:v1.5.0` pin, then asks `deploy.sh --pull-only`
+to resolve the effective Compose images. It captures the resulting local image
+ID and runs that ID with `--validate-only -f /config.yaml` before `deploy.sh`
+can recreate containers. The validator uses `--pull=never`, and the actual
+lifecycle uses `deploy.sh --no-pull`; a second image-ID check immediately before
+deployment refuses a moved tag. The pull-only mode uses the same Compose
+file/overlay selection as deployment and exits before any container decision or
+change. Before invoking Compose, `deploy.sh` replaces any inherited `AGW_IMAGE`
+with the single value rendered in `.env`, because Compose otherwise gives the
+process environment precedence. The validator receives `.env` by file path.
+Production uses Podman's default network so issuer-only OIDC discovery can run;
+local-dev joins `local-dev`, where the Authentik hostname alias is declared.
+This checks config acceptance but does not reproduce the runtime Compose network
+topology. When listener TLS is enabled, it also receives the same read-only
+`/certs` mount and trust settings as Compose; local-dev always receives them;
+the production TLS check uses the same keep-id mapping. Its output is suppressed
+because parser errors may quote configuration. The invocation follows the
+[standalone validation command](https://agentgateway.dev/docs/standalone/latest/documentation/setup/update/)
+and the image comes from the [v1.5.0 release](https://github.com/agentgateway/agentgateway/releases/tag/v1.5.0).
+`Verify agentgateway Runtime (Dev)` is a separate,
+read-only receipt that requires the checkout to match the requested reviewed SHA,
+the running input label to match the current rendered files, readiness, and the
+running image ID to match the resolved v1.5.0 image ID. It reports the checkout
+revision and two sampling values read from the rendered file as separate metadata.
+Because `.env` and `config.yaml` are gitignored render outputs without a source
+revision stamp, this receipt does not prove which checkout produced them. It
+reports only metadata; hashes and rendered file contents are not displayed.
+It does not claim callback-marker absence from stored logs or spans. That runtime
+correlation gate remains incomplete until stdout and OTLP records and an exact
+callback span can be joined to each bounded synthetic request. Validator success
+is necessary config evidence, not proof of runtime callback behavior. OTLP access
+record separation with `signal: "access-log"` remains pending in gateway-owned
+configuration; this source-side verifier does not claim that field has landed.
+
 `deploy.sh` is container lifecycle only. Both files the container reads (`.env`,
 `config.yaml`) are rendered by `deploy-agentgateway.yml` from OpenBao + inventory and
 are gitignored. Operational reference: `../context/architecture.md`. When a deploy's render changes `config.yaml`, the file it replaced is kept

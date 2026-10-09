@@ -1,0 +1,1063 @@
+---
+# Independently deploy the bounded receiver-host journald pilot.
+
+- name: Refuse extra vars that set internal names
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: Require the reviewed checkout
+  ansible.builtin.import_playbook: require-reviewed-checkout.yml
+
+- name: Pre-flight
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: o11y_svc
+    preflight_group_expected: o11y_svc
+
+- name: Validate the reviewed Dev-bound action
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Require exactly one receiver and the Dev branch
+      ansible.builtin.assert:
+        that:
+          - groups.get('o11y_svc', []) | length == 1
+          - service_branch | default('dev') == 'dev'
+          - journal_collector_action | default('apply') in ['survey', 'repair-positions', 'apply', 'stop']
+        fail_msg: >-
+          This workflow requires one o11y_svc host, service_branch=dev, and
+          journal_collector_action=survey|repair-positions|apply|stop.
+        quiet: true
+      tags: [always]
+
+- name: "Deploy the bounded journal collector"
+  hosts: o11y_svc
+  gather_facts: false
+  become: false
+  any_errors_fatal: true
+  vars:
+    _journal_directory: "{{ o11y_journal_directory | default('') | string }}"
+    _journal_mount: /var/log/journal
+    _journal_image: docker.io/grafana/alloy:v1.9.2
+    _journal_loki_query_url: >-
+      {{ [
+        'http://loki:3100/loki/api/v1/query_range?query=%7Bservice%3D%22o11y%2Falloy%22%2Csignal%3D%22container%22%7D',
+        '&start=', _journal_verification_start.stdout | default('') | trim,
+        '&limit=1&direction=backward'
+      ] | join('') }}
+    _journal_monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+    _journal_deploy_dir: "{{ _journal_monorepo_dir }}/platform/services/o11y/deployment"
+    _journal_probe: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/probe-o11y-journal-directory.py') }}"
+    _journal_positions_helper: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/o11y-journal-positions.py') }}"
+    _journal_candidate_path: "{{ _journal_deploy_dir }}/config/.journal.alloy.candidate"
+    _journal_image_probe_argv:
+      - podman
+      - run
+      - --rm
+      - --network
+      - none
+      - --read-only
+      - --user
+      - "0:0"
+      - --mount
+      - "type=bind,src={{ _journal_directory }},dst={{ _journal_mount }},ro"
+      - --entrypoint
+      - /bin/bash
+      - "{{ _journal_image }}"
+      - -c
+      - >-
+        shopt -s globstar nullglob;
+        files=(/var/log/journal/**/*.journal);
+        for file in "${files[@]}"; do
+          if [[ -r "$file" ]] && read -r -N 1 _ < "$file"; then exit 0; fi;
+        done;
+        exit 1
+    _journal_config_path: "{{ _journal_deploy_dir }}/config/journal.alloy"
+
+  tasks:
+    - name: Leave the apply play when the reviewed action is stop
+      ansible.builtin.meta: end_host
+      when: journal_collector_action | default('apply') != 'apply'
+      tags: [always]
+
+    - name: Require the declared rootless Podman host and exact receiver endpoint
+      ansible.builtin.assert:
+        that:
+          - not (local_mode | default(false) | bool)
+          - container_engine | default('podman') == 'podman'
+          - _journal_directory in ['/var/log/journal', '/run/log/journal']
+          - o11y_otlp_bind | default('') is match('^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.)')
+          - o11y_otlp_port | default(4317) | int == 4317
+        fail_msg: >-
+          Declare the actual readable journal directory and private OTLP bind on
+          the single production o11y_svc host; this pilot requires rootless Podman.
+        quiet: true
+      tags: [always]
+
+    - name: Read the Podman rootless runtime mode
+      ansible.builtin.command:
+        argv: [podman, info, --format, "{{ '{{' }}.Host.Security.Rootless{{ '}}' }}"]
+      register: _journal_rootless_mode
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+      tags: [always]
+
+    - name: Require the actual runtime to be rootless
+      ansible.builtin.assert:
+        that:
+          - _journal_rootless_mode.rc | default(1) == 0
+          - _journal_rootless_mode.stdout | default('') | trim == 'true'
+        fail_msg: "The journal pilot requires the target's actual Podman runtime to be rootless."
+        quiet: true
+      tags: [always]
+
+    - name: Read the selected host journal directory
+      ansible.builtin.stat:
+        path: "{{ _journal_directory }}"
+      register: _journal_directory_stat
+      changed_when: false
+      check_mode: false
+      no_log: true
+      tags: [always]
+
+    - name: Require an existing readable journal directory before Compose can mount it
+      ansible.builtin.assert:
+        that:
+          - _journal_directory_stat.stat.exists | default(false)
+          - _journal_directory_stat.stat.isdir | default(false)
+          - _journal_directory_stat.stat.readable | default(false)
+          - _journal_directory_stat.stat.executable | default(false)
+        fail_msg: >-
+          The declared host journal directory is absent or unreadable. No bind mount
+          was created and the collector was not started.
+        quiet: true
+      tags: [always]
+
+    - name: Require a recent exact-name entry in the selected journal
+      ansible.builtin.command:
+        argv: [python3, "-", "{{ _journal_directory }}"]
+        stdin: "{{ _journal_probe }}"
+        stdin_add_newline: false
+      register: _journal_probe_result
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+      tags: [always]
+
+    - name: Require the sanitized journal probe to pass
+      ansible.builtin.assert:
+        that:
+          - _journal_probe_result.rc | default(1) == 0
+          - (_journal_probe_result.stdout | default('{}') | from_json).status == 'observed'
+          - (_journal_probe_result.stdout | default('{}') | from_json).matching_entries | int > 0
+        fail_msg: >-
+          The selected journal has no readable recent CONTAINER_NAME=o11y-alloy entry;
+          collector preflight failed without reporting journal content.
+        quiet: true
+      tags: [always]
+
+    - name: Require the pinned rootless Alloy process to read the journal bind
+      ansible.builtin.command:
+        argv: "{{ _journal_image_probe_argv }}"
+      register: _journal_uid_probe
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+      when: not ansible_check_mode
+      tags: [always]
+
+    - name: Require the rootless Compose UID to read a journal file
+      ansible.builtin.assert:
+        that: _journal_uid_probe.rc | default(1) == 0
+        fail_msg: >-
+          The rootless Compose UID cannot read a journal file from the selected bind.
+          No collector was started.
+        quiet: true
+      when: not ansible_check_mode
+      tags: [always]
+
+    - name: Require the existing o11y Alloy receiver container to be running
+      ansible.builtin.command:
+        argv:
+          - podman
+          - inspect
+          - --format
+          - "{{ '{{' }}.State.Status{{ '}}' }}"
+          - o11y-alloy
+      register: _journal_receiver_status
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      tags: [always]
+
+    - name: Require the existing receiver listener on its private host bind
+      ansible.builtin.wait_for:
+        host: "{{ o11y_otlp_bind }}"
+        port: "{{ o11y_otlp_port | default(4317) }}"
+        timeout: 5
+        state: started
+      register: _journal_receiver_listener
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      when: not ansible_check_mode
+      tags: [always]
+
+    - name: Refuse to continue unless receiver readiness is proven
+      ansible.builtin.assert:
+        that:
+          - _journal_receiver_status.rc | default(1) == 0
+          - _journal_receiver_status.stdout | default('') | trim == 'running'
+          - ansible_check_mode or not (_journal_receiver_listener.failed | default(true))
+        fail_msg: >-
+          The existing receiver is not running on its declared private OTLP/gRPC
+          listener. The journal collector was not started.
+        quiet: true
+      when: not ansible_check_mode
+      tags: [always]
+
+    - name: Place the reviewed monorepo on the receiver through the shared mechanism
+      ansible.builtin.include_tasks: tasks/place-monorepo.yml
+      vars:
+        _monorepo_dir: "{{ _journal_monorepo_dir }}"
+        _branch: "{{ service_branch | default('dev') }}"
+      when: not ansible_check_mode
+
+    - name: Read the receiver checkout revision
+      ansible.builtin.command:
+        argv: [git, rev-parse, HEAD]
+        chdir: "{{ _journal_monorepo_dir }}"
+      register: _journal_target_revision
+      changed_when: false
+      check_mode: false
+      when: not ansible_check_mode
+
+    - name: Require receiver checkout at the exact reviewed revision
+      ansible.builtin.assert:
+        that: _journal_target_revision.stdout | trim == expected_repository_sha
+        fail_msg: >-
+          The receiver checkout does not match the reviewed SHA; collector files
+          were not rendered or applied.
+        quiet: true
+      when: not ansible_check_mode
+
+    - name: Read back the seven existing receiver container identities and states
+      ansible.builtin.shell:
+        cmd: >-
+          set -o pipefail &&
+          podman inspect --format '{{ '{{' }}.Id {{ '}}' }} {{ '{{' }}.State.Status {{ '}}' }} {{ '{{' }}.State.StartedAt {{ '}}' }}'
+          o11y-prometheus o11y-loki o11y-alloy o11y-tempo o11y-pyroscope
+          o11y-grafana o11y-node-exporter | LC_ALL=C sort | sha256sum
+        executable: /bin/bash
+      register: _journal_receiver_snapshot
+      changed_when: false
+      check_mode: false
+      when: not ansible_check_mode
+
+    - name: Require a complete receiver container snapshot before applying
+      ansible.builtin.assert:
+        that:
+          - _journal_receiver_snapshot.rc | default(1) == 0
+          - _journal_receiver_snapshot.stdout.split() | length == 2
+          - _journal_receiver_snapshot.stdout.split()[0] is match('^[0-9a-f]{64}$')
+        fail_msg: >-
+          The seven existing receiver containers could not be read before apply;
+          the journal collector was not started.
+        quiet: true
+      when: not ansible_check_mode
+
+    - name: Verify positions volume identity and access before apply
+      ansible.builtin.command:
+        argv: [python3, "-", verify]
+        stdin: "{{ _journal_positions_helper }}"
+        stdin_add_newline: false
+      register: _journal_positions_gate
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      when: not ansible_check_mode
+
+    - name: Record the positions apply gate as unverified in check mode
+      ansible.builtin.set_fact:
+        _journal_positions_gate:
+          rc: 0
+          stdout: '{"status":"check_mode_unverified","reason":"not_run"}'
+      when: ansible_check_mode
+
+    - name: Require positions access and mount identity before apply
+      ansible.builtin.assert:
+        that:
+          - _journal_positions_gate.rc | default(1) == 0
+          - (_journal_positions_gate.stdout | default('{}') | from_json).status in ['ready', 'bootstrap_allowed']
+        fail_msg: >-
+          Positions-volume identity/access gate refused
+          ({{ (_journal_positions_gate.stdout | default('{}') | from_json).get('reason', 'unverified') }}).
+          The collector was not applied.
+        quiet: true
+      when: not ansible_check_mode
+
+    - name: Report the bounded positions apply-gate result
+      ansible.builtin.debug:
+        msg: >-
+          Positions apply gate: status={{ (_journal_positions_gate.stdout | from_json).status }};
+          owner={{ (_journal_positions_gate.stdout | from_json).root_owner | default('unavailable') }};
+          access={{ (_journal_positions_gate.stdout | from_json).root_mode_access | default('unavailable') }};
+          entries={{ (_journal_positions_gate.stdout | from_json).entry_count | default(0) }}
+      changed_when: false
+
+    - name: Render a candidate journal config with the private receiver endpoint
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../services/o11y/deployment/templates/journal.alloy.j2"
+        dest: "{{ _journal_candidate_path }}"
+        mode: "0644"
+      diff: false
+      no_log: true
+      when: not ansible_check_mode
+
+    - name: Check whether the pinned Alloy validation image is already available
+      ansible.builtin.command:
+        argv: [podman, image, exists, "{{ _journal_image }}"]
+      register: _journal_image_exists
+      changed_when: false
+      failed_when: false
+      when: not ansible_check_mode
+
+    - name: Acquire the pinned Alloy validation image when it is not cached
+      ansible.builtin.command:
+        argv: [podman, pull, --quiet, "{{ _journal_image }}"]
+      register: _journal_image_pull
+      changed_when: _journal_image_pull.rc == 0
+      when:
+        - not ansible_check_mode
+        - _journal_image_exists.rc | default(1) != 0
+      async: 600
+      poll: 5
+
+    - name: Validate the candidate config with the pinned Alloy image before any collector recreation
+      ansible.builtin.command:
+        argv:
+          - podman
+          - run
+          - --pull=never
+          - --rm
+          - --network
+          - none
+          - --read-only
+          - --mount
+          - "type=bind,src={{ _journal_candidate_path }},dst=/etc/alloy/journal.alloy,ro"
+          - "{{ _journal_image }}"
+          - validate
+          - --stability.level=generally-available
+          - /etc/alloy/journal.alloy
+      register: _journal_config_validation
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+      when: not ansible_check_mode
+
+    - name: Refuse to start a collector with an invalid Alloy config
+      ansible.builtin.assert:
+        that: _journal_config_validation.rc | default(1) == 0
+        fail_msg: >-
+          The candidate journal collector config failed validation with the pinned
+          Alloy image; the running collector and its positions were left untouched.
+        quiet: true
+      when: not ansible_check_mode
+
+    - name: Read the validated candidate config digest
+      ansible.builtin.stat:
+        path: "{{ _journal_candidate_path }}"
+        checksum_algorithm: sha256
+      register: _journal_candidate_stat
+      changed_when: false
+      no_log: true
+      when: not ansible_check_mode
+
+    - name: Promote the validated candidate config for the collector
+      ansible.builtin.copy:
+        src: "{{ _journal_candidate_path }}"
+        dest: "{{ _journal_config_path }}"
+        remote_src: true
+        mode: "0644"
+      diff: false
+      no_log: true
+      when: not ansible_check_mode
+
+    - name: Recheck positions volume initialization immediately before mount
+      ansible.builtin.command:
+        argv: [python3, "-", verify]
+        stdin: "{{ _journal_positions_helper }}"
+        stdin_add_newline: false
+      register: _journal_positions_pre_mount
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      when: not ansible_check_mode
+
+    - name: Require positions volume remains safe to mount
+      ansible.builtin.assert:
+        that:
+          - _journal_positions_pre_mount.rc | default(1) == 0
+          - (_journal_positions_pre_mount.stdout | default('{}') | from_json).status in ['ready', 'bootstrap_allowed']
+        fail_msg: >-
+          Positions volume identity or initialization state changed before the
+          collector mount; no container start was requested.
+        quiet: true
+      when: not ansible_check_mode
+
+    - name: Apply the collector and require exact-target Loki delivery
+      when: not ansible_check_mode
+      block:
+        - name: Capture the pre-start lower bound for this run's Loki receipt
+          ansible.builtin.command:
+            argv: [date, +%s%N]
+          register: _journal_verification_start
+          changed_when: false
+          check_mode: false
+
+        - name: Start only the journal collector service
+          ansible.builtin.command:
+            argv: [podman-compose, -f, compose.yml, -f, compose.journal.yml, up, --no-deps, -d, journal-collector]
+            chdir: "{{ _journal_deploy_dir }}"
+          environment:
+            O11Y_JOURNAL_DIRECTORY: "{{ _journal_directory }}"
+            O11Y_JOURNAL_CONFIG_SHA: "{{ _journal_candidate_stat.stat.checksum }}"
+          register: _journal_up
+          changed_when: _journal_up.stdout | length > 0 or _journal_up.stderr | length > 0
+          when: not ansible_check_mode
+
+        - name: Read the collector state
+          ansible.builtin.command:
+            argv: [podman, inspect, --format, "{{ '{{' }}.State.Health.Status{{ '}}' }}", o11y-journal-collector]
+          register: _journal_collector_status
+          changed_when: false
+          check_mode: false
+          # The Compose check allows 20s startup + eight 15s intervals. Keep
+          # polling long enough to observe that full health window before rollback.
+          retries: 60
+          delay: 3
+          until: _journal_collector_status.rc == 0 and _journal_collector_status.stdout | trim == 'healthy'
+
+        - name: Require the collector healthcheck to pass
+          ansible.builtin.assert:
+            that: _journal_collector_status.stdout | trim == 'healthy'
+            fail_msg: "The journal collector healthcheck failed; its state volume was preserved."
+            quiet: true
+
+        - name: Verify the live collector positions mount and access
+          ansible.builtin.command:
+            argv: [python3, "-", verify]
+            stdin: "{{ _journal_positions_helper }}"
+            stdin_add_newline: false
+          register: _journal_positions_live_mount
+          changed_when: false
+          failed_when: false
+          check_mode: false
+
+        - name: Read the Podman rootless UID mapping
+          ansible.builtin.command:
+            argv: [podman, unshare, cat, /proc/self/uid_map]
+          register: _journal_host_uid_map
+          changed_when: false
+          failed_when: false
+          check_mode: false
+          no_log: true
+
+        - name: Verify effective write and rename access in the live collector namespace
+          ansible.builtin.command:
+            argv:
+              - podman
+              - exec
+              - o11y-journal-collector
+              - /bin/bash
+              - -c
+              - >-
+                set -eu; test "$EUID" -eq 0;
+                mapping=$(</proc/self/uid_map);
+                read -r inside outside length <<< "$mapping";
+                test "$inside" = 0; test "$length" -gt 0;
+                a=$(mktemp /var/lib/alloy/data/.positions-live-gate.XXXXXX);
+                b="$a.renamed";
+                trap 'rm -f -- "$a"' EXIT;
+                test ! -e "$b";
+                printf x >> "$a";
+                mv -n -- "$a" "$b"; test -f "$b"; test ! -e "$a";
+                trap 'rm -f -- "$b"' EXIT;
+                rm -- "$b"; trap - EXIT; printf '%s\n' "$mapping"
+          register: _journal_collector_uid_map
+          changed_when: false
+          failed_when: false
+          no_log: true
+
+        - name: Require the actual positions volume mount and namespace access
+          ansible.builtin.assert:
+            that:
+              - _journal_positions_live_mount.rc | default(1) == 0
+              - (_journal_positions_live_mount.stdout | default('{}') | from_json).status == 'ready'
+              - _journal_host_uid_map.rc | default(1) == 0
+              - _journal_collector_uid_map.rc | default(1) == 0
+              - _journal_collector_uid_map.stdout | trim == _journal_host_uid_map.stdout | trim
+              - _journal_collector_uid_map.stdout | trim | length > 0
+            fail_msg: >-
+              The live collector mount identity, writable mode, user namespace mapping,
+              or effective positions access could not be verified.
+            quiet: true
+
+        - name: Read back the seven receiver container identities and states
+          ansible.builtin.shell:
+            cmd: >-
+              set -o pipefail &&
+              podman inspect --format '{{ '{{' }}.Id {{ '}}' }} {{ '{{' }}.State.Status {{ '}}' }} {{ '{{' }}.State.StartedAt {{ '}}' }}'
+              o11y-prometheus o11y-loki o11y-alloy o11y-tempo o11y-pyroscope
+              o11y-grafana o11y-node-exporter | LC_ALL=C sort | sha256sum
+            executable: /bin/bash
+          register: _journal_receiver_snapshot_after
+          changed_when: false
+          check_mode: false
+
+        - name: Require all existing receiver containers to remain unchanged
+          ansible.builtin.assert:
+            that:
+              - _journal_receiver_snapshot_after.rc | default(1) == 0
+              - _journal_receiver_snapshot_after.stdout.split()[0] == _journal_receiver_snapshot.stdout.split()[0]
+            fail_msg: >-
+              At least one existing receiver container changed during collector apply;
+              the collector will be stopped and its positions volume preserved.
+            quiet: true
+
+        - name: Verify the exact bounded journal stream reached Loki
+          ansible.builtin.command:
+            argv:
+              - podman
+              - exec
+              - o11y-grafana
+              - wget
+              - -q
+              - --timeout=5
+              - --tries=1
+              - -O
+              - -
+              - "{{ _journal_loki_query_url }}"
+          register: _journal_loki_result
+          changed_when: false
+          failed_when: false
+          check_mode: false
+          no_log: true
+          retries: 36
+          delay: 5
+          until:
+            - _journal_loki_result.rc | default(1) == 0
+            - (_journal_loki_result.stdout | default('{}') | from_json).status | default('') == 'success'
+            - (_journal_loki_result.stdout | default('{}') | from_json).data.result | length > 0
+
+        - name: Require an exact service and signal stream in Loki
+          ansible.builtin.assert:
+            that:
+              - _journal_loki_result.rc | default(1) == 0
+              - (_journal_loki_result.stdout | default('{}') | from_json).status == 'success'
+              - (_journal_loki_result.stdout | default('{}') | from_json).data.result | length > 0
+              - (_journal_loki_result.stdout | default('{}') | from_json).data.result[0].stream.service == 'o11y/alloy'
+              - (_journal_loki_result.stdout | default('{}') | from_json).data.result[0].stream.signal == 'container'
+              - (_journal_loki_result.stdout | default('{}') | from_json).data.result[0].values | length > 0
+              - (_journal_loki_result.stdout | default('{}') | from_json).data.result[0].values[0][0] | int >= _journal_verification_start.stdout | trim | int
+            fail_msg: >-
+              Loki has no exact o11y/alloy container stream in the last 15 minutes;
+              no post-start sample arrived within three minutes. The collector will be
+              stopped and its positions volume preserved.
+            quiet: true
+
+      rescue:
+        - name: Capture collector runtime state and automatic health results before rollback
+          ansible.builtin.command:
+            argv:
+              - podman
+              - inspect
+              - --format
+              - "{{ '{{' }}printf \"state=%s restart_count=%d \" .State.Status .RestartCount{{ '}}' }}{{ '{{' }}with .State.Health{{ '}}' }}health={{ '{{' }}.Status{{ '}}' }} failing_streak={{ '{{' }}.FailingStreak{{ '}}' }} log_count={{ '{{' }}len .Log{{ '}}' }} exit_codes={{ '{{' }}range .Log{{ '}}' }}{{ '{{' }}.ExitCode{{ '}}' }},{{ '{{' }}end{{ '}}' }}{{ '{{' }}else{{ '}}' }}health=unavailable failing_streak=unavailable log_count=0 exit_codes=unavailable{{ '{{' }}end{{ '}}' }}"
+              - o11y-journal-collector
+          register: _journal_rollback_state_evidence
+          changed_when: false
+          failed_when: false
+          check_mode: false
+
+        - name: Capture at most 80 collector log lines before rollback
+          ansible.builtin.command:
+            argv: [podman, logs, --tail, "80", o11y-journal-collector]
+          register: _journal_rollback_logs
+          changed_when: false
+          failed_when: false
+          check_mode: false
+          no_log: true
+
+        - name: Capture collector effective health schedule before rollback
+          ansible.builtin.command:
+            argv:
+              - podman
+              - inspect
+              - --format
+              - "{{ '{{' }}with .Config.Healthcheck{{ '}}' }}{{ '{{' }}if .Test{{ '}}' }}{{ '{{' }}if eq (index .Test 0) \"NONE\"{{ '}}' }}healthcheck_present=absent test_kind=none interval=unavailable timeout=unavailable retries=unavailable start_period=unavailable{{ '{{' }}else{{ '}}' }}healthcheck_present=present test_kind={{ '{{' }}if eq (index .Test 0) \"CMD\"{{ '}}' }}CMD{{ '{{' }}else if eq (index .Test 0) \"CMD-SHELL\"{{ '}}' }}CMD-SHELL{{ '{{' }}else{{ '}}' }}other{{ '{{' }}end{{ '}}' }} interval={{ '{{' }}.Interval{{ '}}' }} timeout={{ '{{' }}.Timeout{{ '}}' }} retries={{ '{{' }}.Retries{{ '}}' }} start_period={{ '{{' }}.StartPeriod{{ '}}' }}{{ '{{' }}end{{ '}}' }}{{ '{{' }}else{{ '}}' }}healthcheck_present=absent test_kind=none interval=unavailable timeout=unavailable retries=unavailable start_period=unavailable{{ '{{' }}end{{ '}}' }}{{ '{{' }}else{{ '}}' }}healthcheck_present=absent test_kind=none interval=unavailable timeout=unavailable retries=unavailable start_period=unavailable{{ '{{' }}end{{ '}}' }}"
+              - o11y-journal-collector
+          register: _journal_rollback_health_config
+          changed_when: false
+          failed_when: false
+          check_mode: false
+
+        - name: Capture collector health failure action before rollback
+          ansible.builtin.command:
+            argv:
+              - podman
+              - inspect
+              - --format
+              - "{{ '{{' }}if eq .Config.HealthcheckOnFailureAction \"none\"{{ '}}' }}on_failure=none{{ '{{' }}else if eq .Config.HealthcheckOnFailureAction \"restart\"{{ '}}' }}on_failure=restart{{ '{{' }}else if eq .Config.HealthcheckOnFailureAction \"stop\"{{ '}}' }}on_failure=stop{{ '{{' }}else if eq .Config.HealthcheckOnFailureAction \"kill\"{{ '}}' }}on_failure=kill{{ '{{' }}else{{ '}}' }}on_failure=unknown{{ '{{' }}end{{ '}}' }}"
+              - o11y-journal-collector
+          register: _journal_rollback_health_action
+          changed_when: false
+          failed_when: false
+          check_mode: false
+
+        - name: Classify collector health probes without exposing stderr
+          ansible.builtin.set_fact:
+            _journal_rollback_state_class: >-
+              {{
+                'container_missing'
+                if (_journal_rollback_state_evidence.rc | default(1) | int != 0 and
+                    ('no such container' in (_journal_rollback_state_evidence.stderr | default('', true) | lower) or
+                     'no container with name or id' in (_journal_rollback_state_evidence.stderr | default('', true) | lower)))
+                else 'permission_denied'
+                if (_journal_rollback_state_evidence.rc | default(1) | int != 0 and
+                    'permission denied' in (_journal_rollback_state_evidence.stderr | default('', true) | lower))
+                else 'state_probe_failed'
+                if _journal_rollback_state_evidence.rc | default(1) | int != 0
+                else 'empty_formatted_fields'
+                if _journal_rollback_state_evidence.stdout | default('', true) | trim | length == 0
+                else 'fields_available'
+              }}
+            _journal_rollback_health_config_class: >-
+              {{
+                'config_probe_failed'
+                if _journal_rollback_health_config.rc | default(1) | int != 0
+                else 'empty_formatted_fields'
+                if _journal_rollback_health_config.stdout | default('', true) | trim | length == 0
+                else 'healthcheck_absent'
+                if 'healthcheck_present=absent' in (_journal_rollback_health_config.stdout | default('', true) | split())
+                else 'fields_available'
+              }}
+            _journal_rollback_health_action_class: >-
+              {{
+                'action_probe_failed'
+                if _journal_rollback_health_action.rc | default(1) | int != 0
+                else 'empty_formatted_fields'
+                if _journal_rollback_health_action.stdout | default('', true) | trim | length == 0
+                else 'action_unknown'
+                if 'on_failure=unknown' in (_journal_rollback_health_action.stdout | default('', true) | split())
+                else 'fields_available'
+              }}
+            _journal_rollback_log_class: >-
+              {{
+                'unavailable'
+                if _journal_rollback_logs.rc | default(1) | int != 0
+                else 'empty'
+                if (_journal_rollback_logs.stdout | default('', true) | trim | length == 0 and
+                    _journal_rollback_logs.stderr | default('', true) | trim | length == 0)
+                else 'permission_denied'
+                if ('permission denied' in (_journal_rollback_logs.stdout | default('', true) | lower) or
+                    'permission denied' in (_journal_rollback_logs.stderr | default('', true) | lower))
+                else 'config_error'
+                if ('failed to load config' in (_journal_rollback_logs.stdout | default('', true) | lower) or
+                    'failed to load config' in (_journal_rollback_logs.stderr | default('', true) | lower) or
+                    'failed to parse config' in (_journal_rollback_logs.stdout | default('', true) | lower) or
+                    'failed to parse config' in (_journal_rollback_logs.stderr | default('', true) | lower) or
+                    'invalid config' in (_journal_rollback_logs.stdout | default('', true) | lower) or
+                    'invalid config' in (_journal_rollback_logs.stderr | default('', true) | lower))
+                else 'missing_file'
+                if ('no such file or directory' in (_journal_rollback_logs.stdout | default('', true) | lower) or
+                    'no such file or directory' in (_journal_rollback_logs.stderr | default('', true) | lower))
+                else 'connection_refused'
+                if ('connection refused' in (_journal_rollback_logs.stdout | default('', true) | lower) or
+                    'connection refused' in (_journal_rollback_logs.stderr | default('', true) | lower))
+                else 'other'
+              }}
+            _journal_rollback_log_count: >-
+              {{ 0 if (_journal_rollback_logs.rc | default(1) | int != 0) else
+                 (_journal_rollback_logs.stdout_lines | default([]) | length) +
+                 (_journal_rollback_logs.stderr_lines | default([]) | length) }}
+
+        - name: Decide whether one fixed readiness probe is safe as diagnostic evidence
+          ansible.builtin.set_fact:
+            _journal_rollback_readiness_probe_allowed: >-
+              {{
+                _journal_rollback_state_evidence.rc | default(1) | int == 0 and
+                'state=running' in (_journal_rollback_state_evidence.stdout | default('', true) | split()) and
+                _journal_rollback_health_config.rc | default(1) | int == 0 and
+                'healthcheck_present=present' in (_journal_rollback_health_config.stdout | default('', true) | split()) and
+                _journal_rollback_health_action.rc | default(1) | int == 0 and
+                'on_failure=none' in (_journal_rollback_health_action.stdout | default('', true) | split())
+              }}
+
+        - name: Run one fixed output-discarded readiness probe for bounded diagnosis
+          ansible.builtin.command:
+            argv:
+              - /bin/bash
+              - -c
+              - >-
+                /usr/bin/timeout --signal=KILL 3s
+                podman exec o11y-journal-collector /bin/bash -c
+                'exec 2>/dev/null 3<>/dev/tcp/127.0.0.1/12345 >/dev/null'
+                >/dev/null 2>&1
+          register: _journal_readiness_probe
+          changed_when: false
+          failed_when: false
+          check_mode: false
+          when: _journal_rollback_readiness_probe_allowed | bool
+
+        - name: Classify the one-shot fixed readiness probe result
+          ansible.builtin.set_fact:
+            _journal_readiness_probe_class: >-
+              {{
+                'not_run'
+                if not (_journal_rollback_readiness_probe_allowed | bool)
+                else 'passed'
+                if _journal_readiness_probe.rc | default(125) | int == 0
+                else 'failed'
+                if _journal_readiness_probe.rc | default(125) | int == 1
+                else 'probe_error'
+                if _journal_readiness_probe.rc | default(125) | int == 125
+                else 'timeout'
+                if _journal_readiness_probe.rc | default(125) | int == 137
+                else 'unexpected_error'
+              }}
+
+        - name: Capture sanitized state and health log count after the readiness probe
+          ansible.builtin.command:
+            argv:
+              - podman
+              - inspect
+              - --format
+              - "{{ '{{' }}.State.Status{{ '}}' }} {{ '{{' }}with .State.Health{{ '}}' }}{{ '{{' }}.Status{{ '}}' }} {{ '{{' }}len .Log{{ '}}' }}{{ '{{' }}else{{ '}}' }}unavailable 0{{ '{{' }}end{{ '}}' }}"
+              - o11y-journal-collector
+          register: _journal_readiness_probe_readback
+          changed_when: false
+          failed_when: false
+          check_mode: false
+          when: _journal_rollback_readiness_probe_allowed | bool
+
+        - name: Capture the positions volume name before rollback
+          ansible.builtin.command:
+            argv:
+              - podman
+              - inspect
+              - --format
+              - "{{ '{{' }}range .Mounts{{ '}}' }}{{ '{{' }}if eq .Destination \"/var/lib/alloy/data\"{{ '}}' }}{{ '{{' }}.Name{{ '}}' }}{{ '{{' }}end{{ '}}' }}{{ '{{' }}end{{ '}}' }}"
+              - o11y-journal-collector
+          register: _journal_rollback_volume_name
+          changed_when: false
+          failed_when: false
+          check_mode: false
+          no_log: true
+
+        - name: Force-remove only the failed collector while retaining positions
+          ansible.builtin.command:
+            # Exact container name; intentionally omit -v so positions survive.
+            argv: [podman, rm, --force, --time, "10", o11y-journal-collector]
+          register: _journal_rollback_remove
+          changed_when: _journal_rollback_remove.rc == 0
+          failed_when: false
+
+        - name: Read back the collector after delivery rollback
+          ansible.builtin.command:
+            argv: [podman, ps, --all, --filter, name=^o11y-journal-collector$, --format, "{{ '{{' }}.Names{{ '}}' }}"]
+          register: _journal_rollback_readback
+          changed_when: false
+          check_mode: false
+
+        - name: Require the failed pilot container to be absent after rollback
+          ansible.builtin.assert:
+            that:
+              - _journal_rollback_readback.rc == 0
+              - _journal_rollback_readback.stdout | trim == ''
+            fail_msg: >-
+              The failed journal collector could not be removed from the rootless
+              boot-restart set; inspect the receiver host before retrying.
+            quiet: true
+          when: not ansible_check_mode
+
+        - name: Read back the journal collector positions volume after rollback
+          ansible.builtin.command:
+            argv: [podman, volume, exists, "{{ _journal_rollback_volume_name.stdout | trim }}"]
+          register: _journal_rollback_volume_readback
+          changed_when: false
+          failed_when: false
+          check_mode: false
+          when:
+            - _journal_rollback_volume_name.rc == 0
+            - _journal_rollback_volume_name.stdout | default('') | trim | length > 0
+
+        - name: Require the positions volume to survive collector rollback
+          ansible.builtin.assert:
+            that:
+              - _journal_rollback_volume_name.stdout | default('') | trim | length > 0
+              - _journal_rollback_volume_readback.rc | default(1) == 0
+            fail_msg: >-
+              The collector was removed without deleting a volume, but its positions
+              volume could not be identified and verified after rollback.
+            quiet: true
+          when:
+            - not ansible_check_mode
+            - _journal_rollback_volume_name.rc == 0
+
+        - name: Fail closed after stopping the journal collector
+          ansible.builtin.fail:
+            msg: >-
+              The journal collector failed its exact-target delivery gate. Only that
+              collector was removed from the boot-restart set when present. Sanitized
+              state/config/action classification={{ _journal_rollback_state_class | default('unavailable') }}/{{ _journal_rollback_health_config_class | default('unavailable') }}/{{ _journal_rollback_health_action_class | default('unavailable') }};
+              Podman state/config/action rc={{ _journal_rollback_state_evidence.rc | default('unavailable') }}/{{ _journal_rollback_health_config.rc | default('unavailable') }}/{{ _journal_rollback_health_action.rc | default('unavailable') }};
+              allow-listed state/automatic health results={{ _journal_rollback_state_evidence.stdout | default('') | trim | default('unavailable', true) }};
+              allow-listed effective health schedule={{ _journal_rollback_health_config.stdout | default('') | trim | default('unavailable', true) }};
+              allow-listed health failure action={{ _journal_rollback_health_action.stdout | default('') | trim | default('unavailable', true) }};
+              collector logs classification/count={{ _journal_rollback_log_class | default('unavailable') }}/{{ _journal_rollback_log_count | default(0) }};
+              one-shot fixed readiness probe diagnostic={{ _journal_readiness_probe_class | default('unavailable') }};
+              post-check state/health/log-count={{ _journal_readiness_probe_readback.stdout | default('not_run') | trim | default('unavailable', true) }}.
+              The fixed probe only opens Alloy's local TCP listener and is diagnostic; it does not run the configured health command, mutate Podman health, or satisfy automatic health or Loki delivery.
+              All receiver data remains; positions-volume preservation was asserted
+              when a collector with that mount existed.
+
+
+- name: Stop only the journal collector while preserving its positions volume
+  hosts: o11y_svc
+  gather_facts: false
+  become: false
+  tasks:
+    - name: Leave the stop play when the reviewed action is survey or apply
+      ansible.builtin.meta: end_host
+      when: journal_collector_action | default('apply') != 'stop'
+      tags: [always]
+
+    - name: Read the pilot collector state
+      ansible.builtin.command:
+        argv: [podman, inspect, --format, "{{ '{{' }}.State.Status{{ '}}' }}", o11y-journal-collector]
+      register: _journal_stop_status
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Read the positions volume state before removing collector
+      ansible.builtin.command:
+        argv:
+          - podman
+          - inspect
+          - --format
+          - "{{ '{{' }}range .Mounts{{ '}}' }}{{ '{{' }}if eq .Destination \"/var/lib/alloy/data\"{{ '}}' }}{{ '{{' }}.Name{{ '}}' }}{{ '{{' }}end{{ '}}' }}{{ '{{' }}end{{ '}}' }}"
+          - o11y-journal-collector
+      register: _journal_stop_volume_name
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+      when: _journal_stop_status.rc == 0
+
+    - name: Force-remove only the pilot container while preserving positions
+      ansible.builtin.command:
+        # Exact container name; intentionally omit -v so positions survive.
+        argv: [podman, rm, --force, --time, "10", o11y-journal-collector]
+      register: _journal_stop_remove
+      changed_when: _journal_stop_remove.rc == 0
+      when:
+        - not ansible_check_mode
+        - _journal_stop_status.rc == 0
+
+    - name: Read back the stopped pilot container
+      ansible.builtin.command:
+        argv: [podman, ps, --all, --filter, name=^o11y-journal-collector$, --format, "{{ '{{' }}.Names{{ '}}' }}"]
+      register: _journal_stop_readback
+      changed_when: false
+      check_mode: false
+      when: not ansible_check_mode
+
+    - name: Require the stopped pilot container to be absent across host reboots
+      ansible.builtin.assert:
+        that:
+          - _journal_stop_readback.rc == 0
+          - _journal_stop_readback.stdout | trim == ''
+        fail_msg: >-
+          The journal collector container remains registered with the Podman boot
+          restart unit. Its named positions volume was not removed.
+        quiet: true
+      when: not ansible_check_mode
+
+    - name: Read back the positions volume after stop
+      ansible.builtin.command:
+        argv: [podman, volume, exists, "{{ _journal_stop_volume_name.stdout | trim }}"]
+      register: _journal_stop_volume_after
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      when:
+        - not ansible_check_mode
+        - _journal_stop_status.rc == 0
+        - _journal_stop_volume_name.stdout | default('') | trim | length > 0
+
+    - name: Require the existing positions volume to survive stop
+      ansible.builtin.assert:
+        that:
+          - _journal_stop_volume_name.stdout | default('') | trim | length > 0
+          - _journal_stop_volume_after.rc | default(1) == 0
+        fail_msg: >-
+          The collector was removed without deleting a volume, but its positions
+          volume could not be identified and verified after stop.
+        quiet: true
+      when:
+        - not ansible_check_mode
+        - _journal_stop_status.rc == 0
+
+- name: Survey fixed standard journal directory candidates
+  hosts: o11y_svc
+  gather_facts: false
+  become: false
+  tasks:
+    - name: Leave the survey play when the reviewed action is apply or stop
+      ansible.builtin.meta: end_host
+      when: journal_collector_action | default('apply') != 'survey'
+      tags: [always]
+
+    - name: Survey existing positions volume metadata without mounting it
+      ansible.builtin.command:
+        argv: [python3, "-", survey]
+        stdin: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/o11y-journal-positions.py') }}"
+        stdin_add_newline: false
+      register: _journal_positions_survey
+      changed_when: false
+      failed_when: false
+      when: not ansible_check_mode
+
+    - name: Record positions-volume survey as unverified in check mode
+      ansible.builtin.set_fact:
+        _journal_positions_survey:
+          rc: 0
+          stdout: '{"status":"check_mode_unverified","volume_use_count":0,"collector_present":false,"entry_count":0,"root_owner":"unavailable","root_mode_access":"unavailable","acl":"unavailable","mount":"unavailable","children":"unavailable","survey_diagnostics":{"inventory_fields":{"NeedsChown":{"presence":"unverified","type":"unverified","value":"unavailable"},"NeedsCopyUp":{"presence":"unverified","type":"unverified","value":"unavailable"}},"named_volume":{"outcome":"unverified","identity":"unverified","inventory_identity":"unverified","fields":{"NeedsChown":{"presence":"unverified","type":"unverified","value":"unavailable"},"NeedsCopyUp":{"presence":"unverified","type":"unverified","value":"unavailable"}}},"podman_version":{"client":"unavailable","server":"unavailable"}}}'
+      when: ansible_check_mode
+
+    - name: Require bounded positions-volume survey fields
+      ansible.builtin.assert:
+        that:
+          - _journal_positions_survey.rc | default(1) == 0
+          - (_journal_positions_survey.stdout | default('{}') | from_json).status in ['observed', 'unavailable', 'not_rootless', 'receiver_unavailable', 'receiver_identity_unverified', 'volume_inventory_unavailable', 'container_inventory_unavailable', 'volume_missing', 'volume_ambiguous', 'volume_identity_unsupported', 'volume_users_unavailable', 'volume_shared', 'mount_count_unverified', 'collector_mount_unverified', 'collector_identity_unverified', 'metadata_unavailable', 'volume_initialization_unverified', 'volume_initialization_pending', 'check_mode_unverified']
+          - (_journal_positions_survey.stdout | from_json).volume_use_count | int >= 0
+          - (_journal_positions_survey.stdout | from_json).volume_use_count | int <= 33
+          - (_journal_positions_survey.stdout | from_json).entry_count | int >= 0
+          - (_journal_positions_survey.stdout | from_json).entry_count | int <= 32
+          - (_journal_positions_survey.stdout | from_json).root_owner in ['matches_collector', 'mismatch', 'unavailable']
+          - (_journal_positions_survey.stdout | from_json).root_mode_access in ['read_write_execute', 'blocked', 'unavailable']
+          - (_journal_positions_survey.stdout | from_json).acl in ['present', 'absent', 'unavailable']
+          - (_journal_positions_survey.stdout | from_json).mount in ['clear', 'ambiguous', 'unavailable']
+          - (_journal_positions_survey.stdout | from_json).children in ['safe_regular_files', 'ambiguous', 'unavailable']
+          - (_journal_positions_survey.stdout | from_json).survey_diagnostics.named_volume.outcome in ['observed', 'unavailable', 'malformed', 'duplicate', 'missing', 'unverified']
+          - (_journal_positions_survey.stdout | from_json).survey_diagnostics.named_volume.identity in ['match', 'mismatch', 'unverified']
+          - (_journal_positions_survey.stdout | from_json).survey_diagnostics.named_volume.inventory_identity in ['match', 'mismatch', 'unverified']
+          - (_journal_positions_survey.stdout | from_json).survey_diagnostics.inventory_fields.NeedsChown.presence in ['present', 'missing', 'unverified']
+          - (_journal_positions_survey.stdout | from_json).survey_diagnostics.inventory_fields.NeedsChown.type in ['boolean', 'null', 'string', 'number', 'array', 'object', 'other', 'missing', 'unverified']
+          - (_journal_positions_survey.stdout | from_json).survey_diagnostics.inventory_fields.NeedsChown.value is sameas true or (_journal_positions_survey.stdout | from_json).survey_diagnostics.inventory_fields.NeedsChown.value is sameas false or (_journal_positions_survey.stdout | from_json).survey_diagnostics.inventory_fields.NeedsChown.value == 'unavailable'
+          - (_journal_positions_survey.stdout | from_json).survey_diagnostics.inventory_fields.NeedsCopyUp.presence in ['present', 'missing', 'unverified']
+          - (_journal_positions_survey.stdout | from_json).survey_diagnostics.inventory_fields.NeedsCopyUp.type in ['boolean', 'null', 'string', 'number', 'array', 'object', 'other', 'missing', 'unverified']
+          - (_journal_positions_survey.stdout | from_json).survey_diagnostics.inventory_fields.NeedsCopyUp.value is sameas true or (_journal_positions_survey.stdout | from_json).survey_diagnostics.inventory_fields.NeedsCopyUp.value is sameas false or (_journal_positions_survey.stdout | from_json).survey_diagnostics.inventory_fields.NeedsCopyUp.value == 'unavailable'
+          - (_journal_positions_survey.stdout | from_json).survey_diagnostics.named_volume.fields.NeedsChown.presence in ['present', 'missing', 'unverified']
+          - (_journal_positions_survey.stdout | from_json).survey_diagnostics.named_volume.fields.NeedsChown.type in ['boolean', 'null', 'string', 'number', 'array', 'object', 'other', 'missing', 'unverified']
+          - (_journal_positions_survey.stdout | from_json).survey_diagnostics.named_volume.fields.NeedsChown.value is sameas true or (_journal_positions_survey.stdout | from_json).survey_diagnostics.named_volume.fields.NeedsChown.value is sameas false or (_journal_positions_survey.stdout | from_json).survey_diagnostics.named_volume.fields.NeedsChown.value == 'unavailable'
+          - (_journal_positions_survey.stdout | from_json).survey_diagnostics.named_volume.fields.NeedsCopyUp.presence in ['present', 'missing', 'unverified']
+          - (_journal_positions_survey.stdout | from_json).survey_diagnostics.named_volume.fields.NeedsCopyUp.type in ['boolean', 'null', 'string', 'number', 'array', 'object', 'other', 'missing', 'unverified']
+          - (_journal_positions_survey.stdout | from_json).survey_diagnostics.named_volume.fields.NeedsCopyUp.value is sameas true or (_journal_positions_survey.stdout | from_json).survey_diagnostics.named_volume.fields.NeedsCopyUp.value is sameas false or (_journal_positions_survey.stdout | from_json).survey_diagnostics.named_volume.fields.NeedsCopyUp.value == 'unavailable'
+          - (_journal_positions_survey.stdout | from_json).survey_diagnostics.podman_version.client == 'unavailable' or (((_journal_positions_survey.stdout | from_json).survey_diagnostics.podman_version.client | string) is match('^[0-9]+[.][0-9]+[.][0-9]+([-+][A-Za-z0-9.-]{1,32})?$') and ((_journal_positions_survey.stdout | from_json).survey_diagnostics.podman_version.client | string | length) <= 64)
+          - (_journal_positions_survey.stdout | from_json).survey_diagnostics.podman_version.server == 'unavailable' or (((_journal_positions_survey.stdout | from_json).survey_diagnostics.podman_version.server | string) is match('^[0-9]+[.][0-9]+[.][0-9]+([-+][A-Za-z0-9.-]{1,32})?$') and ((_journal_positions_survey.stdout | from_json).survey_diagnostics.podman_version.server | string | length) <= 64)
+        fail_msg: "The positions-volume survey failed without reporting filesystem details."
+        quiet: true
+
+    - name: Report only bounded positions-volume metadata
+      ansible.builtin.debug:
+        msg: "{{ _journal_positions_survey.stdout | from_json }}"
+      changed_when: false
+
+    - name: Survey rootless journal path and exact-name file readability
+      ansible.builtin.command:
+        argv: [python3, "-"]
+        stdin: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/survey-o11y-journal-directory.py') }}"
+        stdin_add_newline: false
+      register: _journal_directory_survey
+      changed_when: false
+      failed_when: false
+      no_log: true
+      when: not ansible_check_mode
+
+    - name: Record check-mode survey as unverified without probing the container runtime
+      ansible.builtin.set_fact:
+        _journal_directory_survey:
+          rc: 0
+          stdout: '{"result":"check_mode_unverified","entry_count":0,"permission_denied_target":"unavailable"}'
+      when: ansible_check_mode
+
+    - name: Require a valid sanitized standard-path survey result
+      ansible.builtin.assert:
+        that:
+          - _journal_directory_survey.rc | default(1) == 0
+          - (_journal_directory_survey.stdout | default('{}') | from_json).result in ['/var/log/journal', '/run/log/journal', 'ambiguous', 'none', 'probe_unavailable', 'check_mode_unverified']
+          - (_journal_directory_survey.stdout | from_json).entry_count | int >= 0
+          - (_journal_directory_survey.stdout | from_json).entry_count | int <= 80
+          - (_journal_directory_survey.stdout | from_json).permission_denied_target in ['journal', 'positions', 'config', 'other', 'none', 'unavailable']
+        fail_msg: "The standard journal directory survey failed without exposing journal data."
+        quiet: true
+
+    - name: Report only the fixed journal source status
+      ansible.builtin.debug:
+        msg: "Journal directory survey status: {{ 'available' if (_journal_directory_survey.stdout | from_json).result in ['/var/log/journal', '/run/log/journal'] else (_journal_directory_survey.stdout | from_json).result }}"
+
+    - name: Report only the bounded collector journal diagnostic
+      ansible.builtin.debug:
+        msg: "Collector journal diagnostic: entry_count={{ (_journal_directory_survey.stdout | from_json).entry_count }}, permission_denied_target={{ (_journal_directory_survey.stdout | from_json).permission_denied_target }}"
+
+- name: Repair only the journal positions volume root ownership
+  hosts: o11y_svc
+  gather_facts: false
+  become: false
+  tasks:
+    - name: Leave the repair play unless the explicit repair action was selected
+      ansible.builtin.meta: end_host
+      when: journal_collector_action | default('apply') != 'repair-positions'
+      tags: [always]
+
+    - name: Run the separately selected guarded positions repair
+      ansible.builtin.command:
+        argv: [python3, "-", repair-positions]
+        stdin: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/o11y-journal-positions.py') }}"
+        stdin_add_newline: false
+      register: _journal_positions_repair
+      changed_when: (_journal_positions_repair.stdout | default('{}') | from_json).status == 'repaired'
+      failed_when: false
+      when: not ansible_check_mode
+
+    - name: Record positions repair as unverified in check mode
+      ansible.builtin.set_fact:
+        _journal_positions_repair:
+          rc: 0
+          stdout: '{"status":"check_mode_unverified","reason":"not_run"}'
+      when: ansible_check_mode
+
+    - name: Require repair completion or explicit check-mode unverified state
+      ansible.builtin.assert:
+        that:
+          - _journal_positions_repair.rc | default(1) == 0
+          - (_journal_positions_repair.stdout | default('{}') | from_json).status in ['repaired', 'already_correct', 'check_mode_unverified']
+        fail_msg: >-
+          Positions repair outcome={{ (_journal_positions_repair.stdout | default('{}') | from_json).status }}.
+          Treat the reason as {{ (_journal_positions_repair.stdout | default('{}') | from_json).get('reason', 'unverified') }}.
+            Treat an uncertain result as requiring a fresh survey before any retry.
+            No recursive ownership or permission-mode change was attempted.
+        quiet: true
+
+    - name: Report bounded positions repair outcome
+      ansible.builtin.debug:
+        msg: "Positions repair: {{ (_journal_positions_repair.stdout | default('{}') | from_json).status }} ({{ (_journal_positions_repair.stdout | default('{}') | from_json).reason }})"
+      changed_when: false

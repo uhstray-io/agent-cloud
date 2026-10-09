@@ -15,6 +15,7 @@ or merged before checks pass.
 | File | Target | Protects |
 |------|--------|----------|
 | [`protect-main.json`](./protect-main.json) | default branch (`main`) | no direct push / force-push / deletion; PR required; conversations resolved; merge-commit or squash merges; required status checks; **PRs into `main` must originate from `dev`** |
+| [`protect-dev.json`](./protect-dev.json) | `refs/heads/dev` | no deletion, no force-push; deliberately **no** PR or status-check rule |
 
 ### `protect-main` rules
 
@@ -25,6 +26,13 @@ or merged before checks pass.
 - **Required status checks** — `Static Analysis`, `Security Scan`, `Unit Tests` (the three jobs in `lint-and-test.yml` that run on **every** PR), plus `Promotion source (dev -> main)` (see next bullet). The path-gated `Go *` jobs are deliberately **not** required: they don't report on non-Go PRs and would deadlock the merge. Contexts are pinned to the GitHub Actions app (`integration_id: 15368`).
 - **Promotion source: only `dev` may PR into `main`.** GitHub rulesets can protect the *base* branch but cannot restrict a PR's *head* branch, so the `Promotion source (dev -> main)` required check ([`enforce-promotion-source.yml`](../workflows/enforce-promotion-source.yml)) is the enforcing half: it runs on every PR whose base is `main` and fails unless the head is exactly this repository's `dev` branch (`head_ref` is only a branch name, so a fork's branch called `dev` is refused by comparing the head repository with this one). It also fails unless the PR head already contains every commit on `main`: `sync-main-to-dev.yml` cannot push a `main`-only workflow-file change into `dev`, and a promotion from a `dev` that lacks it would revert it on `main` (`docs/MISTAKES.md` 10.23). Merge `main` into `dev` through a feature PR to clear that failure. Together the two halves make `feature -> dev -> main` a hard gate instead of a convention. Emergency-only: an Admin bypass actor (below) can merge a hotfix straight to `main` despite a failing check.
 - **Bypass actors** — Repository admin role only (`actor_id: 5`), break-glass. AI agents (NemoClaw / Claude Code) and any automation PAT are intentionally **off** the bypass list. Prefer flipping `enforcement` to `disabled` over using bypass, so bypass events stay rare and meaningful in the audit log.
+
+### `protect-dev` rules
+
+- **Restrict deletions** — the repository setting `delete_branch_on_merge` deletes a merged PR's head branch, and a `dev` -> `main` promotion has `dev` as its head. Merging PR #447 on 2026-10-08 deleted `dev` that way, and `sync-main-to-dev.yml` then failed with "A branch or tag with the name 'dev' could not be found" (`docs/MISTAKES.md` 3.13). GitHub's docs state that "Branch protection rules and repository rules can also prevent branches being automatically deleted" ([docs](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/configuring-pull-request-merges/managing-the-automatic-deletion-of-branches)); the `deletion` rule means "only users with bypass permissions can delete branches or tags whose name matches the pattern" ([docs](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/available-rules-for-rulesets)). Not verified against the live repo: that the automatic deletion is blocked in practice; confirm with the `rules/branches/dev` check under "Applying" below, and again after the next promotion.
+- **Block force pushes** — `sync-main-to-dev.yml` pushes a merge commit on top of `dev` (`git push origin HEAD:dev`), a fast-forward, so it is unaffected. A force-push of `dev` is now refused.
+- **No pull request rule, no required checks, no bypass actors** — the sync workflow pushes to `dev` directly with `GITHUB_TOKEN`; a PR or check rule would refuse it. With no bypass actor, deleting or rewriting `dev` on purpose means setting `enforcement` to `disabled` and re-applying first. Deliberately no admin bypass (unlike `protect-main`): promotions are merged by the admin account, and a bypass for that role may let the automatic head-branch deletion through the `deletion` rule and reopen the failure in `docs/MISTAKES.md` 3.13. An intentional delete or force-push of `dev` is a disable-then-change-then-re-enable sequence instead.
+- The rule is pattern-based, so it does not recreate a missing `dev`: restore the branch from its last head before applying.
 
 ## Applying
 
@@ -41,6 +49,9 @@ gh api repos/uhstray-io/agent-cloud/branches/main/protection
 
 # Show the effective, aggregated rules on main (what actually applies)
 gh api repos/uhstray-io/agent-cloud/rules/branches/main
+
+# Confirm protect-dev is live on dev: expect deletion + non_fast_forward
+gh api repos/uhstray-io/agent-cloud/rules/branches/dev
 ```
 
 ## Rollout: enforcement `active`

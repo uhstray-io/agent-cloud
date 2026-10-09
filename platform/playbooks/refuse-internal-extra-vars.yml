@@ -48,6 +48,24 @@
 # are CLI prompts, not variables, so they never reach hostvars
 # (test_executor_internal_overrides.py runs the guard with both prompts answered).
 #
+# CONNECTION IDENTITY. The inventory legitimately defines where a run connects and as whom
+# (ansible_host, ansible_user, ansible_connection, ...), so a forged `-e ansible_host=...`
+# is indistinguishable from the inventory's own value in hostvars, and extra vars outrank the
+# inventory. Host-key checking is off under Semaphore, so a forged ansible_host would send
+# the run, and the OpenBao-derived become password it hands to sudo, to a host the launcher
+# chose; ansible_ssh_common_args carries a ProxyCommand and ansible_connection=local moves a
+# remote run onto the controller (service-deployment-workflow task 7.10, from the PR #459
+# review). So the second task asks where the value came from: the extra_var_names filter
+# (filter_plugins/extra_var_names.py) returns the NAMES of the command-line extra vars, and
+# any of the names below among them refuses the run. An inventory or Semaphore environment
+# that sets one is refused too; neither does today (no honest -e caller in this repository,
+# and none in the live Semaphore environments). Names only, never values. The list is every
+# option of the ssh connection and sudo become plugins that can move the connection, change
+# who it runs as, run another binary or key it, or switch host-key checking, read from the
+# installed ansible-core's DOCUMENTATION (the password aliases are the pattern above). A name
+# added by a later ansible-core is caught by the test that re-reads it, not by this play.
+# platform/tests/test_connection_identity_vars.py pins the list and runs every name.
+#
 # Usage — the FIRST entry of every playbook Semaphore launches (every templates.yml
 # playbook), before any play or import:
 #
@@ -89,4 +107,53 @@
           records, and an inventory var of the same name is refused alike, since the two
           cannot be told apart. Rename the colliding variable.
         quiet: true
+      when: not (_extra_var_guard_nested is defined and '_extra_var_guard_nested' not in hostvars[inventory_hostname])
+
+    - name: "Refuse an extra var that sets the connection identity"
+      ansible.builtin.assert:
+        that: _conn_forged | length == 0
+        fail_msg: >-
+          Refusing to run: {{ _conn_forged | join(', ') }} set as an extra var. The connection
+          identity (host, user, port, connection type, ssh arguments, become method, user and
+          flags, key file) comes from the inventory alone: an extra var outranks it, and with
+          host-key checking off it would send the run, and the credentials it carries, to a
+          target the launcher chose. Set it in the inventory instead.
+        quiet: true
+      vars:
+        # Underscore names: an extra var of either is refused by the first task, which ends the
+        # run before this one starts. Task vars are not in hostvars, so that task never sees them.
+        _conn_names:
+          - ansible_host
+          - ansible_ssh_host
+          - ansible_user
+          - ansible_ssh_user
+          - ansible_port
+          - ansible_ssh_port
+          - ansible_connection
+          - ansible_ssh_common_args
+          - ansible_ssh_extra_args
+          - ansible_ssh_args
+          - ansible_ssh_executable
+          - ansible_scp_extra_args
+          - ansible_sftp_extra_args
+          - ansible_become_method
+          - ansible_become_user
+          - ansible_become_exe
+          - ansible_become_flags
+          - ansible_private_key_file
+          - ansible_ssh_private_key_file
+          - ansible_private_key
+          - ansible_ssh_private_key
+          - ansible_private_key_passphrase
+          - ansible_ssh_private_key_passphrase
+          - ansible_scp_executable
+          - ansible_sftp_executable
+          - ansible_ssh_pkcs11_provider
+          - ansible_sudo_user
+          - ansible_sudo_exe
+          - ansible_sudo_flags
+          - ansible_sudo_chdir
+          - ansible_host_key_checking
+          - ansible_ssh_host_key_checking
+        _conn_forged: "{{ _conn_names | intersect('' | extra_var_names) | sort }}"
       when: not (_extra_var_guard_nested is defined and '_extra_var_guard_nested' not in hostvars[inventory_hostname])

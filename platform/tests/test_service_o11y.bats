@@ -1316,7 +1316,15 @@ for metric in ('up{job="agentgateway"}', 'agentgateway_config_synchronized',
                'identity, gen_ai_request_model, gen_ai_token_type',
                'status="429"', 'agentgateway_build_info'):
     assert metric in queries, metric
-assert 'or vector(0)' not in queries
+error_ratio = next(panel for panel in dashboard['panels'] if panel['title'] == 'Server error ratio')
+error_ratio_expr = error_ratio['targets'][0]['expr']
+assert 'status=~"5.."' in error_ratio_expr
+assert 'or vector(0)' in error_ratio_expr.split(' / ', 1)[0]
+denominator = error_ratio_expr.split(' / ', 1)[1]
+assert 'agentgateway_requests_total{job="agentgateway", identity=~"$identity"}' in denominator
+assert 'or vector(0)' not in denominator
+assert sum(target.get('expr', '').count('or vector(0)')
+           for panel in dashboard['panels'] for target in panel['targets']) == 1
 rejections = next(panel for panel in dashboard['panels'] if panel['title'] == 'Rejected access records (reason pending sample)')
 assert rejections['type'] == 'logs'
 assert rejections['datasource']['uid'] == 'loki'
@@ -1470,8 +1478,10 @@ tasks = next(p for p in plays if p.get('name') == 'Verify the named service is c
 logs = next(t for t in tasks if t['name'] == 'Query recent Loki logs for the service')
 traces = next(t for t in tasks if t['name'] == 'Search recent Tempo traces for the service')
 require = next(t for t in tasks if t['name'] == 'Require a recent trace returned by Tempo')
-assert logs['when'] == "expect_logs | default('true') | bool"
-assert traces['when'] == "expect_traces | default('false') | bool"
+assert "expect_logs | default('true') | bool" in logs['when']
+assert "o11y_verification_mode | default('legacy') == 'legacy'" in logs['when']
+assert "expect_traces | default('false') | bool" in traces['when']
+assert "o11y_verification_mode | default('legacy') == 'legacy'" in traces['when']
 assert 'service.name=' in traces['ansible.builtin.command']['argv'][-1]
 assert 'tempo:3200/api/search' in traces['ansible.builtin.command']['argv'][-1]
 assert '_canary_started.stdout' in traces['ansible.builtin.command']['argv'][-1]
@@ -1479,7 +1489,7 @@ assert ' - 60' in traces['ansible.builtin.command']['argv'][-1]
 assert ' + 60' in traces['ansible.builtin.command']['argv'][-1]
 assert traces['retries'] == 12
 assert traces['ignore_errors'] is True
-assert require['when'] == "expect_traces | default('false') | bool"
+assert "expect_traces | default('false') | bool" in require['when']
 templates = yaml.safe_load(open(sys.argv[2], encoding='utf-8'))['templates']
 service = next(t for t in templates if t['name'] == 'Verify o11y Service')
 assert {v['name'] for v in service['survey_vars']} >= {'expect_logs', 'expect_traces', 'emit_agentgateway_canary'}
@@ -1765,11 +1775,24 @@ overview = json.loads((deploy / 'config/grafana/dashboards/service-overview.json
 service = next(variable for variable in overview['templating']['list'] if variable['name'] == 'service')
 assert service['datasource']['uid'] == 'prometheus'
 assert service['query'] == 'label_values(up, service)'
-queries = [target['expr'] for panel in overview['panels'] for target in panel['targets']]
-assert all('{service=~"$service"}' in query or 'service=~"$service"' in query for query in queries)
-assert all('container=' not in query for query in queries)
-log_rate = next(panel for panel in overview['panels'] if panel['title'] == 'Service log lines per second')
-assert log_rate['targets'][0]['expr'] == 'sum by (service) (rate({service=~"$service"}[5m]))'
+assert service['label'] == 'Metrics service'
+log_service = next(variable for variable in overview['templating']['list'] if variable['name'] == 'log_service')
+assert log_service['datasource']['uid'] == 'loki'
+assert log_service['query'] == 'label_values({service=~".+"}, service)'
+assert log_service['label'] == 'Logs service'
+metric_queries = [target['expr'] for panel in overview['panels'] if panel['datasource']['type'] == 'prometheus'
+                  for target in panel['targets']]
+loki_queries = [target['expr'] for panel in overview['panels'] if panel['datasource']['type'] == 'loki'
+                for target in panel['targets']]
+assert all('{service=~"$service"}' in query or 'service=~"$service"' in query for query in metric_queries)
+assert all('$log_service' in query for query in loki_queries)
+assert all('container=' not in query for query in metric_queries)
+log_rate = next(panel for panel in overview['panels'] if panel['title'] == 'Log volume by source')
+assert len(log_rate['targets']) == 4
+assert 'container=~".+"' in log_rate['targets'][0]['expr']
+assert 'signal="access-log"' in log_rate['targets'][1]['expr']
+assert 'signal="span"' in log_rate['targets'][2]['expr']
+assert 'job="agent-cloud-conformance"' in log_rate['targets'][3]['expr']
 
 alloy_template = (deploy / 'templates/config.alloy.j2').read_text()
 env = Environment(undefined=StrictUndefined)

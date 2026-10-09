@@ -120,6 +120,19 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
         (by hand or by another tool); an older version of this playbook is not the explanation.
         DECISION FOR THE OPERATOR: rebuild the template, or make the playbook accept any drive
         key. 2.2 stays open.
+      - 2026-10-08, decision for the template read-back: accept a cloud-init drive on ANY drive
+        key. Reasons: the registry criterion ("a cloud-init drive is attached to the template")
+        names no key; a clone of template 9000 already works (VM 219, task 1353, cloud-init
+        configured, reachable on its declared address); a rebuild is destructive and the
+        repository has no rebuild path for it; moving the drive by hand is a live one-off the
+        platform standards forbid. `provision-template.yml` still attaches `ide2` when it builds,
+        passes on a `...-cloudinit` volume on any ide/sata/scsi/virtio key (a description or tag
+        mentioning cloudinit still fails), and records the key(s) as evidence `cloudinit_drive`.
+        No live change; rerun Create VM Template (Dev) to see it pass. 2.2 stays open.
+      - 2026-10-09: proven live. Create VM Template (Dev) task 3623 (check mode, `dev` at
+        `1c735290`, PR #491) recorded `vm-template` `pass` with evidence `cloudinit_drive: ide0`,
+        `template_vmid: 9000`, against the unchanged template that failed in task 3287. Output
+        read from Semaphore. 2.2 stays open only for Destroy VM (Dev), held for the operator.
 - [x] 2.3 Wave 2, the remaining playbooks, grouped by service; same patterns and runs.
       2026-09-22: 67 files (161 reads, 27 logins, 125 skips) applied from the guard's own
       findings; normal runs are unchanged by construction (every guard is inert without
@@ -191,7 +204,7 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
 
 ## 5. Semaphore environments
 
-- [ ] 5.1 PENDING one live launch of a `dev` task by branch on a base template. On v2.19.11 the
+- [x] 5.1 PENDING one live launch of a `dev` task by branch on a base template. On v2.19.11 the
       template must set `allow_override_branch_in_task` (design Context). Then: set it in
       `setup-templates.yml`, remove `dev_variant` generation, launch on `dev` by branch; update the operating guide. If not:
       record the result and keep the twins (design risk entry)
@@ -206,13 +219,25 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
         `main`/`dev` twin templates and do not enable `allow_override_branch_in_task`
         (`docs/MISTAKES.md` 1.9 risk). No launch by branch is attempted. Left unticked, because
         this file records no precedent for ticking a not-applicable item
+      - 2026-10-08: closed as NOT APPLICABLE and ticked, on the operator decision recorded
+        in the 2026-10-04 line above (Joseph A. Wisneski IV): the `main`/`dev` twins stay and
+        `allow_override_branch_in_task` is not enabled, so there is no launch by branch to
+        make. The decision text is the one in that line; nothing new is asserted here. The
+        spec delta "One template per playbook" is amended to match (see 5.3). Ticking a
+        not-applicable item is a new convention for this file (the 2026-10-04 line found no
+        precedent); it is the coordinating session's call, flagged for the operator to reverse.
 - [x] 5.2 Test that no `templates-local.yml` entry reaches the production catalog
       (`platform/tests/test_local_templates_isolation.py`, mutated once: red)
-- [ ] 5.3 Validation gate: spec scenarios "Integration run without a twin" and "Local template
+- [x] 5.3 Validation gate: spec scenarios "Integration run without a twin" and "Local template
       cannot reach production" pass (the first is marked not-applicable if 5.1 kept the twins)
       - 2026-10-04: "Integration run without a twin" is NOT APPLICABLE: 5.1 kept the twins by
         operator decision. "Local template cannot reach production" is covered by 5.2's test,
         but this gate has not been run as a whole. Left unticked
+      - 2026-10-08: ticked. "Integration run without a twin" is not applicable by 5.1, and the
+        spec requirement is amended to "One base template per playbook, with a dev-bound
+        variant" (scenarios "Integration run on the dev variant" and "A task cannot choose its
+        own branch"). "Local template cannot reach production" is covered by
+        `platform/tests/test_local_templates_isolation.py`, which passed 4 of 4 on 2026-10-08
 
 ## 6. Local NetBox
 
@@ -287,6 +312,13 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
         `init_rc` 0, `plan_rc` 0, `show_rc` 0, `plan_changes` 0 and an edge-dns `pass` with
         `check_mode` true (after #454). edge-dns passes D10 with no pending proof. No stamp, for
         the same `main` hazard; service-deploy is still not re-reviewed, so 7.1 stays open.
+      - 2026-10-08: seventeen passing steps stamped `reviewed` (`d10-review.md`, "Stamped —
+        2026-10-08"), in the registry and in OPA `data.json`. The hazard is gone: `dev` was
+        promoted to `main` on 2026-10-07 (`origin/main` c81ada2a), and at `origin/dev` a2224685
+        every executor playbook is byte-identical on `main` and `dev`, includes
+        `tasks/emit-step-result.yml` on `main`, and none of its included tasks differs. Not
+        stamped: service-deploy (still not re-reviewed), and the reasoning and planned steps.
+        7.1 stays open for service-deploy. OPA must be redeployed to pick up `data.json`.
 - [x] 7.2 `provision-vm.yml` sets `onboot`; restart-policy check beside `enable-linger`.
       2026-09-22: onboot with per-host opt-out; `verify-service-persistence.yml` (step
       systemd-enablement) passes on local tududi, normal and check mode (tasks 977, 978)
@@ -334,6 +366,12 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
         and Prometheus), not live. OPEN: the `(Dev)` check-mode run and an apply against one
         enrolled host; production enrollment also waits on the estate observability baseline
         (`estate-wide-observability-instrumentation` 1.3/1.4). Undo is `none`.
+      - 2026-10-08: `lookup-service-inventory.yml` and `validate-address-free.yml` have run
+        against production hosts: Lookup Service Inventory tasks 1741/1742 and Validate Address
+        Free tasks 1749/1750, 2026-09-28, recorded in `production-internal-ca` task 1.2
+        (`production-internal-ca/tasks.md:37-41`) for the DNS and CA hosts. Not re-read from
+        Semaphore here. `instrument-host-o11y.yml` remains open (see 2026-10-05 above), so this
+        task stays unticked
 - [x] 7.4 Snapshot templates for service, firewall and access assessment; each verify-only,
       emitting one JSON document. 2026-09-22: all three pass on local tududi in normal and
       check mode (tasks 971-976); the document is recorded with set_stats under `snapshot`
@@ -412,6 +450,28 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
         `instrument-service`, criteria "series present") have no executor yet (registry
         `executor: null`). It lands with those executors; until then those steps show no
         result, never a pass.
+      - 2026-10-07: read-only Dev-bound Semaphore task 3351 returned data for the
+        provisioned `Services tracked` and `Step status by service` queries over 24h.
+        It did not prove the Grafana table renders correctly. Collector runs can overlap
+        inside the dashboard's 16-minute lookback; the read model now selects the newest
+        numeric state, while rendered-table validation remains open.
+      - [ ] Validate the latest-state conformance read model after a non-destructive Dev-bound
+        o11y update: confirm overlapping collector snapshots select the newest state and verify
+        the rendered Grafana matrix.
+      - [x] PR #476 review follow-up (2026-10-07): set `loki.format=raw` on the conformance
+        pipeline and add a cross-file contract test tying the collector's JSON body, Alloy
+        exporter format, and dashboard's `state_code` / `inventory_code` extraction together.
+      - [x] Production acceptance: deploy the reviewed change through Dev-bound Semaphore and
+        query both step and inventory records to prove top-level JSON extraction in Loki.
+        2026-10-08: ticked (task ids as reported by the operator session; not re-read from
+        Semaphore here). `Deploy o11y (Dev)` dry run 3527, real run 3528 at a2224685 reported
+        "o11y healthy". `Verify o11y Dashboard Data (Dev)` task 3529, `service-conformance`, 1h:
+        step records (`state_code`): "Latest step status by service" 29 series; inventory
+        records (`inventory_code`): "Services not yet run" 5, "Services tracked" 1; also "Current
+        failed step states" 1, "Recent failed task snapshots" returned data, and "History
+        incomplete" was empty by its `== 2` filter (no history window full). Collector schedule
+        live: tasks 3493, 3495, 3500, 3510. The "Validate the latest-state conformance read
+        model" item above stays open: the rendered matrix needs an operator browser check.
 - [ ] 7.6 **[skynet]** Role packs, `service_onboarding` graph built from the registry, proposer
       wiring with the three schemas, eval harness with thresholds in CI
 - [x] 7.7 `agent-practices.md` for agentgateway
@@ -439,7 +499,7 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
         (HTTP 200) for authentik 1472, n8n 1509, o11y 1500, openbao 1522, semaphore 1523,
         honcho 1561 and tududi 1563. caddy declares no health path. Before the change, the
         executor's direct probe answered -1 for tududi, honcho and n8n however healthy they were
-- [ ] 7.10 Connection identity is still settable from outside the run (open, recorded
+- [x] 7.10 Connection identity is still settable from outside the run (open, recorded
       2026-10-07 from the PR #459 review; not implemented). `refuse-internal-extra-vars.yml`
       refuses `_` names and become/connection password variables (`ansible_password`,
       `ansible_*_pass`, `ansible_*_password`), but not the public
@@ -465,6 +525,31 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
       templated forgeries against a real run. Still open for the other executors: the
       connection-identity variables (`ansible_host`, `ansible_user`, `ansible_become_method`)
       and a connection forgery on any playbook that does not go through clean-service
+      - Closed 2026-10-08 (branch `fix/refuse-connection-identity-vars`). The run-start guard
+        `refuse-internal-extra-vars.yml` now refuses a connection-identity name set as an EXTRA
+        VAR, wherever the playbook goes next (clean-service or not): the 19 public connection and become
+        names (host, user, port, connection, ssh and scp/sftp arguments, become method, user, exe
+        and flags, key file) plus 13 more read from ansible-core's ssh and sudo options (inline key material, key
+        passphrases, other binaries and a PKCS11 library to run, sudo's own spelling of become,
+        host-key checking). An inventory that defines them is not refused: the guard asks where
+        a value came from through the `extra_var_names` filter (`filter_plugins/
+        extra_var_names.py`), which returns the NAMES of the command-line extra vars via
+        `ansible.utils.vars.load_extra_vars`, the function the variable manager itself calls
+        (an internal API, used because no public view of the extra vars exists; pinned by
+        tests that run a real ansible-playbook rather than by a version check). It returns
+        names only and fails closed: any error fails the guard, never an empty list. Tested
+        with `forgeries.templated_forgeries` in plain, templated and `@file` forms for every
+        name (`test_connection_identity_vars.py`). The clean-service tests that forged these
+        names now run with `--limit` so they still exercise clean-service's own check, which
+        the guard otherwise pre-empts. Not covered: a run that skips the guard (`--limit`
+        excluding localhost, `--start-at-task`), which is the guard's existing documented limit.
+      - 2026-10-09: merged as PR #492 (`1c55af4e`). The filter loads under Semaphore: the first
+        scheduled run on that revision, Check o11y Liveness (Dev) task 3670 (06:10Z), passed
+        ("o11y liveness OK") through the guard. CI's ansible-core 2.19.14 lists two
+        `delegated_vars[...]` host expressions in the ssh plugin; the coverage test judges only
+        plain names, and both expressions read `ansible_host`/`ansible_ssh_host`, already
+        refused. Live Semaphore environments set no `ansible_*` extra var or var-type secret
+        (read 2026-10-08), so honest launches are unaffected.
 
 ## 8. Backfill agentgateway end to end
 

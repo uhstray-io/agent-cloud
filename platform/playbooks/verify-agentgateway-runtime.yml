@@ -1,0 +1,351 @@
+---
+# Read-only Dev receipt for agentgateway observability-estate task 5.7.
+# Sampling metadata is reported only when the requested checkout, rendered inputs,
+# running input label, image ID, and readiness all match.
+- name: Refuse extra vars that set internal names
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: Require one gateway and an explicit expected Dev revision
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Validate the read-only receipt inputs
+      ansible.builtin.assert:
+        that:
+          - groups.get('agentgateway_svc', []) | length == 1
+          - expected_repository_sha | default('') is match('^[0-9a-f]{40}$')
+        fail_msg: "Require one agentgateway_svc host and expected_repository_sha from the reviewed Dev revision."
+        quiet: true
+
+- name: Read deployed agentgateway metadata without changing the service
+  hosts: agentgateway_svc
+  gather_facts: false
+  become: false
+  any_errors_fatal: true
+  vars:
+    _engine: "{{ container_engine | default('podman') }}"
+    _repo: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+    _deploy_dir: "{{ _repo }}/{{ monorepo_deploy_path }}"
+    _agw_checkout_status_argv: &agw_checkout_status_argv
+      - python3
+      - -c
+      - |
+        import json
+        import os
+        import selectors
+        import subprocess
+        import sys
+        import time
+
+        process = None
+        try:
+            process = subprocess.Popen(
+                ["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+            )
+            deadline = time.monotonic() + 10
+            output_chunks = []
+            output_size = 0
+            with selectors.DefaultSelector() as selector:
+                selector.register(process.stdout, selectors.EVENT_READ)
+                while True:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0 or not selector.select(remaining):
+                        raise ValueError
+                    chunk = os.read(
+                        process.stdout.fileno(), min(65536, 1048577 - output_size)
+                    )
+                    if not chunk:
+                        break
+                    output_size += len(chunk)
+                    if output_size > 1048576:
+                        raise ValueError
+                    output_chunks.append(chunk)
+            if process.wait(timeout=max(deadline - time.monotonic(), 0.001)) != 0:
+                raise ValueError
+            fields = b"".join(output_chunks).split(b"\0")
+            untracked_categories = {
+                "gateway_certificate_tree": 0,
+                "gateway_deployment_other": 0,
+                "other_service_deployment": 0,
+                "service_tree_other": 0,
+                "platform_other": 0,
+                "repository_other": 0,
+            }
+            counts = {
+                "modified": 0,
+                "added": 0,
+                "deleted": 0,
+                "renamed": 0,
+                "copied": 0,
+                "conflicted": 0,
+                "type_changed": 0,
+                "untracked": 0,
+            }
+            path_count = 0
+            index = 0
+            gateway_deploy_prefix = b"platform/services/agentgateway/deployment/"
+            gateway_certificate_prefix = gateway_deploy_prefix + b"certs/"
+            services_prefix = b"platform/services/"
+            while index < len(fields) - 1:
+                entry = fields[index]
+                index += 1
+                if len(entry) < 4 or entry[2:3] != b" ":
+                    raise ValueError
+                status = entry[:2].decode("ascii")
+                path_count += 1
+                if path_count > 2000:
+                    raise ValueError
+                if status == "??":
+                    category = "untracked"
+                    path = entry[3:]
+                    path_parts = path.split(b"/")
+                    if path.startswith(gateway_certificate_prefix):
+                        untracked_category = "gateway_certificate_tree"
+                    elif path.startswith(gateway_deploy_prefix):
+                        untracked_category = "gateway_deployment_other"
+                    elif (
+                        path.startswith(services_prefix)
+                        and len(path_parts) >= 5
+                        and path_parts[3] == b"deployment"
+                    ):
+                        untracked_category = "other_service_deployment"
+                    elif path.startswith(services_prefix):
+                        untracked_category = "service_tree_other"
+                    elif path.startswith(b"platform/"):
+                        untracked_category = "platform_other"
+                    else:
+                        untracked_category = "repository_other"
+                    untracked_categories[untracked_category] += 1
+                elif "U" in status or status in ("AA", "DD"):
+                    category = "conflicted"
+                elif "R" in status:
+                    category = "renamed"
+                elif "C" in status:
+                    category = "copied"
+                elif "A" in status:
+                    category = "added"
+                elif "D" in status:
+                    category = "deleted"
+                elif "T" in status:
+                    category = "type_changed"
+                elif "M" in status:
+                    category = "modified"
+                else:
+                    raise ValueError
+                counts[category] += 1
+                if "R" in status or "C" in status:
+                    if index >= len(fields) - 1:
+                        raise ValueError
+                    index += 1
+            print(json.dumps({
+                "status": "ok",
+                "counts": counts,
+                "untracked_categories": untracked_categories,
+                "path_count": path_count,
+            }, separators=(",", ":")))
+        except Exception:
+            if process is not None:
+                try:
+                    process.kill()
+                except OSError:
+                    pass
+                try:
+                    process.wait(timeout=5)
+                except (OSError, subprocess.SubprocessError):
+                    pass
+            print('{"status":"error","counts":{},"untracked_categories":{},"path_count":0,"reason":"git-status-failed"}')
+            sys.exit(1)
+        finally:
+            if process is not None and process.stdout is not None:
+                process.stdout.close()
+  tasks:
+    - name: Read the exact deployed repository revision
+      ansible.builtin.command:
+        argv: [git, rev-parse, HEAD]
+        chdir: "{{ _repo }}"
+      register: _agw_revision
+      changed_when: false
+      check_mode: false
+
+    - name: Require the reviewed Dev revision
+      ansible.builtin.assert:
+        that: _agw_revision.stdout | trim == expected_repository_sha
+        fail_msg: "The gateway checkout is not the exact reviewed Dev revision supplied to this read-only receipt."
+        quiet: true
+
+    - name: Read checkout change categories as bounded safe metadata
+      ansible.builtin.command:
+        argv: *agw_checkout_status_argv
+        chdir: "{{ _repo }}"
+      register: _agw_checkout_status
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Require checkout status diagnostics to be available
+      ansible.builtin.assert:
+        that:
+          - _agw_checkout_status.rc == 0
+          - (_agw_checkout_status.stdout | default('{"status":"error","counts":{},"untracked_categories":{},"path_count":0,"reason":"diagnostic-unavailable"}', true) | from_json).status == 'ok'
+        fail_msg: "Could not safely read the gateway checkout status; no read-only receipt was produced."
+        quiet: true
+
+    - name: Require a clean reviewed gateway checkout
+      ansible.builtin.assert:
+        that:
+          - (_agw_checkout_status.stdout | default('{"status":"error","counts":{},"untracked_categories":{},"path_count":0,"reason":"diagnostic-unavailable"}', true) | from_json).path_count == 0
+        fail_msg: >-
+          The gateway checkout has uncommitted or untracked source changes; the read-only
+          receipt requires a clean checkout. Safe status={{ _agw_checkout_status.stdout | default('{"status":"error","counts":{},"untracked_categories":{},"path_count":0,"reason":"diagnostic-unavailable"}', true) | from_json | to_json }}.
+        quiet: true
+
+    - name: Read safe metadata from rendered files before runtime comparison
+      ansible.builtin.command:
+        argv: [python3, -c, "{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/inspect-agentgateway-runtime.py') }}"]
+        stdin: "{{ {'env_path': _deploy_dir ~ '/.env', 'config_path': _deploy_dir ~ '/config.yaml', 'checkout_revision': _agw_revision.stdout | trim} | to_json }}"
+      register: _agw_metadata_before
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Compare rendered inputs to the running deployment without mutation
+      ansible.builtin.command:
+        argv: [bash, deploy.sh, --verify-only]
+        chdir: "{{ _deploy_dir }}"
+      environment:
+        CONTAINER_ENGINE: "{{ _engine }}"
+        LOCAL_MODE: "{{ 'true' if (local_mode | default(false) | bool) else '' }}"
+        COMPOSE_CMD: "{{ local_compose_cmd | default('') }}"
+        COMPOSE_OVERLAYS: >-
+          {{ 'compose.tls.yml' if ((agw_listener_tls | default(false) | bool)
+             and not (local_mode | default(false) | bool)) else '' }}
+      register: _agw_runtime_match
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Require the current files and running container input label to match
+      ansible.builtin.assert:
+        that:
+          - _agw_runtime_match.rc == 0
+          - "'runtime-inputs-result: pass' in (_agw_runtime_match.stdout | default(''))"
+        fail_msg: "The running gateway does not match the current rendered inputs, pinned image, and readiness; no sampling receipt was produced."
+        quiet: true
+
+    - name: Read safe metadata again after runtime comparison
+      ansible.builtin.command:
+        argv: [python3, -c, "{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/inspect-agentgateway-runtime.py') }}"]
+        stdin: "{{ {'env_path': _deploy_dir ~ '/.env', 'config_path': _deploy_dir ~ '/config.yaml', 'checkout_revision': _agw_revision.stdout | trim} | to_json }}"
+      register: _agw_metadata_after
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Require rendered metadata to be stable across the runtime comparison
+      ansible.builtin.assert:
+        that:
+          - _agw_metadata_before.rc == 0
+          - _agw_metadata_after.rc == 0
+          - _agw_metadata_before.stdout == _agw_metadata_after.stdout
+          - (_agw_metadata_after.stdout | from_json).status == 'pass'
+        fail_msg: "Rendered image or sampling metadata changed during the runtime receipt."
+        quiet: true
+
+    - name: Read the running container image reference
+      ansible.builtin.command:
+        argv: ["{{ _engine }}", inspect, --format, "{{ '{{.Config.Image}}' }}", agentgateway]
+      register: _agw_running_image
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Require the running container to use the validated image reference
+      ansible.builtin.assert:
+        that:
+          - _agw_running_image.rc == 0
+          - _agw_running_image.stdout | trim == 'cr.agentgateway.dev/agentgateway:v1.5.0'
+        fail_msg: "The running gateway image reference does not match the reviewed v1.5.0 pin."
+        quiet: true
+
+    - name: Read the current pinned image ID
+      ansible.builtin.command:
+        argv: ["{{ _engine }}", image, inspect, --format, "{{ '{{.Id}}' }}", cr.agentgateway.dev/agentgateway:v1.5.0]
+      register: _agw_pinned_image_id
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Read the running gateway image ID
+      ansible.builtin.command:
+        argv: ["{{ _engine }}", inspect, --format, "{{ '{{.Image}}' }}", agentgateway]
+      register: _agw_running_image_id
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Require the running gateway image ID to match the pinned local image
+      ansible.builtin.assert:
+        that:
+          - _agw_pinned_image_id.rc == 0
+          - _agw_running_image_id.rc == 0
+          - (_agw_pinned_image_id.stdout | trim | regex_replace('^sha256:', '')) is match('^[0-9a-f]{64}$')
+          - (_agw_running_image_id.stdout | trim | regex_replace('^sha256:', '')) == (_agw_pinned_image_id.stdout | trim | regex_replace('^sha256:', ''))
+        fail_msg: "The running gateway image ID differs from the locally resolved v1.5.0 image."
+        quiet: true
+
+    - name: Recheck the deployed repository revision
+      ansible.builtin.command:
+        argv: [git, rev-parse, HEAD]
+        chdir: "{{ _repo }}"
+      register: _agw_final_revision
+      changed_when: false
+      check_mode: false
+
+    - name: Require the revision to remain unchanged during the receipt
+      ansible.builtin.assert:
+        that:
+          - _agw_final_revision.stdout | trim == _agw_revision.stdout | trim
+          - _agw_final_revision.stdout | trim == expected_repository_sha
+        fail_msg: "The gateway checkout revision changed during the runtime receipt."
+        quiet: true
+
+    - name: Reread checkout change categories as safe metadata
+      ansible.builtin.command:
+        argv: *agw_checkout_status_argv
+        chdir: "{{ _repo }}"
+      register: _agw_final_checkout_status
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Require checkout status diagnostics to remain available
+      ansible.builtin.assert:
+        that:
+          - _agw_final_checkout_status.rc == 0
+          - (_agw_final_checkout_status.stdout | default('{"status":"error","counts":{},"untracked_categories":{},"path_count":0,"reason":"diagnostic-unavailable"}', true) | from_json).status == 'ok'
+        fail_msg: "Could not safely reread the gateway checkout status; no read-only receipt was produced."
+        quiet: true
+
+    - name: Require the checkout to remain clean at receipt completion
+      ansible.builtin.assert:
+        that:
+          - (_agw_final_checkout_status.stdout | default('{"status":"error","counts":{},"untracked_categories":{},"path_count":0,"reason":"diagnostic-unavailable"}', true) | from_json).path_count == 0
+        fail_msg: >-
+          The checkout changed during the runtime receipt. Safe status={{ _agw_final_checkout_status.stdout | default('{"status":"error","counts":{},"untracked_categories":{},"path_count":0,"reason":"diagnostic-unavailable"}', true) | from_json | to_json }}.
+        quiet: true
+
+    - name: Report the reviewed Dev runtime metadata
+      ansible.builtin.debug:
+        msg:
+          status: pass
+          image: "{{ (_agw_metadata_after.stdout | from_json).image }}"
+          random_sampling: "{{ (_agw_metadata_after.stdout | from_json).random_sampling }}"
+          client_sampling: "{{ (_agw_metadata_after.stdout | from_json).client_sampling }}"
+          checkout_revision: "{{ (_agw_metadata_after.stdout | from_json).checkout_revision }}"
+          running_image_id: "{{ _agw_running_image_id.stdout | trim }}"

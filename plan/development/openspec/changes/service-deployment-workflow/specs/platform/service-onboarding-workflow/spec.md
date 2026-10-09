@@ -93,6 +93,8 @@ criteria not met, error context, undo availability and Semaphore task reference.
   `/v1/logs`, delivery failure fails the collector visibly, and Alloy applies bounded
   conformance-specific `job`, `service`, `step`, and `status` labels. The shared Loki writer
   also adds `cluster` and `environment` labels; task and error details remain in the log body.
+  The exporter preserves a JSON body as the Loki line so the dashboard can extract the
+  top-level `state_code` and `inventory_code` fields without an exporter envelope.
 
 #### Scenario: NetBox outage does not block deployment
 - **WHEN** NetBox is unreachable during a workflow run

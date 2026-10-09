@@ -148,7 +148,7 @@ health inventory. Check the rendered configuration for the selected environment.
 | Service | Local port | Notes |
 |---|---|---|
 | OpenBao (persistent) | 127.0.0.1:8200 | containers reach it at `http://local-openbao:8200` on the `local-dev` network |
-| Semaphore | 127.0.0.1:3000 | prod-typical port |
+| Semaphore | 127.0.0.1:3000 | prod-typical port; Mac-side port is `local_semaphore_port` in the working inventory |
 | UhhCraft | 127.0.0.1:3001 | shifted from 3000 via `${UHHCRAFT_PORT:-3001}` |
 | n8n (P2) | 127.0.0.1:5678 | |
 | NocoDB (P2) | 127.0.0.1:8181 | compose default (`8181:8080`); its Postgres maps 5433 |
@@ -298,6 +298,7 @@ not establish production discovery readiness.
 | Bootstrap fails at "Assert podman machine" | `podman machine start` |
 | NetBox/Grafana login redirect points at `0.0.0.0:9000` | Embedded outpost `authentik_host` unset — re-run `make local-deploy-authentik` (blueprint sets it) |
 | NetBox SSO not gating (loads without login) | `make local-deploy-caddy` (renders the forward_auth route from inventory); confirm `caddy_routes` netbox entry has `forward_auth` |
+| Bootstrap fails at "Wait for Semaphore API" with a 404, or a port-in-use error | Another local app holds `127.0.0.1:3000` (Semaphore) or `:8088` (Caddy HTTP). Set `local_semaphore_port` (under `all.vars`) or `caddy_http_port` (on `caddy-local`) in the gitignored `platform/inventory/local-dev.yml` and re-run `make local-bootstrap`; an existing Semaphore container is recreated to pick up the new port. `./scripts/local-dev.sh` reads the resulting URL from the state file, so nothing else changes. Pick a port the stack does not already use: 3001 (UhhCraft with `UHHCRAFT_PORT=3001`), 3002 (Grafana), 3100 (Loki, and the collector's Loki URL), 3402 (tududi), 5678 (n8n), 8088/8443 (Caddy), 8200 (OpenBao), 9000 (step-ca) |
 | Semaphore container exits (2) | `podman logs local-semaphore` — dialect/image regression; keep the pinned tag |
 | Task fails at OpenBao auth | Re-run bootstrap (regenerates AppRole secret-id + environment) |
 | Task: "no hosts matched" | The static inventory in Semaphore is managed by bootstrap — re-run it; don't hand-edit |

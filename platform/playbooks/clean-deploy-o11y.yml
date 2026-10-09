@@ -10,10 +10,11 @@
 # Uses composable tasks/clean-service.yml then runs deploy-o11y.yml.
 #
 # It refuses BEFORE destroying anything unless the launch names the o11y host it resets
-# (-e confirm_o11y_reset=<inventory hostname>, the confirm pattern of clean-deploy-step-ca.yml
-# and destroy-vm.yml), in every mode. When the destroy reaches a REMOTE host it also requires
-# the controller checkout to be exactly the reviewed commit, clean (-e
-# expected_repository_sha=<40 hex>, the checks of require-reviewed-checkout.yml), and refuses
+# (-e confirm_reset=<inventory hostname>, enforced by tasks/assert-reset-confirmed.yml for every
+# Clean Deploy and checked here first so it precedes the commit gates), in every mode. When the
+# destroy reaches a REMOTE host it also requires the controller checkout to be exactly the
+# reviewed commit, clean (-e expected_repository_sha=<40 hex>, the checks of
+# require-reviewed-checkout.yml), and refuses
 # expanded retention. The imported deploy checks the same SHA, but only after the volumes are
 # gone.
 #
@@ -39,12 +40,7 @@
     _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
   tasks:
     - name: "Refuse a reset the launch did not name"
-      ansible.builtin.assert:
-        that: (confirm_o11y_reset | default('') | string) == inventory_hostname
-        fail_msg: >-
-          Refusing: pass -e confirm_o11y_reset={{ inventory_hostname }} to destroy every o11y
-          volume on this host (metrics, logs, Grafana state). Nothing was removed.
-        quiet: true
+      ansible.builtin.include_tasks: tasks/assert-reset-confirmed.yml
 
     - name: "Decide whether this destroy is on a local-dev host"
       # Waived only when the connection is local (spelled as the local plugin's own names) AND

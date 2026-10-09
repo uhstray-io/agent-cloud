@@ -92,6 +92,9 @@
           plane and the host use SEPARATE inventories, because their filesystem
           paths differ.
         success_msg: >-
-          '{{ preflight_group }}' has
-          {{ groups[preflight_group] | default([]) | length }} host(s):
-          {{ groups[preflight_group] | default([]) | join(', ') }}.
+          {{ (preflight_group ~ ' has ' ~ (groups[preflight_group] | default([]) | length)
+          ~ ' host(s); host identities are suppressed.')
+          if (_preflight_redact_hostnames | default(false) | bool)
+          else ("'" ~ preflight_group ~ "' has "
+          ~ (groups[preflight_group] | default([]) | length) ~ ' host(s): '
+          ~ (groups[preflight_group] | default([]) | join(', ')) ~ '.') }}

@@ -43,6 +43,8 @@ Both read-only diagnostics set Python's `TMPDIR` and Ansible's `ansible_remote_t
 
 Diagnostic run, 2026-10-04: `Diagnose Grafana OAuth Failure (Dev)` task 2746 on `dev` `21891372` ran end to end, unlike task 2103, and reported `category=no_oauth_failure_in_window`: no OAuth failure fell inside the diagnostic window. The playbook then stops by design, because it requires a failure category. Next: the operator attempts a Grafana sign-in and, if it fails, reruns the diagnostic inside the window.
 
+Operator report, 2026-10-08/09: Grafana's Authentik sign-in button now signs in. Direct Authentik sign-in and the original root cause remain unverified; bounded diagnostic task 2746 found no failure in its observation window. This report does not establish which change resolved the issue.
+
 ### Privileged root-LVM survey plan and current evidence
 
 Semaphore task 2115 succeeded on the exact reviewed `dev` checkout `2d567d86eef1f2cd9f7cda63ba0ac03f6663d642`. Its sanitized readback showed a full ext4 root filesystem of about 9.75 GiB, a reported 10 GiB LVM root block, an approximately 18.2 GiB partition, and a 100 GiB virtual disk. Rootless Podman volumes share the full root filesystem. The unprivileged LVM join returned `root_logical_volume_unresolved`, so the LV-to-root-device correlation and VG free space remain unverified; no disk, partition, LV, or filesystem was changed.

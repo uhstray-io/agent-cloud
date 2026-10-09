@@ -1453,4 +1453,86 @@ provisioned dashboard JSON and evaluates Loki panels only when their exact title
 explicitly selected. Whole-dashboard runs skip Loki because a healthy log panel can be
 empty. Loki stream queries use a bounded range and result limit; metric LogQL results use
 the vector/matrix counters. Reports contain panel titles, target statuses, and counts only.
-Dev-bound Semaphore validation of the Service Overview's two Loki panels remains pending.
+The Service Overview keeps UID `service-overview` and its existing four panel queries; it
+also shows the current count of reported scrape targets separately from scrape availability
+over the selected time range. The target count includes down targets, while missing telemetry
+remains no data rather than a healthy zero.
+
+Sanitized read-only Dev-bound Semaphore receipts 3350 and 3352 verified both Service
+Overview Loki panels (`Service log lines per second` and `Recent service logs`) for
+`agentgateway` over 6h. Receipt 3351 checked `Services tracked` and `Step status by service`
+at 24h, but did not prove Grafana table rendering. The dashboard query has since been changed
+to select the newest numeric step and inventory states across overlapping collector runs with
+Loki `last_over_time`; bounded labels and historical failure records remain available for
+drilldown. Empty collector windows remain no data. Live query behavior and rendered matrix
+remain unverified.
+
+## 2026-10-07 conformance log body format correction
+
+Review of PR #476 at `963c1f73` found that the pinned Alloy `otelcol.exporter.loki`
+default JSON envelope nests an OTLP log's body; the conformance dashboard's
+`| json state_code` and `| json inventory_code` therefore cannot read the collector's
+top-level JSON fields in production. Set the conformance record's `loki.format` hint to
+`raw`, preserving the JSON body line while keeping `job`, `service`, `step`, and `status`
+as bounded stream labels. A cross-file test ties the collector's emitted body, Alloy's
+format hint, and the dashboard extraction queries together. Production delivery and
+query read-back after a Dev-bound Semaphore deployment remain unverified.
+
+## 2026-10-07 dashboard signal and failure clarity
+
+Service Overview now has separate `Metrics service` and `Logs service` selectors,
+backed by Prometheus and Loki respectively. Loki volume and log panels separate
+container output, gateway access records, optional span logs, and workflow
+conformance snapshots using existing stream labels. This lets operators find a
+log-only service without implying that it has metrics; absence from either
+selector means no value was observed from that datasource. The metric and log
+selectors are not a synthetic union, and current data applicability still needs
+service-specific receipts. A capped all-streams drill-down remains available for
+unclassified Loki streams; source-specific panels lead the routine view.
+
+The conformance dashboard source configures the latest-state query and table
+transformations for an intended one-row-per-service-and-step view, with status
+color mapping scoped to the numeric state field. Its latest-state query remains
+authoritative for current failed status. The separate, 100-line-capped failure
+log view shows historical task snapshots in the selected time range. The
+collector may repeat a failed task in later snapshots and exposes no unique
+failure-event identity, so
+those rows are not new-event counts and may not match a subsequently recovered
+step. Static dashboard JSON and focused repository checks are the available
+evidence for this change; Grafana 11.4 rendering, Loki variable results, and
+current-state-to-error/task context correlation remain unverified until the
+Dev-bound Semaphore readback and dashboard inspection gate in OpenSpec task 7.4.
+
+2026-10-08 production Service Overview inspection over 6h showed Span and
+Conformance log-volume lines for `agentgateway`, while Recent container logs and
+Recent gateway access records were empty. This narrows the observed gap to those
+streams/selectors; it does not establish a Loki-wide outage. The Dev-bound
+`Survey o11y Log Source` workflow is a metadata-only receiver survey: it classifies
+the rootless Podman default and running o11y container log drivers, checks whether
+the current deploying user can read bounded metadata-only journald entries, and
+checks for a read-only Alloy journal-source mount. Journald readability is counted
+from the latest at most 100 matching metadata-only entries per container within
+the 15-minute query window; it is not a full-window volume count. A read-only
+mount and readable directory do not prove Alloy has a configured or working
+journal pipeline. Journal categories and counts cover only the current deploying
+user's user journal, not the system journal or a host-wide view. Any unknown
+running-container log driver makes the journal result unverified with a zero
+count; only known non-journald drivers produce unsupported. A zero-container
+listing, malformed or failed container inspect, or uncertain Alloy state refuses
+the survey with a fixed category rather than issuing a partial result. For
+verified journald containers, a failed read is unreadable, while timeout or
+malformed metadata is unverified. The implementation and focused tests are source
+evidence only; no Semaphore survey run or receiver result is claimed. Keep task 7.4 open until
+the reviewed Dev source survey and dashboard readback establish container-log
+source support or document its limitation. The survey does not explain or fix
+gateway OTLP access records: their `signal="access-log"` discriminator remains
+owned by the separate gateway change and must be verified there.
+
+The separate 24h conformance-table browser readback showed 18 tracked services
+and five current failed workflow-step states; task 3635 is a conformance
+dashboard receipt, not a receiver log-source survey run. These are latest step
+snapshots, not live service health; prior task failures can recur in later
+snapshots and long error bodies dominate the separate history panel. Keep that
+workflow-context/dashboard correction separate from the container log-source
+survey. Operator-confirmed Grafana Authentik sign-in succeeds; this narrows the
+authentication symptom but does not establish a cause for the missing streams.

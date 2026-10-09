@@ -11,6 +11,11 @@
 # Source of truth: plan/development/LOCAL-DEV-DEPLOYMENT.md Phase 4 (Caddy local
 # profile); plan/architecture/CADDY-REVERSE-PROXY.md.
 
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
 - name: Verify a branch-bound Caddy candidate revision
   hosts: localhost
   connection: local

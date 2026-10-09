@@ -151,6 +151,9 @@ setup() {
   assert_grep -qE '^\s*accessLog:$' "$CONFIG"
   refute_grep -qE '^\s*logging:$' "$CONFIG"
   [ "$(grep -c 'identity: apiKey.name' "$CONFIG")" -eq 3 ]
+  # Source-template assertion only: config.yaml.j2 sets stdout, OTLP, and trace
+  # path expressions. It does not render config or inspect emitted telemetry.
+  [ "$(grep -c 'http.path: request.path' "$CONFIG")" -eq 3 ]
   # Key form only: a comment may NAME the fields it forbids.
   refute_grep -qE ':\s*llm\.(prompt|completion)\b' "$CONFIG"
 }
@@ -259,7 +262,25 @@ assert "_agwp_key" not in str({k: v for k, v in call["ansible.builtin.uri"].item
 keep = next(t for t in probe if "ansible.builtin.set_fact" in t)
 assert keep.get("no_log") is True and set(keep["ansible.builtin.set_fact"]["_agwp_out"]) == {"status", "content", "json", "msg"}
 PY
-  refute_grep -qF 'no_log: true' "$PLAYBOOK"
+  python3 - "$PLAYBOOK" <<'PY'
+import sys
+import yaml
+plays = yaml.safe_load(open(sys.argv[1], encoding='utf-8'))
+def walk(tasks):
+    for task in tasks or []:
+        yield task
+        for key in ('block', 'rescue', 'always'):
+            yield from walk(task.get(key))
+tasks = [task for play in plays for task in walk(play.get('tasks'))]
+validation = next(task for task in tasks if task.get('name', '').startswith('Validate the rendered config'))
+no_log_tasks = {task.get('name') for task in tasks if task.get('no_log') is True}
+assert no_log_tasks == {
+    'Require the rendered Compose image to match the reviewed pin',
+    validation.get('name'),
+    'Classify the validator result without exposing its output',
+    'Normalize validator diagnostics to a protected allowlisted category',
+}
+PY
   refute_grep -qE "secrets\['client_" "$PLAYBOOK"
   refute_grep -qF 'read -r k' "$PLAYBOOK"
   # The identity is checked against, and asks for, only the models it may use; a 429 from the
@@ -360,7 +381,7 @@ YML
   ansible-playbook -i localhost, -c local "$play" >/dev/null
 }
 
-@test "agentgateway: optional OTLP policy has bounded sampling and stable service identity" {
+@test "agentgateway: optional OTLP policy renders query-free path fields and bounded sampling" {
   _render_ui false receiver.test:4317
   python3 - "$BATS_TEST_TMPDIR/config.yaml" <<'PY'
 import sys
@@ -372,11 +393,17 @@ tracing = config['frontendPolicies']['tracing']
 assert tracing['host'] == 'receiver.test:4317'
 assert tracing['randomSampling'] == tracing['clientSampling'] == 0.05
 assert tracing['resources']['service.name'] == '"agentgateway"'
+assert tracing['attributes']['http.path'] == 'request.path'
 access = config['frontendPolicies']['accessLog']['otlp']
 assert config['frontendPolicies']['accessLog']['add']['identity'] == 'apiKey.name'
 assert access['host'] == 'receiver.test:4317'
 assert access['fields']['add']['service'] == '"agentgateway"'
 assert access['fields']['add']['identity'] == 'apiKey.name'
+stdout_add = config['frontendPolicies']['accessLog']['add']
+otlp_add = access['fields']['add']
+assert stdout_add['http.path'] == otlp_add['http.path'] == tracing['attributes']['http.path'] == 'request.path'
+configured_expressions = list(stdout_add.values()) + list(otlp_add.values()) + list(tracing['attributes'].values())
+assert all('request.pathAndQuery' not in expression and 'request.uri' not in expression for expression in configured_expressions if isinstance(expression, str))
 PY
   _render_ui false
   refute_grep -qE '^  tracing:' "$BATS_TEST_TMPDIR/config.yaml"
@@ -384,7 +411,11 @@ PY
 import sys
 import yaml
 config = yaml.safe_load(open(sys.argv[1], encoding='utf-8'))
-assert config['frontendPolicies']['accessLog']['add']['identity'] == 'apiKey.name'
+access = config['frontendPolicies']['accessLog']
+stdout_add = access['add']
+assert stdout_add['identity'] == 'apiKey.name'
+assert stdout_add['http.path'] == 'request.path'
+assert all('request.pathAndQuery' not in expression and 'request.uri' not in expression for expression in stdout_add.values() if isinstance(expression, str))
 assert 'otlp' not in config['frontendPolicies']['accessLog']
 PY
 }
