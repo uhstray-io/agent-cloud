@@ -1478,8 +1478,10 @@ tasks = next(p for p in plays if p.get('name') == 'Verify the named service is c
 logs = next(t for t in tasks if t['name'] == 'Query recent Loki logs for the service')
 traces = next(t for t in tasks if t['name'] == 'Search recent Tempo traces for the service')
 require = next(t for t in tasks if t['name'] == 'Require a recent trace returned by Tempo')
-assert logs['when'] == "expect_logs | default('true') | bool"
-assert traces['when'] == "expect_traces | default('false') | bool"
+assert "expect_logs | default('true') | bool" in logs['when']
+assert "o11y_verification_mode | default('legacy') == 'legacy'" in logs['when']
+assert "expect_traces | default('false') | bool" in traces['when']
+assert "o11y_verification_mode | default('legacy') == 'legacy'" in traces['when']
 assert 'service.name=' in traces['ansible.builtin.command']['argv'][-1]
 assert 'tempo:3200/api/search' in traces['ansible.builtin.command']['argv'][-1]
 assert '_canary_started.stdout' in traces['ansible.builtin.command']['argv'][-1]
@@ -1487,7 +1489,7 @@ assert ' - 60' in traces['ansible.builtin.command']['argv'][-1]
 assert ' + 60' in traces['ansible.builtin.command']['argv'][-1]
 assert traces['retries'] == 12
 assert traces['ignore_errors'] is True
-assert require['when'] == "expect_traces | default('false') | bool"
+assert "expect_traces | default('false') | bool" in require['when']
 templates = yaml.safe_load(open(sys.argv[2], encoding='utf-8'))['templates']
 service = next(t for t in templates if t['name'] == 'Verify o11y Service')
 assert {v['name'] for v in service['survey_vars']} >= {'expect_logs', 'expect_traces', 'emit_agentgateway_canary'}

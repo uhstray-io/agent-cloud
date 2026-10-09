@@ -1,0 +1,90 @@
+- name: Query the exact Loki target selector
+  ansible.builtin.command:
+    argv:
+      - "{{ _engine }}"
+      - exec
+      - o11y-grafana
+      - wget
+      - -q
+      - -O
+      - "-"
+      - "http://loki:3100/loki/api/v1/query_range?query={{ signal_selector | urlencode }}&start={{ ((now(utc=true).timestamp() | int) - (observation_window_seconds | int)) * 1000000000 }}&end={{ (now(utc=true).timestamp() | int) * 1000000000 }}&limit=1"
+  register: _exact_logs
+  changed_when: false
+  check_mode: false
+  when: expected_signal == 'logs'
+
+- name: Query the exact Prometheus target selector
+  ansible.builtin.command:
+    argv:
+      - "{{ _engine }}"
+      - exec
+      - o11y-grafana
+      - wget
+      - -q
+      - -O
+      - "-"
+      - "http://prometheus:9090/api/v1/query?query={{ (signal_selector ~ '[' ~ (observation_window_seconds | int) ~ 's]') | urlencode }}"
+  register: _exact_prometheus
+  changed_when: false
+  check_mode: false
+  when: expected_signal in ['metrics', 'health']
+
+- name: Query the exact Tempo target selector
+  ansible.builtin.command:
+    argv:
+      - "{{ _engine }}"
+      - exec
+      - o11y-grafana
+      - wget
+      - -q
+      - -O
+      - "-"
+      - "http://tempo:3200/api/search?q={{ signal_selector | urlencode }}&start={{ (now(utc=true).timestamp() | int) - (observation_window_seconds | int) }}&end={{ now(utc=true).timestamp() | int }}&limit=1"
+  register: _exact_traces
+  changed_when: false
+  check_mode: false
+  when: expected_signal == 'traces'
+
+- name: Require a fresh exact-target signal observation
+  ansible.builtin.assert:
+    that:
+      - _exact_receipt.status == 'success' if expected_signal != 'traces' else _exact_receipt.traces | default([]) | length > 0
+      - _exact_receipt.traces | default([]) | length > 0 if expected_signal == 'traces' else _exact_receipt.data.result | default([]) | length > 0
+      - expected_signal not in ['metrics', 'health'] or _exact_receipt.data.resultType == 'matrix'
+      - expected_signal not in ['metrics', 'health'] or (_exact_receipt.data.result | map(attribute='metric.target_id') | list | unique == [expected_target_id])
+      - expected_signal not in ['metrics', 'health'] or (_exact_latest_samples | length == _exact_receipt.data.result | length and _exact_latest_samples | selectattr('0', 'ge', (now(utc=true).timestamp() | int) - (freshness_seconds | int)) | list | length == _exact_latest_samples | length and _exact_latest_samples | selectattr('0', 'le', now(utc=true).timestamp() | int) | list | length == _exact_latest_samples | length)
+      - expected_signal != 'health' or (_exact_latest_samples | map(attribute='1') | select('string') | list | length == _exact_latest_samples | length and _exact_latest_samples | map(attribute='1') | select('string') | list | unique == ['1'])
+      - expected_signal != 'logs' or (_exact_receipt.data.result | map(attribute='stream.target_id') | list | unique == [expected_target_id])
+      - expected_signal != 'traces' or _exact_receipt.traces | default([]) | length > 0
+    fail_msg: >-
+      {{ expected_target_id }} has no fresh verified {{ expected_signal }} signal in the declared observation window;
+      sibling service labels do not count as an exact-target receipt.
+  vars:
+    _exact_receipt: >-
+      {{ (
+        _exact_logs.stdout if expected_signal == 'logs' else
+        _exact_prometheus.stdout if expected_signal in ['metrics', 'health'] else
+        _exact_traces.stdout
+      ) | default('{}') | from_json }}
+    _exact_latest_samples: >-
+      {% set latest = [] %}
+      {% for series in _exact_receipt.data.result | default([]) %}
+      {% set samples = series.get('values', []) + series.get('histograms', []) %}
+      {% if samples %}{% set _ = latest.append(samples | sort(attribute='0') | last) %}{% endif %}
+      {% endfor %}
+      {{ latest }}
+
+- name: Emit sanitized unattributed observation metadata
+  ansible.builtin.set_stats:
+    data:
+      o11y_coverage_observation:
+        status: observed
+        target_id: "{{ expected_target_id }}"
+        signal: "{{ expected_signal }}"
+        repository_sha: "{{ expected_repository_sha }}"
+        inventory_revision: "{{ expected_inventory_revision }}"
+        observation_window_seconds: "{{ observation_window_seconds | int }}"
+        freshness_seconds: "{{ freshness_seconds | int }}"
+        task_reference_unattributed: true
+        observed_at: "{{ now(utc=true, fmt='%Y-%m-%dT%H:%M:%SZ') }}"

@@ -1,0 +1,48 @@
+# Read-only candidate and declaration census. Private inventory contributes only
+# sanitized declaration fields to the report; endpoint and host values are never returned.
+- name: Refuse extra vars that set internal names
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: Check out and inventory declarations
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    _coverage_root: "{{ playbook_dir | dirname | dirname }}"
+    _coverage_inventory: "{{ estate_coverage_inventory | default({}) }}"
+  tasks:
+    - name: Read the controller revision
+      ansible.builtin.command:
+        argv: [git, rev-parse, HEAD]
+        chdir: "{{ _coverage_root }}"
+      register: _coverage_revision
+      changed_when: false
+      check_mode: false
+
+    - name: Require the reviewed controller revision
+      ansible.builtin.assert:
+        that:
+          - expected_repository_sha is match('^[0-9a-f]{40}$')
+          - _coverage_revision.stdout == expected_repository_sha
+        fail_msg: "Semaphore checked out a different reviewed revision; no census was produced."
+
+    - name: Generate the sanitized read-only estate census
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ _coverage_root }}/platform/playbooks/files/o11y-coverage-census.py"
+          - "{{ _coverage_root }}"
+        stdin: >-
+          {{ {
+            'inventory_revision': _coverage_inventory.get('revision'),
+            'repository_sha': expected_repository_sha,
+            'targets': _coverage_inventory.get('targets', []),
+            'template_names': ((lookup('ansible.builtin.file', _coverage_root ~ '/platform/semaphore/templates.yml') | from_yaml).templates | map(attribute='name') | list)
+          } | to_json }}
+      register: _coverage_report
+      changed_when: false
+      check_mode: false
+
+    - name: Report the candidate census
+      ansible.builtin.debug:
+        msg: "{{ _coverage_report.stdout | from_json }}"
