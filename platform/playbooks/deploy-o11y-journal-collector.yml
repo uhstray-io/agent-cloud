@@ -43,7 +43,6 @@
       {{ [
         'http://loki:3100/loki/api/v1/query_range?query=%7Bservice%3D%22o11y%2Falloy%22%2Csignal%3D%22container%22%7D',
         '&start=', _journal_verification_start.stdout | default('') | trim,
-        '&end=', _journal_verification_end.stdout | default('') | trim,
         '&limit=1&direction=backward'
       ] | join('') }}
     _journal_monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
@@ -167,6 +166,7 @@
       failed_when: false
       check_mode: false
       no_log: true
+      when: not ansible_check_mode
       tags: [always]
 
     - name: Require the rootless Compose UID to read a journal file
@@ -176,6 +176,7 @@
           The rootless Compose UID cannot read a journal file from the selected bind.
           No collector was started.
         quiet: true
+      when: not ansible_check_mode
       tags: [always]
 
     - name: Require the existing o11y Alloy receiver container to be running
@@ -223,6 +224,7 @@
       vars:
         _monorepo_dir: "{{ _journal_monorepo_dir }}"
         _branch: "{{ service_branch | default('dev') }}"
+      when: not ansible_check_mode
 
     - name: Read the receiver checkout revision
       ansible.builtin.command:
@@ -231,6 +233,7 @@
       register: _journal_target_revision
       changed_when: false
       check_mode: false
+      when: not ansible_check_mode
 
     - name: Require receiver checkout at the exact reviewed revision
       ansible.builtin.assert:
@@ -239,6 +242,7 @@
           The receiver checkout does not match the reviewed SHA; collector files
           were not rendered or applied.
         quiet: true
+      when: not ansible_check_mode
 
     - name: Read back the seven existing receiver container identities and states
       ansible.builtin.shell:
@@ -325,6 +329,7 @@
       when: not ansible_check_mode
 
     - name: Apply the collector and require exact-target Loki delivery
+      when: not ansible_check_mode
       block:
         - name: Capture the pre-start lower bound for this run's Loki receipt
           ansible.builtin.command:
@@ -342,7 +347,7 @@
             O11Y_JOURNAL_CONFIG_SHA: "{{ _journal_candidate_stat.stat.checksum }}"
           register: _journal_up
           changed_when: _journal_up.stdout | length > 0 or _journal_up.stderr | length > 0
-          check_mode: false
+          when: not ansible_check_mode
 
         - name: Read the collector state
           ansible.builtin.command:
@@ -382,13 +387,6 @@
               the collector will be stopped and its positions volume preserved.
             quiet: true
 
-        - name: Capture the query upper bound on the receiver host
-          ansible.builtin.command:
-            argv: [date, +%s%N]
-          register: _journal_verification_end
-          changed_when: false
-          check_mode: false
-
         - name: Verify the exact bounded journal stream reached Loki
           ansible.builtin.command:
             argv:
@@ -407,6 +405,12 @@
           failed_when: false
           check_mode: false
           no_log: true
+          retries: 36
+          delay: 5
+          until:
+            - _journal_loki_result.rc | default(1) == 0
+            - (_journal_loki_result.stdout | default('{}') | from_json).status | default('') == 'success'
+            - (_journal_loki_result.stdout | default('{}') | from_json).data.result | length > 0
 
         - name: Require an exact service and signal stream in Loki
           ansible.builtin.assert:
@@ -420,7 +424,8 @@
               - (_journal_loki_result.stdout | default('{}') | from_json).data.result[0].values[0][0] | int >= _journal_verification_start.stdout | trim | int
             fail_msg: >-
               Loki has no exact o11y/alloy container stream in the last 15 minutes;
-              the collector will be stopped and its positions volume preserved.
+              no post-start sample arrived within three minutes. The collector will be
+              stopped and its positions volume preserved.
             quiet: true
 
       rescue:
@@ -430,13 +435,14 @@
           register: _journal_rollback
           changed_when: _journal_rollback.rc == 0
           failed_when: false
-          check_mode: false
+          when: not ansible_check_mode
 
         - name: Fail closed after stopping the journal collector
           ansible.builtin.fail:
             msg: >-
               The journal collector failed its exact-target delivery gate. Only that
               collector was stopped; its positions volume and all receiver data remain.
+
 
 - name: Stop only the journal collector while preserving its positions volume
   hosts: o11y_svc
@@ -461,7 +467,10 @@
         argv: [podman, stop, --time, "10", o11y-journal-collector]
       register: _journal_stop
       changed_when: _journal_stop.rc == 0
-      when: _journal_stop_status.rc == 0 and _journal_stop_status.stdout | trim == 'running'
+      when:
+        - not ansible_check_mode
+        - _journal_stop_status.rc == 0
+        - _journal_stop_status.stdout | trim == 'running'
 
 - name: Survey fixed standard journal directory candidates
   hosts: o11y_svc

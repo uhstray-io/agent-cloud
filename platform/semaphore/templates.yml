@@ -83,7 +83,7 @@ templates:
         description: "Survey standard journal paths, apply the pilot, or stop only its collector while preserving positions"
         type: enum
         required: true
-        default_value: apply
+        default_value: survey
         values:
           - { name: "Survey journal paths", value: "survey" }
           - { name: "Apply pilot", value: "apply" }

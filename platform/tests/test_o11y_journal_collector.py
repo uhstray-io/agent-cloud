@@ -148,6 +148,7 @@ def test_alloy_config_uses_only_the_fixed_bounded_selector_and_otlp():
 
 def test_playbook_guards_validation_delivery_and_non_destructive_rollback():
     source = PLAYBOOK.read_text()
+    plays = yaml.safe_load(source)
     guard = source.index("import_playbook: refuse-internal-extra-vars.yml")
     reviewed = source.index("import_playbook: require-reviewed-checkout.yml")
     place = source.index("tasks/place-monorepo.yml")
@@ -168,9 +169,70 @@ def test_playbook_guards_validation_delivery_and_non_destructive_rollback():
     assert "up, --no-deps, -d, journal-collector" in source
     assert "Require all existing receiver containers to remain unchanged" in source
     assert "_journal_verification_start" in source
-    assert "_journal_verification_end" in source
     assert "values[0][0]" in source
     assert "State.Health.Status" in source
+
+    apply_play = next(play for play in plays if play.get("hosts") == "o11y_svc")
+    apply_block = next(
+        task
+        for task in apply_play["tasks"]
+        if task.get("name") == "Apply the collector and require exact-target Loki delivery"
+    )
+    assert apply_block["when"] == "not ansible_check_mode"
+    loki_query = next(
+        task
+        for task in apply_block["block"]
+        if task.get("name") == "Verify the exact bounded journal stream reached Loki"
+    )
+    assert loki_query["retries"] == 36
+    assert loki_query["delay"] == 5
+    assert "'&start='" in source  # keep freshness bound part of the Loki range request
+
+    placement = next(
+        task
+        for task in apply_play["tasks"]
+        if task.get("name") == "Place the reviewed monorepo on the receiver through the shared mechanism"
+    )
+    revision = next(
+        task for task in apply_play["tasks"] if task.get("name") == "Read the receiver checkout revision"
+    )
+    candidate_render = next(
+        task
+        for task in apply_play["tasks"]
+        if task.get("name") == "Render a candidate journal config with the private receiver endpoint"
+    )
+    config_promote = next(
+        task
+        for task in apply_play["tasks"]
+        if task.get("name") == "Promote the validated candidate config for the collector"
+    )
+    for task in (placement, revision, candidate_render, config_promote):
+        assert task["when"] == "not ansible_check_mode"
+
+    stop_play = next(
+        play for play in plays if play.get("name", "").startswith("Stop only the journal collector")
+    )
+    stop_action = next(
+        task
+        for task in stop_play["tasks"]
+        if task.get("name") == "Stop only the pilot collector if it is running"
+    )
+    assert "not ansible_check_mode" in stop_action["when"]
+
+    start_task = next(
+        task
+        for task in apply_block["block"]
+        if task.get("name") == "Start only the journal collector service"
+    )
+    rollback_task = next(
+        task
+        for task in apply_block["rescue"]
+        if task.get("name") == "Stop only the journal collector after a failed delivery gate"
+    )
+    assert "check_mode" not in start_task
+    assert start_task["when"] == "not ansible_check_mode"
+    assert "check_mode" not in rollback_task
+    assert rollback_task["when"] == "not ansible_check_mode"
 
 
 def test_semaphore_template_is_dev_bound_and_requires_exact_sha():
@@ -183,6 +245,7 @@ def test_semaphore_template_is_dev_bound_and_requires_exact_sha():
     assert template["repository"] == "agent-cloud dev"
     variables = {item["name"]: item for item in template["survey_vars"]}
     assert variables["expected_repository_sha"]["required"] is True
+    assert variables["journal_collector_action"]["default_value"] == "survey"
     assert variables["journal_collector_action"]["values"] == [
         {"name": "Survey journal paths", "value": "survey"},
         {"name": "Apply pilot", "value": "apply"},
