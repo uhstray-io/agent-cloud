@@ -157,10 +157,22 @@
       unconditionally, plus a BATS assertion on the rendered env). Merged into `dev` on
       2026-09-28 (merge `255b251`). `agentgateway-observability`
       decision 5 makes it a prerequisite for `agw_content_logging: full`
-- [ ] 1.11 Operator UI in production: Cloudflare record `admin.inference` (applied
+- [x] 1.11 Operator UI in production: Cloudflare record `admin.inference` (applied
       2026-09-27, Apply Cloudflare Tofu (Dev) task 1616, zero-diff 1617), the Authentik skip
       rule (PR #289) applied, `agw_ui_enabled: true` (site-config #35), then Deploy
       agentgateway (Dev); proves gate 1.9
+      2026-10-08: ticked; the evidence is already recorded in this change: Cloudflare record
+      `admin.inference` applied and zero-diff (tasks 1616/1617, above); the skip rule
+      `authentik-oidc-bypass-challenge` is declared in `platform/infra/cloudflare/waf.tf:135`;
+      the `admin.inference` Caddy block applied through Manage Caddy Sites (Dev) tasks
+      2463/2464 (task 6.2); `Deploy agentgateway (Dev)` tasks 2460/2462 ran with the UI
+      listener (task 6.1). `agw_ui_enabled: true` (site-config #35) is as quoted in the
+      task text above; it was not re-read in site-config here. Gate 1.9 stays open: its
+      browser half (login as `agent-cloud-admin`, the UI rendering) is still the operator's to do
+      2026-10-08 (review of PR #488): the skip rule is APPLIED, not only declared. Apply
+      Cloudflare Tofu (Dev) task 3006 (2026-10-05) ran at `9edcd9ec`, which contains the rule's
+      commit `ef115877`, and its plan reported `plan_changes: "0"`, `plan_actions: []`: the
+      live zone already matched the declared rule. Output read from Semaphore on 2026-10-08.
 - [ ] 1.12 Change-aware deploy (design decision 11). Today `deploy.sh:47-53` runs
       `compose up -d --force-recreate` on every run, so every deploy, and every playbook
       that imports it, drops in-flight streams. First settle hot reload: v1.5.0 watches a
@@ -343,6 +355,13 @@
       coordinator named is the five-minute non-streaming synthetic probe, and task 3142 saw
       `time_to_first_token_bucket` series exist; streaming client traffic arrives with the
       route switch (task 4.3). Not ticked.
+      2026-10-08: cause (1) is fixed: panels 4 (4xx ratio) and 5 (5xx ratio) of
+      `agentgateway-client-view.json` now wrap the numerator in `( ... ) or vector(0)`, the
+      denominator unchanged, so each panel returns 0 instead of an empty vector while the
+      gateway returns no such status. Pinned by
+      `platform/tests/test_o11y_dashboard_asserts.py::test_client_view_error_ratio_numerator_is_zero_when_no_error_series`
+      (mutated: red without the fallback). Not re-run live. Cause (2), the two first-token
+      panels, still needs streaming traffic (task 4.3). Not ticked.
 
 ## 4. Identities, limits, re-route
 - [ ] 4.1 Virtual-key lifecycle (design §10). DONE 2026-09-17 in code: the deploy mints
@@ -456,6 +475,10 @@
       undeclared entry is refused naming it
       (`test_a_declaration_the_gateway_cannot_serve_is_refused_naming_it`, case `undeclared`).
       The local-dev records the task names are still not re-verified here
+      2026-10-08: wording correction. The assertions this task and gate 6.4 call BATS are
+      pytest: `platform/tests/test_agw_listener_tls.py` (see the 2026-10-03 note); the
+      original text is left as written. Still open as before: the local-dev records the task
+      names are not re-verified here
 - [ ] 6.1a The one gateway probe path. Every check that sends a request to the gateway
       from outside Caddy uses it: this deploy's own verify, the personal-key 401 gates
       (`inference-personal-keys`), the renewal proof for the client leaves that are probed
@@ -516,6 +539,12 @@
       then 3012 (real) reported "PASS, 14/14 cases match" through the shared probe path (#456).
       Still NOT ticked, for the same reason: the personal-key gates, the benchmark VM's
       attribution check and the access-record verify do not exist yet
+      2026-10-08: the probe callers still missing belong to other
+      changes: the personal-key 401 gates (`inference-personal-keys`), the benchmark VM's
+      attribution check (`inference-benchmarking`) and the access-record verify
+      (`agentgateway-observability`). Recorded, not ticked: this task stays open until
+      each of those checks exists and sends through `tasks/agw-probe.yml`, or its text is
+      restated.
 - [ ] 6.2 Caddy's `inference` and `admin.inference` blocks proxy to `https://` with
       `transport http { tls_server_name <gateway SAN>; tls_trust_pool file <root>;
       tls_client_auth <cert> <key> }` (Caddy 2.11.4), the leaf files read from the Caddy

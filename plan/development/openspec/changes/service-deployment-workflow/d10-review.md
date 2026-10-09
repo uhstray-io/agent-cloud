@@ -382,7 +382,163 @@ proven by the fake-tofu tests only.
 Verdict: edge-dns **passes** D10, with no pending proof. Not stamped, for the `main` hazard
 recorded on 2026-10-04. Remaining gap: service-deploy, not yet re-reviewed.
 
+## Stamped — 2026-10-08
+
+Author: Joseph A. Wisneski IV — 2026-10-08
+
+The sections above stay as written. Operator decision 2026-10-04, "Stamp every passing step",
+was held only by the `main` hazard recorded the same day. `dev` was promoted to `main` on
+2026-10-07 (PR #447, `origin/main` c81ada2a). This pass checks the hazard step by step on
+`origin/dev` a2224685 against `origin/main` c81ada2a, then stamps.
+
+Checks, per step. (a) The registry `review_gap` said the only remaining gap was the wait on
+`main`, and no later section above records a new gap. (b) `git diff origin/main origin/dev --
+<executor playbook>` is empty. (c) Every task file the playbook includes, followed through
+`include_tasks`, `import_tasks` and `import_playbook`, is absent from the list of files that
+differ between `main` and `dev`; so is every deploy script, template and infra file these
+executors use. (d) The playbook includes `tasks/emit-step-result.yml` on `main`, and that task
+file is identical on both branches. The files that do differ between the branches are the
+agentgateway, o11y, clean-deploy and local-dev work, the collector library
+(`lib/step_results.py`, not an executor), the Semaphore template files, tests and docs. In
+`templates.yml` the changed entries are the Clean Deploy templates, Verify o11y Service and one
+new `Verify agentgateway Runtime (Dev)`; none is an executor of these steps, and each executor
+template (and Destroy VM, the undo) exists on `main` unchanged.
+
+| Step | Executor | main == dev (diff empty) | Stamped |
+|------|----------|--------------------------|---------|
+| vm-template | provision-template.yml | yes | yes |
+| lookup-inventory | lookup-service-inventory.yml | yes | yes |
+| validate-address | validate-address-free.yml | yes | yes |
+| provision-vm | provision-vm.yml | yes | yes |
+| cloud-init | provision-vm.yml | yes | yes |
+| ssh-keys | distribute-ssh-keys.yml | yes | yes |
+| ssh-key-backup | backup-service-ssh-key.yml | yes | yes |
+| access-harden | harden-ssh.yml | yes | yes |
+| vm-rightsize | resize-vm.yml | yes | yes |
+| secrets-approle | check-secrets.yml | yes | yes |
+| service-validate | verify-service-health.yml | yes | yes |
+| edge-route | manage-caddy-sites.yml | yes | yes |
+| edge-dns | apply-cloudflare-tofu.yml | yes | yes, see note |
+| fw-harden | apply-firewall.yml | yes | yes |
+| systemd-enablement | verify-service-persistence.yml | yes | yes |
+| oidc-config | deploy-authentik.yml | yes | yes |
+| credential-backup | backup-credentials-to-site-config.yml | yes | yes |
+| service-deploy | Deploy {service} | not checked | no: no per-service deploy emits, second-run no-change unproven, not re-reviewed |
+| instrument-host | Instrument Host Observability | not checked | no: never run (registry `review_gap`) |
+| instrument-service | none (planned) | n/a | no: no executor |
+| service-assess, fw-assess, access-assess | none (reasoning) | n/a | no: out of scope |
+
+edge-dns note: the registry `review_gap` still carried "a dry run against real tofu is not yet
+verified", which the 2026-10-06 section above records as done (Apply Cloudflare Tofu (Dev) task
+3006, reported by the coordinator; its output was not read for that note). That gap is resolved,
+so the step is stamped. The 2026-10-06 limit stands: a read-back that the runner's checkout of
+the tofu root was left unchanged is not in the reported evidence.
+
+What the stamps change. The registry carries `reviewed: "2026-10-08"` and no `review_gap` for
+the seventeen steps, and `catalog.workflow_steps.<id>.reviewed` in OPA `data.json` is `true`
+for the same seventeen (the registry test pins the two together). OPA then allows the base,
+`main`-bound template for these steps. The change reaches the running OPA only when OPA is
+redeployed.
+
+## Delta re-review at a2224685 — 2026-10-08
+
+Author: Joseph A. Wisneski IV — 2026-10-08
+
+The sections above stay as written. PR #486 review finding 1: the 2026-10-08 stamps rest on
+verdicts given at older commits, and the executors changed afterwards. This pass takes each of
+the seventeen stamped steps, finds the commit its latest pass verdict was given against, lists
+every non-merge commit since that touched the executor playbook, any task file or playbook it
+includes (followed through `include_tasks`, `import_tasks` and `import_playbook`), or the
+service directory it deploys from, reads each diff, and re-checks the D10 criteria (idempotent
+re-run, result emitted, group and failure handling, guard test, undo) only against what
+changed. Line numbers are on `a2224685`; "result emitted" cites the `step_result_step:` line.
+
+Verdict base per step, from the section that last passed it: lookup-inventory, validate-address,
+secrets-approle, service-validate `8e97e452` (the parent of the 2026-10-02 review commit
+`32e4a05a`; the emitted-result lines that review cites, :106, :246, :190 and :86, hold for
+`step_result_step` at that commit); vm-template, provision-vm, ssh-keys, ssh-key-backup,
+vm-rightsize, fw-harden, systemd-enablement, credential-backup `ce28cadf` (2026-10-03);
+cloud-init and edge-route `21891372` (2026-10-04); access-harden and oidc-config `95a498a3`
+(2026-10-05); edge-dns `9edcd9ec`, the merge of #454 (2026-10-05), which holds `c499cd34` (the
+`tofu show` exit-code fix named in the finding); the live dry run 3006 ran at that revision (see the edge-dns note below).
+
+### What the commits are
+
+Every commit since a base that touches the files above falls in one of these classes. No commit
+outside them touches them.
+
+| Class | Commits | What changed | Test |
+|-------|---------|--------------|------|
+| A. Run-start guard | `5cb1faa0` (a first play in each executor), `4daf31f6`, `5da6f272`, `d2694c1f`, `eaa4bbcf` (the guard's own pattern and wording), `6abe7546` (first entry of every launched playbook, the `_extra_var_guard_nested` flag on imports such as `proxmox-validate.yml`, register renames) | A run whose extra vars set an underscore-prefixed name, or a become or connection password under any alias, is refused before any other play runs. Nothing else in an executor changes: the import is five lines, and the register renames in provision-vm, provision-template, resize-vm and proxmox-validate rename the register and every reader together | `test_executor_internal_overrides.py`, `test_extra_var_refusal_tests.py` |
+| B. Shared result task | `3e089c47`, `1b96860e`, `29319e8c`, `b9e66719` | `tasks/emit-step-result.yml` still records the same result through the same include, now also appended to an aggregated `step_results` list (`3e089c47`), and it refuses the run when one of its seven input names reaches it from outside the executor (reserved names, by name, not by value) | `test_emit_step_result.py` |
+| C. Proxmox token id from the store | `77c8a90c` | The literal fallback token id is gone. A required assert refuses an empty stored `token_id` before the first request: provision-vm `:169` and resize-vm `:169` inside the rescued block (a failure is recorded), provision-template `:65` inside its rescued block, validate-address `:86` with no rescue, like the vm-recorder assert above it at `:80`, and proxmox-validate | `test_pve_token_id_required.py` |
+| D. Template play | `2548c033`, `29e29bca`, `210db130`, `f4787542`, `b8d44283` | provision-template reads its connection from OpenBao itself, refuses a cleartext endpoint, declares empty placeholder play vars, names the drive keys that hold a cloud-init volume in the mismatch message, and treats a `"data": null` read-back as empty. What passes is unchanged | `test_vm_lifecycle_step_results.py`, `test_pve_token_id_required.py` |
+| E. SSH key helpers | `32b455bb` | `materialise-ssh-key.yml` and `pin-ssh-host-key.yml` refuse an extra var that would replace their internal names, through `refuse-var-overrides.yml`; an honest run is unaffected (distribute-ssh-keys only) | `test_materialise_ssh_key.py` |
+| F. Firewall dry run | `eb874640` | In a dry run, the gaps a real run would converge (ufw inactive, default policy, declared rules not held, stale tagged rules) move from `errors` to `would_change`, and the step records `skip` instead of `fail`; a real run still enforces them, and a stale rule held back stays an error in both modes | `test_apply_firewall_convergence.py`, `test_service_executor_step_results.py` |
+| G. Placement guard | `c02d2c5d` | `place-monorepo.yml` refuses placing `main` from a non-`main` checkout. Reached by oidc-config only: verify-service-persistence names `place-monorepo` in comments, includes no such task | `test_placement_branch_guard.py` |
+| H. Comments | `38261cc6` (manage-caddy-sites header), `9ed75dd6` (authentik blueprint comments), `d2694c1f` (harden-ssh header: the become password comes from OpenBao, which the play has read since before `95a498a3`) | Text only | none needed |
+
+### Per step
+
+| Step | Verdict base | Commits since (class) | Criteria still met (file:line at a2224685) | Verdict |
+|------|--------------|-----------------------|-------------------------------------------|---------|
+| vm-template | `ce28cadf` | A: `5cb1faa0`, `6abe7546`, `4daf31f6`, `5da6f272`, `d2694c1f`, `eaa4bbcf`. B: `3e089c47`, `1b96860e`, `29319e8c`, `b9e66719`. C: `77c8a90c`. D: `2548c033`, `29e29bca`, `210db130`, `f4787542`, `b8d44283`. `32b455bb` is not on its path | Re-run: an existing template is adopted with no write (`_tmpl_present`, provision-template.yml:112). Result emitted :323, after a read-back that is skipped when the connection is refused (the step then records the refusal). Failure handling: the create block's rescue (:264) still turns every hard failure, the new asserts included, into a recorded `fail`. Guard: `test_vm_lifecycle_step_results.py`. Undo none | pass |
+| lookup-inventory | `8e97e452` | A: `5cb1faa0`, `6abe7546`, `4daf31f6`, `5da6f272`, `d2694c1f`, `eaa4bbcf`. B: `3e089c47`, `1b96860e`, `29319e8c`, `b9e66719`. `32b455bb` is not on its path | Read-only (one NetBox GET, `check_mode: false` :83); result :111; BATS `test_address_steps.bats` unchanged in its assertions | pass |
+| validate-address | `8e97e452` | A, B as above. C: `77c8a90c` | The one write still runs only when no record exists and never under `--check` (validate-address-free.yml:245-247); result :259; the new token-id assert (:86) is a refusal before any read, the same shape as the vm-recorder assert at :80 | pass |
+| provision-vm | `ce28cadf` | A, B as above. C: `77c8a90c`. `3e089c47` also adds the cloud-init verdict play, which is the cloud-init step | Re-run: an existing VM that is ours is classified, not cloned again (:223); clone `changed_when` on a real clone (:322). Result emitted :714 in its own play after the dry-run `end_host` (:568); undo `Destroy VM` (:723). Failure handling: the provisioning block's rescue (:683) records a hard failure, token-id assert included (:169). Guard: `test_vm_lifecycle_step_results.py` | pass |
+| cloud-init | `21891372` | A: `5cb1faa0`, `6abe7546`, `4daf31f6`, `5da6f272`, `d2694c1f`, `eaa4bbcf`. B: `1b96860e`, `29319e8c`, `b9e66719`. C: `77c8a90c`. `32b455bb` is not on its path | Result :899 in the verdict play, undo `Destroy VM` (:909); a dry run or a VM that never reached post-boot is a `skip`, never a pass (:895-908); the post-boot login and wait are unchanged. Guard: `test_vm_lifecycle_step_results.py` | pass |
+| ssh-keys | `ce28cadf` | A, B as above. E: `32b455bb` | Re-run: `ansible.posix.authorized_key` (:157, :163). Result :347 from the controller play (:317), which folds every host's verdict (:327). Guard: `test_access_executors_step_result.py` | pass |
+| ssh-key-backup | `ce28cadf` | A, B as above. `32b455bb` is not on its path | Staged-only push via `site-config-push.yml` (:204); rescue :221 records a failure; result :236. Guard: `test_access_executors_step_result.py` | pass |
+| access-harden | `95a498a3` | A: `5cb1faa0`, `6abe7546`, `4daf31f6`, `5da6f272`, `d2694c1f`, `eaa4bbcf`. B: `1b96860e`, `29319e8c`, `b9e66719`. H: `d2694c1f` | The key-only proof still precedes any edit (:92-159, gate decided inside the probe task :159); controller play folds every host (:430); result :484. Guards: `test_harden_proves_key_first.py`, `test_harden_check_mode_verdict.py`, `test_access_executors_step_result.py` | pass |
+| vm-rightsize | `ce28cadf` | A, B as above. C: `77c8a90c`. `6abe7546` also renames the hoisted `vm_*` declaration facts to `_hv_vm_*` | Config write `changed_when: _cfg_changes \| length > 0` (:379); rescue :536 records a hard failure, token-id assert inside the block (:169); result :576. Guard: `test_vm_lifecycle_step_results.py`, `test_resize_vm_agent.py` | pass |
+| secrets-approle | `8e97e452` | A, B as above | Read-only (:101); verdict folded across the group (:183); result :195 | pass |
+| service-validate | `8e97e452` | A, B as above | Read-only; verdict folded across the group (:79); result :91 | pass |
+| edge-route | `21891372` | A: `5cb1faa0`, `6abe7546`, `4daf31f6`, `5da6f272`, `d2694c1f`, `eaa4bbcf`. B: `1b96860e`, `29319e8c`, `b9e66719`. H: `38261cc6`. `32b455bb` is not on its path | Populated-group preflight still the first play after the guard (:69-87); result :83 (refusal), :338; both criteria unchanged (`resolves`, `route_status` :342-343). Guards: `test_service_executor_step_results.py`, `test_edge_route_group_preflight.py` | pass |
+| edge-dns | `9edcd9ec` | A: `5cb1faa0`, `6abe7546`, `4daf31f6`, `5da6f272`, `d2694c1f`, `eaa4bbcf`. B: `1b96860e`, `29319e8c`, `b9e66719`. `c499cd34` is inside the base | `-detailed-exitcode` plans (:223, :281, :330), `show_rc` asserts (:423-424), result :160 (stale backend `skip`) and :437. Guard: `test_edge_dns_step_result.py` | pass |
+| fw-harden | `ce28cadf` | A, B as above. F: `eb874640` | A group error is still `fail` (:811-838); an empty group or a host with no verdict is still a recorded failure; only a dry run that would change something is `skip` (:838-839), and `skip` is never `pass`; result :835; rules still added only when ufw reports a change. Guards: `test_apply_firewall_convergence.py`, `test_service_executor_step_results.py` | pass |
+| systemd-enablement | `ce28cadf` | A, B as above. G: `c02d2c5d` is not on its path | Read-only probes (`changed_when: false` :88-139); preflight and per-host errors fold into the run-once verdict (:207); result :221. Guard: `test_persistence_group_verdict.py` | pass |
+| oidc-config | `95a498a3` | A: `5cb1faa0`, `6abe7546`, `4daf31f6`, `5da6f272`, `d2694c1f`, `eaa4bbcf`. B: `1b96860e`, `29319e8c`, `b9e66719`. G: `c02d2c5d`. H: `9ed75dd6` | Recreate only on a changed input or image (`DEPLOY_CHANGED` :331, operator lever :325-327); preflight (:30) and per-host verdicts folded; result :481 (verify failed), :546. The placement guard refuses only `main` from a non-`main` checkout, so the stamped `main`-bound template is not affected. Guard: `test_service_executor_step_results.py` | pass |
+| credential-backup | `ce28cadf` | A, B as above. `32b455bb` is not on its path | Staged-only push; rescue :238 records a failure; evidence `branch` empty when nothing was pushed (:256); result :254. Guard: `test_access_executors_step_result.py` | pass |
+
+No commit breaks a criterion for any of the seventeen steps, so every stamp stays. Every
+change since a base is a guard import, a hardening with a test, or the firewall dry-run
+classification (F); none removes a result, an undo or a failure path. The effects to hold on to:
+
+- A run the new guards refuse (a forged internal name, a missing stored `token_id`, a
+  forged result input) ends before the step result is recorded, and the collector records a
+  failure from the task output tail. That is the limit already written for failures outside
+  the rescued work (2026-10-03 re-review), not a new one. A `--limit` that excludes
+  localhost skips the run-start guard, as `refuse-internal-extra-vars.yml` states.
+- The Proxmox executors now need `token_id` in `secret/services/proxmox`. Unverified here:
+  whether the live store holds it. Task 3195 passed the validation play before it failed
+  the template read-back (tasks.md:106-110, a coordinator report), which implies it did.
+- Live evidence after the guard landed is thin. Validate Proxmox Cluster (Dev) 3284 and Deploy
+  agentgateway (Dev) 3285 succeeded at `dev` `8dc61584` (tasks.md:111-113, task output not read
+  here); neither is one of the seventeen executors. No post-guard live run of the seventeen is
+  recorded in the repository.
+- Open, and not a commit: vm-template. Create VM Template (Dev) 3287 at `cf765af8` recorded
+  `fail` for the live template 9000 (cloud-init drive on `ide0`, not `ide2`; tasks.md:111-120,
+  a coordinator report), and the operator decision (rebuild the template, or accept any drive
+  key) is pending. The executor reports the live state correctly, which is what D10 asks of
+  it, so the stamp stands; the step will record `fail` against that template until the
+  decision lands.
+
+edge-dns: the stamp relies on the values task 3006 recorded at `d10-review.md:369-383`. That
+section did not read the task output; this pass does, on the operator's coordinator's read of
+Semaphore on 2026-10-08: Apply Cloudflare Tofu (Dev) task 3006, status success, created
+2026-10-05T20:40Z, revision `9edcd9ec`; its step "Show the tofu result for action plan" gave
+`plan_actions` empty and `plan_changes` "0", and "Record the edge-dns step result" ran after
+it. The values are verified against the task output, and the run was at the base this pass
+uses, so only the guard and shared-task commits above postdate it.
+
+Re-run for this pass on this branch: `opa check --strict` and `opa test` (101/101), pytest over
+the repository `testpaths` for `platform/tests` plus the registry, emit, guard, lifecycle,
+access, service-executor, edge-dns, edge-route, harden, firewall, token-id, placement,
+persistence, materialise and check-mode suites (1793 passed, Python 3.14 locally, CI pins
+3.11), and `bats platform/tests/` (839 ok, 0 not ok). No guard was added or changed, so
+there is nothing to mutation-check.
+
 2026-10-08, vm-template read-back: the template read-back now accepts a cloud-init drive on any
 drive key (it was `ide2` only; live template 9000 carries it on `ide0`, Semaphore task 3287) and
 adds the evidence key `cloudinit_drive`, which the registry lists. The step's criteria are
-unchanged, so its D10 verdict above is unchanged.
+unchanged, so its D10 verdict and its 2026-10-08 stamp above stand.
