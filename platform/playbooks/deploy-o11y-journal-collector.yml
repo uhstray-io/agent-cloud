@@ -495,7 +495,6 @@
           register: _journal_collector_uid_map
           changed_when: false
           failed_when: false
-          check_mode: false
           no_log: true
 
         - name: Require the actual positions volume mount and namespace access
