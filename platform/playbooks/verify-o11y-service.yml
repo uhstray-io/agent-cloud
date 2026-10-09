@@ -11,6 +11,8 @@
   hosts: localhost
   connection: local
   gather_facts: false
+  vars:
+    _coverage_inventory: "{{ estate_coverage_inventory | default({}) }}"
   tasks:
     - name: Validate the verification mode
       ansible.builtin.assert:
@@ -21,7 +23,7 @@
       ansible.builtin.assert:
         that:
           - expected_repository_sha is defined and expected_repository_sha is match('^[0-9a-f]{40}$')
-          - expected_inventory_revision is defined and expected_inventory_revision is match('^[0-9a-f]{7,64}$')
+          - expected_inventory_revision is defined and expected_inventory_revision is match('^[0-9a-f]{64}$')
           - groups.get('o11y_svc', []) | length == 1
           - expected_target_id is defined and expected_target_id is match('^(service|agent|vm|guest|runner|network|dgx):[a-z][a-z0-9_-]{1,63}$')
           - expected_signal is defined and expected_signal in ['logs', 'metrics', 'health', 'traces']
@@ -29,6 +31,28 @@
           - freshness_seconds is defined and freshness_seconds | int >= 60 and freshness_seconds | int <= 86400
           - observation_window_seconds is defined and observation_window_seconds | int >= 60 and observation_window_seconds | int <= 3600 and observation_window_seconds | int <= freshness_seconds | int
         fail_msg: "Strict signal observation requires reviewed repository and inventory revisions, one exact target/signal selector, and bounded freshness."
+      when: o11y_verification_mode | default('legacy') == 'strict'
+
+    - name: Recompute the canonical private inventory revision
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/files/o11y-coverage-census.py"
+          - --inventory-revision
+        stdin: "{{ {'targets': _coverage_inventory.get('targets', [])} | to_json(sort_keys=True, separators=(',', ':'), ensure_ascii=True) }}"
+      register: _calculated_inventory_revision
+      changed_when: false
+      check_mode: false
+      failed_when: false
+      when: o11y_verification_mode | default('legacy') == 'strict'
+
+    - name: Require the declared and reviewed inventory digest
+      ansible.builtin.assert:
+        that:
+          - _coverage_inventory.get('revision', '') == expected_inventory_revision
+          - _calculated_inventory_revision.rc == 0
+          - _calculated_inventory_revision.stdout == expected_inventory_revision
+        fail_msg: "Strict signal observation refused: the private inventory digest does not match the reviewed revision."
       when: o11y_verification_mode | default('legacy') == 'strict'
 
     - name: Read the candidate checkout revision when required
@@ -173,12 +197,11 @@
     _engine: "{{ container_engine | default('podman') }}"
     _coverage_inventory: "{{ estate_coverage_inventory | default({}) }}"
   tasks:
-    - name: Require the exact inventory revision and unique target
+    - name: Require the unique declared target
       ansible.builtin.assert:
         that:
-          - _coverage_inventory.get('revision', '') == expected_inventory_revision
           - (_coverage_inventory.get('targets', []) | selectattr('target_id', 'equalto', expected_target_id) | list | length) == 1
-        fail_msg: "unverifiable_target: target declaration is absent, duplicated, or uses a different private inventory revision."
+        fail_msg: "unverifiable_target: target declaration is absent or duplicated."
       when: o11y_verification_mode | default('legacy') == 'strict'
 
     - name: Read the declared target signal contract

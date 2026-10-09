@@ -1,4 +1,5 @@
 import ast
+import hashlib
 import json
 import re
 import subprocess
@@ -33,33 +34,40 @@ class CoverageContractTests(unittest.TestCase):
         self.assertIs(census["check_mode"], False)
         self.assertIn("repository_sha", census["ansible.builtin.command"]["stdin"])
 
-    def test_playbook_json_carries_private_inventory_revision_into_census_report(self):
-        plays = yaml.safe_load((ROOT / "platform/playbooks/census-o11y-coverage.yml").read_text())
-        census = plays[1]["tasks"][2]
-        stdin_template = census["ansible.builtin.command"]["stdin"]
-        inventory_revision = "b" * 40
+    def test_ansible_json_transport_matches_the_canonical_python_digest_bytes(self):
+        plays = yaml.safe_load((ROOT / "platform/playbooks/verify-o11y-service.yml").read_text())
+        task = next(
+            task for task in plays[1]["tasks"]
+            if task.get("name") == "Recompute the canonical private inventory revision"
+        )
+        stdin_template = task["ansible.builtin.command"]["stdin"]
+        targets = [{
+            "target_id": "service:alpha", "target_type": "service", "lifecycle": "deployed",
+            "owner": "platform", "runtime": "podman", "service_identity": "alpha",
+            "environment": "production", "signals": {}, "collection_method": "alloy",
+            "budget": {"samples_per_scrape": 1000}, "receipt_reference": {},
+            "template_references": [], "inventory_host": "雪",
+        }]
+        canonical = json.dumps(
+            {"targets": targets}, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+        )
+        inventory_revision = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
         template_environment = jinja2.Environment()
         template_environment.filters["from_yaml"] = yaml.safe_load
         template_environment.filters["to_json"] = json.dumps
-        template_environment.globals["lookup"] = lambda plugin, path: Path(path).read_text()
         rendered_json = template_environment.from_string(stdin_template).render(
-            _coverage_root=str(ROOT),
-            _coverage_inventory={"revision": inventory_revision, "targets": []},
-            expected_repository_sha="a" * 40,
+            _coverage_inventory={"revision": inventory_revision, "targets": targets},
         )
-        payload = json.loads(rendered_json)
-        self.assertEqual(payload["inventory_revision"], inventory_revision)
+        self.assertEqual(rendered_json.encode("utf-8"), canonical.encode("utf-8"))
 
         result = subprocess.run(
-            ["python3", str(ROOT / "platform/playbooks/files/o11y-coverage-census.py"), str(ROOT)],
+            ["python3", str(ROOT / "platform/playbooks/files/o11y-coverage-census.py"), "--inventory-revision"],
             input=rendered_json,
             text=True,
             capture_output=True,
             check=True,
         )
-        report = json.loads(result.stdout)
-        self.assertEqual(report["status"], "complete")
-        self.assertEqual(report["inventory_revision"], inventory_revision)
+        self.assertEqual(result.stdout.strip(), inventory_revision)
 
     def test_strict_verification_keeps_legacy_inputs_and_requires_bounded_target_identity(self):
         plays = yaml.safe_load((ROOT / "platform/playbooks/verify-o11y-service.yml").read_text())
@@ -82,26 +90,36 @@ class CoverageContractTests(unittest.TestCase):
         }, strict_names)
         self.assertNotIn("receipt_reference", strict_names)
 
-    def test_strict_inventory_revision_refuses_a_mismatched_declaration(self):
+    def test_strict_inventory_digest_is_recomputed_before_any_signal_query(self):
         plays = yaml.safe_load((ROOT / "platform/playbooks/verify-o11y-service.yml").read_text())
         task = next(
             task
-            for play in plays
-            for task in play.get("tasks", [])
-            if task.get("name") == "Require the exact inventory revision and unique target"
+            for task in plays[1]["tasks"]
+            if task.get("name") == "Require the declared and reviewed inventory digest"
         )
-        condition = task["ansible.builtin.assert"]["that"][0]
+        conditions = task["ansible.builtin.assert"]["that"]
         environment = jinja2.Environment()
 
-        def matches(actual, expected):
-            rendered = environment.from_string("{{ " + condition + " }}").render(
+        def matches(actual, expected, calculated):
+            return all(environment.from_string("{{ " + condition + " }}").render(
                 _coverage_inventory={"revision": actual},
                 expected_inventory_revision=expected,
-            )
-            return rendered == "True"
+                _calculated_inventory_revision=calculated,
+            ) == "True" for condition in conditions)
 
-        self.assertTrue(matches("a" * 40, "a" * 40))
-        self.assertFalse(matches("b" * 40, "a" * 40))
+        digest = "a" * 64
+        self.assertTrue(matches(digest, digest, {"rc": 0, "stdout": digest}))
+        self.assertFalse(matches("b" * 64, digest, {"rc": 0, "stdout": digest}))
+        self.assertFalse(matches(digest, digest, {"rc": 0, "stdout": "c" * 64}))
+        self.assertFalse(matches(digest, digest, {"rc": 2, "stdout": ""}))
+
+        digest_play_index = next(i for i, play in enumerate(plays)
+                                 if any(task.get("name") == "Require the declared and reviewed inventory digest"
+                                        for task in play.get("tasks", [])))
+        first_query_play_index = next(i for i, play in enumerate(plays)
+                                      if any(task.get("name") == "Query recent Loki logs for the service"
+                                             for task in play.get("tasks", [])))
+        self.assertLess(digest_play_index, first_query_play_index)
 
     def test_strict_signal_observation_uses_the_query_and_is_unattributed(self):
         tasks = yaml.safe_load((ROOT / "platform/playbooks/tasks/o11y-coverage-target-receipt.yml").read_text())

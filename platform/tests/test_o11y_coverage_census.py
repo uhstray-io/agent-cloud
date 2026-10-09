@@ -1,6 +1,10 @@
+import hashlib
 import importlib.util
+import io
+import json
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -88,7 +92,7 @@ class CoverageCensusTests(unittest.TestCase):
     def report(self, targets):
         return CENSUS.build_report(
             self.repo,
-            {"inventory_revision": INVENTORY_REVISION, "targets": targets,
+            {"inventory_revision": CENSUS.canonical_inventory_revision(targets), "targets": targets,
              "template_names": ["Verify o11y Target Receipt"]},
             REPO_SHA,
             NOW,
@@ -143,6 +147,35 @@ class CoverageCensusTests(unittest.TestCase):
         row = self.report([target(signals={"logs": signal(receipt())})])["targets"][0]
         self.assertEqual(row["signals"]["logs"], "incomplete")
         self.assertEqual(row["coverage"], "incomplete")
+
+    def test_inventory_revision_must_match_the_canonical_target_digest(self):
+        declarations = [target()]
+        revision = CENSUS.canonical_inventory_revision(declarations)
+        self.assertEqual(len(revision), 64)
+        self.assertEqual(revision, revision.lower())
+        report = CENSUS.build_report(
+            self.repo,
+            {"inventory_revision": revision, "targets": declarations,
+             "template_names": ["Verify o11y Target Receipt"]},
+            REPO_SHA,
+            NOW,
+        )
+        self.assertEqual(report["status"], "complete")
+        with redirect_stdout(io.StringIO()), self.assertRaises(SystemExit):
+            CENSUS.build_report(
+                self.repo,
+                {"inventory_revision": "b" * 64, "targets": declarations},
+                REPO_SHA,
+                NOW,
+            )
+
+    def test_canonical_digest_matches_wrapped_python_sha256_with_ascii_escaping(self):
+        declarations = [{"service_identity": "雪", "target_id": "service:alpha"}]
+        canonical = json.dumps(
+            {"targets": declarations}, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+        ).encode("utf-8")
+        expected = hashlib.sha256(canonical).hexdigest()
+        self.assertEqual(CENSUS.canonical_inventory_revision(declarations), expected)
 
     def test_duplicate_identity_is_reported_as_unverified_conflict(self):
         rows = self.report([target(), target("service:other", "alpha")])

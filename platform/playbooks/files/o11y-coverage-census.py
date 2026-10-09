@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Build a sanitized, read-only census of repository candidates and estate receipts."""
 
+import hashlib
 import json
 import re
 import sys
@@ -17,6 +18,14 @@ SIGNALS = {"logs", "metrics", "traces", "health"}
 def fail(message):
     print(json.dumps({"status": "invalid_declaration", "error": message}))
     raise SystemExit(2)
+
+
+def canonical_inventory_revision(targets):
+    """Hash private declarations without including their embedded revision."""
+    payload = json.dumps(
+        {"targets": targets}, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
 
 
 def candidate_names(repo, path):
@@ -126,14 +135,14 @@ def build_report(repo, inventory, repository_sha, now=None):
     template_names = set(inventory.get("template_names", []))
     if not isinstance(targets, list):
         fail("targets must be a list")
-    if inventory_revision is not None and (
-        not isinstance(inventory_revision, str)
-        or not re.fullmatch(r"[0-9a-f]{7,64}", inventory_revision)
-    ):
-        fail("inventory revision must be an exact hexadecimal revision when declared")
     if not isinstance(inventory.get("template_names", []), list):
         fail("template_names must be a list")
     ids, conflicts = validate(targets)
+    if inventory_revision is not None:
+        if not isinstance(inventory_revision, str) or not re.fullmatch(r"[0-9a-f]{64}", inventory_revision):
+            fail("inventory revision must be a lowercase SHA-256 declaration digest")
+        if inventory_revision != canonical_inventory_revision(targets):
+            fail("inventory revision does not match the canonical target declaration digest")
     now = now or datetime.now(UTC)
     declared = {}
     for target in targets:
@@ -250,14 +259,21 @@ def build_report(repo, inventory, repository_sha, now=None):
 
 
 def main():
-    if len(sys.argv) != 2:
-        fail("usage: o11y-coverage-census.py <repo-root>")
     try:
         inventory = json.load(sys.stdin)
     except (json.JSONDecodeError, UnicodeDecodeError):
         fail("inventory input must be JSON")
     if not isinstance(inventory, dict):
         fail("inventory input must be a JSON object")
+    if len(sys.argv) == 2 and sys.argv[1] == "--inventory-revision":
+        targets = inventory.get("targets")
+        if not isinstance(targets, list):
+            fail("targets must be a list")
+        validate(targets)
+        print(canonical_inventory_revision(targets))
+        return
+    if len(sys.argv) != 2:
+        fail("usage: o11y-coverage-census.py <repo-root> or --inventory-revision")
     report = build_report(Path(sys.argv[1]).resolve(), inventory, inventory.get("repository_sha", ""))
     print(json.dumps(report, sort_keys=True))
 

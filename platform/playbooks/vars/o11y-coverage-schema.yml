@@ -63,7 +63,9 @@ o11y_coverage_schema:
 # Semaphore task and binds that task ID to the declaration.
 #
 # estate_coverage_inventory:
-#   revision: <site-config commit SHA>
+#   revision: <lowercase SHA-256 of canonical JSON for {"targets": targets}>
+#     Canonical JSON uses sorted object keys, compact separators, and ASCII escaping.
+#     Target array order is significant; the revision field is excluded.
 #   targets:
 #     - target_id: service:example
 #       target_type: service
