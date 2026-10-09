@@ -451,7 +451,7 @@
 
         - name: Verify the live collector positions mount and access
           ansible.builtin.command:
-            argv: [python3, "-", verify]
+            argv: [python3, "-", verify-live]
             stdin: "{{ _journal_positions_helper }}"
             stdin_add_newline: false
           register: _journal_positions_live_mount

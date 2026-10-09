@@ -727,26 +727,47 @@ label refuses. Pending repair compares `CreatedAt`, volume configuration, and
 root device/inode across pre-mutation observations; missing or changed creation
 identity refuses.
 
+Repair checks free bytes and inodes independently from stable metadata equality.
+Pending repair requires the threshold on both GraphRoot and the volume filesystem;
+initialized repair requires it on the volume filesystem. Counter changes above
+threshold do not invalidate root, child, ACL, or mount evidence, while a below-
+threshold reading refuses the repair.
+
 The separate `repair-positions` action keeps its initialized-volume behavior:
-fresh evidence must prove an unused empty root's owner mismatch alone blocks
-collector access; repair changes only root owner/group, reads it back, and runs
-the restricted write/rename/delete probe in the cached Alloy image. A narrow
+fresh evidence must prove an unused root with only safe regular direct files has
+an owner mismatch that alone blocks collector access; repair changes only root
+owner/group, reads it back, and runs the restricted write/rename/delete probe in
+the cached Alloy image. A narrow
 pending exception permits that same root-only change only for the exact empty,
 unused `NeedsChown=false` / `NeedsCopyUp=true` state. This branch does not mount a
 probe container or change contents/mode, and verifies the unchanged empty volume
-before first mount. After any pending-volume mutation, a failure leaves the volume
-untouched and returns `uncertain`; first-mount history cannot be proved from a
-later empty state. No owner restoration or copied-state deletion is automatic.
+before first mount. After any pending-volume mutation, a failure preserves the volume
+and returns `uncertain`; its root owner may already be `0:0`, because first-mount
+history cannot be proved from a later empty state. No owner restoration or
+copied-state deletion is automatic.
 
-Compose `up` is the only volume creation/initialization action. The immediate
-pre-start check runs outside rollback handling. After startup, a lingering
-`NeedsCopyUp=true` is not success by itself: require the exact live RW mount,
+Compose `up` is the only volume creation/initialization action. The pre-apply and
+immediate pre-start `verify` gates accept `bootstrap_allowed` only for the proven
+missing-volume or safe pending-volume cases above. They also permit a bounded
+cursorless retry when a complete read-only observation proves an exact volume
+with both initialization flags false, the
+collector absent from all containers, zero consumers and mounts, safe `0:0` root
+and allowlisted layout, `positions.yml` absent, access, ACL/mount checks, and
+capacity on GraphRoot and the volume filesystem. This `ready` result authorizes
+only a start attempt; it does not prove delivery. A present invalid or unreadable
+cursor, unknown cursor presence, or any incomplete evidence refuses. The immediate
+pre-start check runs outside rollback handling. After startup, `verify-live` is a
+separate strict gate; a lingering
+`NeedsCopyUp=true` is not success by itself: require the collector to be present
+as the single consumer and mount, with the exact live RW mount,
 namespace write/rename/delete, bounded Alloy layout, and a parsed `positions.yml`
 entry for `cursor-loki.source.journal.o11y_alloy` with an empty label set and a
 valid journal cursor. Also require healthy status, unchanged seven receiver
 containers, and a fresh exact-target Loki receipt. An empty image destination
-may leave copy-up pending; partial copy or unexpected layout refuses and
-preserves the volume. Failed-start rollback removes only the pilot container
+may leave copy-up pending. After start, an absent cursor, a present invalid or
+unreadable cursor file, a pending temporary positions file, or any layout outside
+the allowlist refuses as incomplete state; the cursorless pre-start retry is not
+post-start acceptance. Failed-start rollback removes only the pilot container
 without `-v`. The positions helper reports `check_mode_unverified` without its
 own Podman or filesystem operations; the surrounding playbook may still run
 other checks. Survey exceptions produce a bounded unavailable receipt

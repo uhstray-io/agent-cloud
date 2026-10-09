@@ -137,8 +137,9 @@ for observation_attempt in range(2):
     children=[]
     acl_found=acl(root)
     child_mount=False
-    component_layout=st.st_mode & 0o022 == 0
+    component_layout=st.st_mode & (0o022|0o7000) == 0
     cursor_valid=False
+    cursor_presence="absent"
     free=os.statvfs(root)
     free_bytes=free.f_bavail*free.f_frsize
     free_inodes=free.f_favail
@@ -150,11 +151,12 @@ for observation_attempt in range(2):
         acl_found=acl_found or acl(path)
         if stat.S_ISREG(item.st_mode):
             component_layout=(component_layout and name=="alloy_seed.json"
-                and item.st_uid==0 and item.st_gid==0 and item.st_nlink==1)
+                and item.st_uid==0 and item.st_gid==0 and item.st_nlink==1
+                and item.st_mode & 0o077 == 0 and item.st_mode & 0o7133 == 0)
         elif stat.S_ISDIR(item.st_mode) and name=="loki.source.journal.o11y_alloy":
             component_layout=(component_layout and item.st_uid==0 and item.st_gid==0
                 and item.st_nlink==2 and item.st_mode & 0o700 == 0o700
-                and item.st_mode & 0o022 == 0)
+                and item.st_mode & (0o022|0o7000) == 0)
             nested=os.listdir(path)
             if len(nested)>2:
                 component_layout=False
@@ -178,6 +180,7 @@ for observation_attempt in range(2):
                     and nested_stat.st_mode & 0o077 == 0
                     and nested_stat.st_mode & 0o7133 == 0)
                 if nested_name=="positions.yml":
+                    cursor_presence="present"
                     component_layout=(component_layout and safe_file)
                     cursor_valid=False
                     if read_cursor and safe_file and nested_stat.st_size<=65536:
@@ -205,18 +208,10 @@ for observation_attempt in range(2):
             if temp_names:
                 time.sleep(0.1)
                 after=os.listdir(path)
-                component_layout=(component_layout and len(after)==1 and after[0]=="positions.yml")
-                if component_layout:
-                    current=os.lstat(os.path.join(path,"positions.yml"))
-                    current_mount=mount_id(os.path.join(path,"positions.yml"))
-                    current_acl=acl(os.path.join(path,"positions.yml"))
-                    acl_found=acl_found or current_acl
-                    child_mount=child_mount or current_mount[0]!=root_mount[0]
-                    component_layout=(stat.S_ISREG(current.st_mode) and current.st_uid==0
-                        and current.st_gid==0 and current.st_nlink==1 and not current_acl
-                        and current.st_mode & 0o600 == 0o600
-                        and current.st_mode & 0o077 == 0
-                        and current.st_mode & 0o7133 == 0)
+                if len(after)==1 and after[0]=="positions.yml":
+                    os.close(directory_fd)
+                    raise RetryObservation
+                component_layout=False
             os.close(directory_fd)
         else:
             component_layout=False
@@ -228,6 +223,7 @@ for observation_attempt in range(2):
         "children":children, "child_count":len(children), "acl":acl_found,
         "root_is_mount":mount_exact, "child_mount":child_mount,
         "component_layout":component_layout,
+        "journal_cursor_presence":cursor_presence,
         "journal_cursor_valid":cursor_valid,
         "free_bytes":free_bytes,
         "free_inodes":free_inodes,
@@ -655,6 +651,7 @@ def discover(run=subprocess.run, diagnostics=False, read_cursor=False):
             "volume_use_count": len(names),
             "collector_present": bool(names),
         })
+    collector_mount_verified = False
     if names:
         inspect_collector = ["podman", "inspect", "--type", "container", "--format", "json", COLLECTOR]
         collector = _rows(_json(_call(inspect_collector, run=run)))
@@ -676,6 +673,7 @@ def discover(run=subprocess.run, diagnostics=False, read_cursor=False):
         config = collector[0].get("Config")
         if not isinstance(config, dict) or config.get("User") != "0:0":
             return finish({"status": "collector_identity_unverified", "volume_use_count": 1, "collector_present": True})
+        collector_mount_verified = True
     elif collector_present:
         return finish({"status": "collector_mount_unverified", "volume_use_count": 0, "collector_present": True})
 
@@ -695,6 +693,7 @@ def discover(run=subprocess.run, diagnostics=False, read_cursor=False):
         "volume_use_count": len(names),
         "mount_count": mount_count,
         "collector_present": collector_present,
+        "collector_mount_verified": collector_mount_verified,
         "project": project,
         "volume": volume,
         "needs_chown": needs_chown,
@@ -702,7 +701,7 @@ def discover(run=subprocess.run, diagnostics=False, read_cursor=False):
         "volume_inventory_complete": True,
         "name_collision": False,
         "metadata": metadata,
-        "storage_space": _store_space(run) if needs_chown or needs_copy_up else None,
+        "storage_space": _store_space(run),
     }
     return finish(found)
 
@@ -743,7 +742,7 @@ def _safe_metadata(found):
     )
 
 
-def _live_safe_metadata(found):
+def _live_safe_metadata(found, require_cursor=True):
     metadata = found.get("metadata")
     if not isinstance(metadata, dict) or metadata.get("status") != "observed":
         return False
@@ -756,7 +755,13 @@ def _live_safe_metadata(found):
         and isinstance(children, list)
         and len(children) <= MAX_CHILDREN
         and metadata.get("component_layout") is True
-        and metadata.get("journal_cursor_valid") is True
+        and (
+            not require_cursor
+            or (
+                metadata.get("journal_cursor_presence") == "present"
+                and metadata.get("journal_cursor_valid") is True
+            )
+        )
         and metadata.get("acl") is False
         and metadata.get("root_is_mount") is False
         and metadata.get("child_mount") is False
@@ -873,12 +878,17 @@ def _access_test(volume_name, run=subprocess.run):
     return passed and clean
 
 
-def _space_is_sufficient(found):
+def _space_is_sufficient(found, require_storage=False):
     metadata = found.get("metadata")
-    checks = [found.get("storage_space")]
+    storage_space = found.get("storage_space")
+    checks = []
+    if require_storage and storage_space is not None:
+        checks.append(storage_space)
+    elif require_storage:
+        return False
     if isinstance(metadata, dict):
         checks.append(metadata)
-    return all(
+    return bool(checks) and all(
         isinstance(space, dict)
         and type(space.get("free_bytes")) is int
         and space["free_bytes"] >= MIN_FREE_BYTES
@@ -886,6 +896,50 @@ def _space_is_sufficient(found):
         and space["free_inodes"] >= MIN_FREE_INODES
         for space in checks
     )
+
+
+def _cursorless_prestart_safe(found):
+    metadata = found.get("metadata")
+    volume = found.get("volume")
+    labels = volume.get("Labels") if isinstance(volume, dict) else None
+    project = found.get("project")
+    expected_name = f"{project}_{VOLUME_KEY}" if isinstance(project, str) else None
+    return (
+        found.get("status") == "observed"
+        and isinstance(volume, dict)
+        and isinstance(labels, dict)
+        and project
+        and found.get("volume_name") == expected_name
+        and volume.get("Name") == expected_name
+        and labels.get("com.docker.compose.project") == project
+        and labels.get("com.docker.compose.volume") in (None, VOLUME_KEY)
+        and volume.get("Driver") == "local"
+        and volume.get("Scope") == "local"
+        and volume.get("Options") in ({}, None)
+        and volume.get("Mountpoint") == found.get("mountpoint")
+        and type(volume.get("MountCount")) is int
+        and volume["MountCount"] == 0
+        and volume.get("Anonymous", False) is False
+        and found.get("needs_chown") is False
+        and found.get("needs_copy_up") is False
+        and found.get("collector_present") is False
+        and type(found.get("volume_use_count")) is int
+        and found["volume_use_count"] == 0
+        and type(found.get("mount_count")) is int
+        and found["mount_count"] == 0
+        and _live_safe_metadata(found, require_cursor=False)
+        and metadata.get("journal_cursor_presence") == "absent"
+        and metadata.get("journal_cursor_valid") is False
+        and isinstance(metadata.get("root", {}).get("mode"), int)
+        and metadata["root"]["mode"] & 0o700 == 0o700
+        and metadata["root"]["mode"] & (0o022 | 0o7000) == 0
+        and _access(metadata)
+        and _space_is_sufficient(found, require_storage=True)
+    )
+
+
+def _stable_metadata(metadata):
+    return {key: value for key, value in metadata.items() if key not in {"free_bytes", "free_inodes"}}
 
 
 def _pending_empty(found, owner_mismatch=False):
@@ -930,7 +984,7 @@ def _pending_empty(found, owner_mismatch=False):
 
 
 def _repair_pending_positions(first, discover_fn, change_fn):
-    if not _pending_empty(first, owner_mismatch=True) or not _space_is_sufficient(first):
+    if not _pending_empty(first, owner_mismatch=True) or not _space_is_sufficient(first, require_storage=True):
         return {"status": "refused", "reason": "pending_volume_unsupported"}
     original = first["metadata"]["root"]
     original_volume = _volume_identity_tuple(first.get("volume"))
@@ -941,7 +995,7 @@ def _repair_pending_positions(first, discover_fn, change_fn):
         root = current.get("metadata", {}).get("root", {})
         return (
             _pending_empty(current, owner_mismatch=owner != (0, 0))
-            and _space_is_sufficient(current)
+            and _space_is_sufficient(current, require_storage=True)
             and _volume_identity_tuple(current.get("volume")) == original_volume
             and current.get("volume_name") == first.get("volume_name")
             and current.get("mountpoint") == first.get("mountpoint")
@@ -954,7 +1008,7 @@ def _repair_pending_positions(first, discover_fn, change_fn):
 
     fresh = discover_fn()
     owner = (original["uid"], original["gid"])
-    if not fresh_matches(fresh, owner) or fresh.get("metadata") != first.get("metadata"):
+    if not fresh_matches(fresh, owner) or _stable_metadata(fresh["metadata"]) != _stable_metadata(first["metadata"]):
         return {"status": "refused", "reason": "evidence_changed"}
 
     def recover():
@@ -971,7 +1025,10 @@ def _repair_pending_positions(first, discover_fn, change_fn):
         ):
             return recover()
         mount_gate = discover_fn()
-        if not fresh_matches(mount_gate, (0, 0)) or mount_gate.get("metadata") != verified.get("metadata"):
+        if (
+            not fresh_matches(mount_gate, (0, 0))
+            or _stable_metadata(mount_gate["metadata"]) != _stable_metadata(verified["metadata"])
+        ):
             return recover()
     except Exception:
         return recover()
@@ -990,6 +1047,8 @@ def repair_positions(
         return _repair_pending_positions(first, discover_fn, change_fn)
     if first.get("status") != "observed":
         return {"status": "refused", "reason": first.get("status", "unavailable")}
+    if not _space_is_sufficient(first):
+        return {"status": "refused", "reason": "insufficient_space"}
     if first["volume_use_count"] != 0 or first["collector_present"] or first.get("mount_count") != 0:
         return {"status": "refused", "reason": "volume_in_use"}
     if not _safe_metadata(first):
@@ -1012,7 +1071,8 @@ def repair_positions(
         or fresh["volume_use_count"] != 0
         or fresh.get("mount_count") != 0
         or fresh["collector_present"]
-        or fresh["metadata"] != first["metadata"]
+        or _stable_metadata(fresh["metadata"]) != _stable_metadata(first["metadata"])
+        or not _space_is_sufficient(fresh)
         or not _safe_metadata(fresh)
     ):
         return {"status": "refused", "reason": "evidence_changed"}
@@ -1043,7 +1103,7 @@ def repair_positions(
                 or current["metadata"]["children"] != first["metadata"]["children"]
             ):
                 return {"status": "uncertain", "reason": "rollback_metadata_unverified"}
-            restored = current["metadata"] == first["metadata"]
+            restored = _stable_metadata(current["metadata"]) == _stable_metadata(first["metadata"])
             if not restored:
                 restore_fn(current, original_root["uid"], original_root["gid"])
                 restored_state = discover_fn()
@@ -1055,7 +1115,7 @@ def repair_positions(
                     and restored_state.get("volume_use_count") == 0
                     and restored_state.get("mount_count") == 0
                     and restored_state.get("collector_present") is False
-                    and restored_state.get("metadata") == first["metadata"]
+                    and _stable_metadata(restored_state["metadata"]) == _stable_metadata(first["metadata"])
                 )
             if restored:
                 return {"status": "refused", "reason": reason}
@@ -1081,6 +1141,7 @@ def repair_positions(
             or verified["metadata"]["root"]["dev"] != root["dev"]
             or verified["metadata"]["root"]["ino"] != root["ino"]
             or verified["metadata"]["children"] != first["metadata"]["children"]
+            or not _space_is_sufficient(verified)
         ):
             return recover("readback_failed")
         mount_gate = discover_fn()
@@ -1092,7 +1153,8 @@ def repair_positions(
             or mount_gate.get("volume_use_count") != 0
             or mount_gate.get("mount_count") != 0
             or mount_gate.get("collector_present") is not False
-            or mount_gate["metadata"] != verified["metadata"]
+            or _stable_metadata(mount_gate["metadata"]) != _stable_metadata(verified["metadata"])
+            or not _space_is_sufficient(mount_gate)
         ):
             return recover("pre_mount_recheck_failed")
         if not access_test_fn(first["volume_name"]):
@@ -1135,10 +1197,10 @@ def verify(discover_fn=None):
                 and isinstance(mode, int)
                 and mode & 0o700 == 0o700
                 and mode & (0o022 | 0o7000) == 0
-                and _space_is_sufficient(found)
+                and _space_is_sufficient(found, require_storage=True)
             )
         elif found.get("status") == "volume_missing":
-            bootstrap_safe = bootstrap_safe and _space_is_sufficient(found)
+            bootstrap_safe = bootstrap_safe and _space_is_sufficient(found, require_storage=True)
         if bootstrap_safe:
             return {
                 **summary,
@@ -1159,6 +1221,13 @@ def verify(discover_fn=None):
     if found.get("status") != "observed":
         return {"status": "refused", "reason": found.get("status", "unavailable")}
     if not _live_safe_metadata(found):
+        if _cursorless_prestart_safe(found):
+            return {
+                **summary,
+                "children": "alloy_component_layout",
+                "status": "ready",
+                "reason": "positions_cursor_absent_prestart_retry",
+            }
         return {"status": "refused", "reason": "metadata_ambiguous"}
     if not _access(found["metadata"]):
         return {"status": "refused", "reason": "positions_access_blocked"}
@@ -1170,8 +1239,47 @@ def verify(discover_fn=None):
     }
 
 
+def verify_live(discover_fn=None):
+    found = discover(read_cursor=True) if discover_fn is None else discover_fn()
+    if (
+        found.get("status") == "volume_initialization_pending"
+        and found.get("needs_chown", found.get("volume", {}).get("NeedsChown")) is False
+        and found.get("needs_copy_up", found.get("volume", {}).get("NeedsCopyUp")) is True
+        and found.get("collector_present") is True
+        and found.get("volume_use_count") == 1
+        and found.get("mount_count") == 1
+    ):
+        found = {**found, "status": "observed"}
+    if found.get("status") != "observed":
+        return {"status": "refused", "reason": found.get("status", "unavailable")}
+    if (
+        found.get("collector_present") is not True
+        or type(found.get("volume_use_count")) is not int
+        or found["volume_use_count"] != 1
+        or type(found.get("mount_count")) is not int
+        or found["mount_count"] != 1
+        or found.get("collector_mount_verified") is not True
+    ):
+        return {"status": "refused", "reason": "collector_mount_unverified"}
+    if not _live_safe_metadata(found):
+        return {"status": "refused", "reason": "metadata_ambiguous"}
+    if not _access(found["metadata"]):
+        return {"status": "refused", "reason": "positions_access_blocked"}
+    return {
+        **_summary(found),
+        "children": "alloy_component_layout",
+        "status": "ready",
+        "reason": "positions_identity_verified",
+    }
+
+
 def main():
-    actions = {"survey": survey, "repair-positions": repair_positions, "verify": verify}
+    actions = {
+        "survey": survey,
+        "repair-positions": repair_positions,
+        "verify": verify,
+        "verify-live": verify_live,
+    }
     action = sys.argv[1] if len(sys.argv) == 2 else ""
     try:
         result = actions[action]() if action in actions else {"status": "refused", "reason": "invalid_action"}

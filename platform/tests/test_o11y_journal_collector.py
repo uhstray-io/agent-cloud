@@ -61,6 +61,8 @@ def _assert_positions_survey_diagnostics_schema(report, has_reason=False):
 def _positions_state(
     owner=(88, 88), mode=0o700, children=(), acl=False,
     root_mount=False, child_mount=False, component_layout=True, journal_cursor_valid=True,
+    journal_cursor_presence="present",
+    free_bytes=64 * 1024 * 1024, free_inodes=256,
 ):
     return {
         "status": "observed",
@@ -71,9 +73,10 @@ def _positions_state(
         "root_is_mount": root_mount,
         "child_mount": child_mount,
         "component_layout": component_layout,
+        "journal_cursor_presence": journal_cursor_presence,
         "journal_cursor_valid": journal_cursor_valid,
-        "free_bytes": 64 * 1024 * 1024,
-        "free_inodes": 256,
+        "free_bytes": free_bytes,
+        "free_inodes": free_inodes,
     }
 
 
@@ -85,11 +88,20 @@ def _positions_found(metadata=None, users=0):
         "volume_use_count": users,
         "mount_count": users,
         "collector_present": bool(users),
+        "collector_mount_verified": bool(users),
         "project": "o11y",
         "needs_chown": False,
         "needs_copy_up": False,
         "metadata": metadata or _positions_state(),
     }
+
+
+def _positions_with_space_counters(found, free_bytes, free_inodes):
+    metadata = {**found["metadata"], "free_bytes": free_bytes, "free_inodes": free_inodes}
+    result = {**found, "metadata": metadata}
+    if "storage_space" in found:
+        result["storage_space"] = {"free_bytes": free_bytes, "free_inodes": free_inodes}
+    return result
 
 
 def _positions_volume_reply(argv, volume):
@@ -219,6 +231,15 @@ def test_positions_verification_enables_cursor_reading(monkeypatch):
     monkeypatch.setattr(POSITIONS, "discover", discover)
     POSITIONS.verify()
     assert observed == [True]
+
+
+@pytest.mark.parametrize(("action", "function"), [("verify", "verify"), ("verify-live", "verify_live")])
+def test_positions_cli_dispatches_prestart_and_live_actions(action, function, monkeypatch, capsys):
+    result = {"status": "ready", "reason": function}
+    monkeypatch.setattr(sys, "argv", [str(POSITIONS_HELPER), action])
+    monkeypatch.setattr(POSITIONS, function, lambda: result)
+    POSITIONS.main()
+    assert json.loads(capsys.readouterr().out) == result
 
 
 def test_positions_survey_returns_only_bounded_metadata_categories():
@@ -915,6 +936,21 @@ def test_positions_pending_volume_requires_graphroot_and_volume_headroom():
     assert POSITIONS.verify(lambda: pending)["status"] == "refused"
 
 
+@pytest.mark.parametrize("storage_space", [None, {"status": "unavailable"}])
+def test_positions_pending_bootstrap_refuses_missing_or_failed_graphroot_capacity(storage_space):
+    pending = _empty_pending_volume_found(needs_copy_up=True, storage_space=storage_space)
+    assert POSITIONS.verify(lambda: pending) == {
+        "status": "refused", "reason": "volume_initialization_pending"
+    }
+
+
+def test_initialized_volume_repair_does_not_require_graphroot_capacity():
+    found = _positions_found(_positions_state(owner=(88, 88)))
+    found["storage_space"] = {"status": "unavailable"}
+    assert POSITIONS._space_is_sufficient(found)
+    assert not POSITIONS._space_is_sufficient(found, require_storage=True)
+
+
 def test_positions_pending_repair_refuses_changed_volume_creation_identity():
     original = _empty_pending_volume_found(needs_copy_up=True,
         metadata=_positions_state(owner=(88, 88), mode=0o700, children=[]))
@@ -977,6 +1013,56 @@ def test_positions_pending_repair_changes_only_empty_volume_root_without_contain
     assert calls == [("root-only-change", [])]
 
 
+@pytest.mark.parametrize("change_stage", ["before_chown", "after_chown"])
+def test_positions_pending_repair_allows_above_threshold_counter_changes(change_stage):
+    original = _empty_pending_volume_found(
+        needs_copy_up=True,
+        metadata=_positions_state(owner=(88, 88), mode=0o700, children=[], journal_cursor_valid=False),
+    )
+    corrected = _empty_pending_volume_found(
+        needs_copy_up=True,
+        metadata=_positions_state(owner=(0, 0), mode=0o700, children=[], journal_cursor_valid=False),
+    )
+    changed = _positions_with_space_counters(original, 96 * 1024 * 1024, 512)
+    verified = _positions_with_space_counters(corrected, 112 * 1024 * 1024, 768)
+    mount_gate = _positions_with_space_counters(corrected, 128 * 1024 * 1024, 1024)
+    observations = (
+        (original, changed, verified, mount_gate)
+        if change_stage == "before_chown"
+        else (original, original, verified, mount_gate)
+    )
+    result = POSITIONS.repair_positions(
+        iter(observations).__next__,
+        lambda _found: True,
+        access_test_fn=lambda *_args: pytest.fail("pending repair must not mount a probe container"),
+        image_available_fn=lambda: pytest.fail("pending repair must not inspect or pull an image"),
+    )
+    assert result == {"status": "repaired", "reason": "pending_initialization_owner_verified"}
+
+
+@pytest.mark.parametrize(
+    ("counter_source", "space"),
+    [
+        ("storage_space", {"free_bytes": POSITIONS.MIN_FREE_BYTES - 1, "free_inodes": 256}),
+        ("storage_space", {"free_bytes": POSITIONS.MIN_FREE_BYTES, "free_inodes": POSITIONS.MIN_FREE_INODES - 1}),
+        ("metadata", {"free_bytes": POSITIONS.MIN_FREE_BYTES - 1, "free_inodes": 256}),
+        ("metadata", {"free_bytes": POSITIONS.MIN_FREE_BYTES, "free_inodes": POSITIONS.MIN_FREE_INODES - 1}),
+    ],
+)
+def test_positions_pending_repair_refuses_below_threshold_space(counter_source, space):
+    overrides = {counter_source: space} if counter_source == "storage_space" else {
+        "metadata": _positions_state(
+            owner=(88, 88), mode=0o700, children=[], journal_cursor_valid=False, **space
+        )
+    }
+    found = _empty_pending_volume_found(needs_copy_up=True, **overrides)
+    result = POSITIONS.repair_positions(
+        lambda: found,
+        lambda _found: pytest.fail("low capacity must refuse before chown"),
+    )
+    assert result == {"status": "refused", "reason": "pending_volume_unsupported"}
+
+
 def test_positions_pending_repair_rechecks_races_before_mutation():
     original = _empty_pending_volume_found(needs_copy_up=True,
         metadata=_positions_state(owner=(88, 88), mode=0o700, children=[], journal_cursor_valid=False)
@@ -1037,12 +1123,30 @@ def test_positions_post_start_empty_volume_with_initialized_flags_stays_strict_r
         collector_present=True,
         volume_use_count=1,
         mount_count=1,
+        collector_mount_verified=True,
         metadata=_positions_state(owner=(0, 0), children=[{
             "name": "positions-file", "kind": "file", "uid": 0, "gid": 0,
             "nlink": 1, "mode": 0o600,
         }]),
     )
     assert POSITIONS.verify(lambda: found)["status"] == "ready"
+    assert POSITIONS.verify_live(lambda: found)["status"] == "ready"
+
+
+@pytest.mark.parametrize("change", [
+    {"collector_present": False},
+    {"volume_use_count": 0},
+    {"volume_use_count": 2},
+    {"mount_count": 0},
+    {"mount_count": 2},
+    {"collector_mount_verified": False},
+])
+def test_positions_live_verifier_requires_one_collector_and_exact_rw_mount(change):
+    found = _positions_found(users=1)
+    found.update(change)
+    assert POSITIONS.verify_live(lambda: found) == {
+        "status": "refused", "reason": "collector_mount_unverified"
+    }
 
 
 @pytest.mark.parametrize("metadata", [
@@ -1060,6 +1164,7 @@ def test_positions_post_start_refuses_partial_copy_hidden_entry_or_missing_curso
         "NeedsCopyUp": True,
     }
     assert POSITIONS.verify(lambda: found)["status"] == "refused"
+    assert POSITIONS.verify_live(lambda: found)["status"] == "refused"
 
 
 @pytest.mark.parametrize("source_matches", [True, False])
@@ -1100,9 +1205,12 @@ def test_positions_discovery_verifies_live_collector_volume_source(source_matche
         POSITIONS, "_inspect_metadata",
         lambda _path, read_cursor=False, run=None: _positions_state(owner=(0, 0)),
     )
-    assert POSITIONS.discover(run=run)["status"] == (
+    report = POSITIONS.discover(run=run)
+    assert report["status"] == (
         "observed" if source_matches else "collector_mount_unverified"
     )
+    if source_matches:
+        assert report["collector_mount_verified"] is True
 
 
 def test_positions_repair_is_idempotent_and_refuses_volume_in_use():
@@ -1153,6 +1261,42 @@ def test_positions_repair_rechecks_fresh_evidence_before_chown_and_verifies_acce
         ("chown", "o11y_journal-collector-state"),
         ("access-test", "o11y_journal-collector-state"),
     ]
+
+
+@pytest.mark.parametrize("change_stage", ["before_chown", "after_chown"])
+def test_positions_repair_allows_above_threshold_counter_changes(change_stage):
+    original = _positions_found(_positions_state(owner=(88, 88), mode=0o700))
+    corrected = _positions_found(_positions_state(owner=(0, 0), mode=0o700))
+    fresh = _positions_with_space_counters(original, 96 * 1024 * 1024, 512)
+    verified = _positions_with_space_counters(corrected, 112 * 1024 * 1024, 768)
+    mount_gate = _positions_with_space_counters(corrected, 128 * 1024 * 1024, 1024)
+    observations = (
+        (original, fresh, verified, mount_gate)
+        if change_stage == "before_chown"
+        else (original, original, verified, mount_gate)
+    )
+    result = POSITIONS.repair_positions(
+        iter(observations).__next__,
+        lambda _found: True,
+        lambda _name: True,
+        image_available_fn=lambda: True,
+    )
+    assert result == {"status": "repaired", "reason": "verified"}
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        _positions_state(owner=(88, 88), free_bytes=POSITIONS.MIN_FREE_BYTES - 1),
+        _positions_state(owner=(88, 88), free_inodes=POSITIONS.MIN_FREE_INODES - 1),
+    ],
+)
+def test_positions_repair_refuses_below_threshold_space(metadata):
+    assert POSITIONS.repair_positions(
+        lambda: _positions_found(metadata),
+        lambda _found: pytest.fail("low capacity must refuse before chown"),
+        image_available_fn=lambda: True,
+    ) == {"status": "refused", "reason": "insufficient_space"}
 
 
 def test_positions_repair_stops_when_fresh_metadata_changes():
@@ -1262,7 +1406,95 @@ def test_positions_verify_returns_ready_and_matches_successful_playbook_contract
         "(_journal_positions_pre_mount.stdout | default('{}') | from_json).status in "
         "['ready', 'bootstrap_allowed']"
     ) in source
+    plays = yaml.safe_load(source)
+    apply_play = next(play for play in plays if play.get("hosts") == "o11y_svc")
+    def walk(tasks):
+        for task in tasks or []:
+            yield task
+            for key in ("block", "rescue", "always"):
+                yield from walk(task.get(key))
+
+    live_gate = next(
+        task for task in walk(apply_play["tasks"])
+        if task.get("name") == "Verify the live collector positions mount and access"
+    )
+    assert live_gate["ansible.builtin.command"]["argv"] == ["python3", "-", "verify-live"]
+    assert '"journal_cursor_presence":cursor_presence' in POSITIONS_HELPER.read_text()
     assert '"children": "alloy_component_layout"' in POSITIONS_HELPER.read_text()
+
+
+def _cursorless_prestart_found(**overrides):
+    found = _positions_found(_positions_state(
+        owner=(0, 0),
+        children=[],
+        journal_cursor_valid=False,
+        journal_cursor_presence="absent",
+    ))
+    found.update({
+        "project": "o11y",
+        "volume": {
+            "Name": "o11y_journal-collector-state",
+            "Driver": "local",
+            "Scope": "local",
+            "Options": {},
+            "Mountpoint": "/private/podman/volume/_data",
+            "MountCount": 0,
+            "Labels": {
+                "com.docker.compose.project": "o11y",
+                "com.docker.compose.volume": "journal-collector-state",
+            },
+        },
+        "needs_chown": False,
+        "needs_copy_up": False,
+        "collector_present": False,
+        "volume_use_count": 0,
+        "mount_count": 0,
+        "storage_space": {"free_bytes": 64 * 1024 * 1024, "free_inodes": 256},
+        **overrides,
+    })
+    return found
+
+
+@pytest.mark.parametrize("children", [[], [{"kind": "file", "uid": 0, "gid": 0, "nlink": 1}],
+    [{"kind": "dir", "uid": 0, "gid": 0, "nlink": 2}]])
+def test_positions_prestart_allows_only_observed_absent_cursor_safe_layout(children):
+    found = _cursorless_prestart_found(metadata=_positions_state(
+        owner=(0, 0), children=children, journal_cursor_valid=False,
+        journal_cursor_presence="absent",
+    ))
+    result = POSITIONS.verify(lambda: found)
+    assert result["status"] == "ready"
+    assert result["reason"] == "positions_cursor_absent_prestart_retry"
+    assert POSITIONS.verify_live(lambda: found) == {
+        "status": "refused", "reason": "collector_mount_unverified"
+    }
+
+
+@pytest.mark.parametrize("metadata", [
+    _positions_state(owner=(0, 0), journal_cursor_valid=False, journal_cursor_presence="present"),
+    _positions_state(owner=(0, 0), journal_cursor_valid=False, journal_cursor_presence="unknown"),
+])
+def test_positions_prestart_refuses_invalid_unreadable_or_unknown_cursor(metadata):
+    assert POSITIONS.verify(lambda: _cursorless_prestart_found(metadata=metadata))["status"] == "refused"
+
+
+@pytest.mark.parametrize("change", [
+    {"collector_present": True},
+    {"volume_use_count": 1},
+    {"mount_count": 1},
+    {"needs_chown": True},
+    {"needs_copy_up": True},
+    {"storage_space": None},
+    {"storage_space": {"status": "unavailable"}},
+    {"storage_space": {"free_bytes": POSITIONS.MIN_FREE_BYTES, "free_inodes": POSITIONS.MIN_FREE_INODES - 1}},
+])
+def test_positions_prestart_cursorless_retry_refuses_live_unknown_or_low_evidence(change):
+    assert POSITIONS.verify(lambda: _cursorless_prestart_found(**change))["status"] == "refused"
+
+
+def test_positions_live_verifier_never_returns_bootstrap_for_missing_or_pending_volume():
+    assert POSITIONS.verify_live(lambda: _missing_volume_found())["status"] == "refused"
+    assert POSITIONS.verify_live(lambda: _empty_pending_volume_found(needs_copy_up=True))["status"] == "refused"
 
 
 def test_positions_verify_accepts_the_bounded_journal_component_directory_but_repair_refuses_it():
@@ -1355,6 +1587,7 @@ exec({POSITIONS._METADATA_SCRIPT!r})
         os.chmod(temp, 0o600)
         accepted = inspect(component, disappearance="once")
         assert accepted["status"] == "observed"
+        assert accepted["journal_cursor_presence"] == "present"
         assert accepted["component_layout"] is True, json.dumps(accepted, indent=2)
         assert accepted["root_is_mount"] is False
         assert accepted["child_mount"] is False
@@ -1382,6 +1615,7 @@ exec({POSITIONS._METADATA_SCRIPT!r})
     os.chmod(temp, 0o600)
     refused = inspect(component)
     assert refused["status"] == "observed"
+    assert refused["journal_cursor_presence"] == "absent"
     assert refused["component_layout"] is False
 
     component = make_component("multiple")
@@ -1391,7 +1625,105 @@ exec({POSITIONS._METADATA_SCRIPT!r})
         os.chmod(temp, 0o600)
     multiple = inspect(component)
     assert multiple["status"] == "observed"
+    assert multiple["journal_cursor_presence"] == "absent"
     assert multiple["component_layout"] is False
+
+
+def test_embedded_positions_metadata_marks_absence_only_after_successful_listing(tmp_path):
+    root = tmp_path / "empty"
+    root.mkdir(mode=0o700)
+    mountpoint = root.parent
+    prelude = f'''import builtins,io,os,sys
+sys.argv.append("true")
+original_open=builtins.open
+def fake_open(path,*args,**kwargs):
+    if path=="/proc/self/mountinfo":
+        return io.StringIO("1 0 0:1 / {mountpoint} rw - testfs /dev/test rw\\n")
+    return original_open(path,*args,**kwargs)
+builtins.open=fake_open
+os.listxattr=lambda *_args,**_kwargs: []
+exec({POSITIONS._METADATA_SCRIPT!r})
+'''
+    result = subprocess.run(
+        [sys.executable, "-c", prelude, str(root)],
+        check=False, capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    metadata = json.loads(result.stdout)
+    assert metadata["status"] == "observed"
+    assert metadata["journal_cursor_presence"] == "absent"
+    assert metadata["journal_cursor_valid"] is False
+
+    component = root / "loki.source.journal.o11y_alloy"
+    component.mkdir(mode=0o700)
+    positions = component / "positions.yml"
+    positions.write_text("invalid positions")
+    os.chmod(positions, 0o600)
+    result = subprocess.run(
+        [sys.executable, "-c", prelude, str(root)],
+        check=False, capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    metadata = json.loads(result.stdout)
+    assert metadata["journal_cursor_presence"] == "present"
+    assert metadata["journal_cursor_valid"] is False
+
+    unreadable_prelude = prelude.replace(
+        f"exec({POSITIONS._METADATA_SCRIPT!r})",
+        f'''original_os_open=os.open
+def fake_os_open(path,*args,**kwargs):
+    if path=={str(positions)!r}: raise PermissionError(path)
+    return original_os_open(path,*args,**kwargs)
+os.open=fake_os_open
+exec({POSITIONS._METADATA_SCRIPT!r})''',
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", unreadable_prelude, str(root)],
+        check=False, capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    metadata = json.loads(result.stdout)
+    assert metadata["journal_cursor_presence"] == "present"
+    assert metadata["journal_cursor_valid"] is False
+
+
+def test_embedded_positions_metadata_retries_rename_that_finishes_during_observation(tmp_path):
+    root = tmp_path / "rename-during-observation"
+    component = root / "loki.source.journal.o11y_alloy"
+    component.mkdir(mode=0o700, parents=True)
+    os.chmod(root, 0o700)
+    os.chmod(component, 0o700)
+    temp = component / ".positions.yml123456789"
+    positions = component / "positions.yml"
+    temp.write_text("invalid positions")
+    os.chmod(temp, 0o600)
+    prelude = f'''import builtins,io,os,sys,time
+sys.argv.append("true")
+original_open=builtins.open
+def fake_open(path,*args,**kwargs):
+    if path=="/proc/self/mountinfo":
+        return io.StringIO("1 0 0:1 / {root.parent} rw - testfs /dev/test rw\\n")
+    return original_open(path,*args,**kwargs)
+builtins.open=fake_open
+os.listxattr=lambda *_args,**_kwargs: []
+time.sleep=lambda _seconds: os.rename({str(temp)!r},{str(positions)!r})
+exec({POSITIONS._METADATA_SCRIPT!r})
+'''
+    result = subprocess.run(
+        [sys.executable, "-c", prelude, str(root)],
+        check=False, capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    metadata = json.loads(result.stdout)
+    assert metadata["status"] == "observed"
+    assert metadata["journal_cursor_presence"] == "present"
+    assert metadata["journal_cursor_valid"] is False
+    found = _cursorless_prestart_found(metadata=_positions_state(
+        owner=(0, 0), children=[{"kind": "dir", "uid": 0, "gid": 0, "nlink": 2}],
+        journal_cursor_valid=metadata["journal_cursor_valid"],
+        journal_cursor_presence=metadata["journal_cursor_presence"],
+    ))
+    assert POSITIONS.verify(lambda: found)["status"] == "refused"
 
 
 def test_embedded_positions_metadata_refuses_public_files_and_writable_directories(tmp_path):
@@ -2273,7 +2605,7 @@ def test_positions_visibility_is_limited_to_bounded_helper_and_uid_probe_results
     helper_actions = {
         "Verify positions volume identity and access before apply": "verify",
         "Recheck positions volume initialization immediately before mount": "verify",
-        "Verify the live collector positions mount and access": "verify",
+        "Verify the live collector positions mount and access": "verify-live",
         "Survey existing positions volume metadata without mounting it": "survey",
         "Run the separately selected guarded positions repair": "repair-positions",
     }

@@ -39,6 +39,8 @@ The receiver-host journal collector SHALL retain its existing Compose named posi
 - **AND** the exact empty pending state `NeedsChown=false` and `NeedsCopyUp=true` may use a root-only pre-mount repair without an access-probe container
 - **AND** any changed evidence, shared use, ACL, mount, symlink, child ambiguity, failed readback, or failed access test refuses success without recursive ownership/permission changes or volume deletion
 - **AND** a failed pending-volume mutation preserves the volume and returns bounded uncertain status without automatic owner restoration
+- **AND** free-byte and free-inode thresholds are checked independently from stable metadata equality: above-threshold counter changes do not invalidate root, child, ACL, or mount evidence, and below-threshold or unavailable counters refuse repair
+- **AND** pending repair checks both GraphRoot and volume-filesystem capacity, while initialized-volume repair checks volume-filesystem capacity
 
 #### Scenario: Positions check mode remains unverified
 - **WHEN** survey, repair, or apply runs in Ansible check mode
@@ -55,6 +57,8 @@ The receiver-host journal collector SHALL retain its existing Compose named posi
 ### Requirement: First collector start is gated by safe positions-volume bootstrap
 The collector SHALL allow first initialization only through its declared Compose `up`. Before start, the positions gate MAY return `bootstrap_allowed` for a missing expected volume only when bounded inventory is complete, no expected-name collision exists, and an all-container query proves the collector absent, including stopped containers. An existing pending volume SHALL prove one exact local identity, zero consumers and mounts, effective template flags `NeedsChown=false` and `NeedsCopyUp=true`, and an observed empty `0:0` root with owner RWX, no group/other write or special bits, ACL, nested mount, or metadata ambiguity. The gate SHALL require at least 16 MiB available and 128 available inodes both on the Podman graph root and on the pending volume filesystem for this small first mount; this threshold is separate from the 30% retention headroom gate. A missing legacy volume-key label is allowed only with the exact expected name and project; a conflicting label refuses. `bootstrap_allowed` is accepted only by pre-apply and immediately-before-start gates, and the latter runs outside rollback handling. After the first mount, `NeedsCopyUp=true` alone SHALL NOT prove success: post-start verification requires an exact live RW mount, namespace write/rename/delete, bounded allowlisted Alloy layout, the expected `loki.source.journal.o11y_alloy` cursor parsed from `positions.yml`, health, unchanged seven receiver containers, and a fresh exact-target Loki receipt. A still-pending flag may be accepted only when all these checks pass, because an empty image destination can leave copy-up pending. Partial copy or unexpected layout SHALL refuse and preserve the volume; rollback removes only the pilot container without `-v`, never restores ownership or deletes copied state. Unexpected survey exceptions return bounded `survey_failed`; check mode remains unverified and nonmutating.
 
+The helper SHALL expose separate pre-start `verify` and post-start `verify-live` actions. Pre-start MAY return `ready` without a cursor only when a complete observation proves both initialization flags false, collector absent from all containers, zero consumers and mounts, exact safe volume identity, root `0:0`, access, GraphRoot and volume-filesystem capacity, no ACL or nested mount, a safe allowlisted empty/seed/component layout, and `positions.yml` explicitly absent. This result authorizes a bounded start attempt only. Present invalid or unreadable cursor files, unknown cursor presence, and incomplete or unsafe positions artifacts SHALL refuse. For this requirement, partial copy means a present invalid/unreadable cursor, pending temporary positions file, or layout outside the allowlist; proven pre-start absence is a separate retry case. `verify-live` SHALL require a present collector, exactly one consumer and mount, the exact expected RW volume mount, and a valid parsed cursor; it SHALL never return `bootstrap_allowed`. No gate may delete or replace positions state or automatically restore ownership after pending mutation. An empty or allowlisted layout does not establish historical copy-up completion or cursor-loss history; replay/loss safety remains unverified.
+
 #### Scenario: Missing expected volume is safe to initialize
 - **WHEN** bounded volume and all-container inventories complete, no expected-name collision exists, and the named collector is absent
 - **THEN** the pre-start gate returns `bootstrap_allowed` and Compose `up` is the only operation that creates or initializes the volume
@@ -62,6 +66,14 @@ The collector SHALL allow first initialization only through its declared Compose
 #### Scenario: Existing empty volume is awaiting initialization
 - **WHEN** one exact local project volume has zero consumers and mounts, effective template flags `NeedsChown=false` and `NeedsCopyUp=true`, sufficient first-mount free bytes/inodes, and an empty unambiguous root with `0:0` ownership and required access
 - **THEN** the pre-start gate returns `bootstrap_allowed`; any unknown identity, unsafe metadata, or conflicting label refuses
+
+#### Scenario: Safe observed volume has no positions cursor before start
+- **WHEN** both initialization flags are false, the collector is absent from all containers, consumers and mounts are zero, capacity/access/identity/layout checks pass, and metadata explicitly proves `positions.yml` absent
+- **THEN** pre-start `verify` returns `ready` for a start attempt, while `verify-live` refuses until a valid parsed cursor exists
+
+#### Scenario: Present or unreadable positions cursor cannot use the retry path
+- **WHEN** `positions.yml` is present but invalid or unreadable, or its presence cannot be determined
+- **THEN** both pre-start and post-start verification refuse; only a proven absent cursor may use the bounded pre-start retry
 
 #### Scenario: Survey raises an unexpected exception
 - **WHEN** an unexpected exception interrupts the explicit positions survey

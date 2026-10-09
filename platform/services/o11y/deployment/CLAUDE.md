@@ -64,16 +64,21 @@ stack and waits for Grafana to report healthy. Outside local mode it adds
   Survey reads bounded owner/mode and direct-child metadata in the rootless Podman
   namespace; it does not mount or initialize the volume and never reads
   positions-file content. Review this survey before choosing
-  `repair-positions`, which is a separate action. Repair requires an unused unique
-  local volume, no ACL or mount ambiguity, only direct regular single-link files
-  owned by collector identity `0:0`, a root owner mismatch, and owner mode bits
-  sufficient for access after the root-only change. It rechecks evidence, pins the
-  root directory by file descriptor, changes only that directory's owner/group with
-  rootless `podman unshare`, and verifies the result. Every post-attempt failure
-  re-reads the volume identity and metadata before any guarded restoration; an
-  unverified outcome is reported as uncertain. It runs a temporary
-  create/write/rename/delete test using the cached Alloy v1.9.2 image with the
-  collector UID and filesystem restrictions.
+  `repair-positions`, which is a separate action. Both repair paths require an
+  unused unique local volume, no ACL or mount ambiguity, only direct regular
+  single-link files owned by collector identity `0:0`, a root owner mismatch,
+  and owner mode bits sufficient for access after the root-only change. Free-byte
+  and free-inode counters are independent threshold checks; changes above threshold
+  do not invalidate stable root, child, ACL, or mount evidence. Initialized-volume
+  repair rechecks evidence, pins the root directory by file descriptor, changes
+  only that directory's owner/group with rootless `podman unshare`, verifies the
+  result, and runs the restricted cached Alloy create/write/rename/delete probe.
+  Its failure path may restore the original owner only after fresh identity and
+  metadata checks. The narrow pending repair applies only to an empty volume with
+  `NeedsChown=false` and `NeedsCopyUp=true`: it changes only the root owner/group,
+  performs no probe mount, and never restores ownership after mutation because
+  first-mount history cannot be proven. A failed pending repair reports uncertain
+  and preserves the volume.
   It never recurses, changes mode, or removes/recreates the volume. Survey, repair,
   and apply report the positions-specific result as `check_mode_unverified` in
   check mode. Apply accepts `bootstrap_allowed` only at the pre-apply and
@@ -86,12 +91,20 @@ stack and waits for Grafana to report healthy. Outside local mode it adds
   bits, no ACL or nested mount, and no contents. `podman-compose up` is the only
   create/initialization action. The immediate pre-start check is outside the
   rollback block, so a refusal before startup cannot remove an already-running
-  collector. After startup, helper verification must return strict `ready`; runtime
-  checks still prove the actual RW volume source/destination, UID mapping, effective
-  write/rename access, health, unchanged receiver containers, and exact Loki
-  delivery. The bounded live layout permits the optional `alloy_seed.json` and the source's
-  `loki.source.journal.o11y_alloy/` directory with its optional `positions.yml` file,
-  while the separate repair action still refuses directory children.
+  collector. The pre-start `verify` gates also permit a bounded cursorless retry
+  only when an observed volume has both initialization flags false, the collector
+  absent from all containers, zero consumers and mounts, safe `0:0` root and
+  allowlisted layout, proven absent `positions.yml`, successful access/ACL/mount
+  checks, and sufficient GraphRoot and volume capacity. This `ready` result
+  authorizes a start attempt only. Present invalid/unreadable or unknown cursor
+  evidence refuses. After startup, the playbook calls separate `verify-live`, which
+  must return strict `ready`, including the parsed expected journal cursor in
+  `positions.yml`; the cursor is mandatory for post-start success. Runtime checks also prove the actual RW volume source/destination,
+  UID mapping, effective write/rename access, health, unchanged receiver containers,
+  and exact Loki delivery. The bounded live layout permits optional `alloy_seed.json`
+  and the source's `loki.source.journal.o11y_alloy/` directory; post-start acceptance
+  still requires its valid cursor evidence. The separate repair action still refuses
+  directory children.
   Health, seven-container preservation, Loki receipt, and rollback gates still apply.
   Neither survey nor repair proves collector health or Loki delivery. OpenSpec task
   1.2 stays unchecked until the reviewed Semaphore run records the exact production
