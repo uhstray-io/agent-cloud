@@ -207,7 +207,7 @@
       ansible.builtin.assert:
         that:
           - expected_signal == 'traces' or ('target_id="' ~ expected_target_id ~ '"') in signal_selector
-          - expected_signal != 'traces' or ('resource.target_id = "' ~ expected_target_id ~ '"') in signal_selector
+          - expected_signal != 'traces' or signal_selector == '{ resource.target_id = "' ~ expected_target_id ~ '" }'
           - expected_signal != 'health' or signal_selector is not match('^\\s*up(?:\\s|\\{|\\[|$)')
         fail_msg: "unverifiable_target: current service-only labels cannot prove this exact target; declare and emit the bounded target_id label first."
       when: o11y_verification_mode | default('legacy') == 'strict'

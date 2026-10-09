@@ -34,7 +34,7 @@ def signal_excluded(signal_name):
     return {"applicable": False, "exception": exception}
 
 
-def target(target_id="service:alpha", identity="alpha", signals=None):
+def target(target_id="service:alpha", identity="alpha", signals=None, target_type="service"):
     declared_signals = {
         "logs": signal(),
         "metrics": signal_excluded("metrics"),
@@ -45,7 +45,7 @@ def target(target_id="service:alpha", identity="alpha", signals=None):
         declared_signals.update(signals)
     return {
         "target_id": target_id,
-        "target_type": "service",
+        "target_type": target_type,
         "lifecycle": "deployed",
         "owner": "platform",
         "runtime": "podman",
@@ -88,7 +88,7 @@ class CoverageCensusTests(unittest.TestCase):
     def report(self, targets):
         return CENSUS.build_report(
             self.repo,
-            {"revision": INVENTORY_REVISION, "targets": targets,
+            {"inventory_revision": INVENTORY_REVISION, "targets": targets,
              "template_names": ["Verify o11y Target Receipt"]},
             REPO_SHA,
             NOW,
@@ -116,6 +116,17 @@ class CoverageCensusTests(unittest.TestCase):
         scaffold = next(row for row in rows if row["service_identity"] == "scaffold")
         self.assertEqual(scaffold["lifecycle"], "unclassified")
         self.assertEqual(scaffold["coverage"], "unverified")
+
+    def test_candidate_join_requires_matching_target_type(self):
+        (self.repo / "platform/services/o11y").mkdir()
+        declaration = target(target_id="vm:o11y", identity="o11y", target_type="vm")
+        rows = self.report([declaration])["targets"]
+        candidate = next(row for row in rows if row["source_candidate"] == "platform/services/o11y")
+        declared_vm = next(row for row in rows if row["target_id"] == "vm:o11y")
+        self.assertEqual(candidate["target_type"], "service")
+        self.assertEqual(candidate["lifecycle"], "unclassified")
+        self.assertIsNone(declared_vm["source_candidate"])
+        self.assertEqual(declared_vm["target_type"], "vm")
 
     def test_sibling_signal_receipt_does_not_cover_missing_signal(self):
         deployed = target(signals={

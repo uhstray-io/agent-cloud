@@ -134,7 +134,7 @@ def receipt_status(target, signal, declaration, inventory_revision, repository_s
 
 def build_report(repo, inventory, repository_sha, now=None):
     targets = inventory.get("targets", [])
-    inventory_revision = inventory.get("revision")
+    inventory_revision = inventory.get("inventory_revision")
     template_names = set(inventory.get("template_names", []))
     if not isinstance(targets, list):
         fail("targets must be a list")
@@ -151,10 +151,11 @@ def build_report(repo, inventory, repository_sha, now=None):
     for target in targets:
         declared.setdefault(target["service_identity"], []).append(target)
     entries = []
+    matched_target_ids = set()
     for kind, dirname in (("service", "platform/services"), ("agent", "agents")):
         for name in candidate_names(repo, dirname):
             identity = name
-            matches = declared.get(identity, [])
+            matches = [target for target in declared.get(identity, []) if target["target_type"] == kind]
             if len(matches) != 1:
                 entries.append({
                     "target_id": f"candidate:{kind}:{name}",
@@ -167,6 +168,7 @@ def build_report(repo, inventory, repository_sha, now=None):
                 })
                 continue
             target = matches[0]
+            matched_target_ids.add(target["target_id"])
             statuses = {
                 signal: (
                     receipt_status(target, signal, target["signals"][signal], inventory_revision, repository_sha, now)
@@ -218,9 +220,8 @@ def build_report(repo, inventory, repository_sha, now=None):
             },
             "template_references": {"declared": target.get("template_references", []), "present": [], "missing": []},
         })
-    candidate_identities = {entry["service_identity"] for entry in entries}
     for target in targets:
-        if target["service_identity"] in candidate_identities:
+        if target["target_id"] in matched_target_ids or target["service_identity"] in conflicts:
             continue
         statuses = {
             signal: (
