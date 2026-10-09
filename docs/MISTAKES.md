@@ -898,8 +898,8 @@ claims had to be withdrawn; the playbook comment and the PR text were fixed befo
 
 **Root cause.** Twice, a property of the running system was taken from an artifact that only
 describes an intended state: first a comment relayed by another agent, then a compose default that
-production does not run (the deploy refuses nothing about an older running controller; the pin is
-what the NEXT deploy would start). The "correction" repeated the first mistake one level down.
+production was not running (the pin is what a deploy would start, not what is running now). The
+"correction" repeated the first mistake one level down.
 
 **The rule.** A claim about what a running system uses (tool version, image, flag) is read from that
 system: its own API (`/api/info` for Semaphore), the running container, or a task that reports it.
