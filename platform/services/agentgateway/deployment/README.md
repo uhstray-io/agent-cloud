@@ -16,9 +16,12 @@ deployment refuses a moved tag. The pull-only mode uses the same Compose
 file/overlay selection as deployment and exits before any container decision or
 change. Before invoking Compose, `deploy.sh` replaces any inherited `AGW_IMAGE`
 with the single value rendered in `.env`, because Compose otherwise gives the
-process environment precedence. The validator receives `.env` by
-file path and has no network. In local mode and when listener TLS is enabled it
-also receives the same read-only `/certs` mount and trust settings as Compose;
+process environment precedence. The validator receives `.env` by file path.
+Production uses Podman's default network so issuer-only OIDC discovery can run;
+local-dev joins `local-dev`, where the Authentik hostname alias is declared.
+This checks config acceptance but does not reproduce the runtime Compose network
+topology. When listener TLS is enabled, it also receives the same read-only
+`/certs` mount and trust settings as Compose; local-dev always receives them;
 the production TLS check uses the same keep-id mapping. Its output is suppressed
 because parser errors may quote configuration. The invocation follows the
 [standalone validation command](https://agentgateway.dev/docs/standalone/latest/documentation/setup/update/)
