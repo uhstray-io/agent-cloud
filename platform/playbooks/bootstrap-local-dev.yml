@@ -103,8 +103,10 @@
     # Caddy route and every in-network caller name local-semaphore:3000); only the
     # host publish moves. An inventory value lets the stack come up when another
     # local app already holds 127.0.0.1:3000, the same way caddy_http_port does for
-    # 8088. Validated by the first Stage 0 task, before anything is started.
-    _sem_port: "{{ local_semaphore_port | default(3000, true) }}"
+    # 8088. Validated by the first Stage 0 task, before anything is started. No `true`
+    # on the default: it would also replace a set-but-falsy value (0, false, "") with
+    # 3000, and the validation would never see the mistake.
+    _sem_port: "{{ local_semaphore_port | default(3000) }}"
     _sem_url: "http://127.0.0.1:{{ _sem_port }}"
     _sem_admin: localadmin
     _sem_admin_password: LOCAL_FAKE_semaphore_admin
