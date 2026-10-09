@@ -561,7 +561,10 @@
                     'connection refused' in (_journal_rollback_logs.stderr | default('', true) | lower))
                 else 'other'
               }}
-            _journal_rollback_log_count: "{{ 0 if (_journal_rollback_logs.rc | default(1) | int != 0) else ((_journal_rollback_logs.stdout_lines | default([]) | length) + (_journal_rollback_logs.stderr_lines | default([]) | length)) }}"
+            _journal_rollback_log_count: >-
+              {{ 0 if (_journal_rollback_logs.rc | default(1) | int != 0) else
+                 (_journal_rollback_logs.stdout_lines | default([]) | length) +
+                 (_journal_rollback_logs.stderr_lines | default([]) | length) }}
 
         - name: Decide whether one fixed readiness probe is safe as diagnostic evidence
           ansible.builtin.set_fact:
