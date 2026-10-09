@@ -13,6 +13,7 @@ from unittest.mock import Mock
 
 import pytest
 import yaml
+from jinja2 import Environment
 
 ROOT = Path(__file__).resolve().parents[2]
 O11Y = ROOT / "platform/services/o11y/deployment"
@@ -140,7 +141,135 @@ def test_standard_journal_survey_uses_only_fixed_paths_and_cached_probe_image():
     assert '"--user",\n            "0:0"' in source
     assert '"podman", "pull"' not in source
     assert '"--output-fields=CONTAINER_NAME"' in source
-    assert "MESSAGE" not in source
+    assert '"--output-fields=CONTAINER_NAME,MESSAGE"' in source
+    assert '"--since=-24h"' in source
+    assert 'f"--lines={MAX_DIAGNOSTIC_ENTRIES}"' in source
+
+
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        ("permission denied reading /var/log/journal/private", "journal"),
+        ("permission denied writing /var/lib/alloy/data/private", "positions"),
+        ("permission denied opening /etc/alloy/journal.alloy", "config"),
+        ("permission denied opening /private/path", "other"),
+        ("collector started", "none"),
+    ],
+)
+def test_permission_diagnostic_emits_only_fixed_target_category(message, expected):
+    calls = []
+
+    def run(argv, **_kwargs):
+        calls.append(argv)
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps(
+                {"CONTAINER_NAME": "o11y-journal-collector", "MESSAGE": message}
+            ),
+            stderr="private error at 203.0.113.7 token=secret",
+        )
+
+    report = SURVEY.permission_diagnostic(run=run)
+
+    assert report == {"entry_count": 1, "permission_denied_target": expected}
+    assert not any(
+        private in json.dumps(report)
+        for private in (message, "/var/log/journal", "/private/path", "203.0.113.7", "secret")
+    )
+    assert calls == [
+        [
+            "journalctl",
+            "--no-pager",
+            "--quiet",
+            "--output=json",
+            "--output-fields=CONTAINER_NAME,MESSAGE",
+            "--since=-24h",
+            "--lines=80",
+            "CONTAINER_NAME=o11y-journal-collector",
+        ]
+    ]
+
+
+@pytest.mark.parametrize(
+    "stdout",
+    [
+        "not-json\n",
+        '{"CONTAINER_NAME":"other","MESSAGE":"permission denied /private/path"}\n',
+        '{"CONTAINER_NAME":"o11y-journal-collector","MESSAGE":3}\n',
+        '{"CONTAINER_NAME":"o11y-journal-collector"}\n',
+        (
+            '{"CONTAINER_NAME":"other","CONTAINER_NAME":"o11y-journal-collector",'
+            '"MESSAGE":"permission denied /private/path token=secret"}\n'
+        ),
+        (
+            '{"CONTAINER_NAME":"o11y-journal-collector","MESSAGE":"collector started",'
+            '"MESSAGE":"permission denied /private/path token=secret"}\n'
+        ),
+    ],
+)
+def test_permission_diagnostic_refuses_malformed_or_wrong_identity(stdout):
+    runner = Mock(return_value=SimpleNamespace(returncode=0, stdout=stdout, stderr="raw error"))
+
+    report = SURVEY.permission_diagnostic(run=runner)
+    assert report == {
+        "entry_count": 0,
+        "permission_denied_target": "unavailable",
+    }
+    assert "private/path" not in json.dumps(report)
+    assert "secret" not in json.dumps(report)
+
+
+def test_permission_diagnostic_caps_records_and_hides_command_errors():
+    too_many = "\n".join(
+        json.dumps({"CONTAINER_NAME": "o11y-journal-collector", "MESSAGE": "private"})
+        for _ in range(81)
+    )
+    over_limit = Mock(return_value=SimpleNamespace(returncode=0, stdout=too_many, stderr=""))
+    denied = Mock(
+        return_value=SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr="permission denied /private/path token=secret",
+        )
+    )
+
+    expected = {"entry_count": 0, "permission_denied_target": "unavailable"}
+    assert SURVEY.permission_diagnostic(run=over_limit) == expected
+    assert SURVEY.permission_diagnostic(run=denied) == expected
+    assert "private" not in json.dumps(expected)
+    assert "secret" not in json.dumps(expected)
+
+
+def test_permission_diagnostic_conflicting_targets_collapse_to_other():
+    entries = [
+        {"CONTAINER_NAME": "o11y-journal-collector", "MESSAGE": "permission denied /var/log/journal/a"},
+        {"CONTAINER_NAME": "o11y-journal-collector", "MESSAGE": "permission denied /etc/alloy/journal.alloy"},
+    ]
+    runner = Mock(
+        return_value=SimpleNamespace(returncode=0, stdout="\n".join(map(json.dumps, entries)), stderr="")
+    )
+
+    assert SURVEY.permission_diagnostic(run=runner) == {
+        "entry_count": 2,
+        "permission_denied_target": "other",
+    }
+
+
+def test_survey_cli_reports_only_allowlisted_diagnostic_fields(monkeypatch, capsys):
+    monkeypatch.setattr(SURVEY, "survey", lambda: {"result": "ambiguous"})
+    monkeypatch.setattr(
+        SURVEY,
+        "permission_diagnostic",
+        lambda: {"entry_count": 4, "permission_denied_target": "journal"},
+    )
+
+    SURVEY.main()
+
+    assert json.loads(capsys.readouterr().out) == {
+        "result": "ambiguous",
+        "entry_count": 4,
+        "permission_denied_target": "journal",
+    }
 
 
 def test_standard_journal_survey_refuses_when_cached_probe_image_is_unavailable():
@@ -525,12 +654,44 @@ def test_survey_check_mode_skips_container_probe_and_reports_unverified():
 
     assert survey_command["when"] == "not ansible_check_mode"
     assert "check_mode" not in survey_command
+    assert survey_play["become"] is False
     assert check_mode_result["when"] == "ansible_check_mode"
     assert check_mode_result["ansible.builtin.set_fact"]["_journal_directory_survey"] == {
         "rc": 0,
-        "stdout": '{"result":"check_mode_unverified"}',
+        "stdout": '{"result":"check_mode_unverified","entry_count":0,"permission_denied_target":"unavailable"}',
     }
     assert "check_mode_unverified" in PLAYBOOK.read_text()
+
+    report = next(
+        task
+        for task in survey_play["tasks"]
+        if task.get("name") == "Report only the fixed journal source status"
+    )
+    template_environment = Environment()
+    template_environment.filters["from_json"] = json.loads
+    status_template = template_environment.from_string(report["ansible.builtin.debug"]["msg"])
+    for result in (
+        "/var/log/journal",
+        "/run/log/journal",
+        "ambiguous",
+        "none",
+        "probe_unavailable",
+        "check_mode_unverified",
+    ):
+        rendered = status_template.render(
+            _journal_directory_survey={"stdout": json.dumps({"result": result})}
+        )
+        assert "/var/log/journal" not in rendered
+        assert "/run/log/journal" not in rendered
+
+    diagnostic = next(
+        task
+        for task in survey_play["tasks"]
+        if task.get("name") == "Report only the bounded collector journal diagnostic"
+    )
+    assert "entry_count=" in diagnostic["ansible.builtin.debug"]["msg"]
+    assert "permission_denied_target=" in diagnostic["ansible.builtin.debug"]["msg"]
+    assert ".MESSAGE" not in diagnostic["ansible.builtin.debug"]["msg"]
 
 
 def test_rollback_health_diagnostic_is_allowlisted_and_fixed_probe_is_gated():

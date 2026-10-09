@@ -819,7 +819,7 @@
       ansible.builtin.set_fact:
         _journal_directory_survey:
           rc: 0
-          stdout: '{"result":"check_mode_unverified"}'
+          stdout: '{"result":"check_mode_unverified","entry_count":0,"permission_denied_target":"unavailable"}'
       when: ansible_check_mode
 
     - name: Require a valid sanitized standard-path survey result
@@ -827,9 +827,16 @@
         that:
           - _journal_directory_survey.rc | default(1) == 0
           - (_journal_directory_survey.stdout | default('{}') | from_json).result in ['/var/log/journal', '/run/log/journal', 'ambiguous', 'none', 'probe_unavailable', 'check_mode_unverified']
+          - (_journal_directory_survey.stdout | from_json).entry_count | int >= 0
+          - (_journal_directory_survey.stdout | from_json).entry_count | int <= 80
+          - (_journal_directory_survey.stdout | from_json).permission_denied_target in ['journal', 'positions', 'config', 'other', 'none', 'unavailable']
         fail_msg: "The standard journal directory survey failed without exposing journal data."
         quiet: true
 
-    - name: Report only the viable fixed path or a bounded ambiguity result
+    - name: Report only the fixed journal source status
       ansible.builtin.debug:
-        msg: "Journal directory survey result: {{ (_journal_directory_survey.stdout | from_json).result }}"
+        msg: "Journal directory survey status: {{ 'available' if (_journal_directory_survey.stdout | from_json).result in ['/var/log/journal', '/run/log/journal'] else (_journal_directory_survey.stdout | from_json).result }}"
+
+    - name: Report only the bounded collector journal diagnostic
+      ansible.builtin.debug:
+        msg: "Collector journal diagnostic: entry_count={{ (_journal_directory_survey.stdout | from_json).entry_count }}, permission_denied_target={{ (_journal_directory_survey.stdout | from_json).permission_denied_target }}"
