@@ -827,6 +827,19 @@ templates:
     playbook: platform/playbooks/run-agw-conformance.yml
     dev_variant: true
 
+  # Read-only drill for gateway tasks 6.1 and 6.4: how the production TLS listener treats a client
+  # with no certificate and a client leaf that is on no allowlist, with no key and with an invalid
+  # one. Records statuses and failure classes only. Dev-bound: the playbook is on dev until promotion.
+  - name: Probe agentgateway Client TLS (Dev)
+    playbook: platform/playbooks/probe-agentgateway-client-tls.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: probe_leaf
+        title: "Client leaf"
+        description: "A client-profile leaf declared for the gateway host in internal_leaves whose SANs are on no allowlist (issue it with Issue Internal Leaf (Dev) first)"
+        type: string
+        required: true
+
   - name: Deploy honcho
     playbook: platform/playbooks/deploy-honcho.yml
     dev_variant: true
