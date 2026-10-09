@@ -219,6 +219,25 @@ class CoverageContractTests(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0, result.stdout[-1200:] + result.stderr[-1200:])
 
+            refusal = subprocess.run(
+                [
+                    ansible_playbook,
+                    "-i", str(inventory_path),
+                    str(playbook_path),
+                    "-e", json.dumps({"expected_inventory_revision": expected}),
+                ],
+                cwd=ROOT,
+                env=environment,
+                capture_output=True,
+                text=True,
+                timeout=45,
+            )
+            self.assertNotEqual(refusal.returncode, 0, refusal.stdout[-1200:] + refusal.stderr[-1200:])
+            self.assertIn(
+                "Strict signal observation refused: the receiver host inventory does not match the reviewed revision.",
+                refusal.stdout + refusal.stderr,
+            )
+
     def test_strict_signal_observation_uses_the_query_and_is_unattributed(self):
         tasks = yaml.safe_load((ROOT / "platform/playbooks/tasks/o11y-coverage-target-receipt.yml").read_text())
         registers = [task.get("register") for task in tasks if task.get("register")]
