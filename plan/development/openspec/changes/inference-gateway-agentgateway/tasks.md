@@ -233,7 +233,17 @@
         (label `fa0eea35…` to `097bf61f…`) and its verify passed with the new key.
       An inventory-only change could not serve as the leg-C input: the local Semaphore runs from
       the bootstrap's own static inventory (`bootstrap-local-dev.yml`, `agw_models` in the INI),
-      not from `local-dev.yml`. Hot reload stays unconfirmed; the hash-label path is the one built.
+      not from `local-dev.yml`. The hot-reload experiment (directory mount, change one `apiKey`,
+      watch for a reload without restart) was NOT run; the "not confirmed" branch is the one taken
+      by default and built (PR #382), so `inference-personal-keys` takes its cohort-rotation branch.
+      The text's "unverified: plain `compose up -d` starts a stopped container" is moot: `deploy.sh`
+      never takes that path; a missing or stopped gateway sets a recreate reason and runs
+      `up -d --force-recreate` (`deploy.sh`, the RECREATE_REASON branch), which leg B exercised.
+      Between the cited runs, local task 5326 was the first leg-C attempt (an inventory-only model
+      alias plus the failing `deploy.sh`; it failed as forced) and 5327 its follow-up, which changed
+      nothing because that inventory edit never reached the local Semaphore's static inventory;
+      leg C was then redone with a key rotation (5328/5329). The local Semaphore ran on a
+      non-default host port through the fix in PR #498 (`local_semaphore_port`).
 
 ## 2. Conformance against direct vLLM
       Added 2026-09-22 (security review): the gateway's `platform-admins in jwt.groups` rule
