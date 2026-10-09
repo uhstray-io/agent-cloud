@@ -2,10 +2,16 @@
 
 import importlib.util
 import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
+import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -474,6 +480,67 @@ def test_survey_check_mode_skips_container_probe_and_reports_unverified():
         "stdout": '{"result":"check_mode_unverified"}',
     }
     assert "check_mode_unverified" in PLAYBOOK.read_text()
+
+
+def test_rollback_inspect_classifier_maps_results_through_ansible_templar():
+    ansible_playbook = shutil.which("ansible-playbook")
+    if not ansible_playbook:
+        pytest.skip("ansible-playbook is unavailable")
+    first_line = Path(ansible_playbook).read_text(errors="replace").splitlines()[0]
+    ansible_python = first_line[2:].strip().split()[-1] if first_line.startswith("#!") else sys.executable
+    cases = [
+        {
+            "rc": 125,
+            "stderr": "Error: no container with name or ID found",
+            "stdout": "",
+            "expected": "container_missing",
+        },
+        {
+            "rc": 125,
+            "stderr": "permission denied while inspecting container",
+            "stdout": "",
+            "expected": "permission_denied",
+        },
+        {"rc": 1, "stderr": "unexpected inspect failure", "stdout": "", "expected": "inspect_failed"},
+        {"rc": 0, "stderr": "", "stdout": "", "expected": "empty_formatted_fields"},
+        {"rc": 0, "stderr": "", "stdout": "running healthy 0 0", "expected": "fields_available"},
+    ]
+    harness = r'''
+import json, sys, yaml
+from ansible.template import Templar, trust_as_template
+from ansible.parsing.dataloader import DataLoader
+plays = yaml.safe_load(open(sys.argv[1]))
+tasks = next(play for play in plays if play.get("name") == "Deploy the bounded journal collector")["tasks"]
+apply = next(task for task in tasks if task.get("name") == "Apply the collector and require exact-target Loki delivery")
+classifier = next(
+    task for task in apply["rescue"]
+    if task.get("name") == "Classify collector inspect outcome without exposing stderr"
+)
+expression = classifier["ansible.builtin.set_fact"]["_journal_rollback_health_evidence_class"]
+for case in json.loads(sys.stdin.read()):
+    variables = {"_journal_rollback_health_evidence": {key: case[key] for key in ("rc", "stderr", "stdout")}}
+    result = Templar(loader=DataLoader(), variables=variables).template(trust_as_template(expression)).strip()
+    print(result)
+'''
+    temp_root = "/private/tmp" if Path("/private/tmp").is_dir() else tempfile.gettempdir()
+    with tempfile.TemporaryDirectory(prefix="o11y-journal-templar-", dir=temp_root) as ansible_tmp:
+        env = os.environ.copy() | {
+            "ANSIBLE_LOCAL_TEMP": ansible_tmp,
+            "ANSIBLE_REMOTE_TEMP": ansible_tmp,
+        }
+        result = subprocess.run(
+            [ansible_python, "-c", harness, str(PLAYBOOK)],
+            cwd=ROOT,
+            env=env,
+            input=json.dumps(cases),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines() == [case["expected"] for case in cases]
+    assert result.stderr == ""
 
 
 def test_semaphore_template_is_dev_bound_and_requires_exact_sha():
