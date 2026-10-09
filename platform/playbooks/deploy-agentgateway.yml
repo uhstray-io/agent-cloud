@@ -514,12 +514,12 @@
         quiet: true
       when: not ansible_check_mode
 
-    # Invocation follows the standalone CLI docs (`agentgateway --validate-only -f config.yaml`);
-    # --pull=never makes the validator consume the local artifact prepared above.
+    # The default rootless Podman network permits issuer-only OIDC discovery during validate-only.
+    # This checks config acceptance, not parity with the runtime Compose network.
     - name: "Validate the rendered config with the pinned v1.5.0 image before container recreation"
       ansible.builtin.command:
         argv: >-
-          {{ [container_engine | default('podman'), 'run', '--pull=never', '--rm', '--network=none',
+          {{ [container_engine | default('podman'), 'run', '--pull=never', '--rm',
               '--env-file', _deploy_dir ~ '/.env', '--volume', _deploy_dir ~ '/config.yaml:/config.yaml:ro']
              + (['--volume', _deploy_dir ~ '/certs:/certs:ro'] if (_tls or (local_mode | default(false) | bool)) else [])
              + (['--env', 'SSL_CERT_FILE=/certs/step-ca-bundle.crt'] if (local_mode | default(false) | bool) else [])
