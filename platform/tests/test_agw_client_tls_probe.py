@@ -76,21 +76,23 @@ def pki(tmp_path_factory):
 # ── the listener ──────────────────────────────────────────────────────────────
 
 class Listener(ThreadingHTTPServer):
-    """TLS with a required client certificate. `mode` picks the order of the two checks:
-    san-first (the measured gateway), key-first, or admit (no SAN rule, no key check)."""
+    """TLS with a required client certificate (`require_cert=False` asks for one but lets a client
+    without it through the handshake). `mode` picks the answer: san-first (the measured gateway),
+    key-first, admit (no SAN rule, no key check), or status-N (an unhealthy gateway: N for everything)."""
 
     daemon_threads = True
     request_queue_size = 64
 
-    def __init__(self, pki: Path, mode: str, ca: str = "ca"):
+    def __init__(self, pki: Path, mode: str, ca: str = "ca", require_cert: bool = True):
         super().__init__(("127.0.0.1", 0), _Handler)
         self.mode, self.allowed = mode, {"caddy.example.internal"}
+        self.script: list[str] = []  # when set, the mode of each request in turn
         self.seen: list[dict] = []   # one entry per request that got through the handshake
         self.refused = 0             # handshakes the server ended
         self.ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         self.ctx.minimum_version = ssl.TLSVersion.TLSv1_2
         self.ctx.load_cert_chain(pki / "leaves/server/current/cert.pem", pki / "leaves/server/current/key.pem")
-        self.ctx.verify_mode = ssl.CERT_REQUIRED
+        self.ctx.verify_mode = ssl.CERT_REQUIRED if require_cert else ssl.CERT_OPTIONAL
         self.ctx.load_verify_locations(pki / f"{ca}.crt")
 
     def get_request(self):
@@ -119,9 +121,11 @@ class _Handler(DrainingHandler):
         auth = self.headers.get("Authorization")
         self.server.seen.append({"path": self.path, "auth": auth, "sans": sans})
         allowed = bool(set(sans) & self.server.allowed)
-        mode = self.server.mode
+        mode = self.server.script.pop(0) if self.server.script else self.server.mode
         key_ok = auth == f"Bearer {VALID_KEY}"
-        if mode == "admit":
+        if mode.startswith("status-"):
+            status = int(mode.removeprefix("status-"))
+        elif mode == "admit":
             status = 200
         elif mode == "san-first":
             status = 403 if not allowed else (200 if key_ok else 401)
@@ -137,8 +141,8 @@ class _Handler(DrainingHandler):
 def listener(pki):
     started = []
 
-    def start(mode="san-first", ca="ca"):
-        server = Listener(pki, mode, ca)
+    def start(mode="san-first", ca="ca", require_cert=True):
+        server = Listener(pki, mode, ca, require_cert)
         threading.Thread(target=server.serve_forever, daemon=True).start()
         started.append(server)
         return server
@@ -207,7 +211,7 @@ def test_a_leaf_on_no_allowlist_is_refused_with_403_before_the_key_is_looked_at(
     rc, out = _run(tmp_path, pki, f"https://localhost:{gw.server_port}")
     assert rc == 0, out
     rep = _report(out)
-    assert rep["classes"][1] in ("tls-handshake-refused", "connection-closed", "http-400"), out
+    assert rep["classes"][1] in ("tls-handshake-refused", "connection-closed"), out
     assert rep["classes"][2] == "http-403" and rep["classes"][3] == "http-403", out
     assert "the SAN rule ran before the API-key check" in rep["reading"] and "HTTP 403" in rep["reading"], out
     # what the server received: no request without a certificate, then the leaf with no Authorization,
@@ -236,6 +240,41 @@ def test_a_gateway_that_admits_a_client_it_must_refuse_fails_the_run(tmp_path, p
     rc, out = _run(tmp_path, pki, f"https://localhost:{gw.server_port}")
     assert rc != 0 and "The gateway ADMITTED probe(s) p2, p3" in out, out
     assert _report(out)["classes"][2] == "http-200"
+    _no_leak(out)
+
+
+@pytest.mark.parametrize("status", [301, 404, 429, 500, 503])
+def test_a_status_that_is_no_policy_answer_is_inconclusive_and_gives_no_reading(tmp_path, pki, listener, status):
+    # An unhealthy gateway answers every request alike. A 5xx or a 404 on the leaf probes is not the SAN rule
+    # or the key check, so the run fails and does not print "the SAN rule ran first".
+    gw = listener(f"status-{status}")
+    rc, out = _run(tmp_path, pki, f"https://localhost:{gw.server_port}")
+    assert rc != 0 and "were not a policy answer" in out and "inconclusive" in out, out
+    rep = _report(out)
+    assert rep["classes"][2] == f"http-{status}" and rep["classes"][3] == f"http-{status}", out
+    assert rep["reading"].startswith("no reading"), out
+    assert "SAN rule ran before" not in out
+    _no_leak(out)
+
+
+def test_one_policy_answer_and_one_other_status_is_inconclusive(tmp_path, pki, listener):
+    # 403 for the leaf with no key, then the gateway degrades: the second probe's 503 fails the run.
+    gw = listener("san-first")
+    gw.script = ["san-first", "status-503"]
+    rc, out = _run(tmp_path, pki, f"https://localhost:{gw.server_port}")
+    rep = _report(out)
+    assert rc != 0 and rep["classes"][2] == "http-403" and rep["classes"][3] == "http-503", out
+    assert rep["reading"].startswith("no reading"), out
+
+
+@pytest.mark.parametrize("mode, status", [("san-first", 403), ("key-first", 401), ("admit", 200)])
+def test_a_listener_that_answers_http_without_a_client_certificate_fails_the_run(tmp_path, pki, listener, mode, status):
+    # The handshake is not stopped: any HTTP status to the client with no certificate is the finding.
+    gw = listener(mode, require_cert=False)
+    rc, out = _run(tmp_path, pki, f"https://localhost:{gw.server_port}")
+    assert rc != 0 and f"The listener answered without a client certificate (HTTP {status})" in out, out
+    assert _report(out)["classes"][1] == f"http-{status}"
+    assert [s["sans"] for s in gw.seen][0] == []
     _no_leak(out)
 
 

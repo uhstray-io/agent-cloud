@@ -21,14 +21,16 @@
 #
 #   -e probe_leaf=<declared client leaf>      (Semaphore survey, required)
 #
-# Pass: none of the three is admitted (a 2xx) and each was refused by the gateway: an HTTP
-# status, a TLS handshake refusal or a closed connection. A transport failure that says
-# nothing about the gateway's policy (the server leaf did not verify, the name did not
-# resolve, a timeout, a refused connection) fails the run as inconclusive instead of passing it.
+# Pass: no certificate is stopped in the handshake (a TLS handshake refusal or a closed connection;
+# an HTTP answer there is a finding and fails the run), and each leaf probe is answered by the
+# gateway's policy: HTTP 401 or 403, or a handshake refusal. A 2xx is admission and fails. Any other
+# status (3xx, 404, 429, 5xx: an unhealthy gateway) and any transport failure that says nothing about
+# the policy (the server leaf did not verify, the name did not resolve, a timeout, a refused
+# connection) fail the run as inconclusive instead of passing it.
 #
-# Reading, reported and not asserted: when probes 2 and 3 answer the same non-401 status, the
-# SAN rule ran before the API-key check and that status is what a failed rule answers; when
-# probe 2 answers 401 the key check was reached first.
+# Reading, reported and not asserted, only when probes 2 and 3 were both answered 401 or 403: both 403
+# means the SAN rule ran before the API-key check and 403 is what a failed rule answers; probe 2
+# answered 401 means the key check was reached first. Otherwise: no reading.
 #
 # Nothing here prints a response body, a header or a key: the report carries statuses, failure
 # classes and the reading. Read-only on the gateway; the resolution step is its read-only mode
@@ -237,25 +239,35 @@
             _tp_verdict: "{{ _tp_verdict_dict | to_json }}"
           vars:
             _c: "{{ _tp_classes | from_json }}"
-            _refusals: [tls-handshake-refused, connection-closed]
-            _admitted: "{{ _c.items() | selectattr('1', 'match', '^http-2') | map(attribute='0') | list }}"
-            _inconclusive: >-
-              {{ _c.items() | rejectattr('1', 'match', '^http-') | rejectattr('1', 'in', _refusals) | map(attribute='0') | list }}
+            _leaf_probes: "{{ {'p2': _c.p2, 'p3': _c.p3} }}"
+            # What the gateway's own policy answers. Probe 1 has no HTTP answer to give: a client
+            # with no certificate is stopped in the handshake, so any status there is a finding.
+            _no_cert_refusals: [tls-handshake-refused, connection-closed]
+            _leaf_refusals: [http-401, http-403, tls-handshake-refused, connection-closed]
+            _answered: "{{ ['p1'] if (_c.p1 is match('^http-')) else [] }}"
+            _admitted: "{{ _leaf_probes.items() | selectattr('1', 'match', '^http-2') | map(attribute='0') | list }}"
+            # Neither a policy answer nor a 2xx: a 3xx, 404, 429 or 5xx from an unhealthy gateway,
+            # or a transport failure that says nothing about the policy.
+            _inconclusive_1: "{{ [] if (_c.p1 is match('^http-') or _c.p1 in _no_cert_refusals) else ['p1'] }}"
+            _inconclusive_leaf: >-
+              {{ _leaf_probes.items() | rejectattr('1', 'match', '^http-2') | rejectattr('1', 'in', _leaf_refusals)
+                 | map(attribute='0') | list }}
             _s2: "{{ _tp_r2.status }}"
             _s3: "{{ _tp_r3.status }}"
             _reading_raw: >-
-              {% if _admitted | length > 0 or _inconclusive | length > 0 %}
-              no reading: the run did not record three refusals
-              {% elif _s2 > 0 and _s2 == _s3 and _s2 != 401 %}
-              the SAN rule ran before the API-key check: a leaf on no allowlist is answered HTTP {{ _s2 }} with or without a key
+              {% if _s2 not in [401, 403] or _s3 not in [401, 403] %}
+              no reading: probes 2 and 3 were not both answered by the gateway's policy (401 or 403)
+              {% elif _s2 == 403 and _s3 == 403 %}
+              the SAN rule ran before the API-key check: a leaf on no allowlist is answered HTTP 403 with or without a key
               {% elif _s2 == 401 %}
               the API-key check was reached first: the leaf with no key was answered 401, so the SAN rule did not refuse it before the key check
               {% else %}
               no single reading: the leaf answered {{ _c.p2 }} with no key and {{ _c.p3 }} with an invalid key
               {% endif %}
             _tp_verdict_dict:
+              answered: "{{ _answered }}"
               admitted: "{{ _admitted }}"
-              inconclusive: "{{ _inconclusive }}"
+              inconclusive: "{{ _inconclusive_1 + _inconclusive_leaf }}"
               reading: "{{ _reading_raw | trim }}"
 
         # Statuses, classes and the reading only: no body, no header, no key, and the error text
@@ -272,13 +284,17 @@
         - name: "Require three refusals the gateway itself answered"
           ansible.builtin.assert:
             that:
+              - (_tp_verdict | from_json).answered | length == 0
               - (_tp_verdict | from_json).admitted | length == 0
               - (_tp_verdict | from_json).inconclusive | length == 0
             fail_msg: >-
+              {{ 'The listener answered without a client certificate (HTTP ' ~ _tp_r1.status ~ ').'
+                 if ((_tp_verdict | from_json).answered | length > 0) else '' }}
               {{ 'The gateway ADMITTED probe(s) ' ~ ((_tp_verdict | from_json).admitted | join(', ')) ~ ' (a 2xx).'
                  if ((_tp_verdict | from_json).admitted | length > 0) else '' }}
-              {{ 'Probe(s) ' ~ ((_tp_verdict | from_json).inconclusive | join(', ')) ~ ' never reached the gateway policy
-                 (server certificate not trusted, name not resolved, timeout, refused or unclassified): inconclusive.'
+              {{ 'Probe(s) ' ~ ((_tp_verdict | from_json).inconclusive | join(', ')) ~ ' were not a policy answer
+                 (a status other than 401 or 403, a server certificate not trusted, a name not resolved, a timeout,
+                 a refused connection or an unclassified failure): inconclusive.'
                  if ((_tp_verdict | from_json).inconclusive | length > 0) else '' }}
               See the report above for each probe's class.
             quiet: true
