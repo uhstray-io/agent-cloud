@@ -46,8 +46,10 @@
 # rollback that must outlast the next Caddy run is also written into inventory.
 #   inference_route_address           the inference site's address, e.g. inference.<zone>
 #   inference_route_mode              the inventory default ('gateway' after the switch)
-#   inference_route_gateway_upstream  optional; host:port Caddy dials for the gateway
-#                                     (default: the gateway host's agw_bind:agw_port)
+#   inference_route_gateway_upstream  host:port Caddy dials for the gateway. Optional only when
+#                                     the gateway host's agw_bind is a specific address (then
+#                                     agw_bind:agw_port); a wildcard or unset agw_bind is not
+#                                     dialable, so the run refuses until this is declared
 #   inference_route_direct_upstream   optional; host:port Caddy dials for vLLM
 #                                     (default: the host:port of the gateway's
 #                                     agw_upstream_base_url, the head node)
@@ -139,6 +141,22 @@
           - inference_route_address | default('') | length > 0
         fail_msg: "caddy_svc must hold exactly one host, and it must declare inference_route_address (the inference site's address)."
 
+    - name: "Require a dialable gateway upstream"
+      # A wildcard bind (0.0.0.0, ::) or none says where the gateway LISTENS, not where Caddy
+      # dials it, and the read-back could never match it. ansible_host is not assumed to be the
+      # dialable address (local-dev's is a container), so the dial address is declared.
+      tags: [verify]
+      ansible.builtin.assert:
+        that: >-
+          (inference_route_gateway_upstream | default('', true) | length > 0)
+          or (hostvars[_gw].agw_bind | default('') not in ['', '0.0.0.0', '::'])
+        fail_msg: >-
+          inference_route_gateway_upstream is not declared and the gateway host's agw_bind
+          ('{{ hostvars[_gw].agw_bind | default('') }}') is unset or a wildcard, which Caddy cannot
+          dial. Declare inference_route_gateway_upstream (host:port of the gateway as Caddy
+          reaches it); nothing was changed.
+        quiet: true
+
     - name: "Name the upstream each mode dials"
       tags: [verify]
       ansible.builtin.set_fact:
@@ -146,8 +164,8 @@
           {{ inference_route_direct_upstream
              | default(hostvars[_gw].agw_upstream_base_url | default('') | urlsplit('netloc')) }}
         _rb_gateway_upstream: >-
-          {{ inference_route_gateway_upstream
-             | default((hostvars[_gw].agw_bind | default('127.0.0.1')) ~ ':' ~ (hostvars[_gw].agw_port | default('4000'))) }}
+          {{ inference_route_gateway_upstream | default('', true)
+             or ((hostvars[_gw].agw_bind | default('')) ~ ':' ~ (hostvars[_gw].agw_port | default('4000'))) }}
 
     - name: "Require two distinct upstreams"
       tags: [verify]

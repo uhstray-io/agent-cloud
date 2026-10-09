@@ -728,3 +728,19 @@ def test_the_gateway_upstream_defaults_to_the_gateway_bind_and_port(env):
     rc, out = _run(env, mode="restore", caddy={"caddy_managed_sites": sites, "inference_route_gateway_upstream": None},
                    gateway={"agw_bind": "gw-bind.example.test", "agw_port": "4100"})
     assert rc == 0 and f"{ADDRESS} dials gw-bind.example.test:4100 only (running config)." in out, out
+
+
+@pytest.mark.parametrize("bind", [None, "0.0.0.0", "::", ""])
+def test_an_undialable_gateway_bind_without_a_declared_upstream_is_refused_before_any_write(env, bind):
+    tmp = env[0]
+    before = _route(tmp)
+    rc, out = _run(env, mode="restore", caddy={"inference_route_gateway_upstream": None},
+                   gateway={"agw_bind": bind})
+    assert rc != 0 and "inference_route_gateway_upstream is not declared" in out, out
+    assert "nothing was changed" in out and _route(tmp) == before and not _calls(tmp, "restart")
+
+
+@pytest.mark.parametrize("bind", [None, "0.0.0.0"])
+def test_a_declared_gateway_upstream_is_used_whatever_the_bind(env, bind):
+    rc, out = _run(env, mode="restore", gateway={"agw_bind": bind})
+    assert rc == 0 and f"{ADDRESS} dials {GATEWAY} only (running config)." in out, out
