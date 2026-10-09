@@ -306,10 +306,25 @@ def test_playbook_guards_validation_delivery_and_non_destructive_rollback():
         for task in apply_block["block"]
         if task.get("name") == "Start only the journal collector service"
     )
-    rollback_evidence = next(
+    rollback_state = next(
         task
         for task in apply_block["rescue"]
-        if task.get("name") == "Capture allow-listed collector health evidence before rollback"
+        if task.get("name") == "Capture collector runtime state and automatic health results before rollback"
+    )
+    rollback_config = next(
+        task
+        for task in apply_block["rescue"]
+        if task.get("name") == "Capture collector effective health schedule before rollback"
+    )
+    rollback_action = next(
+        task
+        for task in apply_block["rescue"]
+        if task.get("name") == "Capture collector health failure action before rollback"
+    )
+    rollback_startup = next(
+        task
+        for task in apply_block["rescue"]
+        if task.get("name") == "Capture collector startup healthcheck presence before rollback"
     )
     rollback_failure = next(
         task
@@ -319,28 +334,43 @@ def test_playbook_guards_validation_delivery_and_non_destructive_rollback():
     rollback_classifier = next(
         task
         for task in apply_block["rescue"]
-        if task.get("name") == "Classify collector inspect outcome without exposing stderr"
+        if task.get("name") == "Classify collector health probes without exposing stderr"
     )
     assert "check_mode" not in start_task
     assert start_task["when"] == "not ansible_check_mode"
-    assert rollback_evidence["check_mode"] is False
-    evidence_format = " ".join(rollback_evidence["ansible.builtin.command"]["argv"])
-    assert ".State.Health" in evidence_format
-    assert ".State.Healthcheck" not in evidence_format
-    assert ".FailingStreak" in evidence_format
-    assert ".ExitCode" in evidence_format
-    assert ".Output" not in evidence_format
+    evidence_formats = [
+        " ".join(task["ansible.builtin.command"]["argv"])
+        for task in (rollback_state, rollback_config, rollback_action, rollback_startup)
+    ]
+    assert all(
+        task["check_mode"] is False
+        for task in (rollback_state, rollback_config, rollback_action, rollback_startup)
+    )
+    assert ".State.Health" in evidence_formats[0]
+    assert ".FailingStreak" in evidence_formats[0]
+    assert ".ExitCode" in evidence_formats[0]
+    assert ".Output" not in " ".join(evidence_formats)
+    assert ".Config.Healthcheck" in evidence_formats[1]
+    assert ".Interval" in evidence_formats[1]
+    assert ".Config.HealthcheckOnFailureAction" in evidence_formats[2]
+    assert ".Config.StartupHealthCheck" in evidence_formats[3]
     failure_message = rollback_failure["ansible.builtin.fail"]["msg"]
-    classifier = rollback_classifier["ansible.builtin.set_fact"]["_journal_rollback_health_evidence_class"]
-    assert "container_missing" in classifier
-    assert "permission_denied" in classifier
-    assert "inspect_failed" in classifier
-    assert "empty_formatted_fields" in classifier
-    assert "fields_available" in classifier
-    assert "Podman inspect rc={{ _journal_rollback_health_evidence.rc" in failure_message
-    assert "inspect classification={{ _journal_rollback_health_evidence_class" in failure_message
-    assert "_journal_rollback_health_evidence.stdout" in failure_message
-    assert "_journal_rollback_health_evidence.stderr" not in failure_message
+    classifications = rollback_classifier["ansible.builtin.set_fact"]
+    assert "container_missing" in classifications["_journal_rollback_state_class"]
+    assert "permission_denied" in classifications["_journal_rollback_state_class"]
+    assert "state_probe_failed" in classifications["_journal_rollback_state_class"]
+    assert "config_probe_failed" in classifications["_journal_rollback_health_config_class"]
+    assert "healthcheck_absent" in classifications["_journal_rollback_health_config_class"]
+    assert "action_probe_failed" in classifications["_journal_rollback_health_action_class"]
+    assert "action_unknown" in classifications["_journal_rollback_health_action_class"]
+    assert "startup_probe_failed" in classifications["_journal_rollback_startup_health_class"]
+    assert "state/config/action/startup classification=" in failure_message
+    assert "Podman state/config/action/startup rc=" in failure_message
+    assert "_journal_rollback_state_evidence.stdout" in failure_message
+    assert "_journal_rollback_health_config.stdout" in failure_message
+    assert "_journal_rollback_health_action.stdout" in failure_message
+    assert "_journal_rollback_startup_health.stdout" in failure_message
+    assert ".stderr" not in failure_message
     rollback_remove = next(
         task
         for task in apply_block["rescue"]
@@ -370,7 +400,10 @@ def test_playbook_guards_validation_delivery_and_non_destructive_rollback():
         "o11y-journal-collector",
     ]
     assert "when" not in rollback_remove
-    assert apply_block["rescue"].index(rollback_evidence) < apply_block["rescue"].index(rollback_volume_capture)
+    assert all(
+        apply_block["rescue"].index(task) < apply_block["rescue"].index(rollback_volume_capture)
+        for task in (rollback_state, rollback_config, rollback_action, rollback_startup)
+    )
     assert apply_block["rescue"].index(rollback_volume_capture) < apply_block["rescue"].index(rollback_remove)
     assert apply_block["rescue"].index(rollback_remove) < apply_block["rescue"].index(rollback_volume_readback)
     assert ".Name" in " ".join(rollback_volume_capture["ansible.builtin.command"]["argv"])
@@ -488,7 +521,7 @@ def test_rollback_health_diagnostic_is_allowlisted_and_manual_check_is_gated():
         pytest.skip("ansible-playbook is unavailable")
     first_line = Path(ansible_playbook).read_text(errors="replace").splitlines()[0]
     ansible_python = first_line[2:].strip().split()[-1] if first_line.startswith("#!") else sys.executable
-    cases = [
+    state_cases = [
         {
             "rc": 125,
             "stderr": "Error: no container with name or ID found",
@@ -501,43 +534,82 @@ def test_rollback_health_diagnostic_is_allowlisted_and_manual_check_is_gated():
             "stdout": "",
             "expected": "permission_denied",
         },
-        {"rc": 1, "stderr": "unexpected inspect failure", "stdout": "", "expected": "inspect_failed"},
+        {"rc": 1, "stderr": "unexpected inspect failure", "stdout": "", "expected": "state_probe_failed"},
         {"rc": 0, "stderr": "", "stdout": "", "expected": "empty_formatted_fields"},
         {
             "rc": 0,
             "stderr": "",
+            "stdout": "state=running health=starting failing_streak=0 log_count=0 exit_codes=",
+            "expected": "fields_available",
+        },
+    ]
+    config_cases = [
+        {"rc": 125, "stdout": "", "expected": "config_probe_failed"},
+        {"rc": 0, "stdout": "", "expected": "empty_formatted_fields"},
+        {
+            "rc": 0,
             "stdout": (
-                "state=running health=starting failing_streak=0 log_count=0 exit_codes= "
-                "healthcheck_present=present test_kind=CMD-SHELL interval=30s timeout=10s "
-                "retries=3 start_period=20s startup_check=absent on_failure=none max_log_count=5"
+                "healthcheck_present=absent test_kind=none interval=unavailable timeout=unavailable "
+                "retries=unavailable start_period=unavailable"
+            ),
+            "expected": "healthcheck_absent",
+        },
+        {
+            "rc": 0,
+            "stdout": (
+                "healthcheck_present=present test_kind=CMD-SHELL interval=15s timeout=5s "
+                "retries=8 start_period=20s"
             ),
             "expected": "fields_available",
         },
     ]
+    action_cases = [
+        {"rc": 125, "stdout": "", "expected": "action_probe_failed"},
+        {"rc": 0, "stdout": "", "expected": "empty_formatted_fields"},
+        {"rc": 0, "stdout": "on_failure=unknown", "expected": "action_unknown"},
+        {"rc": 0, "stdout": "on_failure=none", "expected": "fields_available"},
+    ]
+    startup_cases = [
+        {"rc": 125, "stdout": "", "expected": "startup_probe_failed"},
+        {"rc": 0, "stdout": "", "expected": "empty_formatted_fields"},
+        {"rc": 0, "stdout": "startup_check=absent", "expected": "fields_available"},
+        {"rc": 0, "stdout": "startup_check=present", "expected": "fields_available"},
+    ]
     gate_cases = [
         {
-            "rc": 0,
-            "stdout": "state=running health=starting healthcheck_present=present on_failure=none",
+            "state": {"rc": 0, "stdout": "state=running health=starting"},
+            "config": {"rc": 0, "stdout": "healthcheck_present=present interval=15s"},
+            "action": {"rc": 0, "stdout": "on_failure=none"},
             "expected": True,
         },
         {
-            "rc": 0,
-            "stdout": "state=running health=starting healthcheck_present=present on_failure=restart",
+            "state": {"rc": 0, "stdout": "state=running health=starting"},
+            "config": {"rc": 0, "stdout": "healthcheck_present=present interval=15s"},
+            "action": {"rc": 0, "stdout": "on_failure=restart"},
             "expected": False,
         },
         {
-            "rc": 0,
-            "stdout": "state=stopped health=starting healthcheck_present=present on_failure=none",
+            "state": {"rc": 0, "stdout": "state=stopped health=starting"},
+            "config": {"rc": 0, "stdout": "healthcheck_present=present interval=15s"},
+            "action": {"rc": 0, "stdout": "on_failure=none"},
             "expected": False,
         },
         {
-            "rc": 0,
-            "stdout": "state=running health=starting healthcheck_present=absent on_failure=none",
+            "state": {"rc": 0, "stdout": "state=running health=starting"},
+            "config": {"rc": 0, "stdout": "healthcheck_present=absent interval=unavailable"},
+            "action": {"rc": 0, "stdout": "on_failure=none"},
             "expected": False,
         },
         {
-            "rc": 125,
-            "stdout": "state=running health=starting healthcheck_present=present on_failure=none",
+            "state": {"rc": 0, "stdout": "state=running health=starting"},
+            "config": {"rc": 125, "stdout": ""},
+            "action": {"rc": 0, "stdout": "on_failure=none"},
+            "expected": False,
+        },
+        {
+            "state": {"rc": 0, "stdout": "state=running health=starting"},
+            "config": {"rc": 0, "stdout": "healthcheck_present=present interval=15s"},
+            "action": {"rc": 125, "stdout": ""},
             "expected": False,
         },
     ]
@@ -555,13 +627,25 @@ from ansible.parsing.dataloader import DataLoader
 plays = yaml.safe_load(open(sys.argv[1]))
 tasks = next(play for play in plays if play.get("name") == "Deploy the bounded journal collector")["tasks"]
 apply = next(task for task in tasks if task.get("name") == "Apply the collector and require exact-target Loki delivery")
-evidence = next(
+state = next(
     task for task in apply["rescue"]
-    if task.get("name") == "Capture allow-listed collector health evidence before rollback"
+    if task.get("name") == "Capture collector runtime state and automatic health results before rollback"
+)
+config = next(
+    task for task in apply["rescue"]
+    if task.get("name") == "Capture collector effective health schedule before rollback"
+)
+action = next(
+    task for task in apply["rescue"]
+    if task.get("name") == "Capture collector health failure action before rollback"
+)
+startup = next(
+    task for task in apply["rescue"]
+    if task.get("name") == "Capture collector startup healthcheck presence before rollback"
 )
 classifier = next(
     task for task in apply["rescue"]
-    if task.get("name") == "Classify collector inspect outcome without exposing stderr"
+    if task.get("name") == "Classify collector health probes without exposing stderr"
 )
 manual = next(
     task for task in apply["rescue"]
@@ -579,9 +663,16 @@ remove = next(
     task for task in apply["rescue"]
     if task.get("name") == "Force-remove only the failed collector while retaining positions"
 )
-format_expression = evidence["ansible.builtin.command"]["argv"][3]
-rendered_format = Templar(loader=DataLoader(), variables={}).template(trust_as_template(format_expression))
-expression = classifier["ansible.builtin.set_fact"]["_journal_rollback_health_evidence_class"]
+render_format = lambda task: Templar(loader=DataLoader(), variables={}).template(
+    trust_as_template(task["ansible.builtin.command"]["argv"][3])
+)
+rendered_formats = {
+    "state": render_format(state),
+    "config": render_format(config),
+    "action": render_format(action),
+    "startup": render_format(startup),
+}
+expressions = classifier["ansible.builtin.set_fact"]
 gate_expression = next(
     task for task in apply["rescue"]
     if task.get("name") == "Decide whether one manual healthcheck is safe as diagnostic evidence"
@@ -601,12 +692,39 @@ manual_settings = {
 data = json.loads(sys.stdin.read())
 classes = []
 for case in data["classifier_cases"]:
-    variables = {"_journal_rollback_health_evidence": {key: case[key] for key in ("rc", "stderr", "stdout")}}
-    result = Templar(loader=DataLoader(), variables=variables).template(trust_as_template(expression)).strip()
+    variables = {"_journal_rollback_state_evidence": {key: case[key] for key in ("rc", "stderr", "stdout")}}
+    result = Templar(loader=DataLoader(), variables=variables).template(
+        trust_as_template(expressions["_journal_rollback_state_class"])
+    ).strip()
     classes.append(result)
+config_classes = []
+for case in data["config_cases"]:
+    variables = {"_journal_rollback_health_config": case}
+    result = Templar(loader=DataLoader(), variables=variables).template(
+        trust_as_template(expressions["_journal_rollback_health_config_class"])
+    ).strip()
+    config_classes.append(result)
+action_classes = []
+for case in data["action_cases"]:
+    variables = {"_journal_rollback_health_action": case}
+    result = Templar(loader=DataLoader(), variables=variables).template(
+        trust_as_template(expressions["_journal_rollback_health_action_class"])
+    ).strip()
+    action_classes.append(result)
+startup_classes = []
+for case in data["startup_cases"]:
+    variables = {"_journal_rollback_startup_health": case}
+    result = Templar(loader=DataLoader(), variables=variables).template(
+        trust_as_template(expressions["_journal_rollback_startup_health_class"])
+    ).strip()
+    startup_classes.append(result)
 gate_results = []
 for case in data["gate_cases"]:
-    variables = {"_journal_rollback_health_evidence": case}
+    variables = {
+        "_journal_rollback_state_evidence": case["state"],
+        "_journal_rollback_health_config": case["config"],
+        "_journal_rollback_health_action": case["action"],
+    }
     result = Templar(loader=DataLoader(), variables=variables).template(trust_as_template(gate_expression))
     gate_results.append(str(result).lower() == "true")
 manual_results = []
@@ -618,8 +736,11 @@ for case in data["manual_cases"]:
     result = Templar(loader=DataLoader(), variables=variables).template(trust_as_template(manual_expression)).strip()
     manual_results.append(result)
 print(json.dumps({
-    "format": rendered_format,
+    "formats": rendered_formats,
     "classes": classes,
+    "config_classes": config_classes,
+    "action_classes": action_classes,
+    "startup_classes": startup_classes,
     "gate_results": gate_results,
     "manual_results": manual_results,
     "manual_argv": manual_argv,
@@ -638,7 +759,16 @@ print(json.dumps({
             [ansible_python, "-c", harness, str(PLAYBOOK)],
             cwd=ROOT,
             env=env,
-            input=json.dumps({"classifier_cases": cases, "gate_cases": gate_cases, "manual_cases": manual_cases}),
+            input=json.dumps(
+                {
+                    "classifier_cases": state_cases,
+                    "config_cases": config_cases,
+                    "action_cases": action_cases,
+                    "startup_cases": startup_cases,
+                    "gate_cases": gate_cases,
+                    "manual_cases": manual_cases,
+                }
+            ),
             capture_output=True,
             text=True,
             check=False,
@@ -646,20 +776,37 @@ print(json.dumps({
 
     assert result.returncode == 0, result.stderr
     rendered = json.loads(result.stdout)
-    assert rendered["format"] == (
+    assert rendered["formats"] == {
+        "state": (
         '{{printf "state=%s " .State.Status}}'
         "{{with .State.Health}}health={{.Status}} failing_streak={{.FailingStreak}} "
         "log_count={{len .Log}} exit_codes={{range .Log}}{{.ExitCode}},{{end}}"
-        "{{else}}health=unavailable failing_streak=unavailable log_count=0 exit_codes=unavailable{{end}} "
-        "{{with .Config.Healthcheck}}healthcheck_present=present "
-        "test_kind={{if .Test}}{{index .Test 0}}{{else}}none{{end}} "
-        "interval={{.Interval}} timeout={{.Timeout}} retries={{.Retries}} start_period={{.StartPeriod}}"
+        "{{else}}health=unavailable failing_streak=unavailable log_count=0 exit_codes=unavailable{{end}}"
+        ),
+        "config": (
+        "{{with .Config.Healthcheck}}{{if .Test}}{{if eq (index .Test 0) \"NONE\"}}"
+        "healthcheck_present=absent test_kind=none interval=unavailable timeout=unavailable "
+        "retries=unavailable start_period=unavailable{{else}}healthcheck_present=present test_kind="
+        "{{if eq (index .Test 0) \"CMD\"}}CMD{{else if eq (index .Test 0) \"CMD-SHELL\"}}CMD-SHELL"
+        "{{else}}other{{end}} interval={{.Interval}} timeout={{.Timeout}} retries={{.Retries}} "
+        "start_period={{.StartPeriod}}{{end}}{{else}}healthcheck_present=absent test_kind=none "
+        "interval=unavailable timeout=unavailable retries=unavailable start_period=unavailable{{end}}"
         "{{else}}healthcheck_present=absent test_kind=none interval=unavailable timeout=unavailable "
-        "retries=unavailable start_period=unavailable{{end}} "
-        "startup_check={{if .Config.StartupHealthCheck}}present{{else}}absent{{end}} "
-        "on_failure={{.Config.HealthcheckOnFailureAction}} max_log_count={{.Config.HealthMaxLogCount}}"
-    )
-    assert rendered["classes"] == [case["expected"] for case in cases]
+        "retries=unavailable start_period=unavailable{{end}}"
+        ),
+        "action": (
+        "{{if eq .Config.HealthcheckOnFailureAction \"none\"}}on_failure=none"
+        "{{else if eq .Config.HealthcheckOnFailureAction \"restart\"}}on_failure=restart"
+        "{{else if eq .Config.HealthcheckOnFailureAction \"stop\"}}on_failure=stop"
+        "{{else if eq .Config.HealthcheckOnFailureAction \"kill\"}}on_failure=kill"
+        "{{else}}on_failure=unknown{{end}}"
+        ),
+        "startup": "{{if .Config.StartupHealthCheck}}startup_check=present{{else}}startup_check=absent{{end}}",
+    }
+    assert rendered["classes"] == [case["expected"] for case in state_cases]
+    assert rendered["config_classes"] == [case["expected"] for case in config_cases]
+    assert rendered["action_classes"] == [case["expected"] for case in action_cases]
+    assert rendered["startup_classes"] == [case["expected"] for case in startup_cases]
     assert rendered["gate_results"] == [case["expected"] for case in gate_cases]
     assert rendered["manual_results"] == [case["expected"] for case in manual_cases]
     assert rendered["manual_argv"] == [
