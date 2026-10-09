@@ -26,6 +26,41 @@ Every deployed target SHALL declare applicable logs, metrics, health, and traces
 - **WHEN** automatic tracing is incompatible with a target runtime or would violate its security boundary
 - **THEN** the declaration records the reason and an approved alternative signal or manual instrumentation plan, without claiming trace coverage
 
+### Requirement: Receiver journal positions state is surveyed and repaired safely
+The receiver-host journal collector SHALL retain its existing Compose named positions volume. A survey SHALL identify only the unique existing local volume with the exact expected volume name and a Compose project label matching the receiver. Its Compose volume label SHALL be `journal-collector-state` when present; a missing volume label is allowed only for that exact name and matching project, and a conflicting label SHALL be refused. The survey SHALL inspect bounded root and direct-child metadata in the rootless Podman user namespace without mounting the volume or reading file contents. A separate repair action MAY change only the volume-root owner and group to the collector's configured `0:0` identity after fresh evidence proves a root ownership mismatch is the supported access failure. Repair SHALL refuse shared or in-use volumes, initialization-required volumes, ACLs, mount boundaries, symlinks, non-regular or multiply linked children, child ownership ambiguity, and modes that cannot provide collector access after the root-only change. It SHALL recheck the volume identity and metadata immediately before mutation, preserve mode and child metadata, verify ownership by readback, and run an isolated create/write/rename/delete probe under the collector's rootless UID and filesystem restrictions. Check mode SHALL perform no mutation and report the result as unverified. Raw Podman, path, ACL, and filesystem diagnostics SHALL remain hidden; operator output SHALL use fixed categories and bounded counts.
+
+#### Scenario: Positions survey runs without collector initialization
+- **WHEN** the explicit positions survey runs and the journal collector container is absent
+- **THEN** it resolves one existing locally scoped named volume from receiver Compose labels, reports bounded ownership, mode-access, ACL, mount, child-type, and use-count categories, and does not create, mount, initialize, or read positions content
+
+#### Scenario: Positions repair is limited to a proven root ownership mismatch
+- **WHEN** the operator selects `repair-positions` and fresh evidence proves the unused volume root owner alone blocks the configured collector identity while all supported safety checks pass
+- **THEN** the workflow changes only that root's owner and group, verifies the preserved mode and child metadata, and requires the restricted isolated access test before reporting success
+- **AND** any changed evidence, shared use, ACL, mount, symlink, child ambiguity, failed readback, or failed access test refuses success without recursive ownership/permission changes or volume deletion
+
+#### Scenario: Positions check mode remains unverified
+- **WHEN** survey, repair, or apply runs in Ansible check mode
+- **THEN** the positions-specific result is `check_mode_unverified`, and the positions helper performs no Podman or filesystem operation
+
+### Requirement: First collector start is gated by safe positions-volume bootstrap
+The collector SHALL allow first initialization only through its declared Compose `up`. Before start, the positions gate MAY return `bootstrap_allowed` for a missing expected volume only when bounded volume inventory is complete, no expected-name collision exists, and a bounded all-container query proves the journal collector absent, including stopped containers. For an existing volume awaiting initialization, the gate SHALL prove one exact local project volume, zero consumers and mounts, exact boolean initialization flags, and an observed empty root owned by `0:0` with owner read/write/execute access, no group/other write or special bits, no ACL or nested mount, and no metadata ambiguity. A legacy volume-key label may be absent only when the exact expected name and project identity match; a conflicting label SHALL refuse. `bootstrap_allowed` SHALL be accepted only by the pre-apply and immediately-before-start gates; the latter SHALL run outside rollback handling. Post-start verification SHALL require `ready` and the existing live mount/access, health, receiver-preservation, and exact-target Loki checks. Unexpected survey exceptions SHALL return a bounded unavailable summary with fixed reason `survey_failed`; this receipt SHALL NOT be treated as a successful survey.
+
+#### Scenario: Missing expected volume is safe to initialize
+- **WHEN** bounded volume and all-container inventories complete, no expected-name collision exists, and the named collector is absent
+- **THEN** the pre-start gate returns `bootstrap_allowed` and Compose `up` is the only operation that creates or initializes the volume
+
+#### Scenario: Existing empty volume is awaiting initialization
+- **WHEN** one exact local project volume has zero consumers and mounts, boolean initialization flags, and an empty unambiguous root with the required ownership and access
+- **THEN** the pre-start gate returns `bootstrap_allowed`; any unknown identity, unsafe metadata, or conflicting label refuses
+
+#### Scenario: Survey raises an unexpected exception
+- **WHEN** an unexpected exception interrupts the explicit positions survey
+- **THEN** output contains only the bounded unavailable summary and fixed reason `survey_failed`, with no raw exception details
+
+#### Scenario: Bootstrap gate passes but post-start proof fails
+- **WHEN** the collector starts but the live mount/access, health, receiver-preservation, or Loki check fails
+- **THEN** the workflow refuses success and performs only collector-specific rollback while preserving the positions volume
+
 ### Requirement: Telemetry is private and bounded
 Collection SHALL use declared private network paths and source-scoped firewall rules, protect credentials and sensitive content, and enforce per-signal retention and ingestion/cardinality budgets before broadening the rollout. Remote logs and traces SHALL enter through receiver Alloy; remote metrics SHALL use declared private scrapes unless another reviewed path is established. The receiver SHALL surface dropped or refused telemetry and low disk headroom as observable failures.
 

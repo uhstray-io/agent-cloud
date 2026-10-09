@@ -56,6 +56,49 @@ stack and waits for Grafana to report healthy. Outside local mode it adds
   The playbook
   passes `--no-deps` too, while the dependency-free service and receiver readback keep
   older podman-compose releases safe if they ignore that flag.
+  The explicit `survey` action resolves the positions volume from the receiver
+  Compose project and `journal-collector-state` identity, including when the pilot
+  container is absent. New volumes carry the explicit `com.docker.compose.volume`
+  label; an existing volume remains compatible when that label is absent only if
+  its exact expected name and project label match. Conflicting labels or names refuse.
+  Survey reads bounded owner/mode and direct-child metadata in the rootless Podman
+  namespace; it does not mount or initialize the volume and never reads
+  positions-file content. Review this survey before choosing
+  `repair-positions`, which is a separate action. Repair requires an unused unique
+  local volume, no ACL or mount ambiguity, only direct regular single-link files
+  owned by collector identity `0:0`, a root owner mismatch, and owner mode bits
+  sufficient for access after the root-only change. It rechecks evidence, pins the
+  root directory by file descriptor, changes only that directory's owner/group with
+  rootless `podman unshare`, and verifies the result. Every post-attempt failure
+  re-reads the volume identity and metadata before any guarded restoration; an
+  unverified outcome is reported as uncertain. It runs a temporary
+  create/write/rename/delete test using the cached Alloy v1.9.2 image with the
+  collector UID and filesystem restrictions.
+  It never recurses, changes mode, or removes/recreates the volume. Survey, repair,
+  and apply report the positions-specific result as `check_mode_unverified` in
+  check mode. Apply accepts `bootstrap_allowed` only at the pre-apply and
+  immediately-before-start gates. For a missing volume, bounded volume inventory
+  must prove the exact expected project name is unused and an all-container query
+  must prove the named collector is absent, including stopped containers. An
+  existing empty volume qualifies only with unique exact identity, zero consumers
+  and mounts, actual boolean `NeedsChown` and `NeedsCopyUp` values, and a read-only
+  metadata result proving root `0:0`, owner RWX, no group/other write or special
+  bits, no ACL or nested mount, and no contents. `podman-compose up` is the only
+  create/initialization action. The immediate pre-start check is outside the
+  rollback block, so a refusal before startup cannot remove an already-running
+  collector. After startup, helper verification must return strict `ready`; runtime
+  checks still prove the actual RW volume source/destination, UID mapping, effective
+  write/rename access, health, unchanged receiver containers, and exact Loki
+  delivery. The bounded live layout permits the optional `alloy_seed.json` and the source's
+  `loki.source.journal.o11y_alloy/` directory with its optional `positions.yml` file,
+  while the separate repair action still refuses directory children.
+  Health, seven-container preservation, Loki receipt, and rollback gates still apply.
+  Neither survey nor repair proves collector health or Loki delivery. OpenSpec task
+  1.2 stays unchecked until the reviewed Semaphore run records the exact production
+  Loki receipt and the other live mount, access, health, and receiver-preservation
+  checks. Check mode reports unverified and does not mutate or mount the volume.
+  An unexpected survey exception returns the bounded unavailable receipt with fixed
+  reason `survey_failed` so the journal-source survey can continue safely.
 
 ## Switches that change what renders
 
