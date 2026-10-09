@@ -1502,3 +1502,26 @@ step. Static dashboard JSON and focused repository checks are the available
 evidence for this change; Grafana 11.4 rendering, Loki variable results, and
 current-state-to-error/task context correlation remain unverified until the
 Dev-bound Semaphore readback and dashboard inspection gate in OpenSpec task 7.4.
+
+2026-10-08 production Service Overview inspection over 6h showed Span and
+Conformance log-volume lines for `agentgateway`, while Recent container logs and
+Recent gateway access records were empty. This narrows the observed gap to those
+streams/selectors; it does not establish a Loki-wide outage. The Dev-bound
+`Survey o11y Log Source` workflow is a metadata-only receiver survey: it classifies
+the rootless Podman default and running o11y container log drivers, checks whether
+the current deploying user can read bounded metadata-only journald entries, and
+checks for a read-only Alloy journal-source mount. It reports fixed categories,
+booleans, and counts; an absent or unreadable journald source remains unsupported
+or unverified. The implementation and focused tests are source evidence only;
+no Semaphore run or production host state is claimed. Keep task 7.4 open until
+the reviewed Dev source survey and dashboard readback establish container-log
+source support or document its limitation. The survey does not explain or fix
+gateway OTLP access records: their `signal="access-log"` discriminator remains
+owned by the separate gateway change and must be verified there.
+
+The same 24h browser readback showed 18 tracked services and five current
+failed workflow-step states in the conformance table. These are latest step
+snapshots, not live service health; prior task failures can recur in later
+snapshots and long error bodies dominate the separate history panel. Keep that
+workflow-context/dashboard correction separate from the container log-source
+survey.
