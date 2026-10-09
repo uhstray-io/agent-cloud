@@ -452,7 +452,7 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
         (HTTP 200) for authentik 1472, n8n 1509, o11y 1500, openbao 1522, semaphore 1523,
         honcho 1561 and tududi 1563. caddy declares no health path. Before the change, the
         executor's direct probe answered -1 for tududi, honcho and n8n however healthy they were
-- [ ] 7.10 Connection identity is still settable from outside the run (open, recorded
+- [x] 7.10 Connection identity is still settable from outside the run (open, recorded
       2026-10-07 from the PR #459 review; not implemented). `refuse-internal-extra-vars.yml`
       refuses `_` names and become/connection password variables (`ansible_password`,
       `ansible_*_pass`, `ansible_*_password`), but not the public
@@ -478,6 +478,24 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
       templated forgeries against a real run. Still open for the other executors: the
       connection-identity variables (`ansible_host`, `ansible_user`, `ansible_become_method`)
       and a connection forgery on any playbook that does not go through clean-service
+      - Closed 2026-10-08 (branch `fix/refuse-connection-identity-vars`). The run-start guard
+        `refuse-internal-extra-vars.yml` now refuses a connection-identity name set as an EXTRA
+        VAR, wherever the playbook goes next (clean-service or not): the 19 public connection and become
+        names (host, user, port, connection, ssh and scp/sftp arguments, become method, user, exe
+        and flags, key file) plus 13 more read from ansible-core's ssh and sudo options (inline key material, key
+        passphrases, other binaries and a PKCS11 library to run, sudo's own spelling of become,
+        host-key checking). An inventory that defines them is not refused: the guard asks where
+        a value came from through the `extra_var_names` filter (`filter_plugins/
+        extra_var_names.py`), which returns the NAMES of the command-line extra vars via
+        `ansible.utils.vars.load_extra_vars`, the function the variable manager itself calls
+        (an internal API, used because no public view of the extra vars exists; pinned by
+        tests that run a real ansible-playbook rather than by a version check). It returns
+        names only and fails closed: any error fails the guard, never an empty list. Tested
+        with `forgeries.templated_forgeries` in plain, templated and `@file` forms for every
+        name (`test_connection_identity_vars.py`). The clean-service tests that forged these
+        names now run with `--limit` so they still exercise clean-service's own check, which
+        the guard otherwise pre-empts. Not covered: a run that skips the guard (`--limit`
+        excluding localhost, `--start-at-task`), which is the guard's existing documented limit.
 
 ## 8. Backfill agentgateway end to end
 

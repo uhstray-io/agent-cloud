@@ -608,8 +608,10 @@ def test_a_forged_connection_cannot_move_a_remote_hosts_teardown_onto_the_contro
     # template that reads ssh at the check and local at the connection, and by <other>.ssh). So even
     # an honest-looking `ssh` is refused. `foo.ssh` is no plugin: a plain forgery of it fails at
     # connect, and the context and stateful ones, which read ssh there, are caught by the check.
+    # --limit skips the run-start guard, which now refuses this name as an extra var before any
+    # task (test_connection_identity_vars.py): the check under test here is clean-service's own.
     forge = forgeries.templated_forgeries("ansible_connection", "ssh", conn)[kind].values[0]
-    proc, log = _prod_run(tmp_path, "-e", forge(tmp_path))
+    proc, log = _prod_run(tmp_path, "-e", forge(tmp_path), limit=True)
     assert proc.returncode != 0, proc.stdout
     assert CONNECTION_REFUSAL in proc.stdout or "was not found" in proc.stdout, proc.stdout
     assert PROD_TEARDOWN not in proc.stdout and "TASK [Remove agent-cloud clone" not in proc.stdout
@@ -644,7 +646,8 @@ def test_the_command_line_connection_must_still_be_ssh_for_a_remote_host(flag, o
 def test_a_local_connection_set_from_outside_does_not_waive_the_o11y_gates_for_a_remote_host(conn, tmp_path):
     # Clean Deploy o11y waives its SHA, checkout and retention gates for a local-dev host only: a
     # remote host whose connection an extra var turns local still needs the reviewed commit.
-    proc = _run(PLAYBOOKS / "clean-deploy-o11y.yml", tmp_path, "--check", "-e",
+    # --limit skips the run-start guard, which now refuses an ansible_connection extra var first.
+    proc = _run(PLAYBOOKS / "clean-deploy-o11y.yml", tmp_path, "--check", "--limit", "obs", "-e",
                 json.dumps({"ansible_connection": conn, "confirm_reset": "obs"}),
                 inventory=_prod_inventory(tmp_path))
     assert proc.returncode != 0, proc.stdout
@@ -828,8 +831,10 @@ PROD_INPUT_IDS = ["user-dotdot", "service-dotdot", "service-other", "service-fol
 @pytest.mark.parametrize("kind", [0, 1, 2], ids=["plain", "context", "stateful"])
 @pytest.mark.parametrize("name, honest, forged", PROD_INPUTS, ids=PROD_INPUT_IDS)
 def test_a_forged_prod_teardown_input_is_refused_before_any_prod_task(kind, name, honest, forged, tmp_path):
+    # --limit skips the run-start guard, which now refuses an ansible_user extra var first
+    # (test_connection_identity_vars.py): the check under test here is the teardown's own.
     forge = forgeries.templated_forgeries(name, honest, forged)[kind].values[0]
-    proc, _log = _prod_run(tmp_path, "-e", forge(tmp_path))
+    proc, _log = _prod_run(tmp_path, "-e", forge(tmp_path), limit=True)
     if kind == 2 and name == "container_engine":
         # container_engine is first read by the pin, so the stateful forgery is honest there and
         # the check and the teardown both see docker: the run is the honest one.
