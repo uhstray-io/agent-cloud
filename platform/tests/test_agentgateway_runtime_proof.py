@@ -559,7 +559,10 @@ def test_checkout_diagnostics_classify_untracked_locations_without_exposing_path
         "platform/services/agentgateway/deployment/config.yaml",
         "platform/services/agentgateway/deployment/config.yaml.previous",
         "platform/services/agentgateway/deployment/config.yaml.replaced",
-        "platform/services/agentgateway/deployment/certs/private-hostname.pem",
+        "platform/services/agentgateway/deployment/certs/agw-server/current/cert.pem",
+        "platform/services/agentgateway/deployment/certs/agw-server/current/key.pem",
+        "platform/services/agentgateway/deployment/certs/step-ca-bundle.crt",
+        "platform/services/agentgateway/deployment/certs/private-hostname-ABC123.crt",
         "platform/services/agentgateway/deployment/certs/private-token-ABC123.key",
     )
     for relative_path in ignored_paths:
@@ -574,9 +577,6 @@ def test_checkout_diagnostics_classify_untracked_locations_without_exposing_path
     paths = {
         "platform/services/agentgateway/deployment/debug/private-token-ABC123.example.internal.py": (
             "UNIQUE-GATEWAY-DEPLOYMENT-CONTENT"
-        ),
-        "platform/services/agentgateway/deployment/certs/private-hostname-ABC123.crt": (
-            "UNIQUE-GATEWAY-CERT-TREE-CONTENT"
         ),
         "platform/services/agentgateway/deployment/certs-escape/private-token-ABC123.crt": (
             "UNIQUE-GATEWAY-DEPLOYMENT-CONTENT"
@@ -606,7 +606,7 @@ def test_checkout_diagnostics_classify_untracked_locations_without_exposing_path
     assert report["status"] == "ok"
     assert report["counts"]["untracked"] == len(paths)
     assert report["untracked_categories"] == {
-        "gateway_certificate_tree": 1,
+        "gateway_certificate_tree": 0,
         "gateway_deployment_other": 2,
         "other_service_deployment": 1,
         "service_tree_other": 3,
