@@ -149,5 +149,10 @@ def test_client_view_error_ratio_numerator_is_zero_when_no_error_series(title, s
     d = json.loads((DASHBOARDS / "agentgateway-client-view.json").read_text())
     (panel,) = [p for p in d["panels"] if p["title"] == title]
     (target,) = panel["targets"]
-    numerator = 'sum(rate(agentgateway_requests_total{job="agentgateway", status=~"%s", identity=~"$identity"}[5m]))' % status
+    # Concatenated, not formatted: the PromQL braces would collide with format placeholders.
+    numerator = (
+        'sum(rate(agentgateway_requests_total{job="agentgateway", status=~"'
+        + status
+        + '", identity=~"$identity"}[5m]))'
+    )
     assert target["expr"].startswith(f"({numerator} or vector(0)) / "), target["expr"]
