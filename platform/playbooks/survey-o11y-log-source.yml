@@ -3,6 +3,9 @@
 - name: "Refuse extra vars that set internal names"
   ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
 
+- name: "Require the reviewed checkout"
+  ansible.builtin.import_playbook: require-reviewed-checkout.yml
+
 - name: Pre-flight
   ansible.builtin.import_playbook: preflight-target-group.yml
   vars:
@@ -15,50 +18,14 @@
   become: false
   any_errors_fatal: true
   vars:
-    _project_root: "{{ playbook_dir | dirname | dirname }}"
     _log_survey: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/survey-o11y-log-source.py') }}"
   tasks:
-    - name: Require one receiver and the exact reviewed revision
+    - name: Require one receiver and production mode
       ansible.builtin.assert:
         that:
           - groups['o11y_svc'] | length == 1
-          - expected_repository_sha | default('') is match('^[0-9a-f]{40}$')
           - not (local_mode | default(false) | bool)
-        fail_msg: "This read-only survey requires one o11y receiver and an exact reviewed revision."
-        quiet: true
-      delegate_to: localhost
-      tags: [always]
-
-    - name: Read controller checkout revision
-      ansible.builtin.command:
-        argv: [git, rev-parse, HEAD]
-        chdir: "{{ _project_root }}"
-      register: _controller_revision
-      changed_when: false
-      failed_when: false
-      check_mode: false
-      delegate_to: localhost
-      tags: [always]
-
-    - name: Read controller checkout status
-      ansible.builtin.command:
-        argv: [git, status, --porcelain, --untracked-files=all]
-        chdir: "{{ _project_root }}"
-      register: _controller_status
-      changed_when: false
-      failed_when: false
-      check_mode: false
-      delegate_to: localhost
-      tags: [always]
-
-    - name: Require a clean checkout at the reviewed revision
-      ansible.builtin.assert:
-        that:
-          - _controller_revision.rc == 0
-          - _controller_status.rc == 0
-          - _controller_revision.stdout == expected_repository_sha
-          - _controller_status.stdout | length == 0
-        fail_msg: "The controller is not a clean checkout of the reviewed Dev revision."
+        fail_msg: "This read-only survey requires one o11y receiver and production mode."
         quiet: true
       delegate_to: localhost
       tags: [always]

@@ -41,7 +41,7 @@ def driver(value):
 
 
 def inspect(name):
-    rc, output = run(["podman", "inspect", "--format", "json", name])
+    rc, output = run(["podman", "inspect", "--type", "container", "--format", "json", name])
     data = decode_json(output) if rc == 0 else None
     return data[0] if isinstance(data, list) and data and isinstance(data[0], dict) else None
 
@@ -116,12 +116,12 @@ def journal_status(names, drivers):
             timeout=12,
         )
         if rc is None:
-            return "unsupported", 0
+            return "unverified", 0
         if rc != 0:
             return "unreadable", 0
         entry_count = journal_entry_count(output, name)
         if entry_count is None:
-            return "unsupported", 0
+            return "unverified", 0
         count += entry_count
     return ("readable" if count else "no_entries"), count
 
@@ -152,6 +152,8 @@ def survey():
     names = running_containers()
     if names is None:
         return {"status": "unavailable", "reason": "container_metadata_unavailable"}
+    if not names:
+        return {"status": "unavailable", "reason": "no_running_o11y_containers"}
     counts = dict.fromkeys(sorted(DRIVERS), 0)
     drivers = {}
     for name in names:

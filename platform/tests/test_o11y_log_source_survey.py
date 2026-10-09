@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import playbook_yaml
+import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -24,7 +25,7 @@ def test_reports_only_driver_counts_and_bounded_journal_metadata(monkeypatch):
             return 0, json.dumps({"host": {"logDriver": "journald"}})
         if argv[:2] == ["podman", "ps"]:
             return 0, json.dumps([{"Names": ["o11y-loki", "private-container-id"]}])
-        if argv[:3] == ["podman", "inspect", "--format"]:
+        if argv[:5] == ["podman", "inspect", "--type", "container", "--format"]:
             return 0, json.dumps(
                 [{"HostConfig": {"LogConfig": {"Type": "journald"}}, "Mounts": []}]
             )
@@ -88,7 +89,7 @@ def test_journald_denial_is_a_fixed_category_and_non_journald_is_unsupported(mon
             return 0, '{"host":{"logDriver":"journald"}}'
         if argv[:2] == ["podman", "ps"]:
             return 0, '[{"Names":["o11y-loki"]}]'
-        if argv[:3] == ["podman", "inspect", "--format"]:
+        if argv[:5] == ["podman", "inspect", "--type", "container", "--format"]:
             return 0, '[{"HostConfig":{"LogConfig":{"Type":"journald"}},"Mounts":[]}]'
         if argv[0] == "journalctl":
             return 1, "secret token /private/path"
@@ -117,7 +118,20 @@ def test_missing_or_malformed_container_readback_fails_closed(monkeypatch):
     assert "secret" not in json.dumps(report)
 
 
-def test_malformed_journal_json_is_unsupported_and_never_reported(monkeypatch):
+def test_zero_running_o11y_containers_fails_closed(monkeypatch):
+    def empty(argv, timeout=8):
+        if argv[:2] == ["podman", "ps"]:
+            return 0, "[]"
+        if argv[:3] == ["podman", "info", "--format"]:
+            return 0, '{"host":{"logDriver":"journald"}}'
+        raise AssertionError("unexpected command")
+
+    monkeypatch.setattr(SURVEY, "run", empty)
+    report = SURVEY.survey()
+    assert report == {"status": "unavailable", "reason": "no_running_o11y_containers"}
+
+
+def test_malformed_journal_json_is_unverified_and_never_reported(monkeypatch):
     def malformed(argv, timeout=8):
         if argv[0] == "journalctl":
             return 0, '{"MESSAGE":"secret /private/path"'
@@ -125,9 +139,32 @@ def test_malformed_journal_json_is_unsupported_and_never_reported(monkeypatch):
 
     monkeypatch.setattr(SURVEY, "run", malformed)
     report = SURVEY.journal_status(["o11y-loki"], {"o11y-loki": "journald"})
-    assert report == ("unsupported", 0)
+    assert report == ("unverified", 0)
     assert "secret" not in json.dumps(report)
     assert "/private/path" not in json.dumps(report)
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        SURVEY.subprocess.TimeoutExpired(["journalctl"], 12),
+        FileNotFoundError("/private/path/journalctl"),
+    ],
+    ids=["timeout", "missing-command"],
+)
+def test_journal_timeout_or_missing_command_is_unverified(monkeypatch, failure):
+    def fail(*args, **kwargs):
+        raise failure
+
+    monkeypatch.setattr(SURVEY.subprocess, "run", fail)
+    assert SURVEY.journal_status(["o11y-loki"], {"o11y-loki": "journald"}) == ("unverified", 0)
+    assert "/private/path" not in json.dumps(SURVEY.journal_status(["o11y-loki"], {"o11y-loki": "journald"}))
+
+
+def test_zero_journal_entries_are_distinct_from_unsupported(monkeypatch):
+    monkeypatch.setattr(SURVEY, "run", lambda argv, timeout=8: (0, ""))
+    assert SURVEY.journal_status(["o11y-loki"], {"o11y-loki": "journald"}) == ("no_entries", 0)
+    assert SURVEY.journal_status(["o11y-loki"], {"o11y-loki": "json-file"}) == ("unsupported", 0)
 
 
 def test_command_helper_discards_stderr_from_its_return_value(monkeypatch):
@@ -145,7 +182,7 @@ def test_alloy_source_requires_read_only_mount_and_container_read_access(monkeyp
     calls = []
 
     def mounted(argv, timeout=8):
-        if argv[:3] == ["podman", "inspect", "--format"]:
+        if argv[:5] == ["podman", "inspect", "--type", "container", "--format"]:
             return 0, json.dumps(
                 [{"Mounts": [{"Source": "/private/journal", "Destination": "/run/log/journal", "RW": False}]}]
             )
@@ -161,7 +198,7 @@ def test_alloy_source_requires_read_only_mount_and_container_read_access(monkeyp
     ]
 
     def writable(argv, timeout=8):
-        if argv[:3] == ["podman", "inspect", "--format"]:
+        if argv[:5] == ["podman", "inspect", "--type", "container", "--format"]:
             return 0, json.dumps(
                 [{"Mounts": [{"Source": "/private/journal", "Destination": "/run/log/journal", "RW": True}]}]
             )
@@ -174,18 +211,26 @@ def test_alloy_source_requires_read_only_mount_and_container_read_access(monkeyp
 def test_playbook_is_dev_bound_guarded_exact_head_and_read_only_in_check_mode():
     plays = yaml.safe_load(PLAYBOOK.read_text())
     assert plays[0]["ansible.builtin.import_playbook"] == "refuse-internal-extra-vars.yml"
-    assert plays[1]["ansible.builtin.import_playbook"] == "preflight-target-group.yml"
-    assert plays[1]["vars"] == {
+    assert plays[1]["ansible.builtin.import_playbook"] == "require-reviewed-checkout.yml"
+    assert plays[2]["ansible.builtin.import_playbook"] == "preflight-target-group.yml"
+    assert plays[2]["vars"] == {
         "preflight_group": "o11y_svc",
         "preflight_group_expected": "o11y_svc",
     }
-    play = plays[2]
+    play = plays[3]
     assert play["hosts"] == "o11y_svc"
     assert play["become"] is False
     tasks = play["tasks"]
-    assert any("groups['o11y_svc'] | length == 1" in task["ansible.builtin.assert"]["that"] for task in tasks)
-    assert any("not (local_mode | default(false) | bool)" in task["ansible.builtin.assert"]["that"] for task in tasks)
-    assert any("expected_repository_sha" in json.dumps(task.get("ansible.builtin.assert", {})) for task in tasks)
+    scope_guard = next(task["ansible.builtin.assert"] for task in tasks if task.get("name") == "Require one receiver and production mode")
+    assert scope_guard["that"] == ["groups['o11y_svc'] | length == 1", "not (local_mode | default(false) | bool)"]
+    reviewed_checkout = yaml.safe_load((ROOT / "platform/playbooks/require-reviewed-checkout.yml").read_text())
+    reviewed_tasks = reviewed_checkout[0]["tasks"]
+    sha_guard = reviewed_tasks[0]["ansible.builtin.assert"]
+    assert sha_guard["that"] == "expected_repository_sha | default('') is match('^[0-9a-f]{40}$')"
+    assert [task["ansible.builtin.command"]["argv"] for task in reviewed_tasks if "ansible.builtin.command" in task] == [
+        ["git", "rev-parse", "HEAD"],
+        ["git", "status", "--porcelain", "--untracked-files=all"],
+    ]
     assert all(task.get("check_mode") is False for task in tasks if "ansible.builtin.command" in task)
     command = next(
         task["ansible.builtin.command"]
@@ -197,9 +242,15 @@ def test_playbook_is_dev_bound_guarded_exact_head_and_read_only_in_check_mode():
         for task in tasks
         if task.get("name") == "Require the survey helper to complete"
     )
+    result_guard = next(
+        task["ansible.builtin.assert"]
+        for task in tasks
+        if task.get("name") == "Require a sanitized survey result"
+    )
     assert command["argv"] == ["python3", "-"]
     assert "stdin" in command
     assert helper_guard["that"] == "(_log_source_report.rc | default(1)) == 0"
+    assert result_guard["that"] == ["(_log_source_report.stdout | from_json).status == 'observed'"]
     assert "stdout" not in helper_guard["fail_msg"]
     assert "stderr" not in helper_guard["fail_msg"]
     assert all(
