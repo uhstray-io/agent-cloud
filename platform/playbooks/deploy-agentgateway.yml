@@ -562,10 +562,10 @@
                 categories = (
                     (
                         "invalid-endpoint-error",
-                        r"\binvalid (?:url|uri|endpoint|host:port)\b|\bmalformed (?:url|uri|endpoint)\b|"
-                        r"\b(?:url|uri|endpoint)\b.{0,80}(?:invalid|malformed|not valid)|"
-                        r"\b(?:url|uri|endpoint)\b parse error|"
-                        r"failed to parse \b(?:url|uri|endpoint)\b",
+                        r"\binvalid (?:url|uri|endpoint|host:port)\b|"
+                        r"\bmalformed (?:url|uri|endpoint)\b|"
+                        r"\b(?:url|uri|endpoint) parse error\b|"
+                        r"\bfailed to parse (?:url|uri|endpoint)\b",
                     ),
                     (
                         "config-type-variant-error",
