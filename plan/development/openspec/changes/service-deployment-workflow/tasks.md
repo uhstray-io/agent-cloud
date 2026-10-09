@@ -129,6 +129,10 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
         passes on a `...-cloudinit` volume on any ide/sata/scsi/virtio key (a description or tag
         mentioning cloudinit still fails), and records the key(s) as evidence `cloudinit_drive`.
         No live change; rerun Create VM Template (Dev) to see it pass. 2.2 stays open.
+      - 2026-10-09: proven live. Create VM Template (Dev) task 3623 (check mode, `dev` at
+        `1c735290`, PR #491) recorded `vm-template` `pass` with evidence `cloudinit_drive: ide0`,
+        `template_vmid: 9000`, against the unchanged template that failed in task 3287. Output
+        read from Semaphore. 2.2 stays open only for Destroy VM (Dev), held for the operator.
 - [x] 2.3 Wave 2, the remaining playbooks, grouped by service; same patterns and runs.
       2026-09-22: 67 files (161 reads, 27 logins, 125 skips) applied from the guard's own
       findings; normal runs are unchanged by construction (every guard is inert without
@@ -539,6 +543,13 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
         names now run with `--limit` so they still exercise clean-service's own check, which
         the guard otherwise pre-empts. Not covered: a run that skips the guard (`--limit`
         excluding localhost, `--start-at-task`), which is the guard's existing documented limit.
+      - 2026-10-09: merged as PR #492 (`1c55af4e`). The filter loads under Semaphore: the first
+        scheduled run on that revision, Check o11y Liveness (Dev) task 3670 (06:10Z), passed
+        ("o11y liveness OK") through the guard. CI's ansible-core 2.19.14 lists two
+        `delegated_vars[...]` host expressions in the ssh plugin; the coverage test judges only
+        plain names, and both expressions read `ansible_host`/`ansible_ssh_host`, already
+        refused. Live Semaphore environments set no `ansible_*` extra var or var-type secret
+        (read 2026-10-08), so honest launches are unaffected.
 
 ## 8. Backfill agentgateway end to end
 

@@ -542,3 +542,6 @@ there is nothing to mutation-check.
 drive key (it was `ide2` only; live template 9000 carries it on `ide0`, Semaphore task 3287) and
 adds the evidence key `cloudinit_drive`, which the registry lists. The step's criteria are
 unchanged, so its D10 verdict and its 2026-10-08 stamp above stand.
+
+2026-10-09: the open vm-template item above is closed. Create VM Template (Dev) task 3623 at
+`1c735290` (PR #491) recorded `pass` against template 9000, evidence `cloudinit_drive: ide0`.
