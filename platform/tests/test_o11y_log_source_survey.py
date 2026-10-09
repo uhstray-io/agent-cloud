@@ -367,6 +367,35 @@ def test_alloy_ancestor_or_malformed_destination_is_unverified(monkeypatch, dest
     assert SURVEY.alloy_source() is None
 
 
+@pytest.mark.parametrize(
+    "other_mount",
+    [
+        {"Source": "/var/log/journal", "Destination": "/var/log", "RW": False},
+        {"Source": "/var/log/journal", "Destination": None, "RW": False},
+        {"Source": "/var/log/journal", "Destination": "/run/log/journal", "RW": True},
+        {"Source": "/run/log/journal", "Destination": "/run/log/journal", "RW": False},
+    ],
+    ids=["ancestor", "malformed", "writable-duplicate", "different-source-duplicate"],
+)
+@pytest.mark.parametrize("uncertain_first", [False, True], ids=["readable-first", "uncertain-first"])
+def test_alloy_valid_mount_does_not_hide_later_uncertain_mounts(
+    monkeypatch, other_mount, uncertain_first
+):
+    readable_mount = {
+        "Source": "/var/log/journal",
+        "Destination": "/run/log/journal",
+        "RW": False,
+    }
+    mounts = [other_mount, readable_mount] if uncertain_first else [readable_mount, other_mount]
+    monkeypatch.setattr(
+        SURVEY,
+        "inspect",
+        lambda name: {"State": {"Running": True}, "Mounts": mounts},
+    )
+    monkeypatch.setattr(SURVEY, "run", lambda argv, timeout=8: (0, "readable"))
+    assert SURVEY.alloy_source() is None
+
+
 @pytest.mark.parametrize("probe", ["missing", "unreadable"], ids=["directory-absent", "directory-unreadable"])
 def test_alloy_absent_mount_and_unreadable_directory_are_known_false(monkeypatch, probe):
     monkeypatch.setattr(

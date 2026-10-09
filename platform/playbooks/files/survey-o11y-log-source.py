@@ -147,6 +147,8 @@ def alloy_source():
     if not isinstance(mounts, list):
         return None
     uncertain = False
+    readable_source = False
+    seen_journal_mounts = {}
     for mount in mounts:
         if not isinstance(mount, dict):
             return None
@@ -165,6 +167,11 @@ def alloy_source():
                 uncertain = True
             continue
         writable = mount.get("RW")
+        signature = (writable, mount.get("Source"))
+        if destination in seen_journal_mounts and seen_journal_mounts[destination] != signature:
+            uncertain = True
+        else:
+            seen_journal_mounts[destination] = signature
         if writable is True:
             continue
         if writable is not False:
@@ -191,12 +198,13 @@ def alloy_source():
             continue
         probe = output.strip()
         if probe == "readable":
-            return True
+            readable_source = True
+            continue
         if probe not in {"missing", "unreadable"}:
             uncertain = True
     if uncertain:
         return None
-    return False
+    return readable_source
 
 
 def survey():
