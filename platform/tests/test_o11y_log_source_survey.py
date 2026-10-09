@@ -30,7 +30,13 @@ def test_reports_only_driver_counts_and_bounded_journal_metadata(monkeypatch):
             if argv[-1] == "o11y-alloy":
                 return 0, json.dumps([{"State": {"Running": True}, "Mounts": []}])
             return 0, json.dumps(
-                [{"HostConfig": {"LogConfig": {"Type": "journald"}}, "Mounts": []}]
+                [
+                    {
+                        "State": {"Running": True},
+                        "HostConfig": {"LogConfig": {"Type": "journald"}},
+                        "Mounts": [],
+                    }
+                ]
             )
         if argv[0] == "journalctl":
             journal_argv.append(argv)
@@ -95,7 +101,7 @@ def test_journald_denial_is_a_fixed_category_and_non_journald_is_unsupported(mon
         if argv[:5] == ["podman", "inspect", "--type", "container", "--format"]:
             if argv[-1] == "o11y-alloy":
                 return 0, '[{"State":{"Running":true},"Mounts":[]}]'
-            return 0, '[{"HostConfig":{"LogConfig":{"Type":"journald"}},"Mounts":[]}]'
+            return 0, '[{"State":{"Running":true},"HostConfig":{"LogConfig":{"Type":"journald"}},"Mounts":[]}]'
         if argv[0] == "journalctl":
             return 1, "secret token /private/path"
         raise AssertionError("unexpected command")
@@ -179,6 +185,26 @@ def test_running_container_inspect_failure_fails_closed(monkeypatch, inspect_rc,
     report = SURVEY.survey()
     assert report == {"status": "unavailable", "reason": "container_metadata_unavailable"}
     assert "private" not in json.dumps(report)
+
+
+def test_container_stopped_after_running_list_fails_closed(monkeypatch):
+    monkeypatch.setattr(SURVEY, "default_driver", lambda: "journald")
+    monkeypatch.setattr(SURVEY, "running_containers", lambda: ["o11y-loki"])
+    monkeypatch.setattr(
+        SURVEY,
+        "inspect",
+        lambda name: {
+            "State": {"Running": False},
+            "HostConfig": {"LogConfig": {"Type": "journald"}},
+        },
+    )
+    monkeypatch.setattr(
+        SURVEY,
+        "journal_status",
+        lambda names, drivers: pytest.fail("stopped container must not be counted"),
+    )
+    report = SURVEY.survey()
+    assert report == {"status": "unavailable", "reason": "container_metadata_unavailable"}
 
 
 def test_malformed_journal_json_is_unverified_and_never_reported(monkeypatch):
@@ -352,7 +378,30 @@ def test_playbook_is_dev_bound_guarded_exact_head_and_read_only_in_check_mode():
     assert plays[2]["vars"] == {
         "preflight_group": "o11y_svc",
         "preflight_group_expected": "o11y_svc",
+        "_preflight_redact_hostnames": True,
     }
+    shared_preflight = yaml.safe_load((ROOT / "platform/playbooks/preflight-target-group.yml").read_text())
+    group_assert = next(
+        task["ansible.builtin.assert"]
+        for task in shared_preflight[0]["tasks"]
+        if task.get("name") == "Require the group to exist and contain at least one host"
+    )
+    success_message = Environment().from_string(group_assert["success_msg"])
+    success_message.environment.filters["bool"] = bool
+    safe_message = success_message.render(
+        preflight_group="o11y_svc",
+        groups={"o11y_svc": ["private-host.example", "other-private-host.example"]},
+        _preflight_redact_hostnames=True,
+    )
+    assert "2 host(s)" in safe_message
+    assert "private-host.example" not in safe_message
+    assert "other-private-host.example" not in safe_message
+    ordinary_message = success_message.render(
+        preflight_group="service_svc",
+        groups={"service_svc": ["service-host.example"]},
+        _preflight_redact_hostnames=False,
+    )
+    assert "service-host.example" in ordinary_message
     play = plays[3]
     assert play["hosts"] == "o11y_svc"
     assert play["become"] is False

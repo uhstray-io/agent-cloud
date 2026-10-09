@@ -11,6 +11,7 @@
   vars:
     preflight_group: o11y_svc
     preflight_group_expected: o11y_svc
+    _preflight_redact_hostnames: true
 
 - name: Survey receiver-host log sources without changing host state
   hosts: o11y_svc

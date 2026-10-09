@@ -198,6 +198,9 @@ def survey():
         container = inspect(name)
         if container is None:
             return {"status": "unavailable", "reason": "container_metadata_unavailable"}
+        state = container.get("State")
+        if not isinstance(state, dict) or state.get("Running") is not True:
+            return {"status": "unavailable", "reason": "container_metadata_unavailable"}
         value = log_driver(container)
         drivers[name] = value
         counts[value] += 1
