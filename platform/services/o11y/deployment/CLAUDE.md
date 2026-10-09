@@ -34,7 +34,11 @@ stack and waits for Grafana to report healthy. Outside local mode it adds
 - **Receiver-host journal pilot:** `Deploy o11y Journal Collector (Dev)` runs independently
   of `Deploy o11y`. Run its `survey` action first: it checks only `/var/log/journal` and
   `/run/log/journal`, requiring a recent exact-name record and file readability by the
-  pinned rootless Alloy UID; it reports one viable path, `ambiguous`, or `none`. Private
+  cached receiver Alloy v1.5.1 image as a rootless UID `0:0` file-read probe with
+  `--pull=never`; it does not validate collector config or pull an image. If that image
+  is absent, the survey reports `probe_unavailable`. It reports one viable path,
+  `ambiguous`, or `none`. Apply uses the separate pinned Alloy v1.9.2 collector image
+  for `alloy validate`. Private
   `o11y_svc` inventory must then declare the reviewed `o11y_journal_directory` as that
   actual directory.
   The playbook checks that directory and a recent exact `CONTAINER_NAME=o11y-alloy` entry,
@@ -43,7 +47,9 @@ stack and waits for Grafana to report healthy. Outside local mode it adds
   engine socket or alter receiver volumes. The Compose service has no dependencies;
   after apply, the playbook hashes IDs and states for all seven existing receiver
   containers and refuses success if any changed. The collector state lives in the
-  separate `journal-collector-state` volume; selecting `stop` preserves it. The playbook
+  Compose named `journal-collector-state` volume; selecting `stop` stops and
+  removes only the pilot container, verifies it is absent from Podman's reboot restart
+  set, and verifies the volume remains. The playbook
   passes `--no-deps` too, while the dependency-free service and receiver readback keep
   older podman-compose releases safe if they ignore that flag.
 

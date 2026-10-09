@@ -91,10 +91,17 @@ def _candidate_is_viable(directory, run, isdir, access):
     return readable is not None and readable.returncode == 0
 
 
+def _image_is_available(run):
+    exists = _call(run, ["podman", "image", "exists", IMAGE])
+    return exists is not None and exists.returncode == 0
+
+
 def survey(run=subprocess.run, isdir=os.path.isdir, access=os.access):
     rootless = _call(run, ["podman", "info", "--format={{.Host.Security.Rootless}}"])
     if rootless is None or rootless.returncode != 0 or rootless.stdout.strip().lower() != "true":
         return {"result": "none"}
+    if not _image_is_available(run):
+        return {"result": "probe_unavailable"}
 
     viable = [directory for directory in DIRECTORIES if _candidate_is_viable(directory, run, isdir, access)]
     if len(viable) == 1:

@@ -3,8 +3,10 @@ services:
     # Keep this service dependency-free: applying it must never reconcile an
     # existing receiver service. The playbook verifies all seven receiver IDs
     # and states are unchanged after `up`.
-    image: docker.io/grafana/alloy:v1.5.1
+    image: docker.io/grafana/alloy:v1.9.2
     container_name: o11y-journal-collector
+    # Explicit stop and failed-delivery rollback remove this container to keep
+    # podman-restart.service from reviving it; the named positions volume stays.
     restart: always
     user: "0:0"
     read_only: true

@@ -73,6 +73,12 @@ templates:
     playbook: platform/playbooks/deploy-o11y-journal-collector.yml
     repository: agent-cloud dev
     survey_vars:
+      - name: service_branch
+        title: "Target branch"
+        description: "The journal collector workflow is Dev-bound"
+        type: string
+        required: true
+        default_value: dev
       - name: expected_repository_sha
         title: "Reviewed commit SHA"
         description: "Exact Dev commit required on controller and receiver"

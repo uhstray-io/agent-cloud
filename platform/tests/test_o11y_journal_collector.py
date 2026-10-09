@@ -64,6 +64,9 @@ def _journal_survey_runner(viable_paths, rootless="true"):
     def run(argv, **_kwargs):
         if argv[:2] == ["podman", "info"]:
             return SimpleNamespace(returncode=0, stdout=rootless)
+        if argv[:3] == ["podman", "image", "exists"]:
+            assert argv[3] == "docker.io/grafana/alloy:v1.5.1"
+            return SimpleNamespace(returncode=0, stdout="")
         if argv[0] == "journalctl":
             directory = argv[1].split("=", 1)[1]
             stdout = '{"CONTAINER_NAME":"o11y-alloy","MESSAGE":"private"}\n'
@@ -101,20 +104,68 @@ def test_standard_journal_survey_reports_only_single_ambiguous_or_none():
     assert "private" not in json.dumps(one)
 
 
-def test_standard_journal_survey_uses_only_fixed_paths_and_no_image_pull():
+def test_survey_file_probe_uses_rootless_uid_zero_and_never_pulls():
+    calls = []
+    runner = _journal_survey_runner({"/var/log/journal"})
+
+    def capture_run(argv, **kwargs):
+        calls.append(argv)
+        return runner(argv, **kwargs)
+
+    report = SURVEY.survey(
+        run=capture_run,
+        isdir=lambda path: path in SURVEY.DIRECTORIES,
+        access=lambda path, _mode: path in SURVEY.DIRECTORIES,
+    )
+
+    probe = next(argv for argv in calls if argv[:2] == ["podman", "run"])
+    assert report == {"result": "/var/log/journal"}
+    assert probe[probe.index("--user") + 1] == "0:0"
+    assert "--pull=never" in probe
+    assert not any(argv[:2] == ["podman", "pull"] for argv in calls)
+
+
+def test_standard_journal_survey_uses_only_fixed_paths_and_cached_probe_image():
     source = SURVEY_HELPER.read_text()
 
     assert 'DIRECTORIES = ("/var/log/journal", "/run/log/journal")' in source
     assert '"--pull=never"' in source
+    assert 'IMAGE = "docker.io/grafana/alloy:v1.5.1"' in source
+    assert '"--user",\n            "0:0"' in source
+    assert '"podman", "pull"' not in source
     assert '"--output-fields=CONTAINER_NAME"' in source
     assert "MESSAGE" not in source
+
+
+def test_standard_journal_survey_refuses_when_cached_probe_image_is_unavailable():
+    calls = []
+
+    def missing_image_run(argv, **_kwargs):
+        calls.append(argv)
+        if argv[:2] == ["podman", "info"]:
+            return SimpleNamespace(returncode=0, stdout="true")
+        if argv[:3] == ["podman", "image", "exists"]:
+            return SimpleNamespace(returncode=1, stdout="private podman diagnostic")
+        raise AssertionError("survey must not pull or run an unavailable probe image")
+
+    report = SURVEY.survey(
+        run=missing_image_run,
+        isdir=lambda path: path in SURVEY.DIRECTORIES,
+        access=lambda path, _mode: path in SURVEY.DIRECTORIES,
+    )
+
+    assert report == {"result": "probe_unavailable"}
+    assert "private" not in json.dumps(report)
+    assert not any(argv[:2] == ["podman", "pull"] for argv in calls)
+    assert not any(argv[:2] == ["podman", "run"] for argv in calls)
 
 
 def test_compose_mount_is_read_only_and_state_is_separate():
     compose = yaml.safe_load((O11Y / "compose.journal.yml").read_text())
     service = compose["services"]["journal-collector"]
 
-    assert service["image"] == "docker.io/grafana/alloy:v1.5.1"
+    assert service["image"] == "docker.io/grafana/alloy:v1.9.2"
+    assert service["restart"] == "always"
     assert service["read_only"] is True
     assert service["user"] == "0:0"
     assert service["cap_drop"] == ["ALL"]
@@ -155,7 +206,7 @@ def test_playbook_guards_validation_delivery_and_non_destructive_rollback():
     validate = source.index("Validate the candidate config")
     apply = source.index("Start only the journal collector service")
     verify = source.index("Verify the exact bounded journal stream reached Loki")
-    stop = source.index("Stop only the journal collector after a failed delivery gate")
+    stop = source.index("Stop only the running journal collector after a failed delivery gate")
 
     assert guard < reviewed < place < validate < apply < verify < stop
     assert "groups.get('o11y_svc', []) | length == 1" in source
@@ -164,13 +215,16 @@ def test_playbook_guards_validation_delivery_and_non_destructive_rollback():
     assert "read -r -N 1 _ < \"$file\"" in source
     assert "expected_repository_sha" in source
     assert "argv: [podman, stop" in source
-    assert "podman rm" not in source
+    assert "podman rm -v" not in source
     assert "compose down" not in source
     assert "up, --no-deps, -d, journal-collector" in source
     assert "Require all existing receiver containers to remain unchanged" in source
     assert "_journal_verification_start" in source
     assert "values[0][0]" in source
     assert "State.Health.Status" in source
+    assert "image: docker.io/grafana/alloy:v1.9.2" in (O11Y / "compose.journal.yml").read_text()
+    assert "_journal_image: docker.io/grafana/alloy:v1.9.2" in source
+    assert 'IMAGE = "docker.io/grafana/alloy:v1.5.1"' in SURVEY_HELPER.read_text()
 
     apply_play = next(play for play in plays if play.get("hosts") == "o11y_svc")
     apply_block = next(
@@ -179,6 +233,25 @@ def test_playbook_guards_validation_delivery_and_non_destructive_rollback():
         if task.get("name") == "Apply the collector and require exact-target Loki delivery"
     )
     assert apply_block["when"] == "not ansible_check_mode"
+    image_exists = next(
+        task
+        for task in apply_play["tasks"]
+        if task.get("name") == "Check whether the pinned Alloy validation image is already available"
+    )
+    image_pull = next(
+        task
+        for task in apply_play["tasks"]
+        if task.get("name") == "Acquire the pinned Alloy validation image when it is not cached"
+    )
+    config_validation = next(
+        task
+        for task in apply_play["tasks"]
+        if task.get("name", "").startswith("Validate the candidate config")
+    )
+    assert image_exists["when"] == "not ansible_check_mode"
+    assert "not ansible_check_mode" in image_pull["when"]
+    assert "_journal_image_exists.rc | default(1) != 0" in image_pull["when"]
+    assert "--pull=never" in config_validation["ansible.builtin.command"]["argv"]
     loki_query = next(
         task
         for task in apply_block["block"]
@@ -227,12 +300,115 @@ def test_playbook_guards_validation_delivery_and_non_destructive_rollback():
     rollback_task = next(
         task
         for task in apply_block["rescue"]
-        if task.get("name") == "Stop only the journal collector after a failed delivery gate"
+        if task.get("name") == "Stop only the running journal collector after a failed delivery gate"
     )
     assert "check_mode" not in start_task
     assert start_task["when"] == "not ansible_check_mode"
     assert "check_mode" not in rollback_task
-    assert rollback_task["when"] == "not ansible_check_mode"
+    rollback_remove = next(
+        task
+        for task in apply_block["rescue"]
+        if task.get("name") == "Remove the stopped journal collector container but retain positions"
+    )
+    rollback_volume_capture = next(
+        task
+        for task in apply_block["rescue"]
+        if task.get("name") == "Capture the positions volume name before rollback"
+    )
+    rollback_volume_precheck = next(
+        task
+        for task in apply_block["rescue"]
+        if task.get("name") == "Verify the positions volume exists before rollback"
+    )
+    rollback_volume_readback = next(
+        task
+        for task in apply_block["rescue"]
+        if task.get("name") == "Read back the journal collector positions volume after rollback"
+    )
+    rollback_readback = next(
+        task
+        for task in apply_block["rescue"]
+        if task.get("name") == "Read back the collector after delivery rollback"
+    )
+    assert rollback_remove["ansible.builtin.command"]["argv"] == [
+        "podman",
+        "rm",
+        "o11y-journal-collector",
+    ]
+    assert "_journal_rollback.rc" in " ".join(rollback_remove["when"])
+    assert ".Name" in " ".join(rollback_volume_capture["ansible.builtin.command"]["argv"])
+    assert "_journal_rollback_volume_name.stdout" in rollback_volume_precheck["ansible.builtin.command"]["argv"][3]
+    assert "_journal_rollback_volume_name.stdout" in rollback_volume_readback["ansible.builtin.command"]["argv"][3]
+    rollback_verify = next(
+        task
+        for task in apply_block["rescue"]
+        if task.get("name") == "Require the failed pilot container to be absent after rollback"
+    )
+    assert rollback_readback["ansible.builtin.command"]["argv"][:3] == ["podman", "ps", "--all"]
+    assert "_journal_rollback_readback.stdout | trim == ''" in rollback_verify["ansible.builtin.assert"]["that"]
+    assert rollback_verify["when"] == "not ansible_check_mode"
+
+    stop_remove = next(
+        task
+        for task in stop_play["tasks"]
+        if task.get("name") == "Remove the stopped pilot container while preserving positions"
+    )
+    stop_readback = next(
+        task
+        for task in stop_play["tasks"]
+        if task.get("name") == "Read back the stopped pilot container"
+    )
+    assert stop_remove["ansible.builtin.command"]["argv"] == [
+        "podman",
+        "rm",
+        "o11y-journal-collector",
+    ]
+    assert "not ansible_check_mode" in stop_remove["when"]
+    stop_volume_capture = next(
+        task
+        for task in stop_play["tasks"]
+        if task.get("name") == "Read the positions volume state before stop"
+    )
+    stop_volume_precheck = next(
+        task
+        for task in stop_play["tasks"]
+        if task.get("name") == "Verify the positions volume exists before stop"
+    )
+    assert ".Name" in " ".join(stop_volume_capture["ansible.builtin.command"]["argv"])
+    assert "_journal_stop_volume_name.stdout" in stop_volume_precheck["ansible.builtin.command"]["argv"][3]
+    assert stop_readback["ansible.builtin.command"]["argv"][:3] == ["podman", "ps", "--all"]
+    assert stop_readback["when"] == "not ansible_check_mode"
+    stop_verify = next(
+        task
+        for task in stop_play["tasks"]
+        if task.get("name") == "Require the stopped pilot container to be absent across host reboots"
+    )
+    assert "_journal_stop_readback.stdout | trim == ''" in stop_verify["ansible.builtin.assert"]["that"]
+
+    volume_readback = next(
+        task
+        for task in stop_play["tasks"]
+        if task.get("name") == "Read back the positions volume after stop"
+    )
+    volume_verify = next(
+        task
+        for task in stop_play["tasks"]
+        if task.get("name") == "Require the existing positions volume to survive stop"
+    )
+    assert volume_readback["ansible.builtin.command"]["argv"][:3] == [
+        "podman",
+        "volume",
+        "exists",
+    ]
+    assert "_journal_stop_volume_name.stdout" in volume_readback["ansible.builtin.command"]["argv"][3]
+    assert volume_verify["ansible.builtin.assert"]["that"] == "_journal_stop_volume_after.rc == 0"
+
+    rollback_volume = next(
+        task
+        for task in apply_block["rescue"]
+        if task.get("name") == "Require the positions volume to survive collector rollback"
+    )
+    assert rollback_volume["ansible.builtin.assert"]["that"] == "_journal_rollback_volume_readback.rc == 0"
 
 
 def test_survey_check_mode_skips_container_probe_and_reports_unverified():
@@ -273,6 +449,7 @@ def test_semaphore_template_is_dev_bound_and_requires_exact_sha():
     assert template["repository"] == "agent-cloud dev"
     variables = {item["name"]: item for item in template["survey_vars"]}
     assert variables["expected_repository_sha"]["required"] is True
+    assert variables["service_branch"]["default_value"] == "dev"
     assert variables["journal_collector_action"]["default_value"] == "survey"
     assert variables["journal_collector_action"]["values"] == [
         {"name": "Survey journal paths", "value": "survey"},

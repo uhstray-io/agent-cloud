@@ -38,7 +38,7 @@
   vars:
     _journal_directory: "{{ o11y_journal_directory | default('') | string }}"
     _journal_mount: /var/log/journal
-    _journal_image: docker.io/grafana/alloy:v1.5.1
+    _journal_image: docker.io/grafana/alloy:v1.9.2
     _journal_loki_query_url: >-
       {{ [
         'http://loki:3100/loki/api/v1/query_range?query=%7Bservice%3D%22o11y%2Falloy%22%2Csignal%3D%22container%22%7D',
@@ -278,11 +278,31 @@
       no_log: true
       when: not ansible_check_mode
 
+    - name: Check whether the pinned Alloy validation image is already available
+      ansible.builtin.command:
+        argv: [podman, image, exists, "{{ _journal_image }}"]
+      register: _journal_image_exists
+      changed_when: false
+      failed_when: false
+      when: not ansible_check_mode
+
+    - name: Acquire the pinned Alloy validation image when it is not cached
+      ansible.builtin.command:
+        argv: [podman, pull, --quiet, "{{ _journal_image }}"]
+      register: _journal_image_pull
+      changed_when: _journal_image_pull.rc == 0
+      when:
+        - not ansible_check_mode
+        - _journal_image_exists.rc | default(1) != 0
+      async: 600
+      poll: 5
+
     - name: Validate the candidate config with the pinned Alloy image before any collector recreation
       ansible.builtin.command:
         argv:
           - podman
           - run
+          - --pull=never
           - --rm
           - --network
           - none
@@ -429,19 +449,125 @@
             quiet: true
 
       rescue:
-        - name: Stop only the journal collector after a failed delivery gate
+        - name: Read the journal collector state before rollback
+          ansible.builtin.command:
+            argv: [podman, inspect, --format, "{{ '{{' }}.State.Status{{ '}}' }}", o11y-journal-collector]
+          register: _journal_rollback_status
+          changed_when: false
+          failed_when: false
+
+        - name: Capture the positions volume name before rollback
+          ansible.builtin.command:
+            argv:
+              - podman
+              - inspect
+              - --format
+              - "{{ '{{' }}range .Mounts{{ '}}' }}{{ '{{' }}if eq .Destination \"/var/lib/alloy/data\"{{ '}}' }}{{ '{{' }}.Name{{ '}}' }}{{ '{{' }}end{{ '}}' }}{{ '{{' }}end{{ '}}' }}"
+              - o11y-journal-collector
+          register: _journal_rollback_volume_name
+          changed_when: false
+          failed_when: false
+          check_mode: false
+          no_log: true
+          when: _journal_rollback_status.rc == 0
+
+        - name: Require a named positions volume before rollback
+          ansible.builtin.assert:
+            that:
+              - _journal_rollback_volume_name.rc | default(1) == 0
+              - _journal_rollback_volume_name.stdout | default('') | trim | length > 0
+            fail_msg: >-
+              The journal collector has no verifiable named positions volume; refusing
+              to remove its container during rollback.
+            quiet: true
+          when: _journal_rollback_status.rc == 0
+
+        - name: Verify the positions volume exists before rollback
+          ansible.builtin.command:
+            argv: [podman, volume, exists, "{{ _journal_rollback_volume_name.stdout | trim }}"]
+          register: _journal_rollback_volume_before
+          changed_when: false
+          failed_when: false
+          no_log: true
+          when: _journal_rollback_status.rc == 0
+
+        - name: Refuse rollback if the positions volume is already missing
+          ansible.builtin.assert:
+            that: _journal_rollback_volume_before.rc | default(1) == 0
+            fail_msg: >-
+              The journal collector positions volume is missing before rollback;
+              refusing to remove the collector container.
+            quiet: true
+          when: _journal_rollback_status.rc == 0
+
+        - name: Stop only the running journal collector after a failed delivery gate
           ansible.builtin.command:
             argv: [podman, stop, --time, "10", o11y-journal-collector]
           register: _journal_rollback
           changed_when: _journal_rollback.rc == 0
           failed_when: false
+          when:
+            - _journal_rollback_status.rc == 0
+            - _journal_rollback_status.stdout | trim in ['running', 'paused']
+
+        - name: Remove the stopped journal collector container but retain positions
+          ansible.builtin.command:
+            # Do not pass -v: the named journal-collector-state volume must survive.
+            argv: [podman, rm, o11y-journal-collector]
+          register: _journal_rollback_remove
+          changed_when: _journal_rollback_remove.rc == 0
+          failed_when: false
+          when:
+            - _journal_rollback_status.rc == 0
+            - >-
+              _journal_rollback_status.stdout | trim in ['created', 'exited'] or
+              (_journal_rollback.rc | default(1)) == 0
+
+        - name: Read back the collector after delivery rollback
+          ansible.builtin.command:
+            argv: [podman, ps, --all, --filter, name=^o11y-journal-collector$, --format, "{{ '{{' }}.Names{{ '}}' }}"]
+          register: _journal_rollback_readback
+          changed_when: false
+          check_mode: false
+
+        - name: Require the failed pilot container to be absent after rollback
+          ansible.builtin.assert:
+            that:
+              - _journal_rollback_readback.rc == 0
+              - _journal_rollback_readback.stdout | trim == ''
+            fail_msg: >-
+              The failed journal collector could not be removed from the rootless
+              boot-restart set; inspect the receiver host before retrying.
+            quiet: true
           when: not ansible_check_mode
+
+        - name: Read back the journal collector positions volume after rollback
+          ansible.builtin.command:
+            argv: [podman, volume, exists, "{{ _journal_rollback_volume_name.stdout | trim }}"]
+          register: _journal_rollback_volume_readback
+          changed_when: false
+          failed_when: false
+          check_mode: false
+          when: _journal_rollback_status.rc == 0
+
+        - name: Require the positions volume to survive collector rollback
+          ansible.builtin.assert:
+            that: _journal_rollback_volume_readback.rc == 0
+            fail_msg: >-
+              The journal collector positions volume is missing after rollback;
+              do not retry until its state is investigated.
+            quiet: true
+          when:
+            - not ansible_check_mode
+            - _journal_rollback_status.rc == 0
 
         - name: Fail closed after stopping the journal collector
           ansible.builtin.fail:
             msg: >-
               The journal collector failed its exact-target delivery gate. Only that
-              collector was stopped; its positions volume and all receiver data remain.
+              collector was stopped and removed from the boot-restart set when
+              present. All receiver data remains; positions-volume preservation was
+              asserted when a collector with that mount existed.
 
 
 - name: Stop only the journal collector while preserving its positions volume
@@ -462,6 +588,51 @@
       failed_when: false
       check_mode: false
 
+    - name: Read the positions volume state before stop
+      ansible.builtin.command:
+        argv:
+          - podman
+          - inspect
+          - --format
+          - "{{ '{{' }}range .Mounts{{ '}}' }}{{ '{{' }}if eq .Destination \"/var/lib/alloy/data\"{{ '}}' }}{{ '{{' }}.Name{{ '}}' }}{{ '{{' }}end{{ '}}' }}{{ '{{' }}end{{ '}}' }}"
+          - o11y-journal-collector
+      register: _journal_stop_volume_name
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+      when: _journal_stop_status.rc == 0
+
+    - name: Require a named positions volume before stop
+      ansible.builtin.assert:
+        that:
+          - _journal_stop_volume_name.rc | default(1) == 0
+          - _journal_stop_volume_name.stdout | default('') | trim | length > 0
+        fail_msg: >-
+          The journal collector has no verifiable named positions volume; refusing
+          to remove its container.
+        quiet: true
+      when: _journal_stop_status.rc == 0
+
+    - name: Verify the positions volume exists before stop
+      ansible.builtin.command:
+        argv: [podman, volume, exists, "{{ _journal_stop_volume_name.stdout | trim }}"]
+      register: _journal_stop_volume_before
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+      when: _journal_stop_status.rc == 0
+
+    - name: Refuse stop if the positions volume is already missing
+      ansible.builtin.assert:
+        that: _journal_stop_volume_before.rc | default(1) == 0
+        fail_msg: >-
+          The journal collector positions volume is missing before stop; refusing to
+          remove the collector container.
+        quiet: true
+      when: _journal_stop_status.rc == 0
+
     - name: Stop only the pilot collector if it is running
       ansible.builtin.command:
         argv: [podman, stop, --time, "10", o11y-journal-collector]
@@ -471,6 +642,71 @@
         - not ansible_check_mode
         - _journal_stop_status.rc == 0
         - _journal_stop_status.stdout | trim == 'running'
+
+    - name: Stop only the pilot collector if it is paused
+      ansible.builtin.command:
+        argv: [podman, stop, --time, "10", o11y-journal-collector]
+      register: _journal_stop_paused
+      changed_when: _journal_stop_paused.rc == 0
+      when:
+        - not ansible_check_mode
+        - _journal_stop_status.rc == 0
+        - _journal_stop_status.stdout | trim == 'paused'
+
+    - name: Remove the stopped pilot container while preserving positions
+      ansible.builtin.command:
+        # Do not pass -v: the named journal-collector-state volume must survive.
+        argv: [podman, rm, o11y-journal-collector]
+      register: _journal_stop_remove
+      changed_when: _journal_stop_remove.rc == 0
+      when:
+        - not ansible_check_mode
+        - _journal_stop_status.rc == 0
+        - >-
+          _journal_stop_status.stdout | trim in ['created', 'exited'] or
+          (_journal_stop.rc | default(1)) == 0 or
+          (_journal_stop_paused.rc | default(1)) == 0
+
+    - name: Read back the stopped pilot container
+      ansible.builtin.command:
+        argv: [podman, ps, --all, --filter, name=^o11y-journal-collector$, --format, "{{ '{{' }}.Names{{ '}}' }}"]
+      register: _journal_stop_readback
+      changed_when: false
+      check_mode: false
+      when: not ansible_check_mode
+
+    - name: Require the stopped pilot container to be absent across host reboots
+      ansible.builtin.assert:
+        that:
+          - _journal_stop_readback.rc == 0
+          - _journal_stop_readback.stdout | trim == ''
+        fail_msg: >-
+          The journal collector container remains registered with the Podman boot
+          restart unit. Its named positions volume was not removed.
+        quiet: true
+      when: not ansible_check_mode
+
+    - name: Read back the positions volume after stop
+      ansible.builtin.command:
+        argv: [podman, volume, exists, "{{ _journal_stop_volume_name.stdout | trim }}"]
+      register: _journal_stop_volume_after
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      when:
+        - not ansible_check_mode
+        - _journal_stop_status.rc == 0
+
+    - name: Require the existing positions volume to survive stop
+      ansible.builtin.assert:
+        that: _journal_stop_volume_after.rc == 0
+        fail_msg: >-
+          The journal collector positions volume is missing after stop; do not retry
+          until its state is investigated.
+        quiet: true
+      when:
+        - not ansible_check_mode
+        - _journal_stop_status.rc == 0
 
 - name: Survey fixed standard journal directory candidates
   hosts: o11y_svc
@@ -504,7 +740,7 @@
       ansible.builtin.assert:
         that:
           - _journal_directory_survey.rc | default(1) == 0
-          - (_journal_directory_survey.stdout | default('{}') | from_json).result in ['/var/log/journal', '/run/log/journal', 'ambiguous', 'none', 'check_mode_unverified']
+          - (_journal_directory_survey.stdout | default('{}') | from_json).result in ['/var/log/journal', '/run/log/journal', 'ambiguous', 'none', 'probe_unavailable', 'check_mode_unverified']
         fail_msg: "The standard journal directory survey failed without exposing journal data."
         quiet: true
 
