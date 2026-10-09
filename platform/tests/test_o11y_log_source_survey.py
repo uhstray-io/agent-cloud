@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import playbook_yaml
 import pytest
 import yaml
+from jinja2 import Environment
 
 ROOT = Path(__file__).resolve().parents[2]
 HELPER = ROOT / "platform/playbooks/files/survey-o11y-log-source.py"
@@ -394,8 +395,35 @@ def test_playbook_is_dev_bound_guarded_exact_head_and_read_only_in_check_mode():
     assert "stdin" in command
     assert helper_guard["that"] == "(_log_source_report.rc | default(1)) == 0"
     assert result_guard["that"] == ["(_log_source_report.stdout | from_json).status == 'observed'"]
-    assert "stdout" not in helper_guard["fail_msg"]
-    assert "stderr" not in helper_guard["fail_msg"]
+    refusal_reasons = play["vars"]["_survey_refusal_reasons"]
+    assert refusal_reasons == [
+        "container_metadata_unavailable",
+        "no_running_o11y_containers",
+        "alloy_source_unverified",
+        "survey_failed",
+    ]
+    assert helper_guard["fail_msg"] == (
+        "Receiver log-source survey failed (survey_failed); no metadata is reported."
+    )
+    template_env = Environment()
+    template_env.filters["from_json"] = json.loads
+    rendered_refusal = template_env.from_string(result_guard["fail_msg"])
+    for reason in refusal_reasons:
+        rendered = rendered_refusal.render(
+            _log_source_report={"stdout": json.dumps({"status": "unavailable", "reason": reason})},
+            _survey_refusal_reasons=refusal_reasons,
+        )
+        assert f"({reason})" in rendered
+
+    untrusted_reason = "/private/host/path secret-value"
+    rendered = rendered_refusal.render(
+        _log_source_report={
+            "stdout": json.dumps({"status": "unavailable", "reason": untrusted_reason})
+        },
+        _survey_refusal_reasons=refusal_reasons,
+    )
+    assert "(unclassified)" in rendered
+    assert untrusted_reason not in rendered
     assert all(
         not any(key in task for key in ("ansible.builtin.copy", "ansible.builtin.file"))
         for task in tasks

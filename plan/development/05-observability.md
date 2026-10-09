@@ -1514,11 +1514,15 @@ checks for a read-only Alloy journal-source mount. Journald readability is count
 from the latest at most 100 matching metadata-only entries per container within
 the 15-minute query window; it is not a full-window volume count. A read-only
 mount and readable directory do not prove Alloy has a configured or working
-journal pipeline. It reports fixed categories, booleans, and counts; no
-journald-configured containers is unsupported, a failed read is unreadable, and
-a timeout or malformed response is unverified. The implementation and focused
-tests are source evidence only; no Semaphore survey run or receiver result is
-claimed. Keep task 7.4 open until
+journal pipeline. Journal categories and counts cover only the current deploying
+user's user journal, not the system journal or a host-wide view. Any unknown
+running-container log driver makes the journal result unverified with a zero
+count; only known non-journald drivers produce unsupported. A zero-container
+listing, malformed or failed container inspect, or uncertain Alloy state refuses
+the survey with a fixed category rather than issuing a partial result. For
+verified journald containers, a failed read is unreadable, while timeout or
+malformed metadata is unverified. The implementation and focused tests are source
+evidence only; no Semaphore survey run or receiver result is claimed. Keep task 7.4 open until
 the reviewed Dev source survey and dashboard readback establish container-log
 source support or document its limitation. The survey does not explain or fix
 gateway OTLP access records: their `signal="access-log"` discriminator remains

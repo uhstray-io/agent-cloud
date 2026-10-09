@@ -19,6 +19,11 @@
   any_errors_fatal: true
   vars:
     _log_survey: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/survey-o11y-log-source.py') }}"
+    _survey_refusal_reasons:
+      - container_metadata_unavailable
+      - no_running_o11y_containers
+      - alloy_source_unverified
+      - survey_failed
   tasks:
     - name: Require one receiver and production mode
       ansible.builtin.assert:
@@ -44,7 +49,7 @@
     - name: Require the survey helper to complete
       ansible.builtin.assert:
         that: (_log_source_report.rc | default(1)) == 0
-        fail_msg: "Receiver log-source helper failed; no metadata is reported."
+        fail_msg: "Receiver log-source survey failed (survey_failed); no metadata is reported."
         quiet: true
       tags: [always]
 
@@ -52,7 +57,11 @@
       ansible.builtin.assert:
         that:
           - (_log_source_report.stdout | from_json).status == 'observed'
-        fail_msg: "Receiver log-source metadata is unavailable; no source is assumed."
+        fail_msg: >-
+          Receiver log-source metadata is unavailable
+          ({{ ((_log_source_report.stdout | from_json).reason | default('unclassified'))
+          if ((_log_source_report.stdout | from_json).reason | default('unclassified'))
+          in _survey_refusal_reasons else 'unclassified' }}); no source is assumed.
         quiet: true
       tags: [always]
 
