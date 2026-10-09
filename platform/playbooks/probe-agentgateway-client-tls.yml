@@ -221,7 +221,7 @@
               {%- set out = {} -%}
               {%- for key, r in {'p1': _tp_r1, 'p2': _tp_r2, 'p3': _tp_r3}.items() -%}
               {%- set m = r.msg | lower -%}
-              {%- if r.status > 0 -%}{%- set c = 'http-' ~ r.status -%}
+              {%- if (r.status | int) > 0 -%}{%- set c = 'http-' ~ (r.status | int) -%}
               {%- elif m is search('certificate verify failed|self.signed|local issuer|doesn.t match|has expired') -%}{%- set c = 'server-certificate-not-trusted' -%}
               {%- elif m is search('certificate required|bad certificate|handshake failure|alert certificate|alert unknown ca|alert handshake') -%}{%- set c = 'tls-handshake-refused' -%}
               {%- elif m is search('connection refused') -%}{%- set c = 'connection-refused' -%}
@@ -252,14 +252,17 @@
             _inconclusive_leaf: >-
               {{ _leaf_probes.items() | rejectattr('1', 'match', '^http-2') | rejectattr('1', 'in', _leaf_refusals)
                  | map(attribute='0') | list }}
-            _s2: "{{ _tp_r2.status }}"
-            _s3: "{{ _tp_r3.status }}"
+            # ansible-core 2.18 hands a vars-level `{{ ... }}` back as a string (2.20 keeps the int),
+            # so cast before comparing with the integer statuses below; uncast, a real 403/403 read
+            # as "no reading" on the prod runner (2026-10-09, task 3834).
+            _s2: "{{ _tp_r2.status | int }}"
+            _s3: "{{ _tp_r3.status | int }}"
             _reading_raw: >-
-              {% if _s2 not in [401, 403] or _s3 not in [401, 403] %}
+              {% if (_s2 | int) not in [401, 403] or (_s3 | int) not in [401, 403] %}
               no reading: probes 2 and 3 were not both answered by the gateway's policy (401 or 403)
-              {% elif _s2 == 403 and _s3 == 403 %}
+              {% elif (_s2 | int) == 403 and (_s3 | int) == 403 %}
               the SAN rule ran before the API-key check: a leaf on no allowlist is answered HTTP 403 with or without a key
-              {% elif _s2 == 401 %}
+              {% elif (_s2 | int) == 401 %}
               the API-key check was reached first: the leaf with no key was answered 401, so the SAN rule did not refuse it before the key check
               {% else %}
               no single reading: the leaf answered {{ _c.p2 }} with no key and {{ _c.p3 }} with an invalid key
