@@ -51,6 +51,7 @@ and why.
 | 1.19 | A negative claim about a host's state from evidence that cannot establish it (widens 1.6) | Unverified claim | 1 | Convention |
 | 1.20 | Assumed Semaphore injected a task-id environment variable; the first production drill printed a blank receipt ID | Unverified runtime assumption | 1 | Test (o11y receipt checks) |
 | 1.21 | Said the live alert readback proved the inference alert groups; it filtered rule uids to `o11y_` and never read them, and no dashboard check covered the inference boards | Unverified claim | 1 | Test (`test_service_o11y.bats` readback mirror) |
+| 1.22 | Told the operator the Semaphore runner uses ansible-core 2.16 from a reviewer's quote of a stale comment; the image runs 2.20.8 | Unverified claim | 1 | Convention |
 | 2.1 | Test compiled a pattern as raw file text, not as the runtime decodes it | False-green test | 1 | Test |
 | 2.2 | Test pinned the vulnerable form of a security check in place | False-green test | 1 | Test |
 | 2.3 | Negative assertion aborted under `set -e` because a no-match grep exits 1 | False-green test | 1 | Convention |
@@ -881,6 +882,29 @@ stated past what its tests exercised); this is the live-verification form.
 live rule and contact state", "real deploy verifies every provisioned dashboard is live") —
 renders the alert file with the inference scrape and probe enabled and fails when an
 `inference_*` rule is missing or unrouted live, or a dashboard file's uid is not live.
+
+### 1.22 A tool version stated from a relayed comment instead of the running image
+
+**What happened.** While diagnosing why a production dry run of `Rollback Inference Route (Dev)`
+(Semaphore task 3762, 2026-10-09) failed inside a `no_log` task, the gateway-config rollback tests
+were run on ansible-core 2.16.18 and 12 failed with a JSON decode error. The operator was then told
+"the Semaphore runner uses 2.16". The 2.16 figure came from a PR reviewer quoting a comment in
+`provision-tududi-github-sync.yml`; nobody had read the version from the runner. Running
+`ansible --version` inside `docker.io/semaphoreui/semaphore:v2.19.11`, the image the production
+compose file pins, returned `ansible [core 2.20.8]`, on which the same tests pass. The 2.16 defect
+is real but is not what failed in production; the claim had to be withdrawn in the next message.
+
+**Root cause.** A version number found in a repository comment and repeated by another agent was
+treated as a fact about the running system. A comment is evidence of what someone once believed;
+the runner's version is a property of the image the orchestrator actually starts.
+
+**The rule.** A claim about what a running system uses (tool version, library, flag) is read from
+that system or the exact artifact it runs (`ansible --version` in the pinned image, the live
+process), never from a comment, a document or another agent's report. An agent's quote of a
+comment is two steps removed from the fact; check before repeating it.
+
+**Enforced by.** Convention. The stale comment is corrected in the same change as the rollback
+extraction fix (branch `fix/rollback-config-extraction`).
 
 ## 2. Tests that would have passed for the wrong reason
 
