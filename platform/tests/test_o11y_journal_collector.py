@@ -305,6 +305,16 @@ def test_playbook_guards_validation_delivery_and_non_destructive_rollback():
         for task in apply_block["rescue"]
         if task.get("name") == "Capture allow-listed collector health evidence before rollback"
     )
+    rollback_failure = next(
+        task
+        for task in apply_block["rescue"]
+        if task.get("name") == "Fail closed after stopping the journal collector"
+    )
+    rollback_classifier = next(
+        task
+        for task in apply_block["rescue"]
+        if task.get("name") == "Classify collector inspect outcome without exposing stderr"
+    )
     assert "check_mode" not in start_task
     assert start_task["when"] == "not ansible_check_mode"
     assert rollback_evidence["check_mode"] is False
@@ -314,6 +324,17 @@ def test_playbook_guards_validation_delivery_and_non_destructive_rollback():
     assert ".FailingStreak" in evidence_format
     assert ".ExitCode" in evidence_format
     assert ".Output" not in evidence_format
+    failure_message = rollback_failure["ansible.builtin.fail"]["msg"]
+    classifier = rollback_classifier["ansible.builtin.set_fact"]["_journal_rollback_health_evidence_class"]
+    assert "container_missing" in classifier
+    assert "permission_denied" in classifier
+    assert "inspect_failed" in classifier
+    assert "empty_formatted_fields" in classifier
+    assert "fields_available" in classifier
+    assert "Podman inspect rc={{ _journal_rollback_health_evidence.rc" in failure_message
+    assert "inspect classification={{ _journal_rollback_health_evidence_class" in failure_message
+    assert "_journal_rollback_health_evidence.stdout" in failure_message
+    assert "_journal_rollback_health_evidence.stderr" not in failure_message
     rollback_remove = next(
         task
         for task in apply_block["rescue"]
