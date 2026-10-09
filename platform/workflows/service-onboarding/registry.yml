@@ -39,7 +39,7 @@ steps:
     criteria:
       - the template vmid exists on the declared node
       - a cloud-init drive is attached to the template
-    evidence_keys: [template_vmid, node]
+    evidence_keys: [template_vmid, node, cloudinit_drive]
     reviewed: null
     review_gap: "none in the executor: passed all D10 checks 2026-10-03; the stamp waits on the playbook reaching main (D10 review 2026-10-04)"
 

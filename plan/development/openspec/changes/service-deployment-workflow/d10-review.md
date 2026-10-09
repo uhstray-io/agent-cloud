@@ -381,3 +381,8 @@ proven by the fake-tofu tests only.
 
 Verdict: edge-dns **passes** D10, with no pending proof. Not stamped, for the `main` hazard
 recorded on 2026-10-04. Remaining gap: service-deploy, not yet re-reviewed.
+
+2026-10-08, vm-template read-back: the template read-back now accepts a cloud-init drive on any
+drive key (it was `ide2` only; live template 9000 carries it on `ide0`, Semaphore task 3287) and
+adds the evidence key `cloudinit_drive`, which the registry lists. The step's criteria are
+unchanged, so its D10 verdict above is unchanged.

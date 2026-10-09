@@ -282,10 +282,12 @@
       # A refused or unresolved connection sends nothing; the step records the refusal.
       when: (_pve_token_id | default('') | length > 0) and (_pve_host | default('') | length > 0)
 
-    # The cloud-init drive is the one this playbook attaches: ide2 = "<storage>:cloudinit" in the
-    # post-install PUT above, which Proxmox stores as a volume named "...-cloudinit" on that key.
-    # Matching that key and volume name, not any value mentioning cloudinit, keeps unrelated
-    # metadata (a description, a tag) from passing as the drive (PR 416 review).
+    # The cloud-init drive may sit on any drive key. This playbook builds with ide2 = "<storage>:cloudinit"
+    # (the post-install PUT above), but an adopted template can be built by other code (live template
+    # 9000 carries it on ide0, Semaphore task 3287) and still clone and cloud-init correctly, and the
+    # registry criterion ("a cloud-init drive is attached to the template") names no key. The check
+    # still matches a DRIVE key holding a volume named "...-cloudinit", not any value mentioning
+    # cloudinit, so unrelated metadata (a description, a tag) cannot pass as the drive (PR 416 review).
     - name: "Decide the template step"
       ansible.builtin.set_fact:
         _tmpl_errors: >-
@@ -294,11 +296,10 @@
                    and ((_tmpl_after.json.data | default({}, true)).template | default(0) | int == 1)
                 else ['vmid ' ~ _vmid ~ ' on ' ~ _node ~ ' is not a template (HTTP '
                       ~ (_tmpl_after.status | default('none')) ~ ')'])
-             + ([] if ((_tmpl_after.json.data | default({}, true)).ide2 | default('') | string)
-                      is search(_tmpl_ci_volume)
-                else ['template ' ~ _vmid ~ ' has no cloud-init drive on ide2 ('
-                      ~ (('cloudinit volume found on: ' ~ (_tmpl_ci_keys | join(', ')))
-                         if _tmpl_ci_keys else 'no cloudinit volume on any drive key') ~ ')']) }}
+             + ([] if _tmpl_ci_keys | length > 0
+                else ['template ' ~ _vmid ~ ' has no cloud-init drive (no cloudinit volume on any drive key)']) }}
+        # The drive key(s) that carry it, as step evidence (key names only, never a value).
+        _tmpl_cloudinit_drive: "{{ _tmpl_ci_keys | join(',') }}"
         # A dry run against a node with no template yet would create one; nothing to prove.
         _tmpl_dry_absent: >-
           {{ ansible_check_mode and not (_tmpl_present | default(false) | bool)
@@ -307,8 +308,8 @@
         _tmpl_ci_volume: '^[^,=]+:([^,=]*-)?cloudinit(,|$)'
         # `default({}, true)`: Proxmox can answer 200 with "data": null, which a plain default
         # keeps, and dict2items on null would fail before the step result is recorded.
-        # On a mismatch, say which drive keys DO hold a cloud-init volume (a template built by
-        # older code may carry it elsewhere). Key names only: no other config value is reported.
+        # The drive keys that hold a cloud-init volume. Key names only: no other config value is
+        # reported or recorded.
         _tmpl_ci_keys: >-
           {{ (_tmpl_after.json.data | default({}, true)) | dict2items
              | selectattr('key', 'match', '^(ide|sata|scsi|virtio)[0-9]+$')
@@ -327,6 +328,7 @@
         step_result_evidence:
           template_vmid: "{{ _vmid | int }}"
           node: "{{ _node }}"
+          cloudinit_drive: "{{ _tmpl_cloudinit_drive }}"
         step_result_error: "{{ _tmpl_errors | join('; ') }}"
 
     - name: "Fail when the template step did not pass"
