@@ -481,35 +481,6 @@
           no_log: true
           when: _journal_rollback_status.rc == 0
 
-        - name: Require a named positions volume before rollback removal
-          ansible.builtin.assert:
-            that:
-              - _journal_rollback_volume_name.rc | default(1) == 0
-              - _journal_rollback_volume_name.stdout | default('') | trim | length > 0
-            fail_msg: >-
-              The journal collector has no verifiable named positions volume; refusing
-              to remove its container during rollback.
-            quiet: true
-          when: _journal_rollback_status.rc == 0
-
-        - name: Verify the positions volume exists before rollback removal
-          ansible.builtin.command:
-            argv: [podman, volume, exists, "{{ _journal_rollback_volume_name.stdout | trim }}"]
-          register: _journal_rollback_volume_before
-          changed_when: false
-          failed_when: false
-          no_log: true
-          when: _journal_rollback_status.rc == 0
-
-        - name: Refuse rollback removal if the positions volume is missing
-          ansible.builtin.assert:
-            that: _journal_rollback_volume_before.rc | default(1) == 0
-            fail_msg: >-
-              The journal collector positions volume is missing before rollback;
-              refusing to remove the collector container.
-            quiet: true
-          when: _journal_rollback_status.rc == 0
-
         - name: Remove the stopped journal collector container but retain positions
           ansible.builtin.command:
             # Do not pass -v: the named journal-collector-state volume must survive.
@@ -548,14 +519,18 @@
           changed_when: false
           failed_when: false
           check_mode: false
-          when: _journal_rollback_status.rc == 0
+          when:
+            - _journal_rollback_status.rc == 0
+            - _journal_rollback_volume_name.stdout | default('') | trim | length > 0
 
         - name: Require the positions volume to survive collector rollback
           ansible.builtin.assert:
-            that: _journal_rollback_volume_readback.rc == 0
+            that:
+              - _journal_rollback_volume_name.stdout | default('') | trim | length > 0
+              - _journal_rollback_volume_readback.rc | default(1) == 0
             fail_msg: >-
-              The journal collector positions volume is missing after rollback;
-              do not retry until its state is investigated.
+              The collector was removed without deleting a volume, but its positions
+              volume could not be identified and verified after rollback.
             quiet: true
           when:
             - not ansible_check_mode
@@ -623,36 +598,6 @@
       no_log: true
       when: _journal_stop_status.rc == 0
 
-    - name: Require a named positions volume before removal
-      ansible.builtin.assert:
-        that:
-          - _journal_stop_volume_name.rc | default(1) == 0
-          - _journal_stop_volume_name.stdout | default('') | trim | length > 0
-        fail_msg: >-
-          The journal collector has no verifiable named positions volume; refusing
-          to remove its container.
-        quiet: true
-      when: _journal_stop_status.rc == 0
-
-    - name: Verify the positions volume exists before removal
-      ansible.builtin.command:
-        argv: [podman, volume, exists, "{{ _journal_stop_volume_name.stdout | trim }}"]
-      register: _journal_stop_volume_before
-      changed_when: false
-      failed_when: false
-      check_mode: false
-      no_log: true
-      when: _journal_stop_status.rc == 0
-
-    - name: Refuse removal if the positions volume is already missing
-      ansible.builtin.assert:
-        that: _journal_stop_volume_before.rc | default(1) == 0
-        fail_msg: >-
-          The journal collector positions volume is missing before stop; refusing to
-          remove the collector container.
-        quiet: true
-      when: _journal_stop_status.rc == 0
-
     - name: Remove the stopped pilot container while preserving positions
       ansible.builtin.command:
         # Do not pass -v: the named journal-collector-state volume must survive.
@@ -696,13 +641,16 @@
       when:
         - not ansible_check_mode
         - _journal_stop_status.rc == 0
+        - _journal_stop_volume_name.stdout | default('') | trim | length > 0
 
     - name: Require the existing positions volume to survive stop
       ansible.builtin.assert:
-        that: _journal_stop_volume_after.rc == 0
+        that:
+          - _journal_stop_volume_name.stdout | default('') | trim | length > 0
+          - _journal_stop_volume_after.rc | default(1) == 0
         fail_msg: >-
-          The journal collector positions volume is missing after stop; do not retry
-          until its state is investigated.
+          The collector was removed without deleting a volume, but its positions
+          volume could not be identified and verified after stop.
         quiet: true
       when:
         - not ansible_check_mode

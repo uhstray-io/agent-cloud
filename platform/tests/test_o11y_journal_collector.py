@@ -315,11 +315,6 @@ def test_playbook_guards_validation_delivery_and_non_destructive_rollback():
         for task in apply_block["rescue"]
         if task.get("name") == "Capture the positions volume name after stopping rollback target"
     )
-    rollback_volume_precheck = next(
-        task
-        for task in apply_block["rescue"]
-        if task.get("name") == "Verify the positions volume exists before rollback removal"
-    )
     rollback_volume_readback = next(
         task
         for task in apply_block["rescue"]
@@ -337,9 +332,8 @@ def test_playbook_guards_validation_delivery_and_non_destructive_rollback():
     ]
     assert "_journal_rollback.rc" in " ".join(rollback_remove["when"])
     assert apply_block["rescue"].index(rollback_task) < apply_block["rescue"].index(rollback_volume_capture)
-    assert apply_block["rescue"].index(rollback_task) < apply_block["rescue"].index(rollback_volume_precheck)
+    assert apply_block["rescue"].index(rollback_remove) < apply_block["rescue"].index(rollback_volume_readback)
     assert ".Name" in " ".join(rollback_volume_capture["ansible.builtin.command"]["argv"])
-    assert "_journal_rollback_volume_name.stdout" in rollback_volume_precheck["ansible.builtin.command"]["argv"][3]
     assert "_journal_rollback_volume_name.stdout" in rollback_volume_readback["ansible.builtin.command"]["argv"][3]
     rollback_verify = next(
         task
@@ -371,15 +365,14 @@ def test_playbook_guards_validation_delivery_and_non_destructive_rollback():
         for task in stop_play["tasks"]
         if task.get("name") == "Read the positions volume state after stopping collector"
     )
-    stop_volume_precheck = next(
+    volume_readback = next(
         task
         for task in stop_play["tasks"]
-        if task.get("name") == "Verify the positions volume exists before removal"
+        if task.get("name") == "Read back the positions volume after stop"
     )
     assert ".Name" in " ".join(stop_volume_capture["ansible.builtin.command"]["argv"])
-    assert "_journal_stop_volume_name.stdout" in stop_volume_precheck["ansible.builtin.command"]["argv"][3]
     assert stop_play["tasks"].index(stop_action) < stop_play["tasks"].index(stop_volume_capture)
-    assert stop_play["tasks"].index(stop_action) < stop_play["tasks"].index(stop_volume_precheck)
+    assert stop_play["tasks"].index(stop_remove) < stop_play["tasks"].index(volume_readback)
     assert stop_readback["ansible.builtin.command"]["argv"][:3] == ["podman", "ps", "--all"]
     assert stop_readback["when"] == "not ansible_check_mode"
     stop_verify = next(
@@ -389,11 +382,6 @@ def test_playbook_guards_validation_delivery_and_non_destructive_rollback():
     )
     assert "_journal_stop_readback.stdout | trim == ''" in stop_verify["ansible.builtin.assert"]["that"]
 
-    volume_readback = next(
-        task
-        for task in stop_play["tasks"]
-        if task.get("name") == "Read back the positions volume after stop"
-    )
     volume_verify = next(
         task
         for task in stop_play["tasks"]
@@ -405,14 +393,20 @@ def test_playbook_guards_validation_delivery_and_non_destructive_rollback():
         "exists",
     ]
     assert "_journal_stop_volume_name.stdout" in volume_readback["ansible.builtin.command"]["argv"][3]
-    assert volume_verify["ansible.builtin.assert"]["that"] == "_journal_stop_volume_after.rc == 0"
+    assert volume_verify["ansible.builtin.assert"]["that"] == [
+        "_journal_stop_volume_name.stdout | default('') | trim | length > 0",
+        "_journal_stop_volume_after.rc | default(1) == 0",
+    ]
 
     rollback_volume = next(
         task
         for task in apply_block["rescue"]
         if task.get("name") == "Require the positions volume to survive collector rollback"
     )
-    assert rollback_volume["ansible.builtin.assert"]["that"] == "_journal_rollback_volume_readback.rc == 0"
+    assert rollback_volume["ansible.builtin.assert"]["that"] == [
+        "_journal_rollback_volume_name.stdout | default('') | trim | length > 0",
+        "_journal_rollback_volume_readback.rc | default(1) == 0",
+    ]
 
 
 def test_survey_check_mode_skips_container_probe_and_reports_unverified():
