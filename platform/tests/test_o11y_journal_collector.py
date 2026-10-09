@@ -1359,7 +1359,10 @@ def test_positions_repair_check_mode_preserves_unverified_result_after_skipped_c
     }
     assert assertion["ansible.builtin.assert"]["that"] == [
         "_journal_positions_repair.rc | default(1) == 0",
-        "(_journal_positions_repair.stdout | default('{}') | from_json).status in ['repaired', 'already_correct', 'check_mode_unverified']",
+        (
+            "(_journal_positions_repair.stdout | default('{}') | from_json).status in "
+            "['repaired', 'already_correct', 'check_mode_unverified']"
+        ),
     ]
 
 
