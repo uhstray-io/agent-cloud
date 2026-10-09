@@ -38,7 +38,7 @@ def _assert_positions_survey_diagnostics_schema(report, has_reason=False):
     top_level = {
         "status", "volume_use_count", "collector_present", "entry_count", "root_owner",
         "root_mode_access", "acl", "mount", "children", "journal_cursor", "free_space",
-        "survey_diagnostics",
+        "survey_diagnostics", "pending_repair_diagnostic",
     }
     assert set(report) == top_level | ({"reason"} if has_reason else set())
     diagnostics = report["survey_diagnostics"]
@@ -50,6 +50,17 @@ def _assert_positions_survey_diagnostics_schema(report, has_reason=False):
     assert set(diagnostics["named_volume"]["fields"]) == {"NeedsChown", "NeedsCopyUp"}
     assert set(diagnostics["named_volume"]["template_fields"]) == {"NeedsChown", "NeedsCopyUp"}
     assert set(diagnostics["podman_version"]) == {"client", "server"}
+    pending = report["pending_repair_diagnostic"]
+    assert set(pending) == {
+        "owner_rwx", "group_other_write_or_special_bits", "volume_free_bytes",
+        "volume_free_inodes", "graphroot_free_bytes", "graphroot_free_inodes", "failed_checks",
+    }
+    assert pending["owner_rwx"] in {"complete", "incomplete", "unverified"}
+    assert pending["group_other_write_or_special_bits"] in {"absent", "present", "unverified"}
+    for key in ("volume_free_bytes", "volume_free_inodes", "graphroot_free_bytes", "graphroot_free_inodes"):
+        assert pending[key] in {"sufficient", "low", "unverified"}
+    assert len(pending["failed_checks"]) <= len(POSITIONS._PENDING_CHECK_NAMES)
+    assert set(pending["failed_checks"]) <= set(POSITIONS._PENDING_CHECK_NAMES)
     for field in (
         *diagnostics["inventory_fields"].values(),
         *diagnostics["named_volume"]["fields"].values(),
@@ -243,11 +254,10 @@ def test_positions_cli_dispatches_prestart_and_live_actions(action, function, mo
 
 
 def test_positions_survey_returns_only_bounded_metadata_categories():
-    report = POSITIONS.survey(
-        lambda: _positions_found(_positions_state(owner=(9001, 9001), children=[
-            {"kind": "file", "uid": 0, "gid": 0, "nlink": 1, "mode": 0o600}
-        ]))
-    )
+    found = _positions_found(_positions_state(owner=(9001, 9001), children=[
+        {"kind": "file", "uid": 0, "gid": 0, "nlink": 1, "mode": 0o600}
+    ]))
+    report = POSITIONS.survey(lambda: found)
 
     assert report == {
         "status": "observed",
@@ -261,6 +271,7 @@ def test_positions_survey_returns_only_bounded_metadata_categories():
         "children": "safe_regular_files",
         "journal_cursor": "valid",
         "free_space": "sufficient",
+        "pending_repair_diagnostic": POSITIONS._pending_diagnostic(found),
     }
     assert "/private" not in json.dumps(report)
     assert "9001" not in json.dumps(report)
@@ -879,6 +890,161 @@ def _empty_pending_volume_found(needs_chown=False, needs_copy_up=False, **overri
     }
 
 
+def _pending_case(**changes):
+    found = _empty_pending_volume_found(
+        needs_copy_up=True,
+        metadata=_positions_state(owner=(88, 88), mode=0o700, children=[], journal_cursor_valid=False),
+    )
+    for path, value in changes.items():
+        target = found
+        parts = path.split(".")
+        if parts[:2] == ["volume", "Labels"]:
+            target = found["volume"]["Labels"]
+            target[".".join(parts[2:])] = value
+            continue
+        for part in parts[:-1]:
+            target = target[part]
+        target[parts[-1]] = value
+    return found
+
+
+@pytest.mark.parametrize(
+    "found",
+    [
+        _pending_case(status="observed"),
+        _pending_case(volume_inventory_complete=False),
+        _pending_case(name_collision=True),
+        _pending_case(project=None),
+        _pending_case(volume=None),
+        _pending_case(**{"volume.Name": "other"}),
+        _pending_case(mountpoint="relative"),
+        _pending_case(**{"volume.Labels": None}),
+        _pending_case(**{"volume.Labels.com.docker.compose.project": "other"}),
+        _pending_case(**{"volume.Labels.com.docker.compose.volume": "other"}),
+        _pending_case(needs_chown=True),
+        _pending_case(needs_copy_up=False),
+        _pending_case(volume_use_count=1),
+        _pending_case(mount_count=1),
+        _pending_case(collector_present=True),
+        _pending_case(**{"metadata.status": "unavailable"}),
+        _pending_case(**{"metadata.children": [{"kind": "file"}]}),
+        _pending_case(**{"metadata.child_count": 1}),
+        _pending_case(**{"metadata.acl": True}),
+        _pending_case(**{"metadata.root_is_mount": True}),
+        _pending_case(**{"metadata.child_mount": True}),
+        _pending_case(**{"metadata.root": None}),
+        _pending_case(**{"metadata.root.mode": 0o600}),
+        _pending_case(**{"metadata.root.mode": 0o722}),
+        _pending_case(**{"metadata.root.uid": 0, "metadata.root.gid": 0}),
+        _pending_case(**{"metadata.root.uid": 0, "metadata.root.gid": 88}),
+        _pending_case(**{"metadata.root.mode": "unavailable"}),
+        _pending_case(**{"metadata.free_bytes": POSITIONS.MIN_FREE_BYTES - 1}),
+        _pending_case(**{"metadata.free_inodes": POSITIONS.MIN_FREE_INODES - 1}),
+        _pending_case(**{"storage_space.free_bytes": POSITIONS.MIN_FREE_BYTES - 1}),
+        _pending_case(**{"storage_space.free_inodes": POSITIONS.MIN_FREE_INODES - 1}),
+    ],
+)
+def test_pending_diagnostic_matches_existing_gate(found):
+    diagnostic = POSITIONS._pending_diagnostic(found)
+    gate_passes = POSITIONS._pending_empty(found, owner_mismatch=True) and POSITIONS._space_is_sufficient(
+        found, require_storage=True
+    )
+    assert (diagnostic["failed_checks"] == []) is gate_passes
+    assert set(diagnostic["failed_checks"]) <= set(POSITIONS._PENDING_CHECK_NAMES)
+
+
+# Frozen from the daeed133 base predicate, before diagnostics were extracted.
+@pytest.mark.parametrize(
+    ("found", "base_results"),
+    [
+        (_pending_case(), (True, True)),
+        (_pending_case(**{"metadata.root.uid": 0, "metadata.root.gid": 0}), (False, True)),
+        (_pending_case(**{"metadata.root.mode": 0o600}), (False, False)),
+        (_pending_case(**{"metadata.status": "unavailable"}), (False, False)),
+        (_pending_case(**{"metadata.free_bytes": None}), (False, False)),
+        (_pending_case(**{"storage_space.free_inodes": None}), (False, False)),
+    ],
+)
+def test_pending_gate_matches_frozen_base_acceptance(found, base_results):
+    actual = tuple(
+        POSITIONS._pending_empty(found, owner_mismatch=owner_mismatch)
+        and POSITIONS._space_is_sufficient(found, require_storage=True)
+        for owner_mismatch in (True, False)
+    )
+    assert actual == base_results
+
+
+@pytest.mark.parametrize(
+    ("mode", "owner_rwx", "unsafe_bits"),
+    [
+        (0o700, "complete", "absent"),
+        (0o600, "incomplete", "absent"),
+        (0o720, "complete", "present"),
+        (0o702, "complete", "present"),
+        (0o4700, "complete", "present"),
+        (0o2700, "complete", "present"),
+        (0o1700, "complete", "present"),
+        ("unknown", "unverified", "unverified"),
+    ],
+)
+def test_pending_diagnostic_distinguishes_mode_failures(mode, owner_rwx, unsafe_bits):
+    diagnostic = POSITIONS._pending_diagnostic(_pending_case(**{"metadata.root.mode": mode}))
+    assert diagnostic["owner_rwx"] == owner_rwx
+    assert diagnostic["group_other_write_or_special_bits"] == unsafe_bits
+
+
+def test_pending_diagnostic_keeps_unobserved_metadata_unverified():
+    found = _pending_case(**{"metadata.status": "unavailable"})
+    diagnostic = POSITIONS._pending_diagnostic(found)
+    assert diagnostic["owner_rwx"] == "unverified"
+    assert diagnostic["group_other_write_or_special_bits"] == "unverified"
+    assert diagnostic["volume_free_bytes"] == "unverified"
+    assert diagnostic["volume_free_inodes"] == "unverified"
+    assert "metadata_observed" in diagnostic["failed_checks"]
+
+
+@pytest.mark.parametrize("filesystem", ["volume", "graphroot"])
+@pytest.mark.parametrize("counter,threshold", [
+    ("free_bytes", POSITIONS.MIN_FREE_BYTES),
+    ("free_inodes", POSITIONS.MIN_FREE_INODES),
+])
+@pytest.mark.parametrize("value,expected", [
+    (None, "unverified"),
+    ("bad", "unverified"),
+    (0, "low"),
+    ("threshold", "sufficient"),
+])
+def test_pending_diagnostic_separates_capacity_checks(filesystem, counter, threshold, value, expected):
+    value = threshold if value == "threshold" else value
+    found = _pending_case()
+    if filesystem == "volume":
+        found["metadata"][counter] = value
+    else:
+        found["storage_space"][counter] = value
+    diagnostic = POSITIONS._pending_diagnostic(found)
+    assert diagnostic[f"{filesystem}_{counter}"] == expected
+
+
+def test_pending_diagnostic_is_read_only_and_sanitized(monkeypatch):
+    found = _pending_case()
+    monkeypatch.setattr(POSITIONS.subprocess, "run", lambda *_a, **_kw: pytest.fail("unexpected Podman call"))
+    report = POSITIONS.survey(lambda: found)
+    diagnostic = report["pending_repair_diagnostic"]
+    assert set(diagnostic) == {
+        "owner_rwx", "group_other_write_or_special_bits", "volume_free_bytes",
+        "volume_free_inodes", "graphroot_free_bytes", "graphroot_free_inodes", "failed_checks",
+    }
+    rendered = json.dumps(diagnostic)
+    assert not any(marker in rendered for marker in ("private", "o11y", "88", "700", "Mountpoint"))
+    found["storage_space"]["free_bytes"] = POSITIONS.MIN_FREE_BYTES - 1
+    result = POSITIONS.repair_positions(
+        lambda: found,
+        lambda _found: pytest.fail("refusal diagnostics must not mutate ownership"),
+    )
+    assert result["status"] == "refused"
+    assert result["pending_repair_diagnostic"] == POSITIONS._pending_diagnostic(found)
+
+
 def test_positions_bootstrap_allows_only_proven_missing_volume_without_collision_or_collector():
     assert POSITIONS.verify(lambda: _missing_volume_found())["status"] == "bootstrap_allowed"
     for found in (
@@ -1060,7 +1226,9 @@ def test_positions_pending_repair_refuses_below_threshold_space(counter_source, 
         lambda: found,
         lambda _found: pytest.fail("low capacity must refuse before chown"),
     )
-    assert result == {"status": "refused", "reason": "pending_volume_unsupported"}
+    assert result["status"] == "refused"
+    assert result["reason"] == "pending_volume_unsupported"
+    assert result["pending_repair_diagnostic"]["failed_checks"]
 
 
 def test_positions_pending_repair_rechecks_races_before_mutation():
@@ -2181,6 +2349,7 @@ def test_positions_survey_exception_keeps_bounded_receipt_schema(monkeypatch, ca
         "journal_cursor": "unavailable",
         "free_space": "unavailable",
         "survey_diagnostics": POSITIONS._unverified_diagnostics(),
+        "pending_repair_diagnostic": POSITIONS._pending_diagnostic({}),
     }
     _assert_positions_survey_diagnostics_schema(report, has_reason=True)
     assert "private detail" not in json.dumps(report)
@@ -2249,7 +2418,11 @@ def test_playbook_guards_validation_delivery_and_non_destructive_rollback():
     )
     assert positions_survey.get("no_log") is not True
     assert positions_survey["when"] == "not ansible_check_mode"
-    assert not any("volume create" in str(task) or "chown" in str(task) for task in survey_play["tasks"])
+    assert not any("volume create" in str(task) for task in survey_play["tasks"])
+    assert not any(
+        "chown" in " ".join(task.get("ansible.builtin.command", {}).get("argv", []))
+        for task in survey_play["tasks"]
+    )
 
     repair_play = next(
         play for play in plays
@@ -2619,9 +2792,9 @@ def test_positions_visibility_is_limited_to_bounded_helper_and_uid_probe_results
     assert set(survey) == {
         "status", "volume_use_count", "collector_present", "entry_count", "root_owner",
         "root_mode_access", "acl", "mount", "children",
-        "journal_cursor", "free_space",
+        "journal_cursor", "free_space", "pending_repair_diagnostic",
     }
-    assert set(verified) == set(survey) | {"reason"}
+    assert set(verified) == (set(survey) - {"pending_repair_diagnostic"}) | {"reason"}
     assert repair == {"status": "already_correct", "reason": "owner_matches"}
     assert not any(value in str((survey, verified, repair)) for value in ("mountpoint", "positions.yml", "/private/"))
 
@@ -2663,6 +2836,7 @@ def test_survey_check_mode_skips_container_probe_and_reports_unverified():
         positions_check_mode["ansible.builtin.set_fact"]["_journal_positions_survey"]["stdout"]
     )
     assert positions_result["status"] == "check_mode_unverified"
+    assert positions_result["pending_repair_diagnostic"] == POSITIONS._pending_diagnostic({})
     assert positions_result["journal_cursor"] == "unavailable"
     assert positions_result["free_space"] == "unavailable"
     assert positions_result["survey_diagnostics"]["named_volume"]["identity"] == "unverified"
