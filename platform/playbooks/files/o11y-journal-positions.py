@@ -6,6 +6,7 @@ import re
 import subprocess
 import sys
 import uuid
+from datetime import UTC, datetime
 
 IMAGE = "docker.io/grafana/alloy:v1.9.2"
 RECEIVER = "o11y-alloy"
@@ -16,7 +17,24 @@ MAX_VOLUMES = 256
 MAX_CONTAINERS = 1024
 MAX_CHILDREN = 32
 MAX_JSON_BYTES = 1_048_576
+MIN_FREE_BYTES = 16 * 1024 * 1024
+MIN_FREE_INODES = 128
 _VERSION_RE = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.-]{1,32})?\Z")
+_CREATED_AT_RE = re.compile(
+    r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}"
+    r"(?:\.[0-9]{1,9})?(?:Z|[+-](?:[01][0-9]|2[0-3]):[0-5][0-9])\Z"
+)
+
+_SPACE_SCRIPT = r'''import json,os,stat,sys
+path=sys.argv[1]
+try:
+    st=os.lstat(path)
+    if not stat.S_ISDIR(st.st_mode) or os.path.realpath(path)!=path: raise ValueError
+    space=os.statvfs(path)
+    print(json.dumps({"status":"observed","free_bytes":space.f_bavail*space.f_frsize,"free_inodes":space.f_favail}))
+except (OSError,ValueError):
+    print(json.dumps({"status":"unavailable"}))
+'''
 
 
 def _call(argv, timeout=15, run=subprocess.run):
@@ -62,6 +80,7 @@ def _container_names(value):
 
 _METADATA_SCRIPT = r'''import hashlib,json,os,re,stat,sys,time
 root=sys.argv[1]
+read_cursor=sys.argv[2]=="true"
 def mount_id(path):
     best=(-1,None)
     with open("/proc/self/mountinfo",encoding="utf-8") as stream:
@@ -86,6 +105,21 @@ def sig(name, st):
         "uid":st.st_uid, "gid":st.st_gid, "mode":stat.S_IMODE(st.st_mode),
         "nlink":st.st_nlink, "dev":st.st_dev, "ino":st.st_ino,
     }
+def scalar(value):
+    if len(value)>=2 and value[0]==value[-1]=="'": return value[1:-1].replace("''", "'")
+    if len(value)>=2 and value[0]==value[-1]=='"': return json.loads(value)
+    return value
+def journal_cursor(data):
+    try: content=data.decode("utf-8")
+    except UnicodeDecodeError: return False
+    match=re.fullmatch(
+        r"positions:\n  \? path: ([^\n]+)\n    labels: ([^\n]+)\n  : ([^\n]+)\n?",
+        content)
+    if not match: return False
+    path,labels,cursor=(scalar(value) for value in match.groups())
+    cursor_format=r"s=[0-9a-f]+;i=[0-9a-f]+;b=[0-9a-f]+;m=[0-9a-f]+;t=[0-9a-f]+;x=[0-9a-f]+"
+    return (path=="cursor-loki.source.journal.o11y_alloy" and labels==""
+        and re.fullmatch(cursor_format, cursor) is not None)
 class RetryObservation(Exception): pass
 for observation_attempt in range(2):
  try:
@@ -103,7 +137,12 @@ for observation_attempt in range(2):
     children=[]
     acl_found=acl(root)
     child_mount=False
-    component_layout=st.st_mode & 0o022 == 0
+    component_layout=st.st_mode & (0o022|0o7000) == 0
+    cursor_valid=False
+    cursor_presence="absent"
+    free=os.statvfs(root)
+    free_bytes=free.f_bavail*free.f_frsize
+    free_inodes=free.f_favail
     for name in sorted(names):
         path=os.path.join(root,name)
         item=os.lstat(path)
@@ -112,15 +151,17 @@ for observation_attempt in range(2):
         acl_found=acl_found or acl(path)
         if stat.S_ISREG(item.st_mode):
             component_layout=(component_layout and name=="alloy_seed.json"
-                and item.st_uid==0 and item.st_gid==0 and item.st_nlink==1)
+                and item.st_uid==0 and item.st_gid==0 and item.st_nlink==1
+                and item.st_mode & 0o077 == 0 and item.st_mode & 0o7133 == 0)
         elif stat.S_ISDIR(item.st_mode) and name=="loki.source.journal.o11y_alloy":
             component_layout=(component_layout and item.st_uid==0 and item.st_gid==0
                 and item.st_nlink==2 and item.st_mode & 0o700 == 0o700
-                and item.st_mode & 0o022 == 0)
+                and item.st_mode & (0o022|0o7000) == 0)
             nested=os.listdir(path)
             if len(nested)>2:
                 component_layout=False
             temp_names=[]
+            directory_fd=os.open(path,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC)
             for nested_name in nested:
                 nested_path=os.path.join(path,nested_name)
                 try:
@@ -139,7 +180,24 @@ for observation_attempt in range(2):
                     and nested_stat.st_mode & 0o077 == 0
                     and nested_stat.st_mode & 0o7133 == 0)
                 if nested_name=="positions.yml":
+                    cursor_presence="present"
                     component_layout=(component_layout and safe_file)
+                    cursor_valid=False
+                    if read_cursor and safe_file and nested_stat.st_size<=65536:
+                        try:
+                            fd=os.open(nested_name,os.O_RDONLY|os.O_NOFOLLOW|os.O_CLOEXEC,dir_fd=directory_fd)
+                            try:
+                                opened=os.fstat(fd)
+                                data=os.read(fd,65537)
+                                after=os.fstat(fd)
+                                cursor_valid=((opened.st_dev,opened.st_ino,opened.st_size,opened.st_mtime_ns)==
+                                    (nested_stat.st_dev,nested_stat.st_ino,nested_stat.st_size,nested_stat.st_mtime_ns)
+                                    and (after.st_dev,after.st_ino,after.st_size,after.st_mtime_ns)==
+                                    (opened.st_dev,opened.st_ino,opened.st_size,opened.st_mtime_ns)
+                                    and len(data)==opened.st_size and journal_cursor(data))
+                            finally: os.close(fd)
+                        except OSError:
+                            cursor_valid=False
                 elif re.fullmatch(r"\.positions\.yml[0-9]{1,19}",nested_name):
                     temp_names.append(nested_name)
                     component_layout=(component_layout and safe_file)
@@ -150,18 +208,11 @@ for observation_attempt in range(2):
             if temp_names:
                 time.sleep(0.1)
                 after=os.listdir(path)
-                component_layout=(component_layout and len(after)==1 and after[0]=="positions.yml")
-                if component_layout:
-                    current=os.lstat(os.path.join(path,"positions.yml"))
-                    current_mount=mount_id(os.path.join(path,"positions.yml"))
-                    current_acl=acl(os.path.join(path,"positions.yml"))
-                    acl_found=acl_found or current_acl
-                    child_mount=child_mount or current_mount[0]!=root_mount[0]
-                    component_layout=(stat.S_ISREG(current.st_mode) and current.st_uid==0
-                        and current.st_gid==0 and current.st_nlink==1 and not current_acl
-                        and current.st_mode & 0o600 == 0o600
-                        and current.st_mode & 0o077 == 0
-                        and current.st_mode & 0o7133 == 0)
+                if len(after)==1 and after[0]=="positions.yml":
+                    os.close(directory_fd)
+                    raise RetryObservation
+                component_layout=False
+            os.close(directory_fd)
         else:
             component_layout=False
         children.append(sig(name,item))
@@ -172,6 +223,10 @@ for observation_attempt in range(2):
         "children":children, "child_count":len(children), "acl":acl_found,
         "root_is_mount":mount_exact, "child_mount":child_mount,
         "component_layout":component_layout,
+        "journal_cursor_presence":cursor_presence,
+        "journal_cursor_valid":cursor_valid,
+        "free_bytes":free_bytes,
+        "free_inodes":free_inodes,
     }
     print(json.dumps(report,sort_keys=True))
     break
@@ -254,12 +309,33 @@ finally:
 '''
 
 
-def _inspect_metadata(path, run=subprocess.run):
-    result = _call(["podman", "unshare", "python3", "-c", _METADATA_SCRIPT, path], run=run)
+def _inspect_metadata(path, read_cursor=False, run=subprocess.run):
+    result = _call(["podman", "unshare", "python3", "-c", _METADATA_SCRIPT, path,
+                    "true" if read_cursor else "false"], run=run)
     value = _json(result)
     if result is None or result.returncode != 0 or not isinstance(value, dict):
         return None
     if value.get("status") not in {"observed", "unavailable", "unbounded"}:
+        return None
+    return value
+
+
+def _store_space(run=subprocess.run):
+    result = _call(["podman", "info", "--format={{.Store.GraphRoot}}"], run=run)
+    if result is None or result.returncode != 0:
+        return None
+    path = result.stdout[:-1] if result.stdout.endswith("\n") else result.stdout
+    if (
+        not path.startswith("/")
+        or len(path) > 4096
+        or any(ord(character) < 32 or ord(character) == 127 for character in path)
+    ):
+        return None
+    result = _call(["podman", "unshare", "python3", "-c", _SPACE_SCRIPT, path], run=run)
+    value = _json(result)
+    if result is None or result.returncode != 0 or not isinstance(value, dict) or value.get("status") != "observed":
+        return None
+    if type(value.get("free_bytes")) is not int or type(value.get("free_inodes")) is not int:
         return None
     return value
 
@@ -309,6 +385,8 @@ def _unverified_diagnostics():
             "identity": "unverified",
             "inventory_identity": "unverified",
             "fields": fields.copy(),
+            "template_fields": fields.copy(),
+            "template_identity": "unverified",
         },
         "podman_version": {"client": "unavailable", "server": "unavailable"},
     }
@@ -334,46 +412,114 @@ def _volume_identity(value, name, project):
     return "match"
 
 
-def _named_volume_diagnostics(name, project, inventory_volume, run):
-    result = _call(["podman", "volume", "inspect", name], run=run)
-    value = _json(result)
-    if result is None or result.returncode != 0:
-        return {
-            "outcome": "unavailable", "identity": "unverified",
-            "inventory_identity": "unverified", "fields": _unverified_fields(),
-        }
-    rows = _rows(value)
-    if rows is None:
-        return {
-            "outcome": "malformed", "identity": "unverified",
-            "inventory_identity": "unverified", "fields": _unverified_fields(),
-        }
-    if len(rows) > 1:
-        return {
-            "outcome": "duplicate", "identity": "unverified",
-            "inventory_identity": "unverified", "fields": _unverified_fields(),
-        }
-    if not rows:
-        return {
-            "outcome": "missing", "identity": "unverified",
-            "inventory_identity": "unverified", "fields": _unverified_fields(),
-        }
+def _volume_identity_tuple(value):
+    if not isinstance(value, dict):
+        return None
+    labels = value.get("Labels")
+    if not isinstance(labels, dict):
+        return None
+    return tuple(value.get(field) for field in (
+        "Name", "Driver", "Scope", "Options", "Mountpoint", "CreatedAt"
+    )) + (
+        tuple(sorted(labels.items())),
+    )
 
-    row = rows[0]
-    identity = _volume_identity(row, name, project)
-    inventory_identity = _volume_identity(inventory_volume, name, project)
-    if "mismatch" in (identity, inventory_identity):
-        identity_comparison = "mismatch"
-    elif identity == inventory_identity == "match":
-        identity_comparison = "match"
-    else:
-        identity_comparison = "unverified"
-    return {
-        "outcome": "observed",
-        "identity": identity,
-        "inventory_identity": identity_comparison,
-        "fields": _field_diagnostics(row),
+
+def _valid_created_at(value):
+    if not isinstance(value, str) or not _CREATED_AT_RE.fullmatch(value):
+        return False
+    try:
+        created_at = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    fraction = re.search(r"\.([0-9]{1,9})", value)
+    return (
+        created_at != datetime.min.replace(tzinfo=UTC)
+        or (fraction is not None and any(digit != "0" for digit in fraction.group(1)))
+    )
+
+
+def _named_volume_flags(name, project, inventory_volume, run):
+    template = (
+        '{{.Name}}\n{{index .Labels "com.docker.compose.project"}}\n'
+        '{{with index .Labels "com.docker.compose.volume"}}{{.}}{{end}}\n'
+        "{{.NeedsChown}}\n{{.NeedsCopyUp}}"
+    )
+
+    def inspect():
+        result = _call(["podman", "volume", "inspect", name], run=run)
+        rows = _rows(_json(result))
+        if result is None or result.returncode != 0 or rows is None or len(rows) != 1:
+            return None
+        return rows[0]
+
+    before = inspect()
+    template_result = _call(["podman", "volume", "inspect", "--format", template, name], run=run)
+    after = inspect()
+    fields = _field_diagnostics(before) if isinstance(before, dict) else _unverified_fields()
+    base = {
+        "outcome": "unavailable",
+        "identity": "unverified",
+        "inventory_identity": "unverified",
+        "fields": fields,
+        "template_fields": _unverified_fields(),
+        "template_identity": "unverified",
     }
+    if before is None or after is None or template_result is None or template_result.returncode != 0:
+        return {**base, "outcome": "unavailable", "flags": None}
+    before_identity = _volume_identity(before, name, project)
+    after_identity = _volume_identity(after, name, project)
+    inventory_identity = _volume_identity(inventory_volume, name, project)
+    template_lines = template_result.stdout.splitlines()
+    template_identity = "match"
+    if len(template_lines) != 5:
+        template_identity = "unverified"
+    elif (
+        template_lines[0] != name
+        or template_lines[1] != project
+        or template_lines[2] not in ("", VOLUME_KEY)
+    ):
+        template_identity = "mismatch"
+    if "mismatch" in (before_identity, after_identity, inventory_identity, template_identity):
+        return {
+            **base, "outcome": "identity_mismatch", "identity": "mismatch",
+            "inventory_identity": "mismatch", "template_identity": template_identity,
+            "flags": None,
+        }
+    if not all(item == "match" for item in (before_identity, after_identity, inventory_identity, template_identity)):
+        return {**base, "outcome": "identity_unverified", "flags": None}
+    if _volume_identity_tuple(before) != _volume_identity_tuple(after) or (
+        _volume_identity_tuple(inventory_volume) != _volume_identity_tuple(before)
+    ):
+        return {**base, "outcome": "identity_changed", "identity": "mismatch", "flags": None}
+    if before != after:
+        return {**base, "outcome": "identity_changed", "identity": "mismatch", "flags": None}
+
+    raw_flags = {}
+    effective_flags = {}
+    for index, field in enumerate(("NeedsChown", "NeedsCopyUp"), start=3):
+        raw = template_lines[index]
+        if raw not in ("false", "true"):
+            return {**base, "outcome": "flag_unverified", "identity": "match", "inventory_identity": "match",
+                    "template_identity": "match", "flags": None}
+        effective = raw == "true"
+        for row in (inventory_volume, before, after):
+            if field in row and (type(row[field]) is not bool or row[field] is not effective):
+                return {**base, "outcome": "flag_mismatch", "identity": "match", "inventory_identity": "match",
+                        "template_identity": "match", "flags": None}
+        effective_flags[field] = effective
+        raw_flags[field] = {"presence": "present", "type": "boolean", "value": effective}
+    return {
+        "outcome": "observed", "identity": "match", "inventory_identity": "match",
+        "fields": fields,
+        "template_fields": raw_flags,
+        "template_identity": "match",
+        "flags": effective_flags,
+    }
+
+
+def _named_volume_diagnostics(readback):
+    return {key: value for key, value in readback.items() if key != "flags"}
 
 
 def _version_diagnostics(run):
@@ -392,7 +538,7 @@ def _version_diagnostics(run):
     return {"client": version("Client"), "server": version("Server")}
 
 
-def discover(run=subprocess.run, diagnostics=False):
+def discover(run=subprocess.run, diagnostics=False, read_cursor=False):
     rootless = _call(["podman", "info", "--format={{.Host.Security.Rootless}}"], run=run)
     if rootless is None or rootless.returncode != 0 or rootless.stdout.strip().lower() != "true":
         return {"status": "not_rootless"}
@@ -438,6 +584,7 @@ def discover(run=subprocess.run, diagnostics=False):
             "volume_inventory_complete": True,
             "name_collision": False,
             "collector_present": collector_present,
+            "storage_space": _store_space(run),
         }
     volume_labels = named[0].get("Labels") if len(named) == 1 else None
     if (
@@ -466,11 +613,12 @@ def discover(run=subprocess.run, diagnostics=False):
     ):
         return {"status": "volume_identity_unsupported"}
 
+    named_flags = _named_volume_flags(name, project, volume, run)
     survey_diagnostics = None
     if diagnostics:
         survey_diagnostics = {
             "inventory_fields": _field_diagnostics(volume),
-            "named_volume": _named_volume_diagnostics(name, project, volume, run),
+            "named_volume": _named_volume_diagnostics(named_flags),
             "podman_version": _version_diagnostics(run),
         }
 
@@ -478,6 +626,13 @@ def discover(run=subprocess.run, diagnostics=False):
         if survey_diagnostics is not None:
             found["survey_diagnostics"] = survey_diagnostics
         return found
+
+    if named_flags.get("flags") is None:
+        return finish({
+            "status": "volume_initialization_unverified",
+            "volume_use_count": 0,
+            "collector_present": collector_present,
+        })
 
     users = _rows(_json(_call(["podman", "ps", "--all", "--filter", f"volume={name}", "--format", "json"], run=run)))
     if users is None:
@@ -496,6 +651,7 @@ def discover(run=subprocess.run, diagnostics=False):
             "volume_use_count": len(names),
             "collector_present": bool(names),
         })
+    collector_mount_verified = False
     if names:
         inspect_collector = ["podman", "inspect", "--type", "container", "--format", "json", COLLECTOR]
         collector = _rows(_json(_call(inspect_collector, run=run)))
@@ -517,25 +673,19 @@ def discover(run=subprocess.run, diagnostics=False):
         config = collector[0].get("Config")
         if not isinstance(config, dict) or config.get("User") != "0:0":
             return finish({"status": "collector_identity_unverified", "volume_use_count": 1, "collector_present": True})
+        collector_mount_verified = True
     elif collector_present:
         return finish({"status": "collector_mount_unverified", "volume_use_count": 0, "collector_present": True})
 
-    metadata = _inspect_metadata(mountpoint, run=run)
+    metadata = _inspect_metadata(mountpoint, read_cursor=read_cursor, run=run)
     if metadata is None or metadata.get("status") != "observed":
         return finish({
             "status": "metadata_unavailable",
             "volume_use_count": len(names),
             "collector_present": bool(names),
         })
-    needs_chown = volume.get("NeedsChown")
-    needs_copy_up = volume.get("NeedsCopyUp")
-    if type(needs_chown) is not bool or type(needs_copy_up) is not bool:
-        return finish({
-            "status": "volume_initialization_unverified",
-            "volume_use_count": len(names),
-            "collector_present": collector_present,
-            "metadata": metadata,
-        })
+    needs_chown = named_flags["flags"]["NeedsChown"]
+    needs_copy_up = named_flags["flags"]["NeedsCopyUp"]
     found = {
         "status": "volume_initialization_pending" if needs_chown or needs_copy_up else "observed",
         "volume_name": name,
@@ -543,11 +693,15 @@ def discover(run=subprocess.run, diagnostics=False):
         "volume_use_count": len(names),
         "mount_count": mount_count,
         "collector_present": collector_present,
+        "collector_mount_verified": collector_mount_verified,
         "project": project,
         "volume": volume,
+        "needs_chown": needs_chown,
+        "needs_copy_up": needs_copy_up,
         "volume_inventory_complete": True,
         "name_collision": False,
         "metadata": metadata,
+        "storage_space": _store_space(run),
     }
     return finish(found)
 
@@ -588,7 +742,7 @@ def _safe_metadata(found):
     )
 
 
-def _live_safe_metadata(found):
+def _live_safe_metadata(found, require_cursor=True):
     metadata = found.get("metadata")
     if not isinstance(metadata, dict) or metadata.get("status") != "observed":
         return False
@@ -601,6 +755,13 @@ def _live_safe_metadata(found):
         and isinstance(children, list)
         and len(children) <= MAX_CHILDREN
         and metadata.get("component_layout") is True
+        and (
+            not require_cursor
+            or (
+                metadata.get("journal_cursor_presence") == "present"
+                and metadata.get("journal_cursor_valid") is True
+            )
+        )
         and metadata.get("acl") is False
         and metadata.get("root_is_mount") is False
         and metadata.get("child_mount") is False
@@ -620,6 +781,8 @@ def _summary(found):
             "acl": "unavailable",
             "mount": "unavailable",
             "children": "unavailable",
+            "journal_cursor": "unavailable",
+            "free_space": "unavailable",
         }
     owner_matches = metadata["root"]["uid"] == 0 and metadata["root"]["gid"] == 0
     return {
@@ -632,6 +795,11 @@ def _summary(found):
         "acl": "present" if metadata["acl"] else "absent",
         "mount": "ambiguous" if metadata["root_is_mount"] or metadata["child_mount"] else "clear",
         "children": "safe_regular_files" if _safe_metadata(found) else "ambiguous",
+        "journal_cursor": "valid" if metadata.get("journal_cursor_valid") is True else "unavailable",
+        "free_space": "sufficient" if (
+            type(metadata.get("free_bytes")) is int and metadata["free_bytes"] >= MIN_FREE_BYTES
+            and type(metadata.get("free_inodes")) is int and metadata["free_inodes"] >= MIN_FREE_INODES
+        ) else "low_or_unverified",
     }
 
 
@@ -677,10 +845,10 @@ def _access_test(volume_name, run=subprocess.run):
     script = (
         "set -eu; umask 077; "
         f"a={path!r}; b={renamed!r}; "
-        "trap 'rm -f -- \"$a\" \"$b\"' EXIT; "
+        "moved=0; trap 'if [ \"$moved\" -eq 1 ]; then rm -f -- \"$b\"; else rm -f -- \"$a\"; fi' EXIT; "
         "(set -C; : > \"$a\"); printf x >> \"$a\"; "
-        "mv -- \"$a\" \"$b\"; test -f \"$b\"; test ! -e \"$a\"; "
-        "rm -- \"$b\"; trap - EXIT"
+        "test ! -e \"$b\"; mv -n -- \"$a\" \"$b\"; test ! -e \"$a\"; moved=1; "
+        "test -f \"$b\"; rm -- \"$b\"; trap - EXIT"
     )
     def test_argv(script, test_container):
         return [
@@ -710,6 +878,163 @@ def _access_test(volume_name, run=subprocess.run):
     return passed and clean
 
 
+def _space_is_sufficient(found, require_storage=False):
+    metadata = found.get("metadata")
+    storage_space = found.get("storage_space")
+    checks = []
+    if require_storage and storage_space is not None:
+        checks.append(storage_space)
+    elif require_storage:
+        return False
+    if isinstance(metadata, dict):
+        checks.append(metadata)
+    return bool(checks) and all(
+        isinstance(space, dict)
+        and type(space.get("free_bytes")) is int
+        and space["free_bytes"] >= MIN_FREE_BYTES
+        and type(space.get("free_inodes")) is int
+        and space["free_inodes"] >= MIN_FREE_INODES
+        for space in checks
+    )
+
+
+def _cursorless_prestart_safe(found):
+    metadata = found.get("metadata")
+    volume = found.get("volume")
+    labels = volume.get("Labels") if isinstance(volume, dict) else None
+    project = found.get("project")
+    expected_name = f"{project}_{VOLUME_KEY}" if isinstance(project, str) else None
+    return (
+        found.get("status") == "observed"
+        and isinstance(volume, dict)
+        and isinstance(labels, dict)
+        and project
+        and found.get("volume_name") == expected_name
+        and volume.get("Name") == expected_name
+        and labels.get("com.docker.compose.project") == project
+        and labels.get("com.docker.compose.volume") in (None, VOLUME_KEY)
+        and volume.get("Driver") == "local"
+        and volume.get("Scope") == "local"
+        and volume.get("Options") in ({}, None)
+        and volume.get("Mountpoint") == found.get("mountpoint")
+        and type(volume.get("MountCount")) is int
+        and volume["MountCount"] == 0
+        and volume.get("Anonymous", False) is False
+        and found.get("needs_chown") is False
+        and found.get("needs_copy_up") is False
+        and found.get("collector_present") is False
+        and type(found.get("volume_use_count")) is int
+        and found["volume_use_count"] == 0
+        and type(found.get("mount_count")) is int
+        and found["mount_count"] == 0
+        and _live_safe_metadata(found, require_cursor=False)
+        and metadata.get("journal_cursor_presence") == "absent"
+        and metadata.get("journal_cursor_valid") is False
+        and isinstance(metadata.get("root", {}).get("mode"), int)
+        and metadata["root"]["mode"] & 0o700 == 0o700
+        and metadata["root"]["mode"] & (0o022 | 0o7000) == 0
+        and _access(metadata)
+        and _space_is_sufficient(found, require_storage=True)
+    )
+
+
+def _stable_metadata(metadata):
+    return {key: value for key, value in metadata.items() if key not in {"free_bytes", "free_inodes"}}
+
+
+def _pending_empty(found, owner_mismatch=False):
+    metadata = found.get("metadata")
+    root = metadata.get("root") if isinstance(metadata, dict) else None
+    volume = found.get("volume")
+    labels = volume.get("Labels") if isinstance(volume, dict) else None
+    project = found.get("project")
+    return (
+        found.get("status") == "volume_initialization_pending"
+        and found.get("volume_inventory_complete") is True
+        and found.get("name_collision") is False
+        and isinstance(project, str)
+        and isinstance(volume, dict)
+        and volume.get("Name") == f"{project}_{VOLUME_KEY}"
+        and isinstance(found.get("mountpoint"), str)
+        and found["mountpoint"].startswith("/")
+        and isinstance(labels, dict)
+        and labels.get("com.docker.compose.project") == project
+        and labels.get("com.docker.compose.volume", VOLUME_KEY) == VOLUME_KEY
+        and found.get("needs_chown") is False
+        and found.get("needs_copy_up") is True
+        and found.get("volume_use_count") == 0
+        and found.get("mount_count") == 0
+        and found.get("collector_present") is False
+        and isinstance(metadata, dict)
+        and metadata.get("status") == "observed"
+        and metadata.get("children") == []
+        and metadata.get("child_count") == 0
+        and metadata.get("acl") is False
+        and metadata.get("root_is_mount") is False
+        and metadata.get("child_mount") is False
+        and isinstance(root, dict)
+        and isinstance(root.get("mode"), int)
+        and root["mode"] & 0o700 == 0o700
+        and root["mode"] & (0o022 | 0o7000) == 0
+        and (not owner_mismatch or (
+            (root.get("uid"), root.get("gid")) != (0, 0)
+            and not _access(metadata)
+        ))
+    )
+
+
+def _repair_pending_positions(first, discover_fn, change_fn):
+    if not _pending_empty(first, owner_mismatch=True) or not _space_is_sufficient(first, require_storage=True):
+        return {"status": "refused", "reason": "pending_volume_unsupported"}
+    original = first["metadata"]["root"]
+    original_volume = _volume_identity_tuple(first.get("volume"))
+    if original_volume is None or not _valid_created_at(first["volume"].get("CreatedAt")):
+        return {"status": "refused", "reason": "volume_identity_unverified"}
+
+    def fresh_matches(current, owner):
+        root = current.get("metadata", {}).get("root", {})
+        return (
+            _pending_empty(current, owner_mismatch=owner != (0, 0))
+            and _space_is_sufficient(current, require_storage=True)
+            and _volume_identity_tuple(current.get("volume")) == original_volume
+            and current.get("volume_name") == first.get("volume_name")
+            and current.get("mountpoint") == first.get("mountpoint")
+            and current.get("project") == first.get("project")
+            and current.get("metadata", {}).get("root", {}).get("mode") == original["mode"]
+            and root.get("dev") == original["dev"]
+            and root.get("ino") == original["ino"]
+            and (root.get("uid"), root.get("gid")) == owner
+        )
+
+    fresh = discover_fn()
+    owner = (original["uid"], original["gid"])
+    if not fresh_matches(fresh, owner) or _stable_metadata(fresh["metadata"]) != _stable_metadata(first["metadata"]):
+        return {"status": "refused", "reason": "evidence_changed"}
+
+    def recover():
+        return {"status": "uncertain", "reason": "first_mount_history_unproven"}
+
+    try:
+        if not change_fn(fresh):
+            return recover()
+        verified = discover_fn()
+        if (
+            not fresh_matches(verified, (0, 0))
+            or verified["metadata"]["root"]["mode"] != original["mode"]
+            or verified["metadata"]["children"] != []
+        ):
+            return recover()
+        mount_gate = discover_fn()
+        if (
+            not fresh_matches(mount_gate, (0, 0))
+            or _stable_metadata(mount_gate["metadata"]) != _stable_metadata(verified["metadata"])
+        ):
+            return recover()
+    except Exception:
+        return recover()
+    return {"status": "repaired", "reason": "pending_initialization_owner_verified"}
+
+
 def repair_positions(
     discover_fn=discover,
     change_fn=_change_root,
@@ -718,8 +1043,12 @@ def repair_positions(
     image_available_fn=_image_is_available,
 ):
     first = discover_fn()
+    if first.get("status") == "volume_initialization_pending":
+        return _repair_pending_positions(first, discover_fn, change_fn)
     if first.get("status") != "observed":
         return {"status": "refused", "reason": first.get("status", "unavailable")}
+    if not _space_is_sufficient(first):
+        return {"status": "refused", "reason": "insufficient_space"}
     if first["volume_use_count"] != 0 or first["collector_present"] or first.get("mount_count") != 0:
         return {"status": "refused", "reason": "volume_in_use"}
     if not _safe_metadata(first):
@@ -742,7 +1071,8 @@ def repair_positions(
         or fresh["volume_use_count"] != 0
         or fresh.get("mount_count") != 0
         or fresh["collector_present"]
-        or fresh["metadata"] != first["metadata"]
+        or _stable_metadata(fresh["metadata"]) != _stable_metadata(first["metadata"])
+        or not _space_is_sufficient(fresh)
         or not _safe_metadata(fresh)
     ):
         return {"status": "refused", "reason": "evidence_changed"}
@@ -773,7 +1103,7 @@ def repair_positions(
                 or current["metadata"]["children"] != first["metadata"]["children"]
             ):
                 return {"status": "uncertain", "reason": "rollback_metadata_unverified"}
-            restored = current["metadata"] == first["metadata"]
+            restored = _stable_metadata(current["metadata"]) == _stable_metadata(first["metadata"])
             if not restored:
                 restore_fn(current, original_root["uid"], original_root["gid"])
                 restored_state = discover_fn()
@@ -785,7 +1115,7 @@ def repair_positions(
                     and restored_state.get("volume_use_count") == 0
                     and restored_state.get("mount_count") == 0
                     and restored_state.get("collector_present") is False
-                    and restored_state.get("metadata") == first["metadata"]
+                    and _stable_metadata(restored_state["metadata"]) == _stable_metadata(first["metadata"])
                 )
             if restored:
                 return {"status": "refused", "reason": reason}
@@ -811,6 +1141,7 @@ def repair_positions(
             or verified["metadata"]["root"]["dev"] != root["dev"]
             or verified["metadata"]["root"]["ino"] != root["ino"]
             or verified["metadata"]["children"] != first["metadata"]["children"]
+            or not _space_is_sufficient(verified)
         ):
             return recover("readback_failed")
         mount_gate = discover_fn()
@@ -822,7 +1153,8 @@ def repair_positions(
             or mount_gate.get("volume_use_count") != 0
             or mount_gate.get("mount_count") != 0
             or mount_gate.get("collector_present") is not False
-            or mount_gate["metadata"] != verified["metadata"]
+            or _stable_metadata(mount_gate["metadata"]) != _stable_metadata(verified["metadata"])
+            or not _space_is_sufficient(mount_gate)
         ):
             return recover("pre_mount_recheck_failed")
         if not access_test_fn(first["volume_name"]):
@@ -832,8 +1164,8 @@ def repair_positions(
     return {"status": "repaired", "reason": "verified"}
 
 
-def verify(discover_fn=discover):
-    found = discover_fn()
+def verify(discover_fn=None):
+    found = discover(read_cursor=True) if discover_fn is None else discover_fn()
     summary = _summary(found)
     if found.get("status") in {"volume_missing", "volume_initialization_pending"}:
         volume = found.get("volume")
@@ -848,8 +1180,8 @@ def verify(discover_fn=discover):
             mode = root.get("mode") if isinstance(root, dict) else None
             bootstrap_safe = bootstrap_safe and (
                 isinstance(volume, dict)
-                and type(volume.get("NeedsChown")) is bool
-                and type(volume.get("NeedsCopyUp")) is bool
+                and found.get("needs_chown", volume.get("NeedsChown")) is False
+                and found.get("needs_copy_up", volume.get("NeedsCopyUp")) is True
                 and found.get("volume_use_count") == 0
                 and found.get("mount_count") == 0
                 and isinstance(metadata, dict)
@@ -865,7 +1197,10 @@ def verify(discover_fn=discover):
                 and isinstance(mode, int)
                 and mode & 0o700 == 0o700
                 and mode & (0o022 | 0o7000) == 0
+                and _space_is_sufficient(found, require_storage=True)
             )
+        elif found.get("status") == "volume_missing":
+            bootstrap_safe = bootstrap_safe and _space_is_sufficient(found, require_storage=True)
         if bootstrap_safe:
             return {
                 **summary,
@@ -875,10 +1210,8 @@ def verify(discover_fn=discover):
         if (
             found.get("status") == "volume_initialization_pending"
             and isinstance(volume, dict)
-            and type(volume.get("NeedsChown")) is bool
-            and type(volume.get("NeedsCopyUp")) is bool
-            and volume["NeedsChown"] is False
-            and volume["NeedsCopyUp"] is False
+            and found.get("needs_chown", volume.get("NeedsChown")) is False
+            and found.get("needs_copy_up", volume.get("NeedsCopyUp")) is True
             and found.get("collector_present") is True
             and found.get("volume_use_count") == 1
             and found.get("mount_count") == 1
@@ -888,6 +1221,13 @@ def verify(discover_fn=discover):
     if found.get("status") != "observed":
         return {"status": "refused", "reason": found.get("status", "unavailable")}
     if not _live_safe_metadata(found):
+        if _cursorless_prestart_safe(found):
+            return {
+                **summary,
+                "children": "alloy_component_layout",
+                "status": "ready",
+                "reason": "positions_cursor_absent_prestart_retry",
+            }
         return {"status": "refused", "reason": "metadata_ambiguous"}
     if not _access(found["metadata"]):
         return {"status": "refused", "reason": "positions_access_blocked"}
@@ -899,8 +1239,47 @@ def verify(discover_fn=discover):
     }
 
 
+def verify_live(discover_fn=None):
+    found = discover(read_cursor=True) if discover_fn is None else discover_fn()
+    if (
+        found.get("status") == "volume_initialization_pending"
+        and found.get("needs_chown", found.get("volume", {}).get("NeedsChown")) is False
+        and found.get("needs_copy_up", found.get("volume", {}).get("NeedsCopyUp")) is True
+        and found.get("collector_present") is True
+        and found.get("volume_use_count") == 1
+        and found.get("mount_count") == 1
+    ):
+        found = {**found, "status": "observed"}
+    if found.get("status") != "observed":
+        return {"status": "refused", "reason": found.get("status", "unavailable")}
+    if (
+        found.get("collector_present") is not True
+        or type(found.get("volume_use_count")) is not int
+        or found["volume_use_count"] != 1
+        or type(found.get("mount_count")) is not int
+        or found["mount_count"] != 1
+        or found.get("collector_mount_verified") is not True
+    ):
+        return {"status": "refused", "reason": "collector_mount_unverified"}
+    if not _live_safe_metadata(found):
+        return {"status": "refused", "reason": "metadata_ambiguous"}
+    if not _access(found["metadata"]):
+        return {"status": "refused", "reason": "positions_access_blocked"}
+    return {
+        **_summary(found),
+        "children": "alloy_component_layout",
+        "status": "ready",
+        "reason": "positions_identity_verified",
+    }
+
+
 def main():
-    actions = {"survey": survey, "repair-positions": repair_positions, "verify": verify}
+    actions = {
+        "survey": survey,
+        "repair-positions": repair_positions,
+        "verify": verify,
+        "verify-live": verify_live,
+    }
     action = sys.argv[1] if len(sys.argv) == 2 else ""
     try:
         result = actions[action]() if action in actions else {"status": "refused", "reason": "invalid_action"}

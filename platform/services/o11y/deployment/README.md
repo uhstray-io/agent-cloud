@@ -707,36 +707,85 @@ Local development keeps the loopback direct-Loki path.
 
 The `Deploy o11y Journal Collector (Dev)` apply action gates the named
 `journal-collector-state` volume before it starts the collector. A missing volume
-can bootstrap only after bounded volume inventory proves the exact expected
-project name is unused and an all-container query proves
-`o11y-journal-collector` absent, including stopped containers. A pre-existing
-empty local volume can bootstrap only with exact project/name identity, zero
-consumers and mounts, boolean `NeedsChown` and `NeedsCopyUp` fields, and a
-read-only root observation proving owner `0:0`, owner RWX, no group/other write
-or special bits, no ACL or nested mount, and no contents. Unknown labels, flags,
-ownership, consumers, mounts, or metadata refuse the start.
+can bootstrap only after bounded volume inventory proves no exact-name collision
+and an all-container query, including stopped containers, proves
+`o11y-journal-collector` absent. An existing pending volume can bootstrap only
+with exact project/name identity, zero consumers and mounts, effective template
+flags `NeedsChown=false` and `NeedsCopyUp=true`, and a read-only observation of
+an empty root owned by `0:0`, owner RWX, no group/other write or special bits,
+no ACL or nested mount, and no metadata ambiguity. Require at least 16 MiB free
+bytes and 128 free inodes both on GraphRoot and on the pending volume filesystem
+for this small first mount; this gate is separate from the 30% retention headroom gate.
 
-Compose `up` is the only volume create/initialization action. Compose declares
-the volume-key label for new volumes. An existing volume without that label is
-accepted only when its exact expected name and project label match; a conflicting
-label refuses. The immediate pre-start check runs outside rollback handling, so
-an existing collector cannot be removed when that check refuses before startup.
-After startup, helper status must be `ready`, and the playbook separately checks
-the actual RW mount, UID mapping, effective write/rename access, health, receiver
-container preservation, and fresh exact-target Loki delivery. Check mode stays
-`check_mode_unverified` and does not mount or mutate the volume. Survey exceptions
-produce a bounded unavailable receipt with fixed reason `survey_failed`.
+Podman may omit false-valued initialization flags from JSON. The helper therefore
+uses one fixed `podman volume inspect --format` template, accepts only literal
+`false` or `true`, and brackets it with named JSON identity reads. It keeps raw
+JSON field presence separate from effective values and refuses unknown template
+output, identity mismatch, or a race. A missing Compose volume-key label is
+accepted only for the exact expected name and matching project; a conflicting
+label refuses. Pending repair compares `CreatedAt`, volume configuration, and
+root device/inode across pre-mutation observations; missing or changed creation
+identity refuses.
 
-Dev positions survey 3856 reported `volume_initialization_unverified`, zero
+Repair checks free bytes and inodes independently from stable metadata equality.
+Pending repair requires the threshold on both GraphRoot and the volume filesystem;
+initialized repair requires it on the volume filesystem. Counter changes above
+threshold do not invalidate root, child, ACL, or mount evidence, while a below-
+threshold reading refuses the repair.
+
+The separate `repair-positions` action keeps its initialized-volume behavior:
+fresh evidence must prove an unused root with only safe regular direct files has
+an owner mismatch that alone blocks collector access; repair changes only root
+owner/group, reads it back, and runs the restricted write/rename/delete probe in
+the cached Alloy image. A narrow
+pending exception permits that same root-only change only for the exact empty,
+unused `NeedsChown=false` / `NeedsCopyUp=true` state. This branch does not mount a
+probe container or change contents/mode, and verifies the unchanged empty volume
+before first mount. After any pending-volume mutation, a failure preserves the volume
+and returns `uncertain`; its root owner may already be `0:0`, because first-mount
+history cannot be proved from a later empty state. No owner restoration or
+copied-state deletion is automatic.
+
+Compose `up` is the only volume creation/initialization action. The pre-apply and
+immediate pre-start `verify` gates accept `bootstrap_allowed` only for the proven
+missing-volume or safe pending-volume cases above. They also permit a bounded
+cursorless retry when a complete read-only observation proves an exact volume
+with both initialization flags false, the
+collector absent from all containers, zero consumers and mounts, safe `0:0` root
+and allowlisted layout, `positions.yml` absent, access, ACL/mount checks, and
+capacity on GraphRoot and the volume filesystem. This `ready` result authorizes
+only a start attempt; it does not prove delivery. A present invalid or unreadable
+cursor, unknown cursor presence, or any incomplete evidence refuses. The immediate
+pre-start check runs outside rollback handling. After startup, `verify-live` is a
+separate strict gate; a lingering
+`NeedsCopyUp=true` is not success by itself: require the collector to be present
+as the single consumer and mount, with the exact live RW mount,
+namespace write/rename/delete, bounded Alloy layout, and a parsed `positions.yml`
+entry for `cursor-loki.source.journal.o11y_alloy` with an empty label set and a
+valid journal cursor. Also require healthy status, unchanged seven receiver
+containers, and a fresh exact-target Loki receipt. An empty image destination
+may leave copy-up pending. After start, an absent cursor, a present invalid or
+unreadable cursor file, a pending temporary positions file, or any layout outside
+the allowlist refuses as incomplete state; the cursorless pre-start retry is not
+post-start acceptance. Failed-start rollback removes only the pilot container
+without `-v`. The positions helper reports `check_mode_unverified` without its
+own Podman or filesystem operations; the surrounding playbook may still run
+other checks. Survey exceptions produce a bounded unavailable receipt
+with fixed reason `survey_failed`.
+
+The live Dev survey 3865 (user-provided evidence; not rerun by this source-only
+change) reported Podman client 4.9.3 with server unavailable, exact all/named
+volume identity, omitted `NeedsChown` and `NeedsCopyUp` JSON fields, effective
+`NeedsChown=false` and `NeedsCopyUp=true`, an empty unused volume with owner
+mismatch and blocked access, and no ACL or mount ambiguity. This evidence
+motivates the narrowly scoped pending repair exception; it does not authorize a
+live mutation or close the delivery gate. Earlier Dev positions survey 3856
+reported `volume_initialization_unverified`, zero
 consumers and entries, root owner mismatch, blocked access, no ACL, a clear
 mount, and safe direct children. The journal source was available, but access
 to the target positions path was denied. The explicit survey adds sanitized
-initialization field presence/type and genuine boolean values, an exact-name
-volume inspection for identity comparison, and bounded Podman client/server
-versions. Invalid values, malformed or duplicate results, and unavailable
-commands appear only as fixed categories; raw Podman output is never reported.
-These diagnostics do not change verify, repair, bootstrap, or apply decisions.
-Check mode reports the diagnostic shape as unverified without querying Podman.
+initialization field presence/type, template values, identity comparisons, and
+bounded Podman versions. Raw Podman output is never reported.
 
 OpenSpec task 1.2 remains unchecked until the reviewed Semaphore run records the
 production runtime and Loki evidence. Unit tests and metadata-only survey results
