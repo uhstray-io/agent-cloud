@@ -227,8 +227,8 @@ jobs:
           ansible-galaxy collection install -r collections/requirements.yml
 
       # Keep pytest's configured root testpaths active so newly registered suites
-      # remain covered. Deselect only NetBox's node IDs; --ignore does not remove a
-      # directory listed directly in testpaths. NetBox has its own parallel job below.
+      # remain covered. Deselect only NetBox and Semaphore node IDs; --ignore does not
+      # remove a directory listed directly in testpaths. Each has its own job below.
       #
       # `-n auto`, one worker per core: the slow tests are independent ansible-playbook
       # subprocesses, so they spread across cores instead of queueing behind each other.
@@ -241,7 +241,30 @@ jobs:
       - name: Run Python core tests
         env:
           PYTHONPATH: platform/services/netbox/deployment/workers/proxmox_discovery:platform/services/netbox/deployment/workers/pfsense_sync
-        run: pytest -v -x -n auto --dist worksteal --durations=20 --deselect=platform/services/netbox/deployment/tests/
+        run: >-
+          pytest -v -x -n auto --dist worksteal --durations=20
+          --deselect=platform/services/netbox/deployment/tests/
+          --deselect=platform/semaphore/tests/
+
+  python-semaphore:
+    name: Python Semaphore
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      - name: Install test dependencies
+        run: |
+          pip install -r platform/requirements-test.txt
+          pip install -r platform/requirements-controller.txt
+          ansible-galaxy collection install -r collections/requirements.yml
+
+      - name: Run Semaphore Python tests
+        run: pytest -v -x -n auto --dist worksteal --durations=20 platform/semaphore/tests/
 
   python-netbox:
     name: Python NetBox
@@ -304,20 +327,22 @@ jobs:
   test:
     name: Unit Tests
     if: always()
-    needs: [python-core, python-netbox, bats, rego]
+    needs: [python-core, python-netbox, python-semaphore, bats, rego]
     runs-on: ubuntu-latest
     steps:
       - name: Require every test group to succeed
         env:
           PYTHON_CORE_RESULT: ${{ needs.python-core.result }}
           PYTHON_NETBOX_RESULT: ${{ needs.python-netbox.result }}
+          PYTHON_SEMAPHORE_RESULT: ${{ needs.python-semaphore.result }}
           BATS_RESULT: ${{ needs.bats.result }}
           REGO_RESULT: ${{ needs.rego.result }}
         run: |
-          printf 'Python core: %s\nPython NetBox: %s\nBATS: %s\nRego: %s\n' \
-            "$PYTHON_CORE_RESULT" "$PYTHON_NETBOX_RESULT" "$BATS_RESULT" "$REGO_RESULT"
+          printf 'Python core: %s\nPython NetBox: %s\nPython Semaphore: %s\nBATS: %s\nRego: %s\n' \
+            "$PYTHON_CORE_RESULT" "$PYTHON_NETBOX_RESULT" "$PYTHON_SEMAPHORE_RESULT" "$BATS_RESULT" "$REGO_RESULT"
           test "$PYTHON_CORE_RESULT" = success
           test "$PYTHON_NETBOX_RESULT" = success
+          test "$PYTHON_SEMAPHORE_RESULT" = success
           test "$BATS_RESULT" = success
           test "$REGO_RESULT" = success
 
