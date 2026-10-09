@@ -537,3 +537,8 @@ access, service-executor, edge-dns, edge-route, harden, firewall, token-id, plac
 persistence, materialise and check-mode suites (1793 passed, Python 3.14 locally, CI pins
 3.11), and `bats platform/tests/` (839 ok, 0 not ok). No guard was added or changed, so
 there is nothing to mutation-check.
+
+2026-10-08, vm-template read-back: the template read-back now accepts a cloud-init drive on any
+drive key (it was `ide2` only; live template 9000 carries it on `ide0`, Semaphore task 3287) and
+adds the evidence key `cloudinit_drive`, which the registry lists. The step's criteria are
+unchanged, so its D10 verdict and its 2026-10-08 stamp above stand.

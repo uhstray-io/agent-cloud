@@ -133,7 +133,7 @@ def _template(tmp_path, data, status=200, present=True, check=False):
 def test_template_with_a_cloud_init_drive_passes(tmp_path):
     result, rc = _template(tmp_path, {"template": 1, "ide2": "vm-lvms:vm-9000-cloudinit,media=cdrom"})
     assert (result["step"], result["status"], rc) == ("vm-template", "pass", 0)
-    assert result["evidence"] == {"template_vmid": 9000, "node": "n1"}
+    assert result["evidence"] == {"template_vmid": 9000, "node": "n1", "cloudinit_drive": "ide2"}
 
 
 def test_template_without_a_cloud_init_drive_fails_and_says_why(tmp_path):
@@ -142,23 +142,34 @@ def test_template_without_a_cloud_init_drive_fails_and_says_why(tmp_path):
     assert "no cloud-init drive" in result["error"]
 
 
-# Semaphore task 3195: a live template failed this check with nothing saying where, if
-# anywhere, its cloud-init volume was. The error names the drive keys that hold one, and only
-# the key names: the config's other values (storage, sizes, descriptions) stay out of it.
-def test_a_cloud_init_drive_on_another_key_is_named_by_key_only(tmp_path):
+# Semaphore task 3287: live template 9000 carries its cloud-init volume on ide0, clones fine, and
+# the registry criterion names no drive key. The step passes on any drive key, and records which.
+@pytest.mark.parametrize("key", ["ide0", "ide2", "scsi1", "sata3", "virtio0"])
+def test_a_cloud_init_drive_on_any_drive_key_passes_and_names_the_key(tmp_path, key):
+    result, rc = _template(tmp_path, {"template": 1, key: "vm-lvms:vm-9000-cloudinit,media=cdrom"})
+    assert (result["status"], rc) == ("pass", 0)
+    assert result["evidence"]["cloudinit_drive"] == key
+
+
+def test_several_cloud_init_drive_keys_are_all_named_by_key_only(tmp_path):
+    result, rc = _template(tmp_path, {"template": 1, "scsi1": "vm-lvms:vm-9000-cloudinit,media=cdrom",
+                                      "ide0": "secretstore:vm-9000-cloudinit"})
+    assert (result["status"], rc) == ("pass", 0)
+    assert result["evidence"]["cloudinit_drive"] == "ide0,scsi1"
+    assert "vm-lvms" not in json.dumps(result) and "secretstore" not in json.dumps(result)
+
+
+def test_a_cloud_init_volume_named_only_in_a_description_does_not_pass(tmp_path):
     result, rc = _template(tmp_path, {"template": 1, "ide2": "none,media=cdrom",
-                                      "scsi1": "vm-lvms:vm-9000-cloudinit,media=cdrom",
-                                      "ide0": "secretstore:vm-9000-cloudinit",
-                                      "description": "vm-lvms:vm-9000-cloudinit"})
+                                      "description": "local:vm-9000-cloudinit"})
     assert (result["status"], rc != 0) == ("fail", True)
-    assert result["error"].endswith("has no cloud-init drive on ide2 (cloudinit volume found on: ide0, scsi1)")
-    assert "vm-lvms" not in result["error"] and "secretstore" not in result["error"]
+    assert result["error"].endswith("has no cloud-init drive (no cloudinit volume on any drive key)")
 
 
 def test_a_template_with_no_cloud_init_volume_says_so(tmp_path):
     result, rc = _template(tmp_path, {"template": 1, "scsi0": "vm-lvms:vm-9000-disk-0,size=20G", "cores": 2})
     assert (result["status"], rc != 0) == ("fail", True)
-    assert result["error"].endswith("has no cloud-init drive on ide2 (no cloudinit volume on any drive key)")
+    assert result["error"].endswith("has no cloud-init drive (no cloudinit volume on any drive key)")
 
 
 def test_a_null_read_back_is_still_recorded_as_a_failure(tmp_path):
@@ -167,7 +178,7 @@ def test_a_null_read_back_is_still_recorded_as_a_failure(tmp_path):
     result, rc = _template(tmp_path, None)
     assert (result["step"], result["status"], rc != 0) == ("vm-template", "fail", True)
     assert "is not a template (HTTP 200)" in result["error"]
-    assert result["error"].endswith("has no cloud-init drive on ide2 (no cloudinit volume on any drive key)")
+    assert result["error"].endswith("has no cloud-init drive (no cloudinit volume on any drive key)")
 
 
 def test_a_vm_that_is_not_a_template_fails(tmp_path):
@@ -439,7 +450,7 @@ def test_cloudinit_named_anywhere_but_the_drive_does_not_pass(tmp_path):
     result, rc, _ = _template_play(tmp_path, {"template": 1, "description": "cloudinit ready",
                                               "tags": "cloudinit", "ide2": "none,media=cdrom"})
     assert (result["status"], rc != 0) == ("fail", True)
-    assert "no cloud-init drive on ide2" in result["error"]
+    assert "has no cloud-init drive (no cloudinit volume on any drive key)" in result["error"]
 
 
 def test_a_vmid_held_by_a_non_template_is_recorded_as_a_failure(tmp_path):

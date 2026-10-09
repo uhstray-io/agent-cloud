@@ -120,6 +120,15 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
         (by hand or by another tool); an older version of this playbook is not the explanation.
         DECISION FOR THE OPERATOR: rebuild the template, or make the playbook accept any drive
         key. 2.2 stays open.
+      - 2026-10-08, decision for the template read-back: accept a cloud-init drive on ANY drive
+        key. Reasons: the registry criterion ("a cloud-init drive is attached to the template")
+        names no key; a clone of template 9000 already works (VM 219, task 1353, cloud-init
+        configured, reachable on its declared address); a rebuild is destructive and the
+        repository has no rebuild path for it; moving the drive by hand is a live one-off the
+        platform standards forbid. `provision-template.yml` still attaches `ide2` when it builds,
+        passes on a `...-cloudinit` volume on any ide/sata/scsi/virtio key (a description or tag
+        mentioning cloudinit still fails), and records the key(s) as evidence `cloudinit_drive`.
+        No live change; rerun Create VM Template (Dev) to see it pass. 2.2 stays open.
 - [x] 2.3 Wave 2, the remaining playbooks, grouped by service; same patterns and runs.
       2026-09-22: 67 files (161 reads, 27 logins, 125 skips) applied from the guard's own
       findings; normal runs are unchanged by construction (every guard is inert without

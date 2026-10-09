@@ -39,7 +39,7 @@ steps:
     criteria:
       - the template vmid exists on the declared node
       - a cloud-init drive is attached to the template
-    evidence_keys: [template_vmid, node]
+    evidence_keys: [template_vmid, node, cloudinit_drive]
     reviewed: "2026-10-08"
 
   - id: lookup-inventory
