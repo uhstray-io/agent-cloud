@@ -474,7 +474,7 @@
       `agent-cloud-750a33b9`
 
 ## 6. Transport security (decisions of 2026-09-27; needs `production-internal-ca`)
-- [ ] 6.1 Gateway API and UI listeners serve HTTPS from step-ca-issued certificates in a
+- [x] 6.1 Gateway API and UI listeners serve HTTPS from step-ca-issued certificates in a
       mounted directory (`current/`; the image has no shell); `tls.root` = the step-ca
       root, so a client certificate is required. This task is the single owner of the
       client allowlist (design decision 12): both gateways carry the `require` rule
@@ -506,6 +506,23 @@
       pytest: `platform/tests/test_agw_listener_tls.py` (see the 2026-10-03 note); the
       original text is left as written. Still open as before: the local-dev records the task
       names are not re-verified here
+      2026-10-09: ticked, on production records (task ids reported by the coordinator; the task
+      output was not read by the author of this note). The task asked for local-dev first;
+      that was not possible: the local-dev listener TLS is not applied in local mode
+      (`deploy-agentgateway.yml` adds `COMPOSE_OVERLAYS` only outside local mode), so
+      production was used. A client leaf on no allowlist (`agw-drill`, its SAN on no
+      allowlisted leaf, declared in site-config #68, issued by `Issue Internal Leaf (Dev)`
+      task 3831) was probed by `Probe agentgateway Client TLS (Dev)` task 3834: HTTP 403 with
+      no API key and HTTP 403 with an invalid key. Answers the two open questions: a failed
+      SAN rule answers 403, and it is evaluated BEFORE API-key authentication (a key-first
+      gateway would have answered the keyless request 401). The remaining clauses are
+      covered elsewhere: the rule rendering beside `llm` and the gateway starting with it is
+      the 2026-10-03 pytest (`platform/tests/test_agw_listener_tls.py`) plus the 2026-10-02
+      production deploys that ran with listener TLS, and the drill's 403 is the rule live in the
+      running gateway (a completed handshake refused with 403 comes from no other rule). The
+      drill's first reading line was wrong ("no reading") on the runner's ansible-core 2.18.15
+      because the statuses compared as strings; the class lines and the verdict were right,
+      and the reading is fixed in the probe playbook
 - [ ] 6.1a The one gateway probe path. Every check that sends a request to the gateway
       from outside Caddy uses it: this deploy's own verify, the personal-key 401 gates
       (`inference-personal-keys`), the renewal proof for the client leaves that are probed
@@ -599,6 +616,19 @@
       after group 6 (readiness, the keyless 401, the keyed `/v1/models` and chat
       round-trip, all through 6.1a); the gateway refuses a vLLM certificate not issued by
       the internal CA; the public path works end to end with every hop encrypted
+      2026-10-09 (task ids reported by the coordinator; the task output was not read by the
+      author of this note): two scenarios proven in production by `Probe agentgateway Client
+      TLS (Dev)` task 3834. "A request without a client certificate is refused": probe 1
+      failed the TLS handshake (`TLSV13_ALERT_CERTIFICATE_REQUIRED`). "Another client leaf is
+      refused at the gateway": the throwaway leaf `agw-drill` completed the handshake and was
+      answered HTTP 403 with no key and with an invalid key (see the 6.1 note of the same
+      date). Remaining legs, not ticked: the allowlisted `agw-verifier` leaf served through
+      6.1a, the refusal of a vLLM certificate not issued by the internal CA, and the public
+      path end to end. Cleanup recorded: the leaf removed (task
+      3836), its declaration removed in site-config #69, inventory re-synced, `Deploy
+      step-ca (Dev)` tasks 3829 (8 names while the leaf existed) and 3838 (back to 7), and the
+      renewal dry run task 3839 passes classification. The drill also found the probe's
+      reading bug, fixed on branch `fix/tls-probe-reading-types`
 
 ## 7. Internal name resolution (follow-up; needs hickory-dns in production)
 - [ ] 7.1 Server-side OIDC off the Cloudflare path: a split-horizon record for
