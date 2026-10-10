@@ -421,57 +421,87 @@ def test_live_positions_debug_rescues_malformed_nested_diagnostic_before_renderi
         if task.get("name") == "Report sanitized live positions diagnostic"
     )
     base = {
-        "helper_status": "refused",
-        "helper_reason": "survey_only",
+        "helper_status": "observed",
+        "helper_reason": "positions_identity_verified",
         "failed_checks": ["owner"],
         "unverified_checks": ["cursor_validity"],
-        "mount": dict.fromkeys(
-            ("destination", "volume_name", "source", "type", "rw", "user"),
-            "unverified",
-        ),
-        "top_level": dict.fromkeys(
-            (
-                "seed_file", "journal_component", "other_files", "other_directories",
-                "other_symlinks", "other_kinds",
-            ),
-            0,
-        ),
+        "mount": {
+            "destination": "match",
+            "volume_name": "match",
+            "source": "mismatch",
+            "type": "match",
+            "rw": "match",
+            "user": "unverified",
+        },
+        "top_level": {
+            "seed_file": 1,
+            "journal_component": 0,
+            "other_files": 2,
+            "other_directories": 3,
+            "other_symlinks": 4,
+            "other_kinds": 5,
+        },
     }
-    malformed = []
-    malformed.append({**base, "helper_reason": "PRIVATE_MARKER_REASON"})
-    malformed.append({
-        **base,
-        "failed_checks": ["PRIVATE_MARKER_CHECK", ["PRIVATE_MARKER_NESTED"]],
-    })
-    malformed.append({
-        **base,
-        "mount": {**base["mount"], "source": "PRIVATE_MARKER_SOURCE"},
-    })
-    malformed.append({**base, "top_level": []})
-
-    for diagnostic in malformed:
-        raw_json = json.dumps({"status": "refused", "live_diagnostic": diagnostic})
-        variables = {"_journal_positions_live_parsed": json.loads(raw_json)}
+    malformed = [
+        ("helper_reason", {**base, "helper_reason": "PRIVATE_MARKER_REASON"}),
+        ("mount_value", {
+            **base,
+            "mount": {**base["mount"], "source": "PRIVATE_MARKER_SOURCE"},
+        }),
+        ("extra_mount_key", {
+            **base,
+            "mount": {**base["mount"], "private": "PRIVATE_MARKER_MOUNT_KEY"},
+        }),
+        ("top_level_list", {
+            **base,
+            "top_level": ["PRIVATE_MARKER_TOP_LEVEL"],
+        }),
+        ("check_name", {
+            **base,
+            "failed_checks": ["owner", "PRIVATE_MARKER_CHECK"],
+        }),
+    ]
+    def evaluate(diagnostic):
+        variables = {
+            "_journal_positions_live_parsed": {
+                "status": "ready",
+                "live_diagnostic": diagnostic,
+            },
+        }
         templar = Templar(loader=DataLoader(), variables=variables)
         passed = all(
-            str(templar.template(trust_as_template(condition))).lower() == "true"
+            templar.evaluate_conditional(trust_as_template(condition))
             for condition in validation["ansible.builtin.assert"]["that"]
         )
         variables["_journal_positions_live_summary"] = (
-            {
-                "status": "refused",
-                "live_diagnostic": diagnostic,
-            }
+            {"status": "ready", "live_diagnostic": diagnostic}
             if passed else rescue
         )
         rendered = Templar(loader=DataLoader(), variables=variables).template(
             trust_as_template(debug["ansible.builtin.debug"]["msg"])
         )
+        return passed, variables["_journal_positions_live_summary"], rendered
 
-        assert passed is False
-        assert variables["_journal_positions_live_summary"] == rescue
-        assert "PRIVATE_MARKER" not in rendered
-        assert "helper=unavailable" in rendered
+    valid_passed, valid_summary, valid_rendered = evaluate(base)
+    assert valid_passed is True
+    assert valid_summary["status"] == "ready"
+    for expected in (
+        "helper=observed",
+        "reason=positions_identity_verified",
+        "failed_checks=['owner']",
+        "unverified_checks=['cursor_validity']",
+        "seed_file=1",
+        "journal_component=0",
+        "other_entries=2/3/4/5",
+    ):
+        assert expected in valid_rendered
+
+    for name, diagnostic in malformed:
+        passed, summary, rendered = evaluate(diagnostic)
+        assert passed is False, name
+        assert summary == rescue, name
+        assert "helper=unavailable" in rendered, name
+        assert "PRIVATE_MARKER" not in rendered, name
 
 
 @pytest.mark.parametrize("field", ["NeedsChown", "NeedsCopyUp"])
