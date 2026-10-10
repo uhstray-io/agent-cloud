@@ -208,7 +208,7 @@ compose_inputs_digest() {
 # A container whose service is no longer declared is an orphan: it counts as a change, and
 # the recreate's --remove-orphans removes it, so the run after is stable.
 _compose_recreate_reason() {
-  local want="$1" services="$2" preserved="${3:-}" names name svc seen=$'\n' running have ref image_run image_now
+  local want="$1" services="$2" preserved="${3:-}" names name svc seen=$'\n' running have ref image_run image_now reason=""
   if ! names=$($CONTAINER_ENGINE ps -a --filter "label=com.docker.compose.project.working_dir=$(pwd)" \
     --format '{{.Names}}' 2>/dev/null); then
     [ -z "$preserved" ] || error "Cannot list project containers while preserving '${preserved}'; refusing to guess."
@@ -227,22 +227,43 @@ _compose_recreate_reason() {
         echo "orphan container: ${name}"; return 0 ;;
     esac
     seen+="${svc}"$'\n'
+    # After a recreate reason is known, preservation mode still checks every remaining
+    # service label so a later unexpected orphan cannot slip through to compose up.
+    if [ -n "$preserved" ] && [ -n "$reason" ]; then continue; fi
     running=$($CONTAINER_ENGINE inspect --format '{{.State.Running}}' "$name" 2>/dev/null) || running=""
-    if [ "$running" != "true" ]; then echo "container not running: ${name}"; return 0; fi
+    if [ "$running" != "true" ]; then
+      if [ -z "$preserved" ]; then echo "container not running: ${name}"; return 0; fi
+      reason="container not running: ${name}"
+      continue
+    fi
     have=$($CONTAINER_ENGINE inspect --format "{{ index .Config.Labels \"${COMPOSE_INPUTS_LABEL}\" }}" "$name" 2>/dev/null) || have=""
-    if [ "$have" != "$want" ]; then echo "inputs changed: ${name}"; return 0; fi
+    if [ "$have" != "$want" ]; then
+      if [ -z "$preserved" ]; then echo "inputs changed: ${name}"; return 0; fi
+      reason="inputs changed: ${name}"
+      continue
+    fi
     ref=$($CONTAINER_ENGINE inspect --format '{{.Config.Image}}' "$name" 2>/dev/null) || ref=""
     image_run=$($CONTAINER_ENGINE inspect --format '{{.Image}}' "$name" 2>/dev/null) || image_run=""
     image_now=$($CONTAINER_ENGINE image inspect --format '{{.Id}}' "$ref" 2>/dev/null) || image_now=""
-    if [ -z "$image_now" ] || [ "$image_now" != "$image_run" ]; then echo "image changed: ${name}"; return 0; fi
+    if [ -z "$image_now" ] || [ "$image_now" != "$image_run" ]; then
+      if [ -z "$preserved" ]; then echo "image changed: ${name}"; return 0; fi
+      reason="image changed: ${name}"
+    fi
   done <<< "$names"
   while IFS= read -r svc; do
     [ -n "$svc" ] || continue
     case "$seen" in
       *$'\n'"${svc}"$'\n'*) ;;
-      *) echo "no container for service: ${svc}"; return 0 ;;
+      *)
+        if [ -z "$preserved" ]; then echo "no container for service: ${svc}"; return 0; fi
+        [ -n "$reason" ] || reason="no container for service: ${svc}"
+        break ;;
     esac
   done <<< "$services"
+  if [ -n "$preserved" ]; then
+    [ -z "$reason" ] || echo "$reason"
+    return 0
+  fi
 }
 
 compose_up_if_changed() {
