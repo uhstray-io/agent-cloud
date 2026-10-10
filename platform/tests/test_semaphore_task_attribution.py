@@ -426,20 +426,19 @@ def test_playbook_guard_check_mode_and_marker_output_contract():
     assert "check_mode_unverified" in str(check_mode["ansible.builtin.debug"])
     prepare = next(task for task in tasks if "Prepare one framed" in task["name"])
     assert prepare["when"] == "not ansible_check_mode"
-    assert prepare["ansible.builtin.command"]["argv"] == [
-        "python3", "{{ _attribution_helper }}"
-    ]
+    assert prepare["semaphore_task_attribution"]["mode"] == "prepare"
     assert prepare["no_log"] is True
     marker = next(task for task in tasks if "Emit the digest marker" in task["name"])
-    assert marker["ansible.builtin.debug"]["msg"] == "{{ _attribution_prepared.marker }}"
+    assert marker["ansible.builtin.debug"]["msg"] == "{{ _attribution_prepared_raw.marker }}"
     verify = next(task for task in tasks if "Read back only" in task["name"])
     assert verify["no_log"] is True
     assert verify["when"] == [
-        "not ansible_check_mode", "_attribution_prepared.status == 'prepared'"
+        "not ansible_check_mode", "_attribution_prepared_raw.status == 'prepared'"
     ]
-    assert "semaphore_vars.task_details.id" in prepare["ansible.builtin.command"]["stdin"]
-    assert "semaphore_project_id" in prepare["ansible.builtin.command"]["stdin"]
-    assert "nonce_hex" in verify["ansible.builtin.command"]["stdin"]
+    assert verify["semaphore_task_attribution"]["mode"] == "verify"
+    assert "semaphore_vars.task_details.id" in str(prepare["semaphore_task_attribution"])
+    assert "semaphore_project_id" in str(prepare["semaphore_task_attribution"])
+    assert "nonce_hex" not in str(verify["semaphore_task_attribution"])
     assert "SEMAPHORE_TASK_ID" not in PLAYBOOK.read_text(encoding="utf-8")
     assert "SEMAPHORE_PROJECT_ID" not in PLAYBOOK.read_text(encoding="utf-8")
     runtime_access = next(task for task in tasks if "Resolve the existing controller" in task["name"])
