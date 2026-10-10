@@ -3685,7 +3685,11 @@ def test_playbook_guards_validation_delivery_and_non_destructive_rollback():
 
     assert guard < reviewed < place < positions_gate < validate < apply < verify < stop
     assert "groups.get('o11y_svc', []) | length == 1" in source
-    assert "journal_collector_action | default('apply') in ['survey', 'repair-positions', 'apply', 'stop']" in source
+    expected_actions = (
+        "journal_collector_action | default('apply') in "
+        "['survey', 'repair-positions', 'prove-provider', 'apply', 'stop']"
+    )
+    assert expected_actions in source
     assert source.index("Verify positions volume identity and access before apply") < apply
     assert "check_mode_unverified" in source
     assert "container_inventory_unavailable" in source
@@ -4700,6 +4704,7 @@ def test_semaphore_template_is_dev_bound_and_requires_exact_sha():
     assert variables["journal_collector_action"]["values"] == [
         {"name": "Survey journal paths", "value": "survey"},
         {"name": "Repair positions root ownership", "value": "repair-positions"},
+        {"name": "Prove provider/image copy behavior", "value": "prove-provider"},
         {"name": "Apply pilot", "value": "apply"},
         {"name": "Stop pilot", "value": "stop"},
     ]
