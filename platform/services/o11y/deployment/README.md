@@ -705,8 +705,21 @@ Local development keeps the loopback direct-Loki path.
 
 ## Receiver-host journal collector positions volume
 
+**Source gate, 2026-10-10:** the collector's declared logical state key is now
+`journal-collector-state-v2`, mounted at `/alloy-state` with Compose `nocopy: true`.
+The isolated provider/image proof and matching receipt gate are not implemented,
+so the playbook refuses both `apply` and `repair-positions` before collector-host
+tasks. `survey` and collector-only `stop` remain selectable. The legacy
+`journal-collector-state` volume is not selected by the v2 Compose declaration
+or helper lookup. The `nocopy` setting is source intent only: actual
+`podman-compose` propagation, image behavior, UID access, cursor persistence and
+cleanup remain unproved. Do not deploy this source slice.
+
+The operational rules below describe the prior v1 positions workflow and are
+historical context only; they do not override the fail-closed v2 source gate.
+
 The `Deploy o11y Journal Collector (Dev)` apply action gates the named
-`journal-collector-state` volume before it starts the collector. A missing volume
+`journal-collector-state-v2` volume before it starts the collector. A missing volume
 can bootstrap only after bounded volume inventory proves no exact-name collision
 and an all-container query, including stopped containers, proves
 `o11y-journal-collector` absent. An existing pending volume can bootstrap only

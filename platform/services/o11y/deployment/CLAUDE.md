@@ -16,6 +16,15 @@ orientation an agent needs before editing here.
 stack and waits for Grafana to report healthy. Outside local mode it adds
 `compose.prod.yml`, which gives Grafana a route to Authentik through the LAN Caddy host.
 
+**Journal collector source gate (2026-10-10):** the helper and Compose source now
+target `journal-collector-state-v2` at `/alloy-state` with `nocopy: true`. The
+provider/image proof and matching receipt gate are not implemented; apply and
+positions repair fail closed before collector-host tasks. Survey and collector-only
+stop remain available. The legacy `journal-collector-state` is never selected by
+the v2 helper or Compose declaration. Do not deploy this source slice until the
+separately selected proof is implemented, independently reviewed and passes on
+the actual provider.
+
 ## How it is deployed
 
 - **Only through Semaphore:** `platform/playbooks/deploy-o11y.yml` (production runs the
@@ -47,7 +56,7 @@ stack and waits for Grafana to report healthy. Outside local mode it adds
   engine socket or alter receiver volumes. The Compose service has no dependencies;
   after apply, the playbook hashes IDs and states for all seven existing receiver
   containers and refuses success if any changed. The collector state lives in the
-  Compose named `journal-collector-state` volume mounted at `/alloy-state`; Alloy's
+  Compose named `journal-collector-state-v2` volume mounted at `/alloy-state`; Alloy's
   `--storage.path` and exact live-mount/rollback checks use that same root-level path.
   This avoids traversing the image's `/var/lib/alloy` directory, which the pinned
   [Alloy v1.9.2 Dockerfile](https://github.com/grafana/alloy/blob/v1.9.2/Dockerfile)
@@ -64,7 +73,7 @@ stack and waits for Grafana to report healthy. Outside local mode it adds
   passes `--no-deps` too, while the dependency-free service and receiver readback keep
   older podman-compose releases safe if they ignore that flag.
   The explicit `survey` action resolves the positions volume from the receiver
-  Compose project and `journal-collector-state` identity, including when the pilot
+  Compose project and `journal-collector-state-v2` identity, including when the pilot
   container is absent. New volumes carry the explicit `com.docker.compose.volume`
   label; an existing volume remains compatible when that label is absent only if
   its exact expected name and project label match. Conflicting labels or names refuse.

@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 IMAGE = "docker.io/grafana/alloy:v1.9.2"
 RECEIVER = "o11y-alloy"
 COLLECTOR = "o11y-journal-collector"
-VOLUME_KEY = "journal-collector-state"
+VOLUME_KEY = "journal-collector-state-v2"
 DATA_PATH = "/alloy-state"
 MAX_VOLUMES = 256
 MAX_CONTAINERS = 1024

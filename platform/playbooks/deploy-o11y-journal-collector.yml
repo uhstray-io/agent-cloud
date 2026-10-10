@@ -30,6 +30,26 @@
         quiet: true
       tags: [always]
 
+    - name: Refuse apply until the isolated provider proof is implemented
+      ansible.builtin.assert:
+        that:
+          - journal_collector_action | default('apply') != 'apply'
+        fail_msg: >-
+          Collector apply is disabled until the reviewed provider/image proof and
+          matching receipt gate are implemented. Survey and stop remain available.
+        quiet: true
+      tags: [always]
+
+    - name: Refuse positions repair for the unproved fresh volume
+      ansible.builtin.assert:
+        that:
+          - journal_collector_action | default('apply') != 'repair-positions'
+        fail_msg: >-
+          Positions repair is disabled for the fresh v2 volume until provider
+          initialization behavior is proved; preserve observed state.
+        quiet: true
+      tags: [always]
+
 - name: "Deploy the bounded journal collector"
   hosts: o11y_svc
   gather_facts: false
