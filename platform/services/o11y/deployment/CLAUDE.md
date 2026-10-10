@@ -18,17 +18,21 @@ stack and waits for Grafana to report healthy. Outside local mode it adds
 
 **Journal collector source gate (2026-10-10):** the logical key is
 `journal-collector-state-v2`, mounted at `/alloy-state` with explicit no-copy
-semantics. The Dev-bound `prove-direct` action now invokes direct rootless Podman
-against the resolved pinned Alloy image. Its source proof checks a same-image
-nonempty positive control, ordinary copy and direct no-copy mounts, then the
-actual state destination; it runs Alloy against a synthetic journal fixture with
-`loki.echo`, checks the persisted cursor across graceful stop/resume, and repeats
-on a second disposable volume. Scans and process output are bounded; output is
-limited to sanitized categories and binding digests. This source proof has not
-been run on the Dev receiver. Apply and
-positions repair remain refused because the full direct lifecycle, authenticated
-Semaphore receipt readback, operational creation receipts, and live acceptance
-gates are still incomplete. Check mode reports `check_mode_unverified`.
+semantics. The Dev-bound `prove-direct` action renders the reviewed candidate
+config on the receiver and binds its derived digest to the receipt. Its source
+proof checks a same-image nonempty positive control, ordinary copy and direct
+no-copy mounts, then the actual state destination; it runs Alloy against a
+synthetic journal fixture with `loki.echo`, checks the persisted cursor across
+graceful stop/resume, and repeats on a second disposable volume. Host volume
+scans run through bounded `podman unshare`; Podman stdout and stderr are captured
+under strict byte, time, and tail limits. A successful source run reports
+`status=partial`, limited to disposable provider and cursor behavior. It does
+not establish a shared workflow lock or quiescent receiver, old-volume
+metadata/initialization flags, receiver signal and alert preservation, an
+authenticated Semaphore receipt, or live acceptance. This source update has
+not been run on the Dev receiver. Those remain the next gates, so apply and
+positions repair stay refused. Check mode reports
+`check_mode_unverified`.
 
 ## How it is deployed
 

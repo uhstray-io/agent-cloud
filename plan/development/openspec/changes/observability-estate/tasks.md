@@ -81,3 +81,15 @@ passed, but Grafana's trace pivots still need an operator click-through receipt.
 The trace receiver is active before the required fail-closed enablement gate
 and production alert-delivery proof; both remain open acceptance work. The four
 DGX follow-up checks and the data-preserving local rebuild deferral remain open.
+
+## Receiver-host journal volume proof progress
+
+The source proof now hashes the rendered candidate config, performs host-side
+volume scans through `podman unshare`, captures bounded stdout and stderr for
+the synthetic Alloy log check, and waits after graceful stop for a parsed cursor.
+A successful source result is explicitly `partial`. It does not prove the
+shared workflow lock or receiver quiescence, old-volume metadata and
+initialization flags, receiver signal and alert preservation, the authenticated
+receipt, or live acceptance. Keep `apply` and `repair-positions` refused until
+those gates are implemented and separately accepted; no operational proof is
+claimed by this source update.

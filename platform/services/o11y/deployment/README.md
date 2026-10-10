@@ -707,20 +707,26 @@ Local development keeps the loopback direct-Loki path.
 
 **Source gate, 2026-10-10:** the collector's declared logical state key is now
 `journal-collector-state-v2` at `/alloy-state`. The Dev-bound `prove-direct`
-action invokes direct rootless Podman and the pinned Alloy image on uniquely
-labelled disposable volumes. It checks ordinary copy and explicit no-copy on a
-same-image nonempty positive control, then tests no-copy at `/alloy-state`. A
-synthetic-only journal fixture is read by `loki.source.journal.o11y_alloy` and
-forwarded to local `loki.echo`; the proof reads Alloy's persisted cursor after a
-graceful stop, restarts on the same volume, checks cursor advancement, and repeats
-on a second fresh volume. It refuses unsafe or unbounded scans, emits only
-sanitized categories and binding digests, and cleans assets only after identity
-and mount checks. This source proof has not been run on the Dev receiver and does not create an authenticated Semaphore
-receipt. The playbook still refuses `apply` and `repair-positions`; the direct
-collector lifecycle, operational volume-creation receipts, receipt readback, and
-live acceptance gates remain incomplete. `survey` and collector-only `stop`
-remain selectable. The legacy `journal-collector-state` is not selected by the
-v2 logical key. Do not run apply from this source slice.
+action renders the reviewed candidate config on the receiver and binds its
+derived SHA-256 to the receipt. The helper checks ordinary copy and explicit
+no-copy on a same-image nonempty positive control, then tests no-copy at
+`/alloy-state`. It inspects rootless volume contents only through a bounded
+`podman unshare` scan and captures both Podman log streams under byte, time, and
+tail limits while keeping raw output protected. A synthetic-only journal
+fixture is read by `loki.source.journal.o11y_alloy` and forwarded to local
+`loki.echo`; after graceful stop, the proof waits a bounded interval for a
+parsed persisted cursor, restarts on the same volume, checks cursor advancement,
+and repeats on a second fresh volume. A successful source run reports
+`status=partial`: it proves disposable provider and cursor behavior only. It
+does not establish a shared workflow lock or quiescent receiver, old-volume
+metadata/initialization flags, receiver signal and alert preservation, an
+authenticated Semaphore receipt, operational volume-creation receipts, or live
+acceptance. Those are the next gates. The playbook continues to refuse `apply`
+and `repair-positions`; `survey` and collector-only `stop` remain selectable.
+This source update has not been run on the Dev receiver and creates no
+authenticated Semaphore receipt.
+The legacy `journal-collector-state` is not selected by the v2 logical key. Do
+not run apply from this source slice.
 
 The operational rules below describe the prior v1 positions workflow and are
 historical context only; they do not override the fail-closed v2 source gate.
