@@ -476,6 +476,12 @@
       that the deploy, the rollback and the runtime verify all use, guarded by
       `test_agw_deploy_env.py`; validate-first and auto-restore stay as defence. The drill is to
       be re-run again
+      2026-10-09: `gateway-config` drill PASSED on `dev` at 2e1799a3 (after PR #521). Dry run
+      Semaphore task 3942 (validation ran and passed; `params.dry_run` recorded); real run task
+      3943: the previous config was put back, `deploy.sh` reported `recreated (inputs changed)`,
+      the gateway answered readiness, `failed=0`. Deploy agentgateway (Dev) task 3946 then
+      rendered the current config from code again (recreated, verify passed). Still owed for this
+      box: the live `direct` then `restore` drill, in a window Joe names
 
 - [ ] 4.7 `legacy_shared_expires` = the route-switch date + 14 days (operator decision
       2026-09-27), set in site-config in the same change that switches the route

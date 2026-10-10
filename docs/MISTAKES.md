@@ -2251,6 +2251,11 @@ and `.github/rulesets/check-drift.sh` reports `OK [protect-dev] live ruleset mat
 unverified: that it blocks the automatic head-branch deletion in practice; the next
 `dev` -> `main` promotion is the test.
 
+**Status — 2026-10-09.** Proven in practice: PR #515 (`dev` -> `main`, head `dev`) merged at
+2026-10-09T19:25:41Z as `293b1e0c` with `delete_branch_on_merge` still `true`, and `dev` survived
+(`gh api repos/uhstray-io/agent-cloud/branches/dev` resolves). The `sync-main-to-dev.yml` run for
+`293b1e0c` succeeded, where the 2026-10-08 run for `c81ada2a` failed on the missing branch.
+
 ### 3.14 Ran a real rollback drill on the strength of a dry run that skips the step that failed
 
 **Occurrences: 1** — 2026-10-09
