@@ -476,7 +476,10 @@
       that the deploy, the rollback and the runtime verify all use, guarded by
       `test_agw_deploy_env.py`; validate-first and auto-restore stay as defence. The drill is to
       be re-run again
-      2026-10-09: `gateway-config` drill PASSED on `dev` at 2e1799a3 (after PR #521). Dry run
+      2026-10-09T19:58Z: the production Semaphore upgrade planned above is done: v2.19.11, app and
+      runner both reporting ansible-core 2.20.8 (site-config `scripts/semaphore-upgrade.sh`, VM
+      snapshot first; `/api/info` and `ansible --version` in both containers read after it).
+      2026-10-10T00:08Z: `gateway-config` drill PASSED on `dev` at 2e1799a3 (after PR #521). Dry run
       Semaphore task 3942 (validation ran and passed; `params.dry_run` recorded); real run task
       3943: the previous config was put back, `deploy.sh` reported `recreated (inputs changed)`,
       the gateway answered readiness, `failed=0`. Deploy agentgateway (Dev) task 3946 then
