@@ -33,6 +33,38 @@
         quiet: true
       tags: [always]
 
+    - name: Read the fixed public Dev head and local origin tracking ref
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "-"
+          - verify-dev-source
+          - --checkout
+          - "{{ playbook_dir }}/../.."
+          - --expected-sha
+          - "{{ expected_repository_sha }}"
+        stdin: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/o11y-journal-workflow.py') }}"
+        stdin_add_newline: false
+      register: _journal_controller_source_result
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      tags: [always]
+
+    - name: Require the exact current public Dev source
+      ansible.builtin.assert:
+        that:
+          - _journal_controller_source_result.rc | default(1) == 0
+          - (_journal_controller_source_result.stdout | default('{}') | from_json).status == 'verified'
+          - (_journal_controller_source_result.stdout | from_json).revision == expected_repository_sha
+          - (_journal_controller_source_result.stdout | from_json).origin_dev_revision == expected_repository_sha
+          - (_journal_controller_source_result.stdout | from_json).public_dev_revision == expected_repository_sha
+        fail_msg: >-
+          The controller checkout, its origin/dev ref, and the canonical public Dev head must
+          match expected_repository_sha. The workflow was refused before receiver verification.
+        quiet: true
+      tags: [always]
+
     - name: Refuse apply until the direct proof and authenticated receipt gate are implemented
       ansible.builtin.assert:
         that:
@@ -91,10 +123,11 @@
           - _journal_checkout_result.rc | default(1) == 0
           - (_journal_checkout_result.stdout | default('{}') | from_json).status == 'verified'
           - (_journal_checkout_result.stdout | from_json).revision == expected_repository_sha
+          - (_journal_checkout_result.stdout | from_json).origin_dev_revision == expected_repository_sha
           - (_journal_checkout_result.stdout | from_json).clean is sameas true
         fail_msg: >-
-          The receiver checkout must already exist at the exact reviewed SHA and
-          have no tracked or untracked changes. No placement or cleanup is attempted.
+          The receiver checkout and its local origin/dev ref must already match the exact
+          reviewed SHA and have no tracked or untracked changes. No placement or cleanup is attempted.
         quiet: true
       when: not ansible_check_mode
 
