@@ -53,7 +53,7 @@ step_start() {
   # compose-spec change, so compose_up_if_changed (common.sh) hashes them with the compose
   # files in effect and recreates only when that digest or an image differs from what the
   # running containers started with. A re-run with identical inputs touches nothing.
-  compose_up_if_changed config
+  COMPOSE_PRESERVED_ORPHAN_SERVICE=journal-collector compose_up_if_changed config
 }
 
 step_wait_healthy() {

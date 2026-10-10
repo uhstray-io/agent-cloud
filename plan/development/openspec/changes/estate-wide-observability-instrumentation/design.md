@@ -107,6 +107,18 @@ implemented. Journal survey/proof/apply/repair/stop/rollback remain closed at th
 existing action gate. Task 1.2a remains incomplete; admission, durable intent,
 recovery, attribution and preservation requirements below remain acceptance gates.
 
+**Receiver reconciliation orphan guard (2026-10-10; partial source):** The ordinary
+o11y deploy opts into preserving only a receiver-project container whose verified
+Compose service label is exactly `journal-collector`. On an o11y recreate, the shared
+helper omits `--remove-orphans` and sets `COMPOSE_REMOVE_ORPHANS=0`; an unexpected
+orphan or missing/unreadable service label refuses before `compose up`, including
+when `FORCE_RECREATE=true`. Other shared-helper callers retain explicit orphan
+removal. Synthetic BATS coverage checks changed-input and forced recreation, no-op
+rerun, unknown/unexpected orphan refusal, and the default removal path. This is only
+source-level protection: provider behavior with a direct collector sharing receiver
+project labels, live receiver preservation, and installed Podman Compose behavior
+remain unverified. Task 1.2a remains unchecked.
+
 **Semaphore attribution and cleanup source note (2026-10-10):** Upstream
 [Semaphore v2.17.31 `LocalJob.go`](https://github.com/semaphoreui/semaphore/blob/v2.17.31/services/tasks/LocalJob.go#L70-L112)
 sets `semaphore_vars.task_details.id` from the running job's task ID, so it is

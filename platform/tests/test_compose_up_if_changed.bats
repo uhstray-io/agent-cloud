@@ -56,6 +56,7 @@ STUB
 # STUB_NAMES: container=service pairs the provider would create.
 S="$STUB_STATE"
 echo "$*" >> "$S/compose.log"
+echo "remove_orphans=${COMPOSE_REMOVE_ORPHANS:-unset}" >> "$S/provider.log"
 files=() prev="" overlay=""
 for a in "$@"; do
   if [ "$prev" = -f ]; then
@@ -253,6 +254,62 @@ o_setup() {
   deploy; [ "$status" -eq 0 ]
   LOCAL=true deploy; [ "$status" -eq 0 ]; changed true
   LOCAL=true deploy; changed false
+}
+
+@test "o11y: preserves the exact journal collector orphan across input and forced recreates" {
+  o_setup
+  deploy; [ "$status" -eq 0 ]
+  mkdir -p "$S/c/journal-collector"
+  echo true > "$S/c/journal-collector/running"
+  echo journal-collector > "$S/c/journal-collector/service"
+  echo stale > "$S/c/journal-collector/label"
+  echo img-1 > "$S/c/journal-collector/image_run"
+
+  echo '# changed' >> "$D/config/loki-config.yml"
+  deploy; [ "$status" -eq 0 ]; changed true
+  [ -d "$S/c/journal-collector" ]
+  grep -q '^remove_orphans=0$' "$S/provider.log"
+  refute_grep -q -- '--remove-orphans' "$S/compose.log"
+  deploy; [ "$status" -eq 0 ]; changed false
+  [ "$(recreates)" -eq 2 ]
+
+  FORCE=true deploy; [ "$status" -eq 0 ]; changed true
+  [ -d "$S/c/journal-collector" ]
+  [ "$(recreates)" -eq 3 ]
+}
+
+@test "o11y: refuses an unexpected orphan before compose up" {
+  o_setup
+  deploy; [ "$status" -eq 0 ]
+  mkdir -p "$S/c/unexpected"
+  echo true > "$S/c/unexpected/running"
+  echo other-service > "$S/c/unexpected/service"
+  echo img-1 > "$S/c/unexpected/image_run"
+  : > "$S/compose.log"
+  deploy
+  [ "$status" -ne 0 ]
+  grep -q 'Unexpected or unverifiable orphan' <<< "$output"
+  refute_grep -q ' up ' "$S/compose.log"
+  [ "$(recreates)" -eq 1 ]
+  FORCE=true deploy
+  [ "$status" -ne 0 ]
+  grep -q 'Unexpected or unverifiable orphan' <<< "$output"
+  refute_grep -q ' up ' "$S/compose.log"
+  [ "$(recreates)" -eq 1 ]
+}
+
+@test "o11y: an orphan with a missing service label is unknown and refuses" {
+  o_setup
+  deploy; [ "$status" -eq 0 ]
+  mkdir -p "$S/c/unknown"
+  echo true > "$S/c/unknown/running"
+  echo img-1 > "$S/c/unknown/image_run"
+  : > "$S/compose.log"
+  deploy
+  [ "$status" -ne 0 ]
+  grep -q "service label 'unknown'" <<< "$output"
+  refute_grep -q ' up ' "$S/compose.log"
+  [ "$(recreates)" -eq 1 ]
 }
 
 # ── synthetic project: overlay-only and removed services ─────────────────────
