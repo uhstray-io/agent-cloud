@@ -99,6 +99,19 @@ discovery and independent review; no lock backend, durable-record location,
 Semaphore environment marker or receipt authentication mechanism is accepted
 by this artifact update.
 
+**Installed Semaphore API observation (2026-10-10; directly queried read-only by the agent via the site-config HTTPS launch URL; sanitized output):** HTTPS
+`/api/info` reported version `v2.19.11-0c3f373-1787751354` and
+`use_remote_runner=false`. `/api/runners` returned two records: the default
+runner was active, offline, with `max_parallel=1`; the nondefault runner was
+inactive and online. The response exposed no tag counts. Historical task 4038
+in project 1/template 312 reported the reviewed Dev SHA and an empty playbook
+override; its template points to the journal-collector playbook and has
+repository/inventory IDs. Neither task nor template exposed `runner_id` or a
+runner tag. This suggests local execution but does not prove task-specific
+runner isolation, runner-token scope, or current behavior. Verify the installed
+execution path and isolation before relying on task attribution or admitting
+runtime proof; task 1.2a remains unchecked.
+
 **Admission remains unimplemented (2026-10-10):** The partial durable admission
 state helper and premature receiver refusal includes were removed because they
 did not establish shared, authenticated admission. Receiver deploy and clean/reset
