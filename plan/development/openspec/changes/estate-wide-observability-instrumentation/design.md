@@ -89,31 +89,55 @@ The helper's `verify` action is the pre-start gate; `verify-live` is the post-st
 
 **Unmatched-directory metadata and Dev receipt (2026-10-10):** Our read-only Dev-bound Semaphore API survey task 4016 succeeded at exact Dev merge `736af5b16917f28a243b3715d56c76c00bfe7a8a`. The sanitized receipt reported `volume_initialization_pending`, no collector, no valid cursor, three direct entries, `seed_file=1`, `journal_component=1`, `other_directories=1`, and zero recognized receiver/exporter directories. Volume identity, capacity, root owner, and root RWX were good; `NeedsCopyUp=true` and the `NeedsChown` field was missing. `component_layout` failed. The pending-repair `failed_checks` included `children_empty`, `child_count_zero`, `owner_mismatch`, and `collector_access_blocked`. These are our API-observed sanitized results, not user-provided evidence. The helper now reports aggregate categorical owner/access/ACL/mount/direct-child-empty status over anonymous unmatched direct child directories, bounded by the existing 32-entry cap. Descriptor-pinned no-follow access and post-observation identity/listing checks make races, symlink substitutions, ACL or mount ambiguity, malformed data, and incomplete observations `unverified`. This is diagnostic only: unmatched directories remain outside the accepted layout and cannot pass repair, pre-start, or live gates. Stop on remaining or unverified entries; do not infer queue state or mutate/apply the volume. Obtain a fresh reviewed Dev survey after merge. Task 1.2 remains unchecked.
 
-### 2a. Fresh positions-volume proof and switch (2026-10-10; planned, not implemented)
+### 2a. Ansible-owned direct Podman collector and fresh positions switch (2026-10-10; planned, not implemented)
 
-**Current receipt and stop:** Independently read Dev-bound read-only task **4038** at
+**Previously recorded receipt and stop (not rerun here):** Independently read
+Dev-bound read-only task **4038** at
 merged SHA `a052555060b4c9ca5fb59fb44fa64906fc38bd69` reports
 `initialization_pending`, collector absent, volume use count 0, three entries
 (`seed_file=1`, `journal_component=1`, `other_directories=1`), unknown-directory
 count 1 fully verified as collector-owned, RWX, ACL absent, same mount and empty.
 There is no cursor; `component_layout` failed; live mount/UID proof was not run.
-This receipt was read from Semaphore after the merged deployment. Empty
+The prior context records this receipt as read from Semaphore after the merged deployment. Empty
 unknown-directory metadata does not identify
 its purpose or origin and does not relax the layout gate. Ownership repair is
 inapplicable: the root already matches the collector and the volume is nonempty.
 Preserve the old volume without mount, chmod/chown, copy, rename, cursor read,
 content change, or deletion throughout proof, switch, stop and rollback.
 
-[Podman volume-inspect documentation](https://docs.podman.io/en/latest/markdown/podman-volume-inspect.1.html)
-defines `NeedsCopyUp` as copying destination data into the volume on next use;
-it is not origin/history evidence. Copy/no-copy semantics, image destination
-contents, initialization flags and UID mapping on this host/provider remain
-**unverified**. In particular, a persistent true flag cannot be explained as an
-empty image destination without the isolated proof. This section adds a
-mandatory provider-proof gate to every fresh/missing-volume bootstrap described
-above; effective fresh initialization flags must match the proved no-copy policy
-rather than inherit an assumed copy-enabled `false/true` pair. Earlier repair
-acceptance sequences are historical and do not authorize repair of task 4038; it does not widen the old volume's repair or layout acceptance.
+**Selected lifecycle owner:** The existing Dev-bound Semaphore journal playbook
+will own the collector through idempotent Ansible tasks invoking direct rootless
+Podman. Compose remains the sole lifecycle owner of the seven receiver services.
+Remove the collector's executable Compose service/mount path in the coupled
+implementation; do not leave two start paths or a selectable Compose fallback.
+Retaining receiver project labels is an identity contract, not permission for
+receiver Compose reconciliation to manage this collector. Guard ordinary receiver
+redeploy/stop and orphan cleanup against selecting it; no broad project-wide
+teardown, volume cleanup or receiver network recreation belongs to this switch.
+This is a declared collector-only capability deviation within o11y, not a second
+receiver stack, environment fork, manual host command or new orchestrator.
+It follows the Semaphore/read-guard/idempotency boundary in `PRINCIPLES.md` §5.
+
+**Evidence and rejected alternatives:** On 2026-10-10, the inspected upstream
+[podman-compose main source](https://github.com/containers/podman-compose/blob/main/podman_compose.py)
+contains no no-copy handling in `mount_desc_to_mount_args`; `parse_short_mount`
+rejects unknown options rather than accepting `nocopy`. Upstream
+[issue #1459](https://github.com/containers/podman-compose/issues/1459) reports
+long-form `volume.nocopy` ignored. These are upstream source/report evidence,
+not proof of the installed production provider. Official
+[Podman volume option documentation](https://github.com/containers/podman/blob/main/docs/source/markdown/options/volume.md)
+includes direct `--volume` copy/no-copy options. Select an explicit direct
+Podman RW/no-copy mount at `/alloy-state`; its installed-version behavior,
+initialization flags, image destination contents and UID mapping remain
+**unverified** until the separately selected proof below passes. Do not infer
+behavior from `NeedsCopyUp`, rendering or documentation. Keep the existing
+Compose provider copy-behavior subproof diagnostic only: success cannot approve
+the selected direct mount, and failure is not a reason to switch providers,
+relax layout, enable copy or normalize old state. A provider upgrade, another
+Compose backend, passthrough wrapper, or ownership patch is not the selected
+solution. Earlier Compose bootstrap/repair sequences above are historical;
+this section supersedes their lifecycle and creation assumptions for all future
+fresh/missing-volume apply. Task 4038 does not authorize old-volume repair.
 
 **Minimal declared identity:** In the single future public implementation PR,
 change only the journal collector's logical state key to
@@ -121,8 +145,17 @@ change only the journal collector's logical state key to
 logical-volume label, helper lookup, pre/live gates, stop/rollback lookup and
 operating tests/docs updated together. Keep `journal-collector-state` as the
 protected legacy identity; never select it by a fallback. Resolve both exact
-physical names using the receiver's verified Compose project and the actual
-provider's rendered configuration; do not guess a prefix. Do not use a volume
+physical names using the receiver's verified Compose project and rendered
+identity model, cross-checked against runtime receiver/legacy-volume labels; do
+not guess a prefix. Resolve the existing `o11y` network to its exact runtime
+name/ID and project labels from the same receiver context; require the expected
+receiver membership and refuse missing, foreign or ambiguous networks. Direct
+Podman attaches only to that verified existing network, never creates a replacement.
+Retain `com.docker.compose.project` and `io.podman.compose.project` project
+labels, the exact `com.docker.compose.volume=journal-collector-state-v2` volume
+label, and the reviewed collector config digest label consistently in creation,
+verification and cleanup. Extra ownership/receipt attribution must not turn
+project-label matches into permission for broad selection. Do not use a volume
 `name:` override, external alias or arbitrary operator-supplied volume selector.
 The public versioned logical key is a mechanism, not private site identity;
 existing private host/journal/endpoint declarations remain in site-config, so
@@ -130,35 +163,45 @@ no new private volume-name setting or private-repo PR is required. If the
 resolved fresh name already belongs to anything else, stop rather than select
 another name, adopt it or delete it.
 
-**Provider proof, separately selected through reviewed Dev-bound Semaphore:**
+**Selected direct Podman proof, separately selected through reviewed Dev-bound Semaphore:**
 Extend the existing guarded workflow/helper, not a laptop experiment or live
 receiver deploy. Pin the reviewed code SHA, inventory revision, rootless user
-and storage context, Podman client/server versions, actual Compose executable
-and version (the current playbook invokes `podman-compose`), rendered mount
-options, and the resolved image digest/ID for the pinned
+and storage context, actual Podman executable identity and client/server versions,
+exact direct lifecycle arguments/security/mount policy, receiver-derived
+project/network identity and rendered config digest, and resolved image digest/ID
+for pinned
 `docker.io/grafana/alloy:v1.9.2`. Use the same resolved image for proof and apply;
 a version tag alone must not let changed image bytes reuse an old proof. Any
-provider, image, mount policy, UID/storage context or relevant configuration
+Podman executable/version, image, mount policy, UID/storage context, receiver
+project/network identity or relevant configuration
 change invalidates the proof. Check mode and survey emit unverified, never a
-proof receipt. Missing provider capability or image/config validation stops.
+proof receipt. Missing direct Podman capability or image/config validation stops. Compose
+executable/version evidence belongs only to the separate diagnostic; it cannot
+satisfy or substitute for the direct lifecycle proof tuple.
 
 1. Take the seven receiver ID/state and signal/alert/health baseline; verify the
    old identity read-only without mounting it. Acquire an exclusive workflow
    lock shared by proof/apply/stop/repair and require an operator-controlled
    quiescent window; repeated snapshots do not establish atomicity against
    unrelated same-user Podman operations. Inspect complete bounded container
-   and volume inventories. Use an isolated test Compose project, task-owned
+   and volume inventories. Use isolated task-owned direct Podman test identities,
    scratch config and synthetic journal fixture, disposable uniquely labelled
    test container and volume, with no old/fresh-volume aliases, receiver service
    definitions, engine socket, live journal bind, host network or published port.
+   Run test containers with networking disabled and the sink in-process; observe
+   the receiver network identity read-only for context binding, without attaching
+   proof containers to it.
 2. Observe the pinned image's `/alloy-state` without a positions volume using an
    owned disposable image-inspection container. Record bounded destination
    layout/ownership and identity, not a provenance claim. With the actual
-   provider, test ordinary copy behavior and an explicit no-copy mount policy
+   installed Podman and selected direct mount syntax, test ordinary copy
+   behavior and the explicit RW/no-copy mount policy
    in **separate new disposable volumes**, never by retesting a used volume as
    fresh. Compare pre-first-mount, effective container mount and post-mount
-   contents/flags/ownership. Verify the provider passes the no-copy policy
-   through; rendering or documentation alone is insufficient. The selected
+   contents/flags/ownership. Use explicit guarded volume creation and creation
+   receipts before container creation, matching the selected operational lifecycle.
+   Verify the direct mount actually enforces no-copy; rendering, the Compose
+   diagnostic or documentation alone is insufficient. The selected
    switch policy is explicit no-copy, with no silent fallback to copy. If
    `/alloy-state` is absent/empty, additionally use an independently observed
    nonempty, benign directory from the SAME pinned image as a positive control
@@ -189,20 +232,32 @@ proof receipt. Missing provider capability or image/config validation stops.
    Verify test assets absent, old volume identity/stable metadata unchanged,
    and all seven receiver IDs/states and baseline unchanged. Record the
    Semaphore task/SHA and verified proof tuple for independent task readback;
-   operator extra vars or a survey boolean cannot forge provider success.
+   operator extra vars or a survey boolean cannot forge direct Podman success.
 
 **Fresh switch through the same reviewed implementation:** Apply must independently
 read back a successful Dev-bound proof task at the reviewed merged SHA and match
-its tuple, then repeat the fresh preflight immediately before first mount,
+its direct Podman tuple, then repeat the fresh preflight immediately before first mount,
 outside collector rollback handling. Require complete inventories, exact old
 and fresh names distinct, exact project/logical labels, local driver with no
 unexpected options, no name/label collisions, and no collector including stopped
 containers for a first start or stopped-state resume. An already accepted live
 collector uses the no-op verification path below, with exactly one verified
-consumer/mount and no foreign users; it cannot reuse the absent-collector gate. A missing fresh volume is created only by the selected collector's
-Compose first mount. An existing fresh volume is accepted only when its owned
-creation identity matches a previous workflow receipt and full metadata/layout
-and cursor checks pass; an empty matching name alone cannot establish ownership.
+consumer/mount and no foreign users; it cannot reuse the absent-collector gate.
+For a missing fresh volume, Ansible alone explicitly creates that exact local
+volume after proof and absent-name/collision preflight pass, before any collector
+container creation or mount. Record an independently attributable creation
+receipt binding Semaphore task/reviewed SHA/inventory, exact resolved name,
+project/logical labels, driver/options, creation timestamp, mountpoint and root
+device/inode; verify safe initial metadata/flags and preserve a protected receipt
+for independent readback. Repeat identity/use/mount/capacity checks after creation
+and immediately before container creation/mount. If creation/readback is partial,
+receipt persistence fails, or identity drifts, preserve the asset and refuse;
+never adopt an unreceipted volume by name/emptiness, silently recreate a missing
+receipted volume, or let implicit Podman creation replace this step. Verify the
+created container's exact volume/network identities and effective policy before
+start; any unreceipted implicit creation refuses and preserves uncertain state.
+An existing fresh volume requires the prior owned creation receipt and full
+metadata/layout/cursor checks. Receiver Compose never creates or initializes it.
 Pin volume creation identity, mountpoint and root device/inode once created;
 refuse symlinks, ACL/special-bit or nested-mount ambiguity, unexpected children,
 identity drift, foreign consumers or unknown inventory. Pending fresh state
@@ -212,10 +267,20 @@ and inodes on GraphRoot and volume backing filesystem (at least the existing
 16 MiB/128-inode first-mount floor, including bounded test/image/fixture peak
 space); image acquisition must not consume the reserved first-mount floor.
 This is separate from retention forecast/headroom, not permission to grow disk.
-A failed proof/preflight changes no collector or receiver service.
+A failed proof/preflight changes no collector or receiver service. A refusal
+after explicit fresh-volume creation retains that receipted/uncertain volume;
+no pre-first-mount failure promises that no task-owned asset was created.
 
-Run only the journal service with no dependencies using the proved provider and
-no-copy policy; never reconcile the seven-service receiver stack. Validate the
+Create/start only the exact receipt-owned journal container through guarded
+Ansible direct Podman tasks using the proved explicit RW/no-copy policy; never
+invoke Compose for the collector or reconcile the seven-service receiver stack.
+Preserve pinned image bytes, `0:0`, read-only root, all capabilities dropped,
+no-new-privileges, read-only declared journal/config binds, loopback-only readiness
+listener, bounded health schedule and restart policy. No engine socket, host
+network, published listener or recursive ownership/relabel option is permitted.
+Before each mutating lifecycle task require an exact identity/state read-guard
+and truthful changed reporting; unexplained config/security/network drift refuses
+rather than adopting or force-replacing a container. Validate the
 real collector config with the pinned image before start. Post-start require
 exact fresh-volume name/source/destination/RW mount, `0:0` mapping and namespace
 write/rename/delete access, strict production component layout, a valid expected
@@ -237,7 +302,9 @@ the verified collector container without volume removal and verifies absence
 from restart sets, BOTH volume identities/preservation and the seven receivers.
 Never remount the unsupported old volume automatically; rollback means returning
 to collector-absent receiver baseline, not historical cursor recovery. Failure
-before first mount is a no-change refusal. Failure after first mount preserves
+before collector mount leaves collector/receivers unchanged and retains any
+explicitly created fresh asset with its receipt or bounded uncertainty. Failure
+after first mount preserves
 fresh state and reports uncertainty; no reset, ownership restore, seed removal,
 or new v3 name on retry. Interrupted proof retains only its own uncertain test
 assets for identity-verified cleanup. Proof reruns reuse no first-mount volume;
@@ -254,11 +321,16 @@ exactly-once or historical continuity. Start the representative seven-day
 baseline only after live acceptance, and keep tasks 1.2/1.3 and cohort/retention
 expansion gates open until their separate receipts pass.
 
-**One future PR and tests:** Keep provider proof, receipt authentication, fresh
-identity resolution, all apply/stop/rollback callers, Compose declaration,
+**One future PR and tests:** Keep direct lifecycle/mount proof, proof and creation
+receipt authentication, receiver-derived project/volume/network identity
+resolution, all apply/survey/stop/rollback callers, removal of the executable
+collector Compose path and guards against competing receiver lifecycle ownership,
 Semaphore action/schema guards, focused fixtures/tests and operating docs in
 ONE reviewed implementation PR; no short-term layout relaxation or patch.
-Tests must cover provider missing/ignored no-copy, inconclusive empty image,
+Tests must cover missing direct Podman capability/ineffective no-copy, diagnostic
+Compose results unable to unlock apply, competing owners/project-orphan cleanup,
+missing/foreign network or project labels, explicit creation/no implicit adoption,
+interrupted or unpersisted creation receipts, inconclusive empty image,
 image/version/context mismatch, spoofed or stale proof, old-volume never mounted
 or mutated, foreign/colliding fresh names, use/mount and metadata races,
 capacity/ACL/link/overflow failures, first-mount copy contamination, invalid or
@@ -266,7 +338,8 @@ lost cursor, restart resume, check-mode unverified, no-op rerun, interrupted
 cleanup and failure after mount preserving BOTH volumes/seven IDs. Run focused
 journal tests, render/Ansible checks and strict worktree-local OpenSpec validation;
 review and green final-head CI precede live proof, then separate apply acceptance.
-No live provider proof, fresh volume or switch is claimed by this plan.
+No installed-provider result, direct Podman proof, fresh-volume creation or
+switch is claimed by this plan. Task 1.2 remains open.
 
 Signal selection per cohort:
 
