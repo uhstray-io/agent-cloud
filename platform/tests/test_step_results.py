@@ -224,7 +224,15 @@ def test_conformance_json_body_format_matches_loki_dashboard_extraction():
         return json.loads(record["body"]["stringValue"])
 
     assert body_for("tududi", "secrets-approle")["state_code"] == 1
-    assert body_for("step-ca", "none")["inventory_code"] == 0
+    marker = body_for("step-ca", "none")
+    assert marker["inventory_code"] == 0
+    assert marker["marker_time_seconds"] == 1700000000
+    assert isinstance(marker["marker_time_seconds"], int)
+    marker_record = next(r for r in records
+                         if any(a["key"] == "step" and a["value"]["stringValue"] == "none"
+                                for a in r["attributes"]))
+    assert {a["key"] for a in marker_record["attributes"]} == {"job", "service", "step", "status"}
+    assert type(json.loads(marker_record["body"]["stringValue"])["marker_time_seconds"]) is int
 
     alloy = (REPO / "platform/services/o11y/deployment/templates/config.alloy.j2").read_text()
     processor = alloy.split('otelcol.processor.attributes "conformance_logs" {', 1)[1].split("\n}\n", 1)[0]
@@ -238,7 +246,9 @@ def test_conformance_json_body_format_matches_loki_dashboard_extraction():
                             "service-conformance.json").read_text())
     expressions = {panel["title"]: panel["targets"][0]["expr"] for panel in dashboard["panels"]}
     assert '| json state_code | unwrap state_code' in expressions["Latest step status by service"]
-    assert '| json inventory_code | unwrap inventory_code' in expressions["Services not yet run"]
+    assert '| json |' in expressions["Services not yet run"]
+    assert '| unwrap inventory_code' in expressions["Services not yet run"]
+    assert "marker_time_seconds" in expressions["Services tracked"]
 
 
 def test_groups_map_to_their_hosts_service_name():
@@ -372,7 +382,8 @@ def test_a_no_history_service_reaches_netbox_and_the_dashboard():
     assert len(streams) == 1
     assert streams[0]["stream"] == {"job": "agent-cloud-conformance", "service": "step-ca",
                                      "step": "none", "status": "no_history"}
-    assert json.loads(streams[0]["values"][0][1]) == {"inventory_code": 0, "no_history": True}
+    marker = json.loads(streams[0]["values"][0][1])
+    assert marker == {"inventory_code": 0, "marker_time_seconds": 0, "no_history": True}
 
 
 def test_inventory_markers_transition_to_the_newest_bounded_state_each_run():
@@ -515,7 +526,9 @@ def test_the_step_table_excludes_the_no_history_marker_and_a_panel_lists_it():
     assert "last_over_time" in exprs["Latest step status by service"]
     assert '| json state_code | unwrap state_code' in exprs["Latest step status by service"]
     assert 'by (service, step)' in exprs["Latest step status by service"]
-    assert '| json inventory_code | unwrap inventory_code' in exprs["Services not yet run"]
+    assert '| json |' in exprs["Services not yet run"]
+    assert '| unwrap inventory_code' in exprs["Services not yet run"]
     assert "by (service) == 0" in exprs["Services not yet run"]
-    assert '| json inventory_code | unwrap inventory_code' in exprs["History incomplete"]
+    assert '| json |' in exprs["History incomplete"]
+    assert '| unwrap inventory_code' in exprs["History incomplete"]
     assert "by (service) == 2" in exprs["History incomplete"]

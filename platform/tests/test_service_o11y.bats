@@ -1120,6 +1120,7 @@ checks = [env.compile_expression(expr) for expr in check['ansible.builtin.assert
 files = sorted(glob.glob(sys.argv[2] + '/*.json'))
 uids = [json.load(open(f))['uid'] for f in files]
 assert {'inference-fleet-health', 'inference-latency-capacity', 'inference-placement-comparison'} <= set(uids)
+assert {'service-conformance', 'service-overview'} <= set(uids)
 docs = {'results': [{'content': base64.b64encode(open(f, 'rb').read()).decode()} for f in files]}
 def ok(live):
     names = {'_dashboard_docs': docs, '_dashboard_files': {'files': [{'path': f} for f in files]},

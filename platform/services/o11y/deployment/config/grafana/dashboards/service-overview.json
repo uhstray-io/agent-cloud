@@ -156,7 +156,7 @@
         "x": 0,
         "y": 14
       },
-      "description": "Loki log lines per second for the selected Logs service, separated by container output, gateway access records, optional gateway span logs, and workflow conformance records. Missing data for a source means no matching logs were observed and does not indicate service health.",
+      "description": "Loki log lines per second for the selected Logs service, separated into disjoint legacy container, journal container, gateway access, optional gateway span, and workflow conformance sources. Missing data means no matching logs were observed and does not indicate service health; Prometheus scrape health is shown separately above.",
       "fieldConfig": {
         "defaults": {},
         "overrides": []
@@ -164,17 +164,22 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (service) (rate({service=~\"$log_service\", container=~\".+\"}[5m]))",
+          "expr": "sum by (service) (rate({service=~\"$log_service\", container=~\".+\", signal!~\"^(container|access-log|span)$\", job!=\"agent-cloud-conformance\"}[5m]))",
           "legendFormat": "Container · {{service}}"
         },
         {
+          "refId": "E",
+          "expr": "sum by (service) (rate({service=~\"$log_service\", signal=\"container\", job!=\"agent-cloud-conformance\"}[5m]))",
+          "legendFormat": "Journal container · {{service}}"
+        },
+        {
           "refId": "B",
-          "expr": "sum by (service) (rate({service=~\"$log_service\", signal=\"access-log\"}[5m]))",
+          "expr": "sum by (service) (rate({service=~\"$log_service\", signal=\"access-log\", job!=\"agent-cloud-conformance\"}[5m]))",
           "legendFormat": "Access · {{service}}"
         },
         {
           "refId": "C",
-          "expr": "sum by (service) (rate({service=~\"$log_service\", signal=\"span\"}[5m]))",
+          "expr": "sum by (service) (rate({service=~\"$log_service\", signal=\"span\", job!=\"agent-cloud-conformance\"}[5m]))",
           "legendFormat": "Span · {{service}}"
         },
         {
@@ -197,7 +202,7 @@
         "x": 0,
         "y": 22
       },
-      "description": "Container stdout and stderr for the selected Logs service. This is container output, not service health.",
+      "description": "For the selected Logs service, includes journal records marked signal=\"container\" even when they also have a container label, plus legacy container records whose signal is outside container/access-log/span. This is container output, not service health.",
       "options": {
         "showLabels": true,
         "showTime": true,
@@ -206,7 +211,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "{service=~\"$log_service\", container=~\".+\"}",
+          "expr": "{service=~\"$log_service\", job!=\"agent-cloud-conformance\"} | (signal=\"container\" or (container=~\".+\" and signal!~\"^(container|access-log|span)$\"))",
           "maxLines": 100
         }
       ]
@@ -233,7 +238,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "{service=~\"$log_service\", signal=\"access-log\"}",
+          "expr": "{service=~\"$log_service\", signal=\"access-log\", job!=\"agent-cloud-conformance\"}",
           "maxLines": 100
         }
       ]
@@ -260,7 +265,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "{service=~\"$log_service\", signal=\"span\"}",
+          "expr": "{service=~\"$log_service\", signal=\"span\", job!=\"agent-cloud-conformance\"}",
           "maxLines": 100
         }
       ]

@@ -12,6 +12,8 @@ Input (stdin, JSON):
   lookback         Prometheus duration, one unit: 30m, 1h, 2d (the dashboard time range)
   panel_titles     optional exact panel titles; empty means every Prometheus panel, while
                    Loki panels must be explicitly selected by title
+  expected_empty_panels  optional exact selected panel titles whose empty results are allowed;
+                   every queried target in an allowed panel must be empty and error-free
   variables        optional {name: value} overriding a template variable's saved default;
                    substituted as written, as Grafana substitutes a custom All value, but
                    never one that could change the query's structure (see below)
@@ -63,9 +65,11 @@ encodes NaN as a string (https://prometheus.io/docs/prometheus/latest/querying/a
 histogram_quantile over a window with no traffic returns NaN, which a panel draws as a gap.
 A native histogram sample (the `histogram` key of a vector series, `histograms` of a matrix
 series, same page) counts when its observation count is finite.
-A panel passes when every queried Prometheus or Loki target has data; the run passes when at
-least one panel is evaluated and every evaluated panel passes. Whole-dashboard runs evaluate
-Prometheus panels; Loki panels require explicit title selection.
+A panel passes when every queried Prometheus or Loki target has data. A named expected-empty
+panel passes only when every queried target is empty and error-free; mixed data and empty
+targets still fail. The run passes when at least one panel is evaluated and every evaluated
+panel passes or is explicitly expected empty. Whole-dashboard runs evaluate Prometheus
+panels; Loki panels require explicit title selection.
 
 Exit status: 0 pass, 1 a panel has no data or a query failed, 2 refused (bad input).
 """
@@ -277,8 +281,13 @@ def plan(payload: dict[str, Any]) -> dict[str, Any]:
         raise Refused("scrape_interval_seconds must be a positive integer")
     titles = payload.get("panel_titles") or []
     overrides = payload.get("variables") or {}
+    expected_empty = payload.get("expected_empty_panels", [])
     if not isinstance(titles, list) or not all(isinstance(t, str) and t for t in titles):
         raise Refused("panel_titles must be a list of exact panel titles")
+    if not isinstance(expected_empty, list) or not all(isinstance(t, str) and t for t in expected_empty):
+        raise Refused("expected_empty_panels must be a list of exact panel titles")
+    if len(expected_empty) != len(set(expected_empty)):
+        raise Refused("expected_empty_panels must not contain duplicates")
     if not isinstance(overrides, dict) or not all(VARIABLE_NAME.fullmatch(str(k)) for k in overrides):
         raise Refused("dashboard_variables must map variable names to values")
 
@@ -360,11 +369,20 @@ def plan(payload: dict[str, Any]) -> dict[str, Any]:
         planned.append(entry)
     if not any(t.get("expr") for p in planned for t in p["targets"]):
         raise Refused("no supported Prometheus or Loki query is selected on this dashboard")
+    dashboard_titles = {p.get("title") for p in panels}
+    missing_expected = sorted(set(expected_empty) - dashboard_titles)
+    if missing_expected:
+        raise Refused(f"expected_empty_panels {missing_expected} are not on this dashboard")
+    queryable_titles = {p["title"] for p in planned if any("expr" in t for t in p["targets"])}
+    unselected_expected = sorted(set(expected_empty) - queryable_titles)
+    if unselected_expected:
+        raise Refused(f"expected_empty_panels {unselected_expected} are not selected for evaluation")
     return {
         "dashboard": dashboard,
         "lookback": lookback,
         "step": step,
         "variables": sources,
+        "expected_empty_panels": expected_empty,
         "panels": planned,
     }
 
@@ -485,12 +503,14 @@ def evaluate(payload: dict[str, Any], now: float | None = None) -> dict[str, Any
             status = "pass"
         elif any(t["status"] == "error" for t in queried):
             status = "error"
+        elif all(t["status"] == "empty" for t in queried) and entry["title"] in planned["expected_empty_panels"]:
+            status = "expected_empty"
         else:
-            status = "empty"
+            status = "empty" if all(t["status"] == "empty" for t in queried) else "partial"
         panels.append({"title": entry["title"], "status": status, "targets": targets})
 
     verified = [p for p in panels if p["status"] != "skipped"]
-    failing = [p["title"] for p in verified if p["status"] != "pass"]
+    failing = [p["title"] for p in verified if p["status"] not in ("pass", "expected_empty")]
     return {
         "status": "pass" if verified and not failing else "fail",
         "dashboard_uid": planned["dashboard"].get("uid"),
@@ -501,6 +521,7 @@ def evaluate(payload: dict[str, Any], now: float | None = None) -> dict[str, Any
         "panels_verified": len(verified),
         "verified_panel_titles": [p["title"] for p in verified],
         "panels_skipped": len(panels) - len(verified),
+        "expected_empty_panel_titles": [p["title"] for p in verified if p["status"] == "expected_empty"],
         "panels_failing": failing,
         "panels": panels,
     }

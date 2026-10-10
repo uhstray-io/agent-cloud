@@ -34,7 +34,7 @@
         "x": 0,
         "y": 0
       },
-      "description": "Count of unique service and step pairs whose newest state in the last 16 minutes is fail. This is current recorded state, not a count of new failure events. When inventory markers exist but no step is currently failed, the fallback returns one unlabeled zero; with no recent inventory marker the panel shows No recent data.",
+      "description": "Count of unique service and step pairs whose newest state in the last 45 minutes is fail. This is current recorded state, not a count of new failure events. When valid inventory markers exist but no step is currently failed, the fallback returns one unlabeled zero; with no recent inventory marker (no valid marker within 45 minutes) the panel shows No recent data.",
       "fieldConfig": {
         "defaults": {
           "noValue": "No recent data",
@@ -62,7 +62,7 @@
             "uid": "loki"
           },
           "queryType": "instant",
-          "expr": "sum(last_over_time({job=\"agent-cloud-conformance\", step!=\"none\"} | json state_code | unwrap state_code | __error__=\"\" [16m]) by (service, step) == bool 0) or (sum(last_over_time({job=\"agent-cloud-conformance\", step=\"none\"} | json inventory_code | unwrap inventory_code | __error__=\"\" [16m]) by (service) * 0))"
+          "expr": "sum(last_over_time({job=\"agent-cloud-conformance\", step!=\"none\"} | json state_code | unwrap state_code | __error__=\"\" [45m]) by (service, step) == bool 0) or (sum(last_over_time({job=\"agent-cloud-conformance\", step=\"none\", status=~\"^(no_history|has_history|history_incomplete)$\"} | json | inventory_code=~\"^(0|1|2)$\" | marker_time_seconds=~\"^[0-9]+$\" | __error__=\"\" | unwrap inventory_code | __error__=\"\" [45m]) by (service) * 0))"
         }
       ]
     },
@@ -102,9 +102,57 @@
             "uid": "loki"
           },
           "queryType": "instant",
-          "expr": "count(sum by (service) (count_over_time({job=\"agent-cloud-conformance\"} [16m])))"
+          "expr": "count(count by (service) (count_over_time({job=\"agent-cloud-conformance\", step=\"none\", status=~\"^(no_history|has_history|history_incomplete)$\"} | json | inventory_code=~\"^(0|1|2)$\" | marker_time_seconds=~\"^[0-9]+$\" | __error__=\"\" [45m])))"
         }
-      ]
+      ],
+      "description": "Distinct services with a valid inventory marker in the last 45 minutes, including services with no workflow history. Invalid marker bodies are excluded. No valid marker means no data."
+    },
+    {
+      "title": "Latest inventory marker age",
+      "type": "stat",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 12,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "No valid marker in 45m",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1800
+              }
+            ]
+          },
+          "unit": "s",
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "queryType": "instant",
+          "expr": "min(last_over_time({job=\"agent-cloud-conformance\", step=\"none\", status=~\"^(no_history|has_history|history_incomplete)$\"} | json | inventory_code=~\"^(0|1|2)$\" | marker_time_seconds=~\"^[0-9]+$\" | __error__=\"\" | label_format age_seconds=`{{sub (unixEpoch now) .marker_time_seconds}}` | unwrap age_seconds | __error__=\"\" [45m]))"
+        }
+      ],
+      "description": "Age in seconds of the newest valid collector inventory marker, calculated from its numeric body timestamp. The 30-minute stale threshold is calibrated from 12 successful collector runs on 2026-10-10 (11.7–11.9-minute task durations; 14.8–15.1-minute completion gaps). Recalibrate from future run receipts; this is not a lifetime timing guarantee. No valid marker within 45 minutes is unavailable, not zero."
     },
     {
       "title": "Services not yet run",
@@ -115,11 +163,11 @@
       },
       "gridPos": {
         "h": 5,
-        "w": 12,
-        "x": 12,
+        "w": 6,
+        "x": 18,
         "y": 0
       },
-      "description": "Inventoried services whose newest collector inventory marker reports no workflow history.",
+      "description": "Inventoried services whose newest valid collector marker reports no workflow history. No matching rows means no service currently reports no history; no valid marker remains no data.",
       "targets": [
         {
           "refId": "A",
@@ -128,7 +176,7 @@
             "uid": "loki"
           },
           "queryType": "instant",
-          "expr": "last_over_time({job=\"agent-cloud-conformance\", step=\"none\"} | json inventory_code | unwrap inventory_code | __error__=\"\" [16m]) by (service) == 0"
+          "expr": "last_over_time({job=\"agent-cloud-conformance\", step=\"none\", status=~\"^(no_history|has_history|history_incomplete)$\"} | json | inventory_code=~\"^(0|1|2)$\" | marker_time_seconds=~\"^[0-9]+$\" | __error__=\"\" | unwrap inventory_code | __error__=\"\" [45m]) by (service) == 0"
         }
       ],
       "transformations": [
@@ -160,7 +208,7 @@
         "x": 0,
         "y": 5
       },
-      "description": "One row per service and workflow step. State is the newest report in the last 16 minutes and is shown as fail, pass, or skip. An empty result means no step state was reported in that window. Services that have not run any step are listed in \"Services not yet run\", not here. Error and task context appears separately in historical failed task snapshots; those snapshots can repeat across collector runs and are not joined to these current rows.",
+      "description": "One row per service and workflow step. State is the newest report in the last 45 minutes and is shown as fail, pass, or skip. The collector re-emits retained state, so a recent collection gap does not erase the latest pass, fail, or skip. An empty result means no step state was reported in that window. Services that have not run any step are listed in \"Services not yet run\", not here. Error and task context appears separately in historical failed task snapshots; those snapshots can repeat across collector runs and are not joined to these current rows.",
       "fieldConfig": {
         "defaults": {
           "custom": {},
@@ -220,7 +268,7 @@
             "uid": "loki"
           },
           "queryType": "instant",
-          "expr": "last_over_time({job=\"agent-cloud-conformance\", step!=\"none\"} | json state_code | unwrap state_code | __error__=\"\" [16m]) by (service, step)"
+          "expr": "last_over_time({job=\"agent-cloud-conformance\", step!=\"none\"} | json state_code | unwrap state_code | __error__=\"\" [45m]) by (service, step)"
         }
       ],
       "transformations": [
@@ -305,7 +353,7 @@
             "uid": "loki"
           },
           "queryType": "instant",
-          "expr": "last_over_time({job=\"agent-cloud-conformance\", step=\"none\"} | json inventory_code | unwrap inventory_code | __error__=\"\" [16m]) by (service) == 2"
+          "expr": "last_over_time({job=\"agent-cloud-conformance\", step=\"none\", status=~\"^(no_history|has_history|history_incomplete)$\"} | json | inventory_code=~\"^(0|1|2)$\" | marker_time_seconds=~\"^[0-9]+$\" | __error__=\"\" | unwrap inventory_code | __error__=\"\" [45m]) by (service) == 2"
         }
       ],
       "transformations": [
