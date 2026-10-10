@@ -52,7 +52,9 @@ stack and waits for Grafana to report healthy. Outside local mode it adds
   explicit `stop` force-removes only the exact pilot container without `-v`, then
   verifies it is absent from Podman's reboot restart set and that its positions
   volume remains. Failure output includes only container state, health state,
-  failing streak, and health-check exit codes; it excludes arbitrary check output.
+  failing streak, health-check exit codes, and fixed mount categories found on
+  permission-denied log lines (`journal`, `positions`, `config`); it excludes raw
+  logs, arbitrary check output, and paths outside those fixed categories.
   The playbook
   passes `--no-deps` too, while the dependency-free service and receiver readback keep
   older podman-compose releases safe if they ignore that flag.

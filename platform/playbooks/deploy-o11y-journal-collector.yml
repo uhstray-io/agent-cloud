@@ -686,6 +686,16 @@
               {{ 0 if (_journal_rollback_logs.rc | default(1) | int != 0) else
                  (_journal_rollback_logs.stdout_lines | default([]) | length) +
                  (_journal_rollback_logs.stderr_lines | default([]) | length) }}
+            _journal_rollback_permission_targets: >-
+              {{
+                (['journal'] if (((_journal_rollback_logs.stdout_lines | default([], true)) + (_journal_rollback_logs.stderr_lines | default([], true)))
+                  | select('search', '(?i)permission denied') | select('search', '/var/log/journal') | list | length) > 0 else []) +
+                (['positions'] if (((_journal_rollback_logs.stdout_lines | default([], true)) + (_journal_rollback_logs.stderr_lines | default([], true)))
+                  | select('search', '(?i)permission denied') | select('search', '/var/lib/alloy') | list | length) > 0 else []) +
+                (['config'] if (((_journal_rollback_logs.stdout_lines | default([], true)) + (_journal_rollback_logs.stderr_lines | default([], true)))
+                  | select('search', '(?i)permission denied') | select('search', '/etc/alloy') | list | length) > 0 else [])
+              }}
+          no_log: true
 
         - name: Decide whether one fixed readiness probe is safe as diagnostic evidence
           ansible.builtin.set_fact:
@@ -821,6 +831,7 @@
               allow-listed effective health schedule={{ _journal_rollback_health_config.stdout | default('') | trim | default('unavailable', true) }};
               allow-listed health failure action={{ _journal_rollback_health_action.stdout | default('') | trim | default('unavailable', true) }};
               collector logs classification/count={{ _journal_rollback_log_class | default('unavailable') }}/{{ _journal_rollback_log_count | default(0) }};
+              permission-denied mount targets={{ _journal_rollback_permission_targets | default([]) }};
               one-shot fixed readiness probe diagnostic={{ _journal_readiness_probe_class | default('unavailable') }};
               post-check state/health/log-count={{ _journal_readiness_probe_readback.stdout | default('not_run') | trim | default('unavailable', true) }}.
               The fixed probe only opens Alloy's local TCP listener and is diagnostic; it does not run the configured health command, mutate Podman health, or satisfy automatic health or Loki delivery.
