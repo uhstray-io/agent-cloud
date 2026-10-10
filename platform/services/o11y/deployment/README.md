@@ -793,6 +793,33 @@ repair. Check mode and survey exceptions use the same keys with unverified
 categories. No additional Podman call, mount, content read, or ownership change
 is part of this diagnostic.
 
+The post-start `verify-live` receipt now adds `live_diagnostic`: fixed helper
+status/reason and failed metadata categories, exact collector mount destination,
+volume name/source/type/RW and configured-user comparisons, the expected seed
+file and journal-component counts, and aggregate other-entry counts by kind.
+It emits no entry names, paths, IDs, modes, or contents. Host and collector UID
+maps remain under `no_log`; the visible receipt reports only availability and
+equality. The existing namespace write/rename/delete probe remains part of the
+live gate and emits only a fixed failing stage (`identity`, `create`, `write`,
+`rename`, or `cleanup`) or `passed`. None of these diagnostics changes the
+acceptance predicates.
+
+The read-only positions survey may report top-level entry roles and aggregate
+entry kinds, but it does not inspect cursor contents or run a namespace probe.
+Its live receipt marks host/collector UID maps, equality, and the namespace
+probe `not_run`. If the collector is absent, mount comparisons are `unverified`;
+survey evidence cannot satisfy the live gate.
+
+**Dev collector gate diagnostic (2026-10-09):** User-provided task 3986 check
+mode and task 3987 survey precede task 3988, which started the collector and
+passed health/readiness but refused the strict live mount/namespace gate and
+rolled back safely. Task 3989 found the collector absent and the named volume
+preserved with three entries; entry children and cursor evidence were
+ambiguous/unavailable. Those receipts do not identify the failed live
+predicate. The next action is a reviewed diagnostic survey at a fresh merged
+Dev revision; do not apply again until its evidence is reviewed. Task 1.2 stays
+open.
+
 The live Dev survey 3925 at reviewed SHA `8050f2768903e09f68285f90c1598cb120006219`
 (sanitized receipt supplied for this implementation; not rerun here) reported
 the exact empty, unused pending volume with owner mismatch, owner RWX, no ACL or

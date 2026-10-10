@@ -135,6 +135,8 @@ for observation_attempt in range(2):
     names=os.listdir(root)
     if len(names)>32: raise OverflowError("children unbounded")
     children=[]
+    top_level={"seed_file":0,"journal_component":0,"other_files":0,
+               "other_directories":0,"other_symlinks":0,"other_kinds":0}
     acl_found=acl(root)
     child_mount=False
     component_layout=st.st_mode & (0o022|0o7000) == 0
@@ -150,10 +152,13 @@ for observation_attempt in range(2):
         child_mount=child_mount or item_mount[0]!=root_mount[0]
         acl_found=acl_found or acl(path)
         if stat.S_ISREG(item.st_mode):
+            if name=="alloy_seed.json": top_level["seed_file"]+=1
+            else: top_level["other_files"]+=1
             component_layout=(component_layout and name=="alloy_seed.json"
                 and item.st_uid==0 and item.st_gid==0 and item.st_nlink==1
                 and item.st_mode & 0o077 == 0 and item.st_mode & 0o7133 == 0)
         elif stat.S_ISDIR(item.st_mode) and name=="loki.source.journal.o11y_alloy":
+            top_level["journal_component"]+=1
             component_layout=(component_layout and item.st_uid==0 and item.st_gid==0
                 and item.st_nlink==2 and item.st_mode & 0o700 == 0o700
                 and item.st_mode & (0o022|0o7000) == 0)
@@ -215,15 +220,20 @@ for observation_attempt in range(2):
             os.close(directory_fd)
         else:
             component_layout=False
+            if stat.S_ISDIR(item.st_mode): top_level["other_directories"]+=1
+            elif stat.S_ISLNK(item.st_mode): top_level["other_symlinks"]+=1
+            else: top_level["other_kinds"]+=1
         children.append(sig(name,item))
     report = {
         "status":"observed",
         "root":{"uid":st.st_uid, "gid":st.st_gid, "mode":stat.S_IMODE(st.st_mode),
                "dev":st.st_dev, "ino":st.st_ino},
         "children":children, "child_count":len(children), "acl":acl_found,
+        "top_level":top_level,
         "root_is_mount":mount_exact, "child_mount":child_mount,
         "component_layout":component_layout,
         "journal_cursor_presence":cursor_presence,
+        "cursor_checked":read_cursor,
         "journal_cursor_valid":cursor_valid,
         "free_bytes":free_bytes,
         "free_inodes":free_inodes,
@@ -676,10 +686,14 @@ def discover(run=subprocess.run, diagnostics=False, read_cursor=False):
             "named_volume": _named_volume_diagnostics(named_flags),
             "podman_version": _version_diagnostics(run),
         }
+    live_mount = dict.fromkeys(
+        ("destination", "volume_name", "source", "type", "rw", "user"), "unverified"
+    )
 
     def finish(found):
         if survey_diagnostics is not None:
             found["survey_diagnostics"] = survey_diagnostics
+        found["live_mount"] = live_mount
         return found
 
     if named_flags.get("flags") is None:
@@ -713,6 +727,24 @@ def discover(run=subprocess.run, diagnostics=False, read_cursor=False):
         if collector is None or len(collector) != 1:
             return finish({"status": "collector_mount_unverified", "volume_use_count": 1, "collector_present": True})
         mounts = collector[0].get("Mounts")
+        if isinstance(mounts, list) and all(isinstance(item, dict) for item in mounts):
+            exact = [item for item in mounts if isinstance(item, dict) and item.get("Destination") == DATA_PATH]
+            live_mount["destination"] = "match" if len(exact) == 1 else "mismatch"
+            if len(exact) == 1:
+                item = exact[0]
+                for key, field, expected in (
+                    ("volume_name", "Name", name), ("source", "Source", mountpoint),
+                    ("type", "Type", "volume"),
+                ):
+                    value = item.get(field)
+                    if isinstance(value, str):
+                        live_mount[key] = "match" if value == expected else "mismatch"
+                rw = item.get("RW")
+                if type(rw) is bool:
+                    live_mount["rw"] = "match" if rw is True else "mismatch"
+        config = collector[0].get("Config")
+        if isinstance(config, dict) and isinstance(config.get("User"), str):
+            live_mount["user"] = "match" if config["User"] == "0:0" else "mismatch"
         exact = (
             [item for item in mounts if isinstance(item, dict) and item.get("Destination") == DATA_PATH]
             if isinstance(mounts, list) else []
@@ -725,7 +757,6 @@ def discover(run=subprocess.run, diagnostics=False, read_cursor=False):
             or exact[0].get("RW") is not True
         ):
             return finish({"status": "collector_mount_unverified", "volume_use_count": 1, "collector_present": True})
-        config = collector[0].get("Config")
         if not isinstance(config, dict) or config.get("User") != "0:0":
             return finish({"status": "collector_identity_unverified", "volume_use_count": 1, "collector_present": True})
         collector_mount_verified = True
@@ -823,6 +854,95 @@ def _live_safe_metadata(found, require_cursor=True):
     )
 
 
+def _live_failed_checks(found):
+    metadata=found.get("metadata")
+    if not isinstance(metadata,dict) or metadata.get("status")!="observed":
+        return ["metadata_unavailable"]
+    root=metadata.get("root")
+    checks=[]
+    if not isinstance(root,dict) or root.get("uid")!=0 or root.get("gid")!=0:
+        checks.append("owner")
+    if metadata.get("component_layout") is not True:
+        checks.append("component_layout")
+    if metadata.get("acl") is not False:
+        checks.append("acl")
+    if metadata.get("root_is_mount") is not False or metadata.get("child_mount") is not False:
+        checks.append("mount_boundary")
+    if metadata.get("journal_cursor_presence")!="present":
+        checks.append("cursor_presence")
+    if metadata.get("cursor_checked") is True and metadata.get("journal_cursor_valid") is not True:
+        checks.append("cursor_validity")
+    if isinstance(root,dict) and not _access(metadata):
+        checks.append("positions_access")
+    return checks
+
+
+def _live_mount_diagnostic(found):
+    source=found.get("live_mount")
+    fields=(source if isinstance(source,dict) else {})
+    allowed={"match","mismatch","unverified"}
+    return {
+        key: value if value in allowed else "unverified"
+        for key,value in {
+            "destination":fields.get("destination"),
+            "volume_name":fields.get("volume_name"),
+            "source":fields.get("source"),
+            "type":fields.get("type"),
+            "rw":fields.get("rw"),
+            "user":fields.get("user"),
+        }.items()
+    }
+
+
+def _live_diagnostic(found):
+    metadata=found.get("metadata")
+    top_level=metadata.get("top_level") if isinstance(metadata,dict) else None
+    if not isinstance(top_level,dict):
+        top_level={
+            "seed_file":"unverified","journal_component":"unverified","other_files":"unverified",
+            "other_directories":"unverified","other_symlinks":"unverified","other_kinds":"unverified",
+        }
+    failed_checks=_live_failed_checks(found)
+    unverified_checks=[]
+    mount=_live_mount_diagnostic(found)
+    for key, check in (
+        ("destination", "mount_destination"),
+        ("volume_name", "mount_volume_name"),
+        ("source", "mount_source"),
+        ("type", "mount_type"),
+        ("rw", "mount_rw"),
+        ("user", "container_user"),
+    ):
+        if mount[key] == "mismatch":
+            failed_checks.append(check)
+        elif mount[key] == "unverified":
+            unverified_checks.append(check)
+    if isinstance(metadata, dict) and metadata.get("cursor_checked") is not True:
+        unverified_checks.append("cursor_validity")
+    return {
+        "helper_status":found.get("status") if found.get("status") in {
+            "observed","volume_initialization_pending","volume_missing","volume_shared",
+            "mount_count_unverified","collector_mount_unverified","collector_identity_unverified",
+            "metadata_unavailable","volume_initialization_unverified","volume_identity_unsupported",
+            "volume_users_unavailable","volume_ambiguous","not_rootless","receiver_unavailable",
+            "receiver_identity_unverified","volume_inventory_unavailable","container_inventory_unavailable",
+        } else "unavailable",
+        "helper_reason":"survey_only",
+        "failed_checks":failed_checks,
+        "unverified_checks":unverified_checks,
+        "mount":mount,
+        "top_level": {
+            key: top_level.get(key)
+            if type(top_level.get(key)) is int and 0 <= top_level.get(key) <= MAX_CHILDREN
+            else "unverified"
+            for key in (
+                "seed_file", "journal_component", "other_files", "other_directories",
+                "other_symlinks", "other_kinds",
+            )
+        },
+    }
+
+
 def _summary(found):
     metadata = found.get("metadata")
     if not isinstance(metadata, dict) or metadata.get("status") != "observed":
@@ -867,6 +987,13 @@ def survey(discover_fn=None):
     elif default_discovery:
         summary["survey_diagnostics"] = _unverified_diagnostics()
     summary["pending_repair_diagnostic"] = _pending_diagnostic(found)
+    summary["live_diagnostic"] = {
+        **_live_diagnostic(found),
+        "host_uid_map": "not_run",
+        "collector_uid_map": "not_run",
+        "uid_maps": "not_run",
+        "namespace_probe": "not_run",
+    }
     return summary
 
 
@@ -1485,8 +1612,19 @@ def verify_live(discover_fn=None):
         and found.get("mount_count") == 1
     ):
         found = {**found, "status": "observed"}
+    def refused(reason):
+        diagnostic=_live_diagnostic(found)
+        diagnostic["helper_reason"]=reason if reason in {
+            "not_rootless","receiver_unavailable","receiver_identity_unverified",
+            "volume_inventory_unavailable","container_inventory_unavailable","volume_ambiguous",
+            "volume_missing","volume_identity_unsupported","volume_initialization_unverified",
+            "volume_users_unavailable","volume_shared","mount_count_unverified",
+            "collector_mount_unverified","collector_identity_unverified","metadata_unavailable",
+            "volume_initialization_pending","metadata_ambiguous","positions_access_blocked",
+        } else "verification_refused"
+        return {"status":"refused","reason":reason,"live_diagnostic":diagnostic}
     if found.get("status") != "observed":
-        return {"status": "refused", "reason": found.get("status", "unavailable")}
+        return refused(found.get("status", "unavailable"))
     if (
         found.get("collector_present") is not True
         or type(found.get("volume_use_count")) is not int
@@ -1495,16 +1633,17 @@ def verify_live(discover_fn=None):
         or found["mount_count"] != 1
         or found.get("collector_mount_verified") is not True
     ):
-        return {"status": "refused", "reason": "collector_mount_unverified"}
+        return refused("collector_mount_unverified")
     if not _live_safe_metadata(found):
-        return {"status": "refused", "reason": "metadata_ambiguous"}
+        return refused("metadata_ambiguous")
     if not _access(found["metadata"]):
-        return {"status": "refused", "reason": "positions_access_blocked"}
+        return refused("positions_access_blocked")
     return {
         **_summary(found),
         "children": "alloy_component_layout",
         "status": "ready",
         "reason": "positions_identity_verified",
+        "live_diagnostic":{**_live_diagnostic(found),"helper_reason":"positions_identity_verified"},
     }
 
 
@@ -1524,10 +1663,25 @@ def main():
             "reason": "survey_failed",
             "survey_diagnostics": _unverified_diagnostics(),
             "pending_repair_diagnostic": _pending_diagnostic({}),
-        } if action == "survey" else {
+            "live_diagnostic": {
+                **_live_diagnostic({"status": "unavailable"}),
+                "helper_reason": "survey_failed",
+                "host_uid_map": "not_run",
+                "collector_uid_map": "not_run",
+                "uid_maps": "not_run",
+                "namespace_probe": "not_run",
+            },
+        } if action == "survey" else ({
             "status": "unavailable",
             "reason": "survey_failed",
-        }
+            "live_diagnostic": {
+                **_live_diagnostic({"status": "unavailable"}),
+                "helper_reason": "survey_failed",
+            },
+        } if action == "verify-live" else {
+            "status": "unavailable",
+            "reason": "survey_failed",
+        })
     print(json.dumps(result, sort_keys=True))
 
 

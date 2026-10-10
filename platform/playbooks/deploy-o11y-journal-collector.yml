@@ -468,6 +468,15 @@
           check_mode: false
           no_log: true
 
+        - name: Observe the live collector UID mapping for diagnostics
+          ansible.builtin.command:
+            argv: [podman, exec, o11y-journal-collector, cat, /proc/self/uid_map]
+          register: _journal_collector_uid_map_observed
+          changed_when: false
+          failed_when: false
+          check_mode: false
+          no_log: true
+
         - name: Verify effective write and rename access in the live collector namespace
           ansible.builtin.command:
             argv:
@@ -477,22 +486,43 @@
               - /bin/bash
               - -c
               - >-
-                set -eu; test "$EUID" -eq 0;
+                set -eE; stage=identity; moved=0; a=; b=;
+                fail() { printf '%s\n' "$stage"; exit 1; }; trap fail ERR;
+                cleanup() { rc=$?; if [ "$moved" -eq 1 ]; then rm -f -- "$b" >/dev/null 2>&1 || true;
+                elif [ -n "$a" ]; then rm -f -- "$a" >/dev/null 2>&1 || true; fi; exit "$rc"; };
+                trap cleanup EXIT; exec 2>/dev/null; test "$EUID" -eq 0;
                 mapping=$(</proc/self/uid_map);
                 read -r inside outside length <<< "$mapping";
                 test "$inside" = 0; test "$length" -gt 0;
+                stage=create;
                 a=$(mktemp /alloy-state/.positions-live-gate.XXXXXX);
                 b="$a.renamed";
-                moved=0;
-                trap 'if [ "$moved" -eq 1 ]; then rm -f -- "$b"; else rm -f -- "$a"; fi' EXIT;
+                stage=write;
                 test ! -e "$b";
                 printf x >> "$a";
-                mv -n -- "$a" "$b"; test ! -e "$a"; moved=1; test -f "$b";
-                rm -- "$b"; trap - EXIT; printf '%s\n' "$mapping"
+                stage=rename; mv -n -- "$a" "$b"; test ! -e "$a"; moved=1; test -f "$b";
+                stage=cleanup; rm -- "$b"; trap - EXIT; printf '%s\n' "$mapping"
           register: _journal_collector_uid_map
           changed_when: false
           failed_when: false
           no_log: true
+
+        - name: Report sanitized live positions diagnostic
+          ansible.builtin.debug:
+            msg: >-
+              Live positions diagnostic: helper={{ (_journal_positions_live_mount.stdout | default('{}') | from_json).get('live_diagnostic', {}).get('helper_status', 'unavailable') }};
+              reason={{ (_journal_positions_live_mount.stdout | default('{}') | from_json).get('live_diagnostic', {}).get('helper_reason', 'unavailable') }};
+              failed_checks={{ (_journal_positions_live_mount.stdout | default('{}') | from_json).get('live_diagnostic', {}).get('failed_checks', []) }};
+              unverified_checks={{ (_journal_positions_live_mount.stdout | default('{}') | from_json).get('live_diagnostic', {}).get('unverified_checks', []) }};
+              mount={{ (_journal_positions_live_mount.stdout | default('{}') | from_json).get('live_diagnostic', {}).get('mount', {}) }};
+              seed_file={{ (_journal_positions_live_mount.stdout | default('{}') | from_json).get('live_diagnostic', {}).get('top_level', {}).get('seed_file', 'unverified') }};
+              journal_component={{ (_journal_positions_live_mount.stdout | default('{}') | from_json).get('live_diagnostic', {}).get('top_level', {}).get('journal_component', 'unverified') }};
+              other_entries={{ (_journal_positions_live_mount.stdout | default('{}') | from_json).get('live_diagnostic', {}).get('top_level', {}).get('other_files', 'unverified') }}/{{ (_journal_positions_live_mount.stdout | default('{}') | from_json).get('live_diagnostic', {}).get('top_level', {}).get('other_directories', 'unverified') }}/{{ (_journal_positions_live_mount.stdout | default('{}') | from_json).get('live_diagnostic', {}).get('top_level', {}).get('other_symlinks', 'unverified') }}/{{ (_journal_positions_live_mount.stdout | default('{}') | from_json).get('live_diagnostic', {}).get('top_level', {}).get('other_kinds', 'unverified') }};
+              host_uid_map={{ 'available' if _journal_host_uid_map.rc | default(1) == 0 else 'unavailable' }};
+              collector_uid_map={{ 'available' if _journal_collector_uid_map_observed.rc | default(1) == 0 else 'unavailable' }};
+              uid_maps={{ 'unverified' if _journal_host_uid_map.rc | default(1) != 0 or _journal_collector_uid_map_observed.rc | default(1) != 0 or _journal_collector_uid_map_observed.stdout | trim | length == 0 else ('equal' if _journal_host_uid_map.stdout | trim == _journal_collector_uid_map_observed.stdout | trim else 'different') }};
+              namespace_probe={{ 'passed' if _journal_collector_uid_map.rc | default(1) == 0 else (_journal_collector_uid_map.stdout | trim if _journal_collector_uid_map.stdout | default('') | trim in ['identity', 'create', 'write', 'rename', 'cleanup'] else 'unverified') }}
+          changed_when: false
 
         - name: Require the actual positions volume mount and namespace access
           ansible.builtin.assert:
