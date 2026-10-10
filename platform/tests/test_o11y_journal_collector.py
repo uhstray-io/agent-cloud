@@ -70,6 +70,10 @@ def _assert_positions_survey_diagnostics_schema(report, has_reason=False):
         *diagnostics["named_volume"]["template_fields"].values(),
     ):
         assert set(field) == {"presence", "type", "value"}
+    live = report["live_diagnostic"]
+    assert set(live["role_metadata"]) == {"receiver", "exporter"}
+    for role in live["role_metadata"].values():
+        assert set(role) == {"owner", "access", "acl", "mount", "children"}
 
 
 def _positions_state(
@@ -440,6 +444,18 @@ def test_live_positions_debug_rescues_malformed_nested_diagnostic_before_renderi
             "other_directories": 3,
             "other_symlinks": 4,
             "other_kinds": 5,
+            "receiver_component": 1,
+            "exporter_component": 0,
+        },
+        "role_metadata": {
+            "receiver": {
+                "owner": "matches_collector", "access": "read_write_execute",
+                "acl": "absent", "mount": "clear", "children": "empty",
+            },
+            "exporter": {
+                "owner": "unverified", "access": "unverified", "acl": "unverified",
+                "mount": "unverified", "children": "unverified",
+            },
         },
     }
     malformed = [
@@ -459,6 +475,24 @@ def test_live_positions_debug_rescues_malformed_nested_diagnostic_before_renderi
         ("check_name", {
             **base,
             "failed_checks": ["owner", "PRIVATE_MARKER_CHECK"],
+        }),
+        ("role_value", {
+            **base,
+            "role_metadata": {
+                **base["role_metadata"],
+                "receiver": {**base["role_metadata"]["receiver"], "owner": "PRIVATE_MARKER_ROLE"},
+            },
+        }),
+        ("role_count_bound", {
+            **base,
+            "top_level": {**base["top_level"], "receiver_component": 33},
+        }),
+        ("role_extra_key", {
+            **base,
+            "role_metadata": {
+                **base["role_metadata"],
+                "receiver": {**base["role_metadata"]["receiver"], "private": "PRIVATE_MARKER_ROLE"},
+            },
         }),
     ]
     def evaluate(diagnostic):
@@ -493,6 +527,8 @@ def test_live_positions_debug_rescues_malformed_nested_diagnostic_before_renderi
         "seed_file=1",
         "journal_component=0",
         "other_entries=2/3/4/5",
+        "receiver_role=",
+        "exporter_role=",
     ):
         assert expected in valid_rendered
 
@@ -2450,6 +2486,34 @@ def test_positions_verify_accepts_the_bounded_journal_component_directory_but_re
     ) == {"status": "refused", "reason": "metadata_ambiguous"}
 
 
+def test_extra_component_role_diagnostics_do_not_change_prestart_or_live_refusal():
+    metadata = _positions_state(
+        owner=(0, 0), children=[{
+            "name": "unreported-role-hash", "kind": "dir", "uid": 0, "gid": 0,
+            "mode": 0o700, "nlink": 2, "dev": 7, "ino": 13,
+        }],
+        component_layout=False, journal_cursor_valid=False, journal_cursor_presence="absent",
+    )
+    metadata["top_level"] = {
+        "seed_file": 0, "journal_component": 0, "other_files": 0,
+        "other_directories": 1, "other_symlinks": 0, "other_kinds": 0,
+        "receiver_component": 1, "exporter_component": 0,
+    }
+    metadata["role_metadata"] = {
+        "receiver": {
+            "owner": "matches_collector", "access": "read_write_execute",
+            "acl": "absent", "mount": "clear", "children": "empty",
+        },
+        "exporter": {
+            "owner": "unverified", "access": "unverified", "acl": "unverified",
+            "mount": "unverified", "children": "unverified",
+        },
+    }
+    found = _cursorless_prestart_found(metadata=metadata)
+    assert POSITIONS.verify(lambda: found)["status"] == "refused"
+    assert POSITIONS.verify_live(lambda: found)["status"] == "refused"
+
+
 @pytest.mark.parametrize(
     "metadata",
     [
@@ -2594,6 +2658,7 @@ exec({POSITIONS._METADATA_SCRIPT!r})
     assert metadata["top_level"] == {
         "seed_file": 0, "journal_component": 0, "other_files": 0,
         "other_directories": 0, "other_symlinks": 0, "other_kinds": 0,
+        "receiver_component": 0, "exporter_component": 0,
     }
 
     component = root / "loki.source.journal.o11y_alloy"
@@ -2659,10 +2724,111 @@ def test_embedded_positions_metadata_aggregates_roles_without_emitting_names_or_
     assert metadata["top_level"] == {
         "seed_file": 1, "journal_component": 1, "other_files": 1,
         "other_directories": 1, "other_symlinks": 1, "other_kinds": 0,
+        "receiver_component": 0, "exporter_component": 0,
     }
     assert all(value <= POSITIONS.MAX_CHILDREN for value in metadata["top_level"].values())
     assert "private-name-marker" not in result.stdout
     assert "PRIVATE_CONTENT_MARKER" not in result.stdout
+
+
+def test_embedded_metadata_classifies_only_exact_component_directories_without_disclosing_names(tmp_path):
+    receiver_name = "otelcol.receiver.loki.journal"
+    exporter_name = "otelcol.exporter.otlp.journal"
+    unknown_name = "private-directory-marker"
+
+    def inspect(name, kind="directory", *, acl=False, mounted=False, race=False, child_count=0):
+        root = tmp_path / f"{name.replace('.', '-')}-{kind}-{acl}-{mounted}-{race}-{child_count}"
+        root.mkdir(mode=0o700)
+        os.chmod(root, 0o700)
+        role_path = root / name
+        if kind == "directory":
+            role_path.mkdir(mode=0o700)
+            os.chmod(role_path, 0o700)
+            for index in range(child_count):
+                (role_path / f"child-{index}").touch()
+        elif kind == "file":
+            role_path.write_text("PRIVATE_CONTENT_MARKER")
+        else:
+            role_path.symlink_to(root)
+        mount_lines = [f"1 0 0:1 / {root.parent} rw - testfs /dev/test rw\n"]
+        if mounted:
+            mount_lines.append(f"2 1 0:2 / {role_path} rw - testfs /dev/test rw\n")
+        prelude = f'''import builtins,io,os,sys,types
+sys.argv.append("false")
+root={str(root)!r}
+role_path={str(role_path)!r}
+role_name={name!r}
+real_stat=os.stat
+real_open=builtins.open
+real_listxattr=getattr(os,"listxattr",lambda *_args,**_kwargs: [])
+def fake_open(path,*args,**kwargs):
+    if path=="/proc/self/mountinfo": return io.StringIO({''.join(mount_lines)!r})
+    return real_open(path,*args,**kwargs)
+builtins.open=fake_open
+def fake_listxattr(path,*args,**kwargs):
+    if {acl!r} and isinstance(path,int):
+        return ["system.posix_acl_access"]
+    return real_listxattr(path,*args,**kwargs)
+os.listxattr=fake_listxattr
+stat_calls={{"value":0}}
+def fake_stat(path,*args,**kwargs):
+    value=real_stat(path,*args,**kwargs)
+    if {race!r} and path==role_name and kwargs.get("dir_fd") is not None:
+        stat_calls["value"]+=1
+        if stat_calls["value"]==2:
+            return types.SimpleNamespace(
+                st_mode=value.st_mode,st_uid=value.st_uid,st_gid=value.st_gid,
+                st_dev=value.st_dev,st_ino=value.st_ino+1,st_nlink=value.st_nlink,
+                st_mtime_ns=value.st_mtime_ns,
+            )
+    return value
+os.stat=fake_stat
+exec({POSITIONS._METADATA_SCRIPT!r})
+'''
+        result = subprocess.run(
+            [sys.executable, "-c", prelude, str(root)],
+            check=False, capture_output=True, text=True,
+        )
+        assert result.returncode == 0, result.stderr
+        return json.loads(result.stdout), result.stdout
+
+    for name, role in ((receiver_name, "receiver"), (exporter_name, "exporter")):
+        metadata, _ = inspect(name)
+        assert metadata["top_level"][f"{role}_component"] == 1
+        assert metadata["top_level"]["other_directories"] == 1
+        assert metadata["component_layout"] is False
+        assert metadata["role_metadata"][role]["children"] == "empty"
+        assert metadata["role_metadata"][role]["acl"] == "absent"
+        assert metadata["role_metadata"][role]["mount"] == "clear"
+
+    metadata, _ = inspect(unknown_name)
+    assert metadata["top_level"]["other_directories"] == 1
+    assert metadata["top_level"]["receiver_component"] == 0
+    assert metadata["top_level"]["exporter_component"] == 0
+    assert set(metadata["role_metadata"]["receiver"].values()) == {"unverified"}
+
+    for kind, count_key in (("file", "other_files"), ("symlink", "other_symlinks")):
+        metadata, _ = inspect(receiver_name, kind)
+        assert metadata["top_level"]["receiver_component"] == 0
+        assert metadata["top_level"][count_key] == 1
+        assert metadata["component_layout"] is False
+        assert set(metadata["role_metadata"]["receiver"].values()) == {"unverified"}
+
+    for kwargs, field, expected in (
+        ({"acl": True}, "acl", "present"),
+        ({"mounted": True}, "mount", "ambiguous"),
+        ({"race": True}, "children", "unverified"),
+        ({"child_count": 33}, "children", "unverified"),
+    ):
+        metadata, _ = inspect(receiver_name, **kwargs)
+        assert metadata["role_metadata"]["receiver"][field] == expected
+        if kwargs.get("race") or kwargs.get("child_count"):
+            assert set(metadata["role_metadata"]["receiver"].values()) == {"unverified"}
+
+    visible = json.dumps(POSITIONS._live_diagnostic({"status": "observed", "metadata": metadata}))
+    assert receiver_name not in visible and exporter_name not in visible and unknown_name not in visible
+    assert "PRIVATE_CONTENT_MARKER" not in visible
+    assert re.search(r"[0-9a-f]{64}", visible) is None
 
 
 def test_embedded_positions_metadata_retries_rename_that_finishes_during_observation(tmp_path):
@@ -4367,7 +4533,19 @@ def test_positions_gate_malformed_or_unexpected_json_is_unavailable(stdout):
     assert live_boundary["block"][2]["no_log"] is True
     assert live_boundary["rescue"][0]["ansible.builtin.set_fact"] == {
         "_journal_positions_live_summary": {
-            "status": "unavailable", "live_diagnostic": {},
+            "status": "unavailable",
+            "live_diagnostic": {
+                "role_metadata": {
+                    "receiver": {
+                        "owner": "unverified", "access": "unverified", "acl": "unverified",
+                        "mount": "unverified", "children": "unverified",
+                    },
+                    "exporter": {
+                        "owner": "unverified", "access": "unverified", "acl": "unverified",
+                        "mount": "unverified", "children": "unverified",
+                    },
+                },
+            },
         },
     }
     assert live_boundary["rescue"][0]["no_log"] is True

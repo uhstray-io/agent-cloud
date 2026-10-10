@@ -120,6 +120,56 @@ def journal_cursor(data):
     cursor_format=r"s=[0-9a-f]+;i=[0-9a-f]+;b=[0-9a-f]+;m=[0-9a-f]+;t=[0-9a-f]+;x=[0-9a-f]+"
     return (path=="cursor-loki.source.journal.o11y_alloy" and labels==""
         and re.fullmatch(cursor_format, cursor) is not None)
+def role_observation(root_path, root_stat, root_mount, name, observed_mount):
+    result={"owner":"unverified","access":"unverified","acl":"unverified",
+            "mount":"unverified","children":"unverified"}
+    root_fd=None
+    role_fd=None
+    try:
+        root_fd=os.open(root_path,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC)
+        pinned_root=os.fstat(root_fd)
+        if (pinned_root.st_dev,pinned_root.st_ino)!=(root_stat.st_dev,root_stat.st_ino):
+            return result
+        before=os.stat(name,dir_fd=root_fd,follow_symlinks=False)
+        if not stat.S_ISDIR(before.st_mode): return result
+        role_fd=os.open(name,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC,dir_fd=root_fd)
+        opened=os.fstat(role_fd)
+        identity=lambda value:(value.st_dev,value.st_ino,value.st_uid,value.st_gid,
+            stat.S_IMODE(value.st_mode),value.st_nlink,value.st_mtime_ns)
+        if identity(before)!=identity(opened): return result
+        result["owner"]="matches_collector" if (opened.st_uid,opened.st_gid)==(0,0) else "mismatch"
+        if opened.st_uid==0: allowed=(opened.st_mode>>6)&7
+        elif opened.st_gid==0: allowed=(opened.st_mode>>3)&7
+        else: allowed=opened.st_mode&7
+        result["access"]="read_write_execute" if allowed&7==7 else "blocked"
+        acl_present=any("acl" in value.lower() for value in os.listxattr(role_fd))
+        result["acl"]="present" if acl_present else "absent"
+        role_path=os.path.join(root_path,name)
+        names=os.listdir(role_fd)
+        if len(names)>32:
+            return {"owner":"unverified","access":"unverified","acl":"unverified",
+                    "mount":"unverified","children":"unverified"}
+        after=os.stat(name,dir_fd=root_fd,follow_symlinks=False)
+        pinned_after=os.fstat(role_fd)
+        path_root=os.lstat(root_path)
+        pinned_root_after=os.fstat(root_fd)
+        acl_after=any("acl" in value.lower() for value in os.listxattr(role_fd))
+        mount_after=mount_id(role_path)
+        if (identity(before)!=identity(after) or identity(opened)!=identity(pinned_after)
+                or (path_root.st_dev,path_root.st_ino)!=(root_stat.st_dev,root_stat.st_ino)
+                or (pinned_root_after.st_dev,pinned_root_after.st_ino)!=(root_stat.st_dev,root_stat.st_ino)
+                or acl_after!=acl_present or mount_after!=observed_mount):
+            return {"owner":"unverified","access":"unverified","acl":"unverified",
+                    "mount":"unverified","children":"unverified"}
+        result["mount"]="ambiguous" if observed_mount[0]!=root_mount[0] else "clear"
+        result["children"]="nonempty" if names else "empty"
+        return result
+    except (OSError,ValueError,IndexError):
+        return {"owner":"unverified","access":"unverified","acl":"unverified",
+                "mount":"unverified","children":"unverified"}
+    finally:
+        if role_fd is not None: os.close(role_fd)
+        if root_fd is not None: os.close(root_fd)
 class RetryObservation(Exception): pass
 for observation_attempt in range(2):
  try:
@@ -136,7 +186,12 @@ for observation_attempt in range(2):
     if len(names)>32: raise OverflowError("children unbounded")
     children=[]
     top_level={"seed_file":0,"journal_component":0,"other_files":0,
-               "other_directories":0,"other_symlinks":0,"other_kinds":0}
+               "other_directories":0,"other_symlinks":0,"other_kinds":0,
+               "receiver_component":0,"exporter_component":0}
+    role_metadata={"receiver":{"owner":"unverified","access":"unverified","acl":"unverified",
+                                 "mount":"unverified","children":"unverified"},
+                   "exporter":{"owner":"unverified","access":"unverified","acl":"unverified",
+                                 "mount":"unverified","children":"unverified"}}
     acl_found=acl(root)
     child_mount=False
     component_layout=st.st_mode & (0o022|0o7000) == 0
@@ -224,7 +279,14 @@ for observation_attempt in range(2):
             os.close(directory_fd)
         else:
             component_layout=False
-            if stat.S_ISDIR(item.st_mode): top_level["other_directories"]+=1
+            if stat.S_ISDIR(item.st_mode):
+                top_level["other_directories"]+=1
+                if name=="otelcol.receiver.loki.journal":
+                    top_level["receiver_component"]+=1
+                    role_metadata["receiver"]=role_observation(root,st,root_mount,name,item_mount)
+                elif name=="otelcol.exporter.otlp.journal":
+                    top_level["exporter_component"]+=1
+                    role_metadata["exporter"]=role_observation(root,st,root_mount,name,item_mount)
             elif stat.S_ISLNK(item.st_mode): top_level["other_symlinks"]+=1
             else: top_level["other_kinds"]+=1
         children.append(sig(name,item))
@@ -234,6 +296,7 @@ for observation_attempt in range(2):
                "dev":st.st_dev, "ino":st.st_ino},
         "children":children, "child_count":len(children), "acl":acl_found,
         "top_level":top_level,
+        "role_metadata":role_metadata,
         "root_is_mount":mount_exact, "child_mount":child_mount,
         "component_layout":component_layout,
         "journal_cursor_presence":cursor_presence,
@@ -905,6 +968,32 @@ def _live_diagnostic(found):
         top_level={
             "seed_file":"unverified","journal_component":"unverified","other_files":"unverified",
             "other_directories":"unverified","other_symlinks":"unverified","other_kinds":"unverified",
+            "receiver_component":"unverified","exporter_component":"unverified",
+        }
+    role_metadata=metadata.get("role_metadata") if isinstance(metadata,dict) else None
+    if not isinstance(role_metadata,dict):
+        role_metadata={}
+    role_values={}
+    for role in ("receiver","exporter"):
+        observation=role_metadata.get(role)
+        if not isinstance(observation,dict):
+            observation={}
+        role_values[role]={
+            "owner": observation.get("owner") if observation.get("owner") in (
+                "matches_collector", "mismatch", "unverified"
+            ) else "unverified",
+            "access": observation.get("access") if observation.get("access") in (
+                "read_write_execute", "blocked", "unverified"
+            ) else "unverified",
+            "acl": observation.get("acl") if observation.get("acl") in (
+                "present", "absent", "unverified"
+            ) else "unverified",
+            "mount": observation.get("mount") if observation.get("mount") in (
+                "clear", "ambiguous", "unverified"
+            ) else "unverified",
+            "children": observation.get("children") if observation.get("children") in (
+                "empty", "nonempty", "unverified"
+            ) else "unverified",
         }
     failed_checks=_live_failed_checks(found)
     unverified_checks=[]
@@ -941,9 +1030,10 @@ def _live_diagnostic(found):
             else "unverified"
             for key in (
                 "seed_file", "journal_component", "other_files", "other_directories",
-                "other_symlinks", "other_kinds",
+                "other_symlinks", "other_kinds", "receiver_component", "exporter_component",
             )
         },
+        "role_metadata":role_values,
     }
 
 
