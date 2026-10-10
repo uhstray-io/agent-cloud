@@ -145,8 +145,22 @@ def role_observation(root_path, root_stat, root_mount, name, observed_mount):
         acl_present=any("acl" in value.lower() for value in os.listxattr(role_fd))
         result["acl"]="present" if acl_present else "absent"
         role_path=os.path.join(root_path,name)
-        names=os.listdir(role_fd)
-        if len(names)>32:
+        def bounded_names(directory_fd):
+            scan_fd=os.open(".",os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC,
+                            dir_fd=directory_fd)
+            try:
+                if identity(os.fstat(scan_fd))!=identity(os.fstat(directory_fd)):
+                    return None
+                names=[]
+                with os.scandir(scan_fd) as entries:
+                    for entry in entries:
+                        names.append(entry.name)
+                        if len(names)>32: return None
+                return names
+            finally:
+                os.close(scan_fd)
+        names=bounded_names(role_fd)
+        if names is None:
             return {"owner":"unverified","access":"unverified","acl":"unverified",
                     "mount":"unverified","children":"unverified"}
         after=os.stat(name,dir_fd=root_fd,follow_symlinks=False)
@@ -155,8 +169,8 @@ def role_observation(root_path, root_stat, root_mount, name, observed_mount):
         pinned_root_after=os.fstat(root_fd)
         acl_after=any("acl" in value.lower() for value in os.listxattr(role_fd))
         mount_after=mount_id(role_path)
-        names_after=os.listdir(role_fd)
-        if (identity(before)!=identity(after) or identity(opened)!=identity(pinned_after)
+        names_after=bounded_names(role_fd)
+        if (names_after is None or identity(before)!=identity(after) or identity(opened)!=identity(pinned_after)
                 or (path_root.st_dev,path_root.st_ino)!=(root_stat.st_dev,root_stat.st_ino)
                 or (pinned_root_after.st_dev,pinned_root_after.st_ino)!=(root_stat.st_dev,root_stat.st_ino)
                 or acl_after!=acl_present or mount_after!=observed_mount or names_after!=names):

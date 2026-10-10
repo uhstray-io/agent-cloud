@@ -6,6 +6,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -253,6 +254,73 @@ def test_positions_metadata_parser_requires_expected_journal_cursor():
         good + b"extra: true\n",
     ):
         assert namespace["journal_cursor"](bad) is False
+
+
+@pytest.mark.parametrize("overflow_pass", [1, 2])
+def test_role_observation_bounds_each_directory_enumeration(overflow_pass):
+    tree = ast.parse(POSITIONS._METADATA_SCRIPT)
+    function = next(
+        node for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "role_observation"
+    )
+    counts = []
+    real_os = SimpleNamespace(**os.__dict__)
+    real_open = real_os.open
+    scan_descriptors = {}
+    scan_number = [0]
+
+    class Entries:
+        def __init__(self, count):
+            self.count = count
+            self.index = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            if self.index >= self.count:
+                raise StopIteration
+            self.index += 1
+            counts[-1] += 1
+            return SimpleNamespace(name=f"entry-{self.index}")
+
+    def scandir(_fd):
+        pass_number = scan_descriptors[_fd]
+        assert pass_number == len(counts) + 1
+        counts.append(0)
+        size = 32 if pass_number < overflow_pass else 100_000
+        return Entries(size)
+
+    def open_directory(path, flags, *args, **kwargs):
+        fd = real_open(path, flags, *args, **kwargs)
+        if path == ".":
+            scan_number[0] += 1
+            scan_descriptors[fd] = scan_number[0]
+        return fd
+
+    real_os.open = open_directory
+    real_os.scandir = scandir
+    real_os.listxattr = lambda *_args: []
+    namespace = {"os": real_os, "stat": stat, "mount_id": lambda _path: (7, "/role")}
+    exec(compile(ast.Module(body=[function], type_ignores=[]), "role-observation", "exec"), namespace)
+    with tempfile.TemporaryDirectory(dir="/private/tmp") as path:
+        role = Path(path) / "unmatched"
+        role.mkdir()
+        observation = namespace["role_observation"](
+            path, os.lstat(path), (7, path), role.name, (7, str(role)),
+        )
+
+    assert counts == ([33] if overflow_pass == 1 else [32, 33])
+    assert observation == {
+        "owner": "unverified", "access": "unverified", "acl": "unverified",
+        "mount": "unverified", "children": "unverified",
+    }
 
 
 @pytest.mark.parametrize(
