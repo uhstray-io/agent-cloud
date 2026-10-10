@@ -707,13 +707,19 @@ Local development keeps the loopback direct-Loki path.
 
 **Source gate, 2026-10-10:** the collector's declared logical state key is now
 `journal-collector-state-v2`, mounted at `/alloy-state` with Compose `nocopy: true`.
-The isolated provider/image proof and matching receipt gate are not implemented,
-so the playbook refuses both `apply` and `repair-positions` before collector-host
-tasks. `survey` and collector-only `stop` remain selectable. The legacy
+The Dev-bound `prove-provider` action now exercises the actual installed Compose
+provider against the cached pinned image using only disposable labelled volumes.
+It checks ordinary copy-up, no-copy on a nonempty same-image positive control, and
+no-copy at the real state destination. This is a provider copy-behavior subproof;
+it does not prove Alloy cursor creation/resume, UID namespace writes, full-action
+repeatability, or an authenticated proof receipt. The complete proof and matching
+apply gate are not implemented, so the playbook refuses both `apply` and
+`repair-positions` before collector-host tasks. `survey` and collector-only
+`stop` remain selectable. The legacy
 `journal-collector-state` volume is not selected by the v2 Compose declaration
-or helper lookup. The `nocopy` setting is source intent only: actual
-`podman-compose` propagation, image behavior, UID access, cursor persistence and
-cleanup remain unproved. Do not deploy this source slice.
+or helper lookup. The full `nocopy` acceptance remains incomplete until the
+subproof runs successfully on the Dev receiver and the cursor, UID, cleanup and
+authenticated receipt gates pass. Do not run apply from this source slice.
 
 The operational rules below describe the prior v1 positions workflow and are
 historical context only; they do not override the fail-closed v2 source gate.

@@ -25,6 +25,18 @@ the v2 helper or Compose declaration. Do not deploy this source slice until the
 separately selected proof is implemented, independently reviewed and passes on
 the actual provider.
 
+**Provider/image subproof source (2026-10-10):** the Dev-bound journal workflow now
+has a prove-provider action. It uses only the cached pinned Alloy image and
+installed podman-compose, and creates separate task-labelled validation projects
+with network_mode: none. It checks ordinary copy-up on a bounded nonempty
+directory from that image, explicit no-copy on the same positive control, and
+no-copy at /alloy-state. It removes only labelled test containers and volumes
+after identity and zero-mount checks; uncertain cleanup leaves assets for
+inspection. This is only a provider copy-behavior subproof. Cursor creation and
+resume, UID mapping and namespace writes, full-proof repeatability, receipt
+authentication, and the production apply gate remain unimplemented; apply and
+repair stay refused. Check mode reports check_mode_unverified.
+
 ## How it is deployed
 
 - **Only through Semaphore:** `platform/playbooks/deploy-o11y.yml` (production runs the
