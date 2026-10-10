@@ -129,6 +129,108 @@ renew, and read back ownership at each mutation boundary, CAS cannot establish
 host-local cross-play admission. This is the accepted design only; implementation,
 recovery, and operational acceptance remain open.
 
+**Receiver deployment admission execution contract (design; not implemented):**
+The first mutating consumer is the ordinary receiver deployment. One operation
+must begin admission before target repository placement or rendering, and retain
+ownership through configuration and alert rendering, privileged probe
+installation/removal, image pull and receiver recreation, acceptance probes, and
+any Prometheus reload or permitted cleanup. These boundaries span
+`platform/playbooks/tasks/place-monorepo.yml`,
+`platform/playbooks/deploy-o11y.yml`,
+`platform/playbooks/tasks/o11y-alert-provision.yml`, and
+`platform/services/o11y/deployment/deploy.sh`; the acceptance play is part of
+the same operation because it also performs probes and reloads. A lock acquired
+only around `deploy.sh`, container startup, or a final play cannot protect this
+transaction.
+
+The root-protected supervisor is the sole host-side owner of the permanent
+admission lock and durable intent for that operation. Ansible sends one bounded,
+action-specific request at a time; the supervisor validates it, writes and
+reads back the intent for that mutation boundary, launches and tracks only its
+fixed worker, waits for that worker to become quiescent, reconciles the observed
+result, then writes and reads back the outcome before accepting the next
+request. The worker set is fixed by the reviewed supervisor implementation;
+requests do not carry shell text, executable paths, arbitrary environment, or
+unbounded target selectors. Ansible must not issue an equivalent target-side
+mutation outside the supervisor while the operation is admitted. The same
+persisted operation identity and monotonic boundary sequence rendezvous across
+the placement, deploy, and acceptance plays; a Semaphore extra var, Ansible
+fact, task-ID string, or caller-supplied operation ID is correlation data, not
+proof of authority.
+
+Every durable pre-mutation record binds the independently authenticated owner
+and Semaphore task, operation and boundary sequence, action, exact reviewed
+checkout, independently derived consumed inventory and effective
+configuration/policy context, and bounded read-only identities of the assets
+the boundary may affect. The record is root-protected, atomically replaced on
+the same filesystem, fsynced with its parent directory, and read back before
+the worker starts. After the worker exits, the supervisor records and reads
+back its bounded result and observed post-state before allowing another
+mutation. A missing, malformed, mismatched, or unreadable record, failed
+readback, changed binding, or unclassified result refuses the next boundary.
+
+**Authority and containment remain unresolved implementation gates.** The
+contract requires an authenticated cross-play rendezvous independently bound
+to the running Semaphore task and reviewed execution context, but does not
+select an authentication mechanism. The existing task-attribution diagnostic
+that reports `partial` is not authority. The mechanism must resist forgery,
+replay, cross-task reuse, and caller-controlled checkout/config claims before
+any receiver mutation is admitted. The implementation must also prove that the
+supervisor can track and stop the complete worker tree, including descendants,
+after controller loss or cancellation; a detached lock-holder beside ordinary
+Ansible mutations does not satisfy this contract. Until both decisions are
+implemented and independently verified, the supervisor refuses receiver
+mutation requests and no journal runtime gate opens.
+
+Root owns admission, durable intent, and fixed privileged host handlers. The
+receiver's Podman operations run only in the verified declared receiver
+identity and its bound storage/environment context. A root supervisor may
+launch that worker as the rootless receiver account, but must never execute
+checkout-writable code as root. Privileged probe changes use separately
+enumerated, narrowly parameterized handlers; root access does not authorize
+rootful Podman operations. A declared rootful receiver context is a distinct
+storage namespace and must be explicitly bound and supported by a reviewed
+handler; otherwise it refuses. Rootless and rootful clients cannot select
+different admission locks or durable-intent namespaces.
+
+Before and after receiver lifecycle work, compare both the legacy journal
+positions volume and the fresh `journal-collector-state-v2` volume by their
+independently observed identities, effective initialization flags, and stable
+root/child metadata. Receiver deployment must not mount, initialize, normalize,
+adopt, or delete either volume. Receiver recreation may proceed only when the
+admitted preservation readbacks pass; ambiguity or drift refuses. This receiver
+transaction does not authorize collector apply, repair, stop, proof, or rollback.
+
+Until converted to this same authenticated supervisor and intent protocol, the
+following exact competing entry points refuse before their first target-side
+mutation: `platform/playbooks/clean-deploy-o11y.yml`,
+`platform/playbooks/drill-o11y-alert-canary.yml` (which invokes `deploy.sh`),
+`platform/playbooks/o11y-fault-drill.yml` (which stops/starts Grafana),
+`platform/playbooks/restore-o11y-alert-baseline.yml`, and
+`platform/playbooks/instrument-host-o11y.yml` (which reloads Prometheus).
+The journal workflow
+`platform/playbooks/deploy-o11y-journal-collector.yml` remains limited to its
+existing read-only diagnostic/check-mode path; its mutating actions remain
+refused. No unconverted caller may infer admission from a recent receiver
+snapshot or from the diagnostic-only lock.
+
+On a worker error, controller disconnect, task cancellation, supervisor
+process failure, or failed result readback, no later mutation request is
+accepted. A live supervisor retains ownership until it proves the complete
+worker tree is quiescent; if the supervisor exits, its unresolved durable
+intent fences successors even after the kernel lock is released. A successor
+cannot take over because a timeout elapsed, a lock became available, Semaphore
+reports a terminal task, or a task-ID field disappeared. After reboot,
+unresolved intent still blocks all new receiver and journal mutations. Recovery
+first authenticates the prior task, proves its host workers cannot continue,
+acquires the same admission namespace, and performs
+read-only reconciliation against the recorded boundary and current asset
+identities. It may close intent only when that readback establishes one
+recorded, safe terminal outcome; otherwise it retains `uncertain` intent and
+assets for reviewed recovery. Recovery does not automatically roll back, adopt,
+normalize, or delete assets. Check mode performs no target write and cannot
+create an admission or intent record.
+
 **Diagnostic-only lock source slice (2026-10-10; not host-wide admission):** A
 separate Dev-bound Ansible bootstrap creates the permanent root-owned empty inode
 `/var/lib/agent-cloud/o11y-journal-positions-diagnostic.lock` only when absent.
