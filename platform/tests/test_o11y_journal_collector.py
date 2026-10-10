@@ -4953,93 +4953,108 @@ def _reservation_path(tmp_path):
     return directory / "reservation.json"
 
 
-def test_workflow_reservation_has_one_atomic_winner_under_concurrency(tmp_path, monkeypatch):
+def test_workflow_admission_has_one_atomic_winner_under_concurrency(tmp_path):
     import concurrent.futures
     import threading
 
     path = _reservation_path(tmp_path)
-    monkeypatch.setattr(WORKFLOW, "_process_start", lambda _pid: "start-1")
     barrier = threading.Barrier(2)
 
-    def attempt():
+    def attempt(owner_id, task_id):
         barrier.wait()
         try:
-            return WORKFLOW.acquire(path, "prove-direct")["status"]
+            return WORKFLOW.begin(path, "prove-direct", owner_id, task_id, authenticated=True)["status"]
         except WORKFLOW.Refusal as exc:
             return str(exc)
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
-        results = list(pool.map(lambda _n: attempt(), range(2)))
-    assert results.count("reserved") == 1
+        results = list(pool.map(lambda row: attempt(*row), [("owner-a", 1), ("owner-b", 2)]))
+    assert results.count("intent") == 1
     assert len(results) == 2
-    assert all(
-        result in {"reserved", "reservation_busy", "reservation_stale_or_unknown"}
-        for result in results
-    )
+    assert results.count("admission_intent_unresolved") == 1
     record, _ = WORKFLOW._read(path)
-    assert record["task_attribution"] == "unverified"
     assert len(record["nonce"]) == 64
 
 
-@pytest.mark.parametrize("owner_start", ["reused-pid", ""])
-def test_workflow_reservation_refuses_pid_reuse_and_crash_recovery(tmp_path, monkeypatch, owner_start):
+def test_workflow_interrupted_intent_stays_unresolved_across_tasks(tmp_path):
     path = _reservation_path(tmp_path)
-    record = {
-        "schema": 1, "state": "active", "action": "apply", "nonce": "a" * 64,
-        "uid": os.geteuid(), "pid": os.getpid(), "process_start": owner_start,
-        "task_attribution": "unverified",
-    }
-    path.write_text(json.dumps(record), encoding="ascii")
+    intent = WORKFLOW.begin(path, "apply", "task-owner", 41, authenticated=True)
+    with pytest.raises(WORKFLOW.Refusal, match="admission_intent_unresolved"):
+        WORKFLOW.begin(path, "apply", "next-task", 42, authenticated=True)
+    record, _ = WORKFLOW._read(path)
+    assert record["state"] == "intent"
+    assert record["nonce"] == intent["nonce"]
+
+
+def test_workflow_admission_refuses_malformed_state(tmp_path):
+    path = _reservation_path(tmp_path)
+    path.write_text("{", encoding="ascii")
     path.chmod(0o600)
-    monkeypatch.setattr(WORKFLOW, "_process_start", lambda _pid: "current-start")
-    with pytest.raises(WORKFLOW.Refusal, match="reservation_stale_or_unknown"):
-        WORKFLOW.acquire(path, "apply")
-    assert json.loads(path.read_text(encoding="ascii")) == record
-    for _ in range(2):
-        with pytest.raises(WORKFLOW.Refusal, match="recovery_disabled_pending_authenticated_api_readback"):
-            WORKFLOW.recover(path)
+    with pytest.raises(WORKFLOW.Refusal, match="admission_state_invalid"):
+        WORKFLOW.begin(path, "survey", "owner", 7, authenticated=True)
 
 
-def test_workflow_reservation_refuses_symlink_and_unsafe_mode(tmp_path):
-    directory = tmp_path / "workflow"
-    directory.mkdir(mode=0o700)
-    directory.chmod(0o700)
-    target = directory / "target"
-    target.write_text("{}", encoding="ascii")
-    target.chmod(0o600)
-    link = directory / "reservation.json"
-    link.symlink_to(target)
-    with pytest.raises(WORKFLOW.Refusal, match="reservation_identity_refused"):
-        WORKFLOW.acquire(link, "survey")
-
-    link.unlink()
-    link.write_text("{}", encoding="ascii")
-    link.chmod(0o644)
-    with pytest.raises(WORKFLOW.Refusal, match="reservation_identity_refused"):
-        WORKFLOW.acquire(link, "survey")
+def test_workflow_admission_refuses_wrong_owner_and_preserves_intent(tmp_path):
+    path = _reservation_path(tmp_path)
+    intent = WORKFLOW.begin(path, "survey", "owner", 7, authenticated=True)
+    with pytest.raises(WORKFLOW.Refusal, match="admission_owner_mismatch"):
+        WORKFLOW.complete(path, "other-owner", 7, intent["nonce"])
+    record, _ = WORKFLOW._read(path)
+    assert record["state"] == "intent"
 
 
-def test_workflow_reservation_refuses_owner_mismatch(tmp_path, monkeypatch):
+def test_workflow_receiver_admission_refuses_unresolved_intent_and_unverified_attribution(tmp_path):
+    path = _reservation_path(tmp_path)
+    with pytest.raises(WORKFLOW.Refusal, match="task_attribution_unverified"):
+        WORKFLOW.receiver_check(path, "receiver-deploy")
+    WORKFLOW.begin(path, "survey", "owner", 7, authenticated=True)
+    with pytest.raises(WORKFLOW.Refusal, match="admission_intent_unresolved"):
+        WORKFLOW.receiver_check(path, "receiver-deploy")
+
+
+def test_workflow_receiver_clean_refuses_until_journal_volume_preservation(tmp_path):
+    path = _reservation_path(tmp_path)
+    with pytest.raises(WORKFLOW.Refusal, match="receiver_reset_preservation_unverified"):
+        WORKFLOW.receiver_check(path, "receiver-clean")
+
+
+def test_workflow_admission_refuses_owner_mismatch(tmp_path, monkeypatch):
     path = _reservation_path(tmp_path)
     monkeypatch.setattr(WORKFLOW.os, "geteuid", lambda: os.getuid() + 1)
-    with pytest.raises(WORKFLOW.Refusal, match="reservation_directory_refused"):
-        WORKFLOW.acquire(path, "survey")
+    with pytest.raises(WORKFLOW.Refusal, match="admission_directory_refused"):
+        WORKFLOW.begin(path, "survey", "owner", 7, authenticated=True)
 
 
-def test_workflow_reservation_release_is_identity_checked_and_repeat_safe(tmp_path, monkeypatch):
+def test_workflow_completed_intent_can_be_finished_by_later_task(tmp_path):
     path = _reservation_path(tmp_path)
-    monkeypatch.setattr(WORKFLOW, "_process_start", lambda _pid: "same-process")
-    reservation = WORKFLOW.acquire(path, "survey")
-    result = WORKFLOW.release(path, reservation["nonce"])
-    assert result == {"status": "released", "completion": "reservation_released"}
-    with pytest.raises(WORKFLOW.Refusal, match="reservation_absent"):
-        WORKFLOW.release(path, reservation["nonce"])
+    intent = WORKFLOW.begin(path, "survey", "stable-owner", 7, authenticated=True)
+    assert WORKFLOW.complete(path, "stable-owner", 7, intent["nonce"]) == {"status": "complete"}
+    assert WORKFLOW.begin(path, "survey", "next-owner", 8, authenticated=True)["status"] == "intent"
 
-    reservation = WORKFLOW.acquire(path, "survey")
-    with pytest.raises(WORKFLOW.Refusal, match="reservation_owner_mismatch"):
-        WORKFLOW.release(path, "0" * 64)
-    assert path.exists()
-    assert WORKFLOW.release(path, reservation["nonce"])["status"] == "released"
+
+def test_receiver_lifecycle_refusal_precedes_deploy_and_clean_mutations():
+    deploy = yaml.safe_load((ROOT / "platform/playbooks/deploy-o11y.yml").read_text())
+    clean = yaml.safe_load((ROOT / "platform/playbooks/clean-deploy-o11y.yml").read_text())
+    admission = yaml.safe_load((ROOT / "platform/playbooks/tasks/o11y-journal-admission.yml").read_text())
+    deploy_phase = next(play for play in deploy if play.get("name") == "Phase 1: Place repo + manage o11y secrets")
+    clean_play = next(play for play in clean if play.get("name") == "Clean o11y deployment")
+    deploy_tasks = deploy_phase["tasks"]
+    clean_tasks = clean_play["tasks"]
+    assert deploy_tasks[0]["ansible.builtin.include_tasks"] == "tasks/o11y-journal-admission.yml"
+    assert deploy_tasks[0]["vars"]["o11y_journal_lifecycle_operation"] == "receiver-deploy"
+    include_index = next(
+        i for i, task in enumerate(clean_tasks)
+        if task.get("ansible.builtin.include_tasks") == "tasks/o11y-journal-admission.yml"
+    )
+    destroy_index = next(i for i, task in enumerate(clean_tasks) if task.get("name") == "Destroy existing deployment")
+    assert clean_tasks[include_index]["vars"]["o11y_journal_lifecycle_operation"] == "receiver-clean"
+    assert include_index < destroy_index
+    command = next(task for task in admission if "ansible.builtin.command" in task)
+    assert command["ansible.builtin.command"]["argv"][2] == "receiver-check"
+    assert command["no_log"] is True
+    assert command["check_mode"] is False
+    refusal = next(task for task in admission if task.get("name", "").startswith("Refuse receiver lifecycle"))
+    assert "from_json" not in str(refusal)
 
 
 def test_workflow_checkout_requires_exact_clean_existing_repository(tmp_path):
