@@ -23,20 +23,23 @@
         that:
           - groups.get('o11y_svc', []) | length == 1
           - service_branch | default('dev') == 'dev'
-          - journal_collector_action | default('apply') in ['survey', 'repair-positions', 'prove-provider', 'apply', 'stop']
+          - journal_collector_action | default('apply') in ['survey', 'repair-positions', 'prove-direct', 'apply', 'stop']
+          - journal_collector_action | default('apply') != 'prove-direct' or expected_repository_sha | default('') is match('^[0-9a-f]{40}$')
+          - journal_collector_action | default('apply') != 'prove-direct' or expected_inventory_revision | default('') is match('^[0-9a-f]{64}$')
         fail_msg: >-
           This workflow requires one o11y_svc host, service_branch=dev, and
-          journal_collector_action=survey|repair-positions|prove-provider|apply|stop.
+          journal_collector_action=survey|repair-positions|prove-direct|apply|stop. The direct proof
+          also requires reviewed repository and inventory revisions.
         quiet: true
       tags: [always]
 
-    - name: Refuse apply until the isolated provider proof is implemented
+    - name: Refuse apply until the direct proof and authenticated receipt gate are implemented
       ansible.builtin.assert:
         that:
           - journal_collector_action | default('apply') != 'apply'
         fail_msg: >-
-          Collector apply is disabled until the reviewed provider/image proof and
-          matching receipt gate are implemented. Survey and stop remain available.
+          Collector apply is disabled until the reviewed direct Podman proof and
+          authenticated matching receipt gate are implemented. Survey and stop remain available.
         quiet: true
       tags: [always]
 
@@ -45,20 +48,20 @@
         that:
           - journal_collector_action | default('apply') != 'repair-positions'
         fail_msg: >-
-          Positions repair is disabled for the fresh v2 volume until provider
-          initialization behavior is proved; preserve observed state.
+          Positions repair is disabled for the fresh v2 volume until the selected
+          direct Podman initialization behavior and receipt gates pass; preserve observed state.
         quiet: true
       tags: [always]
 
-- name: Prove pinned Alloy copy behavior with isolated disposable volumes
+- name: Prove direct Podman and Alloy journal persistence with disposable volumes
   hosts: o11y_svc
   gather_facts: false
   become: false
   any_errors_fatal: true
   tasks:
-    - name: Leave the provider proof play for other journal actions
+    - name: Leave the direct proof play for other journal actions
       ansible.builtin.meta: end_host
-      when: journal_collector_action | default('apply') != 'prove-provider'
+      when: journal_collector_action | default('apply') != 'prove-direct'
       tags: [always]
 
     - name: Require the real rootless Podman receiver
@@ -66,62 +69,84 @@
         that:
           - not (local_mode | default(false) | bool)
           - container_engine | default('podman') == 'podman'
-        fail_msg: "The provider proof requires the Dev receiver's Podman host."
+        fail_msg: "The direct proof requires the Dev receiver's rootless Podman host."
+        quiet: true
+      tags: [always]
+
+    - name: Require the exact reviewed source and inventory revisions for the proof tuple
+      ansible.builtin.assert:
+        that:
+          - expected_repository_sha | default('') is match('^[0-9a-f]{40}$')
+          - expected_inventory_revision | default('') is match('^[0-9a-f]{64}$')
+        fail_msg: "The direct proof requires exact reviewed repository and inventory revisions."
         quiet: true
       tags: [always]
 
     - name: Record the provider proof as unverified in check mode
       ansible.builtin.set_fact:
-        _journal_provider_proof:
+        _journal_direct_proof:
           status: check_mode_unverified
           reason: not_run
       when: ansible_check_mode
 
-    - name: Run the isolated provider and image copy behavior proof
+    - name: Run the isolated direct Podman, mount, and journal cursor proof
       ansible.builtin.script: "{{ playbook_dir }}/files/prove-o11y-journal-volume.py"
-      register: _journal_provider_proof_result
+      register: _journal_direct_proof_result
       changed_when: false
       failed_when: false
       check_mode: false
       no_log: true
+      environment:
+        O11Y_PROOF_REVIEWED_SHA: "{{ expected_repository_sha }}"
+        O11Y_PROOF_INVENTORY_REVISION: "{{ expected_inventory_revision }}"
+        O11Y_PROOF_CONFIG_SHA256: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/../services/o11y/deployment/config/journal.alloy') | hash('sha256') }}"
       when: not ansible_check_mode
 
-    - name: Parse provider proof output through a protected boundary
+    - name: Parse direct proof output through a protected boundary
       ansible.builtin.set_fact:
-        _journal_provider_proof: "{{ _journal_provider_proof_result.stdout | from_json }}"
+        _journal_direct_proof: "{{ _journal_direct_proof_result.stdout | from_json }}"
       no_log: true
       when: not ansible_check_mode
 
-    - name: Require the bounded provider/image copy subproof to pass
+    - name: Require the complete direct Podman and Alloy journal proof
       ansible.builtin.assert:
         that:
-          - _journal_provider_proof_result.rc | default(1) == 0
-          - _journal_provider_proof.status == 'provider_copy_behavior_proven'
-          - _journal_provider_proof.copy_control == 'copied'
-          - _journal_provider_proof.positive_control_no_copy == 'empty'
-          - _journal_provider_proof.state_path_no_copy == 'empty'
-          - _journal_provider_proof.effective_mount == 'rw'
-          - _journal_provider_proof.cursor_resume == 'unverified'
+          - _journal_direct_proof_result.rc | default(1) == 0
+          - _journal_direct_proof.status == 'direct_podman_journal_proven'
+          - _journal_direct_proof.copy_control == 'copied'
+          - _journal_direct_proof.positive_no_copy == 'no_copy'
+          - _journal_direct_proof.state_no_copy == 'no_copy'
+          - _journal_direct_proof.repeat_state_no_copy == 'no_copy'
+          - _journal_direct_proof.state_layout == 'explicit_component_only'
+          - _journal_direct_proof.cursor == 'created_resumed_advanced'
+          - _journal_direct_proof.reviewed_sha == expected_repository_sha
+          - _journal_direct_proof.inventory_revision == expected_inventory_revision
+          - _journal_direct_proof.config_sha256 == (lookup('ansible.builtin.file', playbook_dir ~ '/../services/o11y/deployment/config/journal.alloy') | hash('sha256'))
         fail_msg: >-
-          The disposable provider/image copy-behavior proof was refused or incomplete.
+          The disposable direct Podman journal proof was refused or incomplete.
           No production collector action was run.
         quiet: true
       when: not ansible_check_mode
 
-    - name: Report the bounded provider/image subproof tuple
+    - name: Report only the sanitized direct proof tuple
       ansible.builtin.debug:
         msg: >-
-          Provider/image subproof: status={{ _journal_provider_proof.status }};
-          copy={{ _journal_provider_proof.copy_control | default('unverified') }};
-          positive_no_copy={{ _journal_provider_proof.positive_control_no_copy | default('unverified') }};
-          state_no_copy={{ _journal_provider_proof.state_path_no_copy | default('unverified') }};
-          mount={{ _journal_provider_proof.effective_mount | default('unverified') }};
-          Alloy={{ _journal_provider_proof.image | default('unverified') }};
-          image_id={{ _journal_provider_proof.image_id | default('unverified') }};
-          Podman={{ _journal_provider_proof.podman_client | default('unverified') }}/{{ _journal_provider_proof.podman_server | default('unverified') }};
-          Compose={{ _journal_provider_proof.compose_version | default('unverified') }};
-          provider_sha256={{ _journal_provider_proof.compose_binary_sha256 | default('unverified') }};
-          cursor_resume={{ _journal_provider_proof.cursor_resume | default('unverified') }}
+          Direct proof: status={{ _journal_direct_proof.status | default('check_mode_unverified') }};
+          reason={{ _journal_direct_proof.reason | default('none') }};
+          copy={{ _journal_direct_proof.copy_control | default('unverified') }};
+          positive_no_copy={{ _journal_direct_proof.positive_no_copy | default('unverified') }};
+          state_no_copy={{ _journal_direct_proof.state_no_copy | default('unverified') }};
+          repeat={{ _journal_direct_proof.repeat_state_no_copy | default('unverified') }};
+          layout={{ _journal_direct_proof.state_layout | default('unverified') }};
+          cursor={{ _journal_direct_proof.cursor | default('unverified') }};
+          image={{ _journal_direct_proof.image_id | default('unverified') }};
+          Podman={{ _journal_direct_proof.podman_client | default('unverified') }}/{{ _journal_direct_proof.podman_server | default('unverified') }};
+          executable={{ _journal_direct_proof.podman_executable_sha256 | default('unverified') }};
+          runtime={{ _journal_direct_proof.runtime_context_sha256 | default('unverified') }};
+          receiver_network={{ _journal_direct_proof.project_network_sha256 | default('unverified') }};
+          reviewed={{ _journal_direct_proof.reviewed_sha | default('unverified') }};
+          inventory={{ _journal_direct_proof.inventory_revision | default('unverified') }};
+          config={{ _journal_direct_proof.config_sha256 | default('unverified') }}
       changed_when: false
 
 - name: "Deploy the bounded journal collector"
