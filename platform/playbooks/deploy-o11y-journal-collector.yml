@@ -1078,7 +1078,7 @@
           Treat the reason as {{ (_journal_positions_repair.stdout | default('{}') | from_json).get('reason', 'unverified') }}.
           Failed pending checks={{ (_journal_positions_repair.stdout | default('{}') | from_json).get('pending_repair_diagnostic', {}).get('failed_checks', []) }}.
             Treat an uncertain result as requiring a fresh survey before any retry.
-            No recursive ownership or permission-mode change was attempted.
+            No recursive tree ownership change is performed; root mode or owner/group may already have changed before an uncertain result.
         quiet: true
 
     - name: Report bounded positions repair outcome

@@ -901,7 +901,7 @@ def _pending_case(**changes):
     for path, value in changes.items():
         target = found
         parts = path.split(".")
-        if parts[:2] == ["volume", "Labels"]:
+        if parts[:2] == ["volume", "Labels"] and len(parts) > 2:
             target = found["volume"]["Labels"]
             target[".".join(parts[2:])] = value
             continue
@@ -1191,6 +1191,26 @@ def test_positions_pending_repair_refuses_changed_volume_creation_identity():
     assert result == {"status": "refused", "reason": "evidence_changed"}
 
 
+@pytest.mark.parametrize("malformed_stage", ["first", "fresh"])
+def test_positions_pending_repair_refuses_missing_metadata_before_mutation(malformed_stage):
+    original = _empty_pending_volume_found(
+        needs_copy_up=True,
+        metadata=_positions_state(owner=(88, 88), mode=0o700, children=[], journal_cursor_valid=False),
+    )
+    malformed = {**original, "metadata": None}
+    observations = iter((malformed,)) if malformed_stage == "first" else iter((original, malformed))
+    mutations = []
+
+    result = POSITIONS.repair_positions(
+        lambda: next(observations),
+        lambda _found: mutations.append("chown") or True,
+        mode_change_fn=lambda *_args: mutations.append("chmod") or "changed",
+    )
+
+    assert result == {"status": "refused", "reason": "evidence_changed"}
+    assert mutations == []
+
+
 @pytest.mark.parametrize("created_at", [
     None,
     "not-a-timestamp",
@@ -1237,6 +1257,475 @@ def test_positions_pending_repair_changes_only_empty_volume_root_without_contain
     )
     assert result == {"status": "repaired", "reason": "pending_initialization_owner_verified"}
     assert calls == [("root-only-change", [])]
+
+
+@pytest.mark.parametrize("mode", [0o720, 0o702, 0o722])
+def test_pending_mode_repair_reduces_only_write_bits_before_owner_change(mode):
+    target_mode = mode & ~0o022
+    original = _empty_pending_volume_found(
+        needs_copy_up=True,
+        metadata=_positions_state(owner=(88, 88), mode=mode, children=[], component_layout=False,
+                                  journal_cursor_valid=False),
+    )
+    reduced = _empty_pending_volume_found(
+        needs_copy_up=True,
+        metadata=_positions_state(owner=(88, 88), mode=target_mode, children=[], journal_cursor_valid=False),
+    )
+    corrected = _empty_pending_volume_found(
+        needs_copy_up=True,
+        metadata=_positions_state(owner=(0, 0), mode=target_mode, children=[], journal_cursor_valid=False),
+    )
+    observations = iter((original, original, reduced, corrected, corrected))
+    calls = []
+
+    def reduce_mode(found, target):
+        assert found["metadata"]["root"]["mode"] == mode
+        calls.append(("mode", target))
+        return "changed"
+
+    def change_owner(found):
+        assert found["metadata"]["root"]["mode"] == target_mode
+        calls.append(("owner", found["metadata"]["root"]["uid"], target_mode))
+        return True
+
+    result = POSITIONS.repair_positions(
+        iter(observations).__next__, change_owner, mode_change_fn=reduce_mode,
+        access_test_fn=lambda *_args: pytest.fail("pending repair must not mount a probe container"),
+        image_available_fn=lambda: pytest.fail("pending repair must not inspect or pull an image"),
+    )
+
+    assert result == {"status": "repaired", "reason": "pending_initialization_owner_verified"}
+    assert calls == [("mode", target_mode), ("owner", 88, target_mode)]
+
+
+@pytest.mark.parametrize(
+    ("mode", "change"),
+    [
+        (0o4700, {}),
+        (0o2700, {}),
+        (0o1700, {}),
+        (0o620, {}),
+        (0o720, {"volume_inventory_complete": False}),
+        (0o720, {"name_collision": True}),
+        (0o720, {"project": None}),
+        (0o720, {"volume": None}),
+        (0o720, {"volume.Name": "other"}),
+        (0o720, {"mountpoint": "relative"}),
+        (0o720, {"volume.Labels": None}),
+        (0o720, {"volume.Labels.com.docker.compose.project": "other"}),
+        (0o720, {"volume.Labels.com.docker.compose.volume": "other"}),
+        (0o720, {"needs_chown": True}),
+        (0o720, {"needs_copy_up": False}),
+        (0o720, {"metadata.acl": True}),
+        (0o720, {"volume_use_count": 1}),
+        (0o720, {"mount_count": 1}),
+        (0o720, {"collector_present": True}),
+        (0o720, {"metadata.status": "unavailable"}),
+        (0o720, {"metadata.children": [{"kind": "file"}]}),
+        (0o720, {"metadata.child_count": 1}),
+        (0o720, {"metadata.root_is_mount": True}),
+        (0o720, {"metadata.child_mount": True}),
+        (0o720, {"metadata.root": None}),
+        (0o720, {"metadata.root.uid": 0, "metadata.root.gid": 0}),
+        (0o720, {"metadata.root.uid": 0, "metadata.root.gid": 88}),
+        (0o720, {"metadata.free_bytes": POSITIONS.MIN_FREE_BYTES - 1}),
+        (0o720, {"metadata.free_inodes": POSITIONS.MIN_FREE_INODES - 1}),
+        (0o720, {"storage_space.free_inodes": POSITIONS.MIN_FREE_INODES - 1}),
+        (0o720, {"storage_space.free_bytes": POSITIONS.MIN_FREE_BYTES - 1}),
+    ],
+)
+def test_pending_mode_exception_refuses_special_bits_and_unrelated_failures(mode, change):
+    found = _empty_pending_volume_found(
+        needs_copy_up=True,
+        metadata=_positions_state(owner=(88, 88), mode=mode, children=[], journal_cursor_valid=False),
+    )
+    for path, value in change.items():
+        target = found
+        parts = path.split(".")
+        if parts[:2] == ["volume", "Labels"] and len(parts) > 2:
+            found["volume"]["Labels"][".".join(parts[2:])] = value
+            continue
+        for part in parts[:-1]:
+            target = target[part]
+        target[parts[-1]] = value
+
+    result = POSITIONS.repair_positions(
+        lambda: found,
+        lambda _found: pytest.fail("unsafe pending mode must refuse before owner mutation"),
+        mode_change_fn=lambda *_args: pytest.fail("unsafe pending mode must refuse before mode mutation"),
+    )
+
+    assert result["status"] == "refused"
+    assert result["reason"] == "pending_volume_unsupported"
+
+
+@pytest.mark.parametrize("mode", ["720", True, -1, 0o10000, 0o600])
+def test_pending_mode_exception_refuses_unknown_or_incomplete_owner_mode(mode):
+    found = _empty_pending_volume_found(
+        needs_copy_up=True,
+        metadata=_positions_state(owner=(88, 88), mode=mode, children=[], journal_cursor_valid=False),
+    )
+
+    result = POSITIONS.repair_positions(
+        lambda: found,
+        lambda _found: pytest.fail("invalid owner mode must refuse before owner mutation"),
+        mode_change_fn=lambda *_args: pytest.fail("invalid owner mode must refuse before mode mutation"),
+    )
+
+    assert result["status"] == "refused"
+    assert result["reason"] == "pending_volume_unsupported"
+
+
+def test_pending_mode_repair_returns_uncertain_after_failed_mode_or_owner_mutation():
+    original = _empty_pending_volume_found(
+        needs_copy_up=True,
+        metadata=_positions_state(owner=(88, 88), mode=0o720, children=[], journal_cursor_valid=False),
+    )
+    reduced = _empty_pending_volume_found(
+        needs_copy_up=True,
+        metadata=_positions_state(owner=(88, 88), mode=0o700, children=[], journal_cursor_valid=False),
+    )
+    for mode_result, owner_result, expected_calls in (
+        ("uncertain", True, []),
+        ("changed", False, ["owner"]),
+    ):
+        observations = iter((original, original, reduced))
+        calls = []
+
+        def change_owner(_found, result=owner_result, recorded=calls):
+            recorded.append("owner")
+            return result
+
+        def reduce_mode(*_args, result=mode_result):
+            return result
+
+        result = POSITIONS.repair_positions(
+            iter(observations).__next__, change_owner,
+            mode_change_fn=reduce_mode,
+        )
+
+        assert result == {"status": "uncertain", "reason": "first_mount_history_unproven"}
+        assert calls == expected_calls
+
+
+def test_pending_mode_repair_returns_uncertain_when_fresh_readback_changes():
+    original = _empty_pending_volume_found(
+        needs_copy_up=True,
+        metadata=_positions_state(owner=(88, 88), mode=0o720, children=[], journal_cursor_valid=False),
+    )
+    changed = _empty_pending_volume_found(
+        needs_copy_up=True,
+        metadata=_positions_state(owner=(88, 88), mode=0o700, acl=True, children=[], journal_cursor_valid=False),
+    )
+    observations = iter((original, original, changed))
+
+    result = POSITIONS.repair_positions(
+        iter(observations).__next__,
+        lambda _found: pytest.fail("failed mode readback must prevent owner mutation"),
+        mode_change_fn=lambda *_args: "changed",
+    )
+
+    assert result == {"status": "uncertain", "reason": "first_mount_history_unproven"}
+
+
+def test_pending_mode_repair_refuses_pre_mutation_identity_or_mode_race():
+    original = _empty_pending_volume_found(
+        needs_copy_up=True,
+        metadata=_positions_state(owner=(88, 88), mode=0o720, children=[], journal_cursor_valid=False),
+    )
+    changed = _empty_pending_volume_found(
+        needs_copy_up=True,
+        metadata=_positions_state(owner=(88, 88), mode=0o730, children=[], journal_cursor_valid=False),
+    )
+    observations = iter((original, changed))
+
+    result = POSITIONS.repair_positions(
+        iter(observations).__next__,
+        lambda _found: pytest.fail("pre-mutation race must prevent owner change"),
+        mode_change_fn=lambda *_args: pytest.fail("pre-mutation race must prevent mode change"),
+    )
+
+    assert result == {"status": "refused", "reason": "evidence_changed"}
+
+
+def test_pending_mode_repair_rerun_returns_already_correct_without_mutation():
+    found = _empty_pending_volume_found(
+        needs_copy_up=True,
+        metadata=_positions_state(owner=(0, 0), mode=0o700, children=[], journal_cursor_valid=False),
+    )
+
+    result = POSITIONS.repair_positions(
+        lambda: found,
+        lambda *_args: pytest.fail("converged pending repair must not mutate ownership"),
+        mode_change_fn=lambda *_args: pytest.fail("converged pending repair must not mutate mode"),
+    )
+
+    assert result == {"status": "already_correct", "reason": "owner_matches"}
+
+
+def test_pending_mode_helper_pins_directory_and_verifies_exact_reduction(tmp_path):
+    root = tmp_path / "positions"
+    root.mkdir()
+    root.chmod(0o720)
+    before = root.stat()
+    expected = {"root": {
+        "uid": before.st_uid, "gid": before.st_gid, "mode": 0o720,
+        "dev": before.st_dev, "ino": before.st_ino,
+    }}
+    prelude = r'''import builtins,io,os
+original_open=builtins.open
+def fake_open(path,*args,**kwargs):
+    if path.startswith("/proc/self/fdinfo/"):
+        return io.StringIO("mnt_id:\t1\n")
+    if path=="/proc/self/mountinfo":
+        return io.StringIO("1 0 0:1 / / rw - testfs /dev/test rw\n")
+    return original_open(path,*args,**kwargs)
+builtins.open=fake_open
+os.listxattr=lambda *_args,**_kwargs: []
+'''
+    script = prelude + "exec(" + repr(POSITIONS._CHMOD_PENDING_SCRIPT) + ")"
+    result = subprocess.run(
+        [sys.executable, "-c", script, str(root), json.dumps(expected), str(0o700)],
+        check=False, capture_output=True, text=True,
+    )
+
+    assert result.returncode == 0
+    assert json.loads(result.stdout) == {"status": "changed"}
+    assert root.stat().st_ino == before.st_ino
+    assert root.stat().st_mode & 0o7777 == 0o700
+
+
+def test_pending_mode_helper_reduces_untrusted_command_output_to_uncertain():
+    result = POSITIONS._reduce_pending_root_mode(
+        {"metadata": _positions_state(owner=(88, 88), mode=0o720), "mountpoint": "/private/path"},
+        0o700,
+        run=lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=1, stdout="secret path /private/path", stderr="private detail",
+        ),
+    )
+
+    assert result == "uncertain"
+    assert "private" not in result
+
+
+def test_pending_mode_helper_reports_uncertain_after_partial_fchmod_failure(tmp_path):
+    root = tmp_path / "positions"
+    root.mkdir()
+    root.chmod(0o720)
+    before = root.stat()
+    expected = {"root": {
+        "uid": before.st_uid, "gid": before.st_gid, "mode": 0o720,
+        "dev": before.st_dev, "ino": before.st_ino,
+    }}
+    prelude = r'''import builtins,io,os
+original_open=builtins.open
+original_fchmod=os.fchmod
+def fake_open(path,*args,**kwargs):
+    if path.startswith("/proc/self/fdinfo/"):
+        return io.StringIO("mnt_id:\t1\n")
+    if path=="/proc/self/mountinfo":
+        return io.StringIO("1 0 0:1 / / rw - testfs /dev/test rw\n")
+    return original_open(path,*args,**kwargs)
+def partial_fchmod(fd,mode):
+    original_fchmod(fd,mode)
+    raise OSError("private failure")
+builtins.open=fake_open
+os.listxattr=lambda *_args,**_kwargs: []
+os.fchmod=partial_fchmod
+'''
+    script = prelude + "exec(" + repr(POSITIONS._CHMOD_PENDING_SCRIPT) + ")"
+    result = subprocess.run(
+        [sys.executable, "-c", script, str(root), json.dumps(expected), str(0o700)],
+        check=False, capture_output=True, text=True,
+    )
+
+    assert result.returncode == 0
+    assert json.loads(result.stdout) == {"status": "uncertain"}
+    assert root.stat().st_mode & 0o7777 == 0o700
+    assert "private failure" not in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("script_name", "mode", "arguments", "mutator"),
+    [
+        ("_CHMOD_PENDING_SCRIPT", 0o720, [str(0o700)], "fchmod"),
+        ("_CHOWN_SCRIPT", 0o700, ["0", "0"], "chown"),
+    ],
+)
+@pytest.mark.parametrize("race", ["replacement", "replacement_after_open"])
+def test_pinned_directory_helpers_refuse_replacement_before_mutation(
+    tmp_path, script_name, mode, arguments, mutator, race,
+):
+    root = tmp_path / "positions"
+    root.mkdir()
+    root.chmod(mode)
+    before = root.stat()
+    expected = {"root": {
+        "uid": before.st_uid, "gid": before.st_gid, "mode": mode,
+        "dev": before.st_dev, "ino": before.st_ino,
+    }, "children": []}
+    marker = tmp_path / "mutator-called"
+    prelude = r'''import builtins,io,os,sys
+root=sys.argv[1]
+marker=sys.argv[-1]
+original_open=os.open
+original_fchmod=os.fchmod
+def fake_open(path,*args,**kwargs):
+    if path.startswith("/proc/self/fdinfo/"):
+        return io.StringIO("mnt_id:\t1\n")
+    if path=="/proc/self/mountinfo":
+        return io.StringIO("1 0 0:1 / / rw - testfs /dev/test rw\n")
+    return builtins_open(path,*args,**kwargs)
+builtins_open=builtins.open
+builtins.open=fake_open
+os.listxattr=lambda *_args,**_kwargs: []
+def replaced_open(path,*args,**kwargs):
+    if path==root and RACE=="replacement":
+        os.replace(root,root+".saved")
+        os.mkdir(root)
+        os.chmod(root,MODE)
+        return original_open(path,*args,**kwargs)
+    fd=original_open(path,*args,**kwargs)
+    if path==root and RACE=="replacement_after_open":
+        os.replace(root,root+".saved")
+        os.mkdir(root)
+        os.chmod(root,MODE)
+    return fd
+def record_mutation(*_args,**_kwargs):
+    with builtins_open(marker,"w",encoding="utf-8") as stream: stream.write("called")
+'''.replace("MODE", str(mode)).replace("RACE", repr(race))
+    prelude += "os.open=replaced_open\n"
+    if mutator == "fchmod":
+        prelude += "os.fchmod=record_mutation\n"
+    else:
+        prelude += "os.chown=record_mutation\n"
+    script = prelude + "exec(" + repr(getattr(POSITIONS, script_name)) + ")"
+    result = subprocess.run(
+        [sys.executable, "-c", script, str(root), json.dumps(expected), *arguments, str(marker)],
+        check=False, capture_output=True, text=True,
+    )
+
+    assert result.returncode == 0
+    assert json.loads(result.stdout) == {"status": "refused"}
+    assert not marker.exists()
+
+
+@pytest.mark.parametrize(
+    ("script_name", "mode", "arguments", "mutator"),
+    [
+        ("_CHMOD_PENDING_SCRIPT", 0o720, [str(0o700)], "fchmod"),
+        ("_CHOWN_SCRIPT", 0o700, ["0", "0"], "chown"),
+    ],
+)
+def test_pinned_directory_helpers_refuse_exact_overlay_mount_before_mutation(
+    tmp_path, script_name, mode, arguments, mutator,
+):
+    root = tmp_path / "positions"
+    root.mkdir()
+    root.chmod(mode)
+    before = root.stat()
+    expected = {"root": {
+        "uid": before.st_uid, "gid": before.st_gid, "mode": mode,
+        "dev": before.st_dev, "ino": before.st_ino,
+    }, "children": []}
+    marker = tmp_path / "mutator-called"
+    prelude = r'''import builtins,io,os,sys
+root=sys.argv[1]
+marker=sys.argv[-1]
+original_open=builtins.open
+def fake_open(path,*args,**kwargs):
+    if path.startswith("/proc/self/fdinfo/"):
+        return io.StringIO("mnt_id:\t1\n")
+    if path=="/proc/self/mountinfo":
+        return io.StringIO("99 1 0:1 / " + root + " rw - overlay overlay rw\n")
+    return original_open(path,*args,**kwargs)
+builtins.open=fake_open
+os.listxattr=lambda *_args,**_kwargs: []
+def record_mutation(*_args,**_kwargs):
+    with original_open(marker,"w",encoding="utf-8") as stream: stream.write("called")
+'''
+    prelude += f"os.{mutator}=record_mutation\n"
+    script = prelude + "exec(" + repr(getattr(POSITIONS, script_name)) + ")"
+    result = subprocess.run(
+        [sys.executable, "-c", script, str(root), json.dumps(expected), *arguments, str(marker)],
+        check=False, capture_output=True, text=True,
+    )
+
+    assert result.returncode == 0
+    assert json.loads(result.stdout) == {"status": "refused"}
+    assert not marker.exists()
+
+
+@pytest.mark.parametrize(
+    ("script_name", "mode", "arguments", "mutator", "field", "observed"),
+    [
+        ("_CHMOD_PENDING_SCRIPT", 0o720, [str(0o700)], "fchmod", "mode", 0o500),
+        ("_CHMOD_PENDING_SCRIPT", 0o720, [str(0o700)], "fchmod", "uid", 1234),
+        ("_CHOWN_SCRIPT", 0o700, ["0", "0"], "chown", "mode", 0o777),
+        ("_CHOWN_SCRIPT", 0o700, ["0", "0"], "chown", "gid", 1234),
+    ],
+)
+def test_pinned_directory_helpers_refuse_fresh_mode_or_owner_drift(
+    tmp_path, script_name, mode, arguments, mutator, field, observed,
+):
+    root = tmp_path / "positions"
+    root.mkdir()
+    root.chmod(mode)
+    before = root.stat()
+    expected = {"root": {
+        "uid": before.st_uid, "gid": before.st_gid, "mode": mode,
+        "dev": before.st_dev, "ino": before.st_ino,
+    }, "children": []}
+    marker = tmp_path / "mutator-called"
+    prelude = r'''import builtins,io,os,sys
+from types import SimpleNamespace
+root=sys.argv[1]
+marker=sys.argv[-1]
+original_open=builtins.open
+original_lstat=os.lstat
+original_fstat=os.fstat
+original_listdir=os.listdir
+drift={"active":False}
+def fake_open(path,*args,**kwargs):
+    if path.startswith("/proc/self/fdinfo/"):
+        return io.StringIO("mnt_id:\t1\n")
+    if path=="/proc/self/mountinfo":
+        return io.StringIO("1 0 0:1 / / rw - testfs /dev/test rw\n")
+    return original_open(path,*args,**kwargs)
+def drifted(st):
+    values={"st_uid":st.st_uid,"st_gid":st.st_gid,"st_mode":st.st_mode,
+            "st_dev":st.st_dev,"st_ino":st.st_ino}
+    if FIELD=="mode": values["st_mode"]=(st.st_mode & ~0o7777) | OBSERVED
+    else: values["st_"+FIELD]=OBSERVED
+    return SimpleNamespace(**values)
+def fake_lstat(path):
+    st=original_lstat(path)
+    return drifted(st) if path==root and drift["active"] else st
+def fake_fstat(fd):
+    st=original_fstat(fd)
+    return drifted(st) if drift["active"] else st
+def fake_listdir(fd):
+    names=original_listdir(fd)
+    drift["active"]=True
+    return names
+builtins.open=fake_open
+os.lstat=fake_lstat
+os.fstat=fake_fstat
+os.listdir=fake_listdir
+os.listxattr=lambda *_args,**_kwargs: []
+def record_mutation(*_args,**_kwargs):
+    with original_open(marker,"w",encoding="utf-8") as stream: stream.write("called")
+'''.replace("FIELD", repr(field)).replace("OBSERVED", str(observed))
+    prelude += f"os.{mutator}=record_mutation\n"
+    script = prelude + "exec(" + repr(getattr(POSITIONS, script_name)) + ")"
+    result = subprocess.run(
+        [sys.executable, "-c", script, str(root), json.dumps(expected), *arguments, str(marker)],
+        check=False, capture_output=True, text=True,
+    )
+
+    assert result.returncode == 0
+    assert json.loads(result.stdout) == {"status": "refused"}
+    assert not marker.exists()
 
 
 @pytest.mark.parametrize("change_stage", ["before_chown", "after_chown"])
@@ -2041,13 +2530,14 @@ def test_positions_helper_mutates_only_root_and_fails_closed_on_inner_recheck():
     assert "os.fstat(root_fd)" in POSITIONS_HELPER.read_text()
     assert "str(target_uid), str(target_gid)" in POSITIONS_HELPER.read_text()
     assert "chown -R" not in POSITIONS_HELPER.read_text()
-    assert "chmod" not in POSITIONS_HELPER.read_text()
+    assert "os.chmod(" not in POSITIONS_HELPER.read_text()
+    assert 'subprocess.run(["chmod"' not in POSITIONS_HELPER.read_text()
     assert "listxattr" in POSITIONS_HELPER.read_text()
     assert "os.listdir(root_fd)" in POSITIONS_HELPER.read_text()
     assert "open(os.path.join" not in POSITIONS_HELPER.read_text()
 
 
-def test_positions_chown_pins_the_checked_inode_when_mountpoint_path_is_replaced(tmp_path):
+def test_positions_chown_refuses_when_mountpoint_path_is_replaced_before_mutation(tmp_path):
     root = tmp_path / "positions"
     moved = tmp_path / "pinned-positions"
     root.mkdir(mode=0o700)
@@ -2062,6 +2552,7 @@ def test_positions_chown_pins_the_checked_inode_when_mountpoint_path_is_replaced
     }])
     metadata["root"].update(dev=stat.st_dev, ino=stat.st_ino)
     expected = json.dumps(metadata)
+    marker = tmp_path / "chown-called"
     prelude = f'''import builtins,io,os
 original_open=os.open
 original_builtin_open=builtins.open
@@ -2074,6 +2565,7 @@ def fake_open(path,*args,**kwargs):
     return original_builtin_open(path,*args,**kwargs)
 builtins.open=fake_open
 os.listxattr=lambda *_args,**_kwargs: []
+os.chown=lambda *_args,**_kwargs: original_builtin_open({str(marker)!r},"w").write("called")
 def race_open(path,flags,*args,**kwargs):
     fd=original_open(path,flags,*args,**kwargs)
     if path=={str(root)!r} and not triggered["value"]:
@@ -2085,11 +2577,12 @@ os.open=race_open
 '''
     script = prelude + "exec(" + repr(POSITIONS._CHOWN_SCRIPT) + ")"
     result = subprocess.run(
-        [sys.executable, "-c", script, str(root), expected, str(stat.st_uid), str(stat.st_gid)],
+        [sys.executable, "-c", script, str(root), expected, str(stat.st_uid), str(stat.st_gid), str(marker)],
         check=False, capture_output=True, text=True,
     )
     assert result.returncode == 0
-    assert json.loads(result.stdout) == {"status": "changed"}
+    assert json.loads(result.stdout) == {"status": "refused"}
+    assert not marker.exists()
     assert moved.stat().st_ino == stat.st_ino
     assert root.stat().st_ino != stat.st_ino
     assert (root / "positions.db").exists() is False

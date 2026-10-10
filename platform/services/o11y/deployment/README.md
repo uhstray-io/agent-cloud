@@ -737,14 +737,19 @@ The separate `repair-positions` action keeps its initialized-volume behavior:
 fresh evidence must prove an unused root with only safe regular direct files has
 an owner mismatch that alone blocks collector access; repair changes only root
 owner/group, reads it back, and runs the restricted write/rename/delete probe in
-the cached Alloy image. A narrow
-pending exception permits that same root-only change only for the exact empty,
-unused `NeedsChown=false` / `NeedsCopyUp=true` state. This branch does not mount a
-probe container or change contents/mode, and verifies the unchanged empty volume
-before first mount. After any pending-volume mutation, a failure preserves the volume
-and returns `uncertain`; its root owner may already be `0:0`, because first-mount
-history cannot be proved from a later empty state. No owner restoration or
-copied-state deletion is automatic.
+the cached Alloy image. A narrow pending exception permits the owner/group change
+only for the exact empty, unused `NeedsChown=false` / `NeedsCopyUp=true` state. If
+group/other write bits are the only failed guard, the helper may first clear only
+those bits with `original_mode & ~0o022`; it preserves read/search bits and refuses
+special bits, incomplete owner RWX, malformed mode or any unrelated failed check.
+The mode reduction and owner change each use a no-follow directory descriptor
+pinned to the same verified device/inode, with a full discovery and exact readback
+between them. This branch does not mount a probe container or change contents. It
+verifies the empty volume before first mount. After either pending-volume mutation
+may have occurred, a failure preserves the volume and returns `uncertain`; no
+mode/owner restoration or copied-state deletion is automatic because first-mount
+history cannot be proved from a later empty state. A converged rerun reports
+`already_correct` without another mutation.
 
 Compose `up` is the only volume creation/initialization action. The pre-apply and
 immediate pre-start `verify` gates accept `bootstrap_allowed` only for the proven
@@ -788,13 +793,18 @@ repair. Check mode and survey exceptions use the same keys with unverified
 categories. No additional Podman call, mount, content read, or ownership change
 is part of this diagnostic.
 
-The live Dev survey 3865 (user-provided evidence; not rerun by this source-only
-change) reported Podman client 4.9.3 with server unavailable, exact all/named
-volume identity, omitted `NeedsChown` and `NeedsCopyUp` JSON fields, effective
-`NeedsChown=false` and `NeedsCopyUp=true`, an empty unused volume with owner
-mismatch and blocked access, and no ACL or mount ambiguity. This evidence
-motivates the narrowly scoped pending repair exception; it does not authorize a
-live mutation or close the delivery gate. Earlier Dev positions survey 3856
+The live Dev survey 3925 at reviewed SHA `8050f2768903e09f68285f90c1598cb120006219`
+(sanitized receipt supplied for this implementation; not rerun here) reported
+the exact empty, unused pending volume with owner mismatch, owner RWX, no ACL or
+mount ambiguity, no collector, and sufficient volume/GraphRoot capacity. Group
+write was the only present write/special bit; other write and special bits were
+absent. This supports the narrow code path but does not authorize a live mutation,
+prove repair readback, or close the delivery gate. The earlier live Dev survey
+3865 (user-provided evidence; not rerun by this source-only change) reported
+Podman client 4.9.3 with server unavailable, exact all/named volume identity,
+omitted `NeedsChown` and `NeedsCopyUp` JSON fields, effective `NeedsChown=false`
+and `NeedsCopyUp=true`, an empty unused volume with owner mismatch and blocked
+access, and no ACL or mount ambiguity. Earlier Dev positions survey 3856
 reported `volume_initialization_unverified`, zero
 consumers and entries, root owner mismatch, blocked access, no ACL, a clear
 mount, and safe direct children. The journal source was available, but access

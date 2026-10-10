@@ -75,11 +75,16 @@ stack and waits for Grafana to report healthy. Outside local mode it adds
   result, and runs the restricted cached Alloy create/write/rename/delete probe.
   Its failure path may restore the original owner only after fresh identity and
   metadata checks. The narrow pending repair applies only to an empty volume with
-  `NeedsChown=false` and `NeedsCopyUp=true`: it changes only the root owner/group,
-  performs no probe mount, and never restores ownership after mutation because
-  first-mount history cannot be proven. A failed pending repair reports uncertain
-  and preserves the volume.
-  It never recurses, changes mode, or removes/recreates the volume. Survey, repair,
+  `NeedsChown=false` and `NeedsCopyUp=true`. If group/other write bits are the
+  only failed guard, it may first reduce the pinned root mode with
+  `original_mode & ~0o022`, preserving read/search bits; it refuses special bits,
+  incomplete owner RWX, malformed mode or unrelated failed checks. A separate
+  full discovery/readback must pass before the owner/group change. Each mutation
+  pins the same verified root device/inode through a no-follow descriptor. It
+  performs no probe mount and never restores mode or ownership after mutation
+  because first-mount history cannot be proven. A failed pending repair reports
+  uncertain and preserves the volume; a converged rerun reports already-correct.
+  It never recurses or removes/recreates the volume. Survey, repair,
   and apply report the positions-specific result as `check_mode_unverified` in
   check mode. Apply accepts `bootstrap_allowed` only at the pre-apply and
   immediately-before-start gates. For a missing volume, bounded volume inventory
