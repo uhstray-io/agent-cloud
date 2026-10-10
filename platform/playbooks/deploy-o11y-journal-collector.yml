@@ -288,14 +288,49 @@
           stdout: '{"status":"check_mode_unverified","reason":"not_run"}'
       when: ansible_check_mode
 
+    - name: Parse positions apply-gate output through a protected boundary
+      block:
+        - name: Parse positions apply-gate JSON
+          ansible.builtin.set_fact:
+            _journal_positions_gate_parsed: "{{ _journal_positions_gate.stdout | from_json }}"
+          no_log: true
+
+        - name: Require positions apply-gate JSON to be an object
+          ansible.builtin.assert:
+            that: _journal_positions_gate_parsed is mapping
+            fail_msg: "unavailable"
+            quiet: true
+          no_log: true
+
+        - name: Normalize bounded positions apply-gate fields
+          ansible.builtin.set_fact:
+            _journal_positions_gate_summary:
+              status: "{{ _journal_positions_gate_parsed.status | default('') if _journal_positions_gate_parsed.status | default('') in ['ready', 'bootstrap_allowed'] else 'unavailable' }}"
+              root_owner: "{{ _journal_positions_gate_parsed.root_owner if _journal_positions_gate_parsed.root_owner | default('') in ['matches_collector', 'mismatch'] else 'unavailable' }}"
+              root_mode_access: "{{ _journal_positions_gate_parsed.root_mode_access if _journal_positions_gate_parsed.root_mode_access | default('') in ['read_write_execute', 'blocked'] else 'unavailable' }}"
+              entry_count: >-
+                {{ _journal_positions_gate_parsed.entry_count | int
+                if _journal_positions_gate_parsed.entry_count | default(none) is integer
+                and _journal_positions_gate_parsed.entry_count >= 0
+                and _journal_positions_gate_parsed.entry_count <= 32 else 0 }}
+          no_log: true
+      rescue:
+        - name: Record an unavailable positions apply-gate result
+          ansible.builtin.set_fact:
+            _journal_positions_gate_summary:
+              status: unavailable
+              root_owner: unavailable
+              root_mode_access: unavailable
+              entry_count: 0
+          no_log: true
+
     - name: Require positions access and mount identity before apply
       ansible.builtin.assert:
         that:
           - _journal_positions_gate.rc | default(1) == 0
-          - (_journal_positions_gate.stdout | default('{}') | from_json).status in ['ready', 'bootstrap_allowed']
+          - _journal_positions_gate_summary.status in ['ready', 'bootstrap_allowed']
         fail_msg: >-
-          Positions-volume identity/access gate refused
-          ({{ (_journal_positions_gate.stdout | default('{}') | from_json).get('reason', 'unverified') }}).
+          Positions-volume identity/access gate was refused or unavailable.
           The collector was not applied.
         quiet: true
       when: not ansible_check_mode
@@ -303,10 +338,10 @@
     - name: Report the bounded positions apply-gate result
       ansible.builtin.debug:
         msg: >-
-          Positions apply gate: status={{ (_journal_positions_gate.stdout | from_json).status }};
-          owner={{ (_journal_positions_gate.stdout | from_json).root_owner | default('unavailable') }};
-          access={{ (_journal_positions_gate.stdout | from_json).root_mode_access | default('unavailable') }};
-          entries={{ (_journal_positions_gate.stdout | from_json).entry_count | default(0) }}
+          Positions apply gate: status={{ _journal_positions_gate_summary.status }};
+          owner={{ _journal_positions_gate_summary.root_owner }};
+          access={{ _journal_positions_gate_summary.root_mode_access }};
+          entries={{ _journal_positions_gate_summary.entry_count }}
       changed_when: false
 
     - name: Render a candidate journal config with the private receiver endpoint
@@ -399,11 +434,38 @@
       check_mode: false
       when: not ansible_check_mode
 
+    - name: Parse immediate pre-mount positions output through a protected boundary
+      block:
+        - name: Parse immediate pre-mount positions JSON
+          ansible.builtin.set_fact:
+            _journal_positions_pre_mount_parsed: "{{ _journal_positions_pre_mount.stdout | from_json }}"
+          no_log: true
+
+        - name: Require immediate pre-mount positions JSON to be an object
+          ansible.builtin.assert:
+            that: _journal_positions_pre_mount_parsed is mapping
+            fail_msg: "unavailable"
+            quiet: true
+          no_log: true
+
+        - name: Normalize immediate pre-mount positions status
+          ansible.builtin.set_fact:
+            _journal_positions_pre_mount_status: >-
+              {{ _journal_positions_pre_mount_parsed.status | default('')
+              if _journal_positions_pre_mount_parsed.status | default('') in ['ready', 'bootstrap_allowed']
+              else 'unavailable' }}
+          no_log: true
+      rescue:
+        - name: Record unavailable immediate pre-mount positions status
+          ansible.builtin.set_fact:
+            _journal_positions_pre_mount_status: unavailable
+          no_log: true
+
     - name: Require positions volume remains safe to mount
       ansible.builtin.assert:
         that:
           - _journal_positions_pre_mount.rc | default(1) == 0
-          - (_journal_positions_pre_mount.stdout | default('{}') | from_json).status in ['ready', 'bootstrap_allowed']
+          - _journal_positions_pre_mount_status in ['ready', 'bootstrap_allowed']
         fail_msg: >-
           Positions volume identity or initialization state changed before the
           collector mount; no container start was requested.
@@ -459,6 +521,36 @@
           failed_when: false
           check_mode: false
 
+        - name: Parse live positions output through a protected boundary
+          block:
+            - name: Parse live positions JSON
+              ansible.builtin.set_fact:
+                _journal_positions_live_parsed: "{{ _journal_positions_live_mount.stdout | from_json }}"
+              no_log: true
+
+            - name: Require live positions JSON and diagnostic to be objects
+              ansible.builtin.assert:
+                that:
+                  - _journal_positions_live_parsed is mapping
+                  - _journal_positions_live_parsed.live_diagnostic is mapping
+                fail_msg: "unavailable"
+                quiet: true
+              no_log: true
+
+            - name: Normalize live positions status and diagnostic
+              ansible.builtin.set_fact:
+                _journal_positions_live_summary:
+                  status: "{{ _journal_positions_live_parsed.status if _journal_positions_live_parsed.status | default('') in ['ready', 'refused'] else 'unavailable' }}"
+                  live_diagnostic: "{{ _journal_positions_live_parsed.live_diagnostic }}"
+              no_log: true
+          rescue:
+            - name: Record unavailable live positions result
+              ansible.builtin.set_fact:
+                _journal_positions_live_summary:
+                  status: unavailable
+                  live_diagnostic: {}
+              no_log: true
+
         - name: Read the Podman rootless UID mapping
           ansible.builtin.command:
             argv: [podman, unshare, cat, /proc/self/uid_map]
@@ -488,14 +580,18 @@
               - >-
                 set -eE; stage=identity; moved=0; a=; b=;
                 fail() { printf '%s\n' "$stage"; exit 1; }; trap fail ERR;
-                cleanup() { rc=$?; if [ "$moved" -eq 1 ]; then rm -f -- "$b" >/dev/null 2>&1 || true;
-                elif [ -n "$a" ]; then rm -f -- "$a" >/dev/null 2>&1 || true; fi; exit "$rc"; };
+                created=0;
+                cleanup() { rc=$?; if [ "$created" -eq 1 ]; then
+                if [ "$moved" -eq 1 ] && [ "$b" = "$a.renamed" ]; then rm -f -- "$b" >/dev/null 2>&1 || true;
+                elif [ "$moved" -eq 0 ] && [ -f "$a" ]; then rm -f -- "$a" >/dev/null 2>&1 || true; fi; fi; exit "$rc"; };
                 trap cleanup EXIT; exec 2>/dev/null; test "$EUID" -eq 0;
                 mapping=$(</proc/self/uid_map);
                 read -r inside outside length <<< "$mapping";
                 test "$inside" = 0; test "$length" -gt 0;
                 stage=create;
-                a=$(mktemp /alloy-state/.positions-live-gate.XXXXXX);
+                if ! a=$(mktemp /alloy-state/.positions-live-gate.XXXXXX); then fail; fi;
+                case "$a" in /alloy-state/.positions-live-gate.*) ;; *) fail ;; esac;
+                test -f "$a"; created=1;
                 b="$a.renamed";
                 stage=write;
                 test ! -e "$b";
@@ -510,14 +606,14 @@
         - name: Report sanitized live positions diagnostic
           ansible.builtin.debug:
             msg: >-
-              Live positions diagnostic: helper={{ (_journal_positions_live_mount.stdout | default('{}') | from_json).get('live_diagnostic', {}).get('helper_status', 'unavailable') }};
-              reason={{ (_journal_positions_live_mount.stdout | default('{}') | from_json).get('live_diagnostic', {}).get('helper_reason', 'unavailable') }};
-              failed_checks={{ (_journal_positions_live_mount.stdout | default('{}') | from_json).get('live_diagnostic', {}).get('failed_checks', []) }};
-              unverified_checks={{ (_journal_positions_live_mount.stdout | default('{}') | from_json).get('live_diagnostic', {}).get('unverified_checks', []) }};
-              mount={{ (_journal_positions_live_mount.stdout | default('{}') | from_json).get('live_diagnostic', {}).get('mount', {}) }};
-              seed_file={{ (_journal_positions_live_mount.stdout | default('{}') | from_json).get('live_diagnostic', {}).get('top_level', {}).get('seed_file', 'unverified') }};
-              journal_component={{ (_journal_positions_live_mount.stdout | default('{}') | from_json).get('live_diagnostic', {}).get('top_level', {}).get('journal_component', 'unverified') }};
-              other_entries={{ (_journal_positions_live_mount.stdout | default('{}') | from_json).get('live_diagnostic', {}).get('top_level', {}).get('other_files', 'unverified') }}/{{ (_journal_positions_live_mount.stdout | default('{}') | from_json).get('live_diagnostic', {}).get('top_level', {}).get('other_directories', 'unverified') }}/{{ (_journal_positions_live_mount.stdout | default('{}') | from_json).get('live_diagnostic', {}).get('top_level', {}).get('other_symlinks', 'unverified') }}/{{ (_journal_positions_live_mount.stdout | default('{}') | from_json).get('live_diagnostic', {}).get('top_level', {}).get('other_kinds', 'unverified') }};
+              Live positions diagnostic: helper={{ _journal_positions_live_summary.live_diagnostic.get('helper_status', 'unavailable') }};
+              reason={{ _journal_positions_live_summary.live_diagnostic.get('helper_reason', 'unavailable') }};
+              failed_checks={{ _journal_positions_live_summary.live_diagnostic.get('failed_checks', []) }};
+              unverified_checks={{ _journal_positions_live_summary.live_diagnostic.get('unverified_checks', []) }};
+              mount={{ _journal_positions_live_summary.live_diagnostic.get('mount', {}) }};
+              seed_file={{ _journal_positions_live_summary.live_diagnostic.get('top_level', {}).get('seed_file', 'unverified') }};
+              journal_component={{ _journal_positions_live_summary.live_diagnostic.get('top_level', {}).get('journal_component', 'unverified') }};
+              other_entries={{ _journal_positions_live_summary.live_diagnostic.get('top_level', {}).get('other_files', 'unverified') }}/{{ _journal_positions_live_summary.live_diagnostic.get('top_level', {}).get('other_directories', 'unverified') }}/{{ _journal_positions_live_summary.live_diagnostic.get('top_level', {}).get('other_symlinks', 'unverified') }}/{{ _journal_positions_live_summary.live_diagnostic.get('top_level', {}).get('other_kinds', 'unverified') }};
               host_uid_map={{ 'available' if _journal_host_uid_map.rc | default(1) == 0 else 'unavailable' }};
               collector_uid_map={{ 'available' if _journal_collector_uid_map_observed.rc | default(1) == 0 else 'unavailable' }};
               uid_maps={{ 'unverified' if _journal_host_uid_map.rc | default(1) != 0 or _journal_collector_uid_map_observed.rc | default(1) != 0 or _journal_collector_uid_map_observed.stdout | trim | length == 0 else ('equal' if _journal_host_uid_map.stdout | trim == _journal_collector_uid_map_observed.stdout | trim else 'different') }};
@@ -528,7 +624,7 @@
           ansible.builtin.assert:
             that:
               - _journal_positions_live_mount.rc | default(1) == 0
-              - (_journal_positions_live_mount.stdout | default('{}') | from_json).status == 'ready'
+              - _journal_positions_live_summary.status == 'ready'
               - _journal_host_uid_map.rc | default(1) == 0
               - _journal_collector_uid_map.rc | default(1) == 0
               - _journal_collector_uid_map.stdout | trim == _journal_host_uid_map.stdout | trim

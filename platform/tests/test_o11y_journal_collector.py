@@ -236,6 +236,74 @@ def test_positions_metadata_parser_requires_expected_journal_cursor():
         assert namespace["journal_cursor"](bad) is False
 
 
+@pytest.mark.parametrize(
+    ("cursor_state", "expected_presence", "expected_checked", "expected_valid"),
+    [
+        ("absent", "absent", False, False),
+        ("unsafe", "present", False, False),
+        ("oversized", "present", False, False),
+        ("read_error", "present", False, False),
+        ("valid", "present", True, True),
+    ],
+)
+def test_positions_cursor_checked_tracks_stable_content_examination(
+    tmp_path, cursor_state, expected_presence, expected_checked, expected_valid
+):
+    root = tmp_path / "positions"
+    component = root / "loki.source.journal.o11y_alloy"
+    component.mkdir(mode=0o700, parents=True)
+    os.chmod(root, 0o700)
+    os.chmod(component, 0o700)
+    positions = component / "positions.yml"
+    cursor = "s=1a;i=2b;b=3c;m=4d;t=5e;x=6f"
+    content = (
+        "positions:\n  ? path: cursor-loki.source.journal.o11y_alloy\n"
+        "    labels: \"\"\n  : \"" + cursor + "\"\n"
+    )
+    if cursor_state != "absent":
+        positions.write_text("x" * 65537 if cursor_state == "oversized" else content)
+        os.chmod(positions, 0o644 if cursor_state == "unsafe" else 0o600)
+
+    prelude = f'''import builtins,io,os,sys,types
+root={str(root)!r}
+real_lstat=os.lstat
+real_fstat=os.fstat
+real_open=os.open
+def root_owned(st):
+    return types.SimpleNamespace(st_mode=st.st_mode,st_uid=0,st_gid=0,st_nlink=st.st_nlink,
+        st_dev=st.st_dev,st_ino=st.st_ino,st_size=st.st_size,st_mtime_ns=st.st_mtime_ns)
+os.lstat=lambda path,*args,**kwargs: root_owned(real_lstat(path,*args,**kwargs))
+os.fstat=lambda fd: root_owned(real_fstat(fd))
+def fake_open(path,flags,*args,**kwargs):
+    if path=="positions.yml" and {cursor_state!r}=="read_error": raise PermissionError("private")
+    return real_open(path,flags,*args,**kwargs)
+os.open=fake_open
+original_open=builtins.open
+def fake_builtin_open(path,*args,**kwargs):
+    if path=="/proc/self/mountinfo": return io.StringIO("1 0 0:1 / / rw - testfs /dev/test rw\\n")
+    return original_open(path,*args,**kwargs)
+builtins.open=fake_builtin_open
+os.listxattr=lambda *_args,**_kwargs: []
+sys.argv.append("true")
+exec({POSITIONS._METADATA_SCRIPT!r})
+'''
+    result = subprocess.run(
+        [sys.executable, "-c", prelude, str(root), "true"],
+        check=False, capture_output=True, text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    metadata = json.loads(result.stdout)
+    assert metadata["journal_cursor_presence"] == expected_presence
+    assert metadata["cursor_checked"] is expected_checked
+    assert metadata["journal_cursor_valid"] is expected_valid
+    diagnostic = POSITIONS._live_diagnostic(_positions_found(metadata=metadata))
+    if expected_checked:
+        assert "cursor_validity" not in diagnostic["unverified_checks"]
+    else:
+        assert "cursor_validity" in diagnostic["unverified_checks"]
+
+
 def test_positions_verification_enables_cursor_reading(monkeypatch):
     observed = []
 
@@ -2165,14 +2233,8 @@ def test_positions_verify_returns_ready_and_matches_successful_playbook_contract
     assert ready["reason"] == "positions_identity_verified"
 
     source = PLAYBOOK.read_text()
-    assert (
-        "(_journal_positions_gate.stdout | default('{}') | from_json).status in "
-        "['ready', 'bootstrap_allowed']"
-    ) in source
-    assert (
-        "(_journal_positions_pre_mount.stdout | default('{}') | from_json).status in "
-        "['ready', 'bootstrap_allowed']"
-    ) in source
+    assert "_journal_positions_gate_summary.status in ['ready', 'bootstrap_allowed']" in source
+    assert "_journal_positions_pre_mount_status in ['ready', 'bootstrap_allowed']" in source
     plays = yaml.safe_load(source)
     apply_play = next(play for play in plays if play.get("hosts") == "o11y_svc")
     def walk(tasks):
@@ -3125,9 +3187,9 @@ def test_playbook_guards_validation_delivery_and_non_destructive_rollback():
     )
     assert apply_block["when"] == "not ansible_check_mode"
     apply_task_names = [task.get("name") for task in apply_block["block"]]
-    assert apply_play["tasks"].index(pre_mount) + 2 == apply_play["tasks"].index(apply_block)
+    assert apply_play["tasks"].index(pre_mount) + 3 == apply_play["tasks"].index(apply_block)
     assert apply_play["tasks"][apply_play["tasks"].index(pre_mount) + 1]["name"] == (
-        "Require positions volume remains safe to mount"
+        "Parse immediate pre-mount positions output through a protected boundary"
     )
     assert pre_mount["register"] == "_journal_positions_pre_mount"
     assert pre_mount.get("no_log") is not True
@@ -3166,6 +3228,9 @@ def test_playbook_guards_validation_delivery_and_non_destructive_rollback():
     assert all(stage in live_probe_script for stage in ("identity", "create", "write", "rename", "cleanup"))
     assert "_journal_namespace_probe" not in source
     assert "_journal_collector_uid_map.stdout | trim == _journal_host_uid_map.stdout | trim" in source
+    assert "created=0" in live_probe_script
+    assert "if ! a=$(mktemp /alloy-state/.positions-live-gate.XXXXXX); then fail; fi;" in live_probe_script
+    assert 'case "$a" in /alloy-state/.positions-live-gate.*)' in live_probe_script
     image_exists = next(
         task
         for task in apply_play["tasks"]
@@ -4073,3 +4138,134 @@ def test_semaphore_template_is_dev_bound_and_requires_exact_sha():
         {"name": "Apply pilot", "value": "apply"},
         {"name": "Stop pilot", "value": "stop"},
     ]
+
+
+def test_live_namespace_create_failure_reports_create_without_relative_cleanup(tmp_path):
+    plays = yaml.safe_load(PLAYBOOK.read_text())
+    apply_play = next(play for play in plays if play.get("hosts") == "o11y_svc")
+    apply_block = next(
+        task for task in apply_play["tasks"]
+        if task.get("name") == "Apply the collector and require exact-target Loki delivery"
+    )
+    probe = next(
+        task for task in apply_block["block"]
+        if task.get("name") == "Verify effective write and rename access in the live collector namespace"
+    )
+    script = probe["ansible.builtin.command"]["argv"][-1]
+    identity_checks = (
+        'exec 2>/dev/null; test "$EUID" -eq 0; mapping=$(</proc/self/uid_map); '
+        'read -r inside outside length <<< "$mapping"; test "$inside" = 0; test "$length" -gt 0;'
+    )
+    assert identity_checks in script
+    script = script.replace(identity_checks, "exec 2>/dev/null; mapping='0 1 1';")
+    result = subprocess.run(
+        ["bash", "-c", "mktemp() { return 1; };\n" + script],
+        cwd=tmp_path, check=False, capture_output=True, text=True,
+    )
+
+    assert result.returncode == 1
+    assert result.stdout == "create\n"
+    assert result.stderr == ""
+    assert not (tmp_path / "create").exists()
+
+
+@pytest.mark.parametrize(
+    "stdout",
+    ["", "not-json", "[]", "null", '"ready"', '{"status":"running"}'],
+)
+def test_positions_gate_malformed_or_unexpected_json_is_unavailable(stdout):
+    try:
+        parsed = json.loads(stdout)
+    except json.JSONDecodeError:
+        parsed = None
+    status = parsed.get("status") if isinstance(parsed, dict) else None
+    normalized_status = status if status in {"ready", "bootstrap_allowed"} else "unavailable"
+
+    plays = yaml.safe_load(PLAYBOOK.read_text())
+    apply_play = next(play for play in plays if play.get("hosts") == "o11y_svc")
+    tasks = apply_play["tasks"]
+    boundary = next(
+        task for task in tasks
+        if task.get("name") == "Parse positions apply-gate output through a protected boundary"
+    )
+    parse_task, object_assert, normalize_task = boundary["block"]
+    rescue = boundary["rescue"][0]
+    gate = next(
+        task for task in tasks
+        if task.get("name") == "Require positions access and mount identity before apply"
+    )
+    debug = next(
+        task for task in tasks
+        if task.get("name") == "Report the bounded positions apply-gate result"
+    )
+    pre_mount_boundary = next(
+        task for task in tasks
+        if task.get("name") == "Parse immediate pre-mount positions output through a protected boundary"
+    )
+    pre_mount_gate = next(
+        task for task in tasks
+        if task.get("name") == "Require positions volume remains safe to mount"
+    )
+    apply_block = next(
+        task for task in tasks
+        if task.get("name") == "Apply the collector and require exact-target Loki delivery"
+    )
+    live_boundary = next(
+        task for task in apply_block["block"]
+        if task.get("name") == "Parse live positions output through a protected boundary"
+    )
+    live_debug = next(
+        task for task in apply_block["block"]
+        if task.get("name") == "Report sanitized live positions diagnostic"
+    )
+    live_gate = next(
+        task for task in apply_block["block"]
+        if task.get("name") == "Require the actual positions volume mount and namespace access"
+    )
+
+    assert normalized_status == "unavailable"
+    assert parse_task["ansible.builtin.set_fact"]["_journal_positions_gate_parsed"] == (
+        "{{ _journal_positions_gate.stdout | from_json }}"
+    )
+    assert parse_task["no_log"] is True
+    assert object_assert["ansible.builtin.assert"]["that"] == "_journal_positions_gate_parsed is mapping"
+    assert object_assert["no_log"] is True
+    assert normalize_task["no_log"] is True
+    assert rescue["ansible.builtin.set_fact"]["_journal_positions_gate_summary"] == {
+        "status": "unavailable", "root_owner": "unavailable",
+        "root_mode_access": "unavailable", "entry_count": 0,
+    }
+    assert rescue["no_log"] is True
+    assert gate["ansible.builtin.assert"]["that"] == [
+        "_journal_positions_gate.rc | default(1) == 0",
+        "_journal_positions_gate_summary.status in ['ready', 'bootstrap_allowed']",
+    ]
+    assert pre_mount_boundary["block"][0]["no_log"] is True
+    assert pre_mount_boundary["block"][1]["no_log"] is True
+    assert pre_mount_boundary["block"][2]["no_log"] is True
+    assert pre_mount_boundary["rescue"][0]["ansible.builtin.set_fact"] == {
+        "_journal_positions_pre_mount_status": "unavailable",
+    }
+    assert pre_mount_boundary["rescue"][0]["no_log"] is True
+    assert pre_mount_gate["ansible.builtin.assert"]["that"] == [
+        "_journal_positions_pre_mount.rc | default(1) == 0",
+        "_journal_positions_pre_mount_status in ['ready', 'bootstrap_allowed']",
+    ]
+    assert live_boundary["block"][0]["no_log"] is True
+    assert live_boundary["block"][1]["no_log"] is True
+    assert live_boundary["block"][2]["no_log"] is True
+    assert live_boundary["rescue"][0]["ansible.builtin.set_fact"] == {
+        "_journal_positions_live_summary": {
+            "status": "unavailable", "live_diagnostic": {},
+        },
+    }
+    assert live_boundary["rescue"][0]["no_log"] is True
+    assert "_journal_positions_live_mount.stdout" not in live_debug["ansible.builtin.debug"]["msg"]
+    assert "from_json" not in live_debug["ansible.builtin.debug"]["msg"]
+    assert live_gate["ansible.builtin.assert"]["that"][1] == (
+        "_journal_positions_live_summary.status == 'ready'"
+    )
+    assert "stdout" not in gate["ansible.builtin.assert"]["fail_msg"]
+    assert "stdout" not in pre_mount_gate["ansible.builtin.assert"]["fail_msg"]
+    assert "stdout" not in debug["ansible.builtin.debug"]["msg"]
+    assert "from_json" not in debug["ansible.builtin.debug"]["msg"]

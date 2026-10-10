@@ -760,8 +760,15 @@ collector absent from all containers, zero consumers and mounts, safe `0:0` root
 and allowlisted layout, `positions.yml` absent, access, ACL/mount checks, and
 capacity on GraphRoot and the volume filesystem. This `ready` result authorizes
 only a start attempt; it does not prove delivery. A present invalid or unreadable
-cursor, unknown cursor presence, or any incomplete evidence refuses. The immediate
-pre-start check runs outside rollback handling. After startup, `verify-live` is a
+cursor, unknown cursor presence, or any incomplete evidence refuses. `cursor_checked`
+is true only when the safe, bounded file was read completely with stable identity
+and its contents were parsed; absent, unsafe, oversized, or unreadable files leave
+validity `unverified`. The read-only survey still does not inspect cursor contents.
+The apply, immediate pre-mount, and post-start live gates parse positions output in
+protected tasks; malformed or non-object JSON becomes fixed `unavailable`, and the
+assertions still require normalized `ready`/`bootstrap_allowed` before start and
+`ready` after start. The live diagnostic reads only the normalized result. The
+immediate pre-start check runs outside rollback handling. After startup, `verify-live` is a
 separate strict gate; a lingering
 `NeedsCopyUp=true` is not success by itself: require the collector to be present
 as the single consumer and mount, with the exact live RW mount,

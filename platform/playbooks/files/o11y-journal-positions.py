@@ -142,6 +142,7 @@ for observation_attempt in range(2):
     component_layout=st.st_mode & (0o022|0o7000) == 0
     cursor_valid=False
     cursor_presence="absent"
+    cursor_checked=False
     free=os.statvfs(root)
     free_bytes=free.f_bavail*free.f_frsize
     free_inodes=free.f_favail
@@ -195,11 +196,14 @@ for observation_attempt in range(2):
                                 opened=os.fstat(fd)
                                 data=os.read(fd,65537)
                                 after=os.fstat(fd)
-                                cursor_valid=((opened.st_dev,opened.st_ino,opened.st_size,opened.st_mtime_ns)==
+                                stable_read=((opened.st_dev,opened.st_ino,opened.st_size,opened.st_mtime_ns)==
                                     (nested_stat.st_dev,nested_stat.st_ino,nested_stat.st_size,nested_stat.st_mtime_ns)
                                     and (after.st_dev,after.st_ino,after.st_size,after.st_mtime_ns)==
                                     (opened.st_dev,opened.st_ino,opened.st_size,opened.st_mtime_ns)
-                                    and len(data)==opened.st_size and journal_cursor(data))
+                                    and len(data)==opened.st_size)
+                                if stable_read:
+                                    cursor_checked=True
+                                    cursor_valid=journal_cursor(data)
                             finally: os.close(fd)
                         except OSError:
                             cursor_valid=False
@@ -233,7 +237,7 @@ for observation_attempt in range(2):
         "root_is_mount":mount_exact, "child_mount":child_mount,
         "component_layout":component_layout,
         "journal_cursor_presence":cursor_presence,
-        "cursor_checked":read_cursor,
+        "cursor_checked":cursor_checked,
         "journal_cursor_valid":cursor_valid,
         "free_bytes":free_bytes,
         "free_inodes":free_inodes,
