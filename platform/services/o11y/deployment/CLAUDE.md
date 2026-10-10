@@ -31,13 +31,16 @@ not establish a shared workflow lock or quiescent receiver, old-volume
 metadata/initialization flags, receiver signal and alert preservation, an
 authenticated Semaphore receipt, or live acceptance. The playbook now requires
 an existing receiver checkout at the exact reviewed SHA with a clean tracked and
-untracked worktree; it does not place a moving branch. Its atomic host-local
-reservation primitive does not authenticate Semaphore task attribution, and
-recovery is disabled pending authenticated API readback. Receiver deploy/reset/
-orphan-cleanup paths do not yet participate. Until those gates are integrated,
-all normal journal actions refuse; only check-mode survey returns
-`check_mode_unverified` without Podman or volume access. This source update has
-not been run on the Dev receiver.
+untracked worktree; it does not place a moving branch. A separate Dev-bound
+bootstrap can create `/var/lib/agent-cloud/o11y-journal-positions-diagnostic.lock`
+as a permanent empty root-owned `0644` inode on a verified local filesystem. The explicit
+`diagnose-positions` action opens it read-only, takes a bounded exclusive flock,
+and runs the existing read-only positions survey. This lock serializes that
+diagnostic only; it is not host-wide admission, does not authenticate Semaphore
+task attribution, and does not authorize mutation. Receiver deploy/reset/orphan-
+cleanup paths do not participate. Apply, repair, proof, stop, and ordinary survey
+remain refused; check-mode survey returns `check_mode_unverified` without Podman
+or volume access. This source update has not been run on the Dev receiver.
 
 ## How it is deployed
 
@@ -55,8 +58,11 @@ not been run on the Dev receiver.
   production Semaphore inventory is a copy of it; sync it before a deploy relies on a new
   value (README, "production Semaphore inventory").
 - **Receiver-host journal pilot:** `Deploy o11y Journal Collector (Dev)` runs independently
-  of `Deploy o11y`. Normal journal actions currently refuse pending shared admission;
-  check-mode survey is unverified and performs no Podman or volume access. When that
+  of `Deploy o11y`. Normal journal runtime actions remain refused pending shared admission;
+  check-mode survey is unverified and performs no Podman or volume access. The separate
+  `diagnose-positions` action serializes only its read-only metadata observation using the
+  lock created by `Bootstrap o11y Journal Diagnostic Lock (Dev)`; it grants no runtime
+  admission. When that
   gate is implemented, the `survey` action checks only `/var/log/journal` and
   `/run/log/journal`, requiring a recent exact-name record and file readability by the
   cached receiver Alloy v1.5.1 image as a rootless UID `0:0` file-read probe with

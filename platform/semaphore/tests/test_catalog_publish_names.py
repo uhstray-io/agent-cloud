@@ -31,3 +31,18 @@ def test_twinned_templates_publish_both_names():
     names = set(_published_names())
     for base in ("Deploy o11y", "Clean Deploy o11y", "Snapshot VM", "Create VM Template"):
         assert {base, base + " (Dev)"} <= names, base
+
+
+def test_journal_diagnostic_lock_bootstrap_is_separately_dev_bound():
+    templates = yaml.safe_load(CATALOG.read_text())["templates"]
+    bootstrap = next(t for t in templates if t["name"] == "Bootstrap o11y Journal Diagnostic Lock (Dev)")
+
+    assert bootstrap["playbook"] == "platform/playbooks/bootstrap-o11y-journal-lock.yml"
+    assert bootstrap["repository"] == "agent-cloud dev"
+    assert bootstrap["survey_vars"] == [{
+        "name": "expected_repository_sha",
+        "title": "Reviewed commit SHA",
+        "description": "Exact Dev commit required before creating the permanent diagnostic lock inode",
+        "type": "string",
+        "required": True,
+    }]

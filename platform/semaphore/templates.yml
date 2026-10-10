@@ -92,16 +92,27 @@ templates:
         default_value: ""
       - name: journal_collector_action
         title: "Collector action"
-        description: "Survey journal and positions metadata, run the isolated direct Podman journal proof, repair only a proven positions-root owner mismatch, apply the pilot, or stop only its collector"
+        description: "Survey metadata, run the read-only locked positions diagnostic, prove direct Podman journal behavior, or select a guarded repair/apply/stop action"
         type: enum
         required: true
         default_value: survey
         values:
           - { name: "Survey journal paths", value: "survey" }
+          - { name: "Read-only locked positions diagnostic", value: "diagnose-positions" }
           - { name: "Repair positions root ownership", value: "repair-positions" }
           - { name: "Prove direct Podman journal behavior", value: "prove-direct" }
           - { name: "Apply pilot", value: "apply" }
           - { name: "Stop pilot", value: "stop" }
+
+  - name: Bootstrap o11y Journal Diagnostic Lock (Dev)
+    playbook: platform/playbooks/bootstrap-o11y-journal-lock.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact Dev commit required before creating the permanent diagnostic lock inode"
+        type: string
+        required: true
 
   - name: Verify o11y Service
     playbook: platform/playbooks/verify-o11y-service.yml

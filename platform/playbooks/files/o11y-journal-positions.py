@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """Survey or narrowly repair the root of the journal collector state volume."""
 
+import fcntl
 import json
+import os
 import re
+import stat
 import subprocess
 import sys
+import time
 import uuid
 from datetime import UTC, datetime
 
@@ -13,6 +17,8 @@ RECEIVER = "o11y-alloy"
 COLLECTOR = "o11y-journal-collector"
 VOLUME_KEY = "journal-collector-state-v2"
 DATA_PATH = "/alloy-state"
+DIAGNOSTIC_LOCK = "/var/lib/agent-cloud/o11y-journal-positions-diagnostic.lock"
+DIAGNOSTIC_LOCK_TIMEOUT = 1.0
 MAX_VOLUMES = 256
 MAX_CONTAINERS = 1024
 MAX_CHILDREN = 32
@@ -1166,6 +1172,92 @@ def survey(discover_fn=None):
     return summary
 
 
+def _lock_signature(value):
+    return (
+        value.st_dev,
+        value.st_ino,
+        value.st_uid,
+        value.st_gid,
+        stat.S_IMODE(value.st_mode),
+        value.st_nlink,
+        value.st_size,
+    )
+
+
+def diagnose_positions(
+    lock_path=DIAGNOSTIC_LOCK,
+    observe=survey,
+    expected_uid=0,
+    expected_gid=0,
+    timeout=DIAGNOSTIC_LOCK_TIMEOUT,
+):
+    """Serialize one read-only positions observation on the permanent host inode."""
+    fd = None
+    try:
+        path = os.fspath(lock_path)
+        parent = os.lstat(os.path.dirname(path))
+        if (
+            not stat.S_ISDIR(parent.st_mode)
+            or parent.st_uid != expected_uid
+            or parent.st_gid != expected_gid
+            or parent.st_mode & 0o022
+            or parent.st_mode & 0o7000
+            or os.path.realpath(os.path.dirname(path)) != os.path.dirname(path)
+        ):
+            return {"status": "refused", "reason": "lock_parent_unsafe"}
+        before = os.lstat(path)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_uid != expected_uid
+            or before.st_gid != expected_gid
+            or stat.S_IMODE(before.st_mode) != 0o644
+            or before.st_nlink != 1
+            or before.st_size != 0
+        ):
+            return {"status": "refused", "reason": "lock_inode_unsafe"}
+        nofollow = getattr(os, "O_NOFOLLOW", 0)
+        if not nofollow:
+            return {"status": "refused", "reason": "nofollow_unavailable"}
+        fd = os.open(path, os.O_RDONLY | nofollow | getattr(os, "O_CLOEXEC", 0))
+        opened = os.fstat(fd)
+        if _lock_signature(before) != _lock_signature(opened):
+            return {"status": "refused", "reason": "lock_inode_changed"}
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    return {"status": "refused", "reason": "lock_contended"}
+                time.sleep(min(0.05, max(0, deadline - time.monotonic())))
+        current = os.lstat(path)
+        if _lock_signature(opened) != _lock_signature(current):
+            return {"status": "refused", "reason": "lock_inode_changed"}
+        try:
+            result = observe()
+        except Exception:
+            return {"status": "refused", "reason": "observation_failed"}
+        if not isinstance(result, dict) or not isinstance(result.get("status"), str):
+            return {"status": "refused", "reason": "observation_invalid"}
+        current = os.lstat(path)
+        if _lock_signature(opened) != _lock_signature(current):
+            return {"status": "refused", "reason": "lock_inode_changed"}
+        return {
+            "status": "observed",
+            "reason": "diagnostic_complete",
+            "lock_scope": "diagnostic_serialization_only",
+            "positions": result,
+        }
+    except FileNotFoundError:
+        return {"status": "refused", "reason": "lock_missing"}
+    except (OSError, TypeError, ValueError):
+        return {"status": "refused", "reason": "lock_unavailable"}
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
 def _change_root(found, target_uid=0, target_gid=0, run=subprocess.run):
     expected = found["metadata"]
     argv = ["podman", "unshare", "python3", "-c", _CHOWN_SCRIPT,
@@ -1819,6 +1911,7 @@ def verify_live(discover_fn=None):
 def main():
     actions = {
         "survey": survey,
+        "diagnose": diagnose_positions,
         "repair-positions": repair_positions,
         "verify": verify,
         "verify-live": verify_live,

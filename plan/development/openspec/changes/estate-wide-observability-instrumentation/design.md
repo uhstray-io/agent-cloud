@@ -129,6 +129,30 @@ renew, and read back ownership at each mutation boundary, CAS cannot establish
 host-local cross-play admission. This is the accepted design only; implementation,
 recovery, and operational acceptance remain open.
 
+**Diagnostic-only lock source slice (2026-10-10; not host-wide admission):** A
+separate Dev-bound Ansible bootstrap creates the permanent root-owned empty inode
+`/var/lib/agent-cloud/o11y-journal-positions-diagnostic.lock` only when absent.
+It refuses unsafe existing parents or lock objects and resolves the effective
+mount with a bounded read-only `findmnt --kernel=mountinfo --json --target`
+query before any target creation. When the lock is absent, the precheck targets
+its existing parent; after creation, a second query targets the full lock path.
+Both responses must contain exactly one well-formed result on the same effective
+mount with an allowlisted filesystem and `/dev/` source; missing, malformed,
+nonlocal, or changed evidence refuses. If the lock already exists, final stat
+must retain its original device and inode. Supported filesystems are `ext2`,
+`ext3`, `ext4`, `xfs`, and `btrfs`. The exact reviewed receiver checkout is verified as
+its owning rootless account, while root retains ownership of the lock inode. The inode is
+root-owned mode `0644` so the rootless receiver account can open it read-only; the
+diagnostic takes a nonblocking exclusive flock with a one-second deadline and
+verifies the same inode before and after observing bounded positions metadata.
+Check mode skips both creation tasks. This lock serializes only this diagnostic:
+no other journal or receiver lifecycle action acquires it, so it does not
+establish quiescence, authenticated ownership, mutation admission, or recovery.
+Synthetic coverage includes an NFS findmnt result omitted from Ansible mount
+facts, malformed output, changed pre/post evidence, and existing inode identity;
+no live filesystem or rootless flock proof is implied. Normal journal
+runtime actions remain refused, and task 1.2a remains unchecked.
+
 **Private attribution binding status (2026-10-10):** Site-config PR #71 adds the
 scoped `o11y_attribution_project_id` binding. An independent Sol Medium review
 of its final head `46a44ad1a35dce9aba61ca5b7aa43b0f1f4ca881` passed;

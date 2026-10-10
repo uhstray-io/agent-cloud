@@ -1,7 +1,9 @@
 """Safety contract for the bounded receiver-host journald pilot."""
 
 import ast
+import fcntl
 import importlib.util
+import inspect
 import json
 import os
 import re
@@ -21,6 +23,7 @@ from jinja2 import Environment
 ROOT = Path(__file__).resolve().parents[2]
 O11Y = ROOT / "platform/services/o11y/deployment"
 PLAYBOOK = ROOT / "platform/playbooks/deploy-o11y-journal-collector.yml"
+LOCK_BOOTSTRAP = ROOT / "platform/playbooks/bootstrap-o11y-journal-lock.yml"
 HELPER = ROOT / "platform/playbooks/files/probe-o11y-journal-directory.py"
 SPEC = importlib.util.spec_from_file_location("o11y_journal_probe", HELPER)
 PROBE = importlib.util.module_from_spec(SPEC)
@@ -141,6 +144,100 @@ def _positions_with_space_counters(found, free_bytes, free_inodes):
     if "storage_space" in found:
         result["storage_space"] = {"free_bytes": free_bytes, "free_inodes": free_inodes}
     return result
+
+
+def _diagnostic_lock(path):
+    path.write_bytes(b"")
+    path.chmod(0o644)
+    return path
+
+
+def _diagnose_temp_lock(path, observe=lambda: {"status": "observed"}, timeout=0.1):
+    return POSITIONS.diagnose_positions(
+        path,
+        observe=observe,
+        expected_uid=path.parent.stat().st_uid,
+        expected_gid=path.parent.stat().st_gid,
+        timeout=timeout,
+    )
+
+
+def test_positions_diagnostic_holds_readonly_lock_and_preserves_inode(tmp_path, monkeypatch):
+    lock = _diagnostic_lock(tmp_path / "positions.lock")
+    before = lock.stat()
+    original_open = os.open
+    open_flags = []
+
+    def track_open(path, flags, *args, **kwargs):
+        open_flags.append(flags)
+        return original_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(POSITIONS.os, "open", track_open)
+    second_fd = os.open(lock, os.O_RDONLY)
+    observed = []
+
+    def observe():
+        with pytest.raises(BlockingIOError):
+            fcntl.flock(second_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        observed.append(lock.read_bytes())
+        return {"status": "volume_missing"}
+
+    try:
+        result = _diagnose_temp_lock(lock, observe)
+    finally:
+        os.close(second_fd)
+
+    after = lock.stat()
+    assert result["status"] == "observed"
+    assert result["lock_scope"] == "diagnostic_serialization_only"
+    assert result["positions"]["status"] == "volume_missing"
+    assert observed == [b""]
+    assert (before.st_dev, before.st_ino) == (after.st_dev, after.st_ino)
+    assert after.st_size == 0
+    assert open_flags[-1] & os.O_ACCMODE == os.O_RDONLY
+    assert '"podman", "run"' not in inspect.getsource(POSITIONS.discover)
+    assert '"podman", "mount"' not in inspect.getsource(POSITIONS.discover)
+
+
+def test_positions_diagnostic_refuses_real_lock_contention(tmp_path):
+    lock = _diagnostic_lock(tmp_path / "positions.lock")
+    holder = os.open(lock, os.O_RDONLY)
+    fcntl.flock(holder, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    try:
+        result = _diagnose_temp_lock(lock, timeout=0.05)
+    finally:
+        os.close(holder)
+
+    assert result == {"status": "refused", "reason": "lock_contended"}
+
+
+@pytest.mark.parametrize("kind", ["symlink", "directory", "mode", "hardlink", "content"])
+def test_positions_diagnostic_refuses_unsafe_lock_objects(tmp_path, kind):
+    lock = tmp_path / "positions.lock"
+    if kind == "symlink":
+        target = _diagnostic_lock(tmp_path / "target")
+        lock.symlink_to(target)
+    elif kind == "directory":
+        lock.mkdir()
+    else:
+        _diagnostic_lock(lock)
+        if kind == "mode":
+            lock.chmod(0o666)
+        elif kind == "hardlink":
+            os.link(lock, tmp_path / "second-link")
+        elif kind == "content":
+            lock.write_bytes(b"not-empty")
+
+    result = _diagnose_temp_lock(lock)
+
+    assert result["status"] == "refused"
+    assert result["reason"] in {"lock_inode_unsafe", "lock_unavailable"}
+
+
+def test_positions_diagnostic_fails_closed_when_lock_is_missing(tmp_path):
+    result = _diagnose_temp_lock(tmp_path / "missing.lock")
+
+    assert result == {"status": "refused", "reason": "lock_missing"}
 
 
 def _positions_volume_reply(argv, volume):
@@ -3689,7 +3786,7 @@ def test_playbook_guards_validation_delivery_and_non_destructive_rollback():
     guard = source.index("import_playbook: refuse-internal-extra-vars.yml")
     reviewed = source.index("import_playbook: require-reviewed-checkout.yml")
     checkout = source.index("Verify the existing receiver checkout before any journal action")
-    closed_gate = source.index("Keep journal execution closed until authenticated shared admission is available")
+    closed_gate = source.index("Keep journal runtime actions closed until authenticated shared admission is available")
     proof = source.index("Prove direct Podman and Alloy journal persistence with disposable volumes")
     validate = source.index("Validate the candidate config")
     apply = source.index("Start only the journal collector service")
@@ -3701,16 +3798,30 @@ def test_playbook_guards_validation_delivery_and_non_destructive_rollback():
     assert checkout < closed_gate < proof
     assert "tasks/place-monorepo.yml" not in source
     assert "--untracked-files=all" in WORKFLOW_HELPER.read_text()
-    assert "Keep journal execution closed until authenticated shared admission is available" in source
+    assert "Keep journal runtime actions closed until authenticated shared admission is available" in source
     assert "groups.get('o11y_svc', []) | length == 1" in source
     expected_actions = (
         "journal_collector_action | default('apply') in "
-        "['survey', 'repair-positions', 'prove-direct', 'apply', 'stop']"
+        "['survey', 'diagnose-positions', 'repair-positions', 'prove-direct', 'apply', 'stop']"
     )
     assert expected_actions in source
     assert source.index("Verify positions volume identity and access before apply") < apply
     assert "check_mode_unverified" in source
     assert "container_inventory_unavailable" in source
+    diagnostic = next(
+        play for play in plays
+        if play.get("name") == "Run the read-only positions diagnostic under its permanent inode lock"
+    )
+    diagnostic_command = next(
+        task for task in diagnostic["tasks"]
+        if task.get("name") == "Observe positions metadata while holding the diagnostic lock"
+    )
+    assert diagnostic_command["ansible.builtin.command"]["argv"] == ["python3", "-", "diagnose"]
+    assert diagnostic.get("become", False) is False
+    assert "become" not in diagnostic_command
+    assert diagnostic_command["changed_when"] is False
+    assert diagnostic_command["no_log"] is True
+    assert "podman run" not in diagnostic_command["ansible.builtin.command"]["argv"]
     apply_play = next(
         play for play in plays
         if play.get("hosts") == "o11y_svc"
@@ -3723,6 +3834,8 @@ def test_playbook_guards_validation_delivery_and_non_destructive_rollback():
     assert pre_apply_gate["ansible.builtin.command"]["argv"] == ["python3", "-", "verify"]
     assert pre_apply_gate.get("no_log") is True
     assert "Require the actual runtime to be rootless" in source
+
+
     assert "read -r -N 1 _ < \"$file\"" in source
     assert "expected_repository_sha" in source
     assert "argv: [podman, rm, --force, --time, \"10\", o11y-journal-collector]" in source
@@ -4091,6 +4204,280 @@ def test_playbook_guards_validation_delivery_and_non_destructive_rollback():
         "_journal_rollback_volume_name.stdout | default('') | trim | length > 0",
         "_journal_rollback_volume_readback.rc | default(1) == 0",
     ]
+
+
+def test_diagnostic_lock_bootstrap_is_local_idempotent_and_check_mode_write_free():
+    source = LOCK_BOOTSTRAP.read_text()
+    plays = yaml.safe_load(source)
+    host_play = next(
+        play for play in plays
+        if play.get("name") == "Bootstrap the permanent host-local diagnostic lock inode"
+    )
+    tasks = host_play["tasks"]
+    writers = [task for task in tasks if "ansible.builtin.file" in task]
+    assert host_play["hosts"] == "o11y_svc"
+    assert host_play["become"] is True
+    assert all("not ansible_check_mode" in task["when"] for task in writers)
+    assert all("when" in task and "not ansible_check_mode" in task["when"] for task in writers)
+    assert all(task["ansible.builtin.file"].get("state") in {"directory", "touch"} for task in writers)
+    assert all("_stat.stat.exists" in " ".join(task["when"]) for task in writers)
+    checkout = next(
+        task for task in tasks
+        if task.get("name") == "Verify the existing receiver checkout before creating the lock"
+    )
+    assert checkout["ansible.builtin.command"]["argv"][2] == "verify-checkout"
+    assert checkout["when"] == "not ansible_check_mode"
+    assert checkout.get("no_log") is not True
+    assert checkout["become"] is False
+    assert not any("ansible.builtin.shell" in task for task in tasks)
+    assert "_journal_lock_supported_filesystems: [ext2, ext3, ext4, xfs, btrfs]" in source
+    assert "source is match('^/dev/')" in source
+    assert "state: touch" in source and 'mode: "0644"' in source
+    assert "state: absent" not in source
+    precheck = next(
+        task for task in tasks
+        if task.get("name") == "Read the effective existing mount before any target creation"
+    )
+    postcheck = next(
+        task for task in tasks
+        if task.get("name") == "Read the effective full lock-path mount after creation"
+    )
+    expected_findmnt = [
+        "/usr/bin/findmnt", "--kernel=mountinfo", "--json", "--target",
+        "{{ _journal_lock_mount_query_path }}", "--output", "TARGET,SOURCE,FSTYPE",
+    ]
+    assert precheck["ansible.builtin.command"]["argv"] == expected_findmnt
+    assert precheck["timeout"] == 5
+    assert precheck["changed_when"] is False and precheck["failed_when"] is False
+    assert postcheck["ansible.builtin.command"]["argv"] == expected_findmnt[:4] + [
+        "{{ _journal_lock_path }}", *expected_findmnt[5:],
+    ]
+    assert postcheck["timeout"] == 5
+    assert postcheck["when"] == "not ansible_check_mode"
+    assert tasks.index(precheck) < min(tasks.index(task) for task in writers)
+    assert tasks.index(postcheck) > max(tasks.index(task) for task in writers)
+
+
+def test_diagnostic_lock_bootstrap_check_mode_runs_only_the_readonly_mount_precheck():
+    plays = yaml.safe_load(LOCK_BOOTSTRAP.read_text())
+    host_play = next(
+        play for play in plays
+        if play.get("name") == "Bootstrap the permanent host-local diagnostic lock inode"
+    )
+    tasks = host_play["tasks"]
+    precheck = next(
+        task for task in tasks
+        if task.get("name") == "Read the effective existing mount before any target creation"
+    )
+    postcheck = next(
+        task for task in tasks
+        if task.get("name") == "Read the effective full lock-path mount after creation"
+    )
+    create_tasks = [
+        task for task in tasks
+        if task.get("name") in {
+            "Create the lock directory only when absent",
+            "Create the permanent lock inode only when absent",
+        }
+    ]
+
+    assert precheck["check_mode"] is False
+    assert precheck["ansible.builtin.command"]["argv"][0] == "/usr/bin/findmnt"
+    assert precheck["changed_when"] is False
+    assert "check_mode" not in postcheck
+    assert postcheck["when"] == "not ansible_check_mode"
+    assert len(create_tasks) == 2
+    assert all("not ansible_check_mode" in task["when"] for task in create_tasks)
+    assert all(task["ansible.builtin.file"]["state"] in {"directory", "touch"} for task in create_tasks)
+    assert [task for task in tasks if task.get("check_mode") is False] == [precheck]
+
+
+def test_diagnostic_lock_bootstrap_refuses_0700_existing_parent():
+    plays = yaml.safe_load(LOCK_BOOTSTRAP.read_text())
+    host_play = next(
+        play for play in plays
+        if play.get("name") == "Bootstrap the permanent host-local diagnostic lock inode"
+    )
+    tasks = host_play["tasks"]
+    parent_assert = next(
+        task for task in tasks
+        if task.get("name") == "Refuse unsafe lock directory parents"
+    )
+    directory_assert = next(
+        task for task in tasks
+        if task.get("name") == "Refuse an unsafe pre-existing diagnostic lock directory"
+    )
+
+    parent_stat = next(
+        task for task in tasks
+        if task.get("name") == "Inspect lock directory parents without following links"
+    )
+    assert parent_stat["loop"] == ["/var", "/var/lib"]
+    assert "item.stat.xoth | default(false)" in parent_assert["ansible.builtin.assert"]["that"]
+    assert any(
+        "_journal_lock_dir_stat.stat.xoth | default(false)" in condition
+        for condition in directory_assert["ansible.builtin.assert"]["that"]
+    )
+
+    refuses_without_other_execute = Environment().from_string(
+        "{% if item.stat.xoth | default(false) %}pass{% else %}refuse{% endif %}"
+    )
+    assert refuses_without_other_execute.render(
+        item={"stat": {"xoth": bool(0o700 & 0o001)}}
+    ) == "refuse"
+    assert refuses_without_other_execute.render(
+        item={"stat": {"xoth": bool(0o755 & 0o001)}}
+    ) == "pass"
+
+
+def test_diagnostic_lock_bootstrap_rejects_nfs_reported_by_findmnt_when_ansible_mounts_omits_it():
+    from ansible.parsing.dataloader import DataLoader
+    from ansible.template import Templar, trust_as_template
+
+    source = yaml.safe_load(LOCK_BOOTSTRAP.read_text())
+    host_play = next(
+        play for play in source
+        if play.get("name") == "Bootstrap the permanent host-local diagnostic lock inode"
+    )
+    tasks = host_play["tasks"]
+    assert_task = next(
+        task for task in tasks
+        if task.get("name") == "Require one local filesystem in the kernel mount precheck"
+    )
+    conditions = assert_task["ansible.builtin.assert"]["that"]
+    assert "ansible_mounts" not in LOCK_BOOTSTRAP.read_text()
+    result = json.dumps({"filesystems": [{
+        "target": "/var/lib/agent-cloud", "source": "server:/share", "fstype": "nfs4",
+    }]})
+    variables = {
+        "_journal_lock_mount_before_result": {"rc": 0, "stdout": result},
+        "_journal_lock_supported_filesystems": host_play["vars"]["_journal_lock_supported_filesystems"],
+    }
+    evaluated = [
+        Templar(loader=DataLoader(), variables=variables).template(
+            trust_as_template("{{ " + condition + " }}")
+        )
+        for condition in conditions
+    ]
+
+    assert evaluated[-2:] == [False, False]
+
+
+@pytest.mark.parametrize("stdout", [
+    "not-json",
+    json.dumps({"filesystems": []}),
+    json.dumps({"filesystems": [{"target": "/", "source": "/dev/root", "fstype": "ext4"}] * 2}),
+    json.dumps({"filesystems": [{"target": "/", "source": "/dev/root"}]}),
+])
+def test_diagnostic_lock_bootstrap_refuses_malformed_or_ambiguous_findmnt_results(stdout):
+    from ansible.parsing.dataloader import DataLoader
+    from ansible.template import Templar, trust_as_template
+
+    play = next(
+        play for play in yaml.safe_load(LOCK_BOOTSTRAP.read_text())
+        if play.get("name") == "Bootstrap the permanent host-local diagnostic lock inode"
+    )
+    task = next(
+        task for task in play["tasks"]
+        if task.get("name") == "Require one local filesystem in the kernel mount precheck"
+    )
+    variables = {
+        "_journal_lock_mount_before_result": {"rc": 0, "stdout": stdout},
+        "_journal_lock_supported_filesystems": play["vars"]["_journal_lock_supported_filesystems"],
+    }
+
+    def accepted():
+        return all(
+            Templar(loader=DataLoader(), variables=variables).template(
+                trust_as_template("{{ " + condition + " }}")
+            )
+            for condition in task["ansible.builtin.assert"]["that"]
+        )
+
+    try:
+        result = accepted()
+    except Exception:
+        result = False
+    assert result is False
+
+
+def test_diagnostic_lock_bootstrap_compares_preexisting_inode_device_and_number():
+    from ansible.parsing.dataloader import DataLoader
+    from ansible.template import Templar, trust_as_template
+
+    play = next(
+        play for play in yaml.safe_load(LOCK_BOOTSTRAP.read_text())
+        if play.get("name") == "Bootstrap the permanent host-local diagnostic lock inode"
+    )
+    task = next(
+        task for task in play["tasks"]
+        if task.get("name") == "Require the permanent lock inode identity and safe metadata"
+    )
+    conditions = task["ansible.builtin.assert"]["that"][-2:]
+    for old_identity, final_identity, accepted in [
+        ({"dev": 4, "inode": 20}, {"dev": 4, "inode": 20}, True),
+        ({"dev": 4, "inode": 20}, {"dev": 4, "inode": 21}, False),
+        ({"dev": 4, "inode": 20}, {"dev": 5, "inode": 20}, False),
+    ]:
+        variables = {
+            "_journal_lock_stat": {"stat": {"exists": True, **old_identity}},
+            "_journal_lock_final_stat": {"stat": final_identity},
+        }
+        values = [
+            Templar(loader=DataLoader(), variables=variables).template(
+                trust_as_template("{{ " + condition + " }}")
+            )
+            for condition in conditions
+        ]
+        assert all(values) is accepted
+
+
+def test_diagnostic_lock_bootstrap_refuses_changed_pre_post_mount_evidence():
+    from ansible.parsing.dataloader import DataLoader
+    from ansible.template import Templar, trust_as_template
+
+    play = next(
+        play for play in yaml.safe_load(LOCK_BOOTSTRAP.read_text())
+        if play.get("name") == "Bootstrap the permanent host-local diagnostic lock inode"
+    )
+    task = next(
+        task for task in play["tasks"]
+        if task.get("name") == "Require unchanged local filesystem evidence after creation"
+    )
+    conditions = task["ansible.builtin.assert"]["that"][-3:]
+    before = {"target": "/var", "source": "/dev/disk1", "fstype": "ext4"}
+    for after, accepted in [
+        (before.copy(), True),
+        ({**before, "target": "/var/lib"}, False),
+        ({**before, "source": "/dev/disk2"}, False),
+        ({**before, "fstype": "xfs"}, False),
+    ]:
+        variables = {"_journal_lock_mount_before": before}
+        variables["_journal_lock_mount_after_result"] = {
+            "rc": 0, "stdout": json.dumps({"filesystems": [after]}),
+        }
+        results = [
+            Templar(loader=DataLoader(), variables=variables).template(
+                trust_as_template("{{ " + condition + " }}")
+            )
+            for condition in conditions
+        ]
+        assert all(results) is accepted
+
+
+def test_diagnostic_action_is_the_only_runtime_exception_to_the_closed_gate():
+    plays = yaml.safe_load(PLAYBOOK.read_text())
+    gate = next(
+        play for play in plays
+        if play.get("name") == "Keep journal runtime actions closed until authenticated shared admission is available"
+    )["tasks"][0]["ansible.builtin.assert"]["that"]
+    expression = " ".join(gate)
+
+    assert "ansible_check_mode" in expression
+    assert "== 'survey'" in expression
+    assert "== 'diagnose-positions'" in expression
+    assert "diagnostic_serialization_only" in json.dumps(plays)
+    assert "host-wide admission" in json.dumps(plays)
 
 
 def test_positions_visibility_is_limited_to_bounded_helper_and_uid_probe_results():
@@ -4733,6 +5120,7 @@ def test_semaphore_template_is_dev_bound_and_requires_exact_sha():
     assert variables["journal_collector_action"]["default_value"] == "survey"
     assert variables["journal_collector_action"]["values"] == [
         {"name": "Survey journal paths", "value": "survey"},
+        {"name": "Read-only locked positions diagnostic", "value": "diagnose-positions"},
         {"name": "Repair positions root ownership", "value": "repair-positions"},
         {"name": "Prove direct Podman journal behavior", "value": "prove-direct"},
         {"name": "Apply pilot", "value": "apply"},
@@ -5209,7 +5597,7 @@ def test_workflow_public_source_guard_precedes_target_verification():
     )
     runtime_gate_play = next(
         i for i, play in enumerate(plays)
-        if play.get("name") == "Keep journal execution closed until authenticated shared admission is available"
+        if play.get("name") == "Keep journal runtime actions closed until authenticated shared admission is available"
     )
     assert source_tasks.index(read_source) < source_tasks.index(require_source) < source_tasks.index(refuse_apply)
     assert plays.index(source_play) < target_play
@@ -5239,5 +5627,6 @@ def test_workflow_public_source_guard_precedes_target_verification():
         for condition in target_assert["ansible.builtin.assert"]["that"]
     )
     runtime_gate = plays[runtime_gate_play]["tasks"][0]["ansible.builtin.assert"]["that"]
-    assert "ansible_check_mode" in runtime_gate
-    assert "journal_collector_action | default('apply') == 'survey'" in runtime_gate
+    assert "ansible_check_mode" in " ".join(runtime_gate)
+    assert "journal_collector_action | default('apply') == 'survey'" in " ".join(runtime_gate)
+    assert any("diagnose-positions" in condition for condition in runtime_gate)
