@@ -90,7 +90,11 @@ hashes every input that must restart a container — the compose files in effect
 `config/` — and stores the digest as a label on each container. A deploy whose digest and
 image IDs match the running containers leaves them alone; a changed input, a re-pulled tag,
 a stopped or missing container, or a leftover container whose service is no longer
-declared recreates the whole project (`--remove-orphans` removes the leftover). The service set
+declared recreates the whole project. The o11y caller preserves only a verified orphan labelled
+`journal-collector` and disables provider orphan removal for that recreate; any other orphan or
+missing service label refuses before `compose up`. Other callers keep `--remove-orphans`. This is
+source-level protection only: it does not prove that the installed Podman Compose provider safely
+coexists with a direct collector carrying receiver project labels. The service set
 comes from the effective config (`compose config --services` over the same files). The script prints
 `DEPLOY_CHANGED=true` or `DEPLOY_CHANGED=false`, and `deploy-o11y.yml` reports the task
 changed only on the first. Operator decision 2026-10-04: a second deploy with identical

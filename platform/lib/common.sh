@@ -203,19 +203,28 @@ compose_inputs_digest() {
   printf '%s' "$combined" | _compose_sha256
 }
 
-# _compose_recreate_reason <digest> <services>: empty when every project container matches.
+# _compose_recreate_reason <digest> <services> [preserved-orphan-service]: empty when every
+# project container matches. With preservation enabled, every service label must be verified.
 # A container whose service is no longer declared is an orphan: it counts as a change, and
 # the recreate's --remove-orphans removes it, so the run after is stable.
 _compose_recreate_reason() {
-  local want="$1" services="$2" names name svc seen=$'\n' running have ref image_run image_now
-  names=$($CONTAINER_ENGINE ps -a --filter "label=com.docker.compose.project.working_dir=$(pwd)" \
-    --format '{{.Names}}' 2>/dev/null) || names=""
+  local want="$1" services="$2" preserved="${3:-}" names name svc seen=$'\n' running have ref image_run image_now
+  if ! names=$($CONTAINER_ENGINE ps -a --filter "label=com.docker.compose.project.working_dir=$(pwd)" \
+    --format '{{.Names}}' 2>/dev/null); then
+    [ -z "$preserved" ] || error "Cannot list project containers while preserving '${preserved}'; refusing to guess."
+    names=""
+  fi
   while IFS= read -r name; do
     [ -n "$name" ] || continue
     svc=$($CONTAINER_ENGINE inspect --format '{{ index .Config.Labels "com.docker.compose.service" }}' "$name" 2>/dev/null) || svc=""
     case $'\n'"${services}"$'\n' in
       *$'\n'"${svc}"$'\n'*) ;;
-      *) echo "orphan container: ${name}"; return 0 ;;
+      *)
+        if [ -n "$preserved" ]; then
+          [ "$svc" = "$preserved" ] || error "Unexpected or unverifiable orphan container '${name}' (service label '${svc:-unknown}'); refusing to recreate."
+          continue
+        fi
+        echo "orphan container: ${name}"; return 0 ;;
     esac
     seen+="${svc}"$'\n'
     running=$($CONTAINER_ENGINE inspect --format '{{.State.Running}}' "$name" 2>/dev/null) || running=""
@@ -238,14 +247,17 @@ _compose_recreate_reason() {
 
 compose_up_if_changed() {
   detect_runtime
-  local want services reason label_dir svc
+  local want services reason label_dir svc preserved="${COMPOSE_PRESERVED_ORPHAN_SERVICE:-}"
   want=$(compose_inputs_digest "$@")
   services=$(compose_services)
   [ -n "$services" ] || error "No services found in the compose files; refusing to guess."
   if [ "${FORCE_RECREATE:-}" = "true" ]; then
+    if [ -n "$preserved" ]; then
+      _compose_recreate_reason "$want" "$services" "$preserved" >/dev/null || error "Cannot safely inspect project containers; refusing to recreate."
+    fi
     reason="operator requested FORCE_RECREATE=true"
   else
-    reason=$(_compose_recreate_reason "$want" "$services")
+    reason=$(_compose_recreate_reason "$want" "$services" "$preserved") || error "Cannot safely inspect project containers; refusing to recreate."
   fi
   if [ -z "$reason" ]; then
     info "Every container matches its inputs and image; leaving the project alone."
@@ -261,10 +273,13 @@ compose_up_if_changed() {
       printf '  %s:\n    labels:\n      %s: "%s"\n' "$svc" "$COMPOSE_INPUTS_LABEL" "$want"
     done <<< "$services"
   } > "${label_dir}/inputs-label.yml"
-  # --remove-orphans: a service dropped from the compose files would otherwise leave its old
-  # labelled container behind and every later run would recreate (podman-compose 1.6.0 and
-  # docker compose v2 both accept it).
-  if ! COMPOSE_OVERLAYS="${COMPOSE_OVERLAYS:-} ${label_dir}/inputs-label.yml" compose up -d --force-recreate --remove-orphans; then
+  # Keep the independently owned journal collector out of receiver orphan cleanup.
+  if [ -n "$preserved" ]; then
+    if ! COMPOSE_OVERLAYS="${COMPOSE_OVERLAYS:-} ${label_dir}/inputs-label.yml" COMPOSE_REMOVE_ORPHANS=0 compose up -d --force-recreate; then
+      rm -rf "$label_dir"
+      error "compose up --force-recreate failed."
+    fi
+  elif ! COMPOSE_OVERLAYS="${COMPOSE_OVERLAYS:-} ${label_dir}/inputs-label.yml" compose up -d --force-recreate --remove-orphans; then
     rm -rf "$label_dir"
     error "compose up --force-recreate failed."
   fi
