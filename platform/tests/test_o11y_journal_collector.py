@@ -4946,10 +4946,11 @@ def test_positions_gate_malformed_or_unexpected_json_is_unavailable(stdout):
     assert "from_json" not in debug["ansible.builtin.debug"]["msg"]
 
 
-def test_workflow_checkout_requires_exact_clean_existing_repository(tmp_path):
+@pytest.fixture
+def workflow_checkout(tmp_path):
     checkout = tmp_path / "checkout"
     checkout.mkdir()
-    subprocess.run(["git", "init", "-q", str(checkout)], check=True)
+    subprocess.run([str(WORKFLOW.GIT_EXECUTABLE), "init", "-q", str(checkout)], check=True)
     source = checkout / "tracked.txt"
     source.write_text("clean\n", encoding="utf-8")
     env = {
@@ -4957,20 +4958,286 @@ def test_workflow_checkout_requires_exact_clean_existing_repository(tmp_path):
         "GIT_AUTHOR_NAME": "test", "GIT_AUTHOR_EMAIL": "test@example.invalid",
         "GIT_COMMITTER_NAME": "test", "GIT_COMMITTER_EMAIL": "test@example.invalid",
     }
-    subprocess.run(["git", "-C", str(checkout), "add", "tracked.txt"], check=True, env=env)
-    subprocess.run(["git", "-C", str(checkout), "commit", "-qm", "fixture"], check=True, env=env)
+    subprocess.run([str(WORKFLOW.GIT_EXECUTABLE), "-C", str(checkout), "add", "tracked.txt"], check=True, env=env)
+    subprocess.run([str(WORKFLOW.GIT_EXECUTABLE), "-C", str(checkout), "commit", "-qm", "fixture"], check=True, env=env)
     revision = subprocess.run(
-        ["git", "-C", str(checkout), "rev-parse", "HEAD"], capture_output=True, text=True, check=True,
+        [str(WORKFLOW.GIT_EXECUTABLE), "-C", str(checkout), "rev-parse", "HEAD"],
+        capture_output=True, text=True, check=True,
     ).stdout.strip()
+    subprocess.run(
+        [str(WORKFLOW.GIT_EXECUTABLE), "-C", str(checkout), "update-ref", "refs/remotes/origin/dev", revision],
+        check=True,
+    )
+    return checkout, revision
+
+
+def test_workflow_checkout_requires_exact_clean_existing_repository(workflow_checkout):
+    checkout, revision = workflow_checkout
     assert WORKFLOW.verify_checkout(checkout, revision) == {
-        "status": "verified", "revision": revision, "clean": True,
+        "status": "verified", "revision": revision, "origin_dev_revision": revision, "clean": True,
     }
     with pytest.raises(WORKFLOW.Refusal, match="checkout_revision_mismatch"):
         WORKFLOW.verify_checkout(checkout, "0" * 40)
+    with pytest.raises(WORKFLOW.Refusal, match="expected_revision_invalid"):
+        WORKFLOW.verify_checkout(checkout, "not-a-sha")
     (checkout / "untracked.txt").write_text("dirty\n", encoding="utf-8")
     with pytest.raises(WORKFLOW.Refusal, match="checkout_dirty_or_unknown"):
         WORKFLOW.verify_checkout(checkout, revision)
     (checkout / "untracked.txt").unlink()
-    source.write_text("changed\n", encoding="utf-8")
+    (checkout / "tracked.txt").write_text("changed\n", encoding="utf-8")
     with pytest.raises(WORKFLOW.Refusal, match="checkout_dirty_or_unknown"):
         WORKFLOW.verify_checkout(checkout, revision)
+
+
+def test_workflow_checkout_disables_configured_fsmonitor_hook(workflow_checkout, tmp_path):
+    checkout, revision = workflow_checkout
+    marker = tmp_path / "fsmonitor-ran"
+    hook = tmp_path / "fsmonitor-hook"
+    hook.write_text(f"#!/bin/sh\nprintf invoked > '{marker}'\nprintf 'token\\n'\n", encoding="utf-8")
+    hook.chmod(0o755)
+    subprocess.run(
+        [str(WORKFLOW.GIT_EXECUTABLE), "-C", str(checkout), "config", "core.fsmonitor", str(hook)],
+        check=True,
+    )
+
+    subprocess.run(
+        [str(WORKFLOW.GIT_EXECUTABLE), "-C", str(checkout), "status", "--porcelain=v1"],
+        capture_output=True, text=True, check=False,
+    )
+    assert marker.exists()
+    marker.unlink()
+
+    assert WORKFLOW.verify_checkout(checkout, revision)["status"] == "verified"
+    assert not marker.exists()
+
+
+def test_workflow_checkout_refuses_wrong_root_or_revision_before_status(workflow_checkout, monkeypatch):
+    checkout, revision = workflow_checkout
+    real_run = subprocess.run
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append(argv)
+        return real_run(argv, **kwargs)
+
+    monkeypatch.setattr(WORKFLOW.subprocess, "run", run)
+    nested = checkout / "nested"
+    nested.mkdir()
+    with pytest.raises(WORKFLOW.Refusal, match="checkout_root_mismatch"):
+        WORKFLOW.verify_checkout(nested, revision)
+    assert not any("status" in argv for argv in calls)
+
+    calls.clear()
+    with pytest.raises(WORKFLOW.Refusal, match="checkout_revision_mismatch"):
+        WORKFLOW.verify_checkout(checkout, "0" * 40)
+    assert not any("status" in argv for argv in calls)
+
+
+@pytest.mark.parametrize(
+    ("local_ref", "reason"),
+    [(None, "checkout_dev_ref_unavailable"), ("1" * 40, "checkout_dev_ref_mismatch")],
+)
+def test_workflow_checkout_refuses_missing_or_stale_origin_dev(workflow_checkout, local_ref, reason, monkeypatch):
+    checkout, revision = workflow_checkout
+    if local_ref is None:
+        subprocess.run(
+            [str(WORKFLOW.GIT_EXECUTABLE), "-C", str(checkout), "update-ref", "-d", "refs/remotes/origin/dev"],
+            check=True,
+        )
+    else:
+        real_run = subprocess.run
+
+        def stale_ref(argv, **kwargs):
+            if (
+                argv[0] == str(WORKFLOW.GIT_EXECUTABLE)
+                and argv[-1] == "refs/remotes/origin/dev^{commit}"
+            ):
+                return subprocess.CompletedProcess(argv, 0, f"{local_ref}\n", "")
+            return real_run(argv, **kwargs)
+
+        monkeypatch.setattr(WORKFLOW.subprocess, "run", stale_ref)
+    with pytest.raises(WORKFLOW.Refusal, match=reason):
+        WORKFLOW.verify_checkout(checkout, revision)
+
+
+def test_workflow_dev_source_requires_remote_head_matching_expected_and_local_refs(
+    workflow_checkout, monkeypatch,
+):
+    checkout, revision = workflow_checkout
+    real_run = subprocess.run
+
+    def run(argv, **kwargs):
+        if "ls-remote" in argv:
+            assert argv == [
+                str(WORKFLOW.GIT_EXECUTABLE), "-c", "credential.helper=", "-c",
+                f"core.askPass={WORKFLOW.ASKPASS_EXECUTABLE}", "-c", "core.fsmonitor=false",
+                "-c", "http.sslVerify=true",
+                "-c", "http.proxy=",
+                "ls-remote", "--exit-code", "--refs", WORKFLOW.PUBLIC_DEV_REMOTE, "refs/heads/dev",
+            ]
+            assert kwargs["timeout"] <= 15
+            assert kwargs["cwd"] == "/"
+            assert kwargs["env"] == WORKFLOW._git_environment()
+            return subprocess.CompletedProcess(argv, 0, f"{revision}\trefs/heads/dev\n", "")
+        return real_run(argv, **kwargs)
+
+    monkeypatch.setattr(WORKFLOW.subprocess, "run", run)
+    assert WORKFLOW.verify_dev_source(checkout, revision) == {
+        "status": "verified", "revision": revision, "origin_dev_revision": revision,
+        "public_dev_revision": revision, "clean": True,
+    }
+
+
+def test_workflow_dev_source_isolates_git_from_hostile_environment_and_repo_rewrite(
+    workflow_checkout, monkeypatch, tmp_path,
+):
+    checkout, revision = workflow_checkout
+    subprocess.run(
+        [
+            str(WORKFLOW.GIT_EXECUTABLE), "-C", str(checkout), "config",
+            "url.file:///tmp/redirected.insteadOf", WORKFLOW.PUBLIC_DEV_REMOTE,
+        ],
+        check=True,
+    )
+    hostile = {
+        "GIT_SSL_NO_VERIFY": "1",
+        "GIT_EXEC_PATH": str(tmp_path),
+        "GIT_CONFIG_COUNT": "1",
+        "GIT_CONFIG_KEY_0": "url.file:///tmp/env-redirect.insteadOf",
+        "GIT_CONFIG_VALUE_0": WORKFLOW.PUBLIC_DEV_REMOTE,
+        "GIT_DIR": str(tmp_path),
+        "HTTPS_PROXY": "http://127.0.0.1:9",
+        "http_proxy": "http://127.0.0.1:9",
+        "ALL_PROXY": "http://127.0.0.1:9",
+        "SSL_CERT_FILE": str(tmp_path / "attacker.pem"),
+        "CURL_CA_BUNDLE": str(tmp_path / "attacker.pem"),
+        "GIT_SSL_CAINFO": str(tmp_path / "attacker.pem"),
+        "XDG_CONFIG_HOME": str(tmp_path),
+        "XDG_CONFIG_DIRS": str(tmp_path),
+    }
+    for key, value in hostile.items():
+        monkeypatch.setenv(key, value)
+
+    real_run = subprocess.run
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        assert argv[0] == str(WORKFLOW.GIT_EXECUTABLE)
+        assert kwargs["env"] == {
+            "HOME": os.devnull,
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_SYSTEM": os.devnull,
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_OPTIONAL_LOCKS": "0",
+            "GIT_TERMINAL_PROMPT": "0",
+            "GIT_ASKPASS": WORKFLOW.ASKPASS_EXECUTABLE,
+            "SSH_ASKPASS": WORKFLOW.ASKPASS_EXECUTABLE,
+        }
+        assert not (set(kwargs["env"]) & set(hostile))
+        if "ls-remote" in argv:
+            assert kwargs["cwd"] == os.path.abspath(os.sep)
+            assert "-c" in argv and "http.sslVerify=true" in argv
+            assert "http.proxy=" in argv
+            assert "credential.helper=" in argv
+            assert f"core.askPass={WORKFLOW.ASKPASS_EXECUTABLE}" in argv
+            assert "core.fsmonitor=false" in argv
+            return subprocess.CompletedProcess(argv, 0, f"{revision}\trefs/heads/dev\n", "")
+        return real_run(argv, **kwargs)
+
+    monkeypatch.setattr(WORKFLOW.subprocess, "run", run)
+    assert WORKFLOW.verify_dev_source(checkout, revision)["public_dev_revision"] == revision
+    assert len(calls) == 5
+    assert all(call[1]["timeout"] <= 15 for call in calls)
+    assert all(call[0][0] == str(WORKFLOW.GIT_EXECUTABLE) for call in calls)
+
+
+def test_workflow_refuses_when_fixed_git_is_unavailable(workflow_checkout, monkeypatch, tmp_path):
+    checkout, revision = workflow_checkout
+    monkeypatch.setattr(WORKFLOW, "GIT_EXECUTABLE", tmp_path / "missing-git")
+    with pytest.raises(WORKFLOW.Refusal, match="git_unavailable"):
+        WORKFLOW.verify_checkout(checkout, revision)
+
+
+@pytest.mark.parametrize(
+    ("remote_result", "reason"),
+    [
+        (subprocess.CompletedProcess([], 2, "", ""), "public_dev_revision_mismatch"),
+        (subprocess.CompletedProcess([], 0, f"{'1' * 40}\trefs/heads/dev\n", ""), "public_dev_revision_mismatch"),
+        (subprocess.CompletedProcess([], 0, "malformed\n", ""), "public_dev_revision_mismatch"),
+        (subprocess.TimeoutExpired("git ls-remote", 15), "public_dev_read_failed"),
+    ],
+)
+def test_workflow_dev_source_refuses_remote_failures_and_malformed_heads(
+    workflow_checkout, monkeypatch, remote_result, reason,
+):
+    checkout, revision = workflow_checkout
+    real_run = subprocess.run
+
+    def run(argv, **kwargs):
+        if "ls-remote" in argv:
+            if isinstance(remote_result, BaseException):
+                raise remote_result
+            return subprocess.CompletedProcess(
+                argv, remote_result.returncode, remote_result.stdout, remote_result.stderr,
+            )
+        return real_run(argv, **kwargs)
+
+    monkeypatch.setattr(WORKFLOW.subprocess, "run", run)
+    with pytest.raises(WORKFLOW.Refusal, match=reason):
+        WORKFLOW.verify_dev_source(checkout, revision)
+
+
+def test_workflow_public_source_guard_precedes_target_verification():
+    plays = yaml.safe_load(PLAYBOOK.read_text(encoding="utf-8"))
+    source_play = next(play for play in plays if play.get("name") == "Validate the reviewed Dev-bound action")
+    source_tasks = source_play["tasks"]
+    read_source = next(
+        task for task in source_tasks
+        if task.get("name") == "Read the fixed public Dev head and local origin tracking ref"
+    )
+    require_source = next(
+        task for task in source_tasks
+        if task.get("name") == "Require the exact current public Dev source"
+    )
+    refuse_apply = next(
+        task for task in source_tasks if task.get("name", "").startswith("Refuse apply")
+    )
+    target_play = next(
+        i for i, play in enumerate(plays)
+        if play.get("name") == "Verify the existing receiver checkout before any journal action"
+    )
+    runtime_gate_play = next(
+        i for i, play in enumerate(plays)
+        if play.get("name") == "Keep journal execution closed until authenticated shared admission is available"
+    )
+    assert source_tasks.index(read_source) < source_tasks.index(require_source) < source_tasks.index(refuse_apply)
+    assert plays.index(source_play) < target_play
+    assert target_play < runtime_gate_play < next(
+        i for i, play in enumerate(plays)
+        if play.get("name") == "Prove direct Podman and Alloy journal persistence with disposable volumes"
+    )
+    assert "verify-dev-source" in read_source["ansible.builtin.command"]["argv"]
+    assert read_source["check_mode"] is False
+    assert read_source["changed_when"] is False
+    assert read_source["failed_when"] is False
+    assert any(
+        "origin_dev_revision == expected_repository_sha" in condition
+        for condition in require_source["ansible.builtin.assert"]["that"]
+    )
+    target_checkout = next(
+        task for task in plays[target_play]["tasks"]
+        if "Verify exact receiver checkout" in task.get("name", "")
+    )
+    target_assert = next(
+        task for task in plays[target_play]["tasks"]
+        if task.get("name", "").startswith("Require exact existing")
+    )
+    assert target_checkout["when"] == "not ansible_check_mode"
+    assert any(
+        "origin_dev_revision == expected_repository_sha" in condition
+        for condition in target_assert["ansible.builtin.assert"]["that"]
+    )
+    runtime_gate = plays[runtime_gate_play]["tasks"][0]["ansible.builtin.assert"]["that"]
+    assert "ansible_check_mode" in runtime_gate
+    assert "journal_collector_action | default('apply') == 'survey'" in runtime_gate

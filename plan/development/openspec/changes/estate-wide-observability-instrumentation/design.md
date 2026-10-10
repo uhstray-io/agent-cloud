@@ -277,6 +277,41 @@ operation intent and creation receipts and match them at apply. The discovery
 must establish which execution paths and consumed inputs need verification;
 missing, changed or unverifiable checkout/inventory/policy evidence blocks them.
 
+**Current public Dev source guard (2026-10-10; source-only):** Before receiver
+verification or journal proof work, the controller must pass the existing exact
+expected-SHA and clean-checkout checks, its local `refs/remotes/origin/dev` must
+equal that SHA, and a bounded noninteractive read-only `git ls-remote` against
+the fixed canonical public agent-cloud HTTPS URL must return exactly that SHA
+for `refs/heads/dev`. On the receiver, the existing read-only checkout verifier
+also requires its local `refs/remotes/origin/dev` to equal the expected SHA; it
+does not fetch or contact a remote. Missing or stale refs, a different remote
+head, malformed output, command failure or timeout refuse before journal proof
+or asset mutation. Check mode performs no target write, and the runtime action
+refusal remains in force. This proves only that these observed refs match the
+exact current public Dev head at check time. It does not prove independent
+review, green CI, inventory binding, or authenticated task ownership, and it
+does not satisfy or complete task 1.2a.
+
+**Git invocation isolation (2026-10-10; source-only):** Local checkout reads and
+the public-head query use the fixed `/usr/bin/git` and fail closed if it is
+unavailable. Both receive only a controlled environment: no inherited Git,
+proxy, certificate-override, or XDG configuration variables, and system and
+global Git configuration are disabled. The public query runs from `/`, outside
+the inspected checkout, and explicitly keeps HTTPS certificate verification on,
+clears configured proxies, disables credential helpers, and disables prompts.
+The expected public-ref output remains an exact comparison. This closes the
+reviewed environment/config redirection path in source; it does not establish
+live network, review, CI, inventory-binding, or authenticated-task evidence.
+
+Every fixed Git invocation also passes command-line `-c core.fsmonitor=false`. A
+checkout-local fsmonitor executable can run during `git status`, so the receiver
+verifier now performs that status read only after exact root, `HEAD`, and local
+`origin/dev` validation succeeds. A disposable-repository regression confirms
+plain `git status` executes a configured marker hook, while `verify_checkout`
+returns `verified` without creating the marker; wrong-root and wrong-revision
+fixtures confirm status is skipped. These are source and synthetic-test results
+only, not live checkout or receiver proof.
+
 **Preservation and authenticated attribution (unverified):** Capture and compare
 the old volume's exact identity, effective initialization flags and stable root
 and bounded direct-child metadata before and after every operation, without
