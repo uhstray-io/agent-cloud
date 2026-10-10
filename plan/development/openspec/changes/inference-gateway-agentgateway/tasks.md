@@ -466,6 +466,16 @@
       whether the restore held (that step reads the container's state and exit code only, not
       logs, because a config error can echo a value; deploy.sh prints its own redacted log tail
       when its readiness wait fails). The drill is to be re-run
+      2026-10-09 correction: the drill re-run (Semaphore task 3904) failed again and its restore
+      failed too. The cause, read from the task's stderr (it was already there in 3844): the gateway
+      exited with `failed to watch configured file paths: /certs/agw-server/current/cert.pem`. Prod
+      mounts `./certs` only through `compose.tls.yml`, which the deploy selects with the
+      `COMPOSE_OVERLAYS` environment variable it gives `deploy.sh`; both of the rollback's
+      `deploy.sh` calls omitted it. The "previous config is invalid" diagnosis above was wrong.
+      The deploy.sh environment is now one mapping (`vars/agw-deploy-env.yml`, `_agw_deploy_env`)
+      that the deploy, the rollback and the runtime verify all use, guarded by
+      `test_agw_deploy_env.py`; validate-first and auto-restore stay as defence. The drill is to
+      be re-run again
 
 - [ ] 4.7 `legacy_shared_expires` = the route-switch date + 14 days (operator decision
       2026-09-27), set in site-config in the same change that switches the route

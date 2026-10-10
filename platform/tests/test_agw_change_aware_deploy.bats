@@ -340,6 +340,8 @@ last() { printf '%s' "${lines[${#lines[@]}-1]}"; }
   local blk; blk=$(task_block "$pb" 'Run deploy.sh (container lifecycle)')
   assert_contains "$blk" "changed_when: \"_deploy.stdout_lines | select('match', '^deploy-result: recreated')"
   refute_contains "$blk" "changed_when: true"
-  # The listener-TLS overlay is still passed to deploy.sh.
-  assert_contains "$blk" "compose.tls.yml"
+  # The listener-TLS overlay is still passed to deploy.sh: through the one environment mapping
+  # the deploy, the rollback and the runtime verify share.
+  assert_contains "$blk" 'environment: "{{ _agw_deploy_env }}"'
+  assert_grep -qF "compose.tls.yml" "$REPO_ROOT/platform/playbooks/vars/agw-deploy-env.yml"
 }

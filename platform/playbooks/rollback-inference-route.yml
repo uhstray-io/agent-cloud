@@ -388,6 +388,8 @@
   gather_facts: false
   become: false
   any_errors_fatal: true
+  vars_files:
+    - vars/agw-deploy-env.yml
   vars:
     _rb_mode: "{{ mode | default('gateway-config') }}"
     _engine: "{{ container_engine | default('podman') }}"
@@ -643,10 +645,9 @@
               ansible.builtin.shell: |
                 cd "{{ _deploy_dir }}"
                 bash deploy.sh --no-pull
-              environment:
-                CONTAINER_ENGINE: "{{ _engine }}"
-                LOCAL_MODE: "{{ 'true' if (local_mode | default(false) | bool) else '' }}"
-                COMPOSE_CMD: "{{ local_compose_cmd | default('') }}"
+              # The deploy's own environment (vars/agw-deploy-env.yml), COMPOSE_OVERLAYS included:
+              # without compose.tls.yml the gateway has no ./certs and exits at start.
+              environment: "{{ _agw_deploy_env }}"
               register: _rb_redeploy
               changed_when: true
               when:
@@ -696,10 +697,9 @@
               ansible.builtin.shell: |
                 cd "{{ _deploy_dir }}"
                 bash deploy.sh --no-pull
-              environment:
-                CONTAINER_ENGINE: "{{ _engine }}"
-                LOCAL_MODE: "{{ 'true' if (local_mode | default(false) | bool) else '' }}"
-                COMPOSE_CMD: "{{ local_compose_cmd | default('') }}"
+              # The deploy's own environment (vars/agw-deploy-env.yml), COMPOSE_OVERLAYS included:
+              # without compose.tls.yml the gateway has no ./certs and exits at start.
+              environment: "{{ _agw_deploy_env }}"
               register: _rb_restore_deploy
               changed_when: true
               failed_when: false

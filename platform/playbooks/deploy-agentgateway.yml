@@ -62,6 +62,7 @@
   become: false
   vars_files:
     - vars/secret-declarations/agentgateway.yml
+    - vars/agw-deploy-env.yml
   vars:
     _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
     _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
@@ -466,13 +467,8 @@
       ansible.builtin.shell: |
         cd "{{ _deploy_dir }}"
         bash deploy.sh --pull-only
-      environment:
-        CONTAINER_ENGINE: "{{ container_engine | default('podman') }}"
-        LOCAL_MODE: "{{ 'true' if (local_mode | default(false) | bool) else '' }}"
-        COMPOSE_CMD: "{{ local_compose_cmd | default('') }}"
-        COMPOSE_OVERLAYS: >-
-          {{ 'compose.tls.yml' if ((agw_listener_tls | default(false) | bool)
-             and not (local_mode | default(false) | bool)) else '' }}
+      # The one deploy.sh environment (vars/agw-deploy-env.yml), shared with the rollback.
+      environment: "{{ _agw_deploy_env }}"
       register: _agw_image_pull
       changed_when: false
       when: not ansible_check_mode
@@ -495,6 +491,8 @@
   hosts: agentgateway_svc
   gather_facts: false
   become: false
+  vars_files:
+    - vars/agw-deploy-env.yml
   vars:
     _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
     _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
@@ -528,18 +526,9 @@
       ansible.builtin.shell: |
         cd "{{ _deploy_dir }}"
         bash deploy.sh --no-pull
-      environment:
-        CONTAINER_ENGINE: "{{ container_engine | default('podman') }}"
-        LOCAL_MODE: "{{ 'true' if (local_mode | default(false) | bool) else '' }}"
-        # Force the compose provider on the Mac-direct genesis path; empty on the
-        # Semaphore path (detect_runtime derives it). NOT default(omit) — omit
-        # leaks its placeholder into environment (rc 127).
-        COMPOSE_CMD: "{{ local_compose_cmd | default('') }}"
-        # Listener TLS outside local-dev: mount ./certs and run under userns keep-id
-        # (compose.tls.yml). Local-dev's overlay already mounts ./certs.
-        COMPOSE_OVERLAYS: >-
-          {{ 'compose.tls.yml' if ((agw_listener_tls | default(false) | bool)
-             and not (local_mode | default(false) | bool)) else '' }}
+      # The one deploy.sh environment (vars/agw-deploy-env.yml), shared with the rollback:
+      # compose provider, local-mode flag and the listener-TLS overlay that mounts ./certs.
+      environment: "{{ _agw_deploy_env }}"
       register: _deploy
       # Change-aware (task 1.12): deploy.sh recreates only when the rendered inputs or the
       # image differ from what the running gateway started with, and says which on its last
