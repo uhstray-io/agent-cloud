@@ -537,11 +537,62 @@
                 quiet: true
               no_log: true
 
+            - name: Validate live positions diagnostic fields before summary
+              ansible.builtin.assert:
+                that:
+                  - _journal_positions_live_parsed.live_diagnostic.helper_status in ['observed', 'volume_initialization_pending', 'volume_missing', 'volume_shared', 'mount_count_unverified', 'collector_mount_unverified', 'collector_identity_unverified', 'metadata_unavailable', 'volume_initialization_unverified', 'volume_identity_unsupported', 'volume_users_unavailable', 'volume_ambiguous', 'not_rootless', 'receiver_unavailable', 'receiver_identity_unverified', 'volume_inventory_unavailable', 'container_inventory_unavailable', 'unavailable']
+                  - _journal_positions_live_parsed.live_diagnostic.helper_reason in ['survey_only', 'positions_identity_verified', 'not_rootless', 'receiver_unavailable', 'receiver_identity_unverified', 'volume_inventory_unavailable', 'container_inventory_unavailable', 'volume_ambiguous', 'volume_missing', 'volume_identity_unsupported', 'volume_initialization_unverified', 'volume_users_unavailable', 'volume_shared', 'mount_count_unverified', 'collector_mount_unverified', 'collector_identity_unverified', 'metadata_unavailable', 'volume_initialization_pending', 'metadata_ambiguous', 'positions_access_blocked', 'verification_refused']
+                  - _journal_positions_live_parsed.live_diagnostic.failed_checks | type_debug == 'list'
+                  - _journal_positions_live_parsed.live_diagnostic.failed_checks | length <= 13
+                  - _journal_positions_live_parsed.live_diagnostic.failed_checks | select('string') | list | length == _journal_positions_live_parsed.live_diagnostic.failed_checks | length
+                  - _journal_positions_live_parsed.live_diagnostic.failed_checks | difference(['metadata_unavailable', 'owner', 'component_layout', 'acl', 'mount_boundary', 'cursor_presence', 'cursor_validity', 'positions_access', 'mount_destination', 'mount_volume_name', 'mount_source', 'mount_type', 'mount_rw', 'container_user']) | length == 0
+                  - _journal_positions_live_parsed.live_diagnostic.unverified_checks | type_debug == 'list'
+                  - _journal_positions_live_parsed.live_diagnostic.unverified_checks | length <= 7
+                  - _journal_positions_live_parsed.live_diagnostic.unverified_checks | select('string') | list | length == _journal_positions_live_parsed.live_diagnostic.unverified_checks | length
+                  - _journal_positions_live_parsed.live_diagnostic.unverified_checks | difference(['mount_destination', 'mount_volume_name', 'mount_source', 'mount_type', 'mount_rw', 'container_user', 'cursor_validity']) | length == 0
+                  - _journal_positions_live_parsed.live_diagnostic.mount is mapping
+                  - _journal_positions_live_parsed.live_diagnostic.mount.keys() | list | sort == ['destination', 'volume_name', 'source', 'type', 'rw', 'user'] | sort
+                  - _journal_positions_live_parsed.live_diagnostic.mount.destination in ['match', 'mismatch', 'unverified']
+                  - _journal_positions_live_parsed.live_diagnostic.mount.volume_name in ['match', 'mismatch', 'unverified']
+                  - _journal_positions_live_parsed.live_diagnostic.mount.source in ['match', 'mismatch', 'unverified']
+                  - _journal_positions_live_parsed.live_diagnostic.mount.type in ['match', 'mismatch', 'unverified']
+                  - _journal_positions_live_parsed.live_diagnostic.mount.rw in ['match', 'mismatch', 'unverified']
+                  - _journal_positions_live_parsed.live_diagnostic.mount.user in ['match', 'mismatch', 'unverified']
+                  - _journal_positions_live_parsed.live_diagnostic.top_level is mapping
+                  - _journal_positions_live_parsed.live_diagnostic.top_level.keys() | list | sort == ['seed_file', 'journal_component', 'other_files', 'other_directories', 'other_symlinks', 'other_kinds'] | sort
+                  - _journal_positions_live_parsed.live_diagnostic.top_level.seed_file == 'unverified' or (_journal_positions_live_parsed.live_diagnostic.top_level.seed_file | type_debug == 'int' and 0 <= _journal_positions_live_parsed.live_diagnostic.top_level.seed_file <= 32)
+                  - _journal_positions_live_parsed.live_diagnostic.top_level.journal_component == 'unverified' or (_journal_positions_live_parsed.live_diagnostic.top_level.journal_component | type_debug == 'int' and 0 <= _journal_positions_live_parsed.live_diagnostic.top_level.journal_component <= 32)
+                  - _journal_positions_live_parsed.live_diagnostic.top_level.other_files == 'unverified' or (_journal_positions_live_parsed.live_diagnostic.top_level.other_files | type_debug == 'int' and 0 <= _journal_positions_live_parsed.live_diagnostic.top_level.other_files <= 32)
+                  - _journal_positions_live_parsed.live_diagnostic.top_level.other_directories == 'unverified' or (_journal_positions_live_parsed.live_diagnostic.top_level.other_directories | type_debug == 'int' and 0 <= _journal_positions_live_parsed.live_diagnostic.top_level.other_directories <= 32)
+                  - _journal_positions_live_parsed.live_diagnostic.top_level.other_symlinks == 'unverified' or (_journal_positions_live_parsed.live_diagnostic.top_level.other_symlinks | type_debug == 'int' and 0 <= _journal_positions_live_parsed.live_diagnostic.top_level.other_symlinks <= 32)
+                  - _journal_positions_live_parsed.live_diagnostic.top_level.other_kinds == 'unverified' or (_journal_positions_live_parsed.live_diagnostic.top_level.other_kinds | type_debug == 'int' and 0 <= _journal_positions_live_parsed.live_diagnostic.top_level.other_kinds <= 32)
+                fail_msg: "unavailable"
+                quiet: true
+              no_log: true
+
             - name: Normalize live positions status and diagnostic
               ansible.builtin.set_fact:
                 _journal_positions_live_summary:
                   status: "{{ _journal_positions_live_parsed.status if _journal_positions_live_parsed.status | default('') in ['ready', 'refused'] else 'unavailable' }}"
-                  live_diagnostic: "{{ _journal_positions_live_parsed.live_diagnostic }}"
+                  live_diagnostic:
+                    helper_status: "{{ _journal_positions_live_parsed.live_diagnostic.helper_status }}"
+                    helper_reason: "{{ _journal_positions_live_parsed.live_diagnostic.helper_reason }}"
+                    failed_checks: "{{ _journal_positions_live_parsed.live_diagnostic.failed_checks }}"
+                    unverified_checks: "{{ _journal_positions_live_parsed.live_diagnostic.unverified_checks }}"
+                    mount:
+                      destination: "{{ _journal_positions_live_parsed.live_diagnostic.mount.destination }}"
+                      volume_name: "{{ _journal_positions_live_parsed.live_diagnostic.mount.volume_name }}"
+                      source: "{{ _journal_positions_live_parsed.live_diagnostic.mount.source }}"
+                      type: "{{ _journal_positions_live_parsed.live_diagnostic.mount.type }}"
+                      rw: "{{ _journal_positions_live_parsed.live_diagnostic.mount.rw }}"
+                      user: "{{ _journal_positions_live_parsed.live_diagnostic.mount.user }}"
+                    top_level:
+                      seed_file: "{{ _journal_positions_live_parsed.live_diagnostic.top_level.seed_file }}"
+                      journal_component: "{{ _journal_positions_live_parsed.live_diagnostic.top_level.journal_component }}"
+                      other_files: "{{ _journal_positions_live_parsed.live_diagnostic.top_level.other_files }}"
+                      other_directories: "{{ _journal_positions_live_parsed.live_diagnostic.top_level.other_directories }}"
+                      other_symlinks: "{{ _journal_positions_live_parsed.live_diagnostic.top_level.other_symlinks }}"
+                      other_kinds: "{{ _journal_positions_live_parsed.live_diagnostic.top_level.other_kinds }}"
               no_log: true
           rescue:
             - name: Record unavailable live positions result

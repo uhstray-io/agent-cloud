@@ -395,6 +395,85 @@ def test_live_diagnostic_reports_only_fixed_mount_layout_and_role_categories():
     assert "/private" not in json.dumps(diagnostic)
 
 
+def test_live_positions_debug_rescues_malformed_nested_diagnostic_before_rendering():
+    from ansible.parsing.dataloader import DataLoader
+    from ansible.template import Templar, trust_as_template
+
+    plays = yaml.safe_load(PLAYBOOK.read_text())
+    apply_play = next(play for play in plays if play.get("hosts") == "o11y_svc")
+    apply_block = next(
+        task for task in apply_play["tasks"]
+        if task.get("name") == "Apply the collector and require exact-target Loki delivery"
+    )
+    live_boundary = next(
+        task for task in apply_block["block"]
+        if task.get("name") == "Parse live positions output through a protected boundary"
+    )
+    validation = next(
+        task for task in live_boundary["block"]
+        if task.get("name") == "Validate live positions diagnostic fields before summary"
+    )
+    rescue = live_boundary["rescue"][0]["ansible.builtin.set_fact"][
+        "_journal_positions_live_summary"
+    ]
+    debug = next(
+        task for task in apply_block["block"]
+        if task.get("name") == "Report sanitized live positions diagnostic"
+    )
+    base = {
+        "helper_status": "refused",
+        "helper_reason": "survey_only",
+        "failed_checks": ["owner"],
+        "unverified_checks": ["cursor_validity"],
+        "mount": dict.fromkeys(
+            ("destination", "volume_name", "source", "type", "rw", "user"),
+            "unverified",
+        ),
+        "top_level": dict.fromkeys(
+            (
+                "seed_file", "journal_component", "other_files", "other_directories",
+                "other_symlinks", "other_kinds",
+            ),
+            0,
+        ),
+    }
+    malformed = []
+    malformed.append({**base, "helper_reason": "PRIVATE_MARKER_REASON"})
+    malformed.append({
+        **base,
+        "failed_checks": ["PRIVATE_MARKER_CHECK", ["PRIVATE_MARKER_NESTED"]],
+    })
+    malformed.append({
+        **base,
+        "mount": {**base["mount"], "source": "PRIVATE_MARKER_SOURCE"},
+    })
+    malformed.append({**base, "top_level": []})
+
+    for diagnostic in malformed:
+        raw_json = json.dumps({"status": "refused", "live_diagnostic": diagnostic})
+        variables = {"_journal_positions_live_parsed": json.loads(raw_json)}
+        templar = Templar(loader=DataLoader(), variables=variables)
+        passed = all(
+            str(templar.template(trust_as_template(condition))).lower() == "true"
+            for condition in validation["ansible.builtin.assert"]["that"]
+        )
+        variables["_journal_positions_live_summary"] = (
+            {
+                "status": "refused",
+                "live_diagnostic": diagnostic,
+            }
+            if passed else rescue
+        )
+        rendered = Templar(loader=DataLoader(), variables=variables).template(
+            trust_as_template(debug["ansible.builtin.debug"]["msg"])
+        )
+
+        assert passed is False
+        assert variables["_journal_positions_live_summary"] == rescue
+        assert "PRIVATE_MARKER" not in rendered
+        assert "helper=unavailable" in rendered
+
+
 @pytest.mark.parametrize("field", ["NeedsChown", "NeedsCopyUp"])
 @pytest.mark.parametrize(
     ("value", "expected_type", "expected_value"),
