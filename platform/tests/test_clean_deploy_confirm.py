@@ -59,6 +59,21 @@ def test_the_confirmation_is_the_first_thing_clean_service_does_after_its_inputs
         assert not set(task) & {"ansible.builtin.shell", "ansible.builtin.file", "ansible.builtin.command"}
 
 
+def test_o11y_clean_deploy_refuses_unconditionally_before_shared_teardown():
+    play = next(p for p in playbook_yaml.load(PLAYBOOKS / "clean-deploy-o11y.yml") if "hosts" in p)
+    tasks = play["tasks"]
+    teardown = next(i for i, task in enumerate(tasks)
+                    if task.get("ansible.builtin.include_tasks") == "tasks/clean-service.yml")
+    guard = tasks[teardown - 1]
+
+    assert guard["name"].startswith("Refuse o11y cleanup")
+    assert guard["ansible.builtin.assert"]["that"] == ["false"]
+    assert "Selective teardown is unavailable until host-wide admission and complete" in \
+        guard["ansible.builtin.assert"]["fail_msg"]
+    assert "when" not in guard
+    assert "tags" not in guard
+
+
 def _service(path: Path) -> str:
     return path.stem.removeprefix("clean-deploy-")
 
