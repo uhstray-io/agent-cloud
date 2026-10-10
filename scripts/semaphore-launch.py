@@ -40,7 +40,7 @@ from semaphore_seed import API, TERMINAL, NoRedirect, Refusal, submit, wait  # n
 # read the flag differently, and a mis-read flag means a real run (review of PR #220).
 #   v2.17.31  source + live (production controller, task 1206 recorded params.dry_run)
 #   v2.18.12  source: db/Task.go AnsibleTaskParams.DryRun, Task.Params json:"params" (local-dev image)
-#   v2.19.11  source: same fields (the compose default in platform/services/semaphore)
+#   v2.19.11  source + live (production controller since 2026-10-09; task 3942 recorded params.dry_run)
 VERIFIED_DRY_RUN_VERSIONS = {"v2.17.31", "v2.18.12", "v2.19.11"}
 
 

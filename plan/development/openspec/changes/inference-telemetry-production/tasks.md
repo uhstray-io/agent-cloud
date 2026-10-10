@@ -37,7 +37,7 @@
       and 1851 reached the VM over SSH.
 
 ## 1. Promote o11y to production
-- [ ] 1.1 `o11y_svc` group in site-config `inventory/production.yml` with
+- [x] 1.1 `o11y_svc` group in site-config `inventory/production.yml` with
       `monorepo_deploy_path: platform/services/o11y/deployment`; `templates-prod` entry for
       **Deploy o11y** and **Clean Deploy o11y**
       2026-10-02 rescope: PARTIAL — `o11y_svc` and its deploy path are declared
@@ -57,6 +57,12 @@
       2026-10-08; the checkout may differ from site-config's `origin`). `Deploy o11y` and
       `Clean Deploy o11y` are main-bound with `dev_variant`, as recorded above. Publication of
       the main-bound pair waits for promotion of `dev` to `main`. Left unticked.
+      2026-10-09: ticked. `dev` was promoted to `main` (PR #515, `293b1e0c`), and the main-bound
+      `Deploy o11y` and `Clean Deploy o11y` were created on the production Semaphore with the
+      operator-side scoped `setup-templates.yml` (one template per run, `--check` first, then
+      real); the controller publisher refuses main-bound creates by design. Both now exist on
+      repository record `agent-cloud` (main); `Clean Deploy o11y` carries `confirm_reset`. The
+      `templates-prod` clause stays closed as stale (2026-10-08 note above).
 - [x] 1.2 `templates/env.j2`: `O11Y_PROM_RETENTION` default `15d`, `O11Y_LOKI_RETENTION`
       default `7d`, binds loopback for Prometheus and Alloy, Loki and Grafana bound to the
       VM address; compose reads the retention vars
