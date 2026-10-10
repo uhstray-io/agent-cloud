@@ -1,0 +1,33 @@
+---
+- name: Validate the receiver lifecycle admission action
+  ansible.builtin.assert:
+    that: o11y_journal_lifecycle_operation in ['receiver-deploy', 'receiver-clean']
+    fail_msg: "Receiver lifecycle refused because the admission action is invalid."
+    quiet: true
+
+- name: Check durable journal admission before receiver lifecycle work
+  ansible.builtin.command:
+    argv:
+      - python3
+      - "-"
+      - receiver-check
+      - --operation
+      - "{{ o11y_journal_lifecycle_operation }}"
+    stdin: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/o11y-journal-workflow.py') }}"
+    stdin_add_newline: false
+  register: _o11y_journal_admission
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Refuse receiver lifecycle until shared journal admission is authenticated
+  ansible.builtin.assert:
+    that:
+      - _o11y_journal_admission.rc == 0
+      - _o11y_journal_admission.stdout | trim == '{"status":"admitted"}'
+    fail_msg: >-
+      Receiver lifecycle is refused until authenticated task attribution and durable
+      journal admission are available. Clean/reset also requires selectors that preserve
+      both journal volumes. No service lifecycle action was performed.
+    quiet: true
