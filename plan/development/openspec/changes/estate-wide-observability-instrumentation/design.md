@@ -91,14 +91,14 @@ The helper's `verify` action is the pre-start gate; `verify-live` is the post-st
 
 ### 2a. Fresh positions-volume proof and switch (2026-10-10; planned, not implemented)
 
-**Current receipt and stop:** User-supplied Dev-bound read-only task **4038** at
+**Current receipt and stop:** Independently read Dev-bound read-only task **4038** at
 merged SHA `a052555060b4c9ca5fb59fb44fa64906fc38bd69` reports
 `initialization_pending`, collector absent, volume use count 0, three entries
 (`seed_file=1`, `journal_component=1`, `other_directories=1`), unknown-directory
 count 1 fully verified as collector-owned, RWX, ACL absent, same mount and empty.
 There is no cursor; `component_layout` failed; live mount/UID proof was not run.
-This receipt is recorded from the supplied evidence, not independently reread
-in this planning session. Empty unknown-directory metadata does not identify
+This receipt was read from Semaphore after the merged deployment. Empty
+unknown-directory metadata does not identify
 its purpose or origin and does not relax the layout gate. Ownership repair is
 inapplicable: the root already matches the collector and the volume is nonempty.
 Preserve the old volume without mount, chmod/chown, copy, rename, cursor read,
