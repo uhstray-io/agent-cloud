@@ -300,10 +300,11 @@ except the collector and the custom-fields converger, and all are read-only exce
 | `install-docker.yml` | Install Docker CE from official repo (idempotent) |
 | `install-qemu-guest-agent.yml` | Install `qemu-guest-agent` on existing VMs (idempotent); refuses a VM without the Proxmox guest-agent channel. Enable that channel first with `resize-vm.yml`, which converges `agent=1` (a running VM needs `allow_reboot=true` to pick it up) |
 | `resize-vm.yml` | Converge a live VM's cores/memory/disk and its guest-agent option (`agent=1`, per-host opt-out `vm_agent: false`) to its declaration; grow-only disk, opt-in reboot, and a run without `allow_reboot` is a safe preview |
-| `install-podman.yml` | Install Podman + podman-compose (idempotent); optional `podman_docker_cli` adds the `docker` CLI shim for consumers that shell out to a docker binary |
+| `install-podman.yml` | Install Podman + podman-compose + uidmap (idempotent); optional `podman_docker_cli` adds the `docker` CLI shim for consumers that shell out to a docker binary |
 | `deploy-github-runner.yml` | Install + register one self-hosted GitHub Actions runner. Registration token minted on the CONTROLLER — the host is firewalled away from OpenBao by design |
 | `manage-github-runner-group.yml` | Converge the org runner group's repository access list as code. REFUSES to run if any declared repo is public. Read-only unless `-e dry_run=false` |
 | `grow-o11y-root.yml` | Grow the o11y receiver's LVM ext4 root into its virtual disk online (partition, PV, LV, filesystem); refuses any other layout, plan-only under `--check` |
+| `grow-github-runner-root.yml` | The same online root grow for each host in `github_runner_svc`; both grow playbooks import `tasks/grow-root-lvm.yml` |
 | `reboot-host.yml` | Reboot ONE declared host and wait for it; refuses unless the group holds exactly one host named in `confirm_reboot` |
 | `mount-caddy-certs.yml` | Add a read-only `/etc/caddy/certs` volume to the central Caddy's hand-maintained compose file (after proving Caddy runs from `caddy_compose_dir`); recreate only on change, restoring the previous file on failure |
 

@@ -461,11 +461,37 @@
       failed_when: "(_active.stdout | default('') | trim) != 'active'"
       check_mode: false
 
+    - name: "Confirm rootless podman can run a job container"
+      # A job that declares `container:` runs through the container hooks, which call
+      # `docker` (podman-docker) as this account. That needs newuidmap (the uidmap
+      # package, installed by install-podman.yml) and a /etc/subuid range for the
+      # account. Without either, the hooks fail every container job with "command
+      # required for rootless mode with multiple IDs", and the job cleanup cannot
+      # prune, which is how both runners ran until 2026-10-10. `system migrate`
+      # refreshes podman's user namespace after uidmap or the range arrives; then a
+      # mapping of more than one line proves the account gets a range, not just itself.
+      ansible.builtin.shell: |
+        set -euo pipefail
+        podman system migrate
+        podman unshare cat /proc/self/uid_map
+      args:
+        executable: /bin/bash
+      become: true
+      become_user: "{{ _account }}"
+      environment:
+        XDG_RUNTIME_DIR: "/run/user/{{ _runner_uid }}"
+      register: _uidmap
+      changed_when: false
+      failed_when: >-
+        _uidmap.rc != 0 or (_uidmap.stdout_lines | default([]) | length) < 2
+      check_mode: false
+
     - name: "Report"
       ansible.builtin.debug:
         msg: >-
           {{ github_runner_name }} installed (runner v{{ _rver }}, hooks v{{ _hver }}),
           service {{ _active.stdout | trim }}, labels
           {{ (github_runner_labels | default([])) | join(',') }}, group
-          {{ github_runner_group }}. Confirm it is ONLINE at the organisation with
+          {{ github_runner_group }}, rootless containers mapped
+          ({{ _uidmap.stdout_lines | length }} uid ranges). Confirm it is ONLINE at the organisation with
           verify-github-runners.yml before routing work to it.

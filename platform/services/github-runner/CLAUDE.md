@@ -133,6 +133,16 @@ it — note that every legitimate target sits *inside* that prefix, so a guard p
 - **`systemctl --user` needs `XDG_RUNTIME_DIR`.** sudo does not set it, so service checks
   fail with `Failed to connect to bus: No medium found` even while the runner is online.
   The uid is looked up, never assumed.
+- **Container jobs need `uidmap`.** A job that declares `container:` runs through the
+  container hooks, which call `docker` (podman-docker) as `ghrunner`, i.e. rootless podman.
+  That needs `newuidmap` from the `uidmap` package and a `/etc/subuid` range for the
+  account. Both hosts ran without `uidmap` until 2026-10-10: every container job failed
+  with "command required for rootless mode with multiple IDs", and the job cleanup's
+  container and volume prune failed with it. `install-podman.yml` now installs it, and
+  `deploy-github-runner.yml` refuses to report success unless `podman unshare` maps a range.
+- **The root disk is small until grown.** Both hosts came up with a 9.8 GiB root LV on a
+  200 G disk, 878 MiB free, which no Rust build fits in. Run Grow GitHub Runner Root
+  (`grow-github-runner-root.yml`) after provisioning; its dry run shows each host's chain.
 - **A fresh VM holds the dpkg lock.** cloud-init is still doing its own apt work;
   `tasks/wait-for-apt.yml` waits for it.
 - **`playbook_dir` is the controller's checkout.** Correct for `template:` (read on the
