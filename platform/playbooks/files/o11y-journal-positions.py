@@ -155,10 +155,11 @@ def role_observation(root_path, root_stat, root_mount, name, observed_mount):
         pinned_root_after=os.fstat(root_fd)
         acl_after=any("acl" in value.lower() for value in os.listxattr(role_fd))
         mount_after=mount_id(role_path)
+        names_after=os.listdir(role_fd)
         if (identity(before)!=identity(after) or identity(opened)!=identity(pinned_after)
                 or (path_root.st_dev,path_root.st_ino)!=(root_stat.st_dev,root_stat.st_ino)
                 or (pinned_root_after.st_dev,pinned_root_after.st_ino)!=(root_stat.st_dev,root_stat.st_ino)
-                or acl_after!=acl_present or mount_after!=observed_mount):
+                or acl_after!=acl_present or mount_after!=observed_mount or names_after!=names):
             return {"owner":"unverified","access":"unverified","acl":"unverified",
                     "mount":"unverified","children":"unverified"}
         result["mount"]="ambiguous" if observed_mount[0]!=root_mount[0] else "clear"
@@ -170,6 +171,29 @@ def role_observation(root_path, root_stat, root_mount, name, observed_mount):
     finally:
         if role_fd is not None: os.close(role_fd)
         if root_fd is not None: os.close(root_fd)
+def empty_unmatched():
+    return {
+        "count":0,
+        "owner":{"matches_collector":0,"mismatch":0,"unverified":0},
+        "access":{"read_write_execute":0,"blocked":0,"unverified":0},
+        "acl":{"absent":0,"present":0,"unverified":0},
+        "mount":{"clear":0,"ambiguous":0,"unverified":0},
+        "children":{"empty":0,"nonempty":0,"unverified":0},
+    }
+def record_unmatched(summary, observation):
+    summary["count"]+=1
+    if observation["acl"]!="absent" or observation["mount"]!="clear":
+        observation={key:"unverified" for key in ("owner","access","acl","mount","children")}
+    categories={
+        "owner":{"matches_collector":"matches_collector","mismatch":"mismatch"},
+        "access":{"read_write_execute":"read_write_execute","blocked":"blocked"},
+        "acl":{"absent":"absent","present":"present"},
+        "mount":{"clear":"clear","ambiguous":"ambiguous"},
+        "children":{"empty":"empty","nonempty":"nonempty"},
+    }
+    for field, values in categories.items():
+        category=observation[field]
+        summary[field][category if category in values else "unverified"]+=1
 class RetryObservation(Exception): pass
 for observation_attempt in range(2):
  try:
@@ -192,6 +216,7 @@ for observation_attempt in range(2):
                                  "mount":"unverified","children":"unverified"},
                    "exporter":{"owner":"unverified","access":"unverified","acl":"unverified",
                                  "mount":"unverified","children":"unverified"}}
+    unmatched_directories=empty_unmatched()
     acl_found=acl(root)
     child_mount=False
     component_layout=st.st_mode & (0o022|0o7000) == 0
@@ -287,6 +312,9 @@ for observation_attempt in range(2):
                 elif name=="otelcol.exporter.otlp.journal":
                     top_level["exporter_component"]+=1
                     role_metadata["exporter"]=role_observation(root,st,root_mount,name,item_mount)
+                else:
+                    record_unmatched(unmatched_directories,
+                        role_observation(root,st,root_mount,name,item_mount))
             elif stat.S_ISLNK(item.st_mode): top_level["other_symlinks"]+=1
             else: top_level["other_kinds"]+=1
         children.append(sig(name,item))
@@ -297,6 +325,7 @@ for observation_attempt in range(2):
         "children":children, "child_count":len(children), "acl":acl_found,
         "top_level":top_level,
         "role_metadata":role_metadata,
+        "unmatched_directories":unmatched_directories,
         "root_is_mount":mount_exact, "child_mount":child_mount,
         "component_layout":component_layout,
         "journal_cursor_presence":cursor_presence,
@@ -961,6 +990,37 @@ def _live_mount_diagnostic(found):
     }
 
 
+def _unmatched_directory_diagnostic(metadata):
+    categories = {
+        "owner": ("matches_collector", "mismatch", "unverified"),
+        "access": ("read_write_execute", "blocked", "unverified"),
+        "acl": ("absent", "present", "unverified"),
+        "mount": ("clear", "ambiguous", "unverified"),
+        "children": ("empty", "nonempty", "unverified"),
+    }
+    source = metadata.get("unmatched_directories") if isinstance(metadata, dict) else None
+    count = source.get("count") if isinstance(source, dict) else None
+    valid_count = type(count) is int and 0 <= count <= MAX_CHILDREN
+    valid_source = isinstance(source, dict) and set(source) == {"count", *categories}
+    result = {"count": count if valid_count else "unverified"}
+    for field, values in categories.items():
+        observed = source.get(field) if isinstance(source, dict) else None
+        valid = (
+            valid_count
+            and valid_source
+            and isinstance(observed, dict)
+            and set(observed) == set(values)
+            and all(type(observed[key]) is int and 0 <= observed[key] <= MAX_CHILDREN for key in values)
+            and sum(observed.values()) == count
+        )
+        result[field] = (
+            {key: observed[key] for key in values}
+            if valid
+            else dict.fromkeys(values, "unverified")
+        )
+    return result
+
+
 def _live_diagnostic(found):
     metadata=found.get("metadata")
     top_level=metadata.get("top_level") if isinstance(metadata,dict) else None
@@ -1034,6 +1094,7 @@ def _live_diagnostic(found):
             )
         },
         "role_metadata":role_values,
+        "unmatched_directories":_unmatched_directory_diagnostic(metadata),
     }
 
 

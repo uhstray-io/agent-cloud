@@ -279,6 +279,7 @@
       changed_when: false
       failed_when: false
       check_mode: false
+      no_log: true
       when: not ansible_check_mode
 
     - name: Record the positions apply gate as unverified in check mode
@@ -432,6 +433,7 @@
       changed_when: false
       failed_when: false
       check_mode: false
+      no_log: true
       when: not ansible_check_mode
 
     - name: Parse immediate pre-mount positions output through a protected boundary
@@ -520,6 +522,7 @@
           changed_when: false
           failed_when: false
           check_mode: false
+          no_log: true
 
         - name: Parse live positions output through a protected boundary
           block:
@@ -582,6 +585,39 @@
                   - _journal_positions_live_parsed.live_diagnostic.role_metadata.exporter.mount in ['clear', 'ambiguous', 'unverified']
                   - _journal_positions_live_parsed.live_diagnostic.role_metadata.receiver.children in ['empty', 'nonempty', 'unverified']
                   - _journal_positions_live_parsed.live_diagnostic.role_metadata.exporter.children in ['empty', 'nonempty', 'unverified']
+                  - _journal_positions_live_parsed.live_diagnostic.unmatched_directories is mapping
+                  - _journal_positions_live_parsed.live_diagnostic.unmatched_directories.keys() | list | sort == ['count', 'owner', 'access', 'acl', 'mount', 'children'] | sort
+                  - _journal_positions_live_parsed.live_diagnostic.unmatched_directories.count == 'unverified' or (_journal_positions_live_parsed.live_diagnostic.unmatched_directories.count | type_debug == 'int' and 0 <= _journal_positions_live_parsed.live_diagnostic.unmatched_directories.count <= 32)
+                  - _journal_positions_live_parsed.live_diagnostic.unmatched_directories.owner.keys() | list | sort == ['matches_collector', 'mismatch', 'unverified'] | sort
+                  - _journal_positions_live_parsed.live_diagnostic.unmatched_directories.access.keys() | list | sort == ['read_write_execute', 'blocked', 'unverified'] | sort
+                  - _journal_positions_live_parsed.live_diagnostic.unmatched_directories.acl.keys() | list | sort == ['absent', 'present', 'unverified'] | sort
+                  - _journal_positions_live_parsed.live_diagnostic.unmatched_directories.mount.keys() | list | sort == ['clear', 'ambiguous', 'unverified'] | sort
+                  - _journal_positions_live_parsed.live_diagnostic.unmatched_directories.children.keys() | list | sort == ['empty', 'nonempty', 'unverified'] | sort
+                  - _journal_positions_live_parsed.live_diagnostic.unmatched_directories.owner.values() | select('string') | list | difference(['unverified']) | length == 0
+                  - _journal_positions_live_parsed.live_diagnostic.unmatched_directories.access.values() | select('string') | list | difference(['unverified']) | length == 0
+                  - _journal_positions_live_parsed.live_diagnostic.unmatched_directories.acl.values() | select('string') | list | difference(['unverified']) | length == 0
+                  - _journal_positions_live_parsed.live_diagnostic.unmatched_directories.mount.values() | select('string') | list | difference(['unverified']) | length == 0
+                  - _journal_positions_live_parsed.live_diagnostic.unmatched_directories.children.values() | select('string') | list | difference(['unverified']) | length == 0
+                  - _journal_positions_live_parsed.live_diagnostic.unmatched_directories.owner.values() | select('integer') | list | length + _journal_positions_live_parsed.live_diagnostic.unmatched_directories.owner.values() | select('equalto', 'unverified') | list | length == 3
+                  - _journal_positions_live_parsed.live_diagnostic.unmatched_directories.access.values() | select('integer') | list | length + _journal_positions_live_parsed.live_diagnostic.unmatched_directories.access.values() | select('equalto', 'unverified') | list | length == 3
+                  - _journal_positions_live_parsed.live_diagnostic.unmatched_directories.acl.values() | select('integer') | list | length + _journal_positions_live_parsed.live_diagnostic.unmatched_directories.acl.values() | select('equalto', 'unverified') | list | length == 3
+                  - _journal_positions_live_parsed.live_diagnostic.unmatched_directories.mount.values() | select('integer') | list | length + _journal_positions_live_parsed.live_diagnostic.unmatched_directories.mount.values() | select('equalto', 'unverified') | list | length == 3
+                  - _journal_positions_live_parsed.live_diagnostic.unmatched_directories.children.values() | select('integer') | list | length + _journal_positions_live_parsed.live_diagnostic.unmatched_directories.children.values() | select('equalto', 'unverified') | list | length == 3
+                  - _journal_positions_live_parsed.live_diagnostic.unmatched_directories.owner.values() | select('integer') | list | length == 0 or _journal_positions_live_parsed.live_diagnostic.unmatched_directories.owner.values() | select('integer') | map('int') | list | min >= 0
+                  - _journal_positions_live_parsed.live_diagnostic.unmatched_directories.owner.values() | select('integer') | list | length == 0 or _journal_positions_live_parsed.live_diagnostic.unmatched_directories.owner.values() | select('integer') | map('int') | list | max <= 32
+                  - _journal_positions_live_parsed.live_diagnostic.unmatched_directories.owner.values() | select('integer') | map('int') | sum <= 32
+                  - _journal_positions_live_parsed.live_diagnostic.unmatched_directories.access.values() | select('integer') | list | length == 0 or _journal_positions_live_parsed.live_diagnostic.unmatched_directories.access.values() | select('integer') | map('int') | list | min >= 0
+                  - _journal_positions_live_parsed.live_diagnostic.unmatched_directories.access.values() | select('integer') | list | length == 0 or _journal_positions_live_parsed.live_diagnostic.unmatched_directories.access.values() | select('integer') | map('int') | list | max <= 32
+                  - _journal_positions_live_parsed.live_diagnostic.unmatched_directories.access.values() | select('integer') | map('int') | sum <= 32
+                  - _journal_positions_live_parsed.live_diagnostic.unmatched_directories.acl.values() | select('integer') | list | length == 0 or _journal_positions_live_parsed.live_diagnostic.unmatched_directories.acl.values() | select('integer') | map('int') | list | min >= 0
+                  - _journal_positions_live_parsed.live_diagnostic.unmatched_directories.acl.values() | select('integer') | list | length == 0 or _journal_positions_live_parsed.live_diagnostic.unmatched_directories.acl.values() | select('integer') | map('int') | list | max <= 32
+                  - _journal_positions_live_parsed.live_diagnostic.unmatched_directories.acl.values() | select('integer') | map('int') | sum <= 32
+                  - _journal_positions_live_parsed.live_diagnostic.unmatched_directories.mount.values() | select('integer') | list | length == 0 or _journal_positions_live_parsed.live_diagnostic.unmatched_directories.mount.values() | select('integer') | map('int') | list | min >= 0
+                  - _journal_positions_live_parsed.live_diagnostic.unmatched_directories.mount.values() | select('integer') | list | length == 0 or _journal_positions_live_parsed.live_diagnostic.unmatched_directories.mount.values() | select('integer') | map('int') | list | max <= 32
+                  - _journal_positions_live_parsed.live_diagnostic.unmatched_directories.mount.values() | select('integer') | map('int') | sum <= 32
+                  - _journal_positions_live_parsed.live_diagnostic.unmatched_directories.children.values() | select('integer') | list | length == 0 or _journal_positions_live_parsed.live_diagnostic.unmatched_directories.children.values() | select('integer') | map('int') | list | min >= 0
+                  - _journal_positions_live_parsed.live_diagnostic.unmatched_directories.children.values() | select('integer') | list | length == 0 or _journal_positions_live_parsed.live_diagnostic.unmatched_directories.children.values() | select('integer') | map('int') | list | max <= 32
+                  - _journal_positions_live_parsed.live_diagnostic.unmatched_directories.children.values() | select('integer') | map('int') | sum <= 32
                 fail_msg: "unavailable"
                 quiet: true
               no_log: true
@@ -612,6 +648,7 @@
                       receiver_component: "{{ _journal_positions_live_parsed.live_diagnostic.top_level.receiver_component }}"
                       exporter_component: "{{ _journal_positions_live_parsed.live_diagnostic.top_level.exporter_component }}"
                     role_metadata: "{{ _journal_positions_live_parsed.live_diagnostic.role_metadata }}"
+                    unmatched_directories: "{{ _journal_positions_live_parsed.live_diagnostic.unmatched_directories }}"
               no_log: true
           rescue:
             - name: Record unavailable live positions result
@@ -632,6 +669,13 @@
                         acl: unverified
                         mount: unverified
                         children: unverified
+                    unmatched_directories:
+                      count: unverified
+                      owner: {matches_collector: unverified, mismatch: unverified, unverified: unverified}
+                      access: {read_write_execute: unverified, blocked: unverified, unverified: unverified}
+                      acl: {absent: unverified, present: unverified, unverified: unverified}
+                      mount: {clear: unverified, ambiguous: unverified, unverified: unverified}
+                      children: {empty: unverified, nonempty: unverified, unverified: unverified}
               no_log: true
 
         - name: Read the Podman rootless UID mapping
@@ -699,6 +743,7 @@
               other_entries={{ _journal_positions_live_summary.live_diagnostic.get('top_level', {}).get('other_files', 'unverified') }}/{{ _journal_positions_live_summary.live_diagnostic.get('top_level', {}).get('other_directories', 'unverified') }}/{{ _journal_positions_live_summary.live_diagnostic.get('top_level', {}).get('other_symlinks', 'unverified') }}/{{ _journal_positions_live_summary.live_diagnostic.get('top_level', {}).get('other_kinds', 'unverified') }};
               receiver_role={{ _journal_positions_live_summary.live_diagnostic.get('role_metadata', {}).get('receiver', {}) }};
               exporter_role={{ _journal_positions_live_summary.live_diagnostic.get('role_metadata', {}).get('exporter', {}) }};
+              unmatched_directories={{ _journal_positions_live_summary.live_diagnostic.get('unmatched_directories', {}) }};
               host_uid_map={{ 'available' if _journal_host_uid_map.rc | default(1) == 0 else 'unavailable' }};
               collector_uid_map={{ 'available' if _journal_collector_uid_map_observed.rc | default(1) == 0 else 'unavailable' }};
               uid_maps={{ 'unverified' if _journal_host_uid_map.rc | default(1) != 0 or _journal_collector_uid_map_observed.rc | default(1) != 0 or _journal_collector_uid_map_observed.stdout | trim | length == 0 else ('equal' if _journal_host_uid_map.stdout | trim == _journal_collector_uid_map_observed.stdout | trim else 'different') }};
@@ -1155,13 +1200,14 @@
       register: _journal_positions_survey
       changed_when: false
       failed_when: false
+      no_log: true
       when: not ansible_check_mode
 
     - name: Record positions-volume survey as unverified in check mode
       ansible.builtin.set_fact:
         _journal_positions_survey:
           rc: 0
-          stdout: '{"status":"check_mode_unverified","volume_use_count":0,"collector_present":false,"entry_count":0,"root_owner":"unavailable","root_mode_access":"unavailable","acl":"unavailable","mount":"unavailable","children":"unavailable","journal_cursor":"unavailable","free_space":"unavailable","survey_diagnostics":{"inventory_fields":{"NeedsChown":{"presence":"unverified","type":"unverified","value":"unavailable"},"NeedsCopyUp":{"presence":"unverified","type":"unverified","value":"unavailable"}},"named_volume":{"outcome":"unverified","identity":"unverified","inventory_identity":"unverified","fields":{"NeedsChown":{"presence":"unverified","type":"unverified","value":"unavailable"},"NeedsCopyUp":{"presence":"unverified","type":"unverified","value":"unavailable"}},"template_fields":{"NeedsChown":{"presence":"unverified","type":"unverified","value":"unavailable"},"NeedsCopyUp":{"presence":"unverified","type":"unverified","value":"unavailable"}},"template_identity":"unverified"},"podman_version":{"client":"unavailable","server":"unavailable"}},"pending_repair_diagnostic":{"owner_rwx":"unverified","group_other_write_or_special_bits":"unverified","group_write":"unverified","other_write":"unverified","setuid":"unverified","setgid":"unverified","sticky":"unverified","volume_free_bytes":"unverified","volume_free_inodes":"unverified","graphroot_free_bytes":"unverified","graphroot_free_inodes":"unverified","failed_checks":["status_pending","volume_inventory_complete","name_collision_clear","project_valid","volume_object","volume_name_matches","mountpoint_absolute","labels_object","project_label_matches","volume_label_matches","needs_chown_false","needs_copy_up_true","volume_unused","mount_count_zero","collector_absent","metadata_object","metadata_observed","children_empty","child_count_zero","acl_absent","root_not_mount","child_not_mount","root_object","owner_rwx","group_other_write_or_special_absent","owner_mismatch","collector_access_blocked","volume_free_bytes","volume_free_inodes","graphroot_free_bytes","graphroot_free_inodes"]},"live_diagnostic":{"top_level":{"seed_file":"unverified","journal_component":"unverified","other_files":"unverified","other_directories":"unverified","other_symlinks":"unverified","other_kinds":"unverified","receiver_component":"unverified","exporter_component":"unverified"},"role_metadata":{"receiver":{"owner":"unverified","access":"unverified","acl":"unverified","mount":"unverified","children":"unverified"},"exporter":{"owner":"unverified","access":"unverified","acl":"unverified","mount":"unverified","children":"unverified"}}}}'
+          stdout: '{"status":"check_mode_unverified","volume_use_count":0,"collector_present":false,"entry_count":0,"root_owner":"unavailable","root_mode_access":"unavailable","acl":"unavailable","mount":"unavailable","children":"unavailable","journal_cursor":"unavailable","free_space":"unavailable","survey_diagnostics":{"inventory_fields":{"NeedsChown":{"presence":"unverified","type":"unverified","value":"unavailable"},"NeedsCopyUp":{"presence":"unverified","type":"unverified","value":"unavailable"}},"named_volume":{"outcome":"unverified","identity":"unverified","inventory_identity":"unverified","fields":{"NeedsChown":{"presence":"unverified","type":"unverified","value":"unavailable"},"NeedsCopyUp":{"presence":"unverified","type":"unverified","value":"unavailable"}},"template_fields":{"NeedsChown":{"presence":"unverified","type":"unverified","value":"unavailable"},"NeedsCopyUp":{"presence":"unverified","type":"unverified","value":"unavailable"}},"template_identity":"unverified"},"podman_version":{"client":"unavailable","server":"unavailable"}},"pending_repair_diagnostic":{"owner_rwx":"unverified","group_other_write_or_special_bits":"unverified","group_write":"unverified","other_write":"unverified","setuid":"unverified","setgid":"unverified","sticky":"unverified","volume_free_bytes":"unverified","volume_free_inodes":"unverified","graphroot_free_bytes":"unverified","graphroot_free_inodes":"unverified","failed_checks":["status_pending","volume_inventory_complete","name_collision_clear","project_valid","volume_object","volume_name_matches","mountpoint_absolute","labels_object","project_label_matches","volume_label_matches","needs_chown_false","needs_copy_up_true","volume_unused","mount_count_zero","collector_absent","metadata_object","metadata_observed","children_empty","child_count_zero","acl_absent","root_not_mount","child_not_mount","root_object","owner_rwx","group_other_write_or_special_absent","owner_mismatch","collector_access_blocked","volume_free_bytes","volume_free_inodes","graphroot_free_bytes","graphroot_free_inodes"]},"live_diagnostic":{"top_level":{"seed_file":"unverified","journal_component":"unverified","other_files":"unverified","other_directories":"unverified","other_symlinks":"unverified","other_kinds":"unverified","receiver_component":"unverified","exporter_component":"unverified"},"role_metadata":{"receiver":{"owner":"unverified","access":"unverified","acl":"unverified","mount":"unverified","children":"unverified"},"exporter":{"owner":"unverified","access":"unverified","acl":"unverified","mount":"unverified","children":"unverified"}},"unmatched_directories":{"count":"unverified","owner":{"matches_collector":"unverified","mismatch":"unverified","unverified":"unverified"},"access":{"read_write_execute":"unverified","blocked":"unverified","unverified":"unverified"},"acl":{"absent":"unverified","present":"unverified","unverified":"unverified"},"mount":{"clear":"unverified","ambiguous":"unverified","unverified":"unverified"},"children":{"empty":"unverified","nonempty":"unverified","unverified":"unverified"}}}}'
       when: ansible_check_mode
 
     - name: Require bounded positions-volume survey fields
@@ -1235,6 +1281,39 @@
           - (_journal_positions_survey.stdout | from_json).live_diagnostic.role_metadata.exporter.acl in ['present', 'absent', 'unverified']
           - (_journal_positions_survey.stdout | from_json).live_diagnostic.role_metadata.exporter.mount in ['clear', 'ambiguous', 'unverified']
           - (_journal_positions_survey.stdout | from_json).live_diagnostic.role_metadata.exporter.children in ['empty', 'nonempty', 'unverified']
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.unmatched_directories is mapping
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.unmatched_directories.keys() | list | sort == ['count', 'owner', 'access', 'acl', 'mount', 'children'] | sort
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.unmatched_directories.count == 'unverified' or ((_journal_positions_survey.stdout | from_json).live_diagnostic.unmatched_directories.count | type_debug == 'int' and 0 <= (_journal_positions_survey.stdout | from_json).live_diagnostic.unmatched_directories.count <= 32)
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.unmatched_directories.owner.keys() | list | sort == ['matches_collector', 'mismatch', 'unverified'] | sort
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.unmatched_directories.access.keys() | list | sort == ['read_write_execute', 'blocked', 'unverified'] | sort
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.unmatched_directories.acl.keys() | list | sort == ['absent', 'present', 'unverified'] | sort
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.unmatched_directories.mount.keys() | list | sort == ['clear', 'ambiguous', 'unverified'] | sort
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.unmatched_directories.children.keys() | list | sort == ['empty', 'nonempty', 'unverified'] | sort
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.unmatched_directories.owner.values() | select('string') | list | difference(['unverified']) | length == 0
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.unmatched_directories.access.values() | select('string') | list | difference(['unverified']) | length == 0
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.unmatched_directories.acl.values() | select('string') | list | difference(['unverified']) | length == 0
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.unmatched_directories.mount.values() | select('string') | list | difference(['unverified']) | length == 0
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.unmatched_directories.children.values() | select('string') | list | difference(['unverified']) | length == 0
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.unmatched_directories.owner.values() | select('integer') | list | length + (_journal_positions_survey.stdout | from_json).live_diagnostic.unmatched_directories.owner.values() | select('equalto', 'unverified') | list | length == 3
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.unmatched_directories.access.values() | select('integer') | list | length + (_journal_positions_survey.stdout | from_json).live_diagnostic.unmatched_directories.access.values() | select('equalto', 'unverified') | list | length == 3
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.unmatched_directories.acl.values() | select('integer') | list | length + (_journal_positions_survey.stdout | from_json).live_diagnostic.unmatched_directories.acl.values() | select('equalto', 'unverified') | list | length == 3
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.unmatched_directories.mount.values() | select('integer') | list | length + (_journal_positions_survey.stdout | from_json).live_diagnostic.unmatched_directories.mount.values() | select('equalto', 'unverified') | list | length == 3
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.unmatched_directories.children.values() | select('integer') | list | length + (_journal_positions_survey.stdout | from_json).live_diagnostic.unmatched_directories.children.values() | select('equalto', 'unverified') | list | length == 3
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.unmatched_directories.owner.values() | select('integer') | list | length == 0 or (_journal_positions_survey.stdout | from_json).live_diagnostic.unmatched_directories.owner.values() | select('integer') | map('int') | list | min >= 0
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.unmatched_directories.owner.values() | select('integer') | list | length == 0 or (_journal_positions_survey.stdout | from_json).live_diagnostic.unmatched_directories.owner.values() | select('integer') | map('int') | list | max <= 32
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.unmatched_directories.owner.values() | select('integer') | map('int') | sum <= 32
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.unmatched_directories.access.values() | select('integer') | list | length == 0 or (_journal_positions_survey.stdout | from_json).live_diagnostic.unmatched_directories.access.values() | select('integer') | map('int') | list | min >= 0
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.unmatched_directories.access.values() | select('integer') | list | length == 0 or (_journal_positions_survey.stdout | from_json).live_diagnostic.unmatched_directories.access.values() | select('integer') | map('int') | list | max <= 32
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.unmatched_directories.access.values() | select('integer') | map('int') | sum <= 32
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.unmatched_directories.acl.values() | select('integer') | list | length == 0 or (_journal_positions_survey.stdout | from_json).live_diagnostic.unmatched_directories.acl.values() | select('integer') | map('int') | list | min >= 0
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.unmatched_directories.acl.values() | select('integer') | list | length == 0 or (_journal_positions_survey.stdout | from_json).live_diagnostic.unmatched_directories.acl.values() | select('integer') | map('int') | list | max <= 32
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.unmatched_directories.acl.values() | select('integer') | map('int') | sum <= 32
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.unmatched_directories.mount.values() | select('integer') | list | length == 0 or (_journal_positions_survey.stdout | from_json).live_diagnostic.unmatched_directories.mount.values() | select('integer') | map('int') | list | min >= 0
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.unmatched_directories.mount.values() | select('integer') | list | length == 0 or (_journal_positions_survey.stdout | from_json).live_diagnostic.unmatched_directories.mount.values() | select('integer') | map('int') | list | max <= 32
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.unmatched_directories.mount.values() | select('integer') | map('int') | sum <= 32
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.unmatched_directories.children.values() | select('integer') | list | length == 0 or (_journal_positions_survey.stdout | from_json).live_diagnostic.unmatched_directories.children.values() | select('integer') | map('int') | list | min >= 0
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.unmatched_directories.children.values() | select('integer') | list | length == 0 or (_journal_positions_survey.stdout | from_json).live_diagnostic.unmatched_directories.children.values() | select('integer') | map('int') | list | max <= 32
+          - (_journal_positions_survey.stdout | from_json).live_diagnostic.unmatched_directories.children.values() | select('integer') | map('int') | sum <= 32
         fail_msg: "The positions-volume survey failed without reporting filesystem details."
         quiet: true
 
