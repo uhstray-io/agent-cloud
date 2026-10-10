@@ -202,8 +202,8 @@ for observation_attempt in range(2):
                                     (opened.st_dev,opened.st_ino,opened.st_size,opened.st_mtime_ns)
                                     and len(data)==opened.st_size)
                                 if stable_read:
-                                    cursor_checked=True
                                     cursor_valid=journal_cursor(data)
+                                    cursor_checked=True
                             finally: os.close(fd)
                         except OSError:
                             cursor_valid=False

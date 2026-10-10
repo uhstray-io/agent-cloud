@@ -4158,6 +4158,8 @@ def test_live_namespace_create_failure_reports_create_without_relative_cleanup(t
     )
     assert identity_checks in script
     script = script.replace(identity_checks, "exec 2>/dev/null; mapping='0 1 1';")
+    unrelated = tmp_path / "create"
+    unrelated.write_text("preserve")
     result = subprocess.run(
         ["bash", "-c", "mktemp() { return 1; };\n" + script],
         cwd=tmp_path, check=False, capture_output=True, text=True,
@@ -4166,7 +4168,7 @@ def test_live_namespace_create_failure_reports_create_without_relative_cleanup(t
     assert result.returncode == 1
     assert result.stdout == "create\n"
     assert result.stderr == ""
-    assert not (tmp_path / "create").exists()
+    assert unrelated.read_text() == "preserve"
 
 
 @pytest.mark.parametrize(
