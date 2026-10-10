@@ -721,10 +721,16 @@ and repeats on a second fresh volume. A successful source run reports
 does not establish a shared workflow lock or quiescent receiver, old-volume
 metadata/initialization flags, receiver signal and alert preservation, an
 authenticated Semaphore receipt, operational volume-creation receipts, or live
-acceptance. Those are the next gates. The playbook continues to refuse `apply`
-and `repair-positions`; `survey` and collector-only `stop` remain selectable.
-This source update has not been run on the Dev receiver and creates no
-authenticated Semaphore receipt.
+acceptance. The source now requires the receiver checkout to exist at the exact
+reviewed SHA with no tracked or untracked changes before action-specific work;
+this workflow no longer places a moving branch. A host-local atomic reservation
+primitive refuses occupied, stale, or unknown state and leaves recovery disabled
+until authenticated Semaphore API readback exists. It is not yet integrated as
+host-wide admission: receiver deploy/reset/orphan-cleanup paths remain outside
+this playbook's ownership. Therefore normal `survey`, proof, apply, repair, and
+stop actions all refuse; check-mode survey reports `check_mode_unverified` without
+Podman or volume access. This source update has not been run on the Dev receiver
+and creates no authenticated Semaphore receipt.
 The legacy `journal-collector-state` is not selected by the v2 logical key. Do
 not run apply from this source slice.
 

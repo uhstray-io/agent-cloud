@@ -29,10 +29,15 @@ under strict byte, time, and tail limits. A successful source run reports
 `status=partial`, limited to disposable provider and cursor behavior. It does
 not establish a shared workflow lock or quiescent receiver, old-volume
 metadata/initialization flags, receiver signal and alert preservation, an
-authenticated Semaphore receipt, or live acceptance. This source update has
-not been run on the Dev receiver. Those remain the next gates, so apply and
-positions repair stay refused. Check mode reports
-`check_mode_unverified`.
+authenticated Semaphore receipt, or live acceptance. The playbook now requires
+an existing receiver checkout at the exact reviewed SHA with a clean tracked and
+untracked worktree; it does not place a moving branch. Its atomic host-local
+reservation primitive does not authenticate Semaphore task attribution, and
+recovery is disabled pending authenticated API readback. Receiver deploy/reset/
+orphan-cleanup paths do not yet participate. Until those gates are integrated,
+all normal journal actions refuse; only check-mode survey returns
+`check_mode_unverified` without Podman or volume access. This source update has
+not been run on the Dev receiver.
 
 ## How it is deployed
 
@@ -50,7 +55,9 @@ positions repair stay refused. Check mode reports
   production Semaphore inventory is a copy of it; sync it before a deploy relies on a new
   value (README, "production Semaphore inventory").
 - **Receiver-host journal pilot:** `Deploy o11y Journal Collector (Dev)` runs independently
-  of `Deploy o11y`. Run its `survey` action first: it checks only `/var/log/journal` and
+  of `Deploy o11y`. Normal journal actions currently refuse pending shared admission;
+  check-mode survey is unverified and performs no Podman or volume access. When that
+  gate is implemented, the `survey` action checks only `/var/log/journal` and
   `/run/log/journal`, requiring a recent exact-name record and file readability by the
   cached receiver Alloy v1.5.1 image as a rootless UID `0:0` file-read probe with
   `--pull=never`; it does not validate collector config or pull an image. If that image

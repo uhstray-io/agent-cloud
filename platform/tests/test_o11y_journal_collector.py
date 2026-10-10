@@ -33,6 +33,10 @@ POSITIONS_HELPER = ROOT / "platform/playbooks/files/o11y-journal-positions.py"
 POSITIONS_SPEC = importlib.util.spec_from_file_location("o11y_journal_positions", POSITIONS_HELPER)
 POSITIONS = importlib.util.module_from_spec(POSITIONS_SPEC)
 POSITIONS_SPEC.loader.exec_module(POSITIONS)
+WORKFLOW_HELPER = ROOT / "platform/playbooks/files/o11y-journal-workflow.py"
+WORKFLOW_SPEC = importlib.util.spec_from_file_location("o11y_journal_workflow", WORKFLOW_HELPER)
+WORKFLOW = importlib.util.module_from_spec(WORKFLOW_SPEC)
+WORKFLOW_SPEC.loader.exec_module(WORKFLOW)
 
 
 def _assert_positions_survey_diagnostics_schema(report, has_reason=False):
@@ -3684,14 +3688,20 @@ def test_playbook_guards_validation_delivery_and_non_destructive_rollback():
     plays = yaml.safe_load(source)
     guard = source.index("import_playbook: refuse-internal-extra-vars.yml")
     reviewed = source.index("import_playbook: require-reviewed-checkout.yml")
-    place = source.index("tasks/place-monorepo.yml")
+    checkout = source.index("Verify the existing receiver checkout before any journal action")
+    admission = source.index("Keep journal execution closed until authenticated shared admission is available")
+    proof = source.index("Prove direct Podman and Alloy journal persistence with disposable volumes")
     validate = source.index("Validate the candidate config")
     apply = source.index("Start only the journal collector service")
     verify = source.index("Verify the exact bounded journal stream reached Loki")
     stop = source.index("Force-remove only the failed collector while retaining positions")
     positions_gate = source.index("Verify positions volume identity and access before apply")
 
-    assert guard < reviewed < place < positions_gate < validate < apply < verify < stop
+    assert guard < reviewed < checkout < positions_gate < validate < apply < verify < stop
+    assert checkout < admission < proof
+    assert "tasks/place-monorepo.yml" not in source
+    assert "--untracked-files=all" in WORKFLOW_HELPER.read_text()
+    assert "Keep journal execution closed until authenticated shared admission is available" in source
     assert "groups.get('o11y_svc', []) | length == 1" in source
     expected_actions = (
         "journal_collector_action | default('apply') in "
@@ -3844,13 +3854,13 @@ def test_playbook_guards_validation_delivery_and_non_destructive_rollback():
     assert health_poll["retries"] == 60
     assert health_poll["delay"] == 3
 
-    placement = next(
-        task
-        for task in apply_play["tasks"]
-        if task.get("name") == "Place the reviewed monorepo on the receiver through the shared mechanism"
+    checkout_play = next(
+        play for play in plays
+        if play.get("name") == "Verify the existing receiver checkout before any journal action"
     )
-    revision = next(
-        task for task in apply_play["tasks"] if task.get("name") == "Read the receiver checkout revision"
+    checkout = next(
+        task for task in checkout_play["tasks"]
+        if task.get("name") == "Verify exact receiver checkout and tracked/untracked cleanliness"
     )
     candidate_render = next(
         task
@@ -3862,7 +3872,10 @@ def test_playbook_guards_validation_delivery_and_non_destructive_rollback():
         for task in apply_play["tasks"]
         if task.get("name") == "Promote the validated candidate config for the collector"
     )
-    for task in (placement, revision, candidate_render, config_promote):
+    assert checkout["when"] == "not ansible_check_mode"
+    assert checkout["no_log"] is True
+    assert "tasks/place-monorepo.yml" not in source
+    for task in (candidate_render, config_promote):
         assert task["when"] == "not ansible_check_mode"
 
     stop_play = next(
@@ -4931,3 +4944,129 @@ def test_positions_gate_malformed_or_unexpected_json_is_unavailable(stdout):
     assert "stdout" not in pre_mount_gate["ansible.builtin.assert"]["fail_msg"]
     assert "stdout" not in debug["ansible.builtin.debug"]["msg"]
     assert "from_json" not in debug["ansible.builtin.debug"]["msg"]
+
+
+def _reservation_path(tmp_path):
+    directory = tmp_path / "workflow"
+    directory.mkdir(mode=0o700)
+    directory.chmod(0o700)
+    return directory / "reservation.json"
+
+
+def test_workflow_reservation_has_one_atomic_winner_under_concurrency(tmp_path, monkeypatch):
+    import concurrent.futures
+    import threading
+
+    path = _reservation_path(tmp_path)
+    monkeypatch.setattr(WORKFLOW, "_process_start", lambda _pid: "start-1")
+    barrier = threading.Barrier(2)
+
+    def attempt():
+        barrier.wait()
+        try:
+            return WORKFLOW.acquire(path, "prove-direct")["status"]
+        except WORKFLOW.Refusal as exc:
+            return str(exc)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda _n: attempt(), range(2)))
+    assert results.count("reserved") == 1
+    assert len(results) == 2
+    assert all(
+        result in {"reserved", "reservation_busy", "reservation_stale_or_unknown"}
+        for result in results
+    )
+    record, _ = WORKFLOW._read(path)
+    assert record["task_attribution"] == "unverified"
+    assert len(record["nonce"]) == 64
+
+
+@pytest.mark.parametrize("owner_start", ["reused-pid", ""])
+def test_workflow_reservation_refuses_pid_reuse_and_crash_recovery(tmp_path, monkeypatch, owner_start):
+    path = _reservation_path(tmp_path)
+    record = {
+        "schema": 1, "state": "active", "action": "apply", "nonce": "a" * 64,
+        "uid": os.geteuid(), "pid": os.getpid(), "process_start": owner_start,
+        "task_attribution": "unverified",
+    }
+    path.write_text(json.dumps(record), encoding="ascii")
+    path.chmod(0o600)
+    monkeypatch.setattr(WORKFLOW, "_process_start", lambda _pid: "current-start")
+    with pytest.raises(WORKFLOW.Refusal, match="reservation_stale_or_unknown"):
+        WORKFLOW.acquire(path, "apply")
+    assert json.loads(path.read_text(encoding="ascii")) == record
+    for _ in range(2):
+        with pytest.raises(WORKFLOW.Refusal, match="recovery_disabled_pending_authenticated_api_readback"):
+            WORKFLOW.recover(path)
+
+
+def test_workflow_reservation_refuses_symlink_and_unsafe_mode(tmp_path):
+    directory = tmp_path / "workflow"
+    directory.mkdir(mode=0o700)
+    directory.chmod(0o700)
+    target = directory / "target"
+    target.write_text("{}", encoding="ascii")
+    target.chmod(0o600)
+    link = directory / "reservation.json"
+    link.symlink_to(target)
+    with pytest.raises(WORKFLOW.Refusal, match="reservation_identity_refused"):
+        WORKFLOW.acquire(link, "survey")
+
+    link.unlink()
+    link.write_text("{}", encoding="ascii")
+    link.chmod(0o644)
+    with pytest.raises(WORKFLOW.Refusal, match="reservation_identity_refused"):
+        WORKFLOW.acquire(link, "survey")
+
+
+def test_workflow_reservation_refuses_owner_mismatch(tmp_path, monkeypatch):
+    path = _reservation_path(tmp_path)
+    monkeypatch.setattr(WORKFLOW.os, "geteuid", lambda: os.getuid() + 1)
+    with pytest.raises(WORKFLOW.Refusal, match="reservation_directory_refused"):
+        WORKFLOW.acquire(path, "survey")
+
+
+def test_workflow_reservation_release_is_identity_checked_and_repeat_safe(tmp_path, monkeypatch):
+    path = _reservation_path(tmp_path)
+    monkeypatch.setattr(WORKFLOW, "_process_start", lambda _pid: "same-process")
+    reservation = WORKFLOW.acquire(path, "survey")
+    result = WORKFLOW.release(path, reservation["nonce"])
+    assert result == {"status": "released", "completion": "reservation_released"}
+    with pytest.raises(WORKFLOW.Refusal, match="reservation_absent"):
+        WORKFLOW.release(path, reservation["nonce"])
+
+    reservation = WORKFLOW.acquire(path, "survey")
+    with pytest.raises(WORKFLOW.Refusal, match="reservation_owner_mismatch"):
+        WORKFLOW.release(path, "0" * 64)
+    assert path.exists()
+    assert WORKFLOW.release(path, reservation["nonce"])["status"] == "released"
+
+
+def test_workflow_checkout_requires_exact_clean_existing_repository(tmp_path):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    subprocess.run(["git", "init", "-q", str(checkout)], check=True)
+    source = checkout / "tracked.txt"
+    source.write_text("clean\n", encoding="utf-8")
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "test", "GIT_AUTHOR_EMAIL": "test@example.invalid",
+        "GIT_COMMITTER_NAME": "test", "GIT_COMMITTER_EMAIL": "test@example.invalid",
+    }
+    subprocess.run(["git", "-C", str(checkout), "add", "tracked.txt"], check=True, env=env)
+    subprocess.run(["git", "-C", str(checkout), "commit", "-qm", "fixture"], check=True, env=env)
+    revision = subprocess.run(
+        ["git", "-C", str(checkout), "rev-parse", "HEAD"], capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    assert WORKFLOW.verify_checkout(checkout, revision) == {
+        "status": "verified", "revision": revision, "clean": True,
+    }
+    with pytest.raises(WORKFLOW.Refusal, match="checkout_revision_mismatch"):
+        WORKFLOW.verify_checkout(checkout, "0" * 40)
+    (checkout / "untracked.txt").write_text("dirty\n", encoding="utf-8")
+    with pytest.raises(WORKFLOW.Refusal, match="checkout_dirty_or_unknown"):
+        WORKFLOW.verify_checkout(checkout, revision)
+    (checkout / "untracked.txt").unlink()
+    source.write_text("changed\n", encoding="utf-8")
+    with pytest.raises(WORKFLOW.Refusal, match="checkout_dirty_or_unknown"):
+        WORKFLOW.verify_checkout(checkout, revision)
