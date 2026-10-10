@@ -109,6 +109,34 @@ and retention gates. The journal action gate permits only check-mode survey; run
 survey/proof/apply/repair/stop/rollback remain closed. Task 1.2a remains incomplete; admission, durable intent,
 recovery, attribution and preservation requirements below remain acceptance gates.
 
+**Accepted task 1.2a admission design (2026-10-10; not implemented):** Use one
+root-owned, host-local durable intent namespace outside the repository checkout
+and Podman stores. Keep a permanent flock inode for the namespace; never replace
+or unlink that inode. A root-protected supervisor owns the lock and durable state,
+then launches only the verified rootless worker. Persist each mutation's intent
+before crossing that mutation boundary and read it back; after the operation,
+persist and read back its outcome before another mutation can begin. Replace the
+intent atomically from a same-filesystem temporary file, fsync the file and parent
+directory, then read back the committed record. The lock and record together must
+establish cross-play active ownership for journal actions and every competing
+receiver lifecycle path. There is no expiry-based takeover, and a terminal status
+alone does not authorize takeover; uncertain or interrupted intent requires
+explicit reconciliation. Any receiver lifecycle path that cannot participate in
+the same admission and intent protocol must refuse. Check mode performs zero
+target writes. OpenBao KV CAS alone is insufficient for the monolithic target
+helper: without a credential path and controller/target rendezvous to acquire,
+renew, and read back ownership at each mutation boundary, CAS cannot establish
+host-local cross-play admission. This is the accepted design only; implementation,
+recovery, and operational acceptance remain open.
+
+**Private attribution binding status (2026-10-10):** Site-config PR #71 adds the
+scoped `o11y_attribution_project_id` binding. An independent Sol Medium review
+of its final head `46a44ad1a35dce9aba61ca5b7aa43b0f1f4ca881` passed;
+CodeRabbit approved the earlier head. GitHub Actions job annotations on both
+attempts say account payments failed or the spending limit must increase, and
+the inventory job started no steps. The PR is open and unmerged. No live
+attribution receipt exists, so no journal runtime action is enabled.
+
 **Receiver reconciliation orphan guard (2026-10-10; partial source):** The ordinary
 o11y deploy opts into preserving only a receiver-project container whose verified
 Compose service label is exactly `journal-collector`. On an o11y recreate, the shared
