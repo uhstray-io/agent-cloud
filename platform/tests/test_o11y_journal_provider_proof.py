@@ -3,6 +3,7 @@
 import importlib.util
 import io
 import json
+import sys
 import tempfile
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -50,6 +51,62 @@ def test_bounded_scan_refuses_too_many_entries():
         (root / "two").touch()
         with patch.object(PROOF, "MAX_SCAN_ENTRIES", 1), pytest.raises(PROOF.Refused, match="layout_unbounded"):
             PROOF.scandir_manifest(root)
+
+
+def test_hash_file_rejects_symlinks_and_detects_candidate_bytes():
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        candidate = root / "candidate.alloy"
+        candidate.write_bytes(b"rendered candidate")
+        assert PROOF.hash_file(candidate, 1024) == PROOF.hashlib.sha256(b"rendered candidate").hexdigest()
+        alias = root / "alias.alloy"
+        alias.symlink_to(candidate)
+        with pytest.raises(PROOF.Refused, match="identity_unverified"):
+            PROOF.hash_file(alias, 1024)
+
+
+def test_provider_log_capture_includes_stderr_and_enforces_combined_limit():
+    command = [sys.executable, "-c", "import sys; print('stdout-marker'); print('stderr-marker', file=sys.stderr)"]
+    output = PROOF.run_streams(command, timeout=5, output_limit=1024)
+    assert b"stdout-marker" in output
+    assert b"stderr-marker" in output
+
+    with pytest.raises(PROOF.Refused, match="provider_output_unbounded"):
+        PROOF.run_streams(
+            [sys.executable, "-c", "import sys; print('x' * 100, file=sys.stderr)"],
+            timeout=5, output_limit=32,
+        )
+
+    with pytest.raises(PROOF.Refused, match="provider_timeout"):
+        PROOF.run_streams([sys.executable, "-c", "import time; time.sleep(3)"], timeout=0.1, output_limit=32)
+
+
+def test_volume_scan_runs_only_the_bounded_scan_in_rootless_user_namespace():
+    mountpoint = Path("/private/user/graph/volumes/jproof-a/_data")
+    manifest = {"status": "scanned", "manifest": {"loki.source.journal.o11y_alloy": ["dir", 0o700]}}
+    with (patch.object(PROOF, "volume_root", return_value=mountpoint),
+          patch.object(PROOF, "run", return_value=json.dumps(manifest).encode()) as command,
+          patch.object(PROOF, "volume_unmount") as unmount):
+        result = PROOF.volume_scan("/usr/bin/podman", "jproof-a", target_state=True)
+
+    assert result == {"loki.source.journal.o11y_alloy": ("dir", 0o700)}
+    assert command.call_args.args[0][:3] == ["/usr/bin/podman", "unshare", sys.executable]
+    assert command.call_args.args[0][-2:] == [str(mountpoint), "state"]
+    unmount.assert_called_once_with("/usr/bin/podman", "jproof-a")
+
+
+def test_cursor_read_parses_only_inside_the_rootless_user_namespace():
+    root = Path("/private/user/graph/volumes/jproof-a/_data")
+    cursor = "s=1;i=2;b=3;m=4;t=5;x=6"
+    response = {"status": "cursor", "cursor": cursor}
+    with (patch.object(PROOF, "volume_root", return_value=root),
+          patch.object(PROOF, "run", return_value=json.dumps(response).encode()) as command,
+          patch.object(PROOF, "volume_unmount") as unmount):
+        assert PROOF.read_cursor("/usr/bin/podman", "jproof-a") == cursor
+
+    assert command.call_args.args[0][:3] == ["/usr/bin/podman", "unshare", sys.executable]
+    assert command.call_args.args[0][-1] == "cursor"
+    unmount.assert_called_once_with("/usr/bin/podman", "jproof-a")
 
 
 def test_copy_positive_control_ignores_benign_directory_metadata_but_requires_file_bytes():
@@ -113,12 +170,19 @@ def test_image_positive_control_comes_from_same_image_tree_and_requires_regular_
         (root / "etc" / "ssl" / "certs").mkdir(parents=True)
         (root / "etc" / "ssl" / "certs" / "proof.pem").write_bytes(b"public fixture")
         (root / "etc" / "ssl" / "certs" / "alias.pem").symlink_to("proof.pem")
-        state, positive_path, positive = PROOF.image_manifest(root)
+        def scan(_binary, path, *, target_state=False):
+            if not path.exists():
+                raise PROOF.Refused("layout_absent")
+            return PROOF.scandir_manifest(path, target_state=target_state)
+
+        with patch.object(PROOF, "namespace_scan", side_effect=scan) as namespace_scan:
+            state, positive_path, positive = PROOF.image_manifest("podman", root)
 
     assert state == {}
     assert positive_path == "etc/ssl/certs"
     assert positive["proof.pem"][0] == "file"
     assert positive["alias.pem"][:2] == ("symlink", "proof.pem")
+    assert namespace_scan.call_count == 3
 
 
 def test_cursor_parser_accepts_expected_journal_cursor_only():
@@ -137,6 +201,25 @@ def test_cursor_parser_accepts_expected_journal_cursor_only():
         (component / "positions.yml").write_text("positions: {}\n", encoding="utf-8")
         with pytest.raises(PROOF.Refused, match="cursor_unavailable"):
             PROOF.cursor_from_manifest(root)
+
+
+def test_cursor_wait_retries_only_absence_and_times_out_boundedly():
+    cursor = "s=1;i=2;b=3;m=4;t=5;x=6"
+    with (patch.object(PROOF, "read_cursor", side_effect=[
+            PROOF.Refused("cursor_not_persisted"), cursor]),
+          patch.object(PROOF.time, "sleep") as sleep):
+        assert PROOF.read_cursor_until_persisted("podman", "jproof-a") == cursor
+    sleep.assert_called_once_with(PROOF.CURSOR_POLL_SECONDS)
+
+    with (patch.object(PROOF, "read_cursor", side_effect=PROOF.Refused("cursor_unavailable")),
+          pytest.raises(PROOF.Refused, match="cursor_unavailable")):
+        PROOF.read_cursor_until_persisted("podman", "jproof-a")
+
+    with (patch.object(PROOF, "read_cursor", side_effect=PROOF.Refused("cursor_not_persisted")),
+          patch.object(PROOF.time, "monotonic", side_effect=[0, PROOF.CURSOR_WAIT_SECONDS,
+                                                                PROOF.CURSOR_WAIT_SECONDS + 1]),
+          pytest.raises(PROOF.Refused, match="cursor_persistence_timeout")):
+        PROOF.read_cursor_until_persisted("podman", "jproof-a")
 
 
 def test_cleanup_identity_must_match_exact_container_and_volume_receipts():
@@ -244,11 +327,22 @@ def test_dev_action_is_direct_only_and_apply_and_repair_remain_refused():
     assert "journal_collector_action | default('apply') != 'apply'" in playbook
     assert "journal_collector_action | default('apply') != 'repair-positions'" in playbook
     assert "check_mode_unverified" in playbook
+    assert "templates/journal.alloy.j2" in playbook
+    assert "O11Y_PROOF_CONFIG_PATH" in playbook
+    assert "O11Y_PROOF_CONFIG_SHA256" not in playbook + HELPER.read_text()
+    assert "_journal_proof_candidate_stat.stat.checksum" in playbook
+    assert "_journal_direct_proof.status == 'partial'" in playbook
+    assert "always:" in playbook
+    assert "state: absent" in playbook
+    assert "operational_acceptance_gates_incomplete" in playbook
+    assert "journal-collector-state-v2" in docs
 
 
 def test_proof_output_contains_binding_digests_and_no_paths_or_fixture_content():
     report = {
-        "status": "direct_podman_journal_proven",
+        "status": "partial",
+        "reason": "operational_acceptance_gates_incomplete",
+        "proof_scope": "disposable_rootless_podman_and_cursor_source_only",
         "copy_control": "copied",
         "positive_no_copy": "no_copy",
         "state_no_copy": "no_copy",

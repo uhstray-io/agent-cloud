@@ -28,6 +28,14 @@ MAX_SCAN_ENTRIES = 256
 MAX_SCAN_BYTES = 16 * 1024 * 1024
 MAX_FILE_BYTES = 1024 * 1024
 MAX_CURSOR_BYTES = 65536
+MAX_LOG_OUTPUT = 256 * 1024
+LOG_TAIL_LINES = 200
+CURSOR_WAIT_SECONDS = 20
+CURSOR_POLL_SECONDS = 0.5
+NAMESPACE_SCAN_REFUSALS = {
+    "copy_control_unverified", "layout_changed", "layout_unavailable", "layout_unbounded",
+    "namespace_scan_unverified", "state_path_unsafe",
+}
 PROOF_OWNER = "agent-cloud.proof-owner"
 PROOF_ROLE = "agent-cloud.proof-role"
 PROJECT_LABELS = ("com.docker.compose.project", "io.podman.compose.project")
@@ -92,7 +100,10 @@ def run(argv: list[str], timeout: int = 60, *, input_data: bytes | None = None,
                     output.extend(chunk)
                     if len(output) > output_limit:
                         raise Refused("provider_output_unbounded")
-        if process.wait(timeout=max(1, int(deadline - time.monotonic()))) != 0:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise Refused("provider_timeout")
+        if process.wait(timeout=remaining) != 0:
             raise Refused("provider_operation_failed")
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise Refused("provider_operation_failed") from exc
@@ -100,6 +111,54 @@ def run(argv: list[str], timeout: int = 60, *, input_data: bytes | None = None,
         if process.poll() is None:
             process.kill()
             process.wait()
+    global TOTAL_OUTPUT_BYTES
+    TOTAL_OUTPUT_BYTES += len(output)
+    if TOTAL_OUTPUT_BYTES > MAX_TOTAL_OUTPUT:
+        raise Refused("proof_output_unbounded")
+    return bytes(output)
+
+
+def run_streams(argv: list[str], timeout: int, output_limit: int) -> bytes:
+    """Capture both protected provider streams under one byte and time limit."""
+    try:
+        process = subprocess.Popen(
+            argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            env={**os.environ, "LC_ALL": "C"},
+        )
+    except OSError as exc:
+        raise Refused("provider_unavailable") from exc
+    assert process.stdout is not None and process.stderr is not None
+    output = bytearray()
+    deadline = time.monotonic() + timeout
+    try:
+        with selectors.DefaultSelector() as selector:
+            selector.register(process.stdout, selectors.EVENT_READ)
+            selector.register(process.stderr, selectors.EVENT_READ)
+            while selector.get_map():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise Refused("provider_timeout")
+                for key, _ in selector.select(min(1.0, remaining)):
+                    chunk = os.read(key.fd, min(65536, output_limit + 1 - len(output)))
+                    if not chunk:
+                        selector.unregister(key.fileobj)
+                        continue
+                    output.extend(chunk)
+                    if len(output) > output_limit:
+                        raise Refused("provider_output_unbounded")
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise Refused("provider_timeout")
+        if process.wait(timeout=remaining) != 0:
+            raise Refused("provider_operation_failed")
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise Refused("provider_operation_failed") from exc
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+        process.stdout.close()
+        process.stderr.close()
     global TOTAL_OUTPUT_BYTES
     TOTAL_OUTPUT_BYTES += len(output)
     if TOTAL_OUTPUT_BYTES > MAX_TOTAL_OUTPUT:
@@ -187,17 +246,30 @@ def version(argv: list[str]) -> str:
 
 def hash_file(path: Path, maximum: int) -> str:
     try:
-        info = path.stat(follow_symlinks=False)
-        if not stat.S_ISREG(info.st_mode) or info.st_size > maximum:
+        before = path.lstat()
+        if not stat.S_ISREG(before.st_mode) or before.st_size > maximum:
             raise Refused("identity_unverified")
         value = hashlib.sha256()
-        with path.open("rb") as stream:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        try:
+            opened = os.fstat(fd)
+            if (opened.st_dev, opened.st_ino, opened.st_size) != (before.st_dev, before.st_ino, before.st_size):
+                raise Refused("identity_changed")
             total = 0
-            while chunk := stream.read(65536):
-                total += len(chunk)
-                if total > maximum:
-                    raise Refused("identity_unverified")
-                value.update(chunk)
+            with os.fdopen(fd, "rb", closefd=False) as stream:
+                while chunk := stream.read(65536):
+                    total += len(chunk)
+                    if total > maximum:
+                        raise Refused("identity_unverified")
+                    value.update(chunk)
+            after = os.fstat(fd)
+            current = path.lstat()
+            if ((after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+                    != (opened.st_dev, opened.st_ino, opened.st_size, opened.st_mtime_ns)
+                    or (current.st_dev, current.st_ino) != (before.st_dev, before.st_ino)):
+                raise Refused("identity_changed")
+        finally:
+            os.close(fd)
         return value.hexdigest()
     except OSError as exc:
         raise Refused("identity_unverified") from exc
@@ -414,18 +486,20 @@ def scandir_manifest(root: Path, *, target_state: bool = False) -> dict[str, tup
                 pass
 
 
-def image_manifest(root: Path) -> tuple[dict, str, dict]:
+def image_manifest(binary: str, root: Path) -> tuple[dict, str, dict]:
     state_path = root / "alloy-state"
-    state = (scandir_manifest(state_path, target_state=True)
-             if state_path.exists() or state_path.is_symlink() else {})
+    try:
+        state = namespace_scan(binary, state_path, target_state=True)
+    except Refused as exc:
+        if exc.category != "layout_absent":
+            raise
+        state = {}
     for candidate in ("usr/share/zoneinfo", "etc/ssl/certs", "etc"):
         path = root / candidate
-        if not path.exists() or path.is_symlink():
-            continue
         try:
-            manifest = scandir_manifest(path)
+            manifest = namespace_scan(binary, path)
         except Refused as exc:
-            if exc.category in ("layout_unbounded", "copy_control_unverified"):
+            if exc.category in ("layout_absent", "layout_unbounded", "copy_control_unverified"):
                 continue
             raise
         if any(item[0] == "file" for item in manifest.values()):
@@ -567,9 +641,36 @@ def volume_unmount(binary: str, name: str) -> None:
 def volume_scan(binary: str, name: str, *, target_state: bool = False) -> dict:
     root = volume_root(binary, name)
     try:
-        return scandir_manifest(root, target_state=target_state)
+        return namespace_scan(binary, root, target_state=target_state)
     finally:
         volume_unmount(binary, name)
+
+
+def namespace_scan(binary: str, root: Path, *, target_state: bool = False) -> dict:
+    output = run([
+        binary, "unshare", sys.executable, str(Path(__file__).resolve()),
+        "--scan-volume", str(root), "state" if target_state else "general",
+    ], timeout=30, output_limit=MAX_OUTPUT)
+    try:
+        response = json.loads(output)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise Refused("layout_unverified") from exc
+    if not isinstance(response, dict):
+        raise Refused("layout_unverified")
+    if response.get("status") == "refused":
+        reason = response.get("reason")
+        if not isinstance(reason, str) or reason not in NAMESPACE_SCAN_REFUSALS:
+            raise Refused("layout_unverified")
+        raise Refused(reason)
+    if response.get("status") == "absent":
+        raise Refused("layout_absent")
+    manifest = response.get("manifest")
+    if (response.get("status") != "scanned" or not isinstance(manifest, dict)
+            or any(not isinstance(key, str) or not isinstance(value, list)
+                   or any(type(item) not in (str, int) for item in value)
+                   for key, value in manifest.items())):
+        raise Refused("layout_unverified")
+    return {key: tuple(value) for key, value in manifest.items()}
 
 
 def prove_mount_behavior(binary: str, owner: str, image_id: str, path: str, expected: dict,
@@ -657,7 +758,7 @@ def cursor_from_manifest(root: Path) -> str:
         raise Refused("state_layout_unknown")
     component_entry = layout.get(component_name)
     if not component_entry or component_entry[0] != "dir":
-        raise Refused("cursor_unavailable")
+        raise Refused("cursor_not_persisted")
     positions = component / "positions.yml"
     try:
         before = positions.lstat()
@@ -681,7 +782,7 @@ def cursor_from_manifest(root: Path) -> str:
         finally:
             os.close(fd)
     except FileNotFoundError as exc:
-        raise Refused("cursor_unavailable") from exc
+        raise Refused("cursor_not_persisted") from exc
     except OSError as exc:
         raise Refused("cursor_unavailable") from exc
     try:
@@ -708,9 +809,42 @@ def cursor_from_manifest(root: Path) -> str:
 def read_cursor(binary: str, name: str) -> str:
     root = volume_root(binary, name)
     try:
-        return cursor_from_manifest(root)
+        output = run([
+            binary, "unshare", sys.executable, str(Path(__file__).resolve()),
+            "--scan-volume", str(root), "cursor",
+        ], timeout=30, output_limit=4096)
+        try:
+            response = json.loads(output)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise Refused("cursor_unavailable") from exc
+        if not isinstance(response, dict):
+            raise Refused("cursor_unavailable")
+        if response.get("status") == "refused":
+            reason = response.get("reason")
+            if not isinstance(reason, str) or (reason not in NAMESPACE_SCAN_REFUSALS and reason not in (
+                    "cursor_not_persisted", "cursor_unavailable", "cursor_changed", "state_layout_unknown")):
+                raise Refused("cursor_unavailable")
+            raise Refused(reason)
+        cursor = response.get("cursor")
+        if response.get("status") != "cursor" or not isinstance(cursor, str) or not CURSOR_RE.fullmatch(cursor):
+            raise Refused("cursor_unavailable")
+        return cursor
     finally:
         volume_unmount(binary, name)
+
+
+def read_cursor_until_persisted(binary: str, name: str) -> str:
+    deadline = time.monotonic() + CURSOR_WAIT_SECONDS
+    while True:
+        try:
+            return read_cursor(binary, name)
+        except Refused as exc:
+            if exc.category != "cursor_not_persisted":
+                raise
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise Refused("cursor_persistence_timeout") from exc
+            time.sleep(min(CURSOR_POLL_SECONDS, remaining))
 
 
 def namespace_mutation_probe(binary: str, container_id: str) -> None:
@@ -770,7 +904,10 @@ def run_alloy_phase(binary: str, owner: str, image_id: str, volume: str, scratch
     run([binary, "start", inspect["Id"]])
     deadline = time.monotonic() + 40
     while time.monotonic() < deadline:
-        output = run([binary, "logs", inspect["Id"]], timeout=20, output_limit=MAX_OUTPUT)
+        output = run_streams(
+            [binary, "logs", "--tail", str(LOG_TAIL_LINES), inspect["Id"]],
+            timeout=15, output_limit=MAX_LOG_OUTPUT,
+        )
         if forbidden_marker and forbidden_marker.encode("ascii") in output:
             raise Refused("cursor_resume_failed")
         if marker.encode("ascii") in output:
@@ -784,7 +921,7 @@ def run_alloy_phase(binary: str, owner: str, image_id: str, volume: str, scratch
     if ((stopped.get("State") or {}).get("Running") is not False
             or (stopped.get("State") or {}).get("ExitCode") != 0):
         raise Refused("graceful_stop_unverified")
-    cursor = read_cursor(binary, volume)
+    cursor = read_cursor_until_persisted(binary, volume)
     remove_owned_container(binary, inspect["Id"], owner)
     return cursor, stopped
 
@@ -884,13 +1021,15 @@ def cursor_proof(binary: str, owner: str, image_id: str, scratch: Path) -> tuple
 
 
 def prove() -> dict:
+    config_path = os.environ.get("O11Y_PROOF_CONFIG_PATH", "")
     required = {
         "reviewed_sha": (os.environ.get("O11Y_PROOF_REVIEWED_SHA", ""), r"[0-9a-f]{40}"),
         "inventory_revision": (os.environ.get("O11Y_PROOF_INVENTORY_REVISION", ""), r"[0-9a-f]{64}"),
-        "config_digest": (os.environ.get("O11Y_PROOF_CONFIG_SHA256", ""), r"[0-9a-f]{64}"),
     }
-    if any(not re.fullmatch(pattern, value) for value, pattern in required.values()):
+    if (any(not re.fullmatch(pattern, value) for value, pattern in required.values())
+            or not config_path or not Path(config_path).is_absolute()):
         raise Refused("proof_binding_unverified")
+    config_digest = hash_file(Path(config_path), MAX_FILE_BYTES)
     binary, binary_sha, runtime = podman_info()
     owner = f"jproof-{uuid.uuid4().hex}"
     before = baseline(binary, owner)
@@ -911,14 +1050,10 @@ def prove() -> dict:
             raise Refused("container_isolation_unverified")
         mount_path = run([binary, "mount", image_inspect_id], timeout=30, output_limit=8192).decode().strip()
         image_root = Path(mount_path)
-        try:
-            root_info = image_root.lstat()
-        except OSError as exc:
-            raise Refused("image_layout_unavailable") from exc
-        if not image_root.is_absolute() or not stat.S_ISDIR(root_info.st_mode) or stat.S_ISLNK(root_info.st_mode):
+        if not image_root.is_absolute():
             raise Refused("image_layout_unavailable")
         try:
-            image_state, positive_path, positive = image_manifest(image_root)
+            image_state, positive_path, positive = image_manifest(binary, image_root)
             state_layout_digest = digest(image_state)
             positive_layout_digest = digest(positive)
         finally:
@@ -962,7 +1097,9 @@ def prove() -> dict:
             raise outcome
         raise Refused("proof_unavailable") from outcome
     return {
-        "status": "direct_podman_journal_proven",
+        "status": "partial",
+        "reason": "operational_acceptance_gates_incomplete",
+        "proof_scope": "disposable_rootless_podman_and_cursor_source_only",
         "copy_control": copy_control,
         "positive_no_copy": positive_no_copy,
         "state_no_copy": state_no_copy,
@@ -979,11 +1116,36 @@ def prove() -> dict:
         "project_network_sha256": project_network_sha,
         "reviewed_sha": required["reviewed_sha"][0],
         "inventory_revision": required["inventory_revision"][0],
-        "config_sha256": required["config_digest"][0],
+        "config_sha256": config_digest,
     }
 
 
 def main() -> int:
+    if sys.argv[1:2] == ["--scan-volume"]:
+        try:
+            if (len(sys.argv) != 4 or os.geteuid() != 0
+                    or sys.argv[3] not in ("state", "general", "cursor")
+                    or not Path(sys.argv[2]).is_absolute()):
+                raise Refused("namespace_scan_unverified")
+            root = Path(sys.argv[2])
+            try:
+                root_info = root.lstat()
+            except FileNotFoundError:
+                response = {"status": "absent"}
+            else:
+                if not stat.S_ISDIR(root_info.st_mode) or stat.S_ISLNK(root_info.st_mode):
+                    raise Refused("state_path_unsafe" if sys.argv[3] == "state" else "copy_control_unverified")
+                if sys.argv[3] == "cursor":
+                    response = {"status": "cursor", "cursor": cursor_from_manifest(root)}
+                else:
+                    manifest = scandir_manifest(root, target_state=sys.argv[3] == "state")
+                    response = {"status": "scanned", "manifest": manifest}
+        except Refused as exc:
+            response = {"status": "refused", "reason": exc.category}
+        except Exception:
+            response = {"status": "refused", "reason": "layout_unavailable"}
+        sys.stdout.write(json.dumps(response, sort_keys=True, separators=(",", ":")) + "\n")
+        return 0
     try:
         report = prove()
     except Refused as exc:
@@ -991,7 +1153,7 @@ def main() -> int:
     except Exception:
         report = {"status": "unverified", "reason": "proof_unavailable"}
     sys.stdout.write(json.dumps(report, sort_keys=True, separators=(",", ":")) + "\n")
-    return 0 if report.get("status") == "direct_podman_journal_proven" else 1
+    return 0 if report.get("status") == "partial" else 1
 
 
 if __name__ == "__main__":

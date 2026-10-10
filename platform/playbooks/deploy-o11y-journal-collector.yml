@@ -58,6 +58,8 @@
   gather_facts: false
   become: false
   any_errors_fatal: true
+  vars:
+    _journal_proof_candidate_src: "{{ playbook_dir }}/../services/o11y/deployment/templates/journal.alloy.j2"
   tasks:
     - name: Leave the direct proof play for other journal actions
       ansible.builtin.meta: end_host
@@ -89,17 +91,62 @@
           reason: not_run
       when: ansible_check_mode
 
-    - name: Run the isolated direct Podman, mount, and journal cursor proof
-      ansible.builtin.script: "{{ playbook_dir }}/files/prove-o11y-journal-volume.py"
-      register: _journal_direct_proof_result
-      changed_when: false
-      failed_when: false
-      check_mode: false
-      no_log: true
-      environment:
-        O11Y_PROOF_REVIEWED_SHA: "{{ expected_repository_sha }}"
-        O11Y_PROOF_INVENTORY_REVISION: "{{ expected_inventory_revision }}"
-        O11Y_PROOF_CONFIG_SHA256: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/../services/o11y/deployment/config/journal.alloy') | hash('sha256') }}"
+    - name: Render and bind the reviewed collector candidate to the partial proof
+      block:
+        - name: Create a private temporary candidate config file
+          ansible.builtin.tempfile:
+            state: file
+            path: /tmp
+            prefix: agent-cloud-journal-proof-
+            suffix: .alloy
+          register: _journal_proof_candidate
+          changed_when: false
+          no_log: true
+
+        - name: Render the reviewed target config into the private candidate file
+          ansible.builtin.template:
+            src: "{{ _journal_proof_candidate_src }}"
+            dest: "{{ _journal_proof_candidate.path }}"
+            mode: "0600"
+          diff: false
+          no_log: true
+
+        - name: Hash the rendered candidate config
+          ansible.builtin.stat:
+            path: "{{ _journal_proof_candidate.path }}"
+            checksum_algorithm: sha256
+          register: _journal_proof_candidate_stat
+          changed_when: false
+          no_log: true
+
+        - name: Require a bounded regular candidate config before proof
+          ansible.builtin.assert:
+            that:
+              - _journal_proof_candidate_stat.stat.isreg | default(false)
+              - _journal_proof_candidate_stat.stat.size | default(1048577) <= 1048576
+              - _journal_proof_candidate_stat.stat.checksum | default('') is match('^[0-9a-f]{64}$')
+            fail_msg: "The rendered journal candidate could not be safely bound to the proof."
+            quiet: true
+          no_log: true
+
+        - name: Run the isolated direct Podman, mount, and journal cursor proof
+          ansible.builtin.script: "{{ playbook_dir }}/files/prove-o11y-journal-volume.py"
+          register: _journal_direct_proof_result
+          changed_when: false
+          failed_when: false
+          check_mode: false
+          no_log: true
+          environment:
+            O11Y_PROOF_REVIEWED_SHA: "{{ expected_repository_sha }}"
+            O11Y_PROOF_INVENTORY_REVISION: "{{ expected_inventory_revision }}"
+            O11Y_PROOF_CONFIG_PATH: "{{ _journal_proof_candidate.path }}"
+      always:
+        - name: Remove the temporary rendered candidate config
+          ansible.builtin.file:
+            path: "{{ _journal_proof_candidate.path }}"
+            state: absent
+          when: _journal_proof_candidate.path is defined
+          no_log: true
       when: not ansible_check_mode
 
     - name: Parse direct proof output through a protected boundary
@@ -108,11 +155,13 @@
       no_log: true
       when: not ansible_check_mode
 
-    - name: Require the complete direct Podman and Alloy journal proof
+    - name: Require the bounded partial direct Podman and Alloy journal proof
       ansible.builtin.assert:
         that:
           - _journal_direct_proof_result.rc | default(1) == 0
-          - _journal_direct_proof.status == 'direct_podman_journal_proven'
+          - _journal_direct_proof.status == 'partial'
+          - _journal_direct_proof.reason == 'operational_acceptance_gates_incomplete'
+          - _journal_direct_proof.proof_scope == 'disposable_rootless_podman_and_cursor_source_only'
           - _journal_direct_proof.copy_control == 'copied'
           - _journal_direct_proof.positive_no_copy == 'no_copy'
           - _journal_direct_proof.state_no_copy == 'no_copy'
@@ -121,10 +170,10 @@
           - _journal_direct_proof.cursor == 'created_resumed_advanced'
           - _journal_direct_proof.reviewed_sha == expected_repository_sha
           - _journal_direct_proof.inventory_revision == expected_inventory_revision
-          - _journal_direct_proof.config_sha256 == (lookup('ansible.builtin.file', playbook_dir ~ '/../services/o11y/deployment/config/journal.alloy') | hash('sha256'))
+          - _journal_direct_proof.config_sha256 == _journal_proof_candidate_stat.stat.checksum
         fail_msg: >-
-          The disposable direct Podman journal proof was refused or incomplete.
-          No production collector action was run.
+          The bounded partial direct Podman journal proof was refused or incomplete.
+          Apply and repair remain refused while operational acceptance gates are open.
         quiet: true
       when: not ansible_check_mode
 
@@ -132,6 +181,7 @@
       ansible.builtin.debug:
         msg: >-
           Direct proof: status={{ _journal_direct_proof.status | default('check_mode_unverified') }};
+          scope={{ _journal_direct_proof.proof_scope | default('unverified') }};
           reason={{ _journal_direct_proof.reason | default('none') }};
           copy={{ _journal_direct_proof.copy_control | default('unverified') }};
           positive_no_copy={{ _journal_direct_proof.positive_no_copy | default('unverified') }};
