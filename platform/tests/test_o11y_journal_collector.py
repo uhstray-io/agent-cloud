@@ -3188,6 +3188,8 @@ def test_playbook_guards_validation_delivery_and_non_destructive_rollback():
     assert "other" in classifications["_journal_rollback_log_class"]
     assert "unavailable" in classifications["_journal_rollback_log_class"]
     assert "empty" in classifications["_journal_rollback_log_class"]
+    assert rollback_classifier["no_log"] is True
+    assert "permission-denied mount targets=" in failure_message
     assert "_journal_rollback_logs.stdout" not in failure_message
     assert "collector logs classification/count=" in failure_message
     assert "state/config/action classification=" in failure_message
@@ -3578,18 +3580,51 @@ def test_rollback_health_diagnostic_is_allowlisted_and_fixed_probe_is_gated():
         {"rc": 0, "stdout": "on_failure=none", "expected": "fields_available"},
     ]
     log_cases = [
-        {"rc": 125, "stdout": "private stderr", "expected": "unavailable"},
-        {"rc": 0, "stdout": "", "expected": "empty"},
-        {"rc": 0, "stdout": "permission denied at /private/path token=secret", "expected": "permission_denied"},
-        {"rc": 0, "stdout": "failed to load config /private/path token=secret", "expected": "config_error"},
-        {"rc": 0, "stdout": "no such file or directory: /private/path", "expected": "missing_file"},
-        {"rc": 0, "stdout": "connection refused to 203.0.113.7 header=Bearer secret", "expected": "connection_refused"},
-        {"rc": 0, "stdout": "unrecognized startup issue /private/path token=secret", "expected": "other"},
+        {"rc": 125, "stdout": "private stderr", "expected": "unavailable", "targets": []},
+        {"rc": 0, "stdout": "", "expected": "empty", "targets": []},
+        {
+            "rc": 0,
+            "stdout": "permission denied at /private/path token=secret",
+            "expected": "permission_denied",
+            "targets": [],
+        },
+        {
+            "rc": 0,
+            "stdout": "open /var/log/journal: permission denied token=secret",
+            "expected": "permission_denied",
+            "targets": ["journal"],
+        },
+        {
+            "rc": 0,
+            "stdout": "permission denied /var/lib/alloy/data\npermission denied /etc/alloy/journal.alloy",
+            "expected": "permission_denied",
+            "targets": ["positions", "config"],
+        },
+        {
+            "rc": 0,
+            "stdout": "failed to load config /private/path token=secret",
+            "expected": "config_error",
+            "targets": [],
+        },
+        {"rc": 0, "stdout": "no such file or directory: /private/path", "expected": "missing_file", "targets": []},
+        {
+            "rc": 0,
+            "stdout": "connection refused to 203.0.113.7 header=Bearer secret",
+            "expected": "connection_refused",
+            "targets": [],
+        },
+        {
+            "rc": 0,
+            "stdout": "unrecognized startup issue /private/path token=secret",
+            "expected": "other",
+            "targets": [],
+        },
         {
             "rc": 0,
             "stdout": "",
             "stderr": "failed to parse config /private/path token=secret",
             "expected": "config_error",
+            "targets": [],
         },
     ]
     gate_cases = [
@@ -3732,6 +3767,7 @@ for case in data["action_cases"]:
     action_classes.append(result)
 log_classes = []
 log_counts = []
+permission_targets = []
 failure_outputs = []
 for case in data["log_cases"]:
     variables = {
@@ -3744,6 +3780,10 @@ for case in data["log_cases"]:
         trust_as_template(expressions["_journal_rollback_log_class"])
     ).strip()
     log_classes.append(result)
+    targets = Templar(loader=DataLoader(), variables=variables).template(
+        trust_as_template(expressions["_journal_rollback_permission_targets"])
+    )
+    permission_targets.append(targets)
     count = str(Templar(loader=DataLoader(), variables=variables).template(
         trust_as_template(expressions["_journal_rollback_log_count"])
     )).strip()
@@ -3752,7 +3792,11 @@ for case in data["log_cases"]:
         task for task in apply["rescue"]
         if task.get("name") == "Fail closed after stopping the journal collector"
     )["ansible.builtin.fail"]["msg"]
-    variables.update({"_journal_rollback_log_class": result, "_journal_rollback_log_count": int(count)})
+    variables.update({
+        "_journal_rollback_log_class": result,
+        "_journal_rollback_log_count": int(count),
+        "_journal_rollback_permission_targets": targets,
+    })
     failure_outputs.append(Templar(loader=DataLoader(), variables=variables).template(
         trust_as_template(failure_message)
     ))
@@ -3782,6 +3826,7 @@ print(json.dumps({
     "action_classes": action_classes,
     "log_classes": log_classes,
     "log_counts": log_counts,
+    "permission_targets": permission_targets,
     "failure_outputs": failure_outputs,
     "gate_results": gate_results,
     "readiness_results": readiness_results,
@@ -3848,8 +3893,10 @@ print(json.dumps({
     assert rendered["config_classes"] == [case["expected"] for case in config_cases]
     assert rendered["action_classes"] == [case["expected"] for case in action_cases]
     assert rendered["log_classes"] == [case["expected"] for case in log_cases]
-    assert rendered["log_counts"] == [0, 0, 1, 1, 1, 1, 1, 1]
+    assert rendered["log_counts"] == [0, 0, 1, 1, 2, 1, 1, 1, 1, 1]
+    assert rendered["permission_targets"] == [case["targets"] for case in log_cases]
     assert "collector logs classification/count=config_error/1" in rendered["failure_outputs"][-1]
+    assert "permission-denied mount targets=['positions', 'config']" in rendered["failure_outputs"][4]
     assert rendered["logs"] == ["podman", "logs", "--tail", "80", "o11y-journal-collector"]
     assert rendered["logs_no_log"] is True
     assert not any(
