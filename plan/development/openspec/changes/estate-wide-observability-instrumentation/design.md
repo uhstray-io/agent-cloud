@@ -135,6 +135,17 @@ receiver-only selectors and verify both journal volumes and the collector
 container are preserved. These are acceptance requirements, not a complete
 mechanism.
 
+**Clean/reset refusal gate:** `clean-service.yml` includes `compose.journal.yml`
+in its `down -v` overlay set, removes every container whose name has the service
+prefix, and removes the production checkout/config; its production teardown uses
+`become: true`, which may inspect a different rootful Podman store from the
+collector's rootless owner. Until host-wide admission and complete, distinct-store
+read-only inventories prove the exact old and fresh volume identities and
+collector absence before teardown, clean/reset must refuse before any mutation.
+If any protected asset exists, refuse the entire reset. Make no selective-cleanup
+or preservation claim without installed-provider proof. Keep the existing reset
+confirmation, reviewed-SHA and retention gates.
+
 **Previously recorded receipt and stop (not rerun here):** Independently read
 Dev-bound read-only task **4038** at
 merged SHA `a052555060b4c9ca5fb59fb44fa64906fc38bd69` reports
