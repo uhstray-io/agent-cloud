@@ -67,9 +67,9 @@ def test_o11y_clean_deploy_refuses_unconditionally_before_shared_teardown():
     guard = tasks[teardown - 1]
 
     assert guard["name"].startswith("Refuse o11y cleanup")
-    assert guard["ansible.builtin.assert"]["that"] == ["false"]
+    assert guard["ansible.builtin.fail"]["msg"]
     assert "Selective teardown is unavailable until host-wide admission and complete" in \
-        guard["ansible.builtin.assert"]["fail_msg"]
+        guard["ansible.builtin.fail"]["msg"]
     assert "when" not in guard
     assert "tags" not in guard
 
