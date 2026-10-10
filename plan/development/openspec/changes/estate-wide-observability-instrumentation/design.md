@@ -137,29 +137,35 @@ receiver-only selectors and verify both journal volumes and the collector
 container are preserved. These are acceptance requirements, not a complete
 mechanism.
 
-**Task-output attribution diagnostic (2026-10-10; source-only partial):** The
-new Dev-bound controller playbook requires the exact reviewed clean checkout,
-and takes its API token through the existing controller OpenBao runtime flow.
-Its helper generates a 256-bit nonce in memory and hashes versioned,
-length-framed task ID, project ID, reviewed checkout SHA, fixed playbook/template
-identity, and nonce fields. A separate debug task emits only the digest marker;
-no target-VM secret file or persistent application credential file is
-intentionally created, and `no_log` protects secret-bearing task logs. Ansible
-command-module arguments may be serialized into transient controller-side
-temporary wrappers when pipelining is disabled; exposure there is possible, and
-the installed executor behavior remains unverified. Assess and close this as a
-pending security gate before treating the diagnostic as production
-authentication. The helper disables redirects and proxies, bounds
-HTTPS/loopback requests, response bytes, rows, individual socket reads and output
-polls, and enforces one aggregate 30-second verification deadline across
-metadata and output requests, then requires matching
-project-scoped task, template, playbook, repository-branch and output-row
-context. Check mode reports `check_mode_unverified` before nonce/API work.
-Only a matching marker reports `partial`; missing, malformed, duplicate,
-terminal or mismatched evidence reports `unverified`. This is diagnostic
-evidence, not an authorization gate: task-ID injection, running API response
-shape and process isolation remain unverified, and no journal action is enabled.
-No Semaphore task or live receipt was run for this source change.
+**Task-output attribution diagnostic (2026-10-10; controller-only source route
+locally verified, partial):** The Dev-bound controller playbook requires the
+exact reviewed clean checkout and obtains its runtime API token through the
+shared controller OpenBao include. Two controller action plugins keep OpenBao
+credentials and the attribution nonce out of module arguments. The runtime
+plugin reads the URL, AppRole values, and injected-token fallback from task
+variables or controller environment. The attribution plugin imports the fixed
+helper relative to its source, accepts only non-secret context arguments, and
+reads `_token` plus the protected prepare result from task variables. Both run
+in process without module execution, connection calls, subprocesses, or
+persistent credential files. OpenBao requests disable redirects, cap response
+reads at 64 KiB, and enforce a ten-second total request deadline. The existing
+transport assertion, injected Semaphore token fallback, `no_log` boundaries,
+safe rescue, and `uri`-compatible protected register shapes
+(`json.auth.client_token` and `json.data.data.api_token`) remain, including
+compatibility with callers that inspect `_runtime_login.json`. Prepare keeps
+the 256-bit nonce only in a `no_log` registered result; only its framed digest
+marker reaches visible task output. Verify reuses the helper's redirect-disabled
+bounded readback and aggregate 30-second deadline over task/template/repository
+metadata and output rows. Check mode returns `check_mode_unverified` before
+nonce generation or API access. Only a matching marker returns `partial`;
+failures return fixed reasons and bounded counts, never `authenticated`.
+Focused local tests passed (42), including actual Ansible 2.21.0 action-plugin
+discovery/check-mode execution, callback redaction, and synthetic OpenBao
+responses. This verifies source behavior only: installed Semaphore plugin
+discovery/execution, its API response shape, task-ID injection, and process
+isolation remain unverified. No Semaphore/OpenBao task or live receipt was run,
+and no journal action is enabled. This remains a partial diagnostic, not an
+authorization gate or completion of task 1.2a.
 
 **Clean/reset refusal gate:** `clean-service.yml` includes `compose.journal.yml`
 in its `down -v` overlay set, removes every container whose name has the service

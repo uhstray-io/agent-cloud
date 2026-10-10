@@ -14,7 +14,6 @@
   become: false
   vars:
     _semaphore_url: "http://127.0.0.1:3000"
-    _attribution_helper: "{{ playbook_dir }}/files/diagnose-semaphore-task-attribution.py"
   tasks:
     - name: Read the reviewed controller checkout revision
       ansible.builtin.command:
@@ -38,73 +37,59 @@
       changed_when: false
 
     - name: Prepare one framed random attribution marker
-      ansible.builtin.command:
-        argv: [python3, "{{ _attribution_helper }}"]
-        stdin: >-
-          {{ {'mode': 'prepare',
-              'task_id': semaphore_vars.task_details.id | default(''),
-              'project_id': semaphore_project_id | default(''),
-              'revision': _controller_revision.stdout} | to_json }}
+      semaphore_task_attribution:
+        mode: prepare
+        task_id: "{{ semaphore_vars.task_details.id | default('') }}"
+        project_id: "{{ semaphore_project_id | default('') }}"
+        revision: "{{ _controller_revision.stdout }}"
       register: _attribution_prepared_raw
       changed_when: false
-      failed_when: false
       check_mode: false
-      no_log: true
-      when: not ansible_check_mode
-
-    - name: Hold the sanitized marker result in Ansible memory
-      ansible.builtin.set_fact:
-        _attribution_prepared: "{{ _attribution_prepared_raw.stdout | from_json }}"
       no_log: true
       when: not ansible_check_mode
 
     - name: Emit the digest marker into this task's actual output
       ansible.builtin.debug:
-        msg: "{{ _attribution_prepared.marker }}"
+        msg: "{{ _attribution_prepared_raw.marker }}"
       changed_when: false
       when:
         - not ansible_check_mode
-        - _attribution_prepared.status == 'prepared'
+        - _attribution_prepared_raw.status == 'prepared'
 
     - name: Resolve the existing controller Semaphore runtime access
       ansible.builtin.include_tasks: ../semaphore/tasks/runtime-access.yml
       when:
         - not ansible_check_mode
-        - _attribution_prepared.status == 'prepared'
+        - _attribution_prepared_raw.status == 'prepared'
 
     - name: Read back only this task's bounded metadata and output
-      ansible.builtin.command:
-        argv: [python3, "{{ _attribution_helper }}"]
-        stdin: >-
-          {{ {'mode': 'verify',
-              'api_origin': _semaphore_url,
-              'token': _token,
-              'task_id': semaphore_vars.task_details.id | default(''),
-              'project_id': semaphore_project_id | default(''),
-              'revision': _controller_revision.stdout,
-              'marker': _attribution_prepared.marker,
-              'nonce_hex': _attribution_prepared.nonce_hex} | to_json }}
+      semaphore_task_attribution:
+        mode: verify
+        api_origin: "{{ _semaphore_url }}"
+        task_id: "{{ semaphore_vars.task_details.id | default('') }}"
+        project_id: "{{ semaphore_project_id | default('') }}"
+        revision: "{{ _controller_revision.stdout }}"
+        marker: "{{ _attribution_prepared_raw.marker }}"
       register: _attribution_verified_raw
       changed_when: false
-      failed_when: false
       check_mode: false
       no_log: true
       when:
         - not ansible_check_mode
-        - _attribution_prepared.status == 'prepared'
+        - _attribution_prepared_raw.status == 'prepared'
 
     - name: Report the sanitized source-level attribution result
       ansible.builtin.debug:
-        msg: "{{ _attribution_verified_raw.stdout | from_json }}"
+        msg: "{{ _attribution_verified_raw }}"
       changed_when: false
       when:
         - not ansible_check_mode
-        - _attribution_prepared.status == 'prepared'
+        - _attribution_prepared_raw.status == 'prepared'
 
     - name: Report an unavailable candidate without accessing the API
       ansible.builtin.debug:
-        msg: "{{ _attribution_prepared }}"
+        msg: "{{ _attribution_prepared_raw }}"
       changed_when: false
       when:
         - not ansible_check_mode
-        - _attribution_prepared.status != 'prepared'
+        - _attribution_prepared_raw.status != 'prepared'
