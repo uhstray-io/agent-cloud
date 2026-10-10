@@ -760,8 +760,15 @@ collector absent from all containers, zero consumers and mounts, safe `0:0` root
 and allowlisted layout, `positions.yml` absent, access, ACL/mount checks, and
 capacity on GraphRoot and the volume filesystem. This `ready` result authorizes
 only a start attempt; it does not prove delivery. A present invalid or unreadable
-cursor, unknown cursor presence, or any incomplete evidence refuses. The immediate
-pre-start check runs outside rollback handling. After startup, `verify-live` is a
+cursor, unknown cursor presence, or any incomplete evidence refuses. `cursor_checked`
+is true only when the safe, bounded file was read completely with stable identity
+and its contents were parsed; absent, unsafe, oversized, or unreadable files leave
+validity `unverified`. The read-only survey still does not inspect cursor contents.
+The apply, immediate pre-mount, and post-start live gates parse positions output in
+protected tasks; malformed or non-object JSON becomes fixed `unavailable`, and the
+assertions still require normalized `ready`/`bootstrap_allowed` before start and
+`ready` after start. The live diagnostic reads only the normalized result. The
+immediate pre-start check runs outside rollback handling. After startup, `verify-live` is a
 separate strict gate; a lingering
 `NeedsCopyUp=true` is not success by itself: require the collector to be present
 as the single consumer and mount, with the exact live RW mount,
@@ -792,6 +799,33 @@ does not cover the repair's later identity rechecks and does not authorize a
 repair. Check mode and survey exceptions use the same keys with unverified
 categories. No additional Podman call, mount, content read, or ownership change
 is part of this diagnostic.
+
+The post-start `verify-live` receipt now adds `live_diagnostic`: fixed helper
+status/reason and failed metadata categories, exact collector mount destination,
+volume name/source/type/RW and configured-user comparisons, the expected seed
+file and journal-component counts, and aggregate other-entry counts by kind.
+It emits no entry names, paths, IDs, modes, or contents. Host and collector UID
+maps remain under `no_log`; the visible receipt reports only availability and
+equality. The existing namespace write/rename/delete probe remains part of the
+live gate and emits only a fixed failing stage (`identity`, `create`, `write`,
+`rename`, or `cleanup`) or `passed`. None of these diagnostics changes the
+acceptance predicates.
+
+The read-only positions survey may report top-level entry roles and aggregate
+entry kinds, but it does not inspect cursor contents or run a namespace probe.
+Its live receipt marks host/collector UID maps, equality, and the namespace
+probe `not_run`. If the collector is absent, mount comparisons are `unverified`;
+survey evidence cannot satisfy the live gate.
+
+**Dev collector gate diagnostic (2026-10-09):** User-provided task 3986 check
+mode and task 3987 survey precede task 3988, which started the collector and
+passed health/readiness but refused the strict live mount/namespace gate and
+rolled back safely. Task 3989 found the collector absent and the named volume
+preserved with three entries; entry children and cursor evidence were
+ambiguous/unavailable. Those receipts do not identify the failed live
+predicate. The next action is a reviewed diagnostic survey at a fresh merged
+Dev revision; do not apply again until its evidence is reviewed. Task 1.2 stays
+open.
 
 The live Dev survey 3925 at reviewed SHA `8050f2768903e09f68285f90c1598cb120006219`
 (sanitized receipt supplied for this implementation; not rerun here) reported
