@@ -100,12 +100,10 @@
       when: _o11y_gated
 
     - name: Refuse o11y cleanup until journal preservation and host admission are verified
-      ansible.builtin.assert:
-        that: ["false"]
-        fail_msg: >-
+      ansible.builtin.fail:
+        msg: >-
           Selective teardown is unavailable until host-wide admission and complete
           rootless/rootful journal asset preservation are implemented and verified.
-        quiet: true
 
     - name: "Destroy existing deployment"
       ansible.builtin.include_tasks: tasks/clean-service.yml
