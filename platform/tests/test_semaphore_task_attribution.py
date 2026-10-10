@@ -437,7 +437,9 @@ def test_playbook_guard_check_mode_and_marker_output_contract():
     ]
     assert verify["semaphore_task_attribution"]["mode"] == "verify"
     assert "semaphore_vars.task_details.id" in str(prepare["semaphore_task_attribution"])
-    assert "semaphore_project_id" in str(prepare["semaphore_task_attribution"])
+    assert "o11y_attribution_project_id" in str(prepare["semaphore_task_attribution"])
+    assert "o11y_attribution_project_id" in str(verify["semaphore_task_attribution"])
+    assert "semaphore_project_id" not in PLAYBOOK.read_text(encoding="utf-8")
     assert "nonce_hex" not in str(verify["semaphore_task_attribution"])
     assert "SEMAPHORE_TASK_ID" not in PLAYBOOK.read_text(encoding="utf-8")
     assert "SEMAPHORE_PROJECT_ID" not in PLAYBOOK.read_text(encoding="utf-8")

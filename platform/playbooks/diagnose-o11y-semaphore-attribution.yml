@@ -40,7 +40,7 @@
       semaphore_task_attribution:
         mode: prepare
         task_id: "{{ semaphore_vars.task_details.id | default('') }}"
-        project_id: "{{ semaphore_project_id | default('') }}"
+        project_id: "{{ o11y_attribution_project_id | default('') }}"
         revision: "{{ _controller_revision.stdout }}"
       register: _attribution_prepared_raw
       changed_when: false
@@ -67,7 +67,7 @@
         mode: verify
         api_origin: "{{ _semaphore_url }}"
         task_id: "{{ semaphore_vars.task_details.id | default('') }}"
-        project_id: "{{ semaphore_project_id | default('') }}"
+        project_id: "{{ o11y_attribution_project_id | default('') }}"
         revision: "{{ _controller_revision.stdout }}"
         marker: "{{ _attribution_prepared_raw.marker }}"
       register: _attribution_verified_raw
