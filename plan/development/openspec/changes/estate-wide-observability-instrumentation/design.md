@@ -102,9 +102,11 @@ by this artifact update.
 **Admission remains unimplemented (2026-10-10):** The partial durable admission
 state helper and premature receiver refusal includes were removed because they
 did not establish shared, authenticated admission. Receiver deploy and clean/reset
-remain available through their prior source paths; no receiver admission gate is
-implemented. Journal survey/proof/apply/repair/stop/rollback remain closed at the
-existing action gate. Task 1.2a remains incomplete; admission, durable intent,
+do not share an admission gate. Ordinary receiver deploy remains available through
+its prior source path. Clean/reset is unconditionally refused immediately before
+shared destructive cleanup, after the existing reset-confirmation, reviewed-checkout,
+and retention gates. The journal action gate permits only check-mode survey; runtime
+survey/proof/apply/repair/stop/rollback remain closed. Task 1.2a remains incomplete; admission, durable intent,
 recovery, attribution and preservation requirements below remain acceptance gates.
 
 **Receiver reconciliation orphan guard (2026-10-10; partial source):** The ordinary
