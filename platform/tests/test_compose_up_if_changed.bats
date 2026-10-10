@@ -298,6 +298,22 @@ o_setup() {
   [ "$(recreates)" -eq 1 ]
 }
 
+@test "o11y: changed inputs cannot hide a later unexpected orphan" {
+  o_setup
+  deploy; [ "$status" -eq 0 ]
+  mkdir -p "$S/c/zz-unexpected"
+  echo true > "$S/c/zz-unexpected/running"
+  echo other-service > "$S/c/zz-unexpected/service"
+  echo img-1 > "$S/c/zz-unexpected/image_run"
+  echo '# changed' >> "$D/config/loki-config.yml"
+  : > "$S/compose.log"
+  deploy
+  [ "$status" -ne 0 ]
+  grep -q 'Unexpected or unverifiable orphan' <<< "$output"
+  refute_grep -q ' up ' "$S/compose.log"
+  [ "$(recreates)" -eq 1 ]
+}
+
 @test "o11y: an orphan with a missing service label is unknown and refuses" {
   o_setup
   deploy; [ "$status" -eq 0 ]
