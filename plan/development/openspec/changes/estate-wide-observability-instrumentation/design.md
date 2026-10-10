@@ -137,6 +137,30 @@ receiver-only selectors and verify both journal volumes and the collector
 container are preserved. These are acceptance requirements, not a complete
 mechanism.
 
+**Task-output attribution diagnostic (2026-10-10; source-only partial):** The
+new Dev-bound controller playbook requires the exact reviewed clean checkout,
+and takes its API token through the existing controller OpenBao runtime flow.
+Its helper generates a 256-bit nonce in memory and hashes versioned,
+length-framed task ID, project ID, reviewed checkout SHA, fixed playbook/template
+identity, and nonce fields. A separate debug task emits only the digest marker;
+no target-VM secret file or persistent application credential file is
+intentionally created, and `no_log` protects secret-bearing task logs. Ansible
+command-module arguments may be serialized into transient controller-side
+temporary wrappers when pipelining is disabled; exposure there is possible, and
+the installed executor behavior remains unverified. Assess and close this as a
+pending security gate before treating the diagnostic as production
+authentication. The helper disables redirects and proxies, bounds
+HTTPS/loopback requests, response bytes, rows, individual socket reads and output
+polls, and enforces one aggregate 30-second verification deadline across
+metadata and output requests, then requires matching
+project-scoped task, template, playbook, repository-branch and output-row
+context. Check mode reports `check_mode_unverified` before nonce/API work.
+Only a matching marker reports `partial`; missing, malformed, duplicate,
+terminal or mismatched evidence reports `unverified`. This is diagnostic
+evidence, not an authorization gate: task-ID injection, running API response
+shape and process isolation remain unverified, and no journal action is enabled.
+No Semaphore task or live receipt was run for this source change.
+
 **Clean/reset refusal gate:** `clean-service.yml` includes `compose.journal.yml`
 in its `down -v` overlay set, removes every container whose name has the service
 prefix, and removes the production checkout/config; its production teardown uses
