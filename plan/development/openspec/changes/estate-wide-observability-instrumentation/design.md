@@ -107,6 +107,22 @@ implemented. Journal survey/proof/apply/repair/stop/rollback remain closed at th
 existing action gate. Task 1.2a remains incomplete; admission, durable intent,
 recovery, attribution and preservation requirements below remain acceptance gates.
 
+**Semaphore attribution and cleanup source note (2026-10-10):** Upstream
+[Semaphore v2.17.31 `LocalJob.go`](https://github.com/semaphoreui/semaphore/blob/v2.17.31/services/tasks/LocalJob.go#L70-L112)
+sets `semaphore_vars.task_details.id` from the running job's task ID, so it is
+only an untrusted candidate. Accept it only after loopback API readback binds the
+running task to the expected template, playbook, project, reviewed SHA, branch,
+inventory and execution context; a caller-selected record alone does not prove
+process ownership, and that gate remains unimplemented. The repository's
+configurable Semaphore image defaults to v2.19.11; installed behavior is
+unverified. The existing controller OpenBao runtime-token flow is
+`platform/semaphore/tasks/runtime-access.yml`. `clean-service.yml` expands
+mode-specific Compose overlays, runs `down -v`, then deletes container names by
+service prefix. Before cleanup or journal proof can be admitted, require exact
+receiver-only selectors and verify both journal volumes and the collector
+container are preserved. These are acceptance requirements, not a complete
+mechanism.
+
 **Previously recorded receipt and stop (not rerun here):** Independently read
 Dev-bound read-only task **4038** at
 merged SHA `a052555060b4c9ca5fb59fb44fa64906fc38bd69` reports
