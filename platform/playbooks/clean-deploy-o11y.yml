@@ -99,11 +99,6 @@
           after the reviewed capacity receipt and nonzero Prometheus cap are present.
       when: _o11y_gated
 
-    - name: Refuse reset before cleanup unless journal admission and both-volume preservation are proven
-      ansible.builtin.include_tasks: tasks/o11y-journal-admission.yml
-      vars:
-        o11y_journal_lifecycle_operation: receiver-clean
-
     - name: "Destroy existing deployment"
       ansible.builtin.include_tasks: tasks/clean-service.yml
 

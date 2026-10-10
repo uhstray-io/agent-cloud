@@ -99,19 +99,13 @@ discovery and independent review; no lock backend, durable-record location,
 Semaphore environment marker or receipt authentication mechanism is accepted
 by this artifact update.
 
-**Partial receiver admission implementation (2026-10-10):** The workflow helper
-now has a protected host-local state record, advisory lock, atomic fsync/readback,
-owner-bound completion across separate tasks, and no expiry-based takeover;
-interrupted intent, malformed state, and owner mismatch refuse. Receiver deploy
-and clean-deploy invoke the same refusal task before their first lifecycle
-mutation. This is not shared operational admission: `assert-orchestrated.yml`
-explicitly marks `SEMAPHORE_TASK_ID` unverified and says the observed task did
-not inject it, while `BAO_ROLE_ID` is not unique task proof. The helper therefore
-refuses receiver deploy with `task_attribution_unverified`; clean/reset refuses
-with `receiver_reset_preservation_unverified` until selectors preserve both
-journal volumes. The durable transition API is not exposed as an authenticated
-Semaphore CLI flow, and journal survey/proof/apply/repair/stop/rollback remain
-closed. This is source and focused-test evidence only.
+**Admission remains unimplemented (2026-10-10):** The partial durable admission
+state helper and premature receiver refusal includes were removed because they
+did not establish shared, authenticated admission. Receiver deploy and clean/reset
+remain available through their prior source paths; no receiver admission gate is
+implemented. Journal survey/proof/apply/repair/stop/rollback remain closed at the
+existing action gate. Task 1.2a remains incomplete; admission, durable intent,
+recovery, attribution and preservation requirements below remain acceptance gates.
 
 **Previously recorded receipt and stop (not rerun here):** Independently read
 Dev-bound read-only task **4038** at

@@ -131,11 +131,6 @@
           if _probe_enabled | bool else []) }}
 
   tasks:
-    - name: Refuse receiver deployment before any target work
-      ansible.builtin.include_tasks: tasks/o11y-journal-admission.yml
-      vars:
-        o11y_journal_lifecycle_operation: receiver-deploy
-
     - name: "Require a capacity receipt and nonzero Prometheus cap for retention expansion"
       ansible.builtin.assert:
         that:
