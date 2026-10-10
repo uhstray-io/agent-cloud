@@ -160,8 +160,14 @@ def test_a_forged_internal_fact_cannot_satisfy_the_confirmation(forge_hosts, for
 @pytest.mark.parametrize("path", INCLUDERS, ids=IDS)
 def test_a_launch_naming_the_host_gets_past_the_confirmation(path, tmp_path):
     host, proc = _launch(path, tmp_path, "-e", json.dumps({"confirm_reset": f"{_service(path)}-local"}))
-    assert proc.returncode == 0, proc.stdout + proc.stderr
     assert REFUSAL not in proc.stdout, proc.stdout
+    if _service(path) == "o11y":
+        assert proc.returncode != 0, proc.stdout + proc.stderr
+        assert "Refuse o11y cleanup until journal preservation and host admission are verified" in proc.stdout
+        assert TEARDOWN not in proc.stdout
+        assert "TASK [Verify clean]" not in proc.stdout
+        return
+    assert proc.returncode == 0, proc.stdout + proc.stderr
     assert "TASK [Verify clean]" in proc.stdout, proc.stdout
 
 
