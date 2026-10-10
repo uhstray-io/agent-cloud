@@ -6,6 +6,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -74,6 +75,13 @@ def _assert_positions_survey_diagnostics_schema(report, has_reason=False):
     assert set(live["role_metadata"]) == {"receiver", "exporter"}
     for role in live["role_metadata"].values():
         assert set(role) == {"owner", "access", "acl", "mount", "children"}
+    unmatched = live["unmatched_directories"]
+    assert set(unmatched) == {"count", "owner", "access", "acl", "mount", "children"}
+    assert set(unmatched["owner"]) == {"matches_collector", "mismatch", "unverified"}
+    assert set(unmatched["access"]) == {"read_write_execute", "blocked", "unverified"}
+    assert set(unmatched["acl"]) == {"absent", "present", "unverified"}
+    assert set(unmatched["mount"]) == {"clear", "ambiguous", "unverified"}
+    assert set(unmatched["children"]) == {"empty", "nonempty", "unverified"}
 
 
 def _positions_state(
@@ -96,6 +104,14 @@ def _positions_state(
         "journal_cursor_valid": journal_cursor_valid,
         "free_bytes": free_bytes,
         "free_inodes": free_inodes,
+        "unmatched_directories": {
+            "count": 0,
+            "owner": {"matches_collector": 0, "mismatch": 0, "unverified": 0},
+            "access": {"read_write_execute": 0, "blocked": 0, "unverified": 0},
+            "acl": {"absent": 0, "present": 0, "unverified": 0},
+            "mount": {"clear": 0, "ambiguous": 0, "unverified": 0},
+            "children": {"empty": 0, "nonempty": 0, "unverified": 0},
+        },
     }
 
 
@@ -238,6 +254,73 @@ def test_positions_metadata_parser_requires_expected_journal_cursor():
         good + b"extra: true\n",
     ):
         assert namespace["journal_cursor"](bad) is False
+
+
+@pytest.mark.parametrize("overflow_pass", [1, 2])
+def test_role_observation_bounds_each_directory_enumeration(overflow_pass, tmp_path):
+    tree = ast.parse(POSITIONS._METADATA_SCRIPT)
+    function = next(
+        node for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "role_observation"
+    )
+    counts = []
+    real_os = SimpleNamespace(**os.__dict__)
+    real_open = real_os.open
+    scan_descriptors = {}
+    scan_number = [0]
+
+    class Entries:
+        def __init__(self, count):
+            self.count = count
+            self.index = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            if self.index >= self.count:
+                raise StopIteration
+            self.index += 1
+            counts[-1] += 1
+            return SimpleNamespace(name=f"entry-{self.index}")
+
+    def scandir(_fd):
+        pass_number = scan_descriptors[_fd]
+        assert pass_number == len(counts) + 1
+        counts.append(0)
+        size = 32 if pass_number < overflow_pass else 100_000
+        return Entries(size)
+
+    def open_directory(path, flags, *args, **kwargs):
+        fd = real_open(path, flags, *args, **kwargs)
+        if path == ".":
+            scan_number[0] += 1
+            scan_descriptors[fd] = scan_number[0]
+        return fd
+
+    real_os.open = open_directory
+    real_os.scandir = scandir
+    real_os.listxattr = lambda *_args: []
+    namespace = {"os": real_os, "stat": stat, "mount_id": lambda _path: (7, "/role")}
+    exec(compile(ast.Module(body=[function], type_ignores=[]), "role-observation", "exec"), namespace)
+    path = str(tmp_path)
+    role = tmp_path / "unmatched"
+    role.mkdir()
+    observation = namespace["role_observation"](
+        path, os.lstat(path), (7, path), role.name, (7, str(role)),
+    )
+
+    assert counts == ([33] if overflow_pass == 1 else [32, 33])
+    assert observation == {
+        "owner": "unverified", "access": "unverified", "acl": "unverified",
+        "mount": "unverified", "children": "unverified",
+    }
 
 
 @pytest.mark.parametrize(
@@ -457,6 +540,14 @@ def test_live_positions_debug_rescues_malformed_nested_diagnostic_before_renderi
                 "mount": "unverified", "children": "unverified",
             },
         },
+        "unmatched_directories": {
+            "count": 2,
+            "owner": {"matches_collector": 0, "mismatch": 2, "unverified": 0},
+            "access": {"read_write_execute": 0, "blocked": 2, "unverified": 0},
+            "acl": {"absent": 2, "present": 0, "unverified": 0},
+            "mount": {"clear": 2, "ambiguous": 0, "unverified": 0},
+            "children": {"empty": 2, "nonempty": 0, "unverified": 0},
+        },
     }
     malformed = [
         ("helper_reason", {**base, "helper_reason": "PRIVATE_MARKER_REASON"}),
@@ -494,6 +585,24 @@ def test_live_positions_debug_rescues_malformed_nested_diagnostic_before_renderi
                 "receiver": {**base["role_metadata"]["receiver"], "private": "PRIVATE_MARKER_ROLE"},
             },
         }),
+        ("unmatched_count_bound", {
+            **base,
+            "unmatched_directories": {**base["unmatched_directories"], "count": 33},
+        }),
+        ("unmatched_extra_key", {
+            **base,
+            "unmatched_directories": {
+                **base["unmatched_directories"],
+                "owner": {**base["unmatched_directories"]["owner"], "private": "SECRET"},
+            },
+        }),
+        ("unmatched_category_overflow", {
+            **base,
+            "unmatched_directories": {
+                **base["unmatched_directories"],
+                "children": {**base["unmatched_directories"]["children"], "empty": 33},
+            },
+        }),
     ]
     def evaluate(diagnostic):
         variables = {
@@ -529,6 +638,7 @@ def test_live_positions_debug_rescues_malformed_nested_diagnostic_before_renderi
         "other_entries=2/3/4/5",
         "receiver_role=",
         "exporter_role=",
+        "unmatched_directories=",
     ):
         assert expected in valid_rendered
 
@@ -2814,6 +2924,10 @@ exec({POSITIONS._METADATA_SCRIPT!r})
         assert metadata["component_layout"] is False
         assert set(metadata["role_metadata"]["receiver"].values()) == {"unverified"}
 
+    metadata, _ = inspect(unknown_name, "symlink")
+    assert metadata["top_level"]["other_symlinks"] == 1
+    assert metadata["unmatched_directories"]["count"] == 0
+
     for kwargs, field, expected in (
         ({"acl": True}, "acl", "present"),
         ({"mounted": True}, "mount", "ambiguous"),
@@ -2829,6 +2943,173 @@ exec({POSITIONS._METADATA_SCRIPT!r})
     assert receiver_name not in visible and exporter_name not in visible and unknown_name not in visible
     assert "PRIVATE_CONTENT_MARKER" not in visible
     assert re.search(r"[0-9a-f]{64}", visible) is None
+
+
+def test_embedded_metadata_reports_three_entry_layout_with_anonymous_unknown_directory(tmp_path):
+    root = tmp_path / "three-entry-volume"
+    component = root / "loki.source.journal.o11y_alloy"
+    unknown = root / "private-directory-name"
+    component.mkdir(mode=0o700, parents=True)
+    unknown.mkdir(mode=0o500)
+    (root / "alloy_seed.json").write_text("PRIVATE_CONTENT_MARKER")
+    os.chmod(root, 0o700)
+    os.chmod(component, 0o700)
+    os.chmod(unknown, 0o500)
+    mountinfo = f"1 0 0:1 / {root.parent} rw - testfs /dev/test rw\n"
+    prelude = (
+        "import builtins,io,os,sys; sys.argv.append('false'); "
+        "real_open=builtins.open; "
+        f"builtins.open=lambda path,*args,**kwargs: io.StringIO({mountinfo!r}) "
+        "if path=='/proc/self/mountinfo' else real_open(path,*args,**kwargs); "
+        "os.listxattr=lambda *_args,**_kwargs: []; "
+        f"exec({POSITIONS._METADATA_SCRIPT!r})"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", prelude, str(root)], check=False, capture_output=True, text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    metadata = json.loads(result.stdout)
+    assert metadata["top_level"] == {
+        "seed_file": 1, "journal_component": 1, "other_files": 0,
+        "other_directories": 1, "other_symlinks": 0, "other_kinds": 0,
+        "receiver_component": 0, "exporter_component": 0,
+    }
+    assert metadata["component_layout"] is False
+    assert metadata["unmatched_directories"]["count"] == 1
+    assert metadata["unmatched_directories"]["access"] == {
+        "read_write_execute": 0, "blocked": 1, "unverified": 0,
+    }
+    assert metadata["unmatched_directories"]["children"] == {
+        "empty": 1, "nonempty": 0, "unverified": 0,
+    }
+    diagnostic = POSITIONS._live_diagnostic({"status": "observed", "metadata": metadata})
+    assert "private-directory-name" not in json.dumps(diagnostic)
+    assert "PRIVATE_CONTENT_MARKER" not in json.dumps(diagnostic)
+    assert re.search(r"[0-9a-f]{64}", json.dumps(diagnostic)) is None
+    refused = POSITIONS.verify(lambda: _positions_found(_positions_state(component_layout=False)))
+    assert refused["status"] == "refused"
+    assert refused["reason"] == "metadata_ambiguous"
+    os.chmod(unknown, 0o700)
+
+
+def test_unmatched_directory_categories_count_zero_multiple_and_nonempty(tmp_path):
+    root = tmp_path / "multiple-unknown-directories"
+    root.mkdir(mode=0o700)
+    empty = root / "private-empty-name"
+    nonempty = root / "private-nonempty-name"
+    empty.mkdir(mode=0o700)
+    nonempty.mkdir(mode=0o700)
+    (nonempty / "private-child-name").write_text("PRIVATE_CONTENT_MARKER")
+    os.chmod(root, 0o700)
+    mountinfo = f"1 0 0:1 / {root.parent} rw - testfs /dev/test rw\n"
+    prelude = (
+        "import builtins,io,os,sys; sys.argv.append('false'); "
+        "real_open=builtins.open; "
+        f"builtins.open=lambda path,*args,**kwargs: io.StringIO({mountinfo!r}) "
+        "if path=='/proc/self/mountinfo' else real_open(path,*args,**kwargs); "
+        "os.listxattr=lambda *_args,**_kwargs: []; "
+        f"exec({POSITIONS._METADATA_SCRIPT!r})"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", prelude, str(root)], check=False, capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    diagnostic = json.loads(result.stdout)["unmatched_directories"]
+    assert diagnostic["count"] == 2
+    assert diagnostic["children"] == {"empty": 1, "nonempty": 1, "unverified": 0}
+
+    empty_root = tmp_path / "no-unknown-directories"
+    empty_root.mkdir(mode=0o700)
+    os.chmod(empty_root, 0o700)
+    zero_mountinfo = f"1 0 0:1 / {empty_root.parent} rw - testfs /dev/test rw\n"
+    zero_prelude = prelude.replace(mountinfo, zero_mountinfo)
+    zero = subprocess.run(
+        [sys.executable, "-c", zero_prelude, str(empty_root)], check=False, capture_output=True, text=True,
+    )
+    assert zero.returncode == 0, zero.stderr
+    diagnostic = json.loads(zero.stdout)["unmatched_directories"]
+    assert diagnostic["count"] == 0
+    assert all(value == 0 for categories in diagnostic.values() if isinstance(categories, dict)
+               for value in categories.values())
+
+
+def test_unmatched_directory_ambiguity_and_overflow_are_unverified(tmp_path):
+    name = "private-directory-marker"
+
+    def inspect(*, acl=False, mounted=False, race=False, symlink_race=False, child_count=0):
+        root = tmp_path / f"unknown-{acl}-{mounted}-{race}-{symlink_race}-{child_count}"
+        root.mkdir(mode=0o700)
+        directory = root / name
+        directory.mkdir(mode=0o700)
+        for index in range(child_count):
+            (directory / f"private-child-{index}").touch()
+        os.chmod(root, 0o700)
+        mount_lines = [f"1 0 0:1 / {root.parent} rw - testfs /dev/test rw\n"]
+        if mounted:
+            mount_lines.append(f"2 1 0:2 / {directory} rw - testfs /dev/test rw\n")
+        prelude = f'''import builtins,io,os,sys,types
+sys.argv.append("false")
+root={str(root)!r}
+name={name!r}
+directory={str(directory)!r}
+real_stat=os.stat
+real_open=builtins.open
+real_listxattr=getattr(os,"listxattr",lambda *_args,**_kwargs: [])
+def fake_open(path,*args,**kwargs):
+    if path=="/proc/self/mountinfo": return io.StringIO({''.join(mount_lines)!r})
+    return real_open(path,*args,**kwargs)
+builtins.open=fake_open
+def fake_listxattr(path,*args,**kwargs):
+    if {acl!r} and isinstance(path,int): return ["system.posix_acl_access"]
+    return real_listxattr(path,*args,**kwargs)
+os.listxattr=fake_listxattr
+calls={{"count":0}}
+def fake_stat(path,*args,**kwargs):
+    value=real_stat(path,*args,**kwargs)
+    if ({race!r} or {symlink_race!r}) and path==name and kwargs.get("dir_fd") is not None:
+        calls["count"]+=1
+        if calls["count"]==2:
+            if {symlink_race!r}:
+                os.rename(directory,directory+"-moved")
+                os.symlink(root,directory)
+                return real_stat(path,*args,**kwargs)
+            return types.SimpleNamespace(st_mode=value.st_mode,st_uid=value.st_uid,st_gid=value.st_gid,
+                st_dev=value.st_dev,st_ino=value.st_ino+1,st_nlink=value.st_nlink,st_mtime_ns=value.st_mtime_ns)
+    return value
+os.stat=fake_stat
+exec({POSITIONS._METADATA_SCRIPT!r})
+'''
+        result = subprocess.run(
+            [sys.executable, "-c", prelude, str(root)], check=False, capture_output=True, text=True,
+        )
+        assert result.returncode == 0, result.stderr
+        return json.loads(result.stdout)["unmatched_directories"]
+
+    for kwargs in ({"acl": True}, {"mounted": True}, {"race": True},
+                   {"symlink_race": True}, {"child_count": 33}):
+        summary = inspect(**kwargs)
+        assert summary["count"] == 1
+        assert all(categories["unverified"] == 1 and sum(
+            count for key, count in categories.items() if key != "unverified"
+        ) == 0 for categories in summary.values() if isinstance(categories, dict)), (kwargs, summary)
+
+
+def test_unmatched_directory_summary_rejects_malformed_data_without_emitting_it():
+    malformed = {
+        "count": 1,
+        "owner": {"matches_collector": 1, "mismatch": 0, "unverified": 0, "private": "SECRET"},
+        "access": {"read_write_execute": 1, "blocked": 0, "unverified": 0},
+        "acl": {"absent": 1, "present": 0, "unverified": 0},
+        "mount": {"clear": 1, "ambiguous": 0, "unverified": 0},
+        "children": {"empty": 1, "nonempty": 0, "unverified": 0},
+        "private_path": "/private/SECRET",
+    }
+    diagnostic = POSITIONS._unmatched_directory_diagnostic({"unmatched_directories": malformed})
+    assert diagnostic["count"] == 1
+    assert all(set(categories.values()) == {"unverified"}
+               for categories in diagnostic.values() if isinstance(categories, dict))
+    assert "SECRET" not in json.dumps(diagnostic)
 
 
 def test_embedded_positions_metadata_retries_rename_that_finishes_during_observation(tmp_path):
@@ -3406,6 +3687,7 @@ def test_playbook_guards_validation_delivery_and_non_destructive_rollback():
         if task.get("name") == "Verify positions volume identity and access before apply"
     )
     assert pre_apply_gate["ansible.builtin.command"]["argv"] == ["python3", "-", "verify"]
+    assert pre_apply_gate.get("no_log") is True
     assert "Require the actual runtime to be rootless" in source
     assert "read -r -N 1 _ < \"$file\"" in source
     assert "expected_repository_sha" in source
@@ -3429,7 +3711,7 @@ def test_playbook_guards_validation_delivery_and_non_destructive_rollback():
         task for task in survey_play["tasks"]
         if task.get("name") == "Survey existing positions volume metadata without mounting it"
     )
-    assert positions_survey.get("no_log") is not True
+    assert positions_survey.get("no_log") is True
     assert positions_survey["when"] == "not ansible_check_mode"
     assert positions_survey["ansible.builtin.command"]["argv"] == ["python3", "-", "survey"]
     assert "/alloy-state/.positions-live-gate." not in str(positions_survey)
@@ -3467,7 +3749,7 @@ def test_playbook_guards_validation_delivery_and_non_destructive_rollback():
         "Parse immediate pre-mount positions output through a protected boundary"
     )
     assert pre_mount["register"] == "_journal_positions_pre_mount"
-    assert pre_mount.get("no_log") is not True
+    assert pre_mount.get("no_log") is True
     assert apply_task_names.index("Start only the journal collector service") < apply_task_names.index(
         "Verify the live collector positions mount and access"
     ) < apply_task_names.index("Read the Podman rootless UID mapping") < apply_task_names.index(
@@ -3491,7 +3773,7 @@ def test_playbook_guards_validation_delivery_and_non_destructive_rollback():
         task for task in apply_block["block"]
         if task.get("name") == "Observe the live collector UID mapping for diagnostics"
     )
-    assert live_mount.get("no_log") is not True
+    assert live_mount.get("no_log") is True
     assert host_uid_map["no_log"] is True
     assert collector_uid_map["no_log"] is True
     assert collector_uid_map["ansible.builtin.command"]["argv"] == [
@@ -3786,13 +4068,13 @@ def test_positions_visibility_is_limited_to_bounded_helper_and_uid_probe_results
     tasks = [task for play in plays for task in walk(play.get("tasks"))]
     by_name = {task.get("name"): task for task in tasks}
     visible = {
+        "Run the separately selected guarded positions repair",
+    }
+    protected = {
         "Verify positions volume identity and access before apply",
         "Recheck positions volume initialization immediately before mount",
         "Verify the live collector positions mount and access",
         "Survey existing positions volume metadata without mounting it",
-        "Run the separately selected guarded positions repair",
-    }
-    protected = {
         "Read the Podman rootless UID mapping",
         "Verify effective write and rename access in the live collector namespace",
         "Require a recent exact-name entry in the selected journal",
@@ -4544,6 +4826,14 @@ def test_positions_gate_malformed_or_unexpected_json_is_unavailable(stdout):
                         "owner": "unverified", "access": "unverified", "acl": "unverified",
                         "mount": "unverified", "children": "unverified",
                     },
+                },
+                "unmatched_directories": {
+                    "count": "unverified",
+                    "owner": {"matches_collector": "unverified", "mismatch": "unverified", "unverified": "unverified"},
+                    "access": {"read_write_execute": "unverified", "blocked": "unverified", "unverified": "unverified"},
+                    "acl": {"absent": "unverified", "present": "unverified", "unverified": "unverified"},
+                    "mount": {"clear": "unverified", "ambiguous": "unverified", "unverified": "unverified"},
+                    "children": {"empty": "unverified", "nonempty": "unverified", "unverified": "unverified"},
                 },
             },
         },

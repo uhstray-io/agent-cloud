@@ -815,13 +815,15 @@ The read-only positions survey may report top-level entry roles and aggregate
 entry kinds, but it does not inspect cursor contents or run a namespace probe.
 It compares extra directories only against the two exact public journal receiver
 and OTLP exporter component roles. Matching directories get bounded owner,
-access, ACL, mount, and direct-child categories; unmatched directories stay
-aggregated. These categories expose no entry names, hashes, paths, contents,
-numeric identities, or exception details. Both recognized and unknown extra
-directories remain outside the accepted component layout. Its live receipt
-marks host/collector UID maps, equality, and the namespace probe `not_run`. If
-the collector is absent, mount comparisons are `unverified`; survey evidence
-cannot satisfy the live gate.
+access, ACL, mount, and direct-child categories. Unmatched direct child
+directories also receive aggregate owner/access/ACL/mount/empty-or-nonempty
+counts, without names, paths, hashes, contents, numeric identities, or exception
+details. A race, symlink substitution, ACL/mount ambiguity, malformed metadata,
+or incomplete observation makes that directory's categories `unverified`.
+Both recognized and unknown extra directories remain outside the accepted
+component layout. Its live receipt marks host/collector UID maps, equality, and
+the namespace probe `not_run`. If the collector is absent, mount comparisons are
+`unverified`; survey evidence cannot satisfy the live gate.
 
 **Dev collector gate diagnostic (2026-10-09):** User-provided task 3986 check
 mode and task 3987 survey precede task 3988, which started the collector and
@@ -848,6 +850,23 @@ unmatched directory remains anonymous. It does not infer queue state, alter
 pre-start or verify-live acceptance, mount or write the volume, or authorize
 collector apply. Task 1.2 remains open; do not apply until the fresh diagnostic
 receipt and remaining live gates are reviewed.
+
+**Dev unknown-directory metadata receipt (2026-10-10):** Our read-only
+Dev-bound Semaphore API survey task 4016 succeeded at exact Dev merge
+`736af5b16917f28a243b3715d56c76c00bfe7a8a`. Its sanitized receipt reported a
+pending-initialization volume, no collector, no valid cursor, and three direct
+entries: one seed file, one journal component, and one unmatched directory; the
+recognized receiver and exporter directory counts were zero. Volume identity,
+capacity, root ownership, and root RWX checks were good. `NeedsCopyUp` was true
+and the `NeedsChown` field was missing. The component-layout check failed; the
+pending-repair diagnostic listed `children_empty`, `child_count_zero`,
+`owner_mismatch`, and `collector_access_blocked` among its failed checks. This is
+our API-observed sanitized evidence, not user-provided evidence. The follow-up
+reports only aggregate categorical metadata for unmatched direct child
+directories. It does not identify the directory or infer queue state. Stop:
+keep repair and apply refused while unmatched entries remain or any category is
+unverified; collect and review a fresh survey after this change reaches Dev.
+Task 1.2 remains unchecked.
 
 The live Dev survey 3925 at reviewed SHA `8050f2768903e09f68285f90c1598cb120006219`
 (sanitized receipt supplied for this implementation; not rerun here) reported
