@@ -89,7 +89,15 @@ The helper's `verify` action is the pre-start gate; `verify-live` is the post-st
 
 **Unmatched-directory metadata and Dev receipt (2026-10-10):** Our read-only Dev-bound Semaphore API survey task 4016 succeeded at exact Dev merge `736af5b16917f28a243b3715d56c76c00bfe7a8a`. The sanitized receipt reported `volume_initialization_pending`, no collector, no valid cursor, three direct entries, `seed_file=1`, `journal_component=1`, `other_directories=1`, and zero recognized receiver/exporter directories. Volume identity, capacity, root owner, and root RWX were good; `NeedsCopyUp=true` and the `NeedsChown` field was missing. `component_layout` failed. The pending-repair `failed_checks` included `children_empty`, `child_count_zero`, `owner_mismatch`, and `collector_access_blocked`. These are our API-observed sanitized results, not user-provided evidence. The helper now reports aggregate categorical owner/access/ACL/mount/direct-child-empty status over anonymous unmatched direct child directories, bounded by the existing 32-entry cap. Descriptor-pinned no-follow access and post-observation identity/listing checks make races, symlink substitutions, ACL or mount ambiguity, malformed data, and incomplete observations `unverified`. This is diagnostic only: unmatched directories remain outside the accepted layout and cannot pass repair, pre-start, or live gates. Stop on remaining or unverified entries; do not infer queue state or mutate/apply the volume. Obtain a fresh reviewed Dev survey after merge. Task 1.2 remains unchecked.
 
-### 2a. Ansible-owned direct Podman collector and fresh positions switch (2026-10-10; planned, not implemented)
+### 2a. Ansible-owned direct Podman collector and fresh positions switch (2026-10-10; partial source, operational gates unverified)
+
+**Read-only plan reconciliation (2026-10-10):** The partial source progress under
+task 1.2a is not an operational proof or permission to apply/repair. The following
+admission, intent, checkout, binding, preservation and attribution requirements
+are acceptance gates for the same coupled PR. Their exact implementation needs
+discovery and independent review; no lock backend, durable-record location,
+Semaphore environment marker or receipt authentication mechanism is accepted
+by this artifact update.
 
 **Previously recorded receipt and stop (not rerun here):** Independently read
 Dev-bound read-only task **4038** at
@@ -117,6 +125,70 @@ teardown, volume cleanup or receiver network recreation belongs to this switch.
 This is a declared collector-only capability deviation within o11y, not a second
 receiver stack, environment fork, manual host command or new orchestrator.
 It follows the Semaphore/read-guard/idempotency boundary in `PRINCIPLES.md` §5.
+
+**Host-wide admission and interrupted operations (unverified):** Journal survey,
+proof, apply, repair, stop and rollback must share admission keyed to the verified
+receiver host across tasks and runtime user/storage contexts. Every competing
+receiver lifecycle path that can affect these assets must participate, including
+deploy/reconcile, stop, clean/reset, orphan cleanup and network/volume lifecycle.
+Require a consistent survey observation and exclusive admission throughout each
+mutating operation, including cleanup and acceptance readback. Survey admission
+must retain its read-only target contract; the implementation must establish how
+it participates without target volume, collector or receiver writes. A lock local
+to the journal action or one runner does not satisfy host-wide admission. Map all
+competing entry points and prove participation before runtime proof; unsupported
+paths or inability to establish a quiescent window block execution. Admission
+does not claim atomicity against arbitrary same-user Podman commands outside
+the controlled workflow.
+
+Before any mutation, including proof asset/image preparation, explicit volume
+creation, lifecycle changes or cleanup, persist and read back a protected durable
+operation intent binding the authenticated owner/task, exact reviewed checkout,
+derived inventory/policy context, action, observed asset identities and intended
+mutation boundary. Reconcile the intent with actual identity/state after each
+boundary and retain unresolved intent on interruption; a later success receipt
+cannot replace the pre-mutation record. Do not release unresolved work as safely
+complete or erase its intent to make a retry pass. Elapsed time, lease expiry,
+task-ID absence or runner restart alone cannot authorize stale takeover. Recovery
+requires authenticated prior-task status, evidence that its host execution can no
+longer mutate, and reconciliation of durable intent with current owned assets
+under shared admission. Terminal task status alone is insufficient. If ownership,
+quiescence, durable persistence/readback or recovery evidence is uncertain, stop
+before another mutation and retain uncertain assets for reviewed recovery.
+
+**Exact checkout and independently derived binding (unverified):** Before executing
+the helper or any runtime proof/lifecycle operation, verify the actual controller
+and target code against the exact independently reviewed, CI-green merged Dev
+commit. Remove moving-branch placement from this workflow in the future coupled
+implementation; checking a branch name or checking SHA only after execution
+cannot pass. Do not move a shared checkout underneath another task. Resolve and
+verify the actual inventory revision/content and effective rendered policy/config
+from the inputs consumed by the run, cross-checking their authoritative source
+and authenticated task context. An echoed caller-supplied expected revision or
+digest is not observed binding. Include these derived values in the proof,
+operation intent and creation receipts and match them at apply. The discovery
+must establish which execution paths and consumed inputs need verification;
+missing, changed or unverifiable checkout/inventory/policy evidence blocks them.
+
+**Preservation and authenticated attribution (unverified):** Capture and compare
+the old volume's exact identity, effective initialization flags and stable root
+and bounded direct-child metadata before and after every operation, without
+mounting it or reading its contents/cursor. Preserve ownership, modes, ACL/mount
+boundaries and child identities; incomplete, raced or changed evidence refuses
+success. Capture all seven receiver IDs, states and health plus backend health
+and the existing signal/active-alert baseline; container count or running state
+alone is insufficient. Unavailable baseline evidence blocks proof/apply, and
+drift blocks acceptance with only identity-guarded collector cleanup permitted.
+
+Task attribution and proof/creation/intent receipt readback must use an
+independently authenticated authority tied to the actual Dev-bound run, reviewed
+checkout and derived context. A Semaphore task-ID environment value, operator
+extra var, stdout claim or matching label is not authentication. Establish the
+trust path and protected durable receipt readback through implementation discovery;
+missing, forged, stale, partial or context-mismatched evidence keeps apply/repair
+refused. Do not name an environment variable as trusted without verifying its
+provenance and resistance to caller substitution. Source checks and a `partial`
+proof result cannot satisfy any of these operational gates.
 
 **Evidence and rejected alternatives:** On 2026-10-10, the inspected upstream
 [podman-compose main source](https://github.com/containers/podman-compose/blob/main/podman_compose.py)
@@ -165,7 +237,9 @@ another name, adopt it or delete it.
 
 **Selected direct Podman proof, separately selected through reviewed Dev-bound Semaphore:**
 Extend the existing guarded workflow/helper, not a laptop experiment or live
-receiver deploy. Pin the reviewed code SHA, inventory revision, rootless user
+receiver deploy. Enforce the shared admission, durable intent, exact pre-execution
+checkout and authenticated derived binding above. Pin the reviewed code SHA,
+independently observed inventory revision/content and effective policy, rootless user
 and storage context, actual Podman executable identity and client/server versions,
 exact direct lifecycle arguments/security/mount policy, receiver-derived
 project/network identity and rendered config digest, and resolved image digest/ID
@@ -179,11 +253,11 @@ proof receipt. Missing direct Podman capability or image/config validation stops
 executable/version evidence belongs only to the separate diagnostic; it cannot
 satisfy or substitute for the direct lifecycle proof tuple.
 
-1. Take the seven receiver ID/state and signal/alert/health baseline; verify the
-   old identity read-only without mounting it. Acquire an exclusive workflow
-   lock shared by proof/apply/stop/repair and require an operator-controlled
-   quiescent window; repeated snapshots do not establish atomicity against
-   unrelated same-user Podman operations. Inspect complete bounded container
+1. Enter the host-wide shared admission above before observation; take all seven
+   receiver IDs/states/health and signal/alert/backend-health baseline. Verify old
+   identity, effective flags and stable root/direct-child metadata read-only
+   without mounting it. Require a verified quiescent window and durable intent
+   before mutation; repeated snapshots cannot replace admission. Inspect complete bounded container
    and volume inventories. Use isolated task-owned direct Podman test identities,
    scratch config and synthetic journal fixture, disposable uniquely labelled
    test container and volume, with no old/fresh-volume aliases, receiver service
@@ -229,14 +303,17 @@ satisfy or substitute for the direct lifecycle proof tuple.
    identities/labels and scratch paths after rechecks, absence of foreign users
    and zero mounts; never broad Compose down, prune, wildcard deletion or `-v`.
    Identity drift/uncertain cleanup retains assets and reports a bounded stop.
-   Verify test assets absent, old volume identity/stable metadata unchanged,
-   and all seven receiver IDs/states and baseline unchanged. Record the
-   Semaphore task/SHA and verified proof tuple for independent task readback;
+   Verify test assets absent, old volume identity/effective flags/stable root and
+   direct-child metadata unchanged, and all seven receiver IDs/states/health and
+   baseline unchanged. Reconcile the durable intent and record the authenticated
+   Semaphore task/SHA and derived proof tuple for independent receipt readback;
    operator extra vars or a survey boolean cannot forge direct Podman success.
 
 **Fresh switch through the same reviewed implementation:** Apply must independently
 read back a successful Dev-bound proof task at the reviewed merged SHA and match
-its direct Podman tuple, then repeat the fresh preflight immediately before first mount,
+its authenticated, independently derived direct Podman tuple. Verify the exact
+checkout before execution, hold host-wide admission and persist/read back durable
+intent before mutation; then repeat fresh preflight immediately before first mount,
 outside collector rollback handling. Require complete inventories, exact old
 and fresh names distinct, exact project/logical labels, local driver with no
 unexpected options, no name/label collisions, and no collector including stopped
@@ -298,7 +375,8 @@ no published collector listener/socket/host network, source-scoped admission
 and a denied unapproved-vantage receipt; do not mutate firewall in this switch.
 
 **Stop, rerun and risk:** Explicit stop or failed post-start proof removes only
-the verified collector container without volume removal and verifies absence
+the verified collector container under the same host-wide admission, durable
+intent and authenticated ownership guards, without volume removal, and verifies absence
 from restart sets, BOTH volume identities/preservation and the seven receivers.
 Never remount the unsupported old volume automatically; rollback means returning
 to collector-absent receiver baseline, not historical cursor recovery. Failure
@@ -327,7 +405,13 @@ resolution, all apply/survey/stop/rollback callers, removal of the executable
 collector Compose path and guards against competing receiver lifecycle ownership,
 Semaphore action/schema guards, focused fixtures/tests and operating docs in
 ONE reviewed implementation PR; no short-term layout relaxation or patch.
-Tests must cover missing direct Podman capability/ineffective no-copy, diagnostic
+Tests must cover shared admission across survey/journal/competing receiver lifecycle,
+interruption before/after each mutation, durable-intent persistence/readback failure,
+expiry-only takeover refusal and authenticated stale-owner recovery, exact checkout
+verification before execution, echoed expected revision unable to satisfy derived
+inventory/policy binding, spoofed task-ID environment/receipt refusal, old effective
+flags and root/child metadata plus seven IDs/states/health/signal/alert preservation,
+missing direct Podman capability/ineffective no-copy, diagnostic
 Compose results unable to unlock apply, competing owners/project-orphan cleanup,
 missing/foreign network or project labels, explicit creation/no implicit adoption,
 interrupted or unpersisted creation receipts, inconclusive empty image,
