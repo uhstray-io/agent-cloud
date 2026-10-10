@@ -257,7 +257,7 @@ def test_positions_metadata_parser_requires_expected_journal_cursor():
 
 
 @pytest.mark.parametrize("overflow_pass", [1, 2])
-def test_role_observation_bounds_each_directory_enumeration(overflow_pass):
+def test_role_observation_bounds_each_directory_enumeration(overflow_pass, tmp_path):
     tree = ast.parse(POSITIONS._METADATA_SCRIPT)
     function = next(
         node for node in tree.body
@@ -309,12 +309,12 @@ def test_role_observation_bounds_each_directory_enumeration(overflow_pass):
     real_os.listxattr = lambda *_args: []
     namespace = {"os": real_os, "stat": stat, "mount_id": lambda _path: (7, "/role")}
     exec(compile(ast.Module(body=[function], type_ignores=[]), "role-observation", "exec"), namespace)
-    with tempfile.TemporaryDirectory(dir="/private/tmp") as path:
-        role = Path(path) / "unmatched"
-        role.mkdir()
-        observation = namespace["role_observation"](
-            path, os.lstat(path), (7, path), role.name, (7, str(role)),
-        )
+    path = str(tmp_path)
+    role = tmp_path / "unmatched"
+    role.mkdir()
+    observation = namespace["role_observation"](
+        path, os.lstat(path), (7, path), role.name, (7, str(role)),
+    )
 
     assert counts == ([33] if overflow_pass == 1 else [32, 33])
     assert observation == {
