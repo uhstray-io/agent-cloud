@@ -2711,6 +2711,7 @@ def test_standard_journal_survey_uses_only_fixed_paths_and_cached_probe_image():
     [
         ("permission denied reading /var/log/journal/private", "journal"),
         ("permission denied writing /var/lib/alloy/data/private", "positions"),
+        ("permission denied writing /alloy-state/private", "positions"),
         ("permission denied opening /etc/alloy/journal.alloy", "config"),
         ("permission denied opening /private/path", "other"),
         ("collector started", "none"),
@@ -2874,11 +2875,17 @@ def test_compose_mount_is_read_only_and_state_is_separate():
     assert journal["target"] == "/var/log/journal"
     assert journal["read_only"] is True
     assert journal["bind"]["create_host_path"] is False
-    assert "journal-collector-state:/var/lib/alloy/data" in service["volumes"]
+    assert "--storage.path=/alloy-state" in service["command"]
+    assert "journal-collector-state:/alloy-state" in service["volumes"]
     assert "journal-collector-state" in compose["volumes"]
     assert compose["volumes"]["journal-collector-state"]["labels"] == {
         "com.docker.compose.volume": "journal-collector-state"
     }
+    assert POSITIONS.DATA_PATH == "/alloy-state"
+    playbook_source = PLAYBOOK.read_text()
+    assert "/alloy-state/.positions-live-gate." in playbook_source
+    assert playbook_source.count('eq .Destination \\"/alloy-state\\"') == 2
+    assert "select('search', '/var/lib/alloy|/alloy-state')" in playbook_source
 
 
 def test_positions_survey_exception_keeps_bounded_receipt_schema(monkeypatch, capsys):
@@ -3596,9 +3603,15 @@ def test_rollback_health_diagnostic_is_allowlisted_and_fixed_probe_is_gated():
         },
         {
             "rc": 0,
-            "stdout": "permission denied /var/lib/alloy/data\npermission denied /etc/alloy/journal.alloy",
+            "stdout": "permission denied /alloy-state/private\npermission denied /etc/alloy/journal.alloy",
             "expected": "permission_denied",
             "targets": ["positions", "config"],
+        },
+        {
+            "rc": 0,
+            "stdout": "permission denied /var/lib/alloy/data/private",
+            "expected": "permission_denied",
+            "targets": ["positions"],
         },
         {
             "rc": 0,
@@ -3893,10 +3906,11 @@ print(json.dumps({
     assert rendered["config_classes"] == [case["expected"] for case in config_cases]
     assert rendered["action_classes"] == [case["expected"] for case in action_cases]
     assert rendered["log_classes"] == [case["expected"] for case in log_cases]
-    assert rendered["log_counts"] == [0, 0, 1, 1, 2, 1, 1, 1, 1, 1]
+    assert rendered["log_counts"] == [0, 0, 1, 1, 2, 1, 1, 1, 1, 1, 1]
     assert rendered["permission_targets"] == [case["targets"] for case in log_cases]
     assert "collector logs classification/count=config_error/1" in rendered["failure_outputs"][-1]
     assert "permission-denied mount targets=['positions', 'config']" in rendered["failure_outputs"][4]
+    assert "permission-denied mount targets=['positions']" in rendered["failure_outputs"][5]
     assert rendered["logs"] == ["podman", "logs", "--tail", "80", "o11y-journal-collector"]
     assert rendered["logs_no_log"] is True
     assert not any(
