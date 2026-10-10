@@ -89,6 +89,185 @@ The helper's `verify` action is the pre-start gate; `verify-live` is the post-st
 
 **Unmatched-directory metadata and Dev receipt (2026-10-10):** Our read-only Dev-bound Semaphore API survey task 4016 succeeded at exact Dev merge `736af5b16917f28a243b3715d56c76c00bfe7a8a`. The sanitized receipt reported `volume_initialization_pending`, no collector, no valid cursor, three direct entries, `seed_file=1`, `journal_component=1`, `other_directories=1`, and zero recognized receiver/exporter directories. Volume identity, capacity, root owner, and root RWX were good; `NeedsCopyUp=true` and the `NeedsChown` field was missing. `component_layout` failed. The pending-repair `failed_checks` included `children_empty`, `child_count_zero`, `owner_mismatch`, and `collector_access_blocked`. These are our API-observed sanitized results, not user-provided evidence. The helper now reports aggregate categorical owner/access/ACL/mount/direct-child-empty status over anonymous unmatched direct child directories, bounded by the existing 32-entry cap. Descriptor-pinned no-follow access and post-observation identity/listing checks make races, symlink substitutions, ACL or mount ambiguity, malformed data, and incomplete observations `unverified`. This is diagnostic only: unmatched directories remain outside the accepted layout and cannot pass repair, pre-start, or live gates. Stop on remaining or unverified entries; do not infer queue state or mutate/apply the volume. Obtain a fresh reviewed Dev survey after merge. Task 1.2 remains unchecked.
 
+### 2a. Fresh positions-volume proof and switch (2026-10-10; planned, not implemented)
+
+**Current receipt and stop:** User-supplied Dev-bound read-only task **4038** at
+merged SHA `a052555060b4c9ca5fb59fb44fa64906fc38bd69` reports
+`initialization_pending`, collector absent, volume use count 0, three entries
+(`seed_file=1`, `journal_component=1`, `other_directories=1`), unknown-directory
+count 1 fully verified as collector-owned, RWX, ACL absent, same mount and empty.
+There is no cursor; `component_layout` failed; live mount/UID proof was not run.
+This receipt is recorded from the supplied evidence, not independently reread
+in this planning session. Empty unknown-directory metadata does not identify
+its purpose or origin and does not relax the layout gate. Ownership repair is
+inapplicable: the root already matches the collector and the volume is nonempty.
+Preserve the old volume without mount, chmod/chown, copy, rename, cursor read,
+content change, or deletion throughout proof, switch, stop and rollback.
+
+[Podman volume-inspect documentation](https://docs.podman.io/en/latest/markdown/podman-volume-inspect.1.html)
+defines `NeedsCopyUp` as copying destination data into the volume on next use;
+it is not origin/history evidence. Copy/no-copy semantics, image destination
+contents, initialization flags and UID mapping on this host/provider remain
+**unverified**. In particular, a persistent true flag cannot be explained as an
+empty image destination without the isolated proof. This section adds a
+mandatory provider-proof gate to every fresh/missing-volume bootstrap described
+above; effective fresh initialization flags must match the proved no-copy policy
+rather than inherit an assumed copy-enabled `false/true` pair. Earlier repair
+acceptance sequences are historical and do not authorize repair of task 4038; it does not widen the old volume's repair or layout acceptance.
+
+**Minimal declared identity:** In the single future public implementation PR,
+change only the journal collector's logical state key to
+`journal-collector-state-v2`, still mounted at `/alloy-state`, with matching
+logical-volume label, helper lookup, pre/live gates, stop/rollback lookup and
+operating tests/docs updated together. Keep `journal-collector-state` as the
+protected legacy identity; never select it by a fallback. Resolve both exact
+physical names using the receiver's verified Compose project and the actual
+provider's rendered configuration; do not guess a prefix. Do not use a volume
+`name:` override, external alias or arbitrary operator-supplied volume selector.
+The public versioned logical key is a mechanism, not private site identity;
+existing private host/journal/endpoint declarations remain in site-config, so
+no new private volume-name setting or private-repo PR is required. If the
+resolved fresh name already belongs to anything else, stop rather than select
+another name, adopt it or delete it.
+
+**Provider proof, separately selected through reviewed Dev-bound Semaphore:**
+Extend the existing guarded workflow/helper, not a laptop experiment or live
+receiver deploy. Pin the reviewed code SHA, inventory revision, rootless user
+and storage context, Podman client/server versions, actual Compose executable
+and version (the current playbook invokes `podman-compose`), rendered mount
+options, and the resolved image digest/ID for the pinned
+`docker.io/grafana/alloy:v1.9.2`. Use the same resolved image for proof and apply;
+a version tag alone must not let changed image bytes reuse an old proof. Any
+provider, image, mount policy, UID/storage context or relevant configuration
+change invalidates the proof. Check mode and survey emit unverified, never a
+proof receipt. Missing provider capability or image/config validation stops.
+
+1. Take the seven receiver ID/state and signal/alert/health baseline; verify the
+   old identity read-only without mounting it. Acquire an exclusive workflow
+   lock shared by proof/apply/stop/repair and require an operator-controlled
+   quiescent window; repeated snapshots do not establish atomicity against
+   unrelated same-user Podman operations. Inspect complete bounded container
+   and volume inventories. Use an isolated test Compose project, task-owned
+   scratch config and synthetic journal fixture, disposable uniquely labelled
+   test container and volume, with no old/fresh-volume aliases, receiver service
+   definitions, engine socket, live journal bind, host network or published port.
+2. Observe the pinned image's `/alloy-state` without a positions volume using an
+   owned disposable image-inspection container. Record bounded destination
+   layout/ownership and identity, not a provenance claim. With the actual
+   provider, test ordinary copy behavior and an explicit no-copy mount policy
+   in **separate new disposable volumes**, never by retesting a used volume as
+   fresh. Compare pre-first-mount, effective container mount and post-mount
+   contents/flags/ownership. Verify the provider passes the no-copy policy
+   through; rendering or documentation alone is insufficient. The selected
+   switch policy is explicit no-copy, with no silent fallback to copy. If
+   `/alloy-state` is absent/empty, additionally use an independently observed
+   nonempty, benign directory from the SAME pinned image as a positive control
+   for copy versus no-copy in separate disposable volumes; then verify the
+   actual `/alloy-state` first mount. Do not modify/derive the image to invent
+   evidence. If no bounded positive control establishes behavior, return
+   copy-behavior-unverified and stop; do not infer success from flags.
+3. Under the proved no-copy policy and actual collector `0:0`, read-only root,
+   capability drop and storage path, validate and run an isolated Alloy config
+   against a bounded synthetic journal fixture, retaining the production
+   `loki.source.journal.o11y_alloy` identity. Use a local synthetic-only sink
+   ([loki.echo](https://grafana.com/docs/alloy/latest/reference/components/loki/loki.echo/)
+   is the candidate; support must pass validation in the pinned image), no
+   receiver export. Prove safe root/child ownership, live RW mount and effective
+   UID mapping/access; classify the bounded layout against explicit reviewed
+   component names. Never allow arbitrary directories based on emptiness.
+   Require the expected parsed cursor after consuming fixture records; stop
+   gracefully, read back the cursor under protected output, restart the same
+   test volume, and prove resume plus cursor advancement with a second fixture
+   batch. Container health alone or a synthetic cursor written by the helper
+   cannot pass. Fixture generation and pinned-image sink support remain
+   implementation checks: absent support refuses rather than using live logs.
+4. Repeat the chosen first-mount case on another new disposable volume to prove
+   repeatability. Cleanup only exact task-owned container IDs, volume creation
+   identities/labels and scratch paths after rechecks, absence of foreign users
+   and zero mounts; never broad Compose down, prune, wildcard deletion or `-v`.
+   Identity drift/uncertain cleanup retains assets and reports a bounded stop.
+   Verify test assets absent, old volume identity/stable metadata unchanged,
+   and all seven receiver IDs/states and baseline unchanged. Record the
+   Semaphore task/SHA and verified proof tuple for independent task readback;
+   operator extra vars or a survey boolean cannot forge provider success.
+
+**Fresh switch through the same reviewed implementation:** Apply must independently
+read back a successful Dev-bound proof task at the reviewed merged SHA and match
+its tuple, then repeat the fresh preflight immediately before first mount,
+outside collector rollback handling. Require complete inventories, exact old
+and fresh names distinct, exact project/logical labels, local driver with no
+unexpected options, no name/label collisions, and no collector including stopped
+containers for a first start or stopped-state resume. An already accepted live
+collector uses the no-op verification path below, with exactly one verified
+consumer/mount and no foreign users; it cannot reuse the absent-collector gate. A missing fresh volume is created only by the selected collector's
+Compose first mount. An existing fresh volume is accepted only when its owned
+creation identity matches a previous workflow receipt and full metadata/layout
+and cursor checks pass; an empty matching name alone cannot establish ownership.
+Pin volume creation identity, mountpoint and root device/inode once created;
+refuse symlinks, ACL/special-bit or nested-mount ambiguity, unexpected children,
+identity drift, foreign consumers or unknown inventory. Pending fresh state
+must be empty, unused/unmounted and satisfy the proved ownership/flag policy;
+never repair or normalize it to pass. Require independently sufficient bytes
+and inodes on GraphRoot and volume backing filesystem (at least the existing
+16 MiB/128-inode first-mount floor, including bounded test/image/fixture peak
+space); image acquisition must not consume the reserved first-mount floor.
+This is separate from retention forecast/headroom, not permission to grow disk.
+A failed proof/preflight changes no collector or receiver service.
+
+Run only the journal service with no dependencies using the proved provider and
+no-copy policy; never reconcile the seven-service receiver stack. Validate the
+real collector config with the pinned image before start. Post-start require
+exact fresh-volume name/source/destination/RW mount, `0:0` mapping and namespace
+write/rename/delete access, strict production component layout, a valid expected
+parsed cursor, automatic health/readiness, and a fresh exact-target Loki query
+for `service=o11y/alloy`, `signal=container` and the declared cluster/environment,
+with source identity bound to the observed `o11y-alloy` receiver ID and a receipt
+newer than this apply's start. Synthetic proof receipts and stale matching Loki
+streams are not delivery. Local-sink proof does not establish the production
+pipeline layout: inspect the real layout against the explicit allowlist and
+refuse any extra/partial/unknown state without deletion. Prove cursor persistence
+and continued exact-target delivery after a bounded collector-only restart,
+while all seven receiver IDs/states, backend health and existing signal/alert
+baseline remain unchanged. Private ingress requires the declared private bind,
+no published collector listener/socket/host network, source-scoped admission
+and a denied unapproved-vantage receipt; do not mutate firewall in this switch.
+
+**Stop, rerun and risk:** Explicit stop or failed post-start proof removes only
+the verified collector container without volume removal and verifies absence
+from restart sets, BOTH volume identities/preservation and the seven receivers.
+Never remount the unsupported old volume automatically; rollback means returning
+to collector-absent receiver baseline, not historical cursor recovery. Failure
+before first mount is a no-change refusal. Failure after first mount preserves
+fresh state and reports uncertainty; no reset, ownership restore, seed removal,
+or new v3 name on retry. Interrupted proof retains only its own uncertain test
+assets for identity-verified cleanup. Proof reruns reuse no first-mount volume;
+apply reruns verify an already healthy exact collector/config/image/volume and
+return no-op without restart. After stop/failure, resume the same fresh volume
+only with a proven valid cursor and safe exclusive metadata; proven cursor
+absence may permit one bounded retry only under the verified first-mount policy
+and fully accepted layout, never after a previously recorded valid cursor is
+lost. Invalid/unreadable/unknown cursor or unexplained state requires reviewed
+recovery. A new volume starts without the old cursor: retained/max-age journal
+records can replay and expired/rotated records can be missed. Record the switch
+window, source retention/max-age and measured duplicates/gaps; do not promise
+exactly-once or historical continuity. Start the representative seven-day
+baseline only after live acceptance, and keep tasks 1.2/1.3 and cohort/retention
+expansion gates open until their separate receipts pass.
+
+**One future PR and tests:** Keep provider proof, receipt authentication, fresh
+identity resolution, all apply/stop/rollback callers, Compose declaration,
+Semaphore action/schema guards, focused fixtures/tests and operating docs in
+ONE reviewed implementation PR; no short-term layout relaxation or patch.
+Tests must cover provider missing/ignored no-copy, inconclusive empty image,
+image/version/context mismatch, spoofed or stale proof, old-volume never mounted
+or mutated, foreign/colliding fresh names, use/mount and metadata races,
+capacity/ACL/link/overflow failures, first-mount copy contamination, invalid or
+lost cursor, restart resume, check-mode unverified, no-op rerun, interrupted
+cleanup and failure after mount preserving BOTH volumes/seven IDs. Run focused
+journal tests, render/Ansible checks and strict worktree-local OpenSpec validation;
+review and green final-head CI precede live proof, then separate apply acceptance.
+No live provider proof, fresh volume or switch is claimed by this plan.
+
 Signal selection per cohort:
 
 | Cohort | Default collection | Trace decision |
