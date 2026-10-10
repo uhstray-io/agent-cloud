@@ -727,14 +727,20 @@ metadata/initialization flags, receiver signal and alert preservation, an
 authenticated Semaphore receipt, operational volume-creation receipts, or live
 acceptance. The source now requires the receiver checkout to exist at the exact
 reviewed SHA with no tracked or untracked changes before action-specific work;
-this workflow no longer places a moving branch. A host-local atomic reservation
-primitive refuses occupied, stale, or unknown state and leaves recovery disabled
-until authenticated Semaphore API readback exists. It is not yet integrated as
-host-wide admission: receiver deploy/reset/orphan-cleanup paths remain outside
-this playbook's ownership. Therefore normal `survey`, proof, apply, repair, and
-stop actions all refuse; check-mode survey reports `check_mode_unverified` without
-Podman or volume access. This source update has not been run on the Dev receiver
-and creates no authenticated Semaphore receipt.
+this workflow no longer places a moving branch. `Bootstrap o11y Journal Diagnostic
+Lock (Dev)` creates the permanent empty root-owned `0644` inode at
+`/var/lib/agent-cloud/o11y-journal-positions-diagnostic.lock` only when absent,
+after checking its parent objects and the containing local filesystem. It never
+replaces or unlinks the inode; check mode skips all creation tasks. The explicit
+`diagnose-positions` action opens that inode read-only and takes a bounded
+exclusive flock while running the existing read-only positions metadata survey.
+The lock serializes this diagnostic only. It is not host-wide admission, does not
+authenticate Semaphore task attribution, and does not authorize a journal runtime
+operation. Receiver deploy/reset/orphan-cleanup paths remain outside this
+diagnostic's scope. Apply, repair, proof, stop, and ordinary survey remain refused;
+check-mode survey reports `check_mode_unverified` without Podman or volume access.
+This source update has not been run on the Dev receiver and creates no authenticated
+Semaphore receipt.
 The legacy `journal-collector-state` is not selected by the v2 logical key. Do
 not run apply from this source slice.
 

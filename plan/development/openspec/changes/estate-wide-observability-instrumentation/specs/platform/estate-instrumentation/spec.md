@@ -26,6 +26,21 @@ Every deployed target SHALL declare applicable logs, metrics, health, and traces
 - **WHEN** automatic tracing is incompatible with a target runtime or would violate its security boundary
 - **THEN** the declaration records the reason and an approved alternative signal or manual instrumentation plan, without claiming trace coverage
 
+### Requirement: Read-only journal positions diagnostics use a permanent local serialization inode
+The Dev-bound bootstrap SHALL create `/var/lib/agent-cloud/o11y-journal-positions-diagnostic.lock` only when absent, as an empty root-owned single-link regular file with mode `0644`, on a verified supported local filesystem. Before any target creation, it SHALL use a bounded read-only `findmnt --kernel=mountinfo --json --target` query on the existing lock path or, when absent, its existing parent. After creation, it SHALL query the full lock-file path again. Each response SHALL contain exactly one well-formed result with an allowlisted filesystem and `/dev/` source; missing, malformed, nonlocal, or changed pre/post effective mount evidence SHALL fail closed. For an existing lock, final stat SHALL match its original device and inode. It SHALL verify the exact receiver checkout as its owning rootless account before the root-owned lock is created. It SHALL refuse unsafe pre-existing parent or lock objects and SHALL never unlink or replace the lock inode. Check mode SHALL perform no target writes. The explicit positions diagnostic SHALL open the inode read-only, verify the same inode before and after observation, and acquire a bounded exclusive flock while it runs the existing metadata survey. It SHALL not write positions state, run or mount a Podman container, or start a worker. The lock SHALL be documented and reported as diagnostic serialization only; it SHALL NOT authorize journal runtime actions or claim host-wide admission.
+
+#### Scenario: Bootstrap proves the effective local mount and preserves an existing safe inode
+- **WHEN** the Dev-bound bootstrap runs on a supported local filesystem
+- **THEN** it creates the inode only when absent, leaves a safe existing inode unchanged, and refuses symlinks, non-regular files, wrong ownership/mode, hard links, or missing, malformed, nonlocal, ambiguous, or changed mount evidence
+- **AND** an existing lock's final device and inode match the pre-creation stat
+- **AND** check mode does not create the directory or lock
+
+#### Scenario: Positions diagnostic serializes a read-only observation
+- **WHEN** the explicit diagnostic action runs with a safe, uncontended lock inode
+- **THEN** it opens that inode read-only, takes a bounded exclusive flock, observes positions metadata, and proves the inode identity stayed stable
+- **AND** contention, a missing inode, or an unsafe inode fails closed without positions-volume writes, a container run, a mount, or a new worker
+- **AND** apply, repair, proof, stop, and ordinary survey remain refused pending host-wide admission
+
 ### Requirement: Receiver journal positions state is surveyed and repaired safely
 The repair clauses below retain the bounded historical repair contract; they SHALL NOT authorize touching the protected legacy volume or repairing/normalizing fresh state in the selected direct Podman workflow. Its preservation and creation-receipt requirements below take precedence.
 

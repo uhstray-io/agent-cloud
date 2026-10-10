@@ -1,0 +1,261 @@
+---
+# Create the permanent host-local inode used only to serialize read-only positions diagnostics.
+
+- name: Refuse extra vars that set internal names
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: Require the reviewed checkout
+  ansible.builtin.import_playbook: require-reviewed-checkout.yml
+
+- name: Pre-flight
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: o11y_svc
+    preflight_group_expected: o11y_svc
+
+- name: Validate the Dev-bound diagnostic lock bootstrap
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Require one receiver, Dev branch, and a reviewed revision
+      ansible.builtin.assert:
+        that:
+          - groups.get('o11y_svc', []) | length == 1
+          - service_branch | default('dev') == 'dev'
+          - expected_repository_sha | default('') is match('^[0-9a-f]{40}$')
+        fail_msg: "The diagnostic lock bootstrap requires one o11y_svc host and the reviewed Dev revision."
+        quiet: true
+
+- name: Bootstrap the permanent host-local diagnostic lock inode
+  hosts: o11y_svc
+  gather_facts: true
+  become: true
+  vars:
+    _journal_lock_dir: /var/lib/agent-cloud
+    _journal_lock_path: /var/lib/agent-cloud/o11y-journal-positions-diagnostic.lock
+    _journal_lock_supported_filesystems: [ext2, ext3, ext4, xfs, btrfs]
+  tasks:
+    - name: Inspect lock directory parents without following links
+      ansible.builtin.stat:
+        path: "{{ item }}"
+        follow: false
+      loop:
+        - /var
+        - /var/lib
+      register: _journal_lock_parent_stats
+
+    - name: Refuse unsafe lock directory parents
+      ansible.builtin.assert:
+        that:
+          - item.stat.isdir | default(false)
+          - not (item.stat.islnk | default(false))
+          - item.stat.uid | default(-1) | int == 0
+          - item.stat.gid | default(-1) | int == 0
+          - item.stat.xoth | default(false)
+          - not (item.stat.wgrp | default(true))
+          - not (item.stat.woth | default(true))
+          - not (item.stat.isuid | default(true))
+          - not (item.stat.isgid | default(true))
+          - not (item.stat.issticky | default(true))
+        fail_msg: "A parent of the journal diagnostic lock is missing or unsafe."
+        quiet: true
+      loop: "{{ _journal_lock_parent_stats.results }}"
+
+    - name: Inspect an existing diagnostic lock directory without following links
+      ansible.builtin.stat:
+        path: "{{ _journal_lock_dir }}"
+        follow: false
+      register: _journal_lock_dir_stat
+
+    - name: Refuse an unsafe pre-existing diagnostic lock directory
+      ansible.builtin.assert:
+        that:
+          - _journal_lock_dir_stat.stat.isdir | default(false) or not _journal_lock_dir_stat.stat.exists | default(false)
+          - not (_journal_lock_dir_stat.stat.islnk | default(false))
+          - not _journal_lock_dir_stat.stat.exists | default(false) or _journal_lock_dir_stat.stat.uid | default(-1) | int == 0
+          - not _journal_lock_dir_stat.stat.exists | default(false) or _journal_lock_dir_stat.stat.gid | default(-1) | int == 0
+          - not _journal_lock_dir_stat.stat.exists | default(false) or _journal_lock_dir_stat.stat.xoth | default(false)
+          - not _journal_lock_dir_stat.stat.exists | default(false) or not (_journal_lock_dir_stat.stat.wgrp | default(true))
+          - not _journal_lock_dir_stat.stat.exists | default(false) or not (_journal_lock_dir_stat.stat.woth | default(true))
+          - not _journal_lock_dir_stat.stat.exists | default(false) or not (_journal_lock_dir_stat.stat.isuid | default(true))
+          - not _journal_lock_dir_stat.stat.exists | default(false) or not (_journal_lock_dir_stat.stat.isgid | default(true))
+          - not _journal_lock_dir_stat.stat.exists | default(false) or not (_journal_lock_dir_stat.stat.issticky | default(true))
+        fail_msg: "The existing diagnostic lock directory is not a safe root-owned directory."
+        quiet: true
+
+    - name: Verify the existing receiver checkout before creating the lock
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "-"
+          - verify-checkout
+          - --checkout
+          - "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+          - --expected-sha
+          - "{{ expected_repository_sha }}"
+        stdin: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/o11y-journal-workflow.py') }}"
+        stdin_add_newline: false
+      register: _journal_lock_checkout_result
+      changed_when: false
+      failed_when: false
+      become: false
+      when: not ansible_check_mode
+
+    - name: Require the exact clean receiver checkout before creating the lock
+      ansible.builtin.assert:
+        that:
+          - _journal_lock_checkout_result.rc | default(1) == 0
+          - (_journal_lock_checkout_result.stdout | default('{}') | from_json).status == 'verified'
+          - (_journal_lock_checkout_result.stdout | from_json).revision == expected_repository_sha
+          - (_journal_lock_checkout_result.stdout | from_json).origin_dev_revision == expected_repository_sha
+          - (_journal_lock_checkout_result.stdout | from_json).clean is sameas true
+        fail_msg: >-
+          The receiver checkout must already match the exact reviewed SHA and have no
+          tracked or untracked changes. No placement or cleanup is attempted.
+        quiet: true
+      when: not ansible_check_mode
+
+    - name: Inspect an existing diagnostic lock inode without following links
+      ansible.builtin.stat:
+        path: "{{ _journal_lock_path }}"
+        follow: false
+      register: _journal_lock_stat
+
+    - name: Refuse an unsafe pre-existing diagnostic lock inode
+      ansible.builtin.assert:
+        that:
+          - not _journal_lock_stat.stat.exists | default(false) or _journal_lock_stat.stat.isreg | default(false)
+          - not _journal_lock_stat.stat.exists | default(false) or not (_journal_lock_stat.stat.islnk | default(false))
+          - not _journal_lock_stat.stat.exists | default(false) or _journal_lock_stat.stat.uid | default(-1) | int == 0
+          - not _journal_lock_stat.stat.exists | default(false) or _journal_lock_stat.stat.gid | default(-1) | int == 0
+          - not _journal_lock_stat.stat.exists | default(false) or _journal_lock_stat.stat.mode | default('') == '0644'
+          - not _journal_lock_stat.stat.exists | default(false) or _journal_lock_stat.stat.nlink | default(0) | int == 1
+          - not _journal_lock_stat.stat.exists | default(false) or _journal_lock_stat.stat.size | default(-1) | int == 0
+        fail_msg: "The diagnostic lock path exists but is not the expected empty root-owned regular inode."
+        quiet: true
+
+    - name: Select an existing path for the kernel mount precheck
+      ansible.builtin.set_fact:
+        _journal_lock_mount_query_path: >-
+          {{ _journal_lock_path if _journal_lock_stat.stat.exists | default(false)
+             else (_journal_lock_dir if _journal_lock_dir_stat.stat.exists | default(false) else '/var/lib') }}
+
+    - name: Read the effective existing mount before any target creation
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/findmnt
+          - --kernel=mountinfo
+          - --json
+          - --target
+          - "{{ _journal_lock_mount_query_path }}"
+          - --output
+          - TARGET,SOURCE,FSTYPE
+      register: _journal_lock_mount_before_result
+      changed_when: false
+      failed_when: false
+      timeout: 5
+      check_mode: false
+
+    - name: Require one local filesystem in the kernel mount precheck
+      ansible.builtin.assert:
+        that:
+          - _journal_lock_mount_before_result.rc | default(1) == 0
+          - (_journal_lock_mount_before_result.stdout | from_json).filesystems is defined
+          - (_journal_lock_mount_before_result.stdout | from_json).filesystems | length == 1
+          - (_journal_lock_mount_before_result.stdout | from_json).filesystems[0].target is string
+          - (_journal_lock_mount_before_result.stdout | from_json).filesystems[0].source is string
+          - (_journal_lock_mount_before_result.stdout | from_json).filesystems[0].fstype is string
+          - (_journal_lock_mount_before_result.stdout | from_json).filesystems[0].fstype in _journal_lock_supported_filesystems
+          - (_journal_lock_mount_before_result.stdout | from_json).filesystems[0].source is match('^/dev/')
+        fail_msg: "findmnt did not prove one local filesystem for the diagnostic lock path."
+        quiet: true
+
+    - name: Save the validated pre-creation mount evidence
+      ansible.builtin.set_fact:
+        _journal_lock_mount_before: "{{ (_journal_lock_mount_before_result.stdout | from_json).filesystems[0] }}"
+
+    - name: Create the lock directory only when absent
+      ansible.builtin.file:
+        path: "{{ _journal_lock_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      when:
+        - not ansible_check_mode
+        - not (_journal_lock_dir_stat.stat.exists | default(false))
+
+    - name: Create the permanent lock inode only when absent
+      ansible.builtin.file:
+        path: "{{ _journal_lock_path }}"
+        state: touch
+        owner: root
+        group: root
+        mode: "0644"
+      when:
+        - not ansible_check_mode
+        - not (_journal_lock_stat.stat.exists | default(false))
+
+    - name: Read the effective full lock-path mount after creation
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/findmnt
+          - --kernel=mountinfo
+          - --json
+          - --target
+          - "{{ _journal_lock_path }}"
+          - --output
+          - TARGET,SOURCE,FSTYPE
+      register: _journal_lock_mount_after_result
+      changed_when: false
+      failed_when: false
+      timeout: 5
+      when: not ansible_check_mode
+
+    - name: Require unchanged local filesystem evidence after creation
+      ansible.builtin.assert:
+        that:
+          - _journal_lock_mount_after_result.rc | default(1) == 0
+          - (_journal_lock_mount_after_result.stdout | from_json).filesystems is defined
+          - (_journal_lock_mount_after_result.stdout | from_json).filesystems | length == 1
+          - (_journal_lock_mount_after_result.stdout | from_json).filesystems[0].target is string
+          - (_journal_lock_mount_after_result.stdout | from_json).filesystems[0].source is string
+          - (_journal_lock_mount_after_result.stdout | from_json).filesystems[0].fstype is string
+          - (_journal_lock_mount_after_result.stdout | from_json).filesystems[0].fstype in _journal_lock_supported_filesystems
+          - (_journal_lock_mount_after_result.stdout | from_json).filesystems[0].source is match('^/dev/')
+          - (_journal_lock_mount_after_result.stdout | from_json).filesystems[0].target == _journal_lock_mount_before.target
+          - (_journal_lock_mount_after_result.stdout | from_json).filesystems[0].source == _journal_lock_mount_before.source
+          - (_journal_lock_mount_after_result.stdout | from_json).filesystems[0].fstype == _journal_lock_mount_before.fstype
+        fail_msg: "findmnt mount evidence is missing, nonlocal, malformed, or changed during lock bootstrap."
+        quiet: true
+      when: not ansible_check_mode
+
+    - name: Verify the diagnostic lock inode without replacing it
+      ansible.builtin.stat:
+        path: "{{ _journal_lock_path }}"
+        follow: false
+      register: _journal_lock_final_stat
+      when: not ansible_check_mode
+
+    - name: Require the permanent lock inode identity and safe metadata
+      ansible.builtin.assert:
+        that:
+          - _journal_lock_final_stat.stat.isreg | default(false)
+          - not (_journal_lock_final_stat.stat.islnk | default(false))
+          - _journal_lock_final_stat.stat.uid | default(-1) | int == 0
+          - _journal_lock_final_stat.stat.gid | default(-1) | int == 0
+          - _journal_lock_final_stat.stat.mode | default('') == '0644'
+          - _journal_lock_final_stat.stat.nlink | default(0) | int == 1
+          - _journal_lock_final_stat.stat.size | default(-1) | int == 0
+          - not _journal_lock_stat.stat.exists | default(false) or _journal_lock_final_stat.stat.dev == _journal_lock_stat.stat.dev
+          - not _journal_lock_stat.stat.exists | default(false) or _journal_lock_final_stat.stat.inode == _journal_lock_stat.stat.inode
+        fail_msg: "The diagnostic lock inode failed its post-bootstrap readback."
+        quiet: true
+      when: not ansible_check_mode
+
+    - name: Report bootstrap check mode without creating target paths
+      ansible.builtin.debug:
+        msg: "Diagnostic lock bootstrap: check_mode_unverified; no target paths were created."
+      changed_when: false
+      when: ansible_check_mode

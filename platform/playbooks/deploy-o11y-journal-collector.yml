@@ -23,12 +23,12 @@
         that:
           - groups.get('o11y_svc', []) | length == 1
           - service_branch | default('dev') == 'dev'
-          - journal_collector_action | default('apply') in ['survey', 'repair-positions', 'prove-direct', 'apply', 'stop']
+          - journal_collector_action | default('apply') in ['survey', 'diagnose-positions', 'repair-positions', 'prove-direct', 'apply', 'stop']
           - journal_collector_action | default('apply') != 'prove-direct' or expected_repository_sha | default('') is match('^[0-9a-f]{40}$')
           - journal_collector_action | default('apply') != 'prove-direct' or expected_inventory_revision | default('') is match('^[0-9a-f]{64}$')
         fail_msg: >-
           This workflow requires one o11y_svc host, service_branch=dev, and
-          journal_collector_action=survey|repair-positions|prove-direct|apply|stop. The direct proof
+          journal_collector_action=survey|diagnose-positions|repair-positions|prove-direct|apply|stop. The direct proof
           also requires reviewed repository and inventory revisions.
         quiet: true
       tags: [always]
@@ -131,22 +131,62 @@
         quiet: true
       when: not ansible_check_mode
 
-- name: Keep journal execution closed until authenticated shared admission is available
+- name: Keep journal runtime actions closed until authenticated shared admission is available
   hosts: localhost
   connection: local
   gather_facts: false
   tasks:
-    - name: Permit only non-mutating check-mode survey output while admission is unverified
+    - name: Permit only check-mode survey or the read-only locked diagnostic while admission is unverified
       ansible.builtin.assert:
         that:
-          - ansible_check_mode
-          - journal_collector_action | default('apply') == 'survey'
+          - (ansible_check_mode and journal_collector_action | default('apply') == 'survey') or (not ansible_check_mode and journal_collector_action | default('apply') == 'diagnose-positions')
         fail_msg: >-
           Journal actions are refused until host-wide admission, durable intent,
           authenticated task attribution and recovery readback are integrated.
-          Only survey check mode may report check_mode_unverified.
+          Only check-mode survey or the read-only positions diagnostic may run;
+          the diagnostic lock serializes diagnostics only and is not host-wide admission.
         quiet: true
       tags: [always]
+
+- name: Run the read-only positions diagnostic under its permanent inode lock
+  hosts: o11y_svc
+  gather_facts: false
+  become: false
+  tasks:
+    - name: Leave the diagnostic play unless explicitly selected
+      ansible.builtin.meta: end_host
+      when: journal_collector_action | default('apply') != 'diagnose-positions'
+      tags: [always]
+
+    - name: Observe positions metadata while holding the diagnostic lock
+      ansible.builtin.command:
+        argv: [python3, "-", diagnose]
+        stdin: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/o11y-journal-positions.py') }}"
+        stdin_add_newline: false
+      register: _journal_positions_diagnostic
+      changed_when: false
+      failed_when: false
+      no_log: true
+
+    - name: Require the bounded diagnostic lock and positions result
+      ansible.builtin.assert:
+        that:
+          - _journal_positions_diagnostic.rc | default(1) == 0
+          - (_journal_positions_diagnostic.stdout | default('{}') | from_json).status == 'observed'
+          - (_journal_positions_diagnostic.stdout | from_json).reason == 'diagnostic_complete'
+          - (_journal_positions_diagnostic.stdout | from_json).lock_scope == 'diagnostic_serialization_only'
+          - (_journal_positions_diagnostic.stdout | from_json).positions is mapping
+          - (_journal_positions_diagnostic.stdout | from_json).positions.status is string
+        fail_msg: "The read-only positions diagnostic refused or returned incomplete bounded evidence."
+        quiet: true
+
+    - name: Report only the diagnostic scope and positions status
+      ansible.builtin.debug:
+        msg: >-
+          Positions diagnostic: scope=diagnostic_serialization_only;
+          status={{ (_journal_positions_diagnostic.stdout | from_json).positions.status }};
+          reason={{ (_journal_positions_diagnostic.stdout | from_json).positions.get('reason', 'none') }}
+      changed_when: false
 
 - name: Prove direct Podman and Alloy journal persistence with disposable volumes
   hosts: o11y_svc
