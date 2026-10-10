@@ -487,7 +487,11 @@ def test_live_positions_debug_rescues_malformed_nested_diagnostic_before_renderi
     from ansible.template import Templar, trust_as_template
 
     plays = yaml.safe_load(PLAYBOOK.read_text())
-    apply_play = next(play for play in plays if play.get("hosts") == "o11y_svc")
+    apply_play = next(
+        play for play in plays
+        if play.get("hosts") == "o11y_svc"
+        and "Apply the collector and require exact-target Loki delivery" in json.dumps(play)
+    )
     apply_block = next(
         task for task in apply_play["tasks"]
         if task.get("name") == "Apply the collector and require exact-target Loki delivery"
@@ -2494,7 +2498,11 @@ def test_positions_verify_returns_ready_and_matches_successful_playbook_contract
     assert "_journal_positions_gate_summary.status in ['ready', 'bootstrap_allowed']" in source
     assert "_journal_positions_pre_mount_status in ['ready', 'bootstrap_allowed']" in source
     plays = yaml.safe_load(source)
-    apply_play = next(play for play in plays if play.get("hosts") == "o11y_svc")
+    apply_play = next(
+        play for play in plays
+        if play.get("hosts") == "o11y_svc"
+        and "Apply the collector and require exact-target Loki delivery" in json.dumps(play)
+    )
     def walk(tasks):
         for task in tasks or []:
             yield task
@@ -3687,13 +3695,17 @@ def test_playbook_guards_validation_delivery_and_non_destructive_rollback():
     assert "groups.get('o11y_svc', []) | length == 1" in source
     expected_actions = (
         "journal_collector_action | default('apply') in "
-        "['survey', 'repair-positions', 'prove-provider', 'apply', 'stop']"
+        "['survey', 'repair-positions', 'prove-direct', 'apply', 'stop']"
     )
     assert expected_actions in source
     assert source.index("Verify positions volume identity and access before apply") < apply
     assert "check_mode_unverified" in source
     assert "container_inventory_unavailable" in source
-    apply_play = next(play for play in plays if play.get("hosts") == "o11y_svc")
+    apply_play = next(
+        play for play in plays
+        if play.get("hosts") == "o11y_svc"
+        and "Apply the collector and require exact-target Loki delivery" in json.dumps(play)
+    )
     pre_apply_gate = next(
         task for task in apply_play["tasks"]
         if task.get("name") == "Verify positions volume identity and access before apply"
@@ -4219,7 +4231,11 @@ def test_survey_check_mode_skips_container_probe_and_reports_unverified():
 
 def test_stale_exact_loki_receipt_fails_and_rollback_preserves_positions_volume():
     plays = yaml.safe_load(PLAYBOOK.read_text())
-    apply = next(play for play in plays if play.get("hosts") == "o11y_svc")
+    apply = next(
+        play for play in plays
+        if play.get("hosts") == "o11y_svc"
+        and "Apply the collector and require exact-target Loki delivery" in json.dumps(play)
+    )
     apply_task = next(
         task for task in apply["tasks"]
         if task.get("name") == "Apply the collector and require exact-target Loki delivery"
@@ -4699,12 +4715,13 @@ def test_semaphore_template_is_dev_bound_and_requires_exact_sha():
     assert template["repository"] == "agent-cloud dev"
     variables = {item["name"]: item for item in template["survey_vars"]}
     assert variables["expected_repository_sha"]["required"] is True
+    assert variables["expected_inventory_revision"]["required"] is False
     assert variables["service_branch"]["default_value"] == "dev"
     assert variables["journal_collector_action"]["default_value"] == "survey"
     assert variables["journal_collector_action"]["values"] == [
         {"name": "Survey journal paths", "value": "survey"},
         {"name": "Repair positions root ownership", "value": "repair-positions"},
-        {"name": "Prove provider/image copy behavior", "value": "prove-provider"},
+        {"name": "Prove direct Podman journal behavior", "value": "prove-direct"},
         {"name": "Apply pilot", "value": "apply"},
         {"name": "Stop pilot", "value": "stop"},
     ]
@@ -4738,7 +4755,7 @@ def test_apply_and_repair_fail_closed_before_collector_host_tasks_until_proof_ex
     validation = next(play for play in plays if play.get("hosts") == "localhost")
     apply_guard = next(
         task for task in validation["tasks"]
-        if task.get("name") == "Refuse apply until the isolated provider proof is implemented"
+        if task.get("name") == "Refuse apply until the direct proof and authenticated receipt gate are implemented"
     )
     repair_guard = next(
         task for task in validation["tasks"]
@@ -4751,13 +4768,17 @@ def test_apply_and_repair_fail_closed_before_collector_host_tasks_until_proof_ex
     assert repair_guard["ansible.builtin.assert"]["that"] == [
         "journal_collector_action | default('apply') != 'repair-positions'"
     ]
-    assert "provider/image proof" in apply_guard["ansible.builtin.assert"]["fail_msg"]
+    assert "direct Podman proof" in apply_guard["ansible.builtin.assert"]["fail_msg"]
     assert "survey and stop remain available" in apply_guard["ansible.builtin.assert"]["fail_msg"].lower()
 
 
 def test_live_namespace_create_failure_reports_create_without_relative_cleanup(tmp_path):
     plays = yaml.safe_load(PLAYBOOK.read_text())
-    apply_play = next(play for play in plays if play.get("hosts") == "o11y_svc")
+    apply_play = next(
+        play for play in plays
+        if play.get("hosts") == "o11y_svc"
+        and "Apply the collector and require exact-target Loki delivery" in json.dumps(play)
+    )
     apply_block = next(
         task for task in apply_play["tasks"]
         if task.get("name") == "Apply the collector and require exact-target Loki delivery"
@@ -4799,7 +4820,11 @@ def test_positions_gate_malformed_or_unexpected_json_is_unavailable(stdout):
     normalized_status = status if status in {"ready", "bootstrap_allowed"} else "unavailable"
 
     plays = yaml.safe_load(PLAYBOOK.read_text())
-    apply_play = next(play for play in plays if play.get("hosts") == "o11y_svc")
+    apply_play = next(
+        play for play in plays
+        if play.get("hosts") == "o11y_svc"
+        and "Apply the collector and require exact-target Loki delivery" in json.dumps(play)
+    )
     tasks = apply_play["tasks"]
     boundary = next(
         task for task in tasks

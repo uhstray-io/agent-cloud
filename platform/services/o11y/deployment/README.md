@@ -706,20 +706,21 @@ Local development keeps the loopback direct-Loki path.
 ## Receiver-host journal collector positions volume
 
 **Source gate, 2026-10-10:** the collector's declared logical state key is now
-`journal-collector-state-v2`, mounted at `/alloy-state` with Compose `nocopy: true`.
-The Dev-bound `prove-provider` action now exercises the actual installed Compose
-provider against the cached pinned image using only disposable labelled volumes.
-It checks ordinary copy-up, no-copy on a nonempty same-image positive control, and
-no-copy at the real state destination. This is a provider copy-behavior subproof;
-it does not prove Alloy cursor creation/resume, UID namespace writes, full-action
-repeatability, or an authenticated proof receipt. The complete proof and matching
-apply gate are not implemented, so the playbook refuses both `apply` and
-`repair-positions` before collector-host tasks. `survey` and collector-only
-`stop` remain selectable. The legacy
-`journal-collector-state` volume is not selected by the v2 Compose declaration
-or helper lookup. The full `nocopy` acceptance remains incomplete until the
-subproof runs successfully on the Dev receiver and the cursor, UID, cleanup and
-authenticated receipt gates pass. Do not run apply from this source slice.
+`journal-collector-state-v2` at `/alloy-state`. The Dev-bound `prove-direct`
+action invokes direct rootless Podman and the pinned Alloy image on uniquely
+labelled disposable volumes. It checks ordinary copy and explicit no-copy on a
+same-image nonempty positive control, then tests no-copy at `/alloy-state`. A
+synthetic-only journal fixture is read by `loki.source.journal.o11y_alloy` and
+forwarded to local `loki.echo`; the proof reads Alloy's persisted cursor after a
+graceful stop, restarts on the same volume, checks cursor advancement, and repeats
+on a second fresh volume. It refuses unsafe or unbounded scans, emits only
+sanitized categories and binding digests, and cleans assets only after identity
+and mount checks. This source proof has not been run on the Dev receiver and does not create an authenticated Semaphore
+receipt. The playbook still refuses `apply` and `repair-positions`; the direct
+collector lifecycle, operational volume-creation receipts, receipt readback, and
+live acceptance gates remain incomplete. `survey` and collector-only `stop`
+remain selectable. The legacy `journal-collector-state` is not selected by the
+v2 logical key. Do not run apply from this source slice.
 
 The operational rules below describe the prior v1 positions workflow and are
 historical context only; they do not override the fail-closed v2 source gate.

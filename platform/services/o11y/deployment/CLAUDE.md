@@ -16,26 +16,19 @@ orientation an agent needs before editing here.
 stack and waits for Grafana to report healthy. Outside local mode it adds
 `compose.prod.yml`, which gives Grafana a route to Authentik through the LAN Caddy host.
 
-**Journal collector source gate (2026-10-10):** the helper and Compose source now
-target `journal-collector-state-v2` at `/alloy-state` with `nocopy: true`. The
-provider/image proof and matching receipt gate are not implemented; apply and
-positions repair fail closed before collector-host tasks. Survey and collector-only
-stop remain available. The legacy `journal-collector-state` is never selected by
-the v2 helper or Compose declaration. Do not deploy this source slice until the
-separately selected proof is implemented, independently reviewed and passes on
-the actual provider.
-
-**Provider/image subproof source (2026-10-10):** the Dev-bound journal workflow now
-has a prove-provider action. It uses only the cached pinned Alloy image and
-installed podman-compose, and creates separate task-labelled validation projects
-with network_mode: none. It checks ordinary copy-up on a bounded nonempty
-directory from that image, explicit no-copy on the same positive control, and
-no-copy at /alloy-state. It removes only labelled test containers and volumes
-after identity and zero-mount checks; uncertain cleanup leaves assets for
-inspection. This is only a provider copy-behavior subproof. Cursor creation and
-resume, UID mapping and namespace writes, full-proof repeatability, receipt
-authentication, and the production apply gate remain unimplemented; apply and
-repair stay refused. Check mode reports check_mode_unverified.
+**Journal collector source gate (2026-10-10):** the logical key is
+`journal-collector-state-v2`, mounted at `/alloy-state` with explicit no-copy
+semantics. The Dev-bound `prove-direct` action now invokes direct rootless Podman
+against the resolved pinned Alloy image. Its source proof checks a same-image
+nonempty positive control, ordinary copy and direct no-copy mounts, then the
+actual state destination; it runs Alloy against a synthetic journal fixture with
+`loki.echo`, checks the persisted cursor across graceful stop/resume, and repeats
+on a second disposable volume. Scans and process output are bounded; output is
+limited to sanitized categories and binding digests. This source proof has not
+been run on the Dev receiver. Apply and
+positions repair remain refused because the full direct lifecycle, authenticated
+Semaphore receipt readback, operational creation receipts, and live acceptance
+gates are still incomplete. Check mode reports `check_mode_unverified`.
 
 ## How it is deployed
 

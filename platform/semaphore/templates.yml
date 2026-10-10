@@ -84,16 +84,22 @@ templates:
         description: "Exact Dev commit required on controller and receiver"
         type: string
         required: true
+      - name: expected_inventory_revision
+        title: "Reviewed inventory revision"
+        description: "Exact 64-character inventory revision included in the proof binding"
+        type: string
+        required: false
+        default_value: ""
       - name: journal_collector_action
         title: "Collector action"
-        description: "Survey journal and positions metadata, run an isolated provider/image copy-behavior proof, repair only a proven positions-root owner mismatch, apply the pilot, or stop only its collector"
+        description: "Survey journal and positions metadata, run the isolated direct Podman journal proof, repair only a proven positions-root owner mismatch, apply the pilot, or stop only its collector"
         type: enum
         required: true
         default_value: survey
         values:
           - { name: "Survey journal paths", value: "survey" }
           - { name: "Repair positions root ownership", value: "repair-positions" }
-          - { name: "Prove provider/image copy behavior", value: "prove-provider" }
+          - { name: "Prove direct Podman journal behavior", value: "prove-direct" }
           - { name: "Apply pilot", value: "apply" }
           - { name: "Stop pilot", value: "stop" }
 
