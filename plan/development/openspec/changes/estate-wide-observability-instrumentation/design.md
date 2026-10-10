@@ -275,21 +275,11 @@ source-level protection: provider behavior with a direct collector sharing recei
 project labels, live receiver preservation, and installed Podman Compose behavior
 remain unverified. Task 1.2a remains unchecked.
 
-**Semaphore attribution and cleanup source note (2026-10-10):** Upstream
-[Semaphore v2.17.31 `LocalJob.go`](https://github.com/semaphoreui/semaphore/blob/v2.17.31/services/tasks/LocalJob.go#L70-L112)
-sets `semaphore_vars.task_details.id` from the running job's task ID, so it is
-only an untrusted candidate. Accept it only after loopback API readback binds the
-running task to the expected template, playbook, project, reviewed SHA, branch,
-inventory and execution context; a caller-selected record alone does not prove
-process ownership, and that gate remains unimplemented. The repository's
-configurable Semaphore image defaults to v2.19.11; installed behavior is
-unverified. The existing controller OpenBao runtime-token flow is
-`platform/semaphore/tasks/runtime-access.yml`. `clean-service.yml` expands
-mode-specific Compose overlays, runs `down -v`, then deletes container names by
-service prefix. Before cleanup or journal proof can be admitted, require exact
-receiver-only selectors and verify both journal volumes and the collector
-container are preserved. These are acceptance requirements, not a complete
-mechanism.
+**Semaphore task-output authority audit (v2.19.11 source; installed behavior
+unverified):** Local executor stdout/stderr is attached to its `TaskRunner`
+logger and persisted against that runner's task ID ([executor wiring](https://github.com/semaphoreui/semaphore/blob/0c3f3738ea5ed988165afe499d896ff78b428c44/services/tasks/TaskPool.go#L1028-L1045), [output pipes](https://github.com/semaphoreui/semaphore/blob/0c3f3738ea5ed988165afe499d896ff78b428c44/services/tasks/TaskRunner_logging.go#L60-L65), [persistence](https://github.com/semaphoreui/semaphore/blob/0c3f3738ea5ed988165afe499d896ff78b428c44/services/tasks/TaskPool.go#L353-L396)). The ordinary task-output API exposes GET/HEAD routes; the inspected source has no ordinary-user append route ([routes](https://github.com/semaphoreui/semaphore/blob/0c3f3738ea5ed988165afe499d896ff78b428c44/api/router.go#L497-L506)). An assigned remote runner holding its runner token can append task output through its update endpoint ([runner authentication](https://github.com/semaphoreui/semaphore/blob/0c3f3738ea5ed988165afe499d896ff78b428c44/api/runners/runners.go#L20-L51), [runner updates](https://github.com/semaphoreui/semaphore/blob/0c3f3738ea5ed988165afe499d896ff78b428c44/api/runners/runners.go#L265-L340)); therefore a task-row challenge is not proof that Ansible emitted it or that the runner is isolated. The existing project API credential is user-scoped and project-resource permission applies to output routes, so it is not inherently a read-only credential ([bearer authentication](https://github.com/semaphoreui/semaphore/blob/0c3f3738ea5ed988165afe499d896ff78b428c44/api/auth.go#L218-L242), [project middleware](https://github.com/semaphoreui/semaphore/blob/0c3f3738ea5ed988165afe499d896ff78b428c44/api/router.go#L295-L308)).
+
+The current controller diagnostic generates its nonce on the controller, accepts `waiting`, derives template/repository/inventory IDs from task metadata, and returns `partial` after marker readback ([prepare](../../../../../platform/playbooks/files/diagnose-semaphore-task-attribution.py#L57-L70), [metadata checks](../../../../../platform/playbooks/files/diagnose-semaphore-task-attribution.py#L130-L174), [result](../../../../../platform/playbooks/files/diagnose-semaphore-task-attribution.py#L294-L307)). A receiver-generated challenge bound to a receiver session/key, pinned numeric project/template/repository/inventory IDs, exact playbook and reviewed SHA, effective inputs, `running`-only checks before verification and consumption, and atomic one-use consumption is proposed diagnostic evidence only. It is not authority for a Transit signer or mutating permit until installed runner assignment/isolation and a protected verifier are established. Remote-runner trust and a protected cancellation/admission fence remain open; status readback is a snapshot and does not make cancellation atomic with receiver mutation. The existing controller OpenBao runtime-token flow is `platform/semaphore/tasks/runtime-access.yml`. Before cleanup or journal proof can be admitted, require exact receiver-only selectors and verify both journal volumes and the collector container are preserved.
 
 **Task-output attribution diagnostic (2026-10-10; controller-only source route
 locally verified, partial):** The Dev-bound controller playbook requires the
