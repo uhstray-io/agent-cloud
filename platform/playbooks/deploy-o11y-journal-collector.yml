@@ -481,7 +481,7 @@
                 mapping=$(</proc/self/uid_map);
                 read -r inside outside length <<< "$mapping";
                 test "$inside" = 0; test "$length" -gt 0;
-                a=$(mktemp /var/lib/alloy/data/.positions-live-gate.XXXXXX);
+                a=$(mktemp /alloy-state/.positions-live-gate.XXXXXX);
                 b="$a.renamed";
                 moved=0;
                 trap 'if [ "$moved" -eq 1 ]; then rm -f -- "$b"; else rm -f -- "$a"; fi' EXIT;
@@ -691,7 +691,7 @@
                 (['journal'] if (((_journal_rollback_logs.stdout_lines | default([], true)) + (_journal_rollback_logs.stderr_lines | default([], true)))
                   | select('search', '(?i)permission denied') | select('search', '/var/log/journal') | list | length) > 0 else []) +
                 (['positions'] if (((_journal_rollback_logs.stdout_lines | default([], true)) + (_journal_rollback_logs.stderr_lines | default([], true)))
-                  | select('search', '(?i)permission denied') | select('search', '/var/lib/alloy') | list | length) > 0 else []) +
+                  | select('search', '(?i)permission denied') | select('search', '/alloy-state') | list | length) > 0 else []) +
                 (['config'] if (((_journal_rollback_logs.stdout_lines | default([], true)) + (_journal_rollback_logs.stderr_lines | default([], true)))
                   | select('search', '(?i)permission denied') | select('search', '/etc/alloy') | list | length) > 0 else [])
               }}
@@ -762,7 +762,7 @@
               - podman
               - inspect
               - --format
-              - "{{ '{{' }}range .Mounts{{ '}}' }}{{ '{{' }}if eq .Destination \"/var/lib/alloy/data\"{{ '}}' }}{{ '{{' }}.Name{{ '}}' }}{{ '{{' }}end{{ '}}' }}{{ '{{' }}end{{ '}}' }}"
+              - "{{ '{{' }}range .Mounts{{ '}}' }}{{ '{{' }}if eq .Destination \"/alloy-state\"{{ '}}' }}{{ '{{' }}.Name{{ '}}' }}{{ '{{' }}end{{ '}}' }}{{ '{{' }}end{{ '}}' }}"
               - o11y-journal-collector
           register: _journal_rollback_volume_name
           changed_when: false
@@ -863,7 +863,7 @@
           - podman
           - inspect
           - --format
-          - "{{ '{{' }}range .Mounts{{ '}}' }}{{ '{{' }}if eq .Destination \"/var/lib/alloy/data\"{{ '}}' }}{{ '{{' }}.Name{{ '}}' }}{{ '{{' }}end{{ '}}' }}{{ '{{' }}end{{ '}}' }}"
+          - "{{ '{{' }}range .Mounts{{ '}}' }}{{ '{{' }}if eq .Destination \"/alloy-state\"{{ '}}' }}{{ '{{' }}.Name{{ '}}' }}{{ '{{' }}end{{ '}}' }}{{ '{{' }}end{{ '}}' }}"
           - o11y-journal-collector
       register: _journal_stop_volume_name
       changed_when: false

@@ -47,7 +47,12 @@ stack and waits for Grafana to report healthy. Outside local mode it adds
   engine socket or alter receiver volumes. The Compose service has no dependencies;
   after apply, the playbook hashes IDs and states for all seven existing receiver
   containers and refuses success if any changed. The collector state lives in the
-  Compose named `journal-collector-state` volume. Apply observes health for up to
+  Compose named `journal-collector-state` volume mounted at `/alloy-state`; Alloy's
+  `--storage.path` and exact live-mount/rollback checks use that same root-level path.
+  This avoids traversing the image's `/var/lib/alloy` directory, which the pinned
+  [Alloy v1.9.2 Dockerfile](https://github.com/grafana/alloy/blob/v1.9.2/Dockerfile)
+  creates as UID/GID 473 with mode `770`, while this pilot keeps UID `0:0` and drops
+  all capabilities. Apply observes health for up to
   three minutes, matching the Compose startup grace/retry window. A failed apply or
   explicit `stop` force-removes only the exact pilot container without `-v`, then
   verifies it is absent from Podman's reboot restart set and that its positions
