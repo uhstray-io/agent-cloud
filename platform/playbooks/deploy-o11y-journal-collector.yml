@@ -53,6 +53,68 @@
         quiet: true
       tags: [always]
 
+- name: Verify the existing receiver checkout before any journal action
+  hosts: o11y_svc
+  gather_facts: false
+  become: false
+  vars:
+    _journal_monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+  tasks:
+    - name: Record checkout as unverified in check mode
+      ansible.builtin.set_fact:
+        _journal_checkout_verification:
+          status: check_mode_unverified
+          reason: not_run
+      when: ansible_check_mode
+
+    - name: Verify exact receiver checkout and tracked/untracked cleanliness
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "-"
+          - verify-checkout
+          - --checkout
+          - "{{ _journal_monorepo_dir }}"
+          - --expected-sha
+          - "{{ expected_repository_sha }}"
+        stdin: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/o11y-journal-workflow.py') }}"
+        stdin_add_newline: false
+      register: _journal_checkout_result
+      changed_when: false
+      failed_when: false
+      no_log: true
+      when: not ansible_check_mode
+
+    - name: Require exact existing receiver checkout before continuing
+      ansible.builtin.assert:
+        that:
+          - _journal_checkout_result.rc | default(1) == 0
+          - (_journal_checkout_result.stdout | default('{}') | from_json).status == 'verified'
+          - (_journal_checkout_result.stdout | from_json).revision == expected_repository_sha
+          - (_journal_checkout_result.stdout | from_json).clean is sameas true
+        fail_msg: >-
+          The receiver checkout must already exist at the exact reviewed SHA and
+          have no tracked or untracked changes. No placement or cleanup is attempted.
+        quiet: true
+      when: not ansible_check_mode
+
+- name: Keep journal execution closed until authenticated shared admission is available
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Permit only non-mutating check-mode survey output while admission is unverified
+      ansible.builtin.assert:
+        that:
+          - ansible_check_mode
+          - journal_collector_action | default('apply') == 'survey'
+        fail_msg: >-
+          Journal actions are refused until host-wide admission, durable intent,
+          authenticated task attribution and recovery readback are integrated.
+          Only survey check mode may report check_mode_unverified.
+        quiet: true
+      tags: [always]
+
 - name: Prove direct Podman and Alloy journal persistence with disposable volumes
   hosts: o11y_svc
   gather_facts: false
@@ -388,31 +450,6 @@
         quiet: true
       when: not ansible_check_mode
       tags: [always]
-
-    - name: Place the reviewed monorepo on the receiver through the shared mechanism
-      ansible.builtin.include_tasks: tasks/place-monorepo.yml
-      vars:
-        _monorepo_dir: "{{ _journal_monorepo_dir }}"
-        _branch: "{{ service_branch | default('dev') }}"
-      when: not ansible_check_mode
-
-    - name: Read the receiver checkout revision
-      ansible.builtin.command:
-        argv: [git, rev-parse, HEAD]
-        chdir: "{{ _journal_monorepo_dir }}"
-      register: _journal_target_revision
-      changed_when: false
-      check_mode: false
-      when: not ansible_check_mode
-
-    - name: Require receiver checkout at the exact reviewed revision
-      ansible.builtin.assert:
-        that: _journal_target_revision.stdout | trim == expected_repository_sha
-        fail_msg: >-
-          The receiver checkout does not match the reviewed SHA; collector files
-          were not rendered or applied.
-        quiet: true
-      when: not ansible_check_mode
 
     - name: Read back the seven existing receiver container identities and states
       ansible.builtin.shell:
