@@ -165,7 +165,7 @@
         {
           "refId": "A",
           "expr": "sum by (service) (rate({service=~\"$log_service\", container=~\".+\", signal!~\"^(container|access-log|span)$\", job!=\"agent-cloud-conformance\"}[5m]))",
-          "legendFormat": "Container · {{service}}"
+          "legendFormat": "Legacy container · {{service}}"
         },
         {
           "refId": "E",
@@ -200,7 +200,7 @@
         "h": 10,
         "w": 12,
         "x": 0,
-        "y": 22
+        "y": 28
       },
       "description": "For the selected Logs service, includes journal records marked signal=\"container\" even when they also have a container label, plus legacy container records whose signal is outside container/access-log/span. This is container output, not service health.",
       "options": {
@@ -227,7 +227,7 @@
         "h": 10,
         "w": 12,
         "x": 12,
-        "y": 22
+        "y": 28
       },
       "description": "OTLP gateway access records for the selected Logs service. These structured records are separate from container output and optional span logs.",
       "options": {
@@ -254,7 +254,7 @@
         "h": 10,
         "w": 12,
         "x": 0,
-        "y": 32
+        "y": 38
       },
       "description": "Derived span log lines for the selected Logs service. This stream is inventory-gated and may be absent; Tempo remains the trace store.",
       "options": {
@@ -281,7 +281,7 @@
         "h": 10,
         "w": 12,
         "x": 12,
-        "y": 32
+        "y": 38
       },
       "description": "Service workflow status records for the selected Logs service. These are collector snapshots, not application logs.",
       "options": {
@@ -308,7 +308,7 @@
         "h": 10,
         "w": 24,
         "x": 0,
-        "y": 42
+        "y": 48
       },
       "description": "Bounded mixed-source drill-down for every Loki stream carrying the selected Logs service, including streams not yet classified in a source-specific panel. Prefer the source-specific panels above for routine review; mixed logs do not indicate service health.",
       "options": {
@@ -321,6 +321,141 @@
           "refId": "A",
           "expr": "{service=~\"$log_service\"}",
           "maxLines": 100
+        }
+      ]
+    },
+    {
+      "title": "Selected service identities",
+      "type": "text",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "description": "Metrics and logs are selected independently; their service identities are shown here.",
+      "options": {
+        "mode": "markdown",
+        "content": "**Metrics service:** $service  \n**Logs service:** $log_service"
+      }
+    },
+    {
+      "title": "Selected source records observed (5m)",
+      "type": "stat",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 24,
+        "x": 0,
+        "y": 22
+      },
+      "description": "For the selected Logs service, each source reports whether matching records were observed in five minutes. “No records” is a neutral absence observation, not a zero-health result or an ingestion diagnosis. Query errors remain errors.",
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "No records",
+                  "color": "gray",
+                  "index": 0
+                }
+              }
+            },
+            {
+              "type": "range",
+              "options": {
+                "from": 1e-06,
+                "to": 1e+18,
+                "result": {
+                  "text": "Records observed",
+                  "color": "blue",
+                  "index": 0
+                }
+              }
+            }
+          ],
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          },
+          "noValue": "No query result"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "orientation": "horizontal",
+        "textMode": "value_and_name",
+        "colorMode": "none",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "queryType": "instant",
+          "expr": "(sum(count_over_time({service=~\"$log_service\", container=~\".+\", signal!~\"^(container|access-log|span)$\", job!=\"agent-cloud-conformance\"}[5m])) or on() vector(0))",
+          "legendFormat": "Legacy container"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "queryType": "instant",
+          "expr": "(sum(count_over_time({service=~\"$log_service\", signal=\"container\", job!=\"agent-cloud-conformance\"}[5m])) or on() vector(0))",
+          "legendFormat": "Journal container"
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "queryType": "instant",
+          "expr": "(sum(count_over_time({service=~\"$log_service\", signal=\"access-log\", job!=\"agent-cloud-conformance\"}[5m])) or on() vector(0))",
+          "legendFormat": "Access"
+        },
+        {
+          "refId": "D",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "queryType": "instant",
+          "expr": "(sum(count_over_time({service=~\"$log_service\", signal=\"span\", job!=\"agent-cloud-conformance\"}[5m])) or on() vector(0))",
+          "legendFormat": "Span"
+        },
+        {
+          "refId": "E",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "queryType": "instant",
+          "expr": "(sum(count_over_time({service=~\"$log_service\", job=\"agent-cloud-conformance\"}[5m])) or on() vector(0))",
+          "legendFormat": "Conformance"
         }
       ]
     }

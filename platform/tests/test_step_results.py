@@ -37,7 +37,7 @@ def _run_line(result: dict) -> str:
 
 
 def _task(tid, status, template_id, output="", service="tududi", **extra):
-    return {"id": tid, "status": status, "end": f"t{tid}", "template_id": template_id,
+    return {"id": tid, "status": status, "end": "2026-10-11T12:00:00Z", "template_id": template_id,
             "service": service, "output": output, **extra}
 
 
@@ -174,6 +174,49 @@ def test_report_lists_failed_steps_with_their_context_and_unreviewed_steps():
     assert entry["unreviewed"] == [s["id"] for s in REGISTRY if not s.get("reviewed")]
 
 
+def test_completion_time_requires_a_valid_timezone_aware_timestamp():
+    assert step_results._completion_time_seconds("2026-10-11T12:00:00Z") == 1791720000
+    assert step_results._completion_time_seconds("2026-10-11T15:00:00+03:00") == 1791720000
+    for value in (None, "", "not-a-time", "2026-10-11T12:00:00"):
+        assert step_results._completion_time_seconds(value) == "unknown"
+
+
+def test_retained_and_missing_completion_provenance_is_explicitly_unknown():
+    retained = step_results.aggregate(
+        REGISTRY, TEMPLATES, [], ["tududi"], DEPLOYS,
+        retained={"tududi": {"fw-harden": "fail"}},
+    )
+    retained_stream = next(s for s in step_results.loki_streams(retained, 1)
+                           if s["stream"]["step"] == "fw-harden")
+    retained_body = json.loads(retained_stream["values"][0][1])
+    assert retained_body["task_id"] == "unknown"
+    assert retained_body["completed_at_seconds"] == "unknown"
+    assert retained_body["retained"] is True
+
+    missing_time = _task(8, "success", 2, _run_line(
+        {"service": "tududi", "step": "fw-harden", "status": "pass"}), end="invalid")
+    agg = _agg(missing_time)
+    stream = next(s for s in step_results.loki_streams(agg, 1) if s["stream"]["step"] == "fw-harden")
+    body = json.loads(stream["values"][0][1])
+    assert body["task_id"] == 8
+    assert body["completed_at_seconds"] == "unknown"
+
+
+def test_latest_pass_replaces_an_older_failure_with_its_own_provenance():
+    failure = _task(10, "error", 2, _run_line(
+        {"service": "tududi", "step": "fw-harden", "status": "fail"}),
+        end="2026-10-11T11:00:00Z")
+    success = _task(11, "success", 2, _run_line(
+        {"service": "tududi", "step": "fw-harden", "status": "pass"}),
+        end="2026-10-11T12:00:00Z")
+    agg = _agg(failure, success)
+    assert agg["status_by_service"]["tududi"]["fw-harden"] == "pass"
+    stream = next(s for s in step_results.loki_streams(agg, 1) if s["stream"]["step"] == "fw-harden")
+    assert stream["stream"]["status"] == "pass"
+    assert json.loads(stream["values"][0][1])["task_id"] == 11
+    assert json.loads(stream["values"][0][1])["completed_at_seconds"] == 1791720000
+
+
 def test_loki_streams_label_every_result():
     out = _run_line({"service": "tududi", "step": "secrets-approle", "status": "pass"})
     streams = step_results.loki_streams(_agg(_task(8, "success", 1, out)), 1700000000000000000)
@@ -182,7 +225,8 @@ def test_loki_streams_label_every_result():
         "stream": {"job": "agent-cloud-conformance", "service": "tududi",
                    "step": "secrets-approle", "status": "pass"},
         "values": [["1700000000000000000", json.dumps(
-            {"check_mode": False, "error": None, "state_code": 1, "task_id": 8}, sort_keys=True)]],
+            {"check_mode": False, "completed_at_seconds": 1791720000, "error": None,
+             "state_code": 1, "task_id": 8}, sort_keys=True)]],
     }
 
 
@@ -203,8 +247,10 @@ def test_otlp_logs_keep_payload_in_body_and_only_bounded_loki_labels():
     assert set(attributes) == {"job", "service", "step", "status"}
     assert record["timeUnixNano"] == "1700000000000000000"
     assert json.loads(record["body"]["stringValue"]) == {
-        "check_mode": False, "error": "task output detail", "state_code": 0, "task_id": 8,
+        "check_mode": False, "completed_at_seconds": 1791720000,
+        "error": "task output detail", "state_code": 0, "task_id": 8,
     }
+    assert {entry["key"] for entry in record["attributes"]} == {"job", "service", "step", "status"}
 
 
 def test_conformance_json_body_format_matches_loki_dashboard_extraction():
@@ -246,6 +292,14 @@ def test_conformance_json_body_format_matches_loki_dashboard_extraction():
                             "service-conformance.json").read_text())
     expressions = {panel["title"]: panel["targets"][0]["expr"] for panel in dashboard["panels"]}
     assert '| json state_code | unwrap state_code' in expressions["Latest step status by service"]
+    assert "completed_at_seconds" in expressions["Latest workflow completion age"]
+    assert "marker_time_seconds" not in expressions["Latest workflow completion age"]
+    assert "task_id, completed_at_seconds" in expressions["Workflow completion and task provenance"]
+    failure_state = expressions["Current failed step states"]
+    assert failure_state.index("last_over_time") < failure_state.index("== bool 0")
+    assert 'status="fail"' not in failure_state
+    assert dashboard["panels"][[p["title"] for p in dashboard["panels"]].index(
+        "Recent failed task snapshots")]["timeFrom"] == "7d"
     assert '| json |' in expressions["Services not yet run"]
     assert '| unwrap inventory_code' in expressions["Services not yet run"]
     assert "marker_time_seconds" in expressions["Services tracked"]
