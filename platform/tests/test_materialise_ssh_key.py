@@ -308,7 +308,7 @@ PRIVATE_KEY_WRITERS = {
 }
 # A writer is recognised by the variable its content templates, so a copy that renamed the
 # key to something bland would slip past this set; the tempfile set is the second net.
-KEY_VAR_HINTS = ("priv", "private_key", "_svc_key", "ssh_key", "deploy_key")
+KEY_VAR_HINTS = ("_priv_key", "private_key", "_svc_key", "ssh_key", "deploy_key")
 TEMPFILE_USERS = {
     MATERIALISE: "the probe key's scratch directory",
     "tasks/backup-ssh-key-to-site-config.yml": "pair derivation scratch",
