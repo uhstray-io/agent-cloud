@@ -216,7 +216,10 @@ def test_overview_source_status_queries_match_disjoint_aggregate_selectors_and_s
     assert 'signal="access-log"' in aggregate_by_source["Access"]
     assert 'signal="span"' in aggregate_by_source["Span"]
     assert 'job="agent-cloud-conformance"' in aggregate_by_source["Conformance"]
-    assert _selector(_panel(dashboard, "All Loki streams (mixed-source drill-down)")["targets"][0]["expr"]) not in aggregate_by_source.values()
+    assert (
+        _selector(_panel(dashboard, "All Loki streams (mixed-source drill-down)")["targets"][0]["expr"])
+        not in aggregate_by_source.values()
+    )
     assert all("or on() vector(0)" in target["expr"] for target in status["targets"])
     mappings = status["fieldConfig"]["defaults"]["mappings"]
     assert mappings[0]["options"]["0"]["text"] == "No records"
