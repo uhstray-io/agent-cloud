@@ -126,9 +126,11 @@ separate and unchanged.
 `Diagnose o11y Launch Contract` task observes only the task-local probe process's
 root/non-root UID category and cgroup mode, with bounded `/proc/self/cgroup`
 input. It makes no API or network request and probes no target. Check mode
-performs no local observation. It reports executor identity, reviewed artifact
-identity, protected installation, effective launch configuration, neighboring
-task token isolation, protected launch interception, signer issuance,+cancellation fencing, and descendant containment as `unverified`. The local
+skips the local UID/cgroup probe; reviewed-checkout verification still reads
+checkout code. It reports executor identity, reviewed artifact identity,
+protected installation, effective launch configuration, neighboring task token
+isolation, protected launch interception, signer issuance, cancellation fencing,
+and descendant containment as `unverified`. The local
 process facts do not establish who launched the task or authorize any action;
 the result is not an admission signal. The diagnostic does not enable receiver
 or journal mutation and does not change JWT activation. On 2026-10-11, the

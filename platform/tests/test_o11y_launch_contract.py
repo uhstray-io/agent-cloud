@@ -102,6 +102,21 @@ def test_playbook_is_dev_bound_local_only_and_skips_probe_in_check_mode():
     assert probe["when"] == "not ansible_check_mode"
     assert probe["no_log"] is True
     assert check_mode["when"] == "ansible_check_mode"
+    assert check_mode["ansible.builtin.debug"]["msg"]["reason"] == (
+        "uid_cgroup_probe_skipped_checkout_verification_reads_code"
+    )
+    checkout_guard = yaml.safe_load(
+        (ROOT / "platform/playbooks/require-reviewed-checkout.yml").read_text()
+    )[0]
+    checkout_check = next(
+        task
+        for task in checkout_guard["tasks"]
+        if task["name"] == "Compare checkout bytes with the reviewed commit"
+    )
+    assert checkout_check["check_mode"] is False
+    assert "lookup('ansible.builtin.file'" in checkout_check[
+        "ansible.builtin.command"
+    ]["stdin"]
     assert "check_mode: false" not in json.dumps(tasks)
     assert "ansible.builtin.uri" not in json.dumps(tasks)
     assert "ansible.builtin.shell" not in json.dumps(tasks)

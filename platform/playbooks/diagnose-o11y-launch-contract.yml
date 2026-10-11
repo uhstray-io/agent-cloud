@@ -37,8 +37,8 @@
         msg:
           schema_version: 1
           status: check_mode_unverified
-          reason: check_mode_skips_all_observations
-          observations: not_read
+          reason: uid_cgroup_probe_skipped_checkout_verification_reads_code
+          observations: uid_cgroup_probe_not_read
           launch_prerequisites: unverified
           api_requests: not_called
           network_requests: not_called
