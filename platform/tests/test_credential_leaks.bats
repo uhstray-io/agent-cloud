@@ -400,9 +400,11 @@ _committed_files() {
 import re, codecs, sys
 src = open('$REPO_ROOT/platform/playbooks/tasks/assert-bao-transport.yml').read()
 m = re.search(r\"_pat_strict: '(.*?)'\", src)
+mh = re.search(r\"_pat_https: '(.*?)'\", src)
 ms = re.search(r\"_pat_single_label: '(.*?)'\", src)
-assert m and ms, 'patterns not found in the shared task'
+assert m and mh and ms, 'patterns not found in the shared task'
 pat = m.group(1)
+pat_https = mh.group(1)
 pat_single = ms.group(1)
 # The single-label branch must be gated on local_mode in the assert expression —
 # unconditional single-label acceptance is what the resolver search-suffix
@@ -420,8 +422,13 @@ accept = [
     'http://192.168.0.1:8200/v1',          # example: RFC1918 192.168/16 with path
     'http://172.16.0.1:8200',              # example: RFC1918 lower bound
     'http://172.31.255.254:8200',          # example: RFC1918 upper bound
+    'https://[::1]:8200',                   # example: bracketed IPv6 TLS host
 ]
 refuse = [
+    'https://',                             # empty authority
+    'https://bad..example',                 # malformed DNS authority
+    'https://public.example:bad',           # malformed port
+    'https://' + 'user:FAKE@public.example', # userinfo is not the host
     'http://bao.example.com:8200',         # example: public host, cleartext
     'http://10.evil.example/',             # example: prefix-match bypass
     'http://192.168.0.1.evil.example/',    # example: private-looking public host
@@ -442,10 +449,13 @@ refuse = [
     'http://local-openbao:8200',           # single-label: allowed ONLY under local_mode, strict refuses
 ]
 bad = []
+def accepted(u):
+    return bool(re.match(pat, u) and
+                (not u.startswith('https://') or re.match(pat_https, u)))
 for u in accept:
-    if not re.match(pat, u): bad.append('should ACCEPT: ' + u)
+    if not accepted(u): bad.append('should ACCEPT: ' + u)
 for u in refuse:
-    if re.match(pat, u): bad.append('should REFUSE: ' + u)
+    if accepted(u): bad.append('should REFUSE: ' + u)
 # The local_mode branch's own pattern: single-label only, same trailing anchor.
 sl_accept = ['http://local-openbao:8200', 'http://local-openbao:8200/v1',
              'http://host.containers.internal:8000']   # podman's engine-host name, exact
@@ -466,7 +476,7 @@ if bad:
 print('all %d cases correct' % (len(accept) + len(refuse) + len(sl_accept) + len(sl_refuse)))
 "
   [ "$status" -eq 0 ]
-  [[ "$output" == *"all 30 cases correct"* ]]
+  [[ "$output" == *"all 35 cases correct"* ]]
 }
 
 @test "repo: no generated Python bytecode is tracked" {

@@ -5,7 +5,7 @@ import json
 import tempfile
 import unittest
 from contextlib import redirect_stdout
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 SCRIPT = Path(__file__).parents[1] / "playbooks/files/o11y-coverage-census.py"
@@ -79,6 +79,43 @@ def receipt(target_id="service:alpha", signal_name="logs", inventory_revision=IN
     }
 
 
+def observation(signal_name, response, **overrides):
+    payload = {
+        "response": response,
+        "command_rc": 0,
+        "signal": signal_name,
+        "target_id": "service:alpha",
+        "query_start": 1000,
+        "query_end": 1300,
+        "observed_at": 1300,
+        "requested_freshness_seconds": 600,
+        "declared_freshness_seconds": 600,
+        "window_seconds": 300,
+    }
+    payload.update(overrides)
+    return payload
+
+
+def prometheus(values=None, histograms=None, target_id="service:alpha"):
+    series = {"metric": {"target_id": target_id}}
+    if values is not None:
+        series["values"] = values
+    if histograms is not None:
+        series["histograms"] = histograms
+    return {"status": "success", "data": {"resultType": "matrix", "result": [series]}}
+
+
+def tempo(timestamp="1300000000000", target_id="service:alpha"):
+    return {"traces": [{
+        "rootServiceName": "parent-service",
+        "spanSets": [{"spans": [{
+            "spanID": "child-span",
+            "startTimeUnixNano": timestamp,
+            "attributes": [{"key": "target_id", "value": {"stringValue": target_id}}],
+        }]}],
+    }]}
+
+
 class CoverageCensusTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -89,13 +126,20 @@ class CoverageCensusTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
-    def report(self, targets):
+    def report(self, targets, receipt_bindings=None, verified_receipts=None):
+        inventory = {
+            "inventory_revision": CENSUS.canonical_inventory_revision(targets),
+            "targets": targets,
+            "template_names": ["Verify o11y Target Receipt"],
+        }
+        if receipt_bindings is not None:
+            inventory["receipt_bindings"] = receipt_bindings
         return CENSUS.build_report(
             self.repo,
-            {"inventory_revision": CENSUS.canonical_inventory_revision(targets), "targets": targets,
-             "template_names": ["Verify o11y Target Receipt"]},
+            inventory,
             REPO_SHA,
             NOW,
+            verified_receipts=verified_receipts,
         )
 
     def test_optional_profiles_signal_preserves_the_existing_four_signal_contract(self):
@@ -169,6 +213,176 @@ class CoverageCensusTests(unittest.TestCase):
         self.assertEqual(result, {"status": "invalid_response", "sample_count": 0})
         self.assertEqual(set(result), {"status", "sample_count"})
 
+    def test_strict_loki_nanosecond_boundaries_are_exact_and_sibling_streams_refuse(self):
+        def response(timestamp, streams=None):
+            values = [{"stream": {"target_id": "service:alpha"}, "values": [[timestamp, "private log"]]}]
+            if streams:
+                values.extend(streams)
+            return {"status": "success", "data": {"resultType": "streams", "result": values}}
+
+        for timestamp in ("1000000000000", "1300000000000"):
+            result = CENSUS.validate_signal_observation(observation("logs", response(timestamp)))
+            self.assertEqual(result["status"], "verified")
+        for timestamp in ("999999999999", "1300000000001"):
+            result = CENSUS.validate_signal_observation(observation("logs", response(timestamp)))
+            self.assertEqual(result["reason"], "timestamp_out_of_bounds")
+        sibling = {"stream": {"target_id": "service:beta"}, "values": [["1300000000000", "private"]]}
+        result = CENSUS.validate_signal_observation(observation("logs", response("1300000000000", [sibling])))
+        self.assertEqual(result["reason"], "identity_mismatch")
+        self.assertEqual(set(result), {"status", "reason", "evidence_count"})
+        self.assertNotIn("private", json.dumps(result))
+        crowded = response("1300000000000")
+        crowded["data"]["result"][0]["values"] = [["1300000000000", "x"]] * 1001
+        bounded = CENSUS.validate_signal_observation(observation("logs", crowded))
+        self.assertEqual(bounded["evidence_count"], CENSUS.MAX_EVIDENCE_COUNT)
+
+    def test_strict_prometheus_decimal_bounds_native_histograms_and_sibling_series(self):
+        exact = prometheus(values=[["1000.000000000", "2"]])
+        self.assertEqual(CENSUS.validate_signal_observation(observation("metrics", exact))["status"], "verified")
+        outside = prometheus(values=[["1300.000000001", "2"]])
+        self.assertEqual(
+            CENSUS.validate_signal_observation(observation("metrics", outside))["reason"],
+            "timestamp_out_of_bounds",
+        )
+        histogram = prometheus(histograms=[[1300, {"count": "4", "sum": "8", "buckets": []}]])
+        self.assertEqual(CENSUS.validate_signal_observation(observation("metrics", histogram))["status"], "verified")
+        malformed = prometheus(histograms=[[1300, {}]])
+        self.assertEqual(
+            CENSUS.validate_signal_observation(observation("metrics", malformed))["reason"],
+            "invalid_response",
+        )
+        sibling = prometheus(values=[[1300, "1"]])
+        sibling["data"]["result"].append({"metric": {"target_id": "service:beta"}, "values": [[1300, "2"]]})
+        self.assertEqual(
+            CENSUS.validate_signal_observation(observation("metrics", sibling))["reason"],
+            "identity_mismatch",
+        )
+
+    def test_strict_health_uses_latest_float_sample_and_requires_one(self):
+        healthy = prometheus(values=[[1200, "0"], [1250, "1"]])
+        self.assertEqual(CENSUS.validate_signal_observation(observation("health", healthy))["status"], "verified")
+        unhealthy_latest = prometheus(values=[[1200, "1"], [1250, "0"]])
+        self.assertEqual(
+            CENSUS.validate_signal_observation(observation("health", unhealthy_latest))["reason"],
+            "unhealthy_latest_sample",
+        )
+        histogram_latest = prometheus(
+            values=[[1200, "1"]],
+            histograms=[[1250, {"count": "4", "sum": "8", "buckets": []}]],
+        )
+        self.assertEqual(
+            CENSUS.validate_signal_observation(observation("health", histogram_latest))["reason"],
+            "unhealthy_latest_sample",
+        )
+
+    def test_strict_tempo_requires_a_target_child_span_and_rejects_metadata_only(self):
+        valid = CENSUS.validate_signal_observation(observation("traces", tempo()))
+        self.assertEqual(valid["status"], "verified")
+        metadata_only = {"traces": [{"rootServiceName": "parent-service", "startTimeUnixNano": "1"}]}
+        self.assertEqual(
+            CENSUS.validate_signal_observation(observation("traces", metadata_only))["reason"],
+            "no_evidence",
+        )
+        self.assertEqual(
+            CENSUS.validate_signal_observation(observation("traces", tempo(target_id="service:beta")))["reason"],
+            "identity_mismatch",
+        )
+        for timestamp in ("999999999999", "1300000000001"):
+            self.assertEqual(
+                CENSUS.validate_signal_observation(observation("traces", tempo(timestamp=timestamp)))["reason"],
+                "timestamp_out_of_bounds",
+            )
+
+    def test_strict_pyroscope_requires_a_whole_fresh_bucket(self):
+        def response(timestamp, value=1.0):
+            return {"series": [{
+                "labels": [{"name": "target_id", "value": "service:alpha"}],
+                "points": [{"timestamp": timestamp, "value": value}],
+            }]}
+
+        for timestamp in (1_060_000, "1060001", 1_300_000):
+            self.assertEqual(
+                CENSUS.validate_signal_observation(observation("profiles", response(timestamp)))["status"],
+                "verified",
+            )
+        too_early = CENSUS.validate_signal_observation(observation("profiles", response(1_059_999)))
+        self.assertEqual(too_early["reason"], "no_evidence")
+        too_late = CENSUS.validate_signal_observation(observation("profiles", response(1_300_001)))
+        self.assertEqual(too_late["reason"], "timestamp_out_of_bounds")
+        omitted_zero = {
+            "series": [{
+                "labels": [{"name": "target_id", "value": "service:alpha"}],
+                "points": [
+                    {"timestamp": 1_200_000},
+                    {"timestamp": 1_260_000, "value": 1.0},
+                ],
+            }],
+        }
+        self.assertEqual(
+            CENSUS.validate_signal_observation(observation("profiles", omitted_zero)),
+            {"status": "verified", "reason": "verified", "evidence_count": 1},
+        )
+        malformed_value = response(1_060_000, "not-a-number")
+        self.assertEqual(
+            CENSUS.validate_signal_observation(observation("profiles", malformed_value))["reason"],
+            "invalid_response",
+        )
+        self.assertEqual(
+            CENSUS.validate_signal_observation(observation("profiles", response(1_060_000, float("inf"))))["reason"],
+            "malformed_json",
+        )
+
+    def test_strict_interval_freshness_expiry_transport_and_parser_refusals_are_sanitized(self):
+        valid_response = prometheus(values=[[1300, "1"]])
+        base = observation("metrics", valid_response)
+        self.assertEqual(
+            CENSUS.validate_signal_observation({**base, "observed_at": 1599})["status"],
+            "verified",
+        )
+        self.assertEqual(
+            CENSUS.validate_signal_observation({**base, "observed_at": 1600})["reason"],
+            "invalid_interval",
+        )
+        self.assertEqual(
+            CENSUS.validate_signal_observation({**base, "declared_freshness_seconds": 601})["reason"],
+            "invalid_interval",
+        )
+        for changes in (
+            {"window_seconds": 59},
+            {"window_seconds": 3601},
+            {"requested_freshness_seconds": 300, "declared_freshness_seconds": 300},
+            {"requested_freshness_seconds": 86401, "declared_freshness_seconds": 86401},
+            {"window_seconds": True},
+        ):
+            self.assertEqual(
+                CENSUS.validate_signal_observation({**base, **changes})["reason"],
+                "invalid_interval",
+            )
+        minimum_window = {
+            **base,
+            "query_start": 1000,
+            "query_end": 1060,
+            "window_seconds": 60,
+            "observed_at": 1060,
+            "requested_freshness_seconds": 61,
+            "declared_freshness_seconds": 61,
+            "response": prometheus(values=[[1060, "1"]]),
+        }
+        self.assertEqual(CENSUS.validate_signal_observation(minimum_window)["status"], "verified")
+        self.assertEqual(
+            CENSUS.validate_signal_observation({**base, "command_rc": 7})["reason"],
+            "transport_error",
+        )
+        for raw in ('{"status":"success","status":"success"}', '{"x":NaN}'):
+            result = CENSUS.validate_signal_observation(observation("metrics", raw))
+            self.assertEqual(result["reason"], "malformed_json")
+            self.assertNotIn(raw, json.dumps(result))
+        large = " " * (CENSUS.MAX_OBSERVATION_BYTES + 1)
+        self.assertEqual(
+            CENSUS.validate_signal_observation(observation("metrics", large))["reason"],
+            "oversized_response",
+        )
+
     def test_deployed_missing_signal_is_incomplete(self):
         item = self.report([target()])["targets"][0]
         self.assertEqual(item["coverage"], "incomplete")
@@ -219,6 +433,69 @@ class CoverageCensusTests(unittest.TestCase):
         self.assertEqual(row["signals"]["logs"], "incomplete")
         self.assertEqual(row["coverage"], "incomplete")
 
+    def test_verified_receipts_cover_candidate_and_unmatched_declaration_paths(self):
+        declarations = [target(), target("vm:beta", "beta", target_type="vm")]
+        for declaration in declarations:
+            declaration["signals"]["logs"].pop("receipt_reference")
+            declaration["receipt_reference"].pop("logs")
+        bindings = {
+            declaration["target_id"]: {"logs": {
+                "task_id": task_id, "template_id": 45, "observation_window_seconds": 300,
+            }}
+            for declaration, task_id in zip(declarations, (123, 124), strict=True)
+        }
+        revision = CENSUS.canonical_inventory_revision(declarations)
+        accepted = {
+            declaration["target_id"]: {"logs": {
+                "status": "verified", "target_id": declaration["target_id"], "signal": "logs",
+                "task_id": task_id, "template_id": 45, "repository_sha": REPO_SHA,
+                "inventory_revision": revision, "observed_at": "2026-10-09T11:30:00Z",
+                "expires_at": "2026-10-09T13:00:00Z",
+            }}
+            for declaration, task_id in zip(declarations, (123, 124), strict=True)
+        }
+        rows = self.report(declarations, bindings, accepted)["targets"]
+        for target_id in ("service:alpha", "vm:beta"):
+            row = next(item for item in rows if item["target_id"] == target_id)
+            self.assertEqual(row["signals"]["logs"], "verified")
+            self.assertEqual(row["coverage"], "verified")
+
+    def test_expired_or_mismatched_verified_receipt_remains_incomplete(self):
+        declaration = target()
+        binding = {"service:alpha": {"logs": {
+            "task_id": 123, "template_id": 45, "observation_window_seconds": 300,
+        }}}
+        revision = CENSUS.canonical_inventory_revision([declaration])
+        accepted = {"service:alpha": {"logs": {
+            "status": "verified", "target_id": "service:alpha", "signal": "logs",
+            "task_id": 123, "template_id": 45, "repository_sha": REPO_SHA,
+            "inventory_revision": revision, "observed_at": "2026-10-09T11:30:00Z",
+            "expires_at": (NOW - timedelta(seconds=1)).isoformat(),
+        }}}
+        self.assertEqual(self.report([declaration], binding, accepted)["targets"][0]["signals"]["logs"],
+                         "incomplete")
+        accepted["service:alpha"]["logs"]["expires_at"] = "2026-10-09T13:00:00Z"
+        accepted["service:alpha"]["logs"]["task_id"] = 999
+        self.assertEqual(self.report([declaration], binding, accepted)["targets"][0]["signals"]["logs"],
+                         "incomplete")
+
+    def test_empty_verified_receipt_map_preserves_incomplete_compatibility(self):
+        declaration = target()
+        self.assertEqual(self.report([declaration])["targets"][0]["signals"]["logs"], "incomplete")
+        self.assertEqual(self.report([declaration], verified_receipts={})["targets"][0]["signals"]["logs"],
+                         "incomplete")
+
+    def test_inventory_cannot_supply_an_accepted_receipt_map(self):
+        declarations = [target()]
+        inventory = {
+            "inventory_revision": CENSUS.canonical_inventory_revision(declarations),
+            "targets": declarations,
+            "template_names": ["Verify o11y Target Receipt"],
+            "verified_receipts": {"service:alpha": {"logs": receipt()}},
+        }
+        with redirect_stdout(io.StringIO()), self.assertRaises(SystemExit):
+            CENSUS.build_report(self.repo, inventory, REPO_SHA, NOW)
+
     def test_inventory_revision_must_match_the_canonical_target_digest(self):
         declarations = [target()]
         revision = CENSUS.canonical_inventory_revision(declarations)
@@ -247,6 +524,95 @@ class CoverageCensusTests(unittest.TestCase):
         ).encode("utf-8")
         expected = hashlib.sha256(canonical).hexdigest()
         self.assertEqual(CENSUS.canonical_inventory_revision(declarations), expected)
+
+    def test_receipt_binding_edits_preserve_the_existing_target_digest(self):
+        declarations = [target()]
+        original = CENSUS.canonical_inventory_revision(declarations)
+        bindings = {"service:alpha": {"logs": {
+            "task_id": 123, "template_id": 45, "observation_window_seconds": 3600,
+        }}}
+        self.assertEqual(CENSUS.canonical_inventory_revision(declarations), original)
+        self.assertEqual(self.report(declarations, bindings)["targets"][0]["signals"]["logs"], "incomplete")
+        bindings["service:alpha"]["logs"]["task_id"] = 124
+        self.assertEqual(CENSUS.canonical_inventory_revision(declarations), original)
+
+    def test_signal_edits_still_invalidate_the_existing_target_digest(self):
+        declarations = [target()]
+        original = CENSUS.canonical_inventory_revision(declarations)
+        declarations[0]["signals"]["logs"]["selector"] = '{target_id="service:changed"}'
+        self.assertNotEqual(CENSUS.canonical_inventory_revision(declarations), original)
+
+    def test_legacy_receipt_pointers_may_be_omitted_and_remain_incomplete(self):
+        declaration = target()
+        declaration["signals"]["logs"].pop("receipt_reference")
+        declaration["receipt_reference"].pop("logs")
+        row = self.report([declaration])["targets"][0]
+        self.assertEqual(row["signals"]["logs"], "incomplete")
+
+    def test_binding_is_accepted_without_legacy_pointers_and_remains_incomplete(self):
+        declaration = target()
+        declaration["signals"]["logs"].pop("receipt_reference")
+        declaration["receipt_reference"].pop("logs")
+        binding = {"service:alpha": {"logs": {
+            "task_id": 123, "template_id": 45, "observation_window_seconds": 3600,
+        }}}
+        row = self.report([declaration], binding)["targets"][0]
+        self.assertEqual(row["signals"]["logs"], "incomplete")
+
+    def test_legacy_and_binding_task_ids_must_agree(self):
+        bindings = {"service:alpha": {"logs": {
+            "task_id": 124, "template_id": 45, "observation_window_seconds": 3600,
+        }}}
+        with redirect_stdout(io.StringIO()), self.assertRaises(SystemExit):
+            self.report([target()], bindings)
+
+    def test_partial_legacy_pointer_refuses(self):
+        declaration = target()
+        declaration["receipt_reference"].pop("logs")
+        with redirect_stdout(io.StringIO()), self.assertRaises(SystemExit):
+            self.report([declaration])
+
+    def test_mismatched_legacy_pointers_refuse(self):
+        declaration = target()
+        declaration["receipt_reference"]["logs"] = "semaphore/task/456"
+        with redirect_stdout(io.StringIO()), self.assertRaises(SystemExit):
+            self.report([declaration])
+
+    def test_malformed_receipt_bindings_refuse(self):
+        invalid_bindings = (
+            {"service:unknown": {"logs": {
+                "task_id": 123, "template_id": 45, "observation_window_seconds": 3600,
+            }}},
+            {"service:alpha": {"unknown": {
+                "task_id": 123, "template_id": 45, "observation_window_seconds": 3600,
+            }}},
+            {"service:alpha": {"logs": {
+                "task_id": 0, "template_id": 45, "observation_window_seconds": 3600,
+            }}},
+            {"service:alpha": {"logs": {
+                "task_id": 123, "template_id": 0, "observation_window_seconds": 3600,
+            }}},
+            {"service:alpha": {"logs": {
+                "task_id": 123, "template_id": 45, "observation_window_seconds": -1,
+            }}},
+            {"service:alpha": {"logs": {
+                "task_id": True, "template_id": 45, "observation_window_seconds": 3600,
+            }}},
+            {"service:alpha": {"logs": {
+                "task_id": 123, "template_id": 45, "observation_window_seconds": 3600, "extra": 1,
+            }}},
+        )
+        for bindings in invalid_bindings:
+            with self.subTest(bindings=bindings), redirect_stdout(io.StringIO()), self.assertRaises(SystemExit):
+                self.report([target()], bindings)
+
+        inventory = {"targets": [target()], "receipt_bindings": None}
+        with redirect_stdout(io.StringIO()), self.assertRaises(SystemExit):
+            CENSUS.build_report(self.repo, inventory, REPO_SHA, NOW)
+
+    def test_duplicate_json_keys_are_rejected(self):
+        with self.assertRaises(ValueError):
+            json.loads('{"task_id":1,"task_id":2}', object_pairs_hook=CENSUS.unique_object)
 
     def test_duplicate_identity_is_reported_as_unverified_conflict(self):
         rows = self.report([target(), target("service:other", "alpha")])

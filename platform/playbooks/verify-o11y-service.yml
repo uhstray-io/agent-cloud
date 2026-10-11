@@ -28,8 +28,9 @@
           - expected_target_id is defined and expected_target_id is match('^(service|agent|vm|guest|runner|network|dgx):[a-z][a-z0-9_-]{1,63}$')
           - expected_signal is defined and expected_signal in ['logs', 'metrics', 'health', 'traces', 'profiles']
           - signal_selector is defined and signal_selector | length <= 512
-          - freshness_seconds is defined and freshness_seconds | int >= 60 and freshness_seconds | int <= 86400
-          - observation_window_seconds is defined and observation_window_seconds | int >= 60 and observation_window_seconds | int <= 3600 and observation_window_seconds | int <= freshness_seconds | int
+          - freshness_seconds is integer and freshness_seconds is not boolean and freshness_seconds >= 60 and freshness_seconds <= 86400
+          - observation_window_seconds is integer and observation_window_seconds is not boolean and observation_window_seconds >= 60 and observation_window_seconds <= 3600
+          - freshness_seconds is integer and freshness_seconds is not boolean and observation_window_seconds is integer and observation_window_seconds is not boolean and observation_window_seconds < freshness_seconds
         fail_msg: "Strict signal observation requires reviewed repository and inventory revisions, one exact target/signal selector, and bounded freshness."
       when: o11y_verification_mode | default('legacy') == 'strict'
 
@@ -245,6 +246,15 @@
           - _coverage_target.signals[expected_signal].applicable | bool
           - _coverage_target.signals[expected_signal].selector == signal_selector
         fail_msg: "unverifiable_target: this signal selector is not declared for the exact target."
+      when: o11y_verification_mode | default('legacy') == 'strict'
+
+    - name: Require the requested and declared freshness to match exactly
+      ansible.builtin.assert:
+        that:
+          - _coverage_target.signals[expected_signal].freshness_seconds is integer
+          - _coverage_target.signals[expected_signal].freshness_seconds is not boolean
+          - freshness_seconds == _coverage_target.signals[expected_signal].freshness_seconds
+        fail_msg: "unverifiable_target: requested freshness does not match the declared signal contract."
       when: o11y_verification_mode | default('legacy') == 'strict'
 
     - name: Require the pinned profile type for profile receipts
