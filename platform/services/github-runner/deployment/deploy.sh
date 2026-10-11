@@ -134,6 +134,7 @@ user_systemctl() {
 
 RUNNER_STOP_WAIT="${RUNNER_STOP_WAIT:-60}"
 
+# PIDs of this account's Runner.Listener / Runner.Worker started from RUNNER_HOME.
 runner_pids() {
   local home_re
   # shellcheck disable=SC2016 # the sed expression is literal on purpose
@@ -202,6 +203,7 @@ swap_in_release() {
   done < <(find "$stage" -mindepth 1 -maxdepth 1 -print0)
 }
 
+# Bring the runner in RUNNER_HOME to RUNNER_VERSION: no-op, upgrade, or refusal.
 install_runner() {
   local have stage="${RUNNER_HOME}/_install.${RUNNER_VERSION}" prev="${RUNNER_HOME}/_previous" f staged now
   have=$(installed_runner_version)
@@ -261,6 +263,7 @@ install_runner() {
   fi
 }
 
+# Bring the container hooks in RUNNER_HOME/_hooks to HOOKS_VERSION, by the same rules.
 install_hooks() {
   local have new="${RUNNER_HOME}/_hooks.new" old="${RUNNER_HOME}/_hooks.old"
   have=$(installed_hooks_version)

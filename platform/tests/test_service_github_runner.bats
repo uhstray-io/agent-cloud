@@ -164,6 +164,7 @@ _fake_runner_release() {
   tar czf "$SERVE/actions-runner-linux-x64-${ver}.tar.gz" -C "$src" .
 }
 
+# Build a fake hooks release $1: a zip holding one index.js, like the real one.
 _fake_hooks_release() {
   local ver="$1" src="$BATS_TEST_TMPDIR/hooks-$1"
   rm -rf "$src"
@@ -172,6 +173,7 @@ _fake_hooks_release() {
   (cd "$src" && zip -q "$SERVE/actions-runner-hooks-docker-${ver}.zip" index.js)
 }
 
+# sha256 of file $1, as deploy.sh computes it.
 _sha() { sha256sum "$1" | cut -d' ' -f1; }
 
 # Write runner.env for the declared versions, with the served artefacts' real digests.
@@ -190,6 +192,7 @@ HOOKS_SHA256=$(_sha "$SERVE/actions-runner-hooks-docker-${hver}.zip")
 EOF
 }
 
+# Run deploy.sh install in the sandbox; extra NAME=value arguments go into its env.
 _install() {
   run env -u XDG_RUNTIME_DIR PATH="$STUBS:$PATH" RUNNER_ENV_FILE="$ENVF" RUNNER_STOP_WAIT=1 "$@" "$SH" install
 }
@@ -210,6 +213,7 @@ _existing_host() {
   : > "$CALLS"
 }
 
+# Sandbox paths, plus curl / systemctl / pgrep stubs that record or serve locally.
 _setup_sandbox() {
   RH="$BATS_TEST_TMPDIR/home"
   SERVE="$BATS_TEST_TMPDIR/serve"
