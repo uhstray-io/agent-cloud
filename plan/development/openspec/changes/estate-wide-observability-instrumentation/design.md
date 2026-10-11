@@ -95,9 +95,10 @@ The helper's `verify` action is the pre-start gate; `verify-live` is the post-st
 task 1.2a is not an operational proof or permission to apply/repair. The following
 admission, intent, checkout, binding, preservation and attribution requirements
 are acceptance gates for the same coupled PR. Their exact implementation needs
-discovery and independent review; no lock backend, durable-record location,
-Semaphore environment marker or receipt authentication mechanism is accepted
-by this artifact update.
+discovery and independent review; no lock backend, durable-record location or
+Semaphore environment marker is accepted by this artifact update. The
+conditional native task-JWT authentication decision and its remaining verifier
+gates are recorded below.
 
 **Installed Semaphore API observation (2026-10-10; directly queried read-only by the agent via the site-config HTTPS launch URL; sanitized output):** HTTPS
 `/api/info` reported version `v2.19.11-0c3f373-1787751354` and
@@ -111,6 +112,45 @@ runner tag. This suggests local execution but does not prove task-specific
 runner isolation, runner-token scope, or current behavior. Verify the installed
 execution path and isolation before relying on task attribution or admitting
 runtime proof; task 1.2a remains unchecked.
+
+**Conditional native task-JWT decision (2026-10-10; design only):** Use
+Semaphore's task JWT as the authentication input only when its signer is
+configured and the selected template explicitly enables JWT parameters. The
+pinned v2.19.11 source review reports local `TaskRunner` issuance only under
+both conditions and continuation without a token on signing failure
+([TaskRunner.go:248-277](https://github.com/semaphoreui/semaphore/blob/0c3f3738ea5ed988165afe499d896ff78b428c44/services/tasks/TaskRunner.go#L248-L277)).
+Its ES256 claim set binds task, project, template and user IDs plus
+`iss`/`sub`/`aud`/`exp`/`nbf`/`iat`/`jti`; its single-key JWKS has no checkout
+SHA, inventory, host, action or policy claims. Treat the currently observed
+`jwt.enabled=false` and missing `jwt_params` on templates 224/234/312 as an
+activation gap: no issuance or runtime containment is established.
+The pinned signer/claim implementation is in
+[`pkg/jwt`](https://github.com/semaphoreui/semaphore/tree/0c3f3738ea5ed988165afe499d896ff78b428c44/pkg/jwt).
+
+The protected root supervisor remains the authorization/admission boundary.
+Its verifier must pin the trusted issuer, JWKS, audience and ES256 algorithm;
+read task status/context through a protected path; and independently derive
+the consumed checkout, inventory and policy binding. Require a receiver-issued
+one-use challenge, running-status/context checks at the mutation boundary, a
+durable replay fence, full worker-tree containment with cancellation and reboot
+recovery, and reviewed key rotation with drain. Never place a broad Semaphore
+API token on the target. Keep OpenBao Transit only as a key-custody alternative
+if independent or overlapping signing keys become mandatory. These are design
+requirements, not evidence of JWT issuance, verifier operation or runtime
+containment; journal mutation gates remain closed and task 1.2a remains
+unchecked.
+
+**JWT activation risks (source-level, not installed-runtime findings):** The
+pinned [`local_executor.go:723-732`](https://github.com/semaphoreui/semaphore/blob/0c3f3738ea5ed988165afe499d896ff78b428c44/services/tasks/local_executor.go#L723-L732)
+appends `getSurveyEnvVars()` after `getEnvironmentENV()`. A survey environment
+key named `SEMAPHORE_JWT` can therefore create a later entry that may shadow the
+minted token. Template/setup validation and the verifier must reject this name
+collision; environment-variable presence alone is not authentication. Local
+task processes may also share Semaphore's OS user, so require installed
+read-only proof of token isolation from neighboring tasks and the server, or
+hardening that provides it, before relying on the token. These are activation
+risks; the pinned source ordering does not prove either collision exploitation
+or an installed-runtime isolation failure.
 
 **Admission remains unimplemented (2026-10-10):** The partial durable admission
 state helper and premature receiver refusal includes were removed because they
