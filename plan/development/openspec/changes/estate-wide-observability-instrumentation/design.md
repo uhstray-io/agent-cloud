@@ -122,6 +122,20 @@ process-identity requirements have been implemented, independently reviewed,
 and passed final-head CI. The conditional native task-JWT design below remains
 separate and unchanged.
 
+**Local launch-contract diagnostic (source-only, 2026-10-11):** The Dev-bound
+`Diagnose o11y Launch Contract` task observes only the task-local probe process's
+root/non-root UID category and cgroup mode, with bounded `/proc/self/cgroup`
+input. It makes no API or network request and probes no target. Check mode
+performs no local observation. It reports executor identity, reviewed artifact
+identity, protected installation, effective launch configuration, neighboring
+task token isolation, protected launch interception, signer issuance,+cancellation fencing, and descendant containment as `unverified`. The local
+process facts do not establish who launched the task or authorize any action;
+the result is not an admission signal. The diagnostic does not enable receiver
+or journal mutation and does not change JWT activation. On 2026-10-11, the
+available API and LAN observations timed out; no route was retried and no
+private address is recorded. Installed executor behavior, private deployment
+bindings, and the prior protected-launch design gates remain unverified.
+
 **Installed Semaphore API observation (2026-10-10; directly queried read-only by the agent via the site-config HTTPS launch URL; sanitized output):** HTTPS
 `/api/info` reported version `v2.19.11-0c3f373-1787751354` and
 `use_remote_runner=false`. `/api/runners` returned two records: the default

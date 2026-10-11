@@ -2032,6 +2032,17 @@ templates:
     # Linux/systemd/cgroup and declared receiver-user categories only; no
     # Podman-store access, service mutation, paths, IDs, command output, or stderr.
 
+  - name: Diagnose o11y Launch Contract (Dev)
+    playbook: platform/playbooks/diagnose-o11y-launch-contract.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for the read-only local launch-contract diagnostic"
+        type: string
+        required: true
+    # Reports the probe process UID/cgroup categories only; launch prerequisites remain unverified.
+
   - name: Diagnose o11y Semaphore Task Attribution (Dev)
     playbook: platform/playbooks/diagnose-o11y-semaphore-attribution.yml
     repository: agent-cloud dev

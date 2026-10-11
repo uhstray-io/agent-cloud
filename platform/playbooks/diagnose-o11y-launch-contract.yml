@@ -1,0 +1,104 @@
+---
+# Task-local observations only; this play grants no launch authority.
+- name: Refuse extra vars that set internal names
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: Require the reviewed checkout
+  ansible.builtin.import_playbook: require-reviewed-checkout.yml
+  vars:
+    _reviewed_checkout_payload_paths:
+      - platform/playbooks/files/diagnose-o11y-launch-contract.py
+
+- name: Diagnose the current launch contract without treating it as authority
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  vars:
+    _launch_prerequisites:
+      - executor_identity
+      - reviewed_artifact_identity
+      - protected_installation
+      - effective_launch_configuration
+      - neighboring_task_token_isolation
+      - protected_launch_interception
+      - signer_issuance
+      - cancellation_fencing
+      - descendant_containment
+    _launch_local_observations:
+      - probe_process_uid
+      - probe_process_cgroup_mode
+    _launch_local_values:
+      probe_process_uid: [root, nonroot, unknown]
+      probe_process_cgroup_mode: [v1, v2, hybrid, unknown]
+  tasks:
+    - name: Report check mode without running the local probe
+      ansible.builtin.debug:
+        msg:
+          schema_version: 1
+          status: check_mode_unverified
+          reason: check_mode_skips_all_observations
+          observations: not_read
+          launch_prerequisites: unverified
+          api_requests: not_called
+          network_requests: not_called
+          target_probes: not_called
+          writes: not_called
+      changed_when: false
+      when: ansible_check_mode
+
+    - name: Read bounded local process categories
+      ansible.builtin.command:
+        argv: [python3, "-"]
+        stdin: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/diagnose-o11y-launch-contract.py', rstrip=false) }}"
+        stdin_add_newline: false
+      register: _launch_contract_raw
+      changed_when: false
+      failed_when: false
+      no_log: true
+      when: not ansible_check_mode
+
+    - name: Retain only a valid sanitized report
+      ansible.builtin.set_fact:
+        _launch_contract_report: "{{ (_launch_contract_raw.stdout | from_json) if (_launch_contract_raw.rc | default(1) == 0) else {} }}"
+      no_log: true
+      when: not ansible_check_mode
+
+    - name: Refuse malformed or unexpected report fields
+      ansible.builtin.assert:
+        that:
+          - _launch_contract_raw.rc | default(1) == 0
+          - _launch_contract_report.keys() | sort == ['actions', 'launch_prerequisites', 'local_observations', 'schema_version', 'status']
+          - _launch_contract_report.schema_version == 1
+          - _launch_contract_report.status == 'unverified'
+          - _launch_contract_report.local_observations.keys() | sort == _launch_local_observations | sort
+          - _launch_contract_report.launch_prerequisites.keys() | sort == _launch_prerequisites | sort
+          - _launch_contract_report.launch_prerequisites.values() | unique | list == ['unverified']
+          - _launch_contract_report.actions.keys() | sort == ['api_requests', 'network_requests', 'target_probes', 'writes']
+          - _launch_contract_report.actions.values() | unique | list == ['not_called']
+        fail_msg: "Launch contract diagnostic returned an invalid report; no raw output is reported."
+        quiet: true
+      no_log: true
+      when: not ansible_check_mode
+
+    - name: Require closed local observation categories
+      ansible.builtin.assert:
+        that:
+          - item.value.keys() | sort == ['reason', 'status', 'value']
+          - item.value.status in ['observed', 'refused']
+          - item.value.value in _launch_local_values[item.key]
+          - item.value.reason in ['observed', 'invalid_input', 'probe_failed', 'probe_malformed', 'probe_missing', 'probe_oversized', 'probe_unavailable']
+          - (item.value.status == 'observed') == (item.value.reason == 'observed')
+        fail_msg: "Launch contract diagnostic returned an invalid observation; no raw output is reported."
+        quiet: true
+      loop: "{{ _launch_contract_report.local_observations | dict2items }}"
+      loop_control:
+        label: "{{ item.key }}"
+      no_log: true
+      when: not ansible_check_mode
+
+    - name: Report only fixed local categories and unverified prerequisites
+      ansible.builtin.debug:
+        msg: "{{ _launch_contract_report }}"
+      changed_when: false
+      when: not ansible_check_mode
