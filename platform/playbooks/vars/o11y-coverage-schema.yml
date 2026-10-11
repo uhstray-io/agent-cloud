@@ -33,6 +33,7 @@ o11y_coverage_schema:
     - metrics
     - traces
     - health
+    - profiles
   deployed_target_signal_declarations:
     - logs
     - metrics
@@ -45,6 +46,10 @@ o11y_coverage_schema:
     - collection_method
     - receipt_reference
     - freshness_seconds
+  profile_signal_fields:
+    profile_type_id: process_cpu:cpu:nanoseconds:cpu:nanoseconds
+    selector_format: '{target_id="<declared target_id>"}'
+    note: Optional declaration; omission preserves existing four-signal coverage requirements.
   exception_fields:
     - reason
     - reference
@@ -84,4 +89,11 @@ o11y_coverage_schema:
 #           selector: '{target_id="service:example"}'
 #           collection_method: alloy
 #           receipt_reference: semaphore/task/123
+#           freshness_seconds: 3600
+#         profiles: # optional fifth signal; declarations use the pinned CPU profile type
+#           applicable: true
+#           selector: '{target_id="service:example"}'
+#           profile_type_id: process_cpu:cpu:nanoseconds:cpu:nanoseconds
+#           collection_method: alloy
+#           receipt_reference: semaphore/task/124
 #           freshness_seconds: 3600

@@ -1408,7 +1408,7 @@ profiled_alloy = env.from_string(alloy_template).render(
     o11y_alloy_profile_pilot_enabled=True,
 )
 assert 'pyroscope.scrape "alloy_self_profile"' in profiled_alloy
-assert '"__address__" = "alloy:12345", "service_name" = "o11y/alloy"' in profiled_alloy
+assert '"__address__" = "alloy:12345", "service_name" = "o11y/alloy", "target_id" = "service:o11y"' in profiled_alloy
 assert 'scrape_interval = "60s"' in profiled_alloy
 assert 'pyroscope.write.private.receiver' in profiled_alloy
 assert 'otelcol.receiver.otlp "traces"' in alloy

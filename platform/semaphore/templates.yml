@@ -181,6 +181,7 @@ templates:
           - { name: "Metrics", value: "metrics" }
           - { name: "Health", value: "health" }
           - { name: "Traces", value: "traces" }
+          - { name: "Profiles", value: "profiles" }
       - name: signal_selector
         title: "Exact signal selector"
         description: "Selector declared in private inventory and containing the bounded target_id label"

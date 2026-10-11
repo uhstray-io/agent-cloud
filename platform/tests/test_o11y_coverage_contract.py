@@ -241,7 +241,10 @@ class CoverageContractTests(unittest.TestCase):
     def test_strict_signal_observation_uses_the_query_and_is_unattributed(self):
         tasks = yaml.safe_load((ROOT / "platform/playbooks/tasks/o11y-coverage-target-receipt.yml").read_text())
         registers = [task.get("register") for task in tasks if task.get("register")]
-        self.assertEqual(registers, ["_exact_logs", "_exact_prometheus", "_exact_traces"])
+        self.assertEqual(
+            registers,
+            ["_exact_logs", "_exact_prometheus", "_exact_traces", "_exact_profiles", "_validated_profiles"],
+        )
         prom = next(task for task in tasks if task.get("name") == "Query the exact Prometheus target selector")
         self.assertIn("observation_window_seconds", prom["ansible.builtin.command"]["argv"][-1])
         self.assertIn("~ '[' ~", prom["ansible.builtin.command"]["argv"][-1])
@@ -256,6 +259,59 @@ class CoverageContractTests(unittest.TestCase):
         self.assertEqual(observation["status"], "observed")
         self.assertIs(observation["task_reference_unattributed"], True)
         self.assertNotIn("receipt_reference", observation)
+
+    def test_profile_receipt_query_is_bounded_and_raw_backend_output_is_hidden(self):
+        tasks = yaml.safe_load((ROOT / "platform/playbooks/tasks/o11y-coverage-target-receipt.yml").read_text())
+        query = next(task for task in tasks if task.get("name") == "Query the exact Pyroscope profile selector")
+        argv = query["ansible.builtin.command"]["argv"]
+        self.assertIn("--post-data=", argv[-2])
+        self.assertIn("--header=Content-Type: application/json", argv)
+        self.assertIn("'limit': 1", argv[-2])
+        self.assertIn("'step': 60", argv[-2])
+        self.assertEqual(argv[-1], "http://pyroscope:4040/querier.v1.QuerierService/SelectSeries")
+        self.assertIs(query["no_log"], True)
+        parser = next(
+            task for task in tasks
+            if task.get("name") == "Validate the pinned Pyroscope response without exposing labels"
+        )
+        self.assertIs(parser["no_log"], True)
+        self.assertEqual(parser["delegate_to"], "localhost")
+        self.assertIn("--validate-profile-receipt", parser["ansible.builtin.command"]["argv"])
+        templates = yaml.safe_load((ROOT / "platform/semaphore/templates.yml").read_text())["templates"]
+        receipt_template = next(
+            template for template in templates
+            if template.get("name") == "Verify o11y Target Receipt"
+        )
+        signal_field = next(
+            field for field in receipt_template["survey_vars"]
+            if field.get("name") == "expected_signal"
+        )
+        self.assertIn("profiles", [value["value"] for value in signal_field["values"]])
+
+    def test_profiles_require_the_exact_single_target_label_selector(self):
+        plays = yaml.safe_load((ROOT / "platform/playbooks/verify-o11y-service.yml").read_text())
+        strict = next(play for play in plays if any(
+            task.get("name") == "Refuse selectors without the bounded target identity label"
+            for task in play.get("tasks", [])
+        ))
+        selector_task = next(
+            task for task in strict["tasks"]
+            if task.get("name") == "Refuse selectors without the bounded target identity label"
+        )
+        condition = next(
+            condition for condition in selector_task["ansible.builtin.assert"]["that"]
+            if "expected_signal != 'profiles'" in condition
+        )
+        env = jinja2.Environment()
+
+        def accepts(selector):
+            return env.from_string("{{ " + condition + " }}").render(
+                expected_signal="profiles", expected_target_id="service:alpha", signal_selector=selector,
+            ) == "True"
+
+        self.assertTrue(accepts('{target_id="service:alpha"}'))
+        self.assertFalse(accepts('{target_id="service:alpha",service_name="o11y"}'))
+        self.assertFalse(accepts('{target_id="service:beta"}'))
 
     def test_prometheus_source_samples_are_checked_for_freshness_target_and_health(self):
         tasks = yaml.safe_load((ROOT / "platform/playbooks/tasks/o11y-coverage-target-receipt.yml").read_text())
@@ -391,6 +447,7 @@ class CoverageContractTests(unittest.TestCase):
         checks = assertion["ansible.builtin.assert"]["that"]
         self.assertFalse(any("rootServiceName" in check for check in checks))
         env = jinja2.Environment()
+        env.filters["from_json"] = json.loads
         child_trace_receipt = {
             "traces": [{"rootServiceName": "parent-service", "traceID": "abc"}],
         }
