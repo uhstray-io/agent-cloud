@@ -90,7 +90,13 @@ A registration token is single use, so it is minted **per host**. Nothing here i
 |---|---|
 | `deploy-github-runner.yml` | Install, register, start. Idempotent: a re-run leaves an existing registration intact. |
 | `manage-github-runner-group.yml` | Converge the group's repository access list. Read-only unless `-e dry_run=false`. |
+| `grant-github-runner-app-repository.yml` | Add only private `uhstray-io/site-config` to the runner App installation. Directly Dev-bound in Semaphore; reads the classic PAT and App key from OpenBao, previews in check mode, and verifies a grant with a fresh App token. |
 | `netbox-allocate-ip.yml` | Ask the address authority for free addresses. Read-only unless `-e reserve=true`. |
+
+The installation grant is separate from runner-group convergence. Run its reviewed Dev
+template first; a successful App installation grant allows the existing group playbook to
+resolve `site-config`. The grant is additive and never removes access. Check mode and
+`--tags verify` perform no repository-selection write.
 
 Host lifecycle reuses the platform's existing playbooks unchanged: `provision-vm.yml`,
 `verify-host-access.yml`, `distribute-ssh-keys.yml`, `harden-ssh.yml`,
