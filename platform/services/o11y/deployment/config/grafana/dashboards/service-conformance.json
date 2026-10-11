@@ -402,7 +402,7 @@
             "uid": "loki"
           },
           "queryType": "instant",
-          "expr": "min(last_over_time({job=\"agent-cloud-conformance\", step!=\"none\"} | json completed_at_seconds | label_format age_seconds=`{{if eq (.completed_at_seconds | default \"unknown\") \"unknown\"}}-1{{else}}{{sub (unixEpoch now) .completed_at_seconds}}{{end}}` | unwrap age_seconds | __error__=\"\" [45m]) by (service, step) > -1)"
+          "expr": "min(last_over_time({job=\"agent-cloud-conformance\", step!=\"none\"} | json completed_at_seconds | drop status | label_format age_seconds=`{{if eq (.completed_at_seconds | default \"unknown\") \"unknown\"}}-1{{else}}{{sub (unixEpoch now) .completed_at_seconds}}{{end}}` | unwrap age_seconds | __error__=\"\" [45m]) by (service, step) > -1)"
         }
       ],
       "options": {
@@ -459,7 +459,7 @@
             "uid": "loki"
           },
           "queryType": "instant",
-          "expr": "last_over_time({job=\"agent-cloud-conformance\", step!=\"none\"} | json completed_at_seconds | label_format age_seconds=`{{if eq (.completed_at_seconds | default \"unknown\") \"unknown\"}}-1{{else}}{{sub (unixEpoch now) .completed_at_seconds}}{{end}}` | unwrap age_seconds | __error__=\"\" [45m]) by (service, step)"
+          "expr": "last_over_time({job=\"agent-cloud-conformance\", step!=\"none\"} | json completed_at_seconds | drop status | label_format age_seconds=`{{if eq (.completed_at_seconds | default \"unknown\") \"unknown\"}}-1{{else}}{{sub (unixEpoch now) .completed_at_seconds}}{{end}}` | unwrap age_seconds | __error__=\"\" [45m]) by (service, step)"
         }
       ],
       "transformations": [

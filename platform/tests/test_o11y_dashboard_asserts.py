@@ -181,6 +181,8 @@ def test_unknown_newest_step_completion_replaces_older_known_age_without_fallbac
     assert "completed_at_seconds" in workflow_age and "marker_time_seconds" not in workflow_age
     for expr in (workflow_age, step_age_expr):
         assert expr.index("| json completed_at_seconds") < expr.index("| label_format age_seconds=")
+        assert expr.index("| json completed_at_seconds") < expr.index("| drop status")
+        assert expr.index("| drop status") < expr.index("| label_format age_seconds=")
         assert 'default "unknown") "unknown"}}-1' in expr
         assert "| unwrap age_seconds" in expr
         assert "[45m]) by (service, step)" in expr
