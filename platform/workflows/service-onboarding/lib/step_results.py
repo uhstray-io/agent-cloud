@@ -319,7 +319,8 @@ def loki_streams(agg: dict, now_ns: int) -> list[dict]:
         streams.append({"stream": {"job": "agent-cloud-conformance", "service": service, "step": "none",
                                    "status": marker},
                         "values": [[str(now_ns), json.dumps({marker: True,
-                                                              "inventory_code": INVENTORY_CODES[marker]})]]})
+                                                              "inventory_code": INVENTORY_CODES[marker],
+                                                              "marker_time_seconds": now_ns // 1_000_000_000})]]})
     for service, steps in sorted(agg["services"].items()):
         for step, result in sorted(steps.items()):
             payload = {"task_id": result["task_id"], "error": result["error"],

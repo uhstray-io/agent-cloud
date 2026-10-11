@@ -360,6 +360,95 @@ def test_one_empty_target_fails_a_two_target_panel(prometheus):
     assert report["panels_failing"] == ["Request duration p95 (HTTP and model)"]
 
 
+def test_an_expected_empty_panel_is_reported_without_sample_values(tmp_path, prometheus):
+    dashboard = _synthetic("up")
+    prometheus.rules["up"] = "empty"
+    report = vdd.evaluate(
+        _payload(
+            "synthetic",
+            dashboards_dir=_dashboard_dir(tmp_path, dashboard),
+            panel_titles=["Only"],
+            expected_empty_panels=["Only"],
+            prometheus_url=prometheus.url,
+        )
+    )
+    assert report["status"] == "pass"
+    assert report["panels_failing"] == []
+    assert report["panels"][0]["status"] == "expected_empty"
+    assert report["panels"][0]["targets"][0]["status"] == "empty"
+
+
+def test_an_allowed_panel_with_a_query_error_still_fails(tmp_path, prometheus):
+    dashboard = _synthetic("up")
+    prometheus.rules["up"] = "error"
+    report = vdd.evaluate(
+        _payload(
+            "synthetic",
+            dashboards_dir=_dashboard_dir(tmp_path, dashboard),
+            panel_titles=["Only"],
+            expected_empty_panels=["Only"],
+            prometheus_url=prometheus.url,
+        )
+    )
+    assert report["status"] == "fail"
+    assert report["panels"][0]["status"] == "error"
+    assert report["panels_failing"] == ["Only"]
+
+
+def test_an_allowed_panel_with_one_empty_target_and_one_data_target_fails(tmp_path, prometheus):
+    dashboard = _synthetic("up")
+    dashboard["panels"][0]["targets"].append({"refId": "B", "expr": "missing_metric"})
+    prometheus.rules["missing_metric"] = "empty"
+    report = vdd.evaluate(
+        _payload(
+            "synthetic",
+            dashboards_dir=_dashboard_dir(tmp_path, dashboard),
+            panel_titles=["Only"],
+            expected_empty_panels=["Only"],
+            prometheus_url=prometheus.url,
+        )
+    )
+    assert report["status"] == "fail"
+    assert report["panels"][0]["status"] == "partial"
+    assert [target["status"] for target in report["panels"][0]["targets"]] == ["data", "empty"]
+
+
+@pytest.mark.parametrize(
+    "allowlist",
+    ["Only", ["Only", "Only"], [""], [1]],
+    ids=["not-a-list", "duplicate", "empty-title", "non-string"],
+)
+def test_malformed_expected_empty_panel_lists_are_refused(tmp_path, allowlist):
+    dashboard = _synthetic("up")
+    with pytest.raises(vdd.Refused, match="expected_empty_panels"):
+        vdd.plan(
+            _payload(
+                "synthetic",
+                dashboards_dir=_dashboard_dir(tmp_path, dashboard),
+                expected_empty_panels=allowlist,
+            )
+        )
+
+
+def test_unknown_or_unselected_expected_empty_panels_are_refused(tmp_path):
+    dashboard = _synthetic("up")
+    dashboard["panels"].append(
+        {"title": "Other", "type": "timeseries", "targets": [{"refId": "A", "expr": "up"}]}
+    )
+    dashboard_dir = _dashboard_dir(tmp_path, dashboard)
+    with pytest.raises(vdd.Refused, match="not on this dashboard"):
+        vdd.plan(_payload("synthetic", dashboards_dir=dashboard_dir, expected_empty_panels=["Missing"]))
+    with pytest.raises(vdd.Refused, match="not selected"):
+        vdd.plan(
+            _payload(
+                "synthetic",
+                dashboards_dir=dashboard_dir,
+                panel_titles=["Other"],
+                expected_empty_panels=["Only"],
+            )
+        )
+
+
 @pytest.mark.parametrize(
     ("behaviour", "reported"),
     [
@@ -758,7 +847,7 @@ def _set_loki_inventory(receiver, bind, loki):
 def test_playbook_passes_identically_under_check(receiver, check):
     proc = _run(receiver, "-e", "dashboard_uid=agentgateway-client-view", *(["--check"] if check else []))
     assert proc.returncode == 0, proc.stdout[-4000:]
-    assert "6 panels of agentgateway-client-view render data over 1h" in proc.stdout
+    assert "6 panels of agentgateway-client-view verified over 1h" in proc.stdout
     assert "First-token latency p50; First-token latency p95; " in proc.stdout
     assert re.search(r"receiver\s+: ok=\d+\s+changed=0", proc.stdout)
     assert not any(label in proc.stdout for label in SECRET_LABELS)
@@ -778,6 +867,39 @@ def test_playbook_fails_naming_the_empty_panel(receiver):
     assert proc.returncode != 0
     assert "Panels without data over 1h: Request rate by identity" in proc.stdout
     assert len(receiver["prometheus"].requests) == 2
+
+
+@needs_ansible
+def test_playbook_reports_expected_empty_panel_in_readback(receiver):
+    receiver["prometheus"].rules["sum by (identity)"] = "empty"
+    proc = _run(
+        receiver,
+        "-e",
+        "dashboard_uid=agentgateway-client-view",
+        "-e",
+        '{"panel_titles": "[\\"Request rate by identity\\"]", '
+        '"expected_empty_panels": "[\\"Request rate by identity\\"]"}',
+    )
+    assert proc.returncode == 0, proc.stdout[-4000:]
+    assert '"status": "expected_empty"' in proc.stdout
+    assert '"status": "pass"' in proc.stdout
+    assert "Expected empty: Request rate by identity." in proc.stdout
+    assert not any(label in proc.stdout for label in SECRET_LABELS)
+
+
+@needs_ansible
+@pytest.mark.parametrize("value", ['"{}"', '"[1]"', '"not-json"'])
+def test_playbook_refuses_a_malformed_expected_empty_list_before_query(receiver, value):
+    proc = _run(
+        receiver,
+        "-e",
+        "dashboard_uid=agentgateway-client-view",
+        "-e",
+        '{"expected_empty_panels": ' + value + "}",
+    )
+    assert proc.returncode != 0
+    assert "Read the receiver checkout revision" not in proc.stdout
+    assert receiver["prometheus"].requests == []
 
 
 @needs_ansible
@@ -801,7 +923,7 @@ def test_playbook_queries_selected_loki_panel_and_discards_log_content(receiver)
         '{"panel_titles": "[\\"Recent vLLM journal\\"]"}',
     )
     assert proc.returncode == 0, proc.stdout[-4000:]
-    assert "1 panel of inference-fleet-health render data" in proc.stdout
+    assert "1 panel of inference-fleet-health verified over 1h" in proc.stdout
     assert receiver["loki"].requests[0][0] == "/loki/api/v1/query_range"
     assert "private log line" not in proc.stdout
     assert not any(label in proc.stdout for label in SECRET_LABELS)
@@ -883,6 +1005,18 @@ def test_playbook_refuses_a_forged_panel_selection(receiver, forge, tmp_path):
     assert receiver["prometheus"].requests == []
 
 
+@needs_ansible
+@pytest.mark.parametrize(
+    "forge", forgeries.templated_forgeries("_vdd_expected_empty_panels", [], ["First-token latency p50"])
+)
+def test_playbook_refuses_a_forged_expected_empty_allowance(receiver, forge, tmp_path):
+    proc = _run(receiver, "-e", "dashboard_uid=agentgateway-client-view", "-e", forge(tmp_path))
+    assert proc.returncode != 0, proc.stdout
+    assert "Refusing to run: _vdd_expected_empty_panels set from outside the playbook" in proc.stdout
+    assert proc.stdout.count("PLAY [") == 1
+    assert receiver["prometheus"].requests == []
+
+
 def test_dev_template_declares_the_survey():
     templates = yaml.safe_load((REPO / "platform/semaphore/templates.yml").read_text())["templates"]
     template = next(t for t in templates if t["name"] == "Verify o11y Dashboard Data (Dev)")
@@ -892,5 +1026,6 @@ def test_dev_template_declares_the_survey():
         "dashboard_uid",
         "lookback",
         "panel_titles",
+        "expected_empty_panels",
         "dashboard_variables",
     ]

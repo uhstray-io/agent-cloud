@@ -6,8 +6,8 @@
 # file loaded. It says nothing about whether the panels draw anything: a dashboard whose
 # metric names are wrong, or whose traffic never arrived, loads just the same. This play
 # evaluates the dashboard's own Prometheus and Loki queries against the receiver over the
-# dashboard time range and reports, per panel, how many result groups contain data. It
-# passes only when every selected Prometheus panel and every explicitly selected Loki panel has data.
+# dashboard time range and reports, per panel, how many result groups contain data. It passes
+# when every selected panel has data or is explicitly named as an expected-empty exception.
 # Validation gates that need it: inference-gateway-agentgateway 3.3 (one hour of traffic
 # renders p50/p95 first-token latency and per-identity counts) and
 # inference-telemetry-production 3.5 (the three inference dashboards render).
@@ -39,6 +39,8 @@
 #   lookback             dashboard time range, one Prometheus duration unit (default 1h)
 #   panel_titles         optional JSON list of exact panel titles; empty means every
 #                        Prometheus panel, while Loki panels require an explicit title
+#   expected_empty_panels optional JSON list of selected panel titles allowed to be empty;
+#                        every queried target in an allowed panel must be empty and error-free
 #   dashboard_variables  optional JSON object overriding template variables, e.g.
 #                        {"compare_offset": "7d"}; refused if it could change the query's
 #                        structure (quotes, braces, parentheses, backslashes, line breaks;
@@ -67,14 +69,17 @@
           - lookback | default('1h', true) is match('^[1-9][0-9]*[smhd]$')
           - _panel_titles is sequence and _panel_titles is not string
           - _panel_titles | reject('string') | list | length == 0
+          - _expected_empty_panels | type_debug == 'list'
+          - _expected_empty_panels | reject('string') | list | length == 0
           - _dashboard_variables is mapping
         fail_msg: >-
           Declare exactly one o11y_svc host and pass dashboard_uid (a Grafana uid), lookback
-          (one duration unit, e.g. 1h), panel_titles as a JSON list and dashboard_variables as
-          a JSON object.
+          (one duration unit, e.g. 1h), panel_titles and expected_empty_panels as JSON lists,
+          and dashboard_variables as a JSON object.
         quiet: true
       vars:
         _panel_titles: "{{ (panel_titles | default('[]', true)) | from_json if (panel_titles | default('[]', true)) is string else panel_titles }}"
+        _expected_empty_panels: "{{ (expected_empty_panels | default('[]', true)) | from_json if (expected_empty_panels | default('[]', true)) is string else expected_empty_panels }}"
         _dashboard_variables: "{{ (dashboard_variables | default('{}', true)) | from_json if (dashboard_variables | default('{}', true)) is string else dashboard_variables }}"
 
 - name: Evaluate the selected dashboard data queries on the receiver
@@ -88,6 +93,7 @@
          ~ '/' ~ monorepo_deploy_path | default('platform/services/o11y/deployment') }}
     _vdd_lookback: "{{ lookback | default('1h', true) }}"
     _vdd_panel_titles: "{{ (panel_titles | default('[]', true)) | from_json if (panel_titles | default('[]', true)) is string else panel_titles }}"
+    _vdd_expected_empty_panels: "{{ (expected_empty_panels | default('[]', true)) | from_json if (expected_empty_panels | default('[]', true)) is string else expected_empty_panels }}"
     _vdd_variables: "{{ (dashboard_variables | default('{}', true)) | from_json if (dashboard_variables | default('{}', true)) is string else dashboard_variables }}"
     _vdd_loki_bind: "{{ o11y_loki_bind | default('127.0.0.1') }}"
     _vdd_loki_host: >-
@@ -118,6 +124,7 @@
               'dashboard_uid': dashboard_uid,
               'lookback': _vdd_lookback,
               'panel_titles': _vdd_panel_titles,
+              'expected_empty_panels': _vdd_expected_empty_panels,
               'variables': _vdd_variables,
               'prometheus_url': 'http://' ~ (o11y_prom_bind | default('127.0.0.1')) ~ ':' ~ (o11y_prom_port | default(9090)),
               'loki_url': 'http://' ~ _vdd_loki_host ~ ':' ~ (o11y_loki_port | default(3100)),
@@ -139,7 +146,7 @@
       ansible.builtin.debug:
         msg: "{{ _vdd_readback.stdout | from_json | combine({'receiver_revision': _vdd_revision.stdout | default('') | trim if _vdd_revision.rc | default(1) == 0 else 'unknown'}) }}"
 
-    - name: Require every selected Prometheus or explicitly selected Loki panel to render data
+    - name: Require every selected Prometheus or explicitly selected Loki panel to pass
       ansible.builtin.assert:
         that: (_vdd_readback.stdout | from_json).status == 'pass'
         fail_msg: >-
@@ -150,5 +157,7 @@
         success_msg: >-
           {{ (_vdd_readback.stdout | from_json).get('panels_verified', 0) }}
           {{ 'panel' if (_vdd_readback.stdout | from_json).get('panels_verified', 0) == 1 else 'panels' }} of
-          {{ dashboard_uid }} render data over {{ _vdd_lookback }}:
+          {{ dashboard_uid }} verified over {{ _vdd_lookback }}:
           {{ (_vdd_readback.stdout | from_json).get('verified_panel_titles', []) | join('; ') }}.
+          Expected empty:
+          {{ (_vdd_readback.stdout | from_json).get('expected_empty_panel_titles', []) | join('; ') }}.

@@ -1120,6 +1120,7 @@ checks = [env.compile_expression(expr) for expr in check['ansible.builtin.assert
 files = sorted(glob.glob(sys.argv[2] + '/*.json'))
 uids = [json.load(open(f))['uid'] for f in files]
 assert {'inference-fleet-health', 'inference-latency-capacity', 'inference-placement-comparison'} <= set(uids)
+assert {'service-conformance', 'service-overview'} <= set(uids)
 docs = {'results': [{'content': base64.b64encode(open(f, 'rb').read()).decode()} for f in files]}
 def ok(live):
     names = {'_dashboard_docs': docs, '_dashboard_files': {'files': [{'path': f} for f in files]},
@@ -1788,11 +1789,13 @@ assert all('{service=~"$service"}' in query or 'service=~"$service"' in query fo
 assert all('$log_service' in query for query in loki_queries)
 assert all('container=' not in query for query in metric_queries)
 log_rate = next(panel for panel in overview['panels'] if panel['title'] == 'Log volume by source')
-assert len(log_rate['targets']) == 4
+assert len(log_rate['targets']) == 5
 assert 'container=~".+"' in log_rate['targets'][0]['expr']
-assert 'signal="access-log"' in log_rate['targets'][1]['expr']
-assert 'signal="span"' in log_rate['targets'][2]['expr']
-assert 'job="agent-cloud-conformance"' in log_rate['targets'][3]['expr']
+assert 'signal!~"^(container|access-log|span)$"' in log_rate['targets'][0]['expr']
+assert 'signal="container"' in log_rate['targets'][1]['expr']
+assert 'signal="access-log"' in log_rate['targets'][2]['expr']
+assert 'signal="span"' in log_rate['targets'][3]['expr']
+assert 'job="agent-cloud-conformance"' in log_rate['targets'][4]['expr']
 
 alloy_template = (deploy / 'templates/config.alloy.j2').read_text()
 env = Environment(undefined=StrictUndefined)

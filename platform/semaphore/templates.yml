@@ -285,6 +285,11 @@ templates:
         description: "Exact panel titles to verify; empty verifies all Prometheus panels. Name Loki panels explicitly."
         type: string
         required: false
+      - name: expected_empty_panels
+        title: "Expected-empty panels (JSON list)"
+        description: "Exact selected panel titles allowed to return no data; every target must be empty and error-free."
+        type: string
+        required: false
       - name: dashboard_variables
         title: "Template variables (JSON object)"
         description: "Overrides for template variables, e.g. {\"compare_offset\": \"7d\"}"
