@@ -15,6 +15,10 @@ import yaml
 ROOT = Path(__file__).parents[2]
 
 
+def _play_named(plays, name):
+    return next(play for play in plays if play.get("name") == name)
+
+
 class CoverageContractTests(unittest.TestCase):
     def test_strict_observation_cli_is_sanitized_and_profile_cli_remains_compatible(self):
         script = ROOT / "platform/playbooks/files/o11y-coverage-census.py"
@@ -109,7 +113,7 @@ class CoverageContractTests(unittest.TestCase):
 
     def test_census_invokes_protected_read_only_receipt_controller(self):
         plays = yaml.safe_load((ROOT / "platform/playbooks/census-o11y-coverage.yml").read_text())
-        tasks = plays[1]["tasks"]
+        tasks = _play_named(plays, "Check out and inventory declarations")["tasks"]
         controller = next(
             task for task in tasks
             if task.get("name") == "Run the read-only Semaphore receipt census controller"
@@ -128,9 +132,139 @@ class CoverageContractTests(unittest.TestCase):
         self.assertIn("'template_names':", command["stdin"])
         self.assertIn("'expected_repository_sha': expected_repository_sha", command["stdin"])
 
+    def test_coverage_playbooks_guard_before_credentials_and_strict_helpers(self):
+        census = yaml.safe_load((ROOT / "platform/playbooks/census-o11y-coverage.yml").read_text())
+        census_guard = next(
+            index for index, entry in enumerate(census)
+            if entry.get("ansible.builtin.import_playbook") == "require-reviewed-checkout.yml"
+        )
+        census_work = next(
+            index for index, entry in enumerate(census)
+            if entry.get("name") == "Check out and inventory declarations"
+        )
+        self.assertLess(census_guard, census_work)
+
+        verifier = yaml.safe_load((ROOT / "platform/playbooks/verify-o11y-service.yml").read_text())
+        strict_guard = next(
+            (index, entry) for index, entry in enumerate(verifier)
+            if entry.get("ansible.builtin.import_playbook") == "require-reviewed-checkout.yml"
+        )
+        self.assertEqual(
+            strict_guard[1]["when"],
+            "o11y_verification_mode | default('legacy') == 'strict'",
+        )
+        strict_work = next(
+            index for index, entry in enumerate(verifier)
+            if entry.get("name") == "Require a declared o11y receiver and a service identity"
+        )
+        self.assertLess(strict_guard[0], strict_work)
+
+    def test_reviewed_checkout_refusal_precedes_fake_external_access(self):
+        ansible_playbook = shutil.which("ansible-playbook")
+        self.assertIsNotNone(ansible_playbook)
+
+        def run_fixture(mutation=None, wrong_sha=False):
+            with tempfile.TemporaryDirectory(prefix="o11y-reviewed-entry-") as directory:
+                temp = Path(directory)
+                checkout = temp / "checkout"
+                playbook_dir = checkout / "platform" / "playbooks"
+                files = playbook_dir / "files"
+                files.mkdir(parents=True)
+                shutil.copy2(ROOT / "platform/playbooks/require-reviewed-checkout.yml", playbook_dir)
+                shutil.copy2(ROOT / "platform/playbooks/files/reviewed-checkout.py", files)
+                payload = checkout / "payload.txt"
+                payload.write_text("reviewed bytes\n", encoding="utf-8")
+                other = checkout / "other.txt"
+                other.write_text("other bytes\n", encoding="utf-8")
+                calls = temp / "external-access.calls"
+                entrypoint = playbook_dir / "guard-entry.yml"
+                entrypoint.write_text(yaml.safe_dump([
+                    {"name": "Run the shared reviewed-checkout gate",
+                     "ansible.builtin.import_playbook": "require-reviewed-checkout.yml"},
+                    {"name": "Fake credentials, backend query, and observation emission",
+                     "hosts": "localhost", "connection": "local", "gather_facts": False,
+                     "tasks": [{
+                         "name": "Record that a protected action was reached",
+                         "ansible.builtin.command": {"argv": [
+                             "python3", "-c",
+                             "from pathlib import Path; Path(" + repr(str(calls)) + ").write_text('called')",
+                         ]},
+                         "changed_when": False,
+                     }]},
+                ]), encoding="utf-8")
+
+                git_env = {
+                    **os.environ,
+                    "GIT_AUTHOR_NAME": "test",
+                    "GIT_AUTHOR_EMAIL": "test@example.invalid",
+                    "GIT_COMMITTER_NAME": "test",
+                    "GIT_COMMITTER_EMAIL": "test@example.invalid",
+                    "GIT_CONFIG_GLOBAL": os.devnull,
+                    "GIT_CONFIG_NOSYSTEM": "1",
+                }
+                subprocess.run(["git", "init", "-q", str(checkout)], env=git_env, check=True)
+                subprocess.run(["git", "-C", str(checkout), "add", "."], env=git_env, check=True)
+                subprocess.run(["git", "-C", str(checkout), "commit", "-qm", "fixture"],
+                               env=git_env, check=True)
+                revision = subprocess.run(
+                    ["git", "-C", str(checkout), "rev-parse", "HEAD"],
+                    env=git_env, text=True, capture_output=True, check=True,
+                ).stdout.strip()
+                if mutation:
+                    mutation(checkout)
+
+                environment = {
+                    **os.environ,
+                    "ANSIBLE_LOCAL_TEMP": str(temp / "local"),
+                    "ANSIBLE_REMOTE_TEMP": str(temp / "remote"),
+                    "ANSIBLE_STDOUT_CALLBACK": "default",
+                    "ANSIBLE_NOCOLOR": "1",
+                }
+                (temp / "local").mkdir()
+                (temp / "remote").mkdir()
+                expected = "0" * 40 if wrong_sha else revision
+                result = subprocess.run(
+                    [ansible_playbook, "-i", "localhost,", "-c", "local", "-e",
+                     f"expected_repository_sha={expected}", str(entrypoint)],
+                    cwd=ROOT, env=environment, text=True, capture_output=True, check=False,
+                )
+                return result, calls.exists()
+
+        mutations = {
+            "dirty worktree": lambda checkout: (checkout / "payload.txt").write_text(
+                "changed bytes\n", encoding="utf-8"),
+            "staged index": lambda checkout: (
+                (checkout / "payload.txt").write_text("staged bytes\n", encoding="utf-8"),
+                subprocess.run(["git", "-C", str(checkout), "add", "payload.txt"], check=True),
+            ),
+            "mode change": lambda checkout: (checkout / "payload.txt").chmod(
+                (checkout / "payload.txt").stat().st_mode | 0o100,
+            ),
+            "type change": lambda checkout: (
+                (checkout / "payload.txt").unlink(),
+                os.symlink("other.txt", checkout / "payload.txt"),
+            ),
+            "skip-worktree shortcut": lambda checkout: subprocess.run(
+                ["git", "-C", str(checkout), "update-index", "--skip-worktree", "payload.txt"], check=True,
+            ),
+        }
+        result, accessed = run_fixture()
+        if "Local RPC server did not start" in result.stderr:
+            self.skipTest("installed Ansible runtime cannot start its local RPC server")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue(accessed)
+        for name, mutation in mutations.items():
+            with self.subTest(refusal=name):
+                result, accessed = run_fixture(mutation)
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertFalse(accessed, result.stdout + result.stderr)
+        result, accessed = run_fixture(wrong_sha=True)
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse(accessed, result.stdout + result.stderr)
+
     def test_receipt_controller_secret_boundaries_and_fixed_refusal(self):
         plays = yaml.safe_load((ROOT / "platform/playbooks/census-o11y-coverage.yml").read_text())
-        tasks = plays[1]["tasks"]
+        tasks = _play_named(plays, "Check out and inventory declarations")["tasks"]
         by_name = {task.get("name"): task for task in tasks}
         for name in (
             "Authenticate to OpenBao (AppRole)",
@@ -236,7 +370,8 @@ class CoverageContractTests(unittest.TestCase):
 
     def test_controller_payload_shape_and_empty_binding_execution(self):
         plays = yaml.safe_load((ROOT / "platform/playbooks/census-o11y-coverage.yml").read_text())
-        task = next(task for task in plays[1]["tasks"]
+        tasks = _play_named(plays, "Check out and inventory declarations")["tasks"]
+        task = next(task for task in tasks
                     if task.get("name") == "Run the read-only Semaphore receipt census controller")
         stdin_template = task["ansible.builtin.command"]["stdin"]
         template_environment = jinja2.Environment()
@@ -359,8 +494,9 @@ class CoverageContractTests(unittest.TestCase):
 
     def test_ansible_json_transport_matches_the_canonical_python_digest_bytes(self):
         plays = yaml.safe_load((ROOT / "platform/playbooks/verify-o11y-service.yml").read_text())
+        tasks = _play_named(plays, "Require a declared o11y receiver and a service identity")["tasks"]
         task = next(
-            task for task in plays[1]["tasks"]
+            task for task in tasks
             if task.get("name") == "Recompute the canonical private inventory revision"
         )
         stdin_template = task["ansible.builtin.command"]["stdin"]
@@ -415,9 +551,10 @@ class CoverageContractTests(unittest.TestCase):
 
     def test_strict_inventory_digest_is_recomputed_before_any_signal_query(self):
         plays = yaml.safe_load((ROOT / "platform/playbooks/verify-o11y-service.yml").read_text())
+        tasks = _play_named(plays, "Require a declared o11y receiver and a service identity")["tasks"]
         task = next(
             task
-            for task in plays[1]["tasks"]
+            for task in tasks
             if task.get("name") == "Require the declared and reviewed inventory digest"
         )
         conditions = task["ansible.builtin.assert"]["that"]
