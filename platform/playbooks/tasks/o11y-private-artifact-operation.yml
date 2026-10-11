@@ -239,12 +239,18 @@
       failed_when: false
       changed_when: false
       no_log: true
-      when: operation == 'propose' and _selection.rc | default(1) != 0
+      when:
+        - operation == 'propose'
+        - _sc_existing_remote.stdout | default('') | length == 0
+        - _selection.rc | default(1) != 0
 
     - name: Surface fresh census refusal safely
       ansible.builtin.fail:
         msg: "{{ _selection_refusal.stdout if _selection_refusal.rc | default(1) == 0 and _selection_refusal.stdout in ['Private artifact selection refused because input did not match the reviewed schema.', 'The private artifact capture is outside the allowed freshness window. Recapture before proposing.', 'The fresh Proxmox census differs from the private artifact capture. Recapture before proposing.', 'The private artifact catalog is malformed or unsupported.', 'The private inventory does not match the reviewed selector insertion contract.'] else 'Private artifact selection refused because input did not match the reviewed schema.' }}"
-      when: operation == 'propose' and _selection.rc | default(1) != 0
+      when:
+        - operation == 'propose'
+        - _sc_existing_remote.stdout | default('') | length == 0
+        - _selection.rc | default(1) != 0
 
     - name: Prepare a private capture catalog
       ansible.builtin.command:
@@ -359,12 +365,18 @@
       failed_when: false
       changed_when: false
       no_log: true
-      when: operation == 'propose' and _freshness.rc | default(1) != 0
+      when:
+        - operation == 'propose'
+        - _sc_existing_remote.stdout | default('') | length == 0
+        - _freshness.rc | default(1) != 0
 
     - name: Surface freshness refusal safely
       ansible.builtin.fail:
         msg: "{{ _freshness_refusal.stdout if _freshness_refusal.rc | default(1) == 0 and _freshness_refusal.stdout in ['Private artifact selection refused because input did not match the reviewed schema.', 'The private artifact capture is outside the allowed freshness window. Recapture before proposing.', 'The fresh Proxmox census differs from the private artifact capture. Recapture before proposing.', 'The private artifact catalog is malformed or unsupported.', 'The private inventory does not match the reviewed selector insertion contract.'] else 'Private artifact selection refused because input did not match the reviewed schema.' }}"
-      when: operation == 'propose' and _freshness.rc | default(1) != 0
+      when:
+        - operation == 'propose'
+        - _sc_existing_remote.stdout | default('') | length == 0
+        - _freshness.rc | default(1) != 0
 
     - name: Push the one-path reviewed branch
       ansible.builtin.include_tasks: site-config-push.yml

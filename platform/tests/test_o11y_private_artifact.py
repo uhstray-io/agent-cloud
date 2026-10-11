@@ -185,6 +185,29 @@ def test_helper_command_failures_are_normalized_before_visible_refusal():
         assert f"{register}.stdout" not in message
 
 
+@pytest.mark.parametrize("register", ["_selection", "_freshness"])
+def test_skipped_new_proposal_helpers_skip_normalizer_and_visible_failure(register):
+    operation = yaml.safe_load((ROOT / "platform/playbooks/tasks/o11y-private-artifact-operation.yml").read_text())
+    block = next(task["block"] for task in operation if "block" in task)
+    helper = next(task for task in block if task.get("register") == register)
+    proposal_guard = [
+        "operation == 'propose'",
+        "_sc_existing_remote.stdout | default('') | length == 0",
+    ]
+    assert helper["when"] == proposal_guard
+
+    dependent_guard = proposal_guard + [f"{register}.rc | default(1) != 0"]
+    normalizer = next(task for task in block if task.get("register") == f"{register}_refusal")
+    visible = next(
+        task
+        for task in block
+        if "ansible.builtin.fail" in task
+        and f"{register}_refusal.stdout" in task["ansible.builtin.fail"]["msg"]
+    )
+    assert normalizer["when"] == dependent_guard
+    assert visible["when"] == dependent_guard
+
+
 def test_inventory_inserts_only_selector_and_preserves_existing_bytes():
     catalog, _ = catalog_fixture()
     source = (
