@@ -13,7 +13,8 @@ from urllib.parse import urlencode
 REPO = "uhstray-io/agent-cloud"
 WORKFLOW = ".github/workflows/lint-and-test.yml"
 PRE_PARTITION_WORKFLOW_BLOB_SHA = "da998c35a6bc5d3ea7eedc72ea228e48f9fc6b38"
-PARTITIONED_WORKFLOW_BLOB_SHA = "29020efdaa1747bd2dc42d4c6468a96e676d8b4b"
+INITIAL_PARTITIONED_WORKFLOW_BLOB_SHA = "29020efdaa1747bd2dc42d4c6468a96e676d8b4b"
+PARTITIONED_WORKFLOW_BLOB_SHA = "a4bd0d3db1de56fb2d7e0cf53fbbd879490838a0"
 EXPECTED = {
     "Detect changes", "Static Analysis", "Security Scan", "Python core",
     "Python Playbook Safety",
@@ -268,10 +269,10 @@ def check_workflow_policy(source, partitioned=False):
 def check_workflow_change(api, base_sha, head_sha, files):
     base, base_blob_sha = workflow_bytes(api, base_sha)
     candidate, candidate_blob_sha = workflow_bytes(api, head_sha)
-    if candidate_blob_sha != PARTITIONED_WORKFLOW_BLOB_SHA:
-        raise Refusal("Workflow head is not the exact reviewed Python Playbook Safety partition")
     workflow_records = [f for f in files if f["filename"] == WORKFLOW or f.get("previous_filename") == WORKFLOW]
     if base_blob_sha == PRE_PARTITION_WORKFLOW_BLOB_SHA:
+        if candidate_blob_sha != INITIAL_PARTITIONED_WORKFLOW_BLOB_SHA:
+            raise Refusal("Workflow head is not the exact original Python Playbook Safety partition")
         check_workflow_policy(base)
         check_workflow_policy(candidate, partitioned=True)
         if base == candidate:
@@ -281,10 +282,24 @@ def check_workflow_change(api, base_sha, head_sha, files):
                 or workflow_records[0].get("previous_filename") is not None):
             raise Refusal("Workflow transition requires one modified record at the protected path")
         return
+    if base_blob_sha == INITIAL_PARTITIONED_WORKFLOW_BLOB_SHA:
+        if candidate_blob_sha != PARTITIONED_WORKFLOW_BLOB_SHA:
+            raise Refusal("Workflow head is not the exact reviewed credential-safe partition")
+        check_workflow_policy(base, partitioned=True)
+        check_workflow_policy(candidate, partitioned=True)
+        if base == candidate:
+            raise Refusal("Original partition must transition to the exact credential-safe workflow")
+        if (len(workflow_records) != 1 or workflow_records[0].get("status") != "modified"
+                or workflow_records[0]["filename"] != WORKFLOW
+                or workflow_records[0].get("previous_filename") is not None):
+            raise Refusal("Workflow transition requires one modified record at the protected path")
+        return
     if base_blob_sha == PARTITIONED_WORKFLOW_BLOB_SHA:
+        if candidate_blob_sha != PARTITIONED_WORKFLOW_BLOB_SHA:
+            raise Refusal("Workflow head is not the exact reviewed credential-safe partition")
         check_workflow_policy(base, partitioned=True)
         if base != candidate or workflow_records:
-            raise Refusal("Partitioned workflow may only remain byte-identical on subsequent PRs")
+            raise Refusal("Credential-safe partition may only remain byte-identical on subsequent PRs")
         return
     raise Refusal("Workflow base is outside the exact pre-partition or reviewed partition states")
 
