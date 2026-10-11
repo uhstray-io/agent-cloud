@@ -301,6 +301,7 @@ class SemaphoreReader:
         self.project_id = project_id
         self.clock = clock
         context = ssl.create_default_context()
+        context.minimum_version = ssl.TLSVersion.TLSv1_2
         self.opener = opener or urllib.request.build_opener(
             urllib.request.ProxyHandler({}), NoRedirect(), urllib.request.HTTPSHandler(context=context)
         )

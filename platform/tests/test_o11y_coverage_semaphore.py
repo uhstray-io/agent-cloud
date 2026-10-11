@@ -348,7 +348,7 @@ class SemaphoreReceiptTests(unittest.TestCase):
                 census_module=CENSUS,
             )
 
-    def test_controller_refuses_forged_inventory_acceptance_before_reader_creation(self):
+    def test_controller_rejects_supplied_inventory_evidence_before_reader_creation(self):
         payload, _data = controller_payload()
         payload["inventory"]["verified_receipts"] = {"service:census_test": {"logs": {"status": "verified"}}}
         reader_created = []
@@ -629,6 +629,7 @@ class SemaphoreReceiptTests(unittest.TestCase):
         )
         self.assertTrue(https._context.check_hostname)
         self.assertEqual(https._context.verify_mode, ssl.CERT_REQUIRED)
+        self.assertGreaterEqual(https._context.minimum_version, ssl.TLSVersion.TLSv1_2)
         self.assertFalse(any(isinstance(handler, SEMAPHORE.urllib.request.ProxyHandler)
                              for handler in reader.opener.handlers))
         self.assertTrue(any(isinstance(handler, SEMAPHORE.NoRedirect) for handler in reader.opener.handlers))
