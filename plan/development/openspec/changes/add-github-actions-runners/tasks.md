@@ -312,10 +312,8 @@ The runner App installation grant must not reuse `secret/services/github:pat`: t
 shared credential also serves GHCR, and a scope change could disrupt package pulls.
 Keep the grant-only `installation_admin_token` in `secret/services/github-runner`; the
 helper accepts only a dedicated `ghp_` classic PAT with the `repo` scope and refuses to
-write unless its user has admin permission on the private target repository. GitHub's
-grant accepts only that dedicated classic PAT, refuses `gho_` CLI OAuth tokens, and requires
-the PAT's user to have admin permission on the private target repository. Keep the shared
-`secret/services/github:pat` unchanged for GHCR.
+write unless its user has admin permission on the private target repository. Keep the
+shared `secret/services/github:pat` unchanged for GHCR.
 
 - [ ] 11.1 After the reviewed code merges into Dev, seed only the dedicated classic PAT as
       `installation_admin_token` into `secret/services/github-runner` through the governed
