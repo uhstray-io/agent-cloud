@@ -46,6 +46,7 @@ Verified from inside a running job, on both hosts:
 | Platform interior unreachable | **enforced** — secret store, orchestrator and every hypervisor denied at the network boundary |
 | Per-job containerisation | **NOT enforced** — see below |
 | Per-job process reaping | **NOT enforced** — the wipe removes files and containers, not a process an undeclared host job left running |
+| Setuid programs out of a job's reach | **NOT enforced** (since 2026-10-11): the unit runs without `NoNewPrivileges`, because rootless podman needs the setuid `newuidmap`/`newgidmap`. The deploy strips the setuid/setgid bit from helpers a runner never uses (`chfn`, `chsh`, `passwd`, `gpasswd`, `newgrp`, `chage`, `expiry`, `su`, `crontab`, `ssh-keysign`, `polkit-agent-helper-1`); `sudo`, `mount`, `umount`, `fusermount3`, `newuidmap` and `newgidmap` stay executable by jobs |
 
 **Per-job containerisation is not a control here.** The container-hook mechanism manages
 containers for a job that *declares* one; it does not place an undeclared job into a
@@ -55,6 +56,20 @@ recreated per job — a lifecycle change, not a setting.
 
 **Practical consequence:** a job can read whatever `ghrunner` can read on that host. Do not
 place anything on a runner host that all six permitted repositories are not entitled to.
+
+**Why `NoNewPrivileges` is off.** Rootless podman maps a container's users onto the
+account's `/etc/subuid` range with `newuidmap`/`newgidmap`. A `uid_map` of more than the
+writer's own id is accepted only from a writer holding `CAP_SETUID` in the parent namespace
+(user_namespaces(7)), which the helpers get from their setuid bit. no_new_privs makes setuid
+bits and file capabilities inert on `execve`, is inherited by every descendant, and cannot
+be cleared (prctl(2), `PR_SET_NO_NEW_PRIVS`). With the unit's `NoNewPrivileges=true`, every
+container job failed with `newuidmap: write to uid_map failed: Operation not permitted`
+(2026-10-11). Turning it off concedes that a job can execute the setuid programs that
+remain, so a local privilege-escalation bug in one of them (sudo has had two that needed no
+sudoers entry: CVE-2021-3156, CVE-2025-32463) is reachable from repository code. Patching
+these hosts promptly is part of the isolation, not hygiene. The same applies to every unit
+option that sets no_new_privs implicitly in a user unit (all seccomp-backed ones) or implies
+`PrivateUsers=`; the unit comment lists them and a test refuses them.
 
 ## Credential chain
 
@@ -157,8 +172,15 @@ it — note that every legitimate target sits *inside* that prefix, so a guard p
   That needs `newuidmap` from the `uidmap` package and a `/etc/subuid` range for the
   account. Both hosts ran without `uidmap` until 2026-10-10: every container job failed
   with "command required for rootless mode with multiple IDs", and the job cleanup's
-  container and volume prune failed with it. `install-podman.yml` now installs it, and
-  `deploy-github-runner.yml` refuses to report success unless `podman unshare` maps a range.
+  container and volume prune failed with it. `install-podman.yml` now installs it.
+- **A check run through `become_user` is not a job.** It is a sudo session from the SSH
+  login, outside the runner unit, so it inherits none of the unit's properties. On
+  2026-10-11 the deploy's `podman unshare` passed that way while every job, a descendant
+  of a `NoNewPrivileges=true` unit, failed in `newuidmap`. `deploy-github-runner.yml` now
+  reads the running service's `NoNewPrivs` and user namespace from `/proc/<MainPID>`, runs
+  the podman mapping check in a `systemd-run --user` transient unit carrying the unit's own
+  `NoNewPrivileges` value, and requires at least 65536 ids in both `/etc/subuid` and
+  `/etc/subgid` for the account.
 - **The root disk is small until grown.** Both hosts came up with a 9.8 GiB root LV on a
   200 G disk, 878 MiB free, which no Rust build fits in. Run Grow GitHub Runner Root
   (`grow-github-runner-root.yml`) after provisioning; its dry run shows each host's chain.

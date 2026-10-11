@@ -81,6 +81,7 @@ and why.
 | 2.26 | A fixture placed an inventory variable where production does not; the planning play saw it in tests and nothing in prod (widens 2.22) | False-green fixture | 1 | Test (one playbook); class Convention |
 | 2.27 | A run that matched its hosts, found nothing to do, and reported success (widens 2.21) | Wrong-reason pass | 1 | Test (one playbook); class Convention, lint proposed |
 | 2.28 | A clean-copy test passed only where the copy carried bytecode caches; refusal tests matched text every refusal prints | Wrong-reason pass | 1 | Test (`test_o11y_fault_drill.py`) |
+| 2.29 | A deploy proved rootless podman from a sudo session while every job, under a `NoNewPrivileges=true` unit, failed in `newuidmap`; a test had pinned the breaking directive | Wrong-reason pass | 1 | Playbook checks in the service context + test (`test_service_github_runner.bats`) |
 | 3.1 | Wrote a probe value over a real credential in a live secret store | Live-state damage | 1 | OPA (`agent_actions.rego`; inert until callers send fields) |
 | 3.2 | Attempted to mutate a shared orchestrator credential without asking | Live-state damage | 1 | Sandbox + OPA (`agent_actions.rego`; inert until callers send grants) |
 | 3.3 | Treated failed workstation login as a controller access prerequisite | Wrong executor boundary | 1 | Test + convention |
@@ -1821,6 +1822,35 @@ run's output that "Controller checkout has uncommitted files" is absent unless t
 `test_dirty_checkout_is_refused_before_any_fault` (`:282`) covers the clean-checkout gate
 itself. The refusal-path cases still assert only the shared "no fault was induced" text; the
 every-run assertion is what stops a clean-checkout refusal from passing them.
+
+### 2.29 The rootless-podman check ran outside the context jobs run in
+
+**What happened.** Container jobs on the GitHub runners failed with `exec: "newuidmap":
+executable file not found`. The fix installed `uidmap` and added a deploy check, `podman
+unshare cat /proc/self/uid_map` through `become_user`, which passed. On 2026-10-11 every
+`podman build` in weft's CI still failed on both runners, now with `newuidmap: write to
+uid_map failed: Operation not permitted`. The runner's systemd user unit set
+`NoNewPrivileges=true`. no_new_privs makes setuid bits inert on `execve` and is inherited by
+every descendant (prctl(2)), and the kernel accepts a multi-range `uid_map` only from a
+writer with `CAP_SETUID` in the parent namespace (user_namespaces(7)), which `newuidmap`
+gets only from its setuid bit. A bats test asserted `NoNewPrivileges=true`.
+
+**Root cause.** The check ran in a sudo session started from the SSH login. That session
+is not a descendant of the runner unit, so it inherited none of the unit's properties and
+could not see the one that broke every job. The test pinned a hardening directive without
+anyone measuring what it broke.
+
+**The rule.** A deploy check that stands for "jobs can do X" runs in the jobs' context:
+under the same service manager, with the unit's properties, or it reads the property from
+the running service itself. A sudo or SSH session proves only what a sudo or SSH session
+can do. A hardening directive is added with a measurement of what it breaks, not only a test
+that it is present.
+
+**Enforced by.** `deploy-github-runner.yml` reads `NoNewPrivs` and the user namespace of
+the service's main process from `/proc`, and runs the podman mapping in a
+`systemd-run --user` transient unit carrying the unit's own `NoNewPrivileges` value.
+`test_service_github_runner.bats` requires both checks, requires `NoNewPrivileges=false`, and
+refuses the unit options that set no_new_privs implicitly or imply `PrivateUsers=`.
 
 ## 3. Acting on live state
 
