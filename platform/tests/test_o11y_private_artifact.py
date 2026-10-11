@@ -1,4 +1,5 @@
 import copy
+import io
 import json
 import subprocess
 import sys
@@ -11,13 +12,19 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "platform/playbooks/files"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import o11y_private_artifact as private_artifact  # noqa: E402
 from o11y_private_artifact import (  # noqa: E402
+    DRIFT_REFUSAL,
+    FRESHNESS_REFUSAL,
     INVENTORY_REFUSAL,
+    SAFE_REFUSAL,
+    SCHEMA_REFUSAL,
     _catalog_from_payload,
     _insert_selector,
     _validate_catalog,
     catalog_path,
     propose,
+    safe_refusal,
     verify_capture,
     verify_proposal,
 )
@@ -41,12 +48,34 @@ def catalog_fixture():
     return _catalog_from_payload(data, target, "a" * 40, "b" * 40, 1_800_000_000), data
 
 
-def test_capture_catalog_is_sorted_and_maps_rows_without_public_identifiers():
-    catalog, _ = catalog_fixture()
-    assert catalog["schema_version"] == 1
-    assert [row["volid"] for row in catalog["rows"]] == sorted(row["volid"] for row in catalog["rows"])
-    assert catalog["rows"][0]["backend"] == "dir"
-    assert "volid" not in {"backend", "format", "size_bytes"}
+def test_capture_main_emits_only_allowlisted_sanitized_rows(monkeypatch, capsys):
+    catalog, census = catalog_fixture()
+    request = {
+        "census": census,
+        "target": catalog["target"],
+        "agent_cloud_sha": catalog["agent_cloud_sha"],
+        "site_config_base_sha": catalog["site_config_base_sha"],
+    }
+    monkeypatch.setattr(private_artifact.sys, "stdin", io.StringIO(json.dumps(request)))
+    monkeypatch.setattr(private_artifact.sys, "argv", ["helper", "capture"])
+
+    assert private_artifact.main() == 0
+    output = json.loads(capsys.readouterr().out)
+    visible_rows = output["rows"]
+    allowed = {
+        "row",
+        "backend",
+        "format",
+        "creation_time_epoch",
+        "size_bytes",
+        "proxmox_protected_flag",
+    }
+    assert output["catalog"]["schema_version"] == 1
+    assert visible_rows and all(set(row) == allowed for row in visible_rows)
+    rendered_rows = json.dumps(visible_rows)
+    assert all(storage["storage_id"] not in rendered_rows for storage in output["catalog"]["storages"])
+    assert all(row["volid"] not in rendered_rows for row in output["catalog"]["rows"])
+    assert "storage_id" not in rendered_rows and "volid" not in rendered_rows
 
 
 def test_catalog_schema_and_fixed_path_refuse_unknown_content_and_symlinks(tmp_path):
@@ -86,6 +115,74 @@ def test_proposal_refuses_stale_future_and_changed_census():
         propose(catalog, changed, "c" * 40, 1, catalog["observed_at_epoch"] + 1, "o11y-test")
     with pytest.raises(ValueError, match="differs from the private artifact capture"):
         propose(catalog, data, "c" * 40, 1, catalog["observed_at_epoch"] + 1, "other-host")
+
+
+@pytest.mark.parametrize("message", [SAFE_REFUSAL, FRESHNESS_REFUSAL, DRIFT_REFUSAL, SCHEMA_REFUSAL, INVENTORY_REFUSAL])
+def test_main_preserves_only_fixed_value_error_refusals(monkeypatch, capsys, message):
+    monkeypatch.setattr(private_artifact.sys, "stdin", io.StringIO('{"catalog":{}}'))
+    monkeypatch.setattr(private_artifact.sys, "argv", ["helper", "freshness"])
+    monkeypatch.setattr(private_artifact, "_validate_catalog", lambda _: (_ for _ in ()).throw(ValueError(message)))
+
+    assert private_artifact.main() == 2
+    assert json.loads(capsys.readouterr().out) == {"refusal": message}
+
+
+@pytest.mark.parametrize("message", ["private path /secret/backup", "Unexpected helper failure: sensitive-value"])
+def test_main_replaces_unknown_value_errors_with_generic_refusal(monkeypatch, capsys, message):
+    monkeypatch.setattr(private_artifact.sys, "stdin", io.StringIO('{"catalog":{}}'))
+    monkeypatch.setattr(private_artifact.sys, "argv", ["helper", "freshness"])
+    monkeypatch.setattr(private_artifact, "_validate_catalog", lambda _: (_ for _ in ()).throw(ValueError(message)))
+
+    assert private_artifact.main() == 2
+    output = capsys.readouterr().out
+    assert json.loads(output) == {"refusal": SAFE_REFUSAL}
+    assert message not in output
+
+
+@pytest.mark.parametrize("stdout", [None, "", "not-json", "{}", '{"refusal":"private value"}'])
+def test_safe_refusal_rejects_missing_malformed_and_unlisted_output(stdout):
+    assert safe_refusal(stdout) == SAFE_REFUSAL
+
+
+def test_safe_refusal_returns_only_a_parsed_allowlisted_message():
+    assert safe_refusal(json.dumps({"refusal": INVENTORY_REFUSAL})) == INVENTORY_REFUSAL
+
+
+def test_refusal_operation_prints_only_allowlisted_or_generic_message(monkeypatch, capsys):
+    private_output = json.dumps({"refusal": DRIFT_REFUSAL, "details": "/private/backup/path"})
+    monkeypatch.setattr(private_artifact.sys, "stdin", io.StringIO(json.dumps({"stdout": private_output})))
+    monkeypatch.setattr(private_artifact.sys, "argv", ["helper", "refusal"])
+
+    assert private_artifact.main() == 0
+    assert capsys.readouterr().out.strip() == DRIFT_REFUSAL
+
+
+def test_helper_command_failures_are_normalized_before_visible_refusal():
+    operation = yaml.safe_load((ROOT / "platform/playbooks/tasks/o11y-private-artifact-operation.yml").read_text())
+    block = next(task["block"] for task in operation if "block" in task)
+    helper_tasks = [
+        task
+        for task in block
+        if task.get("ansible.builtin.command", {}).get("argv", [None, None])[0] == "python3"
+        and task["ansible.builtin.command"]["argv"][1].endswith("o11y_private_artifact.py")
+        and task["ansible.builtin.command"]["argv"][2] != "refusal"
+    ]
+    assert len(helper_tasks) == 7
+    for helper in helper_tasks:
+        register = helper["register"]
+        assert helper["failed_when"] is False
+        assert helper["no_log"] is True
+        normalizer = next(task for task in block if task.get("register") == f"{register}_refusal")
+        assert normalizer["failed_when"] is False
+        assert normalizer["no_log"] is True
+        assert f"{register}.stdout" in normalizer["ansible.builtin.command"]["stdin"]
+        visible = next(
+            task for task in block if f"{register}_refusal.stdout" in str(task.get("ansible.builtin.fail", {}))
+        )
+        message = visible["ansible.builtin.fail"]["msg"]
+        assert "Private artifact selection refused because input did not match the reviewed schema." in message
+        assert "The private artifact catalog is malformed or unsupported." in message
+        assert f"{register}.stdout" not in message
 
 
 def test_inventory_inserts_only_selector_and_preserves_existing_bytes():

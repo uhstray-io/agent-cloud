@@ -101,9 +101,25 @@
         argv: [python3, "{{ playbook_dir }}/files/o11y_private_artifact.py", verify-capture]
         stdin: "{{ {'repo': _sc_clone, 'capture_sha': capture_commit_sha, 'base_sha': site_config_base_sha, 'agent_sha': expected_repository_sha} | to_json }}"
       register: _capture_verified
+      failed_when: false
       changed_when: false
       no_log: true
       when: operation == 'propose'
+
+    - name: Normalize a failed capture provenance helper result
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/files/o11y_private_artifact.py", refusal]
+        stdin: "{{ {'stdout': _capture_verified.stdout | default('')} | to_json }}"
+      register: _capture_verified_refusal
+      failed_when: false
+      changed_when: false
+      no_log: true
+      when: operation == 'propose' and _capture_verified.rc | default(1) != 0
+
+    - name: Surface capture provenance refusal safely
+      ansible.builtin.fail:
+        msg: "{{ _capture_verified_refusal.stdout if _capture_verified_refusal.rc | default(1) == 0 and _capture_verified_refusal.stdout in ['Private artifact selection refused because input did not match the reviewed schema.', 'The private artifact capture is outside the allowed freshness window. Recapture before proposing.', 'The fresh Proxmox census differs from the private artifact capture. Recapture before proposing.', 'The private artifact catalog is malformed or unsupported.', 'The private inventory does not match the reviewed selector insertion contract.'] else 'Private artifact selection refused because input did not match the reviewed schema.' }}"
+      when: operation == 'propose' and _capture_verified.rc | default(1) != 0
 
     - name: Keep the verified private catalog
       ansible.builtin.set_fact:
@@ -126,9 +142,25 @@
         argv: [python3, "{{ playbook_dir }}/files/o11y_private_artifact.py", inventory]
         stdin: "{{ {'inventory': _base_inventory.stdout, 'catalog': _private_catalog, 'row_number': artifact_row | int} | to_json }}"
       register: _expected_inventory
+      failed_when: false
       changed_when: false
       no_log: true
       when: operation == 'propose'
+
+    - name: Normalize a failed inventory helper result
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/files/o11y_private_artifact.py", refusal]
+        stdin: "{{ {'stdout': _expected_inventory.stdout | default('')} | to_json }}"
+      register: _expected_inventory_refusal
+      failed_when: false
+      changed_when: false
+      no_log: true
+      when: operation == 'propose' and _expected_inventory.rc | default(1) != 0
+
+    - name: Surface inventory refusal safely
+      ansible.builtin.fail:
+        msg: "{{ _expected_inventory_refusal.stdout if _expected_inventory_refusal.rc | default(1) == 0 and _expected_inventory_refusal.stdout in ['Private artifact selection refused because input did not match the reviewed schema.', 'The private artifact capture is outside the allowed freshness window. Recapture before proposing.', 'The fresh Proxmox census differs from the private artifact capture. Recapture before proposing.', 'The private artifact catalog is malformed or unsupported.', 'The private inventory does not match the reviewed selector insertion contract.'] else 'Private artifact selection refused because input did not match the reviewed schema.' }}"
+      when: operation == 'propose' and _expected_inventory.rc | default(1) != 0
 
     - name: Verify and return an existing deterministic proposal without creating a commit
       ansible.builtin.command:
@@ -143,13 +175,26 @@
         - operation == 'propose'
         - _sc_existing_remote.stdout | default('') | length > 0
 
-    - name: Require an exact existing proposal receipt
-      ansible.builtin.assert:
-        that: _existing_proposal.rc == 0
-        fail_msg: "The deterministic proposal branch exists with different provenance or content; it was preserved."
+    - name: Normalize a failed existing proposal helper result
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/files/o11y_private_artifact.py", refusal]
+        stdin: "{{ {'stdout': _existing_proposal.stdout | default('')} | to_json }}"
+      register: _existing_proposal_refusal
+      failed_when: false
+      changed_when: false
+      no_log: true
       when:
         - operation == 'propose'
         - _sc_existing_remote.stdout | default('') | length > 0
+        - _existing_proposal.rc | default(1) != 0
+
+    - name: Require an exact existing proposal receipt
+      ansible.builtin.fail:
+        msg: "{{ _existing_proposal_refusal.stdout if _existing_proposal_refusal.rc | default(1) == 0 and _existing_proposal_refusal.stdout in ['Private artifact selection refused because input did not match the reviewed schema.', 'The private artifact capture is outside the allowed freshness window. Recapture before proposing.', 'The fresh Proxmox census differs from the private artifact capture. Recapture before proposing.', 'The private artifact catalog is malformed or unsupported.', 'The private inventory does not match the reviewed selector insertion contract.'] else 'The deterministic proposal branch exists with different provenance or content; it was preserved.' }}"
+      when:
+        - operation == 'propose'
+        - _sc_existing_remote.stdout | default('') | length > 0
+        - _existing_proposal.rc | default(1) != 0
 
     - name: Report an existing proposal without claiming fresh validation
       ansible.builtin.debug:
@@ -179,11 +224,27 @@
                                        'data': hostvars['localhost']._vm_config.json.data}}}
              | to_json }}
       register: _selection
+      failed_when: false
       changed_when: false
       no_log: true
       when:
         - operation == 'propose'
         - _sc_existing_remote.stdout | default('') | length == 0
+
+    - name: Normalize a failed fresh census selection helper result
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/files/o11y_private_artifact.py", refusal]
+        stdin: "{{ {'stdout': _selection.stdout | default('')} | to_json }}"
+      register: _selection_refusal
+      failed_when: false
+      changed_when: false
+      no_log: true
+      when: operation == 'propose' and _selection.rc | default(1) != 0
+
+    - name: Surface fresh census refusal safely
+      ansible.builtin.fail:
+        msg: "{{ _selection_refusal.stdout if _selection_refusal.rc | default(1) == 0 and _selection_refusal.stdout in ['Private artifact selection refused because input did not match the reviewed schema.', 'The private artifact capture is outside the allowed freshness window. Recapture before proposing.', 'The fresh Proxmox census differs from the private artifact capture. Recapture before proposing.', 'The private artifact catalog is malformed or unsupported.', 'The private inventory does not match the reviewed selector insertion contract.'] else 'Private artifact selection refused because input did not match the reviewed schema.' }}"
+      when: operation == 'propose' and _selection.rc | default(1) != 0
 
     - name: Prepare a private capture catalog
       ansible.builtin.command:
@@ -203,9 +264,25 @@
                                        'data': hostvars['localhost']._vm_config.json.data}}}
              | to_json }}
       register: _capture_output
+      failed_when: false
       changed_when: false
       no_log: true
       when: operation == 'capture'
+
+    - name: Normalize a failed capture helper result
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/files/o11y_private_artifact.py", refusal]
+        stdin: "{{ {'stdout': _capture_output.stdout | default('')} | to_json }}"
+      register: _capture_output_refusal
+      failed_when: false
+      changed_when: false
+      no_log: true
+      when: operation == 'capture' and _capture_output.rc | default(1) != 0
+
+    - name: Surface capture refusal safely
+      ansible.builtin.fail:
+        msg: "{{ _capture_output_refusal.stdout if _capture_output_refusal.rc | default(1) == 0 and _capture_output_refusal.stdout in ['Private artifact selection refused because input did not match the reviewed schema.', 'The private artifact capture is outside the allowed freshness window. Recapture before proposing.', 'The fresh Proxmox census differs from the private artifact capture. Recapture before proposing.', 'The private artifact catalog is malformed or unsupported.', 'The private inventory does not match the reviewed selector insertion contract.'] else 'Private artifact selection refused because input did not match the reviewed schema.' }}"
+      when: operation == 'capture' and _capture_output.rc | default(1) != 0
 
     - name: Keep private catalog and safe row summaries
       ansible.builtin.set_fact:
@@ -219,9 +296,25 @@
         argv: [python3, "{{ playbook_dir }}/files/o11y_private_artifact.py", catalog-path]
         stdin: "{{ {'root': _sc_clone} | to_json }}"
       register: _catalog_path
+      failed_when: false
       changed_when: false
       no_log: true
       when: operation == 'capture'
+
+    - name: Normalize a failed catalog path helper result
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/files/o11y_private_artifact.py", refusal]
+        stdin: "{{ {'stdout': _catalog_path.stdout | default('')} | to_json }}"
+      register: _catalog_path_refusal
+      failed_when: false
+      changed_when: false
+      no_log: true
+      when: operation == 'capture' and _catalog_path.rc | default(1) != 0
+
+    - name: Surface catalog path refusal safely
+      ansible.builtin.fail:
+        msg: "{{ _catalog_path_refusal.stdout if _catalog_path_refusal.rc | default(1) == 0 and _catalog_path_refusal.stdout in ['Private artifact selection refused because input did not match the reviewed schema.', 'The private artifact capture is outside the allowed freshness window. Recapture before proposing.', 'The fresh Proxmox census differs from the private artifact capture. Recapture before proposing.', 'The private artifact catalog is malformed or unsupported.', 'The private inventory does not match the reviewed selector insertion contract.'] else 'Private artifact selection refused because input did not match the reviewed schema.' }}"
+      when: operation == 'capture' and _catalog_path.rc | default(1) != 0
 
     - name: Write the catalog only at its fixed private path
       ansible.builtin.copy:
@@ -250,11 +343,28 @@
       ansible.builtin.command:
         argv: [python3, "{{ playbook_dir }}/files/o11y_private_artifact.py", freshness]
         stdin: "{{ {'catalog': _private_catalog} | to_json }}"
+      register: _freshness
+      failed_when: false
       changed_when: false
       no_log: true
       when:
         - operation == 'propose'
         - _sc_existing_remote.stdout | default('') | length == 0
+
+    - name: Normalize a failed freshness helper result
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/files/o11y_private_artifact.py", refusal]
+        stdin: "{{ {'stdout': _freshness.stdout | default('')} | to_json }}"
+      register: _freshness_refusal
+      failed_when: false
+      changed_when: false
+      no_log: true
+      when: operation == 'propose' and _freshness.rc | default(1) != 0
+
+    - name: Surface freshness refusal safely
+      ansible.builtin.fail:
+        msg: "{{ _freshness_refusal.stdout if _freshness_refusal.rc | default(1) == 0 and _freshness_refusal.stdout in ['Private artifact selection refused because input did not match the reviewed schema.', 'The private artifact capture is outside the allowed freshness window. Recapture before proposing.', 'The fresh Proxmox census differs from the private artifact capture. Recapture before proposing.', 'The private artifact catalog is malformed or unsupported.', 'The private inventory does not match the reviewed selector insertion contract.'] else 'Private artifact selection refused because input did not match the reviewed schema.' }}"
+      when: operation == 'propose' and _freshness.rc | default(1) != 0
 
     - name: Push the one-path reviewed branch
       ansible.builtin.include_tasks: site-config-push.yml

@@ -42,6 +42,7 @@ FRESHNESS_REFUSAL = "The private artifact capture is outside the allowed freshne
 DRIFT_REFUSAL = "The fresh Proxmox census differs from the private artifact capture. Recapture before proposing."
 SCHEMA_REFUSAL = "The private artifact catalog is malformed or unsupported."
 INVENTORY_REFUSAL = "The private inventory does not match the reviewed selector insertion contract."
+REFUSALS = frozenset({SAFE_REFUSAL, FRESHNESS_REFUSAL, DRIFT_REFUSAL, SCHEMA_REFUSAL, INVENTORY_REFUSAL})
 
 
 def require(condition: bool, message: str = SAFE_REFUSAL) -> None:
@@ -62,6 +63,39 @@ def _safe_backend(value: object) -> str:
     return value
 
 
+def _normalized_storages(storages: list[Mapping[str, object]], validate_content: bool):
+    classes = _storage_classes(storages)
+    backend_by_id = {item["storage"]: _safe_backend(item["type"]) for item in storages}
+    records = []
+    for item in storages:
+        content = item.get("content")
+        if validate_content:
+            require(isinstance(content, str) and content != "")
+        values = content.split(",")
+        if validate_content:
+            require(all(re.fullmatch(r"[a-z][a-z0-9_-]{0,31}", value) for value in values))
+            require(len(values) == len(set(values)))
+        records.append(
+            {"storage_id": item["storage"], "backend": backend_by_id[item["storage"]], "content": sorted(values)}
+        )
+    return classes, backend_by_id, records
+
+
+def _normalized_row(volid: str, summary: Mapping[str, object], backend: str) -> dict[str, object]:
+    return {
+        "volid": volid,
+        "backend": backend,
+        "format": summary["format"],
+        "creation_time_epoch": summary["creation_time_epoch"],
+        "size_bytes": summary["size_bytes"],
+        "proxmox_protected_flag": summary["proxmox_protected_flag"],
+    }
+
+
+def _selector_backend(row: Mapping[str, object]) -> str:
+    return "pbs" if row["format"] == "pbs-vm" else "non-pbs"
+
+
 def _catalog_from_payload(
     payload: Mapping[str, object], target: Mapping[str, object], agent_sha: str, site_sha: str, now: int
 ) -> dict[str, object]:
@@ -73,32 +107,13 @@ def _catalog_from_payload(
     require(isinstance(target["vmid"], str) and re.fullmatch(r"[1-9][0-9]{0,8}", target["vmid"]) is not None)
     require(str(payload.get("vmid")) == target["vmid"] and payload.get("node") == target["node"])
     storages = payload["storages"]
-    classes = _storage_classes(storages)
-    backend_by_id = {item["storage"]: _safe_backend(item["type"]) for item in storages}
-    content_by_id = {}
-    for item in storages:
-        content = item.get("content")
-        require(isinstance(content, str) and content != "")
-        values = content.split(",")
-        require(all(re.fullmatch(r"[a-z][a-z0-9_-]{0,31}", value) for value in values))
-        require(len(values) == len(set(values)))
-        content_by_id[item["storage"]] = sorted(values)
+    classes, backend_by_id, storage_records = _normalized_storages(storages, validate_content=True)
     row_values = []
     for read in payload["content_reads"]:
         storage = read.get("storage", read.get("item", {}).get("storage"))
         for candidate in read.get("json", {}).get("data", []):
             volid, summary = _inspect_candidate(candidate, int(target["vmid"]), storage, classes)
-            protected = summary["proxmox_protected_flag"]
-            row_values.append(
-                {
-                    "volid": volid,
-                    "backend": backend_by_id[storage],
-                    "format": summary["format"],
-                    "creation_time_epoch": summary["creation_time_epoch"],
-                    "size_bytes": summary["size_bytes"],
-                    "proxmox_protected_flag": protected,
-                }
-            )
+            row_values.append(_normalized_row(volid, summary, backend_by_id[storage]))
     row_values.sort(key=lambda row: row["volid"])
     require(len(row_values) > 0 and len({row["volid"] for row in row_values}) == len(row_values))
     return {
@@ -107,10 +122,7 @@ def _catalog_from_payload(
         "agent_cloud_sha": agent_sha,
         "site_config_base_sha": site_sha,
         "target": dict(target),
-        "storages": [
-            {"storage_id": storage, "backend": backend_by_id[storage], "content": content_by_id[storage]}
-            for storage in sorted(backend_by_id)
-        ],
+        "storages": sorted(storage_records, key=lambda item: item["storage_id"]),
         "rows": row_values,
     }
 
@@ -294,7 +306,7 @@ def _insert_selector(source: str, catalog: Mapping[str, object], row_number: int
     row = catalog["rows"][row_number - 1]
     selector = {
         "volid": row["volid"],
-        "backend": "pbs" if row["format"] == "pbs-vm" else "non-pbs",
+        "backend": _selector_backend(row),
         "format": row["format"],
         "creation_time_epoch": row["creation_time_epoch"],
         "size_bytes": row["size_bytes"],
@@ -342,29 +354,13 @@ def _census_rows(
     payload: Mapping[str, object], target: Mapping[str, object]
 ) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
     inspect(payload)
-    classes = _storage_classes(payload["storages"])
-    backend_by_id = {item["storage"]: _safe_backend(item["type"]) for item in payload["storages"]}
-    storage_records = []
-    for item in payload["storages"]:
-        content = item["content"].split(",")
-        storage_records.append(
-            {"storage_id": item["storage"], "backend": backend_by_id[item["storage"]], "content": sorted(content)}
-        )
+    classes, backend_by_id, storage_records = _normalized_storages(payload["storages"], validate_content=False)
     rows = []
     for read in payload["content_reads"]:
         storage = read.get("storage", read.get("item", {}).get("storage"))
         for candidate in read.get("json", {}).get("data", []):
             volid, summary = _inspect_candidate(candidate, int(target["vmid"]), storage, classes)
-            rows.append(
-                {
-                    "volid": volid,
-                    "backend": backend_by_id[storage],
-                    "format": summary["format"],
-                    "creation_time_epoch": summary["creation_time_epoch"],
-                    "size_bytes": summary["size_bytes"],
-                    "proxmox_protected_flag": summary["proxmox_protected_flag"],
-                }
-            )
+            rows.append(_normalized_row(volid, summary, backend_by_id[storage]))
     return sorted(storage_records, key=lambda item: item["storage_id"]), sorted(rows, key=lambda item: item["volid"])
 
 
@@ -392,7 +388,7 @@ def propose(
     return {
         "selector": {
             "volid": selected["volid"],
-            "backend": "pbs" if selected["format"] == "pbs-vm" else "non-pbs",
+            "backend": _selector_backend(selected),
             "format": selected["format"],
             "creation_time_epoch": selected["creation_time_epoch"],
             "size_bytes": selected["size_bytes"],
@@ -508,6 +504,19 @@ def catalog_path(root: str) -> dict[str, object]:
     return {"path": str(target)}
 
 
+def safe_refusal(stdout: object) -> str:
+    if not isinstance(stdout, str):
+        return SAFE_REFUSAL
+    try:
+        result = json.loads(stdout)
+    except (json.JSONDecodeError, TypeError):
+        return SAFE_REFUSAL
+    refusal = result.get("refusal") if isinstance(result, dict) else None
+    if isinstance(refusal, str) and refusal in REFUSALS:
+        return refusal
+    return SAFE_REFUSAL
+
+
 def main() -> int:
     try:
         request = json.load(sys.stdin, object_pairs_hook=_unique_object)
@@ -525,7 +534,7 @@ def main() -> int:
                 "rows": [
                     {
                         "row": index,
-                        "backend": "pbs" if row["format"] == "pbs-vm" else "non-pbs",
+                        "backend": _selector_backend(row),
                         "format": row["format"],
                         "creation_time_epoch": row["creation_time_epoch"],
                         "size_bytes": row["size_bytes"],
@@ -568,10 +577,17 @@ def main() -> int:
                 request["row_number"],
                 request["expected_inventory"],
             )
+        elif operation == "refusal":
+            print(safe_refusal(request.get("stdout")))
+            return 0
         else:
             raise ValueError(SAFE_REFUSAL)
         print(json.dumps(output, separators=(",", ":")))
         return 0
+    except ValueError as exc:
+        refusal = str(exc) if str(exc) in REFUSALS else SAFE_REFUSAL
+        print(json.dumps({"refusal": refusal}, separators=(",", ":")))
+        return 2
     except Exception:
         print(json.dumps({"refusal": SAFE_REFUSAL}, separators=(",", ":")))
         return 2
