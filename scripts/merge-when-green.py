@@ -12,9 +12,11 @@ from urllib.parse import urlencode
 
 REPO = "uhstray-io/agent-cloud"
 WORKFLOW = ".github/workflows/lint-and-test.yml"
-REVIEWED_WORKFLOW_BLOB_SHA = "05826a7e56e75d53b4bbeb680d8b4e05fa1f2d98"
+PRE_PARTITION_WORKFLOW_BLOB_SHA = "da998c35a6bc5d3ea7eedc72ea228e48f9fc6b38"
+PARTITIONED_WORKFLOW_BLOB_SHA = "29020efdaa1747bd2dc42d4c6468a96e676d8b4b"
 EXPECTED = {
     "Detect changes", "Static Analysis", "Security Scan", "Python core",
+    "Python Playbook Safety",
     "Python Semaphore", "Python NetBox", "Bash Tests", "Rego Tests", "Unit Tests",
     "Go lint (uhhcraft)", "Go test (uhhcraft)", "Go build (uhhcraft image)",
 }
@@ -132,7 +134,8 @@ def required_jobs(files):
     go_build = go or any(p in DOCKERFILES for p in files)
     return {
         "Detect changes": True, "Static Analysis": True, "Security Scan": True,
-        "Python core": True, "Python Semaphore": True, "Python NetBox": True,
+        "Python core": True, "Python Playbook Safety": True,
+        "Python Semaphore": True, "Python NetBox": True,
         "Bash Tests": True, "Rego Tests": True, "Unit Tests": True,
         "Go lint (uhhcraft)": go, "Go test (uhhcraft)": go,
         "Go build (uhhcraft image)": go_build,
@@ -178,7 +181,7 @@ def workflow_bytes(api, commit_sha):
     return source, blob_sha
 
 
-def check_workflow_policy(source):
+def check_workflow_policy(source, partitioned=False):
     try:
         source = source.decode("utf-8")
     except UnicodeDecodeError as error:
@@ -190,6 +193,8 @@ def check_workflow_policy(source):
         "test": "Unit Tests", "go-lint": "Go lint (uhhcraft)",
         "go-test": "Go test (uhhcraft)", "go-build": "Go build (uhhcraft image)",
     }
+    if partitioned:
+        expected["python-playbook-safety"] = "Python Playbook Safety"
     jobs = {}
     current = None
     in_jobs = False
@@ -260,42 +265,28 @@ def check_workflow_policy(source):
         raise Refusal("Dev PR workflow changed; review and update the merge gate policy first")
 
 
-def check_workflow_edit(base, candidate):
-    marker = b"  bats:\n    name: Bash Tests\n    runs-on: ubuntu-latest\n"
-    if (base.count(b"  bats:\n") != 1 or base.count(b"    name: Bash Tests\n") != 1
-            or base.count(marker) != 1):
-        raise Refusal("Pinned base workflow has a missing or ambiguous Bash job")
-    insertion = base.index(marker) + len(marker)
-    if not base[insertion:].startswith(b"    steps:\n"):
-        raise Refusal("Pinned base Bash job is moved or has an existing timeout")
-    job_start = base.index(b"  bats:\n")
-    next_job = re.search(rb"(?m)^  [A-Za-z0-9_-]+:\n", base[job_start + len(b"  bats:\n"):])
-    job_end = job_start + len(b"  bats:\n") + next_job.start() if next_job else len(base)
-    if b"timeout-minutes" in base[job_start:job_end]:
-        raise Refusal("Pinned base Bash job already has a timeout")
-    match = re.match(rb"    timeout-minutes: ([1-9]|[12][0-9]|30)\n", candidate[insertion:])
-    if not match:
-        raise Refusal("Workflow exception requires a canonical unquoted Bash timeout from 1 through 30")
-    permitted = base[:insertion] + match.group(0) + base[insertion:]
-    if candidate != permitted:
-        raise Refusal("Workflow change includes bytes beyond the permitted Bash timeout insertion")
-
-
 def check_workflow_change(api, base_sha, head_sha, files):
     base, base_blob_sha = workflow_bytes(api, base_sha)
-    candidate, _ = workflow_bytes(api, head_sha)
-    check_workflow_policy(base)
+    candidate, candidate_blob_sha = workflow_bytes(api, head_sha)
+    if candidate_blob_sha != PARTITIONED_WORKFLOW_BLOB_SHA:
+        raise Refusal("Workflow head is not the exact reviewed Python Playbook Safety partition")
     workflow_records = [f for f in files if f["filename"] == WORKFLOW or f.get("previous_filename") == WORKFLOW]
-    if base == candidate:
-        if workflow_records:
-            raise Refusal("Changed-file evidence reports a workflow change but pinned bytes are identical")
+    if base_blob_sha == PRE_PARTITION_WORKFLOW_BLOB_SHA:
+        check_workflow_policy(base)
+        check_workflow_policy(candidate, partitioned=True)
+        if base == candidate:
+            raise Refusal("Pre-partition workflow must transition to the exact reviewed partition blob")
+        if (len(workflow_records) != 1 or workflow_records[0].get("status") != "modified"
+                or workflow_records[0]["filename"] != WORKFLOW
+                or workflow_records[0].get("previous_filename") is not None):
+            raise Refusal("Workflow transition requires one modified record at the protected path")
         return
-    if (len(workflow_records) != 1 or workflow_records[0].get("status") != "modified"
-            or workflow_records[0]["filename"] != WORKFLOW or workflow_records[0].get("previous_filename") is not None):
-        raise Refusal("Workflow changes require one modified record at the protected path")
-    check_workflow_edit(base, candidate)
-    if base_blob_sha != REVIEWED_WORKFLOW_BLOB_SHA:
-        raise Refusal("Workflow edit exception requires the exact reviewed base blob; update the merge-gate policy")
+    if base_blob_sha == PARTITIONED_WORKFLOW_BLOB_SHA:
+        check_workflow_policy(base, partitioned=True)
+        if base != candidate or workflow_records:
+            raise Refusal("Partitioned workflow may only remain byte-identical on subsequent PRs")
+        return
+    raise Refusal("Workflow base is outside the exact pre-partition or reviewed partition states")
 
 
 def check_runs(api, sha):
