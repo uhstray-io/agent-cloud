@@ -1,11 +1,14 @@
 """Synthetic contract tests for the bounded receiver capability survey."""
 
+import ast
 import importlib.util
 import json
+import sys
 from pathlib import Path
 
 import pytest
 import yaml
+from jinja2 import Environment, StrictUndefined
 
 ROOT = Path(__file__).resolve().parents[2]
 HELPER = ROOT / "platform/playbooks/files/survey-o11y-receiver-capabilities.py"
@@ -112,6 +115,20 @@ def test_malformed_missing_oversized_and_timed_out_probes_become_unknown(
     assert "4412" not in json.dumps(report)
 
 
+@pytest.mark.parametrize(
+    ("program", "expected_reason"),
+    [
+        ("import time; time.sleep(1)", "probe_timeout"),
+        ("import sys; sys.stdout.buffer.write(b'x' * (65536 + 1))", "probe_oversized"),
+        ("raise SystemExit(7)", "probe_failed"),
+    ],
+)
+def test_run_enforces_timeout_output_bound_and_exit_status(monkeypatch, program, expected_reason):
+    monkeypatch.setattr(SURVEY, "PROBE_TIMEOUT", 0.05)
+    with pytest.raises(SURVEY.ProbeError, match=expected_reason):
+        SURVEY._run([sys.executable, "-c", program])
+
+
 def test_identity_mismatch_skips_the_receiver_user_systemd_probe(monkeypatch):
     called = []
 
@@ -142,7 +159,9 @@ def test_invalid_user_produces_a_closed_unknown_report_without_probes(monkeypatc
 def test_playbook_is_dev_bound_receiver_only_check_mode_safe_and_schema_guarded():
     plays = yaml.safe_load(PLAYBOOK.read_text())
     templates = yaml.safe_load((ROOT / "platform/semaphore/templates.yml").read_text())["templates"]
-    template = next(item for item in templates if item["name"] == "Survey o11y Receiver Capabilities (Dev)")
+    matching_templates = [item for item in templates if item["name"] == "Survey o11y Receiver Capabilities (Dev)"]
+    assert len(matching_templates) == 1
+    template = matching_templates[0]
     normal_tasks = plays[-1]["tasks"]
     probe = next(
         task for task in normal_tasks
@@ -160,15 +179,21 @@ def test_playbook_is_dev_bound_receiver_only_check_mode_safe_and_schema_guarded(
         task for task in normal_tasks
         if task["name"] == "Require a fixed unknown result when collection is unavailable"
     )
-
     assert plays[0]["ansible.builtin.import_playbook"] == "refuse-internal-extra-vars.yml"
     assert plays[1]["ansible.builtin.import_playbook"] == "require-reviewed-checkout.yml"
+    assert plays[1]["vars"]["_reviewed_checkout_payload_paths"] == [
+        "platform/playbooks/files/reviewed-checkout.py",
+        "platform/playbooks/files/survey-o11y-receiver-capabilities.py",
+    ]
     assert plays[-1]["hosts"] == "o11y_svc"
     assert probe["ansible.builtin.command"]["argv"] == ["python3", "-", "{{ _receiver_account }}"]
     assert probe["no_log"] is True
     assert probe["when"] == "not ansible_check_mode"
     assert checkout["no_log"] is True
     assert checkout["when"] == "not ansible_check_mode"
+    assert "--require-dev-ref" in checkout["ansible.builtin.command"]["argv"]
+    assert "hostvars['localhost']._reviewed_checkout_payloads" in plays[-1]["vars"]["_checkout_helper"]
+    assert "hostvars['localhost']._reviewed_checkout_payloads" in plays[-1]["vars"]["_receiver_helper"]
     assert "probe_unavailable" in json.dumps(fallback)
     assert "probe_unavailable" in json.dumps(unknown_guard)
     assert SURVEY.MAX_OUTPUT == 64 * 1024
@@ -176,8 +201,71 @@ def test_playbook_is_dev_bound_receiver_only_check_mode_safe_and_schema_guarded(
     assert "check_mode_unverified" in json.dumps(normal_tasks)
     assert "expected_repository_sha" in {item["name"] for item in template["survey_vars"]}
     assert template["repository"] == "agent-cloud dev"
+    assert "ansible_user | default('') is match" in json.dumps(plays[3]["tasks"])
+    checkout_expression = plays[-1]["vars"]["_receiver_checkout"]
+    environment = Environment(undefined=StrictUndefined)
+    render_checkout = environment.from_string(checkout_expression).render
+    assert render_checkout(local_monorepo_dir="/srv/agent-cloud") == "/srv/agent-cloud"
+    assert Path(render_checkout(ansible_user="receiver")).parts[-2:] == ("receiver", "agent-cloud")
+    assert Path(render_checkout()).parts[-2:] == ("deploy", "agent-cloud")
     source = HELPER.read_text()
     assert "openbao" not in source.lower()
     assert "shell=True" not in source
     assert "subprocess.Popen(" in source
     assert "verify-dev-source" not in json.dumps(plays)
+
+
+
+def _playbook_task(name):
+    tasks = yaml.safe_load(PLAYBOOK.read_text())[-1]["tasks"]
+    return next(task for task in tasks if task["name"] == name)
+
+
+def _evaluate_assertions(task, context):
+    expressions = task["ansible.builtin.assert"]["that"]
+    if isinstance(expressions, str):
+        expressions = [expressions]
+    environment = Environment(undefined=StrictUndefined)
+    return all(environment.compile_expression(expression)(**context) for expression in expressions)
+
+
+def test_report_validation_fails_closed_and_nonzero_uses_fixed_fallback():
+    mapping_guard = _playbook_task("Require the receiver report to be a mapping")
+    status_guard = _playbook_task("Require a supported top-level receiver report status")
+    observed_guard = _playbook_task("Require the helper's closed report schema")
+    tasks = yaml.safe_load(PLAYBOOK.read_text())[-1]["tasks"]
+    names = [task["name"] for task in tasks]
+    visible_report_index = names.index("Report only the sanitized receiver capability categories")
+    for guard in (mapping_guard, status_guard, observed_guard):
+        assert names.index(guard["name"]) < visible_report_index
+
+    context = {"_receiver_report": {"schema_version": 1, "status": "unexpected"}}
+    assert _evaluate_assertions(mapping_guard, context)
+    assert not _evaluate_assertions(status_guard, context)
+    assert not _evaluate_assertions(mapping_guard, {"_receiver_report": []})
+    report_with_extra_key = {
+        "schema_version": 1,
+        "status": "observed",
+        "observations": {},
+        "actions": {"podman_store": "not_called", "service_mutation": "not_called"},
+        "extra_sensitive_key": "must-not-print",
+    }
+    context = {"_receiver_report": report_with_extra_key}
+    assert _evaluate_assertions(status_guard, context)
+    assert not _evaluate_assertions(observed_guard, context)
+
+    unavailable = _playbook_task("Validate the strict sanitized result and retain categories only")
+    expression = unavailable["ansible.builtin.set_fact"]["_receiver_report"]
+    environment = Environment(undefined=StrictUndefined)
+    environment.filters["from_json"] = json.loads
+    fallback = ast.literal_eval(
+        environment.from_string(expression).render(
+            _receiver_capability_raw={"rc": 1, "stdout": "untrusted command output"},
+        )
+    )
+    context = {"_receiver_report": fallback, "_observation_names": sorted(OBSERVATION_NAMES)}
+    unknown_guard = _playbook_task("Require a fixed unknown result when collection is unavailable")
+    assert _evaluate_assertions(mapping_guard, context)
+    assert _evaluate_assertions(status_guard, context)
+    assert _evaluate_assertions(unknown_guard, context)
+    assert fallback["reason"] == "probe_unavailable"

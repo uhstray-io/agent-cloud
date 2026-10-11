@@ -490,15 +490,18 @@ def test_playbook_is_dev_bound_guarded_exact_head_and_read_only_in_check_mode():
     reviewed_checkout = yaml.safe_load((ROOT / "platform/playbooks/require-reviewed-checkout.yml").read_text())
     reviewed_tasks = reviewed_checkout[0]["tasks"]
     sha_guard = reviewed_tasks[0]["ansible.builtin.assert"]
-    assert sha_guard["that"] == "expected_repository_sha | default('') is match('^[0-9a-f]{40}$')"
-    assert [
-        task["ansible.builtin.command"]["argv"]
-        for task in reviewed_tasks
-        if "ansible.builtin.command" in task
-    ] == [
-        ["git", "rev-parse", "HEAD"],
-        ["git", "status", "--porcelain", "--untracked-files=all"],
-    ]
+    assert "expected_repository_sha | default('') is match('^[0-9a-f]{40}$')" in sha_guard["that"]
+    verifier = next(
+        task for task in reviewed_tasks
+        if task.get("name") == "Compare checkout bytes with the reviewed commit"
+    )
+    assert verifier["ansible.builtin.command"]["argv"][:2] == ["python3", "-"]
+    assert verifier["ansible.builtin.command"]["stdin_add_newline"] is False
+    assert "--require-dev-ref" not in json.dumps(verifier)
+    assert next(
+        task for task in reviewed_tasks
+        if task.get("name") == "Require pinned index and worktree bytes"
+    )["no_log"] is True
     assert all(task.get("check_mode") is False for task in tasks if "ansible.builtin.command" in task)
     command = next(
         task["ansible.builtin.command"]

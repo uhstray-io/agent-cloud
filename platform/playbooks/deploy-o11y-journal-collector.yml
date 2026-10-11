@@ -6,6 +6,11 @@
 
 - name: Require the reviewed checkout
   ansible.builtin.import_playbook: require-reviewed-checkout.yml
+  vars:
+    _reviewed_checkout_require_dev_ref: true
+    _reviewed_checkout_payload_paths:
+      - platform/playbooks/files/reviewed-checkout.py
+      - platform/playbooks/files/o11y-journal-public-dev.py
 
 - name: Pre-flight
   ansible.builtin.import_playbook: preflight-target-group.yml
@@ -33,17 +38,14 @@
         quiet: true
       tags: [always]
 
-    - name: Read the fixed public Dev head and local origin tracking ref
+    - name: Read the fixed public Dev head
       ansible.builtin.command:
         argv:
           - python3
           - "-"
-          - verify-dev-source
-          - --checkout
-          - "{{ playbook_dir }}/../.."
           - --expected-sha
           - "{{ expected_repository_sha }}"
-        stdin: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/o11y-journal-workflow.py') }}"
+        stdin: "{{ hostvars['localhost']._reviewed_checkout_payloads['platform/playbooks/files/o11y-journal-public-dev.py'] | b64decode(encoding='utf-8') }}"
         stdin_add_newline: false
       register: _journal_controller_source_result
       changed_when: false
@@ -56,8 +58,6 @@
         that:
           - _journal_controller_source_result.rc | default(1) == 0
           - (_journal_controller_source_result.stdout | default('{}') | from_json).status == 'verified'
-          - (_journal_controller_source_result.stdout | from_json).revision == expected_repository_sha
-          - (_journal_controller_source_result.stdout | from_json).origin_dev_revision == expected_repository_sha
           - (_journal_controller_source_result.stdout | from_json).public_dev_revision == expected_repository_sha
         fail_msg: >-
           The controller checkout, its origin/dev ref, and the canonical public Dev head must
@@ -104,12 +104,12 @@
         argv:
           - python3
           - "-"
-          - verify-checkout
           - --checkout
           - "{{ _journal_monorepo_dir }}"
           - --expected-sha
           - "{{ expected_repository_sha }}"
-        stdin: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/o11y-journal-workflow.py') }}"
+          - --require-dev-ref
+        stdin: "{{ hostvars['localhost']._reviewed_checkout_payloads['platform/playbooks/files/reviewed-checkout.py'] | b64decode(encoding='utf-8') }}"
         stdin_add_newline: false
       register: _journal_checkout_result
       changed_when: false
@@ -121,10 +121,11 @@
       ansible.builtin.assert:
         that:
           - _journal_checkout_result.rc | default(1) == 0
-          - (_journal_checkout_result.stdout | default('{}') | from_json).status == 'verified'
+          - (_journal_checkout_result.stdout | default('{}') | from_json).status == 'checkout_consistent'
           - (_journal_checkout_result.stdout | from_json).revision == expected_repository_sha
-          - (_journal_checkout_result.stdout | from_json).origin_dev_revision == expected_repository_sha
-          - (_journal_checkout_result.stdout | from_json).clean is sameas true
+          - (_journal_checkout_result.stdout | from_json).index_matches_revision == true
+          - (_journal_checkout_result.stdout | from_json).tracked_bytes_match_revision == true
+          - (_journal_checkout_result.stdout | from_json).local_dev_ref_matches_revision == true
         fail_msg: >-
           The receiver checkout and its local origin/dev ref must already match the exact
           reviewed SHA and have no tracked or untracked changes. No placement or cleanup is attempted.

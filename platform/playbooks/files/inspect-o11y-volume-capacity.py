@@ -202,14 +202,24 @@ def main() -> int:
         resolved[logical_name] = {"mountpoint": mountpoint}
 
     reports: list[dict[str, int | str | bool]] = []
+    volume_fsids: list[int] = []
+    filesystem_groups: dict[int, int] = {}
+    filesystem_capacities = {root_fsid: (root_total, root_available)}
     for logical_name, details in resolved.items():
         mountpoint = details["mountpoint"]
         capacity = fs_capacity(mountpoint)
         if capacity is None:
             return result("volume_filesystem_unresolved", volume=logical_name)
         total, available, fsid = capacity
+        observed_capacity = filesystem_capacities.get(fsid)
+        if observed_capacity is not None and observed_capacity[0] != total:
+            return result("backing_filesystem_readback_inconsistent", volume=logical_name)
+        filesystem_capacities[fsid] = (total, min(available, observed_capacity[1]) if observed_capacity else available)
+        if fsid not in filesystem_groups:
+            filesystem_groups[fsid] = len(filesystem_groups) + 1
         report: dict[str, int | str | bool] = {
             "volume": logical_name,
+            "backing_filesystem_group": filesystem_groups[fsid],
             "mountpoint_verified": True,
             "shares_guest_root_filesystem": fsid == root_fsid,
             "backing_filesystem_total_bytes": total,
@@ -222,6 +232,12 @@ def main() -> int:
                 return result("volume_size_unreadable", volume=logical_name)
             report["stored_bytes"] = size
         reports.append(report)
+        volume_fsids.append(fsid)
+
+    for report, fsid in zip(reports, volume_fsids, strict=True):
+        total, available = filesystem_capacities[fsid]
+        report["backing_filesystem_available_bytes"] = available
+        report["backing_filesystem_free_percent"] = round(100 * available / total, 2) if total else 0
 
     if minimum_free_percent is not None:
         blocked = next(
