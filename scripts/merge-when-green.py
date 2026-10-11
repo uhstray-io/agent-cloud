@@ -108,9 +108,12 @@ def changed_files(api, number):
     files = paged(api, f"repos/{REPO}/pulls/{number}/files", "")
     if any(not isinstance(f, dict) or not isinstance(f.get("filename"), str) for f in files):
         raise Refusal("Changed-file evidence is incomplete")
+    if any(f.get("previous_filename") is not None and not isinstance(f.get("previous_filename"), str)
+           for f in files):
+        raise Refusal("Changed-file rename evidence is incomplete")
     if any(f["filename"] == WORKFLOW or f.get("previous_filename") == WORKFLOW for f in files):
         raise Refusal("PR changes the protected lint-and-test workflow")
-    return [f["filename"] for f in files]
+    return [path for f in files for path in (f.get("previous_filename"), f["filename"]) if path]
 
 
 def required_jobs(files):
@@ -229,6 +232,21 @@ def check_runs(api, sha):
     return runs
 
 
+def check_commit_statuses(api, sha):
+    statuses = paged(api, f"repos/{REPO}/commits/{sha}/statuses", "")
+    latest = {}
+    for status in statuses:
+        if (not isinstance(status, dict) or not isinstance(status.get("context"), str)
+                or not status["context"] or not isinstance(status.get("state"), str)
+                or status["state"] not in ("error", "failure", "pending", "success")):
+            raise Refusal("Exact-head commit status is incomplete")
+        latest.setdefault(status["context"].casefold(), status)
+    failed = [status["context"] for context, status in latest.items()
+              if context != "coderabbit" and status["state"] != "success"]
+    if failed:
+        raise Refusal(f"Latest commit status is not successful: {', '.join(sorted(failed))}")
+
+
 def workflow_runs(api, sha, number):
     runs = paged(api, f"repos/{REPO}/actions/runs?head_sha={sha}&event=pull_request", "workflow_runs")
     if not runs:
@@ -261,6 +279,7 @@ def workflow_runs(api, sha, number):
 
 
 def check_job_evidence(api, number, sha, files):
+    check_commit_statuses(api, sha)
     runs = check_runs(api, sha)
     by_id = {}
     external = []
@@ -352,7 +371,8 @@ def review_evidence(api, number, sha, author, receipt_path):
         submitted = review.get("submitted_at") or ""
         if not isinstance(submitted, str):
             raise Refusal("Review response has an invalid submission time")
-        if login not in latest or submitted > (latest[login].get("submitted_at") or ""):
+        # GitHub returns reviews chronologically, so the later item wins timestamp ties.
+        if login not in latest or submitted >= (latest[login].get("submitted_at") or ""):
             latest[login] = review
     if any(r.get("state") == "CHANGES_REQUESTED" for r in latest.values()):
         raise Refusal("An outstanding changes-requested review remains")
@@ -375,11 +395,18 @@ def review_evidence(api, number, sha, author, receipt_path):
         nodes, page_info = threads.get("nodes"), threads.get("pageInfo")
         if not isinstance(nodes, list) or not isinstance(page_info, dict):
             raise Refusal("Review-thread response is incomplete")
-        unresolved.extend(n for n in nodes if not isinstance(n, dict) or not n.get("isResolved"))
-        if not page_info.get("hasNextPage"):
+        for node in nodes:
+            if not isinstance(node, dict) or not isinstance(node.get("isResolved"), bool):
+                raise Refusal("Review-thread resolution evidence is incomplete")
+            if not node["isResolved"]:
+                unresolved.append(node)
+        has_next = page_info.get("hasNextPage")
+        if not isinstance(has_next, bool):
+            raise Refusal("Review-thread pagination metadata is incomplete")
+        if not has_next:
             break
         cursor = page_info.get("endCursor")
-        if not cursor:
+        if not isinstance(cursor, str) or not cursor:
             raise Refusal("Review-thread pagination is incomplete")
     else:
         raise Refusal("Review-thread pagination limit reached")

@@ -52,6 +52,9 @@ class FakeGitHub:
         ]
         self.file_pages = None
         self.check_pages = None
+        self.statuses = []
+        self.status_pages = None
+        self.thread_page_info = {"hasNextPage": False, "endCursor": None}
         self.workflow_source = (SCRIPT.parents[1] / guard.WORKFLOW).read_bytes()
 
     def api(self, endpoint, fields=()):
@@ -74,6 +77,10 @@ class FakeGitHub:
             batch = self.check_pages[page - 1] if self.check_pages is not None else self.checks
             total = sum(map(len, self.check_pages)) if self.check_pages is not None else len(self.checks)
             return {"total_count": total, "check_runs": batch}
+        if endpoint == f"repos/{guard.REPO}/commits/{HEAD}/statuses":
+            page = int(dict(fields)["page"])
+            pages = self.status_pages or [self.statuses]
+            return pages[page - 1] if page <= len(pages) else []
         if endpoint.startswith(f"repos/{guard.REPO}/actions/runs?"):
             page = int(dict(fields)["page"])
             return {"total_count": len(self.runs), "workflow_runs": self.runs if page == 1 else []}
@@ -81,7 +88,7 @@ class FakeGitHub:
             return {"total_count": len(self.jobs), "jobs": list(self.jobs.values())}
         if endpoint == "graphql":
             return {"data": {"repository": {"pullRequest": {"reviewThreads": {
-                "nodes": self.threads, "pageInfo": {"hasNextPage": False, "endCursor": None},
+                "nodes": self.threads, "pageInfo": self.thread_page_info,
             }}}}}
         raise AssertionError(endpoint)
 
@@ -154,6 +161,33 @@ class MergeGuardTests(unittest.TestCase):
         self.assertTrue(any(dict(fields).get("page") == "2" for endpoint, fields in api.calls
                             if endpoint.endswith("/files")))
 
+    def test_renamed_go_file_remains_in_path_skip_evidence(self):
+        api = FakeGitHub()
+        api.file_pages = [[{"filename": "docs/moved.md",
+                            "previous_filename": "platform/services/uhhcraft/deployment/main.go"}]]
+        run_refusal(self, api, "was skipped")
+
+    def test_exact_head_commit_status_failure_refuses_and_coderabbit_is_optional(self):
+        api = FakeGitHub()
+        api.statuses = [
+            {"context": "ci/build", "state": "failure", "created_at": "2026-10-10T12:00:00Z"},
+            {"context": "CodeRabbit", "state": "error", "created_at": "2026-10-10T12:01:00Z"},
+        ]
+        run_refusal(self, api, "Latest commit status is not successful")
+        api.statuses[0]["state"] = "success"
+        self.assertTrue(guard.validate(api, PR, HEAD, None))
+
+    def test_commit_statuses_are_paginated_and_latest_state_wins(self):
+        api = FakeGitHub()
+        api.status_pages = [
+            [{"context": "ci/build", "state": "success", "created_at": "2026-10-10T12:01:00Z"}
+             for _ in range(100)],
+            [{"context": "ci/build", "state": "failure", "created_at": "2026-10-10T12:00:00Z"}],
+        ]
+        self.assertTrue(guard.validate(api, PR, HEAD, None))
+        self.assertTrue(any(dict(fields).get("page") == "2" for endpoint, fields in api.calls
+                            if endpoint.endswith("/statuses")))
+
     def test_exact_head_check_runs_are_paginated_and_unknown_runs_refuse(self):
         api = FakeGitHub()
         api.check_pages = [api.checks + [dict(api.checks[0], id=i + 1000) for i in range(88)],
@@ -178,6 +212,12 @@ class MergeGuardTests(unittest.TestCase):
         api.reviews[0]["commit_id"] = "b" * 40
         run_refusal(self, api, "No independent approval")
 
+    def test_equal_timestamp_latest_review_verdict_wins_in_api_order(self):
+        api = FakeGitHub()
+        api.reviews.append({"user": {"login": "reviewer"}, "state": "CHANGES_REQUESTED",
+                            "commit_id": HEAD, "submitted_at": api.reviews[0]["submitted_at"]})
+        run_refusal(self, api, "changes-requested")
+
     def test_structured_sol_receipt_can_supply_final_head_approval(self):
         api = FakeGitHub()
         api.reviews = []
@@ -198,6 +238,21 @@ class MergeGuardTests(unittest.TestCase):
         api = FakeGitHub()
         api.threads = [{"id": "thread-1", "isResolved": False, "isOutdated": True}]
         run_refusal(self, api, "unresolved review thread")
+
+    def test_review_threads_require_boolean_pagination_and_resolution_fields(self):
+        invalid = [
+            ({}, []),
+            ({"hasNextPage": None, "endCursor": None}, []),
+            ({"hasNextPage": True, "endCursor": None}, []),
+            ({"hasNextPage": False, "endCursor": None}, [{"id": "thread-1"}]),
+            ({"hasNextPage": False, "endCursor": None}, [{"id": "thread-1", "isResolved": "false"}]),
+        ]
+        for page_info, threads in invalid:
+            with self.subTest(page_info=page_info, threads=threads):
+                api = FakeGitHub()
+                api.thread_page_info = page_info
+                api.threads = threads
+                run_refusal(self, api, "Review-thread")
 
     def test_workflow_policy_drift_refuses_before_merge(self):
         api = FakeGitHub()
