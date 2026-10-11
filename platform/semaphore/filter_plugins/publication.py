@@ -6,7 +6,6 @@ https://github.com/semaphoreui/semaphore/blob/v2.18.12/db/Template.go
 """
 
 import json
-import re
 
 
 def publication_matches(expected, actual):
@@ -42,19 +41,18 @@ def jwt_params_problems(template):
     params = template.get("jwt_params")
     if "jwt_params" in template:
         if not isinstance(params, dict) or set(params) - {"enabled", "audience", "ttl"}:
-            problems.append("jwt_params must contain only enabled, audience, and ttl")
+            problems.append("jwt_params must contain only enabled and audience")
         else:
             enabled = params.get("enabled", False)
             audience = params.get("audience", [])
-            ttl = params.get("ttl")
             if not isinstance(enabled, bool):
                 problems.append("jwt_params.enabled must be a boolean")
             if not isinstance(audience, list) or any(not isinstance(value, str) for value in audience):
                 problems.append("jwt_params.audience must be a list of strings")
             elif enabled and (len(audience) > 32 or "" in audience):
                 problems.append("enabled JWT audience must contain at most 32 nonempty strings")
-            if "ttl" in params and (not isinstance(ttl, str) or not _positive_jwt_ttl(ttl)):
-                problems.append("jwt_params.ttl must be a positive duration string")
+            if "ttl" in params:
+                problems.append("jwt_params.ttl is unsupported; use Semaphore's native default TTL")
 
     surveys = template.get("survey_vars", [])
     if not isinstance(surveys, list) or any(not isinstance(survey, dict) for survey in surveys):
@@ -62,29 +60,6 @@ def jwt_params_problems(template):
     elif any(survey.get("name") == "SEMAPHORE_JWT" for survey in surveys):
         problems.append("SEMAPHORE_JWT is reserved and cannot be a survey variable")
     return problems
-
-
-_JWT_TTL_PART = re.compile(r"([0-9]+)(ns|us|ms|s|m|h)")
-
-
-def _positive_jwt_ttl(value):
-    """Accept positive integer components in the bounded Go duration subset ns/us/ms/s/m/h."""
-    unit_ns = {"ns": 1, "us": 1_000, "ms": 1_000_000, "s": 1_000_000_000,
-               "m": 60_000_000_000, "h": 3_600_000_000_000}
-    position = 0
-    duration_ns = 0
-    while position < len(value):
-        match = _JWT_TTL_PART.match(value, position)
-        if match is None:
-            return False
-        digits = match.group(1)
-        if len(digits) > 19:
-            return False
-        duration_ns += int(digits) * unit_ns[match.group(2)]
-        if duration_ns > (1 << 63) - 1:
-            return False
-        position = match.end()
-    return position > 0 and duration_ns > 0
 
 
 SEED_AUTH_INPUTS = ("BAO_ROLE_ID", "BAO_SECRET_ID")

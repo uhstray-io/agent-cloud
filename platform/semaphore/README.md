@@ -175,6 +175,14 @@ environment, arguments and operational settings are preserved. By default, no
 schedules, service jobs, repository records, inventory records or credentials
 are changed.
 
+Declared task JWT settings are limited to `enabled` and `audience`; omit
+`jwt_params.ttl` so Semaphore applies its native default. The publisher cannot
+authoritatively read the controller's effective JWT `max_ttl`, and Semaphore
+validates an explicit template TTL against that limit. A future change may
+support explicit TTL only after it can bind the declaration to the effective
+`max_ttl` and reject an excessive value before any publication writes. Scoped
+survey updates preserve the live JWT settings, including their TTL.
+
 To publish one code-declared Dev schedule, set
 `semaphore_allow_scoped_schedule=true` and select exactly one existing scheduled
 template whose name ends in `(Dev)` and whose declaration binds directly to

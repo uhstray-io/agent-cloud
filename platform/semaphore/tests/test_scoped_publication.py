@@ -275,7 +275,7 @@ class ScopedPublicationTests(unittest.TestCase):
         self.assertEqual(self.schedules[0]["cron_format"], "*/30 * * * *")
 
     def test_native_jwt_params_publish_and_read_back_for_base_and_dev_variant(self):
-        params = {"enabled": True, "audience": ["agent-cloud-journal"], "ttl": "1h30m"}
+        params = {"enabled": True, "audience": ["agent-cloud-journal"]}
         declaration = {"name": "JWT fixture", "repository": "agent-cloud", "playbook": TEMPLATE["playbook"],
                        "dev_variant": True, "jwt_params": params}
         code, output = self.run_play(full_catalog=True, _base_templates=[declaration])
@@ -284,7 +284,7 @@ class ScopedPublicationTests(unittest.TestCase):
         self.assertEqual([row["jwt_params"] for row in self.records[-2:]], [params, params])
 
     def test_scoped_create_publishes_and_reads_back_native_jwt_params(self):
-        params = {"enabled": True, "audience": ["scoped-create"], "ttl": "5m"}
+        params = {"enabled": True, "audience": ["scoped-create"]}
         selected = ["JWT scoped create"]
         declaration = {"name": selected[0], "repository": "agent-cloud dev",
                        "playbook": TEMPLATE["playbook"], "jwt_params": params}
@@ -343,13 +343,6 @@ class ScopedPublicationTests(unittest.TestCase):
             ({"enabled": "true"}, []),
             ({"enabled": True, "audience": [""]}, []),
             ({"enabled": True, "audience": ["audience"] * 33}, []),
-            ({"enabled": True, "ttl": 5}, []),
-            ({"enabled": True, "ttl": "not-a-duration"}, []),
-            ({"enabled": True, "ttl": ""}, []),
-            ({"enabled": True, "ttl": "-1s"}, []),
-            ({"enabled": True, "ttl": "0s"}, []),
-            ({"enabled": True, "ttl": "1.5h"}, []),
-            ({"enabled": True, "ttl": "999999999999999999999999h"}, []),
             (None, []),
             ("missing", [{"name": "SEMAPHORE_JWT", "type": "string"}]),
         )
@@ -366,21 +359,24 @@ class ScopedPublicationTests(unittest.TestCase):
                 self.assertEqual(self.writes, [])
 
     def test_invalid_later_ttl_declaration_refuses_before_environment_or_template_writes(self):
-        declarations = [
-            {"name": "Valid earlier", "repository": "agent-cloud dev", "playbook": TEMPLATE["playbook"],
-             "isolated_environment": "Earlier isolated inputs"},
-            {"name": "Invalid later", "repository": "agent-cloud dev", "playbook": TEMPLATE["playbook"],
-             "jwt_params": {"enabled": True, "ttl": "-1s"}},
-        ]
-        code, output = self.run_play(full_catalog=True, _all_templates=declarations)
-        self.assertNotEqual(code, 0, output)
-        self.assertIn("invalid native JWT parameters", output)
-        self.assertEqual(self.writes, [])
-        self.assertEqual(self.environments, [])
+        for ttl in ("5m", "25h"):
+            with self.subTest(ttl=ttl):
+                self.setUp()
+                declarations = [
+                    {"name": "Valid earlier", "repository": "agent-cloud dev", "playbook": TEMPLATE["playbook"],
+                     "isolated_environment": "Earlier isolated inputs"},
+                    {"name": "Invalid later", "repository": "agent-cloud dev", "playbook": TEMPLATE["playbook"],
+                     "jwt_params": {"enabled": True, "ttl": ttl}},
+                ]
+                code, output = self.run_play(full_catalog=True, _all_templates=declarations)
+                self.assertNotEqual(code, 0, output)
+                self.assertIn("invalid native JWT parameters", output)
+                self.assertEqual(self.writes, [])
+                self.assertEqual(self.environments, [])
 
     def test_check_mode_with_jwt_declaration_performs_no_writes(self):
         declaration = {"name": NAME, "repository": "agent-cloud dev", "playbook": TEMPLATE["playbook"],
-                       "jwt_params": {"enabled": True, "audience": ["fixture"], "ttl": "5m"}}
+                       "jwt_params": {"enabled": True, "audience": ["fixture"]}}
         code, output = self.run_play(_all_templates=[declaration], check_mode=True)
         self.assertEqual(code, 0, output)
         self.assertEqual(self.writes, [])

@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-10-11
+goal: Reject explicit JWT TTL declarations before writes while preserving native
+  enabled and audience publication and live scoped JWT settings.
