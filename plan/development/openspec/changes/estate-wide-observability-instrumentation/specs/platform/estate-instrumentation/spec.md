@@ -162,9 +162,10 @@ When the forecast lacks headroom, the wave SHALL wait for a reviewed, non-destru
 - **WHEN** two or more backend volumes share a backing filesystem
 - **THEN** each backend's full projected retained bytes are summed once against that filesystem's current free space, with the shared filesystem charged once and no credit for resident bytes, hypothetical deletion, retention expiry, cleanup, or relocation
 
-#### Scenario: Underfilled live retention receives no resident-byte credit
-- **WHEN** a backend ingests 1 GiB/day, has seven resident days, a 15-day live retention setting, a 90-day candidate retention, a 120-GiB filesystem with 113 GiB free, and no wave or transient allowance
+#### Scenario: Underfilled retention forecast is a synthetic evaluator fixture
+- **WHEN** a synthetic evaluator fixture supplies seven complete, valid daily baseline totals peaking at 1 GiB/day, a synthetic calibrated storage-conversion ratio of 1, seven resident days, a 15-day live retention setting, a 90-day candidate retention, a 120-GiB filesystem with 113 GiB free, and no wave or transient allowance
 - **THEN** the forecast SHALL charge the full 90-GiB candidate baseline against free space, leaving 23 GiB (19.17%) projected free, and refuse because this is below the 30% threshold
+- **AND** the `refused` result is source-only and does not satisfy live baseline or calibration gates
 
 #### Scenario: Capacity forecast source proof is not live acceptance
 - **WHEN** a synthetic source fixture proves a refusal or unavailable result
