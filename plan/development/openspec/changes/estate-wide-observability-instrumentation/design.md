@@ -172,6 +172,28 @@ hardening that provides it, before relying on the token. These are activation
 risks; the pinned source ordering does not prove either collision exploitation
 or an installed-runtime isolation failure.
 
+**Pinned Semaphore source inspection (2026-10-11; source-level evidence only):**
+The public Compose fallback pins `semaphoreui/semaphore:v2.19.11`
+(`platform/services/semaphore/deployment/compose.yml:23`), while private
+`site-config/semaphore/compose.yml:27` uses the floating `latest` tag. The
+declared API was unreachable from this workstation on 2026-10-11, so the
+installed version remains unverified. At pinned upstream v2.19.11,
+[`TaskRunner.go:231-263`](https://github.com/semaphoreui/semaphore/blob/0c3f3738ea5ed988165afe499d896ff78b428c44/services/tasks/TaskRunner.go#L231-L263)
+mints the local task JWT before `LocalExecutor.Run`;
+[`local_executor.go:676-696`](https://github.com/semaphoreui/semaphore/blob/0c3f3738ea5ed988165afe499d896ff78b428c44/services/tasks/local_executor.go#L676-L696)
+calls `Prepare` then `App.Run` and exposes the direct process callback, while
+[`local_executor.go:68-79`](https://github.com/semaphoreui/semaphore/blob/0c3f3738ea5ed988165afe499d896ff78b428c44/services/tasks/local_executor.go#L68-L79)
+shows `Kill` targets that process. The executor appends survey environment after
+base environment ([`local_executor.go:707-732`](https://github.com/semaphoreui/semaphore/blob/0c3f3738ea5ed988165afe499d896ff78b428c44/services/tasks/local_executor.go#L707-L732)),
+prepares checkout, inventory and requirements
+([`local_executor.go:884-929`](https://github.com/semaphoreui/semaphore/blob/0c3f3738ea5ed988165afe499d896ff78b428c44/services/tasks/local_executor.go#L884-L929)),
+and locks only repository Git operations
+([`local_executor.go:980-1000`](https://github.com/semaphoreui/semaphore/blob/0c3f3738ea5ed988165afe499d896ff78b428c44/services/tasks/local_executor.go#L980-L1000)).
+This source review does not establish installed behavior: launch attestation,
+per-task process isolation, cancellation fencing, and worker-tree containment
+remain unverified. Keep task 1.2a unchecked; ordinary receiver deploy remains
+available.
+
 **Admission remains unimplemented (2026-10-10):** The partial durable admission
 state helper and premature receiver refusal includes were removed because they
 did not establish shared, authenticated admission. Receiver deploy and clean/reset
