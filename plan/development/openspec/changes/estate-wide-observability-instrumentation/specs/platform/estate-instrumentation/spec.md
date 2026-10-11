@@ -387,3 +387,12 @@ Instrumentation and receiver changes SHALL be declared as code, applied through 
 #### Scenario: New instrumentation fails validation
 - **WHEN** a rollout wave fails its exact-target verification or receiver-health gate
 - **THEN** rollout stops; an operator reverts the declaration through the branch workflow and redeploys it through Semaphore, preserves stored telemetry, and records the failed target and validation receipt
+
+### Requirement: Native task-JWT template publication remains non-authorizing
+The Semaphore template publisher MAY publish optional native `jwt_params` fields (`enabled`, `audience`, and `ttl`) and SHALL validate their native field types before publication writes. It SHALL reject `SEMAPHORE_JWT` as a survey variable before publication writes, preserve live JWT settings during scoped survey updates, and verify declared JWT settings by readback. The actual catalog SHALL keep JWT declarations dormant until installed signer, issuance, and token-isolation behavior are inspected. JWT publication SHALL NOT authorize a task or open receiver/journal mutation gates.
+
+#### Scenario: Dormant catalog keeps receiver and journal mutations refused
+- **WHEN** template publication runs with the actual catalog
+- **THEN** no template declares JWT parameters or the reserved `SEMAPHORE_JWT` survey name, and receiver/journal mutation actions remain refused
+- **AND** a synthetic enabled JWT declaration is accepted only when its published native fields pass readback; a reserved survey collision or malformed native field refuses before any publication write
+- **AND** scoped survey publication preserves the complete pre-existing JWT setting and check mode performs zero writes

@@ -121,6 +121,16 @@
         fail_msg: "Supply a nonempty list of unique, exact declared template names, including any (Dev) suffix."
       when: _scoped
 
+    - name: "Validate optional task-JWT declarations and reserve the token survey name"
+      ansible.builtin.assert:
+        that: item | jwt_params_problems | length == 0
+        fail_msg: >-
+          Template '{{ item.name | default('unnamed') }}' has invalid native JWT parameters
+          or uses the reserved SEMAPHORE_JWT survey name.
+      loop: "{{ _selected_templates }}"
+      loop_control:
+        label: "{{ item.name | default('unnamed') }}"
+
     - name: "Require one existing directly Dev-bound scheduled declaration for scoped schedule publication"
       ansible.builtin.assert:
         that:
@@ -355,6 +365,7 @@
               'autorun': false,
               'suppress_success_alerts': true}
              | combine({'id': (_existing_ids | first | int)} if (_existing_ids | length > 0) else {})
+             | combine({'jwt_params': item.jwt_params} if (item.jwt_params is defined) else {})
              | combine({'survey_vars': item.survey_vars} if (item.survey_vars is defined) else {}) }}
         # Scoped publication updates declared survey fields only. The binding
         # gate above proves the execution path; all other live settings survive.
@@ -398,7 +409,25 @@
            | selectattr('name', 'in', _selected_templates | map(attribute='_publish_name') | list) | list }}
       loop_control:
         label: "{{ item.name }}"
-      when: _scoped or (_bootstrap_survey_publisher | default(false))
+      when: >-
+        _scoped or (_bootstrap_survey_publisher | default(false))
+        or (_selected_templates | selectattr('jwt_params', 'defined') | list | length > 0)
+
+    - name: "Verify declared task-JWT parameters after publication"
+      ansible.builtin.assert:
+        that:
+          - >-
+            (_before.jwt_params | default({}) | publication_matches(_actual.jwt_params | default({})))
+            if _scoped and _before else
+            (item.jwt_params | publication_matches(_actual.jwt_params | default({})))
+        fail_msg: "JWT parameter readback failed for '{{ item._publish_name }}'."
+      vars:
+        _actual: "{{ _selected_after.results | map(attribute='json') | selectattr('name', 'equalto', item._publish_name) | first }}"
+        _before: "{{ (_merge_records | selectattr('name', 'equalto', item._publish_name) | list | first) | default({}) }}"
+      loop: "{{ _selected_templates | selectattr('jwt_params', 'defined') | list }}"
+      loop_control:
+        label: "{{ item._publish_name }}"
+      when: not ansible_check_mode
 
     - name: "Verify the bootstrap publisher was saved with the reviewed bindings"
       ansible.builtin.assert:

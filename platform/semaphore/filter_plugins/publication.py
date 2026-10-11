@@ -15,7 +15,7 @@ def publication_matches(expected, actual):
             return False
         return all(
             publication_matches(value, actual[key]) if key in actual
-            else value is None or value is False or value == "" or value == []
+            else value is None or value is False or value == "" or value == [] or value == {}
             for key, value in expected.items()
         )
     if isinstance(expected, list):
@@ -30,6 +30,37 @@ def publication_settings(record):
     """Exclude survey payload and computed runtime metadata from preservation."""
     return {key: value for key, value in record.items()
             if key not in {"survey_vars", "last_task", "tasks", "permissions"}}
+
+
+def jwt_params_problems(template):
+    """Validate Semaphore's optional native task-JWT fields and survey names."""
+    problems = []
+    if not isinstance(template, dict):
+        return ["template is not an object"]
+
+    params = template.get("jwt_params")
+    if "jwt_params" in template:
+        if not isinstance(params, dict) or set(params) - {"enabled", "audience", "ttl"}:
+            problems.append("jwt_params must contain only enabled, audience, and ttl")
+        else:
+            enabled = params.get("enabled", False)
+            audience = params.get("audience", [])
+            ttl = params.get("ttl", "")
+            if not isinstance(enabled, bool):
+                problems.append("jwt_params.enabled must be a boolean")
+            if not isinstance(audience, list) or any(not isinstance(value, str) for value in audience):
+                problems.append("jwt_params.audience must be a list of strings")
+            elif enabled and (len(audience) > 32 or "" in audience):
+                problems.append("enabled JWT audience must contain at most 32 nonempty strings")
+            if not isinstance(ttl, str):
+                problems.append("jwt_params.ttl must be a string")
+
+    surveys = template.get("survey_vars", [])
+    if not isinstance(surveys, list) or any(not isinstance(survey, dict) for survey in surveys):
+        problems.append("survey_vars must be a list of objects")
+    elif any(survey.get("name") == "SEMAPHORE_JWT" for survey in surveys):
+        problems.append("SEMAPHORE_JWT is reserved and cannot be a survey variable")
+    return problems
 
 
 SEED_AUTH_INPUTS = ("BAO_ROLE_ID", "BAO_SECRET_ID")
@@ -94,4 +125,5 @@ def seed_environment_problems(environment, legacy_pin_ok=False):
 class FilterModule:
     def filters(self):
         return {"publication_matches": publication_matches, "publication_settings": publication_settings,
-                "seed_environment_problems": seed_environment_problems}
+                "seed_environment_problems": seed_environment_problems,
+                "jwt_params_problems": jwt_params_problems}

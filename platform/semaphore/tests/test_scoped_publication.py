@@ -103,7 +103,10 @@ class ScopedPublicationTests(unittest.TestCase):
                     return self.reply({}, 201)
                 if self.path == "/api/project/1/templates":
                     value = json.loads(body)
-                    value["id"] = 300
+                    cls.template_payloads.append(copy.deepcopy(value))
+                    value["id"] = 300 + len(cls.records)
+                    if cls.drop_jwt_setting:
+                        value.pop("jwt_params", None)
                     cls.records.append(value)
                     return self.reply({}, 201)
                 return self.reply({}, 405)
@@ -146,6 +149,8 @@ class ScopedPublicationTests(unittest.TestCase):
                     ]
                     if cls.drop_setting:
                         value.pop("description", None)
+                    if cls.drop_jwt_setting:
+                        value.pop("jwt_params", None)
                     cls.records[0] = value
                 return self.reply({})
 
@@ -185,6 +190,7 @@ class ScopedPublicationTests(unittest.TestCase):
         cls.schedules = []
         cls.ignore_write = False
         cls.drop_setting = False
+        cls.drop_jwt_setting = False
         cls.template_drift = False
         cls.deny_secret = False
         cls.environments = []
@@ -254,9 +260,80 @@ class ScopedPublicationTests(unittest.TestCase):
         code, output = self.run_play(full_catalog=True, _all_templates=[declaration])
         self.assertEqual(code, 0, output)
         self.assertEqual(self.writes[2:], [("PUT", "/api/project/1/templates/206"),
-                                         ("PUT", "/api/project/1/schedules/400")])
+                                           ("PUT", "/api/project/1/schedules/400")])
         self.assertEqual(len(self.schedules), 1)
         self.assertEqual(self.schedules[0]["cron_format"], "*/30 * * * *")
+
+    def test_native_jwt_params_publish_and_read_back_for_base_and_dev_variant(self):
+        params = {"enabled": True, "audience": ["agent-cloud-journal"], "ttl": "5m"}
+        declaration = {"name": "JWT fixture", "repository": "agent-cloud", "playbook": TEMPLATE["playbook"],
+                       "dev_variant": True, "jwt_params": params}
+        code, output = self.run_play(full_catalog=True, _base_templates=[declaration])
+        self.assertEqual(code, 0, output)
+        self.assertEqual([payload["jwt_params"] for payload in self.template_payloads], [params, params])
+        self.assertEqual([row["jwt_params"] for row in self.records[-2:]], [params, params])
+
+    def test_scoped_create_publishes_and_reads_back_native_jwt_params(self):
+        params = {"enabled": True, "audience": ["scoped-create"], "ttl": "5m"}
+        selected = ["JWT scoped create"]
+        declaration = {"name": selected[0], "repository": "agent-cloud dev",
+                       "playbook": TEMPLATE["playbook"], "jwt_params": params}
+        code, output = self.run_play(
+            selection=selected, _all_templates=[declaration], semaphore_allow_scoped_create=True,
+            semaphore_project_id=1, semaphore_inventory_id=37, semaphore_environment_id=42,
+        )
+        self.assertEqual(code, 0, output)
+        created = next(row for row in self.records if row["name"] == selected[0])
+        self.assertEqual(self.template_payloads[0]["jwt_params"], params)
+        self.assertEqual(created["jwt_params"], params)
+
+    def test_scoped_survey_publication_preserves_live_jwt_settings(self):
+        live = {"enabled": True, "audience": ["live-audience"], "ttl": "10m"}
+        self.records[0]["jwt_params"] = copy.deepcopy(live)
+        declaration = {"name": NAME, "repository": "agent-cloud dev", "playbook": TEMPLATE["playbook"],
+                       "survey_vars": [{"name": "updated", "type": "string"}],
+                       "jwt_params": {"enabled": False}}
+        code, output = self.run_play(_all_templates=[declaration])
+        self.assertEqual(code, 0, output)
+        self.assertEqual(self.template_payloads[0]["jwt_params"], live)
+        self.assertEqual(self.records[0]["jwt_params"], live)
+
+    def test_jwt_readback_refuses_a_server_dropped_declaration(self):
+        type(self).drop_jwt_setting = True
+        declaration = {"name": NAME, "repository": "agent-cloud dev", "playbook": TEMPLATE["playbook"],
+                       "jwt_params": {"enabled": True, "audience": ["fixture"], "ttl": "5m"}}
+        code, output = self.run_play(full_catalog=True, _all_templates=[declaration])
+        self.assertNotEqual(code, 0, output)
+        self.assertIn("JWT parameter readback failed", output)
+        self.assertEqual(len(self.writes), 1)
+
+    def test_invalid_jwt_params_and_reserved_survey_name_refuse_before_writes(self):
+        cases = (
+            ({"enabled": "true"}, []),
+            ({"enabled": True, "audience": [""]}, []),
+            ({"enabled": True, "audience": ["audience"] * 33}, []),
+            ({"enabled": True, "ttl": 5}, []),
+            (None, []),
+            ("missing", [{"name": "SEMAPHORE_JWT", "type": "string"}]),
+        )
+        for jwt_params, surveys in cases:
+            with self.subTest(jwt_params=jwt_params, surveys=surveys):
+                self.setUp()
+                declaration = {"name": NAME, "repository": "agent-cloud dev", "playbook": TEMPLATE["playbook"],
+                               "survey_vars": surveys}
+                if jwt_params != "missing":
+                    declaration["jwt_params"] = jwt_params
+                code, output = self.run_play(_all_templates=[declaration])
+                self.assertNotEqual(code, 0, output)
+                self.assertIn("invalid native JWT parameters", output)
+                self.assertEqual(self.writes, [])
+
+    def test_check_mode_with_jwt_declaration_performs_no_writes(self):
+        declaration = {"name": NAME, "repository": "agent-cloud dev", "playbook": TEMPLATE["playbook"],
+                       "jwt_params": {"enabled": True, "audience": ["fixture"], "ttl": "5m"}}
+        code, output = self.run_play(_all_templates=[declaration], check_mode=True)
+        self.assertEqual(code, 0, output)
+        self.assertEqual(self.writes, [])
 
     def test_bootstrap_installs_only_publisher_with_explicit_bindings(self):
         original = copy.deepcopy(self.records)

@@ -162,6 +162,8 @@ requirements, not evidence of JWT issuance, verifier operation or runtime
 containment; journal mutation gates remain closed and task 1.2a remains
 unchecked.
 
+**Publisher source prerequisite (2026-10-11):** The shared template publisher accepts only Semaphore's native `jwt_params` fields (`enabled`, `audience`, `ttl`), carries declared values through full publication, generated Dev variants, and scoped creation, and checks published values by readback. It refuses a `SEMAPHORE_JWT` survey collision before publication writes. Scoped survey updates preserve the complete live JWT setting. The real catalog remains dormant; this source slice does not enable JWT issuance, authorize a task, or open a receiver/journal mutation gate. Installed API compatibility and token isolation remain unverified.
+
 **JWT activation risks (source-level, not installed-runtime findings):** The
 pinned [`local_executor.go:723-732`](https://github.com/semaphoreui/semaphore/blob/0c3f3738ea5ed988165afe499d896ff78b428c44/services/tasks/local_executor.go#L723-L732)
 appends `getSurveyEnvVars()` after `getEnvironmentENV()`. A survey environment

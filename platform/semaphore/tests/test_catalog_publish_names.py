@@ -46,3 +46,10 @@ def test_journal_diagnostic_lock_bootstrap_is_separately_dev_bound():
         "type": "string",
         "required": True,
     }]
+
+
+def test_catalog_jwt_declarations_remain_dormant_and_reserve_token_survey_name():
+    templates = yaml.safe_load(CATALOG.read_text())["templates"]
+    assert all("jwt_params" not in template for template in templates)
+    assert all(survey.get("name") != "SEMAPHORE_JWT"
+               for template in templates for survey in template.get("survey_vars", []))
