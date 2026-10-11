@@ -208,6 +208,7 @@ class CoverageContractTests(unittest.TestCase):
                 ("https://bad..example", False),
                 ("https://public.example:bad", False),
                 ("https://bao.example.com:8200/v1", True),
+                ("https://bao.example.com.:8200/v1", True),
             ):
                 with self.subTest(endpoint=endpoint):
                     playbook = [{

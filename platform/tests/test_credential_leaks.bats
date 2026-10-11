@@ -415,6 +415,7 @@ assert re.search(r'local_mode \| default\(false\).*is match\(_pat_single_label\)
 # that address is site data and lives in site-config, not here.
 accept = [
     'https://bao.example.com:8200',        # example: TLS anywhere is fine
+    'https://bao.example.com.:8200',       # DNS root dot is a valid FQDN
     'http://localhost:8200',               # example: loopback by name
     'http://127.0.0.1:8200',               # example: loopback by address
     'http://10.1.2.3:8200',                # example: RFC1918 10/8
@@ -476,7 +477,7 @@ if bad:
 print('all %d cases correct' % (len(accept) + len(refuse) + len(sl_accept) + len(sl_refuse)))
 "
   [ "$status" -eq 0 ]
-  [[ "$output" == *"all 35 cases correct"* ]]
+  [[ "$output" == *"all 36 cases correct"* ]]
 }
 
 @test "repo: no generated Python bytecode is tracked" {
