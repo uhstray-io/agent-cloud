@@ -255,9 +255,13 @@ always knows which image it runs.
 (task 6.3), then promoted by changing the declared image name. The previous image is kept
 until the new one has run a release, then deleted.
 
-**Cadence.** Rebuilt monthly, which also keeps the baked runner within GitHub's 30 day
-version window, and on every Xcode or macOS bump. The host's own macOS is kept at or above
-the guest's version.
+**Cadence.** GitHub stops queueing jobs to a runner 30 days after a newer runner release,
+so a calendar month is too slow. The image is rebuilt **within 14 days of every runner
+release** (the verify playbook watches the upstream release feed and reports a pending
+bump), and in any case at least every 21 days, which leaves a week for smoke test and
+promotion inside the window. It is also rebuilt on every Xcode or macOS bump. The same
+14-day rule applies to the plane-wide `github_runner_version` that the Linux and Windows
+members read. The host's own macOS is kept at or above the guest's version.
 
 **Why Packer here when the Windows change rejects it.** For Windows the platform already had
 a template mechanism that fits (`provision-template.yml`). For macOS there is none, the
@@ -297,12 +301,29 @@ platform's issued keys: users, launchd services, `pf`, power settings (restart a
 loss, never sleep), software update policy, Tart and Softnet installation, the supervisor,
 and image builds. `verify-host-access.yml` and `harden-ssh.yml` gain a macOS branch.
 
-**The first boot is manual, and that is stated, not hidden.** A new Mac needs Setup
-Assistant, an administrator account, and Remote Login switched on before anything can reach
-it over SSH. Without device management (MDM) this cannot be automated. It is the same class
-of step as installing Proxmox on a new node: a documented, one-time bootstrap in the
-service's `CLAUDE.md`, after which automation owns the machine. Enrolling the Mac in an MDM
-would remove it and is recorded as unnecessary for one host.
+**The first boot is a short, encoded bootstrap, and the part that cannot be encoded is
+named.** A new or replacement Mac must pass Setup Assistant before anything can reach it,
+and without device management (MDM) Apple provides no way to script Setup Assistant. That
+irreducible part is kept to three screens: language and region, the administrator
+account, and skipping every optional service. Everything after it is code:
+
+1. **`bootstrap.sh`**, checked in under `platform/services/macos-runner/bootstrap/`, run once
+   in Terminal by the operator with the management public key as its only argument. It is
+   idempotent: it enables Remote Login, installs the key for the administrator account,
+   sets power settings so the host survives a power loss, and prints the host's hardware
+   address for the declaration. Re-running it changes nothing on a host it already ran on.
+2. **`bootstrap-macos-host.yml`**, launched from the orchestrator, takes over over SSH and
+   converges everything else (the list at the top of this decision, and phase 2 of
+   `tasks.md`). It is the same playbook for
+   a first host and a replacement, so replacing failed hardware is "Setup Assistant,
+   `bootstrap.sh`, launch the playbook".
+3. **Erase All Content and Settings** returns a host to the start of this path, which is
+   how the path itself is tested (task 2.8).
+
+This is the same class of step as installing Proxmox on a new node. Enrolling the Mac in
+Apple Business Manager with an MDM would remove even the three screens through automated
+device enrolment; that is unnecessary for one host and is the recorded next step if the
+fleet grows to several Macs.
 
 **FileVault and unattended restart.** With FileVault on, a Mac that loses power waits at a
 pre-boot unlock screen. With it off, the App private key on the disk is protected only by
@@ -351,7 +372,8 @@ seen when it is planned, not when someone reads the licence.
 **Decision.** The `zerds` macOS jobs select the runner with
 `runs-on: ${{ fromJSON(vars.MACOS_RUNNER || '["self-hosted","macos","arm64","uhstray-lan"]') }}`,
 the same pattern as `LINUX_RUNNER` and `WINDOWS_RUNNER`. Setting `MACOS_RUNNER` to
-`"macos-15"` sends every macOS job back to GitHub. No other step needs to change: the
+the JSON array `["macos-15"]` (it must parse with `fromJSON`) sends every macOS job back
+to GitHub. No other step needs to change: the
 disk-freeing steps succeed (and free little) in a VM sized for the build, `setup-xcode`
 finds the one Xcode, `brew install cmake` is already satisfied, and the keychain steps
 work in the VM.
@@ -374,8 +396,9 @@ documented response to a host outage.
   archive under the licence, the automation verifies its digest and does the rest.
 - **The App key lives on this host** (D4). → Separate App, `0400` file, no VM route to the
   host, revocable independently.
-- **The 30-day runner version window applies fleet-wide.** → The monthly image rebuild
-  covers macOS; the same cadence must be adopted for the Linux and Windows pins, which
+- **The 30-day runner version window applies fleet-wide.** → The release-triggered rebuild
+  (within 14 days, at most every 21) covers macOS; the same rule must be adopted for the
+  Linux and Windows pins, which
   today are fixed declarations (Linux is pinned to 2.336.0 while 2.337.0 and 2.338.0 have
   been published).
 - **GitHub could start charging for self-hosted minutes.** It announced and then postponed

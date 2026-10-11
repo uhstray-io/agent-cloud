@@ -14,12 +14,15 @@
 
 ## 1. Bootstrap the host and spike the unknowns
 
-- [ ] 1.1 Place the Mac mini (wired, UPS, declared address from the allocation process
-      in 2.1), and do the documented first boot: Setup Assistant, the administrator
-      account, Remote Login on, the management public key installed. Write each step into
-      `platform/services/macos-runner/CLAUDE.md` as the one manual exception (D7).
-- [ ] 1.2 Headless operation: install Tart by hand on the host, run a vanilla VM from a
-      launchd service with no logged-in session, reboot the host (with FileVault per 0.1,
+- [ ] 1.1 Write `platform/services/macos-runner/bootstrap/bootstrap.sh` (D7): idempotent,
+      takes the management public key as its argument, enables Remote Login, installs the
+      key, sets power settings, prints the hardware address. Place the Mac mini (wired,
+      UPS), complete the three Setup Assistant screens, run the script, and record the
+      exact screens in `platform/services/macos-runner/CLAUDE.md` as the one step that
+      cannot be encoded without MDM.
+- [ ] 1.2 Headless operation: install Tart and a vanilla VM through the first draft of the
+      task 2.3 playbook (on this branch, launched from Semaphore's Dev variant, so the spike
+      is re-runnable), run the VM from a launchd service with no logged-in session, reboot the host (with FileVault per 0.1,
       using an authenticated restart if FileVault is on), and record whether the VM comes
       back without a human. Record the exact keychain handling that worked. This answer
       may reopen Open Question 4.
@@ -31,8 +34,8 @@
       and the Tart plugin, then install an operator-downloaded Xcode 26 archive. Record the
       build time and image size. If IPSW automation fails, record why and fall back to the
       Cirrus Labs vanilla base (D5).
-- [ ] 1.5 Just-in-time runner: mint a configuration by hand with the platform helper and
-      `generate-jitconfig`, start the runner in the spike VM with it, dispatch a trivial
+- [ ] 1.5 Just-in-time runner: mint a configuration with the first draft of the task 5.2
+      helper (a pytest-covered script on this branch, not an ad-hoc command), start the runner in the spike VM with it, dispatch a trivial
       job, and confirm the runner disappears from the group after the job.
 - [ ] 1.6 Confirm the third-VM limit: start a third macOS VM while two run, and record the
       error.
@@ -65,9 +68,15 @@
 - [ ] 2.5 Tests for the `pf` branch: one block per declared denial, none when empty, the
       broad-denial guard fires.
 - [ ] 2.6 Run 2.3 and 2.4 from Semaphore, then re-run both unchanged.
-- [ ] 2.7 Validation gate: spec scenario **"Bootstrap access is withdrawn only after key
+- [ ] 2.7 Add `platform/playbooks/bootstrap-macos-host.yml` as the single entry point that
+      chains 2.2 to 2.4 for a new or replacement host, and its Semaphore template.
+- [ ] 2.8 Prove the bootstrap path is repeatable: Erase All Content and Settings on the
+      host, then Setup Assistant, `bootstrap.sh` and `bootstrap-macos-host.yml` again, and
+      confirm the host converges to the same state with no other step.
+- [ ] 2.9 Validation gate: spec scenario **"Bootstrap access is withdrawn only after key
       access is proven"** (from `add-github-actions-runners`) holds for the macOS host,
-      both 2.6 re-runs report no change, and the host's reachable ports from the network
+      both 2.6 re-runs report no change, the 2.8 erase-and-rebuild converged with no extra
+      step, and the host's reachable ports from the network
       are SSH from the declared ranges only.
 
 ## 3. Build the golden image as code
@@ -85,8 +94,9 @@
       archive's digest on the host first, runs `packer build` on the host, names the image
       by its inputs, and leaves the current image untouched on failure. Add its Semaphore
       template.
-- [ ] 3.4 Corrupt the declared Xcode digest, run the build, confirm it aborts before
-      installing Xcode and the current image is unchanged, then restore.
+- [ ] 3.4 Run the build against a test fixture declaration with a wrong Xcode digest
+      (never by editing the real declaration), confirm it aborts before installing Xcode
+      and the current image is unchanged. Keep the fixture as a regression test.
 - [ ] 3.5 Validation gate: spec scenarios **"The image is rebuilt from code"** and **"An
       Xcode archive with the wrong digest aborts the build"** verified.
 
@@ -112,10 +122,13 @@
 
 ## 5. Establish the macOS credential
 
-- [ ] 5.1 If the owner chose a separate App (0.1): create it with only organisation
-      self-hosted runners read and write, install it on `uhstray-io`, store its key at
-      `secret/services/github-runner-macos` through the additive seeding path. (Operator
-      action: the key never transits a chat or a log.)
+- [ ] 5.1 If the owner chose a separate App (0.1): check in its App manifest (name, the
+      single permission organisation self-hosted runners read and write, no webhook) and a
+      playbook that renders the manifest-flow URL from it, so the App's definition is code.
+      An organisation owner completes the one approval click GitHub requires to create and
+      install an App (it cannot be done with an API token, by GitHub's design), then the
+      key is stored at `secret/services/github-runner-macos` through the additive seeding
+      path. (The key never transits a chat or a log.)
 - [ ] 5.2 Add a just-in-time step beside `platform/lib/github_app_token.py`: given an
       installation token, the group id, a runner name and labels, call
       `generate-jitconfig` and print only the encoded configuration. pytest for the
@@ -142,7 +155,7 @@
       the VM's peak memory and disk.
 - [ ] 6.4 Build a second image with a changed input, smoke it in one slot, promote it by
       declaration, and confirm the other slot picks it up on its next VM.
-- [ ] 6.5 Set `MACOS_RUNNER` to `"macos-15"` on the branch and confirm the same jobs pass
+- [ ] 6.5 Set `MACOS_RUNNER` to `["macos-15"]` on the branch and confirm the same jobs pass
       hosted with no other edit.
 - [ ] 6.6 Validation gate: spec scenarios **"A macOS job cannot see the previous job's
       machine"** (6.1), **"Administration inside the VM does not reach the host"** (6.1),
@@ -154,9 +167,11 @@
 ## 7. Verification, operations and documentation
 
 - [ ] 7.1 Add `verify-macos-runner.yml`: both slots registered and idle or busy, image
-      age and inputs, runner version against the 30 day window, Tart licence core total
+      age and inputs, runner version against the 30-day window and any upstream release older than 14 days
+      that the image does not carry yet, Tart licence core total
       against the free tier (warn at 80, D9), FileVault and power settings as declared.
-- [ ] 7.2 Add the monthly image rebuild as a scheduled Semaphore template, and a host
+- [ ] 7.2 Add the image rebuild as a scheduled Semaphore template (at most every 21 days,
+      and run within 14 days of each runner release, D5), and a host
       update playbook that drains the slots before installing macOS updates.
 - [ ] 7.3 Record queue time and slot utilisation over the first month; revisit slot size
       and the second-host question with the numbers.
@@ -167,7 +182,8 @@
       `README.md`, and the plane's label contract in
       `platform/services/github-runner/CLAUDE.md` so the three operating systems are
       documented in one place.
-- [ ] 7.6 Open the `zerds` pull request that makes the self-hosted macOS runner the default
+- [ ] 7.6 Ask the user before opening the `zerds` pull request (user-gated, like every
+      PR); on approval, open the one that makes the self-hosted macOS runner the default
       via `vars.MACOS_RUNNER`.
 - [ ] 7.7 Validation gate: spec scenarios **"Verification confirms a healthy plane"** and
       **"Verification detects a runner that is registered but not online"** (stop the
@@ -181,7 +197,9 @@
 - [ ] 8.4 Commit and push; ask before opening the PR (user-gated).
 - [ ] 8.5 On the go-ahead, open the PR into `dev`, wait for CodeRabbit and every check,
       address findings, merge with a merge commit through `scripts/merge-when-green.py`.
-- [ ] 8.6 Ask before the `dev` to `main` promotion; merge with a merge commit.
+- [ ] 8.6 Ask before the `dev` to `main` promotion (user-gated). On approval, open it,
+      wait for CodeRabbit and every required check to complete and pass, address
+      findings, and only then merge with a merge commit.
 - [ ] 8.7 Archive and retain one Hindsight memory into `agent-cloud-750a33b9`: the outcome
       labelled worked / dead end / corrected, the headless-reboot answer, the measured
       release time, and any constraint found the hard way.

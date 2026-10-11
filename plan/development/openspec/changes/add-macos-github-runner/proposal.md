@@ -1,7 +1,8 @@
 ## Why
 
-The owner has decided that every GitHub Actions job of the private repository `zerds`
-runs on hardware the organisation controls: Linux on the existing pool
+The owner has decided that the target state for every GitHub Actions job of the private
+repository `zerds` is hardware the organisation controls, with GitHub's hosted runners
+kept only as a fallback for when a self-hosted member is unavailable: Linux on the existing pool
 (`add-github-actions-runners`), Windows on a Proxmox VM (`add-windows-github-runner`), and
 macOS here. The owner's constraint for macOS is explicit: a virtual machine or GitHub's
 hosted runners, **never a personal workstation**.
@@ -102,7 +103,7 @@ None. The plane is `platform/github-actions-runners`.
 Staged, each stage independently sufficient:
 
 1. **Stop routing work.** Set the `zerds` repository variable that selects the macOS runner
-   back to `"macos-15"`. Every macOS job runs hosted again, unchanged. No platform change.
+   back to the JSON array `["macos-15"]`. Every macOS job runs hosted again, unchanged. No platform change.
 2. **Withdraw availability.** Stop the supervisor service on the host. No new VM registers,
    any running job finishes, and the just-in-time runners vanish from the group on their
    own after their one job.

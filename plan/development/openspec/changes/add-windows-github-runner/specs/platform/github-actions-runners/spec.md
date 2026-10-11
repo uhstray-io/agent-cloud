@@ -116,20 +116,25 @@ be declared, and the host-configured job-completed hook SHALL empty each declare
 directory and the runner account's temporary directory after every job, including on
 failure and cancellation.
 
-A cleanup that could not remove everything SHALL be reported by verification rather than
-pass silently.
-
 #### Scenario: A release's target directory does not survive into the next job
 
 - **GIVEN** a job that writes into a declared build root outside its workspace
 - **WHEN** the next job runs on the same runner
 - **THEN** that build root is empty at the start of the next job
 
-#### Scenario: An incomplete wipe is visible
+### Requirement: An incomplete cleanup quarantines the runner
 
-- **GIVEN** a job that leaves a file locked by a surviving process
-- **WHEN** verification runs after the job
-- **THEN** it reports that the last cleanup on that runner was incomplete
+A cleanup that could not remove everything SHALL make the runner ineligible to run job
+steps: the next job on that runner MUST fail before its first step unless a retried wipe
+succeeds, and verification SHALL report the runner as quarantined.
+
+#### Scenario: An incomplete wipe quarantines the runner
+
+- **GIVEN** a job that leaves a file locked by a surviving process, so the wipe is
+  incomplete
+- **WHEN** the next job is dispatched to that runner and the retried wipe also fails
+- **THEN** that job fails before its first step runs, the leftover file is never readable
+  by it, and verification reports the runner as quarantined
 
 ### Requirement: A workflow selects the operating system explicitly
 

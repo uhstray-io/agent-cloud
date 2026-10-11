@@ -114,7 +114,8 @@ introduced by `add-github-actions-runners`.
 Staged, each stage independently sufficient, matching the Linux change:
 
 1. **Stop routing work.** In `zerds`, set the repository variable that selects the Windows
-   runner back to the hosted label (`"windows-latest"`). The admin steps that were gated to
+   runner back to the hosted label as a JSON array, `["windows-latest"]`, which is what
+   the workflow's `fromJSON` expects. The admin steps that were gated to
    hosted runners run again there, so the workflow is complete on either surface. No
    platform change.
 2. **Withdraw availability.** De-register the Windows runner. The Linux pool is untouched,

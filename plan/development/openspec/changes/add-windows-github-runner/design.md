@@ -210,8 +210,10 @@ which is why the starting point is moderate rather than generous.
   AVX2. Rejected on memory: about 18 G free of 31 G, so a 32 G guest does not fit. Recorded
   as the placement to revisit if the build proves clock-bound.
 - *Two Windows runners.* Rejected for now. The Windows jobs are a weekly cache warm, one
-  check per pull request, and a release; one runner serialises them, and a second costs a
-  second licence position. Growth is a declaration (the plane's declaration-only
+  check per pull request, and a release; one runner serialises them. A second runner on
+  crabnebula needs no further licence, because licensing all of a host's cores covers two
+  Windows Server VMs there (D1); a second runner on another node would need that node
+  licensed too. Growth is a declaration (the plane's declaration-only
   requirement), so this is cheap to revisit once queue time is measured.
 - *8 vCPU / 16 GB, matching the Linux runners.* Rejected: the Linux sizing was chosen for
   test and lint workloads ahead of evidence, whereas the Windows release build has
@@ -224,7 +226,7 @@ which is why the starting point is moderate rather than generous.
 the Windows Server 2025 installation ISO, the VirtIO driver ISO, and a seed ISO generated
 from a templated `autounattend.xml` (plus a first-logon PowerShell script). The answer
 file loads the VirtIO storage and network drivers during setup, installs the QEMU guest
-agent and the cloud-init service (below), enables the in-box OpenSSH server with
+agent and cloudbase-init (below), enables the in-box OpenSSH server with
 PowerShell as its default shell, installs the management public key, applies the
 security baseline that belongs in every clone (no RDP, no SMB inbound, no WinRM
 listener), and then runs `sysprep /generalize /oobe /shutdown`. The playbook waits for
@@ -233,13 +235,20 @@ storage, attaches a cloud-init drive, and converts the VM to a template. With th
 parameter absent, the Ubuntu path is byte-identical (a regression test pins that).
 
 **Clone-time identity: cloudbase-init, with a guest-agent fallback.** A clone must get its
-own hostname, static address and SSH key from its declaration, which on Ubuntu is
-cloud-init's job. On Windows the established equivalent is **cloudbase-init** reading the
-Proxmox cloud-init drive. Whether Proxmox's drive and cloudbase-init's configuration agree
-on this cluster's version is **unverified**, so it is settled by the first spike (phase 1).
-If it does not work cleanly, the fallback needs no new guest software: `provision-vm.yml`
-sets the address and hostname through the QEMU guest agent's command execution, which the
-Proxmox API already exposes and the platform already relies on the agent for.
+own hostname, static address and administrative SSH key from its declaration, which on
+Ubuntu is cloud-init's job. On Windows the one agent this design uses is
+**cloudbase-init** (the Cloudbase Solutions MSI, pinned in the toolchain manifest and run
+as its own Windows service), configured with its ConfigDrive metadata service to read the
+Proxmox cloud-init drive (Proxmox's `configdrive2` format), and with exactly three plugins
+enabled: hostname, static network configuration, and SSH public keys (which it writes to
+`administrators_authorized_keys`). Proxmox's own cloud-init drive is written by
+`provision-vm.yml` from the declaration, as it is for Ubuntu clones. Whether this
+combination works on this cluster's Proxmox version is **unverified**, so it is settled by
+the first spike (task 1.3). If it does not work cleanly, the fallback needs no new guest
+software: the Windows branch of `provision-vm.yml` sets the hostname and address and
+writes the administrative public key through the QEMU guest agent's command execution,
+which the Proxmox API already exposes. The spike records which path is kept, and only
+that one ships.
 
 **Why this, not Packer.** Packer would build the same image by the same unattended
 install, but it is a second tool with its own state, plugin versions and credentials,
@@ -400,9 +409,16 @@ service, not from the host.
 **Processes, stated honestly.** The runner terminates processes a job started, by
 tracking an environment variable it injects; a job can clear that variable and escape
 the tracking. On Windows a surviving process also holds file locks, so the wipe can
-partially fail. The hook logs every path it could not remove, and verification (task 8.1)
-reports a host whose last wipe was incomplete. As on Linux, no reaper is shipped: one that
-cannot tell a leftover process from the runner's own is more dangerous than the gap.
+partially fail. The hook logs every path it could not remove and, when anything is left,
+writes a **quarantine marker** in a directory only the runner account and the hooks use.
+A second host-configured hook, `ACTIONS_RUNNER_HOOK_JOB_STARTED`, runs before any step of
+the next job: if the marker exists it retries the wipe, and if anything is still left it
+**fails that job before the job's first step runs**, naming the quarantine. A host with an
+incomplete wipe therefore takes no job that could read the leftovers; it fails closed
+until an operator (or the verify playbook's remediation, which reboots the host to
+release the locks and re-runs the wipe) clears the marker. Verification (task 8.1) reports
+a quarantined runner. As on Linux, no reaper is shipped: one that cannot tell a leftover
+process from the runner's own is more dangerous than the gap.
 
 ### D8: Inbound default-deny and egress denial on the Windows firewall, from the same declaration
 
@@ -426,14 +442,19 @@ follow-up from the Linux change, and this host is one more reason to do it.
 ### D9: Updates are applied by automation, in a window, with the runner drained
 
 **Decision.** Automatic Windows Update is disabled by policy. A patch playbook
-(`ansible.windows.win_updates`) is launched from the orchestrator: it refuses to start
-while the runner reports a job in progress, stops the runner service, installs updates,
-reboots if required, starts the runner and verifies it is online. The monthly template
+(`ansible.windows.win_updates`) is launched from the orchestrator. It first **drains** the
+runner: it removes the plane label (`uhstray-lan`) from the runner through the
+organisation API, so no newly queued job can match it, then waits until the runner
+reports no job in progress (bounded by the longest job timeout, 180 minutes). Only then
+does it stop the runner service, install updates, reboot if required, start the runner,
+restore the label and verify the runner is online with its declared labels. A run that
+fails after draining leaves the label off, so the host stays out of rotation rather than
+taking work half-patched, and verification reports the label drift. The monthly template
 rebuild (D3) is the other half: a freshly built host starts patched.
 
 **Why.** An automatic reboot in the middle of a three hour release turns into a failed
 release with no obvious cause. Patching on a schedule the platform controls keeps the host
-current without that failure mode, and the refusal-when-busy rule makes the playbook
+current without that failure mode, and draining before stopping makes the playbook
 safe to launch at any time.
 
 ### D10: Isolation, and what does not hold on Windows
@@ -457,8 +478,8 @@ administrative rights; the platform interior is unreachable from the host.
 3. **A signing secret on this host is visible to later jobs if the wipe fails.** The
    release job writes `cert.pfx` into the workspace and deletes it at the end of the step;
    a step that dies in between leaves it for the hook. The hook runs on failure and
-   cancellation, which is what makes this acceptable, and verification flags an
-   incomplete wipe.
+   cancellation, and if it cannot remove the file the quarantine (D7) stops the next job
+   before its first step, so a surviving `cert.pfx` is never readable by a later job.
 
 **The strong fix is a different lifecycle**: a fresh VM cloned from the template per job,
 registered with a just-in-time configuration and destroyed afterwards. That is what
@@ -474,7 +495,8 @@ request, the following:
 
 - **Runner selection by repository variable**, the pattern its Linux jobs already use:
   `runs-on: ${{ fromJSON(vars.WINDOWS_RUNNER || '["self-hosted","windows","x64","uhstray-lan"]') }}`.
-  Setting `WINDOWS_RUNNER` to `"windows-latest"` sends the jobs back to hosted runners.
+  Setting `WINDOWS_RUNNER` to the JSON array `["windows-latest"]` (it must parse with
+  `fromJSON`) sends the jobs back to hosted runners.
 - **Machine-administration steps run on hosted runners only**, gated with
   `if: runner.environment == 'github-hosted'`: the NASM and Vulkan SDK installs, the
   `LongPathsEnabled` write and the antivirus exclusions.
@@ -514,12 +536,13 @@ an `ubuntu:22.04` container on both.
   new guest software.
 - **Antivirus exclusions widen what malware could hide in.** → Scoped to build output and
   toolchains; replaced by a Dev Drive if the edition supports it.
-- **A pinned runner with self-update disabled has a 30 day shelf life.** Since 2026-09-25
+- **A pinned runner with self-update disabled has a 30-day shelf life.** Since 2026-09-25
   GitHub stops queueing jobs, silently, to a runner more than 30 days behind a newer
   release. The Linux pin (2.336.0) is already behind 2.337.0 (2026-08-26) and 2.338.0
-  (2026-10-06). → The plane-wide `github_runner_version` gets a monthly bump cadence,
-  carried out with the monthly rebuild (D3) for Windows, and verification (task 8.1)
-  reports a runner within a week of the window closing.
+  (2026-10-06). → The plane-wide `github_runner_version` is bumped within 14 days of every
+  runner release, a deadline independent of the monthly template rebuild (D3), and
+  verification (task 8.1) reports a pending release and any runner within a week of the
+  window closing. The rule is shared with `add-macos-github-runner`.
 - **GitHub could start charging for self-hosted minutes.** It announced a per-minute
   charge on self-hosted runners in private repositories for 2026-03-01, then postponed
   it without cancelling. → Outside this platform's control; recorded so that "no GitHub
@@ -568,9 +591,8 @@ exists either way.
    declaration. The figure to watch is memory: if peak use is under 20 GB, 24 GB frees room
    on the node; if the build pages, 48 GB is the next step.
 4. **One runner or two.** **Recommendation: one**, revisited when queue time is measured.
-   A second runner also needs a second licence position (the first host's Standard
-   licence covers two VMs on that node, so a second runner on crabnebula costs nothing
-   more).
+   A second runner on crabnebula costs no further licence (Standard covers two VMs on a
+   fully licensed host); one on any other node needs that node licensed as well.
 5. **Release signing on this host.** The Authenticode certificate is a repository secret
    today and is only used when configured. **Recommendation: allow it**, given D10 item 3
    and the hook's failure-path wipe, but the owner should know that a self-hosted signer

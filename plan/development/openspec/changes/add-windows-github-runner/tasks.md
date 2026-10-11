@@ -22,9 +22,11 @@ under the decision it settles.
       image (a read-only Semaphore task that prints `ansible --version`). It must be 2.18
       or later (D4). If it is not, the fix is an orchestrator image upgrade, sequenced
       before phase 2; WinRM is not the fallback.
-- [ ] 1.2 Unattended install: create a VM by hand-run of a draft of the D3 request body
-      (UEFI, TPM state disk, VirtIO SCSI and network, the three ISOs from `SharedISOs`)
-      and a draft `autounattend.xml`. Record whether setup loads the VirtIO drivers,
+- [ ] 1.2 Unattended install: write the first draft of the task 2.1 template branch and
+      the `autounattend.xml.j2` on this branch, and run it from Semaphore's Dev variant
+      against a throwaway vmid (UEFI, TPM state disk, VirtIO SCSI and network, the three
+      ISOs from `SharedISOs`), so the spike is itself re-runnable and its output is a
+      Semaphore task log. Record whether setup loads the VirtIO drivers,
       completes without interaction, installs the guest agent, enables OpenSSH with
       PowerShell as the default shell, and powers off after sysprep.
 - [ ] 1.3 Clone-time identity: convert the spike VM to a template, clone it with a Proxmox
@@ -151,8 +153,10 @@ under the decision it settles.
       `cmake --version`, `nasm -v`, `perl -v`, `glslc --version`, `clang --version`,
       `pwsh -v`, `git --version`, `bash --version` (must report Git Bash, not WSL),
       `makeappx` and `signtool` located, `rustup --version`.
-- [ ] 5.5 Corrupt one manifest digest on purpose, run the playbook, confirm that install
-      aborts and the installed version is unchanged, then restore the digest.
+- [ ] 5.5 Run the playbook against a test fixture manifest (a copy with one wrong digest,
+      selected by a test-only inventory, never by editing the declaration), confirm that
+      install aborts and the installed version is unchanged. Keep the fixture and the
+      command as a regression test.
 - [ ] 5.6 Validation gate: spec scenarios **"Toolchain convergence is idempotent"** (the
       5.3 re-run reports no change) and **"A corrupted toolchain download aborts its
       install"** (5.5) verified.
@@ -175,10 +179,14 @@ under the decision it settles.
       the runner account.
 - [ ] 6.5 Render the job-completed hook (`.ps1`, D7): remove per-job work directories
       (keeping `_tool`, `_temp`, `_actions`), empty each declared build root and the
-      account's `TEMP`, log every path it could not remove, record the result where
-      verification can read it, and always exit 0.
+      account's `TEMP`, log every path it could not remove, write the quarantine marker
+      when anything is left, and always exit 0. Render the job-started hook (D7): if the
+      marker exists, retry the wipe; if anything is still left, fail the job before its
+      first step, naming the quarantine.
 - [ ] 6.6 Tests: the token never appears in an argument position; the hook empties the
-      build roots on success and failure paths; the hook exits 0 when a path is locked.
+      build roots on success and failure paths; the completed hook exits 0 and writes the
+      marker when a path is locked; the started hook fails the job while the marker and the
+      leftover remain, and passes once the retry succeeds.
 - [ ] 6.7 Add or extend the Semaphore templates (deploy, de-register, verify), run the
       deploy from Semaphore, then re-run it unchanged.
 - [ ] 6.8 Validation gate: spec scenarios **"A runner registers without an operator
@@ -220,23 +228,29 @@ under the decision it settles.
 ## 8. Verification, operations and documentation
 
 - [ ] 8.1 Extend `verify-github-runners.yml` (or its equivalent) to cover the Windows
-      runner: registered, online, labels, and the last cleanup's completeness from 6.5.
-      Prove the incomplete-wipe report by holding a file open from a background process
-      in a test job.
-- [ ] 8.2 Add the patch playbook (D9): refuses while a job runs, stops the service,
-      `win_updates`, reboots if needed, starts and verifies the runner. Add its Semaphore
+      runner: registered, online, labels, and quarantine state from 6.5, with a
+      remediation mode that reboots the host to release locks, re-runs the wipe and clears
+      the marker only when it succeeds. Prove the quarantine with a test job that holds a
+      file open from a background process.
+- [ ] 8.2 Add the patch playbook (D9): drains first (removes the plane label through the
+      organisation API, waits until no job is in progress), then stops the service,
+      `win_updates`, reboots if needed, starts the runner, restores the label and verifies
+      it. Test that a job queued during the drain is not picked up. Add its Semaphore
       template and run it once.
 - [ ] 8.3 Add the monthly template rebuild and host rebuild as scheduled Semaphore
-      templates (D3), and record queue time for Windows jobs over the first month.
+      templates (D3), add the runner-release check (bump `github_runner_version` within
+      14 days of each upstream release, shared with the Linux pool), and record queue time
+      for Windows jobs over the first month.
 - [ ] 8.4 Update `platform/services/github-runner/CLAUDE.md`: the Windows member, its label
       contract, its isolation table (including the three things that do not hold, D10),
       the toolchain manifest, and the gotchas found in phases 1 to 7.
 - [ ] 8.5 Update root `AGENTS.md` (playbooks in the Independent Workflows table, the new
       secret-store fields, the Windows branches of host access and firewall) and
       `README.md`.
-- [ ] 8.6 Open the `zerds` pull request that makes the self-hosted runner the default via
+- [ ] 8.6 Ask the user before opening the `zerds` pull request (user-gated, like every
+      PR); on approval, open the one that makes the self-hosted runner the default via
       `vars.WINDOWS_RUNNER` (D11), with the hosted fallback documented in the workflow.
-- [ ] 8.7 Validation gate: spec scenarios **"An incomplete wipe is visible"** (8.1),
+- [ ] 8.7 Validation gate: spec scenarios **"An incomplete wipe quarantines the runner"** (8.1),
       **"Verification detects a runner that is registered but not online"** for the
       Windows runner, and **"A licensed host is not placed off its licensed node"** (2.5,
       re-run against the real declaration) verified.
@@ -250,7 +264,9 @@ under the decision it settles.
 - [ ] 9.4 Commit and push; ask before opening the PR (user-gated).
 - [ ] 9.5 On the go-ahead, open the PR into `dev`, wait for CodeRabbit and every check,
       address findings, merge with a merge commit through `scripts/merge-when-green.py`.
-- [ ] 9.6 Ask before the `dev` to `main` promotion; merge with a merge commit.
+- [ ] 9.6 Ask before the `dev` to `main` promotion (user-gated). On approval, open it,
+      wait for CodeRabbit and every required check to complete and pass, address
+      findings, and only then merge with a merge commit.
 - [ ] 9.7 Archive the change and retain one Hindsight memory into `agent-cloud-750a33b9`:
       the outcome labelled worked / dead end / corrected, which clone-identity path won in
       1.3, the measured release time, and any constraint found the hard way.
