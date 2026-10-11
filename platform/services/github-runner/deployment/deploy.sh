@@ -229,7 +229,15 @@ install_runner() {
 
   # Only an existing install is serving; a fresh host has nothing to stop, and is not
   # registered yet, so the playbook starts it after configure.
-  [ -z "$have" ] || stop_runner
+  if [ -n "$have" ]; then
+    stop_runner
+    # From here every failure path restores the previous files and exits through
+    # error(); this brings the service back on whatever install is then in place, so
+    # a refused upgrade does not also leave the host serving nothing.
+    if [ -f "${RUNNER_HOME}/.runner" ]; then
+      trap 'user_systemctl start actions-runner.service >/dev/null 2>&1 || true' EXIT
+    fi
+  fi
   swap_in_release "$stage" "$prev"
   rm -rf "$stage"
 
@@ -244,6 +252,7 @@ install_runner() {
 
   if [ -n "$have" ]; then
     if [ -f "${RUNNER_HOME}/.runner" ]; then
+      trap - EXIT
       user_systemctl start actions-runner.service || error "upgraded to ${now} but the service did not start"
     fi
     info "upgraded runner ${have} -> ${now}"

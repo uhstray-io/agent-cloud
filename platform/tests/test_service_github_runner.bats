@@ -148,7 +148,12 @@ _fake_runner_release() {
   local ver="$1" extra="${2:-}" src="$BATS_TEST_TMPDIR/src-$1"
   rm -rf "$src"
   mkdir -p "$src/bin" "$src/externals/node24"
-  printf '#!/bin/sh\n[ "$1" = "--version" ] && echo "%s"\n' "${REPORTS:-$ver}" > "$src/bin/Runner.Listener"
+  if [ -n "${REPORTS_ONCE_PLACED:-}" ]; then
+    # Reports the declared version while staged, another once swapped into place.
+    printf '#!/bin/sh\ncase "$0" in */_install.*) echo "%s" ;; *) echo "%s" ;; esac\n' "$ver" "$REPORTS_ONCE_PLACED" > "$src/bin/Runner.Listener"
+  else
+    printf '#!/bin/sh\n[ "$1" = "--version" ] && echo "%s"\n' "${REPORTS:-$ver}" > "$src/bin/Runner.Listener"
+  fi
   chmod +x "$src/bin/Runner.Listener"
   echo "$ver" > "$src/bin/release.txt"
   for f in config.sh env.sh run.sh safe_sleep.sh run-helper.sh.template run-helper.cmd.template; do
@@ -356,6 +361,22 @@ EOF
   refute_contains "$output" "upgraded runner"
   refute_grep -q 'systemctl' "$CALLS"
   [ "$("$RH/bin/Runner.Listener" --version)" = "2.336.0" ]
+}
+
+@test "gh-runner: a swap that does not take restores the old install and restarts it" {
+  _setup_sandbox
+  _existing_host 2.336.0 0.8.1
+  REPORTS_ONCE_PLACED=9.9.9 _fake_runner_release 2.338.0
+  _declare 2.338.0 0.8.1
+  _install
+  [ "$status" -ne 0 ]
+  assert_contains "$output" "previous install restored"
+  refute_contains "$output" "upgraded runner"
+  [ "$("$RH/bin/Runner.Listener" --version)" = "2.336.0" ]
+  [ "$(cat "$RH/bin/release.txt")" = "2.336.0" ]
+  [ "$(cat "$RH/.credentials")" = "registration .credentials" ]
+  # Stopped for the swap, and started again on the restored install.
+  [ "$(grep -n 'systemctl --user stop' "$CALLS" | cut -d: -f1)" -lt "$(grep -n 'systemctl --user start' "$CALLS" | cut -d: -f1)" ]
 }
 
 @test "gh-runner: a release that ships a host-owned file is refused" {
