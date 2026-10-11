@@ -8,6 +8,8 @@ stdout/stderr; API bodies, headers, tokens, and exception text are never exposed
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
 import json
 import re
 import sys
@@ -106,6 +108,14 @@ def positive_id(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value > 0
 
 
+def _sign_assertion(issuer: str, key: bytes) -> str:
+    try:
+        with contextlib.redirect_stderr(io.StringIO()):
+            return sign_assertion(issuer, key)
+    except (Exception, SystemExit):
+        raise Refusal("app", "assertion_signing_refused") from None
+
+
 def validate_repository(api: GitHub, pat: str) -> int:
     response = checked(api.request("GET", f"/repos/{ORG}/{REPOSITORY}", pat), (200,), "repository")
     repo = response.body
@@ -129,7 +139,7 @@ def validate_repository(api: GitHub, pat: str) -> int:
 
 
 def validate_app(api: GitHub, issuer: str, key: bytes) -> tuple[int, int]:
-    jwt = sign_assertion(issuer, key)
+    jwt = _sign_assertion(issuer, key)
     app_response = checked(api.request("GET", "/app", jwt), (200,), "app")
     app = app_response.body
     owner = app.get("owner") if isinstance(app, dict) else None
@@ -257,7 +267,7 @@ def installation_repository_ids(api: GitHub, token: str) -> set[int]:
 
 
 def _installation_token(api: GitHub, issuer: str, key: bytes, installation_id: int) -> str:
-    jwt = sign_assertion(issuer, key)
+    jwt = _sign_assertion(issuer, key)
     response = checked(
         api.request("POST", f"/app/installations/{installation_id}/access_tokens", jwt),
         (201,),

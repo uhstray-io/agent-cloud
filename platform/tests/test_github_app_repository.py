@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
 import github_app_repository as grant  # noqa: E402
+import github_app_token as app_token_module  # noqa: E402
 
 PAT = "ghp_synthetic_pat"
 PEM = b"synthetic-private-key"
@@ -289,6 +290,36 @@ class GitHubAppRepositoryTests(unittest.TestCase):
         self.assertNotIn(PEM.decode(), output)
         self.assertNotIn(PAT, stderr.getvalue())
         self.assertNotIn(PEM.decode(), stderr.getvalue())
+
+    def test_malformed_private_key_returns_bounded_json_without_signer_diagnostics(self):
+        pem = "malformed synthetic key"
+        with (
+            patch.object(grant, "sign_assertion", app_token_module.sign_assertion),
+            patch.object(grant, "GitHub", return_value=FakeGitHub()),
+            patch.object(sys, "argv", ["github_app_repository.py", "--issuer", ISSUER]),
+            patch.object(sys, "stdin", io.StringIO(json.dumps({"pat": PAT, "app_private_key": pem}))),
+        ):
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                result = grant.main()
+
+        output = stdout.getvalue()
+        self.assertEqual(result, 1)
+        self.assertEqual(
+            json.loads(output),
+            {
+                "phase": "app",
+                "outcome": "assertion_signing_refused",
+                "http_status": 0,
+                "grant_attempted": False,
+                "verified": False,
+            },
+        )
+        self.assertLessEqual(len(output.splitlines()), 1)
+        self.assertNotIn("could not be parsed", stderr.getvalue())
+        self.assertNotIn("malformed synthetic key", stderr.getvalue())
+        self.assertEqual(stderr.getvalue(), "")
 
     def test_api_client_rejects_non_api_destinations(self):
         client = grant.GitHub()
