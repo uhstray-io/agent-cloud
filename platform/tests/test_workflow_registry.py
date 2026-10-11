@@ -193,7 +193,7 @@ def test_conformance_collection_and_dashboard_absence_are_explicit():
     assert variables["log_service"]["datasource"]["uid"] == "loki"
     assert "label_values" in variables["log_service"]["query"]
     loki_panels = [panel for panel in overview["panels"] if panel["datasource"]["type"] == "loki"]
-    assert len(loki_panels) == 6
+    assert len(loki_panels) == 7
     assert all("selected Logs service" in panel["description"] for panel in loki_panels)
     source_panels = {panel["title"]: panel for panel in loki_panels}
     container_query = source_panels["Recent container logs"]["targets"][0]["expr"]
@@ -216,11 +216,11 @@ def test_conformance_collection_and_dashboard_absence_are_explicit():
     volume_targets = {target["legendFormat"].split(" · ", 1)[0]: target["expr"]
                       for target in next(p for p in overview["panels"]
                                          if p["title"] == "Log volume by source")["targets"]}
-    assert set(volume_targets) == {"Container", "Journal container", "Access", "Span", "Conformance"}
-    assert 'signal!~"^(container|access-log|span)$"' in volume_targets["Container"]
+    assert set(volume_targets) == {"Legacy container", "Journal container", "Access", "Span", "Conformance"}
+    assert 'signal!~"^(container|access-log|span)$"' in volume_targets["Legacy container"]
     assert 'signal="container"' in volume_targets["Journal container"]
     assert all('job!="agent-cloud-conformance"' in volume_targets[source]
-               for source in ("Container", "Journal container", "Access", "Span"))
+               for source in ("Legacy container", "Journal container", "Access", "Span"))
     # Label combinations that carry more than one source hint still contribute once.
     records = [
         {"container": "app", "signal": ""},
@@ -308,7 +308,9 @@ def test_only_the_collector_writes_workflow_status():
     code = {f: "\n".join(ln for ln in text.splitlines() if not ln.lstrip().startswith("#"))
             for f, text in files.items()}
     assert sorted(f for f, text in code.items() if "_agg.loki_streams" in text) == [collector]
-    assert not [f for f, text in files.items() if "agent-cloud-conformance" in text]
+    assert sorted(f for f, text in code.items() if "agent-cloud-conformance" in text) == [
+        "platform/playbooks/deploy-o11y.yml"
+    ]  # The dashboard read-back may name the stream; only the collector writes it.
 
 
 def test_production_conformance_uses_the_exact_private_otlp_receiver():

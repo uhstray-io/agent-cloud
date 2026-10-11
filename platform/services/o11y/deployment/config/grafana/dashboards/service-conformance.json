@@ -208,7 +208,7 @@
         "x": 0,
         "y": 10
       },
-      "description": "One row per service and workflow step. State is the newest report in the last 45 minutes, reduced across pass, fail, and skip before any failure filtering, and is shown as fail, pass, or skip. The collector re-emits retained state, so a recent collection gap does not erase the latest status. Services that have not run are listed separately. Workflow completion age and task provenance are shown in separate panels; historical failures are not current service health.",
+      "description": "One row per service and workflow step. State is the newest report in the last 45 minutes, reduced across pass, fail, and skip before any failure filtering, and is shown as fail, pass, or skip. The collector re-emits retained state, so a recent collection gap does not erase the latest status. Services that have not run are listed separately. Workflow completion age and task provenance are shown in separate panels; historical failure snapshots are displayed separately and are not joined to these current rows or current service health.",
       "fieldConfig": {
         "defaults": {
           "custom": {},
@@ -312,7 +312,7 @@
         "x": 0,
         "y": 22
       },
-      "description": "Bounded history of failed workflow task records received in the last seven days, including error detail and the Semaphore task ID when present. The collector may repeat a historical failure across snapshots; these rows are historical workflow evidence, not current service health or a new-failure count. Use Latest step status by service for current recorded workflow state.",
+      "description": "Bounded history of failed workflow task records received in the last seven days, including error detail and the Semaphore task ID when present. The collector may repeat a historical failure across snapshots; these rows are historical workflow evidence, not current service health; they are not new-event counts. Use Latest step status by service for current recorded workflow state.",
       "options": {
         "showLabels": true,
         "wrapLogMessage": false,
@@ -327,7 +327,7 @@
           },
           "queryType": "range",
           "expr": "{job=\"agent-cloud-conformance\", status=\"fail\"}",
-          "maxLines": 50
+          "maxLines": 100
         }
       ],
       "timeFrom": "7d"
