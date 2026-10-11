@@ -115,12 +115,29 @@ setup() {
   grep -qF 'rm -rf' "$H"
 }
 
-@test "gh-runner: the unit restarts the runner and forbids privilege escalation" {
+@test "gh-runner: the unit restarts the runner and is not severed mid-build" {
   local U="$D/templates/actions-runner.service.j2"
-  grep -qF 'Restart=always' "$U"
-  grep -qF 'NoNewPrivileges=true' "$U"
+  assert_grep -qF 'Restart=always' "$U"
   # An in-flight job must not be severed mid-build.
-  grep -qF 'TimeoutStopSec=5min' "$U"
+  assert_grep -qF 'TimeoutStopSec=5min' "$U"
+}
+
+@test "gh-runner: the unit leaves no_new_privs off, so rootless podman can map ids" {
+  # Jobs run rootless podman, which maps the account's subordinate range through the
+  # setuid newuidmap/newgidmap. no_new_privs makes setuid bits inert on execve and is
+  # inherited by every job, so with NoNewPrivileges=true every container job failed with
+  # "newuidmap: write to uid_map failed: Operation not permitted" (2026-10-11).
+  local U="$D/templates/actions-runner.service.j2"
+  grep -vE '^[[:space:]]*#' "$U" > "$BATS_TEST_TMPDIR/unit"
+  assert_grep -qxF 'NoNewPrivileges=false' "$BATS_TEST_TMPDIR/unit"
+  refute_grep -qiE '^NoNewPrivileges=(true|yes|on|1)' "$BATS_TEST_TMPDIR/unit"
+  # A user manager lacks CAP_SYS_ADMIN, so systemd sets no_new_privs for every
+  # seccomp-backed option (exec-invoke.c context_has_seccomp, v255). In a user unit the
+  # namespace and capability options imply PrivateUsers=, which maps only the account's
+  # own uid. DynamicUser= forces no_new_privs outright. Each breaks rootless podman just
+  # as NoNewPrivileges=true did. Code lines only: the unit's comment names them to say
+  # why they are absent.
+  refute_grep -qE '^(SystemCallFilter|SystemCallArchitectures|SystemCallLog|RestrictNamespaces|RestrictAddressFamilies|RestrictRealtime|RestrictSUIDSGID|LockPersonality|MemoryDenyWriteExecute|PrivateDevices|ProtectClock|ProtectHostname|ProtectKernelTunables|ProtectKernelModules|ProtectKernelLogs|PrivateUsers|PrivateTmp|PrivateNetwork|PrivateIPC|PrivateMounts|ProtectHome|ReadWritePaths|ReadOnlyPaths|InaccessiblePaths|ExecPaths|NoExecPaths|TemporaryFileSystem|CapabilityBoundingSet|AmbientCapabilities|DynamicUser)=' "$BATS_TEST_TMPDIR/unit"
 }
 
 @test "gh-runner: no templates carry real addresses or a literal token" {
@@ -133,6 +150,55 @@ setup() {
   # subuid range every one of them fails, and the deploy used to report success anyway.
   local PB="$BATS_TEST_DIRNAME/../playbooks/deploy-github-runner.yml"
   assert_grep -qF 'podman unshare cat /proc/self/uid_map' "$PB"
+  assert_grep -qF 'podman unshare cat /proc/self/gid_map' "$PB"
   assert_grep -qF 'podman system migrate' "$PB"
-  assert_grep -qF '(_uidmap.stdout_lines | default([]) | length) < 2' "$PB"
+  assert_grep -qF "(_uidmap.stdout_lines.index('gid_map') - _uidmap.stdout_lines.index('uid_map') - 1) < 2" "$PB"
+}
+
+@test "gh-runner: the rootless check runs where jobs run, not in a sudo session" {
+  # The 2026-10-11 deploy passed its podman check through become_user, a sudo session
+  # outside the runner unit, while every job (a descendant of a NoNewPrivileges=true unit)
+  # failed. The check must run under the user manager with the unit's own setting, and
+  # the live service's effective no_new_privs bit must be read from the kernel.
+  local PB="$BATS_TEST_DIRNAME/../playbooks/deploy-github-runner.yml"
+  assert_grep -qF 'systemd-run --user --wait --pipe --collect --quiet' "$PB"
+  assert_grep -qF -- '--property=NoNewPrivileges="$nnp"' "$PB"
+  assert_grep -qF 'systemctl --user show --property=NoNewPrivileges --value actions-runner.service' "$PB"
+  assert_grep -qF 'systemctl --user show --property=MainPID --value actions-runner.service' "$PB"
+  assert_grep -qF '"/proc/$pid/status"' "$PB"
+  assert_grep -qF "'NoNewPrivs=0' not in _runner_privs.stdout_lines" "$PB"
+  assert_grep -qF "'userns=host' not in _runner_privs.stdout_lines" "$PB"
+  # A changed unit must reach the running process, which keeps the properties it was
+  # started with, so the deploy restarts the service when the unit file changed.
+  assert_grep -qF "state: \"{{ 'restarted' if (_runner_unit.changed | default(false)) else 'started' }}\"" "$PB"
+}
+
+@test "gh-runner: the deploy requires a subordinate uid and gid range for the account" {
+  local PB="$BATS_TEST_DIRNAME/../playbooks/deploy-github-runner.yml"
+  assert_grep -qF 'loop: [/etc/subuid, /etc/subgid]' "$PB"
+  assert_grep -qF '_subid_counts[0] >= 65536' "$PB"
+  assert_grep -qF '_subid_counts[1] >= 65536' "$PB"
+}
+
+@test "gh-runner: the deploy strips unused setuid helpers and keeps the ones it needs" {
+  # no_new_privs is off, so every setuid program is reachable from a job. The ones a
+  # runner host never uses lose the bit through dpkg-statoverride, which survives package
+  # upgrades; sudo (Ansible's escalation) and newuidmap/newgidmap (rootless podman) stay.
+  local PB="$BATS_TEST_DIRNAME/../playbooks/deploy-github-runner.yml"
+  local block
+  block=$(sed -n '/^    - name: "Remove the setuid and setgid bits a runner host does not use"$/,/^    - name: "Read back the mode/p' "$PB")
+  [ -n "$block" ]
+  assert_contains "$block" 'dpkg-statoverride --update --add'
+  local f
+  for f in /usr/bin/chfn /usr/bin/chsh /usr/bin/gpasswd /usr/bin/newgrp /usr/bin/passwd \
+           /usr/bin/su /usr/bin/chage /usr/bin/expiry /usr/bin/crontab \
+           /usr/lib/openssh/ssh-keysign /usr/lib/polkit-1/polkit-agent-helper-1; do
+    assert_contains "$block" "path: $f,"
+  done
+  local keep
+  for keep in /usr/bin/sudo /usr/bin/newuidmap /usr/bin/newgidmap; do
+    refute_contains "$block" "path: $keep,"
+  done
+  # And the result is read back from the inode, not trusted from the override database.
+  assert_grep -qF '_setuid_still | length == 0' "$PB"
 }

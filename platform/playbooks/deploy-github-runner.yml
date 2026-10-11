@@ -158,6 +158,48 @@
         shell: /bin/bash
         create_home: true
         state: present
+      register: _runner_user
+
+    - name: "Read the subordinate id files"
+      # Rootless podman maps a container's users onto the account's /etc/subuid and
+      # /etc/subgid ranges through newuidmap/newgidmap, and refuses multi-id images without
+      # them. useradd allocates both for a new non-system account, but an account created
+      # another way, or a file edited by hand, leaves them out. Asserted here, before
+      # anything is registered, so a missing range fails the deploy and not the first job.
+      ansible.builtin.slurp:
+        src: "{{ item }}"
+      loop: [/etc/subuid, /etc/subgid]
+      register: _subid_files
+      check_mode: false
+
+    - name: "Require a subordinate uid and gid range of at least 65536 for the runner account"
+      # A line is `name-or-uid:start:count`, with no whitespace, so splitting the file on
+      # whitespace yields its lines. 65536 is podman's own default size and the
+      # least that maps an image using uid/gid 65534 (nobody). Summed, because an account
+      # may hold more than one range.
+      vars:
+        _subid_owner: "^({{ _account | regex_escape }}{{ ('|' ~ _runner_user.uid) if (_runner_user.uid | default('') | string | length) > 0 else '' }}):[0-9]+:[0-9]+$"
+        _subid_counts: >-
+          {{ _subid_files.results
+             | map(attribute='content') | map('b64decode') | map('split')
+             | map('select', 'match', _subid_owner)
+             | map('map', 'split', ':') | map('map', 'last') | map('map', 'int') | map('sum')
+             | list }}
+      ansible.builtin.assert:
+        that:
+          - _subid_counts | length == 2
+          - _subid_counts[0] >= 65536
+          - _subid_counts[1] >= 65536
+        fail_msg: >-
+          {{ _account }} holds {{ _subid_counts[0] | default('?') }} subordinate uids in
+          /etc/subuid and {{ _subid_counts[1] | default('?') }} gids in /etc/subgid; rootless
+          container jobs need at least 65536 of each. Add a range, for example
+          `usermod --add-subuids 165536-231071 --add-subgids 165536-231071 {{ _account }}`
+          with a start that overlaps no other account's range, then redeploy.
+        success_msg: "{{ _account }} holds {{ _subid_counts[0] }} subordinate uids and {{ _subid_counts[1] }} gids."
+      # A check-mode run against a host that does not have the account yet has nothing to
+      # read; the real run creates the account, and useradd allocates the ranges.
+      when: not (ansible_check_mode and (_runner_user.changed | default(false)))
 
     - name: "Confirm the runner account holds no sudo rights"
       # Asserted rather than assumed: a host that was once used for something else may
@@ -177,6 +219,90 @@
           {{ _account }} appears to have sudo rights. A runner executes
           repository-authored code; granting it host administration defeats every other
           control here. Remove the sudoers entry before deploying.
+
+    # ── setuid surface a job can reach ─────────────────────────────────────
+    # The runner unit cannot set no_new_privs (rootless podman needs the setuid
+    # newuidmap/newgidmap; see actions-runner.service.j2), so every setuid or setgid
+    # program on the host can be executed by repository code as the runner account. These
+    # are the ones a runner host has no use for: account self-service (chfn, chsh, passwd,
+    # gpasswd, newgrp, chage, expiry), su (Ansible escalates with sudo, never su),
+    # ssh-keysign (host-based SSH authentication, unused), the polkit authentication agent
+    # helper (nothing here authenticates to polkit interactively), and crontab's setgid (a
+    # user crontab is one way for a job to leave work running after it ends; systemd user
+    # timers remain another, see Known limitations in the service CLAUDE.md). Root's use of
+    # each is unaffected: only the privilege an unprivileged caller would gain is removed.
+    #
+    # dpkg-statoverride, not chmod: dpkg re-applies an override on every package upgrade,
+    # where a chmod is silently undone by the next security update of the package.
+    #
+    # Deliberately KEPT: sudo (Ansible's own escalation path; the runner account has no
+    # sudoers entry, asserted above), newuidmap/newgidmap (the reason no_new_privs is off),
+    # fusermount3 (podman's fuse-overlayfs fallback), and mount/umount (they only honour
+    # fstab entries marked `user`, and these hosts declare none).
+    - name: "Remove the setuid and setgid bits a runner host does not use"
+      ansible.builtin.shell: |
+        set -euo pipefail
+        f={{ item.path | quote }}
+        if [ ! -e "$f" ]; then echo absent; exit 0; fi
+        # An existing override prints as `owner group mode path`; the mode is compared
+        # as a number because dpkg does not promise to print a leading zero.
+        cur=$(dpkg-statoverride --list "$f" || true)
+        co='' cg='' cm=''
+        if [ -n "$cur" ]; then read -r co cg cm _ <<<"$cur"; fi
+        if [ "$co" = {{ item.owner }} ] && [ "$cg" = {{ item.group }} ] && [ -n "$cm" ] \
+           && [ "$((8#$cm))" -eq "$((8#{{ item.mode }}))" ] && [ ! -u "$f" ] && [ ! -g "$f" ]; then
+          echo kept; exit 0
+        fi
+        if [ -n "$cur" ]; then dpkg-statoverride --remove "$f"; fi
+        dpkg-statoverride --update --add {{ item.owner }} {{ item.group }} {{ item.mode }} "$f"
+        echo changed
+      args:
+        executable: /bin/bash
+      loop: "{{ _runner_setuid_strip }}"
+      loop_control:
+        label: "{{ item.path }}"
+      vars:
+        _runner_setuid_strip:
+          - { path: /usr/bin/chfn, owner: root, group: root, mode: "0755" }
+          - { path: /usr/bin/chsh, owner: root, group: root, mode: "0755" }
+          - { path: /usr/bin/gpasswd, owner: root, group: root, mode: "0755" }
+          - { path: /usr/bin/newgrp, owner: root, group: root, mode: "0755" }
+          - { path: /usr/bin/passwd, owner: root, group: root, mode: "0755" }
+          - { path: /usr/bin/su, owner: root, group: root, mode: "0755" }
+          - { path: /usr/bin/chage, owner: root, group: shadow, mode: "0755" }
+          - { path: /usr/bin/expiry, owner: root, group: shadow, mode: "0755" }
+          - { path: /usr/bin/crontab, owner: root, group: crontab, mode: "0755" }
+          - { path: /usr/lib/openssh/ssh-keysign, owner: root, group: root, mode: "0755" }
+          - { path: /usr/lib/polkit-1/polkit-agent-helper-1, owner: root, group: root, mode: "0755" }
+      register: _setuid_strip
+      changed_when: "'changed' in _setuid_strip.stdout"
+
+    - name: "Read back the mode of each stripped helper"
+      # Read from the file, not from the override database: the claim is about what a job
+      # can execute, and only the inode says that.
+      ansible.builtin.stat:
+        path: "{{ item.item.path }}"
+      loop: "{{ _setuid_strip.results | default([]) }}"
+      loop_control:
+        label: "{{ item.item.path }}"
+      register: _setuid_after
+      when: not ansible_check_mode
+
+    - name: "Require every stripped helper to carry no setuid or setgid bit"
+      ansible.builtin.assert:
+        that:
+          - _setuid_still | length == 0
+        fail_msg: "Still setuid or setgid after the override: {{ _setuid_still | join(', ') }}"
+        success_msg: "No setuid or setgid bit on the helpers a runner host does not use."
+      vars:
+        _setuid_still: >-
+          {{ _setuid_after.results | default([])
+             | selectattr('stat', 'defined') | map(attribute='stat')
+             | selectattr('exists') | rejectattr('isuid', 'false') | map(attribute='path') | list
+             | union(_setuid_after.results | default([])
+               | selectattr('stat', 'defined') | map(attribute='stat')
+               | selectattr('exists') | rejectattr('isgid', 'false') | map(attribute='path') | list) }}
+      when: not ansible_check_mode
 
     - name: "Enable lingering so the runner survives logout and reboot"
       ansible.builtin.include_tasks: tasks/enable-linger.yml
@@ -378,6 +504,7 @@
       vars:
         github_runner_home: "{{ _home }}"
         github_runner_name: "{{ github_runner_name }}"
+      register: _runner_unit
 
     # ── install + register ─────────────────────────────────────────────────
     - name: "Install and register the runner"
@@ -436,7 +563,12 @@
         scope: user
         daemon_reload: true
         enabled: true
-        state: started
+        # RESTART when the unit changed. A running process keeps the properties it was
+        # started with (no_new_privs above all: it can never be cleared), so `started`
+        # alone would leave a changed unit inert on a runner that is already up until the
+        # host next reboots. A restart sends SIGTERM to the runner and waits up to
+        # TimeoutStopSec for it, so an in-flight job on this host may be cut short.
+        state: "{{ 'restarted' if (_runner_unit.changed | default(false)) else 'started' }}"
       become: true
       become_user: "{{ _account }}"
       # Without XDG_RUNTIME_DIR, `systemctl --user` reports "Failed to connect to bus:
@@ -461,19 +593,59 @@
       failed_when: "(_active.stdout | default('') | trim) != 'active'"
       check_mode: false
 
-    - name: "Confirm rootless podman can run a job container"
-      # A job that declares `container:` runs through the container hooks, which call
-      # `docker` (podman-docker) as this account. That needs newuidmap (the uidmap
-      # package, installed by install-podman.yml) and a /etc/subuid range for the
-      # account. Without either, the hooks fail every container job with "command
-      # required for rootless mode with multiple IDs", and the job cleanup cannot
-      # prune, which is how both runners ran until 2026-10-10. `system migrate`
-      # refreshes podman's user namespace after uidmap or the range arrives; then a
-      # mapping of more than one line proves the account gets a range, not just itself.
+    # Rootless containers are proved in the context jobs actually run in. A check run
+    # through become_user is a sudo session from the SSH login: it is not a descendant of
+    # the runner unit and inherits none of its properties. That is how this deploy reported
+    # "rootless containers mapped" on 2026-10-11 while every job, all of them descendants of
+    # a unit with NoNewPrivileges=true, failed with "newuidmap: write to uid_map failed:
+    # Operation not permitted". Two checks, because each sees what the other cannot.
+    - name: "Confirm the running runner service carries no no_new_privs and no private user namespace"
+      # Read from the kernel, for the service's own main process: every job is a
+      # descendant and inherits exactly this. NoNewPrivs is the effective bit, so it also
+      # catches the unit options that set it implicitly. The user-namespace link must equal
+      # this shell's, which is the host's: PrivateUsers= (and the options that imply it in a
+      # user unit) would put the runner in a namespace that maps no subordinate range.
       ansible.builtin.shell: |
         set -euo pipefail
-        podman system migrate
-        podman unshare cat /proc/self/uid_map
+        pid=$(systemctl --user show --property=MainPID --value actions-runner.service)
+        if [ -z "$pid" ] || [ "$pid" -eq 0 ]; then echo "no main process"; exit 1; fi
+        awk '$1 == "NoNewPrivs:" { print "NoNewPrivs=" $2 }' "/proc/$pid/status"
+        if [ "$(readlink "/proc/$pid/ns/user")" = "$(readlink /proc/self/ns/user)" ]; then
+          echo "userns=host"
+        else
+          echo "userns=private"
+        fi
+      args:
+        executable: /bin/bash
+      become: true
+      become_user: "{{ _account }}"
+      environment:
+        XDG_RUNTIME_DIR: "/run/user/{{ _runner_uid }}"
+      register: _runner_privs
+      changed_when: false
+      failed_when: >-
+        _runner_privs.rc != 0
+        or 'NoNewPrivs=0' not in _runner_privs.stdout_lines
+        or 'userns=host' not in _runner_privs.stdout_lines
+      check_mode: false
+
+    - name: "Confirm rootless podman maps the account's ranges from inside the user manager"
+      # Exercises newuidmap/newgidmap for real, in a transient unit of the SAME user
+      # manager as the runner, carrying the runner unit's own NoNewPrivileges value read
+      # back from systemd. A unit that set it would fail here exactly as its jobs would.
+      # `system migrate` stops podman's pause process first: while one is alive, podman
+      # joins its namespace and never calls the helpers, so the check would prove nothing.
+      # More than one line in each map proves a subordinate range, not just the account.
+      # No image is pulled: the hosts' egress is restricted and the question is the
+      # mapping, not the registry.
+      ansible.builtin.shell: |
+        set -euo pipefail
+        nnp=$(systemctl --user show --property=NoNewPrivileges --value actions-runner.service)
+        systemd-run --user --wait --pipe --collect --quiet \
+          --property=NoNewPrivileges="$nnp" \
+          /bin/sh -c 'podman system migrate \
+            && echo uid_map && podman unshare cat /proc/self/uid_map \
+            && echo gid_map && podman unshare cat /proc/self/gid_map'
       args:
         executable: /bin/bash
       become: true
@@ -483,7 +655,11 @@
       register: _uidmap
       changed_when: false
       failed_when: >-
-        _uidmap.rc != 0 or (_uidmap.stdout_lines | default([]) | length) < 2
+        _uidmap.rc != 0
+        or 'uid_map' not in _uidmap.stdout_lines
+        or 'gid_map' not in _uidmap.stdout_lines
+        or (_uidmap.stdout_lines.index('gid_map') - _uidmap.stdout_lines.index('uid_map') - 1) < 2
+        or ((_uidmap.stdout_lines | length) - _uidmap.stdout_lines.index('gid_map') - 1) < 2
       check_mode: false
 
     - name: "Report"
@@ -492,6 +668,8 @@
           {{ github_runner_name }} installed (runner v{{ _rver }}, hooks v{{ _hver }}),
           service {{ _active.stdout | trim }}, labels
           {{ (github_runner_labels | default([])) | join(',') }}, group
-          {{ github_runner_group }}, rootless containers mapped
-          ({{ _uidmap.stdout_lines | length }} uid ranges). Confirm it is ONLINE at the organisation with
+          {{ github_runner_group }}, no_new_privs off on the running service, rootless
+          containers mapped from inside the user manager
+          ({{ _uidmap.stdout_lines.index('gid_map') - _uidmap.stdout_lines.index('uid_map') - 1 }}
+          uid map lines). Confirm it is ONLINE at the organisation with
           verify-github-runners.yml before routing work to it.
