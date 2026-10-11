@@ -1,0 +1,215 @@
+---
+# Read-only receiver-host capability snapshot. Unknown is not a readiness result.
+- name: Refuse extra vars that set internal names
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: Require the reviewed checkout
+  ansible.builtin.import_playbook: require-reviewed-checkout.yml
+
+- name: Pre-flight
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: o11y_svc
+    preflight_group_expected: o11y_svc
+    _preflight_redact_hostnames: true
+
+- name: Validate receiver survey inputs
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  vars:
+    _receiver_hosts: "{{ groups.get('o11y_svc', []) }}"
+    _receiver_host: "{{ _receiver_hosts | first | default('') }}"
+    _survey_override_names:
+      - local_mode
+      - container_engine
+      - podman_rootful
+      - linger_user
+      - local_monorepo_dir
+      - service_branch
+      - ansible_become
+      - become
+      - ansible_python_interpreter
+    _survey_forged_names: "{{ _survey_override_names | intersect('' | extra_var_names) }}"
+  tasks:
+    - name: Refuse survey context overrides
+      ansible.builtin.assert:
+        that: _survey_forged_names | length == 0
+        fail_msg: "Receiver survey context must come from the Dev template and declared inventory."
+        quiet: true
+      tags: [always]
+
+    - name: Require one production rootless Podman receiver
+      ansible.builtin.assert:
+        that:
+          - expected_repository_sha | default('') is match('^[0-9a-f]{40}$')
+          - _receiver_hosts | length == 1
+          - not (local_mode | default(false) | bool)
+          - hostvars[_receiver_host].container_engine | default('') == 'podman'
+          - not (hostvars[_receiver_host].podman_rootful | default(false) | bool)
+          - hostvars[_receiver_host].ansible_user | default('') is match('^[a-z_][a-z0-9_.-]{0,31}$')
+          - (hostvars[_receiver_host].linger_user | default(hostvars[_receiver_host].ansible_user)) is match('^[a-z_][a-z0-9_.-]{0,31}$')
+        fail_msg: "This survey requires one declared production rootless Podman receiver and an exact reviewed Dev SHA."
+        quiet: true
+      tags: [always]
+
+- name: Survey the declared receiver context
+  hosts: o11y_svc
+  gather_facts: false
+  become: false
+  any_errors_fatal: true
+  vars:
+    _receiver_account: "{{ linger_user | default(ansible_user) }}"
+    _receiver_checkout: "{{ local_monorepo_dir | default('/home/' ~ ansible_user ~ '/agent-cloud') }}"
+    _receiver_helper: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/survey-o11y-receiver-capabilities.py') }}"
+    _checkout_helper: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/o11y-journal-workflow.py') }}"
+    _observation_names:
+      - kernel_band
+      - systemd_band
+      - cgroup_mode
+      - receiver_identity
+      - receiver_privilege
+      - linger
+      - restart_context
+      - delegation
+      - container_restart_policy
+    _allowed_values:
+      kernel_band: [5.x, 6.x, other, unknown]
+      systemd_band: [2xx, other, unknown]
+      cgroup_mode: [v1, v2, hybrid, unknown]
+      receiver_identity: [matched, mismatch, unknown]
+      receiver_privilege: [rootful, rootless, unknown]
+      linger: [enabled, disabled, unknown]
+      restart_context: [enabled_active, enabled_nonactive, disabled, not_loaded, loaded_other, unknown]
+      delegation: [unknown]
+      container_restart_policy: [unknown]
+  tasks:
+    - name: Mark target probes unverified in check mode
+      ansible.builtin.set_fact:
+        _receiver_report:
+          schema_version: 1
+          status: check_mode_unverified
+          reason: target_probes_skipped
+      when: ansible_check_mode
+
+    - name: Verify the receiver's existing clean Dev checkout
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "-"
+          - verify-checkout
+          - --checkout
+          - "{{ _receiver_checkout }}"
+          - --expected-sha
+          - "{{ expected_repository_sha }}"
+        stdin: "{{ _checkout_helper }}"
+        stdin_add_newline: false
+      register: _receiver_checkout_result
+      changed_when: false
+      failed_when: false
+      no_log: true
+      when: not ansible_check_mode
+
+    - name: Refuse receiver observations without the exact clean Dev checkout
+      ansible.builtin.assert:
+        that:
+          - _receiver_checkout_result.rc | default(1) == 0
+          - (_receiver_checkout_result.stdout | default('{}') | from_json).status == 'verified'
+          - (_receiver_checkout_result.stdout | from_json).revision == expected_repository_sha
+          - (_receiver_checkout_result.stdout | from_json).origin_dev_revision == expected_repository_sha
+        fail_msg: "The receiver checkout is unavailable, dirty, or does not match the reviewed Dev SHA; no survey probes ran."
+        quiet: true
+      no_log: true
+      when: not ansible_check_mode
+
+    - name: Read bounded Linux, systemd, cgroup, and receiver-user metadata
+      ansible.builtin.command:
+        argv: [python3, "-", "{{ _receiver_account }}"]
+        stdin: "{{ _receiver_helper }}"
+        stdin_add_newline: false
+      register: _receiver_capability_raw
+      changed_when: false
+      failed_when: false
+      no_log: true
+      when: not ansible_check_mode
+
+    - name: Validate the strict sanitized result and retain categories only
+      ansible.builtin.set_fact:
+        _receiver_report: >-
+          {{ (_receiver_capability_raw.stdout | from_json)
+             if (_receiver_capability_raw.rc | default(1) == 0)
+             else {'schema_version': 1, 'status': 'unknown', 'reason': 'probe_unavailable'} }}
+      no_log: true
+      when: not ansible_check_mode
+
+    - name: Require the receiver report to be a mapping
+      ansible.builtin.assert:
+        that: _receiver_report is mapping
+        fail_msg: "Receiver survey report failed schema validation; no metadata is reported."
+        quiet: true
+      no_log: true
+      when: not ansible_check_mode
+
+    - name: Require a supported top-level receiver report status
+      ansible.builtin.assert:
+        that: _receiver_report.status | default('') in ['observed', 'unknown']
+        fail_msg: "Receiver survey report failed schema validation; no metadata is reported."
+        quiet: true
+      no_log: true
+      when: not ansible_check_mode
+
+    - name: Require the helper's closed report schema
+      ansible.builtin.assert:
+        that:
+          - _receiver_report.keys() | sort == ['actions', 'observations', 'schema_version', 'status']
+          - _receiver_report.schema_version == 1
+          - _receiver_report.status == 'observed'
+          - _receiver_report.observations.keys() | sort == _observation_names | sort
+          - _receiver_report.actions.keys() | sort == ['podman_store', 'service_mutation']
+          - _receiver_report.actions.podman_store == 'not_called'
+          - _receiver_report.actions.service_mutation == 'not_called'
+        fail_msg: "Receiver survey report failed schema validation; no metadata is reported."
+        quiet: true
+      no_log: true
+      when: not ansible_check_mode and _receiver_report.status == 'observed'
+
+    - name: Require a fixed unknown result when collection is unavailable
+      ansible.builtin.assert:
+        that:
+          - _receiver_report.status == 'unknown'
+          - _receiver_report.schema_version == 1
+          - >-
+            (_receiver_report.keys() | sort == ['reason', 'schema_version', 'status']
+            and _receiver_report.reason == 'probe_unavailable')
+            or
+            (_receiver_report.keys() | sort == ['actions', 'observations', 'schema_version', 'status']
+            and _receiver_report.observations.keys() | sort == _observation_names | sort
+            and _receiver_report.actions.keys() | sort == ['podman_store', 'service_mutation']
+            and _receiver_report.actions.podman_store == 'not_called'
+            and _receiver_report.actions.service_mutation == 'not_called')
+        fail_msg: "Receiver survey returned an invalid unknown result; no metadata is reported."
+        quiet: true
+      no_log: true
+      when: not ansible_check_mode and _receiver_report.status == 'unknown'
+
+    - name: Require every observation to contain only its fixed category
+      ansible.builtin.assert:
+        that:
+          - item.value.keys() | sort == ['reason', 'status', 'value']
+          - item.value.status in ['observed', 'unknown']
+          - item.value.value in _allowed_values[item.key]
+          - item.value.reason in ['observed', 'probe_unavailable', 'probe_failed', 'probe_timeout', 'probe_oversized', 'probe_malformed', 'probe_missing', 'not_read']
+          - (item.value.status == 'observed') == (item.value.reason == 'observed')
+        fail_msg: "Receiver survey observation failed its category allowlist; no metadata is reported."
+        quiet: true
+      loop: "{{ _receiver_report.observations | dict2items }}"
+      loop_control:
+        label: "{{ item.key }}"
+      no_log: true
+      when: not ansible_check_mode and _receiver_report.observations is defined
+
+    - name: Report only the sanitized receiver capability categories
+      ansible.builtin.debug:
+        msg: "{{ _receiver_report }}"
+      changed_when: false
