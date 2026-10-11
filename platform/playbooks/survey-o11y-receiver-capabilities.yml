@@ -5,6 +5,10 @@
 
 - name: Require the reviewed checkout
   ansible.builtin.import_playbook: require-reviewed-checkout.yml
+  vars:
+    _reviewed_checkout_payload_paths:
+      - platform/playbooks/files/reviewed-checkout.py
+      - platform/playbooks/files/survey-o11y-receiver-capabilities.py
 
 - name: Pre-flight
   ansible.builtin.import_playbook: preflight-target-group.yml
@@ -62,8 +66,8 @@
   vars:
     _receiver_account: "{{ linger_user | default(ansible_user) }}"
     _receiver_checkout: "{{ local_monorepo_dir | default('/home/' ~ ansible_user ~ '/agent-cloud') }}"
-    _receiver_helper: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/survey-o11y-receiver-capabilities.py') }}"
-    _checkout_helper: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/o11y-journal-workflow.py') }}"
+    _receiver_helper: "{{ hostvars['localhost']._reviewed_checkout_payloads['platform/playbooks/files/survey-o11y-receiver-capabilities.py'] | b64decode(encoding='utf-8') }}"
+    _checkout_helper: "{{ hostvars['localhost']._reviewed_checkout_payloads['platform/playbooks/files/reviewed-checkout.py'] | b64decode(encoding='utf-8') }}"
     _observation_names:
       - kernel_band
       - systemd_band
@@ -98,11 +102,11 @@
         argv:
           - python3
           - "-"
-          - verify-checkout
           - --checkout
           - "{{ _receiver_checkout }}"
           - --expected-sha
           - "{{ expected_repository_sha }}"
+          - --require-dev-ref
         stdin: "{{ _checkout_helper }}"
         stdin_add_newline: false
       register: _receiver_checkout_result
@@ -115,9 +119,11 @@
       ansible.builtin.assert:
         that:
           - _receiver_checkout_result.rc | default(1) == 0
-          - (_receiver_checkout_result.stdout | default('{}') | from_json).status == 'verified'
+          - (_receiver_checkout_result.stdout | default('{}') | from_json).status == 'checkout_consistent'
           - (_receiver_checkout_result.stdout | from_json).revision == expected_repository_sha
-          - (_receiver_checkout_result.stdout | from_json).origin_dev_revision == expected_repository_sha
+          - (_receiver_checkout_result.stdout | from_json).index_matches_revision == true
+          - (_receiver_checkout_result.stdout | from_json).tracked_bytes_match_revision == true
+          - (_receiver_checkout_result.stdout | from_json).local_dev_ref_matches_revision == true
         fail_msg: "The receiver checkout is unavailable, dirty, or does not match the reviewed Dev SHA; no survey probes ran."
         quiet: true
       no_log: true

@@ -179,12 +179,19 @@ def test_playbook_is_dev_bound_receiver_only_check_mode_safe_and_schema_guarded(
     )
     assert plays[0]["ansible.builtin.import_playbook"] == "refuse-internal-extra-vars.yml"
     assert plays[1]["ansible.builtin.import_playbook"] == "require-reviewed-checkout.yml"
+    assert plays[1]["vars"]["_reviewed_checkout_payload_paths"] == [
+        "platform/playbooks/files/reviewed-checkout.py",
+        "platform/playbooks/files/survey-o11y-receiver-capabilities.py",
+    ]
     assert plays[-1]["hosts"] == "o11y_svc"
     assert probe["ansible.builtin.command"]["argv"] == ["python3", "-", "{{ _receiver_account }}"]
     assert probe["no_log"] is True
     assert probe["when"] == "not ansible_check_mode"
     assert checkout["no_log"] is True
     assert checkout["when"] == "not ansible_check_mode"
+    assert "--require-dev-ref" in checkout["ansible.builtin.command"]["argv"]
+    assert "hostvars['localhost']._reviewed_checkout_payloads" in plays[-1]["vars"]["_checkout_helper"]
+    assert "hostvars['localhost']._reviewed_checkout_payloads" in plays[-1]["vars"]["_receiver_helper"]
     assert "probe_unavailable" in json.dumps(fallback)
     assert "probe_unavailable" in json.dumps(unknown_guard)
     assert SURVEY.MAX_OUTPUT == 64 * 1024
