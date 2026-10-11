@@ -96,3 +96,21 @@ No private site-config checkout or live Semaphore task is required for this
 source-only slice. No direct Proxmox writes, laptop OpenBao HTTP, inventory
 activation, restore, VM growth, retention changes, destructive deploy, commit,
 push, PR, merge, or deployment is in scope.
+
+## Live transport follow-up (2026-10-11)
+
+After the source change merged, Dev-bound Semaphore capture task 4351 stopped at
+its first Proxmox VM-list GET, before writing a private catalog. That request
+used Ansible's default certificate validation. A separate credential-free TLS
+probe to the inventory-declared Proxmox endpoint failed certificate validation;
+the protected task's exact exception and endpoint equivalence remain unverified.
+
+The shared four-request Proxmox census must use the existing inventory-controlled
+`proxmox_validate_certs | default(false) | bool` setting and refuse redirects,
+matching the backup-readiness survey. Keep this setting on those Proxmox GETs,
+not on unrelated OpenBao or GitHub requests. Preserve HTTPS, GET-only access,
+`no_log`, and failure before a catalog write. A focused test must require both
+transport options on every census request. After independent review and green
+CI, rerun capture from the reviewed Dev revision with fresh private-base pins.
+Capture is a private Git write; it is not a TLS diagnostic. Re-enable certificate
+validation after the Proxmox CA and hostname are made trustworthy to Semaphore.

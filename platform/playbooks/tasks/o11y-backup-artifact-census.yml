@@ -47,6 +47,8 @@
   ansible.builtin.uri:
     url: "{{ _pve_host }}/api2/json/cluster/resources?type=vm"
     method: GET
+    validate_certs: "{{ proxmox_validate_certs | default(false) | bool }}"
+    follow_redirects: none
     status_code: 200
     headers:
       Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
@@ -58,6 +60,8 @@
   ansible.builtin.uri:
     url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/storage"
     method: GET
+    validate_certs: "{{ proxmox_validate_certs | default(false) | bool }}"
+    follow_redirects: none
     status_code: 200
     headers:
       Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
@@ -80,6 +84,8 @@
   ansible.builtin.uri:
     url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/storage/{{ item.storage | urlencode }}/content?content=backup&vmid={{ _vmid }}"
     method: GET
+    validate_certs: "{{ proxmox_validate_certs | default(false) | bool }}"
+    follow_redirects: none
     status_code: 200
     headers:
       Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
@@ -94,6 +100,8 @@
   ansible.builtin.uri:
     url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/config"
     method: GET
+    validate_certs: "{{ proxmox_validate_certs | default(false) | bool }}"
+    follow_redirects: none
     status_code: 200
     headers:
       Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
