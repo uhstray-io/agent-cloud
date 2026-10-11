@@ -97,6 +97,8 @@ def test_reports_aggregate_api_facts_without_selection_or_private_identifiers():
         "source_disk_sizes_complete": True,
         "backup_inclusion_verified": False,
         "single_supported_artifact_candidate": True,
+        "selected_artifact_candidate_verified": False,
+        "selected_artifact_candidate_index": None,
         "storage_capacity_basis": "proxmox-reported",
         "storage_count_scope": "distinct-off-source-non-shared-image-storage-ids",
         "image_storage_ids_off_source_meeting_reported_capacity_count": 2,
@@ -115,6 +117,7 @@ def test_reports_aggregate_api_facts_without_selection_or_private_identifiers():
     assert set(result) == {
         "survey", "source_layout_parsed", "source_disk_sizes_complete", "backup_inclusion_verified",
         "single_supported_artifact_candidate", "storage_capacity_basis", "storage_count_scope",
+        "selected_artifact_candidate_verified", "selected_artifact_candidate_index",
         "image_storage_ids_off_source_meeting_reported_capacity_count",
         "other_node_reported_capacity_sufficient",
         "unused_cluster_vmid_available_now",
@@ -182,6 +185,52 @@ def test_explicit_backup_inclusion_is_reported_only_when_every_disk_is_true():
     assert inspect(data)["backup_inclusion_verified"] is False
     disks[-1]["included_in_backup"] = None
     assert inspect(data)["backup_inclusion_verified"] is False
+
+
+def test_selected_candidate_preserves_census_and_never_proves_disk_inclusion():
+    data = payload()
+    receipt = data["artifact_receipt"]
+    selected = {
+        "backend_class": "non-pbs",
+        "format": "vma.zst",
+        "size_bytes": 987654,
+        "creation_time_epoch": 1_790_553_600,
+        "proxmox_protected_flag": "unknown",
+        "immutability_verified": False,
+    }
+    receipt["candidates"].append(selected)
+    receipt["candidate_artifact_count"] = 2
+    for disk in receipt["source_disk_layout"]:
+        disk["included_in_backup"] = True
+    receipt["selected_candidate_index"] = 1
+    receipt["selected_candidate"] = selected
+    data["selected_artifact"] = {"index": 1, "candidate": dict(selected)}
+
+    result = inspect(data)
+
+    assert result["single_supported_artifact_candidate"] is False
+    assert result["selected_artifact_candidate_verified"] is True
+    assert result["selected_artifact_candidate_index"] == 1
+    assert result["backup_inclusion_verified"] is False
+    assert result["image_storage_ids_off_source_meeting_reported_capacity_count"] == 2
+
+
+@pytest.mark.parametrize(
+    "selected_artifact",
+    [
+        {"index": 9, "candidate": {"backend_class": "non-pbs", "format": "vma.zst"}},
+        {"index": 0, "candidate": {"backend_class": "non-pbs", "format": "other"}},
+        {"index": True, "candidate": {"backend_class": "non-pbs", "format": "vma.zst"}},
+    ],
+)
+def test_malformed_selected_candidate_receipt_refuses(selected_artifact):
+    data = payload()
+    data["artifact_receipt"]["selected_candidate_index"] = 0
+    data["artifact_receipt"]["selected_candidate"] = data["artifact_receipt"]["candidates"][0]
+    data["selected_artifact"] = selected_artifact
+
+    with pytest.raises(ValueError, match="selected artifact receipt"):
+        inspect(data)
 
 
 @pytest.mark.parametrize(
