@@ -309,8 +309,9 @@ def execute(
     require(installation_after == installation_id, "installation", "identity_changed")
     try:
         grant = api.request("PUT", f"/user/installations/{installation_id}/repositories/{repository_id}", pat)
-    except Refusal as exc:
-        raise Refusal("grant", "grant_outcome_unverified", exc.status, True) from None
+    except Exception as exc:
+        status = exc.status if isinstance(exc, Refusal) else 0
+        raise Refusal("grant", "grant_outcome_unverified", status, True) from None
     if grant.status not in (204, 304):
         outcome = {401: "unauthorized", 403: "forbidden", 404: "not_found"}.get(
             grant.status, "grant_outcome_unverified"

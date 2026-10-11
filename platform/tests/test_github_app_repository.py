@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import http.client
 import io
 import json
 import sys
@@ -243,6 +244,25 @@ class GitHubAppRepositoryTests(unittest.TestCase):
         self.assertTrue(raised.exception.attempted)
         self.assertEqual(api.put_count(), 1)
         self.assertFalse(any(method == "DELETE" for method, *_ in api.calls))
+
+    def test_bad_status_line_during_put_is_unverified(self):
+        path = f"/user/installations/{INSTALLATION_ID}/repositories/{REPOSITORY_ID}"
+        api = FakeGitHub(overrides={("PUT", path): http.client.BadStatusLine("synthetic response")})
+        with (
+            patch.object(grant, "GitHub", return_value=api),
+            patch.object(sys, "argv", ["github_app_repository.py", "--issuer", ISSUER]),
+            patch.object(sys, "stdin", io.StringIO(json.dumps({"pat": PAT, "app_private_key": PEM.decode()}))),
+        ):
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                result = grant.main()
+        summary = json.loads(stdout.getvalue())
+        self.assertEqual(result, 1)
+        self.assertEqual(summary["phase"], "grant")
+        self.assertEqual(summary["outcome"], "grant_outcome_unverified")
+        self.assertTrue(summary["grant_attempted"])
+        self.assertNotIn("synthetic response", stdout.getvalue())
+        self.assertEqual(api.put_count(), 1)
 
     def test_204_without_fresh_visibility_is_unverified(self):
         api = FakeGitHub(verify_after_put=False)
