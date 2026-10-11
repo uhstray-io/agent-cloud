@@ -326,3 +326,17 @@ shared `secret/services/github:pat` unchanged for GHCR.
       fresh installation-token readback report `site-config` present.
 - [ ] 11.4 Run the `site-config` runner CI workflow and confirm it completes on the
       declared self-hosted runner group.
+
+## 12. Future work — per-job ephemeral runners
+
+The accepted interim boundary is that the six permitted private repositories share the
+runner trust boundary, and jobs can leave processes behind.
+
+- [ ] 12.1 Migrate to per-job ephemeral runners. `--ephemeral` registration alone is
+      insufficient: isolate and destroy the runner process and filesystem after every
+      job, including failed or cancelled jobs.
+- [ ] 12.2 Acceptance: prove jobs from two different permitted private repositories
+      cannot observe each other's workspace or lingering processes; preserve the runner
+      group access limits and `agent-cloud`'s public-repository exclusion. Deploy through
+      reviewed config-as-code and Semaphore changes, with final-head CI and review green
+      before rollout.
