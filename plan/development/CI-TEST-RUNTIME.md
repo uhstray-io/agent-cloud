@@ -40,7 +40,7 @@ flowchart LR
 
 | Check | Pass condition |
 |---|---|
-| Python collection | Split collections are disjoint and their union equals the existing root collection |
+| Python collection | `platform/tests/test_ci_python_partition.py` reruns pytest collection from the workflow's root/core/safety/NetBox/Semaphore commands; collection errors fail, the four shard node-ID sets are pairwise disjoint, their union equals root exactly, and safety is nonempty |
 | BATS | Existing `bats platform/tests/` command remains covered |
 | Rego | The official OPA 1.0.0 Linux amd64 static binary passes the pinned SHA-256 check before execution; both `check --strict` and `test -v` remain covered |
 | Gate | Aggregate fails for any non-success dependency |

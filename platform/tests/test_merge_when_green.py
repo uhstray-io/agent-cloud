@@ -15,6 +15,22 @@ SPEC = importlib.util.spec_from_file_location("merge_when_green", SCRIPT)
 guard = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(guard)
 
+WORKFLOW_PATH = SCRIPT.parents[1] / guard.WORKFLOW
+CURRENT_WORKFLOW = WORKFLOW_PATH.read_bytes()
+PRE_PARTITION_WORKFLOW = Path(__file__).with_name("fixtures").joinpath(
+    "lint-and-test-pre-partition.txt").read_bytes()
+INTERMEDIATE_PARTITIONED_WORKFLOW = Path(__file__).with_name("fixtures").joinpath(
+    "lint-and-test-python-partition.txt").read_bytes()
+
+
+def _blob_sha(source):
+    return hashlib.sha1(b"blob " + str(len(source)).encode() + b"\0" + source).hexdigest()
+
+
+assert _blob_sha(PRE_PARTITION_WORKFLOW) == guard.PRE_PARTITION_WORKFLOW_BLOB_SHA
+assert _blob_sha(INTERMEDIATE_PARTITIONED_WORKFLOW) == "29020efdaa1747bd2dc42d4c6468a96e676d8b4b"
+assert _blob_sha(CURRENT_WORKFLOW) == guard.PARTITIONED_WORKFLOW_BLOB_SHA
+
 HEAD = "a" * 40
 BASE = "b" * 40
 PR = 532
@@ -37,6 +53,7 @@ class FakeGitHub:
         self.threads = []
         self.comments = [{"id": 1, "body": "Addressed in this review."}]
         self.jobs = {}
+        self.extra_jobs = []
         self.runs = [{"id": 900, "workflow_id": 7, "run_number": 4, "run_attempt": 1,
                       "head_sha": HEAD, "event": "pull_request", "path": guard.WORKFLOW + "@refs/pull/532/merge",
                       "pull_requests": [{"number": PR}],
@@ -58,8 +75,8 @@ class FakeGitHub:
         self.status_pages = None
         self.thread_page_info = {"hasNextPage": False, "endCursor": None}
         self.workflow_sources = {
-            BASE: (SCRIPT.parents[1] / guard.WORKFLOW).read_bytes(),
-            HEAD: (SCRIPT.parents[1] / guard.WORKFLOW).read_bytes(),
+            BASE: CURRENT_WORKFLOW,
+            HEAD: CURRENT_WORKFLOW,
         }
         self.tree_overrides = {}
 
@@ -107,7 +124,8 @@ class FakeGitHub:
             page = int(dict(fields)["page"])
             return {"total_count": len(self.runs), "workflow_runs": self.runs if page == 1 else []}
         if endpoint == f"repos/{guard.REPO}/actions/runs/900/jobs?filter=latest":
-            return {"total_count": len(self.jobs), "jobs": list(self.jobs.values())}
+            jobs = list(self.jobs.values()) + self.extra_jobs
+            return {"total_count": len(jobs), "jobs": jobs}
         if endpoint == "graphql":
             return {"data": {"repository": {"pullRequest": {"reviewThreads": {
                 "nodes": self.threads, "pageInfo": self.thread_page_info,
@@ -123,12 +141,18 @@ class FakeGitHub:
         self.workflow_sources[BASE] = value
         self.workflow_sources[HEAD] = value
 
-    def set_timeout(self, value):
-        base = self.workflow_sources[BASE]
-        marker = b"  bats:\n    name: Bash Tests\n    runs-on: ubuntu-latest\n    steps:\n"
-        self.workflow_sources[HEAD] = base.replace(
-            marker, marker.replace(b"    steps:\n", b"    timeout-minutes: " + value + b"\n    steps:\n"), 1)
+    def set_partition_transition(self):
+        self.workflow_sources[BASE] = PRE_PARTITION_WORKFLOW
+        self.workflow_sources[HEAD] = CURRENT_WORKFLOW
         self.files = [guard.WORKFLOW]
+        for name in ("Go lint (uhhcraft)", "Go test (uhhcraft)", "Go build (uhhcraft image)"):
+            self.jobs[name]["conclusion"] = "success"
+            next(check for check in self.checks if check["name"] == name)["conclusion"] = "success"
+
+    def set_partition_baseline(self):
+        self.workflow_sources[BASE] = CURRENT_WORKFLOW
+        self.workflow_sources[HEAD] = CURRENT_WORKFLOW
+        self.files = []
         for name in ("Go lint (uhhcraft)", "Go test (uhhcraft)", "Go build (uhhcraft image)"):
             self.jobs[name]["conclusion"] = "success"
             next(check for check in self.checks if check["name"] == name)["conclusion"] = "success"
@@ -191,6 +215,13 @@ class MergeGuardTests(unittest.TestCase):
     def test_missing_running_failing_and_unconditional_skipped_jobs_refuse(self):
         changes = [
             (lambda api: api.jobs.pop("Python core"), "Missing expected Actions jobs"),
+            (lambda api: api.jobs.pop("Python Playbook Safety"), "Missing expected Actions jobs"),
+            (lambda api: api.jobs["Python Playbook Safety"].update(
+                status="in_progress", conclusion=None), "incomplete"),
+            (lambda api: api.jobs["Python Playbook Safety"].update(
+                conclusion="cancelled"), "is cancelled"),
+            (lambda api: api.jobs["Python Playbook Safety"].update(
+                conclusion="skipped"), "was skipped"),
             (lambda api: api.jobs["Bash Tests"].update(status="in_progress", conclusion=None), "incomplete"),
             (lambda api: api.jobs["Security Scan"].update(conclusion="failure"), "failure"),
             (lambda api: api.jobs["Static Analysis"].update(conclusion="skipped"), "was skipped"),
@@ -211,69 +242,91 @@ class MergeGuardTests(unittest.TestCase):
         api.files = ["platform/services/uhhcraft/deployment/internal/main.go"]
         run_refusal(self, api, "was skipped")
 
-    def test_canonical_bash_timeout_insertion_is_allowed(self):
+    def test_exact_partition_transition_is_allowed(self):
         api = FakeGitHub()
-        base = api.workflow_sources[BASE]
-        base_blob_sha = hashlib.sha1(b"blob " + str(len(base)).encode() + b"\0" + base).hexdigest()
-        self.assertEqual(base_blob_sha, guard.REVIEWED_WORKFLOW_BLOB_SHA)
-        api.set_timeout(b"30")
+        api.set_partition_transition()
         self.assertEqual(guard.main(["--pr", str(PR), "--head", HEAD], api), 0)
         self.assertEqual(api.merge_calls, [])
 
-    def test_changed_pinned_base_blob_refuses_workflow_exception(self):
+    def test_identical_credential_safe_partition_is_allowed(self):
         api = FakeGitHub()
-        api.workflow_sources[BASE] += b"# baseline changed\n"
-        api.set_timeout(b"5")
-        run_refusal(self, api, "exact reviewed base blob")
-
-    def test_escaped_timeout_key_in_changed_base_refuses_workflow_exception(self):
-        api = FakeGitHub()
-        source = api.workflow_sources[BASE]
-        start = source.index(b"  bats:\n")
-        following = source.index(b"  rego:\n", start)
-        api.workflow_sources[BASE] = source[:following] + b"    timeout\\u002dminutes: 360\n" + source[following:]
-        api.workflow_sources[HEAD] = api.workflow_sources[BASE]
-        api.set_timeout(b"5")
-        run_refusal(self, api, "exact reviewed base blob")
-
-    def test_unchanged_workflow_at_new_baseline_passes_normal_policy(self):
-        api = FakeGitHub()
-        api.set_timeout(b"5")
-        api.workflow_sources[BASE] = api.workflow_sources[HEAD]
-        api.files = ["docs/change.md"]
+        api.set_partition_baseline()
         self.assertEqual(guard.main(["--pr", str(PR), "--head", HEAD], api), 0)
         self.assertEqual(api.merge_calls, [])
 
-    def test_timeout_bounds_and_canonical_format(self):
+    def test_partitioned_workflow_is_accepted_for_later_prs(self):
         api = FakeGitHub()
-        for value in (b"1", b"30"):
-            with self.subTest(value=value):
-                api = FakeGitHub()
-                api.set_timeout(value)
-                self.assertEqual(guard.main(["--pr", str(PR), "--head", HEAD], api), 0)
-        for value in (b"0", b"31", b"01", b"\"5\"", b"${{ 5 }}", b"5 # limit"):
-            with self.subTest(value=value):
-                api = FakeGitHub()
-                api.set_timeout(value)
-                run_refusal(self, api, "canonical unquoted Bash timeout")
+        self.assertEqual(guard.main(["--pr", str(PR), "--head", HEAD], api), 0)
+        self.assertEqual(api.merge_calls, [])
 
-    def test_workflow_exception_rejects_extra_byte_and_bad_file_evidence(self):
-        api = FakeGitHub()
-        api.set_timeout(b"5")
-        api.workflow_sources[HEAD] += b"# extra\n"
-        run_refusal(self, api, "beyond the permitted Bash timeout")
-        for status, previous in (("renamed", "old-workflow.yml"), ("added", None), ("removed", None),
-                                 ("copied", None), ("modified", "old-workflow.yml")):
+    def test_only_exact_transition_or_partitioned_baseline_is_accepted(self):
+        cases = [
+            ("unsupported base", lambda api: api.workflow_sources.__setitem__(BASE, b"other")),
+            ("extra candidate byte", lambda api: api.workflow_sources.__setitem__(
+                HEAD, CURRENT_WORKFLOW + b"# extra\n")),
+            ("reverse transition", lambda api: (api.workflow_sources.__setitem__(BASE, CURRENT_WORKFLOW),
+                                                  api.workflow_sources.__setitem__(HEAD, PRE_PARTITION_WORKFLOW))),
+            ("old baseline unchanged", lambda api: (api.workflow_sources.__setitem__(BASE, PRE_PARTITION_WORKFLOW),
+                                                      api.workflow_sources.__setitem__(HEAD, PRE_PARTITION_WORKFLOW))),
+        ]
+        for label, change in cases:
+            with self.subTest(label=label):
+                api = FakeGitHub()
+                api.set_partition_transition()
+                change(api)
+                run_refusal(self, api)
+
+    def test_intermediate_partition_is_rejected_as_base_or_head(self):
+        cases = (
+            ("intermediate head", PRE_PARTITION_WORKFLOW, INTERMEDIATE_PARTITIONED_WORKFLOW),
+            ("intermediate base", INTERMEDIATE_PARTITIONED_WORKFLOW, CURRENT_WORKFLOW),
+        )
+        for label, base, head in cases:
+            with self.subTest(label=label):
+                api = FakeGitHub()
+                api.set_partition_transition()
+                api.workflow_sources[BASE] = base
+                api.workflow_sources[HEAD] = head
+                run_refusal(self, api)
+
+    def test_partition_transition_requires_one_modified_workflow_record(self):
+        for status, previous in (("renamed", "old-workflow.yml"), ("added", None),
+                                 ("removed", None), ("copied", None), ("modified", "old-workflow.yml")):
             with self.subTest(status=status, previous=previous):
                 api = FakeGitHub()
-                api.set_timeout(b"5")
+                api.set_partition_transition()
                 api.file_pages = [[{"filename": guard.WORKFLOW, "status": status,
                                     **({"previous_filename": previous} if previous else {})}]]
                 run_refusal(self, api, "one modified record")
+        api = FakeGitHub()
+        api.set_partition_transition()
+        api.files = []
+        run_refusal(self, api, "one modified record")
+
+    def test_partitioned_baseline_rejects_misleading_workflow_change_record(self):
+        api = FakeGitHub()
+        api.file_pages = [[{"filename": guard.WORKFLOW, "status": "modified"}]]
+        run_refusal(self, api, "byte-identical on subsequent PRs")
+
+    def test_partition_job_must_succeed_even_when_the_aggregate_run_is_green(self):
+        api = FakeGitHub()
+        api.jobs["Python Playbook Safety"].update(conclusion="failure")
+        next(check for check in api.checks if check["name"] == "Python Playbook Safety")["conclusion"] = "failure"
+        run_refusal(self, api, "Python Playbook Safety is failure")
+
+    def test_duplicate_partition_job_refuses_even_when_both_are_green(self):
+        api = FakeGitHub()
+        api.extra_jobs = [dict(api.jobs["Python Playbook Safety"])]
+        run_refusal(self, api, "Unknown or duplicate Actions job")
+
+    def test_stale_partition_check_run_refuses_even_when_job_is_green(self):
+        api = FakeGitHub()
+        next(check for check in api.checks if check["name"] == "Python Playbook Safety")["head_sha"] = "f" * 40
+        run_refusal(self, api, "missing, stale, or incomplete")
 
     def test_missing_go_check_refuses_when_workflow_is_touched(self):
         api = FakeGitHub()
-        api.set_timeout(b"5")
+        api.set_partition_transition()
         api.jobs.pop("Go lint (uhhcraft)")
         run_refusal(self, api, "Missing expected Actions jobs")
 
@@ -305,64 +358,13 @@ class MergeGuardTests(unittest.TestCase):
                 corrupt(api)
                 run_refusal(self, api)
 
-    def test_bash_job_shape_and_existing_timeout_refuse(self):
-        source = (SCRIPT.parents[1] / guard.WORKFLOW).read_bytes()
-        marker = b"  bats:\n    name: Bash Tests\n    runs-on: ubuntu-latest\n    steps:\n"
-        start = source.index(b"  bats:\n")
-        following = source.index(b"  rego:\n", start)
-        job = source[start:following]
-        moved_job = source[:start] + source[following:] + b"\n" + job
-        variants = {
-            "missing": (source, source.replace(job, b"", 1)),
-            "moved": (source, moved_job.replace(
-                marker, marker.replace(b"    steps:\n", b"    timeout-minutes: 5\n    steps:\n"), 1)),
-            "ambiguous": (source + b"\n" + job, (source + b"\n" + job).replace(
-                marker, marker.replace(b"    steps:\n", b"    timeout-minutes: 5\n    steps:\n"), 1)),
-            "existing timeout": (source.replace(
-                marker, marker.replace(b"    steps:\n", b"    timeout-minutes: 10\n    steps:\n"), 1),
-                source.replace(marker, marker.replace(
-                    b"    steps:\n", b"    timeout-minutes: 5\n    timeout-minutes: 10\n    steps:\n"), 1)),
-            "timeout before runner": (source.replace(
-                b"  bats:\n    name: Bash Tests\n",
-                b"  bats:\n    name: Bash Tests\n    timeout-minutes: 10\n", 1),
-                source.replace(
-                    b"  bats:\n    name: Bash Tests\n    runs-on:",
-                    b"  bats:\n    name: Bash Tests\n    timeout-minutes: 10\n"
-                    b"    timeout-minutes: 5\n    runs-on:", 1)),
-        }
-        for label, (base, candidate) in variants.items():
-            with self.subTest(label=label):
-                api = FakeGitHub()
-                api.workflow_sources[BASE] = base
-                api.workflow_sources[HEAD] = candidate
-                api.files = [guard.WORKFLOW]
-                run_refusal(self, api)
-
-    def test_alternate_existing_timeout_keys_refuse_without_merging(self):
-        source = (SCRIPT.parents[1] / guard.WORKFLOW).read_bytes()
-        start = source.index(b"  bats:\n")
-        following = source.index(b"  rego:\n", start)
-        spellings = (
-            b'    "timeout-minutes": 360',
-            b"    'timeout-minutes': 360",
-            b"    timeout-minutes : 360",
-        )
-        for spelling in spellings:
-            with self.subTest(spelling=spelling):
-                api = FakeGitHub()
-                base = source[:following] + spelling + b"\n" + source[following:]
-                api.workflow_sources[BASE] = base
-                api.workflow_sources[HEAD] = base
-                api.set_timeout(b"5")
-                run_refusal(self, api, "already has a timeout")
-
     def test_workflow_status_is_required_and_rename_evidence_is_rejected(self):
         for record in ({"filename": guard.WORKFLOW},
                        {"filename": guard.WORKFLOW, "status": "renamed"},
                        {"filename": "other.yml", "status": "renamed", "previous_filename": guard.WORKFLOW}):
             with self.subTest(record=record):
                 api = FakeGitHub()
-                api.set_timeout(b"4")
+                api.set_partition_transition()
                 api.file_pages = [[record]]
                 run_refusal(self, api)
 
@@ -525,19 +527,18 @@ class MergeGuardTests(unittest.TestCase):
                 run_refusal(self, api, "Review-thread")
 
     def test_workflow_policy_drift_refuses_before_merge(self):
-        api = FakeGitHub()
         changed = b"name: Changed\non:\n  pull_request:\n    branches: [dev]\n"
-        api.workflow_source = changed
-        run_refusal(self, api, "workflow changed")
+        with self.assertRaisesRegex(guard.Refusal, "Dev PR workflow changed"):
+            guard.check_workflow_policy(changed, partitioned=True)
 
     def test_path_gate_drift_refuses_before_merge(self):
-        api = FakeGitHub()
-        api.workflow_source = api.workflow_source.replace(
+        changed = CURRENT_WORKFLOW.replace(
             b"              - '.github/workflows/lint-and-test.yml'\n",
             b"              - '.github/workflows/lint-and-test.yml'\n              - 'platform/services/other/**'\n",
             1,
         )
-        run_refusal(self, api, "workflow changed")
+        with self.assertRaisesRegex(guard.Refusal, "Dev PR workflow changed"):
+            guard.check_workflow_policy(changed, partitioned=True)
 
     def test_ambiguous_merge_response_is_read_back_and_never_retried(self):
         api = FakeGitHub()
