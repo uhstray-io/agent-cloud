@@ -143,7 +143,6 @@
       register: _grant
       changed_when: (_grant.stdout | from_json).grant_attempted | bool
       failed_when: false
-      check_mode: false
       no_log: true
       when:
         - not ansible_check_mode

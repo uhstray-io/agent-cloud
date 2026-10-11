@@ -70,6 +70,7 @@ def test_secret_material_only_enters_helper_stdin_and_mutation_is_guarded():
         assert _named(tasks, name)["no_log"] is True
 
     grant = _named(tasks, "Add the repository to the App installation")
+    assert grant.get("check_mode") is not False
     assert "not ansible_check_mode" in grant["when"]
     assert "not (_verify_only | bool)" in grant["when"]
     assert grant["tags"] == ["verify"]
