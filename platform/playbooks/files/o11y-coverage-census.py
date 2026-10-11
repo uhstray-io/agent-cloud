@@ -3,6 +3,7 @@
 
 import hashlib
 import json
+import math
 import re
 import sys
 from datetime import UTC, datetime
@@ -13,6 +14,9 @@ SERVICE_ID = re.compile(r"^[a-z][a-z0-9_-]*(/[a-z][a-z0-9_-]*)?$")
 TARGET_TYPES = {"service", "agent", "vm", "guest", "runner", "network", "dgx"}
 LIFECYCLE = {"deployed", "planned", "retired", "excluded"}
 SIGNALS = {"logs", "metrics", "traces", "health"}
+OPTIONAL_SIGNALS = {"profiles"}
+PROFILE_TYPE_ID = "process_cpu:cpu:nanoseconds:cpu:nanoseconds"
+PROFILE_STEP_MS = 60_000
 
 
 def fail(message):
@@ -65,7 +69,7 @@ def validate(targets):
         if not isinstance(identity, str) or not SERVICE_ID.fullmatch(identity):
             fail("service_identity must use the canonical service identity format")
         identities.setdefault(identity, []).append(target_id)
-        if not isinstance(target["signals"], dict) or set(target["signals"]) - SIGNALS:
+        if not isinstance(target["signals"], dict) or set(target["signals"]) - SIGNALS - OPTIONAL_SIGNALS:
             fail("signals must be a mapping of supported signal names")
         if (
             not isinstance(target["runtime"], str)
@@ -112,6 +116,11 @@ def validate(targets):
                 or not 60 <= declaration["freshness_seconds"] <= 86400
             ):
                 fail(f"{signal} freshness_seconds must be between 60 and 86400")
+            if signal == "profiles" and declaration["applicable"] and (
+                declaration.get("profile_type_id") != PROFILE_TYPE_ID
+                or declaration.get("selector") != f'{{target_id="{target_id}"}}'
+            ):
+                fail("profiles must use the pinned CPU profile type and an exact target_id selector")
     return ids, {key: values for key, values in identities.items() if len(values) > 1}
 
 
@@ -184,7 +193,7 @@ def build_report(repo, inventory, repository_sha, now=None):
                     "excepted" if not target["signals"][signal]["applicable"] else
                     receipt_status(target, signal, target["signals"][signal], inventory_revision, repository_sha, now)
                 )
-                for signal in sorted(SIGNALS)
+                for signal in sorted(SIGNALS | target["signals"].keys())
             }
             deployed = target["lifecycle"] == "deployed"
             coverage = "verified" if deployed and statuses and all(
@@ -227,7 +236,7 @@ def build_report(repo, inventory, repository_sha, now=None):
                 "excepted" if not target["signals"][signal]["applicable"] else
                 receipt_status(target, signal, target["signals"][signal], inventory_revision, repository_sha, now)
             )
-            for signal in sorted(SIGNALS)
+            for signal in sorted(SIGNALS | target["signals"].keys())
         }
         deployed = target["lifecycle"] == "deployed"
         references = target.get("template_references", [])
@@ -258,7 +267,87 @@ def build_report(repo, inventory, repository_sha, now=None):
     }
 
 
+def validate_profile_receipt(payload):
+    """Return only a bounded status for the pinned SelectSeries response shape."""
+    invalid = {"status": "invalid_response", "sample_count": 0}
+    if not isinstance(payload, dict):
+        return invalid
+    target_id = payload.get("target_id")
+    start_ms = payload.get("start_ms")
+    end_ms = payload.get("end_ms")
+    freshness_seconds = payload.get("freshness_seconds")
+    if (
+        not isinstance(target_id, str)
+        or not TARGET_ID.fullmatch(target_id)
+        or any(not isinstance(value, int) or isinstance(value, bool) for value in (start_ms, end_ms, freshness_seconds))
+        or start_ms >= end_ms
+        or not 60 <= freshness_seconds <= 86400
+        or end_ms - start_ms > 3600_000
+    ):
+        return invalid
+    try:
+        response = payload["response"]
+        if isinstance(response, str):
+            response = json.loads(response)
+        if (
+            not isinstance(response, dict)
+            or not isinstance(response.get("series"), list)
+            or len(response["series"]) > 1
+        ):
+            return invalid
+        samples = 0
+        for series in response["series"]:
+            if (
+                not isinstance(series, dict)
+                or not isinstance(series.get("labels"), list)
+                or not isinstance(series.get("points"), list)
+                or len(series["points"]) > 62
+            ):
+                return invalid
+            if any(
+                not isinstance(label, dict)
+                or not isinstance(label.get("name"), str)
+                or not isinstance(label.get("value"), str)
+                for label in series["labels"]
+            ):
+                return invalid
+            target_labels = [
+                label.get("value") for label in series["labels"]
+                if label["name"] == "target_id"
+            ]
+            if target_labels != [target_id]:
+                return invalid
+            for point in series["points"]:
+                if not isinstance(point, dict):
+                    return invalid
+                timestamp = point.get("timestamp")
+                if isinstance(timestamp, str) and re.fullmatch(r"[0-9]+", timestamp):
+                    timestamp = int(timestamp)
+                value = point.get("value", 0)
+                if (
+                    not isinstance(timestamp, int)
+                    or isinstance(timestamp, bool)
+                    or not isinstance(value, (int, float))
+                    or isinstance(value, bool)
+                    or not math.isfinite(value)
+                ):
+                    return invalid
+                earliest_bucket_end = max(start_ms, end_ms - freshness_seconds * 1000) + PROFILE_STEP_MS
+                if earliest_bucket_end <= timestamp <= end_ms and value > 0:
+                    samples += 1
+        return {"status": "verified" if samples else "no_fresh_sample", "sample_count": samples}
+    except (KeyError, TypeError, ValueError, OverflowError, json.JSONDecodeError):
+        return invalid
+
+
 def main():
+    if len(sys.argv) == 2 and sys.argv[1] == "--validate-profile-receipt":
+        try:
+            payload = json.load(sys.stdin)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            payload = None
+        print(json.dumps(validate_profile_receipt(payload), sort_keys=True))
+        return
     try:
         inventory = json.load(sys.stdin)
     except (json.JSONDecodeError, UnicodeDecodeError):
@@ -273,7 +362,7 @@ def main():
         print(canonical_inventory_revision(targets))
         return
     if len(sys.argv) != 2:
-        fail("usage: o11y-coverage-census.py <repo-root> or --inventory-revision")
+        fail("usage: o11y-coverage-census.py <repo-root>, --inventory-revision, or --validate-profile-receipt")
     report = build_report(Path(sys.argv[1]).resolve(), inventory, inventory.get("repository_sha", ""))
     print(json.dumps(report, sort_keys=True))
 

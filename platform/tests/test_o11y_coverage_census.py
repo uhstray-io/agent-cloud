@@ -98,6 +98,77 @@ class CoverageCensusTests(unittest.TestCase):
             NOW,
         )
 
+    def test_optional_profiles_signal_preserves_the_existing_four_signal_contract(self):
+        declaration = target(signals={name: signal_excluded(name) for name in CENSUS.SIGNALS})
+        row = self.report([declaration])["targets"][0]
+        self.assertEqual(row["coverage"], "verified")
+        self.assertEqual(set(row["signals"]), CENSUS.SIGNALS)
+
+    def test_profile_declaration_requires_the_pinned_type_and_exact_target_selector(self):
+        declaration = target()
+        declaration["signals"]["profiles"] = {
+            "applicable": True,
+            "selector": '{target_id="service:alpha"}',
+            "profile_type_id": CENSUS.PROFILE_TYPE_ID,
+            "collection_method": "alloy",
+            "receipt_reference": "semaphore/task/124",
+            "freshness_seconds": 600,
+        }
+        declaration["receipt_reference"]["profiles"] = "semaphore/task/124"
+        CENSUS.validate([declaration])
+        declaration["signals"]["profiles"]["selector"] = '{target_id="service:alpha",service_name="o11y"}'
+        with redirect_stdout(io.StringIO()), self.assertRaises(SystemExit):
+            CENSUS.validate([declaration])
+
+    def test_profile_receipt_requires_the_exact_target_and_fresh_positive_sample(self):
+        payload = {
+            "target_id": "service:alpha",
+            "start_ms": 1_000_000,
+            "end_ms": 1_600_000,
+            "freshness_seconds": 300,
+            "response": {
+                "series": [{
+                    "labels": [{"name": "target_id", "value": "service:alpha"}],
+                    "points": [{"timestamp": "1500000", "value": 3.0}],
+                }],
+            },
+        }
+        payload["response"]["series"][0]["points"].append({"timestamp": "1500000"})
+        self.assertEqual(CENSUS.validate_profile_receipt(payload), {"status": "verified", "sample_count": 1})
+        payload["response"]["series"][0]["points"][0]["value"] = None
+        self.assertEqual(CENSUS.validate_profile_receipt(payload)["status"], "invalid_response")
+        payload["response"]["series"][0]["points"][0]["value"] = 3.0
+        payload["response"]["series"][0]["labels"][0]["value"] = "service:beta"
+        self.assertEqual(CENSUS.validate_profile_receipt(payload)["status"], "invalid_response")
+        payload["response"]["series"][0]["labels"][0]["value"] = "service:alpha"
+        payload["response"]["series"][0]["points"][0]["timestamp"] = "1"
+        self.assertEqual(CENSUS.validate_profile_receipt(payload)["status"], "no_fresh_sample")
+        point = payload["response"]["series"][0]["points"][0]
+        payload["freshness_seconds"] = 600
+        point["timestamp"] = "1059999"
+        self.assertEqual(CENSUS.validate_profile_receipt(payload)["status"], "no_fresh_sample")
+        point["timestamp"] = "1060000"
+        self.assertEqual(CENSUS.validate_profile_receipt(payload)["status"], "verified")
+        payload["freshness_seconds"] = 300
+        point["timestamp"] = "1359999"
+        self.assertEqual(CENSUS.validate_profile_receipt(payload)["status"], "no_fresh_sample")
+        point["timestamp"] = "1360000"
+        self.assertEqual(CENSUS.validate_profile_receipt(payload)["status"], "verified")
+        point["value"] = 0
+        self.assertEqual(CENSUS.validate_profile_receipt(payload)["status"], "no_fresh_sample")
+
+    def test_profile_receipt_refuses_ambiguous_series_shape_without_echoing_response(self):
+        payload = {
+            "target_id": "service:alpha",
+            "start_ms": 1_000_000,
+            "end_ms": 1_600_000,
+            "freshness_seconds": 300,
+            "response": {"series": [{"labels": [], "points": []}]},
+        }
+        result = CENSUS.validate_profile_receipt(payload)
+        self.assertEqual(result, {"status": "invalid_response", "sample_count": 0})
+        self.assertEqual(set(result), {"status", "sample_count"})
+
     def test_deployed_missing_signal_is_incomplete(self):
         item = self.report([target()])["targets"][0]
         self.assertEqual(item["coverage"], "incomplete")

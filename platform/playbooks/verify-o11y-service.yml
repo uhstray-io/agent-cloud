@@ -26,7 +26,7 @@
           - expected_inventory_revision is defined and expected_inventory_revision is match('^[0-9a-f]{64}$')
           - groups.get('o11y_svc', []) | length == 1
           - expected_target_id is defined and expected_target_id is match('^(service|agent|vm|guest|runner|network|dgx):[a-z][a-z0-9_-]{1,63}$')
-          - expected_signal is defined and expected_signal in ['logs', 'metrics', 'health', 'traces']
+          - expected_signal is defined and expected_signal in ['logs', 'metrics', 'health', 'traces', 'profiles']
           - signal_selector is defined and signal_selector | length <= 512
           - freshness_seconds is defined and freshness_seconds | int >= 60 and freshness_seconds | int <= 86400
           - observation_window_seconds is defined and observation_window_seconds | int >= 60 and observation_window_seconds | int <= 3600 and observation_window_seconds | int <= freshness_seconds | int
@@ -247,10 +247,18 @@
         fail_msg: "unverifiable_target: this signal selector is not declared for the exact target."
       when: o11y_verification_mode | default('legacy') == 'strict'
 
+    - name: Require the pinned profile type for profile receipts
+      ansible.builtin.assert:
+        that:
+          - expected_signal != 'profiles' or _coverage_target.signals.profiles.profile_type_id == 'process_cpu:cpu:nanoseconds:cpu:nanoseconds'
+        fail_msg: "unverifiable_target: profiles require the pinned CPU profile type."
+      when: o11y_verification_mode | default('legacy') == 'strict'
+
     - name: Refuse selectors without the bounded target identity label
       ansible.builtin.assert:
         that:
           - expected_signal == 'traces' or ('target_id="' ~ expected_target_id ~ '"') in signal_selector
+          - expected_signal != 'profiles' or signal_selector == '{target_id="' ~ expected_target_id ~ '"}'
           - expected_signal != 'traces' or signal_selector == '{ resource.target_id = "' ~ expected_target_id ~ '" }'
           - expected_signal not in ['metrics', 'health'] or signal_selector is match('^\\s*[a-zA-Z_:][a-zA-Z0-9_:]*\\s*\\{[^{}]*\\}\\s*$')
           - expected_signal not in ['metrics', 'health'] or signal_selector is search('(?:\\{|,)\\s*target_id\\s*=\\s*"' ~ expected_target_id ~ '"\\s*(?:,|\\})')

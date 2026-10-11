@@ -46,11 +46,70 @@
   check_mode: false
   when: expected_signal == 'traces'
 
+- name: Set the bounded Pyroscope observation interval
+  ansible.builtin.set_fact:
+    _profile_query_end_ms: "{{ (now(utc=true).timestamp() | int) * 1000 }}"
+  no_log: true
+  when: expected_signal == 'profiles'
+
+- name: Query the exact Pyroscope profile selector
+  ansible.builtin.command:
+    argv:
+      - "{{ _engine }}"
+      - exec
+      - o11y-grafana
+      - wget
+      - -q
+      - -O
+      - "-"
+      - -T
+      - "10"
+      - "--header=Content-Type: application/json"
+      - "--post-data={{ {
+          'profileTypeID': _coverage_target.signals.profiles.profile_type_id,
+          'labelSelector': signal_selector,
+          'start': (_profile_query_end_ms | int) - (observation_window_seconds | int * 1000),
+          'end': _profile_query_end_ms | int,
+          'groupBy': ['target_id'],
+          'limit': 1,
+          'step': 60
+        } | to_json }}"
+      - "http://pyroscope:4040/querier.v1.QuerierService/SelectSeries"
+  register: _exact_profiles
+  changed_when: false
+  check_mode: false
+  failed_when: false
+  no_log: true
+  when: expected_signal == 'profiles'
+
+- name: Validate the pinned Pyroscope response without exposing labels
+  ansible.builtin.command:
+    argv:
+      - python3
+      - "{{ playbook_dir }}/files/o11y-coverage-census.py"
+      - --validate-profile-receipt
+    stdin: "{{ {
+      'response': _exact_profiles.stdout | default(''),
+      'target_id': expected_target_id,
+      'start_ms': (_profile_query_end_ms | int) - (observation_window_seconds | int * 1000),
+      'end_ms': _profile_query_end_ms | int,
+      'freshness_seconds': freshness_seconds | int
+    } | to_json }}"
+  delegate_to: localhost
+  register: _validated_profiles
+  changed_when: false
+  check_mode: false
+  failed_when: false
+  no_log: true
+  when: expected_signal == 'profiles'
+
 - name: Require a fresh exact-target signal observation
   ansible.builtin.assert:
     that:
-      - _exact_receipt.status == 'success' if expected_signal != 'traces' else _exact_receipt.traces | default([]) | length > 0
-      - _exact_receipt.traces | default([]) | length > 0 if expected_signal == 'traces' else _exact_receipt.data.result | default([]) | length > 0
+      - expected_signal in ['traces', 'profiles'] or _exact_receipt.status == 'success'
+      - expected_signal != 'traces' or _exact_receipt.traces | default([]) | length > 0
+      - expected_signal != 'profiles' or (_validated_profiles.stdout | from_json).status == 'verified'
+      - expected_signal in ['traces', 'profiles'] or _exact_receipt.data.result | default([]) | length > 0
       - expected_signal not in ['metrics', 'health'] or _exact_receipt.data.resultType == 'matrix'
       - expected_signal not in ['metrics', 'health'] or (_exact_receipt.data.result | map(attribute='metric.target_id') | list | unique == [expected_target_id])
       - expected_signal not in ['metrics', 'health'] or (_exact_latest_samples | length == _exact_receipt.data.result | length and _exact_latest_samples | selectattr('0', 'ge', (now(utc=true).timestamp() | int) - (freshness_seconds | int)) | list | length == _exact_latest_samples | length and _exact_latest_samples | selectattr('0', 'le', now(utc=true).timestamp() | int) | list | length == _exact_latest_samples | length)
@@ -65,7 +124,7 @@
       {{ (
         _exact_logs.stdout if expected_signal == 'logs' else
         _exact_prometheus.stdout if expected_signal in ['metrics', 'health'] else
-        _exact_traces.stdout
+        _exact_traces.stdout if expected_signal == 'traces' else '{}'
       ) | default('{}') | from_json }}
     _exact_latest_samples: >-
       {% set latest = [] %}

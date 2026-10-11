@@ -53,6 +53,7 @@
   - **Live acceptance receipt (2026-10-11):** Source is merged in `dev` at `f9e8a3a8b597ec90c11c15fecb284567f657a4cd`; production Dev-bound Semaphore check-mode task 4395 and normal task 4396 passed at that SHA. Effective Tempo readback validated service-graphs/span-metrics source configuration, disabled processors, and 2,000 max active series. Grafana readback validated `serviceMap`, trace-to-metrics/logs/profiles, and the Loki trace link; Pyroscope datasource/storage checks passed. Processors remain disabled pending numeric capacity and backup/isolated-restore gates. Graph edges and per-service coverage remain unproven; tasks 6.2 and 6.3 remain open. Trace clicks were not tested.
 - [ ] 6.2 Extend the existing 5.1/5.2 cohorts with a per-service log, metric, trace, and profile applicability matrix and exact-target receipts for each applicable signal. Require verified spans to underpin graph edges; a node alone, including an inferred peer, does not prove service trace coverage. Mark unsupported or not-applicable signals without inventing coverage.
 - [ ] 6.3 Evaluate Grafana 12 trace-correlations UI separately after documented backup/restore and receiver-capacity gates. Do not upgrade the pinned Grafana 11.4 image as part of this baseline.
+- [x] 6.4 Add the optional fifth profile signal and a fail-closed, exact-target Pyroscope receipt with pinned response validation; keep Alloy profiling disabled and make no live profile-coverage claim. Focused source tests and syntax validation cover the contract.
 
 ## 7. Provisioned dashboard query verification
 
