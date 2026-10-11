@@ -167,6 +167,16 @@ class MergeGuardTests(unittest.TestCase):
                             "previous_filename": "platform/services/uhhcraft/deployment/main.go"}]]
         run_refusal(self, api, "was skipped")
 
+    def test_renamed_files_require_a_valid_previous_filename(self):
+        for previous_filename in ("missing", None, "", 42):
+            with self.subTest(previous_filename=previous_filename):
+                api = FakeGitHub()
+                file = {"filename": "docs/moved.md", "status": "renamed"}
+                if previous_filename != "missing":
+                    file["previous_filename"] = previous_filename
+                api.file_pages = [[file]]
+                run_refusal(self, api, "Changed-file rename evidence is incomplete")
+
     def test_exact_head_commit_status_failure_refuses_and_coderabbit_is_optional(self):
         api = FakeGitHub()
         api.statuses = [

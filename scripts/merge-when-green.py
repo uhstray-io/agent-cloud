@@ -111,6 +111,8 @@ def changed_files(api, number):
     if any(f.get("previous_filename") is not None and not isinstance(f.get("previous_filename"), str)
            for f in files):
         raise Refusal("Changed-file rename evidence is incomplete")
+    if any(f.get("status") == "renamed" and not f.get("previous_filename") for f in files):
+        raise Refusal("Changed-file rename evidence is incomplete")
     if any(f["filename"] == WORKFLOW or f.get("previous_filename") == WORKFLOW for f in files):
         raise Refusal("PR changes the protected lint-and-test workflow")
     return [path for f in files for path in (f.get("previous_filename"), f["filename"]) if path]
