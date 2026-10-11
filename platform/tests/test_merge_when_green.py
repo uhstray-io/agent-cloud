@@ -320,37 +320,58 @@ class MergeGuardTests(unittest.TestCase):
                 run_refusal(self, api)
 
     def test_bash_job_shape_and_existing_timeout_refuse(self):
-        source = CURRENT_WORKFLOW
-        marker = b"  bats:\n    name: Bash Tests\n    runs-on: ubuntu-latest\n    steps:\n"
-        start = source.index(b"  bats:\n")
-        following = source.index(b"  rego:\n", start)
-        job = source[start:following]
-        moved_job = source[:start] + source[following:] + b"\n" + job
-        variants = {
-            "missing": (source, source.replace(job, b"", 1)),
-            "moved": (source, moved_job.replace(
-                marker, marker.replace(b"    steps:\n", b"    timeout-minutes: 5\n    steps:\n"), 1)),
-            "ambiguous": (source + b"\n" + job, (source + b"\n" + job).replace(
-                marker, marker.replace(b"    steps:\n", b"    timeout-minutes: 5\n    steps:\n"), 1)),
-            "existing timeout": (source.replace(
-                marker, marker.replace(b"    steps:\n", b"    timeout-minutes: 10\n    steps:\n"), 1),
-                source.replace(marker, marker.replace(
-                    b"    steps:\n", b"    timeout-minutes: 5\n    timeout-minutes: 10\n    steps:\n"), 1)),
-            "timeout before runner": (source.replace(
-                b"  bats:\n    name: Bash Tests\n",
-                b"  bats:\n    name: Bash Tests\n    timeout-minutes: 10\n", 1),
-                source.replace(
-                    b"  bats:\n    name: Bash Tests\n    runs-on:",
-                    b"  bats:\n    name: Bash Tests\n    timeout-minutes: 10\n"
-                    b"    timeout-minutes: 5\n    runs-on:", 1)),
+        source = REVIEWED_WORKFLOW
+        job_start = source.index(b"  bats:\n")
+        job_end = source.index(b"  rego:\n", job_start)
+        job = source[job_start:job_end]
+        runner = b"  bats:\n    name: Bash Tests\n    runs-on: ubuntu-latest\n"
+        steps = runner + b"    steps:\n"
+        timeout = b"    timeout-minutes: 10\n"
+        invalid_bases = {
+            "missing Bash job": (
+                source[:job_start] + source[job_end:],
+                "Pinned base workflow has a missing or ambiguous Bash job",
+            ),
+            "ambiguous Bash job": (
+                source + b"\n" + job,
+                "Pinned base workflow has a missing or ambiguous Bash job",
+            ),
+            "timeout before steps": (
+                source.replace(steps, runner + timeout + b"    steps:\n", 1),
+                "Pinned base Bash job is moved or has an existing timeout",
+            ),
+            "timeout after steps": (
+                source.replace(steps, steps + timeout, 1),
+                "Pinned base Bash job already has a timeout",
+            ),
         }
-        for label, (base, candidate) in variants.items():
+        for label, (base, message) in invalid_bases.items():
             with self.subTest(label=label):
-                api = FakeGitHub()
-                api.workflow_sources[BASE] = base
-                api.workflow_sources[HEAD] = candidate
-                api.files = [guard.WORKFLOW]
-                run_refusal(self, api)
+                with self.assertRaises(guard.Refusal) as raised:
+                    guard.check_workflow_edit(base, source)
+                self.assertEqual(str(raised.exception), message)
+
+        invalid_candidates = {
+            "missing timeout": (
+                source,
+                "Workflow exception requires a canonical unquoted Bash timeout from 1 through 30",
+            ),
+            "extra byte": (
+                source.replace(runner, runner + b"    timeout-minutes: 5\n", 1) + b"# extra\n",
+                "Workflow change includes bytes beyond the permitted Bash timeout insertion",
+            ),
+        }
+        for label, (candidate, message) in invalid_candidates.items():
+            with self.subTest(label=label):
+                with self.assertRaises(guard.Refusal) as raised:
+                    guard.check_workflow_edit(source, candidate)
+                self.assertEqual(str(raised.exception), message)
+                if candidate != source:
+                    api = FakeGitHub()
+                    api.workflow_sources[BASE] = source
+                    api.workflow_sources[HEAD] = candidate
+                    api.files = [guard.WORKFLOW]
+                    run_refusal(self, api, message)
 
     def test_alternate_existing_timeout_keys_refuse_without_merging(self):
         source = REVIEWED_WORKFLOW
