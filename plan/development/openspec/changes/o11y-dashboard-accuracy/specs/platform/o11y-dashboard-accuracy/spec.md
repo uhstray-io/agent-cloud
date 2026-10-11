@@ -89,6 +89,20 @@ The existing read-only dashboard verifier SHALL allow a caller to name exact sel
 - **WHEN** a required selected panel returns no data or its backend query fails
 - **THEN** verification fails and reports the panel outcome without exposing backend error bodies or sample values
 
+### Requirement: Dashboard verification reproduces bounded panel-relative time
+
+The dashboard verifier SHALL accept `timeFrom` only as one positive Prometheus duration unit. It SHALL use the resulting per-panel lookback for range-query starts, range steps, and Grafana range built-ins. Instant queries SHALL remain evaluated at the current end time. Other unsupported panel and target settings SHALL remain refused.
+
+#### Scenario: Selected panel has a supported relative range
+- **WHEN** an evaluated panel declares `timeFrom` as one positive duration such as `7d` or `45m`
+- **THEN** its range query starts at now minus that panel duration
+- **AND** its step and interpolated Grafana range built-ins use that same duration
+
+#### Scenario: Selected panel has an unsupported relative range
+- **WHEN** an evaluated panel declares a malformed or compound `timeFrom`
+- **THEN** verification refuses the panel before sending backend requests
+- **AND** a valid `timeFrom` does not permit other unsupported panel settings
+
 ### Requirement: Service Overview presents existing signals without double counting
 
 The Service Overview SHALL preserve its dashboard and datasource identities, display existing service metrics and available container, access-log, span and conformance streams, and keep missing-source evidence distinct from service health. Aggregate log-source counts MUST use disjoint selectors; an all-stream drill-down MUST NOT be included in those totals. New telemetry labels MUST remain bounded.
@@ -109,3 +123,8 @@ The Service Overview SHALL preserve its dashboard and datasource identities, dis
 
 - **WHEN** the dashboards are provisioned after the change
 - **THEN** Grafana retains UIDs `service-conformance` and `service-overview` and datasource UIDs `prometheus` and `loki`
+
+#### Scenario: Completion age table preserves row identity
+- **WHEN** Loki returns separate frames for service and step completion ages
+- **THEN** the table converts labels to columns, merges the frames, removes the time column, and renames the value column to Age
+- **AND** service, step, and the `-1` to neutral `Unknown` mapping remain visible

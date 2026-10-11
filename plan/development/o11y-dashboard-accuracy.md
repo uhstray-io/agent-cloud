@@ -22,6 +22,8 @@ The supplied read-only Semaphore API measurement covers 12 successive successful
 2. **Make absence explicit:** only exact, selected exception panels may pass empty; query errors and required-panel no-data remain failures. A selected log source with no matching records is reported as no data observed for that source, not as a healthy zero or a diagnosis of why ingestion is absent.
 3. **Keep observability bounded:** reuse existing Prometheus/Loki signals and stable datasource UIDs; add no unbounded labels (`plan/architecture/02-service-onboarding.md:68-80`; `PRINCIPLES.md:366-375`).
 4. **Operate through the platform:** validate and deploy with Semaphore; no direct production changes or Clean Deploy (`AGENTS.md:25-40,167-174`).
+5. **Reproduce dashboard time scopes:** the read-only verifier honors only positive one-unit `timeFrom` overrides, applying the panel lookback to range queries, step sizing, and Grafana range built-ins while keeping instant-query time at now; other unsupported settings remain refused.
+6. **Preserve table identity:** the per-step age table uses the same frame-label, merge, time-column, and rename transformations as the latest status table, with its `-1` value displayed as `Unknown`.
 
 ## Architecture
 

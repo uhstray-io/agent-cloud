@@ -190,6 +190,13 @@ def test_unknown_newest_step_completion_replaces_older_known_age_without_fallbac
     assert step_ages["fieldConfig"]["defaults"]["mappings"][0]["options"]["-1"] == {
         "text": "Unknown", "color": "gray"
     }
+    transformations = step_ages["transformations"]
+    assert [item["id"] for item in transformations] == [
+        "labelsToFields", "merge", "organize", "renameByRegex"
+    ]
+    assert transformations[0]["options"] == {"mode": "columns"}
+    assert transformations[2]["options"]["excludeByName"] == {"Time": True}
+    assert transformations[-1]["options"]["renamePattern"] == "Age"
     assert "Latest step status by service" in step_ages["description"]
     assert "task_id, completed_at_seconds" in provenance_expr
     assert 'step!="none"' in provenance_expr

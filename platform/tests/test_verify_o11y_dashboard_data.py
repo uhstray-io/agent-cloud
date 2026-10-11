@@ -273,6 +273,61 @@ def test_a_loki_only_selection_is_planned():
     assert planned["panels"][0]["targets"][0]["modes"] == ["range"]
 
 
+def test_dashboard_panel_time_from_is_planned_for_both_relative_windows():
+    planned = vdd.plan(_payload(
+        "service-conformance",
+        panel_titles=["Recent failed task snapshots", "Workflow completion and task provenance"],
+    ))
+    by_title = {panel["title"]: panel for panel in planned["panels"]}
+    assert by_title["Recent failed task snapshots"]["lookback"] == 7 * 86400
+    assert by_title["Workflow completion and task provenance"]["lookback"] == 45 * 60
+
+
+def test_real_time_from_panels_query_their_own_range(loki):
+    titles = ["Recent failed task snapshots", "Workflow completion and task provenance"]
+    report = vdd.evaluate(
+        _payload("service-conformance", panel_titles=titles, loki_url=loki.url), now=1700000000
+    )
+    assert report["status"] == "pass", report
+    assert [form["start"] for _, form in loki.requests] == ["1699395200.000", "1699997300.000"]
+    assert [form["end"] for _, form in loki.requests] == ["1700000000.000", "1700000000.000"]
+
+
+@pytest.mark.parametrize("time_from", ["1h30m", "0m", "7d;up", "-45m", "45M"])
+def test_malformed_panel_time_from_is_refused(tmp_path, time_from):
+    dashboard = _synthetic("up")
+    dashboard["panels"][0]["timeFrom"] = time_from
+    with pytest.raises(vdd.Refused, match="one Prometheus duration unit"):
+        vdd.plan(_payload("synthetic", dashboards_dir=_dashboard_dir(tmp_path, dashboard)))
+
+
+def test_malformed_time_from_on_skipped_loki_panel_does_not_refuse_dashboard_plan(tmp_path):
+    dashboard = _synthetic("up")
+    dashboard["panels"].append(
+        {
+            "title": "Skipped Loki panel",
+            "type": "logs",
+            "datasource": {"type": "loki"},
+            "timeFrom": "1h30m",
+            "targets": [{"refId": "B", "expr": "{job=\"app\"}"}],
+        }
+    )
+
+    planned = vdd.plan(_payload("synthetic", dashboards_dir=_dashboard_dir(tmp_path, dashboard)))
+
+    assert planned["panels"][1]["lookback"] == 3600
+    assert planned["panels"][1]["targets"] == [
+        {"ref": "B", "datasource": "loki", "status": "skipped"}
+    ]
+
+
+def test_supported_panel_time_from_does_not_allow_other_unsupported_options(tmp_path):
+    dashboard = _synthetic("up")
+    dashboard["panels"][0].update(timeFrom="45m", maxDataPoints=100)
+    with pytest.raises(vdd.Refused, match="maxDataPoints"):
+        vdd.plan(_payload("synthetic", dashboards_dir=_dashboard_dir(tmp_path, dashboard)))
+
+
 def test_scrape_interval_matches_the_prometheus_datasource():
     sources = yaml.safe_load((GRAFANA / "provisioning/datasources/datasources.yml").read_text())["datasources"]
     prom = next(s for s in sources if s["type"] == "prometheus")
@@ -296,6 +351,37 @@ def test_builtins_follow_grafanas_definitions(tmp_path):
     # step = ceil(172800 / 1000) = 173; rate interval = max(173 + 15, 60) = 188
     assert long["step"] == 173
     assert long["panels"][0]["targets"][0]["expr"].startswith("rate(x[188s]) + rate(x[173s])")
+
+
+def test_panel_time_from_sets_range_start_step_and_interpolated_builtins(tmp_path, prometheus):
+    dashboard = _synthetic("increase(requests[$__range])")
+    dashboard["panels"][0]["timeFrom"] = "45m"
+    dashboards_dir = _dashboard_dir(tmp_path, dashboard)
+    planned = vdd.plan(_payload("synthetic", dashboards_dir=dashboards_dir))
+    assert planned["panels"][0]["targets"][0]["expr"] == "increase(requests[2700s])"
+    report = vdd.evaluate(
+        _payload("synthetic", dashboards_dir=dashboards_dir, prometheus_url=prometheus.url), now=1700003600
+    )
+    assert report["status"] == "pass"
+    assert report["panels"][0]["lookback_seconds"] == 2700
+    _, form = prometheus.requests[0]
+    assert (form["start"], form["end"], form["step"]) == ("1700000900.000", "1700003600.000", "15s")
+
+
+def test_panel_time_from_keeps_instant_queries_at_now(tmp_path, prometheus):
+    dashboard = _synthetic("up", datasource={"type": "prometheus", "uid": "prometheus"})
+    dashboard["panels"][0]["timeFrom"] = "45m"
+    dashboard["panels"][0]["targets"][0]["instant"] = True
+    report = vdd.evaluate(
+        _payload(
+            "synthetic",
+            dashboards_dir=_dashboard_dir(tmp_path, dashboard),
+            prometheus_url=prometheus.url,
+        ),
+        now=1700003600,
+    )
+    assert report["status"] == "pass"
+    assert prometheus.requests[0] == ("/api/v1/query", {"query": "up", "time": "1700003600.000"})
 
 
 @pytest.mark.parametrize(
@@ -721,7 +807,6 @@ def test_a_saved_default_outside_a_string_must_be_a_duration(tmp_path):
     [
         ({"maxDataPoints": 100}, {}),
         ({"interval": "1m"}, {}),
-        ({"timeFrom": "6h"}, {}),
         ({"timeShift": "1d"}, {}),
         ({"repeat": "identity"}, {}),
         ({"libraryPanel": {"uid": "lib"}}, {}),
