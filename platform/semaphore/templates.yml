@@ -2395,6 +2395,21 @@ templates:
         required: false
         default_value: "true"
 
+  - name: Grant GitHub Runner App Repository (Dev)
+    playbook: platform/playbooks/grant-github-runner-app-repository.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed Dev commit SHA"
+        description: "Exact clean Dev revision containing the reviewed grant playbook"
+        type: string
+        required: true
+      - name: github_app_client_id
+        title: "Runner App client id"
+        description: "JWT issuer for uhstray-io-runner-automation"
+        type: string
+        required: true
+
   - name: Deploy GitHub Runner
     playbook: platform/playbooks/deploy-github-runner.yml
     # Before the 2026-10-07 promotion (PR #447), main had no copy of this playbook, so a
