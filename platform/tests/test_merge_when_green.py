@@ -2,6 +2,7 @@
 
 import base64
 import contextlib
+import hashlib
 import importlib.util
 import io
 import json
@@ -15,6 +16,7 @@ guard = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(guard)
 
 HEAD = "a" * 40
+BASE = "b" * 40
 PR = 532
 
 
@@ -24,7 +26,7 @@ class FakeGitHub:
         self.merge_calls = []
         self.pr = {
             "number": PR, "state": "open", "draft": False, "merged": False,
-            "base": {"ref": "dev", "repo": {"full_name": guard.REPO}},
+            "base": {"ref": "dev", "sha": BASE, "repo": {"full_name": guard.REPO}},
             "head": {"sha": HEAD, "repo": {"full_name": guard.REPO}},
             "user": {"login": "author"},
         }
@@ -55,18 +57,38 @@ class FakeGitHub:
         self.statuses = []
         self.status_pages = None
         self.thread_page_info = {"hasNextPage": False, "endCursor": None}
-        self.workflow_source = (SCRIPT.parents[1] / guard.WORKFLOW).read_bytes()
+        self.workflow_sources = {
+            BASE: (SCRIPT.parents[1] / guard.WORKFLOW).read_bytes(),
+            HEAD: (SCRIPT.parents[1] / guard.WORKFLOW).read_bytes(),
+        }
+        self.tree_overrides = {}
 
     def api(self, endpoint, fields=()):
         self.calls.append((endpoint, tuple(fields)))
-        if endpoint == f"repos/{guard.REPO}/contents/{guard.WORKFLOW}?ref=dev":
-            return {"content": base64.b64encode(self.workflow_source).decode()}
+        if endpoint.startswith(f"repos/{guard.REPO}/contents/{guard.WORKFLOW}?ref="):
+            sha = endpoint.rsplit("=", 1)[1]
+            source = self.workflow_sources[sha]
+            blob_sha = hashlib.sha1(b"blob " + str(len(source)).encode() + b"\0" + source).hexdigest()
+            return {"type": "file", "path": guard.WORKFLOW, "encoding": "base64", "size": len(source),
+                    "sha": blob_sha, "content": base64.encodebytes(source).decode()}
+        if endpoint.startswith(f"repos/{guard.REPO}/git/commits/"):
+            sha = endpoint.rsplit("/", 1)[1]
+            return {"sha": sha, "tree": {"sha": "c" * 40 if sha == BASE else "d" * 40}}
+        if endpoint.startswith(f"repos/{guard.REPO}/git/trees/"):
+            tree_sha = endpoint.rsplit("/", 1)[1]
+            source = self.workflow_sources[BASE if tree_sha == "c" * 40 else HEAD]
+            blob_sha = hashlib.sha1(b"blob " + str(len(source)).encode() + b"\0" + source).hexdigest()
+            return self.tree_overrides.get(tree_sha, {
+                "sha": tree_sha, "truncated": False,
+                "tree": [{"path": guard.WORKFLOW, "mode": "100644", "type": "blob",
+                          "sha": blob_sha, "size": len(source)}],
+            })
         if endpoint == f"repos/{guard.REPO}/pulls/{PR}":
             return self.pr
         if endpoint == f"repos/{guard.REPO}/pulls/{PR}/files":
             page = int(dict(fields)["page"])
             return self.file_pages[page - 1] if self.file_pages is not None else [
-                {"filename": filename} for filename in self.files
+                {"filename": filename, "status": "modified"} for filename in self.files
             ]
         if endpoint == f"repos/{guard.REPO}/pulls/{PR}/reviews":
             return self.reviews
@@ -91,6 +113,47 @@ class FakeGitHub:
                 "nodes": self.threads, "pageInfo": self.thread_page_info,
             }}}}}
         raise AssertionError(endpoint)
+
+    @property
+    def workflow_source(self):
+        return self.workflow_sources[BASE]
+
+    @workflow_source.setter
+    def workflow_source(self, value):
+        self.workflow_sources[BASE] = value
+        self.workflow_sources[HEAD] = value
+
+    def set_timeout(self, value):
+        base = self.workflow_sources[BASE]
+        marker = b"  bats:\n    name: Bash Tests\n    runs-on: ubuntu-latest\n    steps:\n"
+        self.workflow_sources[HEAD] = base.replace(
+            marker, marker.replace(b"    steps:\n", b"    timeout-minutes: " + value + b"\n    steps:\n"), 1)
+        self.files = [guard.WORKFLOW]
+        for name in ("Go lint (uhhcraft)", "Go test (uhhcraft)", "Go build (uhhcraft image)"):
+            self.jobs[name]["conclusion"] = "success"
+            next(check for check in self.checks if check["name"] == name)["conclusion"] = "success"
+
+    def corrupt_blob(self, sha):
+        original = self.api
+
+        def changed(endpoint, fields=()):
+            result = original(endpoint, fields)
+            if endpoint.startswith(f"repos/{guard.REPO}/contents/"):
+                result["sha"] = sha
+            return result
+
+        self.api = changed
+
+    def corrupt_content(self, field, value):
+        original = self.api
+
+        def changed(endpoint, fields=()):
+            result = original(endpoint, fields)
+            if endpoint.startswith(f"repos/{guard.REPO}/contents/"):
+                result[field] = value
+            return result
+
+        self.api = changed
 
     def merge(self, pr, sha):
         self.merge_calls.append(["gh", "pr", "merge", str(pr), "--repo", guard.REPO,
@@ -118,7 +181,7 @@ class MergeGuardTests(unittest.TestCase):
         self.assertEqual(guard.main(["--pr", str(PR), "--head", HEAD, "--merge", "--feedback-addressed"], api), 0)
         self.assertEqual(api.merge_calls, [["gh", "pr", "merge", str(PR), "--repo", guard.REPO,
                                             "--merge", "--match-head-commit", HEAD]])
-        self.assertEqual(sum(endpoint == f"repos/{guard.REPO}/pulls/{PR}" for endpoint, _ in api.calls), 3)
+        self.assertEqual(sum(endpoint == f"repos/{guard.REPO}/pulls/{PR}" for endpoint, _ in api.calls), 5)
 
     def test_stale_head_refuses_without_merge(self):
         api = FakeGitHub()
@@ -148,22 +211,219 @@ class MergeGuardTests(unittest.TestCase):
         api.files = ["platform/services/uhhcraft/deployment/internal/main.go"]
         run_refusal(self, api, "was skipped")
 
-    def test_changes_to_the_dev_workflow_refuse_before_merge(self):
+    def test_canonical_bash_timeout_insertion_is_allowed(self):
         api = FakeGitHub()
-        api.files = [guard.WORKFLOW]
-        run_refusal(self, api, "PR changes the protected lint-and-test workflow")
+        base = api.workflow_sources[BASE]
+        base_blob_sha = hashlib.sha1(b"blob " + str(len(base)).encode() + b"\0" + base).hexdigest()
+        self.assertEqual(base_blob_sha, guard.REVIEWED_WORKFLOW_BLOB_SHA)
+        api.set_timeout(b"30")
+        self.assertEqual(guard.main(["--pr", str(PR), "--head", HEAD], api), 0)
+        self.assertEqual(api.merge_calls, [])
+
+    def test_changed_pinned_base_blob_refuses_workflow_exception(self):
+        api = FakeGitHub()
+        api.workflow_sources[BASE] += b"# baseline changed\n"
+        api.set_timeout(b"5")
+        run_refusal(self, api, "exact reviewed base blob")
+
+    def test_escaped_timeout_key_in_changed_base_refuses_workflow_exception(self):
+        api = FakeGitHub()
+        source = api.workflow_sources[BASE]
+        start = source.index(b"  bats:\n")
+        following = source.index(b"  rego:\n", start)
+        api.workflow_sources[BASE] = source[:following] + b"    timeout\\u002dminutes: 360\n" + source[following:]
+        api.workflow_sources[HEAD] = api.workflow_sources[BASE]
+        api.set_timeout(b"5")
+        run_refusal(self, api, "exact reviewed base blob")
+
+    def test_unchanged_workflow_at_new_baseline_passes_normal_policy(self):
+        api = FakeGitHub()
+        api.set_timeout(b"5")
+        api.workflow_sources[BASE] = api.workflow_sources[HEAD]
+        api.files = ["docs/change.md"]
+        self.assertEqual(guard.main(["--pr", str(PR), "--head", HEAD], api), 0)
+        self.assertEqual(api.merge_calls, [])
+
+    def test_timeout_bounds_and_canonical_format(self):
+        api = FakeGitHub()
+        for value in (b"1", b"30"):
+            with self.subTest(value=value):
+                api = FakeGitHub()
+                api.set_timeout(value)
+                self.assertEqual(guard.main(["--pr", str(PR), "--head", HEAD], api), 0)
+        for value in (b"0", b"31", b"01", b"\"5\"", b"${{ 5 }}", b"5 # limit"):
+            with self.subTest(value=value):
+                api = FakeGitHub()
+                api.set_timeout(value)
+                run_refusal(self, api, "canonical unquoted Bash timeout")
+
+    def test_workflow_exception_rejects_extra_byte_and_bad_file_evidence(self):
+        api = FakeGitHub()
+        api.set_timeout(b"5")
+        api.workflow_sources[HEAD] += b"# extra\n"
+        run_refusal(self, api, "beyond the permitted Bash timeout")
+        for status, previous in (("renamed", "old-workflow.yml"), ("added", None), ("removed", None),
+                                 ("copied", None), ("modified", "old-workflow.yml")):
+            with self.subTest(status=status, previous=previous):
+                api = FakeGitHub()
+                api.set_timeout(b"5")
+                api.file_pages = [[{"filename": guard.WORKFLOW, "status": status,
+                                    **({"previous_filename": previous} if previous else {})}]]
+                run_refusal(self, api, "one modified record")
+
+    def test_missing_go_check_refuses_when_workflow_is_touched(self):
+        api = FakeGitHub()
+        api.set_timeout(b"5")
+        api.jobs.pop("Go lint (uhhcraft)")
+        run_refusal(self, api, "Missing expected Actions jobs")
+
+    def test_other_workflow_path_changes_refuse(self):
+        api = FakeGitHub()
+        api.files = [".github/workflows/other.yml"]
+        run_refusal(self, api, "another protected workflow path")
+
+    def test_pinned_workflow_blob_tree_and_mode_evidence_fail_closed(self):
+        cases = [
+            ("blob SHA", lambda api: api.corrupt_blob("e" * 40)),
+            ("size", lambda api: api.corrupt_content("size", 1)),
+            ("path", lambda api: api.corrupt_content("path", "elsewhere.yml")),
+            ("encoding", lambda api: api.corrupt_content("encoding", "utf-8")),
+            ("base64", lambda api: api.corrupt_content("content", "%%%")),
+            ("truncated", lambda api: api.tree_overrides.update({"d" * 40: {
+                "sha": "d" * 40, "truncated": True, "tree": []}})),
+            ("mode", lambda api: api.tree_overrides.update({"d" * 40: {
+                "sha": "d" * 40, "truncated": False,
+                "tree": [{"path": guard.WORKFLOW, "mode": "100755", "type": "blob",
+                          "sha": hashlib.sha1(
+                              b"blob " + str(len(api.workflow_sources[HEAD])).encode() + b"\0"
+                              + api.workflow_sources[HEAD]).hexdigest(),
+                          "size": len(api.workflow_sources[HEAD])}]}})),
+        ]
+        for label, corrupt in cases:
+            with self.subTest(label=label):
+                api = FakeGitHub()
+                corrupt(api)
+                run_refusal(self, api)
+
+    def test_bash_job_shape_and_existing_timeout_refuse(self):
+        source = (SCRIPT.parents[1] / guard.WORKFLOW).read_bytes()
+        marker = b"  bats:\n    name: Bash Tests\n    runs-on: ubuntu-latest\n    steps:\n"
+        start = source.index(b"  bats:\n")
+        following = source.index(b"  rego:\n", start)
+        job = source[start:following]
+        moved_job = source[:start] + source[following:] + b"\n" + job
+        variants = {
+            "missing": (source, source.replace(job, b"", 1)),
+            "moved": (source, moved_job.replace(
+                marker, marker.replace(b"    steps:\n", b"    timeout-minutes: 5\n    steps:\n"), 1)),
+            "ambiguous": (source + b"\n" + job, (source + b"\n" + job).replace(
+                marker, marker.replace(b"    steps:\n", b"    timeout-minutes: 5\n    steps:\n"), 1)),
+            "existing timeout": (source.replace(
+                marker, marker.replace(b"    steps:\n", b"    timeout-minutes: 10\n    steps:\n"), 1),
+                source.replace(marker, marker.replace(
+                    b"    steps:\n", b"    timeout-minutes: 5\n    timeout-minutes: 10\n    steps:\n"), 1)),
+            "timeout before runner": (source.replace(
+                b"  bats:\n    name: Bash Tests\n",
+                b"  bats:\n    name: Bash Tests\n    timeout-minutes: 10\n", 1),
+                source.replace(
+                    b"  bats:\n    name: Bash Tests\n    runs-on:",
+                    b"  bats:\n    name: Bash Tests\n    timeout-minutes: 10\n"
+                    b"    timeout-minutes: 5\n    runs-on:", 1)),
+        }
+        for label, (base, candidate) in variants.items():
+            with self.subTest(label=label):
+                api = FakeGitHub()
+                api.workflow_sources[BASE] = base
+                api.workflow_sources[HEAD] = candidate
+                api.files = [guard.WORKFLOW]
+                run_refusal(self, api)
+
+    def test_alternate_existing_timeout_keys_refuse_without_merging(self):
+        source = (SCRIPT.parents[1] / guard.WORKFLOW).read_bytes()
+        start = source.index(b"  bats:\n")
+        following = source.index(b"  rego:\n", start)
+        spellings = (
+            b'    "timeout-minutes": 360',
+            b"    'timeout-minutes': 360",
+            b"    timeout-minutes : 360",
+        )
+        for spelling in spellings:
+            with self.subTest(spelling=spelling):
+                api = FakeGitHub()
+                base = source[:following] + spelling + b"\n" + source[following:]
+                api.workflow_sources[BASE] = base
+                api.workflow_sources[HEAD] = base
+                api.set_timeout(b"5")
+                run_refusal(self, api, "already has a timeout")
+
+    def test_workflow_status_is_required_and_rename_evidence_is_rejected(self):
+        for record in ({"filename": guard.WORKFLOW},
+                       {"filename": guard.WORKFLOW, "status": "renamed"},
+                       {"filename": "other.yml", "status": "renamed", "previous_filename": guard.WORKFLOW}):
+            with self.subTest(record=record):
+                api = FakeGitHub()
+                api.set_timeout(b"4")
+                api.file_pages = [[record]]
+                run_refusal(self, api)
+
+    def test_workflow_path_keeps_all_go_jobs_required(self):
+        self.assertEqual(guard.required_jobs([guard.WORKFLOW])["Go lint (uhhcraft)"], True)
+        self.assertEqual(guard.required_jobs([guard.WORKFLOW])["Go test (uhhcraft)"], True)
+        self.assertEqual(guard.required_jobs([guard.WORKFLOW])["Go build (uhhcraft image)"], True)
+
+    def test_pr_base_and_head_movement_during_validation_refuse(self):
+        def moving_api(field, api):
+            original = api.api
+            reads = 0
+
+            def moving(endpoint, fields=()):
+                nonlocal reads
+                if endpoint == f"repos/{guard.REPO}/pulls/{PR}":
+                    reads += 1
+                    if reads == 2:
+                        if field == "base":
+                            api.pr["base"]["sha"] = "e" * 40
+                        else:
+                            api.pr["head"]["sha"] = "f" * 40
+                return original(endpoint, fields)
+
+            return moving
+
+        for field in ("base", "head"):
+            with self.subTest(field=field):
+                api = FakeGitHub()
+                api.api = moving_api(field, api)
+                run_refusal(self, api, "match --head" if field == "head"
+                            else "moved while collecting")
+
+    def test_pr_base_movement_between_merge_validations_refuses(self):
+        api = FakeGitHub()
+        api.workflow_sources["e" * 40] = api.workflow_sources[BASE]
+        original = api.api
+        reads = 0
+
+        def moving(endpoint, fields=()):
+            nonlocal reads
+            if endpoint == f"repos/{guard.REPO}/pulls/{PR}":
+                reads += 1
+                if reads == 3:
+                    api.pr["base"]["sha"] = "e" * 40
+            return original(endpoint, fields)
+
+        api.api = moving
+        run_refusal(self, api, "moved between merge-gate validations")
 
     def test_paginated_changed_files_are_used_for_path_evidence(self):
         api = FakeGitHub()
-        api.file_pages = [[{"filename": f"docs/{n}.md"} for n in range(100)],
-                          [{"filename": "platform/services/uhhcraft/deployment/main.go"}]]
+        api.file_pages = [[{"filename": f"docs/{n}.md", "status": "modified"} for n in range(100)],
+                          [{"filename": "platform/services/uhhcraft/deployment/main.go", "status": "modified"}]]
         run_refusal(self, api, "was skipped")
         self.assertTrue(any(dict(fields).get("page") == "2" for endpoint, fields in api.calls
                             if endpoint.endswith("/files")))
 
     def test_renamed_go_file_remains_in_path_skip_evidence(self):
         api = FakeGitHub()
-        api.file_pages = [[{"filename": "docs/moved.md",
+        api.file_pages = [[{"filename": "docs/moved.md", "status": "renamed",
                             "previous_filename": "platform/services/uhhcraft/deployment/main.go"}]]
         run_refusal(self, api, "was skipped")
 
@@ -266,15 +526,8 @@ class MergeGuardTests(unittest.TestCase):
 
     def test_workflow_policy_drift_refuses_before_merge(self):
         api = FakeGitHub()
-        original = api.api
-
-        def drift(endpoint, fields=()):
-            if endpoint.startswith(f"repos/{guard.REPO}/contents/"):
-                changed = b"name: Changed\non:\n  pull_request:\n    branches: [dev]\n"
-                return {"content": base64.b64encode(changed).decode()}
-            return original(endpoint, fields)
-
-        api.api = drift
+        changed = b"name: Changed\non:\n  pull_request:\n    branches: [dev]\n"
+        api.workflow_source = changed
         run_refusal(self, api, "workflow changed")
 
     def test_path_gate_drift_refuses_before_merge(self):

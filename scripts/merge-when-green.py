@@ -3,6 +3,7 @@
 
 import argparse
 import base64
+import hashlib
 import json
 import re
 import subprocess
@@ -11,6 +12,7 @@ from urllib.parse import urlencode
 
 REPO = "uhstray-io/agent-cloud"
 WORKFLOW = ".github/workflows/lint-and-test.yml"
+REVIEWED_WORKFLOW_BLOB_SHA = "05826a7e56e75d53b4bbeb680d8b4e05fa1f2d98"
 EXPECTED = {
     "Detect changes", "Static Analysis", "Security Scan", "Python core",
     "Python Semaphore", "Python NetBox", "Bash Tests", "Rego Tests", "Unit Tests",
@@ -100,22 +102,29 @@ def check_pr(pr, number, sha):
             or not isinstance(head, dict) or not isinstance(head.get("repo"), dict)
             or pr.get("number") != number or pr.get("state") != "open" or pr.get("draft") is not False
             or base["repo"].get("full_name") != REPO or base.get("ref") != "dev"
+            or not isinstance(base.get("sha"), str) or not SHA.fullmatch(base["sha"])
             or head["repo"].get("full_name") != REPO or head.get("sha") != sha):
-        raise Refusal("PR must be open, ready, same-repository, target dev, and match --head")
+        raise Refusal("PR must be open, ready, same-repository, target dev, and match --head with a pinned base SHA")
+    return base["sha"]
 
 
 def changed_files(api, number):
     files = paged(api, f"repos/{REPO}/pulls/{number}/files", "")
-    if any(not isinstance(f, dict) or not isinstance(f.get("filename"), str) for f in files):
+    if any(not isinstance(f, dict) or not isinstance(f.get("filename"), str) or not f["filename"]
+           for f in files):
         raise Refusal("Changed-file evidence is incomplete")
-    if any(f.get("previous_filename") is not None and not isinstance(f.get("previous_filename"), str)
+    if any(not isinstance(f.get("status"), str) or not f["status"] for f in files):
+        raise Refusal("Changed-file status evidence is incomplete")
+    if any(f.get("previous_filename") is not None
+           and (not isinstance(f.get("previous_filename"), str) or not f["previous_filename"])
            for f in files):
         raise Refusal("Changed-file rename evidence is incomplete")
     if any(f.get("status") == "renamed" and not f.get("previous_filename") for f in files):
         raise Refusal("Changed-file rename evidence is incomplete")
-    if any(f["filename"] == WORKFLOW or f.get("previous_filename") == WORKFLOW for f in files):
-        raise Refusal("PR changes the protected lint-and-test workflow")
-    return [path for f in files for path in (f.get("previous_filename"), f["filename"]) if path]
+    paths = [path for f in files for path in (f.get("previous_filename"), f["filename"]) if path]
+    if any(path.startswith(".github/workflows/") and path != WORKFLOW for path in paths):
+        raise Refusal("PR changes another protected workflow path")
+    return paths, files
 
 
 def required_jobs(files):
@@ -130,12 +139,50 @@ def required_jobs(files):
     }
 
 
-def check_workflow_policy(api):
-    data = api.api(f"repos/{REPO}/contents/{WORKFLOW}?ref=dev")
+def workflow_bytes(api, commit_sha):
+    data = api.api(f"repos/{REPO}/contents/{WORKFLOW}?ref={commit_sha}")
+    if (not isinstance(data, dict) or data.get("type") != "file" or data.get("path") != WORKFLOW
+            or data.get("encoding") != "base64" or not isinstance(data.get("content"), str)
+            or not isinstance(data.get("size"), int) or isinstance(data.get("size"), bool)
+            or data["size"] < 0 or not isinstance(data.get("sha"), str) or not SHA.fullmatch(data["sha"])):
+        raise Refusal("Pinned workflow content response is incomplete")
+    encoded = data["content"]
+    if not re.fullmatch(r"[A-Za-z0-9+/=]*(?:\n[A-Za-z0-9+/=]*)*", encoded):
+        raise Refusal("Pinned workflow content encoding is malformed")
     try:
-        source = base64.b64decode(data["content"], validate=False).decode()
-    except (KeyError, TypeError, ValueError, UnicodeDecodeError) as error:
-        raise Refusal("Cannot verify Dev PR workflow policy") from error
+        source = base64.b64decode(encoded.replace("\n", ""), validate=True)
+    except (ValueError, base64.binascii.Error) as error:
+        raise Refusal("Pinned workflow content encoding is malformed") from error
+    if len(source) != data["size"]:
+        raise Refusal("Pinned workflow content size does not match decoded bytes")
+    blob_sha = hashlib.sha1(b"blob " + str(len(source)).encode() + b"\0" + source).hexdigest()
+    if blob_sha != data["sha"]:
+        raise Refusal("Pinned workflow content does not match its reported blob SHA")
+
+    commit = api.api(f"repos/{REPO}/git/commits/{commit_sha}")
+    commit_tree = commit.get("tree") if isinstance(commit, dict) else None
+    tree_sha = commit_tree.get("sha") if isinstance(commit_tree, dict) else None
+    if (not isinstance(commit, dict) or commit.get("sha") != commit_sha
+            or not isinstance(tree_sha, str) or not SHA.fullmatch(tree_sha)):
+        raise Refusal("Pinned workflow commit tree evidence is incomplete")
+    tree = api.api(f"repos/{REPO}/git/trees/{tree_sha}", (("recursive", "1"),))
+    entries = tree.get("tree") if isinstance(tree, dict) else None
+    if (not isinstance(tree, dict) or tree.get("sha") != tree_sha or tree.get("truncated") is not False
+            or not isinstance(entries, list)
+            or any(not isinstance(entry, dict) or not isinstance(entry.get("path"), str) for entry in entries)):
+        raise Refusal("Pinned workflow tree evidence is incomplete or truncated")
+    matches = [entry for entry in entries if isinstance(entry, dict) and entry.get("path") == WORKFLOW]
+    if (len(matches) != 1 or matches[0].get("mode") != "100644" or matches[0].get("type") != "blob"
+            or matches[0].get("sha") != data["sha"] or matches[0].get("size") != len(source)):
+        raise Refusal("Pinned workflow tree entry is missing, ambiguous, or not a regular 100644 blob")
+    return source, blob_sha
+
+
+def check_workflow_policy(source):
+    try:
+        source = source.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise Refusal("Cannot verify pinned Dev PR workflow policy") from error
     expected = {
         "changes": "Detect changes", "lint": "Static Analysis", "security": "Security Scan",
         "python-core": "Python core", "python-semaphore": "Python Semaphore",
@@ -211,6 +258,44 @@ def check_workflow_policy(api):
             or filters != expected_filters
             or any(item not in source for item in required)):
         raise Refusal("Dev PR workflow changed; review and update the merge gate policy first")
+
+
+def check_workflow_edit(base, candidate):
+    marker = b"  bats:\n    name: Bash Tests\n    runs-on: ubuntu-latest\n"
+    if (base.count(b"  bats:\n") != 1 or base.count(b"    name: Bash Tests\n") != 1
+            or base.count(marker) != 1):
+        raise Refusal("Pinned base workflow has a missing or ambiguous Bash job")
+    insertion = base.index(marker) + len(marker)
+    if not base[insertion:].startswith(b"    steps:\n"):
+        raise Refusal("Pinned base Bash job is moved or has an existing timeout")
+    job_start = base.index(b"  bats:\n")
+    next_job = re.search(rb"(?m)^  [A-Za-z0-9_-]+:\n", base[job_start + len(b"  bats:\n"):])
+    job_end = job_start + len(b"  bats:\n") + next_job.start() if next_job else len(base)
+    if b"timeout-minutes" in base[job_start:job_end]:
+        raise Refusal("Pinned base Bash job already has a timeout")
+    match = re.match(rb"    timeout-minutes: ([1-9]|[12][0-9]|30)\n", candidate[insertion:])
+    if not match:
+        raise Refusal("Workflow exception requires a canonical unquoted Bash timeout from 1 through 30")
+    permitted = base[:insertion] + match.group(0) + base[insertion:]
+    if candidate != permitted:
+        raise Refusal("Workflow change includes bytes beyond the permitted Bash timeout insertion")
+
+
+def check_workflow_change(api, base_sha, head_sha, files):
+    base, base_blob_sha = workflow_bytes(api, base_sha)
+    candidate, _ = workflow_bytes(api, head_sha)
+    check_workflow_policy(base)
+    workflow_records = [f for f in files if f["filename"] == WORKFLOW or f.get("previous_filename") == WORKFLOW]
+    if base == candidate:
+        if workflow_records:
+            raise Refusal("Changed-file evidence reports a workflow change but pinned bytes are identical")
+        return
+    if (len(workflow_records) != 1 or workflow_records[0].get("status") != "modified"
+            or workflow_records[0]["filename"] != WORKFLOW or workflow_records[0].get("previous_filename") is not None):
+        raise Refusal("Workflow changes require one modified record at the protected path")
+    check_workflow_edit(base, candidate)
+    if base_blob_sha != REVIEWED_WORKFLOW_BLOB_SHA:
+        raise Refusal("Workflow edit exception requires the exact reviewed base blob; update the merge-gate policy")
 
 
 def check_runs(api, sha):
@@ -418,16 +503,21 @@ def review_evidence(api, number, sha, author, receipt_path):
 
 
 def validate(api, number, sha, receipt_path):
-    check_workflow_policy(api)
     pr = get_pr(api, number)
-    check_pr(pr, number, sha)
-    files = changed_files(api, number)
+    base_sha = check_pr(pr, number, sha)
+    files, file_records = changed_files(api, number)
+    check_workflow_change(api, base_sha, sha, file_records)
     comments = paged(api, f"repos/{REPO}/issues/{number}/comments", "")
     if any(not isinstance(comment, dict) or not isinstance(comment.get("body"), str) for comment in comments):
         raise Refusal("Conversation comments are incomplete")
     checks = check_job_evidence(api, number, sha, files)
     approvals, receipt = review_evidence(api, number, sha, pr["user"]["login"], receipt_path)
-    return {"checks": checks, "approvals": approvals, "receipt": receipt, "comments": len(comments)}
+    current_pr = get_pr(api, number)
+    current_base_sha = check_pr(current_pr, number, sha)
+    if current_base_sha != base_sha or current_pr["head"]["sha"] != pr["head"]["sha"]:
+        raise Refusal("PR base or head moved while collecting merge evidence")
+    return {"checks": checks, "approvals": approvals, "receipt": receipt, "comments": len(comments),
+            "base_sha": base_sha, "head_sha": sha}
 
 
 def main(argv=None, api=None):
@@ -453,7 +543,10 @@ def main(argv=None, api=None):
             print("Read-only validation only; no feedback attestation supplied and no merge attempted.")
             return 0
         # Re-read every gate immediately before the single mutating command.
-        validate(api, args.pr, args.head, args.review_receipt)
+        refreshed = validate(api, args.pr, args.head, args.review_receipt)
+        if (refreshed["base_sha"] != evidence["base_sha"]
+                or refreshed["head_sha"] != evidence["head_sha"]):
+            raise Refusal("PR base or head moved between merge-gate validations")
         try:
             api.merge(args.pr, args.head)
         except Refusal:
