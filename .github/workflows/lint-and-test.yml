@@ -289,6 +289,7 @@ jobs:
   bats:
     name: Bash Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
 
