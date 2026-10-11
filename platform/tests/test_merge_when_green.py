@@ -19,7 +19,7 @@ WORKFLOW_PATH = SCRIPT.parents[1] / guard.WORKFLOW
 CURRENT_WORKFLOW = WORKFLOW_PATH.read_bytes()
 PRE_PARTITION_WORKFLOW = Path(__file__).with_name("fixtures").joinpath(
     "lint-and-test-pre-partition.txt").read_bytes()
-INITIAL_PARTITIONED_WORKFLOW = Path(__file__).with_name("fixtures").joinpath(
+INTERMEDIATE_PARTITIONED_WORKFLOW = Path(__file__).with_name("fixtures").joinpath(
     "lint-and-test-python-partition.txt").read_bytes()
 
 
@@ -28,7 +28,7 @@ def _blob_sha(source):
 
 
 assert _blob_sha(PRE_PARTITION_WORKFLOW) == guard.PRE_PARTITION_WORKFLOW_BLOB_SHA
-assert _blob_sha(INITIAL_PARTITIONED_WORKFLOW) == guard.INITIAL_PARTITIONED_WORKFLOW_BLOB_SHA
+assert _blob_sha(INTERMEDIATE_PARTITIONED_WORKFLOW) == "29020efdaa1747bd2dc42d4c6468a96e676d8b4b"
 assert _blob_sha(CURRENT_WORKFLOW) == guard.PARTITIONED_WORKFLOW_BLOB_SHA
 
 HEAD = "a" * 40
@@ -143,16 +143,16 @@ class FakeGitHub:
 
     def set_partition_transition(self):
         self.workflow_sources[BASE] = PRE_PARTITION_WORKFLOW
-        self.workflow_sources[HEAD] = INITIAL_PARTITIONED_WORKFLOW
+        self.workflow_sources[HEAD] = CURRENT_WORKFLOW
         self.files = [guard.WORKFLOW]
         for name in ("Go lint (uhhcraft)", "Go test (uhhcraft)", "Go build (uhhcraft image)"):
             self.jobs[name]["conclusion"] = "success"
             next(check for check in self.checks if check["name"] == name)["conclusion"] = "success"
 
-    def set_partition_followup(self):
-        self.workflow_sources[BASE] = INITIAL_PARTITIONED_WORKFLOW
+    def set_partition_baseline(self):
+        self.workflow_sources[BASE] = CURRENT_WORKFLOW
         self.workflow_sources[HEAD] = CURRENT_WORKFLOW
-        self.files = [guard.WORKFLOW]
+        self.files = []
         for name in ("Go lint (uhhcraft)", "Go test (uhhcraft)", "Go build (uhhcraft image)"):
             self.jobs[name]["conclusion"] = "success"
             next(check for check in self.checks if check["name"] == name)["conclusion"] = "success"
@@ -248,9 +248,9 @@ class MergeGuardTests(unittest.TestCase):
         self.assertEqual(guard.main(["--pr", str(PR), "--head", HEAD], api), 0)
         self.assertEqual(api.merge_calls, [])
 
-    def test_exact_partition_followup_is_allowed(self):
+    def test_identical_credential_safe_partition_is_allowed(self):
         api = FakeGitHub()
-        api.set_partition_followup()
+        api.set_partition_baseline()
         self.assertEqual(guard.main(["--pr", str(PR), "--head", HEAD], api), 0)
         self.assertEqual(api.merge_calls, [])
 
@@ -276,23 +276,30 @@ class MergeGuardTests(unittest.TestCase):
                 change(api)
                 run_refusal(self, api)
 
-    def test_original_partition_transition_sha_remains_required(self):
-        api = FakeGitHub()
-        api.set_partition_transition()
-        api.workflow_sources[HEAD] = CURRENT_WORKFLOW
-        run_refusal(self, api, "exact original Python Playbook Safety partition")
+    def test_intermediate_partition_is_rejected_as_base_or_head(self):
+        cases = (
+            ("intermediate head", PRE_PARTITION_WORKFLOW, INTERMEDIATE_PARTITIONED_WORKFLOW),
+            ("intermediate base", INTERMEDIATE_PARTITIONED_WORKFLOW, CURRENT_WORKFLOW),
+        )
+        for label, base, head in cases:
+            with self.subTest(label=label):
+                api = FakeGitHub()
+                api.set_partition_transition()
+                api.workflow_sources[BASE] = base
+                api.workflow_sources[HEAD] = head
+                run_refusal(self, api)
 
     def test_partition_transition_requires_one_modified_workflow_record(self):
         for status, previous in (("renamed", "old-workflow.yml"), ("added", None),
                                  ("removed", None), ("copied", None), ("modified", "old-workflow.yml")):
             with self.subTest(status=status, previous=previous):
                 api = FakeGitHub()
-                api.set_partition_followup()
+                api.set_partition_transition()
                 api.file_pages = [[{"filename": guard.WORKFLOW, "status": status,
                                     **({"previous_filename": previous} if previous else {})}]]
                 run_refusal(self, api, "one modified record")
         api = FakeGitHub()
-        api.set_partition_followup()
+        api.set_partition_transition()
         api.files = []
         run_refusal(self, api, "one modified record")
 

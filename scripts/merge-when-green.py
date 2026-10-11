@@ -13,7 +13,6 @@ from urllib.parse import urlencode
 REPO = "uhstray-io/agent-cloud"
 WORKFLOW = ".github/workflows/lint-and-test.yml"
 PRE_PARTITION_WORKFLOW_BLOB_SHA = "da998c35a6bc5d3ea7eedc72ea228e48f9fc6b38"
-INITIAL_PARTITIONED_WORKFLOW_BLOB_SHA = "29020efdaa1747bd2dc42d4c6468a96e676d8b4b"
 PARTITIONED_WORKFLOW_BLOB_SHA = "a4bd0d3db1de56fb2d7e0cf53fbbd879490838a0"
 EXPECTED = {
     "Detect changes", "Static Analysis", "Security Scan", "Python core",
@@ -271,24 +270,12 @@ def check_workflow_change(api, base_sha, head_sha, files):
     candidate, candidate_blob_sha = workflow_bytes(api, head_sha)
     workflow_records = [f for f in files if f["filename"] == WORKFLOW or f.get("previous_filename") == WORKFLOW]
     if base_blob_sha == PRE_PARTITION_WORKFLOW_BLOB_SHA:
-        if candidate_blob_sha != INITIAL_PARTITIONED_WORKFLOW_BLOB_SHA:
-            raise Refusal("Workflow head is not the exact original Python Playbook Safety partition")
+        if candidate_blob_sha != PARTITIONED_WORKFLOW_BLOB_SHA:
+            raise Refusal("Workflow head is not the exact credential-safe Python Playbook Safety partition")
         check_workflow_policy(base)
         check_workflow_policy(candidate, partitioned=True)
         if base == candidate:
-            raise Refusal("Pre-partition workflow must transition to the exact reviewed partition blob")
-        if (len(workflow_records) != 1 or workflow_records[0].get("status") != "modified"
-                or workflow_records[0]["filename"] != WORKFLOW
-                or workflow_records[0].get("previous_filename") is not None):
-            raise Refusal("Workflow transition requires one modified record at the protected path")
-        return
-    if base_blob_sha == INITIAL_PARTITIONED_WORKFLOW_BLOB_SHA:
-        if candidate_blob_sha != PARTITIONED_WORKFLOW_BLOB_SHA:
-            raise Refusal("Workflow head is not the exact reviewed credential-safe partition")
-        check_workflow_policy(base, partitioned=True)
-        check_workflow_policy(candidate, partitioned=True)
-        if base == candidate:
-            raise Refusal("Original partition must transition to the exact credential-safe workflow")
+            raise Refusal("Pre-partition workflow must transition to the exact credential-safe partition blob")
         if (len(workflow_records) != 1 or workflow_records[0].get("status") != "modified"
                 or workflow_records[0]["filename"] != WORKFLOW
                 or workflow_records[0].get("previous_filename") is not None):
