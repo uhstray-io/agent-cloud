@@ -15,6 +15,20 @@ SPEC = importlib.util.spec_from_file_location("merge_when_green", SCRIPT)
 guard = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(guard)
 
+WORKFLOW_PATH = SCRIPT.parents[1] / guard.WORKFLOW
+CURRENT_WORKFLOW = WORKFLOW_PATH.read_bytes()
+_BASH_TIMEOUT = (
+    b"  bats:\n    name: Bash Tests\n    runs-on: ubuntu-latest\n"
+    b"    timeout-minutes: 30\n"
+)
+assert CURRENT_WORKFLOW.count(_BASH_TIMEOUT) == 1
+REVIEWED_WORKFLOW = CURRENT_WORKFLOW.replace(_BASH_TIMEOUT, _BASH_TIMEOUT.removesuffix(
+    b"    timeout-minutes: 30\n"), 1)
+_REVIEWED_WORKFLOW_SHA = hashlib.sha1(
+    b"blob " + str(len(REVIEWED_WORKFLOW)).encode() + b"\0" + REVIEWED_WORKFLOW
+).hexdigest()
+assert _REVIEWED_WORKFLOW_SHA == guard.REVIEWED_WORKFLOW_BLOB_SHA
+
 HEAD = "a" * 40
 BASE = "b" * 40
 PR = 532
@@ -58,8 +72,8 @@ class FakeGitHub:
         self.status_pages = None
         self.thread_page_info = {"hasNextPage": False, "endCursor": None}
         self.workflow_sources = {
-            BASE: (SCRIPT.parents[1] / guard.WORKFLOW).read_bytes(),
-            HEAD: (SCRIPT.parents[1] / guard.WORKFLOW).read_bytes(),
+            BASE: REVIEWED_WORKFLOW,
+            HEAD: REVIEWED_WORKFLOW,
         }
         self.tree_overrides = {}
 
@@ -306,7 +320,7 @@ class MergeGuardTests(unittest.TestCase):
                 run_refusal(self, api)
 
     def test_bash_job_shape_and_existing_timeout_refuse(self):
-        source = (SCRIPT.parents[1] / guard.WORKFLOW).read_bytes()
+        source = CURRENT_WORKFLOW
         marker = b"  bats:\n    name: Bash Tests\n    runs-on: ubuntu-latest\n    steps:\n"
         start = source.index(b"  bats:\n")
         following = source.index(b"  rego:\n", start)
@@ -339,7 +353,7 @@ class MergeGuardTests(unittest.TestCase):
                 run_refusal(self, api)
 
     def test_alternate_existing_timeout_keys_refuse_without_merging(self):
-        source = (SCRIPT.parents[1] / guard.WORKFLOW).read_bytes()
+        source = REVIEWED_WORKFLOW
         start = source.index(b"  bats:\n")
         following = source.index(b"  rego:\n", start)
         spellings = (
