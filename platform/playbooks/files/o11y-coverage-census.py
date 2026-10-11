@@ -16,6 +16,7 @@ LIFECYCLE = {"deployed", "planned", "retired", "excluded"}
 SIGNALS = {"logs", "metrics", "traces", "health"}
 OPTIONAL_SIGNALS = {"profiles"}
 PROFILE_TYPE_ID = "process_cpu:cpu:nanoseconds:cpu:nanoseconds"
+PROFILE_STEP_MS = 60_000
 
 
 def fail(message):
@@ -331,7 +332,8 @@ def validate_profile_receipt(payload):
                     or not math.isfinite(value)
                 ):
                     return invalid
-                if max(start_ms, end_ms - freshness_seconds * 1000) <= timestamp <= end_ms and value > 0:
+                earliest_bucket_end = max(start_ms, end_ms - freshness_seconds * 1000) + PROFILE_STEP_MS
+                if earliest_bucket_end <= timestamp <= end_ms and value > 0:
                     samples += 1
         return {"status": "verified" if samples else "no_fresh_sample", "sample_count": samples}
     except (KeyError, TypeError, ValueError, OverflowError, json.JSONDecodeError):

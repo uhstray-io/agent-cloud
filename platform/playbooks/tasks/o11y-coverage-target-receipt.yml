@@ -70,6 +70,7 @@
           'labelSelector': signal_selector,
           'start': (_profile_query_end_ms | int) - (observation_window_seconds | int * 1000),
           'end': _profile_query_end_ms | int,
+          'groupBy': ['target_id'],
           'limit': 1,
           'step': 60
         } | to_json }}"

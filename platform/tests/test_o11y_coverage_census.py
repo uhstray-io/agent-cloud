@@ -139,7 +139,18 @@ class CoverageCensusTests(unittest.TestCase):
         payload["response"]["series"][0]["labels"][0]["value"] = "service:alpha"
         payload["response"]["series"][0]["points"][0]["timestamp"] = "1"
         self.assertEqual(CENSUS.validate_profile_receipt(payload)["status"], "no_fresh_sample")
-        payload["response"]["series"][0]["points"][0]["value"] = 0
+        point = payload["response"]["series"][0]["points"][0]
+        payload["freshness_seconds"] = 600
+        point["timestamp"] = "1059999"
+        self.assertEqual(CENSUS.validate_profile_receipt(payload)["status"], "no_fresh_sample")
+        point["timestamp"] = "1060000"
+        self.assertEqual(CENSUS.validate_profile_receipt(payload)["status"], "verified")
+        payload["freshness_seconds"] = 300
+        point["timestamp"] = "1359999"
+        self.assertEqual(CENSUS.validate_profile_receipt(payload)["status"], "no_fresh_sample")
+        point["timestamp"] = "1360000"
+        self.assertEqual(CENSUS.validate_profile_receipt(payload)["status"], "verified")
+        point["value"] = 0
         self.assertEqual(CENSUS.validate_profile_receipt(payload)["status"], "no_fresh_sample")
 
     def test_profile_receipt_refuses_ambiguous_series_shape_without_echoing_response(self):

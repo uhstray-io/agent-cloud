@@ -268,6 +268,9 @@ class CoverageContractTests(unittest.TestCase):
         self.assertIn("--header=Content-Type: application/json", argv)
         self.assertIn("'limit': 1", argv[-2])
         self.assertIn("'step': 60", argv[-2])
+        self.assertIn("'groupBy': ['target_id']", argv[-2])
+        census_source = (ROOT / "platform/playbooks/files/o11y-coverage-census.py").read_text()
+        self.assertIn('if label["name"] == "target_id"', census_source)
         self.assertEqual(argv[-1], "http://pyroscope:4040/querier.v1.QuerierService/SelectSeries")
         self.assertIs(query["no_log"], True)
         parser = next(
