@@ -30,6 +30,51 @@ The dashboard SHALL show the latest recorded pass, fail or skip state after coll
 - **THEN** the dashboard shows that state for the service and step
 - **AND** it identifies incomplete history separately when the collector marks it incomplete
 
+### Requirement: Latest workflow result age and provenance are truthful
+
+Each conformance step record from a current task SHALL carry the workflow completion time as a
+numeric `completed_at_seconds` value and the numeric Semaphore `task_id` in its record body,
+never as Loki labels. A completion time SHALL be derived only from a valid timezone-aware task
+end value. When completion time is missing or invalid, `completed_at_seconds` SHALL be
+`unknown`, while a known task ID remains numeric. When a state is retained without the
+originating task, both fields SHALL be `unknown`. Dashboard age MUST use workflow completion
+time rather than Loki event time. The dashboard MUST map missing or `unknown` completion
+timestamps to numeric `-1` before reducing the latest record by service and step. It MUST filter
+`-1` only after that reduction when computing the newest-known aggregate, and it MUST provide
+a per-service/step age table that displays `-1` as neutral `Unknown`.
+
+#### Scenario: Current workflow result has valid provenance
+
+- **WHEN** the newest conformance result has a valid timezone-aware task end time and task ID
+- **THEN** its record body contains a numeric `completed_at_seconds` and numeric `task_id`
+- **AND** neither field is added to the bounded Loki label set
+
+#### Scenario: Retained or missing workflow provenance is unavailable
+
+- **WHEN** a conformance state is retained without its originating task or its task end value is missing or invalid
+- **THEN** unavailable provenance fields are reported as `unknown`
+- **AND** the dashboard does not calculate a current result age from collector emission time
+
+#### Scenario: Newer unknown completion replaces older known completion
+
+- **WHEN** a newer step snapshot has missing or `unknown` completion time while an older known completion remains in the 45-minute window
+- **THEN** the dashboard reduces the `-1` unknown value as that service and step's newest record
+- **AND** the per-step age table displays `Unknown` instead of falling back to the older known age
+- **AND** the newest-known aggregate excludes `-1` only after each service and step has been reduced
+
+#### Scenario: Per-step completion ages align with latest state
+
+- **WHEN** workflow step snapshots are available in the selected window
+- **THEN** the dashboard shows one latest completion age per service and step
+- **AND** operators can match each row to the latest step state by service and step
+- **AND** unknown ages use a neutral display while inventory marker age remains separate
+
+#### Scenario: A later pass replaces an earlier failure
+
+- **WHEN** a newer completed workflow result passes after an older result failed
+- **THEN** the latest state, task ID, and completion time all come from the newer passing result
+- **AND** the prior failure does not remain the current result
+
 ### Requirement: Dashboard verification distinguishes expected empty panels
 
 The existing read-only dashboard verifier SHALL allow a caller to name exact selected panels for which an empty query result is healthy. It MUST report those panels as expected empty, while query errors and empty required panels remain failures.
@@ -44,6 +89,20 @@ The existing read-only dashboard verifier SHALL allow a caller to name exact sel
 - **WHEN** a required selected panel returns no data or its backend query fails
 - **THEN** verification fails and reports the panel outcome without exposing backend error bodies or sample values
 
+### Requirement: Dashboard verification reproduces bounded panel-relative time
+
+The dashboard verifier SHALL accept `timeFrom` only as one positive Prometheus duration unit. It SHALL use the resulting per-panel lookback for range-query starts, range steps, and Grafana range built-ins. Instant queries SHALL remain evaluated at the current end time. Other unsupported panel and target settings SHALL remain refused.
+
+#### Scenario: Selected panel has a supported relative range
+- **WHEN** an evaluated panel declares `timeFrom` as one positive duration such as `7d` or `45m`
+- **THEN** its range query starts at now minus that panel duration
+- **AND** its step and interpolated Grafana range built-ins use that same duration
+
+#### Scenario: Selected panel has an unsupported relative range
+- **WHEN** an evaluated panel declares a malformed or compound `timeFrom`
+- **THEN** verification refuses the panel before sending backend requests
+- **AND** a valid `timeFrom` does not permit other unsupported panel settings
+
 ### Requirement: Service Overview presents existing signals without double counting
 
 The Service Overview SHALL preserve its dashboard and datasource identities, display existing service metrics and available container, access-log, span and conformance streams, and keep missing-source evidence distinct from service health. Aggregate log-source counts MUST use disjoint selectors; an all-stream drill-down MUST NOT be included in those totals. New telemetry labels MUST remain bounded.
@@ -57,9 +116,15 @@ The Service Overview SHALL preserve its dashboard and datasource identities, dis
 #### Scenario: A selected signal has no live records
 
 - **WHEN** a selected service has no matching records for a source
-- **THEN** the Overview shows no source data rather than a healthy zero or a service-health claim
+- **THEN** the Overview reports an explicit no-data observation for that source rather than a healthy zero or a service-health claim
+- **AND** the source's ingestion cause remains unverified unless separate evidence establishes it
 
 #### Scenario: Dashboard identity remains stable
 
 - **WHEN** the dashboards are provisioned after the change
 - **THEN** Grafana retains UIDs `service-conformance` and `service-overview` and datasource UIDs `prometheus` and `loki`
+
+#### Scenario: Completion age table preserves row identity
+- **WHEN** Loki returns separate frames for service and step completion ages
+- **THEN** the table converts labels to columns, merges the frames, removes the time column, and renames the value column to Age
+- **AND** service, step, and the `-1` to neutral `Unknown` mapping remain visible

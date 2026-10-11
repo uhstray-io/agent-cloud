@@ -1168,6 +1168,82 @@
         fail_msg: "Grafana did not provision the complete Agentgateway client-view dashboard."
       when: not ansible_check_mode
 
+    - name: Read the provisioned service conformance dashboard
+      ansible.builtin.command:
+        argv:
+          - "{{ _engine }}"
+          - exec
+          - o11y-grafana
+          - sh
+          - -c
+          - >-
+            printf 'user = "admin:%s"\n' "$GF_SECURITY_ADMIN_PASSWORD" |
+            curl -fsS --config - http://127.0.0.1:3000/api/dashboards/uid/service-conformance
+      register: _service_conformance_dashboard
+      changed_when: false
+      retries: 6
+      delay: 5
+      until: _service_conformance_dashboard.rc == 0
+      when: not ansible_check_mode
+
+    - name: Require truthful conformance freshness and failure history panels
+      ansible.builtin.assert:
+        that:
+          - (_service_conformance_dashboard.stdout | from_json).dashboard.uid == 'service-conformance'
+          - (_service_conformance_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Latest inventory marker age') | list | length == 1
+          - (_service_conformance_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Latest workflow completion age') | list | length == 1
+          - (_service_conformance_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Latest workflow completion age by service and step') | list | length == 1
+          - (_service_conformance_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Workflow completion and task provenance') | list | length == 1
+          - (_service_conformance_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Latest step status by service') | list | length == 1
+          - (_service_conformance_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Recent failed task snapshots') | list | length == 1
+          - "'completed_at_seconds' in (_service_conformance_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Latest workflow completion age') | map(attribute='targets') | flatten | map(attribute='expr') | join(' ')"
+          - "'label_format age_seconds=' in (_service_conformance_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Latest workflow completion age by service and step') | map(attribute='targets') | flatten | map(attribute='expr') | join(' ')"
+          - (_service_conformance_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Latest workflow completion age by service and step') | map(attribute='transformations') | map('map', attribute='id') | map('list') | first == ['labelsToFields', 'merge', 'organize', 'renameByRegex']
+          - "'task_id, completed_at_seconds' in (_service_conformance_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Workflow completion and task provenance') | map(attribute='targets') | flatten | map(attribute='expr') | join(' ')"
+          - "'last_over_time' in (_service_conformance_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Latest step status by service') | map(attribute='targets') | flatten | map(attribute='expr') | join(' ')"
+          - (_service_conformance_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Recent failed task snapshots') | map(attribute='timeFrom') | list == ['7d']
+        fail_msg: "Grafana's service conformance dashboard is missing separate workflow freshness, provenance, or bounded historical failure evidence."
+      when: not ansible_check_mode
+
+    - name: Read the provisioned service overview dashboard
+      ansible.builtin.command:
+        argv:
+          - "{{ _engine }}"
+          - exec
+          - o11y-grafana
+          - sh
+          - -c
+          - >-
+            printf 'user = "admin:%s"\n' "$GF_SECURITY_ADMIN_PASSWORD" |
+            curl -fsS --config - http://127.0.0.1:3000/api/dashboards/uid/service-overview
+      register: _service_overview_dashboard
+      changed_when: false
+      retries: 6
+      delay: 5
+      until: _service_overview_dashboard.rc == 0
+      when: not ansible_check_mode
+
+    - name: Require selected identities and explicit per-source observations
+      ansible.builtin.assert:
+        that:
+          - (_service_overview_dashboard.stdout | from_json).dashboard.uid == 'service-overview'
+          - (_service_overview_dashboard.stdout | from_json).dashboard.templating.list | selectattr('name', 'equalto', 'service') | selectattr('label', 'equalto', 'Metrics service') | list | length == 1
+          - (_service_overview_dashboard.stdout | from_json).dashboard.templating.list | selectattr('name', 'equalto', 'log_service') | selectattr('label', 'equalto', 'Logs service') | list | length == 1
+          - (_service_overview_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Selected service identities') | list | length == 1
+          - (_service_overview_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Selected source records observed (5m)') | list | length == 1
+          - (_service_overview_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Scrape target health') | list | length == 1
+          - (_service_overview_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Log volume by source') | list | length == 1
+          - (_service_overview_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'All Loki streams (mixed-source drill-down)') | list | length == 1
+          - (_service_overview_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Selected source records observed (5m)') | map(attribute='targets') | flatten | list | length == 5
+          - "'or on() vector(0)' in (_service_overview_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Selected source records observed (5m)') | map(attribute='targets') | flatten | map(attribute='expr') | join(' ')"
+          - "'container=~\".+\"' in (_service_overview_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Selected source records observed (5m)') | map(attribute='targets') | flatten | map(attribute='expr') | join(' ')"
+          - "'signal=\"container\"' in (_service_overview_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Selected source records observed (5m)') | map(attribute='targets') | flatten | map(attribute='expr') | join(' ')"
+          - "'signal=\"access-log\"' in (_service_overview_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Selected source records observed (5m)') | map(attribute='targets') | flatten | map(attribute='expr') | join(' ')"
+          - "'signal=\"span\"' in (_service_overview_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Selected source records observed (5m)') | map(attribute='targets') | flatten | map(attribute='expr') | join(' ')"
+          - "'job=\"agent-cloud-conformance\"' in (_service_overview_dashboard.stdout | from_json).dashboard.panels | selectattr('title', 'equalto', 'Selected source records observed (5m)') | map(attribute='targets') | flatten | map(attribute='expr') | join(' ')"
+        fail_msg: "Grafana's service overview dashboard is missing selected service identities or explicit source-presence indicators."
+      when: not ansible_check_mode
+
     # Every committed dashboard file must be live by its own uid: the asserts above
     # check three dashboards' contents, this checks that none of the rest is missing.
     - name: Verify every provisioned dashboard is live

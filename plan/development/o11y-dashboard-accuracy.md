@@ -1,7 +1,7 @@
 # O11y Dashboard Accuracy
 
 **Date:** 2026-10-10
-**Status:** SOURCE IMPLEMENTED; focused checks passed; Dev acceptance pending
+**Status:** SOURCE PROVENANCE SLICE IMPLEMENTED; dashboard consumption and Dev acceptance pending
 **Context:** Plan correction of the production Service deployment conformance and Service Overview dashboards, with OpenSpec contract in `openspec/changes/o11y-dashboard-accuracy/`. Current source references are local to this feature checkout; the live evidence below was supplied with this task.
 
 ---
@@ -18,10 +18,12 @@ The supplied read-only Semaphore API measurement covers 12 successive successful
 
 ## Design Principles
 
-1. **Use owned evidence:** derive tracked services and freshness from collector inventory markers; preserve the collector’s retained latest state (`collect-service-conformance.yml:241-257`).
-2. **Make absence explicit:** only exact, selected exception panels may pass empty; query errors and required-panel no-data remain failures.
+1. **Use owned evidence:** derive tracked services and freshness from collector inventory markers; preserve the collector’s retained latest state (`collect-service-conformance.yml:241-257`). Each current workflow result carries its numeric Semaphore task ID and, when valid, its numeric completion time in the Loki body. A missing or invalid completion time is `unknown`; retained results have both fields `unknown`. Collector emission time is not a substitute for workflow completion time.
+2. **Make absence explicit:** only exact, selected exception panels may pass empty; query errors and required-panel no-data remain failures. A selected log source with no matching records is reported as no data observed for that source, not as a healthy zero or a diagnosis of why ingestion is absent.
 3. **Keep observability bounded:** reuse existing Prometheus/Loki signals and stable datasource UIDs; add no unbounded labels (`plan/architecture/02-service-onboarding.md:68-80`; `PRINCIPLES.md:366-375`).
 4. **Operate through the platform:** validate and deploy with Semaphore; no direct production changes or Clean Deploy (`AGENTS.md:25-40,167-174`).
+5. **Reproduce dashboard time scopes:** the read-only verifier honors only positive one-unit `timeFrom` overrides, applying the panel lookback to range queries, step sizing, and Grafana range built-ins while keeping instant-query time at now; other unsupported settings remain refused.
+6. **Preserve table identity:** the per-step age table uses the same frame-label, merge, time-column, and rename transformations as the latest status table, with its `-1` value displayed as `Unknown`.
 
 ## Architecture
 
@@ -55,11 +57,11 @@ flowchart LR
 
 **Tasks:**
 1. Count tracked services from valid inventory-marker records and show age of the newest valid marker. Use the measured 45-minute latest-marker window and 30-minute stale boundary above; future receipts may require recalibration.
-2. Keep latest pass/fail/skip state through collector recovery using the existing retained-state path. Preserve Grafana dashboard UIDs `service-conformance` and `service-overview`.
+2. Keep latest pass/fail/skip state through collector recovery using the existing retained-state path. Use the result's completion timestamp and task ID for age and provenance; retained results have unknown age and task provenance. Map unknown completion age to `-1` before reducing the latest record by service and step, then filter `-1` for the newest-known aggregate. Add a per-service/step age table with neutral `Unknown` mapping so it aligns with latest step state. Preserve Grafana dashboard UIDs `service-conformance` and `service-overview`.
 3. Update Overview log selection to include the existing `signal="container"` journal stream, retain useful existing container/access/span/conformance streams, and keep their source aggregates disjoint. Keep raw mixed-source drill-down separate from source counts. Use only existing Prometheus series for metrics; live coverage still requires a receipt.
 4. Update deploy read-back assertions and focused fixtures/tests for panel titles, UIDs, stable datasource UIDs, query coverage, bounded labels and no-double-count behavior.
 
-**Acceptance criteria:** inventory markers define the tracked count; freshness distinguishes current, stale and unavailable evidence; recent-state display survives a gap; source totals do not double count; source absence is not shown as healthy service state.
+**Acceptance criteria:** inventory markers define the tracked count; freshness distinguishes current, stale and unavailable evidence; recent-state display survives a gap; current result age uses a validated numeric workflow completion timestamp; a newer unknown timestamp replaces older known provenance for the same service and step; each latest step has a matching age row with `Unknown` shown neutrally; retained or missing provenance is explicit as unknown; source totals do not double count; source absence is reported as an observation and not shown as healthy service state.
 
 ### Phase 3: Reviewed Dev acceptance
 
@@ -68,7 +70,7 @@ flowchart LR
 **Tasks:**
 1. Obtain independent review and green CI for the final commit head.
 2. Run the existing `Deploy o11y (Dev)` through Semaphore in check mode, then perform the non-destructive Dev-bound deployment only after review and CI pass. Do not use Clean Deploy or production inventory.
-3. Reuse `Verify o11y Dashboard Data (Dev)` with exact selected panel titles. When appropriate, explicitly name only “Services not yet run”, “Recent failed task snapshots”, and “History incomplete” as expected-empty panels. Capture the final receiver revision, task ID, source and panel results. Required Overview metrics and log sources need exact live query receipts. Existing receipts establish that at least one Loki stream is queryable and that “Recent container logs” is empty across the nonempty service labels; do not claim container ingestion. The journal rollout gate remains separate.
+3. Reuse `Verify o11y Dashboard Data (Dev)` with exact selected panel titles. When appropriate, explicitly name only “Services not yet run”, “Recent failed task snapshots”, and “History incomplete” as expected-empty panels. Capture the final receiver revision, task ID, source and panel results, including latest workflow completion time/task provenance and explicit no-data observations for selected log sources. Required Overview metrics and log sources need exact live query receipts. Existing receipts establish that at least one Loki stream is queryable and that “Recent container logs” is empty across the nonempty service labels; do not claim container ingestion. The journal rollout gate remains separate.
 
 **Acceptance criteria:** live data appears for required panels; explicitly permitted empty panels are reported as expected empty; query failures and required no-data fail. Identify the promoted Dev merge commit that contains the reviewed final-head content, then verify the receiver SHA equals that promoted Dev commit. Do not require equality with the pre-merge reviewed SHA because GitHub squash merges rewrite the commit SHA.
 
@@ -77,7 +79,7 @@ flowchart LR
 | Check | Pass Condition |
 |---|---|
 | OpenSpec strict validation | `openspec validate o11y-dashboard-accuracy --strict` succeeds directly from the canonical `plan/development` checkout |
-| Focused unit/static coverage | Evaluator, dashboard, and playbook assertions cover both positive and empty/error cases |
+| Focused unit/static coverage | Evaluator, dashboard, and playbook assertions cover positive and empty/error cases; conformance records validate completion timestamps, retained/unknown provenance, newest-unknown replacement, per-step age rows, latest fail-to-pass state, and the unchanged label contract |
 | Final-head CI and review | Independent review approved and CI green on the exact final head |
 | Dev dry run and deployment | Semaphore task uses reviewed revision; no Clean Deploy or production target |
 | Live dashboard receipt | Required series/streams return data; expected-empty panels are explicitly named; no runtime claim without receipt |

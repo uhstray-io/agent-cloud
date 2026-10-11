@@ -41,8 +41,9 @@ Grafana semantics reproduced, and where they come from:
   - A target or panel with no datasource uses the default one, which is Prometheus
     (datasources.yml, isDefault). Loki targets are evaluated only when their panel title is
     explicitly named in `panel_titles`; whole-dashboard runs skip Loki and unsupported data sources.
-  - What this script does not reproduce, an evaluated panel may not use: a panel's own
-    time range (timeFrom, timeShift), its query options (maxDataPoints, a min interval on
+  - A panel's timeFrom is reproduced when it is one Prometheus duration unit; it sets that
+    panel's relative lookback, query step and $__range builtins. Instant queries still run at
+    the current end time. A panel may not use timeShift, its query options (maxDataPoints, a min interval on
     the panel or a target, intervalFactor), repetition (repeat, on the panel or its row) and
     library panels (whose queries live outside the dashboard file). Each is refused. A
     library panel is refused whatever its datasource, since the file does not say.
@@ -111,7 +112,7 @@ OVERRIDE_FORBIDDEN = re.compile(r'["{}()\\\r\n]')
 # A value substituted outside a string literal: a duration or a number, nothing else.
 BARE_VALUE = re.compile(r"^[0-9]+(?:\.[0-9]+)?(?:ms|s|m|h|d|w|y)?$")
 # Panel and target fields whose effect this script does not reproduce.
-PANEL_UNSUPPORTED = ("maxDataPoints", "interval", "timeFrom", "timeShift", "repeat", "libraryPanel")
+PANEL_UNSUPPORTED = ("maxDataPoints", "interval", "timeShift", "repeat", "libraryPanel")
 TARGET_UNSUPPORTED = ("interval",)
 
 
@@ -273,6 +274,19 @@ def interpolate(expr: str, values: dict[str, str], builtins: dict[str, str]) -> 
     return REFERENCE.sub(replace, expr)
 
 
+def grafana_builtins(lookback: int, scrape: int) -> tuple[int, dict[str, str]]:
+    step = max(scrape, math.ceil(lookback / POINTS_PER_PANEL))
+    builtins = {
+        "__interval": f"{step}s",
+        "__interval_ms": str(step * 1000),
+        "__rate_interval": f"{max(step + scrape, 4 * scrape)}s",
+        "__range": f"{lookback}s",
+        "__range_s": str(lookback),
+        "__range_ms": str(lookback * 1000),
+    }
+    return step, builtins
+
+
 def plan(payload: dict[str, Any]) -> dict[str, Any]:
     """Resolve every selected panel's queries without contacting either backend."""
     lookback = duration_seconds(payload.get("lookback"))
@@ -293,15 +307,7 @@ def plan(payload: dict[str, Any]) -> dict[str, Any]:
 
     dashboard = load_dashboard(str(payload.get("dashboards_dir", "")), str(payload.get("dashboard_uid", "")))
     values, sources = template_values(dashboard, overrides)
-    step = max(scrape, math.ceil(lookback / POINTS_PER_PANEL))
-    builtins = {
-        "__interval": f"{step}s",
-        "__interval_ms": str(step * 1000),
-        "__rate_interval": f"{max(step + scrape, 4 * scrape)}s",
-        "__range": f"{lookback}s",
-        "__range_s": str(lookback),
-        "__range_ms": str(lookback * 1000),
-    }
+    step, _ = grafana_builtins(lookback, scrape)
 
     panels = flatten_panels(dashboard.get("panels", []))
     missing = [t for t in titles if t not in {p.get("title") for p in panels}]
@@ -330,7 +336,18 @@ def plan(payload: dict[str, Any]) -> dict[str, Any]:
         ]
         if evaluated:
             refuse_unsupported(panel, evaluated)
-        entry: dict[str, Any] = {"title": panel.get("title", ""), "targets": []}
+        panel_lookback = (
+            duration_seconds(panel["timeFrom"])
+            if evaluated and _set(panel.get("timeFrom"))
+            else lookback
+        )
+        panel_step, builtins = grafana_builtins(panel_lookback, scrape)
+        entry: dict[str, Any] = {
+            "title": panel.get("title", ""),
+            "lookback": panel_lookback,
+            "step": panel_step,
+            "targets": [],
+        }
         for target in targets:
             kind = datasource_type(target, panel)
             ref = target.get("refId", "")
@@ -483,7 +500,7 @@ def evaluate(payload: dict[str, Any], now: float | None = None) -> dict[str, Any
             for mode in target["modes"]:
                 answer = _query(
                     bases[target["datasource"]], target["datasource"], mode, target["expr"], end,
-                    planned["lookback"], planned["step"],
+                    entry["lookback"], entry["step"],
                 )
                 row = {"ref": target["ref"], "mode": mode}
                 if "error" in answer:
@@ -507,7 +524,12 @@ def evaluate(payload: dict[str, Any], now: float | None = None) -> dict[str, Any
             status = "expected_empty"
         else:
             status = "empty" if all(t["status"] == "empty" for t in queried) else "partial"
-        panels.append({"title": entry["title"], "status": status, "targets": targets})
+        panels.append({
+            "title": entry["title"],
+            "status": status,
+            "lookback_seconds": entry["lookback"],
+            "targets": targets,
+        })
 
     verified = [p for p in panels if p["status"] != "skipped"]
     failing = [p["title"] for p in verified if p["status"] not in ("pass", "expected_empty")]

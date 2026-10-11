@@ -1781,7 +1781,9 @@ log_service = next(variable for variable in overview['templating']['list'] if va
 assert log_service['datasource']['uid'] == 'loki'
 assert log_service['query'] == 'label_values({service=~".+"}, service)'
 assert log_service['label'] == 'Logs service'
-metric_queries = [target['expr'] for panel in overview['panels'] if panel['datasource']['type'] == 'prometheus'
+assert any(panel['type'] == 'text' and panel['datasource']['type'] == 'prometheus' and 'targets' not in panel
+           for panel in overview['panels'])
+metric_queries = [target['expr'] for panel in overview['panels'] if panel['datasource']['type'] == 'prometheus' and panel['type'] != 'text'
                   for target in panel['targets']]
 loki_queries = [target['expr'] for panel in overview['panels'] if panel['datasource']['type'] == 'loki'
                 for target in panel['targets']]
