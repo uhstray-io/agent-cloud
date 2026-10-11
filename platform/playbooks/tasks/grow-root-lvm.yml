@@ -41,9 +41,12 @@
   failed_when: false
   tags: [verify]
 
+# A helper that dies before printing (a traceback, say) leaves stdout empty, and
+# from_json on that fails with a parse error that hides the exit code. Parse only
+# what looks like JSON; an empty mapping then reaches the rc and refusal checks.
 - name: "Parse the plan"
   ansible.builtin.set_fact:
-    _grow_plan: "{{ _grow_plan_raw.stdout | from_json }}"
+    _grow_plan: "{{ (_grow_plan_raw.stdout | from_json) if (_grow_plan_raw.stdout | trim).startswith('{') else {} }}"
   tags: [verify]
 
 - name: "Refuse a root the helper cannot grow safely"
@@ -80,7 +83,7 @@
 
 - name: "Parse the result"
   ansible.builtin.set_fact:
-    _grow_result: "{{ _grow_apply_raw.stdout | from_json }}"
+    _grow_result: "{{ (_grow_apply_raw.stdout | from_json) if (_grow_apply_raw.stdout | trim).startswith('{') else {} }}"
   when: not ansible_check_mode and (_grow_plan.steps | length > 0)
 
 - name: "Refuse a grow that did not enlarge the root filesystem"
@@ -115,14 +118,19 @@
   failed_when: false
   tags: [verify]
 
+- name: "Parse the re-read"
+  ansible.builtin.set_fact:
+    _grow_final: "{{ (_grow_final_raw.stdout | from_json) if (_grow_final_raw.stdout | trim).startswith('{') else {} }}"
+  tags: [verify]
+
 - name: "Refuse a root that still has room to grow"
   ansible.builtin.assert:
     that:
       - _grow_final_raw.rc == 0
-      - (_grow_final_raw.stdout | from_json).steps | default(['unreadable']) | length == 0
+      - _grow_final.steps | default(['unreadable']) | length == 0
     fail_msg: >-
-      The root is not fully grown: {{ (_grow_final_raw.stdout | from_json).steps
-      | default((_grow_final_raw.stdout | from_json).refused | default('unreadable')) }}.
+      The root is not fully grown: {{ _grow_final.steps
+      | default(_grow_final.refused | default('unreadable, helper rc ' ~ _grow_final_raw.rc)) }}.
     quiet: true
   # Under --check the steps it plans have not been taken (MISTAKES 10.18).
   when: not (ansible_check_mode and (_grow_plan.steps | length > 0))
