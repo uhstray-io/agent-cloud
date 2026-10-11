@@ -335,8 +335,11 @@ runner trust boundary, and jobs can leave processes behind.
 - [ ] 12.1 Migrate to per-job ephemeral runners. `--ephemeral` registration alone is
       insufficient: isolate and destroy the runner process and filesystem after every
       job, including failed or cancelled jobs.
-- [ ] 12.2 Acceptance: prove jobs from two different permitted private repositories
-      cannot observe each other's workspace or lingering processes; preserve the runner
-      group access limits and `agent-cloud`'s public-repository exclusion. Deploy through
-      reviewed config-as-code and Semaphore changes, with final-head CI and review green
-      before rollout.
+- [ ] 12.2 Acceptance: in each of two cases, have the first job from one permitted
+      private repository write a unique workspace marker and start a uniquely identifiable
+      background process; fail it in one case and cancel it in the other. After each
+      outcome, run a job from a different permitted private repository on the same runner
+      host and prove it cannot read the marker or observe or attach to the process. Preserve
+      the runner group access limits and
+      `agent-cloud`'s public-repository exclusion. Deploy through reviewed config-as-code
+      and Semaphore changes, with final-head CI and review green before rollout.
