@@ -3771,7 +3771,7 @@ def test_alloy_config_uses_only_the_fixed_bounded_selector_and_otlp():
 
     assert 'matches    = "CONTAINER_NAME=o11y-alloy"' in config
     assert 'max_age    = "15m"' in config
-    assert 'labels     = { service = "o11y/alloy", signal = "container" }' in config
+    assert 'labels     = { service = "o11y/alloy", signal = "container", target_id = "service:o11y" }' in config
     assert "otelcol.exporter.otlp" in config
     assert "o11y_otlp_bind" in config
     assert "loki.write" not in config
@@ -5171,6 +5171,41 @@ def test_apply_and_repair_fail_closed_before_collector_host_tasks_until_proof_ex
     ]
     assert "direct Podman proof" in apply_guard["ansible.builtin.assert"]["fail_msg"]
     assert "survey and stop remain available" in apply_guard["ansible.builtin.assert"]["fail_msg"].lower()
+
+
+def test_journal_otlp_marks_the_fixed_bounded_target_id_for_loki_label_selection():
+    env = Environment()
+    env.filters["to_json"] = json.dumps
+    env.filters["bool"] = bool
+    journal = env.from_string((O11Y / "templates/journal.alloy.j2").read_text()).render(
+        o11y_otlp_bind="127.0.0.1",
+    )
+    receiver = env.from_string((O11Y / "templates/config.alloy.j2").read_text()).render(
+        local_mode=False,
+        _o11y_forbidden_metric_label_names_regex=".*",
+        o11y_cluster="test-cluster",
+        o11y_environment="test",
+        o11y_gateway_span_logs_enabled=True,
+    )
+    target_id = "service:o11y"
+
+    assert re.fullmatch(r"(service|agent|vm|guest|runner|network|dgx):[a-z][a-z0-9_-]{1,63}", target_id)
+    assert (
+        'labels     = { service = "o11y/alloy", signal = "container", target_id = "service:o11y" }'
+        in journal
+    )
+    journal_receiver = journal.split('otelcol.receiver.loki "journal" {', 1)[1].split("\n}\n", 1)[0]
+    assert "logs = [otelcol.processor.attributes.journal_labels.input]" in journal_receiver
+    journal_labels = journal.split('otelcol.processor.attributes "journal_labels" {', 1)[1].split("\n}\n", 1)[0]
+    assert 'key    = "loki.attribute.labels"' in journal_labels
+    assert 'action = "upsert"' in journal_labels
+    assert 'value  = "service,signal,target_id"' in journal_labels
+    assert "logs = [otelcol.exporter.otlp.journal.input]" in journal_labels
+    gateway_logs = receiver.split('otelcol.processor.attributes "gateway_logs" {', 1)[1].split("\n}\n", 1)[0]
+    assert 'value  = "service,signal"' in gateway_logs
+    assert "logs = [otelcol.exporter.loki.gateway.input]" in gateway_logs
+    span_logs = receiver.split('otelcol.processor.attributes "gateway_span_logs" {', 1)[1].split("\n}\n", 1)[0]
+    assert 'value  = "service,signal"' in span_logs
 
 
 def test_live_namespace_create_failure_reports_create_without_relative_cleanup(tmp_path):
