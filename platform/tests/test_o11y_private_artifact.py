@@ -403,7 +403,14 @@ def test_existing_proposal_verification_precedes_conditional_get_only_census():
     census = yaml.safe_load((ROOT / "platform/playbooks/tasks/o11y-backup-artifact-census.yml").read_text())
     requests = [task for task in census if "ansible.builtin.uri" in task]
     assert len(requests) == 4
-    assert all(task["ansible.builtin.uri"]["method"] == "GET" and task["no_log"] is True for task in requests)
+    assert all(
+        task["ansible.builtin.uri"]["method"] == "GET"
+        and task["ansible.builtin.uri"]["validate_certs"]
+        == "{{ proxmox_validate_certs | default(false) | bool }}"
+        and task["ansible.builtin.uri"]["follow_redirects"] == "none"
+        and task["no_log"] is True
+        for task in requests
+    )
     assert "_sc_existing_remote.stdout" in str(
         block[names.index("Run the bounded GET-only census only when work is needed")]["when"]
     )
