@@ -18,7 +18,7 @@ SPEC.loader.exec_module(guard)
 WORKFLOW_PATH = SCRIPT.parents[1] / guard.WORKFLOW
 CURRENT_WORKFLOW = WORKFLOW_PATH.read_bytes()
 PRE_PARTITION_WORKFLOW = Path(__file__).with_name("fixtures").joinpath(
-    "lint-and-test-pre-partition.yml").read_bytes()
+    "lint-and-test-pre-partition.txt").read_bytes()
 
 
 def _blob_sha(source):
