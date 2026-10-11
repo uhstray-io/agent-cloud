@@ -206,32 +206,30 @@ class GitHubAppRepositoryTests(unittest.TestCase):
                     grant.execute(CLASSIC_TOKEN, PEM, ISSUER, False, False, api)
                 self.assertEqual(api.put_count(), 0)
 
-    def test_oauth_token_with_repo_scope_is_accepted(self):
+    def test_classic_pat_with_repo_scope_is_accepted(self):
         api = FakeGitHub()
-        result = grant.execute(OAUTH_TOKEN, PEM, ISSUER, False, False, api)
+        result = grant.execute(CLASSIC_TOKEN, PEM, ISSUER, False, False, api)
         self.assertEqual(result["outcome"], "added")
         self.assertTrue(result["verified"])
         self.assertEqual(api.put_count(), 1)
 
     def test_refuses_unsupported_token_form_before_request(self):
-        api = FakeGitHub()
-        with self.assertRaisesRegex(grant.Refusal, "supported_token_required"):
-            grant.execute("github_pat_synthetic", PEM, ISSUER, False, False, api)
-        self.assertEqual(api.calls, [])
-
-    def test_refuses_missing_repo_scope_for_classic_and_oauth_tokens_before_put(self):
-        for token in (CLASSIC_TOKEN, OAUTH_TOKEN):
+        for token in (OAUTH_TOKEN, "github_pat_synthetic"):
             with self.subTest(token=token):
-                api = FakeGitHub(
-                    overrides={
-                        ("GET", "/user"): grant.Response(
-                            200, {"X-OAuth-Scopes": "read:user"}, {"login": "runner"}
-                        )
-                    }
-                )
-                with self.assertRaisesRegex(grant.Refusal, "repo_scope_required"):
+                api = FakeGitHub()
+                with self.assertRaisesRegex(grant.Refusal, "supported_token_required"):
                     grant.execute(token, PEM, ISSUER, False, False, api)
-                self.assertEqual(api.put_count(), 0)
+                self.assertEqual(api.calls, [])
+
+    def test_refuses_missing_repo_scope_for_classic_pat_before_put(self):
+        api = FakeGitHub(
+            overrides={
+                ("GET", "/user"): grant.Response(200, {"X-OAuth-Scopes": "read:user"}, {"login": "runner"})
+            }
+        )
+        with self.assertRaisesRegex(grant.Refusal, "repo_scope_required"):
+            grant.execute(CLASSIC_TOKEN, PEM, ISSUER, False, False, api)
+        self.assertEqual(api.put_count(), 0)
 
     def test_refuses_incomplete_or_hostile_pagination_before_put(self):
         for link, count, page_ids in (

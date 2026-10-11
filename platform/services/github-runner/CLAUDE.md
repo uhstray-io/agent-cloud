@@ -74,15 +74,16 @@ Both playbooks read that key from OpenBao and nowhere else — not from a Semaph
 environment secret, because two channels for one private key means two places to rotate
 and two places to leak.
 
-The installation grant uses a separate `installation_admin_token` at
-`secret/services/github-runner`. It must be a `ghp_` classic PAT or `gho_` OAuth token
-with the `repo` scope, and its authenticated user must have admin permission on
-`uhstray-io/site-config`. The grant helper checks both before its additive PUT, then
-confirms the repository appears through a fresh installation token. This dedicated
-credential keeps the shared `secret/services/github:pat` unchanged; that PAT also serves
-GHCR. After the reviewed code merges into Dev, seed the field through the governed
-`seed-openbao-key.yml` workflow using an encrypted isolated Semaphore environment, never
-a survey value or log.
+The installation grant uses a dedicated classic `ghp_` PAT at
+`secret/services/github-runner:installation_admin_token`. Create it with the `repo` scope;
+its authenticated user must have admin permission on `uhstray-io/site-config`. The helper
+rejects OAuth tokens because GitHub requires an access token authorized to a GitHub App for
+the user-installation grant, checks the PAT scope and repository permission before its
+additive PUT, then confirms the repository appears through a fresh installation token.
+This dedicated credential keeps the shared `secret/services/github:pat` unchanged; that
+PAT also serves GHCR. After the reviewed code merges into Dev, seed the dedicated PAT via
+the governed `seed-openbao-key.yml` workflow using an encrypted isolated Semaphore
+environment, never a survey value or log.
 
 Minting runs on the orchestrator, not the host, because the host is firewalled away from
 OpenBao by its own declaration — it could not fetch its own secret even holding a

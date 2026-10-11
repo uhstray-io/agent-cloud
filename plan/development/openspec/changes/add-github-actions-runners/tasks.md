@@ -311,14 +311,16 @@
 The runner App installation grant must not reuse `secret/services/github:pat`: that
 shared credential also serves GHCR, and a scope change could disrupt package pulls.
 Keep the grant-only `installation_admin_token` in `secret/services/github-runner`; the
-helper accepts only `ghp_` classic PAT or `gho_` OAuth token forms and refuses to write
-unless the token has the `repo` OAuth scope and its user has admin permission on the
-private target repository.
+helper accepts only a dedicated `ghp_` classic PAT with the `repo` scope and refuses to
+write unless its user has admin permission on the private target repository. GitHub's
+user-installation grant requires an access token authorized to a GitHub App, so do not
+seed a CLI OAuth token. Keep the shared `secret/services/github:pat` unchanged for GHCR.
 
-- [ ] 11.1 After the reviewed code merges into Dev, seed only `installation_admin_token` into
-      `secret/services/github-runner` through the governed `seed-openbao-key.yml` flow,
-      using `scripts/semaphore-seed-input.py` with an encrypted isolated Semaphore
-      environment. Do not replace or rewrite `secret/services/github:pat`.
+- [ ] 11.1 After the reviewed code merges into Dev, seed only the dedicated classic PAT as
+      `installation_admin_token` into `secret/services/github-runner` through the governed
+      `seed-openbao-key.yml` flow, using `scripts/semaphore-seed-input.py` with an encrypted
+      isolated Semaphore environment. Do not seed a CLI OAuth token or replace/rewrite
+      `secret/services/github:pat`.
 - [ ] 11.2 Run the reviewed Dev grant template in check mode; confirm it previews the
       fixed repository without a PUT and emits no credential material.
 - [ ] 11.3 Run the reviewed Dev grant template normally; confirm the additive grant and

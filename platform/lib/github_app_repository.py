@@ -177,7 +177,7 @@ def validate_app(api: GitHub, issuer: str, key: bytes) -> tuple[int, int]:
 
 def validate_admin_token(api: GitHub, admin_token: str) -> None:
     require(
-        isinstance(admin_token, str) and re.fullmatch(r"gh(?:p|o)_[A-Za-z0-9]+", admin_token) is not None,
+        isinstance(admin_token, str) and re.fullmatch(r"ghp_[A-Za-z0-9]+", admin_token) is not None,
         "admin_token",
         "supported_token_required",
     )
