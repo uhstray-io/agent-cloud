@@ -72,8 +72,10 @@
 - name: "Require unchanged integration tip and absent proposal branch"
   ansible.builtin.assert:
     that:
-      - _sc_before_push_base.stdout.split() | length == 1
+      - _sc_before_push_base.stdout_lines | length == 1
+      - _sc_before_push_base.stdout.split() | length == 2
       - _sc_before_push_base.stdout.split()[0] == _sc_reviewed_base_sha
+      - _sc_before_push_base.stdout.split()[1] == 'refs/heads/' ~ _sc_guarded_base_branch
       - _sc_before_push_branch.stdout | length == 0
     fail_msg: "The site-config base changed or the proposal branch already exists."
   when:

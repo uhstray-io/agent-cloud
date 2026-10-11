@@ -101,6 +101,66 @@ def test_inventory_inserts_only_selector_and_preserves_existing_bytes():
     assert "private-store" not in INVENTORY_REFUSAL
 
 
+def test_inventory_inserts_before_following_sibling_group_at_host_field_indent():
+    catalog, _ = catalog_fixture()
+    source = (
+        "agent_cloud:\n  children:\n    o11y_svc:\n      hosts:\n"
+        "        o11y-test:\n          vm_node: node-test\n          vm_vmid: '100'\n"
+        "    loki_svc:\n      hosts:\n        loki-test:\n          ansible_host: loki-test\n"
+    )
+    updated = _insert_selector(source, catalog, 1)
+    sibling_at = source.index("    loki_svc:")
+    assert updated.index("          o11y_backup_artifact_selector:") < updated.index("    loki_svc:")
+    assert updated[: updated.index("    loki_svc:")].startswith(source[:sibling_at])
+    assert updated.endswith(source[sibling_at:])
+    assert yaml.safe_load(updated)["agent_cloud"]["children"]["loki_svc"] == {
+        "hosts": {"loki-test": {"ansible_host": "loki-test"}}
+    }
+
+
+def test_inventory_read_preserves_terminal_newline_in_ansible_command():
+    operation = yaml.safe_load(
+        (ROOT / "platform/playbooks/tasks/o11y-private-artifact-operation.yml").read_text()
+    )
+    block = next(task["block"] for task in operation if task.get("name") == "Enter the private branch operation")
+    task = next(task for task in block if task["name"] == "Read exact base inventory bytes")
+    assert task["ansible.builtin.command"]["strip_empty_ends"] is False
+    source = (
+        "agent_cloud:\n  children:\n    o11y_svc:\n      hosts:\n        o11y-test:\n"
+        "          vm_node: node-test\n          vm_vmid: '100'\n"
+    )
+    catalog, _ = catalog_fixture()
+    updated = _insert_selector(source, catalog, 1)
+    assert source.endswith("\n") and updated.endswith("\n")
+    assert updated.startswith(source)
+    without_terminal_newline = _insert_selector(source.rstrip("\n"), catalog, 1)
+    assert without_terminal_newline.startswith(source.rstrip("\n"))
+
+
+def test_census_identity_fact_is_hidden_and_private_vmids_are_strings():
+    census = yaml.safe_load((ROOT / "platform/playbooks/tasks/o11y-backup-artifact-census.yml").read_text())
+    assert census[0]["no_log"] is True
+    operation = yaml.safe_load(
+        (ROOT / "platform/playbooks/tasks/o11y-private-artifact-operation.yml").read_text()
+    )
+    block = next(task["block"] for task in operation if task.get("name") == "Enter the private branch operation")
+    propose_name = "Validate freshness, explicit row, and complete fresh census"
+    propose = next(task for task in block if task["name"] == propose_name)
+    capture = next(task for task in block if task["name"] == "Prepare a private capture catalog")
+    assert "hostvars['localhost']._vmid | string" in propose["ansible.builtin.command"]["stdin"]
+    assert "hostvars['localhost']._vmid | string" in capture["ansible.builtin.command"]["stdin"]
+
+
+def test_guarded_push_requires_one_exact_sha_and_ref_record():
+    push = yaml.safe_load((ROOT / "platform/playbooks/tasks/site-config-push.yml").read_text())
+    task = next(task for task in push if task["name"] == "Require unchanged integration tip and absent proposal branch")
+    assertions = task["ansible.builtin.assert"]["that"]
+    assert "_sc_before_push_base.stdout_lines | length == 1" in assertions
+    assert "_sc_before_push_base.stdout.split() | length == 2" in assertions
+    assert "_sc_before_push_base.stdout.split()[0] == _sc_reviewed_base_sha" in assertions
+    assert "_sc_before_push_base.stdout.split()[1] == 'refs/heads/' ~ _sc_guarded_base_branch" in assertions
+
+
 @pytest.mark.parametrize(
     "source",
     [

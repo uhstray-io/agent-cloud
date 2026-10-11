@@ -115,6 +115,7 @@
       ansible.builtin.command:
         argv: [git, show, "{{ site_config_base_sha }}:inventory/production.yml"]
         chdir: "{{ _sc_clone }}"
+        strip_empty_ends: false
       register: _base_inventory
       changed_when: false
       no_log: true
@@ -169,7 +170,7 @@
               'capture_sha': capture_commit_sha,
               'row_number': artifact_row | int,
               'inventory_host': hostvars['localhost']._o11y_host,
-              'census': {'vmid': hostvars['localhost']._vmid,
+              'census': {'vmid': hostvars['localhost']._vmid | string,
                          'node': hostvars['localhost']._node,
                          'vms': hostvars['localhost']._pve_vms.json.data,
                          'storages': hostvars['localhost']._backup_storages,
@@ -193,7 +194,7 @@
               'target': {'host': hostvars['localhost']._o11y_host,
                          'node': hostvars['localhost']._node,
                          'vmid': hostvars['localhost']._vmid | string},
-              'census': {'vmid': hostvars['localhost']._vmid,
+              'census': {'vmid': hostvars['localhost']._vmid | string,
                          'node': hostvars['localhost']._node,
                          'vms': hostvars['localhost']._pve_vms.json.data,
                          'storages': hostvars['localhost']._backup_storages,

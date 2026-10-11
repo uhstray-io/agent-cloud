@@ -302,9 +302,17 @@ def _insert_selector(source: str, catalog: Mapping[str, object], row_number: int
     lines = source.splitlines(keepends=True)
     end_line = host_node.end_mark.line
     require(end_line <= len(lines) and bool(lines), INVENTORY_REFUSAL)
-    line = lines[min(end_line, len(lines) - 1)]
-    indent = len(line) - len(line.lstrip(" "))
-    insertion = min(end_line + 1, len(lines))
+    first_host_field = host_node.value[0][0]
+    indent_line = lines[first_host_field.start_mark.line]
+    indent = len(indent_line) - len(indent_line.lstrip(" "))
+    insertion = min(end_line, len(lines))
+    if (
+        insertion == len(lines) - 1
+        and not lines[insertion].endswith("\n")
+        and len(lines[insertion]) - len(lines[insertion].lstrip(" ")) >= indent
+    ):
+        lines[insertion] += "\n"
+        insertion += 1
     block = " " * indent + "o11y_backup_artifact_selector:\n"
     for key in ("volid", "backend", "format", "creation_time_epoch", "size_bytes"):
         block += (

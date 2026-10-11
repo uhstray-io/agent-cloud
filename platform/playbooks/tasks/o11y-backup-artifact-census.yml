@@ -5,6 +5,7 @@
     _o11y_host: "{{ (groups['o11y_svc'] | default([]) | first) | default('') }}"
     _vmid: "{{ hostvars[(groups['o11y_svc'] | default([]) | first)].vm_vmid | default('') if (groups['o11y_svc'] | default([]) | length > 0) else '' }}"
     _node: "{{ hostvars[(groups['o11y_svc'] | default([]) | first)].vm_node | default('') if (groups['o11y_svc'] | default([]) | length > 0) else '' }}"
+  no_log: true
 
 - name: Require exact reviewed checkout and one declared o11y VM
   ansible.builtin.assert:
