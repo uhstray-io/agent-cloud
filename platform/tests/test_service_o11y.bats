@@ -2016,6 +2016,7 @@ with contextlib.redirect_stdout(captured):
 receipt = json.loads(captured.getvalue())
 assert receipt['status'] == 'observed' and len(receipt['volumes']) == 5
 assert receipt['guest_root_filesystem_available_bytes'] == 500
+assert [volume['backing_filesystem_group'] for volume in receipt['volumes']] == [1] * 5
 assert [volume['stored_bytes'] for volume in receipt['volumes']] == [24] * 5
 assert len(du_calls) == 5 and all(
     call[0] == 'podman' and call[1][1:] == ('du', '-s', '-B1', '--', '/tmp')
@@ -2085,7 +2086,35 @@ with contextlib.redirect_stdout(captured):
 threshold_receipt = json.loads(captured.getvalue())
 assert threshold_receipt['status'] == 'observed'
 assert all('stored_bytes' not in volume for volume in threshold_receipt['volumes'])
+module.allocated_bytes = original_allocated_bytes
+module.sys.argv = [str(script), 'podman']
+readbacks = iter([
+    (2000, 400, 987654321),
+    (1000, 500, 123456789),
+    (2000, 300, 987654321),
+    (1000, 400, 123456789),
+    (1000, 450, 135792468),
+    (2000, 350, 987654321),
+])
+module.fs_capacity = lambda _path: next(readbacks)
+captured = io.StringIO()
+with contextlib.redirect_stdout(captured):
+    assert module.main() == 0
+grouped_receipt = json.loads(captured.getvalue())
+assert [volume['backing_filesystem_group'] for volume in grouped_receipt['volumes']] == [1, 2, 1, 3, 2]
+assert [volume['backing_filesystem_available_bytes'] for volume in grouped_receipt['volumes']] == [400, 300, 400, 450, 300]
+assert [volume['backing_filesystem_free_percent'] for volume in grouped_receipt['volumes']] == [40, 15, 40, 45, 15]
+assert all(str(fsid) not in captured.getvalue() for fsid in (123456789, 987654321, 246813579, 135792468))
+readbacks = iter([(2000, 400, 987654321), (1000, 500, 123456789), (1999, 300, 987654321)])
+module.fs_capacity = lambda _path: next(readbacks)
+captured = io.StringIO()
+with contextlib.redirect_stdout(captured):
+    assert module.main() == 1
+failure = json.loads(captured.getvalue())
+assert failure['reason'] == 'backing_filesystem_readback_inconsistent'
+assert all(str(fsid) not in captured.getvalue() for fsid in (123456789, 987654321))
 no_containers = True
+module.sys.argv = [str(script), 'podman', '30']
 module.allocated_bytes = original_allocated_bytes
 module.fs_capacity = lambda _path: (1000, 200, 1)
 captured = io.StringIO()

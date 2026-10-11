@@ -135,11 +135,36 @@ Collection SHALL use declared private network paths and source-scoped firewall r
 - **THEN** the source-scoped firewall denies it and the source is not enrolled by discovery alone
 
 ### Requirement: Capacity gates each rollout wave
-The platform SHALL compare observed and forecast ingestion, storage, CPU, and memory demand with the declared o11y VM capacity before enabling each wave. When the forecast lacks headroom, the wave SHALL wait for a reviewed, non-destructive capacity change and post-change readback.
+The platform SHALL compare observed and forecast ingestion, storage, CPU, and memory demand with the declared o11y VM capacity before enabling each wave. A read-only forecast SHALL keep live retention readback distinct from private candidate retention and candidate Prometheus size-cap values; evaluating a candidate SHALL NOT change live retention, resize a VM, or enable a sender. The candidate 90d Prometheus / 45d Loki / 45d Tempo retention and nonzero Prometheus size cap SHALL be evaluated independently from the current live configuration. A passing forecast SHALL NOT authorize a retention change, resize, or wave. Current live retention and destructive/restore gates remain in force until their own reviewed changes and acceptance receipts pass.
+
+The forecast SHALL start its seven-consecutive-day measurement window at the first successful exact-target receiver-host receipt. Each required stream SHALL have at least 95% of expected samples, no gap greater than one hour, and a window end no older than 24 hours; live capacity and health readback SHALL be no older than 15 minutes. An explicit representativeness assessment SHALL establish that declared pilot sources and expected schedules are present, known peak periods are included, and outage, maintenance, or abnormal operation did not invalidate the window. A nonrepresentative or incomplete window SHALL be extended and recaptured. Missing, stale, incomplete, nonfinite, negative, or invalidly timestamped evidence SHALL produce `unavailable`, never a zero assumption.
+
+For each backend, forecast inputs SHALL include measured peak incoming bytes per day (the maximum complete-day total in the accepted seven-day window), attributable persisted bytes after normal compaction for the same pilot batch, the resulting storage-conversion ratio, measured transient compaction/queue allowance, and measured per-target incremental ingest, series/cardinality, CPU p95, and peak memory for the pilot cohort. Retention deletion, unrelated concurrent writes, or unmeasured compaction SHALL invalidate the storage calibration. Scale each per-target pilot increment by proposed target count and observed pilot peak-to-mean factor; projected CPU p95 and peak memory SHALL add the scaled increment to measured baseline CPU p95 and peak memory. Candidate and live retention SHALL be normalized to days. Full projected retained bytes SHALL equal `(baseline peak ingest bytes/day + scaled wave ingest bytes/day) * candidate retention days * measured storage-conversion ratio + transient allowance bytes`. Additional filesystem demand SHALL equal `max(candidate retention days - live retention days, 0) * baseline peak ingest bytes/day * conversion ratio + candidate retention days * scaled wave ingest bytes/day * conversion ratio + transient allowance bytes`. Projection SHALL validate the nonzero candidate Prometheus size cap against full projected Prometheus retained bytes. Shared backend volumes SHALL be grouped by backing filesystem; their additional demand SHALL be summed and subtracted once from current filesystem free bytes, which already includes existing occupancy. No deletion, cleanup, retention expiry, or relocation credit SHALL be assumed. The forecast SHALL require `(current free bytes - summed additional demand bytes) / filesystem total bytes >= 0.30` for every affected filesystem, projected peak memory headroom >=25% of declared VM memory, projected CPU p95 <70% of declared VM CPU capacity, and no observed telemetry drops/refusals or unhealthy representative backend queries. An observed threshold breach, drop/refusal, unhealthy query, or insufficient candidate cap SHALL refuse the wave; missing health/query evidence SHALL be `unavailable`.
+
+The forecast receipt SHALL be versioned and use only `pass`, `refused`, or `unavailable`, resource categories `ingest`, `storage`, `cpu`, `memory`, `retention_cap`, `telemetry_health`, or `evidence`, and reason categories `capacity_limit`, `retention_cap`, `drops_or_refusals`, `query_unhealthy`, `evidence_missing_or_stale`, `window_incomplete`, `window_unrepresentative`, `measurement_invalid`, `source_revision_mismatch`, or `inventory_revision_mismatch`. It SHALL include source and inventory revisions, bounded measurement/calibration windows, sanitized assumptions, projections, and margins. It SHALL omit addresses, paths, filesystem identities, raw labels/responses, credentials, and exception text. Source fixtures/tests SHALL establish source behavior only. Live acceptance SHALL require a fresh read-only Dev-bound Semaphore receipt tied to reviewed source and inventory revisions and verified private measurement evidence; source tests SHALL NOT be presented as live proof. If a VM resize occurs under a separate reviewed action, the existing VM/guest readback, backup/isolated-restore, and telemetry-preservation gates remain required before rollout resumes.
+
+When the forecast lacks headroom, the wave SHALL wait for a reviewed, non-destructive capacity change and post-change readback.
 
 #### Scenario: Wave exceeds capacity
 - **WHEN** the forecasted wave exceeds a declared capacity or retention budget
 - **THEN** rollout stops before enabling new collection and reports the limiting resource and proposed VM-spec change
+
+#### Scenario: Candidate retention is forecast without changing live retention
+- **WHEN** an operator evaluates candidate retention and a nonzero Prometheus size cap
+- **THEN** the verifier reports live readback separately from candidate values and performs no retention, VM, or sender mutation
+- **AND** a candidate forecast pass alone does not authorize those changes
+
+#### Scenario: Capacity evidence is incomplete or invalid
+- **WHEN** any required seven-day stream is missing, stale, incomplete, nonrepresentative, nonfinite, negative, or invalidly timestamped
+- **THEN** the forecast returns `unavailable` and does not substitute zero or produce a capacity pass
+
+#### Scenario: Shared filesystem projection has no deletion credit
+- **WHEN** two or more backend volumes share a backing filesystem
+- **THEN** their measured incremental demand is summed once against that filesystem's current free space, with no credit for hypothetical deletion, retention expiry, cleanup, or relocation
+
+#### Scenario: Capacity forecast source proof is not live acceptance
+- **WHEN** a synthetic source fixture proves a refusal or unavailable result
+- **THEN** the result establishes source behavior only; live acceptance remains pending until a fresh read-only Dev-bound Semaphore receipt is tied to reviewed revisions and valid private measurements
 
 #### Scenario: VM capacity increased
 - **WHEN** a reviewed VM resource declaration is converged through Semaphore
