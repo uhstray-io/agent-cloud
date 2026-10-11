@@ -510,6 +510,16 @@ exact current public Dev head at check time. It does not prove independent
 review, green CI, inventory binding, or authenticated task ownership, and it
 does not satisfy or complete task 1.2a.
 
+**Receiver capability survey prerequisite (2026-10-11; source-only):** The
+Dev-bound receiver survey reports bounded Linux, systemd, cgroup, declared-user,
+linger, and user restart-unit categories after the existing exact clean checkout
+guards pass. It skips receiver probes in check mode and reports
+`check_mode_unverified`. It does not query Podman storage, inspect container
+restart policies, prove cgroup delegation, service recovery, cancellation, task
+isolation, host-wide admission, or worker-tree containment. Unknown observations
+remain unknown. This is a bounded source prerequisite only and leaves task 1.2a
+unchecked.
+
 **Git invocation isolation (2026-10-10; source-only):** Local checkout reads and
 the public-head query use the fixed `/usr/bin/git` and fail closed if it is
 unavailable. Both receive only a controlled environment: no inherited Git,
