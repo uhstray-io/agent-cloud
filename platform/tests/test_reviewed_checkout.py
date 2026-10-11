@@ -140,6 +140,31 @@ def test_fsmonitor_marker_never_runs_and_index_is_unchanged(clean_checkout, tmp_
     assert (index.read_bytes(), index.stat().st_mtime_ns) == before
 
 
+def test_untracked_scan_does_not_run_configured_clean_filter(clean_checkout, tmp_path):
+    checkout, revision = clean_checkout
+    marker = tmp_path / "clean-filter-ran"
+    filter_command = f"/bin/sh -c 'touch {shlex.quote(str(marker))}; cat'"
+    (checkout / ".gitattributes").write_text("tracked.txt filter=marker\n", encoding="utf-8")
+    _git(checkout, "add", ".gitattributes", check=True)
+    _git(checkout, "commit", "-qm", "configure clean filter", check=True)
+    revision = _git(
+        checkout, "rev-parse", "HEAD", capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    _git(checkout, "update-ref", "refs/remotes/origin/dev", revision, check=True)
+    _git(checkout, "config", "filter.marker.clean", filter_command, check=True)
+
+    assert not marker.exists()
+    CHECKOUT._run_git(
+        checkout,
+        ("status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=none"),
+        deadline=time.monotonic() + 2,
+    )
+    assert marker.exists()
+    marker.unlink()
+    assert _verify(checkout, revision)["status"] == "checkout_consistent"
+    assert not marker.exists()
+
+
 def test_split_index_is_refused_without_modifying_either_index_file(clean_checkout):
     checkout, revision = clean_checkout
     _git(checkout, "update-index", "--split-index", check=True)
@@ -206,6 +231,27 @@ def test_bounded_runner_kills_child_holding_stdout_pipe(tmp_path, monkeypatch):
     with pytest.raises(CHECKOUT.Refusal, match="checkout_timeout"):
         CHECKOUT._run_git(Path("/tmp"), ("status",), deadline=time.monotonic() + 1)
     assert time.monotonic() - started < 2
+
+
+def test_bounded_runner_kills_child_after_parent_exits(tmp_path, monkeypatch):
+    fake_git = tmp_path / "fake-git"
+    marker = tmp_path / "child-survived"
+    child_pid = tmp_path / "child.pid"
+    fake_git.write_text(
+        f"#!/bin/sh\n(sleep 1; touch {shlex.quote(str(marker))}) &\n"
+        f"echo $! > {shlex.quote(str(child_pid))}\nexit 0\n",
+        encoding="utf-8",
+    )
+    fake_git.chmod(0o755)
+    monkeypatch.setattr(CHECKOUT, "GIT", str(fake_git))
+    monkeypatch.setattr(CHECKOUT, "COMMAND_TIMEOUT", 0.5)
+    started = time.monotonic()
+    with pytest.raises(CHECKOUT.Refusal, match="checkout_timeout"):
+        CHECKOUT._run_git(Path("/tmp"), ("status",), deadline=time.monotonic() + 1)
+    assert time.monotonic() - started < 2
+    time.sleep(1.2)
+    assert child_pid.exists()
+    assert not marker.exists()
 
 
 def test_malformed_git_metadata_fails_closed():

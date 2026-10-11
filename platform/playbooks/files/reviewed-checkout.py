@@ -65,11 +65,10 @@ def _git_argv(root: Path, *args: str) -> list[str]:
 
 
 def _terminate(process: subprocess.Popen[bytes]) -> None:
-    if process.poll() is None:
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
     try:
         process.wait(timeout=0.5)
     except subprocess.TimeoutExpired:
@@ -100,6 +99,7 @@ def _run_git(
     selector = selectors.DefaultSelector()
     output = bytearray()
     input_offset = 0
+    completed = False
     try:
         assert process.stdout is not None
         os.set_blocking(process.stdout.fileno(), False)
@@ -138,12 +138,13 @@ def _run_git(
                         raise Refusal("checkout_output_limit")
         if process.wait(timeout=0.1) != 0:
             raise Refusal("checkout_git_failed")
+        completed = True
         return bytes(output)
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise Refusal("checkout_read_failed") from exc
     finally:
         selector.close()
-        if process.poll() is None or process.returncode is None:
+        if not completed:
             _terminate(process)
         for pipe in (process.stdin, process.stdout):
             if pipe is not None and not pipe.closed:
@@ -415,13 +416,13 @@ def verify_checkout(checkout: Path, expected_sha: str, payload_paths: list[str],
     finally:
         os.close(root_fd)
 
-    # Read-only status catches non-ignored untracked paths; index flags are rejected above.
-    status = _run_git(
+    # Enumerate untracked paths without invoking status's clean-filter conversions.
+    untracked = _run_git(
         root,
-        ("status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=none"),
+        ("ls-files", "--others", "--exclude-standard", "-z"),
         deadline=deadline,
     )
-    if status:
+    if untracked:
         raise Refusal("checkout_dirty_or_unknown")
 
     dev_ref = None
