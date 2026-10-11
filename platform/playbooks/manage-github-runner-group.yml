@@ -55,7 +55,7 @@
     # The declared access list. PRIVATE repositories only — see the proposal's rationale:
     # a fork of a public repository can propose workflow code, and these runners sit
     # inside the network perimeter.
-    _repos: "{{ github_runner_repos | default(['zerds', 'atlas', 'zerds-website', 'weft', 'scientific-business']) }}"
+    _repos: "{{ github_runner_repos | default(['zerds', 'atlas', 'zerds-website', 'weft', 'scientific-business', 'site-config']) }}"
     _api: "https://api.github.com"
 
   tasks:

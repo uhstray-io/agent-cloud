@@ -19,9 +19,10 @@ service can change, which is why the label contract matters.
 
 ## Which repositories may use it
 
-Exactly five, all private: `zerds`, `atlas`, `zerds-website`, `weft`,
-`scientific-business`. They are the declared access list of the `uhstray-selfhosted`
-runner group (`visibility: selected`, `allows_public_repositories: false`).
+Exactly six, all private: `zerds`, `atlas`, `zerds-website`, `weft`,
+`scientific-business`, and `site-config`. They are the declared access list of the
+`uhstray-selfhosted` runner group (`visibility: selected`,
+`allows_public_repositories: false`).
 
 **`agent-cloud` is deliberately excluded.** It is public, a fork can propose workflow code,
 and these hosts sit inside the perimeter. Upstream's own guidance is to pair self-hosted
@@ -53,7 +54,7 @@ every job needs an ephemeral runner whose own process and filesystem are contain
 recreated per job — a lifecycle change, not a setting.
 
 **Practical consequence:** a job can read whatever `ghrunner` can read on that host. Do not
-place anything on a runner host that all five permitted repositories are not entitled to.
+place anything on a runner host that all six permitted repositories are not entitled to.
 
 ## Credential chain
 

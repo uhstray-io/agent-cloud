@@ -2333,6 +2333,11 @@ templates:
     # dev-bound variant was the only way to exercise it (setup-templates.yml emits "<name> (Dev)").
     dev_variant: true
     survey_vars:
+      - name: github_app_client_id
+        title: "App client id"
+        description: "JWT issuer — the App's client id (NOT the client secret, which is unused)"
+        type: string
+        required: true
       - name: dry_run
         title: "Dry run"
         description: "true = resolve + report, change nothing"
