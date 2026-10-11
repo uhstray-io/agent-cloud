@@ -1,0 +1,47 @@
+---
+# grow-github-runner-root.yml: grow each runner host's root filesystem into its virtual disk, online.
+#
+# The runner VMs are declared at 200 G, but a job on gh-runner-01 (2026-10-10) found its root
+# at 9.8 GiB with 878 MiB free: the Ubuntu install left the root LV at its default size. A
+# Rust workspace build needs tens of GiB for target/ alone, so every build job dies on disk
+# before it gets anywhere. This is the guest half of the grow, the same one grow-o11y-root.yml
+# takes: partition -> PV -> root LV and its ext4 filesystem, with no reboot and no unmount,
+# through the shared tasks/grow-root-lvm.yml.
+#
+# If the dry run reports a disk far below the declaration, the Proxmox disk itself was never
+# grown: run Resize VM first, then this.
+#
+# Safe under --check: the plan reads the chain and runs growpart's own dry run (-N). Each
+# host grows independently; a host already grown reports nothing to do. Bound to the
+# reviewed commit (require-reviewed-checkout.yml). `--tags verify` changes nothing and fails
+# unless every runner's root is fully grown.
+
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: "Pre-flight"
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: github_runner_svc
+    preflight_group_expected: github_runner_svc
+  # Under --tags verify too: a verify run over no hosts would otherwise pass (MISTAKES 2.21).
+  tags: [always]
+
+- name: "Reviewed checkout"
+  ansible.builtin.import_playbook: require-reviewed-checkout.yml
+
+- name: "Grow the runner root filesystems"
+  hosts: github_runner_svc
+  gather_facts: false
+  become: false
+  environment:
+    TMPDIR: /dev/shm/ansible-tmp
+  vars:
+    ansible_remote_tmp: /dev/shm/ansible-tmp
+    _helper: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/grow-root-lvm.py') }}"
+  tasks:
+    # Shared with grow-o11y-root.yml. A static import, so `--tags verify` reaches each task.
+    - name: "Grow the root filesystem"
+      ansible.builtin.import_tasks: tasks/grow-root-lvm.yml

@@ -1882,6 +1882,18 @@ templates:
         type: string
         required: true
 
+  # Grow each self-hosted runner's root filesystem into its virtual disk, online (same
+  # helper as Grow o11y Root). Dev-bound; dry run shows each host's chain and steps.
+  - name: Grow GitHub Runner Root (Dev)
+    playbook: platform/playbooks/grow-github-runner-root.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "The exact dev commit the grow was reviewed at; any other checkout is refused"
+        type: string
+        required: true
+
   - name: Survey o11y Backup Readiness (Dev)
     playbook: platform/playbooks/survey-o11y-backup-readiness.yml
     repository: agent-cloud dev

@@ -127,3 +127,12 @@ setup() {
   refute_grep -rqE '(192\.168\.[0-9]+\.[0-9]+|10\.[0-9]+\.[0-9]+\.[0-9]+|172\.(1[6-9]|2[0-9]|3[01])\.[0-9]+\.[0-9]+)' "$D"
   ! grep -rqiE '(gh[pousr]_[A-Za-z0-9]{16}|A[A-Z0-9]{20,})' "$D/templates"
 }
+
+@test "gh-runner: the deploy proves rootless podman maps a uid range for the runner account" {
+  # Container jobs run through the hooks as the runner account. Without newuidmap or a
+  # subuid range every one of them fails, and the deploy used to report success anyway.
+  local PB="$BATS_TEST_DIRNAME/../playbooks/deploy-github-runner.yml"
+  assert_grep -qF 'podman unshare cat /proc/self/uid_map' "$PB"
+  assert_grep -qF 'podman system migrate' "$PB"
+  assert_grep -qF '(_uidmap.stdout_lines | default([]) | length) < 2' "$PB"
+}

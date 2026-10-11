@@ -1,5 +1,5 @@
 ---
-# install-podman.yml — Install Podman + podman-compose on target hosts.
+# install-podman.yml: Install Podman + podman-compose (and uidmap, for rootless) on target hosts.
 #
 # Mirrors install-docker.yml. Idempotent via apt `state: present` — it installs
 # whichever of podman / podman-compose is missing (so a host that already has
@@ -47,10 +47,18 @@
     - name: "Install podman + podman-compose"
       # state: present is idempotent — installs only what's missing, so this
       # also fixes a host that has podman but is missing podman-compose.
+      #
+      # uidmap provides newuidmap/newgidmap, which rootless podman needs to map a
+      # container's users onto the account's /etc/subuid range. podman only
+      # RECOMMENDS it, so a host can end up without it, and then every container
+      # start fails with "command required for rootless mode with multiple IDs:
+      # exec: "newuidmap": executable file not found in $PATH". Measured on both
+      # GitHub runners (2026-10-10): every job that declared a container failed so.
       ansible.builtin.apt:
         name:
           - podman
           - podman-compose
+          - uidmap
         state: present
         update_cache: true
 
