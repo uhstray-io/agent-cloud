@@ -508,3 +508,41 @@ The root agent's sanitized read-only receipts 4293, 4295, and 4296 ran at exact
 Dev SHA `7362aaa7080d87b91606c4d6a65f884dbf67b0b0`; the reported census had six
 non-PBS `vma.zst` candidates. This count does not select an artifact or prove
 archive disk inclusion, immutability, an isolated restore, or restore cleanup.
+
+## 2026-10-10 private artifact capture and selector proposal slice
+
+The public automation adds distinct Dev-bound capture and proposal playbooks.
+Both use the existing artifact inspector and the same GET-only VM, node-storage,
+backup-content, and VM-config census inputs. An exact existing proposal is
+verified before any Proxmox request; new work validates the complete census and
+stores a versioned catalog at the fixed private path
+`catalogs/o11y/backup-artifacts.json`. The private catalog holds the exact
+volid-to-row mapping, target identity, storage scope, runner-generated UTC epoch,
+and reviewed public/private base SHAs. Its visible report contains only ordered
+row numbers and sanitized metadata.
+
+Proposal requires the full capture commit, explicit one-based row, reviewed
+public revision, and reviewed private integration branch/base. The capture
+commit must have one parent at that private base and change only the fixed
+catalog. A new proposal repeats the GET-only census, requires age 0–1,800 seconds,
+and compares complete normalized storage and artifact sets independent of API
+ordering. It writes only `inventory/production.yml`, adding the existing
+five-field selector to the literal sole-host location proposed for
+`agent_cloud.children.o11y_svc.hosts`. Duplicate YAML keys, aliases, anchors,
+merge keys, tags, flow mappings, alternate layouts, identity mismatch, and any
+semantic diff beyond that selector refuse with fixed text.
+
+The deterministic proposal ref is
+`proposal/o11y-artifact-<capture-commit>-row-<row>`. A matching existing branch
+is accepted only after its base, one-parent provenance, exact one-file diff,
+commit metadata, remote tip, and reconstructed inventory bytes agree. It returns
+the existing branch and commit without a new commit or freshness claim. The
+shared Git helpers add optional reviewed-base and deterministic-ref handling;
+legacy fresh-branch callers keep their existing mode. Base-tip checks before
+and after push detect observed drift but are not atomic with the separate
+proposal-ref update. A post-push drift refuses and preserves the unmerged branch.
+
+Private site-config compatibility is not established by public source or
+synthetic tests. Runtime must refuse any layout that differs from the proposed
+literal schema. Catalog selection does not prove immutability, archive contents,
+isolated restore, cleanup, or restore success; OpenSpec 4.6e remains unchecked.

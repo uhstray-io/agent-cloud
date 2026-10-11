@@ -1926,6 +1926,56 @@ templates:
     # are shown. A VMID is not reserved;
     # missing protection stays unknown, and this task never writes PVE.
 
+  - name: Capture o11y Backup Artifact Catalog (Dev)
+    playbook: platform/playbooks/capture-o11y-backup-artifacts.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for the GET-only capture and private catalog branch"
+        type: string
+        required: true
+      - name: site_config_base_branch
+        title: "Reviewed site-config base branch"
+        description: "Exact private integration branch name whose tip equals the reviewed base SHA"
+        type: string
+        required: true
+      - name: site_config_base_sha
+        title: "Reviewed site-config base SHA"
+        description: "Full commit ID of the private integration branch tip"
+        type: string
+        required: true
+
+  - name: Propose o11y Backup Artifact Selector (Dev)
+    playbook: platform/playbooks/propose-o11y-backup-artifact.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for the GET-only census and selector proposal"
+        type: string
+        required: true
+      - name: site_config_base_branch
+        title: "Reviewed site-config base branch"
+        description: "Exact private integration branch name whose tip equals the reviewed base SHA"
+        type: string
+        required: true
+      - name: site_config_base_sha
+        title: "Reviewed site-config base SHA"
+        description: "Full commit ID recorded in the capture catalog and equal to the current private branch tip"
+        type: string
+        required: true
+      - name: capture_commit_sha
+        title: "Private capture commit SHA"
+        description: "Full site-config capture commit containing the fixed artifact catalog"
+        type: string
+        required: true
+      - name: artifact_row
+        title: "Explicit artifact row number"
+        description: "One-based row number from the sanitized capture report"
+        type: string
+        required: true
+
   - name: Survey o11y PBS Physical Storage (Dev)
     playbook: platform/playbooks/survey-o11y-pbs-physical-storage.yml
     repository: agent-cloud dev

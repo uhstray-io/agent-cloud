@@ -158,6 +158,15 @@ The read-only artifact survey MAY accept an optional private selector containing
 - **THEN** the survey reports the same candidate census count and passes only the verified index and sanitized candidate metadata to feasibility
 - **AND** stale or ambiguous selection refuses without printing private values, while `backup_inclusion_verified` remains false for the selected artifact
 
+#### Scenario: Capture and propose a private artifact selector
+- **WHEN** an operator captures a reviewed GET-only census and later proposes an explicit one-based row from its private capture commit
+- **THEN** capture writes only the fixed versioned catalog path on a fresh branch from the reviewed private base and reports sanitized numbered metadata without artifact identifiers
+- **AND** proposal verifies capture provenance, requires a 0–1,800-second capture, repeats the census, and compares complete normalized storage and artifact sets independent of API order
+- **AND** proposal writes only the production inventory selector at the literal sole-host location, refuses unsupported inventory syntax or any mismatch, and leaves PR review and merge to the operator
+- **AND** an exact deterministic proposal rerun returns its existing branch/commit without a new commit or freshness claim; conflicting content is preserved and refused
+- **AND** separate pre/post-push integration-tip checks report and preserve observed cross-reference drift without claiming atomic ref updates
+- **AND** private inventory compatibility, immutability, backup contents, isolated restore, cleanup, and restore success remain unverified and do not complete OpenSpec 4.6e
+
 ### Requirement: Backup storage preparation is evidence-gated
 The platform SHALL use a reviewed, Dev-bound, GET-only survey before considering local backup-storage preparation. The survey SHALL source the node from private inventory, verify that it is uniquely online, and emit only allow-listed aggregate facts and coarse reported-capacity bands. Missing usage data SHALL remain unknown; survey output SHALL NOT identify a device as safe, select a disk, establish physical locality or filesystem readiness, or authorize a write.
 
