@@ -276,6 +276,7 @@
           - { path: /usr/lib/polkit-1/polkit-agent-helper-1, owner: root, group: root, mode: "0755" }
       register: _setuid_strip
       changed_when: "'changed' in _setuid_strip.stdout"
+      when: not ansible_check_mode
 
     - name: "Read back the mode of each stripped helper"
       # Read from the file, not from the override database: the claim is about what a job
