@@ -313,8 +313,9 @@ shared credential also serves GHCR, and a scope change could disrupt package pul
 Keep the grant-only `installation_admin_token` in `secret/services/github-runner`; the
 helper accepts only a dedicated `ghp_` classic PAT with the `repo` scope and refuses to
 write unless its user has admin permission on the private target repository. GitHub's
-user-installation grant requires an access token authorized to a GitHub App, so do not
-seed a CLI OAuth token. Keep the shared `secret/services/github:pat` unchanged for GHCR.
+grant accepts only that dedicated classic PAT, refuses `gho_` CLI OAuth tokens, and requires
+the PAT's user to have admin permission on the private target repository. Keep the shared
+`secret/services/github:pat` unchanged for GHCR.
 
 - [ ] 11.1 After the reviewed code merges into Dev, seed only the dedicated classic PAT as
       `installation_admin_token` into `secret/services/github-runner` through the governed

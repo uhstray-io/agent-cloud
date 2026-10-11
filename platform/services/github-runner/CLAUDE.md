@@ -77,9 +77,10 @@ and two places to leak.
 The installation grant uses a dedicated classic `ghp_` PAT at
 `secret/services/github-runner:installation_admin_token`. Create it with the `repo` scope;
 its authenticated user must have admin permission on `uhstray-io/site-config`. The helper
-rejects OAuth tokens because GitHub requires an access token authorized to a GitHub App for
-the user-installation grant, checks the PAT scope and repository permission before its
-additive PUT, then confirms the repository appears through a fresh installation token.
+accepts only a dedicated classic `ghp_` PAT with the `repo` scope, refuses `gho_` CLI OAuth
+tokens, and requires the PAT's user to have admin permission on `uhstray-io/site-config`
+before its additive PUT. It then confirms the repository appears through a fresh
+installation token.
 This dedicated credential keeps the shared `secret/services/github:pat` unchanged; that
 PAT also serves GHCR. After the reviewed code merges into Dev, seed the dedicated PAT via
 the governed `seed-openbao-key.yml` workflow using an encrypted isolated Semaphore
