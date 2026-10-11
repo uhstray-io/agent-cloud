@@ -17,7 +17,11 @@
 #
 # Usage:
 #   printf '%s' "$REG_TOKEN" | ./deploy.sh configure
+#   ./deploy.sh install                          (install or upgrade to the declared versions)
 #   ./deploy.sh start | stop | status | remove   (remove reads a REMOVE token on stdin)
+#
+# Upgrades: raising RUNNER_VERSION or HOOKS_VERSION and re-running converges the host on
+# the new version. Lowering one is refused unless RUNNER_ALLOW_DOWNGRADE=1.
 
 set -euo pipefail
 
@@ -69,21 +73,226 @@ fetch() {
     || error "download failed: $url"
 }
 
-cmd_install() {
-  mkdir -p "$RUNNER_HOME" "${RUNNER_HOME}/_hooks"
-  cd "$RUNNER_HOME"
+# ── installed versions ──────────────────────────────────────────────────────
+# What is installed is read from the install itself, never from a note of what was last
+# deployed: a note records an intent, the binary reports what runs (docs/MISTAKES.md
+# 1.22). An earlier cmd_install extracted only when run.sh was absent and then logged
+# "installed runner <declared version>" regardless, so a bumped pin changed nothing on
+# an existing host while the log said it had.
+VERSION_RE='^[0-9]+\.[0-9]+\.[0-9]+$'
 
+# Prints the runner version installed in $1 (default RUNNER_HOME), or nothing when no
+# runner is installed there. A binary that exists but reports no version is a hard
+# error: guessing would turn a damaged install into a silent no-op or a silent swap.
+installed_runner_version() {
+  local dir="${1:-$RUNNER_HOME}" v
+  [ -e "${dir}/bin/Runner.Listener" ] || return 0
+  v=$("${dir}/bin/Runner.Listener" --version 2>/dev/null | tr -d '[:space:]') || true
+  [[ "$v" =~ $VERSION_RE ]] \
+    || error "${dir}/bin/Runner.Listener reports no usable version ('${v}'); refusing to guess what is installed"
+  printf '%s' "$v"
+}
+
+# The hooks archive holds a single index.js and carries no version a script can read,
+# so the version is recorded in a marker written in the same step that places the
+# files it describes. No marker means "unknown", which is installed over: the hooks are
+# stateless, so a reinstall cannot lose anything.
+HOOKS_MARKER=".hooks-version"
+installed_hooks_version() {
+  local m="${RUNNER_HOME}/_hooks/${HOOKS_MARKER}"
+  [ -r "$m" ] && tr -d '[:space:]' < "$m"
+  return 0
+}
+
+# True when version $1 sorts strictly before version $2.
+version_lt() {
+  [ "$1" != "$2" ] && [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -n1)" = "$1" ]
+}
+
+# A downgrade is refused unless RUNNER_ALLOW_DOWNGRADE=1. A declared version below the
+# installed one is far more often a stale declaration (an old branch, a reverted
+# inventory) than an intent, and acting on it silently would move a host backwards,
+# possibly behind the window in which GitHub still queues jobs to a runner that does
+# not self-update. A broken release still needs a way back, so the escape is explicit
+# and logged rather than absent.
+check_downgrade() {
+  local what="$1" have="$2" want="$3"
+  version_lt "$want" "$have" || return 0
+  if [ "${RUNNER_ALLOW_DOWNGRADE:-0}" = "1" ]; then
+    warn "downgrading ${what} ${have} -> ${want} (RUNNER_ALLOW_DOWNGRADE=1)"
+    return 0
+  fi
+  error "refusing to downgrade ${what} from ${have} to ${want}; declare ${have} or newer, or re-run with github_runner_allow_downgrade=true if the rollback is intended"
+}
+
+# ── service control ───────────────────────────────────────────────────────────
+# systemctl --user needs XDG_RUNTIME_DIR, which sudo does not set. The playbook passes
+# it; the fallback derives it from the account this runs as, never a hardcoded uid.
+user_systemctl() {
+  XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}" systemctl --user "$@"
+}
+
+RUNNER_STOP_WAIT="${RUNNER_STOP_WAIT:-60}"
+
+runner_pids() {
+  local home_re
+  # shellcheck disable=SC2016 # the sed expression is literal on purpose
+  home_re=$(printf '%s' "$RUNNER_HOME" | sed 's/[.[\*^$()+?{|]/\\&/g')
+  pgrep -u "$(id -u)" -f "^${home_re}/bin/Runner\.(Listener|Worker)( |\$)" || true
+}
+
+# Stop the service AND wait for the runner's own processes to go. The unit uses
+# KillMode=process, so stopping it signals run.sh alone and can leave Runner.Listener
+# (and a Runner.Worker with a job) alive. Those are asked to shut down with SIGINT, the
+# runner's graceful-stop signal; an in-flight job is cancelled, which is why an upgrade
+# is best run while the runner is idle. If they outlive RUNNER_STOP_WAIT the swap is
+# refused: starting a second listener beside a live one fights over one registration.
+stop_runner() {
+  local pids waited=0
+  user_systemctl stop actions-runner.service || error "could not stop actions-runner.service"
+  pids=$(runner_pids)
+  # shellcheck disable=SC2086 # one pid per word is intended
+  [ -z "$pids" ] || kill -INT $pids 2>/dev/null || true
+  while [ -n "$(runner_pids)" ]; do
+    [ "$waited" -lt "$RUNNER_STOP_WAIT" ] \
+      || error "runner processes still alive ${RUNNER_STOP_WAIT}s after the service stopped; refusing to swap binaries under them (the old install is intact; stop them, then re-run)"
+    sleep 1
+    waited=$((waited + 1))
+  done
+  info "runner stopped"
+}
+
+# ── install / upgrade ─────────────────────────────────────────────────────────
+# Names in RUNNER_HOME that the tarball must never replace: the registration written by
+# config.sh (.runner, .credentials, .credentials_rsaparams, .path), the job environment
+# Ansible renders (.env), and everything else this deploy or the runner owns there. The
+# 2.336.0 and 2.338.0 tarballs ship only bin/, externals/, config.sh, env.sh, run.sh,
+# safe_sleep.sh and two run-helper templates, so none of these is touched; the guard
+# below makes that a checked property of each new release rather than an assumption.
+PRESERVED=(.runner .credentials .credentials_rsaparams .env .path
+           config _hooks _work _diag job-cleanup.sh .config)
+
+# Restore every entry moved aside into $1, after a failed swap.
+restore_previous() {
+  local prev="$1" entry name
+  while IFS= read -r -d '' entry; do
+    name=$(basename "$entry")
+    rm -rf "${RUNNER_HOME:?}/${name}"
+    mv "$entry" "${RUNNER_HOME}/${name}"
+  done < <(find "$prev" -mindepth 1 -maxdepth 1 -print0)
+}
+
+# Replace exactly the entries the staged release ships, moving the old ones aside
+# first. Moving rather than extracting over the top mirrors the runner's own updater
+# (bin/update.sh.template renames bin and externals before placing the new ones): an
+# overlay would leave the previous release's files mixed into the new bin/, and a
+# rename is safe for a process still holding the old files open.
+swap_in_release() {
+  local stage="$1" prev="$2" entry name
+  rm -rf "$prev"
+  mkdir -p "$prev"
+  while IFS= read -r -d '' entry; do
+    name=$(basename "$entry")
+    if [ -e "${RUNNER_HOME}/${name}" ] || [ -L "${RUNNER_HOME}/${name}" ]; then
+      mv "${RUNNER_HOME}/${name}" "${prev}/${name}" \
+        || { restore_previous "$prev"; error "could not move ${name} aside; previous install restored"; }
+    fi
+    mv "$entry" "${RUNNER_HOME}/${name}" \
+      || { restore_previous "$prev"; error "could not place ${name}; previous install restored"; }
+  done < <(find "$stage" -mindepth 1 -maxdepth 1 -print0)
+}
+
+install_runner() {
+  local have stage="${RUNNER_HOME}/_install.${RUNNER_VERSION}" prev="${RUNNER_HOME}/_previous" f staged now
+  have=$(installed_runner_version)
+  if [ "$have" = "$RUNNER_VERSION" ]; then
+    info "runner ${have} already installed (declared ${RUNNER_VERSION}); nothing to change"
+    return 0
+  fi
+  [ -z "$have" ] || check_downgrade runner "$have" "$RUNNER_VERSION"
+
+  # Fetched and verified BEFORE the service is touched: a bad download leaves the
+  # running runner exactly as it was.
   fetch "$RUNNER_URL" "${RUNNER_HOME}/${RUNNER_TGZ}"
   verify_digest "${RUNNER_HOME}/${RUNNER_TGZ}" "${RUNNER_SHA256:-}"
-  # Extract only when the binary is absent, so a re-run is a no-op rather than
-  # clobbering a configured runner's .runner / .credentials files.
-  [ -x "${RUNNER_HOME}/run.sh" ] || tar xzf "${RUNNER_HOME}/${RUNNER_TGZ}" -C "$RUNNER_HOME"
+
+  rm -rf "$stage"
+  mkdir -p "$stage"
+  tar xzf "${RUNNER_HOME}/${RUNNER_TGZ}" -C "$stage" || { rm -rf "$stage"; error "could not extract ${RUNNER_TGZ}"; }
+  for f in "${PRESERVED[@]}"; do
+    [ ! -e "${stage}/${f}" ] \
+      || { rm -rf "$stage"; error "${RUNNER_TGZ} ships ${f}, which this host owns; refusing to replace it"; }
+  done
+  staged=$(installed_runner_version "$stage") || staged=""
+  [ "$staged" = "$RUNNER_VERSION" ] \
+    || { rm -rf "$stage"; error "${RUNNER_TGZ} contains runner '${staged}', not the declared ${RUNNER_VERSION}; refusing to install it"; }
+
+  # Only an existing install is serving; a fresh host has nothing to stop, and is not
+  # registered yet, so the playbook starts it after configure.
+  [ -z "$have" ] || stop_runner
+  swap_in_release "$stage" "$prev"
+  rm -rf "$stage"
+
+  now=$(installed_runner_version) || now=""
+  if [ "$now" != "$RUNNER_VERSION" ]; then
+    restore_previous "$prev"
+    error "after the swap the runner reports '${now}', not ${RUNNER_VERSION}; previous install restored"
+  fi
+  rm -rf "$prev"
+  # The previous release's tarball is dead weight on a small root disk.
+  find "$RUNNER_HOME" -maxdepth 1 -name 'actions-runner-linux-x64-*.tar.gz' ! -name "$RUNNER_TGZ" -delete
+
+  if [ -n "$have" ]; then
+    if [ -f "${RUNNER_HOME}/.runner" ]; then
+      user_systemctl start actions-runner.service || error "upgraded to ${now} but the service did not start"
+    fi
+    info "upgraded runner ${have} -> ${now}"
+  else
+    info "installed runner ${now}"
+  fi
+}
+
+install_hooks() {
+  local have new="${RUNNER_HOME}/_hooks.new" old="${RUNNER_HOME}/_hooks.old"
+  have=$(installed_hooks_version)
+  if [ "$have" = "$HOOKS_VERSION" ] && [ -f "${RUNNER_HOME}/_hooks/index.js" ]; then
+    info "container hooks ${have} already installed (declared ${HOOKS_VERSION}); nothing to change"
+    return 0
+  fi
+  [ -z "$have" ] || check_downgrade "container hooks" "$have" "$HOOKS_VERSION"
 
   fetch "$HOOKS_URL" "${RUNNER_HOME}/${HOOKS_ZIP}"
   verify_digest "${RUNNER_HOME}/${HOOKS_ZIP}" "${HOOKS_SHA256:-}"
-  [ -f "${RUNNER_HOME}/_hooks/index.js" ] || unzip -oq "${RUNNER_HOME}/${HOOKS_ZIP}" -d "${RUNNER_HOME}/_hooks"
 
-  info "installed runner ${RUNNER_VERSION} + container hooks ${HOOKS_VERSION}"
+  rm -rf "$new" "$old"
+  mkdir -p "$new"
+  unzip -oq "${RUNNER_HOME}/${HOOKS_ZIP}" -d "$new" || { rm -rf "$new"; error "could not extract ${HOOKS_ZIP}"; }
+  [ -f "${new}/index.js" ] || { rm -rf "$new"; error "${HOOKS_ZIP} has no index.js; refusing to install it"; }
+  printf '%s\n' "$HOOKS_VERSION" > "${new}/${HOOKS_MARKER}"
+  # Two renames, no overlay: a job starting its hook mid-swap sees the old directory or
+  # the new one, never a half-written file. No service stop is needed; the runner
+  # starts the hook afresh for each job.
+  [ ! -e "${RUNNER_HOME}/_hooks" ] || mv "${RUNNER_HOME}/_hooks" "$old"
+  mv "$new" "${RUNNER_HOME}/_hooks" || { [ ! -e "$old" ] || mv "$old" "${RUNNER_HOME}/_hooks"; error "could not place the container hooks"; }
+  rm -rf "$old"
+  find "$RUNNER_HOME" -maxdepth 1 -name 'actions-runner-hooks-docker-*.zip' ! -name "$HOOKS_ZIP" -delete
+
+  if [ -n "$have" ]; then
+    info "upgraded container hooks ${have} -> $(installed_hooks_version)"
+  else
+    info "installed container hooks $(installed_hooks_version)"
+  fi
+}
+
+# Converges the install on the declared versions. Same version is a no-op; a different
+# one is fetched, verified, and swapped in; a lower one is refused (check_downgrade).
+cmd_install() {
+  [[ "$RUNNER_VERSION" =~ $VERSION_RE ]] || error "RUNNER_VERSION '${RUNNER_VERSION}' is not MAJOR.MINOR.PATCH"
+  [[ "$HOOKS_VERSION" =~ $VERSION_RE ]] || error "HOOKS_VERSION '${HOOKS_VERSION}' is not MAJOR.MINOR.PATCH"
+  mkdir -p "$RUNNER_HOME"
+  cd "$RUNNER_HOME"
+  install_runner
+  install_hooks
 }
 
 cmd_configure() {
@@ -137,7 +346,7 @@ cmd_remove() {
 }
 
 cmd_status() {
-  systemctl --user is-active "actions-runner.service" 2>/dev/null || true
+  user_systemctl is-active "actions-runner.service" 2>/dev/null || true
   if [ -f "${RUNNER_HOME}/.runner" ]; then
     info "configured"
   else
@@ -149,8 +358,8 @@ case "${1:-}" in
   install)   cmd_install ;;
   configure) cmd_configure ;;
   remove)    cmd_remove ;;
-  start)     systemctl --user enable --now actions-runner.service; info "started" ;;
-  stop)      systemctl --user stop actions-runner.service; info "stopped" ;;
+  start)     user_systemctl enable --now actions-runner.service; info "started" ;;
+  stop)      stop_runner ;;
   status)    cmd_status ;;
   *)         error "usage: $0 {install|configure|remove|start|stop|status}" ;;
 esac

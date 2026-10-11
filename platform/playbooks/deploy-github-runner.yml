@@ -70,7 +70,12 @@
     _install_id: "{{ github_app_installation_id | default(lookup('env', 'GITHUB_APP_INSTALLATION_ID'), true) | default('', true) }}"
     _home: "{{ github_runner_home | default('/opt/actions-runner') }}"
     _account: "{{ github_runner_account | default('ghrunner') }}"
-    _rver: "{{ github_runner_version | default('2.336.0') }}"
+    # A runner started with --disableupdate must be upgraded by hand within 30 days of a
+    # newer release, or GitHub stops queueing jobs to it (GitHub Docs, Self-hosted runners
+    # reference, "Runner software updates on self-hosted runners"). Raising this, or the
+    # inventory pin, now upgrades an existing host: deploy.sh compares it with the
+    # installed version and swaps the release in.
+    _rver: "{{ github_runner_version | default('2.338.0') }}"
     # Where the monorepo lands ON THE TARGET, and where this service's deploy.sh sits
     # inside it. The script runs on the host, so it must be reached by a path that exists
     # there — playbook_dir is the CONTROLLER's checkout and resolving a remote command
@@ -380,6 +385,19 @@
         github_runner_name: "{{ github_runner_name }}"
 
     # ── install + register ─────────────────────────────────────────────────
+    - name: "Resolve the runner account's uid"
+      # Looked up, not assumed. systemd --user talks to a bus under /run/user/<uid>, and
+      # a hardcoded 1000/1001 is a guess that silently targets the wrong user's bus on a
+      # host where accounts were created in a different order. Resolved before the
+      # install, which stops and starts the service when it upgrades the runner.
+      ansible.builtin.getent:
+        database: passwd
+        key: "{{ _account }}"
+
+    - name: "Record the uid and the user bus it implies"
+      ansible.builtin.set_fact:
+        _runner_uid: "{{ getent_passwd[_account][1] }}"
+
     - name: "Install and register the runner"
       # The token arrives on stdin. `no_log` covers only this task: the install and the
       # verification below stay visible, because a censored deploy is an undiagnosable one
@@ -392,10 +410,16 @@
       environment:
         REG_TOKEN: "{{ _regtoken.stdout }}"
         RUNNER_ENV_FILE: "{{ _home }}/config/runner.env"
+        # An upgrade stops and restarts the user service from inside deploy.sh.
+        XDG_RUNTIME_DIR: "/run/user/{{ _runner_uid }}"
+        # deploy.sh refuses a declared version below the installed one. Rolling back
+        # past a broken release is an explicit act: -e github_runner_allow_downgrade=true.
+        RUNNER_ALLOW_DOWNGRADE: "{{ '1' if (github_runner_allow_downgrade | default(false) | bool) else '0' }}"
       become: true
       become_user: "{{ _account }}"
       register: _configured
-      changed_when: "'registered' in (_configured.stdout | default(''))"
+      # An upgrade is a change as much as a registration is; "already installed" is not.
+      changed_when: (_configured.stdout | default('')) is search('registered|installed runner|installed container hooks|upgraded ')
       failed_when: false
       no_log: true
       when: not ansible_check_mode
@@ -415,20 +439,10 @@
       ansible.builtin.assert:
         that:
           - (_configured.rc | default(1)) == 0
-        fail_msg: "The runner did not register — see the reported rc and output above."
+        # Also the path for a refused install: a downgrade, a digest mismatch, or a
+        # release that reports a version other than the declared one.
+        fail_msg: "The runner did not install or register; see the reported rc and output above."
         success_msg: "Runner registered."
-
-    - name: "Resolve the runner account's uid"
-      # Looked up, not assumed. systemd --user talks to a bus under /run/user/<uid>, and
-      # a hardcoded 1000/1001 is a guess that silently targets the wrong user's bus on a
-      # host where accounts were created in a different order.
-      ansible.builtin.getent:
-        database: passwd
-        key: "{{ _account }}"
-
-    - name: "Record the uid and the user bus it implies"
-      ansible.builtin.set_fact:
-        _runner_uid: "{{ getent_passwd[_account][1] }}"
 
     - name: "Reload the account's systemd and start the runner"
       ansible.builtin.systemd_service:
@@ -461,6 +475,33 @@
       failed_when: "(_active.stdout | default('') | trim) != 'active'"
       check_mode: false
 
+    - name: "Confirm the installed runner is the declared version"
+      # Read from the binary, not from the declaration: the final report states this
+      # version, and before this gate it stated the pin whether or not the host had moved
+      # to it (docs/MISTAKES.md 1.22).
+      ansible.builtin.command: "{{ _home }}/bin/Runner.Listener --version"
+      become: true
+      become_user: "{{ _account }}"
+      register: _installed_version
+      changed_when: false
+      # A dry run skips the install, so there it reports what is installed and does not
+      # judge it; a real run fails here unless the host now runs the pin.
+      failed_when: >-
+        not ansible_check_mode and (_installed_version.stdout | default('') | trim) != _rver
+      check_mode: false
+
+    - name: "Confirm the installed container hooks are the declared version"
+      # The hooks archive carries no readable version, so deploy.sh records it in a
+      # marker beside the files it places; this reads that marker back.
+      ansible.builtin.command: "cat {{ _home }}/_hooks/.hooks-version"
+      become: true
+      become_user: "{{ _account }}"
+      register: _installed_hooks
+      changed_when: false
+      failed_when: >-
+        not ansible_check_mode and (_installed_hooks.stdout | default('') | trim) != _hver
+      check_mode: false
+
     - name: "Confirm rootless podman can run a job container"
       # A job that declares `container:` runs through the container hooks, which call
       # `docker` (podman-docker) as this account. That needs newuidmap (the uidmap
@@ -489,7 +530,7 @@
     - name: "Report"
       ansible.builtin.debug:
         msg: >-
-          {{ github_runner_name }} installed (runner v{{ _rver }}, hooks v{{ _hver }}),
+          {{ github_runner_name }} installed (runner v{{ _installed_version.stdout | trim }}, hooks v{{ _installed_hooks.stdout | default('') | trim }}),
           service {{ _active.stdout | trim }}, labels
           {{ (github_runner_labels | default([])) | join(',') }}, group
           {{ github_runner_group }}, rootless containers mapped
