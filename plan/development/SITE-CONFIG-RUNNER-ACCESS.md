@@ -18,7 +18,8 @@ The runner group declaration admits the existing private repositories but does n
 
 ```mermaid
 flowchart LR
-    REVIEW["Reviewed merge to Dev"] --> DRY["Semaphore dry run"]
+    REVIEW["Reviewed merge to Dev"] --> SURVEY["Publish Dev template survey"]
+    SURVEY --> DRY["Semaphore dry run"]
     DRY --> APPLY["Semaphore converge"]
     APPLY --> VERIFY["Verify site-config group grant"]
     VERIFY --> SWITCH["Switch site-config workflow to runner group"]
@@ -30,8 +31,13 @@ The playbook remains the authority for the selected repository list. Its public-
 
 1. Update the declared list, its exact structural test, and runner documentation. **Acceptance:** focused BATS test passes; `agent-cloud` remains excluded.
 2. Merge the reviewed change to Dev. **Acceptance:** the reviewed Dev revision contains the allowlist change.
-3. Run `Manage GitHub Runner Group (Dev)` in Semaphore dry-run mode, then converge. **Acceptance:** dry run reports the intended list; convergence completes.
-4. Verify `site-config` is granted to `uhstray-selfhosted`, then switch its workflow to that group. **Acceptance:** the grant is visible before the workflow is changed.
+3. Use `Publish Semaphore Template Surveys (Dev)` to publish the updated `Manage GitHub Runner Group (Dev)` survey and read it back. **Acceptance:** the live template requires the App client id.
+4. Run `Manage GitHub Runner Group (Dev)` in Semaphore dry-run mode with the required App client id survey input, then converge. **Acceptance:** dry run reports the intended list; convergence completes.
+5. Verify `site-config` is granted to `uhstray-selfhosted`, then switch its workflow to that group. **Acceptance:** the grant is visible before the workflow is changed.
+
+## Dry-Run Failure Evidence
+
+Dev-bound Semaphore task 4333 failed during declaration validation because `_issuer | length > 0` was false. The playbook accepts `github_app_client_id`, but the runner-group template exposed only `dry_run`, so the required App issuer was not available as a launch-time survey input. The template now requires the App client id; provide that identifier when launching the dry run. No actual client id or site-specific value is recorded here.
 
 ## Validation Criteria
 
