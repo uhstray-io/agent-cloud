@@ -152,6 +152,14 @@ def test_playbook_is_dev_bound_receiver_only_check_mode_safe_and_schema_guarded(
         task for task in normal_tasks
         if task["name"] == "Verify the receiver's existing clean Dev checkout"
     )
+    fallback = next(
+        task for task in normal_tasks
+        if task["name"] == "Validate the strict sanitized result and retain categories only"
+    )
+    unknown_guard = next(
+        task for task in normal_tasks
+        if task["name"] == "Require a fixed unknown result when collection is unavailable"
+    )
 
     assert plays[0]["ansible.builtin.import_playbook"] == "refuse-internal-extra-vars.yml"
     assert plays[1]["ansible.builtin.import_playbook"] == "require-reviewed-checkout.yml"
@@ -161,6 +169,8 @@ def test_playbook_is_dev_bound_receiver_only_check_mode_safe_and_schema_guarded(
     assert probe["when"] == "not ansible_check_mode"
     assert checkout["no_log"] is True
     assert checkout["when"] == "not ansible_check_mode"
+    assert "probe_unavailable" in json.dumps(fallback)
+    assert "probe_unavailable" in json.dumps(unknown_guard)
     assert SURVEY.MAX_OUTPUT == 64 * 1024
     assert SURVEY.PROBE_TIMEOUT == 4
     assert "check_mode_unverified" in json.dumps(normal_tasks)

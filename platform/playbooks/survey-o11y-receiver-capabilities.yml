@@ -148,7 +148,7 @@
         that:
           - _receiver_report.keys() | sort == ['actions', 'observations', 'schema_version', 'status']
           - _receiver_report.schema_version == 1
-          - _receiver_report.status in ['observed', 'unknown']
+          - _receiver_report.status == 'observed'
           - _receiver_report.observations.keys() | sort == _observation_names | sort
           - _receiver_report.actions.keys() | sort == ['podman_store', 'service_mutation']
           - _receiver_report.actions.podman_store == 'not_called'
@@ -156,7 +156,26 @@
         fail_msg: "Receiver survey report failed schema validation; no metadata is reported."
         quiet: true
       no_log: true
-      when: not ansible_check_mode
+      when: not ansible_check_mode and _receiver_report.status == 'observed'
+
+    - name: Require a fixed unknown result when collection is unavailable
+      ansible.builtin.assert:
+        that:
+          - _receiver_report.status == 'unknown'
+          - _receiver_report.schema_version == 1
+          - >-
+            (_receiver_report.keys() | sort == ['reason', 'schema_version', 'status']
+            and _receiver_report.reason == 'probe_unavailable')
+            or
+            (_receiver_report.keys() | sort == ['actions', 'observations', 'schema_version', 'status']
+            and _receiver_report.observations.keys() | sort == _observation_names | sort
+            and _receiver_report.actions.keys() | sort == ['podman_store', 'service_mutation']
+            and _receiver_report.actions.podman_store == 'not_called'
+            and _receiver_report.actions.service_mutation == 'not_called')
+        fail_msg: "Receiver survey returned an invalid unknown result; no metadata is reported."
+        quiet: true
+      no_log: true
+      when: not ansible_check_mode and _receiver_report.status == 'unknown'
 
     - name: Require every observation to contain only its fixed category
       ansible.builtin.assert:
@@ -172,7 +191,7 @@
       loop_control:
         label: "{{ item.key }}"
       no_log: true
-      when: not ansible_check_mode
+      when: not ansible_check_mode and _receiver_report.observations is defined
 
     - name: Report only the sanitized receiver capability categories
       ansible.builtin.debug:
