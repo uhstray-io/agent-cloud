@@ -323,7 +323,7 @@ def validate_profile_receipt(payload):
                 timestamp = point.get("timestamp")
                 if isinstance(timestamp, str) and re.fullmatch(r"[0-9]+", timestamp):
                     timestamp = int(timestamp)
-                value = point.get("value")
+                value = point.get("value", 0)
                 if (
                     not isinstance(timestamp, int)
                     or isinstance(timestamp, bool)

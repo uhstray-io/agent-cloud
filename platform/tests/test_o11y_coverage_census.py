@@ -133,7 +133,11 @@ class CoverageCensusTests(unittest.TestCase):
                 }],
             },
         }
+        payload["response"]["series"][0]["points"].append({"timestamp": "1500000"})
         self.assertEqual(CENSUS.validate_profile_receipt(payload), {"status": "verified", "sample_count": 1})
+        payload["response"]["series"][0]["points"][0]["value"] = None
+        self.assertEqual(CENSUS.validate_profile_receipt(payload)["status"], "invalid_response")
+        payload["response"]["series"][0]["points"][0]["value"] = 3.0
         payload["response"]["series"][0]["labels"][0]["value"] = "service:beta"
         self.assertEqual(CENSUS.validate_profile_receipt(payload)["status"], "invalid_response")
         payload["response"]["series"][0]["labels"][0]["value"] = "service:alpha"
