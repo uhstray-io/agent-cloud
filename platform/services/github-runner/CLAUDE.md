@@ -74,6 +74,18 @@ Both playbooks read that key from OpenBao and nowhere else — not from a Semaph
 environment secret, because two channels for one private key means two places to rotate
 and two places to leak.
 
+The installation grant uses a dedicated classic `ghp_` PAT at
+`secret/services/github-runner:installation_admin_token`. Create it with the `repo` scope;
+its authenticated user must have admin permission on `uhstray-io/site-config`. The helper
+accepts only a dedicated classic `ghp_` PAT with the `repo` scope, refuses `gho_` CLI OAuth
+tokens, and requires the PAT's user to have admin permission on `uhstray-io/site-config`
+before its additive PUT. It then confirms the repository appears through a fresh
+installation token.
+This dedicated credential keeps the shared `secret/services/github:pat` unchanged; that
+PAT also serves GHCR. After the reviewed code merges into Dev, seed the dedicated PAT via
+the governed `seed-openbao-key.yml` workflow using an encrypted isolated Semaphore
+environment, never a survey value or log.
+
 Minting runs on the orchestrator, not the host, because the host is firewalled away from
 OpenBao by its own declaration — it could not fetch its own secret even holding a
 credential. That is the design. Signing is `platform/lib/github_app_token.py`: standard
@@ -90,7 +102,7 @@ A registration token is single use, so it is minted **per host**. Nothing here i
 |---|---|
 | `deploy-github-runner.yml` | Install, register, start. Idempotent: a re-run leaves an existing registration intact. |
 | `manage-github-runner-group.yml` | Converge the group's repository access list. Read-only unless `-e dry_run=false`. |
-| `grant-github-runner-app-repository.yml` | Add only private `uhstray-io/site-config` to the runner App installation. Directly Dev-bound in Semaphore; reads the classic PAT and App key from OpenBao, previews in check mode, and verifies a grant with a fresh App token. |
+| `grant-github-runner-app-repository.yml` | Add only private `uhstray-io/site-config` to the runner App installation. Directly Dev-bound in Semaphore; reads the dedicated repo-scoped administration token and App key from `secret/services/github-runner`, previews in check mode, and verifies a grant with a fresh App token. |
 | `netbox-allocate-ip.yml` | Ask the address authority for free addresses. Read-only unless `-e reserve=true`. |
 
 The installation grant is separate from runner-group convergence. Run its reviewed Dev

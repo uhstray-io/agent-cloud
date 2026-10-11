@@ -24,7 +24,7 @@ def test_template_is_one_direct_dev_binding_with_only_review_inputs():
     ]
 
 
-def test_playbook_binds_review_sha_and_reads_only_the_two_declared_openbao_secrets():
+def test_playbook_binds_review_sha_and_reads_only_the_runner_openbao_secret():
     document = yaml.safe_load(PLAYBOOK.read_text(encoding="utf-8"))
     play = next(item for item in document if item.get("hosts") == "localhost")
     tasks = play["tasks"]
@@ -36,15 +36,14 @@ def test_playbook_binds_review_sha_and_reads_only_the_two_declared_openbao_secre
     reads = [
         task
         for task in tasks
-        if task.get("name", "").startswith("Read the GitHub")
-        or task.get("name") == "Read the runner App private key from OpenBao"
+        if task.get("name") == "Read runner App credentials from OpenBao"
     ]
     assert {task["ansible.builtin.uri"]["url"] for task in reads} == {
-        "{{ _bao_url }}/v1/secret/data/services/github",
         "{{ _bao_url }}/v1/secret/data/services/github-runner",
     }
     assert all(task["no_log"] is True for task in reads)
     assert all(task["ansible.builtin.uri"]["follow_redirects"] == "none" for task in reads)
+    assert "services/github\"" not in PLAYBOOK.read_text(encoding="utf-8")
 
 
 def test_secret_material_only_enters_helper_stdin_and_mutation_is_guarded():
@@ -56,16 +55,15 @@ def test_secret_material_only_enters_helper_stdin_and_mutation_is_guarded():
         assert task["no_log"] is True
         command = task["ansible.builtin.command"]
         assert "stdin" in command
-        assert "pat" in command["stdin"]
+        assert "installation_admin_token" in command["stdin"]
         assert "app_private_key" in command["stdin"]
-        assert "pat" not in command.get("argv", "")
+        assert "installation_admin_token" not in command.get("argv", "")
         assert "app_private_key" not in command.get("argv", "")
 
     for name in (
         "Authenticate to OpenBao",
-        "Read the GitHub classic PAT from OpenBao",
-        "Read the runner App private key from OpenBao",
-        "Require both stored GitHub credentials",
+        "Read runner App credentials from OpenBao",
+        "Require the runner App administration token and private key",
     ):
         assert _named(tasks, name)["no_log"] is True
 

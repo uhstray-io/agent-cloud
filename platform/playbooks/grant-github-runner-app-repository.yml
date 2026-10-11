@@ -72,22 +72,7 @@
       check_mode: false
       tags: [verify]
 
-    - name: Read the GitHub classic PAT from OpenBao
-      ansible.builtin.uri:
-        url: "{{ _bao_url }}/v1/secret/data/services/github"
-        method: GET
-        headers:
-          X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
-        follow_redirects: none
-        unredirected_headers: [X-Vault-Token]
-        status_code: [200]
-      register: _github_secret
-      no_log: true
-      changed_when: false
-      check_mode: false
-      tags: [verify]
-
-    - name: Read the runner App private key from OpenBao
+    - name: Read runner App credentials from OpenBao
       ansible.builtin.uri:
         url: "{{ _bao_url }}/v1/secret/data/services/github-runner"
         method: GET
@@ -102,12 +87,12 @@
       check_mode: false
       tags: [verify]
 
-    - name: Require both stored GitHub credentials
+    - name: Require the runner App administration token and private key
       ansible.builtin.assert:
         that:
-          - (_github_secret.json.data.data.pat | default('')) | length > 0
+          - (_runner_app_secret.json.data.data.installation_admin_token | default('')) | length > 0
           - (_runner_app_secret.json.data.data.app_private_key | default('')) | length > 0
-        fail_msg: "OpenBao is missing the GitHub PAT or runner App private key."
+        fail_msg: "OpenBao is missing the runner App administration token or private key."
         quiet: true
       no_log: true
       tags: [verify]
@@ -117,7 +102,7 @@
     - name: Inspect the fixed repository grant state
       ansible.builtin.command:
         argv: "{{ [ansible_playbook_python, _api_helper, '--issuer', github_app_client_id, '--check-mode'] + (['--verify-only'] if _verify_only | bool else []) }}"
-        stdin: "{{ {'pat': _github_secret.json.data.data.pat, 'app_private_key': _runner_app_secret.json.data.data.app_private_key} | to_json }}"
+        stdin: "{{ {'installation_admin_token': _runner_app_secret.json.data.data.installation_admin_token, 'app_private_key': _runner_app_secret.json.data.data.app_private_key} | to_json }}"
       register: _inspection
       changed_when: false
       failed_when: false
@@ -139,7 +124,7 @@
     - name: Add the repository to the App installation
       ansible.builtin.command:
         argv: [ "{{ ansible_playbook_python }}", "{{ _api_helper }}", --issuer, "{{ github_app_client_id }}" ]
-        stdin: "{{ {'pat': _github_secret.json.data.data.pat, 'app_private_key': _runner_app_secret.json.data.data.app_private_key} | to_json }}"
+        stdin: "{{ {'installation_admin_token': _runner_app_secret.json.data.data.installation_admin_token, 'app_private_key': _runner_app_secret.json.data.data.app_private_key} | to_json }}"
       register: _grant
       changed_when: (_grant.stdout | from_json).grant_attempted | bool
       failed_when: false
