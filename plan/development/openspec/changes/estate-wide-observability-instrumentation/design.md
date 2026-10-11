@@ -100,6 +100,26 @@ Semaphore environment marker is accepted by this artifact update. The
 conditional native task-JWT authentication decision and its remaining verifier
 gates are recorded below.
 
+**Deferred local-executor isolation diagnostic (2026-10-10; prototype rejected at review):**
+The uncommitted Dev-bound diagnostic prototype is archived outside the worktree
+and removed from this change. Independent review found five defects: (1) scoped
+updates to an existing template bypassed empty-environment validation; (2) the
+contents and ownership checks did not exclude concurrent changes through
+publication and launch; (3) a matching executable basename and `comm` did not
+establish trusted Semaphore server identity; (4) inspected parent identities
+were not revalidated as one ancestry chain; and (5) a successful `/proc` open
+could be discarded if a later identity check raced or failed. The publication
+race is an authority-design prerequisite: every relevant environment writer,
+template publisher, and launch path must be constrained by enforceable
+exclusion or equivalent protected immutability, with contention and failure
+evidence. Readback, post-publication checks, or rollback alone do not prove this
+boundary. Do not add a global publisher lock in this change. The prototype was
+not published or run; installed executor behavior remains unverified. Keep task
+1.2a and all journal mutation closed until the authority design and remaining
+process-identity requirements have been implemented, independently reviewed,
+and passed final-head CI. The conditional native task-JWT design below remains
+separate and unchanged.
+
 **Installed Semaphore API observation (2026-10-10; directly queried read-only by the agent via the site-config HTTPS launch URL; sanitized output):** HTTPS
 `/api/info` reported version `v2.19.11-0c3f373-1787751354` and
 `use_remote_runner=false`. `/api/runners` returned two records: the default
