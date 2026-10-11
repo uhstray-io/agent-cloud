@@ -1,0 +1,289 @@
+---
+- name: Validate private artifact operation parameters
+  ansible.builtin.assert:
+    that:
+      - not ansible_check_mode
+      - not (local_mode | default(false) | bool)
+      - expected_repository_sha is match('^[0-9a-f]{40}$')
+      - site_config_base_sha is match('^[0-9a-f]{40}$')
+      - site_config_base_branch is match('^[A-Za-z0-9._/-]+$')
+      - operation in ['capture', 'propose']
+      - operation != 'propose' or capture_commit_sha is match('^[0-9a-f]{40}$')
+      - operation != 'propose' or (artifact_row | string) is match('^[1-9][0-9]*$')
+    fail_msg: "Private artifact operation parameters are incomplete or malformed."
+
+- name: Set public checkout root
+  ansible.builtin.set_fact:
+    _project_root: "{{ playbook_dir | dirname | dirname }}"
+
+- name: Read public controller commit
+  ansible.builtin.command:
+    argv: [git, rev-parse, HEAD]
+    chdir: "{{ _project_root }}"
+  register: _controller_revision
+  changed_when: false
+  check_mode: false
+
+- name: Require the reviewed public revision
+  ansible.builtin.assert:
+    that: _controller_revision.stdout == expected_repository_sha
+    fail_msg: "Semaphore checked out a different reviewed Dev revision."
+
+- name: Read public controller changes
+  ansible.builtin.command:
+    argv: [git, status, --porcelain, --untracked-files=all]
+    chdir: "{{ _project_root }}"
+  register: _controller_changes
+  changed_when: false
+  check_mode: false
+
+- name: Require a clean public checkout
+  ansible.builtin.assert:
+    that: _controller_changes.stdout | length == 0
+    fail_msg: "The reviewed controller checkout contains uncommitted files."
+
+- name: Refuse public cleartext OpenBao transport
+  ansible.builtin.include_tasks: assert-bao-transport.yml
+  vars:
+    _assert_bao_url: "{{ openbao_addr | default('') }}"
+
+- name: Read site-config deploy key
+  ansible.builtin.set_fact:
+    _sc_secret: "{{ lookup('community.hashi_vault.hashi_vault', 'secret/data/services/ssh/site-config', url=openbao_addr, auth_method='approle', role_id=bao_role_id | default(lookup('env', 'BAO_ROLE_ID')), secret_id=bao_secret_id | default(lookup('env', 'BAO_SECRET_ID'))) }}"
+  no_log: true
+
+- name: Enter the private branch operation
+  when: not ansible_check_mode
+  block:
+    - name: Clone the reviewed private base for a fresh capture branch
+      ansible.builtin.include_tasks: site-config-clone.yml
+      vars:
+        _sc_deploy_key: "{{ _sc_secret.private_key }}"
+        _sc_repo_url: "{{ site_config_repo | default('', true) }}"
+        _sc_known_hosts: "{{ git_known_hosts_file | default('', true) }}"
+        _sc_reviewed_base_sha: "{{ site_config_base_sha }}"
+        _sc_base_branch: "{{ site_config_base_branch }}"
+        _sc_branch_prefix: "o11y/artifact-capture"
+      when: operation == 'capture'
+
+    - name: Clone the reviewed private base for deterministic proposal reuse
+      ansible.builtin.include_tasks: site-config-clone.yml
+      vars:
+        _sc_deploy_key: "{{ _sc_secret.private_key }}"
+        _sc_repo_url: "{{ site_config_repo | default('', true) }}"
+        _sc_known_hosts: "{{ git_known_hosts_file | default('', true) }}"
+        _sc_reviewed_base_sha: "{{ site_config_base_sha }}"
+        _sc_base_branch: "{{ site_config_base_branch }}"
+        _sc_branch_prefix: "o11y/artifact-proposal"
+        _sc_deterministic_branch: "{{ 'proposal/o11y-artifact-' ~ capture_commit_sha ~ '-row-' ~ (artifact_row | int) }}"
+      when: operation == 'propose'
+
+    - name: Fetch the selected capture commit
+      ansible.builtin.command:
+        argv: [git, fetch, origin, "{{ capture_commit_sha }}"]
+        chdir: "{{ _sc_clone }}"
+      environment: "{{ _sc_git_env }}"
+      changed_when: false
+      when: operation == 'propose'
+
+    - name: Fetch the recorded base for receipt-only proposal validation
+      ansible.builtin.command:
+        argv: [git, fetch, origin, "{{ site_config_base_sha }}"]
+        chdir: "{{ _sc_clone }}"
+      environment: "{{ _sc_git_env }}"
+      changed_when: false
+      when:
+        - operation == 'propose'
+        - _sc_existing_remote.stdout | default('') | length > 0
+
+    - name: Verify capture provenance and read its private catalog
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/files/o11y_private_artifact.py", verify-capture]
+        stdin: "{{ {'repo': _sc_clone, 'capture_sha': capture_commit_sha, 'base_sha': site_config_base_sha, 'agent_sha': expected_repository_sha} | to_json }}"
+      register: _capture_verified
+      changed_when: false
+      no_log: true
+      when: operation == 'propose'
+
+    - name: Keep the verified private catalog
+      ansible.builtin.set_fact:
+        _private_catalog: "{{ (_capture_verified.stdout | from_json).catalog }}"
+      no_log: true
+      when: operation == 'propose'
+
+    - name: Read exact base inventory bytes
+      ansible.builtin.command:
+        argv: [git, show, "{{ site_config_base_sha }}:inventory/production.yml"]
+        chdir: "{{ _sc_clone }}"
+      register: _base_inventory
+      changed_when: false
+      no_log: true
+      when: operation == 'propose'
+
+    - name: Construct the proposed inventory bytes from the explicit row
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/files/o11y_private_artifact.py", inventory]
+        stdin: "{{ {'inventory': _base_inventory.stdout, 'catalog': _private_catalog, 'row_number': artifact_row | int} | to_json }}"
+      register: _expected_inventory
+      changed_when: false
+      no_log: true
+      when: operation == 'propose'
+
+    - name: Verify and return an existing deterministic proposal without creating a commit
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/files/o11y_private_artifact.py", verify-proposal]
+        stdin: "{{ {'repo': _sc_clone, 'branch': _sc_branch, 'base_sha': site_config_base_sha, 'capture_sha': capture_commit_sha, 'agent_sha': expected_repository_sha, 'row_number': artifact_row | int, 'expected_inventory': (_expected_inventory.stdout | from_json).inventory} | to_json }}"
+      environment: "{{ _sc_git_env }}"
+      register: _existing_proposal
+      failed_when: false
+      changed_when: false
+      no_log: true
+      when:
+        - operation == 'propose'
+        - _sc_existing_remote.stdout | default('') | length > 0
+
+    - name: Require an exact existing proposal receipt
+      ansible.builtin.assert:
+        that: _existing_proposal.rc == 0
+        fail_msg: "The deterministic proposal branch exists with different provenance or content; it was preserved."
+      when:
+        - operation == 'propose'
+        - _sc_existing_remote.stdout | default('') | length > 0
+
+    - name: Report an existing proposal without claiming fresh validation
+      ansible.builtin.debug:
+        msg: "Existing proposal verified; no new proposal commit or freshness claim. {{ (_existing_proposal.stdout | from_json).branch }} @ {{ (_existing_proposal.stdout | from_json).commit }}"
+      when:
+        - operation == 'propose'
+        - _sc_existing_remote.stdout | default('') | length > 0
+
+    - name: Run the bounded GET-only census only when work is needed
+      ansible.builtin.include_tasks: o11y-backup-artifact-census.yml
+      when: operation == 'capture' or _sc_existing_remote.stdout | default('') | length == 0
+
+    - name: Validate freshness, explicit row, and complete fresh census
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/files/o11y_private_artifact.py", propose]
+        stdin: >-
+          {{ {'catalog': _private_catalog,
+              'capture_sha': capture_commit_sha,
+              'row_number': artifact_row | int,
+              'inventory_host': hostvars['localhost']._o11y_host,
+              'census': {'vmid': hostvars['localhost']._vmid,
+                         'node': hostvars['localhost']._node,
+                         'vms': hostvars['localhost']._pve_vms.json.data,
+                         'storages': hostvars['localhost']._backup_storages,
+                         'content_reads': hostvars['localhost']._backup_content_reads.results,
+                         'vm_config': {'status': hostvars['localhost']._vm_config.status,
+                                       'data': hostvars['localhost']._vm_config.json.data}}}
+             | to_json }}
+      register: _selection
+      changed_when: false
+      no_log: true
+      when:
+        - operation == 'propose'
+        - _sc_existing_remote.stdout | default('') | length == 0
+
+    - name: Prepare a private capture catalog
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/files/o11y_private_artifact.py", capture]
+        stdin: >-
+          {{ {'agent_cloud_sha': expected_repository_sha,
+              'site_config_base_sha': site_config_base_sha,
+              'target': {'host': hostvars['localhost']._o11y_host,
+                         'node': hostvars['localhost']._node,
+                         'vmid': hostvars['localhost']._vmid | string},
+              'census': {'vmid': hostvars['localhost']._vmid,
+                         'node': hostvars['localhost']._node,
+                         'vms': hostvars['localhost']._pve_vms.json.data,
+                         'storages': hostvars['localhost']._backup_storages,
+                         'content_reads': hostvars['localhost']._backup_content_reads.results,
+                         'vm_config': {'status': hostvars['localhost']._vm_config.status,
+                                       'data': hostvars['localhost']._vm_config.json.data}}}
+             | to_json }}
+      register: _capture_output
+      changed_when: false
+      no_log: true
+      when: operation == 'capture'
+
+    - name: Keep private catalog and safe row summaries
+      ansible.builtin.set_fact:
+        _private_catalog: "{{ (_capture_output.stdout | from_json).catalog }}"
+        _safe_rows: "{{ (_capture_output.stdout | from_json).rows }}"
+      no_log: true
+      when: operation == 'capture'
+
+    - name: Check the fixed catalog path and reject symlinks or unexpected content
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/files/o11y_private_artifact.py", catalog-path]
+        stdin: "{{ {'root': _sc_clone} | to_json }}"
+      register: _catalog_path
+      changed_when: false
+      no_log: true
+      when: operation == 'capture'
+
+    - name: Write the catalog only at its fixed private path
+      ansible.builtin.copy:
+        content: "{{ _private_catalog | to_json }}\n"
+        dest: "{{ (_catalog_path.stdout | from_json).path }}"
+        mode: "0600"
+      no_log: true
+      when: operation == 'capture'
+
+    - name: Report numbered sanitized capture rows
+      ansible.builtin.debug:
+        msg: "{{ _safe_rows }}"
+      when: operation == 'capture'
+
+    - name: Write the inventory proposal
+      ansible.builtin.copy:
+        content: "{{ (_expected_inventory.stdout | from_json).inventory }}"
+        dest: "{{ _sc_clone }}/inventory/production.yml"
+        mode: preserve
+      no_log: true
+      when:
+        - operation == 'propose'
+        - _sc_existing_remote.stdout | default('') | length == 0
+
+    - name: Recheck capture freshness immediately before proposal push
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/files/o11y_private_artifact.py", freshness]
+        stdin: "{{ {'catalog': _private_catalog} | to_json }}"
+      changed_when: false
+      no_log: true
+      when:
+        - operation == 'propose'
+        - _sc_existing_remote.stdout | default('') | length == 0
+
+    - name: Push the one-path reviewed branch
+      ansible.builtin.include_tasks: site-config-push.yml
+      vars:
+        _sc_add_path: "{{ 'catalogs/o11y/backup-artifacts.json' if operation == 'capture' else 'inventory/production.yml' }}"
+        _sc_commit_subject: "{{ 'o11y: capture backup artifact catalog' if operation == 'capture' else 'o11y: propose explicit backup artifact selector' }}"
+        _sc_commit_body: >-
+          Capture metadata: agent-cloud={{ expected_repository_sha }} site-config-base={{ site_config_base_sha }}.
+          {{ ('capture=' ~ capture_commit_sha ~ ' row=' ~ (artifact_row | int)) if operation == 'propose' else 'Catalog contains private artifact identifiers.' }}
+        _sc_report_what: "{{ 'numbered private backup artifact catalog' if operation == 'capture' else 'one explicit backup artifact selector' }}"
+        _sc_guarded_base_branch: "{{ site_config_base_branch }}"
+        _sc_reviewed_base_sha: "{{ site_config_base_sha }}"
+      when: operation == 'capture' or _sc_existing_remote.stdout | default('') | length == 0
+
+    - name: Read the private commit reference for this operation
+      ansible.builtin.command:
+        argv: [git, rev-parse, HEAD]
+        chdir: "{{ _sc_clone }}"
+      register: _operation_commit
+      changed_when: false
+      when: operation == 'capture' or _sc_existing_remote.stdout | default('') | length == 0
+
+    - name: Report the pushed private branch and commit reference
+      ansible.builtin.debug:
+        msg: "{{ _sc_branch }} @ {{ _operation_commit.stdout }}"
+      when: operation == 'capture' or _sc_existing_remote.stdout | default('') | length == 0
+
+  always:
+    - name: Wipe private site-config scratch
+      ansible.builtin.file:
+        path: "{{ _sc_wd }}"
+        state: absent
+      when: _sc_wd is defined

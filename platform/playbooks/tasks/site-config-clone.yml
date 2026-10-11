@@ -16,6 +16,8 @@
 #   _sc_deploy_key      the private key material (from OpenBao; never a parameter)
 #   _sc_repo_url        optional; default the site-config SSH URL
 #   _sc_known_hosts     optional; default files/github_known_hosts (pinned)
+#   _sc_reviewed_base_sha + _sc_base_branch enable guarded reviewed-base mode.
+#   _sc_deterministic_branch enables receipt-only reuse of an existing proposal.
 #
 # Sets for the caller:
 #   _sc_wd        scratch dir (caller MUST wipe it in an `always:`)
@@ -33,6 +35,18 @@
       with the Seed OpenBao Key template (bao_path services/ssh/site-config,
       bao_key private_key, value as the BAO_VALUE environment secret) and register
       the public half on the site-config GitHub repo WITH WRITE ACCESS.
+
+- name: "Validate guarded site-config refs before using them"
+  ansible.builtin.assert:
+    that:
+      - _sc_reviewed_base_sha is match('^[0-9a-f]{40}$')
+      - _sc_base_branch is match('^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$')
+      - "'..' not in _sc_base_branch"
+      - "'//' not in _sc_base_branch"
+      - not _sc_base_branch.endswith('/')
+      - _sc_deterministic_branch is not defined or _sc_deterministic_branch is match('^proposal/o11y-artifact-[0-9a-f]{40}-row-[1-9][0-9]*$')
+    fail_msg: "The reviewed site-config branch or revision is malformed."
+  when: _sc_reviewed_base_sha is defined
 
 - name: "Resolve the remote and the pinned host keys"
   ansible.builtin.set_fact:
@@ -77,9 +91,9 @@
   # with /dev/null generates without storing.
   ansible.builtin.set_fact:
     _sc_branch: >-
-      {{ _sc_branch_prefix
-         ~ '-' ~ lookup('pipe', 'date -u +%Y%m%dT%H%M%SZ')
-         ~ '-' ~ lookup('password', '/dev/null chars=hexdigits length=6') | lower }}
+      {{ _sc_deterministic_branch if _sc_deterministic_branch is defined else
+         (_sc_branch_prefix ~ '-' ~ lookup('pipe', 'date -u +%Y%m%dT%H%M%SZ') ~
+          '-' ~ lookup('password', '/dev/null chars=hexdigits length=6') | lower) }}
     _sc_wd: "{{ _sc_wd_result.path }}"
     _sc_clone: "{{ _sc_wd_result.path }}/site-config"
     _sc_key: "{{ _sc_wd_result.path }}/deploy_key"
@@ -97,19 +111,107 @@
     mode: "0600"
   no_log: true
 
-- name: "Clone site-config"
+- name: "Clone the reviewed integration branch"
   ansible.builtin.command:
-    cmd: "git clone --depth 1 {{ _sc_repo }} {{ _sc_clone }}"
+    argv: [git, clone, --depth, "1", --branch, "{{ _sc_base_branch }}", "{{ _sc_repo }}", "{{ _sc_clone }}"]
   environment: "{{ _sc_git_env }}"
   changed_when: true
-  when: not ansible_check_mode
+  when:
+    - not ansible_check_mode
+    - _sc_reviewed_base_sha is defined
+
+- name: "Clone site-config using the legacy default branch"
+  ansible.builtin.command:
+    argv: [git, clone, --depth, "1", "{{ _sc_repo }}", "{{ _sc_clone }}"]
+  environment: "{{ _sc_git_env }}"
+  changed_when: true
+  when:
+    - not ansible_check_mode
+    - _sc_reviewed_base_sha is not defined
+
+- name: "Verify the reviewed site-config base"
+  ansible.builtin.command:
+    argv: [git, rev-parse, HEAD]
+    chdir: "{{ _sc_clone }}"
+  register: _sc_base_checkout
+  changed_when: false
+  when:
+    - not ansible_check_mode
+    - _sc_reviewed_base_sha is defined
+
+- name: "Check for the deterministic proposal branch"
+  ansible.builtin.command:
+    argv: [git, ls-remote, --heads, origin, "refs/heads/{{ _sc_branch }}"]
+    chdir: "{{ _sc_clone }}"
+  environment: "{{ _sc_git_env }}"
+  register: _sc_existing_remote
+  changed_when: false
+  when:
+    - not ansible_check_mode
+    - _sc_deterministic_branch is defined
+
+- name: "Require the reviewed site-config base for new work"
+  ansible.builtin.assert:
+    that:
+      - _sc_reviewed_base_sha is match('^[0-9a-f]{40}$')
+      - _sc_base_branch is match('^[A-Za-z0-9._/-]+$')
+      - _sc_base_checkout.stdout == _sc_reviewed_base_sha
+    fail_msg: "The site-config integration tip differs from the reviewed base."
+  when:
+    - not ansible_check_mode
+    - _sc_reviewed_base_sha is defined
+    - _sc_deterministic_branch is not defined or _sc_existing_remote.stdout | length == 0
+
+- name: "Reuse the existing deterministic branch for validation"
+  ansible.builtin.command:
+    argv: [git, fetch, origin, "refs/heads/{{ _sc_branch }}:refs/remotes/origin/{{ _sc_branch }}"]
+    chdir: "{{ _sc_clone }}"
+  environment: "{{ _sc_git_env }}"
+  changed_when: true
+  when:
+    - not ansible_check_mode
+    - _sc_deterministic_branch is defined
+    - _sc_existing_remote.stdout | length > 0
+
+- name: "Start the existing deterministic proposal branch"
+  ansible.builtin.command:
+    argv: [git, switch, -c, "{{ _sc_branch }}", --track, "origin/{{ _sc_branch }}"]
+    chdir: "{{ _sc_clone }}"
+  changed_when: true
+  when:
+    - not ansible_check_mode
+    - _sc_deterministic_branch is defined
+    - _sc_existing_remote.stdout | length > 0
+
+- name: "Start a new deterministic proposal branch"
+  ansible.builtin.command:
+    argv: [git, switch, -c, "{{ _sc_branch }}"]
+    chdir: "{{ _sc_clone }}"
+  changed_when: true
+  when:
+    - not ansible_check_mode
+    - _sc_deterministic_branch is defined
+    - _sc_existing_remote.stdout | length == 0
 
 - name: "Start a fresh branch for this backup"
   ansible.builtin.command:
     cmd: "git switch -c {{ _sc_branch }}"
     chdir: "{{ _sc_clone }}"
   changed_when: true
-  when: not ansible_check_mode
+  when:
+    - not ansible_check_mode
+    - _sc_reviewed_base_sha is not defined
+    - _sc_deterministic_branch is not defined
+
+- name: "Start a guarded capture branch"
+  ansible.builtin.command:
+    argv: [git, switch, -c, "{{ _sc_branch }}"]
+    chdir: "{{ _sc_clone }}"
+  changed_when: true
+  when:
+    - not ansible_check_mode
+    - _sc_reviewed_base_sha is defined
+    - _sc_deterministic_branch is not defined
 
 - name: "Identify the commit"
   # argv, not cmd. `command` word-splits a cmd string, so a name with spaces
