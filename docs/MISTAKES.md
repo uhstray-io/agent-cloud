@@ -3047,19 +3047,29 @@ pattern over the `--body`/`--body-file` and `--title` of a `gh pr create|edit` o
 `32b455bb` was still running (Bash Tests, Python core, Security Scan and Static Analysis in
 progress). The merge script judged the PR's status rollup, which just after a push still
 showed the previous head's completed checks. CI on the new head passed afterwards, so nothing
-broken landed, but the merge rested on no evidence about the code merged.
+broken landed, but the merge rested on no evidence about the code merged. The same failure
+recurred on PR #531: `gh pr merge --auto --squash` merged at 2026-10-11T02:48:51Z while Bash
+and Python core were running; Python core was still running at dispatch. Bash passed after
+merge. Do not claim final-head CI success from that timeline.
 
 **Root cause.** The rollup is not keyed to the commit being merged. Right after a push it
 reports the last finished runs, which belong to the old head.
 
-**The rule.** A merge decision reads the check runs of the exact head SHA being merged
-(`commits/<sha>/check-runs`), takes the latest run per check name, and waits until every one
-is complete and passing. "Never merge a PR before its checks have completed and passed"
-(AGENTS.md) means the checks of that head.
+**The rule.** A feature-to-Dev merge decision uses
+`python3 scripts/merge-when-green.py --pr PR_NUMBER --head FULL_HEAD_SHA`. It verifies the
+open same-repository PR and exact head, the latest applicable workflow execution, every
+expected job's exact-head check run, one independent approval on that head, cleared review
+threads and changes requests, and an operator attestation that actionable feedback is
+addressed. A skipped Go job is accepted only when complete changed-file evidence proves its
+declared path condition false. The tool re-reads all gates immediately before one explicit
+`gh pr merge --merge --match-head-commit FULL_HEAD_SHA`; it never enables auto-merge/admin or
+blindly retries an ambiguous result. Read-only validation is the default.
 
-**Enforced by.** Convention. The merge script is operator-side, outside this repository, and
-now judges the head's check runs as above. No repository gate applies: `protect-main` includes
-only the default branch, so `dev` has no required-checks rule.
+**Enforced by.** Operator CLI: `scripts/merge-when-green.py`; tests:
+`platform/tests/test_merge_when_green.py`; workflow: `plan/development/dev-merge-guard.md`.
+This remains a convention because `dev` intentionally has no required-check rule: the
+main-to-Dev sync workflow pushes directly to `dev`. A direct merge command can bypass the
+CLI, and a concurrently started rerun or review can race the separate API reads and merge.
 
 ## 6. Working from assumptions about files
 

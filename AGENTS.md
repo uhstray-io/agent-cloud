@@ -35,6 +35,12 @@ config-as-code**. Do the work *through* those mechanisms — not around them:
   Never ad-hoc API pokes or console clicks for anything reproducible.
 - **Changes land through the branch workflow** (`feature → dev → main`, tested on `dev`).
 
+### Feature-to-Dev pull-request merges
+
+Before merging a feature PR into `dev`, run `python3 scripts/merge-when-green.py --pr PR_NUMBER --head FULL_HEAD_SHA` and review the exact-head evidence. The command is read-only unless `--merge` is supplied. Merge only after one independent final-head approval, all final-head CI jobs pass (or a path-proven Go job is skipped), review threads are resolved, outstanding changes requests are cleared, and actionable feedback is addressed. With explicit authorization for that PR/head, use `--feedback-addressed --merge`; the CLI repeats the gates and supplies `--match-head-commit` to one merge command. See [plan/development/dev-merge-guard.md](plan/development/dev-merge-guard.md).
+
+`dev` intentionally has no required-check rule because the main-to-Dev sync workflow pushes directly to it. The CLI is therefore an operator gate, not GitHub-enforced protection; do not substitute `gh pr merge --auto`, `--admin`, or a direct merge command.
+
 If a mechanism to do something the right way is missing or broken, **build/fix it
 properly** (a playbook, task, template, config change) — do not route around it. A
 result obtained outside these mechanisms is a **defect even if it "works,"** because
