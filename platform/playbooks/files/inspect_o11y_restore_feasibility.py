@@ -25,6 +25,7 @@ SAFE_REFUSALS = {
     "Proxmox returned a malformed next-VMID response.",
     "Proxmox did not return a usable next VMID.",
     "The artifact receipt is incomplete or malformed.",
+    "The selected artifact receipt is incomplete or malformed.",
 }
 FALLBACK_REFUSAL = "Restore feasibility inspection refused because Proxmox returned invalid data."
 NEXTID_VALUE = re.compile(r"[1-9][0-9]{0,8}")
@@ -50,7 +51,9 @@ def _valid_nextid(value: object) -> bool:
     return isinstance(value, str) and NEXTID_VALUE.fullmatch(value) is not None
 
 
-def _source_facts(receipt: object) -> tuple[bool, bool, bool, bool, int | None]:
+def _source_facts(
+    receipt: object, selected_artifact: object
+) -> tuple[bool, bool, bool, bool, int | None, bool, int | None]:
     _require(isinstance(receipt, Mapping), "The artifact receipt is incomplete or malformed.")
     candidates = receipt.get("candidates")
     disks = receipt.get("source_disk_layout")
@@ -78,6 +81,43 @@ def _source_facts(receipt: object) -> tuple[bool, bool, bool, bool, int | None]:
             or (candidate_backend == "non-pbs" and candidate_format in SUPPORTED_FORMATS - {"pbs-vm"})
         )
     )
+    receipt_candidate = receipt.get("selected_candidate")
+    receipt_index = receipt.get("selected_candidate_index")
+    if selected_artifact is None:
+        _require(
+            receipt_candidate is None and receipt_index is None,
+            "The selected artifact receipt is incomplete or malformed.",
+        )
+        selected_artifact_verified = False
+        selected_index = None
+    else:
+        _require(
+            isinstance(selected_artifact, Mapping)
+            and set(selected_artifact) == {"index", "candidate"}
+            and type(selected_artifact.get("index")) is int
+            and selected_artifact["index"] == receipt_index
+            and 0 <= selected_artifact["index"] < len(candidates)
+            and isinstance(receipt_candidate, Mapping)
+            and isinstance(selected_artifact.get("candidate"), Mapping)
+            and dict(selected_artifact["candidate"]) == dict(receipt_candidate)
+            and dict(selected_artifact["candidate"]) == dict(candidates[selected_artifact["index"]])
+            and isinstance(selected_artifact["candidate"].get("backend_class"), str)
+            and selected_artifact["candidate"]["backend_class"] in ("pbs", "non-pbs")
+            and isinstance(selected_artifact["candidate"].get("format"), str)
+            and (
+                (selected_artifact["candidate"]["backend_class"] == "pbs"
+                 and selected_artifact["candidate"]["format"] == "pbs-vm")
+                or (selected_artifact["candidate"]["backend_class"] == "non-pbs"
+                    and selected_artifact["candidate"]["format"] in SUPPORTED_FORMATS - {"pbs-vm"})
+            )
+            and type(selected_artifact["candidate"].get("size_bytes")) is int
+            and selected_artifact["candidate"]["size_bytes"] > 0
+            and type(selected_artifact["candidate"].get("creation_time_epoch")) is int
+            and selected_artifact["candidate"]["creation_time_epoch"] > 0,
+            "The selected artifact receipt is incomplete or malformed.",
+        )
+        selected_artifact_verified = True
+        selected_index = selected_artifact["index"]
     seen_devices: set[str] = set()
     for disk in disks:
         device = disk.get("device")
@@ -104,8 +144,20 @@ def _source_facts(receipt: object) -> tuple[bool, bool, bool, bool, int | None]:
     restore_bytes = (
         sum(disk["size_bytes"] for disk in disks) if sizes_complete and layout_parsed else None
     )
-    inclusion_verified = bool(disks) and all(disk.get("included_in_backup") is True for disk in disks)
-    return layout_parsed, sizes_complete, inclusion_verified, single_supported_candidate, restore_bytes
+    inclusion_verified = (
+        not selected_artifact_verified
+        and bool(disks)
+        and all(disk.get("included_in_backup") is True for disk in disks)
+    )
+    return (
+        layout_parsed,
+        sizes_complete,
+        inclusion_verified,
+        single_supported_candidate,
+        restore_bytes,
+        selected_artifact_verified,
+        selected_index,
+    )
 
 
 def _online_nodes(raw_nodes: object) -> list[str]:
@@ -236,7 +288,9 @@ def inspect(payload: Mapping[str, object]) -> dict[str, object]:
         inclusion_verified,
         single_supported_candidate,
         restore_bytes,
-    ) = _source_facts(payload.get("artifact_receipt"))
+        selected_artifact_verified,
+        selected_index,
+    ) = _source_facts(payload.get("artifact_receipt"), payload.get("selected_artifact"))
     storage_count = _capacity_storage_count(
         payload.get("nodes"), payload.get("storage_reads"), payload.get("source_node"), restore_bytes
     )
@@ -255,6 +309,8 @@ def inspect(payload: Mapping[str, object]) -> dict[str, object]:
         "backup_inclusion_verified": inclusion_verified,
         "storage_capacity_basis": "proxmox-reported",
         "single_supported_artifact_candidate": single_supported_candidate,
+        "selected_artifact_candidate_verified": selected_artifact_verified,
+        "selected_artifact_candidate_index": selected_index,
         "storage_count_scope": "distinct-off-source-non-shared-image-storage-ids",
         "image_storage_ids_off_source_meeting_reported_capacity_count": storage_count,
         "other_node_reported_capacity_sufficient": storage_count > 0,

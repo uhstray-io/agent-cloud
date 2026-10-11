@@ -484,3 +484,27 @@ the existing ops contact, and matching Discord delivery was independently
 verified. This verifies the low-space warning and delivery path for this event.
 It does not establish a seven-day capacity forecast, backup/restore readiness,
 or delivery of other alert classes.
+
+## 2026-10-10 exact artifact selection preflight
+
+The read-only artifact survey accepts an optional private inventory selector with
+exactly `volid`, `backend`, `format`, `creation_time_epoch`, and `size_bytes`.
+It validates strict field types and schema, then requires those values to match
+exactly one artifact in the complete VM/store enumeration. An absent selector
+preserves the existing census; the survey never chooses the newest candidate.
+Missing, duplicate, stale, or mutated selections fail with fixed sanitized
+refusals. The protected inspector receipt adds only the selected candidate's
+zero-based census index and already-sanitized metadata; it never returns its
+identifier. The feasibility inspector receives that index and metadata and
+revalidates them against the census while retaining the total candidate count.
+Selecting an artifact does not establish immutability or restore success, and
+the source VM's current `backup` flags cannot prove the selected archive's disk
+contents, so `backup_inclusion_verified` remains false for a selected artifact.
+Raw API rows, private selector values, and helper stderr remain protected from
+visible task output. This work adds no Proxmox write, secret change, restore,
+provisioning, or site-config declaration.
+
+The root agent's sanitized read-only receipts 4293, 4295, and 4296 ran at exact
+Dev SHA `7362aaa7080d87b91606c4d6a65f884dbf67b0b0`; the reported census had six
+non-PBS `vma.zst` candidates. This count does not select an artifact or prove
+archive disk inclusion, immutability, an isolated restore, or restore cleanup.

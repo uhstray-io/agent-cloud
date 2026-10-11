@@ -150,6 +150,14 @@ The platform SHALL compare observed and forecast ingestion, storage, CPU, and me
 - **THEN** the workflow verifies the exact job and VM, adds the VM only to an enabled explicit-VMID selection, preserves other job settings and members, verifies the readback, and reports a no-op on repetition; jobs selected by all, pool, or exclusion fail closed
 - **AND** backup artifact presence and an isolated restore remain required before guest disk growth or longer retention
 
+### Requirement: Artifact selection is exact and remains private
+The read-only artifact survey MAY accept an optional private selector containing exactly the artifact volid, backend, format, creation epoch, and byte size. It SHALL match every supplied value against exactly one enumerated artifact for the declared VM and its source storage. With no selector it SHALL preserve census behavior and SHALL NOT infer a choice from recency. Malformed, missing, duplicate, stale, or changed selections SHALL fail closed with a fixed nonprivate refusal. Visible output SHALL omit artifact identifiers, selector values, raw API rows, and helper stderr. A selected result MAY expose only its census index and sanitized candidate metadata to the feasibility inspector; the original census count SHALL remain intact. Current VM configuration SHALL NOT be treated as proof of the selected archive's disk contents. Artifact selection SHALL NOT establish immutability, isolated restore, or restore success.
+
+#### Scenario: Operator selects one exact artifact from multiple candidates
+- **WHEN** private inventory contains a complete selector that matches one enumerated artifact exactly
+- **THEN** the survey reports the same candidate census count and passes only the verified index and sanitized candidate metadata to feasibility
+- **AND** stale or ambiguous selection refuses without printing private values, while `backup_inclusion_verified` remains false for the selected artifact
+
 ### Requirement: Backup storage preparation is evidence-gated
 The platform SHALL use a reviewed, Dev-bound, GET-only survey before considering local backup-storage preparation. The survey SHALL source the node from private inventory, verify that it is uniquely online, and emit only allow-listed aggregate facts and coarse reported-capacity bands. Missing usage data SHALL remain unknown; survey output SHALL NOT identify a device as safe, select a disk, establish physical locality or filesystem readiness, or authorize a write.
 

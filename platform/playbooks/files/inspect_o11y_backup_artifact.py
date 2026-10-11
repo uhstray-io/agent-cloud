@@ -38,6 +38,8 @@ SAFE_REFUSALS = {
     "A PBS backup artifact has inconsistent timestamp metadata.",
     "Proxmox returned a malformed VM disk configuration.",
     "Proxmox returned a malformed VM disk size.",
+    "The declared backup artifact selection is malformed.",
+    "The declared backup artifact selection does not match exactly one enumerated candidate.",
     "Unsupported artifact inspection operation.",
 }
 FALLBACK_REFUSAL = "Backup artifact inspection refused because Proxmox returned invalid data."
@@ -166,6 +168,42 @@ def _disk_layout(config: object) -> list[dict[str, object]]:
     return sorted(disks, key=lambda item: str(item["device"]))
 
 
+def _select_candidate(
+    selector: object, candidates: list[tuple[str, dict[str, object]]], defined: bool
+) -> tuple[int, dict[str, object]] | None:
+    _require(type(defined) is bool, "The declared backup artifact selection is malformed.")
+    if not defined:
+        _require(selector is None, "The declared backup artifact selection is malformed.")
+        return None
+    _require(
+        isinstance(selector, Mapping)
+        and set(selector) == {"volid", "backend", "format", "creation_time_epoch", "size_bytes"}
+        and isinstance(selector.get("volid"), str)
+        and isinstance(selector.get("backend"), str)
+        and selector["backend"] in ("pbs", "non-pbs")
+        and isinstance(selector.get("format"), str)
+        and type(selector.get("creation_time_epoch")) is int
+        and selector["creation_time_epoch"] > 0
+        and type(selector.get("size_bytes")) is int
+        and selector["size_bytes"] > 0,
+        "The declared backup artifact selection is malformed.",
+    )
+    matches = [
+        (index, summary)
+        for index, (volid, summary) in enumerate(candidates)
+        if volid == selector["volid"]
+        and summary["backend_class"] == selector["backend"]
+        and summary["format"] == selector["format"]
+        and summary["creation_time_epoch"] == selector["creation_time_epoch"]
+        and summary["size_bytes"] == selector["size_bytes"]
+    ]
+    _require(
+        len(matches) == 1,
+        "The declared backup artifact selection does not match exactly one enumerated candidate.",
+    )
+    return matches[0]
+
+
 def inspect(payload: Mapping[str, object]) -> dict[str, object]:
     vmid_value = payload.get("vmid")
     node = payload.get("node")
@@ -207,7 +245,7 @@ def inspect(payload: Mapping[str, object]) -> dict[str, object]:
             volid, summary = _inspect_candidate(candidate, vmid, storage, storage_classes)
             _require(volid not in seen_volids, "Proxmox returned duplicate backup artifact identities.")
             seen_volids.add(volid)
-            candidates.append(summary)
+            candidates.append((volid, summary))
     _require(seen_storages == set(storage_classes),
              "Proxmox returned an incomplete backup-content listing.")
 
@@ -217,11 +255,13 @@ def inspect(payload: Mapping[str, object]) -> dict[str, object]:
              "Proxmox returned a malformed VM disk configuration.")
     disk_layout = _disk_layout(config["data"])
     _require(bool(disk_layout), "Proxmox returned a malformed VM disk configuration.")
-    return {
+    selector_defined = payload.get("artifact_selector_defined", "artifact_selector" in payload)
+    selected = _select_candidate(payload.get("artifact_selector"), candidates, selector_defined)
+    result = {
         "survey": "read-only-artifact-detail",
         "target_vm_verified": True,
         "candidate_artifact_count": len(candidates),
-        "candidates": candidates,
+        "candidates": [summary for _, summary in candidates],
         "source_disk_count": len(disk_layout),
         "source_disk_layout": disk_layout,
         "source_disk_layout_complete": all(disk["size_bytes"] is not None for disk in disk_layout),
@@ -229,6 +269,9 @@ def inspect(payload: Mapping[str, object]) -> dict[str, object]:
         "isolated_restore_target_verified": False,
         "restore_test_verified": False,
     }
+    if selected is not None:
+        result["selected_candidate_index"], result["selected_candidate"] = selected
+    return result
 
 
 def main() -> int:
