@@ -34,7 +34,7 @@
         "x": 0,
         "y": 0
       },
-      "description": "Count of unique service and step pairs whose newest state across all statuses in the last 45 minutes is fail. The state is reduced first; a later pass or skip replaces an older failure. This is current recorded workflow state, not a count of new failure events or overall service health. With valid inventory markers and no currently failed steps, the fallback returns an unlabeled zero; with no recent valid marker the panel shows no data.",
+      "description": "Count of unique service and step pairs whose newest state across all statuses in the last 45 minutes is fail. The state is reduced first; a later pass or skip replaces an older failure. This is current recorded workflow state, not a count of new failure events or overall service health. With valid inventory markers and no currently failed steps, the fallback returns an unlabeled zero; with no recent inventory marker the panel shows no data.",
       "fieldConfig": {
         "defaults": {
           "noValue": "No recent data",
