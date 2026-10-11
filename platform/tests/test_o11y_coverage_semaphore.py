@@ -596,7 +596,7 @@ class SemaphoreReceiptTests(unittest.TestCase):
         with self.assertRaisesRegex(SEMAPHORE.Refusal, "invalid_endpoint"):
             SEMAPHORE.SemaphoreReader("https://@semaphore.invalid", "fake-secret", PROJECT_ID)
 
-    def test_http_body_is_bounded_and_chunked_transfer_is_refused(self):
+    def test_http_body_is_bounded_and_chunked_transfer_is_checked(self):
         too_large = FakeResponse(b"{}", {"Content-Length": str(SEMAPHORE.MAX_METADATA_BYTES + 1)})
         reader = SEMAPHORE.SemaphoreReader(
             "https://semaphore.invalid", "fake-secret", PROJECT_ID, opener=FakeOpener([too_large])
@@ -608,8 +608,18 @@ class SemaphoreReceiptTests(unittest.TestCase):
         reader = SEMAPHORE.SemaphoreReader(
             "https://semaphore.invalid", "fake-secret", PROJECT_ID, opener=FakeOpener([chunked])
         )
-        with self.assertRaisesRegex(SEMAPHORE.Refusal, "chunked_response"):
-            reader._get("/api/project/7/tasks/123", SEMAPHORE.MAX_METADATA_BYTES, 10**30)
+        self.assertEqual(reader._get("/api/project/7/tasks/123", SEMAPHORE.MAX_METADATA_BYTES, 10**30), {})
+        for headers, limit, code in (
+            ({"Transfer-Encoding": "chunked"}, 1, "response_size"),
+            ({"Transfer-Encoding": "chunked", "Content-Length": "2"}, 2, "response_framing"),
+            ({"Transfer-Encoding": "gzip"}, 2, "response_framing"),
+        ):
+            reader = SEMAPHORE.SemaphoreReader(
+                "https://semaphore.invalid", "fake-secret", PROJECT_ID,
+                opener=FakeOpener([FakeResponse(b"{}", headers)]),
+            )
+            with self.subTest(headers=headers), self.assertRaisesRegex(SEMAPHORE.Refusal, code):
+                reader._get("/api/project/7/tasks/123", limit, 10**30)
 
     def test_default_transport_has_verified_tls_no_proxy_and_no_redirects(self):
         reader = SEMAPHORE.SemaphoreReader("https://semaphore.invalid", "fake-secret", PROJECT_ID)

@@ -328,8 +328,9 @@ class SemaphoreReader:
                 lengths = response.headers.get_all("Content-Length", [])
                 if len(lengths) > 1 or (lengths and (not lengths[0].isdigit() or int(lengths[0]) > limit)):
                     raise Refusal("response_size")
-                if response.headers.get("Transfer-Encoding"):
-                    raise Refusal("chunked_response")
+                transfers = response.headers.get_all("Transfer-Encoding", [])
+                if len(transfers) > 1 or (transfers and (lengths or transfers[0].strip().lower() != "chunked")):
+                    raise Refusal("response_framing")
                 if response.headers.get("Content-Encoding", "identity").lower() not in ("", "identity"):
                     raise Refusal("response_encoding")
                 body = bytearray()
