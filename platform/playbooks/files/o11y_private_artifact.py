@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 import subprocess
 import sys
@@ -233,12 +234,18 @@ def _strict_yaml(source: str):
                 "tag:yaml.org,2002:str",
                 "tag:yaml.org,2002:int",
                 "tag:yaml.org,2002:bool",
+                "tag:yaml.org,2002:float",
                 "tag:yaml.org,2002:null",
             },
             INVENTORY_REFUSAL,
         )
-        if isinstance(node, MappingNode):
-            require(node.flow_style is False, INVENTORY_REFUSAL)
+        if isinstance(node, ScalarNode) and node.tag == "tag:yaml.org,2002:float":
+            try:
+                number = yaml.safe_load(node.value)
+            except yaml.YAMLError:
+                raise ValueError(INVENTORY_REFUSAL) from None
+            require(type(number) is float and math.isfinite(number), INVENTORY_REFUSAL)
+        elif isinstance(node, MappingNode):
             keys = []
             for key, val in node.value:
                 require(
@@ -250,7 +257,6 @@ def _strict_yaml(source: str):
                 visit(key)
                 visit(val)
         elif isinstance(node, SequenceNode):
-            require(node.flow_style is False, INVENTORY_REFUSAL)
             for item in node.value:
                 visit(item)
 
@@ -278,12 +284,18 @@ def _insert_selector(source: str, catalog: Mapping[str, object], row_number: int
         require(isinstance(current, dict) and key in current, INVENTORY_REFUSAL)
         node = _node_map(node).get(key)
         current = current[key]
-        require(isinstance(node, MappingNode) and isinstance(current, dict), INVENTORY_REFUSAL)
+        require(
+            isinstance(node, MappingNode) and node.flow_style is False and isinstance(current, dict),
+            INVENTORY_REFUSAL,
+        )
     require(len(current) == 1 and next(iter(current)) == catalog["target"]["host"], INVENTORY_REFUSAL)
     host_name = next(iter(current))
     host_node = _node_map(node)[host_name]
     host_doc = current[host_name]
-    require(isinstance(host_node, MappingNode) and isinstance(host_doc, dict), INVENTORY_REFUSAL)
+    require(
+        isinstance(host_node, MappingNode) and host_node.flow_style is False and isinstance(host_doc, dict),
+        INVENTORY_REFUSAL,
+    )
     require(
         host_doc.get("vm_node") == catalog["target"]["node"]
         and str(host_doc.get("vm_vmid")) == catalog["target"]["vmid"],

@@ -162,7 +162,9 @@ The read-only artifact survey MAY accept an optional private selector containing
 - **WHEN** an operator captures a reviewed GET-only census and later proposes an explicit one-based row from its private capture commit
 - **THEN** capture writes only the fixed versioned catalog path on a fresh branch from the reviewed private base and reports sanitized numbered metadata without artifact identifiers
 - **AND** proposal verifies capture provenance, requires a 0–1,800-second capture, repeats the census, and compares complete normalized storage and artifact sets independent of API order
-- **AND** proposal writes only the production inventory selector at the literal sole-host location, refuses unsupported inventory syntax or any mismatch, and leaves PR review and merge to the operator
+- **AND** proposal writes only the production inventory selector at the literal sole-host location; the document root, each mapping along `agent_cloud.children.o11y_svc.hosts`, and the target-host mapping are block-style, while unrelated or descendant flow mappings and sequences and standard finite YAML floats are accepted
+- **AND** recursive validation refuses duplicate keys, aliases, anchors, merge keys, custom tags, nonfinite floats, any existing selector, and semantic changes beyond the new selector; original bytes outside the insertion remain unchanged
+- **AND** Dev-bound proposal task 4359's parser refusals occurred before recensus or private inventory writes; in-memory private catalog/inventory compatibility passed without printing values, while private-layout acceptance remains unverified
 - **AND** an exact deterministic proposal rerun returns its existing branch/commit without a new commit or freshness claim; conflicting content is preserved and refused
 - **AND** separate pre/post-push integration-tip checks report and preserve observed cross-reference drift without claiming atomic ref updates
 - **AND** private inventory compatibility, immutability, backup contents, isolated restore, cleanup, and restore success remain unverified and do not complete OpenSpec 4.6e
