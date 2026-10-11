@@ -199,6 +199,13 @@ def test_playbook_is_dev_bound_receiver_only_check_mode_safe_and_schema_guarded(
     assert "check_mode_unverified" in json.dumps(normal_tasks)
     assert "expected_repository_sha" in {item["name"] for item in template["survey_vars"]}
     assert template["repository"] == "agent-cloud dev"
+    assert "ansible_user | default('') is match" in json.dumps(plays[3]["tasks"])
+    checkout_expression = plays[-1]["vars"]["_receiver_checkout"]
+    environment = Environment(undefined=StrictUndefined)
+    render_checkout = environment.from_string(checkout_expression).render
+    assert render_checkout(local_monorepo_dir="/srv/agent-cloud") == "/srv/agent-cloud"
+    assert Path(render_checkout(ansible_user="receiver")).parts[-2:] == ("receiver", "agent-cloud")
+    assert Path(render_checkout()).parts[-2:] == ("deploy", "agent-cloud")
     source = HELPER.read_text()
     assert "openbao" not in source.lower()
     assert "shell=True" not in source

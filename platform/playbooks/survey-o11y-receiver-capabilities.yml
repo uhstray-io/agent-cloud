@@ -65,7 +65,7 @@
   any_errors_fatal: true
   vars:
     _receiver_account: "{{ linger_user | default(ansible_user) }}"
-    _receiver_checkout: "{{ local_monorepo_dir | default('/home/' ~ ansible_user ~ '/agent-cloud') }}"
+    _receiver_checkout: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
     _receiver_helper: "{{ hostvars['localhost']._reviewed_checkout_payloads['platform/playbooks/files/survey-o11y-receiver-capabilities.py'] | b64decode(encoding='utf-8') }}"
     _checkout_helper: "{{ hostvars['localhost']._reviewed_checkout_payloads['platform/playbooks/files/reviewed-checkout.py'] | b64decode(encoding='utf-8') }}"
     _observation_names:
