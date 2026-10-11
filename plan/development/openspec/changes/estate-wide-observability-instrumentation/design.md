@@ -297,12 +297,20 @@ admitted preservation readbacks pass; ambiguity or drift refuses. This receiver
 transaction does not authorize collector apply, repair, stop, proof, or rollback.
 
 Until converted to this same authenticated supervisor and intent protocol, the
-following exact competing entry points refuse before their first target-side
-mutation: `platform/playbooks/clean-deploy-o11y.yml`,
+following exact competing entry points must refuse before their first
+target-side mutation: `platform/playbooks/clean-deploy-o11y.yml`,
 `platform/playbooks/drill-o11y-alert-canary.yml` (which invokes `deploy.sh`),
 `platform/playbooks/o11y-fault-drill.yml` (which stops/starts Grafana),
 `platform/playbooks/restore-o11y-alert-baseline.yml`, and
-`platform/playbooks/instrument-host-o11y.yml` (which reloads Prometheus).
+`platform/playbooks/instrument-host-o11y.yml` (which reloads Prometheus),
+`platform/playbooks/drill-o11y-active-alert-delivery.yml` (which creates an
+active-drill marker and scrape declaration, then reloads Prometheus), and
+`platform/playbooks/recover-o11y-active-alert-drill.yml` (which removes that
+declaration, reloads Prometheus, and clears the marker after recovery checks).
+The contract requires both alert-drill entry points to refuse before their
+first target-side mutation until they participate in the same authenticated
+admission and intent protocol; their current source does not implement that
+protocol.
 The journal workflow
 `platform/playbooks/deploy-o11y-journal-collector.yml` remains limited to its
 existing read-only diagnostic/check-mode path; its mutating actions remain
@@ -350,13 +358,12 @@ facts, malformed output, changed pre/post evidence, and existing inode identity;
 no live filesystem or rootless flock proof is implied. Normal journal
 runtime actions remain refused, and task 1.2a remains unchecked.
 
-**Private attribution binding status (2026-10-10):** Site-config PR #71 adds the
-scoped `o11y_attribution_project_id` binding. An independent Sol Medium review
-of its final head `46a44ad1a35dce9aba61ca5b7aa43b0f1f4ca881` passed;
-CodeRabbit approved the earlier head. GitHub Actions job annotations on both
-attempts say account payments failed or the spending limit must increase, and
-the inventory job started no steps. The PR is open and unmerged. No live
-attribution receipt exists, so no journal runtime action is enabled.
+**Private attribution binding status (2026-10-11):** Site-config PR #71, which
+adds the scoped `o11y_attribution_project_id` binding, merged at
+`ef0ae5457886fc3675032312d66bbb2ecdddf25b`; its final head was
+`73062b30a3c8b88bae40b4a8aaec680a41e8064f`, and inventory CI succeeded. The
+live attribution receipt remains unverified, so no journal runtime action is
+enabled.
 
 **Receiver reconciliation orphan guard (2026-10-10; partial source):** The ordinary
 o11y deploy opts into preserving only a receiver-project container whose verified
