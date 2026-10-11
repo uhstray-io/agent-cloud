@@ -13,7 +13,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
 import github_app_repository as grant  # noqa: E402
 import github_app_token as app_token_module  # noqa: E402
 
-PAT = "ghp_synthetic_pat"
+CLASSIC_TOKEN = "ghp_syntheticpat"
+OAUTH_TOKEN = "gho_syntheticoauthtoken"
 PEM = b"synthetic-private-key"
 ISSUER = "synthetic-client-id"
 REPOSITORY_ID = 9001
@@ -125,14 +126,14 @@ class GitHubAppRepositoryTests(unittest.TestCase):
 
     def test_check_mode_reports_missing_access_without_put(self):
         api = FakeGitHub()
-        result = grant.execute(PAT, PEM, ISSUER, check_mode=True, verify_only=False, api=api)
+        result = grant.execute(CLASSIC_TOKEN, PEM, ISSUER, check_mode=True, verify_only=False, api=api)
         self.assertEqual(result["outcome"], "would_add")
         self.assertFalse(result["grant_attempted"])
         self.assertEqual(api.put_count(), 0)
 
     def test_apply_uses_one_put_and_fresh_app_token_readback(self):
         api = FakeGitHub()
-        result = grant.execute(PAT, PEM, ISSUER, check_mode=False, verify_only=False, api=api)
+        result = grant.execute(CLASSIC_TOKEN, PEM, ISSUER, check_mode=False, verify_only=False, api=api)
         self.assertEqual(result["outcome"], "added")
         self.assertTrue(result["verified"])
         self.assertEqual(api.put_count(), 1)
@@ -140,28 +141,28 @@ class GitHubAppRepositoryTests(unittest.TestCase):
 
     def test_304_is_accepted_only_after_fresh_visibility_verification(self):
         api = FakeGitHub(put_status=304)
-        result = grant.execute(PAT, PEM, ISSUER, check_mode=False, verify_only=False, api=api)
+        result = grant.execute(CLASSIC_TOKEN, PEM, ISSUER, check_mode=False, verify_only=False, api=api)
         self.assertEqual(result["http_status"], 304)
         self.assertTrue(result["verified"])
         self.assertEqual(api.put_count(), 1)
 
     def test_rerun_is_noop_after_grant(self):
         api = FakeGitHub()
-        grant.execute(PAT, PEM, ISSUER, check_mode=False, verify_only=False, api=api)
-        result = grant.execute(PAT, PEM, ISSUER, check_mode=False, verify_only=False, api=api)
+        grant.execute(CLASSIC_TOKEN, PEM, ISSUER, check_mode=False, verify_only=False, api=api)
+        result = grant.execute(CLASSIC_TOKEN, PEM, ISSUER, check_mode=False, verify_only=False, api=api)
         self.assertEqual(result["outcome"], "present")
         self.assertFalse(result["grant_attempted"])
         self.assertEqual(api.put_count(), 1)
 
     def test_already_visible_repository_is_noop(self):
         api = FakeGitHub(present=True)
-        result = grant.execute(PAT, PEM, ISSUER, check_mode=False, verify_only=False, api=api)
+        result = grant.execute(CLASSIC_TOKEN, PEM, ISSUER, check_mode=False, verify_only=False, api=api)
         self.assertEqual(result["outcome"], "present")
         self.assertEqual(api.put_count(), 0)
 
     def test_membership_on_second_page_is_found(self):
         api = FakeGitHub(page_mode=True)
-        result = grant.execute(PAT, PEM, ISSUER, check_mode=False, verify_only=False, api=api)
+        result = grant.execute(CLASSIC_TOKEN, PEM, ISSUER, check_mode=False, verify_only=False, api=api)
         self.assertEqual(result["outcome"], "present")
         self.assertEqual(api.put_count(), 0)
         self.assertTrue(any("page=2" in path for _, path, _, _ in api.calls))
@@ -169,13 +170,13 @@ class GitHubAppRepositoryTests(unittest.TestCase):
     def test_verify_mode_refuses_missing_access_without_put(self):
         api = FakeGitHub()
         with self.assertRaisesRegex(grant.Refusal, "not_granted"):
-            grant.execute(PAT, PEM, ISSUER, check_mode=False, verify_only=True, api=api)
+            grant.execute(CLASSIC_TOKEN, PEM, ISSUER, check_mode=False, verify_only=True, api=api)
         self.assertEqual(api.put_count(), 0)
 
     def test_refuses_wrong_app_identity_before_put(self):
         api = FakeGitHub(overrides={("GET", "/app"): grant.Response(200, {}, app(slug="different-app"))})
         with self.assertRaisesRegex(grant.Refusal, "identity_refused"):
-            grant.execute(PAT, PEM, ISSUER, False, False, api)
+            grant.execute(CLASSIC_TOKEN, PEM, ISSUER, False, False, api)
         self.assertEqual(api.put_count(), 0)
 
     def test_refuses_wrong_or_suspended_or_all_repositories_installation(self):
@@ -192,7 +193,7 @@ class GitHubAppRepositoryTests(unittest.TestCase):
                     }
                 )
                 with self.assertRaisesRegex(grant.Refusal, "identity_refused"):
-                    grant.execute(PAT, PEM, ISSUER, False, False, api)
+                    grant.execute(CLASSIC_TOKEN, PEM, ISSUER, False, False, api)
                 self.assertEqual(api.put_count(), 0)
 
     def test_refuses_public_or_non_admin_repository(self):
@@ -202,16 +203,33 @@ class GitHubAppRepositoryTests(unittest.TestCase):
                     overrides={("GET", "/repos/uhstray-io/site-config"): grant.Response(200, {}, repository(**changed))}
                 )
                 with self.assertRaisesRegex(grant.Refusal, "metadata_refused"):
-                    grant.execute(PAT, PEM, ISSUER, False, False, api)
+                    grant.execute(CLASSIC_TOKEN, PEM, ISSUER, False, False, api)
                 self.assertEqual(api.put_count(), 0)
 
-    def test_refuses_missing_classic_repo_scope_and_does_not_put(self):
-        for token, scopes in (("fine-grained-token", "repo"), (PAT, "read:user")):
-            with self.subTest(token=token, scopes=scopes):
+    def test_oauth_token_with_repo_scope_is_accepted(self):
+        api = FakeGitHub()
+        result = grant.execute(OAUTH_TOKEN, PEM, ISSUER, False, False, api)
+        self.assertEqual(result["outcome"], "added")
+        self.assertTrue(result["verified"])
+        self.assertEqual(api.put_count(), 1)
+
+    def test_refuses_unsupported_token_form_before_request(self):
+        api = FakeGitHub()
+        with self.assertRaisesRegex(grant.Refusal, "supported_token_required"):
+            grant.execute("github_pat_synthetic", PEM, ISSUER, False, False, api)
+        self.assertEqual(api.calls, [])
+
+    def test_refuses_missing_repo_scope_for_classic_and_oauth_tokens_before_put(self):
+        for token in (CLASSIC_TOKEN, OAUTH_TOKEN):
+            with self.subTest(token=token):
                 api = FakeGitHub(
-                    overrides={("GET", "/user"): grant.Response(200, {"X-OAuth-Scopes": scopes}, {"login": "runner"})}
+                    overrides={
+                        ("GET", "/user"): grant.Response(
+                            200, {"X-OAuth-Scopes": "read:user"}, {"login": "runner"}
+                        )
+                    }
                 )
-                with self.assertRaises(grant.Refusal):
+                with self.assertRaisesRegex(grant.Refusal, "repo_scope_required"):
                     grant.execute(token, PEM, ISSUER, False, False, api)
                 self.assertEqual(api.put_count(), 0)
 
@@ -233,14 +251,14 @@ class GitHubAppRepositoryTests(unittest.TestCase):
                     }
                 )
                 with self.assertRaises(grant.Refusal):
-                    grant.execute(PAT, PEM, ISSUER, False, False, api)
+                    grant.execute(CLASSIC_TOKEN, PEM, ISSUER, False, False, api)
                 self.assertEqual(api.put_count(), 0)
 
     def test_put_timeout_is_unverified_and_never_rolled_back(self):
         path = f"/user/installations/{INSTALLATION_ID}/repositories/{REPOSITORY_ID}"
         api = FakeGitHub(overrides={("PUT", path): grant.Refusal("request", "transport_unavailable")})
         with self.assertRaises(grant.Refusal) as raised:
-            grant.execute(PAT, PEM, ISSUER, False, False, api)
+            grant.execute(CLASSIC_TOKEN, PEM, ISSUER, False, False, api)
         self.assertEqual(raised.exception.outcome, "grant_outcome_unverified")
         self.assertTrue(raised.exception.attempted)
         self.assertEqual(api.put_count(), 1)
@@ -252,7 +270,11 @@ class GitHubAppRepositoryTests(unittest.TestCase):
         with (
             patch.object(grant, "GitHub", return_value=api),
             patch.object(sys, "argv", ["github_app_repository.py", "--issuer", ISSUER]),
-            patch.object(sys, "stdin", io.StringIO(json.dumps({"pat": PAT, "app_private_key": PEM.decode()}))),
+            patch.object(
+                sys,
+                "stdin",
+                io.StringIO(json.dumps({"installation_admin_token": CLASSIC_TOKEN, "app_private_key": PEM.decode()})),
+            ),
         ):
             stdout = io.StringIO()
             with contextlib.redirect_stdout(stdout):
@@ -268,16 +290,22 @@ class GitHubAppRepositoryTests(unittest.TestCase):
     def test_204_without_fresh_visibility_is_unverified(self):
         api = FakeGitHub(verify_after_put=False)
         with self.assertRaisesRegex(grant.Refusal, "grant_outcome_unverified") as raised:
-            grant.execute(PAT, PEM, ISSUER, False, False, api)
+            grant.execute(CLASSIC_TOKEN, PEM, ISSUER, False, False, api)
         self.assertTrue(raised.exception.attempted)
         self.assertEqual(api.put_count(), 1)
 
     def test_failure_output_does_not_contain_synthetic_secrets(self):
-        api = FakeGitHub(overrides={("GET", "/user"): grant.Response(403, {}, {"message": PAT + PEM.decode()})})
+        api = FakeGitHub(
+            overrides={("GET", "/user"): grant.Response(403, {}, {"message": CLASSIC_TOKEN + PEM.decode()})}
+        )
         with (
             patch.object(grant, "GitHub", return_value=api),
             patch.object(sys, "argv", ["github_app_repository.py", "--issuer", ISSUER]),
-            patch.object(sys, "stdin", io.StringIO(json.dumps({"pat": PAT, "app_private_key": PEM.decode()}))),
+            patch.object(
+                sys,
+                "stdin",
+                io.StringIO(json.dumps({"installation_admin_token": CLASSIC_TOKEN, "app_private_key": PEM.decode()})),
+            ),
         ):
             stdout = io.StringIO()
             stderr = io.StringIO()
@@ -286,9 +314,9 @@ class GitHubAppRepositoryTests(unittest.TestCase):
         output = stdout.getvalue()
         self.assertEqual(result, 1)
         self.assertIn('"outcome": "forbidden"', output)
-        self.assertNotIn(PAT, output)
+        self.assertNotIn(CLASSIC_TOKEN, output)
         self.assertNotIn(PEM.decode(), output)
-        self.assertNotIn(PAT, stderr.getvalue())
+        self.assertNotIn(CLASSIC_TOKEN, stderr.getvalue())
         self.assertNotIn(PEM.decode(), stderr.getvalue())
 
     def test_malformed_private_key_returns_bounded_json_without_signer_diagnostics(self):
@@ -297,7 +325,11 @@ class GitHubAppRepositoryTests(unittest.TestCase):
             patch.object(grant, "sign_assertion", app_token_module.sign_assertion),
             patch.object(grant, "GitHub", return_value=FakeGitHub()),
             patch.object(sys, "argv", ["github_app_repository.py", "--issuer", ISSUER]),
-            patch.object(sys, "stdin", io.StringIO(json.dumps({"pat": PAT, "app_private_key": pem}))),
+            patch.object(
+                sys,
+                "stdin",
+                io.StringIO(json.dumps({"installation_admin_token": CLASSIC_TOKEN, "app_private_key": pem})),
+            ),
         ):
             stdout = io.StringIO()
             stderr = io.StringIO()

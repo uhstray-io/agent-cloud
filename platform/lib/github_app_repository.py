@@ -175,17 +175,21 @@ def validate_app(api: GitHub, issuer: str, key: bytes) -> tuple[int, int]:
     return app["id"], installation["id"]
 
 
-def validate_pat(api: GitHub, pat: str) -> None:
-    require(pat.startswith("ghp_"), "pat", "classic_token_required")
-    response = checked(api.request("GET", "/user", pat), (200,), "pat")
+def validate_admin_token(api: GitHub, admin_token: str) -> None:
+    require(
+        isinstance(admin_token, str) and re.fullmatch(r"gh(?:p|o)_[A-Za-z0-9]+", admin_token) is not None,
+        "admin_token",
+        "supported_token_required",
+    )
+    response = checked(api.request("GET", "/user", admin_token), (200,), "admin_token")
     require(
         isinstance(response.body, dict) and isinstance(response.body.get("login"), str),
-        "pat",
+        "admin_token",
         "user_refused",
         response.status,
     )
     scopes = response.headers.get("X-OAuth-Scopes", "") if response.headers else ""
-    require("repo" in {scope.strip() for scope in scopes.split(",")}, "pat", "repo_scope_required")
+    require("repo" in {scope.strip() for scope in scopes.split(",")}, "admin_token", "repo_scope_required")
 
 
 def _next_link(link_header: str) -> str | None:
@@ -279,7 +283,7 @@ def _installation_token(api: GitHub, issuer: str, key: bytes, installation_id: i
 
 
 def execute(
-    pat: str,
+    admin_token: str,
     key: bytes,
     issuer: str,
     check_mode: bool,
@@ -287,9 +291,9 @@ def execute(
     api: GitHub | None = None,
 ) -> dict[str, Any]:
     api = api or GitHub()
-    require(bool(pat) and bool(key) and bool(issuer), "input", "required_input_missing")
-    validate_pat(api, pat)
-    repository_id = validate_repository(api, pat)
+    require(bool(admin_token) and bool(key) and bool(issuer), "input", "required_input_missing")
+    validate_admin_token(api, admin_token)
+    repository_id = validate_repository(api, admin_token)
     _app_id, installation_id = validate_app(api, issuer, key)
     token = _installation_token(api, issuer, key, installation_id)
     present = repository_id in installation_repository_ids(api, token)
@@ -313,12 +317,12 @@ def execute(
         }
 
     # Revalidate both independent authorities immediately before the sole additive PUT.
-    validate_pat(api, pat)
-    require(validate_repository(api, pat) == repository_id, "repository", "metadata_changed")
+    validate_admin_token(api, admin_token)
+    require(validate_repository(api, admin_token) == repository_id, "repository", "metadata_changed")
     _app_id_after, installation_after = validate_app(api, issuer, key)
     require(installation_after == installation_id, "installation", "identity_changed")
     try:
-        grant = api.request("PUT", f"/user/installations/{installation_id}/repositories/{repository_id}", pat)
+        grant = api.request("PUT", f"/user/installations/{installation_id}/repositories/{repository_id}", admin_token)
     except Exception as exc:
         status = exc.status if isinstance(exc, Refusal) else 0
         raise Refusal("grant", "grant_outcome_unverified", status, True) from None
@@ -356,7 +360,7 @@ def main() -> int:
         require(isinstance(payload, dict), "input", "malformed_input")
         pem = payload.get("app_private_key")
         result = execute(
-            payload.get("pat", ""),
+            payload.get("installation_admin_token", ""),
             pem.encode() if isinstance(pem, str) else b"",
             args.issuer,
             args.check_mode,

@@ -305,3 +305,23 @@
       `verify-github-runners.yml`, and spec scenarios **"Two hosts installed at
       different times match"** and **"The running version does not drift"** are verified
       (both hosts report the declared pinned version with self-update disabled).
+
+## 11. Dedicated runner App administration credential follow-up
+
+The runner App installation grant must not reuse `secret/services/github:pat`: that
+shared credential also serves GHCR, and a scope change could disrupt package pulls.
+Keep the grant-only `installation_admin_token` in `secret/services/github-runner`; the
+helper accepts only `ghp_` classic PAT or `gho_` OAuth token forms and refuses to write
+unless the token has the `repo` OAuth scope and its user has admin permission on the
+private target repository.
+
+- [ ] 11.1 After the reviewed code merges into Dev, seed only `installation_admin_token` into
+      `secret/services/github-runner` through the governed `seed-openbao-key.yml` flow,
+      using `scripts/semaphore-seed-input.py` with an encrypted isolated Semaphore
+      environment. Do not replace or rewrite `secret/services/github:pat`.
+- [ ] 11.2 Run the reviewed Dev grant template in check mode; confirm it previews the
+      fixed repository without a PUT and emits no credential material.
+- [ ] 11.3 Run the reviewed Dev grant template normally; confirm the additive grant and
+      fresh installation-token readback report `site-config` present.
+- [ ] 11.4 Run the `site-config` runner CI workflow and confirm it completes on the
+      declared self-hosted runner group.
