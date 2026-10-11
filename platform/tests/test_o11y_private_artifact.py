@@ -307,6 +307,104 @@ def test_inventory_mismatch_duplicate_or_alias_refuses(source):
         _insert_selector(source, catalog, 1)
 
 
+def test_flow_mappings_lists_and_finite_floats_outside_insertion_path_are_preserved():
+    catalog, _ = catalog_fixture()
+    source = (
+        "unrelated: {mode: strict, ratios: [0.25, 1.5]}\n"
+        "agent_cloud:\n  children:\n    o11y_svc:\n      hosts:\n        o11y-test:\n"
+        "          vm_node: node-test\n          vm_vmid: '100'\n"
+        "          firewall_rules: [{ports: [443, 9100], weight: 0.75}]\n"
+    )
+
+    result = _insert_selector(source, catalog, 1)
+    selector = yaml.safe_load(result)["agent_cloud"]["children"]["o11y_svc"]["hosts"]["o11y-test"][
+        "o11y_backup_artifact_selector"
+    ]
+    insertion = "          o11y_backup_artifact_selector:\n"
+    insertion += "".join(
+        "            "
+        + key
+        + ": "
+        + (json.dumps(selector[key]) if isinstance(selector[key], str) else str(selector[key]))
+        + "\n"
+        for key in ("volid", "backend", "format", "creation_time_epoch", "size_bytes")
+    )
+
+    assert insertion in result
+    assert result.replace(insertion, "", 1) == source
+    expected = yaml.safe_load(source)
+    expected["agent_cloud"]["children"]["o11y_svc"]["hosts"]["o11y-test"][
+        "o11y_backup_artifact_selector"
+    ] = selector
+    assert yaml.safe_load(result) == expected
+    assert "unrelated: {mode: strict, ratios: [0.25, 1.5]}" in result
+    assert "firewall_rules: [{ports: [443, 9100], weight: 0.75}]" in result
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "{agent_cloud: {children: {o11y_svc: {hosts: {o11y-test: {vm_node: node-test, vm_vmid: '100'}}}}}}\n",
+        "agent_cloud: {children: {o11y_svc: {hosts: {o11y-test: {vm_node: node-test, vm_vmid: '100'}}}}}\n",
+        "agent_cloud:\n  children: {o11y_svc: {hosts: {o11y-test: {vm_node: node-test, vm_vmid: '100'}}}}\n",
+        "agent_cloud:\n  children:\n    o11y_svc: {hosts: {o11y-test: {vm_node: node-test, vm_vmid: '100'}}}\n",
+        "agent_cloud:\n  children:\n    o11y_svc:\n      hosts: {o11y-test: {vm_node: node-test, vm_vmid: '100'}}\n",
+        (
+            "agent_cloud:\n  children:\n    o11y_svc:\n      hosts:\n"
+            "        o11y-test: {vm_node: node-test, vm_vmid: '100'}\n"
+        ),
+    ],
+)
+def test_flow_mapping_at_each_insertion_boundary_refuses(source):
+    catalog, _ = catalog_fixture()
+    with pytest.raises(ValueError, match="private inventory does not match"):
+        _insert_selector(source, catalog, 1)
+
+
+@pytest.mark.parametrize(
+    "unrelated_yaml",
+    [
+        "settings: [{mode: !custom strict}]\n",
+        "defaults: &shared {mode: strict}\nsettings: [{mode: *shared}]\n",
+        "settings: [{mode: strict, mode: relaxed}]\n",
+        "settings: [{<<: {mode: strict}}]\n",
+    ],
+)
+def test_nested_duplicate_alias_merge_and_custom_tag_constructs_refuse(unrelated_yaml):
+    catalog, _ = catalog_fixture()
+    source = (
+        unrelated_yaml
+        + "agent_cloud:\n  children:\n    o11y_svc:\n      hosts:\n        o11y-test:\n"
+        "          vm_node: node-test\n          vm_vmid: '100'\n"
+    )
+
+    with pytest.raises(ValueError, match="private inventory does not match"):
+        _insert_selector(source, catalog, 1)
+
+
+@pytest.mark.parametrize("number", [".nan", ".inf", "-.Inf"])
+def test_nonfinite_floats_refuse(number):
+    catalog, _ = catalog_fixture()
+    source = (
+        f"unrelated: {{ratio: {number}}}\n"
+        "agent_cloud:\n  children:\n    o11y_svc:\n      hosts:\n        o11y-test:\n"
+        "          vm_node: node-test\n          vm_vmid: '100'\n"
+    )
+    with pytest.raises(ValueError, match="private inventory does not match"):
+        _insert_selector(source, catalog, 1)
+
+
+def test_existing_selector_refuses():
+    catalog, _ = catalog_fixture()
+    source = (
+        "agent_cloud:\n  children:\n    o11y_svc:\n      hosts:\n        o11y-test:\n"
+        "          vm_node: node-test\n          vm_vmid: '100'\n"
+        "          o11y_backup_artifact_selector: {format: vma.zst}\n"
+    )
+    with pytest.raises(ValueError, match="private inventory does not match"):
+        _insert_selector(source, catalog, 1)
+
+
 def test_capture_and_deterministic_proposal_provenance_are_exact(tmp_path):
     catalog, _ = catalog_fixture()
     repo = tmp_path / "repo"

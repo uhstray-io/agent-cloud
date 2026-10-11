@@ -206,6 +206,22 @@ or filesystems. Use these facts to declare any artifact selector and then
 design the isolated target and immutable storage mechanism in private
 site-config before implementing a restore workflow.
 
+**Private selector proposal compatibility (task 4359, 2026-10-11):** the
+proposal refused before recensus and before any private inventory write. After
+flow-style sequences were admitted, valid nested flow mappings in firewall
+lists and coverage records still failed the global mapping-style guard; after
+that guard was scoped, a standard finite YAML float in an unrelated gateway
+sampling value failed the tag whitelist. The insertion validator now requires
+block style for the root, each mapping along the literal
+`agent_cloud.children.o11y_svc.hosts` path, and the target-host mapping. It
+recursively validates all nodes, accepts nested flow
+maps/lists and standard finite floats elsewhere (including below the target
+host), and continues to refuse duplicate keys, aliases, merge keys, custom
+tags, nonfinite floats, an existing selector, or semantic changes beyond the
+new selector. In-memory private-catalog and inventory compatibility passed
+without printing values. This parser compatibility result does not establish
+private-layout acceptance, select an artifact, or complete OpenSpec `4.6e`.
+
 The follow-on restore-feasibility receipt is deliberately narrow. It reports
 source-layout parse and size completeness separately from whether exactly one
 supported artifact candidate is present. It reports the count of distinct
@@ -528,9 +544,17 @@ catalog. A new proposal repeats the GET-only census, requires age 0–1,800 seco
 and compares complete normalized storage and artifact sets independent of API
 ordering. It writes only `inventory/production.yml`, adding the existing
 five-field selector to the literal sole-host location proposed for
-`agent_cloud.children.o11y_svc.hosts`. Duplicate YAML keys, aliases, anchors,
-merge keys, tags, flow mappings, alternate layouts, identity mismatch, and any
-semantic diff beyond that selector refuse with fixed text.
+`agent_cloud.children.o11y_svc.hosts`. The root, each mapping along that path,
+and the target-host mapping must use block style; unrelated or descendant flow
+maps and sequences and standard finite YAML floats are accepted. Recursive
+validation refuses duplicate YAML keys, aliases, anchors, merge keys, custom
+tags, nonfinite floats, alternate layouts, identity mismatch, an existing
+selector, and any semantic diff beyond that selector. Task 4359 refused before
+recensus and before a private write: after flow sequences were admitted, valid
+nested flow maps in firewall lists and coverage records failed the global
+mapping-style guard; after that guard was scoped, an unrelated gateway sampling
+float failed the tag whitelist. In-memory private compatibility passed without
+printing values; actual private-layout acceptance remains unverified.
 
 The deterministic proposal ref is
 `proposal/o11y-artifact-<capture-commit>-row-<row>`. A matching existing branch

@@ -55,10 +55,30 @@ refused.
 
 Inventory insertion is restricted to the literal
 `agent_cloud.children.o11y_svc.hosts.<sole-host>` structure, direct matching
-`vm_node`/`vm_vmid` fields, and one new host-level selector. Duplicate keys,
-aliases, anchors, merge keys, custom tags, flow mappings, selectors elsewhere,
-ambiguous layout, or any semantic change beyond that selector refuse. The actual
-private layout remains unverified and is a runtime gate.
+`vm_node`/`vm_vmid` fields, and one new host-level selector. The root, each
+mapping along that path, and the target-host mapping must use block style;
+unrelated or descendant flow mappings and sequences are accepted. Recursive
+validation still refuses duplicate keys, aliases, anchors, merge keys, custom
+tags, nonfinite floats, selectors elsewhere, ambiguous layout, or any semantic
+change beyond that selector. Standard finite YAML floats are accepted. The
+actual private layout remains unverified and is a runtime gate.
+
+## Selector compatibility follow-up (2026-10-11)
+
+Dev-bound proposal task 4359 refused before the fresh census and before any
+private inventory write. After sequence-style compatibility was relaxed, the
+whole-document validator still rejected valid nested flow mappings in firewall
+lists and coverage records, including descendants of the target host; admitting
+those exposed a second refusal because an unrelated gateway sampling value was
+a standard finite YAML float. The compatibility change now requires block style
+only for the document root, each mapping in the literal selector path, and the
+target-host mapping. Recursive duplicate-key, alias, merge-key, and tag checks
+remain global; standard finite floats are accepted and nonfinite values refuse.
+Insertion preserves original bytes outside the selector and requires full
+semantic equality with only that selector added. In-memory private
+catalog/inventory compatibility then passed without printing values. The
+refusals selected no artifact and changed no private state. OpenSpec `4.6e`
+remains unchecked.
 
 The shared site-config Git tasks add optional reviewed-base mode; existing
 callers retain their fresh-branch behavior. The proposal push rechecks the
