@@ -30,7 +30,7 @@ The playbook remains the authority for the selected repository list. Its public-
 
 1. Update the declared list, its exact structural test, and runner documentation. **Acceptance:** focused BATS test passes; `agent-cloud` remains excluded.
 2. Merge the reviewed change to Dev. **Acceptance:** the reviewed Dev revision contains the allowlist change.
-3. Run the existing runner-group Semaphore task in dry-run mode, then converge. **Acceptance:** dry run reports the intended list; convergence completes.
+3. Run `Manage GitHub Runner Group (Dev)` in Semaphore dry-run mode, then converge. **Acceptance:** dry run reports the intended list; convergence completes.
 4. Verify `site-config` is granted to `uhstray-selfhosted`, then switch its workflow to that group. **Acceptance:** the grant is visible before the workflow is changed.
 
 ## Validation Criteria
