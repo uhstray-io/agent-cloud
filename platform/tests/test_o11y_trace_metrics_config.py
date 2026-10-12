@@ -118,8 +118,14 @@ def test_production_retention_requires_numeric_backup_restore_reference_before_w
         "o11y_prom_retention_size | default('0B') | string | trim is match('^[1-9][0-9]*(B|KB|MB|GB|TB|PB|EB)$')",
     }
     assert gate["when"] == "not (local_mode | default(false) | bool) and (_o11y_retention_expansion | bool)"
-    volume_index = next(i for i, task in enumerate(deploy_tasks) if task["name"] == "Read o11y volume backing capacity before retention expansion")
-    placement_index = next(i for i, task in enumerate(deploy_tasks) if task["name"] == "Place the monorepo + ensure podman/compose")
+    volume_index = next(
+        i
+        for i, task in enumerate(deploy_tasks)
+        if task["name"] == "Read o11y volume backing capacity before retention expansion"
+    )
+    placement_index = next(
+        i for i, task in enumerate(deploy_tasks) if task["name"] == "Place the monorepo + ensure podman/compose"
+    )
     assert gate_index < volume_index < placement_index
 
     env = Environment(undefined=StrictUndefined)

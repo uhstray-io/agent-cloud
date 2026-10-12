@@ -5,7 +5,6 @@ import pytest
 import yaml
 from jinja2 import Environment, StrictUndefined, Undefined
 
-
 ROOT = Path(__file__).resolve().parents[2]
 DEPLOY = ROOT / "platform/services/o11y/deployment"
 POLICY = yaml.safe_load(
