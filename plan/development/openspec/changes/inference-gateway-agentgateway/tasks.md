@@ -644,8 +644,9 @@
       each of those checks exists and sends through `tasks/agw-probe.yml`, or its text is
       restated.
       2026-10-12: restated by operator decision. 6.1a = the shared probe exists and every
-      gateway request in this change goes through it (deploy, renewal proof, conformance,
-      client-TLS probe). Checks owned by sibling changes (benchmark, personal keys,
+      gateway verification gate in this change goes through it (deploy, renewal proof,
+      conformance's keyless gate, client-TLS probe); the conformance cases themselves stay curl,
+      as recorded 2026-10-05. Checks owned by sibling changes (benchmark, personal keys,
       observability) are tracked there. Ticked. Evidence read from `origin/dev`: the shared
       probe `tasks/agw-probe.yml` is included by `deploy-agentgateway.yml:713,763,812`,
       `renew-internal-certs.yml:558` (as `file:`), `run-agw-conformance.yml:221` and

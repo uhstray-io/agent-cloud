@@ -338,8 +338,9 @@ Deliberation, verification log and the phased plan: OpenSpec change
 `plan/development/openspec/changes/inference-gateway-agentgateway` (design.md decisions 1–8).
 
 **Refresh, 2026-10-12 (appended; the text above is unchanged).** The count in the line
-above is stale: `design.md` of that change now carries numbered decisions 1 to 12, plus the
-dated 2026-09-27 and 2026-10-02 sections, so "decisions 1–8" names only the original eight.
+above is stale: `design.md` of that change now carries numbered decisions 1 to 12 (11 and 12 sit
+in "Decisions recorded 2026-09-28"), plus the "Decisions recorded 2026-09-27" and
+"Findings 2026-10-02" sections, so "decisions 1–8" names only the original eight.
 The pointer in plan 06 that this record promised was added on 2026-10-04
 (`plan/development/openspec/changes/inference-gateway-agentgateway/tasks.md`, task 5.2).
 
