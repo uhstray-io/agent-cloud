@@ -15,6 +15,11 @@
 # installed by install-podman.yml.
 ACTIONS_RUNNER_CONTAINER_HOOKS={{ github_runner_home }}/_hooks/index.js
 
+# Runs before EVERY job. Creates the directories the runner bind-mounts into a job
+# container: podman, unlike Docker, refuses a bind mount whose source is missing.
+# The runner reads this file only when it starts, so the deploy restarts it on a change.
+ACTIONS_RUNNER_HOOK_JOB_STARTED={{ github_runner_home }}/job-started.sh
+
 # Runs after EVERY job — success, failure, or cancellation — and destroys the job's
 # workspace and containers. Second layer on purpose: the container boundary above is a
 # single mechanism protecting several repositories from each other, and a workspace wipe

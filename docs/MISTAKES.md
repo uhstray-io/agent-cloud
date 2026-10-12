@@ -163,6 +163,7 @@ and why.
 | 10.21 | Checked-in ruleset declared `active`; the live one was `evaluate` and `main` was unprotected | Config drift | 1 | Convention (scheduled live-vs-JSON check proposed) |
 | 10.22 | A dashboard panel was renamed and the deploy's verify kept the old title; only a production run compared them | Mechanism never exercised | 1 | Test (`test_o11y_dashboard_asserts.py`, mutation-checked) |
 | 10.23 | The main-to-dev sync failed on every workflow-file change from 2026-08-28; a promotion would have reverted two action bumps on `main` | Mechanism never exercised | 1 | CI (`Promotion source (dev -> main)` ancestry step; `test_promotion_source_guard.py`, mutation-checked) |
+| 10.24 | Shipped container jobs on rootless podman with Docker's mount semantics assumed; every `container:` job failed on a missing bind source and on a socket link to root's podman, while the deploy's uid-map check passed | Mechanism never exercised | 1 | Playbook probe (hook-shaped `docker create` in the user manager) + test (`test_service_github_runner.bats`) |
 | 11.1 | 76 assertions across the suite could never fail — `!` and `[[ ]]` are exempt from `set -e` | False-green test | 1 | **Ratchet test** (`test_assertions_are_real.bats` + `known_inert_assertions.txt`) |
 | 11.2 | Sourced a config file instead of reading it, turning every credential into shell code | Live-state damage | 1 | Test |
 | 11.3 | Committed without running the suite — third occurrence | Process | 1 | Pre-push hook (status note 2026-10-02) |
@@ -4433,6 +4434,38 @@ promoting. Do not assume the sync ran; its job is a convenience, not the guarant
 `platform/tests/test_promotion_source_guard.py` runs that step's own script against
 throwaway repositories; removing the fetch, the `exit 1`, the error/non-ancestor split or the
 full-history checkout each turns one of its tests red.
+
+### 10.24 Container jobs were shipped on rootless podman with Docker's mount semantics assumed
+
+**What happened.** After the 2.29 fix, the deploy's uid-map check passed on both GitHub
+runners, and every job that declared `container:` still failed in "Initialize containers"
+(weft run 38153546438, 2026-10-11): `cannot resolve /github/home: lstat /github: no such file
+or directory`. A diagnostic workflow repeated the hooks' `docker create` inside a job on each
+runner. It failed with `statfs .../_work/_actions: no such file or directory`; after the
+missing sources were made it failed again with `statfs /var/run/docker.sock: permission
+denied`. The runner deletes `_actions` at the start of every job and makes the tool cache
+only on demand, and Docker creates a missing bind source where podman refuses it. The runner
+also mounts `/var/run/docker.sock` into every job container, a hardcoded path, and
+podman-docker links it to root's socket, which the runner account cannot reach.
+
+**Root cause.** The design's spike (task 1.2: run the hooks against rootless podman "with a
+trivial job payload", recording the volume mount of the work directory) is still unchecked in
+`tasks.md`, and the hooks were enabled on the strength of the podman-docker shim being
+present. The deploy
+proved the parts it could see (the shim, the uid map) and nothing created a container with
+the mounts a job actually gets.
+
+**The rule.** A compatibility layer is proved with the exact call its client makes, not by
+its presence. For container jobs that is the hooks' `docker create` with the runner's full
+mount set, in the jobs' context (2.29).
+
+**Enforced by.** `deploy-github-runner.yml` runs the deployed `job-started.sh` and then a
+hook-shaped `docker create` with all eight runner mounts in a `systemd-run --user` transient
+unit, and calls `_ping` on the mounted socket path; the deploy fails unless both succeed.
+`tasks/podman-user-docker-socket.yml` reads back the effective tmpfiles.d lines for the
+socket path. `test_service_github_runner.bats` renders and runs the job-started hook, and
+requires the probe's mount set, the user-socket link, and that root's socket is never a
+link target.
 
 ## 11. The largest one
 

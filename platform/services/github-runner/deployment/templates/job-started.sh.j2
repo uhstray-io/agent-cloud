@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# job-started.sh: runs before every job. Rendered by Ansible; do not edit on the host.
+#
+# Creates the host directories the runner bind-mounts into a job container, so a job that
+# declares `container:` can start under rootless podman.
+#
+# Docker creates a missing bind-mount source. Podman refuses it: `docker create` fails with
+# "statfs <path>: no such file or directory". The runner mounts its action and tool
+# directories into every job container but does not create them. It deletes _actions at
+# the start of every job and creates it again only when it downloads an action, and it
+# creates the tool cache only when a tool is installed. So a container job that uses no
+# action fails before its first step. (Upstream file and line references: the service
+# CLAUDE.md, "Container jobs under rootless podman".)
+#
+# The runner calls this hook after it downloads the actions and before "Initialize
+# containers", which is the only moment that works: a directory made at deploy time is
+# gone after the first job. The runner also creates the two _temp directories itself;
+# they are made here too so that the deploy's mount probe, which runs this script,
+# covers the full mount set.
+#
+# This hook NEVER fails the job. Most jobs declare no container and need none of this, and
+# a non-zero exit from a job-started hook fails the job. If a directory cannot be made, the
+# log says so and a container job then fails in "Initialize containers" with the path.
+set -uo pipefail
+
+log() { printf '[job-started] %s\n' "$*"; }
+
+WORKDIR="{{ github_runner_home }}/_work"
+TEMPDIR="${RUNNER_TEMP:-$WORKDIR/_temp}"
+
+for dir in "$WORKDIR/_actions" "${RUNNER_TOOL_CACHE:-$WORKDIR/_tool}" \
+           "$TEMPDIR/_github_home" "$TEMPDIR/_github_workflow"; do
+  mkdir -p "$dir" || log "WARNING: could not create $dir; a container job will not start"
+done
+log "container mount sources present"
+
+exit 0
