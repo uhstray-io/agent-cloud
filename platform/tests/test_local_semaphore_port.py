@@ -119,24 +119,40 @@ def test_a_typed_inventory_integer_is_accepted(tmp_path):
 
 
 STUB = """#!/bin/sh
-# Stand-in for podman: answers what the recreate task asks, logs every `rm`.
+# Stand-in for podman: answers what the recreate task asks, logs every `rm` and `pull`.
+# The desired image is local when STUB_IMAGE_LOCAL=yes or once a pull has succeeded.
 case "$1" in
   container) [ "$STUB_EXISTS" = yes ] ;;
   rm) echo "$*" >> "$STUB_LOG" ;;
+  pull)
+    echo "pull" >> "$STUB_PULL_LOG"
+    [ "$STUB_PULL" = ok ] && touch "$STUB_PULLED" ;;
+  image)
+    if [ "$STUB_IMAGE_LOCAL" = yes ] || [ -e "$STUB_PULLED" ]; then
+      [ "$2" = inspect ] && printf '%s' "$STUB_IMAGE_WANT"
+      exit 0
+    fi
+    exit 1 ;;
   inspect)
     case "$*" in
       *PortBindings*) printf '%s' "$STUB_PORTS" ;;
       *Mounts*) printf '%s' '/run/podman/podman.sock /workspace/agent-cloud /var/lib/agent-cloud-deploy ' ;;
       *SecurityOpt*) printf '%s' '[label=disable]' ;;
       *Config.Env*) printf '%s' '["SSL_CERT_FILE=/x"]' ;;
+      *'{{.Image}}'*) printf '%s' "$STUB_IMAGE_HAVE" ;;
     esac ;;
 esac
 """
 
 
-def _recreate(tmp_path: Path, *, exists: bool, ports: str, want: int = 3000):
+def _recreate(tmp_path: Path, *, exists: bool, ports: str, want: int = 3000, image_have: str = "sha256:a",
+              image_want: str = "sha256:a", image_local: bool = True, pull_ok: bool = True):
     """Run the real recreate task against a stub podman. Everything else the task checks
-    (mounts, label=disable, OIDC) is stubbed as satisfied, so only the port decides."""
+    (mounts, label=disable, OIDC) is stubbed as satisfied, so only the port and the image
+    decide. image_have is the running container's image ID, image_want what the desired
+    image resolves to once it is local; image_local says whether it already is, pull_ok whether
+    a pull would succeed. Returns (result, rm log, pull log, combined output); result is None
+    when the task failed."""
     bindir = tmp_path / "bin"
     bindir.mkdir()
     podman = bindir / "podman"
@@ -153,12 +169,16 @@ def _recreate(tmp_path: Path, *, exists: bool, ports: str, want: int = 3000):
     env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
     env.update(ANSIBLE_NOCOLOR="1", ANSIBLE_LOCAL_TEMP=str(tmp_path), ANSIBLE_REMOTE_TEMP=str(tmp_path),
                PATH=f"{bindir}:{os.environ['PATH']}", STUB_EXISTS="yes" if exists else "no", STUB_PORTS=ports,
-               STUB_LOG=str(log))
+               STUB_LOG=str(log), STUB_IMAGE_HAVE=image_have, STUB_IMAGE_WANT=image_want,
+               STUB_IMAGE_LOCAL="yes" if image_local else "no", STUB_PULL="ok" if pull_ok else "fail",
+               STUB_PULLED=str(tmp_path / "pulled"), STUB_PULL_LOG=str(tmp_path / "pull.log"))
     out = subprocess.run(["ansible-playbook", "-i", "localhost,", str(play)], cwd=REPO, env=env, text=True,
                          capture_output=True, check=False, timeout=120, stdin=subprocess.DEVNULL)
-    assert out.returncode == 0, out.stdout + out.stderr
-    result = out.stdout.split("RESULT=[")[1].split("]")[0]
-    return result, (log.read_text() if log.exists() else "")
+    rm_log = log.read_text() if log.exists() else ""
+    pull_log = (tmp_path / "pull.log").read_text() if (tmp_path / "pull.log").exists() else ""
+    if out.returncode != 0:
+        return None, rm_log, pull_log, out.stdout + out.stderr
+    return out.stdout.split("RESULT=[")[1].split("]")[0], rm_log, pull_log, out.stdout + out.stderr
 
 
 def test_the_recreate_task_runs_under_bash():
@@ -188,9 +208,39 @@ def _bindings(port: str) -> str:
 )
 def test_a_changed_port_recreates_an_existing_container(tmp_path, exists, ports, want, result, removed):
     """The publish is fixed at creation, so without this a changed value silently does nothing."""
-    got, rm_log = _recreate(tmp_path, exists=exists, ports=ports, want=want)
+    got, rm_log, _, _ = _recreate(tmp_path, exists=exists, ports=ports, want=want)
     assert got == result
     assert bool(rm_log) is removed, rm_log
+
+
+@needs_ansible
+@pytest.mark.parametrize(
+    ("image_have", "image_want", "local", "pull_ok", "result", "removed", "pulled"),
+    [
+        ("sha256:a", "sha256:a", True, True, "ok", False, False),  # same image: leave it
+        ("sha256:a", "sha256:b", True, True, "recreated", True, False),  # the pin moved: recreate, no pull needed
+        ("sha256:a", "sha256:b", False, True, "recreated", True, True),  # not local: pull first, then recreate
+        ("sha256:a", "sha256:a", False, True, "ok", False, True),  # pulled and identical: still no recreate
+        ("sha256:a", "sha256:b", False, False, None, False, True),  # pull fails: task fails, controller kept
+    ],
+)
+def test_a_changed_image_recreates_an_existing_container(
+    tmp_path, image_have, image_want, local, pull_ok, result, removed, pulled
+):
+    """The image is fixed at creation, so without this a bumped pin keeps the old controller.
+    The desired image is pulled BEFORE anything is removed, so a failed pull never costs the
+    working controller."""
+    got, rm_log, pull_log, output = _recreate(
+        tmp_path, exists=True, ports=_bindings("3000"), image_have=image_have, image_want=image_want,
+        image_local=local, pull_ok=pull_ok,
+    )
+    assert got == result, output
+    assert bool(rm_log) is removed, rm_log
+    assert bool(pull_log) is pulled, pull_log
+    assert "volume" not in rm_log  # only the container is removed, never local-semaphore-data
+    if result is None:
+        assert "cannot pull" in output
+        assert "left in place" in output
 
 
 def test_the_example_inventory_declares_the_default():
