@@ -46,6 +46,7 @@ Verified from inside a running job, on both hosts:
 | Platform interior unreachable | **enforced** — secret store, orchestrator and every hypervisor denied at the network boundary |
 | Per-job containerisation | **NOT enforced** — see below |
 | Per-job process reaping | **NOT enforced** — the wipe removes files and containers, not a process an undeclared host job left running |
+| Container engine out of a job container's reach | **NOT enforced**, by design (since 2026-10-11): `/var/run/docker.sock` in a job container is the runner account's own rootless podman socket, so a job container can do what the account can do. It can never reach root's socket. See "Container jobs under rootless podman" |
 | Setuid programs out of a job's reach | **NOT enforced** (since 2026-10-11): the unit runs without `NoNewPrivileges`, because rootless podman needs the setuid `newuidmap`/`newgidmap`. The deploy strips the setuid/setgid bit from helpers a runner never uses (`chfn`, `chsh`, `passwd`, `gpasswd`, `newgrp`, `chage`, `expiry`, `su`, `crontab`, `ssh-keysign`, `polkit-agent-helper-1`); `sudo`, `mount`, `umount`, `fusermount3`, `newuidmap` and `newgidmap` stay executable by jobs |
 
 **Per-job containerisation is not a control here.** The container-hook mechanism manages
@@ -70,6 +71,61 @@ sudoers entry: CVE-2021-3156, CVE-2025-32463) is reachable from repository code.
 these hosts promptly is part of the isolation, not hygiene. The same applies to every unit
 option that sets no_new_privs implicitly in a user unit (all seccomp-backed ones) or implies
 `PrivateUsers=`; the unit comment lists them and a test refuses them.
+
+## Container jobs under rootless podman
+
+A job that declares `container:` runs through the docker variant of the container hooks,
+which run `docker` (the podman-docker shim) as `ghrunner`, so the engine is rootless
+podman. Until 2026-10-11 every such job failed in "Initialize containers", for two reasons
+that Docker hides and podman does not.
+
+**Missing bind sources.** The runner hands the hooks a fixed mount set, and the hooks pass
+it to `docker create` unchanged (runner-container-hooks v0.8.1,
+`packages/docker/src/dockerCommands/container.ts:56-65`). The set includes `_work/_actions`
+and `_work/_tool` (actions/runner v2.336.0,
+`src/Runner.Worker/ContainerOperationProvider.cs:301-318`). The runner deletes `_actions`
+at the start of every job (`ActionManager.cs:93`), creates it again only to download an
+action, and creates the tool cache only when a tool is installed. Docker creates a
+missing source; podman refuses it (`statfs ...: no such file or directory`). The
+`ACTIONS_RUNNER_HOOK_JOB_STARTED` hook, `job-started.sh`, creates the sources. It runs
+after the action download and before "Initialize containers" (`JobExtension.cs:299-326`),
+so it must run per job: a directory made at deploy time is gone after the first job.
+
+**The Docker socket.** The runner adds `-v /var/run/docker.sock:/var/run/docker.sock` to
+every job container (`src/Runner.Worker/Container/ContainerInfo.cs:57-60`) and every
+`docker://` step (`Handlers/ContainerActionHandler.cs:193`). The path is hardcoded; no
+runner or hook setting removes it (the hooks read only the Docker CLI variables,
+`packages/docker/src/utils.ts:29-66`, and those do not change a mount source).
+podman-docker links the path to root's socket, `/run/podman/podman.sock`, in a directory
+`ghrunner` cannot enter, so podman refused the mount with `permission denied`.
+
+The options, and why this one:
+
+| Option | Result |
+|---|---|
+| Give `ghrunner` access to root's socket | **Refused.** That is root on the host for every job. |
+| Remove the mount by rewriting the hooks' input or the `docker` shim | **Rejected.** A patch on a pinned, digest-verified upstream component, which the design rules out ("the fallback is an existing supported path rather than a patch"). It would also break any job that expects a Docker API in its container. |
+| Run the rootful Docker engine instead | **Rejected.** Its socket is root-equivalent. |
+| Point the socket path at `ghrunner`'s own rootless podman socket | **Chosen.** The design's own plan for this gap (openspec `add-github-actions-runners`, tasks 2.4: the Docker-compatible API socket for a named unprivileged user). |
+
+**Isolation impact.** A job container that uses the socket controls `ghrunner`'s rootless
+podman, so it can do what `ghrunner` can do. A job that declares no container already runs
+as `ghrunner` on the host, and a workflow chooses whether to declare one, so the container
+was never an isolation boundary here (table above; design D4). No account gains access to
+root's socket, and the link target is in `/run/user/<uid>` (mode 0700), so no other
+unprivileged account can use the link. **Host-wide cost:** a root process that connects to
+`/var/run/docker.sock` now reaches `ghrunner`'s engine, a job-controlled one. So, in
+addition to the rule above: do not place on a runner host a root service that uses the
+Docker API. Root's own socket is still at `/run/podman/podman.sock`.
+
+**How it is applied.** `tasks/podman-user-docker-socket.yml` (shared, reusable) enables the
+account's `podman.socket` user unit and writes `/etc/tmpfiles.d/podman-docker.conf`, which
+replaces the package's file of the same name, so the link survives reboots and package
+upgrades. It reads back the effective tmpfiles.d configuration and the link. The deploy
+then runs the hooks' `docker create`, with the full mount set and the deployed
+`job-started.sh`, in a `systemd-run --user` transient unit carrying the runner unit's
+`NoNewPrivileges` value (the reason is in `docs/MISTAKES.md` 2.29), and calls `_ping` on the
+mounted socket path. The runner reads `.env` only at start, so a changed `.env` restarts it.
 
 ## Credential chain
 
@@ -181,6 +237,9 @@ it — note that every legitimate target sits *inside* that prefix, so a guard p
   the podman mapping check in a `systemd-run --user` transient unit carrying the unit's own
   `NoNewPrivileges` value, and requires at least 65536 ids in both `/etc/subuid` and
   `/etc/subgid` for the account.
+- **A uid-map check does not prove a container job.** The 2.29 checks passed while every
+  `container:` job still failed on its mounts (above). The deploy now creates a container
+  with the hooks' own mount set, from inside the user manager (`docs/MISTAKES.md` 10.24).
 - **The root disk is small until grown.** Both hosts came up with a 9.8 GiB root LV on a
   200 G disk, 878 MiB free, which no Rust build fits in. Run Grow GitHub Runner Root
   (`grow-github-runner-root.yml`) after provisioning; its dry run shows each host's chain.
