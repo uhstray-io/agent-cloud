@@ -27,7 +27,7 @@
       - groups.get('all', []) | length > 0
     fail_msg: >-
       The inventory could not be parsed or contained no hosts, so every inventory group
-      is empty; refusing to evaluate group-dependent guards against it{{
+      is empty; refusing to continue on guards that depend on it{{
       (' (target group: ' ~ require_parsed_inventory_group ~ ')') if require_parsed_inventory_group is defined else '' }}.
       A known cause on Semaphore is concurrent tasks sharing one inventory file, which
       the first task to finish removes before another has parsed it; re-run this task on its own.

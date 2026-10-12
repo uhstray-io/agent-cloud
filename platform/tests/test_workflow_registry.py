@@ -392,13 +392,21 @@ def test_production_collector_refuses_missing_or_mismatched_host_destination(tmp
         assert "Production conformance delivery requires collector_otlp_url" in output
 
 
-def _run_with_broken_inventory(tmp_path, playbook, extra=None, environment=None):
-    inventory_path = tmp_path / "inventory.yml"
-    inventory_path.write_text("not: [valid\n")
+def _run_with_broken_inventory(tmp_path, playbook, extra=None, environment=None, inventory="broken"):
+    """Run a playbook. inventory: "broken" (unparseable file), "missing" (path that does not
+    exist, what a Semaphore task is left with when another task removed the shared file) or
+    None (no -i at all, as an operator-side tool is started)."""
     env = os.environ.copy()
     env.update(ANSIBLE_LOCAL_TEMP=str(tmp_path), ANSIBLE_REMOTE_TEMP=str(tmp_path),
                ANSIBLE_STDOUT_CALLBACK="default", ANSIBLE_NOCOLOR="1", **(environment or {}))
-    cmd = ["ansible-playbook", "-i", str(inventory_path), str(REPO / playbook)]
+    cmd = ["ansible-playbook"]
+    if inventory == "broken":
+        inventory_path = tmp_path / "inventory.yml"
+        inventory_path.write_text("not: [valid\n")
+        cmd += ["-i", str(inventory_path)]
+    elif inventory == "missing":
+        cmd += ["-i", str(tmp_path / "inventory_2.yml")]
+    cmd.append(str(REPO / playbook))
     if extra is not None:
         cmd += ["-e", json.dumps(extra)]
     result = subprocess.run(cmd, cwd=REPO, env=env, capture_output=True, text=True, timeout=60)
@@ -417,7 +425,9 @@ def test_production_collector_names_an_unparsed_inventory(tmp_path):
     assert "Production conformance delivery requires collector_otlp_url" not in output
 
 
-def test_local_collector_does_not_require_a_parsed_inventory():
+def test_local_collector_skips_the_parsed_inventory_guard_in_local_mode():
+    # A local inventory always holds localhost (bootstrap-local-dev.yml), so the guard is
+    # unnecessary there; production, where an empty inventory is an error, keeps it.
     collector = playbook_yaml.plays(REPO / "platform/playbooks/collect-service-conformance.yml")[0]
     guard = next(t for t in collector["tasks"] if t.get("name") == "Require the inventory to have parsed")
     assert guard["ansible.builtin.include_tasks"] == "tasks/require-parsed-inventory.yml"
@@ -446,12 +456,22 @@ LOCAL_OPENBAO_NO_TOKEN = {"OPENBAO_ADDR": "http://local-openbao:8200", "SEMAPHOR
 TRANSPORT_REFUSAL = "Refusing to send secret material"
 
 
-@pytest.mark.parametrize("playbook, extra", [
+RUNTIME_ACCESS_CALLERS = [
     ("platform/playbooks/inspect-discovery-metadata.yml", {"discovery_project_id": "1"}),
     ("platform/playbooks/manage-semaphore-access.yml", None),
-])
-def test_runtime_access_names_an_unparsed_inventory_before_the_transport_check(tmp_path, playbook, extra):
-    rc, output = _run_with_broken_inventory(tmp_path, playbook, extra, LOCAL_OPENBAO_NO_TOKEN)
+    # The publisher template imports setup-templates.yml (an operator-side tool that is
+    # legitimately run with no inventory); a Semaphore launch of it must still be checked.
+    ("platform/playbooks/publish-semaphore-templates.yml",
+     {"semaphore_template_names_json": json.dumps(["Publish Semaphore Template Surveys (Dev)"])}),
+]
+
+
+@pytest.mark.parametrize("inventory", ["broken", "missing"])
+@pytest.mark.parametrize("playbook, extra", RUNTIME_ACCESS_CALLERS)
+def test_runtime_access_names_an_unparsed_inventory_before_the_transport_check(
+        tmp_path, playbook, extra, inventory):
+    rc, output = _run_with_broken_inventory(
+        tmp_path, playbook, extra, LOCAL_OPENBAO_NO_TOKEN, inventory=inventory)
     assert rc != 0
     assert UNPARSED in output
     assert TRANSPORT_REFUSAL not in output
@@ -462,27 +482,28 @@ def test_runtime_access_names_an_unparsed_inventory_before_the_transport_check(t
     "platform/semaphore/bootstrap-semaphore-repositories.yml",
     "platform/semaphore/sync-inventory.yml",
 ])
-def test_operator_side_tools_do_not_require_an_inventory(tmp_path, playbook):
+def test_operator_side_tools_started_without_an_inventory_are_not_asked_for_one(tmp_path, playbook):
     """They run from a workstation with no -i, so runtime-access must not demand one."""
     rc, output = _run_with_broken_inventory(
         tmp_path, playbook, None,
-        {"SEMAPHORE_URL": "http://127.0.0.1:9", "SEMAPHORE_TOKEN": "not-a-real-token"})
+        {"SEMAPHORE_URL": "http://127.0.0.1:9", "SEMAPHORE_TOKEN": "not-a-real-token"},
+        inventory=None)
     assert UNPARSED not in output
 
 
-@pytest.mark.parametrize(("playbook", "optional"), [
-    ("platform/semaphore/setup-templates.yml", True),
-    ("platform/semaphore/bootstrap-semaphore-repositories.yml", True),
-    ("platform/semaphore/sync-inventory.yml", True),
-    ("platform/semaphore/provision-seed-environment.yml", False),
-    ("platform/playbooks/inspect-discovery-metadata.yml", False),
-    ("platform/playbooks/manage-semaphore-access.yml", False),
-    ("platform/playbooks/collect-service-conformance.yml", False),
+@pytest.mark.parametrize("playbook", [
+    "platform/semaphore/setup-templates.yml",
+    "platform/semaphore/bootstrap-semaphore-repositories.yml",
+    "platform/semaphore/sync-inventory.yml",
+    "platform/playbooks/inspect-discovery-metadata.yml",
+    "platform/playbooks/manage-semaphore-access.yml",
+    "platform/playbooks/collect-service-conformance.yml",
+    "platform/semaphore/provision-seed-environment.yml",
 ])
-def test_only_operator_side_includers_mark_the_inventory_optional(playbook, optional):
-    plays = playbook_yaml.plays(REPO / playbook)
-    flagged = [p for p in plays if (p.get("vars") or {}).get("runtime_access_inventory_optional") is True]
-    assert bool(flagged) is optional
+def test_no_playbook_decides_for_itself_whether_an_inventory_is_needed(playbook):
+    """The decision is made by runtime-access from how the run was started; a play var
+    would leak into every playbook that imports the play that set it."""
+    assert "runtime_access_inventory_optional" not in (REPO / playbook).read_text()
 
 
 @pytest.mark.parametrize(

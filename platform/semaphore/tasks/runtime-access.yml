@@ -8,11 +8,17 @@
 # it) has no local_mode, so a correct local single-label OpenBao URL is refused with
 # "Refusing to send secret material ... invalid endpoint" — true, and not the cause.
 #
-# A caller that legitimately runs with no inventory (an operator-side tool started from a
-# workstation without -i) sets `runtime_access_inventory_optional: true` in its play vars.
+# The check applies whenever the run was GIVEN an inventory (-i), and Semaphore always gives
+# one. ansible_inventory_sources keeps the path it was given even when the file has vanished,
+# so a lost file is still seen as "given". An operator-side tool started from a workstation
+# with no -i has only Ansible's configured default source (DEFAULT_HOST_LIST) and legitimately
+# has no hosts, so it is not asked for one. Decided by how the run was started, never by a
+# flag the calling playbook sets: a flag leaks into every playbook that imports it (the
+# publisher template imports setup-templates.yml). ANSIBLE_INVENTORY set in the environment
+# moves the configured default with it, so that route is treated as "not given".
 - name: "Require the inventory to have parsed"
   ansible.builtin.include_tasks: ../../playbooks/tasks/require-parsed-inventory.yml
-  when: not (runtime_access_inventory_optional | default(false) | bool)
+  when: (ansible_inventory_sources | default([]) | list) != (lookup('ansible.builtin.config', 'DEFAULT_HOST_LIST') | list)
 
 - name: "Require a non-cleartext transport to Semaphore"
   ansible.builtin.assert:
