@@ -641,8 +641,9 @@ def test_live_positions_debug_rescues_malformed_nested_diagnostic_before_renderi
         }
         done = subprocess.run(
             [_ansible_python(), "-c", _EVALUATE], input=json.dumps(job), text=True,
-            capture_output=True, check=True,
+            capture_output=True,
         )
+        assert done.returncode == 0, done.stderr
         return [tuple(result) for result in json.loads(done.stdout)]
 
     evaluated = evaluate_all([base] + [diagnostic for _, diagnostic in malformed])
