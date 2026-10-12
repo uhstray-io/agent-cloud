@@ -489,6 +489,27 @@ Deliberation, receipts and the phased plan: OpenSpec change
 `plan/development/openspec/changes/inference-telemetry-production` (design.md decisions
 1, 2 and 7).
 
+**Refresh, 2026-10-12 (appended; the text above is unchanged).** Three facts in the
+Decision and Consequences text are stale:
+
+- *"with Tempo and Pyroscope added later"*: Tempo and Pyroscope already run in the
+  receiver's stack; the "Production receiver correction, 2026-10-04" note above records both
+  ready at Semaphore task 2671.
+- *"until its first scheduled run is recorded, a receiver failure has no timely alert"*: the
+  external liveness watcher's scheduled runs are recorded: Semaphore task 3526
+  (2026-10-08) ended in error because the watcher caught Grafana down during the fault drill,
+  and task 3532 succeeded. Task 3.6 of the change is ticked.
+- *"The guest root filesystem ... has been read as full (task 2115)"*: no longer current.
+  Verify o11y Production Budgets (Dev) read the root filesystem 84.41% free in task 3141 and
+  84.23% free in task 3314 (`plan/development/openspec/changes/inference-telemetry-production/design.md`,
+  the budget readings table). The retention review is no longer blocked by a full disk; it
+  stays blocked on the estate-wide isolated-restore receipt (task 4.1 of the change).
+
+**Accepted 2026-10-12 (operator decision, Joseph A. Wisneski IV).** The Status line above
+("Proposed ... until then it binds nothing") is superseded by this line; the record binds from
+this date. The section heading and the Status paragraph are left as written, so the diff stays
+append-only (scenario "Status is dated and append-only").
+
 ---
 
 ## Revision History
@@ -498,3 +519,4 @@ Deliberation, receipts and the phased plan: OpenSpec change
 | 2026-06-14 | Initial draft — instrumentation contract, socket-SD metrics auto-discovery, Grafana MCP triage workflow, phased rollout. |
 | 2026-06-14 | Added the tracing pillar — Tempo (monolithic, local→MinIO), OTLP via the existing Alloy, metrics-generator RED/service-graph, trace↔logs↔metrics correlation by `service.name`; Phase 4 (tracing) + Phase 5 (prod). |
 | 2026-10-04 | Production receiver correction callout (dated, appended); Proposed record for the dedicated o11y VM and static DGX Spark node scrape. |
+| 2026-10-12 | Refresh of the dedicated o11y VM record's stale facts and its acceptance by the operator (dated, appended). |

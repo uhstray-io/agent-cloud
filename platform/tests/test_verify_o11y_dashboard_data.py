@@ -464,6 +464,36 @@ def test_an_expected_empty_panel_is_reported_without_sample_values(tmp_path, pro
     assert report["panels"][0]["targets"][0]["status"] == "empty"
 
 
+# The fleet-health dashboard's "Inference probe serving" panel reads the synthetic probe, which
+# exists only where o11y_inference_probe_enabled is true and the probe has sampled. A
+# whole-dashboard run elsewhere must either have the probe on or name the panel as expected-empty.
+PROBE_PANEL = "Inference probe serving"
+
+
+def test_a_whole_fleet_health_run_fails_on_an_empty_probe_panel(prometheus):
+    prometheus.rules["inference_probe_success"] = "empty"
+    report = vdd.evaluate(_payload("inference-fleet-health", prometheus_url=prometheus.url))
+    assert report["status"] == "fail"
+    assert report["panels_failing"] == [PROBE_PANEL]
+
+
+def test_a_whole_fleet_health_run_passes_with_the_empty_probe_panel_expected(prometheus):
+    prometheus.rules["inference_probe_success"] = "empty"
+    report = vdd.evaluate(
+        _payload("inference-fleet-health", expected_empty_panels=[PROBE_PANEL], prometheus_url=prometheus.url)
+    )
+    assert report["status"] == "pass"
+    assert report["panels_failing"] == []
+    assert report["expected_empty_panel_titles"] == [PROBE_PANEL]
+    assert next(p for p in report["panels"] if p["title"] == PROBE_PANEL)["status"] == "expected_empty"
+
+
+def test_a_whole_fleet_health_run_passes_with_the_probe_sampled(prometheus):
+    report = vdd.evaluate(_payload("inference-fleet-health", prometheus_url=prometheus.url))
+    assert report["status"] == "pass"
+    assert PROBE_PANEL in report["verified_panel_titles"]
+
+
 def test_an_allowed_panel_with_a_query_error_still_fails(tmp_path, prometheus):
     dashboard = _synthetic("up")
     prometheus.rules["up"] = "error"

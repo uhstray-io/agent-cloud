@@ -347,7 +347,7 @@ used to live in `AUTOMATION-COMPOSABILITY.md`, which is now under `plan/archive/
 | `tasks/run-migrations.yml` | Implemented | Generic goose migration runner; container or host execution |
 | `tasks/install-nvidia-toolkit.yml` | Implemented | NVIDIA Container Toolkit + CDI for Podman on GPU hosts |
 | `tasks/install-podman-compose.yml` | Implemented | Verify podman + `podman compose` / `podman-compose` is callable (Linux apt / macOS Homebrew) |
-| `tasks/place-monorepo.yml` | Implemented | Put the monorepo on the target (clone in prod, copy the working tree in local-dev) — the shared Phase-1 preamble |
+| `tasks/place-monorepo.yml` | Implemented | Put the monorepo on the target (clone in prod, copy the working tree in local-dev) — the shared Phase-1 preamble. The local copy reports `changed` only for a transfer, a created or retargeted symlink, a deletion or a mode change on a non-symlink (`filter_plugins/rsync_itemize.py`), so a second deploy of an unchanged tree reports none |
 | `tasks/enable-linger.yml` | Implemented | Linger plus podman's user boot unit, so rootless `restart: always` containers survive a reboot. Included by `place-monorepo.yml`; optional `linger_user` for a dedicated service account |
 | `tasks/assert-bao-transport.yml` | Implemented | Refuse to send secret material over public cleartext. Included by every play reaching OpenBao, and by other token-receiving endpoints via `_assert_url_label` |
 | `tasks/assert-seed-inputs-declared.yml` | Implemented | Refuse, before the AppRole login, a seed run whose environment carries a seed input (`BAO_VALUE`, `SEED_*`) its template does not declare. Lists variable names only. Included by both isolated seed playbooks |

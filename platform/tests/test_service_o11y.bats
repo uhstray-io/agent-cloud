@@ -2218,6 +2218,12 @@ for uid, path in files.items():
                 assert target['expr'].startswith('{cluster="dgx-spark", service="vllm"}'), target['expr']
                 continue
             exprs.append(target['expr'])
+            if panel['title'] == 'Inference probe serving':
+                # The one panel not scraped from the DGX pair: the synthetic probe on the o11y
+                # host, which o11y-fault-drill.yml reads back by this title during its fault.
+                assert uid == 'inference-fleet-health'
+                assert target['expr'] == 'max by (model_name) (inference_probe_success{job="receiver-host"})'
+                continue
             assert 'job="dgx-spark-' in target['expr'], (uid, panel['title'])
             if 'vllm:' in target['expr']:
                 assert 'model_name=~"$model_alias"' in target['expr'], (uid, panel['title'])
