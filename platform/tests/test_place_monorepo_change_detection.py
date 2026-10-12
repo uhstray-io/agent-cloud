@@ -6,7 +6,7 @@ tasks/place-monorepo.yml copies the checkout with `rsync -i`; `changed_when` use
 tracked symlink on every run and `.d..t` for a directory mtime, so the second deploy was never
 clean. The unit lines below were captured from rsync 3.5.0 with the checkout bind-mounted
 read-only; the end-to-end class runs the task's own script against real GNU rsync (skipped
-where only openrsync is installed, whose itemize output differs).
+on a workstation with only openrsync, whose itemize output differs; a failure when CI is set).
 """
 
 import importlib.util
@@ -85,8 +85,17 @@ def _gnu_rsync():
     return "openrsync" not in out
 
 
-@pytest.mark.skipif(not _gnu_rsync(), reason="needs GNU rsync (openrsync itemizes differently)")
 class TestRealRsync:
+    @pytest.fixture(autouse=True)
+    def _require_gnu_rsync(self):
+        # A skip on a workstation with only openrsync (itemizes differently) is fine; a skip in
+        # CI would let the end-to-end guard silently stop running, so there it is a failure.
+        if _gnu_rsync():
+            return
+        if os.environ.get("CI"):
+            pytest.fail("GNU rsync is required in CI: install rsync (apt-get install -y rsync)")
+        pytest.skip("needs GNU rsync (openrsync itemizes differently)")
+
     @pytest.fixture
     def tree(self, tmp_path):
         src, dst = tmp_path / "src", tmp_path / "dst"
