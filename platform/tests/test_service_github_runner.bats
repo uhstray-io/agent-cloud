@@ -203,6 +203,13 @@ setup() {
   assert_grep -qF '_setuid_still | length == 0' "$PB"
 }
 
+@test "gh-runner: a dry run does not judge the registration it skipped" {
+  local PB="$BATS_TEST_DIRNAME/../playbooks/deploy-github-runner.yml"
+  local block
+  block="$(awk '/- name: "Fail if the runner did not register"/,/^$/' "$PB")"
+  assert_contains "$block" "when: not ansible_check_mode"
+}
+
 @test "gh-runner: a changed .env restarts the runner, which reads it only at start" {
   # Runner.Listener/Program.cs loads .env once, when the process starts. A new hook
   # variable written to a running runner's .env does nothing until the next restart.
