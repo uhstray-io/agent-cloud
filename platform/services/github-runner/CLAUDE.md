@@ -164,16 +164,25 @@ The options, and why this one:
 the runner home (not `bin/`, which holds the runner's own binaries), owned by the account
 and mode 0750 like the job hooks. It always sets `XDG_CONFIG_HOME` and `XDG_DATA_HOME` to the
 account's `.config` and `.local/share`, `XDG_RUNTIME_DIR` to `/run/user/<uid>` (the uid is
-looked up), and PATH to the fixed system list, then runs `/usr/bin/podman` with the
-arguments unchanged. It never sets HOME. These are the values a podman command run by the
+looked up), and PATH to the fixed system list, then runs `/usr/bin/podman`. It never sets
+HOME. A job keeps its own values of those four names: the hooks pass each job variable as
+a bare `-e NAME`, which the engine would fill from the wrapper's replaced environment, so
+the wrapper first reads the caller's values (printenv) and rewrites a bare `-e`/`--env`
+(also the `=` forms) of one of the four into `NAME=<the caller's value>`, or drops it when
+the caller had none. Every other argument is passed unchanged. The rewrite does not stop
+at the image, so a container command containing `-e PATH` as two words, in a job that
+also sets PATH, is rewritten too. These are the values a podman command run by the
 account in its own session uses, so the store is the same one plain job steps and earlier
 runs used; nothing in this repository customises the account's storage location. The
 runner's `.env` sets PATH with `_bin` first: the systemd unit starts the runner through
 `run.sh`, which does not read the runner's `.path` file. The deploy's mount probe resolves
 `docker` from that PATH and requires the wrapper, imports its image under `env -i` (as the
-hooks' `pull` runs) after `podman system migrate`, creates the container under `env -i
-HOME=/github/home GITHUB_ACTIONS=true CI=true` with `-e HOME`, and requires the container to
-carry `HOME=/github/home` (`docs/MISTAKES.md` 10.25).
+hooks' `pull` runs), creates the container under `env -i HOME=/github/home
+GITHUB_ACTIONS=true CI=true` with `-e HOME`, and requires the container to carry
+`HOME=/github/home` (`docs/MISTAKES.md` 10.25). It runs no `podman system migrate`, which
+stops running containers and so could stop a job; it therefore joins the pause process
+the uid-map check left and does not exercise the wrapper's PATH for `newuidmap`. The
+rendered-wrapper bats test covers that PATH.
 
 ## Credential chain
 

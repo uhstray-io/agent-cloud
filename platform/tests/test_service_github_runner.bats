@@ -386,6 +386,48 @@ STUB
   refute_grep -qE '(^|[[:space:];])(export[[:space:]]+)?HOME=' "$BATS_TEST_TMPDIR/code"
 }
 
+@test "gh-runner: the docker wrapper hands a job its own PATH and XDG values, and no others change" {
+  # The hooks pass each job variable as a bare `-e NAME`, and the engine fills that from
+  # its own environment, which the wrapper replaces. A job's PATH or XDG_* value must
+  # still reach its container; a bare -e of one the job did not set is dropped, as
+  # docker drops a bare -e of an unset variable. The stub records argv NUL-separated, so
+  # the comparison is byte for byte.
+  local T="$D/templates/docker-wrapper.sh.j2"
+  local stub="$BATS_TEST_TMPDIR/podman" w="$BATS_TEST_TMPDIR/docker" out="$BATS_TEST_TMPDIR/argv"
+  cat > "$stub" <<STUB
+#!/bin/sh
+printf '%s\0' "\$@" > "$out"
+/usr/bin/printenv XDG_DATA_HOME
+STUB
+  chmod +x "$stub"
+  sed -e "s#{{ github_runner_home }}#/opt/r#g" -e 's#{{ github_runner_uid }}#1001#g' \
+      -e "s#^exec /usr/bin/podman #exec $stub #" "$T" > "$w"
+  refute_grep -qF '{{' "$w"
+  # (a) every form, for all four names; a value with a space and one ending in a newline.
+  run env -i HOME=/github/home PATH=/job/bin:/usr/bin XDG_CONFIG_HOME='/job/c fg' \
+    XDG_DATA_HOME=$'/job/d\n' XDG_RUNTIME_DIR=/job/r /bin/sh "$w" create \
+    -e PATH --env XDG_CONFIG_HOME -e=XDG_DATA_HOME --env=XDG_RUNTIME_DIR -e HOME \
+    --name 'a b' -e 'K=v=w x' -e=OTHER --env-file f -v=/x:/y img cmd -e
+  [ "$status" -eq 0 ]
+  # The engine itself still gets the account's store.
+  [ "$output" = '/opt/r/.local/share' ]
+  printf '%s\0' create -e PATH=/job/bin:/usr/bin --env 'XDG_CONFIG_HOME=/job/c fg' \
+    -e $'XDG_DATA_HOME=/job/d\n' --env XDG_RUNTIME_DIR=/job/r -e HOME \
+    --name 'a b' -e 'K=v=w x' -e=OTHER --env-file f -v=/x:/y img cmd -e > "$BATS_TEST_TMPDIR/want"
+  cmp "$BATS_TEST_TMPDIR/want" "$out"
+  # (b) names the caller did not set: the pair is dropped, everything else kept.
+  run env -i HOME=/github/home /bin/sh "$w" create -e PATH --env=XDG_DATA_HOME \
+    --env XDG_RUNTIME_DIR -e=XDG_CONFIG_HOME -e HOME --name 'a b' img
+  [ "$status" -eq 0 ]
+  printf '%s\0' create -e HOME --name 'a b' img > "$BATS_TEST_TMPDIR/want"
+  cmp "$BATS_TEST_TMPDIR/want" "$out"
+  # (c) a call with no -e of these names passes through byte for byte.
+  run env -i /bin/sh "$w" pull 'img:x y' --format='{{.ID}} a=b' ''
+  [ "$status" -eq 0 ]
+  printf '%s\0' pull 'img:x y' --format='{{.ID}} a=b' '' > "$BATS_TEST_TMPDIR/want"
+  cmp "$BATS_TEST_TMPDIR/want" "$out"
+}
+
 @test "gh-runner: the deploy probe runs docker the way the hooks do, environment included" {
   # The 10.24 probe ran `docker create` with the user manager's environment and passed
   # while every container job failed with `cannot resolve /github/home` (MISTAKES 10.25).
@@ -397,8 +439,10 @@ STUB
   assert_contains "$block" "runner_path=\$(sed -n 's/^PATH=//p' \"\$H/.env\")"
   assert_contains "$block" 'dk=$(PATH="$runner_path" command -v docker)'
   assert_contains "$block" '[ "$dk" = "$H/_bin/docker" ]'
-  # `pull`-shaped calls: no environment at all, with no pause process to join.
-  assert_contains "$block" 'env -i "$dk" system migrate'
+  # `pull`-shaped calls: no environment at all. And no `system migrate`: it stops running
+  # containers, so it could stop a job that started after the uid-map check.
+  printf '%s\n' "$block" | grep -vE '^[[:space:]]*#' > "$BATS_TEST_TMPDIR/probe-code"
+  refute_grep -qF 'system migrate' "$BATS_TEST_TMPDIR/probe-code"
   assert_contains "$block" 'env -i "$dk" import "$src/rootfs.tar" "$img"'
   assert_contains "$block" 'env -i "$dk" image exists "$img"'
   # The `create`: the job's variables only, with -e HOME, on the same image.

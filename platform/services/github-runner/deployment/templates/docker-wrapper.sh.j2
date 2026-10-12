@@ -29,11 +29,24 @@
 # So the three directories are ALWAYS set to the account's own, the same values a
 # podman command run by the account in its own session uses. They are never taken from
 # the caller: the hooks' environment never carries the correct ones. PATH is ALWAYS the
-# fixed system list, for the same reason and because "no PATH given" cannot be detected
-# here: a shell gives itself a default PATH when none is passed, without exporting it,
-# and the default differs between shells (bash's includes "."). Podman needs no
-# directory of the caller's; its helpers are in the system directories. The list leaves
-# out this wrapper's own directory, so podman can never run this file again.
+# fixed system list, for the same reason and because the shell's own PATH is no guide:
+# a shell gives itself a default PATH when none is passed, without exporting it, and the
+# default differs between shells (bash's includes "."). Podman needs no directory of the
+# caller's; its helpers are in the system directories. The list leaves out this
+# wrapper's own directory, so podman can never run this file again.
+#
+# The JOB keeps its own values of these four names. The hooks pass each job variable as
+# a bare `-e NAME` (container.ts: `dockerArgs.push('-e', key)`), and the engine fills a
+# bare `-e NAME` from its own environment, which this file replaces. So a job that sets
+# PATH or an XDG variable would get the host's value in its container. Before
+# replacing them, the caller's values are read from the real environment (printenv, not
+# the shell's variables), and a bare `-e NAME`, `-e=NAME`, `--env NAME` or `--env=NAME`
+# for one of the four names becomes `-e NAME=<the caller's value>`, or is dropped when
+# the caller had none, as docker does for a bare `-e` of an unset variable. Every other
+# argument passes through unchanged. Known limit: the rewrite does not stop at the
+# image, so a container command that itself contains `-e PATH` (or one of the other
+# three names) as two separate words, while the job also sets that variable, is
+# rewritten too.
 #
 # HOME is NOT changed. The engine copies `-e HOME` from its own HOME into the container,
 # and that must stay the job's /github/home, not this account's home directory.
@@ -41,6 +54,71 @@
 # The runner finds this file because the runner's PATH (.env) lists its directory
 # first; the hooks resolve `docker` with the runner's PATH, not with the job's. The
 # deploy's mount probe runs it with the environment the hooks give it.
+
+# The caller's value of one name, byte for byte (a trailing newline survives the
+# command substitution through the `x` guard). Sets `found` and `val`.
+caller_value() {
+  if /usr/bin/printenv "$1" >/dev/null 2>&1; then
+    found=1
+    val=$(/usr/bin/printenv "$1"; echo x)
+    val=${val%x}
+    val=${val%?}
+  else
+    found=
+    val=
+  fi
+}
+caller_value PATH; c_found_PATH=$found; c_PATH=$val
+caller_value XDG_CONFIG_HOME; c_found_XDG_CONFIG_HOME=$found; c_XDG_CONFIG_HOME=$val
+caller_value XDG_DATA_HOME; c_found_XDG_DATA_HOME=$found; c_XDG_DATA_HOME=$val
+caller_value XDG_RUNTIME_DIR; c_found_XDG_RUNTIME_DIR=$found; c_XDG_RUNTIME_DIR=$val
+
+# Looks up a captured name. Returns 1 for any name this file does not set.
+captured() {
+  case $1 in
+    PATH) found=$c_found_PATH; val=$c_PATH ;;
+    XDG_CONFIG_HOME) found=$c_found_XDG_CONFIG_HOME; val=$c_XDG_CONFIG_HOME ;;
+    XDG_DATA_HOME) found=$c_found_XDG_DATA_HOME; val=$c_XDG_DATA_HOME ;;
+    XDG_RUNTIME_DIR) found=$c_found_XDG_RUNTIME_DIR; val=$c_XDG_RUNTIME_DIR ;;
+    *) return 1 ;;
+  esac
+}
+
+# Rebuilds "$@" in place: each argument is shifted off the front and appended, changed
+# only when it is a bare -e/--env of a captured name.
+n=$#
+i=0
+flag=
+while [ "$i" -lt "$n" ]; do
+  a=$1
+  shift
+  i=$((i + 1))
+  if [ -n "$flag" ]; then
+    if captured "$a"; then
+      if [ -n "$found" ]; then set -- "$@" "$flag" "$a=$val"; fi
+    else
+      set -- "$@" "$flag" "$a"
+    fi
+    flag=
+    continue
+  fi
+  case $a in
+    -e | --env)
+      if [ "$i" -lt "$n" ]; then
+        flag=$a
+        continue
+      fi
+      ;;
+    -e=* | --env=*)
+      if captured "${a#*=}"; then
+        if [ -n "$found" ]; then set -- "$@" "${a%%=*}" "${a#*=}=$val"; fi
+        continue
+      fi
+      ;;
+  esac
+  set -- "$@" "$a"
+done
+
 XDG_CONFIG_HOME="{{ github_runner_home }}/.config"
 XDG_DATA_HOME="{{ github_runner_home }}/.local/share"
 XDG_RUNTIME_DIR="/run/user/{{ github_runner_uid }}"

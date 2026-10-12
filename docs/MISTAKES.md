@@ -4499,13 +4499,17 @@ the client gives proves the probe, not the client (widens 10.24).
 **Enforced by.** The runner's `docker` is now a deployed wrapper (`docker-wrapper.sh.j2`,
 first on the runner's PATH through `.env`) that always sets the account's own
 `XDG_CONFIG_HOME`, `XDG_DATA_HOME` and `XDG_RUNTIME_DIR` and the fixed system PATH, leaves
-HOME alone and runs `/usr/bin/podman`. `deploy-github-runner.yml` resolves
-`docker` from the PATH in the deployed `.env` and requires the wrapper, imports the probe
-image under `env -i` (as the hooks' `pull` runs) after `podman system migrate`, creates the
-container under `env -i HOME=/github/home GITHUB_ACTIONS=true CI=true` with `-e HOME`, and
-requires the created container to carry `HOME=/github/home`. `test_service_github_runner.bats`
-renders the wrapper and runs it against a stub podman with the hooks' environment, and
-requires the probe's environment and the `.env` PATH.
+HOME alone and runs `/usr/bin/podman`. Because the hooks pass job variables as bare `-e
+NAME`, the wrapper first rewrites a bare `-e` of one of those four names into the caller's
+own value (or drops it when the caller had none), so a job's own PATH or XDG value still
+reaches its container. `deploy-github-runner.yml` resolves `docker` from the PATH in the
+deployed `.env` and requires the wrapper, imports the probe image under `env -i` (as the
+hooks' `pull` runs), creates the container under `env -i HOME=/github/home
+GITHUB_ACTIONS=true CI=true` with `-e HOME`, and requires the created container to carry
+`HOME=/github/home`. It runs no `podman system migrate`, which would stop a running job's
+containers. `test_service_github_runner.bats` renders the wrapper and runs it against a
+stub podman with the hooks' environment and argument forms (compared byte for byte), and
+requires the probe's environment, the absence of a migrate, and the `.env` PATH.
 
 ## 11. The largest one
 

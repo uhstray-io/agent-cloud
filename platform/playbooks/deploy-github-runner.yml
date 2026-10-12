@@ -749,11 +749,14 @@
       # environment, passed, and every container job still failed with `cannot resolve
       # /github/home` (docs/MISTAKES.md 10.25). So `docker` is resolved from the PATH in
       # the deployed .env and must be the wrapper; the import runs under `env -i` as the
-      # hooks' pull does, after `system migrate` stops any pause process so the empty
-      # environment must map the subordinate range itself; the create runs under `env -i
-      # HOME=/github/home GITHUB_ACTIONS=true CI=true` with `-e HOME`, and must find the
-      # imported image, so both calls use one store; and the created container must
-      # carry HOME=/github/home, so the wrapper did not change the job's HOME.
+      # hooks' pull does; the create runs under `env -i HOME=/github/home
+      # GITHUB_ACTIONS=true CI=true` with `-e HOME`, and must find the imported image, so
+      # both calls use one store; and the created container must carry HOME=/github/home,
+      # so the wrapper did not change the job's HOME. No second `system migrate` here:
+      # it stops running containers, so it could stop a job that started after the
+      # uid-map check. The cost: this probe joins the pause process that check left, so
+      # it does not exercise the wrapper's PATH for newuidmap; the bats test of the
+      # rendered wrapper covers that PATH.
       ansible.builtin.shell: |
         set -euo pipefail
         nnp=$(systemctl --user show --property=NoNewPrivileges --value actions-runner.service)
@@ -775,7 +778,6 @@
         mkdir "$src/root"
         : > "$src/root/.probe"
         tar -C "$src/root" -cf "$src/rootfs.tar" .
-        env -i "$dk" system migrate
         env -i "$dk" import "$src/rootfs.tar" "$img" >/dev/null
         env -i "$dk" image exists "$img"
         echo "import=ok"
