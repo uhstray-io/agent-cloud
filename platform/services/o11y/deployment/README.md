@@ -82,8 +82,8 @@ a 10-second exporter request timeout, and retries up to five minutes with a
 restart. Its item count is bounded, while serialized byte size depends on span
 payloads; the memory limiter and container cap provide the aggregate memory
 bounds. Queue overflow, memory-limiter refusals, and lost data remain possible
-during sustained receiver or Tempo outages; this source slice does not add
-their alerts or prove runtime delivery.
+during sustained receiver or Tempo outages; the alert source rules below do not
+prove metric exposition or runtime delivery.
 
 ### Per-scrape response and label budgets — task 3.3 source slice
 
@@ -122,10 +122,44 @@ scrapes. Live target readback, over-budget refusal checks, and calibration of
 the private values remain open. Prometheus's `body_size_limit` is documented
 as experimental in the pinned v3.1.0 configuration reference.
 
-Task 3.3 still requires nonzero Prometheus size retention, disk-free/drop/refusal
-alerts, missing-telemetry alerts, inventory-driven environment/cluster labels
-across Prometheus and Alloy with dependent dashboard/alert migration, and proof
-that secrets, prompts, and request bodies do not enter telemetry.
+### Alloy refusal and Tempo queue-loss alerts — task 3.3 source slice
+
+The provisioned `service-telemetry` group includes an Alloy receiver-refusal
+alert for `otelcol_receiver_refused_log_records_total` and
+`otelcol_receiver_refused_spans_total`, plus a Tempo exporter queue-loss alert
+for `otelcol_exporter_enqueue_failed_spans_total`. These are the Prometheus
+counter names for the pinned Alloy v1.5.1 / OTel Collector v0.112.0 metrics.
+Each optional counter is measured as `sum(increase(counter{job="alloy"}[5m]))
+or vector(0)`, so an absent series contributes zero. The receiver alert adds the
+two refusal counts. Both rules fire above zero for two minutes and use the
+`service=o11y/alloy` label. `enqueue_failed_spans_total` means a span could not
+be added to the bounded exporter queue and was lost; exporter send failures are
+not used because retrying may still deliver those spans. Refused log records
+and spans were rejected at the receiver and were not accepted into the pipeline.
+
+The rules remain paused unless private inventory sets
+`o11y_receiver_loss_alerts_reviewed: true`, `o11y_alerts_enabled` is true, and
+the render is production (`local_mode` false, environment `prod`) without an
+alert canary. The new review flag defaults false in the template; do not add it
+to production inventory until metric exposition and alert delivery have been
+verified.
+
+Live acceptance requires reading the exact pinned Alloy `/metrics` endpoint
+and confirming all three counters are exposed, then using a controlled,
+non-sensitive refusal and a bounded queue-pressure scenario to observe the
+corresponding counter increases. After enabling the reviewed inventory flag,
+read back both provisioned rules from Grafana and prove each can fire and route
+through `agent-cloud-ops`, then verify resolution. Do not use secrets, prompts,
+request bodies, or span attributes in these checks. Source rendering does not
+prove metric exposition, delivery, or runtime behavior; those remain
+unverified.
+
+Task 3.3 still requires nonzero Prometheus size retention, broader receiver
+memory/backpressure and ingestion protections, inventory-driven
+environment/cluster labels across Prometheus and Alloy with dependent
+dashboard/alert migration, and proof that secrets, prompts, and request bodies
+do not enter telemetry. These alert source rules do not close the live metric,
+delivery, or telemetry-privacy gates.
 
 The rollout gate remains: validate rendered River with the exact pinned Alloy
 image, complete final-head review and CI, run the Dev-bound Semaphore check and

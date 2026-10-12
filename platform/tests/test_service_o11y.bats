@@ -815,8 +815,14 @@ contact_template = env.from_string(open(sys.argv[2], encoding='utf-8').read())
 targets = [{'uid': 'o11y_missing_caddy', 'service': 'caddy-reverse-proxy/caddy', 'instance': 'caddy:2021'}]
 for enabled in (False, True):
     for declared in ([], targets):
-        rules = yaml.safe_load(template.render(o11y_expected_metrics_targets=declared, local_mode=False, o11y_alerts_enabled=enabled))['groups'][0]['rules']
-        assert [rule['uid'] for rule in rules] == ['o11y_service_down', 'o11y_receiver_root_disk_low'] + [target['uid'] for target in declared]
+        rules = yaml.safe_load(template.render(o11y_expected_metrics_targets=declared, local_mode=False,
+                                              o11y_alerts_enabled=enabled,
+                                              o11y_receiver_loss_alerts_reviewed=enabled))['groups'][0]['rules']
+        assert [rule['uid'] for rule in rules] == [
+            'o11y_service_down', 'o11y_receiver_root_disk_low',
+        ] + [target['uid'] for target in declared] + [
+            'o11y_alloy_receiver_refused', 'o11y_tempo_exporter_enqueue_failed',
+        ]
         assert all(rule['isPaused'] is not enabled for rule in rules)
         assert all(('notification_settings' in rule) is enabled for rule in rules)
         assert rules[0]['annotations']['dashboard_url'] == '/d/service-overview?var-service={{ $labels.service }}'
@@ -861,12 +867,76 @@ local_rules = yaml.safe_load(template.render(local_mode=True))['groups'][0]['rul
 assert local_rules[1]['uid'] == 'o11y_receiver_root_disk_low'
 assert local_rules[1]['isPaused'] is True
 assert local_rules[2]['uid'] == 'o11y_missing_caddy'
+assert local_rules[3]['uid'] == 'o11y_alloy_receiver_refused'
+assert local_rules[3]['isPaused'] is True
 canary = 'o11y-fault-probe-' + 'a' * 12
 canary_rules = yaml.safe_load(template.render(local_mode=True, o11y_alerts_enabled=True,
                                               o11y_alert_canary_service=canary))['groups'][0]['rules']
 assert canary_rules[0]['data'][0]['model']['expr'] == f'up{{service="{canary}"}}'
 assert canary_rules[0]['isPaused'] is False
 assert all(rule['isPaused'] is True and 'notification_settings' not in rule for rule in canary_rules[1:])
+PY
+}
+
+@test "o11y: Alloy refusal and Tempo queue-loss alerts require reviewed production enablement" {
+  python3 - "$DEPLOY_DIR/templates/alerts.yml.j2" <<'PY'
+import json
+import sys
+
+import yaml
+from jinja2 import Environment, StrictUndefined
+
+env = Environment(undefined=StrictUndefined, trim_blocks=True)
+env.filters['bool'] = bool
+env.filters['to_json'] = json.dumps
+template = env.from_string(open(sys.argv[1], encoding='utf-8').read())
+
+def rules(**values):
+    values.setdefault('o11y_expected_metrics_targets', [])
+    return {rule['uid']: rule for rule in yaml.safe_load(template.render(**values))['groups'][0]['rules']}
+
+refused_expr = (
+    '(sum(increase(otelcol_receiver_refused_log_records_total{job="alloy"}[5m])) or vector(0)) + '
+    '(sum(increase(otelcol_receiver_refused_spans_total{job="alloy"}[5m])) or vector(0))'
+)
+queue_expr = 'sum(increase(otelcol_exporter_enqueue_failed_spans_total{job="alloy"}[5m])) or vector(0)'
+expected = {
+    'o11y_alloy_receiver_refused': refused_expr,
+    'o11y_tempo_exporter_enqueue_failed': queue_expr,
+}
+for enabled in (False, True):
+    values = dict(local_mode=False, o11y_alerts_enabled=enabled,
+                  o11y_receiver_loss_alerts_reviewed=enabled, o11y_environment='prod')
+    current = rules(**values)
+    for uid, expression in expected.items():
+        rule = current[uid]
+        assert rule['data'][0]['model']['expr'] == expression
+        assert rule['data'][1]['model']['conditions'][0]['evaluator'] == {'type': 'gt', 'params': [0]}
+        assert rule['for'] == '2m'
+        assert rule['labels']['service'] == 'o11y/alloy'
+        assert rule['labels']['owner'] == 'platform-operations'
+        assert rule['isPaused'] is (not enabled)
+        assert ('notification_settings' in rule) is enabled
+        if enabled:
+            assert rule['notification_settings'] == {
+                'receiver': 'agent-cloud-ops',
+                'group_by': ['service', 'environment', 'cluster', 'alertname'],
+                'group_wait': '30s', 'group_interval': '5m', 'repeat_interval': '4h'}
+
+for values in (
+    dict(local_mode=False, o11y_alerts_enabled=True, o11y_environment='prod'),
+    dict(local_mode=False, o11y_alerts_enabled=False, o11y_receiver_loss_alerts_reviewed=True,
+         o11y_environment='prod'),
+    dict(local_mode=True, o11y_alerts_enabled=True, o11y_receiver_loss_alerts_reviewed=True),
+    dict(local_mode=False, o11y_alerts_enabled=True, o11y_receiver_loss_alerts_reviewed=True,
+         o11y_environment='staging'),
+    dict(local_mode=False, o11y_alerts_enabled=True, o11y_receiver_loss_alerts_reviewed=True,
+         o11y_environment='prod', o11y_alert_canary_service='o11y-fault-probe-' + 'd' * 12),
+):
+    for uid in expected:
+        rule = rules(**values)[uid]
+        assert rule['isPaused'] is True, values
+        assert 'notification_settings' not in rule, values
 PY
 }
 
