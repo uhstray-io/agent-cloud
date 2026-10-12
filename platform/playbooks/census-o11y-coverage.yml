@@ -3,6 +3,9 @@
 - name: Refuse extra vars that set internal names
   ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
 
+- name: Require the reviewed checkout before Census credentials or helper execution
+  ansible.builtin.import_playbook: require-reviewed-checkout.yml
+
 - name: Check out and inventory declarations
   hosts: localhost
   connection: local
