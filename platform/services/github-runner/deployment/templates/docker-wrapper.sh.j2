@@ -1,0 +1,49 @@
+#!/bin/sh
+# docker: the `docker` the container hooks run. Rendered by Ansible; do not edit on the host.
+#
+# It gives rootless podman the runner account's own directories, then runs podman with
+# the arguments unchanged. It changes no argument, no mount and no image: only the
+# environment of the engine process.
+#
+# Why it exists. The container hooks start `docker` with an environment built from the
+# job alone: for `docker create`, `exec` and `run` it is exactly the job container's
+# variables plus the DOCKER_* variables, and for every other call (`pull`, `network`,
+# `rm`) it is the DOCKER_* variables only (runner-container-hooks v0.8.1,
+# packages/docker/src/utils.ts, optionsWithDockerEnvs). Nothing else of the runner's
+# environment reaches the engine: no PATH, no XDG_* directories. And the job's variables
+# include HOME=/github/home, because that is how `-e HOME` gives the container its home.
+# Rootless podman reads its directories from that environment:
+#   - its configuration directory from XDG_CONFIG_HOME, else from HOME, which it must
+#     resolve on the host (podman v4.9.3, pkg/util/utils_supported.go:81-92). With
+#     HOME=/github/home every container job failed in "Initialize containers" with
+#     `cannot resolve /github/home: lstat /github: no such file or directory`.
+#   - its image store from XDG_DATA_HOME, else from HOME, else from the passwd entry
+#     (containers/storage v1.51.0, pkg/homedir/homedir.go:28-37,
+#     pkg/unshare/unshare.go:17-23). A `pull` (no HOME) and a `create` (HOME=/github/home)
+#     would use two different stores, and the image pulled in one would be absent in
+#     the other.
+#   - newuidmap and newgidmap from PATH (podman v4.9.3, pkg/rootless/rootless_linux.go:
+#     104-106). With no PATH, podman fails to map the account's subordinate range
+#     whenever no podman pause process is already running.
+#
+# So the three directories are ALWAYS set to the account's own, the same values a
+# podman command run by the account in its own session uses. They are never taken from
+# the caller: the hooks' environment never carries the correct ones. PATH is ALWAYS the
+# fixed system list, for the same reason and because "no PATH given" cannot be detected
+# here: a shell gives itself a default PATH when none is passed, without exporting it,
+# and the default differs between shells (bash's includes "."). Podman needs no
+# directory of the caller's; its helpers are in the system directories. The list leaves
+# out this wrapper's own directory, so podman can never run this file again.
+#
+# HOME is NOT changed. The engine copies `-e HOME` from its own HOME into the container,
+# and that must stay the job's /github/home, not this account's home directory.
+#
+# The runner finds this file because the runner's PATH (.env) lists its directory
+# first; the hooks resolve `docker` with the runner's PATH, not with the job's. The
+# deploy's mount probe runs it with the environment the hooks give it.
+XDG_CONFIG_HOME="{{ github_runner_home }}/.config"
+XDG_DATA_HOME="{{ github_runner_home }}/.local/share"
+XDG_RUNTIME_DIR="/run/user/{{ github_runner_uid }}"
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export XDG_CONFIG_HOME XDG_DATA_HOME XDG_RUNTIME_DIR PATH
+exec /usr/bin/podman "$@"

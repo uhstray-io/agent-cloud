@@ -21,6 +21,18 @@
       against that rootless socket with a trivial job payload. Record verbatim what
       works and what fails — in particular container create, exec, volume mount of the
       work directory, and cleanup.
+      **Findings so far (2026-10-12), from the live runners and upstream source; still
+      open: the end-to-end result after the next deploy, then 1.3.** On both runners (rootless
+      podman 4.9.3 through podman-docker, hooks v0.8.1, runner 2.336.0) container create
+      failed three ways, recorded in `docs/MISTAKES.md` 10.24 and 10.25:
+      (a) `cannot resolve /github/home: lstat /github: no such file or directory`: the
+      hooks give `docker create` only the job's variables, with HOME=/github/home and no
+      XDG directory (fix: the runner's `docker` wrapper, `_bin/docker`);
+      (b) `statfs .../_work/_actions: no such file or directory`: podman refuses a missing
+      bind source (fix: `job-started.sh`);
+      (c) `statfs /var/run/docker.sock: permission denied`: the hardcoded socket mount led
+      to root's socket (fix: the account's own podman socket at that path).
+      Exec and cleanup through the hooks are not yet observed.
 - [ ] 1.3 Write the outcome into `design.md` under D4 as a resolved decision (replacing
       the "unverified" wording) — either "rootless podman compatibility socket works,
       platform norm holds" or "rootless podman insufficient because <verbatim failure>;

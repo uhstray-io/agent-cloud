@@ -164,6 +164,7 @@ and why.
 | 10.22 | A dashboard panel was renamed and the deploy's verify kept the old title; only a production run compared them | Mechanism never exercised | 1 | Test (`test_o11y_dashboard_asserts.py`, mutation-checked) |
 | 10.23 | The main-to-dev sync failed on every workflow-file change from 2026-08-28; a promotion would have reverted two action bumps on `main` | Mechanism never exercised | 1 | CI (`Promotion source (dev -> main)` ancestry step; `test_promotion_source_guard.py`, mutation-checked) |
 | 10.24 | Shipped container jobs on rootless podman with Docker's mount semantics assumed; every `container:` job failed on a missing bind source and on a socket link to root's podman, while the deploy's uid-map check passed | Mechanism never exercised | 1 | Playbook probe (hook-shaped `docker create` in the user manager) + test (`test_service_github_runner.bats`) |
+| 10.25 | The 10.24 probe copied the hooks' `docker create` arguments but ran it with the account's own environment; the hooks pass HOME=/github/home and no XDG directories, so every `container:` job still failed with `cannot resolve /github/home` | Mechanism never exercised | 1 | Playbook probe (wrapper run under `env -i` with the hooks' HOME, one image store for pull and create) + test (`test_service_github_runner.bats`) |
 | 11.1 | 76 assertions across the suite could never fail — `!` and `[[ ]]` are exempt from `set -e` | False-green test | 1 | **Ratchet test** (`test_assertions_are_real.bats` + `known_inert_assertions.txt`) |
 | 11.2 | Sourced a config file instead of reading it, turning every credential into shell code | Live-state damage | 1 | Test |
 | 11.3 | Committed without running the suite — third occurrence | Process | 1 | Pre-push hook (status note 2026-10-02) |
@@ -4466,6 +4467,45 @@ unit, and calls `_ping` on the mounted socket path; the deploy fails unless both
 socket path. `test_service_github_runner.bats` renders and runs the job-started hook, and
 requires the probe's mount set, the user-socket link, and that root's socket is never a
 link target.
+
+### 10.25 The hook-shaped probe copied the hooks' arguments but not their environment
+
+**What happened.** After the 10.24 fix was deployed and its probe passed on both GitHub
+runners, every job that declared `container:` still failed in "Initialize containers" with
+the error 10.24 quotes first: `cannot resolve /github/home: lstat /github: no such file or
+directory`. That error was never a mount error. The container hooks start `docker` with an
+environment built from the job alone: for `create`, `exec` and `run` it is exactly the job
+container's variables plus the `DOCKER_*` variables, and for every other call it is the
+`DOCKER_*` variables only (runner-container-hooks v0.8.1, `packages/docker/src/utils.ts`,
+`optionsWithDockerEnvs`). The job's variables include `HOME=/github/home`, which is how `-e
+HOME` hands the container its home. Rootless podman resolves HOME on the host when
+`XDG_CONFIG_HOME` is unset and fails with exactly this message (podman v4.9.3,
+`pkg/util/utils_supported.go:81-92`), and it also places its image store under HOME when
+`XDG_DATA_HOME` is unset (containers/storage v1.51.0, `pkg/homedir/homedir.go:28-37`). So
+even past the error, a `pull` (no HOME, so the passwd home) and a `create` (HOME=/github/home)
+would use two different image stores. The diagnostic workflow in 10.24 ran its `docker
+create` inside a job step, whose HOME is the runner account's home, so it saw only the two
+errors behind this one.
+
+**Root cause.** The probe 10.24 added repeated the hooks' `docker create` with their full
+mount set, but ran it with the user manager's environment: the account's HOME, a PATH and
+the XDG directories. It never set `HOME=/github/home` and never cleared the rest, so it could
+not fail the way the hooks fail. The probe was hook-shaped in arguments only.
+
+**The rule.** A probe of a client's call copies the client's whole invocation: arguments,
+environment and the way the binary is found. A probe that inherits a richer environment than
+the client gives proves the probe, not the client (widens 10.24).
+
+**Enforced by.** The runner's `docker` is now a deployed wrapper (`docker-wrapper.sh.j2`,
+first on the runner's PATH through `.env`) that always sets the account's own
+`XDG_CONFIG_HOME`, `XDG_DATA_HOME` and `XDG_RUNTIME_DIR` and the fixed system PATH, leaves
+HOME alone and runs `/usr/bin/podman`. `deploy-github-runner.yml` resolves
+`docker` from the PATH in the deployed `.env` and requires the wrapper, imports the probe
+image under `env -i` (as the hooks' `pull` runs) after `podman system migrate`, creates the
+container under `env -i HOME=/github/home GITHUB_ACTIONS=true CI=true` with `-e HOME`, and
+requires the created container to carry `HOME=/github/home`. `test_service_github_runner.bats`
+renders the wrapper and runs it against a stub podman with the hooks' environment, and
+requires the probe's environment and the `.env` PATH.
 
 ## 11. The largest one
 

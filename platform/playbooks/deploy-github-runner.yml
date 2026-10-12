@@ -571,6 +571,35 @@
       ansible.builtin.set_fact:
         _runner_uid: "{{ getent_passwd[_account][1] }}"
 
+    - name: "Create the directory for the runner's own docker wrapper"
+      # Not the runner's bin/: that holds the runner's own binaries, from its archive.
+      ansible.builtin.file:
+        path: "{{ _home }}/_bin"
+        state: directory
+        owner: "{{ _account }}"
+        group: "{{ _account }}"
+        mode: "0750"
+
+    - name: "Install the docker wrapper the container hooks run"
+      # The hooks start `docker` with only the job's environment variables, which include
+      # HOME=/github/home and no XDG_* directories, so rootless podman looked for its
+      # configuration and its image store under a path that exists only inside the job
+      # container. Every container job failed in "Initialize containers" with `cannot
+      # resolve /github/home`. The wrapper sets the account's own directories and runs
+      # podman unchanged; the runner's PATH (.env) lists _bin first. Templated after the
+      # uid lookup because XDG_RUNTIME_DIR is /run/user/<uid>. The full reasoning is in
+      # docker-wrapper.sh.j2 and the service CLAUDE.md, "Container jobs under rootless
+      # podman".
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../services/github-runner/deployment/templates/docker-wrapper.sh.j2"
+        dest: "{{ _home }}/_bin/docker"
+        owner: "{{ _account }}"
+        group: "{{ _account }}"
+        mode: "0750"
+      vars:
+        github_runner_home: "{{ _tpl_home }}"
+        github_runner_uid: "{{ _runner_uid }}"
+
     - name: "Give job containers the runner account's own podman socket, never root's"
       # The runner mounts /var/run/docker.sock into every job container; the path is
       # hardcoded upstream and no setting removes it (see the task file). podman-docker
@@ -707,6 +736,20 @@
       # one-file archive, so no registry is involved; the container is created, never
       # started, then removed. `_ping` on the mounted socket path must reach the account's
       # own podman.
+      #
+      # Hook-shaped in ENVIRONMENT too, not only in arguments. The hooks resolve `docker`
+      # with the runner's PATH and then start it with the job's variables only
+      # (runner-container-hooks v0.8.1, utils.ts optionsWithDockerEnvs): `create` gets
+      # HOME=/github/home and nothing else of the runner's, while `pull` gets no HOME at
+      # all. The first version of this probe ran `docker` with the user manager's own
+      # environment, passed, and every container job still failed with `cannot resolve
+      # /github/home` (docs/MISTAKES.md 10.25). So `docker` is resolved from the PATH in
+      # the deployed .env and must be the wrapper; the import runs under `env -i` as the
+      # hooks' pull does, after `system migrate` stops any pause process so the empty
+      # environment must map the subordinate range itself; the create runs under `env -i
+      # HOME=/github/home GITHUB_ACTIONS=true CI=true` with `-e HOME`, and must find the
+      # imported image, so both calls use one store; and the created container must
+      # carry HOME=/github/home, so the wrapper did not change the job's HOME.
       ansible.builtin.shell: |
         set -euo pipefail
         nnp=$(systemctl --user show --property=NoNewPrivileges --value actions-runner.service)
@@ -717,15 +760,23 @@
         H={{ _home | quote }}
         W="$H/_work"
         "$H/job-started.sh"
+        runner_path=$(sed -n 's/^PATH=//p' "$H/.env")
+        dk=$(PATH="$runner_path" command -v docker)
+        echo "docker=$dk"
+        [ "$dk" = "$H/_bin/docker" ]
         probe="gh-runner-mount-probe-$$"
         img="localhost/$probe:latest"
         src=$(mktemp -d)
-        trap 'docker rm -f "$probe" >/dev/null 2>&1 || true; docker rmi -f "$img" >/dev/null 2>&1 || true; rm -rf "$src"' EXIT
+        trap 'env -i "$dk" rm -f "$probe" >/dev/null 2>&1 || true; env -i "$dk" rmi -f "$img" >/dev/null 2>&1 || true; rm -rf "$src"' EXIT
         mkdir "$src/root"
         : > "$src/root/.probe"
         tar -C "$src/root" -cf "$src/rootfs.tar" .
-        docker import "$src/rootfs.tar" "$img" >/dev/null
-        docker create --name "$probe" \
+        env -i "$dk" system migrate
+        env -i "$dk" import "$src/rootfs.tar" "$img" >/dev/null
+        env -i "$dk" image exists "$img"
+        echo "import=ok"
+        env -i HOME=/github/home GITHUB_ACTIONS=true CI=true "$dk" create --name "$probe" \
+          -e HOME -e GITHUB_ACTIONS=true -e CI=true \
           -v=/var/run/docker.sock:/var/run/docker.sock \
           -v="$W":/__w \
           -v="$H/externals":/__e:ro \
@@ -736,6 +787,10 @@
           -v="$W/_temp/_github_workflow":/github/workflow \
           --entrypoint tail "$img" -f /dev/null >/dev/null
         echo "create=ok"
+        cfg=$(env -i "$dk" inspect "$probe")
+        if grep -qF '"HOME=/github/home"' <<<"$cfg"; then
+          echo "home=job"
+        fi
         echo "ping=$(curl -sf --unix-socket /var/run/docker.sock http://d/_ping)"
         PROBE
       args:
@@ -748,7 +803,10 @@
       changed_when: false
       failed_when: >-
         _mountprobe.rc != 0
+        or ('docker=' ~ _home ~ '/_bin/docker') not in _mountprobe.stdout_lines
+        or 'import=ok' not in _mountprobe.stdout_lines
         or 'create=ok' not in _mountprobe.stdout_lines
+        or 'home=job' not in _mountprobe.stdout_lines
         or 'ping=OK' not in _mountprobe.stdout_lines
       # It creates and removes a container, so a dry run skips it.
       when: not ansible_check_mode
@@ -763,5 +821,6 @@
           containers mapped from inside the user manager
           ({{ _uidmap.stdout_lines.index('gid_map') - _uidmap.stdout_lines.index('uid_map') - 1 }}
           uid map lines), a job container created with the runner's mounts and the
-          account's own podman socket. Confirm it is ONLINE at the organisation with
+          account's own podman socket, through the runner's docker wrapper with the
+          hooks' own environment. Confirm it is ONLINE at the organisation with
           verify-github-runners.yml before routing work to it.

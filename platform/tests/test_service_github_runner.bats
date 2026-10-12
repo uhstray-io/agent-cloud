@@ -300,3 +300,113 @@ setup() {
   assert_contains "$block" "'create=ok' not in _mountprobe.stdout_lines"
   assert_contains "$block" "'ping=OK' not in _mountprobe.stdout_lines"
 }
+
+@test "gh-runner: the hooks find the runner's docker wrapper first on the runner's PATH" {
+  # The hooks resolve `docker` with the runner's own PATH (@actions/exec looks the tool up
+  # with the hook process's PATH, not the child's). The runner is started by run.sh, which
+  # does not read .path, so the PATH line in .env is what puts _bin first.
+  local PB="$BATS_TEST_DIRNAME/../playbooks/deploy-github-runner.yml"
+  assert_grep -qxF 'PATH={{ github_runner_home }}/_bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin' \
+    "$D/templates/runner-dotenv.j2"
+  # The runner applies .env only when it starts; a .env change already restarts it.
+  assert_grep -qF "or ('runner-dotenv.j2' in (_runner_files.results | default([])" "$PB"
+  local t
+  t=$(task_block "$PB" 'Install the docker wrapper the container hooks run')
+  [ -n "$t" ]
+  assert_contains "$t" 'docker-wrapper.sh.j2"'
+  assert_contains "$t" 'dest: "{{ _home }}/_bin/docker"'
+  assert_contains "$t" 'mode: "0750"'
+  assert_contains "$t" 'github_runner_uid: "{{ _runner_uid }}"'
+  # Not the runner's own bin/, which holds the runner's binaries from its archive.
+  refute_contains "$t" '{{ _home }}/bin/'
+  # After the uid is known (XDG_RUNTIME_DIR is /run/user/<uid>), and in place before the
+  # runner restarts with the new PATH.
+  assert_precedes "$PB" '_runner_uid: "\{\{ getent_passwd' 'name: "Install the docker wrapper the container hooks run"'
+  assert_precedes "$PB" 'name: "Install the docker wrapper the container hooks run"' 'name: "Reload the account.s systemd and start the runner"'
+}
+
+@test "gh-runner: the docker wrapper gives podman the account's directories and keeps the job's HOME" {
+  # The hooks start `docker create` with exactly the job's variables: HOME=/github/home
+  # and no PATH or XDG_* directory. Podman then resolved HOME on the host and failed with
+  # `cannot resolve /github/home`, and would have used a different image store from the
+  # one `docker pull` (no HOME) wrote to. Rendered and run, not grepped.
+  local T="$D/templates/docker-wrapper.sh.j2"
+  assert_grep -qxF 'exec /usr/bin/podman "$@"' "$T"
+  local home="$BATS_TEST_TMPDIR/home" stub="$BATS_TEST_TMPDIR/podman" w="$BATS_TEST_TMPDIR/docker"
+  mkdir -p "$home"
+  # The stub prints what it was GIVEN (/usr/bin/env), not what a shell would assume: a
+  # shell sets itself an unexported default PATH when it receives none.
+  cat > "$stub" <<'STUB'
+#!/bin/sh
+/usr/bin/env
+for a in "$@"; do echo "arg=$a"; done
+STUB
+  chmod +x "$stub"
+  sed -e "s#{{ github_runner_home }}#$home#g" -e 's#{{ github_runner_uid }}#1001#g' \
+      -e "s#^exec /usr/bin/podman #exec $stub #" "$T" > "$w"
+  refute_grep -qF '{{' "$w"
+  assert_grep -qxF "exec $stub \"\$@\"" "$w"
+  # As the hooks run `create`: the job's variables only.
+  local sys='PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
+  run env -i HOME=/github/home GITHUB_ACTIONS=true CI=true /bin/sh "$w" create -e HOME --name 'a b' img
+  [ "$status" -eq 0 ]
+  assert_contains "$output" 'HOME=/github/home'
+  assert_contains "$output" "XDG_CONFIG_HOME=$home/.config"
+  assert_contains "$output" "XDG_DATA_HOME=$home/.local/share"
+  assert_contains "$output" 'XDG_RUNTIME_DIR=/run/user/1001'
+  # An exported PATH, so podman can find newuidmap/newgidmap.
+  assert_contains "$output" "$sys"
+  # Arguments pass through unchanged, one per word, including one with a space.
+  assert_contains "$output" "$(printf 'arg=create\narg=-e\narg=HOME\narg=--name\narg=a b\narg=img')"
+  # As the hooks run `pull`: no HOME at all. The wrapper must not invent one, and the
+  # store directory is the same as for `create`.
+  run env -i /bin/sh "$w" pull img
+  [ "$status" -eq 0 ]
+  printf '%s\n' "$output" > "$BATS_TEST_TMPDIR/pull"
+  refute_grep -qE '^HOME=' "$BATS_TEST_TMPDIR/pull"
+  assert_contains "$output" "XDG_DATA_HOME=$home/.local/share"
+  # A caller's directories and PATH are replaced: the wrapper's own _bin can never be
+  # found again, and a job-chosen store is never used.
+  run env -i PATH="$BATS_TEST_TMPDIR:/usr/bin" XDG_DATA_HOME=/job/data \
+    XDG_CONFIG_HOME=/job/config XDG_RUNTIME_DIR=/tmp/r /bin/sh "$w" info
+  [ "$status" -eq 0 ]
+  assert_contains "$output" "$sys"
+  assert_contains "$output" "XDG_DATA_HOME=$home/.local/share"
+  assert_contains "$output" "XDG_CONFIG_HOME=$home/.config"
+  assert_contains "$output" 'XDG_RUNTIME_DIR=/run/user/1001'
+  # And no code line assigns HOME: `-e HOME` must hand the container the job's home.
+  grep -vE '^[[:space:]]*#' "$T" > "$BATS_TEST_TMPDIR/code"
+  refute_grep -qE '(^|[[:space:];])(export[[:space:]]+)?HOME=' "$BATS_TEST_TMPDIR/code"
+}
+
+@test "gh-runner: the deploy probe runs docker the way the hooks do, environment included" {
+  # The 10.24 probe ran `docker create` with the user manager's environment and passed
+  # while every container job failed with `cannot resolve /github/home` (MISTAKES 10.25).
+  local PB="$BATS_TEST_DIRNAME/../playbooks/deploy-github-runner.yml"
+  local block
+  block=$(sed -n '/^    - name: "Confirm a job container can be created with the runner.s mounts/,/^    - name: "Report"$/p' "$PB")
+  [ -n "$block" ]
+  # `docker` is found the way the hooks find it, and it is the wrapper.
+  assert_contains "$block" "runner_path=\$(sed -n 's/^PATH=//p' \"\$H/.env\")"
+  assert_contains "$block" 'dk=$(PATH="$runner_path" command -v docker)'
+  assert_contains "$block" '[ "$dk" = "$H/_bin/docker" ]'
+  # `pull`-shaped calls: no environment at all, with no pause process to join.
+  assert_contains "$block" 'env -i "$dk" system migrate'
+  assert_contains "$block" 'env -i "$dk" import "$src/rootfs.tar" "$img"'
+  assert_contains "$block" 'env -i "$dk" image exists "$img"'
+  # The `create`: the job's variables only, with -e HOME, on the same image.
+  assert_contains "$block" 'env -i HOME=/github/home GITHUB_ACTIONS=true CI=true "$dk" create --name "$probe"'
+  assert_contains "$block" '-e HOME -e GITHUB_ACTIONS=true -e CI=true'
+  assert_contains "$block" "grep -qF '\"HOME=/github/home\"' <<<\"\$cfg\""
+  # No engine call in the probe body runs outside the hooks' environment.
+  printf '%s\n' "$block" > "$BATS_TEST_TMPDIR/block"
+  refute_grep -qE '^[[:space:]]*(docker|podman|"\$dk")[[:space:]]' "$BATS_TEST_TMPDIR/block"
+  local r
+  for r in "('docker=' ~ _home ~ '/_bin/docker') not in _mountprobe.stdout_lines" \
+           "'import=ok' not in _mountprobe.stdout_lines" \
+           "'create=ok' not in _mountprobe.stdout_lines" \
+           "'home=job' not in _mountprobe.stdout_lines" \
+           "'ping=OK' not in _mountprobe.stdout_lines"; do
+    assert_contains "$block" "$r"
+  done
+}
