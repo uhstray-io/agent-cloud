@@ -274,6 +274,40 @@ Task 2681 tested a different served model from the other two (see the paragraph 
 Reading: the gateway adds roughly 25 ms to the first token and nothing measurable to the gaps
 between chunks. Cases matched at task 2709: **13/13, PASS**.
 
+### Streaming pass-through check (tasks 2.3, 2.4; opt-in, not yet run)
+
+The default run proves the gateway adds no measurable delay to a stream that lasts seconds. Spec
+scenario "Stream is not buffered" needs one past 130 s, so `Run agentgateway Conformance` (and its
+`(Dev)` variant) takes the survey var `agw_conformance_long_stream` (`-e
+agw_conformance_long_stream=true` in the playbook). Set, it adds a fifteenth case, `stream-long`, to
+the fourteen; unset it runs the fourteen as before.
+
+The case sends one streamed `xhigh` completion with `max_tokens` 8000 and a prompt asking for an
+exhaustive answer to the gateway and then straight to vLLM, with the same hard ceiling on each
+(`agw_conformance_long_stream_timeout`, 600 s). That is the technique of dgx-spark's
+`vllm/public_probe.py` `long` mode, which produced the 256 s public-path stream recorded in the
+inference-endpoint-reliability change. dgx-spark sets `--sse-keep-alive-interval 15`, so vLLM sends
+an SSE comment line (`: keep-alive`) whenever no chunk has gone out for 15 s: during a queue wait or
+a long prefill. A stream that generates steadily may therefore carry few or no comments, and the
+report says so (`keepalives_seen_from_vllm`) rather than treating zero against zero as proof of
+pass-through.
+
+For each side the report gives `duration_s`, `first_byte_s`, `keepalives` (SSE comment lines) and
+`gap_max_s` (the longest silence between two received lines, comments included). The case passes
+only when every one of these holds; otherwise it fails and `failure` names each that does not:
+
+- the direct stream itself ran past 130 s (`agw_conformance_long_stream_min_seconds`), so a stream
+  that ended early cannot pass for lack of evidence;
+- both streams ended with `[DONE]` and the gateway's also ran past 130 s;
+- the gateway passed at least as many comments as vLLM, less one for a boundary;
+- the gateway's first byte came no more than 2 s after vLLM's, and its longest silence no more than
+  2 s over vLLM's. A gateway that holds the whole stream delivers it in one burst, which shows as a
+  late first byte rather than a long gap between lines, so both are checked.
+
+The two bodies are not compared: generation over thousands of tokens is not bit-identical even at
+temperature 0 with a seed, and the usage-chunk check belongs to `stream-xhigh`. No result is
+recorded here yet; the first production run's task number and figures go in this section.
+
 ## Verification log
 
 - 2026-09-17 — structural: BATS `platform/tests/test_service_agentgateway.bats` 17/17;

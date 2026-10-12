@@ -33,6 +33,17 @@
 #                       it (include_usage and continuous_usage_stats true), so the two shapes are
 #                       comparable
 #   responses           one Responses API request (POST /responses, reasoning.effort nested)
+#   stream-long         OPT-IN (AGW_CONF_LONG_STREAM=1; change tasks 2.3 and 2.4, spec scenario "Stream
+#                       is not buffered"): one streamed xhigh request sized to run past 130 s
+#                       (max_tokens 8000 and a prompt asking for an exhaustive answer, the technique
+#                       of dgx-spark's vllm/public_probe.py `long` mode), sent to both targets. Per
+#                       side it records the duration, the first-byte time, the SSE comment lines
+#                       (vLLM's keep-alives) and the longest silence between two received lines. It
+#                       PASSES only when the direct stream itself ran past the required time (else
+#                       nothing is proved), both streams ended with [DONE], the gateway stream ran
+#                       past it too, the gateway passed at least as many comments as vLLM (less one
+#                       for a boundary), and it neither started late nor went quiet for longer than
+#                       vLLM did (plus 2 s): a buffering gateway shows as a late first byte
 #
 # Each case goes to the gateway, then straight to vLLM, from the same host, so the two differ only
 # by the gateway hop. A result line records the status, a sha256 of the body with identifiers and
@@ -62,12 +73,18 @@
 #   AGW_CONF_TIMEOUT          per-request ceiling in seconds (default 600)
 #   AGW_CONF_MAX_TOKENS       max_tokens for non-streamed cases (default 512)
 #   AGW_CONF_STREAM_MAX_TOKENS max_tokens for the streamed case (default 2048)
+#   AGW_CONF_LONG_STREAM      1 or true adds the stream-long case (default off: the 14 cases above)
+#   AGW_CONF_LONG_STREAM_MIN_S      seconds the direct stream must last to prove anything (default 130)
+#   AGW_CONF_LONG_STREAM_MAX_TOKENS max_tokens for stream-long (default 8000)
+#   AGW_CONF_LONG_STREAM_TIMEOUT    hard ceiling per side for stream-long, seconds (default 600)
 #
 # Needs bash, curl (7.55 or later, for -H @file), jq (1.6 or later) and sha256sum or shasum.
 set -euo pipefail
 
 EFFORTS="none minimal low medium high xhigh max"
 PROMPT='What is 12*17? Answer with the number only.'
+# stream-long asks for a long answer (the prompt of dgx-spark's vllm/public_probe.py).
+LONG_PROMPT='Prove, step by step and checking every assumption, that there are infinitely many primes; then do the same for the irrationality of the square root of 2; then compare the two proofs in detail. Be exhaustive.'
 
 die() {
 	printf 'conformance: %s\n' "$*" >&2
@@ -158,6 +175,13 @@ body_for() { # case model target -> JSON on stdout
 			'$b + {stream: true, stream_options: ({include_usage: $iu} + if $iu then {continuous_usage_stats: true} else {} end),
 			reasoning_effort: "low", max_tokens: $mt}'
 		;;
+	stream-long)
+		# The same deterministic base as every case (temperature 0, seed 7), so the two sides run
+		# for about as long: their keep-alive counts and silences are then comparable.
+		jq -nc --argjson b "$base" --arg p "$LONG_PROMPT" --argjson mt "$LONG_MAX_TOKENS" \
+			'$b + {stream: true, reasoning_effort: "xhigh", max_tokens: $mt,
+			messages: [{role: "user", content: $p}]}'
+		;;
 	responses)
 		jq -nc --arg m "$model" --arg p "$PROMPT" --argjson mt "$MAX_TOKENS" \
 			'{model: $m, input: $p, reasoning: {effort: "low"}, max_output_tokens: $mt, temperature: 0}'
@@ -230,7 +254,11 @@ run_plain() { # case kind method path target
 run_stream() { # case target
 	local case="$1" target="$2"
 	local req="$WORK/$case.$target.req" raw="$WORK/$case.$target.raw" hdr="$WORK/$case.$target.hdr"
-	local t0 rc_curl rc_jq
+	local t0 rc_curl rc_jq timeout="$TIMEOUT" required=null
+	if [ "$case" = stream-long ]; then
+		timeout="$LONG_TIMEOUT"
+		required="$LONG_MIN_S"
+	fi
 	body_for "$case" "$(model_for "$target")" "$target" >"$req"
 	: >"$raw"
 	: >"$hdr"
@@ -249,7 +277,7 @@ run_stream() { # case target
 	#         death would make curl fail too (write error 23), so jq's status is checked first.
 	# Nothing in this pipeline exits early on purpose (no head, no grep -q): jq reads to EOF.
 	local -a st
-	if curl_target "$target" -sS -N --max-time "$TIMEOUT" -D "$hdr" -H 'Content-Type: application/json' \
+	if curl_target "$target" -sS -N --max-time "$timeout" -D "$hdr" -H 'Content-Type: application/json' \
 		--data-binary "@$req" "$(base_url "$target")/chat/completions" 2>>"$WORK/curl.err" |
 		jq -R -c --unbuffered '[now, .]' >"$raw"; then
 		st=("${PIPESTATUS[@]}")
@@ -263,14 +291,21 @@ run_stream() { # case target
 	# tr and awk both read their whole input, so no SIGPIPE; an empty header file (no connection)
 	# prints 0, which is the "no answer" status the comparison treats as a failure.
 	status=$(tr -d '\r' <"$hdr" | awk '/^HTTP\//{s=$2} END{print s+0}')
-	jq -s -c --argjson t0 "$t0" --argjson status "$status" "$JQ_LIB"'
+	jq -s -c --argjson t0 "$t0" --argjson status "$status" --argjson required "$required" "$JQ_LIB"'
 		map(.[1] |= rtrimstr("\r")) as $lines
 		| [$lines[] | select(.[1] | startswith("data:")) | {t: .[0], d: (.[1][5:] | ltrimstr(" "))}] as $data
 		| ([$lines[] | select(.[1] | startswith(":"))] | length) as $ka
 		| (($lines | last | .[0]) // $t0) as $tend
+		# When each non-blank line (data or comment) arrived: the first byte, and the longest
+		# silence between two of them (null with fewer than two). A blank line only ends an event.
+		| ([$lines[] | select(.[1] != "") | .[0]]) as $lt
+		| ([range(1; $lt | length) as $i | $lt[$i] - $lt[$i - 1]] | max) as $lgap
+		| ({first_byte_s: (if ($lt | length) == 0 then null else ($lt[0] - $t0 | r3) end),
+			line_gap_max_s: ($lgap | r3)}
+			+ (if $required == null then {} else {required_s: $required} end)) as $x
 		| if ($status < 200 or $status >= 300) or ($data | length) == 0 then
 			{summary: ($lines | map(.[1]) | join("\n") | summarise_body("stream"; $status)),
-			 timing: {ttft_s: null, total_s: ($tend - $t0 | r3), keepalives: $ka, gaps: ([] | stats)}}
+			 timing: ({ttft_s: null, total_s: ($tend - $t0 | r3), keepalives: $ka, gaps: ([] | stats)} + $x)}
 		  else
 			[$data[] | select(.d != "[DONE]") | {t, e: (.d | try fromjson catch {_unparsed: true})}] as $ev
 			| any($data[]; .d == "[DONE]") as $done
@@ -287,11 +322,11 @@ run_stream() { # case target
 					done: $done,
 					error_event: any($ev[]; .e.error != null),
 					usage_chunk: any($ev[]; (.e.usage.total_tokens | type) == "number")}},
-			   timing: {
+			   timing: ({
 				ttft_s: (if $ft == null then null else ($ft - $t0 | r3) end),
 				total_s: ($tend - $t0 | r3),
 				keepalives: $ka,
-				gaps: ([range(1; $ts | length) as $i | $ts[$i] - $ts[$i - 1]] | stats)}}
+				gaps: ([range(1; $ts | length) as $i | $ts[$i] - $ts[$i - 1]] | stats)} + $x)}
 		  end' "$raw" >"$raw.out"
 	jq -c '.summary' "$raw.out" >"$raw.sum"
 	emit "$case" "$target" POST /chat/completions "$status" "$rc_curl" "$raw.sum" "$(jq -c '.timing' "$raw.out")"
@@ -319,6 +354,18 @@ cmd_run() {
 	positive_int AGW_CONF_TIMEOUT "$TIMEOUT"
 	positive_int AGW_CONF_MAX_TOKENS "$MAX_TOKENS"
 	positive_int AGW_CONF_STREAM_MAX_TOKENS "$STREAM_MAX_TOKENS"
+	LONG_STREAM=0
+	case "${AGW_CONF_LONG_STREAM:-}" in
+	'' | 0 | false) ;;
+	1 | true) LONG_STREAM=1 ;;
+	*) die "AGW_CONF_LONG_STREAM must be 1, true, 0, false or empty" ;;
+	esac
+	LONG_MIN_S="${AGW_CONF_LONG_STREAM_MIN_S:-130}"
+	LONG_MAX_TOKENS="${AGW_CONF_LONG_STREAM_MAX_TOKENS:-8000}"
+	LONG_TIMEOUT="${AGW_CONF_LONG_STREAM_TIMEOUT:-600}"
+	positive_int AGW_CONF_LONG_STREAM_MIN_S "$LONG_MIN_S"
+	positive_int AGW_CONF_LONG_STREAM_MAX_TOKENS "$LONG_MAX_TOKENS"
+	positive_int AGW_CONF_LONG_STREAM_TIMEOUT "$LONG_TIMEOUT"
 	GATEWAY_URL="${AGW_CONF_GATEWAY_URL%/}"
 	DIRECT_URL="${AGW_CONF_DIRECT_URL%/}"
 	MODEL="$AGW_CONF_MODEL"
@@ -358,6 +405,10 @@ cmd_run() {
 	for t in gateway direct; do run_stream stream-xhigh "$t"; done
 	for t in gateway direct; do run_stream stream-options-without-usage "$t"; done
 	for t in gateway direct; do run_plain responses responses POST /responses "$t"; done
+	# Last, so the minutes it takes delay nothing else and a hang costs only its own ceiling.
+	if [ "$LONG_STREAM" = 1 ]; then
+		for t in gateway direct; do run_stream stream-long "$t"; done
+	fi
 }
 
 # ── 2.2: the comparison ────────────────────────────────────────────────────────
@@ -441,6 +492,28 @@ cmd_diff() {
 			   only_direct: [$dt | keys[] | . as $k | select($gt | has($k) | not)],
 			   type_changed: [$gt | keys[] | . as $k | select(($dt | has($k)) and $dt[$k] != $gt[$k])
 				| {path: $k, gateway: $gt[$k], direct: $dt[$k]}]};
+		# stream-long (OPT-IN case, see the header). The figures for one side, and the reasons the pair
+		# cannot be accepted; none means the gateway added no buffering. Silence is judged from
+		# the request: a late first byte counts as much as a long gap between lines, because a
+		# gateway that holds the whole stream delivers it in one burst at the end.
+		def long_side($r): {duration_s: $r.timing.total_s, first_byte_s: $r.timing.first_byte_s,
+			keepalives: $r.timing.keepalives, gap_max_s: $r.timing.line_gap_max_s};
+		def long_failures($g; $d): ($d.timing.required_s // 130) as $req | 2 as $tol
+			| [(if ($d.timing.total_s // 0) < $req then
+					"direct vLLM stream lasted \($d.timing.total_s) s, under the \($req) s needed: nothing is proved about buffering"
+				else empty end),
+			   (if ($g.timing.total_s // 0) < $req then
+					"gateway stream lasted \($g.timing.total_s) s, under the \($req) s needed"
+				else empty end),
+			   (if $g.timing.keepalives < ($d.timing.keepalives - 1) then
+					"gateway passed \($g.timing.keepalives) keep-alive comments, vLLM \($d.timing.keepalives): the gateway dropped keep-alives"
+				else empty end),
+			   (if ($g.timing.first_byte_s // 0) > (($d.timing.first_byte_s // 0) + $tol) then
+					"gateway first byte after \($g.timing.first_byte_s) s, vLLM after \($d.timing.first_byte_s) s: the gateway held the stream"
+				else empty end),
+			   (if ($g.timing.line_gap_max_s // 0) > (($d.timing.line_gap_max_s // 0) + $tol) then
+					"gateway went quiet for \($g.timing.line_gap_max_s) s between lines, vLLM for \($d.timing.line_gap_max_s) s: the gateway buffered the stream"
+				else empty end)];
 		def not_in($l): map(. as $x | select(($l // []) | index($x) | not));
 		def only_in($l): map(. as $x | select(($l // []) | index($x)));
 		# The lists for one case: the global ones plus the entry for that case, if any.
@@ -491,7 +564,16 @@ cmd_diff() {
 				| if ($g.semantic | has("done")) then
 					.stream_usage = {gateway: $g.semantic.usage_chunk, direct: $d.semantic.usage_chunk}
 				  else . end
-				| if ($g | ok) and ($d | ok) and ($g.semantic | has("done")) and $g.semantic.usage_chunk != true then
+				| if $g.case == "stream-long" and ($g | ok) and ($d | ok) then
+					# Judged on timing alone: at temperature 0 the two bodies are not guaranteed
+					# identical over thousands of tokens, and the usage chunk is a check of stream-xhigh.
+					long_failures($g; $d) as $lf
+					| .long_stream = {required_s: ($d.timing.required_s // 130), tolerance_s: 2,
+						keepalives_seen_from_vllm: ($d.timing.keepalives > 0),
+						gateway: long_side($g), direct: long_side($d)}
+					| if ($lf | length) == 0 then .verdict = "match"
+					  else .verdict = "error" | .failure = ($lf | join("; ")) end
+				  elif ($g | ok) and ($d | ok) and ($g.semantic | has("done")) and $g.semantic.usage_chunk != true then
 					.verdict = "error"
 					| .failure = "gateway \($g | how), stream carried no usage chunk (its tokens are not charged to the budget)"
 				  elif ($g | ok) and ($d | ok) then
