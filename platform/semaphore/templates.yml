@@ -908,6 +908,13 @@ templates:
         type: string
         required: true
 
+  # Read-only gate probe for the route switch (gateway tasks 4.5 and 6.4): keyless and invalid-key
+  # /v1/models must each be 401, and keyless /health is recorded (does a public /health survive
+  # gateway mode). No survey, no OpenBao call, no key material. Dev-bound until promotion.
+  - name: Probe agentgateway Gate (Dev)
+    playbook: platform/playbooks/probe-agentgateway-gate.yml
+    repository: agent-cloud dev
+
   - name: Deploy honcho
     playbook: platform/playbooks/deploy-honcho.yml
     dev_variant: true
