@@ -412,9 +412,13 @@
       dashboard file, evaluated against Prometheus) gave the drill model "not serving" during
       the fault; restored and verified, failed=0. With the 2026-10-12 operator restatement
       above (no wipe; dashboards accepted on 2839 and 3303-3305), scenario "Health up,
-      inference down" is proven. Ticked. Prerequisites that landed: PR #561 (the panel and
-      the drill's proof of it), PR #567 (`delegate_to` fix for ansible-core 2.20, MISTAKES
-      5.17), and Deploy o11y (Dev) task 4882, which provisioned the panel.
+      inference down" is proven. The twelve-minute hold ran: 24 health checks at a 30 s pause
+      (`o11y-fault-drill.yml:435-438`), all 24 with `/health` 200 (task 4905, "health check
+      24/24"). `vllm-node` was not restarted by construction, not by a runtime check: probe
+      mode rewrites only the o11y host's probe environment (playbook header) and no
+      probe-mode task targets the DGX nodes. Ticked. Prerequisites that landed: PR #561 (the
+      panel and the drill's proof of it), PR #567 (`delegate_to` fix for ansible-core 2.20,
+      MISTAKES 5.17), and Deploy o11y (Dev) task 4882, which provisioned the panel.
 - [x] 3.6 External liveness watcher on a path the firewall permits: a Semaphore schedule
       runs `check-o11y-liveness.yml` from the Semaphore host every 10 min against the
       Caddy front door, not the VM: Grafana `https://o11y.uhstray.io/api/health` (exempt
