@@ -268,7 +268,7 @@
           - -O
           - /dev/null
           - http://tempo:3200/ready
-      delegate_to: "{{ groups['o11y_svc'][0] }}"
+      delegate_to: "{{ groups.get('o11y_svc', []) | first | default(inventory_hostname) }}"
       changed_when: false
       check_mode: false
       when: agw_otlp_host | default('') | length > 0
@@ -642,7 +642,7 @@
     - name: "Mark gateway readiness time on the receiver"
       ansible.builtin.command:
         argv: [date, +%s]
-      delegate_to: "{{ groups['o11y_svc'][0] }}"
+      delegate_to: "{{ groups.get('o11y_svc', []) | first | default(inventory_hostname) }}"
       register: _gateway_ready_epoch
       changed_when: false
       check_mode: false
@@ -661,7 +661,7 @@
           - -O
           - '-'
           - "{{ 'http://127.0.0.1:9090/api/v1/query?query=' ~ ('timestamp(agentgateway_config_synchronized{job=\"agentgateway\"}) and agentgateway_config_synchronized{job=\"agentgateway\"} == 1' | urlencode) }}"
-      delegate_to: "{{ groups['o11y_svc'][0] }}"
+      delegate_to: "{{ groups.get('o11y_svc', []) | first | default(inventory_hostname) }}"
       register: _gateway_metric_gate
       changed_when: false
       check_mode: false

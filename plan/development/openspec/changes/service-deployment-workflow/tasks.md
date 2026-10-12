@@ -37,6 +37,12 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
       local_semaphore_image=docker.io/semaphoreui/semaphore:v2.19.11-ansible2.16.5`, confirm the
       sqlite store starts (the recorded v2.19-beta panic is gone), then move the default in
       `bootstrap-local-dev.yml`; keeps local and production on one branch-override behaviour
+      2026-10-12: local Semaphore bootstrapped on v2.19.11 (plain tag, the image production runs,
+      ansible-core 2.20.8 — the `-ansible2.16.5` variant named above would have kept local on a
+      third, older core); `/api/ping` 200, no panic in the log, sqlite store starts. Reported by
+      the coordinator; not re-verified here. Bootstrap's template registration stopped at the
+      isolated seed-environment guard (OpenBao address pinned in "OpenBao key seed inputs (Dev)");
+      fix in progress. Default in `bootstrap-local-dev.yml` not yet moved. Not ticked.
       - 2026-10-12: bootstrapped on the PLAIN `docker.io/semaphoreui/semaphore:v2.19.11` tag,
         not the `-ansible2.16.5` variant this task named: production runs the plain tag
         (ansible-core 2.20.8, which the local controller now matches), so the variant would
@@ -97,7 +103,7 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
       Deprecated `dry_run` only where it defaulted to false (create-netbox-device); the runner
       group and NetBox cleanup keep `dry_run=true` as their safety default (spec scenario
       "A dry-by-default playbook keeps its safety default")
-- [ ] 2.2 Run every wave-1 playbook on local-dev three ways (normal, `--check`,
+- [x] 2.2 Run every wave-1 playbook on local-dev three ways (normal, `--check`,
       `--tags verify`) and record the result per playbook in `design.md`. 2026-09-22: the
       local-runnable ones are recorded (design "Wave-1 check-mode results"); `--tags verify`
       is proven by `--list-tasks`, since Semaphore cannot launch a tag override. REMAINING:
@@ -150,6 +156,12 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
         `1c735290`, PR #491) recorded `vm-template` `pass` with evidence `cloudinit_drive: ide0`,
         `template_vmid: 9000`, against the unchanged template that failed in task 3287. Output
         read from Semaphore. 2.2 stays open only for Destroy VM (Dev), held for the operator.
+      - 2026-10-12: ticked. Destroy VM (Dev) dry run only, by operator decision: task 4856, target
+        o11y, `confirm_destroy` 219, `params.dry_run` true recorded; reported "check mode: VM 219
+        on alphacentauri would be destroyed (purge=1) ... Nothing was changed." No real run, by
+        decision. Task id and output as reported by the coordinator; not read from Semaphore here.
+        Every wave-1 playbook now has its runs; 2.2 ticked. Row added to `design.md`, "Production
+        `(Dev)` dry runs — 2026-10-12".
 - [x] 2.3 Wave 2, the remaining playbooks, grouped by service; same patterns and runs.
       2026-09-22: 67 files (161 reads, 27 logins, 125 skips) applied from the guard's own
       findings; normal runs are unchanged by construction (every guard is inert without

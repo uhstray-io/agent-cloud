@@ -160,6 +160,16 @@ How the TLS listener treats a client it must refuse (tasks 6.1, 6.4): the Semaph
 client leaf that is on no allowlist, once with no key and once with an invalid one, and reports
 statuses and failure classes only (no body, header or key).
 
+The pre-switch gate (tasks 4.5, 6.4, and the route-switch runbook's open `/health` item): the
+Semaphore template `Probe agentgateway Gate (Dev)` (`platform/playbooks/probe-agentgateway-gate.yml`)
+presents the verifier leaf, which the SAN rule admits, so the key check is the layer that answers.
+Keyless `GET /v1/models` proves a client with no key is refused; `GET /v1/models` with a literal key
+that is no credential proves a key the gateway does not hold is refused. Both must be 401 or the run
+fails. A keyless `GET /health` is **reported, not asserted**: the gateway config has no `/health`
+route and the key policy is strict on the listener, so the probe records what it actually does
+(200 means a public `/health` survives gateway mode; any other status means the route switch needs a
+`/health` handler). The report prints before the assertion. Read-only, no OpenBao call, no survey.
+
 A case **matches** when both targets succeeded (curl exit 0, a 2xx status, and for the stream
 an ending `[DONE]` with no error event) and returned the
 same status, the same body shape (every leaf path and its JSON type) and the same semantic fields:
@@ -273,6 +283,45 @@ its stream deltas are not recorded here; the three earlier production runs below
 Task 2681 tested a different served model from the other two (see the paragraph above).
 Reading: the gateway adds roughly 25 ms to the first token and nothing measurable to the gaps
 between chunks. Cases matched at task 2709: **13/13, PASS**.
+
+### Streaming pass-through check (tasks 2.3, 2.4; opt-in, not yet run)
+
+The default run proves the gateway adds no measurable delay to a stream that lasts seconds. Spec
+scenario "Stream is not buffered" needs one past 130 s, so `Run agentgateway Conformance` (and its
+`(Dev)` variant) takes the survey var `agw_conformance_long_stream` (`-e
+agw_conformance_long_stream=true` in the playbook). Set, it adds a fifteenth case, `stream-long`, to
+the fourteen; unset it runs the fourteen as before.
+
+The case sends one streamed `xhigh` completion with `max_tokens` 8000 and a prompt asking for an
+exhaustive answer to the gateway and then straight to vLLM, with the same hard ceiling on each
+(`agw_conformance_long_stream_timeout`, 600 s). That is the technique of dgx-spark's
+`vllm/public_probe.py` `long` mode, which produced the 256 s public-path stream recorded in the
+inference-endpoint-reliability change. dgx-spark sets `--sse-keep-alive-interval 15`, so vLLM sends
+an SSE comment line (`: keep-alive`) whenever no chunk has gone out for 15 s: during a queue wait or
+a long prefill. A stream that generates steadily may therefore carry few or no comments. The case
+still passes on timing, but the run does not count zero against zero as proof of pass-through: when
+vLLM sent none, `keepalives_seen_from_vllm` is false, the report and the CUSTOM STATS carry
+`unproven: ["keepalive"]`, and the playbook prints a visible (non-failing) task, "Warn: keep-alive
+pass-through is unproven on this run": "keep-alive pass-through UNPROVEN: vLLM sent no keep-alive
+comments during this stream; do not close gateway task 2.3 on this run." Task 2.3 closes only on a
+run without that warning, which needs a stream that sat idle past 15 s (a queue wait or a long
+prefill).
+
+For each side the report gives `duration_s`, `first_byte_s`, `keepalives` (SSE comment lines) and
+`gap_max_s` (the longest silence between two received lines, comments included). The case passes
+only when every one of these holds; otherwise it fails and `failure` names each that does not:
+
+- the direct stream itself ran past 130 s (`agw_conformance_long_stream_min_seconds`), so a stream
+  that ended early cannot pass for lack of evidence;
+- both streams ended with `[DONE]` and the gateway's also ran past 130 s;
+- the gateway passed at least as many comments as vLLM, less one for a boundary;
+- the gateway's first byte came no more than 2 s after vLLM's, and its longest silence no more than
+  2 s over vLLM's. A gateway that holds the whole stream delivers it in one burst, which shows as a
+  late first byte rather than a long gap between lines, so both are checked.
+
+The two bodies are not compared: generation over thousands of tokens is not bit-identical even at
+temperature 0 with a seed, and the usage-chunk check belongs to `stream-xhigh`. No result is
+recorded here yet; the first production run's task number and figures go in this section.
 
 ## Verification log
 

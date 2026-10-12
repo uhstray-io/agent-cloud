@@ -101,7 +101,7 @@
   tasks:
     - name: Mark the canary start on the Tempo receiver clock
       ansible.builtin.command: date +%s
-      delegate_to: "{{ groups['o11y_svc'][0] }}"
+      delegate_to: "{{ groups.get('o11y_svc', []) | first | default(inventory_hostname) }}"
       register: _canary_started
       changed_when: false
       check_mode: false

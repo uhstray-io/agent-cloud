@@ -151,6 +151,15 @@ against the o11y service. Each result is identified by its Semaphore task id.
 | Destroy VM (Dev) | | **held** | still waits on the operator |
 | Snapshot VM, Create VM Template | | not run | still no `(Dev)` variant |
 
+### Production `(Dev)` dry runs — 2026-10-12
+
+Task id and output as reported by the coordinator; not read from Semaphore here. Nothing was
+changed in production: the run is a dry run by operator decision, with no real run.
+
+| Template | Target | Result | Notes |
+|---|---|---|---|
+| Destroy VM (Dev) | o11y (`confirm_destroy` 219) | dry run pass (4856) | `params.dry_run` true recorded; reported "check mode: VM 219 on alphacentauri would be destroyed (purge=1) ... Nothing was changed." No real run, by operator decision. Closes the wave-1 production dry runs (task 2.2) |
+
 ## Goals / Non-Goals
 
 **Goals:**

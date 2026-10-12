@@ -61,7 +61,7 @@ def clean_copy(tmp_path_factory):
 
 
 def run(tmp_path, clean_copy, extra, *, check=False, exporter_host="o11y-test", other_hosts=None,
-        expect_dirty=False, engine_script=FAKE_ENGINE):
+        expect_dirty=False, engine_script=FAKE_ENGINE, declare_exporters=True, host_extra=None):
     root, sha = clean_copy
     bindir = tmp_path / "bin"
     bindir.mkdir()
@@ -74,15 +74,19 @@ def run(tmp_path, clean_copy, extra, *, check=False, exporter_host="o11y-test", 
     log = tmp_path / "engine.log"
     log.write_text("")
     inventory = tmp_path / "inventory.yml"
+    host_vars = {
+        "ansible_connection": "local",
+        "ansible_python_interpreter": shutil.which("python3"),
+        "monorepo_deploy_path": "platform/services/o11y/deployment",
+        "dgx_spark_scrape_enabled": True,
+        "dgx_spark_nodes": [{"name": "spark-test", "address": "192.0.2.10"}],
+    }
+    host_vars.update(host_extra or {})
+    if declare_exporters:
+        host_vars["o11y_fault_drill_exporters"] = {
+            "spark-test": {"host": exporter_host, "unit": "node-exporter.service"}}
     inventory.write_text(json.dumps({"all": {"children": {
-        "o11y_svc": {"hosts": {"o11y-test": {
-            "ansible_connection": "local",
-            "ansible_python_interpreter": shutil.which("python3"),
-            "monorepo_deploy_path": "platform/services/o11y/deployment",
-            "dgx_spark_scrape_enabled": True,
-            "dgx_spark_nodes": [{"name": "spark-test", "address": "192.0.2.10"}],
-            "o11y_fault_drill_exporters": {"spark-test": {"host": exporter_host, "unit": "node-exporter.service"}},
-        }}},
+        "o11y_svc": {"hosts": {"o11y-test": host_vars}},
         "dgx": {"hosts": other_hosts or {}},
     }}}))
     env = {k: v for k, v in os.environ.items()
@@ -142,6 +146,20 @@ def test_check_mode_reads_but_induces_nothing(tmp_path, clean_copy):
     assert calls and all(c.startswith("exec o11y-grafana") for c in calls), calls
     assert any("alert-rules/inference_target_down" in c for c in calls)
     assert "systemd" not in " ".join(c for c in calls)
+
+
+def test_a_probe_dry_run_needs_no_exporter_declaration(tmp_path, clean_copy):
+    """Production dry run 4888 (ansible-core 2.20.8): the exporter stop/restore tasks
+    delegate to `_exporter.host`, and 2.19+ templates `delegate_to` strictly even for a task
+    its `when` skips, so a probe drill on an inventory with no
+    `o11y_fault_drill_exporters` died with "object of type 'dict' has no attribute 'host'".
+    ansible-core 2.18 left the unresolved template alone, which is why drill 3295 passed."""
+    rc, out, calls = run(tmp_path, clean_copy, {
+        "drill": "probe", "confirm_fault_drill": "probe", "drill_restore_only": True},
+        check=True, declare_exporters=False, host_extra={"o11y_inference_probe_model": "served-model-a"})
+    assert "has no attribute 'host'" not in out, out
+    assert rc == 0, out
+    assert "systemd" not in " ".join(calls)
 
 
 # ---- structural ----------------------------------------------------------------------
@@ -562,3 +580,198 @@ def test_a_rule_without_a_title_is_refused_before_any_fault(tmp_path, clean_copy
     assert rc != 0
     assert "has no title; no fault was induced" in out
     assert all(c.startswith("exec o11y-grafana") for c in calls), calls
+
+
+# ── dashboard proof: the probe panel shows "not serving" during the fault ───────────
+# Spec scenario "Health up, inference down": the inference dashboard shows the model as not
+# serving while the host shows as reachable. The drill reads the provisioned dashboard's own
+# panel, so these cases run the playbook's real tasks against the committed dashboard JSON
+# and synthetic Prometheus answers.
+
+DASHBOARD = ROOT / "platform/services/o11y/deployment/config/grafana/dashboards/inference-fleet-health.json"
+PANEL_TITLE = "Inference probe serving"
+DEPLOYED_MODEL = "served-model-a"
+PANEL_READ = "Read the provisioned inference dashboard"
+PANEL_HOLD = "Hold the dashboard's probe panel"
+PANEL_REFUSAL = "Refuse a dashboard whose probe panel the drill cannot read back"
+PANEL_FAULT_READ = "Read what the dashboard's probe panel evaluates to for the drill model"
+PANEL_FAULT_ASSERT = "Require the probe panel to show the drill model as not serving"
+PANEL_RESTORED = "Require the probe panel to show the deployed model serving again"
+
+
+def _dashboard_b64(mutate=None):
+    import base64
+    dashboard = json.loads(DASHBOARD.read_text())
+    if mutate:
+        mutate(dashboard)
+    return base64.b64encode(json.dumps(dashboard).encode()).decode()
+
+
+def _panel(dashboard):
+    return next(p for p in dashboard["panels"] if p["title"] == PANEL_TITLE)
+
+
+def _run_tasks(tmp_path, names, facts, extra=()):
+    """Run the playbook's own tasks `names`, in order, on localhost with the play's vars;
+    `extra` are harness-only tasks appended after them."""
+    play = playbook_yaml.plays(PLAYBOOK)[2]
+    tasks = [_task(name) for name in names] + list(extra)
+    harness = [{"hosts": "localhost", "connection": "local", "gather_facts": False,
+                "vars": {**play["vars"], "monorepo_deploy_path": "platform/services/o11y/deployment",
+                         "local_monorepo_dir": "/srv/agent-cloud", "drill": "probe", **facts},
+                "tasks": tasks}]
+    (tmp_path / "pb.yml").write_text(yaml.safe_dump(harness))
+    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
+    env.update(ANSIBLE_NOCOLOR="1", ANSIBLE_STDOUT_CALLBACK="default", ANSIBLE_LOCALHOST_WARNING="0",
+               ANSIBLE_INVENTORY_UNPARSED_WARNING="0")
+    done = subprocess.run(["ansible-playbook", "-i", "localhost,", str(tmp_path / "pb.yml"),
+                           "-e", f"ansible_python_interpreter={shutil.which('python3')}"],
+                          cwd=ROOT, env=env, text=True, capture_output=True, stdin=subprocess.DEVNULL)
+    return done.returncode, done.stdout + done.stderr
+
+
+def _prometheus(*rows):
+    """A Prometheus instant-query answer: rows are (model_name, value)."""
+    return {"rc": 0, "stdout": json.dumps({"status": "success", "data": {"resultType": "vector", "result": [
+        {"metric": {"model_name": model}, "value": [1700000000, value]} for model, value in rows]}})}
+
+
+def test_the_committed_probe_panel_passes_the_drills_own_refusal(tmp_path):
+    rc, out = _run_tasks(tmp_path, [PANEL_HOLD, PANEL_REFUSAL],
+                         {"_probe_dashboard": {"content": _dashboard_b64()}})
+    assert rc == 0, out
+
+
+def _drop_panel(dashboard):
+    dashboard["panels"] = [p for p in dashboard["panels"] if p["title"] != PANEL_TITLE]
+
+
+def _duplicate_panel(dashboard):
+    dashboard["panels"].append(dict(_panel(dashboard), id=99))
+
+
+def _rename_not_serving(dashboard):
+    _panel(dashboard)["fieldConfig"]["defaults"]["mappings"][0]["options"]["0"]["text"] = "ok"
+
+
+def _no_mappings(dashboard):
+    _panel(dashboard)["fieldConfig"]["defaults"]["mappings"] = []
+
+
+def _templated_expr(dashboard):
+    _panel(dashboard)["targets"][0]["expr"] = (
+        'max by (model_name) (inference_probe_success{model_name=~"$model_alias"})')
+
+
+def _other_metric(dashboard):
+    _panel(dashboard)["targets"][0]["expr"] = 'up{job="receiver-host"}'
+
+
+def _timeseries(dashboard):
+    _panel(dashboard)["type"] = "timeseries"
+
+
+def _loki(dashboard):
+    _panel(dashboard)["datasource"] = {"type": "loki", "uid": "loki"}
+
+
+@pytest.mark.parametrize("mutate", [_drop_panel, _duplicate_panel, _rename_not_serving, _no_mappings,
+                                    _templated_expr, _other_metric, _timeseries, _loki])
+def test_a_dashboard_the_drill_cannot_read_back_is_refused_before_any_fault(tmp_path, mutate):
+    rc, out = _run_tasks(tmp_path, [PANEL_HOLD, PANEL_REFUSAL],
+                         {"_probe_dashboard": {"content": _dashboard_b64(mutate)}})
+    assert rc != 0, mutate.__name__
+    assert "No fault was induced" in out, mutate.__name__
+
+
+def test_the_panel_expression_is_read_from_the_dashboard_not_copied_into_the_playbook(tmp_path):
+    retargeted = 'max by (model_name) (inference_probe_success{job="other"})'
+
+    def retarget(dashboard):
+        _panel(dashboard)["targets"][0]["expr"] = retargeted
+    echo = {"ansible.builtin.debug": {"msg": "EXPR {{ _probe_panel_expr | to_json }}"}}
+    rc, out = _run_tasks(tmp_path, [PANEL_HOLD, PANEL_REFUSAL],
+                         {"_probe_dashboard": {"content": _dashboard_b64(retarget)}}, extra=[echo])
+    assert rc == 0, out
+    assert json.dumps(json.dumps(retargeted))[1:-1] in out, out
+    # Both reads query that expression, urlencoded, and nothing else.
+    for name in (PANEL_FAULT_READ, PANEL_RESTORED):
+        argv = _task(name)["ansible.builtin.command"]["argv"]
+        assert argv[-1] == "http://prometheus:9090/api/v1/query?query={{ _probe_panel_expr | urlencode }}", name
+
+
+def _fault_verdict(tmp_path, rows):
+    rc, out = _run_tasks(tmp_path, [PANEL_HOLD, PANEL_FAULT_ASSERT], {
+        "_probe_dashboard": {"content": _dashboard_b64()}, "_drill_model": {"stdout": DRILL_MODEL},
+        "_probe_panel_fault": _prometheus(*rows)})
+    return rc, out
+
+
+def test_the_fault_proof_passes_when_the_panel_shows_the_drill_model_not_serving(tmp_path):
+    rc, out = _fault_verdict(tmp_path, [(DRILL_MODEL, "0")])
+    assert rc == 0, out
+    assert f"gives {DRILL_MODEL}: not serving." in out, out
+
+
+@pytest.mark.parametrize("rows,why", [
+    ([(DRILL_MODEL, "1")], "panel says serving during the fault"),
+    ([(DEPLOYED_MODEL, "0")], "another model's failure is not the drill model's"),
+    ([(DEPLOYED_MODEL, "1"), (DRILL_MODEL, "1")], "healthy deployed model does not excuse a serving drill model"),
+    ([], "no series for the drill model"),
+    ([(DRILL_MODEL, "0"), (DRILL_MODEL, "0")], "ambiguous duplicate rows"),
+])
+def test_the_fault_proof_fails_when_the_panel_does_not_show_not_serving(tmp_path, rows, why):
+    rc, out = _fault_verdict(tmp_path, rows)
+    assert rc != 0, why
+    assert "did not show" in out, why
+
+
+def test_the_fault_proof_prints_only_title_model_and_mapped_text(tmp_path):
+    rc, out = _fault_verdict(tmp_path, [(DRILL_MODEL, "0"), (DEPLOYED_MODEL, "1")])
+    assert rc == 0, out
+    assert DEPLOYED_MODEL not in out
+    assert "inference_probe_success" not in out
+
+
+@pytest.mark.parametrize(("rows", "want"), [
+    ([(DEPLOYED_MODEL, "1")], True),
+    ([(DEPLOYED_MODEL, "0")], False),
+    ([(DRILL_MODEL, "1")], False),
+    ([], False),
+])
+def test_the_restore_proof_needs_the_panel_to_show_the_deployed_model_serving(tmp_path, rows, want):
+    task = _task(PANEL_RESTORED)
+    facts = {"_probe_panel_restored": _prometheus(*rows), "o11y_inference_probe_model": DEPLOYED_MODEL}
+    assert _evaluate(tmp_path, task["until"], facts) is want
+
+
+def test_the_panel_proof_is_probe_only_ordered_and_never_gates_a_restore_only_run():
+    block = _fault_block()
+    names = [t["name"] for t in block["block"]]
+    # After the alert proof, before the restore and before the Grafana-mode steps.
+    assert names.index("Require inference_probe_failing firing for the drill model") \
+        < names.index(PANEL_FAULT_READ) < names.index(PANEL_FAULT_ASSERT) < names.index("Stop Grafana")
+    assert PANEL_FAULT_READ not in [t["name"] for t in block["always"]]
+    for name in (PANEL_READ, PANEL_HOLD, PANEL_REFUSAL, PANEL_FAULT_READ, PANEL_FAULT_ASSERT, PANEL_RESTORED):
+        when = _task(name)["when"]
+        assert "drill == 'probe'" in when and "not _restore_only" in when, name
+    # The dashboard read is read-only and runs under --check, like every other refusal read.
+    assert _task(PANEL_READ)["check_mode"] is False
+    # Every refusal runs before the block that induces the fault.
+    top = [t.get("name") for t in _play_tasks()]
+    assert top.index(PANEL_READ) < top.index(PANEL_HOLD) < top.index(PANEL_REFUSAL) \
+        < top.index("Induce, prove, restore")
+    # The serving-again proof follows the fresh-sample proof, after the restore.
+    tasks = [t.get("name") for t in _play_tasks()]
+    assert tasks.index("Require a successful probe sample for the deployed model after the restore") \
+        < tasks.index(PANEL_RESTORED) < tasks.index("Report the drill result")
+    assert "not ansible_check_mode" in _task(PANEL_RESTORED)["when"]
+
+
+def test_the_other_modes_read_no_dashboard(tmp_path, clean_copy):
+    rc, out, _ = run(tmp_path, clean_copy, {
+        "drill": "exporter", "confirm_fault_drill": "exporter", "drill_node": "spark-test",
+        "drill_window_confirmed": True}, check=True)
+    assert rc == 0, out
+    section = out.split(f"TASK [{PANEL_READ}]", 1)[1].split("TASK [", 1)[0]
+    assert "skipping: [o11y-test]" in section, section

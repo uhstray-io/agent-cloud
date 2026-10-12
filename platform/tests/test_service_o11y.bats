@@ -1467,7 +1467,7 @@ assert any('expect_traces' in item for item in inputs)
 assert any('emit_agentgateway_canary' in item for item in inputs)
 canary = next(p for p in plays if p.get('name') == 'Emit an optional gateway trace canary')
 mark, traffic = canary['tasks']
-assert mark['delegate_to'] == "{{ groups['o11y_svc'][0] }}"
+assert mark['delegate_to'] == "{{ groups.get('o11y_svc', []) | first | default(inventory_hostname) }}"
 assert traffic['ansible.builtin.uri']['status_code'] == 401
 assert traffic['ansible.builtin.uri']['use_netrc'] is False
 assert traffic['ansible.builtin.uri']['use_proxy'] is False
@@ -2218,6 +2218,12 @@ for uid, path in files.items():
                 assert target['expr'].startswith('{cluster="dgx-spark", service="vllm"}'), target['expr']
                 continue
             exprs.append(target['expr'])
+            if panel['title'] == 'Inference probe serving':
+                # The one panel not scraped from the DGX pair: the synthetic probe on the o11y
+                # host, which o11y-fault-drill.yml reads back by this title during its fault.
+                assert uid == 'inference-fleet-health'
+                assert target['expr'] == 'max by (model_name) (inference_probe_success{job="receiver-host"})'
+                continue
             assert 'job="dgx-spark-' in target['expr'], (uid, panel['title'])
             if 'vllm:' in target['expr']:
                 assert 'model_name=~"$model_alias"' in target['expr'], (uid, panel['title'])

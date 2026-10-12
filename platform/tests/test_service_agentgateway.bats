@@ -443,7 +443,7 @@ assert not any('named gateway metric' in name for name in names)
 verify = next(play for play in plays if play.get('name') == 'Phase 3: Verify agentgateway')['tasks']
 verify_names = [task['name'] for task in verify]
 metric = next(task for task in verify if task['name'] == 'Require the receiver to collect the restarted gateway')
-assert metric['delegate_to'] == "{{ groups['o11y_svc'][0] }}"
+assert metric['delegate_to'] == "{{ groups.get('o11y_svc', []) | first | default(inventory_hostname) }}"
 assert 'agentgateway_config_synchronized' in metric['ansible.builtin.command']['argv'][-1]
 assert 'timestamp(agentgateway_config_synchronized{job="agentgateway"}) and agentgateway_config_synchronized{job="agentgateway"} == 1' in metric['ansible.builtin.command']['argv'][-1]
 assert verify_names.index('Readiness listener answers (via the compose network)') < verify_names.index(metric['name'])
