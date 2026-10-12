@@ -11,15 +11,18 @@ import re
 
 import playbook_yaml
 
-REF = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\b")
+# An identifier not preceded by `.`: `item.name` refers to `item`, never to `name`.
+REF = re.compile(r"(?<![.\w])([A-Za-z_]\w*)")
 JINJA = re.compile(r"\{\{(.*?)\}\}|\{%(.*?)%\}", re.S)
+# Quoted literals inside an expression, so `default('name')` names no variable.
+LITERAL = re.compile(r"'(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\"")
 
 
 def refs(value) -> set[str]:
     out = set()
     for text in playbook_yaml.strings(value):
         for a, b in JINJA.findall(text):
-            out |= set(REF.findall(a or b))
+            out |= set(REF.findall(LITERAL.sub("", a or b)))
     return out
 
 
@@ -47,9 +50,10 @@ def violations(doc) -> list[str]:
             if task is play or not isinstance(task.get("vars"), dict):
                 continue
             for name, value in task["vars"].items():
-                # The task's own entry shadows the play's: resolve through the play's other
-                # names, with `name` itself standing for the task-level value.
-                scope = {k: v for k, v in play_vars.items() if k != name}
+                # Task entries shadow the play's. Resolve through both, with `name` itself
+                # standing for the task-level value, so `a: "{{ b }}"` beside
+                # `b: "{{ a }}"` is caught as well.
+                scope = {k: v for k, v in {**play_vars, **task["vars"]}.items() if k != name}
                 if reaches(refs(value), name, scope):
                     found.append(f"{task.get('name', '?')}: {name}")
     return found
@@ -83,6 +87,21 @@ def test_the_guard_catches_the_runner_shape():
       ansible.builtin.debug: {msg: x}
       vars:
         github_runner_version: "{{ _tpl_rver }}"
+    - name: literal
+      ansible.builtin.debug: {msg: x}
+      vars:
+        name: "{{ fallback | default('name') }}"
+        title: "{{ item.title }}"
+    - name: pair
+      ansible.builtin.debug: {msg: x}
+      vars:
+        a: "{{ b }}"
+        b: "{{ a }}"
 """
     )
-    assert violations(doc) == ["t: github_runner_version", "self: github_runner_name"]
+    assert violations(doc) == [
+        "t: github_runner_version",
+        "self: github_runner_name",
+        "pair: a",
+        "pair: b",
+    ]
