@@ -865,11 +865,13 @@ for enabled in (False, True):
     for declared in ([], targets):
         rules = yaml.safe_load(template.render(o11y_expected_metrics_targets=declared, local_mode=False,
                                               o11y_alerts_enabled=enabled,
-                                              o11y_receiver_loss_alerts_reviewed=enabled))['groups'][0]['rules']
+                                              o11y_receiver_loss_alerts_reviewed=enabled,
+                                              o11y_backend_drop_alerts_reviewed=enabled))['groups'][0]['rules']
         assert [rule['uid'] for rule in rules] == [
             'o11y_service_down', 'o11y_receiver_root_disk_low',
         ] + [target['uid'] for target in declared] + [
             'o11y_alloy_receiver_refused', 'o11y_tempo_exporter_enqueue_failed',
+            'o11y_loki_discarded_samples', 'o11y_tempo_discarded_spans',
         ]
         assert all(rule['isPaused'] is not enabled for rule in rules)
         assert all(('notification_settings' in rule) is enabled for rule in rules)
@@ -985,6 +987,77 @@ for values in (
         rule = rules(**values)[uid]
         assert rule['isPaused'] is True, values
         assert 'notification_settings' not in rule, values
+PY
+}
+
+@test "o11y: backend discard alerts are guarded and dashboard preserves existing panels" {
+  python3 - "$DEPLOY_DIR/templates/alerts.yml.j2" "$DEPLOY_DIR/config/grafana/dashboards/o11y-self-monitoring.json" <<'PY'
+import json
+import sys
+
+import yaml
+from jinja2 import Environment, StrictUndefined
+
+env = Environment(undefined=StrictUndefined, trim_blocks=True)
+env.filters['bool'] = bool
+env.filters['to_json'] = json.dumps
+template = env.from_string(open(sys.argv[1], encoding='utf-8').read())
+
+def rules(**values):
+    values.setdefault('o11y_expected_metrics_targets', [])
+    return {rule['uid']: rule for rule in yaml.safe_load(template.render(**values))['groups'][0]['rules']}
+
+expected = {
+    'o11y_loki_discarded_samples': 'sum(increase(loki_discarded_samples_total{job="loki"}[5m])) or vector(0)',
+    'o11y_tempo_discarded_spans': 'sum(increase(tempo_discarded_spans_total{job="tempo"}[5m])) or vector(0)',
+}
+disabled_cases = (
+    {},
+    {'local_mode': False, 'o11y_alerts_enabled': True, 'o11y_environment': 'prod'},
+    {'local_mode': False, 'o11y_alerts_enabled': False, 'o11y_backend_drop_alerts_reviewed': True,
+     'o11y_environment': 'prod'},
+    {'local_mode': True, 'o11y_alerts_enabled': True, 'o11y_backend_drop_alerts_reviewed': True},
+    {'local_mode': False, 'o11y_alerts_enabled': True, 'o11y_backend_drop_alerts_reviewed': True,
+     'o11y_environment': 'staging'},
+    {'local_mode': False, 'o11y_alerts_enabled': True, 'o11y_backend_drop_alerts_reviewed': True,
+     'o11y_environment': 'prod', 'o11y_alert_canary_service': 'o11y-fault-probe-' + 'e' * 12},
+)
+for values in disabled_cases:
+    for uid in expected:
+        rule = rules(**values)[uid]
+        assert rule['isPaused'] is True, (uid, values)
+        assert 'notification_settings' not in rule, (uid, values)
+
+active = rules(local_mode=False, o11y_alerts_enabled=True, o11y_backend_drop_alerts_reviewed=True,
+               o11y_environment='prod')
+for uid, expression in expected.items():
+    rule = active[uid]
+    assert rule['data'][0]['model']['expr'] == expression
+    assert rule['data'][1]['model']['conditions'][0]['evaluator'] == {'type': 'gt', 'params': [0]}
+    assert rule['for'] == '2m'
+    assert rule['isPaused'] is False
+    assert rule['labels']['severity'] == 'warning'
+    assert rule['labels']['service'] in {'o11y/loki', 'o11y/tempo'}
+    assert rule['labels']['owner'] == 'platform-operations'
+    assert rule['notification_settings'] == {
+        'receiver': 'agent-cloud-ops',
+        'group_by': ['service', 'environment', 'cluster', 'alertname'],
+        'group_wait': '30s', 'group_interval': '5m', 'repeat_interval': '4h'}
+
+dashboard = json.load(open(sys.argv[2], encoding='utf-8'))
+panel_list = dashboard['panels']
+panel_ids = [panel['id'] for panel in panel_list]
+assert len(panel_ids) == len(set(panel_ids))
+assert sorted(panel_ids) == list(range(1, 19))
+panels = {panel['id']: panel for panel in panel_list}
+assert panels[16]['gridPos'] == {'h': 8, 'w': 12, 'x': 12, 'y': 53}
+assert panels[17]['gridPos'] == {'h': 8, 'w': 12, 'x': 0, 'y': 61}
+assert panels[18]['gridPos'] == {'h': 8, 'w': 12, 'x': 12, 'y': 61}
+assert panels[17]['type'] == panels[18]['type'] == 'timeseries'
+assert panels[17]['targets'][0]['expr'] == (
+    'sum by (reason) (rate(loki_discarded_samples_total{job="loki"}[5m]))')
+assert panels[18]['targets'][0]['expr'] == (
+    'sum by (reason) (rate(tempo_discarded_spans_total{job="tempo"}[5m]))')
 PY
 }
 

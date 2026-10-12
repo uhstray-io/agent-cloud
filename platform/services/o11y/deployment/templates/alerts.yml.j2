@@ -233,6 +233,71 @@ groups:
           repeat_interval: 4h
 {% endif %}
 {% endfor %}
+{% set _backend_drop_active = o11y_alerts_enabled | default(false) | bool
+    and o11y_backend_drop_alerts_reviewed | default(false) | bool
+    and not (local_mode | default(false) | bool)
+    and o11y_environment | default('local' if local_mode | default(false) | bool else 'prod') == 'prod'
+    and o11y_alert_canary_service is not defined %}
+{% for drop_rule in [
+  {'uid': 'o11y_loki_discarded_samples', 'title': 'Loki discarded log lines',
+   'expr': 'sum(increase(loki_discarded_samples_total{job="loki"}[5m])) or vector(0)',
+   'service': 'o11y/loki', 'summary': 'Loki discarded log lines during the last five minutes.'},
+  {'uid': 'o11y_tempo_discarded_spans', 'title': 'Tempo discarded spans',
+   'expr': 'sum(increase(tempo_discarded_spans_total{job="tempo"}[5m])) or vector(0)',
+   'service': 'o11y/tempo', 'summary': 'Tempo discarded spans during the last five minutes.'}
+] %}
+      - uid: {{ drop_rule.uid }}
+        title: {{ drop_rule.title | to_json }}
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: prometheus
+            model:
+              editorMode: code
+              expr: {{ drop_rule.expr | to_json }}
+              instant: true
+              range: false
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              expression: A
+              type: threshold
+              conditions:
+                - evaluator: { type: gt, params: [0] }
+                  operator: { type: and }
+                  query: { params: [B] }
+                  reducer: { type: last, params: [] }
+                  type: query
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: B
+        noDataState: OK
+        execErrState: Alerting
+        for: 2m
+        annotations:
+          summary: {{ drop_rule.summary | to_json }}
+          dashboard_url: /d/o11y-self-monitoring
+          description: Review backend ingestion limits and receiver health; alert values contain no telemetry payload.
+        labels:
+          severity: warning
+          service: '{{ drop_rule.service }}'
+          owner: platform-operations
+          environment: {{ o11y_environment | default('local' if local_mode | default(false) | bool else 'prod') | to_json }}
+          cluster: {{ o11y_cluster | default('agent-cloud-local') | to_json }}
+        isPaused: {{ 'false' if _backend_drop_active else 'true' }}
+{% if _backend_drop_active %}
+        notification_settings:
+          receiver: agent-cloud-ops
+          group_by: [service, environment, cluster, alertname]
+          group_wait: 30s
+          group_interval: 5m
+          repeat_interval: 4h
+{% endif %}
+{% endfor %}
 {# Loki-backed platform rules (change production-internal-ca, task 6.4, design
    decision 10). Their producers push through tasks/push-loki-lines.yml; the line
    schema they match is in the o11y README ("Scheduled jobs and internal CA expiry").

@@ -137,7 +137,7 @@ scrapes. Live target readback, over-budget refusal checks, and calibration of
 the private values remain open. Prometheus's `body_size_limit` is documented
 as experimental in the pinned v3.1.0 configuration reference.
 
-### Alloy refusal and Tempo queue-loss alerts — task 3.3 source slice
+### Receiver-loss and backend-discard alerts — task 3.3 source slice
 
 The provisioned `service-telemetry` group includes an Alloy receiver-refusal
 alert for `otelcol_receiver_refused_log_records_total` and
@@ -168,6 +168,27 @@ through `agent-cloud-ops`, then verify resolution. Do not use secrets, prompts,
 request bodies, or span attributes in these checks. Source rendering does not
 prove metric exposition, delivery, or runtime behavior; those remain
 unverified.
+
+The same group also has one aggregate alert for each backend's discarded data:
+`loki_discarded_samples_total{job="loki"}` and
+`tempo_discarded_spans_total{job="tempo"}`. Each uses
+`sum(increase(metric[5m])) or vector(0)`, fires above zero after two minutes,
+and produces one rule instance per backend rather than one per `reason` label.
+The new `o11y_backend_drop_alerts_reviewed` switch defaults false; both rules
+remain paused unless the existing alerts switch is enabled, the render is
+production and non-local, and no alert canary is set. Active rules use the
+existing low-noise `agent-cloud-ops` grouping. Grafana documents the Loki
+counter and its `reason` label in [Loki monitoring metrics](https://grafana.com/docs/loki/latest/operations/meta-monitoring/metrics/)
+and describes the Tempo counter and `reason` label in [Tempo trace ingestion](https://grafana.com/docs/tempo/latest/operations/manage-trace-ingestion/).
+The self-monitoring dashboard adds rate-by-reason timeseries for both counters
+without moving the existing panels.
+
+Keep the review switch false in production inventory until the exact pinned
+Loki and Tempo metric endpoints expose these counters and a controlled,
+non-sensitive drop increments each counter. Then read the provisioned rules
+back from Grafana and verify firing, `agent-cloud-ops` delivery, and resolution.
+No controlled drop, live alert delivery, or telemetry-privacy proof is claimed
+by this source change.
 
 Task 3.3 still requires nonzero Prometheus size retention, broader receiver
 memory/backpressure and ingestion protections, inventory-driven
