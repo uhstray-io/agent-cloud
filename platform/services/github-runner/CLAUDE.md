@@ -253,7 +253,9 @@ Listener or any Worker, and a `run.sh` that honours the trap variable. A restart
    reload first would make this stop send SIGKILL to the Listener that holds the job.
 3. SIGINT to every Listener still in the unit's cgroup (the ones `KillMode=process` left
    behind), and wait up to 300 s for them.
-4. SIGKILL to whatever is still in the cgroup; the deploy fails unless it is empty.
+4. SIGKILL to whatever is still in the cgroup; the deploy fails unless it is empty. If no
+   cgroup is found, steps 3 and 4 apply to the account's Listeners read from `/proc`, and
+   the deploy fails if one survives.
 
 After the start, the deploy reads `deploy.sh procs` again and fails unless every line holds.
 A dry run reads the processes and reports the restart decision; it stops and starts nothing,

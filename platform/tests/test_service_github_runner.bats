@@ -729,6 +729,20 @@ STUB
   [ "$status" -ne 0 ]
 }
 
+@test "gh-runner: quiesce with no cgroup found still signals the account's Listeners, and fails closed" {
+  # A cgroup layout the search does not know must not let a leftover Listener through
+  # (CodeRabbit on #563). The fabricated Listener is no real process, so it survives
+  # SIGINT and SIGKILL, and quiesce must fail rather than report success.
+  _fake_runner
+  _fake_proc 999999 Runner.Listener "$(id -u)" -5000 "$UCG" 0 4026531837
+  STUB_CG='' _run_deploy quiesce
+  [ "$status" -ne 0 ]
+  printf '%s\n' "$output" > "$BATS_TEST_TMPDIR/out"
+  assert_grep -qxF 'signalled=1' "$BATS_TEST_TMPDIR/out"
+  assert_grep -qxF 'remaining=1' "$BATS_TEST_TMPDIR/out"
+  assert_grep -qF 'no cgroup found for actions-runner.service: 999999' "$BATS_TEST_TMPDIR/out"
+}
+
 @test "gh-runner: the deploy verifies the Listener after the start, not only the unit" {
   local PB="$BATS_TEST_DIRNAME/../playbooks/deploy-github-runner.yml"
   local block

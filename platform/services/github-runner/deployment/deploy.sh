@@ -289,9 +289,36 @@ cmd_quiesce() {
       -path "*/$UNIT/cgroup.procs" -type f 2>/dev/null | head -n 1 || true)
   fi
   if [ -z "$procs" ] || [ ! -r "$procs" ]; then
-    echo "signalled=0"
-    echo "killed=0"
-    echo "remaining=0"
+    # No cgroup found: an empty, removed cgroup, or a layout the search above does not
+    # know. Fall back to this account's Listeners from /proc, so a leftover Listener is
+    # never skipped, and fail closed if one survives SIGINT and then SIGKILL.
+    listeners=$(account_pids Runner.Listener | tr '\n' ' ')
+    # shellcheck disable=SC2086
+    echo "signalled=$(count $listeners)"
+    left=""
+    if [ -n "$listeners" ]; then
+      # shellcheck disable=SC2086
+      kill -INT $listeners 2>/dev/null || true
+      deadline=$((SECONDS + grace))
+      # shellcheck disable=SC2086
+      while [ -n "$(live_listeners $listeners)" ] && [ "$SECONDS" -lt "$deadline" ]; do sleep 2; done
+      # shellcheck disable=SC2086
+      left=$(live_listeners $listeners | tr '\n' ' ')
+    fi
+    # shellcheck disable=SC2086
+    echo "killed=$(count $left)"
+    if [ -n "$left" ]; then
+      # shellcheck disable=SC2086
+      kill -KILL $left 2>/dev/null || true
+      deadline=$((SECONDS + 30))
+      # shellcheck disable=SC2086
+      while [ -n "$(live_listeners $left)" ] && [ "$SECONDS" -lt "$deadline" ]; do sleep 1; done
+      # shellcheck disable=SC2086
+      left=$(live_listeners $left | tr '\n' ' ')
+    fi
+    # shellcheck disable=SC2086
+    echo "remaining=$(count $left)"
+    [ -z "$left" ] || error "Listeners still running, and no cgroup found for $UNIT: $left"
     return 0
   fi
 
