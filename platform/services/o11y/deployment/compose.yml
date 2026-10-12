@@ -82,6 +82,7 @@ services:
     image: ${O11Y_ALLOY_IMAGE:-docker.io/grafana/alloy:v1.5.1}
     container_name: o11y-alloy
     restart: always
+    mem_limit: 512m
     command:
       - run
       - --server.http.listen-addr=0.0.0.0:12345

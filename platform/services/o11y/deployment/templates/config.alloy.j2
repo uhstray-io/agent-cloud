@@ -7,6 +7,9 @@
 // Gateway traces and access logs arrive over OTLP/gRPC. Tempo receives spans;
 // Loki receives labeled access records alongside the local container logs.
 
+{% set _o11y_otlp_memory_limit = '384MiB' %}
+{% set _o11y_otlp_memory_spike = '64MiB' %}
+
 discovery.docker "containers" {
   host = "unix:///var/run/docker.sock"
 }
@@ -138,7 +141,18 @@ otelcol.receiver.otlp "traces" {
     endpoint = "0.0.0.0:4317"
   }
   output {
-    logs   = [otelcol.processor.attributes.gateway_logs.input]
+    logs   = [otelcol.processor.memory_limiter.gateway.input]
+    traces = [otelcol.processor.memory_limiter.gateway.input]
+  }
+}
+
+otelcol.processor.memory_limiter "gateway" {
+  check_interval = "1s"
+  limit = {{ _o11y_otlp_memory_limit | to_json }}
+  spike_limit = {{ _o11y_otlp_memory_spike | to_json }}
+
+  output {
+    logs = [otelcol.processor.attributes.gateway_logs.input]
 {% if o11y_gateway_span_logs_enabled | default(false) | bool %}
     traces = [otelcol.processor.batch.traces.input, otelcol.connector.spanlogs.gateway.input]
 {% else %}
@@ -204,6 +218,16 @@ otelcol.receiver.otlp "conformance" {
     endpoint = "0.0.0.0:4318"
   }
   output {
+    logs = [otelcol.processor.memory_limiter.conformance.input]
+  }
+}
+
+otelcol.processor.memory_limiter "conformance" {
+  check_interval = "1s"
+  limit = {{ _o11y_otlp_memory_limit | to_json }}
+  spike_limit = {{ _o11y_otlp_memory_spike | to_json }}
+
+  output {
     logs = [otelcol.processor.attributes.conformance_logs.input]
   }
 }
@@ -230,17 +254,34 @@ otelcol.exporter.loki "conformance" {
 }
 
 otelcol.processor.batch "traces" {
+  timeout = "1s"
+  send_batch_size = 256
+  send_batch_max_size = 512
+
   output {
     traces = [otelcol.exporter.otlp.tempo.input]
   }
 }
 
 otelcol.exporter.otlp "tempo" {
+  timeout = "10s"
+
   client {
     endpoint = "tempo:4317"
     tls {
       insecure = true
     }
+  }
+  retry_on_failure {
+    enabled = true
+    initial_interval = "1s"
+    max_interval = "30s"
+    max_elapsed_time = "5m"
+  }
+  sending_queue {
+    enabled = true
+    num_consumers = 2
+    queue_size = 128
   }
 }
 

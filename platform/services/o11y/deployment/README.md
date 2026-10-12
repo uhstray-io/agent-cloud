@@ -63,6 +63,45 @@ gateway host to `o11y_otlp_bind:4317`. The client-view dashboard plots HTTP and
 model (`agentgateway_gen_ai_server_request_duration`) p95 side by side, and the
 inference latency dashboard links to it.
 
+## OTLP receiver resource bounds — source slice for task 3.3
+
+Both OTLP inputs pass directly through their own Alloy memory limiter before
+the existing gRPC trace/access-log and HTTP conformance-log routes. Each
+limiter checks every second, with a 384 MiB hard heap limit and a 64 MiB spike
+allowance (320 MiB soft threshold). The shared Compose base caps the Alloy
+container at 512 MiB in local and production deployments; the local overlay
+does not set a second Alloy cap. Gateway traces keep the optional
+`o11y_gateway_span_logs_enabled` fan-out after the limiter.
+These are initial source bounds, not measured tuning values; compare them with
+receiver memory headroom before rollout.
+
+The Tempo path batches at most 512 spans per batch (256 triggers a send, with a
+one-second timeout), holds at most 128 queued batches with two consumers, uses
+a 10-second exporter request timeout, and retries up to five minutes with a
+30-second maximum interval. The queue is in memory and does not survive Alloy
+restart. Its item count is bounded, while serialized byte size depends on span
+payloads; the memory limiter and container cap provide the aggregate memory
+bounds. Queue overflow, memory-limiter refusals, and lost data remain possible
+during sustained receiver or Tempo outages; this source slice does not add
+their alerts or prove runtime delivery.
+
+This source change covers receiver-side memory limits and the Tempo trace
+batch/export queue only. Task 3.3 still requires per-target cardinality and
+volume limits, nonzero Prometheus retention, disk-free/drop/refusal alerts,
+missing-telemetry alerts, inventory-driven environment/cluster labels across
+Prometheus and Alloy with dependent dashboard/alert migration, and proof that
+secrets, prompts, and request bodies do not enter telemetry.
+
+The rollout gate remains: validate rendered River with the exact pinned Alloy
+image, complete final-head review and CI, run the Dev-bound Semaphore check and
+reviewed apply, and prove the exact-target trace path plus refusal/drop behavior
+without sensitive payloads. The local Podman and Docker daemons were
+inaccessible, so cached-image availability and River validation are
+unverified here; no pull was attempted and no rollout is authorized by this
+source change. Complete task 3.3 and its
+separate task 3.4 firewall/budget/runtime gate before expanding the sender
+cohort.
+
 The production Semaphore inventory is a static copy of private site-config. After
 a private inventory change is reviewed and merged, run the code-managed
 operator-side `platform/semaphore/sync-inventory.yml` check and apply from the

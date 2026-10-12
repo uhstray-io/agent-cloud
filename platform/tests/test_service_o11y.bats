@@ -1382,6 +1382,11 @@ from jinja2 import Environment, StrictUndefined
 
 deploy = pathlib.Path(sys.argv[1])
 compose = yaml.safe_load((deploy / 'compose.yml').read_text())
+local_compose = yaml.safe_load((deploy / 'compose.local.yml').read_text())
+prod_compose = yaml.safe_load((deploy / 'compose.prod.yml').read_text())
+assert compose['services']['alloy']['mem_limit'] == '512m'
+assert 'mem_limit' not in local_compose['services']['alloy']
+assert 'mem_limit' not in prod_compose.get('services', {}).get('alloy', {})
 assert compose['services']['tempo']['image'].endswith('grafana/tempo:2.10.8}')
 assert 'tempo-data:/var/tempo' in compose['services']['tempo']['volumes']
 assert not compose['services']['tempo'].get('ports')
@@ -1406,13 +1411,22 @@ profiled_alloy = env.from_string(alloy_template).render(
     o11y_cluster='test-cluster',
     _o11y_forbidden_metric_label_names_regex=r'(?i)(request|user|client|session|trace|email|api[_-]?key)',
     o11y_alloy_profile_pilot_enabled=True,
+    o11y_gateway_span_logs_enabled=True,
 )
 assert 'pyroscope.scrape "alloy_self_profile"' in profiled_alloy
 assert '"__address__" = "alloy:12345", "service_name" = "o11y/alloy", "target_id" = "service:o11y"' in profiled_alloy
 assert 'scrape_interval = "60s"' in profiled_alloy
 assert 'pyroscope.write.private.receiver' in profiled_alloy
+profiled_gateway_limiter = profiled_alloy.split('otelcol.processor.memory_limiter "gateway" {', 1)[1].split('\n}\n', 1)[0]
+assert 'otelcol.connector.spanlogs.gateway.input' in profiled_gateway_limiter
 assert 'otelcol.receiver.otlp "traces"' in alloy
 assert 'grpc {\n    endpoint = "0.0.0.0:4317"' in alloy
+assert 'logs   = [otelcol.processor.memory_limiter.gateway.input]' in alloy
+assert 'traces = [otelcol.processor.memory_limiter.gateway.input]' in alloy
+gateway_limiter = alloy.split('otelcol.processor.memory_limiter "gateway" {', 1)[1].split('\n}\n', 1)[0]
+assert 'check_interval = "1s"' in gateway_limiter
+assert 'limit = "384MiB"' in gateway_limiter and 'spike_limit = "64MiB"' in gateway_limiter
+assert 'otelcol.processor.attributes.gateway_logs.input' in gateway_limiter
 assert 'otelcol.processor.attributes.gateway_logs.input' in alloy
 assert 'otelcol.exporter.loki "gateway"' in alloy
 assert 'loki.attribute.labels' in alloy
@@ -1421,8 +1435,19 @@ assert 'cluster = "test-cluster"' in alloy
 assert 'otelcol.processor.batch.traces.input' in alloy
 assert 'otelcol.exporter.otlp.tempo.input' in alloy
 assert 'endpoint = "tempo:4317"' in alloy
+trace_batch = alloy.split('otelcol.processor.batch "traces" {', 1)[1].split('\n}\n', 1)[0]
+assert 'timeout = "1s"' in trace_batch
+assert 'send_batch_size = 256' in trace_batch and 'send_batch_max_size = 512' in trace_batch
+tempo_exporter = alloy.split('otelcol.exporter.otlp "tempo" {', 1)[1].split('\n}\n', 1)[0]
+assert 'timeout = "10s"' in tempo_exporter
+assert 'num_consumers = 2' in tempo_exporter and 'queue_size = 128' in tempo_exporter
+assert 'max_elapsed_time = "5m"' in tempo_exporter and 'max_interval = "30s"' in tempo_exporter
 assert 'otelcol.receiver.otlp "conformance"' in alloy
 assert 'http {\n    endpoint = "0.0.0.0:4318"' in alloy
+assert 'logs = [otelcol.processor.memory_limiter.conformance.input]' in alloy
+conformance_limiter = alloy.split('otelcol.processor.memory_limiter "conformance" {', 1)[1].split('\n}\n', 1)[0]
+assert 'limit = "384MiB"' in conformance_limiter and 'spike_limit = "64MiB"' in conformance_limiter
+assert 'otelcol.processor.attributes.conformance_logs.input' in conformance_limiter
 assert 'otelcol.processor.attributes.conformance_logs.input' in alloy
 assert 'otelcol.exporter.loki "conformance"' in alloy
 assert 'action = "upsert"' in alloy
