@@ -1,0 +1,59 @@
+---
+# emit-service-deploy-result.yml — record the `service-deploy` workflow step result for a
+# per-service deploy playbook. Registry step: platform/workflows/service-onboarding/registry.yml
+# (criteria: the deploy verify phase passes; a second run reports no change; evidence_keys
+# [verified, changed_on_rerun]). It wraps tasks/emit-step-result.yml, which owns the contract.
+#
+# Include it as the LAST task of the playbook's verify play, so it is reached only when every
+# verify task passed. A verify failure fails the play before this runs and records no result;
+# the conformance collector counts a run with no result as a failure, so there is no fail path
+# here:
+#
+#   - name: "Record the step result"
+#     ansible.builtin.include_tasks: tasks/emit-service-deploy-result.yml
+#     vars:
+#       service_deploy_task: "{{ _deploy | default({}) }}"   # the registered deploy.sh result
+#
+# `service_deploy_task` is the registered result of the task that did the work: the
+# deploy.sh shell task for a compose service, whose changed_when reads the DEPLOY_CHANGED line
+# common.sh compose_up_if_changed prints. A caller whose result carries a credential passes a
+# dict holding only `skipped` and `changed` (deploy-github-runner.yml does), never the result.
+#
+#   status   skip  the task was skipped (check mode, or a run limited to other tags so it never
+#                  registered), nothing was deployed to judge
+#            pass  otherwise
+#   evidence verified          true: the verify phase passed before this ran
+#            changed_on_rerun  whether the deploy changed anything on this run. A re-run of an
+#                              unchanged service must report false, which is what the registry's
+#                              second-run criterion reads; this run is the re-run when it is one.
+#
+# A play over several hosts records the first host's result (emit-step-result is run_once); the
+# per-service groups this is included from hold one host each.
+#
+# `service_deploy_task` is an include var only. Like emit-step-result's own inputs it is
+# refused when defined anywhere else (an extra var outranks include vars and would forge the
+# change report), so nothing may set, register or define it outside the include.
+
+- name: "Service-deploy result: refuse the input set as an extra var"
+  ansible.builtin.assert:
+    that: "'service_deploy_task' not in hostvars[inventory_hostname]"
+    fail_msg: >-
+      Refusing to record a service-deploy result: service_deploy_task is defined outside the
+      executor. It is reserved for emit-service-deploy-result's include vars: an extra var
+      would outrank the deploy result the playbook passes and forge the change report.
+    quiet: true
+  run_once: true
+
+- name: "Service-deploy result: record the result"
+  ansible.builtin.include_tasks: emit-step-result.yml
+  vars:
+    _service_deploy_ran: >-
+      {{ service_deploy_task is mapping and (service_deploy_task | length) > 0
+         and not (service_deploy_task.skipped | default(false) | bool) }}
+    step_result_step: service-deploy
+    step_result_status: "{{ 'pass' if (_service_deploy_ran | string | lower == 'true') else 'skip' }}"
+    step_result_evidence:
+      verified: true
+      changed_on_rerun: >-
+        {{ (_service_deploy_ran | string | lower == 'true')
+           and (service_deploy_task.changed | default(false) | bool) }}

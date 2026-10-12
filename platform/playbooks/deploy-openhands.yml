@@ -94,8 +94,13 @@
         bash deploy.sh
       environment:
         CONTAINER_ENGINE: docker
+        # Operator lever (survey `deploy_force_recreate`, only the literal true): recreate even when every input
+        # and image matches — clears a stale bind mount a running container still holds.
+        FORCE_RECREATE: "{{ 'true' if ((deploy_force_recreate | default('false') | string | lower) == 'true') else '' }}"
       register: _deploy
-      changed_when: true
+      # deploy.sh recreates only when its inputs or images changed (common.sh
+      # compose_up_if_changed) and says which on its own line.
+      changed_when: "'DEPLOY_CHANGED=true' in _deploy.stdout_lines"
       when: not ansible_check_mode
 
     - name: "Show deploy.sh output"
@@ -124,6 +129,12 @@
     - name: "Report"
       ansible.builtin.debug:
         msg: "openhands healthy — server answering on :{{ openhands_port | default('3000') }} (gated by Authentik via central Caddy)."
+
+    # Last: every verify task above passed (a failure stops the play before this records).
+    - name: "Record the service-deploy step result"
+      ansible.builtin.include_tasks: tasks/emit-service-deploy-result.yml
+      vars:
+        service_deploy_task: "{{ _deploy | default({}) }}"
 
 # ── Phase 4: Render + distribute Caddy fragment ─────────────────────────────
 - name: "Phase 4: Render + distribute Caddy fragment"

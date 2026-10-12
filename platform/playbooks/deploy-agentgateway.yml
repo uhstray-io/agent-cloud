@@ -890,6 +890,12 @@
           {% else %}No enrolled identity (agw_clients is empty): the keyed round-trip was not
           run.{% endif %}
 
+    # Last: every verify task above passed (a failure stops the play before this records).
+    - name: "Record the service-deploy step result"
+      ansible.builtin.include_tasks: tasks/emit-service-deploy-result.yml
+      vars:
+        service_deploy_task: "{{ _deploy | default({}) }}"
+
 # ── Phase 4: Shared-key retirement verdict (gateway task 5.1) ──────────────
 # Last on purpose: a failure here must not stop Phase 2 from removing the expired identity from
 # the running gateway. Reads only the booleans Phase 1's credential task set.

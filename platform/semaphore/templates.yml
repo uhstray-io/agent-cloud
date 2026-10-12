@@ -727,6 +727,12 @@ templates:
         type: string
         required: false
         default_value: "main"
+      - name: deploy_force_recreate
+        title: "Force container recreate"
+        description: "true to recreate every container even when inputs and images match (clears a stale bind mount)"
+        type: string
+        required: false
+        default_value: "false"
 
   - name: Deploy WisBot
     playbook: platform/playbooks/deploy-wisbot.yml
@@ -748,6 +754,12 @@ templates:
         type: string
         required: false
         default_value: "main"
+      - name: deploy_force_recreate
+        title: "Force container recreate"
+        description: "true to recreate every container even when inputs and images match (clears a stale bind mount)"
+        type: string
+        required: false
+        default_value: "false"
 
   - name: Deploy agentgateway
     playbook: platform/playbooks/deploy-agentgateway.yml
@@ -918,6 +930,12 @@ templates:
         type: string
         required: false
         default_value: "main"
+      - name: deploy_force_recreate
+        title: "Force container recreate"
+        description: "true to recreate every container even when inputs and images match (clears a stale bind mount)"
+        type: string
+        required: false
+        default_value: "false"
 
   - name: Deploy Postiz
     playbook: platform/playbooks/deploy-postiz.yml
