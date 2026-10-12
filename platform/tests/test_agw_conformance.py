@@ -422,6 +422,7 @@ def test_a_gateway_that_passes_a_long_stream_through_proves_it_is_not_buffered(t
     c = _case(report, "stream-long")
     assert report["verdict"] == "pass" and c["verdict"] == "match", c
     assert report["matched"] == report["total"] == len(CASES) + 1
+    assert report["unproven"] == [], report  # vLLM sent comments, so pass-through was exercised
     ls = c["long_stream"]
     assert ls["required_s"] == 3 and ls["keepalives_seen_from_vllm"] is True, ls
     for side in ("gateway", "direct"):
@@ -436,6 +437,21 @@ def test_a_gateway_that_passes_a_long_stream_through_proves_it_is_not_buffered(t
     argv = (tmp_path / "argv.log").read_text().split("\n")
     assert argv.count("--max-time") == len(CASES) * 2 + 2 and argv.count("600") == 2, "ceiling on the long case only"
     _no_key_anywhere(tmp_path, r)
+
+
+def test_a_long_stream_without_any_keepalive_from_vllm_passes_but_is_marked_unproven(tmp_path, stubs):
+    # Steady generation: vLLM sent no comment, so a gateway that drops them cannot be told apart.
+    # The verdict stays a match (timing is proved); the report says what it did not prove.
+    gw = stubs(key=GW_KEY, long=LONG, drop_keepalives=True)
+    direct = stubs(key=UP_KEY, long=LONG, drop_keepalives=True)
+    r, _ = _run(tmp_path, gw, direct, env=LONG_ENV)
+    assert r.returncode == 0, r.stderr
+    report = _diff(tmp_path)
+    c = _case(report, "stream-long")
+    assert report["verdict"] == "pass" and c["verdict"] == "match", c
+    assert c["long_stream"]["keepalives_seen_from_vllm"] is False, c
+    assert c["long_stream"]["gateway"]["keepalives"] == c["long_stream"]["direct"]["keepalives"] == 0, c
+    assert report["unproven"] == ["keepalive"], report
 
 
 def test_a_gateway_that_drops_the_keepalives_fails_the_long_stream(tmp_path, stubs):
@@ -1130,6 +1146,24 @@ def test_the_playbook_runs_the_long_stream_case_only_when_asked(tmp_path, stubs,
     assert rc == 0, out
     assert f"PASS, {len(CASES) + 1}/{len(CASES) + 1} cases match." in out, out
     assert len(direct.seen) == len(CASES) + 1
+    assert UNPROVEN not in out  # vLLM sent comments: nothing to warn about
+    assert made and not _left_behind(made)
+
+
+UNPROVEN = ("keep-alive pass-through UNPROVEN: vLLM sent no keep-alive comments during this stream; "
+            "do not close gateway task 2.3 on this run.")
+
+
+def test_the_playbook_warns_visibly_when_the_long_stream_proved_no_keepalive_passthrough(tmp_path, stubs):
+    gw = stubs(key=GW_KEY, long=LONG, drop_keepalives=True)
+    direct = stubs(key=UP_KEY, long=LONG, drop_keepalives=True)
+    rc, out, made = _playbook(tmp_path, gw, direct, extra={
+        "agw_conformance_long_stream": True, "agw_conformance_long_stream_min_seconds": 3,
+        "agw_conformance_long_stream_max_tokens": 777})
+    assert rc == 0, out  # a warning, not a failure
+    assert f"PASS, {len(CASES) + 1}/{len(CASES) + 1} cases match." in out, out
+    assert UNPROVEN in out, out
+    assert '"unproven": [' in out and '"keepalive"' in out  # in the report and the stats
     assert made and not _left_behind(made)
 
 

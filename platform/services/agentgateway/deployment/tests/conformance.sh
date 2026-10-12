@@ -587,6 +587,11 @@ cmd_diff() {
 		   total: length,
 		   not_matched: [.[] | select(.verdict != "match") | .case],
 		   failures: [.[] | select(.failure != null) | "\(.case): \(.failure)"],
+		   # What a passing verdict did NOT prove. "keepalive": the long stream passed, but vLLM sent
+		   # no keep-alive comments (it sends one only after 15 s without a chunk), so comparing the
+		   # gateway count against it showed nothing about comment pass-through.
+		   unproven: ([.[] | select(.case == "stream-long" and .verdict == "match"
+				and .long_stream.keepalives_seen_from_vllm == false) | "keepalive"] | unique),
 		   shape_differences: ([.[] | select(.shape_diff != null and (.shape_diff | empty_diff | not))
 			| {key: .case, value: {diff: .shape_diff, unaccepted: .shape_unaccepted}}] | from_entries),
 		   cases: .}' "$1"

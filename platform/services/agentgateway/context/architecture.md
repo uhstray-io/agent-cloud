@@ -288,9 +288,14 @@ exhaustive answer to the gateway and then straight to vLLM, with the same hard c
 `vllm/public_probe.py` `long` mode, which produced the 256 s public-path stream recorded in the
 inference-endpoint-reliability change. dgx-spark sets `--sse-keep-alive-interval 15`, so vLLM sends
 an SSE comment line (`: keep-alive`) whenever no chunk has gone out for 15 s: during a queue wait or
-a long prefill. A stream that generates steadily may therefore carry few or no comments, and the
-report says so (`keepalives_seen_from_vllm`) rather than treating zero against zero as proof of
-pass-through.
+a long prefill. A stream that generates steadily may therefore carry few or no comments. The case
+still passes on timing, but the run does not count zero against zero as proof of pass-through: when
+vLLM sent none, `keepalives_seen_from_vllm` is false, the report and the CUSTOM STATS carry
+`unproven: ["keepalive"]`, and the playbook prints a visible (non-failing) task, "Warn: keep-alive
+pass-through is unproven on this run": "keep-alive pass-through UNPROVEN: vLLM sent no keep-alive
+comments during this stream; do not close gateway task 2.3 on this run." Task 2.3 closes only on a
+run without that warning, which needs a stream that sat idle past 15 s (a queue wait or a long
+prefill).
 
 For each side the report gives `duration_s`, `first_byte_s`, `keepalives` (SSE comment lines) and
 `gap_max_s` (the longest silence between two received lines, comments included). The case passes

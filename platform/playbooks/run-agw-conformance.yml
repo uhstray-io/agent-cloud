@@ -434,6 +434,7 @@
                 model: "{{ _model }}"
                 gateway_url: "{{ _gateway_url }}"
                 report: "{{ _conf_report }}"
+                unproven: "{{ _conf_report.unproven | default([]) }}"
                 results: "{{ _conf_lines }}"
 
         - name: "Report gateway against direct vLLM: summary"
@@ -454,6 +455,17 @@
         - name: "Report gateway against direct vLLM: per case"
           ansible.builtin.debug:
             var: _conf_report.cases
+
+        # Not a failure, and the verdict stays as it is: a long stream that carried no keep-alive from
+        # vLLM (it sends one only after 15 s without a chunk) passed on timing alone, which says
+        # nothing about the gateway passing the comments through. Also in the report and the stats
+        # as `unproven: ["keepalive"]`.
+        - name: "Warn: keep-alive pass-through is unproven on this run"
+          ansible.builtin.debug:
+            msg: >-
+              keep-alive pass-through UNPROVEN: vLLM sent no keep-alive comments during this stream;
+              do not close gateway task 2.3 on this run.
+          when: "'keepalive' in (_conf_report.unproven | default([]))"
 
         - name: "Require the gateway to match direct vLLM"
           ansible.builtin.assert:
