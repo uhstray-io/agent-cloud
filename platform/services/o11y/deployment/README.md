@@ -85,6 +85,21 @@ bounds. Queue overflow, memory-limiter refusals, and lost data remain possible
 during sustained receiver or Tempo outages; the alert source rules below do not
 prove metric exposition or runtime delivery.
 
+### Loki and Tempo ingestion caps — task 3.3 source slice
+
+The committed Loki and Tempo configs make the pinned images' finite ingestion
+defaults explicit: Loki uses global rate limiting (4 MB/s, 6 MB burst), a
+5,000-stream aggregate limit, 3 MB/s per-stream rate with a 15 MB burst, a
+256 KB line limit, and at most 15 labels per series. Tempo uses its local
+strategy, 15,000,000 bytes/s with a 20,000,000-byte burst, 10,000 live traces
+per user per ingester, and a 5,000,000-byte trace limit. These are aggregate
+default-equivalent caps, not per-target controls; making the defaults explicit
+does not establish a measured target budget or live config acceptance.
+
+Rollout remains gated on measured baselines and follow-on per-target budget and
+alert work. Keep task 3.3 open until its remaining source and live acceptance
+gates are met; do not infer runtime acceptance from parsing these files.
+
 ### Per-scrape response and label budgets — task 3.3 source slice
 
 Every declared Prometheus scrape job, including the optional DGX GPU job and

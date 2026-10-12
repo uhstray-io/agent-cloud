@@ -523,6 +523,54 @@ PY
   grep -q 'retention_period: ${O11Y_LOKI_RETENTION:-7d}' "$DEPLOY_DIR/config/loki-config.yml"
 }
 
+@test "o11y: Loki and Tempo aggregate ingestion defaults are explicit" {
+  python3 - "$DEPLOY_DIR/config/loki-config.yml" "$DEPLOY_DIR/config/tempo-config.yml" <<'PY'
+import sys
+import yaml
+
+loki = yaml.safe_load(open(sys.argv[1], encoding='utf-8'))
+limits = loki['limits_config']
+assert {key: limits[key] for key in (
+    'ingestion_rate_strategy', 'ingestion_rate_mb', 'ingestion_burst_size_mb',
+    'max_global_streams_per_user', 'per_stream_rate_limit',
+    'per_stream_rate_limit_burst', 'max_line_size', 'max_label_names_per_series',
+)} == {
+    'ingestion_rate_strategy': 'global', 'ingestion_rate_mb': 4,
+    'ingestion_burst_size_mb': 6, 'max_global_streams_per_user': 5000,
+    'per_stream_rate_limit': '3MB', 'per_stream_rate_limit_burst': '15MB',
+    'max_line_size': '256KB', 'max_label_names_per_series': 15,
+}
+assert limits['retention_period'] == '${O11Y_LOKI_RETENTION:-7d}'
+assert limits['reject_old_samples_max_age'] == '${O11Y_LOKI_RETENTION:-7d}'
+
+tempo = yaml.safe_load(open(sys.argv[2], encoding='utf-8'))
+defaults = tempo['overrides']['defaults']
+assert defaults['ingestion'] == {
+    'rate_strategy': 'local', 'rate_limit_bytes': 15000000,
+    'burst_size_bytes': 20000000, 'max_traces_per_user': 10000,
+}
+assert defaults['global'] == {'max_bytes_per_trace': 5000000}
+assert tempo['compactor']['compaction']['block_retention'] == '${O11Y_TEMPO_RETENTION:-168h}'
+assert tempo['metrics_generator']['storage'] == {
+    'path': '/var/tempo/generator/wal',
+    'remote_write': [{'url': 'http://prometheus:9090/api/v1/write'}],
+}
+assert tempo['metrics_generator']['processor']['service_graphs'] == {
+    'max_items': 1000, 'workers': 2,
+}
+assert tempo['metrics_generator']['processor']['span_metrics'] == {
+    'intrinsic_dimensions': {
+        'service': True, 'span_name': False, 'span_kind': True,
+        'status_code': True, 'status_message': False,
+    },
+    'histogram_buckets': [0.05, 0.1, 0.25, 0.5, 1, 2, 5],
+}
+assert defaults['metrics_generator'] == {
+    'processors': '${O11Y_TEMPO_METRIC_PROCESSORS:-[]}', 'max_active_series': 2000,
+}
+PY
+}
+
 @test "o11y: committed config-as-code present (prometheus/loki/alloy/grafana)" {
   # Prometheus self-scrape is the committed config-as-code. Per-target scrapes
   # (Caddy :2019, cAdvisor, ...) are deferred to Phase 2 in the Prometheus template
