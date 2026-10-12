@@ -124,6 +124,7 @@ and why.
 | 5.14 | Wrote a file into a checkout another task owns with a path checkout; widens 5.10 past branch switches | Process | 1 | Convention (hook proposed) |
 | 5.15 | Published AI attribution in a PR body; widens 5.9 from commits to every GitHub artifact | Process | 1 | Convention (`gh` wrapper proposed) |
 | 5.16 | Merged on a PR status rollup that still showed the previous head's checks; CI on the merged head was running | Process | 1 | Convention (operator-side script; `dev` has no required checks) |
+| 5.17 | Upgraded production's ansible-core before CI ran the playbooks on the new version; 2.20 templates `delegate_to` strictly, a probe drill dry run failed | Process | 1 | Test (`test_delegate_to_strict_undefined.py`) + CI pin + Convention (upgrade ordering) |
 | 6.1 | Built an edit from an assumed file structure instead of a read one | Process | 1 | Convention |
 | 6.2 | Built an interface the consumer never calls, without reading how it invokes | Process | 1 | Test |
 | 6.3 | Repeated 6.2 — assumed openssl and jq exist on the orchestrator image; neither does — **x3** (CI never installed the playbook collections) | Process | 3 | Convention -> **Test + declared dep**; CI installs `collections/requirements.yml` |
@@ -3122,6 +3123,42 @@ blindly retries an ambiguous result. Read-only validation is the default.
 This remains a convention because `dev` intentionally has no required-check rule: the
 main-to-Dev sync workflow pushes directly to `dev`. A direct merge command can bypass the
 CLI, and a concurrently started rerun or review can race the separate API reads and merge.
+
+### 5.17 Upgraded production's ansible-core before CI exercised the playbooks on the new version
+
+**Occurrences: 1** — 2026-10-12
+
+**What happened.** The production Semaphore runner was upgraded on 2026-10-09 to image v2.19.11,
+taking ansible-core from 2.18.15 to 2.20.8. CI was pinned to 2.20.8 only afterwards (PR #519;
+see 1.22), so for the days between, the playbooks ran in production on a version no test had
+exercised. On 2026-10-12 the dry run of `o11y Fault Drill (Dev)` with `drill=probe` (Semaphore
+task 4888) failed with `object of type 'dict' has no attribute 'host'` on the exporter-only
+stop task, an inventory with no `o11y_fault_drill_exporters`. The same drill had passed on
+2.18.15 (task 3295, 2026-10-07). Reproduced on 2.20.8: `delegate_to: "{{ d.host }}"` on a task
+whose `when` is false fails, bare, inside a block, and in `always:`. 2.20.8
+`executor/task_executor.py` calls `_calculate_delegate_to` (line 458) first, which reaches
+`vars/manager.py:519`, a strict `templar.template(task.delegate_to)`; 2.18.15
+`vars/manager.py:524` passes `fail_on_undefined=False`, so an unresolvable expression stayed
+literal and the skipped task never noticed. Six templated delegations in three playbooks
+(`o11y-fault-drill.yml` twice, `deploy-agentgateway.yml` three times, `verify-o11y-service.yml`
+once) carried the same latent failure; the drill's was the one that surfaced.
+
+**Root cause.** The version gate ran after the upgrade instead of before it. A tool upgrade on
+the orchestrator was treated as an image bump rather than a behaviour change for every playbook
+it runs, and the check-mode and drill templates, which run rarely, were not run on the new
+version first.
+
+**The rule.** Before upgrading the runner's ansible-core, pin CI to the target version and get
+a green run first, then run a check-mode pass of each scheduled and drill template on that
+version. The runner image and the CI pin are bumped together (the rule 1.22 left as
+Convention). A templated `delegate_to` carries a `default(...)` so a skipped task never fails
+on it.
+
+**Enforced by.** Test for the class: `platform/tests/test_delegate_to_strict_undefined.py`
+(every templated `delegate_to` has a default or an audited reason) and
+`test_o11y_fault_drill.py::test_a_probe_dry_run_needs_no_exporter_declaration`; CI pin
+`ansible-core==2.20.8` in `platform/requirements-test.txt`. Convention for the ordering (pin
+CI, green run, then upgrade the runner). Related: 1.22.
 
 ## 6. Working from assumptions about files
 
