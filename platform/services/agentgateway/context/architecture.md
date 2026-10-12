@@ -160,6 +160,16 @@ How the TLS listener treats a client it must refuse (tasks 6.1, 6.4): the Semaph
 client leaf that is on no allowlist, once with no key and once with an invalid one, and reports
 statuses and failure classes only (no body, header or key).
 
+The pre-switch gate (tasks 4.5, 6.4, and the route-switch runbook's open `/health` item): the
+Semaphore template `Probe agentgateway Gate (Dev)` (`platform/playbooks/probe-agentgateway-gate.yml`)
+presents the verifier leaf, which the SAN rule admits, so the key check is the layer that answers.
+Keyless `GET /v1/models` proves a client with no key is refused; `GET /v1/models` with a literal key
+that is no credential proves a key the gateway does not hold is refused. Both must be 401 or the run
+fails. A keyless `GET /health` is **reported, not asserted**: the gateway config has no `/health`
+route and the key policy is strict on the listener, so the probe records what it actually does
+(200 means a public `/health` survives gateway mode; any other status means the route switch needs a
+`/health` handler). The report prints before the assertion. Read-only, no OpenBao call, no survey.
+
 A case **matches** when both targets succeeded (curl exit 0, a 2xx status, and for the stream
 an ending `[DONE]` with no error event) and returned the
 same status, the same body shape (every leaf path and its JSON type) and the same semantic fields:

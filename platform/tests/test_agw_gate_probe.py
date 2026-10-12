@@ -207,3 +207,10 @@ def test_the_playbook_is_launchable_and_guarded_first():
     assert doc[2]["hosts"] == "agentgateway_svc"
     assert json.dumps(doc[1]["vars"]) == json.dumps(
         {"preflight_group": "agentgateway_svc", "preflight_group_expected": "agentgateway_svc"})
+
+
+def test_agents_md_and_the_service_doc_list_the_workflow():
+    agents = (REPO / "AGENTS.md").read_text()
+    assert "| Probe agentgateway Gate (Dev) | `probe-agentgateway-gate.yml` |" in agents
+    doc = (REPO / "platform/services/agentgateway/context/architecture.md").read_text()
+    assert "probe-agentgateway-gate.yml" in doc
