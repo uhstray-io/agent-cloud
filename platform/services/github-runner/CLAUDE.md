@@ -76,8 +76,9 @@ option that sets no_new_privs implicitly in a user unit (all seccomp-backed ones
 
 A job that declares `container:` runs through the docker variant of the container hooks,
 which run `docker` (the podman-docker shim) as `ghrunner`, so the engine is rootless
-podman. Until 2026-10-11 every such job failed in "Initialize containers", for two reasons
-that Docker hides and podman does not.
+podman. Until 2026-10-11 every such job failed in "Initialize containers", for three reasons
+that Docker hides and podman does not. The first two are below; the third, the engine's
+environment, is in its own subsection after them.
 
 **Missing bind sources.** The runner hands the hooks a fixed mount set, and the hooks pass
 it to `docker create` unchanged (runner-container-hooks v0.8.1,
@@ -126,6 +127,68 @@ then runs the hooks' `docker create`, with the full mount set and the deployed
 `job-started.sh`, in a `systemd-run --user` transient unit carrying the runner unit's
 `NoNewPrivileges` value (the reason is in `docs/MISTAKES.md` 2.29), and calls `_ping` on the
 mounted socket path. The runner reads `.env` only at start, so a changed `.env` restarts it.
+
+### The engine's environment
+
+**The failure.** After the two fixes above were deployed, every container job still failed
+with `cannot resolve /github/home: lstat /github: no such file or directory`. The hooks
+start `docker` with an environment built from the job alone. For `create`, `exec` and `run`
+it is exactly the job container's variables plus the `DOCKER_*` variables; for every other
+call (`pull`, `network`, `rm`) it is the `DOCKER_*` variables only (runner-container-hooks
+v0.8.1, `packages/docker/src/utils.ts`, `optionsWithDockerEnvs`). No PATH and no XDG
+directory of the runner's reaches the engine. The job's variables include
+`HOME=/github/home`: the CLI fills `-e HOME` from its own HOME, which is how the container
+gets its home. Rootless podman reads three things from that environment:
+
+| What | Source | With the hooks' environment |
+|---|---|---|
+| Configuration directory | `XDG_CONFIG_HOME`, else HOME resolved on the host (podman v4.9.3, `pkg/util/utils_supported.go:81-92`) | HOME is `/github/home`, which exists only in the container: the error above |
+| Image store | `XDG_DATA_HOME`, else HOME, else the passwd entry (containers/storage v1.51.0, `pkg/homedir/homedir.go:28-37`, `pkg/unshare/unshare.go:17-23`) | `pull` (no HOME) and `create` (HOME=/github/home) would use two different stores |
+| `newuidmap`/`newgidmap` | PATH (podman v4.9.3, `pkg/rootless/rootless_linux.go:104-106`) | No PATH: the mapping fails whenever no podman pause process is running |
+
+The hooks look up the `docker` binary itself with the runner's PATH (`@actions/exec` uses
+the hook process's PATH, not the child's), so a `docker` earlier on the runner's PATH is the
+one they run.
+
+The options, and why this one:
+
+| Option | Result |
+|---|---|
+| Set the XDG variables in the job's environment | **Rejected.** Workflow-side, so it fails open, and the values would also enter the job container. |
+| Make `/github/home` exist on the host (a link to the account's home) | **Rejected.** A new path at the host's filesystem root, made for one account's engine, and it would put the image store under a path name that only the hooks' calls use. |
+| Change HOME for the engine | **Rejected.** The container's `-e HOME` would become the account's home instead of `/github/home`. |
+| A Docker CLI against the account's podman API socket (`DOCKER_HOST`, which the hooks pass through) | **Not taken now.** A new package source and a different engine path on both hosts, with its own compatibility questions unmeasured. Kept as the alternative if the wrapper proves insufficient. |
+| A runner-only `docker` wrapper first on the runner's PATH that sets the account's directories and runs `/usr/bin/podman` | **Chosen.** It changes no argument, mount or image, and no upstream file; the hooks, the runner and the podman-docker shim stay as shipped. |
+
+**How it is applied.** `templates/docker-wrapper.sh.j2` is installed as `_bin/docker` under
+the runner home (not `bin/`, which holds the runner's own binaries), owned by the account
+and mode 0750 like the job hooks. It always sets `XDG_CONFIG_HOME` and `XDG_DATA_HOME` to the
+account's `.config` and `.local/share`, `XDG_RUNTIME_DIR` to `/run/user/<uid>` (the uid is
+looked up), and PATH to the fixed system list, then runs `/usr/bin/podman`. It never sets
+HOME. A job keeps its own values of those four names: the hooks pass each job variable as
+a bare `-e NAME`, which the engine would fill from the wrapper's replaced environment, so
+the wrapper first reads the caller's values (printenv) and rewrites a bare `-e`/`--env`
+(also the `=` forms) of one of the four into `NAME=<the caller's value>`, or drops it when
+the caller had none. Every other argument is passed unchanged. The rewrite applies only
+to the options of `create`, `run` and `exec` and stops at the first positional argument
+(the IMAGE, or the CONTAINER for exec): podman reads everything from there on as the
+container's command (`SetInterspersed(false)`), so `echo -e PATH` is never changed. To
+find that argument the wrapper carries podman v4.9.3's lists of value-taking and boolean
+options for those subcommands, read from podman's own flag definitions (cited in the
+wrapper). An option it does not know, written without `=`, a combined short form or
+`--` ends the rewrite early, which at worst hands that job the host's value for one of
+the four names. The directories the wrapper sets are the values a podman command run by the
+account in its own session uses, so the store is the same one plain job steps and earlier
+runs used; nothing in this repository customises the account's storage location. The
+runner's `.env` sets PATH with `_bin` first: the systemd unit starts the runner through
+`run.sh`, which does not read the runner's `.path` file. The deploy's mount probe resolves
+`docker` from that PATH and requires the wrapper, imports its image under `env -i` (as the
+hooks' `pull` runs), creates the container under `env -i HOME=/github/home
+GITHUB_ACTIONS=true CI=true` with `-e HOME`, and requires the container to carry
+`HOME=/github/home` (`docs/MISTAKES.md` 10.25). It runs no `podman system migrate`, which
+stops running containers and so could stop a job; it therefore joins the pause process
+the uid-map check left and does not exercise the wrapper's PATH for `newuidmap`. The
+rendered-wrapper bats test covers that PATH.
 
 ## Credential chain
 
@@ -240,6 +303,11 @@ it — note that every legitimate target sits *inside* that prefix, so a guard p
 - **A uid-map check does not prove a container job.** The 2.29 checks passed while every
   `container:` job still failed on its mounts (above). The deploy now creates a container
   with the hooks' own mount set, from inside the user manager (`docs/MISTAKES.md` 10.24).
+- **A hook-shaped probe must copy the hooks' environment too.** The 10.24 probe used the
+  hooks' arguments with the account's own environment, passed, and every container job
+  still failed: the hooks give the engine only the job's variables, with
+  `HOME=/github/home`. The probe now runs the wrapper under `env -i` with the hooks' HOME
+  (`docs/MISTAKES.md` 10.25).
 - **The root disk is small until grown.** Both hosts came up with a 9.8 GiB root LV on a
   200 G disk, 878 MiB free, which no Rust build fits in. Run Grow GitHub Runner Root
   (`grow-github-runner-root.yml`) after provisioning; its dry run shows each host's chain.
