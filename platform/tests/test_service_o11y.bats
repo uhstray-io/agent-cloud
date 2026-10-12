@@ -1856,7 +1856,7 @@ assert result.returncode != 0 and 'tempo_time' in result.stderr
 PY
 }
 
-@test "o11y: changed production retention refuses missing capacity receipt before deploy writes" {
+@test "o11y: changed production retention refuses missing capacity or backup restore receipts before writes" {
   python3 - "$REPO_ROOT/platform/playbooks/deploy-o11y.yml" <<'PY'
 import pathlib
 import re
@@ -1867,7 +1867,7 @@ from jinja2 import Environment
 plays = yaml.safe_load(pathlib.Path(sys.argv[1]).read_text())
 phase = next(play for play in plays if play.get('name') == 'Phase 1: Place repo + manage o11y secrets')
 tasks = phase['tasks']
-gate = next(task for task in tasks if task.get('name') == 'Require a capacity receipt and nonzero Prometheus cap for retention expansion')
+gate = next(task for task in tasks if task.get('name') == 'Require capacity and backup/restore receipt references and nonzero Prometheus cap for retention expansion')
 gate_index = tasks.index(gate)
 write_index = next(index for index, task in enumerate(tasks)
                    if task.get('ansible.builtin.include_tasks') == 'tasks/place-monorepo.yml'
@@ -1877,6 +1877,9 @@ assert '_o11y_retention_expansion' in gate['when']
 assert 'local_mode' in gate['when']
 message = gate['ansible.builtin.assert']['fail_msg'].lower()
 assert 'o11y_capacity_receipt_id' in message
+assert 'o11y_backup_restore_receipt_id' in message
+assert 'only a reference' in message
+assert 'does not inspect its evidence' in message
 assert 'seven-day backend growth' in message
 assert 'backup' in message
 assert 'separately reviewed successful capacity receipt' in message
@@ -1900,11 +1903,15 @@ assert evaluate(gate['when'], _o11y_retention_expansion=True, local_mode=False)
 assert not evaluate(gate['when'], _o11y_retention_expansion=False, local_mode=False)
 assert not evaluate(gate['when'], _o11y_retention_expansion=True, local_mode=True)
 requirements = gate['ansible.builtin.assert']['that']
-assert len(requirements) == 2
+assert len(requirements) == 3
 assert not evaluate(requirements[0], o11y_prom_retention_size='0B')
 assert not evaluate(requirements[1], o11y_capacity_receipt_id='')
+assert not evaluate(requirements[2])
+assert not evaluate(requirements[2], o11y_backup_restore_receipt_id='malformed')
+assert not evaluate(requirements[2], o11y_backup_restore_receipt_id='0')
 assert evaluate(requirements[0], o11y_prom_retention_size='100GB')
 assert evaluate(requirements[1], o11y_capacity_receipt_id='1776')
+assert evaluate(requirements[2], o11y_backup_restore_receipt_id='1777')
 PY
 }
 
@@ -2303,7 +2310,7 @@ assert engine_guard['ansible.builtin.assert']['that'] == "_engine == 'podman'"
 deploy = yaml.safe_load(deploy_path.read_text())
 phase_one = next(play for play in deploy if play.get('name') == 'Phase 1: Place repo + manage o11y secrets')
 names_in_phase = [task['name'] for task in phase_one['tasks']]
-receipt_gate = phase_one['tasks'][names_in_phase.index('Require a capacity receipt and nonzero Prometheus cap for retention expansion')]
+receipt_gate = phase_one['tasks'][names_in_phase.index('Require capacity and backup/restore receipt references and nonzero Prometheus cap for retention expansion')]
 expansion_expression = Environment().compile_expression(
     phase_one['vars']['_o11y_retention_expansion'].removeprefix('{{').removesuffix('}}').strip()
 )

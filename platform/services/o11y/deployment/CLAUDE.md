@@ -146,11 +146,13 @@ All default off, so declaring a value alone never starts a scrape or pages anyon
 - Retention defaults are Prometheus `15d`, Loki `7d`, Tempo `168h`; the Prometheus size
   cap defaults to `1GB` in local mode and `0B` (no cap) otherwise (`templates/env.j2:26-30`).
   In production, any retention other than that baseline is refused unless the run has a
-  nonzero Prometheus cap and a numeric `o11y_capacity_receipt_id`
-  (`deploy-o11y.yml:132-146`), the named volumes resolve with at least 30% headroom
-  (`:156-178`), and the capacity readback reports an acceptable state (`:180-186`). The
-  retention gate does not check a backup or restore receipt; that receipt is required only
-  for Tempo-derived metrics (`:306-310`).
+  nonzero Prometheus cap and numeric `o11y_capacity_receipt_id` and
+  `o11y_backup_restore_receipt_id` references (`deploy-o11y.yml:134-150`), the named
+  volumes resolve with at least 30% headroom (`:169-180`), and the capacity readback
+  reports an acceptable state (`:182-188`). The backup/restore check validates only that
+  inventory contains a positive numeric reference; it does not inspect independent receipt
+  evidence or prove a live restore. Tempo-derived metrics use the same common receipt
+  variable (`:312-323`). These reference checks do not authorize retention expansion.
 - `config/scrape.d/host-<group>.yml` (rendered from `templates/scrape-host-node.yml.j2`) is
   written by `instrument-host-o11y.yml`, the service deployment workflow's instrument-host
   step, never by `deploy-o11y.yml`, which neither writes nor removes it.

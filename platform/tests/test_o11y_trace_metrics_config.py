@@ -101,19 +101,49 @@ def test_tempo_datasource_keeps_log_link_and_provisions_service_map_metric_and_p
     ]
 
 
-def test_production_metrics_enablement_requires_all_recorded_gates_and_live_readback():
-    """Require recorded capacity/backup gates and validate the live Tempo config in memory."""
+def test_production_retention_requires_numeric_backup_restore_reference_before_writes():
+    """Require a numeric reference before volume inspection or repo placement."""
     playbook = yaml.safe_load((ROOT / "platform/playbooks/deploy-o11y.yml").read_text())
-    deploy_tasks = [task for play in playbook for task in play.get("tasks", [])]
-    gate = next(task for task in deploy_tasks if "numeric capacity and backup/restore receipts" in task["name"])
+    phase_one = next(play for play in playbook if play.get("name") == "Phase 1: Place repo + manage o11y secrets")
+    deploy_tasks = phase_one["tasks"]
+    gate_index, gate = next(
+        (index, task)
+        for index, task in enumerate(deploy_tasks)
+        if "backup/restore receipt references" in task["name"]
+    )
+    receipt_check = "o11y_backup_restore_receipt_id | default('') | string is match('^[1-9][0-9]*$')"
     assert set(gate["ansible.builtin.assert"]["that"]) == {
         "o11y_capacity_receipt_id | default('') | string is match('^[1-9][0-9]*$')",
-        "o11y_trace_backup_restore_receipt_id | default('') | string is match('^[1-9][0-9]*$')",
+        receipt_check,
+        "o11y_prom_retention_size | default('0B') | string | trim is match('^[1-9][0-9]*(B|KB|MB|GB|TB|PB|EB)$')",
     }
-    assert gate["when"] == [
+    assert gate["when"] == "not (local_mode | default(false) | bool) and (_o11y_retention_expansion | bool)"
+    volume_index = next(i for i, task in enumerate(deploy_tasks) if task["name"] == "Read o11y volume backing capacity before retention expansion")
+    placement_index = next(i for i, task in enumerate(deploy_tasks) if task["name"] == "Place the monorepo + ensure podman/compose")
+    assert gate_index < volume_index < placement_index
+
+    env = Environment(undefined=StrictUndefined)
+    env.filters["string"] = str
+    env.tests["match"] = lambda value, pattern: re.match(pattern, value) is not None
+    check_receipt = env.compile_expression(receipt_check)
+    assert check_receipt() is False
+    assert check_receipt(o11y_backup_restore_receipt_id="not-a-number") is False
+    assert check_receipt(o11y_backup_restore_receipt_id="0") is False
+    assert check_receipt(o11y_backup_restore_receipt_id="123") is True
+
+    all_tasks = [task for play in playbook for task in play.get("tasks", [])]
+    metrics_gate = next(task for task in all_tasks if "before enabling Tempo-derived metrics" in task["name"])
+    assert set(metrics_gate["ansible.builtin.assert"]["that"]) == {
+        "o11y_capacity_receipt_id | default('') | string is match('^[1-9][0-9]*$')",
+        receipt_check,
+    }
+    assert metrics_gate["when"] == [
         "not (local_mode | default(false) | bool)",
         "o11y_trace_derived_metrics_enabled | default(false) | bool",
     ]
+    assert not any("o11y_trace_backup_restore_receipt_id" in str(task) for task in all_tasks)
+
+    deploy_tasks = all_tasks
     tempo_readback = next(
         task
         for task in deploy_tasks

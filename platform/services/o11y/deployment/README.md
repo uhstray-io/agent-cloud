@@ -647,7 +647,11 @@ The production target is Prometheus 90d, Loki 45d, and Tempo 1080h
 (45d). Keep the current 15d / 7d / 168h tuple until a measured capacity receipt
 is available. A normal deploy refuses any production tuple change unless
 `o11y_prom_retention_size` is nonzero and private inventory contains a numeric
-`o11y_capacity_receipt_id` referencing a separately reviewed successful receipt. Do not create that receipt
+`o11y_capacity_receipt_id` referencing a separately reviewed successful receipt,
+plus a numeric `o11y_backup_restore_receipt_id` reference. The playbook checks only
+that the backup/restore reference is a positive integer; it does not inspect an
+independent receipt or prove a live isolated restore. Do not treat this source-level
+reference guard as retention authorization. Do not create the capacity receipt
 until receiver host metrics have at least seven days of CPU/memory and
 per-backend stored-byte growth, the forecast meets >=30% free disk, >=25%
 memory headroom, and CPU p95 <70%, and any guest filesystem growth is repeatable
