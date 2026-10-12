@@ -13,6 +13,14 @@
       receiver host runs `o11y-*` containers (its own seven, expected). `nocodb`, `nemoclaw` and
       `openhands` were unreachable over SSH ("Host is unreachable"), so the task ended in error.
       Not ticked: the operator decides whether to close as superseded or investigate those three.
+      2026-10-12: investigated (operator: investigate first). Task ids and output as reported by
+      the coordinator; not read from Semaphore here. Verify Host Access (Dev) tasks 4857
+      (nocodb_svc), 4858 (nemoclaw_svc), 4859 (openhands_svc): each NO-GO, ssh port 22 "Host is
+      unreachable", and no per-service key in the store. Probe Reachability (Dev) from caddy_svc,
+      tasks 4860-4862: openhands 3000+22, nocodb 8181+22, nemoclaw 22 all error. The three VMs are
+      network-unreachable from both the controller and the Caddy host, so this is VM state, not
+      credentials; power state not read (no read-only hypervisor-status template). Operator to
+      confirm whether these VMs are powered off, moved or retired; 0.2 stays open.
 - [ ] 0.3 Allocate the o11y VM in site-config `proxmox/vm-specs.yml` (Auxiliary tier,
       Podman) and provision it through the onboarding checklist phases 1 to 2
       2026-10-02 rescope: PARTIAL — the VM is reserved and provisioned under
@@ -379,6 +387,13 @@
       operator-scheduled, not run), so "Dashboards render from provisioning alone" is not
       proven; and the inference dashboard showing the model as not serving during the fault,
       the rest of "Health up, inference down". Not ticked.
+      2026-10-12: restated by operator decision: the destructive wipe/redeploy is dropped;
+      "Dashboards render from provisioning alone" is accepted on the provisioned-dashboard
+      readback (Deploy o11y (Dev) task 2839, recorded under 3.1 above: it reads back every
+      provisioned dashboard live, the three `inference-*` dashboards included) and tasks
+      3303-3305. Remaining: the probe drill's proof that the inference dashboard shows the model
+      not serving during the fault (in progress: drill change on branch
+      `feat/probe-drill-dashboard-proof`). Not ticked.
 - [x] 3.6 External liveness watcher on a path the firewall permits: a Semaphore schedule
       runs `check-o11y-liveness.yml` from the Semaphore host every 10 min against the
       Caddy front door, not the VM: Grafana `https://o11y.uhstray.io/api/health` (exempt
@@ -437,6 +452,11 @@
       and static node scrape" in `plan/architecture/06-observability-instrumentation.md` (the
       repo's convention: a section in the numbered doc), with the three rejected alternatives
       from design decisions 1 and 2. Accepted when Joe confirms the text.
+      2026-10-12: accepted. The operator accepted the record (decision of 2026-10-12). The section
+      gains a dated refresh of its stale facts (Tempo and Pyroscope already running, the liveness
+      watcher's scheduled runs recorded, the root filesystem 84.41% free in task 3141 and 84.23%
+      in task 3314) and an appended "Accepted 2026-10-12" line; its heading and Status paragraph
+      are left as written, so the document diff stays append-only (4.4).
 - [ ] 4.4 Validation gate: both plan documents carry the dated lines and `git diff` shows
       only appended text, proving scenario "Status is dated and append-only"; on archive,
       retain the outcome (worked / dead end / corrected) into bank `agent-cloud-750a33b9`
