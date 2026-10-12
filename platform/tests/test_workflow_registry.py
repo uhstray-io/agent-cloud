@@ -392,12 +392,12 @@ def test_production_collector_refuses_missing_or_mismatched_host_destination(tmp
         assert "Production conformance delivery requires collector_otlp_url" in output
 
 
-def _run_with_broken_inventory(tmp_path, playbook, extra=None):
+def _run_with_broken_inventory(tmp_path, playbook, extra=None, environment=None):
     inventory_path = tmp_path / "inventory.yml"
     inventory_path.write_text("not: [valid\n")
     env = os.environ.copy()
     env.update(ANSIBLE_LOCAL_TEMP=str(tmp_path), ANSIBLE_REMOTE_TEMP=str(tmp_path),
-               ANSIBLE_STDOUT_CALLBACK="default", ANSIBLE_NOCOLOR="1")
+               ANSIBLE_STDOUT_CALLBACK="default", ANSIBLE_NOCOLOR="1", **(environment or {}))
     cmd = ["ansible-playbook", "-i", str(inventory_path), str(REPO / playbook)]
     if extra is not None:
         cmd += ["-e", json.dumps(extra)]
@@ -437,6 +437,52 @@ def test_scheduled_callers_name_an_unparsed_inventory(tmp_path, playbook, extra)
     rc, output = _run_with_broken_inventory(tmp_path, playbook, extra)
     assert rc != 0
     assert UNPARSED in output
+
+
+# A local controller's OpenBao address (a single-label name) is only legal under local_mode,
+# which an unparsed inventory does not supply. Before the parse check ran first, that
+# surfaced as a transport refusal and hid the real cause (local tasks 5583/5585, prod 3878).
+LOCAL_OPENBAO_NO_TOKEN = {"OPENBAO_ADDR": "http://local-openbao:8200", "SEMAPHORE_TOKEN": ""}
+TRANSPORT_REFUSAL = "Refusing to send secret material"
+
+
+@pytest.mark.parametrize("playbook, extra", [
+    ("platform/playbooks/inspect-discovery-metadata.yml", {"discovery_project_id": "1"}),
+    ("platform/playbooks/manage-semaphore-access.yml", None),
+])
+def test_runtime_access_names_an_unparsed_inventory_before_the_transport_check(tmp_path, playbook, extra):
+    rc, output = _run_with_broken_inventory(tmp_path, playbook, extra, LOCAL_OPENBAO_NO_TOKEN)
+    assert rc != 0
+    assert UNPARSED in output
+    assert TRANSPORT_REFUSAL not in output
+
+
+@pytest.mark.parametrize("playbook", [
+    "platform/semaphore/setup-templates.yml",
+    "platform/semaphore/bootstrap-semaphore-repositories.yml",
+    "platform/semaphore/sync-inventory.yml",
+])
+def test_operator_side_tools_do_not_require_an_inventory(tmp_path, playbook):
+    """They run from a workstation with no -i, so runtime-access must not demand one."""
+    rc, output = _run_with_broken_inventory(
+        tmp_path, playbook, None,
+        {"SEMAPHORE_URL": "http://127.0.0.1:9", "SEMAPHORE_TOKEN": "not-a-real-token"})
+    assert UNPARSED not in output
+
+
+@pytest.mark.parametrize(("playbook", "optional"), [
+    ("platform/semaphore/setup-templates.yml", True),
+    ("platform/semaphore/bootstrap-semaphore-repositories.yml", True),
+    ("platform/semaphore/sync-inventory.yml", True),
+    ("platform/semaphore/provision-seed-environment.yml", False),
+    ("platform/playbooks/inspect-discovery-metadata.yml", False),
+    ("platform/playbooks/manage-semaphore-access.yml", False),
+    ("platform/playbooks/collect-service-conformance.yml", False),
+])
+def test_only_operator_side_includers_mark_the_inventory_optional(playbook, optional):
+    plays = playbook_yaml.plays(REPO / playbook)
+    flagged = [p for p in plays if (p.get("vars") or {}).get("runtime_access_inventory_optional") is True]
+    assert bool(flagged) is optional
 
 
 @pytest.mark.parametrize(

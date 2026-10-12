@@ -37,6 +37,8 @@
   connection: local
   gather_facts: false
   vars:
+    # Operator-side tool, started from a workstation with no -i: no inventory is expected.
+    runtime_access_inventory_optional: true
     _semaphore_url: "{{ semaphore_url | default(lookup('env', 'SEMAPHORE_URL'), true) }}"
     _project_id: "{{ semaphore_project_id | default(1) }}"
     _name: "{{ inventory_name | default('production') }}"

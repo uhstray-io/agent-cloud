@@ -1,6 +1,19 @@
 ---
 # Reuse an injected runtime token or the controller's existing OpenBao AppRole.
 # Never extract browser credentials or read a workstation cache/backup file.
+#
+# The first task names an unparsed inventory before anything judges the OpenBao address.
+# Without it, a task whose inventory file Semaphore lost (concurrent tasks share
+# /tmp/semaphore/project_<n>/inventory_<id>; one finishing removes it before another parses
+# it) has no local_mode, so a correct local single-label OpenBao URL is refused with
+# "Refusing to send secret material ... invalid endpoint" — true, and not the cause.
+#
+# A caller that legitimately runs with no inventory (an operator-side tool started from a
+# workstation without -i) sets `runtime_access_inventory_optional: true` in its play vars.
+- name: "Require the inventory to have parsed"
+  ansible.builtin.include_tasks: ../../playbooks/tasks/require-parsed-inventory.yml
+  when: not (runtime_access_inventory_optional | default(false) | bool)
+
 - name: "Require a non-cleartext transport to Semaphore"
   ansible.builtin.assert:
     that:

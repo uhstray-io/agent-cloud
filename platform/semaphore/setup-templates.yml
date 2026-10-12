@@ -31,6 +31,8 @@
   connection: local
   gather_facts: false
   vars:
+    # Operator-side tool, started from a workstation with no -i: no inventory is expected.
+    runtime_access_inventory_optional: true
     _semaphore_url: "{{ semaphore_url | default(lookup('env', 'SEMAPHORE_URL'), true) }}"
     # Defaults match the production instance; the local-dev bootstrap overrides
     # them for the fresh local Semaphore (LOCAL-DEV-DEPLOYMENT.md Phase 0B).
