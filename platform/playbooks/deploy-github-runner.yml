@@ -556,6 +556,10 @@
           - (_configured.rc | default(1)) == 0
         fail_msg: "The runner did not register — see the reported rc and output above."
         success_msg: "Runner registered."
+      # The register step is skipped under --check, so it leaves no rc to judge. Without
+      # this guard every dry run stopped here (Semaphore task 4631), before the read-only
+      # service checks below, which do run in check mode.
+      when: not ansible_check_mode
 
     - name: "Resolve the runner account's uid"
       # Looked up, not assumed. systemd --user talks to a bus under /run/user/<uid>, and

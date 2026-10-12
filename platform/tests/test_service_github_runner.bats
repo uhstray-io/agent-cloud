@@ -202,3 +202,10 @@ setup() {
   # And the result is read back from the inode, not trusted from the override database.
   assert_grep -qF '_setuid_still | length == 0' "$PB"
 }
+
+@test "gh-runner: a dry run does not judge the registration it skipped" {
+  local PB="$BATS_TEST_DIRNAME/../playbooks/deploy-github-runner.yml"
+  local block
+  block="$(awk '/- name: "Fail if the runner did not register"/,/^$/' "$PB")"
+  assert_contains "$block" "when: not ansible_check_mode"
+}
