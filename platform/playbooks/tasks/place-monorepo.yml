@@ -75,10 +75,17 @@
   # every local placement. Keep the rule file-specific so future committed
   # alert rules in the same directory still copy into place.
   # No -o/-g (like tar): ownership becomes this uid.
+  #
+  # Changed means a deploy input differs, not that rsync printed a line: -i also lists a
+  # symlink's mode (the read-only checkout mount reports one the copy cannot take, so every
+  # run printed `.L...p`) and a directory's mtime. --omit-dir-times drops the mtimes at the
+  # source; filter_plugins/rsync_itemize.py counts only a transfer, a created or retargeted
+  # link, a deletion, or a mode change on a non-symlink (deploy.sh losing +x). A second local
+  # deploy of an unchanged tree therefore reports no change.
   ansible.builtin.shell: |
     set -euo pipefail
     mkdir -p "{{ _monorepo_dir }}"
-    rsync -rlpti --delete \
+    rsync -rlpti --omit-dir-times --delete \
       --filter=':- .gitignore' \
       --exclude .git --exclude .remember --exclude secrets --exclude netbox-docker \
       --exclude build/ --exclude '*.egg-info/' \
@@ -93,7 +100,7 @@
     - not ansible_check_mode
     - local_mode | default(false) | bool
   register: _rsync_result
-  changed_when: _rsync_result.stdout | length > 0
+  changed_when: _rsync_result.stdout | rsync_itemize_changed
 
 - name: "Ensure podman + compose entrypoint"
   # Sibling task in this directory; resolves relative to this file. Podman hosts only: a
