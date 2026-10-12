@@ -889,11 +889,23 @@ templates:
 
   # Conformance against direct vLLM (change inference-gateway-agentgateway, tasks 2.1/2.2):
   # the same cases to the gateway and to vLLM from the gateway VM, then the comparison. Keys are
-  # read from OpenBao by the runner and placed as 0600 files for the run only; no survey, because
-  # every input is inventory. Introduced on dev, so the (Dev) variant runs before promotion.
+  # read from OpenBao by the runner and placed as 0600 files for the run only. Every input is
+  # inventory except one opt-in survey var: the long-stream case (tasks 2.3/2.4) lasts minutes on
+  # each side, so a default run stays the fourteen quick cases. Introduced on dev, so the (Dev)
+  # variant runs before promotion.
   - name: Run agentgateway Conformance
     playbook: platform/playbooks/run-agw-conformance.yml
     dev_variant: true
+    survey_vars:
+      - name: agw_conformance_long_stream
+        title: "Long-stream case"
+        description: "Add the stream-long case: one streamed request past 130 s through the gateway and straight to vLLM (minutes of generation on each side). Leave false for the fourteen quick cases"
+        type: enum
+        required: false
+        default_value: "false"
+        values:
+          - { name: "No (fourteen quick cases)", value: "false" }
+          - { name: "Yes (add stream-long, minutes)", value: "true" }
 
   # Read-only drill for gateway tasks 6.1 and 6.4: how the production TLS listener treats a client
   # with no certificate and a client leaf that is on no allowlist, with no key and with an invalid
