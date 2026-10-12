@@ -347,7 +347,7 @@
       rules are checked against the same list; the probe's shellcheck and no-literal-key
       check is `test_inference_probe.py`, which the o11y BATS suite pins rather than
       duplicates.
-- [ ] 3.5 Validation gate: wipe and redeploy o11y; the three dashboards render, proving
+- [x] 3.5 Validation gate: wipe and redeploy o11y; the three dashboards render, proving
       scenario "Dashboards render from provisioning alone"; `o11y-fault-drill.yml -e
       drill=probe` points the probe at a model name the server does not serve, starts
       `inference-probe.service` immediately (so the first failed sample does not wait for
@@ -404,6 +404,17 @@
       3303-3305. Remaining: the probe drill's proof that the inference dashboard shows the model
       not serving during the fault (in progress: drill change on branch
       `feat/probe-drill-dashboard-proof`). Not ticked.
+      2026-10-12 (task output read from Semaphore by the lead): PROVEN live. o11y Fault
+      Drill (Dev) `drill=probe` task 4905 at `0d72458a` (dry run 4904): fault induced,
+      `inference_probe_failing` (Synthetic inference probe failing) fired for
+      `o11y-drill-absent-model-bc5ad93e8ef4` and reached Discord naming both, `/health` 200
+      throughout; the panel "Inference probe serving" expression (read from the provisioned
+      dashboard file, evaluated against Prometheus) gave the drill model "not serving" during
+      the fault; restored and verified, failed=0. With the 2026-10-12 operator restatement
+      above (no wipe; dashboards accepted on 2839 and 3303-3305), scenario "Health up,
+      inference down" is proven. Ticked. Prerequisites that landed: PR #561 (the panel and
+      the drill's proof of it), PR #567 (`delegate_to` fix for ansible-core 2.20, MISTAKES
+      5.17), and Deploy o11y (Dev) task 4882, which provisioned the panel.
 - [x] 3.6 External liveness watcher on a path the firewall permits: a Semaphore schedule
       runs `check-o11y-liveness.yml` from the Semaphore host every 10 min against the
       Caddy front door, not the VM: Grafana `https://o11y.uhstray.io/api/health` (exempt

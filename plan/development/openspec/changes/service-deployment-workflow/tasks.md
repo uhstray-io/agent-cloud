@@ -275,6 +275,14 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
 - [ ] 6.5 Validation gate: spec scenarios "Local deploy is repeatable", "Target outside
       local-dev is refused", "No targets means no discovery" and "Local targets are
       discovered" pass
+      2026-10-12 (task output read from Semaphore by the lead): "Local deploy is repeatable"
+      PROVEN after PR #565 (`place-monorepo` change detection): local NetBox deploy tasks 5619
+      and 5620 (local Semaphore v2.19.11). The second run changed only Run deploy.sh, Run
+      post-deploy.sh, Create fresh orb-agent credential and Update .env with credentials (the
+      allowed set); "Copy working tree into place" no longer reports changed (it did in 5593
+      before the fix). "Target outside local-dev is refused" proven by task 5608 and "No
+      targets means no discovery" by task 5609 (check mode). "Local targets are discovered"
+      is pending the first scheduled subnet_scan (about 00:00 UTC). Not ticked.
 
 ## 7. Executors, snapshots and tracking
 
@@ -331,6 +339,10 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
         `tasks/emit-step-result.yml` on `main`, and none of its included tasks differs. Not
         stamped: service-deploy (still not re-reviewed), and the reasoning and planned steps.
         7.1 stays open for service-deploy. OPA must be redeployed to pick up `data.json`.
+      - 2026-10-12: service-deploy re-review in progress. Wave 1 (PR #568:
+        `emit-service-deploy-result` and `compose_up_if_changed` for tududi, honcho and
+        openhands) is under review; wave 2 (n8n, NetBox, Postiz) is next; then two Dev
+        deploys per service on production to prove `changed_on_rerun` false. Not ticked.
 - [x] 7.2 `provision-vm.yml` sets `onboot`; restart-policy check beside `enable-linger`.
       2026-09-22: onboot with per-host opt-out; `verify-service-persistence.yml` (step
       systemd-enablement) passes on local tududi, normal and check mode (tasks 977, 978)
