@@ -576,6 +576,10 @@ STUB
   # A restart is also due when the processes are not in the promised state, so a run
   # after a failed one converges, not only one that changed a file.
   assert_grep -qF "or (_runner_converged | difference(_procs_before.stdout_lines) | length > 0)" "$PB"
+  # A dry run reads the host's checkout as it is, which may predate `procs`: it reports a
+  # restart instead of failing. A real run fails on any probe error.
+  assert_grep -qF 'failed_when: _procs_before.rc != 0 and not ansible_check_mode' "$PB"
+  assert_grep -qF 'failed_when: _procs.rc != 0 and not ansible_check_mode' "$PB"
 }
 
 @test "gh-runner: quiesce drains, stops, signals Listeners gracefully, then kills the rest" {

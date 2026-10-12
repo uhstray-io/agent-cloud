@@ -648,6 +648,9 @@
         RUNNER_ENV_FILE: "{{ _home }}/config/runner.env"
       register: _procs_before
       changed_when: false
+      # A dry run does not update the checkout on the host, so its deploy.sh may predate
+      # `procs`. The decision below then reads no lines and reports a restart.
+      failed_when: _procs_before.rc != 0 and not ansible_check_mode
       check_mode: false
 
     - name: "Decide whether the runner must be restarted"
@@ -665,7 +668,10 @@
 
     - name: "Report the runner's processes and the restart decision"
       ansible.builtin.debug:
-        msg: "restart={{ _runner_restart }}; {{ _procs_before.stdout_lines | join('; ') }}"
+        msg: >-
+          restart={{ _runner_restart }}; procs rc={{ _procs_before.rc }};
+          {{ _procs_before.stdout_lines | join('; ') }}
+          {{ (_procs_before.stderr | default('')) | trim }}
 
     - name: "Drain, stop and empty the runner's unit"
       # deploy.sh quiesce: waits up to github_runner_drain_seconds for no Worker to run
@@ -732,6 +738,7 @@
         RUNNER_ENV_FILE: "{{ _home }}/config/runner.env"
       register: _procs
       changed_when: false
+      failed_when: _procs.rc != 0 and not ansible_check_mode
       until: ansible_check_mode or ('listeners=0' not in _procs.stdout_lines)
       retries: 12
       delay: 5
