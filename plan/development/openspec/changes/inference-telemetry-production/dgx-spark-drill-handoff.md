@@ -50,13 +50,42 @@ access, but only the node named by `-e drill_node=` is ever touched):
    management, no shell as root.
    - The systemd action is `org.freedesktop.systemd1.manage-units` (defined in systemd
      `src/core/org.freedesktop.systemd1.policy.in`, default `auth_admin`).
-   - PID 1 passes the unit name and the verb to polkit as the details `unit` and `verb`
-     (systemd `src/core/dbus-util.c`, `bus_verify_manage_units_async_impl`), so a rule can
-     match one unit for one account.
-   - dgx-spark writes and tests the rule on its own nodes. unverified: the exact `verb`
-     strings the installed systemd version sends for stop and start (the systemd source
-     read is `main`, not the nodes' installed version), and whether the rule needs
-     `action.lookup("verb")` at all; dgx-spark confirms both on a node.
+   - PID 1 adds the details `unit` and `verb` to the polkit request only when the call
+     has them (systemd `src/core/dbus-util.c`, `bus_verify_manage_units_async_impl`, the
+     `if (id)` and `if (verb)` branches).
+   - **The rule MUST require `action.lookup("unit") === "node-exporter.service"`. An
+     absent unit is not a match.** SHOULD also require `action.lookup("verb")` to be
+     `"start"` or `"stop"`.
+   - **A rule on the action id and the account alone is out of bounds: it is
+     root-equivalent.** The same action also authorizes the manager-level calls, which
+     carry no `unit` detail (`bus_verify_manage_units_async` passes none; used by
+     `method_enqueue_unit_job_many`, `method_clear_jobs`, `method_reset_failed` and
+     `method_enqueue_marked_jobs` in systemd `src/core/dbus-manager.c:893`, `:1309`,
+     `:1330`, `:2223`), and `StartTransientUnit` (`method_start_transient_unit`,
+     `dbus-manager.c:1226`), which creates a unit with a command of the caller's
+     choosing and so is what `systemd-run` as root rests on. The unit match is what
+     keeps all of these denied. All line numbers are systemd `main` read on 2026-10-12,
+     not the nodes' installed version.
+   - Shape of the rule (an example; dgx-spark writes, places and tests the real one):
+
+     ```js
+     polkit.addRule(function(action, subject) {
+         if (action.id === "org.freedesktop.systemd1.manage-units" &&
+             subject.user === "<dedicated account>" &&
+             action.lookup("unit") === "node-exporter.service" &&
+             (action.lookup("verb") === "start" || action.lookup("verb") === "stop")) {
+             return polkit.Result.YES;
+         }
+     });
+     ```
+
+     The rule returns nothing for any other request, so the action's own default
+     (`auth_admin`) applies to it; dgx-spark confirms that behaviour on a node.
+   - unverified, dgx-spark to confirm on each node: that polkit is installed and its
+     JavaScript `.rules` files are supported (a version of 0.106 or later is the
+     expectation, not confirmed); the exact `verb` strings the installed systemd sends for
+     stop and start; and that a call for any other unit, and a manager-level call, are
+     refused for the account after the rule is placed.
 3. **Firewall:** allow SSH (the port is dgx-spark's to name) from the Semaphore runner
    host to both nodes. The runner's address is in `site-config`, not here. The existing
    scrape path from the o11y VM to the exporter port is unaffected and unchanged.
@@ -80,8 +109,9 @@ access, but only the node named by `-e drill_node=` is ever touched):
 agent-cloud first planned a sudoers rule limited to `systemctl stop|start|is-active
 node-exporter.service`. That cannot work for this drill as written: the drill uses
 `ansible.builtin.systemd_service` with `become: true`, and Ansible's sudo become does not
-run `systemctl` directly. The installed become plugin (ansible 14.0.0,
-`ansible/plugins/become/__init__.py:67-77`, `_build_success_command`) wraps the module
+run `systemctl` directly. The become plugin in ansible-core (read at 2.20.8, the
+production runner's version; `ansible/plugins/become/__init__.py:67-77`,
+`_build_success_command`, unchanged in the workstation's 14.0.0 package) wraps the module
 command as `<shell> -c 'echo BECOME-SUCCESS-<id> ; <module command>'`, so a sudoers
 entry naming only `systemctl` rejects every task. Granting broader sudo to make it pass
 would defeat the least-privilege goal, so the request asks for polkit and agent-cloud
