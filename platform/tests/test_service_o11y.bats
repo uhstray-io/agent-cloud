@@ -108,8 +108,11 @@ from jinja2 import Environment, StrictUndefined
 
 env = Environment(undefined=StrictUndefined)
 env.filters['bool'] = bool
+env.filters['mandatory'] = lambda value: value
 template = env.from_string(open(sys.argv[1], encoding='utf-8').read())
 secrets = {'grafana_admin_password': 'test-only', 'grafana_oidc_client_secret': 'test-only'}
+limits = {'body_size_limit_bytes': 16777216, 'sample_limit': 10000, 'label_limit': 64,
+          'label_name_length_limit': 128, 'label_value_length_limit': 2048}
 
 def values(**kwargs):
     rendered = template.render(secrets=secrets, **kwargs)
@@ -122,7 +125,8 @@ assert local['GF_AUTH_GENERIC_OAUTH_TOKEN_URL'] == 'http://authentik-server:9000
 assert local['GF_AUTH_GENERIC_OAUTH_API_URL'] == 'http://authentik-server:9000/application/o/userinfo/'
 assert 'O11Y_AUTHENTIK_EDGE_IP' not in local
 
-prod = values(local_mode=False, o11y_zone='uhstray.io', _auth_edge_ip='192.0.2.10')
+prod = values(local_mode=False, o11y_zone='uhstray.io', _auth_edge_ip='192.0.2.10',
+              o11y_scrape_limits=limits, o11y_scrape_limits_reviewed=True)
 assert prod['GF_SERVER_ROOT_URL'] == 'https://o11y.uhstray.io/'
 assert prod['GF_AUTH_GENERIC_OAUTH_AUTH_URL'] == 'https://auth.uhstray.io/application/o/authorize/'
 assert prod['GF_AUTH_GENERIC_OAUTH_TOKEN_URL'] == 'https://auth.uhstray.io/application/o/token/'
@@ -542,6 +546,7 @@ from jinja2 import Environment, StrictUndefined
 env = Environment(undefined=StrictUndefined)
 env.filters['to_json'] = json.dumps
 env.filters['bool'] = bool
+env.filters['mandatory'] = lambda value: value
 plays = yaml.safe_load(open(sys.argv[2], encoding='utf-8'))
 phase_one = next(play for play in plays if play.get('name') == 'Phase 1: Place repo + manage o11y secrets')
 assert 'vars/o11y-metric-labels.yml' in phase_one['vars_files']
@@ -557,6 +562,9 @@ values = {
     'dgx_spark_head_address': '192.0.2.1',
     'dgx_spark_head_name': 'spark-1',
     'dgx_spark_api_port': 8000,
+    'o11y_scrape_limits': {'body_size_limit_bytes': 16777216, 'sample_limit': 10000, 'label_limit': 64,
+                           'label_name_length_limit': 128, 'label_value_length_limit': 2048},
+    'o11y_scrape_limits_reviewed': True,
     '_o11y_forbidden_metric_label_names_regex': policy,
 }
 
@@ -649,6 +657,13 @@ all:
           dgx_spark_head_name: spark-1
           dgx_spark_head_address: "192.0.2.1"
           dgx_spark_api_port: 8000
+          o11y_scrape_limits:
+            body_size_limit_bytes: 16777216
+            sample_limit: 10000
+            label_limit: 64
+            label_name_length_limit: 128
+            label_value_length_limit: 2048
+          o11y_scrape_limits_reviewed: true
     agentgateway_svc:
       hosts:
         gateway:
@@ -755,6 +770,7 @@ from jinja2 import Environment, StrictUndefined
 env = Environment(undefined=StrictUndefined)
 env.filters['to_json'] = json.dumps
 env.filters['bool'] = bool
+env.filters['mandatory'] = lambda value: value
 plays = yaml.safe_load(open(sys.argv[2], encoding='utf-8'))
 phase_one = next(play for play in plays if play.get('name') == 'Phase 1: Place repo + manage o11y secrets')
 assert 'vars/o11y-metric-labels.yml' in phase_one['vars_files']
@@ -765,6 +781,9 @@ config = yaml.safe_load(env.from_string(open(sys.argv[1], encoding='utf-8').read
     o11y_cluster='test-cluster',
     o11y_environment='prod',
     local_mode=False,
+    o11y_scrape_limits={'body_size_limit_bytes': 16777216, 'sample_limit': 10000, 'label_limit': 64,
+                        'label_name_length_limit': 128, 'label_value_length_limit': 2048},
+    o11y_scrape_limits_reviewed=True,
     _o11y_forbidden_metric_label_names_regex=policy,
 ))
 job = config['scrape_configs'][0]
@@ -1157,6 +1176,7 @@ deploy = pathlib.Path(sys.argv[1])
 env = Environment(undefined=StrictUndefined)
 env.filters['to_json'] = json.dumps
 env.filters['bool'] = bool
+env.filters['mandatory'] = lambda value: value
 plays = yaml.safe_load(pathlib.Path(sys.argv[2]).read_text())
 phase_one = next(play for play in plays if play.get('name') == 'Phase 1: Place repo + manage o11y secrets')
 assert 'vars/o11y-metric-labels.yml' in phase_one['vars_files']
@@ -1164,6 +1184,9 @@ policy = yaml.safe_load(open(sys.argv[2].rsplit('/', 1)[0] + '/vars/o11y-metric-
 prometheus_template = (deploy / 'templates/prometheus.yml.j2').read_text()
 rendered_prometheus = env.from_string(prometheus_template).render(
     o11y_cluster='test-cluster', o11y_environment='prod', local_mode=False,
+    o11y_scrape_limits={'body_size_limit_bytes': 16777216, 'sample_limit': 10000, 'label_limit': 64,
+                        'label_name_length_limit': 128, 'label_value_length_limit': 2048},
+    o11y_scrape_limits_reviewed=True,
     _o11y_forbidden_metric_label_names_regex=policy,
 )
 prometheus_config = yaml.safe_load(rendered_prometheus)

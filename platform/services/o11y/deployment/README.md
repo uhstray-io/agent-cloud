@@ -85,12 +85,47 @@ bounds. Queue overflow, memory-limiter refusals, and lost data remain possible
 during sustained receiver or Tempo outages; this source slice does not add
 their alerts or prove runtime delivery.
 
-This source change covers receiver-side memory limits and the Tempo trace
-batch/export queue only. Task 3.3 still requires per-target cardinality and
-volume limits, nonzero Prometheus retention, disk-free/drop/refusal alerts,
-missing-telemetry alerts, inventory-driven environment/cluster labels across
-Prometheus and Alloy with dependent dashboard/alert migration, and proof that
-secrets, prompts, and request bodies do not enter telemetry.
+### Per-scrape response and label budgets — task 3.3 source slice
+
+Every declared Prometheus scrape job, including the optional DGX GPU job and
+host-node fragments, and Alloy's local-container scrape use the same private
+inventory object:
+
+```yaml
+o11y_scrape_limits_reviewed: true
+o11y_scrape_limits:
+  body_size_limit_bytes: <integer from 1 to 167772160>
+  sample_limit: <integer from 1 to 100000>
+  label_limit: <integer from 1 to 640>
+  label_name_length_limit: <integer from 1 to 1280>
+  label_value_length_limit: <integer from 1 to 20480>
+```
+
+The object is required and must be marked reviewed before a production render;
+missing or unreviewed production values fail closed before deployment. The
+review flag is an explicit rollout gate, not evidence that a live baseline was
+measured. Until each current production target has a reviewed baseline, keep
+the flag unset and do not deploy the candidate limits. Local mode has finite
+defaults (16 MiB response, 10,000 samples, 64 labels, 128-byte label names,
+2,048-byte label values) for development. Production values must be YAML
+integers, positive, and no greater than ten times those finite local baselines;
+the existing `o11y_scrape_sample_limit`, when set, must be a positive YAML
+integer no greater than 20,000. Missing, unreviewed, malformed, nonpositive,
+or excessive production values are refused before placement or rendering; they
+are never coerced or clamped to one.
+
+The existing `o11y_scrape_sample_limit` remains the stricter ceiling for the
+receiver-host and host-node exporters. All scrape paths retain the forbidden
+label drop and target identity labels. Per-scrape bounds restrict one response
+at a time; they do not cap lifetime series churn as label values change across
+scrapes. Live target readback, over-budget refusal checks, and calibration of
+the private values remain open. Prometheus's `body_size_limit` is documented
+as experimental in the pinned v3.1.0 configuration reference.
+
+Task 3.3 still requires nonzero Prometheus size retention, disk-free/drop/refusal
+alerts, missing-telemetry alerts, inventory-driven environment/cluster labels
+across Prometheus and Alloy with dependent dashboard/alert migration, and proof
+that secrets, prompts, and request bodies do not enter telemetry.
 
 The rollout gate remains: validate rendered River with the exact pinned Alloy
 image, complete final-head review and CI, run the Dev-bound Semaphore check and

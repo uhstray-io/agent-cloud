@@ -198,6 +198,9 @@
         fail_msg: "Production o11y needs its declared DNS zone and one Caddy origin IP; local test URLs are refused."
       when: not (local_mode | default(false) | bool)
 
+    - name: "Validate production scrape budgets before placement or rendering"
+      ansible.builtin.include_tasks: tasks/assert-o11y-scrape-limits.yml
+
     - name: "Inspect an unfinished production alert canary"
       ansible.builtin.stat:
         path: "{{ _deploy_dir }}/config/scrape.d/o11y-prod-canary.yml"
