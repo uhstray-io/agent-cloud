@@ -473,7 +473,7 @@
         _tpl_rver: "{{ _rver }}"
         _tpl_hver: "{{ _hver }}"
 
-    - name: "Template the runner's declaration, job env, cleanup hook and unit"
+    - name: "Template the runner's declaration, job env and job hooks"
       ansible.builtin.template:
         src: "{{ playbook_dir }}/../services/github-runner/deployment/templates/{{ item.src }}"
         dest: "{{ item.dest }}"
@@ -493,8 +493,10 @@
         - { src: "runner.env.j2", dest: "{{ _home }}/config/runner.env", mode: "0640" }
         - { src: "runner-dotenv.j2", dest: "{{ _home }}/.env", mode: "0640" }
         - { src: "job-cleanup.sh.j2", dest: "{{ _home }}/job-cleanup.sh", mode: "0750" }
+        - { src: "job-started.sh.j2", dest: "{{ _home }}/job-started.sh", mode: "0750" }
       loop_control:
         label: "{{ item.dest }}"
+      register: _runner_files
 
     - name: "Create the account's systemd user-unit directory"
       # systemd --user only reads units from this path, and it does not exist on a fresh
@@ -573,18 +575,38 @@
       ansible.builtin.set_fact:
         _runner_uid: "{{ getent_passwd[_account][1] }}"
 
+    - name: "Give job containers the runner account's own podman socket, never root's"
+      # The runner mounts /var/run/docker.sock into every job container; the path is
+      # hardcoded upstream and no setting removes it (see the task file). podman-docker
+      # links it to root's socket, which the account cannot reach, so every container job
+      # failed in "Initialize containers". Pointed at the account's rootless socket, a job
+      # container gets what a plain job on this host already has (it runs as this
+      # account), and no account gets root's socket. Options weighed and isolation
+      # reasoning: the service CLAUDE.md, "Container jobs under rootless podman".
+      ansible.builtin.include_tasks: tasks/podman-user-docker-socket.yml
+      vars:
+        pds_user: "{{ _account }}"
+        pds_uid: "{{ _runner_uid }}"
+
     - name: "Reload the account's systemd and start the runner"
       ansible.builtin.systemd_service:
         name: actions-runner.service
         scope: user
         daemon_reload: true
         enabled: true
-        # RESTART when the unit changed. A running process keeps the properties it was
-        # started with (no_new_privs above all: it can never be cleared), so `started`
-        # alone would leave a changed unit inert on a runner that is already up until the
-        # host next reboots. A restart sends SIGTERM to the runner and waits up to
-        # TimeoutStopSec for it, so an in-flight job on this host may be cut short.
-        state: "{{ 'restarted' if (_runner_unit.changed | default(false)) else 'started' }}"
+        # RESTART when the unit or the runner's .env changed. A running process keeps the
+        # properties it was started with (no_new_privs above all: it can never be
+        # cleared), and the runner reads .env only when it starts
+        # (Runner.Listener/Program.cs), so `started` alone would leave either change inert
+        # on a runner that is already up until the host next reboots. A restart sends
+        # SIGTERM to the runner and waits up to TimeoutStopSec for it, so an in-flight job
+        # on this host may be cut short.
+        state: >-
+          {{ 'restarted'
+             if (_runner_unit.changed | default(false))
+                or ('runner-dotenv.j2' in (_runner_files.results | default([])
+                    | selectattr('changed') | map(attribute='item.src') | list))
+             else 'started' }}
       become: true
       become_user: "{{ _account }}"
       # Without XDG_RUNTIME_DIR, `systemctl --user` reports "Failed to connect to bus:
@@ -678,6 +700,63 @@
         or ((_uidmap.stdout_lines | length) - _uidmap.stdout_lines.index('gid_map') - 1) < 2
       check_mode: false
 
+    - name: "Confirm a job container can be created with the runner's mounts, from inside the user manager"
+      # The uid-map check above passed while every `container:` job still failed in
+      # "Initialize containers" (2026-10-11): podman refused bind sources that Docker would
+      # have created, and the Docker socket path led to root's socket. This repeats the
+      # hooks' own `docker create`, with the mount set the runner hands them
+      # (ContainerOperationProvider.cs:301-318, ContainerInfo.cs:59), in a transient unit of
+      # the same user manager with the runner unit's NoNewPrivileges value, after running
+      # the deployed job-started hook exactly as a job runs it. The image is imported from a
+      # one-file archive, so no registry is involved; the container is created, never
+      # started, then removed. `_ping` on the mounted socket path must reach the account's
+      # own podman.
+      ansible.builtin.shell: |
+        set -euo pipefail
+        nnp=$(systemctl --user show --property=NoNewPrivileges --value actions-runner.service)
+        systemd-run --user --wait --pipe --collect --quiet \
+          --property=NoNewPrivileges="$nnp" \
+          /bin/bash -s <<'PROBE'
+        set -euo pipefail
+        H={{ _home | quote }}
+        W="$H/_work"
+        "$H/job-started.sh"
+        probe="gh-runner-mount-probe-$$"
+        img="localhost/$probe:latest"
+        src=$(mktemp -d)
+        trap 'docker rm -f "$probe" >/dev/null 2>&1 || true; docker rmi -f "$img" >/dev/null 2>&1 || true; rm -rf "$src"' EXIT
+        mkdir "$src/root"
+        : > "$src/root/.probe"
+        tar -C "$src/root" -cf "$src/rootfs.tar" .
+        docker import "$src/rootfs.tar" "$img" >/dev/null
+        docker create --name "$probe" \
+          -v=/var/run/docker.sock:/var/run/docker.sock \
+          -v="$W":/__w \
+          -v="$H/externals":/__e:ro \
+          -v="$W/_temp":/__w/_temp \
+          -v="$W/_actions":/__w/_actions \
+          -v="$W/_tool":/__w/_tool \
+          -v="$W/_temp/_github_home":/github/home \
+          -v="$W/_temp/_github_workflow":/github/workflow \
+          --entrypoint tail "$img" -f /dev/null >/dev/null
+        echo "create=ok"
+        echo "ping=$(curl -sf --unix-socket /var/run/docker.sock http://d/_ping)"
+        PROBE
+      args:
+        executable: /bin/bash
+      become: true
+      become_user: "{{ _account }}"
+      environment:
+        XDG_RUNTIME_DIR: "/run/user/{{ _runner_uid }}"
+      register: _mountprobe
+      changed_when: false
+      failed_when: >-
+        _mountprobe.rc != 0
+        or 'create=ok' not in _mountprobe.stdout_lines
+        or 'ping=OK' not in _mountprobe.stdout_lines
+      # It creates and removes a container, so a dry run skips it.
+      when: not ansible_check_mode
+
     - name: "Report"
       ansible.builtin.debug:
         msg: >-
@@ -687,5 +766,6 @@
           {{ github_runner_group }}, no_new_privs off on the running service, rootless
           containers mapped from inside the user manager
           ({{ _uidmap.stdout_lines.index('gid_map') - _uidmap.stdout_lines.index('uid_map') - 1 }}
-          uid map lines). Confirm it is ONLINE at the organisation with
+          uid map lines), a job container created with the runner's mounts and the
+          account's own podman socket. Confirm it is ONLINE at the organisation with
           verify-github-runners.yml before routing work to it.

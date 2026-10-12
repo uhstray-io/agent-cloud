@@ -170,7 +170,7 @@ setup() {
   assert_grep -qF "'userns=host' not in _runner_privs.stdout_lines" "$PB"
   # A changed unit must reach the running process, which keeps the properties it was
   # started with, so the deploy restarts the service when the unit file changed.
-  assert_grep -qF "state: \"{{ 'restarted' if (_runner_unit.changed | default(false)) else 'started' }}\"" "$PB"
+  assert_grep -qF "if (_runner_unit.changed | default(false))" "$PB"
 }
 
 @test "gh-runner: the deploy requires a subordinate uid and gid range for the account" {
@@ -208,4 +208,102 @@ setup() {
   local block
   block="$(awk '/- name: "Fail if the runner did not register"/,/^$/' "$PB")"
   assert_contains "$block" "when: not ansible_check_mode"
+}
+
+@test "gh-runner: a changed .env restarts the runner, which reads it only at start" {
+  # Runner.Listener/Program.cs loads .env once, when the process starts. A new hook
+  # variable written to a running runner's .env does nothing until the next restart.
+  local PB="$BATS_TEST_DIRNAME/../playbooks/deploy-github-runner.yml"
+  assert_grep -qF 'register: _runner_files' "$PB"
+  assert_grep -qF "or ('runner-dotenv.j2' in (_runner_files.results | default([])" "$PB"
+  assert_grep -qF "else 'started' }}" "$PB"
+}
+
+@test "gh-runner: the job-started hook is wired and renders a script that makes every bind source" {
+  # Podman, unlike Docker, refuses a bind mount whose source is missing. The runner
+  # deletes _actions at the start of every job and makes the tool cache only on demand,
+  # so a container job that used no action failed in "Initialize containers".
+  local H="$D/templates/job-started.sh.j2"
+  assert_grep -qF 'ACTIONS_RUNNER_HOOK_JOB_STARTED={{ github_runner_home }}/job-started.sh' "$D/templates/runner-dotenv.j2"
+  assert_grep -qF '{ src: "job-started.sh.j2", dest: "{{ _home }}/job-started.sh", mode: "0750" }' \
+    "$BATS_TEST_DIRNAME/../playbooks/deploy-github-runner.yml"
+  # Rendered and run, not grepped: the directories must exist afterwards.
+  local home="$BATS_TEST_TMPDIR/home"
+  mkdir -p "$home"
+  sed "s#{{ github_runner_home }}#$home#g" "$H" > "$BATS_TEST_TMPDIR/job-started.sh"
+  refute_grep -qF '{{' "$BATS_TEST_TMPDIR/job-started.sh"
+  run env -u RUNNER_TEMP -u RUNNER_TOOL_CACHE bash "$BATS_TEST_TMPDIR/job-started.sh"
+  [ "$status" -eq 0 ]
+  local d
+  for d in _actions _tool _temp/_github_home _temp/_github_workflow; do
+    [ -d "$home/_work/$d" ] || { echo "missing $d"; false; }
+  done
+  # In a job the runner exports its own temp and tool-cache paths; those win.
+  run env RUNNER_TEMP="$BATS_TEST_TMPDIR/rt" RUNNER_TOOL_CACHE="$BATS_TEST_TMPDIR/tc" \
+    bash "$BATS_TEST_TMPDIR/job-started.sh"
+  [ "$status" -eq 0 ]
+  [ -d "$BATS_TEST_TMPDIR/rt/_github_home" ]
+  [ -d "$BATS_TEST_TMPDIR/rt/_github_workflow" ]
+  [ -d "$BATS_TEST_TMPDIR/tc" ]
+}
+
+@test "gh-runner: the job-started hook never fails a job" {
+  # Most jobs declare no container. A failing job-started hook would fail every one of
+  # them for a directory only a container job needs.
+  local H="$D/templates/job-started.sh.j2"
+  refute_grep -qE '^set -e' "$H"
+  assert_grep -qxF 'exit 0' "$H"
+  local home="$BATS_TEST_TMPDIR/ro"
+  mkdir -p "$home"
+  : > "$home/_work"   # a file where the work directory should be: every mkdir fails
+  sed "s#{{ github_runner_home }}#$home#g" "$H" > "$BATS_TEST_TMPDIR/job-started.sh"
+  run env -u RUNNER_TEMP -u RUNNER_TOOL_CACHE bash "$BATS_TEST_TMPDIR/job-started.sh"
+  [ "$status" -eq 0 ]
+  assert_contains "$output" 'WARNING: could not create'
+}
+
+@test "gh-runner: the Docker socket path leads to the runner account's rootless socket, never root's" {
+  # The runner mounts /var/run/docker.sock into every job container (hardcoded upstream).
+  # podman-docker links it to root's socket, which the account cannot reach. It is
+  # pointed at the account's own socket by a tmpfiles.d file that replaces the package's.
+  local PB="$BATS_TEST_DIRNAME/../playbooks/deploy-github-runner.yml"
+  local T="$BATS_TEST_DIRNAME/../playbooks/tasks/podman-user-docker-socket.yml"
+  assert_grep -qF 'ansible.builtin.include_tasks: tasks/podman-user-docker-socket.yml' "$PB"
+  assert_grep -qF 'pds_user: "{{ _account }}"' "$PB"
+  assert_grep -qF 'pds_uid: "{{ _runner_uid }}"' "$PB"
+  assert_grep -qF 'dest: /etc/tmpfiles.d/podman-docker.conf' "$T"
+  assert_grep -qF 'L+ /run/docker.sock - - - - /run/user/{{ pds_uid }}/podman/podman.sock' "$T"
+  assert_grep -qF 'name: podman.socket' "$T"
+  assert_grep -qF 'scope: user' "$T"
+  # Root's socket is never a target, and nothing widens access to it.
+  grep -vE '^[[:space:]]*#' "$T" > "$BATS_TEST_TMPDIR/code"
+  refute_grep -qE 'L\+?[[:space:]].*/run/podman/podman\.sock' "$BATS_TEST_TMPDIR/code"
+  refute_grep -qE 'chmod|setfacl|chgrp|SocketGroup|SocketMode' "$BATS_TEST_TMPDIR/code"
+  refute_grep -qE 'SocketGroup|SocketMode|/run/podman' "$D/templates/runner-dotenv.j2"
+  # And the effective tmpfiles.d config is read back, so a package file under another
+  # name cannot keep the old link.
+  assert_grep -qF 'systemd-tmpfiles --cat-config' "$T"
+  assert_grep -qF '_pds_lines | length == 1' "$T"
+}
+
+@test "gh-runner: the deploy proves a hook-shaped docker create where jobs run" {
+  # The uid-map check passed while every container job failed on its mounts, so the deploy
+  # repeats the hooks' create with the runner's full mount set, inside the user manager.
+  local PB="$BATS_TEST_DIRNAME/../playbooks/deploy-github-runner.yml"
+  local block
+  block=$(sed -n '/^    - name: "Confirm a job container can be created with the runner.s mounts/,/^    - name: "Report"$/p' "$PB")
+  [ -n "$block" ]
+  assert_contains "$block" 'systemd-run --user --wait --pipe --collect --quiet'
+  assert_contains "$block" '--property=NoNewPrivileges="$nnp"'
+  assert_contains "$block" '"$H/job-started.sh"'
+  local m
+  for m in '-v=/var/run/docker.sock:/var/run/docker.sock' '-v="$W":/__w' \
+           '-v="$H/externals":/__e:ro' '-v="$W/_temp":/__w/_temp' \
+           '-v="$W/_actions":/__w/_actions' '-v="$W/_tool":/__w/_tool' \
+           '-v="$W/_temp/_github_home":/github/home' \
+           '-v="$W/_temp/_github_workflow":/github/workflow'; do
+    assert_contains "$block" "$m"
+  done
+  assert_contains "$block" "'create=ok' not in _mountprobe.stdout_lines"
+  assert_contains "$block" "'ping=OK' not in _mountprobe.stdout_lines"
 }

@@ -1,0 +1,110 @@
+---
+# podman-user-docker-socket.yml: make the host's Docker socket path, /run/docker.sock
+# (/var/run/docker.sock), the rootless podman API socket of ONE unprivileged account.
+#
+# Required vars:
+#   pds_user  the account whose rootless podman answers on the Docker socket path
+#   pds_uid   its uid (looked up by the caller, never assumed)
+#
+# WHY. Some tools mount the Docker socket path into a container as a fixed string. The
+# GitHub Actions runner does this for every job container and every docker:// step
+# (actions/runner v2.336.0, Runner.Worker/Container/ContainerInfo.cs:57-60 and
+# Handlers/ContainerActionHandler.cs:193), and the container hooks pass the mount to
+# `docker create` unchanged (runner-container-hooks v0.8.1,
+# packages/docker/src/dockerCommands/container.ts:56-65). No setting removes it. The
+# podman-docker package links the path to ROOT's API socket, /run/podman/podman.sock, in
+# a directory that only root can enter. Rootless podman then refuses the mount with
+# "statfs /var/run/docker.sock: permission denied", so every container job fails.
+#
+# WHAT IT GIVES. A process that can use this socket controls the account's own rootless
+# podman: it can do what the account can do, and no more. Root's socket is not touched
+# and no account gets access to it. The link target is in /run/user/<uid>, mode 0700, so
+# other unprivileged accounts cannot use the link at all.
+#
+# WHAT IT COSTS, HOST-WIDE. A root process that connects to the Docker socket path now
+# talks to the account's podman, not to root's. Use this task only on a host that runs
+# no root service that uses the Docker API (a dedicated CI runner host, for example).
+# Root's own socket is still at /run/podman/podman.sock.
+#
+# HOW. A tmpfiles.d file in /etc with the same name as the package's
+# (/usr/lib/tmpfiles.d/podman-docker.conf) replaces that file completely (tmpfiles.d(5)),
+# so the link stays correct after a reboot and after a package upgrade. The account's
+# podman.socket user unit (shipped by the podman package) makes the socket; lingering,
+# enabled by the caller, starts it at boot.
+#
+# Idempotent: the link is recreated only when its target is wrong.
+
+- name: "Require the account and its uid"
+  ansible.builtin.assert:
+    that:
+      - pds_user | default('') | length > 0
+      - (pds_uid | default('') | string) is match('^[0-9]+$')
+    fail_msg: "podman-user-docker-socket.yml needs pds_user and a numeric pds_uid."
+
+- name: "Enable the account's rootless podman API socket"
+  ansible.builtin.systemd_service:
+    name: podman.socket
+    scope: user
+    enabled: true
+    state: started
+  become: true
+  become_user: "{{ pds_user }}"
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/{{ pds_uid }}"
+
+- name: "Point the Docker socket path at the account's socket, not root's"
+  ansible.builtin.copy:
+    dest: /etc/tmpfiles.d/podman-docker.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      # Managed by Ansible (platform/playbooks/tasks/podman-user-docker-socket.yml).
+      # Replaces /usr/lib/tmpfiles.d/podman-docker.conf, which links this path to root's
+      # podman socket. Here it is the rootless socket of {{ pds_user }}.
+      L+ /run/docker.sock - - - - /run/user/{{ pds_uid }}/podman/podman.sock
+
+- name: "Read the Docker socket link"
+  ansible.builtin.stat:
+    path: /run/docker.sock
+    follow: false
+  register: _pds_link
+  check_mode: false
+
+- name: "Recreate the Docker socket link from the tmpfiles.d file"
+  # L+ replaces whatever is at the path. Run only when the target is wrong, so a
+  # re-run changes nothing.
+  ansible.builtin.command: systemd-tmpfiles --create /etc/tmpfiles.d/podman-docker.conf
+  when:
+    - not ansible_check_mode
+    - (_pds_link.stat.lnk_target | default('')) != ('/run/user/' ~ pds_uid ~ '/podman/podman.sock')
+  changed_when: true
+
+- name: "Read the effective tmpfiles.d lines for the Docker socket path"
+  # Proves that no other tmpfiles.d file still links the path to root's socket: a file
+  # with a different name would not be replaced by the one above. The package writes the
+  # path as `%t/docker.sock` (%t is /run for the system instance).
+  ansible.builtin.shell: |
+    set -euo pipefail
+    systemd-tmpfiles --cat-config \
+      | grep -E '^[[:space:]]*[^#[:space:]]+[[:space:]]+(%t|/run|/var/run)/docker\.sock([[:space:]]|$)' || true
+    echo "link=$(readlink /run/docker.sock || true)"
+  args:
+    executable: /bin/bash
+  register: _pds_effective
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: "Require the Docker socket path to lead to the account's socket only"
+  ansible.builtin.assert:
+    that:
+      - _pds_lines | length == 1
+      - _pds_lines[0] is search('/run/user/' ~ pds_uid ~ '/podman/podman\.sock$')
+      - ('link=/run/user/' ~ pds_uid ~ '/podman/podman.sock') in _pds_effective.stdout_lines
+    fail_msg: >-
+      The Docker socket path does not lead to {{ pds_user }}'s rootless socket only.
+      tmpfiles.d lines: {{ _pds_lines }}; {{ _pds_effective.stdout_lines | last | default('') }}.
+    success_msg: "/run/docker.sock leads to {{ pds_user }}'s rootless podman socket."
+  vars:
+    _pds_lines: "{{ _pds_effective.stdout_lines | reject('match', '^link=') | list }}"
+  when: not ansible_check_mode
