@@ -165,7 +165,7 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
         increment is its own branch cut from `origin/dev` and merged by pull request, so every
         later section-3 branch starts from a `dev` that already carries the gateway.
       - 2026-10-03: recorded by PR #395 (merged)
-- [ ] 3.1 Prove the DGX API is reachable from inside the local controller's container (not
+- [x] 3.1 Prove the DGX API is reachable from inside the local controller's container (not
       only the host); record the result; if unreachable, record the degraded path in design
       - 2026-10-12, NOT reachable from the container: from inside `local-semaphore`
         (v2.19.11) a TCP connect to the DGX API port and to its SSH port are both REFUSED,
@@ -177,9 +177,8 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
         the VM helper or the VM's gateway). Degraded path confirmed usable: from the container
         the public edge answers `GET /health` 200 and an unauthenticated `GET /v1/models` 401.
         So section 3's local gateway runs against the public edge (subject to its rate limit)
-        until the VM path is fixed. Not ticked: `design.md`
-        carries only the anticipated fallback (Risks), not this measured result, and this
-        branch does not own it
+        until the VM path is fixed. Ticked once the measured result and the
+        degraded path were recorded in `design.md` (Risks, "Measured 2026-10-12")
 - [ ] 3.2 Local inventory: agentgateway upstream set to the DGX API in `local-dev.yml` only;
       `vllm_api_key` seeded into local OpenBao with `Seed OpenBao Key` from the environment
       secret, never an argv; `agw_clients` gains the four role identities and `skynet-eval`
