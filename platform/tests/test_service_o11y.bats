@@ -2159,7 +2159,7 @@ assert phase_one['tasks'][preflight + 2]['when'] == gate_when
 clean = yaml.safe_load(clean_deploy_path.read_text())[1:]  # [0] imports the extra-var guard
 clean_tasks = clean[0]['tasks']
 # The confirm and reviewed-checkout refusals come first (test_executor_internal_overrides.py
-# runs them); the retention refusal is the last task before the destroy.
+# runs them); retention stays gated, then journal preservation refuses cleanup unconditionally.
 retention = next(i for i, t in enumerate(clean_tasks) if t['name'] == 'Refuse expanded retention before destructive o11y cleanup')
 clean_tasks = clean_tasks[retention:]
 assert clean_tasks[0]['name'] == 'Refuse expanded retention before destructive o11y cleanup'
@@ -2169,7 +2169,12 @@ baseline = {'o11y_prom_retention': '15d', 'o11y_loki_retention': '7d', 'o11y_tem
 expanded = {'o11y_prom_retention': '90d', 'o11y_loki_retention': '45d', 'o11y_tempo_retention': '1080h'}
 assert all(condition(**baseline) for condition in clean_conditions)
 assert not all(condition(**expanded) for condition in clean_conditions)
-assert clean_tasks[1]['name'] == 'Destroy existing deployment'
+refusal = clean_tasks[1]
+assert refusal['name'] == 'Refuse o11y cleanup until journal preservation and host admission are verified'
+assert set(refusal) == {'name', 'ansible.builtin.fail'}
+destroy = clean_tasks[2]
+assert destroy['name'] == 'Destroy existing deployment'
+assert destroy['ansible.builtin.include_tasks'] == 'tasks/clean-service.yml'
 PY
 }
 
