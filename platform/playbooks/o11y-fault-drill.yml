@@ -20,7 +20,11 @@
 #             (the probe URL's, or with a gateway client identity the gateway upstream's,
 #             read from the o11y host),
 #             proves `inference_probe_failing` fires for that model and the Discord
-#             contact point delivered it, restores the probe environment in `always:`.
+#             contact point delivered it, proves the provisioned inference dashboard's
+#             "Inference probe serving" panel expression (read from the dashboard JSON on
+#             the o11y host, evaluated against Prometheus; Grafana's rendered panel is not
+#             queried) gives that model as not serving, restores the probe environment in
+#             `always:` and proves the expression gives the deployed model serving again.
 #   grafana   stops the `o11y-grafana` container for up to fifteen minutes and proves the
 #             external liveness watcher (check-o11y-liveness.yml, its own Semaphore
 #             schedule) posted its failure message through the alert webhook; restarts
@@ -120,6 +124,16 @@
     # probe
     _probe_env: "{{ _deploy_dir }}/probe/inference-probe.env"
     _probe_env_backup: "{{ _deploy_dir }}/probe/inference-probe.env.drill-backup"
+    # The dashboard panel that must show the model not serving (spec scenario "Health up,
+    # inference down"). Its expression is read from the dashboard JSON Grafana provisions
+    # from this host, never copied here, so the drill and the dashboard cannot drift apart.
+    _probe_dashboard_file: "{{ _deploy_dir }}/config/grafana/dashboards/inference-fleet-health.json"
+    _probe_panel_title: Inference probe serving
+    _probe_panel_expr: "{{ _probe_panel[0].targets[0].expr }}"
+    # The panel's own value mapping: sample value -> the text the dashboard shows.
+    _probe_panel_states: >-
+      {{ _probe_panel[0].fieldConfig.defaults.mappings | default([]) | selectattr('type', 'equalto', 'value')
+         | map(attribute='options') | list | first | default({}) }}
     _drill_model_prefix: o11y-drill-absent-model-
     # Where "health up" is read while inference is down. On the public path: the probe URL's
     # own /health, from the runner (Cloudflare -> Caddy -> vLLM's /health). With a gateway
@@ -148,7 +162,8 @@
       exporter: "{{ _drill_rule_uid }} ({{ _drill_alertname | default('') }}) fired for node {{ drill_node | default('') }}"
       probe: >-
         {{ _drill_rule_uid }} ({{ _drill_alertname | default('') }}) fired for model {{ _drill_model.stdout | default('') }}
-        and reached Discord naming both, with /health 200 throughout
+        and reached Discord naming both, with /health 200 throughout, and the dashboard panel
+        "{{ _probe_panel_title }}" expression gave it as not serving, then serving again after the restore
       grafana: the liveness watcher's Grafana-health failure reached Discord
     # What ONE Discord message must hold to count as this mode's receipt. Probe: the contact
     # point's firing line, and inside the default message's Firing section the label lines
@@ -251,6 +266,38 @@
       changed_when: false
       check_mode: false
       when: drill == 'probe'
+
+    # Read-only, so it runs under --check too. A restore-only run reads nothing here: the
+    # restore must not wait on a dashboard it does not prove.
+    - name: Read the provisioned inference dashboard
+      ansible.builtin.slurp:
+        src: "{{ _probe_dashboard_file }}"
+      register: _probe_dashboard
+      check_mode: false
+      when: drill == 'probe' and not _restore_only
+
+    - name: Hold the dashboard's probe panel
+      ansible.builtin.set_fact:
+        _probe_panel: "{{ (_probe_dashboard.content | b64decode | from_json).panels | selectattr('title', 'equalto', _probe_panel_title) | list }}"
+      when: drill == 'probe' and not _restore_only
+
+    - name: Refuse a dashboard whose probe panel the drill cannot read back
+      ansible.builtin.assert:
+        that:
+          - _probe_panel | length == 1
+          - _probe_panel[0].type == 'stat'
+          - _probe_panel[0].datasource.uid == 'prometheus'
+          - _probe_panel[0].targets | length == 1
+          - "'inference_probe_success' in _probe_panel_expr"
+          - "'$' not in _probe_panel_expr"
+          - _probe_panel_states.get('0', {}).get('text', '') == 'not serving'
+          - _probe_panel_states.get('1', {}).get('text', '') == 'serving'
+        fail_msg: >-
+          {{ _probe_dashboard_file }} must hold exactly one stat panel titled
+          "{{ _probe_panel_title }}" with one Prometheus target on inference_probe_success, no
+          dashboard variables, and value mappings 0 -> "not serving", 1 -> "serving".
+          No fault was induced.
+      when: drill == 'probe' and not _restore_only
 
     - name: Report what a real run does (check mode induces nothing)
       ansible.builtin.debug:
@@ -409,6 +456,52 @@
              selectattr('labels.model_name', 'defined') |
              selectattr('labels.model_name', 'equalto', _drill_model.stdout) |
              selectattr('state', 'match', '^(Alerting|firing)$') | list | length) > 0
+          when: drill == 'probe' and not _restore_only
+
+        # The dashboard half of "Health up, inference down": the panel's own expression
+        # (from the provisioned dashboard file) evaluated against Prometheus for the drill
+        # model, and the text the panel's value mapping gives that value. Grafana's rendered
+        # panel is not queried. Only the panel title, the model name and that text are reported.
+        - name: Read what the dashboard's probe panel evaluates to for the drill model
+          ansible.builtin.command:
+            argv:
+              - "{{ _engine }}"
+              - exec
+              - o11y-grafana
+              - wget
+              - -q
+              - -O
+              - "-"
+              - "http://prometheus:9090/api/v1/query?query={{ _probe_panel_expr | urlencode }}"
+          register: _probe_panel_fault
+          changed_when: false
+          retries: 6
+          delay: 10
+          until: >-
+            _probe_panel_fault.rc == 0 and
+            ((_probe_panel_fault.stdout | from_json).data.result |
+             selectattr('metric.model_name', 'defined') |
+             selectattr('metric.model_name', 'equalto', _drill_model.stdout) | list | length) == 1
+          when: drill == 'probe' and not _restore_only
+
+        - name: Require the probe panel to show the drill model as not serving
+          ansible.builtin.assert:
+            that:
+              - _panel_rows | length == 1
+              - _panel_rows[0].value[1] == '0'
+              - _probe_panel_states[_panel_rows[0].value[1]].text == 'not serving'
+            fail_msg: >-
+              Panel "{{ _probe_panel_title }}" did not show {{ _drill_model.stdout }} as not serving
+              during the fault.
+            success_msg: >-
+              Panel "{{ _probe_panel_title }}" expression (from the provisioned dashboard file,
+              evaluated against Prometheus) gives {{ _drill_model.stdout }}:
+              {{ _probe_panel_states[_panel_rows[0].value[1]].text }}.
+          vars:
+            _panel_rows: >-
+              {{ (_probe_panel_fault.stdout | from_json).data.result
+                 | selectattr('metric.model_name', 'defined')
+                 | selectattr('metric.model_name', 'equalto', _drill_model.stdout) | list }}
           when: drill == 'probe' and not _restore_only
 
         # grafana ------------------------------------------------------------------
@@ -600,6 +693,31 @@
         _probe_restored.rc == 0 and
         ((_probe_restored.stdout | from_json).data.result | length) == 1
       when: not ansible_check_mode and drill == 'probe'
+
+    # The dashboard half of the recovery: the same panel expression, now for the deployed
+    # model. Waits out the scrape that follows the fresh sample above.
+    - name: Require the probe panel to show the deployed model serving again
+      ansible.builtin.command:
+        argv:
+          - "{{ _engine }}"
+          - exec
+          - o11y-grafana
+          - wget
+          - -q
+          - -O
+          - "-"
+          - "http://prometheus:9090/api/v1/query?query={{ _probe_panel_expr | urlencode }}"
+      register: _probe_panel_restored
+      changed_when: false
+      retries: 12
+      delay: 10
+      until: >-
+        _probe_panel_restored.rc == 0 and
+        ((_probe_panel_restored.stdout | from_json).data.result |
+         selectattr('metric.model_name', 'defined') |
+         selectattr('metric.model_name', 'equalto', o11y_inference_probe_model) |
+         selectattr('value.1', 'equalto', '1') | list | length) == 1
+      when: not ansible_check_mode and drill == 'probe' and not _restore_only
 
     - name: Report the drill result
       ansible.builtin.debug:
