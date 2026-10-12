@@ -47,6 +47,13 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
         `docs/LOCAL-DEV.md`; `scripts/semaphore-launch.py`'s VERIFIED set keeps v2.18.12 (left
         alone on purpose). Every local task id recorded below (5591 onward)
         ran on this controller.
+      - 2026-10-12, review follow-up: the production half of "same ansible-core" is evidence,
+        not assumption: the lead read both production containers on 2026-10-09 (~20:00Z),
+        `/api/info` `v2.19.11-0c3f373` and `ansible --version` core 2.20.8, recorded in
+        `inference-gateway-agentgateway` tasks.md 4.6 ("2026-10-09T19:58Z", PR #523). The
+        recreate check in `bootstrap-local-dev.yml` now compares image IDs, so re-running
+        `make local-bootstrap` replaces a controller still on an older image (data volume
+        kept); a bare re-run before this change would have kept the old container
 - [x] 0.6 Validation gate: `openspec validate service-deployment-workflow --store agent-cloud`
       passes and 0.2 to 0.5 each carry a dated evidence line; proves no scenario yet and
       unblocks every later section
@@ -286,11 +293,13 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
       local-dev is refused", "No targets means no discovery" and "Local targets are
       discovered" pass
       - 2026-10-12, local Semaphore v2.19.11, template "Deploy NetBox (Local)": runs 5591 and
-        5593, both success (health OK). The SECOND run (5593) reports 5 changed tasks, of which
-        the allowed set (container lifecycle scripts, orb-agent credential refresh) covers four:
-        `Run deploy.sh (infrastructure)`, `Run post-deploy.sh (migrations, superuser, OAuth2)`,
-        `Create fresh orb-agent credential via Diode plugin`, `Update .env with credentials`
-        (twice). The fifth, `Copy working tree into place (local mode)`, is NOT allowed, so
+        5593, both success (health OK). The SECOND run (5593) reports 5 changed tasks (play recap `changed=5`)
+        under 5 distinct names, one of which (`Update .env with credentials`) changed for two
+        loop items, so the log shows 6 `changed:` lines. Four names are in the allowed set
+        (container lifecycle scripts, orb-agent credential refresh): `Run deploy.sh
+        (infrastructure)`, `Run post-deploy.sh (migrations, superuser, OAuth2)`, `Create fresh
+        orb-agent credential via Diode plugin`, `Update .env with credentials`. The fifth name,
+        `Copy working tree into place (local mode)`, is NOT allowed, so
         "Local deploy is repeatable" FAILS as written. Cause (rsync dry run from the
         controller, nothing written): `rsync -rlpti` itemizes `.L...p` (mode differs)
         on every `AGENTS.md -> CLAUDE.md` symlink and `.d..t` (mtime differs) on the netbox

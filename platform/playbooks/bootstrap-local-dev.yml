@@ -96,7 +96,9 @@
     _bao_url_net: "http://local-openbao:8200"        # from containers on _net
     _sem_name: local-semaphore
     # Pinned to the plain v2.19.11 tag, the one production runs (same branch-override
-    # behaviour, same ansible-core). The v2.19 beta and the bolt dialect panicked
+    # behaviour, same ansible-core 2.20.8: read from both production containers on
+    # 2026-10-09, `/api/info` v2.19.11-0c3f373 and `ansible --version` core 2.20.8,
+    # recorded in inference-gateway-agentgateway tasks.md 4.6, PR #523). The v2.19 beta and the bolt dialect panicked
     # ("unknown store type", pro Terraform-store factory); v2.19.11 starts on the
     # sqlite embedded store, which stays the supported one.
     _sem_image: "{{ local_semaphore_image | default('docker.io/semaphoreui/semaphore:v2.19.11') }}"
@@ -707,7 +709,7 @@
       # A write (sudo mkdir + chmod 1777 on the VM): skipped under --check.
       when: not ansible_check_mode
 
-    - name: "Recreate Semaphore if a required mount, label=disable or the host port is missing"
+    - name: "Recreate Semaphore if a required mount, label=disable, the host port or the image differs"
       ansible.builtin.shell: |
         set -o pipefail
         if podman container exists {{ _sem_name }}; then
@@ -718,6 +720,21 @@
           # The host publish is fixed at container creation, so a changed
           # local_semaphore_port only takes effect on a recreated container.
           if ! echo "$PORTS" | grep -q '"HostPort":"{{ _sem_port }}"'; then
+            podman rm -f {{ _sem_name }}
+            echo recreated
+            exit 0
+          fi
+          # The image is fixed at creation too, so a changed _sem_image (a bumped pin, an
+          # inventory override) only takes effect on a recreated container. Compare image
+          # IDs, not names: podman normalises a short name to docker.io/..., so a name
+          # compare would recreate on every run for an override spelled without the
+          # registry, while both spellings resolve to one ID. A desired image that is not
+          # local resolves to nothing, which differs from any running container ID, and
+          # podman run below pulls it. The data volume is kept, so a newer binary
+          # migrates the sqlite store forward.
+          WANT_IMAGE=$(podman image inspect {{ _sem_image }} --format '{{ "{{" }}.Id{{ "}}" }}' 2>/dev/null || true)
+          HAVE_IMAGE=$(podman inspect {{ _sem_name }} --format '{{ "{{" }}.Image{{ "}}" }}')
+          if [ "$WANT_IMAGE" != "$HAVE_IMAGE" ]; then
             podman rm -f {{ _sem_name }}
             echo recreated
             exit 0

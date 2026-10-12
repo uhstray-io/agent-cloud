@@ -177,6 +177,9 @@ the production privileged-discovery path.
   dialect both panicked (`unknown store type`, pro Terraform-store factory) —
   the supported embedded store is **SQLite**; v2.19.11 starts on it. Before
   2026-10-12 the pin was `v2.18.12-ansible2.16.5`.
+  A changed pin is applied by re-running `make local-bootstrap`: it recreates the
+  controller when the image differs and keeps the data volume, so a newer binary
+  migrates the SQLite store forward.
 - Semaphore auto-installs `collections/requirements.yml` from the cloned repo
   per task; the bootstrap additionally installs `hvac` +
   `community.hashi_vault` in the container for `hashi_vault` lookups.

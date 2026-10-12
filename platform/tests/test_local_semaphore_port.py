@@ -129,14 +129,19 @@ case "$1" in
       *Mounts*) printf '%s' '/run/podman/podman.sock /workspace/agent-cloud /var/lib/agent-cloud-deploy ' ;;
       *SecurityOpt*) printf '%s' '[label=disable]' ;;
       *Config.Env*) printf '%s' '["SSL_CERT_FILE=/x"]' ;;
+      *'{{.Image}}'*) printf '%s' "$STUB_IMAGE_HAVE" ;;
     esac ;;
+  image) printf '%s' "$STUB_IMAGE_WANT" ;;
 esac
 """
 
 
-def _recreate(tmp_path: Path, *, exists: bool, ports: str, want: int = 3000):
+def _recreate(tmp_path: Path, *, exists: bool, ports: str, want: int = 3000, image_have: str = "sha256:a",
+              image_want: str = "sha256:a"):
     """Run the real recreate task against a stub podman. Everything else the task checks
-    (mounts, label=disable, OIDC) is stubbed as satisfied, so only the port decides."""
+    (mounts, label=disable, OIDC) is stubbed as satisfied, so only the port and the image
+    decide. image_have is the running container's image ID, image_want what the desired
+    image resolves to (empty: not present locally)."""
     bindir = tmp_path / "bin"
     bindir.mkdir()
     podman = bindir / "podman"
@@ -153,7 +158,7 @@ def _recreate(tmp_path: Path, *, exists: bool, ports: str, want: int = 3000):
     env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
     env.update(ANSIBLE_NOCOLOR="1", ANSIBLE_LOCAL_TEMP=str(tmp_path), ANSIBLE_REMOTE_TEMP=str(tmp_path),
                PATH=f"{bindir}:{os.environ['PATH']}", STUB_EXISTS="yes" if exists else "no", STUB_PORTS=ports,
-               STUB_LOG=str(log))
+               STUB_LOG=str(log), STUB_IMAGE_HAVE=image_have, STUB_IMAGE_WANT=image_want)
     out = subprocess.run(["ansible-playbook", "-i", "localhost,", str(play)], cwd=REPO, env=env, text=True,
                          capture_output=True, check=False, timeout=120, stdin=subprocess.DEVNULL)
     assert out.returncode == 0, out.stdout + out.stderr
@@ -191,6 +196,24 @@ def test_a_changed_port_recreates_an_existing_container(tmp_path, exists, ports,
     got, rm_log = _recreate(tmp_path, exists=exists, ports=ports, want=want)
     assert got == result
     assert bool(rm_log) is removed, rm_log
+
+
+@needs_ansible
+@pytest.mark.parametrize(
+    ("image_have", "image_want", "result", "removed"),
+    [
+        ("sha256:a", "sha256:a", "ok", False),  # the running container is on the desired image: leave it
+        ("sha256:a", "sha256:b", "recreated", True),  # the pin moved: recreate, the data volume is kept
+        ("sha256:a", "", "recreated", True),  # the desired image is not local yet: it differs, run pulls it
+    ],
+)
+def test_a_changed_image_recreates_an_existing_container(tmp_path, image_have, image_want, result, removed):
+    """The image is fixed at creation, so without this a bumped pin keeps the old controller."""
+    got, rm_log = _recreate(tmp_path, exists=True, ports=_bindings("3000"), image_have=image_have,
+                            image_want=image_want)
+    assert got == result
+    assert bool(rm_log) is removed, rm_log
+    assert "volume" not in rm_log  # only the container is removed, never local-semaphore-data
 
 
 def test_the_example_inventory_declares_the_default():

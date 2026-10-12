@@ -55,6 +55,8 @@ Verified on 2026-09-22:
   v2.19 (then a beta) panicked on the local sqlite store (`bootstrap-local-dev.yml:95-98`), and
   whether 2.19.11 still does is unverified. Local moves only after a local bootstrap on
   2.19.11 starts cleanly; until then local and production differ on branch override.
+  - 2026-10-12: resolved. Local now runs v2.19.11 (`tasks.md` 0.7), so local and production
+    share the branch-override behaviour above.
 - **The template's "allow override branch" flag is enforced only in the web UI** (v2.18.12).
   `web/src/components/TaskForm.vue:123` hides the branch field unless the flag is set; the
   API path validates only the branch name's syntax (`db/git_branch.go`,
