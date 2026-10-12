@@ -95,10 +95,11 @@
     _bao_url_host: "http://127.0.0.1:8200"           # from the Mac
     _bao_url_net: "http://local-openbao:8200"        # from containers on _net
     _sem_name: local-semaphore
-    # Pinned: latest (v2.19 beta) and bolt dialect both panic ("unknown store
-    # type", pro Terraform-store factory); sqlite is the supported embedded
-    # store. The -ansible variant ships ansible for task execution.
-    _sem_image: "{{ local_semaphore_image | default('docker.io/semaphoreui/semaphore:v2.18.12-ansible2.16.5') }}"
+    # Pinned to the plain v2.19.11 tag, the one production runs (same branch-override
+    # behaviour, same ansible-core). The v2.19 beta and the bolt dialect panicked
+    # ("unknown store type", pro Terraform-store factory); v2.19.11 starts on the
+    # sqlite embedded store, which stays the supported one.
+    _sem_image: "{{ local_semaphore_image | default('docker.io/semaphoreui/semaphore:v2.19.11') }}"
     # Mac-side port Semaphore is published on. The container side stays 3000 (the
     # Caddy route and every in-network caller name local-semaphore:3000); only the
     # host publish moves. An inventory value lets the stack come up when another
