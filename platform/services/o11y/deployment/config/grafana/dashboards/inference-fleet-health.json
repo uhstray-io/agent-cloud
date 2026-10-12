@@ -64,7 +64,7 @@
       },
       "gridPos": {
         "h": 5,
-        "w": 6,
+        "w": 5,
         "x": 0,
         "y": 0
       },
@@ -107,8 +107,8 @@
       },
       "gridPos": {
         "h": 5,
-        "w": 6,
-        "x": 6,
+        "w": 5,
+        "x": 5,
         "y": 0
       },
       "targets": [
@@ -150,8 +150,8 @@
       },
       "gridPos": {
         "h": 5,
-        "w": 6,
-        "x": 12,
+        "w": 5,
+        "x": 10,
         "y": 0
       },
       "targets": [
@@ -179,8 +179,8 @@
       },
       "gridPos": {
         "h": 5,
-        "w": 6,
-        "x": 18,
+        "w": 5,
+        "x": 15,
         "y": 0
       },
       "targets": [
@@ -194,6 +194,67 @@
       "fieldConfig": {
         "defaults": {
           "unit": "short"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 13,
+      "title": "Inference probe serving",
+      "description": "Result of the synthetic chat completion through the public inference hostname, per model (probe on the o11y host, every five minutes). Host and scrape panels can be green while this one is red: the host is reachable but the model is not serving.",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 4,
+        "x": 20,
+        "y": 0
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max by (model_name) (inference_probe_success{job=\"receiver-host\"})",
+          "legendFormat": "{{model_name}}",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "max": 1,
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "not serving",
+                  "color": "red",
+                  "index": 0
+                },
+                "1": {
+                  "text": "serving",
+                  "color": "green",
+                  "index": 1
+                }
+              }
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          }
         },
         "overrides": []
       }
