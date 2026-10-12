@@ -1852,6 +1852,25 @@ the service's main process from `/proc`, and runs the podman mapping in a
 `test_service_github_runner.bats` requires both checks, requires `NoNewPrivileges=false`, and
 refuses the unit options that set no_new_privs implicitly or imply `PrivateUsers=`.
 
+### 2.30 A task var mapped a name back to its own defaulted copy
+
+**What happened.** The first Deploy GitHub Runner dry run after 2.29 (Semaphore task 4609,
+2026-10-11) passed every new check, then failed both hosts at the template step with
+`Recursive loop detected in template: maximum recursion depth exceeded`. The task's `vars:`
+set `github_runner_version: "{{ _rver }}"` while the play defined `_rver: "{{
+github_runner_version | default('2.336.0') }}"`, and the unit template step set
+`github_runner_name: "{{ github_runner_name }}"`. Reproduced on ansible-core 2.20 and 2.21.
+
+**Root cause.** Ansible templates lazily. Inside the task, the task-level name shadows the
+play's, so resolving it goes through the copy and lands on itself. Nothing rendered these
+templates in CI, so the deploy's last real run was the first to evaluate them.
+
+**The rule.** A task never maps a name to an expression that resolves back to that name.
+Pin the defaulted copy with `set_fact` first and map the raw name to the pinned fact.
+
+**Enforced by.** `platform/tests/test_no_recursive_task_vars.py`, which follows each task
+var through the play's vars across every playbook.
+
 ## 3. Acting on live state
 
 ### 3.1 Overwriting a real credential with a probe value
