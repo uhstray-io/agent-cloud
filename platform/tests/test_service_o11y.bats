@@ -1460,8 +1460,8 @@ PY
   python3 - "$REPO_ROOT/platform/playbooks/verify-o11y-service.yml" "$REPO_ROOT/platform/semaphore/templates.yml" <<'PY'
 import sys
 import yaml
-plays = yaml.safe_load(open(sys.argv[1], encoding='utf-8'))[1:]  # [0] imports the extra-var guard
-inputs = plays[0]['tasks'][-1]['ansible.builtin.assert']['that']
+plays = yaml.safe_load(open(sys.argv[1], encoding='utf-8'))
+inputs = next(p for p in plays if p.get('name') == 'Require a declared o11y receiver and a service identity')['tasks'][-1]['ansible.builtin.assert']['that']
 assert any('expect_logs' in item for item in inputs)
 assert any('expect_traces' in item for item in inputs)
 assert any('emit_agentgateway_canary' in item for item in inputs)
