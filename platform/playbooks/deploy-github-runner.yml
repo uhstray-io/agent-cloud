@@ -461,6 +461,18 @@
         group: "{{ _account }}"
         mode: "0750"
 
+    - name: "Pin the resolved values the templates read"
+      # The templates read the RAW inventory names, and the play's `_`-prefixed copies are
+      # defined FROM those names (`_rver: github_runner_version | default(...)`). Mapping a
+      # raw name back to its copy in a task's `vars` makes the name refer to itself, and
+      # ansible-core fails the render with "Recursive loop detected in template". set_fact
+      # resolves each copy once, here, where the raw name is not yet shadowed.
+      ansible.builtin.set_fact:
+        _tpl_home: "{{ _home }}"
+        _tpl_org: "{{ _org }}"
+        _tpl_rver: "{{ _rver }}"
+        _tpl_hver: "{{ _hver }}"
+
     - name: "Template the runner's declaration, job env, cleanup hook and unit"
       ansible.builtin.template:
         src: "{{ playbook_dir }}/../services/github-runner/deployment/templates/{{ item.src }}"
@@ -473,10 +485,10 @@
       # default still renders — otherwise the first host to omit, say,
       # github_runner_hooks_version fails with an undefined-variable error at render time.
       vars:
-        github_runner_home: "{{ _home }}"
-        github_org: "{{ _org }}"
-        github_runner_version: "{{ _rver }}"
-        github_runner_hooks_version: "{{ _hver }}"
+        github_runner_home: "{{ _tpl_home }}"
+        github_org: "{{ _tpl_org }}"
+        github_runner_version: "{{ _tpl_rver }}"
+        github_runner_hooks_version: "{{ _tpl_hver }}"
       loop:
         - { src: "runner.env.j2", dest: "{{ _home }}/config/runner.env", mode: "0640" }
         - { src: "runner-dotenv.j2", dest: "{{ _home }}/.env", mode: "0640" }
@@ -503,8 +515,7 @@
         group: "{{ _account }}"
         mode: "0644"
       vars:
-        github_runner_home: "{{ _home }}"
-        github_runner_name: "{{ github_runner_name }}"
+        github_runner_home: "{{ _tpl_home }}"
       register: _runner_unit
 
     # ── install + register ─────────────────────────────────────────────────

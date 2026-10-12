@@ -82,6 +82,7 @@ and why.
 | 2.27 | A run that matched its hosts, found nothing to do, and reported success (widens 2.21) | Wrong-reason pass | 1 | Test (one playbook); class Convention, lint proposed |
 | 2.28 | A clean-copy test passed only where the copy carried bytecode caches; refusal tests matched text every refusal prints | Wrong-reason pass | 1 | Test (`test_o11y_fault_drill.py`) |
 | 2.29 | A deploy proved rootless podman from a sudo session while every job, under a `NoNewPrivileges=true` unit, failed in `newuidmap`; a test had pinned the breaking directive | Wrong-reason pass | 1 | Playbook checks in the service context + test (`test_service_github_runner.bats`) |
+| 2.30 | A deploy task mapped template vars back to the defaulted copies defined from them; ansible-core failed the render with a recursive loop, and no test rendered the step | Unrunnable playbook, green suite | 1 | Test (`test_no_recursive_task_vars.py`) |
 | 3.1 | Wrote a probe value over a real credential in a live secret store | Live-state damage | 1 | OPA (`agent_actions.rego`; inert until callers send fields) |
 | 3.2 | Attempted to mutate a shared orchestrator credential without asking | Live-state damage | 1 | Sandbox + OPA (`agent_actions.rego`; inert until callers send grants) |
 | 3.3 | Treated failed workstation login as a controller access prerequisite | Wrong executor boundary | 1 | Test + convention |
@@ -1851,6 +1852,25 @@ the service's main process from `/proc`, and runs the podman mapping in a
 `systemd-run --user` transient unit carrying the unit's own `NoNewPrivileges` value.
 `test_service_github_runner.bats` requires both checks, requires `NoNewPrivileges=false`, and
 refuses the unit options that set no_new_privs implicitly or imply `PrivateUsers=`.
+
+### 2.30 A task var mapped a name back to its own defaulted copy
+
+**What happened.** The first Deploy GitHub Runner dry run after 2.29 (Semaphore task 4609,
+2026-10-11) passed every new check, then failed both hosts at the template step with
+`Recursive loop detected in template: maximum recursion depth exceeded`. The task's `vars:`
+set `github_runner_version: "{{ _rver }}"` while the play defined `_rver: "{{
+github_runner_version | default('2.336.0') }}"`, and the unit template step set
+`github_runner_name: "{{ github_runner_name }}"`. Reproduced on ansible-core 2.20 and 2.21.
+
+**Root cause.** Ansible templates lazily. Inside the task, the task-level name shadows the
+play's, so resolving it goes through the copy and lands on itself. Nothing rendered these
+templates in CI, so the deploy's last real run was the first to evaluate them.
+
+**The rule.** A task never maps a name to an expression that resolves back to that name.
+Pin the defaulted copy with `set_fact` first and map the raw name to the pinned fact.
+
+**Enforced by.** `platform/tests/test_no_recursive_task_vars.py`, which follows each task
+var through the play's vars across every playbook.
 
 ## 3. Acting on live state
 
