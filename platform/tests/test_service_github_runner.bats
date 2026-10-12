@@ -428,6 +428,73 @@ STUB
   cmp "$BATS_TEST_TMPDIR/want" "$out"
 }
 
+@test "gh-runner: the docker wrapper rewrites only the options before the image, never the container's command" {
+  # Podman reads everything from the IMAGE (CONTAINER for exec) on as the container's
+  # command (SetInterspersed(false)), so `echo -e PATH` there must reach podman as-is.
+  # The rewrite is limited to create/run/exec and stops at the first positional
+  # argument; an option it does not know ends it early (fail safe).
+  local T="$D/templates/docker-wrapper.sh.j2"
+  local stub="$BATS_TEST_TMPDIR/podman" w="$BATS_TEST_TMPDIR/docker" out="$BATS_TEST_TMPDIR/argv"
+  cat > "$stub" <<STUB
+#!/bin/sh
+printf '%s\0' "\$@" > "$out"
+STUB
+  chmod +x "$stub"
+  sed -e "s#{{ github_runner_home }}#/opt/r#g" -e 's#{{ github_runner_uid }}#1001#g' \
+      -e "s#^exec /usr/bin/podman #exec $stub #" "$T" > "$w"
+  local want="$BATS_TEST_TMPDIR/want"
+  # Hooks' create shape (container.ts containerCreate), from a real job log, plus a
+  # command after the image that contains `-e PATH`.
+  run env -i HOME=/github/home PATH=/job/bin /bin/sh "$w" create \
+    --label=a1b2 --network=github_network_1 --name job_c -p 8080:80 -e PATH -e HOME \
+    -e GITHUB_ACTIONS=true -e CI=true -v=/var/run/docker.sock:/var/run/docker.sock \
+    -v=/w:/__w:ro --entrypoint tail img:1 -f /dev/null -e PATH --env=PATH
+  [ "$status" -eq 0 ]
+  printf '%s\0' create \
+    --label=a1b2 --network=github_network_1 --name job_c -p 8080:80 -e PATH=/job/bin -e HOME \
+    -e GITHUB_ACTIONS=true -e CI=true -v=/var/run/docker.sock:/var/run/docker.sock \
+    -v=/w:/__w:ro --entrypoint tail img:1 -f /dev/null -e PATH --env=PATH > "$want"
+  cmp "$want" "$out"
+  # Hooks' run shape (containerRun): `-v` with a separate value, a boolean, a command.
+  run env -i PATH=/job/bin /bin/sh "$w" run --rm --name step_1 --workdir=/__w/r \
+    -e PATH -v /a:/b --entrypoint sh img echo -e PATH
+  [ "$status" -eq 0 ]
+  printf '%s\0' run --rm --name step_1 --workdir=/__w/r \
+    -e PATH=/job/bin -v /a:/b --entrypoint sh img echo -e PATH > "$want"
+  cmp "$want" "$out"
+  # Hooks' exec shape (containerExecStep): rewritten before the CONTAINER only; an unset
+  # name is dropped; the hooks' own `-e PATH=...` is untouched.
+  run env -i PATH='/job bin' /bin/sh "$w" exec -i --workdir=/__w/r -e PATH -e XDG_DATA_HOME \
+    -e PATH=/pre:/usr/bin cid0 sh -e PATH
+  [ "$status" -eq 0 ]
+  printf '%s\0' exec -i --workdir=/__w/r -e 'PATH=/job bin' \
+    -e PATH=/pre:/usr/bin cid0 sh -e PATH > "$want"
+  cmp "$want" "$out"
+  # A boolean right before the CONTAINER must not swallow it: the command that follows
+  # (here one starting with -e) stays untouched.
+  run env -i PATH=/job/bin /bin/sh "$w" exec -i cid0 -e PATH
+  [ "$status" -eq 0 ]
+  printf '%s\0' exec -i cid0 -e PATH > "$want"
+  cmp "$want" "$out"
+  # Fail safe: an unknown option without `=`, a combined short form, or `--` ends the
+  # rewrite; what follows passes through unchanged.
+  local stop
+  for stop in --not-a-podman-flag -it --; do
+    run env -i PATH=/job/bin /bin/sh "$w" create --name n "$stop" -e PATH img
+    [ "$status" -eq 0 ]
+    printf '%s\0' create --name n "$stop" -e PATH img > "$want"
+    cmp "$want" "$out" || { echo "rewrote after $stop"; false; }
+  done
+  # Any other subcommand passes through unchanged, even with a job PATH set.
+  local sub
+  for sub in start pull logs; do
+    run env -i PATH=/job/bin /bin/sh "$w" "$sub" -e PATH x
+    [ "$status" -eq 0 ]
+    printf '%s\0' "$sub" -e PATH x > "$want"
+    cmp "$want" "$out" || { echo "rewrote for $sub"; false; }
+  done
+}
+
 @test "gh-runner: the deploy probe runs docker the way the hooks do, environment included" {
   # The 10.24 probe ran `docker create` with the user manager's environment and passed
   # while every container job failed with `cannot resolve /github/home` (MISTAKES 10.25).

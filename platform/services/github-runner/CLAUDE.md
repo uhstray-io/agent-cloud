@@ -169,9 +169,15 @@ HOME. A job keeps its own values of those four names: the hooks pass each job va
 a bare `-e NAME`, which the engine would fill from the wrapper's replaced environment, so
 the wrapper first reads the caller's values (printenv) and rewrites a bare `-e`/`--env`
 (also the `=` forms) of one of the four into `NAME=<the caller's value>`, or drops it when
-the caller had none. Every other argument is passed unchanged. The rewrite does not stop
-at the image, so a container command containing `-e PATH` as two words, in a job that
-also sets PATH, is rewritten too. These are the values a podman command run by the
+the caller had none. Every other argument is passed unchanged. The rewrite applies only
+to the options of `create`, `run` and `exec` and stops at the first positional argument
+(the IMAGE, or the CONTAINER for exec): podman reads everything from there on as the
+container's command (`SetInterspersed(false)`), so `echo -e PATH` is never changed. To
+find that argument the wrapper carries podman v4.9.3's lists of value-taking and boolean
+options for those subcommands, read from podman's own flag definitions (cited in the
+wrapper). An option it does not know, written without `=`, a combined short form or
+`--` ends the rewrite early, which at worst hands that job the host's value for one of
+the four names. The directories the wrapper sets are the values a podman command run by the
 account in its own session uses, so the store is the same one plain job steps and earlier
 runs used; nothing in this repository customises the account's storage location. The
 runner's `.env` sets PATH with `_bin` first: the systemd unit starts the runner through

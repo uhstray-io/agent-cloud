@@ -4502,13 +4502,16 @@ first on the runner's PATH through `.env`) that always sets the account's own
 HOME alone and runs `/usr/bin/podman`. Because the hooks pass job variables as bare `-e
 NAME`, the wrapper first rewrites a bare `-e` of one of those four names into the caller's
 own value (or drops it when the caller had none), so a job's own PATH or XDG value still
-reaches its container. `deploy-github-runner.yml` resolves `docker` from the PATH in the
+reaches its container. It does so only in the options of `create`, `run` and `exec`, and
+stops at the IMAGE (CONTAINER for exec), so the container's command is never changed;
+an option outside podman v4.9.3's flag lists ends the rewrite early. `deploy-github-runner.yml` resolves `docker` from the PATH in the
 deployed `.env` and requires the wrapper, imports the probe image under `env -i` (as the
 hooks' `pull` runs), creates the container under `env -i HOME=/github/home
 GITHUB_ACTIONS=true CI=true` with `-e HOME`, and requires the created container to carry
 `HOME=/github/home`. It runs no `podman system migrate`, which would stop a running job's
 containers. `test_service_github_runner.bats` renders the wrapper and runs it against a
-stub podman with the hooks' environment and argument forms (compared byte for byte), and
+stub podman with the hooks' environment and argument shapes for create, run and exec
+(compared byte for byte, including a command after the image that contains `-e PATH`), and
 requires the probe's environment, the absence of a migrate, and the `.env` PATH.
 
 ## 11. The largest one
