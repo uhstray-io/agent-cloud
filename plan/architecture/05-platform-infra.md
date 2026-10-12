@@ -337,6 +337,17 @@ playbook, because vLLM cannot authenticate gateway-issued keys.
 Deliberation, verification log and the phased plan: OpenSpec change
 `plan/development/openspec/changes/inference-gateway-agentgateway` (design.md decisions 1–8).
 
+**Refresh, 2026-10-12 (appended; the text above is unchanged).** The count in the line
+above is stale: `design.md` of that change now carries numbered decisions 1 to 12, plus the
+dated 2026-09-27 and 2026-10-02 sections, so "decisions 1–8" names only the original eight.
+The pointer in plan 06 that this record promised was added on 2026-10-04
+(`plan/development/openspec/changes/inference-gateway-agentgateway/tasks.md`, task 5.2).
+
+**Accepted 2026-10-12 (operator decision, Joseph A. Wisneski IV).** The Status line above
+("Proposed ... until then it binds nothing") is superseded by this line; the record binds from
+this date. The section heading and the Status paragraph are left as written, so the diff stays
+append-only.
+
 ## Internal DNS naming (decided 2026-09-28)
 
 Status: **Proposed (decisions by Joe 2026-09-28).** Joe decided the scheme and the

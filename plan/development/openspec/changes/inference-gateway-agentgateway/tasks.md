@@ -507,7 +507,7 @@
       the retirement date is recorded in `context/architecture.md` once 4.7 sets it
       2026-10-03: the deploy half is PR #400 (merged). The vLLM rotation waits on the dgx-spark
       handoff, which has not been sent
-- [ ] 5.2 Accept the architecture record; append a dated pointer line to
+- [x] 5.2 Accept the architecture record; append a dated pointer line to
       `plan/development/06-inference-skynet.md`; `platform/services/inference/` stub
       gains a README pointing at the gateway service and the dgx-spark roadmap record
       2026-10-04: the non-decision half is done — a dated pointer callout in
@@ -515,6 +515,13 @@
       replaces the two `.gitkeep` stubs, pointing at `platform/services/agentgateway/` and the
       dgx-spark `node-telemetry-and-placement-benchmark` roadmap record. Open: accepting the
       architecture record is Joe's decision, so this box stays unticked.
+      2026-10-12: ticked. The operator accepted the architecture record (decision of 2026-10-12).
+      `plan/architecture/05-platform-infra.md`, section "Inference gateway: agentgateway alongside
+      skynet", gains a dated refresh (the "design.md decisions 1–8" pointer was stale: the design
+      now numbers decisions 1 to 12) and an appended "Accepted 2026-10-12" line; its heading and
+      Status paragraph are left as written. The remaining clause of this task was only the
+      acceptance (the plan 06 pointer and the `platform/services/inference/` README landed
+      2026-10-04, above)
 - [ ] 5.3 Validation gate: 5.1 proves scenario "Grace period ends"; the record and the
       plan 06 line prove scenario "Decision is findable and plan 06 is amended"; on
       archive, retain the outcome (worked / dead end / corrected) into bank
@@ -570,7 +577,7 @@
       drill's first reading line was wrong ("no reading") on the runner's ansible-core 2.18.15
       because the statuses compared as strings; the class lines and the verdict were right,
       and the reading is fixed in the probe playbook
-- [ ] 6.1a The one gateway probe path. Every check that sends a request to the gateway
+- [x] 6.1a The one gateway probe path. Every check that sends a request to the gateway
       from outside Caddy uses it: this deploy's own verify, the personal-key 401 gates
       (`inference-personal-keys`), the renewal proof for the client leaves that are probed
       directly (`production-internal-ca`), the benchmark VM's attribution check
@@ -636,6 +643,17 @@
       (`agentgateway-observability`). Recorded, not ticked: this task stays open until
       each of those checks exists and sends through `tasks/agw-probe.yml`, or its text is
       restated.
+      2026-10-12: restated by operator decision. 6.1a = the shared probe exists and every
+      gateway request in this change goes through it (deploy, renewal proof, conformance,
+      client-TLS probe). Checks owned by sibling changes (benchmark, personal keys,
+      observability) are tracked there. Ticked. Evidence read from `origin/dev`: the shared
+      probe `tasks/agw-probe.yml` is included by `deploy-agentgateway.yml:713,763,812`,
+      `renew-internal-certs.yml:558` (as `file:`), `run-agw-conformance.yml:221` and
+      `probe-agentgateway-client-tls.yml:164,181,198`. `rollback-inference-route.yml` sends no
+      gateway request: its `uri` calls (`:255,:269,:893,:908`) hit OpenBao only, and its
+      readiness check execs `wget` in the db container (`:398`). The sibling checks are named in
+      their own tasks: `inference-benchmarking/tasks.md:45`, `inference-personal-keys/tasks.md:172`,
+      `production-internal-ca/tasks.md:313`
 - [ ] 6.2 Caddy's `inference` and `admin.inference` blocks proxy to `https://` with
       `transport http { tls_server_name <gateway SAN>; tls_trust_pool file <root>;
       tls_client_auth <cert> <key> }` (Caddy 2.11.4), the leaf files read from the Caddy
