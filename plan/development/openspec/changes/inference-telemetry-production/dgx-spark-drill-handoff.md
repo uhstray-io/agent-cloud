@@ -61,10 +61,12 @@ access, but only the node named by `-e drill_node=` is ever touched):
      carry no `unit` detail (`bus_verify_manage_units_async` passes none; used by
      `method_enqueue_unit_job_many`, `method_clear_jobs`, `method_reset_failed` and
      `method_enqueue_marked_jobs` in systemd `src/core/dbus-manager.c:893`, `:1309`,
-     `:1330`, `:2223`), and `StartTransientUnit` (`method_start_transient_unit`,
-     `dbus-manager.c:1226`), which creates a unit with a command of the caller's
-     choosing and so is what `systemd-run` as root rests on. The unit match is what
-     keeps all of these denied. All line numbers are systemd `main` read on 2026-10-12,
+     `:1330`, `:2223`), and `StartTransientUnit` (`method_start_transient_unit`), which
+     does carry a `unit` (the new unit's own name, `dbus-manager.c:1226-1232`) and
+     creates a unit running a command of the caller's choosing, which is what
+     `systemd-run` as root rests on. The unit match denies the manager-level calls
+     because they carry no unit, and denies a transient unit because its name is not
+     `node-exporter.service`. All line numbers are systemd `main` read on 2026-10-12,
      not the nodes' installed version.
    - Shape of the rule (an example; dgx-spark writes, places and tests the real one):
 
