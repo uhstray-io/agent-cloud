@@ -113,7 +113,10 @@ waiting requests; KV-cache use; preemptions; token throughput), `inference-fleet
 (scrape health, memory headroom against the memory guard's thresholds, CPU, load, root
 filesystem and the vLLM journal from Loki, plus the "Inference probe serving" panel: the
 synthetic probe's result per model, 0 shown as "not serving" and 1 as "serving", which can
-be red while every scrape panel is green; the probe drill below asserts against it), and `inference-placement-comparison`
+be red while every scrape panel is green; the probe drill below asserts against it; the
+panel has data only where `o11y_inference_probe_enabled` is true and the probe has taken
+its first sample, so a whole-dashboard `Verify o11y Dashboard Data` of `inference-fleet-health`
+needs the probe on, or `expected_empty_panels=["Inference probe serving"]`), and `inference-placement-comparison`
 (the same signals against an earlier window, with a link to the dgx-spark `results/`
 run manifests). Each has a `model_alias` variable. vLLM labels its series with
 `model_name`, which carries the served model name, so the variable filters on that
@@ -421,10 +424,12 @@ Dashboard proof (probe mode): the drill also reads the provisioned `inference-fl
 dashboard's "Inference probe serving" panel from the o11y host, refusing before any fault
 unless it is exactly one stat panel on `inference_probe_success` with no dashboard
 variables and the mappings 0 "not serving" and 1 "serving". During the fault it evaluates
-that panel's own expression and requires the drill model to read 0 (not serving) while
-`/health` stays 200; after the restore it requires the deployed model to read 1 again.
-The expression comes from the dashboard JSON, never from the playbook, and only the panel
-title, the model name and the mapped text are printed. A `drill_restore_only=true` run
+that panel's own expression (read from the provisioned dashboard file) against Prometheus
+and requires the drill model to read 0 (not serving) while `/health` stays 200; after the
+restore it requires the deployed model to read 1 again. It does not query Grafana's
+rendered panel. The expression comes from the dashboard JSON, never from the playbook, and
+only the panel title, the model name and the mapped text are printed. The probe must be
+deployed and sampled for the panel to have data (`o11y_inference_probe_enabled`). A `drill_restore_only=true` run
 reads no dashboard.
 
 Alert identity: Grafana sets an alert's `alertname` label to its rule's title, so the drill

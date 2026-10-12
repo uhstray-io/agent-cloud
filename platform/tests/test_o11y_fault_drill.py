@@ -692,7 +692,7 @@ def _fault_verdict(tmp_path, rows):
 def test_the_fault_proof_passes_when_the_panel_shows_the_drill_model_not_serving(tmp_path):
     rc, out = _fault_verdict(tmp_path, [(DRILL_MODEL, "0")])
     assert rc == 0, out
-    assert f"shows {DRILL_MODEL}: not serving." in out, out
+    assert f"gives {DRILL_MODEL}: not serving." in out, out
 
 
 @pytest.mark.parametrize("rows,why", [
@@ -739,6 +739,10 @@ def test_the_panel_proof_is_probe_only_ordered_and_never_gates_a_restore_only_ru
         assert "drill == 'probe'" in when and "not _restore_only" in when, name
     # The dashboard read is read-only and runs under --check, like every other refusal read.
     assert _task(PANEL_READ)["check_mode"] is False
+    # Every refusal runs before the block that induces the fault.
+    top = [t.get("name") for t in _play_tasks()]
+    assert top.index(PANEL_READ) < top.index(PANEL_HOLD) < top.index(PANEL_REFUSAL) \
+        < top.index("Induce, prove, restore")
     # The serving-again proof follows the fresh-sample proof, after the restore.
     tasks = [t.get("name") for t in _play_tasks()]
     assert tasks.index("Require a successful probe sample for the deployed model after the restore") \

@@ -21,10 +21,10 @@
 #             read from the o11y host),
 #             proves `inference_probe_failing` fires for that model and the Discord
 #             contact point delivered it, proves the provisioned inference dashboard's
-#             "Inference probe serving" panel shows that model as not serving (the panel's
-#             own expression, read from the dashboard JSON on the o11y host), restores the
-#             probe environment in `always:` and proves the panel shows the deployed model
-#             serving again.
+#             "Inference probe serving" panel expression (read from the dashboard JSON on
+#             the o11y host, evaluated against Prometheus; Grafana's rendered panel is not
+#             queried) gives that model as not serving, restores the probe environment in
+#             `always:` and proves the expression gives the deployed model serving again.
 #   grafana   stops the `o11y-grafana` container for up to fifteen minutes and proves the
 #             external liveness watcher (check-o11y-liveness.yml, its own Semaphore
 #             schedule) posted its failure message through the alert webhook; restarts
@@ -163,7 +163,7 @@
       probe: >-
         {{ _drill_rule_uid }} ({{ _drill_alertname | default('') }}) fired for model {{ _drill_model.stdout | default('') }}
         and reached Discord naming both, with /health 200 throughout, and the dashboard panel
-        "{{ _probe_panel_title }}" showed it not serving, then serving again after the restore
+        "{{ _probe_panel_title }}" expression gave it as not serving, then serving again after the restore
       grafana: the liveness watcher's Grafana-health failure reached Discord
     # What ONE Discord message must hold to count as this mode's receipt. Probe: the contact
     # point's firing line, and inside the default message's Firing section the label lines
@@ -458,9 +458,10 @@
              selectattr('state', 'match', '^(Alerting|firing)$') | list | length) > 0
           when: drill == 'probe' and not _restore_only
 
-        # The dashboard half of "Health up, inference down": the panel's own expression, the
-        # samples Prometheus holds for the drill model, and the text the panel's value mapping
-        # gives that value. Only the panel title, the model name and that text are reported.
+        # The dashboard half of "Health up, inference down": the panel's own expression
+        # (from the provisioned dashboard file) evaluated against Prometheus for the drill
+        # model, and the text the panel's value mapping gives that value. Grafana's rendered
+        # panel is not queried. Only the panel title, the model name and that text are reported.
         - name: Read what the dashboard's probe panel evaluates to for the drill model
           ansible.builtin.command:
             argv:
@@ -493,7 +494,8 @@
               Panel "{{ _probe_panel_title }}" did not show {{ _drill_model.stdout }} as not serving
               during the fault.
             success_msg: >-
-              Panel "{{ _probe_panel_title }}" shows {{ _drill_model.stdout }}:
+              Panel "{{ _probe_panel_title }}" expression (from the provisioned dashboard file,
+              evaluated against Prometheus) gives {{ _drill_model.stdout }}:
               {{ _probe_panel_states[_panel_rows[0].value[1]].text }}.
           vars:
             _panel_rows: >-
