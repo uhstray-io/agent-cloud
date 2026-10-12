@@ -111,7 +111,9 @@ Three provisioned dashboards cover the DGX Spark pair: `inference-latency-capaci
 (first-token, end-to-end, inter-token, queue, prefill and decode latency; running and
 waiting requests; KV-cache use; preemptions; token throughput), `inference-fleet-health`
 (scrape health, memory headroom against the memory guard's thresholds, CPU, load, root
-filesystem and the vLLM journal from Loki), and `inference-placement-comparison`
+filesystem and the vLLM journal from Loki, plus the "Inference probe serving" panel: the
+synthetic probe's result per model, 0 shown as "not serving" and 1 as "serving", which can
+be red while every scrape panel is green; the probe drill below asserts against it), and `inference-placement-comparison`
 (the same signals against an earlier window, with a link to the dgx-spark `results/`
 run manifests). Each has a `model_alias` variable. vLLM labels its series with
 `model_name`, which carries the served model name, so the variable filters on that
@@ -414,6 +416,16 @@ skips `always:` for unreachable hosts); the run then fails naming that recovery.
 probe environment file holds the inference key, so every task touching it sets
 `diff: false` and `no_log`. The probe restore requires a success sample for the deployed
 model newer than the restore, and the resolved check covers every drill model name.
+
+Dashboard proof (probe mode): the drill also reads the provisioned `inference-fleet-health`
+dashboard's "Inference probe serving" panel from the o11y host, refusing before any fault
+unless it is exactly one stat panel on `inference_probe_success` with no dashboard
+variables and the mappings 0 "not serving" and 1 "serving". During the fault it evaluates
+that panel's own expression and requires the drill model to read 0 (not serving) while
+`/health` stays 200; after the restore it requires the deployed model to read 1 again.
+The expression comes from the dashboard JSON, never from the playbook, and only the panel
+title, the model name and the mapped text are printed. A `drill_restore_only=true` run
+reads no dashboard.
 
 Alert identity: Grafana sets an alert's `alertname` label to its rule's title, so the drill
 reads that title back from the provisioned rule (refusing a rule without one before any

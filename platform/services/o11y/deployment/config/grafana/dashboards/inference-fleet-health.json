@@ -1,7 +1,7 @@
 {
   "uid": "inference-fleet-health",
   "title": "Inference fleet health",
-  "description": "Scrape health, memory headroom against the memory guard thresholds, host load and journal lines for the DGX Spark pair.",
+  "description": "Scrape health, the synthetic inference probe result per model, memory headroom against the memory guard thresholds, host load and journal lines for the DGX Spark pair.",
   "tags": [
     "agent-cloud",
     "inference",
