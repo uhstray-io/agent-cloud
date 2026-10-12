@@ -19,11 +19,11 @@ Semaphore "Deploy honcho"
      ├─ tasks/place-monorepo.yml     # clone/copy the monorepo, ensure podman + compose
      ├─ tasks/manage-secrets.yml     # OpenBao → templates/env.j2 → .env (JWT secret + DB
      │                               #   password; Gemini key shared-read from nemoclaw)
-     ├─ deploy.sh                    # podman compose pull + up -d --force-recreate + wait healthy
+     ├─ deploy.sh                    # podman compose pull + compose_up_if_changed + wait healthy
      └─ verify                       # GET /health → 200 (inside the api container)
 ```
 
-`deploy.sh` is container lifecycle only — it never generates secrets (Critical Deployment Rule #2). The image is prebuilt by `.github/workflows/build-honcho.yml` (dispatch-only; pinned `plastic-labs/honcho` ref → GHCR) — nothing builds on the VM. Clean rebuild: `platform/playbooks/clean-deploy-honcho.yml` (destroys the Postgres + redis volumes).
+`deploy.sh` is container lifecycle only — it never generates secrets (Critical Deployment Rule #2). The image is prebuilt by `.github/workflows/build-honcho.yml` (dispatch-only; pinned `plastic-labs/honcho` ref → GHCR) — nothing builds on the VM. Containers are recreated only when `.env`, the compose files or an image changed (`compose_up_if_changed`); the survey `deploy_force_recreate=true` forces it. Clean rebuild: `platform/playbooks/clean-deploy-honcho.yml` (destroys the Postgres + redis volumes).
 
 ## Auth
 

@@ -195,4 +195,4 @@
     - name: "Record the service-deploy step result"
       ansible.builtin.include_tasks: tasks/emit-service-deploy-result.yml
       vars:
-        service_deploy_task: "{{ _deploy | default({}) }}"
+        service_deploy_result_var: _deploy

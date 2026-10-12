@@ -891,10 +891,20 @@
           run.{% endif %}
 
     # Last: every verify task above passed (a failure stops the play before this records).
+    # `verified` is false when the keyed round-trip was refused by the gateway's own request
+    # bucket and the run accepted that as unproven (agw_verify_allow_unproven): the evidence key
+    # stays a boolean and does not claim a proof the run did not make.
+    - name: "Gather this host's service-deploy result"
+      ansible.builtin.set_fact:
+        _service_deploy_result:
+          skipped: "{{ _deploy is not defined or _deploy is skipped }}"
+          changed: "{{ (_deploy | default({})).changed | default(false) }}"
+          verified: "{{ not (_verify_refused | default(false) | bool) }}"
+
     - name: "Record the service-deploy step result"
       ansible.builtin.include_tasks: tasks/emit-service-deploy-result.yml
       vars:
-        service_deploy_task: "{{ _deploy | default({}) }}"
+        service_deploy_result_var: _service_deploy_result
 
 # ── Phase 4: Shared-key retirement verdict (gateway task 5.1) ──────────────
 # Last on purpose: a failure here must not stop Phase 2 from removing the expired identity from

@@ -73,7 +73,7 @@ def test_wave_playbook_records_service_deploy_last_in_its_verify_play(playbook, 
     assert str(last.get("ansible.builtin.include_tasks", "")) == "tasks/emit-service-deploy-result.yml", (
         f"{playbook}: the last task of {verify_play!r} is {last.get('name')!r}, not the service-deploy record"
     )
-    assert "service_deploy_task" in last.get("vars", {}), playbook
+    assert "service_deploy_result_var" in last.get("vars", {}), playbook
     # Exactly one record per playbook, so a re-run is judged once.
     includes = [
         t for t in playbook_yaml.tasks(playbook_yaml.plays(PLAYBOOKS / playbook))
@@ -128,24 +128,33 @@ def test_the_tududi_local_overlay_bind_mount_is_a_digest_input():
         assert mount.split(":")[0].removeprefix("./") in code, f"{mount} is not passed to compose_up_if_changed"
 
 
-def _run_shared(tmp_path, deploy: str | None, *extra: str, check: bool = False):
-    """Run the shared task in a one-host play. `deploy` is the YAML of the registered result
-    the caller passes, or None to pass an undefined one."""
-    value = "{{ _deploy | default({}) }}"
-    play = [{
-        "hosts": "svc", "gather_facts": False,
-        "tasks": [
-            *([{"ansible.builtin.set_fact": {"_deploy": yaml.safe_load(deploy)}}] if deploy is not None else []),
-            {
-                "name": "Record the step result",
-                "ansible.builtin.include_tasks": str(SHARED),
-                "vars": {"service_deploy_task": value},
-            },
-        ],
-    }]
-    (tmp_path / "play.yml").write_text(json.dumps(play))
-    host = {"ansible_connection": "local", "service_name": "demo"}
-    inventory = {"all": {"children": {"svc": {"hosts": {"h1": host}}}}}
+def _task(playbook: str, name: str) -> dict:
+    """The named top-level task of a playbook's plays, as the playbook defines it."""
+    (task,) = [t for t in playbook_yaml.tasks(playbook_yaml.plays(PLAYBOOKS / playbook)) if t.get("name") == name]
+    return json.loads(json.dumps(task))
+
+
+GATHER = "Gather this host's service-deploy result"
+
+
+def _run_shared(tmp_path, hosts: dict, *extra, var="_deploy", before=(), fail_hosts=(), check=False):
+    """Run the shared task over a play of local hosts. `hosts` maps a host to its host vars (the
+    per-host deploy result lives in them). `before` are tasks run first (a playbook's own gather
+    task, rendered as the playbook writes it); `fail_hosts` fail before the include, as a host
+    that failed an earlier phase does."""
+    include = {
+        "name": "Record the step result",
+        "ansible.builtin.include_tasks": str(SHARED),
+        "vars": {"service_deploy_result_var": var},
+    }
+    tasks = [*before]
+    if fail_hosts:
+        tasks.append({"ansible.builtin.fail": {"msg": "earlier phase failed"},
+                      "when": f"inventory_hostname in {list(fail_hosts)!r} and not ansible_check_mode"})
+    tasks.append(include)
+    (tmp_path / "play.yml").write_text(json.dumps([{"hosts": "svc", "gather_facts": False, "tasks": tasks}]))
+    base = {"ansible_connection": "local", "service_name": "demo"}
+    inventory = {"all": {"children": {"svc": {"hosts": {h: {**base, **v} for h, v in hosts.items()}}}}}
     (tmp_path / "inv.yml").write_text(json.dumps(inventory))
     env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
     env["ANSIBLE_NOCOLOR"] = "1"
@@ -157,24 +166,94 @@ def _run_shared(tmp_path, deploy: str | None, *extra: str, check: bool = False):
     return proc, step_results.results_in(proc.stdout.splitlines())
 
 
+def _one(found):
+    assert len(found) == 1, found
+    (res,) = found
+    assert (res["step"], res["service"]) == ("service-deploy", "demo")
+    assert type(res["evidence"]["changed_on_rerun"]) is bool and type(res["evidence"]["verified"]) is bool
+    return res
+
+
+CHANGED, SAME, SKIPPED = {"changed": True}, {"changed": False}, {"skipped": True, "changed": False}
+
+
 @needs_ansible
 @pytest.mark.parametrize(
-    "deploy,status,changed",
+    "results,status,verified,changed",
     [
-        ("{changed: true, rc: 0}", "pass", True),
-        ("{changed: false, rc: 0}", "pass", False),
-        ("{skipped: true, changed: false}", "skip", False),
-        (None, "skip", False),
+        ([CHANGED], "pass", True, True),
+        ([SAME], "pass", True, False),
+        ([SAME, SAME], "pass", True, False),
+        ([SAME, CHANGED], "pass", True, True),  # the second host alone changed
+        ([CHANGED, SAME], "pass", True, True),
+        ([SKIPPED, SKIPPED], "skip", True, False),
+        ([SKIPPED, SAME], "pass", True, False),
+        ([SAME, {"changed": False, "verified": False}], "pass", False, False),
+        ([None, None], "skip", True, False),  # nothing registered: the run was limited to other tags
     ],
 )
-def test_shared_task_records_status_and_both_evidence_keys(tmp_path, deploy, status, changed):
-    proc, found = _run_shared(tmp_path, deploy)
+def test_shared_task_aggregates_every_host_of_the_play(tmp_path, results, status, verified, changed):
+    hosts = {f"h{i}": ({"_deploy": r} if r is not None else {}) for i, r in enumerate(results, 1)}
+    proc, found = _run_shared(tmp_path, hosts)
     assert proc.returncode == 0, proc.stdout[-3000:]
-    assert len(found) == 1, found
-    res = found[0]
-    assert (res["step"], res["status"], res["service"], res["error"]) == ("service-deploy", status, "demo", None)
-    assert res["evidence"] == {"verified": True, "changed_on_rerun": changed}
-    assert type(res["evidence"]["changed_on_rerun"]) is bool
+    res = _one(found)
+    assert (res["status"], res["error"]) == (status, None)
+    assert res["evidence"] == {"verified": verified, "changed_on_rerun": changed}
+
+
+@needs_ansible
+def test_shared_task_fails_when_a_host_of_the_play_failed(tmp_path):
+    proc, found = _run_shared(tmp_path, {"h1": {"_deploy": SAME}, "h2": {"_deploy": CHANGED}}, fail_hosts=["h2"])
+    assert proc.returncode != 0
+    res = _one(found)
+    assert res["status"] == "fail" and "h2" in res["error"] and "h1" not in res["error"]
+    assert res["evidence"] == {"verified": False, "changed_on_rerun": False}
+
+
+@needs_ansible
+def test_shared_task_does_not_judge_a_missing_host_in_a_dry_run(tmp_path):
+    # meta: end_host (the dry run's "not deployed yet, stop") removes a host from the play's
+    # hosts exactly as a failure does; a dry run's deploy is skipped on every host anyway.
+    proc, found = _run_shared(
+        tmp_path, {"h1": {"_deploy": SKIPPED}, "h2": {"_deploy": SKIPPED}}, fail_hosts=["h2"], check=True
+    )
+    assert proc.returncode == 0, proc.stdout[-3000:]
+    assert _one(found)["status"] == "skip"
+
+
+@needs_ansible
+@pytest.mark.parametrize(
+    "vars_,status,changed",
+    [
+        ({"_configured": {"changed": True}}, "pass", True),
+        ({"_configured": {"changed": False}, "_runner_unit": {"changed": True}}, "pass", True),
+        ({"_configured": {"changed": False}, "_runner_files": {"changed": True}}, "pass", True),
+        ({"_configured": {"changed": False}, "_runner_unit": {"changed": False}}, "pass", False),
+        ({"_configured": {"skipped": True, "changed": False}}, "skip", False),
+        ({}, "skip", False),
+    ],
+)
+def test_github_runner_composite_result_reads_the_tasks_it_names(tmp_path, vars_, status, changed):
+    # Rendered exactly as deploy-github-runner.yml writes it: renaming a registered var it reads
+    # silently reports "no change", so a rename must turn this red.
+    gather = _task("deploy-github-runner.yml", GATHER)
+    proc, found = _run_shared(tmp_path, {"h1": vars_}, var="_service_deploy_result", before=[gather])
+    assert proc.returncode == 0, proc.stdout[-3000:]
+    res = _one(found)
+    assert (res["status"], res["evidence"]["changed_on_rerun"]) == (status, changed)
+    include = _task("deploy-github-runner.yml", "Record the service-deploy step result")
+    assert include["vars"] == {"service_deploy_result_var": "_service_deploy_result"}
+
+
+@needs_ansible
+@pytest.mark.parametrize("refused,verified", [(True, False), (False, True), (None, True)])
+def test_agentgateway_result_is_unverified_when_an_unproven_429_was_accepted(tmp_path, refused, verified):
+    gather = _task("deploy-agentgateway.yml", GATHER)
+    host = {"_deploy": CHANGED, **({"_verify_refused": refused} if refused is not None else {})}
+    proc, found = _run_shared(tmp_path, {"h1": host}, var="_service_deploy_result", before=[gather])
+    assert proc.returncode == 0, proc.stdout[-3000:]
+    res = _one(found)
+    assert (res["status"], res["evidence"]) == ("pass", {"verified": verified, "changed_on_rerun": True})
 
 
 @needs_ansible
@@ -189,10 +268,10 @@ def test_shared_task_evidence_keys_are_the_registrys():
 @needs_ansible
 @pytest.mark.parametrize(
     "forge",
-    forgeries.templated_forgeries("service_deploy_task", {"changed": False}, {"changed": False, "forged": True}),
+    forgeries.templated_forgeries("service_deploy_result_var", "_deploy", "_other"),
 )
 def test_shared_task_refuses_the_input_forged_as_an_extra_var(tmp_path, forge):
-    proc, found = _run_shared(tmp_path, "{changed: true}", "-e", forge(tmp_path))
+    proc, found = _run_shared(tmp_path, {"h1": {"_deploy": CHANGED, "_other": SAME}}, "-e", forge(tmp_path))
     assert proc.returncode != 0
     assert "Refusing to record a service-deploy result" in proc.stdout
     assert not found

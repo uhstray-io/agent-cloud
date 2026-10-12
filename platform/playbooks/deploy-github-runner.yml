@@ -831,16 +831,20 @@
           hooks' own environment. Confirm it is ONLINE at the organisation with
           verify-github-runners.yml before routing work to it.
 
-    # Last: every verify task above passed. The result carries only the two flags it reads,
-    # never _configured, whose task is no_log because it handled the registration token.
-    # "Changed" is any of the three things this deploy installs: a registration, the systemd
-    # unit, or a rendered declaration/env/hook file. `_configured` is skipped under --check,
-    # and undefined when the run was limited away from it.
-    - name: "Record the service-deploy step result"
-      ansible.builtin.include_tasks: tasks/emit-service-deploy-result.yml
-      vars:
-        service_deploy_task:
+    # Last: every verify task above passed. The per-host result carries only the flags the
+    # shared task reads, never _configured, whose task is no_log because it handled the
+    # registration token. "Changed" is any of the three things this deploy installs: a
+    # registration, the systemd unit, or a rendered declaration/env/hook file. `_configured`
+    # is skipped under --check, and undefined when the run was limited away from it.
+    - name: "Gather this host's service-deploy result"
+      ansible.builtin.set_fact:
+        _service_deploy_result:
           skipped: "{{ _configured is not defined or _configured is skipped }}"
           changed: >-
             {{ (_configured.changed | default(false)) or (_runner_unit.changed | default(false))
                or (_runner_files.changed | default(false)) }}
+
+    - name: "Record the service-deploy step result"
+      ansible.builtin.include_tasks: tasks/emit-service-deploy-result.yml
+      vars:
+        service_deploy_result_var: _service_deploy_result
