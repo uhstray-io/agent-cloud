@@ -198,6 +198,16 @@
       unit; the drill refuses an undeclared node). That map was not found in the local
       site-config checkout, and the unit names are unverified. Then one run in a dgx-spark
       window. Left unticked.
+      2026-10-12: BLOCKED on dgx-spark. The DGX nodes are not inventory hosts (site-config
+      `inventory/production.yml` carries only the `dgx_spark_nodes` scrape list), so the
+      drill's host assert (`o11y-fault-drill.yml:179`) cannot pass, and agent-cloud has no
+      login on the nodes. The unit is `node-exporter.service` (dgx-spark
+      `telemetry-host-exporter.yml`, `origin/main` `d803163`). A sudoers rule limited to
+      `systemctl` cannot serve the drill's `become: true` module tasks (Ansible wraps the
+      module in `<shell> -c`), so the request asks for a polkit rule and the drill's two
+      exporter tasks (`:282-286`, `:457-461`) move to `become: false` afterwards. The
+      request is prepared at `dgx-spark-drill-handoff.md` in this change and is NOT sent,
+      per the operator's decision of 2026-10-12. Left unticked.
 - [ ] 2.6 Validation gate: 2.4 proves scenario "All node targets up" and scenario "Boot
       journal is queryable"; 2.5 proves scenario "Missing scrape is a telemetry failure"
       including the alert firing;
