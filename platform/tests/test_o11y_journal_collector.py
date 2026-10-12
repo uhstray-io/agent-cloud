@@ -17,6 +17,7 @@ from unittest.mock import Mock
 import pytest
 import yaml
 from jinja2 import Environment
+from test_connection_identity_vars import _ansible_python, needs_ansible
 
 ROOT = Path(__file__).resolve().parents[2]
 O11Y = ROOT / "platform/services/o11y/deployment"
@@ -482,10 +483,37 @@ def test_live_diagnostic_reports_only_fixed_mount_layout_and_role_categories():
     assert "/private" not in json.dumps(diagnostic)
 
 
-def test_live_positions_debug_rescues_malformed_nested_diagnostic_before_rendering():
-    from ansible.parsing.dataloader import DataLoader
-    from ansible.template import Templar, trust_as_template
+# Templated by ansible's own Templar, run in the interpreter ansible-playbook uses: the test
+# interpreter need not have ansible-core installed (the pre-push hook runs on a workstation
+# python3 without it). One process evaluates every diagnostic, read from stdin.
+_EVALUATE = """
+import json, sys
+from ansible.parsing.dataloader import DataLoader
+from ansible.template import Templar, trust_as_template
+job = json.load(sys.stdin)
+results = []
+for diagnostic in job["diagnostics"]:
+    variables = {
+        "_journal_positions_live_parsed": {"status": "ready", "live_diagnostic": diagnostic},
+    }
+    templar = Templar(loader=DataLoader(), variables=variables)
+    passed = all(
+        templar.evaluate_conditional(trust_as_template(condition))
+        for condition in job["conditions"]
+    )
+    variables["_journal_positions_live_summary"] = (
+        {"status": "ready", "live_diagnostic": diagnostic} if passed else job["rescue"]
+    )
+    rendered = Templar(loader=DataLoader(), variables=variables).template(
+        trust_as_template(job["msg"])
+    )
+    results.append([passed, variables["_journal_positions_live_summary"], str(rendered)])
+print(json.dumps(results))
+"""
 
+
+@needs_ansible
+def test_live_positions_debug_rescues_malformed_nested_diagnostic_before_rendering():
     plays = yaml.safe_load(PLAYBOOK.read_text())
     apply_play = next(play for play in plays if play.get("hosts") == "o11y_svc")
     apply_block = next(
@@ -604,28 +632,22 @@ def test_live_positions_debug_rescues_malformed_nested_diagnostic_before_renderi
             },
         }),
     ]
-    def evaluate(diagnostic):
-        variables = {
-            "_journal_positions_live_parsed": {
-                "status": "ready",
-                "live_diagnostic": diagnostic,
-            },
+    def evaluate_all(diagnostics):
+        job = {
+            "conditions": validation["ansible.builtin.assert"]["that"],
+            "msg": debug["ansible.builtin.debug"]["msg"],
+            "rescue": rescue,
+            "diagnostics": diagnostics,
         }
-        templar = Templar(loader=DataLoader(), variables=variables)
-        passed = all(
-            templar.evaluate_conditional(trust_as_template(condition))
-            for condition in validation["ansible.builtin.assert"]["that"]
+        done = subprocess.run(
+            [_ansible_python(), "-c", _EVALUATE], input=json.dumps(job), text=True,
+            capture_output=True, check=True,
         )
-        variables["_journal_positions_live_summary"] = (
-            {"status": "ready", "live_diagnostic": diagnostic}
-            if passed else rescue
-        )
-        rendered = Templar(loader=DataLoader(), variables=variables).template(
-            trust_as_template(debug["ansible.builtin.debug"]["msg"])
-        )
-        return passed, variables["_journal_positions_live_summary"], rendered
+        return [tuple(result) for result in json.loads(done.stdout)]
 
-    valid_passed, valid_summary, valid_rendered = evaluate(base)
+    evaluated = evaluate_all([base] + [diagnostic for _, diagnostic in malformed])
+    (valid_passed, valid_summary, valid_rendered), *malformed_results = evaluated
+
     assert valid_passed is True
     assert valid_summary["status"] == "ready"
     for expected in (
@@ -642,8 +664,7 @@ def test_live_positions_debug_rescues_malformed_nested_diagnostic_before_renderi
     ):
         assert expected in valid_rendered
 
-    for name, diagnostic in malformed:
-        passed, summary, rendered = evaluate(diagnostic)
+    for (name, _), (passed, summary, rendered) in zip(malformed, malformed_results, strict=True):
         assert passed is False, name
         assert summary == rescue, name
         assert "helper=unavailable" in rendered, name
