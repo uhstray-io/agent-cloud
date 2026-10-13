@@ -41,6 +41,11 @@
       backed up to a site-config branch (`Back Up Service SSH Key (Dev)` task 2740; the site-config PR
       is pending), distributed with key auth confirmed (`Distribute SSH Keys (Dev)` task 2742).
       Still open: SSH hardening, waiting on the harden-ssh pre-proof change, and the site-config merge.
+      2026-10-13: the harden-ssh pre-proof change has landed (access-harden passes D10, per
+      the service-deployment-workflow 7.1 note of 2026-10-05, PRs #430 and #439). Remaining:
+      the operator merges site-config #63 (the o11y SSH keypair backup; site-config main has
+      no `secrets/ssh/o11y` entry), then Verify Host Access (Dev) and Harden SSH (Dev) run on
+      `o11y_svc`. Not ticked.
 - [x] 0.4 Validation gate: `openspec validate inference-telemetry-production --store
       agent-cloud` passes; the VM answers SSH via the distributed key; proves nothing in
       the spec yet and unblocks section 1
@@ -526,3 +531,6 @@
       only appended text, proving scenario "Status is dated and append-only"; on archive,
       retain the outcome (worked / dead end / corrected) into bank `agent-cloud-750a33b9`
       2026-10-02 rescope: OPEN — waits on 4.2, 4.3 and the archive.
+      2026-10-13: 4.2 and 4.3 are ticked (4.3 accepted 2026-10-12); what remains is the
+      archive step, which waits on the other open tasks of this change (0.2, 0.3, 1.3, 2.5,
+      2.6, 4.1). Not ticked.

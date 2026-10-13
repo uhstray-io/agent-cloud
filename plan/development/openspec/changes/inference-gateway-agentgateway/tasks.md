@@ -351,7 +351,7 @@
       2.3's keep-alive half. Not ticked.
 
 ## 3. Telemetry
-- [ ] 3.1 o11y: `scrape.d/agentgateway.yml.j2` for the stats endpoint (`/metrics` on the
+- [x] 3.1 o11y: `scrape.d/agentgateway.yml.j2` for the stats endpoint (`/metrics` on the
       stats port; series `agentgateway_requests_total`, `agentgateway_request_duration_seconds_*`,
       `agentgateway_gen_ai_server_request_duration_*`, `agentgateway_gen_ai_client_token_usage_*`
       — read on the running container 2026-09-17); Alloy
@@ -374,6 +374,21 @@
       the stats port 19002 and `agentgateway_gen_ai_server_time_to_first_token_bucket` series.
       Still open: no Loki readback of a span log line, and the client-view row is not proven on
       live traffic (task 3.3; dashboard-data proof PR pending). Not ticked.
+      2026-10-13 (task output read from production Semaphore by the lead): the Loki readback
+      is PROVEN. Verify o11y Service (Dev) with `expected_service` agentgateway,
+      `emit_agentgateway_canary` true, `expect_traces` true, `expect_logs` true and
+      `expect_metrics` false. The first dry run, 5250, failed all 100 canary requests: the
+      canary sent plain http to a listener that has served TLS only since task 6.1 (a TLS
+      alert record came back in the reply). PR #594 (merged as 08465c5f) sends the canary over
+      the listener's TLS, as `probe-agentgateway-gate.yml` does. Dry run 5257 and real run
+      5262 then both passed: "agentgateway verified: recent Loki log, metrics not requested,
+      recent Tempo trace." The Loki query is `{service="agentgateway"}`, and the only Loki
+      source that sets that label is the span-log processor in
+      `platform/services/o11y/deployment/templates/config.alloy.j2` (the attributes processor
+      `gateway_span_logs`): Docker discovery labels only the o11y host's own containers and
+      the journal collector only o11y and alloy. So the line read back is a gateway span log
+      line. The scrape half was proven 2026-10-06 (3142) and the client-view row by 4913
+      (task 3.3). Ticked.
 - [x] 3.2 Check whether `localRateLimit` has a log-only mode in the v1.5.0 schema; record
       the answer in `design.md` and set the first-week policy accordingly. 2026-09-17: no
       such mode (`RateLimitSpec` has only `maxTokens`, `tokensPerFill`, `fillInterval`,
