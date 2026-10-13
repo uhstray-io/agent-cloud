@@ -19,7 +19,6 @@ import importlib.util
 import json
 import os
 import re
-import shutil
 import subprocess
 from pathlib import Path
 
@@ -27,6 +26,7 @@ import forgeries
 import playbook_yaml
 import pytest
 import yaml
+from ansible_python import needs_ansible
 
 REPO = Path(__file__).resolve().parents[2]
 PLAYBOOKS = REPO / "platform/playbooks"
@@ -37,8 +37,6 @@ _spec = importlib.util.spec_from_file_location(
 )
 step_results = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(step_results)
-
-needs_ansible = pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="ansible-playbook not installed")
 
 # playbook -> the verify play that records the result (the play's name starts with this).
 # Wave 2 (n8n, postiz) is not here yet: add it as each lands.
