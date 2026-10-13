@@ -18,6 +18,7 @@ reads, not inferred from the YAML.
 import importlib.util
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -40,14 +41,13 @@ _spec.loader.exec_module(step_results)
 needs_ansible = pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="ansible-playbook not installed")
 
 # playbook -> the verify play that records the result (the play's name starts with this).
-# Wave 2 so far: n8n and postiz. NetBox is not here yet: its deploy.sh runs on its own library
-# (services/netbox/deployment/lib/common.sh), not the platform one compose_up_if_changed lives in.
 WAVE = {
     "deploy-agentgateway.yml": "Phase 3: Verify agentgateway",
     "deploy-authentik.yml": "Phase 3: Verify authentik",
     "deploy-github-runner.yml": "Deploy GitHub Actions self-hosted runner",
     "deploy-honcho.yml": "Phase 3: Verify honcho",
     "deploy-n8n.yml": "Phase 3: Verify n8n",
+    "deploy-netbox.yml": "Phase 5: Verify deployment",
     "deploy-o11y.yml": "Phase 3: Verify o11y",
     "deploy-openhands.yml": "Phase 3: Verify OpenHands",
     "deploy-postiz.yml": "Phase 3: Verify postiz",
@@ -59,8 +59,11 @@ RECREATE_AWARE = {
     "honcho": "deploy-honcho.yml",
     "openhands": "deploy-openhands.yml",
     "n8n": "deploy-n8n.yml",
+    "netbox": "deploy-netbox.yml",
     "postiz": "deploy-postiz.yml",
 }
+# NetBox keeps its own compose wrapper and library, so its deploy.sh decides through its own call.
+CHANGE_CALL = {"netbox": "netbox_recreate_reason"}
 ALREADY_AWARE = ("authentik", "o11y")
 
 
@@ -90,7 +93,7 @@ def test_wave_playbook_records_service_deploy_last_in_its_verify_play(playbook, 
 @pytest.mark.parametrize("service", sorted(RECREATE_AWARE))
 def test_deploy_sh_recreates_only_on_a_change(service):
     code = _code(SERVICES / service / "deployment/deploy.sh")
-    assert "compose_up_if_changed" in code, service
+    assert CHANGE_CALL.get(service, "compose_up_if_changed") in code, service
     assert "--force-recreate" not in code, f"{service}: an unconditional recreate makes every re-run a change"
 
 
@@ -108,7 +111,8 @@ def test_deploy_playbook_reads_the_change_line_and_carries_the_lever(service, pl
     plays = playbook_yaml.plays(PLAYBOOKS / playbook)
     runs = [
         t for t in playbook_yaml.tasks(plays)
-        if "deploy.sh" in str(t.get("ansible.builtin.shell", ""))
+        # `deploy.sh` but not `post-deploy.sh` (deploy-netbox.yml runs both)
+        if re.search(r"(?<![\w-])deploy\.sh", str(t.get("ansible.builtin.shell", "")))
     ]
     assert len(runs) == 1, playbook
     task = runs[0]

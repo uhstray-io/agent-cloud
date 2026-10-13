@@ -402,6 +402,18 @@ templates:
         type: string
         required: false
         default_value: "main"
+      - name: deploy_force_recreate
+        title: "Force container recreate"
+        description: "true to recreate every container even when inputs and images match (clears a stale bind mount). This stops the orb-agent: run Deploy Orb Agent afterwards"
+        type: string
+        required: false
+        default_value: "false"
+      - name: netbox_force_rebuild
+        title: "Force plugin image rebuild"
+        description: "true to rebuild the NetBox plugin image even when its build inputs match (takes a newer Diode plugin release; the rebuilt image recreates the stack and stops the orb-agent)"
+        type: string
+        required: false
+        default_value: "false"
 
   - name: Audit NetBox Runtime
     playbook: platform/playbooks/audit-netbox-runtime.yml
@@ -907,11 +919,35 @@ templates:
 
   # Conformance against direct vLLM (change inference-gateway-agentgateway, tasks 2.1/2.2):
   # the same cases to the gateway and to vLLM from the gateway VM, then the comparison. Keys are
-  # read from OpenBao by the runner and placed as 0600 files for the run only; no survey, because
-  # every input is inventory. Introduced on dev, so the (Dev) variant runs before promotion.
+  # read from OpenBao by the runner and placed as 0600 files for the run only. Every input is
+  # inventory except two opt-in survey vars: the long-stream case (tasks 2.3/2.4) lasts minutes on
+  # each side, so a default run stays the fourteen quick cases, and its saturation count makes that
+  # stream queue so vLLM's keep-alive comments appear (it loads the shared upstream, so it is off
+  # by default). Introduced on dev, so the (Dev) variant runs before promotion.
   - name: Run agentgateway Conformance
     playbook: platform/playbooks/run-agw-conformance.yml
     dev_variant: true
+    survey_vars:
+      - name: agw_conformance_long_stream
+        title: "Long-stream case"
+        description: "Add the stream-long case: one streamed request past 130 s through the gateway and straight to vLLM (minutes of generation on each side). Leave false for the fourteen quick cases"
+        type: enum
+        required: false
+        default_value: "false"
+        values:
+          - { name: "No (fourteen quick cases)", value: "false" }
+          - { name: "Yes (add stream-long, minutes)", value: "true" }
+      - name: agw_conformance_long_stream_saturate
+        title: "Filler streams to make the long stream queue"
+        description: "Long-stream case only: filler streams started per side so the stream queues and vLLM sends keep-alives. 8 fills its 8 slots. Real load on the shared DGX, about 45 s per side"
+        type: enum
+        required: false
+        default_value: "0"
+        values:
+          - { name: "0 (none; keep-alives stay unproven)", value: "0" }
+          - { name: "8 (fills vLLM's 8 slots)", value: "8" }
+          - { name: "12", value: "12" }
+          - { name: "16 (the maximum)", value: "16" }
 
   # Read-only drill for gateway tasks 6.1 and 6.4: how the production TLS listener treats a client
   # with no certificate and a client leaf that is on no allowlist, with no key and with an invalid
@@ -1620,6 +1656,14 @@ templates:
         type: string
         default_value: "false"
 
+  - name: Rotate Semaphore Operator Token
+    playbook: platform/playbooks/rotate-semaphore-api-token.yml
+    dev_variant: true
+    isolated_environment: Semaphore token rotation inputs
+    seed_inputs: [SEMAPHORE_OLD_TOKEN, SEMAPHORE_NEW_TOKEN]
+    # Both values are staged as encrypted environment inputs by the operator
+    # rotation command. They are never survey fields or task extra vars.
+
   - name: Reconcile pfSense API Key
     playbook: platform/playbooks/reconcile-pfsense-api-key.yml
     dev_variant: true
@@ -1895,6 +1939,18 @@ templates:
         description: "Exact current receiver revision to measure"
         type: string
         required: true
+
+  - name: Survey o11y Scrape Baseline (Dev)
+    playbook: platform/playbooks/survey-o11y-scrape-baseline.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for the read-only scrape baseline survey"
+        type: string
+        required: true
+    # Reports fixed public job categories, 24-hour sample and stored-series label maxima,
+    # plus point-in-time response bytes. Private selectors, URLs, labels and bodies stay protected.
 
   - name: Diagnose o11y Host Storage (Dev)
     playbook: platform/playbooks/diagnose-o11y-host-storage.yml

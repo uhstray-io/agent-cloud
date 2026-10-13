@@ -216,6 +216,32 @@
       exporter tasks (`:282-286`, `:457-461`) move to `become: false` afterwards. The
       request is prepared at `dgx-spark-drill-handoff.md` in this change and is NOT sent,
       per the operator's decision of 2026-10-12. Left unticked.
+      2026-10-12: dgx-spark replied (operator-relayed; branch `feat/o11y-drill-access`,
+      commit `f9967fa`, playbook `drill-access.yml`, NOT applied yet). Account `o11y-drill`
+      on spark-1 and spark-2 (no password, no groups, no sudo, `/bin/bash`). Polkit rule
+      `/etc/polkit-1/rules.d/50-o11y-drill-node-exporter.rules` has the requested shape
+      (action id, `subject.user`, unit equal to `node-exporter.service`, verb `start` or
+      `stop`); installed polkitd `124-2ubuntu1.24.04.4` and systemd `255.4-1ubuntu8.17`;
+      the verbs are `start`, `stop`, `restart`, `try-restart`, `reload` and `reload-or-*`,
+      and only start and stop pass, which `systemd_service` `state=started` and
+      `state=stopped` need. dgx-spark asks that `daemon_reload` is never set. sshd confines
+      the account to the runner's source address, key-only, no forwarding; port 22; the
+      firewall already allows the LAN. dgx-spark's apply runs a boundary proof every time
+      (stop allowed; `systemd-run` as the exporter refused while stopped; start allowed;
+      another unit, reload, reset-failed, daemon-reload and `systemd-run` refused; exporter
+      active afterwards). Nothing on the nodes depends on the exporter. The only unattended
+      dgx-spark job is `dgx-update.timer` at 04:30 Eastern daily, so the window must sit
+      outside 04:15 to 05:00 Eastern. dgx-spark reads the public key from site-config
+      `secrets/ssh/o11y-fault-drill/id_ed25519.pub` (service name `o11y-fault-drill`).
+      agent-cloud side, this change: the drill's two exporter tasks now run `become: false`
+      (follow-up 1 of `dgx-spark-drill-handoff.md`) and connect with the exporter host's
+      per-service key read from `secret/services/ssh/<its service_name>` (refused before any
+      fault when the service name or key is missing; runner-side 0600 file, wiped after the
+      restore), with tests. Remaining: generate the key
+      and back it up to site-config; site-config PR for a hosts group (the account as
+      `ansible_user`) and the `o11y_fault_drill_exporters` map; dgx-spark applies
+      `drill-access.yml`; verify key-only login to both nodes; a `--check` dry run; one real
+      run in the agreed window and its evidence recorded here. Left unticked.
 - [ ] 2.6 Validation gate: 2.4 proves scenario "All node targets up" and scenario "Boot
       journal is queryable"; 2.5 proves scenario "Missing scrape is a telemetry failure"
       including the alert firing;
@@ -347,7 +373,7 @@
       rules are checked against the same list; the probe's shellcheck and no-literal-key
       check is `test_inference_probe.py`, which the o11y BATS suite pins rather than
       duplicates.
-- [ ] 3.5 Validation gate: wipe and redeploy o11y; the three dashboards render, proving
+- [x] 3.5 Validation gate: wipe and redeploy o11y; the three dashboards render, proving
       scenario "Dashboards render from provisioning alone"; `o11y-fault-drill.yml -e
       drill=probe` points the probe at a model name the server does not serve, starts
       `inference-probe.service` immediately (so the first failed sample does not wait for
@@ -404,6 +430,21 @@
       3303-3305. Remaining: the probe drill's proof that the inference dashboard shows the model
       not serving during the fault (in progress: drill change on branch
       `feat/probe-drill-dashboard-proof`). Not ticked.
+      2026-10-12 (task output read from Semaphore by the lead): PROVEN live. o11y Fault
+      Drill (Dev) `drill=probe` task 4905 at `0d72458a` (dry run 4904): fault induced,
+      `inference_probe_failing` (Synthetic inference probe failing) fired for
+      `o11y-drill-absent-model-bc5ad93e8ef4` and reached Discord naming both, `/health` 200
+      throughout; the panel "Inference probe serving" expression (read from the provisioned
+      dashboard file, evaluated against Prometheus) gave the drill model "not serving" during
+      the fault; restored and verified, failed=0. With the 2026-10-12 operator restatement
+      above (no wipe; dashboards accepted on 2839 and 3303-3305), scenario "Health up,
+      inference down" is proven. The twelve-minute hold ran: 24 health checks at a 30 s pause
+      (`o11y-fault-drill.yml:435-438`), all 24 with `/health` 200 (task 4905, "health check
+      24/24"). `vllm-node` was not restarted by construction, not by a runtime check: probe
+      mode rewrites only the o11y host's probe environment (playbook header) and no
+      probe-mode task targets the DGX nodes. Ticked. Prerequisites that landed: PR #561 (the
+      panel and the drill's proof of it), PR #567 (`delegate_to` fix for ansible-core 2.20,
+      MISTAKES 5.17), and Deploy o11y (Dev) task 4882, which provisioned the panel.
 - [x] 3.6 External liveness watcher on a path the firewall permits: a Semaphore schedule
       runs `check-o11y-liveness.yml` from the Semaphore host every 10 min against the
       Caddy front door, not the VM: Grafana `https://o11y.uhstray.io/api/health` (exempt

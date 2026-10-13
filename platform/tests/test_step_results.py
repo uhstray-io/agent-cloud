@@ -308,7 +308,33 @@ def test_conformance_json_body_format_matches_loki_dashboard_extraction():
 def test_groups_map_to_their_hosts_service_name():
     groups = {"all": ["a", "b"], "tududi_svc": ["a"], "step_ca_svc": ["b"], "ungrouped": [], "misc": ["c"]}
     assert step_results.group_services(groups, {"a": "tududi", "b": "step-ca"}) == {
-        "all": "tududi", "tududi_svc": "tududi", "step_ca_svc": "step-ca"}
+        "tududi_svc": "tududi", "step_ca_svc": "step-ca"}
+
+
+def test_implicit_groups_never_map_to_a_service():
+    groups = {"all": ["a", "b"], "ungrouped": ["a"], "tududi_svc": ["a"]}
+    by_group = step_results.group_services(groups, {"a": "tududi", "b": "step-ca"})
+    assert by_group == {"tududi_svc": "tududi"}
+    # a launch whose target_service fell back to "ungrouped" stays unattributed
+    task = {"environment": json.dumps({"target_service": "ungrouped"})}
+    assert step_results._service_of(task, by_group) is None
+    assert step_results._service_of({"environment": json.dumps({"target_service": "all"})}, by_group) is None
+
+
+def test_a_group_takes_its_service_from_its_first_tracked_host():
+    # a host the collector skipped is absent from host_services; it must not hide a tracked peer
+    host_services = {"tracked": "alpha", "other": "beta"}
+    groups = {
+        "opted_out_first": ["skipped", "tracked"],
+        "opted_out_last": ["tracked", "skipped"],
+        "all_opted_out": ["skipped", "skipped2"],
+        "two_tracked": ["tracked", "other"],
+    }
+    assert step_results.group_services(groups, host_services) == {
+        "opted_out_first": "alpha",
+        "opted_out_last": "alpha",
+        "two_tracked": "alpha",
+    }
 
 
 def test_main_runs_the_three_modes_as_the_collector_calls_them():

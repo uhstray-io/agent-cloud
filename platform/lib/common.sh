@@ -319,7 +319,7 @@ dump_container_diagnostics() {
   local name="$1" lines="${2:-60}"
   warn "Diagnostics for ${name}:"
   $CONTAINER_ENGINE inspect --format \
-    'state={{.State.Status}} exit={{.State.ExitCode}} restarts={{.RestartCount}} started={{.State.StartedAt}} error={{.State.Error}}' \
+    'state={{.State.Status}} exit={{.State.ExitCode}} oom={{.State.OOMKilled}} restarts={{.RestartCount}} health={{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}} started={{.State.StartedAt}} error={{.State.Error}}' \
     "$name" 2>&1 | redact_secrets >&2 || true
   warn "Last ${lines} log lines of ${name} (redacted, engine timestamps):"
   # Timestamps place the container's own events against the wait that timed out (task 1213:
