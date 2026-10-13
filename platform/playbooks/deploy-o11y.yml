@@ -1422,3 +1422,9 @@
     - name: "Report"
       ansible.builtin.debug:
         msg: "o11y healthy — Grafana, Prometheus, Loki, and Tempo answering; Alloy collector healthy."
+
+    # Last: every verify task above passed (a failure stops the play before this records).
+    - name: "Record the service-deploy step result"
+      ansible.builtin.include_tasks: tasks/emit-service-deploy-result.yml
+      vars:
+        service_deploy_result_var: _deploy

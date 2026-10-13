@@ -496,6 +496,12 @@
       ansible.builtin.debug:
         msg: "authentik healthy — server up, API answering on :9000, embedded outpost serving forward_auth (behind Caddy for TLS)."
 
+    # Last: every verify task above passed (a failure stops the play before this records).
+    - name: "Record the service-deploy step result"
+      ansible.builtin.include_tasks: tasks/emit-service-deploy-result.yml
+      vars:
+        service_deploy_result_var: _deploy
+
 # ── Phase 4: Render + distribute Caddy fragment (prod only) ─────────────────
 # auth.uhstray.io -> this VM:9000, tls internal. Skipped unless a central Caddy
 # host (caddy_svc) exists AND not local_mode (local-dev routes the IdP via
