@@ -12,13 +12,13 @@ refused) is proven without a UFW host.
 import importlib.util
 import json
 import os
-import shutil
 import subprocess
 from pathlib import Path
 
 import playbook_yaml
 import pytest
 import yaml
+from ansible_python import needs_ansible
 
 REPO = Path(__file__).resolve().parents[2]
 PLAYBOOKS = REPO / "platform/playbooks"
@@ -28,8 +28,6 @@ _spec = importlib.util.spec_from_file_location(
 )
 step_results = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(step_results)
-
-needs_ansible = pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="ansible-playbook not installed")
 
 
 def _plays(name):
@@ -146,6 +144,9 @@ def _run_slice(tmp_path, playbook, first_task, hostvars: dict, *extra, play_vars
         raise AssertionError(f"{first_task!r} not in {playbook}")
     for task in _emits(tasks):
         task["ansible.builtin.include_tasks"] = str(EMIT)
+    for task in tasks:  # the verify play also records service-deploy, through its own shared task
+        if str(task.get("ansible.builtin.include_tasks", "")).endswith("emit-service-deploy-result.yml"):
+            task["ansible.builtin.include_tasks"] = str(PLAYBOOKS / "tasks/emit-service-deploy-result.yml")
     tasks = list(prepend) + tasks
     play = {"name": "slice", "hosts": "svc", "gather_facts": False,
             "vars": {**source_vars, **(play_vars or {})}, "tasks": tasks}
@@ -241,7 +242,9 @@ def test_oidc_passing_verify_records_nothing_until_the_last_play(tmp_path):
     # The pass is recorded at the end of Phase 4, not here.
     proc, found = _run_slice(tmp_path, "deploy-authentik.yml", OIDC_FIRST, {"ak": _oidc_host()})
     assert proc.returncode == 0, proc.stdout[-3000:]
-    assert found == []
+    # Phase 3 now records service-deploy (skip here: the slice has no deploy result); only the
+    # oidc-config result waits for the last play.
+    assert [r["step"] for r in found] == ["service-deploy"]
 
 
 def test_oidc_result_is_recorded_last_and_verify_failures_reach_it():

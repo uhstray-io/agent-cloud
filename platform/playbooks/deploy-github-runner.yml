@@ -632,7 +632,7 @@
     # Until 2026-10-12 this was a `state: restarted` under KillMode=process: systemd
     # signalled run.sh alone, the Listener kept running in the unit's cgroup, and each
     # restart stacked a new Listener beside the one that held the session and took every
-    # job (docs/MISTAKES.md 10.26). No unit or .env change after the boot-time start ever
+    # job (docs/MISTAKES.md 10.27). No unit or .env change after the boot-time start ever
     # reached the process that runs jobs. So the deploy reads the Listener itself, before
     # and after, and a restart is a drain, a stop, and an emptied cgroup, then a start.
     - name: "Read the runner's Listener and Worker processes"
@@ -749,7 +749,7 @@
       # read only the unit's MainPID, which is run.sh: each stacked restart gave it a fresh
       # run.sh carrying the unit's current settings, so it passed while the Listener that
       # took every job still ran with the settings of its own start (docs/MISTAKES.md
-      # 10.26). Every job is a descendant of the Listener and its Worker and inherits
+      # 10.27). Every job is a descendant of the Listener and its Worker and inherits
       # exactly what they carry. NoNewPrivs is the effective bit, so it also catches the
       # unit options that set it implicitly. The user namespace must be the host's:
       # PrivateUsers= (and the options that imply it in a user unit) would put the runner
@@ -900,3 +900,21 @@
           account's own podman socket, through the runner's docker wrapper with the
           hooks' own environment. Confirm it is ONLINE at the organisation with
           verify-github-runners.yml before routing work to it.
+
+    # Last: every verify task above passed. The per-host result carries only the flags the
+    # shared task reads, never _configured, whose task is no_log because it handled the
+    # registration token. "Changed" is any of the three things this deploy installs: a
+    # registration, the systemd unit, or a rendered declaration/env/hook file. `_configured`
+    # is skipped under --check, and undefined when the run was limited away from it.
+    - name: "Gather this host's service-deploy result"
+      ansible.builtin.set_fact:
+        _service_deploy_result:
+          skipped: "{{ _configured is not defined or _configured is skipped }}"
+          changed: >-
+            {{ (_configured.changed | default(false)) or (_runner_unit.changed | default(false))
+               or (_runner_files.changed | default(false)) }}
+
+    - name: "Record the service-deploy step result"
+      ansible.builtin.include_tasks: tasks/emit-service-deploy-result.yml
+      vars:
+        service_deploy_result_var: _service_deploy_result

@@ -58,11 +58,14 @@ step_pull_images() {
 
 step_start() {
   info "Step 3: Starting honcho (api + deriver + db + redis)..."
-  # --force-recreate: honcho reads runtime config (JWT secret, DB URI, LLM
-  # keys) from `env_file: .env`. An env_file content change is NOT a
-  # compose-spec change, so plain `up -d` leaves the old containers running
-  # with stale env. Force-recreate so a re-rendered .env always applies.
-  compose up -d --force-recreate
+  # honcho reads runtime config (JWT secret, DB URI, LLM keys) from `env_file: .env`.
+  # An env_file content change is NOT a compose-spec change, so plain `up -d` leaves
+  # the old containers running with stale env. compose_up_if_changed hashes .env with
+  # the compose files and recreates only when that digest or an image changed, so a
+  # re-rendered .env still applies and an unchanged re-run recreates nothing (it prints
+  # DEPLOY_CHANGED=true|false for the playbook). Neither compose file bind-mounts a
+  # config path, so there is no further input to pass.
+  compose_up_if_changed
 }
 
 step_wait_healthy() {

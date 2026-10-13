@@ -166,7 +166,7 @@ setup() {
   assert_grep -qF 'systemctl --user show --property=NoNewPrivileges --value actions-runner.service' "$PB"
   # The effective bit is read from the kernel for the processes that run jobs (the
   # Listener and any Worker) as well as the unit's main process, and the deploy fails
-  # unless none carries it (MISTAKES 10.26: MainPID alone is run.sh).
+  # unless none carries it (MISTAKES 10.27: MainPID alone is run.sh).
   assert_grep -qF '"$PROC_ROOT/$pid/status"' "$SH"
   assert_grep -qF 'for pid in $(account_pids Runner.Listener); do describe_proc listener "$pid"; done' "$SH"
   assert_grep -qF 'for pid in $(account_pids Runner.Worker); do describe_proc worker "$pid"; done' "$SH"
@@ -533,7 +533,7 @@ STUB
   done
 }
 
-# ── restarts reach the Listener (docs/MISTAKES.md 10.26) ─────────────────────────
+# ── restarts reach the Listener (docs/MISTAKES.md 10.27) ─────────────────────────
 # Until 2026-10-12 the unit had KillMode=process and started run.sh, which passes no
 # signal on: every restart signalled run.sh alone, the Listener that held the session
 # kept running and taking jobs, and a new one was stacked beside it. Both hosts carried

@@ -40,7 +40,7 @@ RestartSec=5
 # them is reachable from repository code. The deploy reads the NoNewPrivs status of the
 # unit's main process, its Listener and any Worker, and fails if this ever comes back.
 NoNewPrivileges=false
-# How a stop reaches the runner (docs/MISTAKES.md 10.26). The main process is run.sh, which
+# How a stop reaches the runner (docs/MISTAKES.md 10.27). The main process is run.sh, which
 # starts run-helper.sh, which starts bin/Runner.Listener; the Listener holds the session
 # and starts a Runner.Worker per job. Neither script passes a signal on, unless
 # RUNNER_MANUALLY_TRAP_SIG is set: then run.sh runs run-helper.sh as its own process group

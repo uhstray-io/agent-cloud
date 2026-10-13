@@ -27,6 +27,33 @@ currently have NetBox configured on Docker; production is the current validation
 target. Local app readiness cannot prove the privileged, host-network discovery
 path or production ingestion. This documentation establishes no recovery result.
 
+## Change-aware deploy
+
+`deploy.sh` recreates the stack only when its inputs changed (`lib/common.sh`,
+`netbox_inputs_digest` and `netbox_recreate_reason`; NetBox keeps its own compose
+wrapper, so it does not use `compose_up_if_changed` from `platform/lib/`). An
+unchanged re-run must stop at the `DEPLOY_CHANGED=false` line before anything is
+stopped, built or removed: the standalone orb-agent is not a compose service,
+`stop_orb_agent` removes it, and nothing in this workflow starts it again.
+
+- A new bind-mounted config file, a new environment-read compose variable, or a
+  new image build input belongs in the digest. One left out changes without the
+  containers being recreated.
+- Do not add the orb-agent-only `.env` keys to the digest. `ORB_AGENT_CLIENT_ID` and
+  `ORB_AGENT_CLIENT_SECRET` are rewritten by the credential refresh after a changed
+  deploy, so the next run would look changed. `SNMP_COMMUNITY` is not rewritten by it;
+  it is left out because no compose service reads it (only the standalone orb-agent
+  start does), so a change would recreate the stack for nothing.
+- Every `compose up` after the decision carries `.deploy-inputs-label.yml` through
+  `COMPOSE_OVERLAYS`; one started without it is recreated by the next run.
+- `netbox_force_rebuild` / `deploy_force_recreate` (literal `true`) are the operator
+  levers. A changed deploy stops the orb-agent; the operator runs Deploy Orb Agent.
+  Either branch of `deploy.sh` prints `ORB_AGENT_RUNNING=false` when no orb-agent is
+  running, and `deploy-netbox.yml` shows it as a warning.
+- Never delete or replace a bind-mounted directory under a running stack
+  (`platform/tests/test_no_bind_mount_dir_delete.py` covers this service).
+  `deploy.sh` forces a recreate when it replaces the `netbox-docker/` clone.
+
 ## Responsibilities that must remain separate
 
 | Entry point | Owns |
@@ -50,6 +77,9 @@ mount source is deleted after startup.
 - **The deployed template controls schedules and workers.** `agent.yaml.j2`
   uses runtime `vault://` references and schedules pfSense/Proxmox workers.
   Legacy helpers in `lib/common.sh` do not describe this deployment path.
+- **Never pair `fast_mode` with `ports` in a `network_discovery` scope.** `fast_mode`
+  adds nmap `-F`, which nmap refuses beside an explicit port list, so the scan exits 1
+  on every run and NetBox stays empty (`tests/test_discovery_scan_flags.py`).
 - **Verify the checker revision.** The current source replaces GPS writes with
   bounded read-only evidence and refuses recovery acceptance. An older installed
   revision may still mutate coordinates. Aggregate counts and submission messages

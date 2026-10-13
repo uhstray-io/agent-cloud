@@ -82,12 +82,17 @@ services:
     image: ${O11Y_ALLOY_IMAGE:-docker.io/grafana/alloy:v1.5.1}
     container_name: o11y-alloy
     restart: always
+    mem_limit: 512m
     command:
       - run
       - --server.http.listen-addr=0.0.0.0:12345
       - /etc/alloy/config.alloy
     environment:
       O11Y_SCRAPE_SAMPLE_LIMIT: ${O11Y_SCRAPE_SAMPLE_LIMIT:-2000}
+      O11Y_SCRAPE_BODY_SIZE_LIMIT_BYTES: ${O11Y_SCRAPE_BODY_SIZE_LIMIT_BYTES:-16777216}
+      O11Y_SCRAPE_LABEL_LIMIT: ${O11Y_SCRAPE_LABEL_LIMIT:-64}
+      O11Y_SCRAPE_LABEL_NAME_LENGTH_LIMIT: ${O11Y_SCRAPE_LABEL_NAME_LENGTH_LIMIT:-128}
+      O11Y_SCRAPE_LABEL_VALUE_LENGTH_LIMIT: ${O11Y_SCRAPE_LABEL_VALUE_LENGTH_LIMIT:-2048}
     volumes:
       - ./config/config.alloy:/etc/alloy/config.alloy:ro
     networks: [o11y]

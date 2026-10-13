@@ -42,6 +42,15 @@ metrics_generator:
       histogram_buckets: [0.05, 0.1, 0.25, 0.5, 1, 2, 5]
 overrides:
   defaults:
+    # Explicit equivalents of Tempo v2.10.8 ingestion defaults; aggregate
+    # caps, not per-target budgets. Keep rollout gated on measured baselines.
+    ingestion:
+      rate_strategy: local
+      rate_limit_bytes: 15000000
+      burst_size_bytes: 20000000
+      max_traces_per_user: 10000
+    global:
+      max_bytes_per_trace: 5000000
     metrics_generator:
       # Ansible renders [] unless a reviewed rollout explicitly enables it.
       processors: ${O11Y_TEMPO_METRIC_PROCESSORS:-[]}

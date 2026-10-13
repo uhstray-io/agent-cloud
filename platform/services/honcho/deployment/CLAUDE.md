@@ -19,7 +19,7 @@ Every text-gen feature (deriver, summary, all dialectic levels, dream) is pointe
 
 ## Conventions specific to this service
 
-- **deploy.sh is lifecycle only** (Critical Deployment Rule #2). `deploy-honcho.yml` renders `.env` from OpenBao via `manage-secrets`; `deploy.sh` pulls, `up -d --force-recreate` (env_file changes are not compose-spec changes), waits for `honcho-api` healthy.
+- **deploy.sh is lifecycle only** (Critical Deployment Rule #2). `deploy-honcho.yml` renders `.env` from OpenBao via `manage-secrets`; `deploy.sh` pulls, runs `compose_up_if_changed` (`platform/lib/common.sh`), waits for `honcho-api` healthy. env_file changes are not compose-spec changes, so it hashes `.env` and the compose files and recreates only when that digest or an image changed, printing `DEPLOY_CHANGED=true|false`, which `deploy-honcho.yml` reads into `changed_when` and the `service-deploy` step result's `changed_on_rerun`. The Semaphore survey `deploy_force_recreate=true` forces a recreate anyway.
 - **Prebuilt GHCR image** (wisbot pattern): `.github/workflows/build-honcho.yml` builds `plastic-labs/honcho` at a pinned ref → `ghcr.io/uhstray-io/honcho:<ref>`. Never built on the VM; bump the pin deliberately.
 - **Only the api publishes a port** — env-driven in the base compose via `HONCHO_BIND`/`HONCHO_PORT` (`.env`); db/redis/deriver have no host ports (no firewall rules needed for them). The overlay only adds mem caps, `label=disable`, and the `local-dev` network on the api.
 - **Stable secrets**: the JWT secret and DB password are generated once into OpenBao and reused — rotating the JWT secret invalidates every minted token; rotating the DB password locks the app out of the existing volume.

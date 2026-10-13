@@ -229,6 +229,10 @@ is a separate dashboard, with operations as a second dashboard.
         not `no_log`.
       - A 429 from the gateway's own bucket still satisfies the check if 4.2 shows a
         refused request leaves a record.
+      2026-10-12: pointer only, nothing here changes. Phase 3 of `deploy-agentgateway.yml` sends its
+      probes through the shared `tasks/agw-probe.yml` (`deploy-agentgateway.yml:713,763,812`), so this
+      task's access-record verify rides that probe path and
+      `inference-gateway-agentgateway` task 6.1a (ticked 2026-10-12) does not wait on it
 - [ ] 4.4 BATS: the Loki receipt selects on `signal="access-log"` (a stdout line cannot
       satisfy it), runs only when `agw_otlp_logs` is true, and its task carries no
       `Authorization` header

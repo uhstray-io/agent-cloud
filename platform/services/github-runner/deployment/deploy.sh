@@ -151,7 +151,7 @@ cmd_status() {
 # The unit's main process is run.sh, not the runner: run.sh starts run-helper.sh, which
 # starts bin/Runner.Listener, which holds the session and starts one Runner.Worker per
 # job. Until 2026-10-12 every restart signalled run.sh alone and left the old Listener
-# serving (docs/MISTAKES.md 10.26), so these commands look at the Listener and the Worker
+# serving (docs/MISTAKES.md 10.27), so these commands look at the Listener and the Worker
 # themselves, read from the kernel.
 UNIT="actions-runner.service"
 # Overridable only so the tests can hand in a fabricated tree.

@@ -334,7 +334,7 @@ PY_ORDER
              f && /^    - name:/ { exit }
              f { print }' "$dep")
   [ -n "$blk" ]
-  assert_grep -qF "'{{ '{{' }}' not in" <<<"$blk"
+  assert_grep -qF "('{' ~ '{') not in" <<<"$blk"
 }
 
 @test "authentik deploy: Phase 3 reads the live state back — blueprints applied, accounts present/absent" {

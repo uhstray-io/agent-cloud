@@ -13,6 +13,17 @@
       receiver host runs `o11y-*` containers (its own seven, expected). `nocodb`, `nemoclaw` and
       `openhands` were unreachable over SSH ("Host is unreachable"), so the task ended in error.
       Not ticked: the operator decides whether to close as superseded or investigate those three.
+      2026-10-12: investigated (operator: investigate first). Task ids and output as reported by
+      the coordinator; not read from Semaphore here. Verify Host Access (Dev) tasks 4857
+      (nocodb_svc), 4858 (nemoclaw_svc), 4859 (openhands_svc): each NO-GO, ssh port 22 "Host is
+      unreachable", and no per-service key in the store. Probe Reachability (Dev) from caddy_svc,
+      tasks 4860-4862: openhands 3000+22, nocodb 8181+22, nemoclaw 22 all error. The three VMs are
+      network-unreachable from both the controller and the Caddy host, so this is VM state, not
+      credentials; power state not read (no read-only hypervisor-status template). Operator to
+      confirm whether these VMs are powered off, moved or retired; 0.2 stays open.
+      2026-10-13: investigation so far (task ids as reported by the coordinator): the nocodb,
+      nemoclaw and openhands VMs were network-unreachable from the controller and from Caddy
+      (tasks 4857-4862). The operator's decision on their VM state is pending. Not ticked.
 - [ ] 0.3 Allocate the o11y VM in site-config `proxmox/vm-specs.yml` (Auxiliary tier,
       Podman) and provision it through the onboarding checklist phases 1 to 2
       2026-10-02 rescope: PARTIAL — the VM is reserved and provisioned under
@@ -161,6 +172,17 @@
       `changed=3`, enabling gateway span logs from site-config #62) each applied a new
       declaration, so they are first runs of a new configuration, not failed second runs.
       Ticked: both scenarios' conditions are met.
+      2026-10-13, production Alloy outage (task output read from Semaphore by the lead):
+      Deploy o11y (Dev) task 5000 (03:44 UTC) rolled `dev` including PR #570's scrape budgets.
+      Alloy rejected its config (`body_size_limit` got a bare byte count; Alloy v1.5.1 needs a
+      units string) and restarted in a loop: Inspect Service Runtime task 5015 reported
+      `oom=false restarts=1027`, Alloy started at 04:15:49 UTC, so 1,027 restarts since the
+      03:44 UTC recreate is about one per 1.9 s. Reproduced locally with the pinned image and fixed by PR #582
+      (MISTAKES 10.26). Restored by task 5037 at 05:29 UTC (inspect task 5040: alloy healthy,
+      restarts 0); task 5042 then reported no change. PR #580 added OOM, health and start
+      fields to Inspect Service Runtime for this diagnosis. The telemetry collection gap runs
+      from about 03:44 to 05:29 UTC. The cause of the outage as a process failure is MISTAKES
+      3.15 (a proof run deployed an unproven merge). The ticked state above is unchanged.
 
 ## 2. Scrape the nodes, receive their logs
 - [x] 2.1 `config/prometheus.yml`: `scrape_config_files: [scrape.d/*.yml]`;
@@ -198,6 +220,42 @@
       unit; the drill refuses an undeclared node). That map was not found in the local
       site-config checkout, and the unit names are unverified. Then one run in a dgx-spark
       window. Left unticked.
+      2026-10-12: BLOCKED on dgx-spark. The DGX nodes are not inventory hosts (site-config
+      `inventory/production.yml` carries only the `dgx_spark_nodes` scrape list), so the
+      drill's host assert (`o11y-fault-drill.yml:179`) cannot pass, and agent-cloud has no
+      login on the nodes. The unit is `node-exporter.service` (dgx-spark
+      `telemetry-host-exporter.yml`, `origin/main` `d803163`). A sudoers rule limited to
+      `systemctl` cannot serve the drill's `become: true` module tasks (Ansible wraps the
+      module in `<shell> -c`), so the request asks for a polkit rule and the drill's two
+      exporter tasks (`:282-286`, `:457-461`) move to `become: false` afterwards. The
+      request is prepared at `dgx-spark-drill-handoff.md` in this change and is NOT sent,
+      per the operator's decision of 2026-10-12. Left unticked.
+      2026-10-12: dgx-spark replied (operator-relayed; branch `feat/o11y-drill-access`,
+      commit `f9967fa`, playbook `drill-access.yml`, NOT applied yet). Account `o11y-drill`
+      on spark-1 and spark-2 (no password, no groups, no sudo, `/bin/bash`). Polkit rule
+      `/etc/polkit-1/rules.d/50-o11y-drill-node-exporter.rules` has the requested shape
+      (action id, `subject.user`, unit equal to `node-exporter.service`, verb `start` or
+      `stop`); installed polkitd `124-2ubuntu1.24.04.4` and systemd `255.4-1ubuntu8.17`;
+      the verbs are `start`, `stop`, `restart`, `try-restart`, `reload` and `reload-or-*`,
+      and only start and stop pass, which `systemd_service` `state=started` and
+      `state=stopped` need. dgx-spark asks that `daemon_reload` is never set. sshd confines
+      the account to the runner's source address, key-only, no forwarding; port 22; the
+      firewall already allows the LAN. dgx-spark's apply runs a boundary proof every time
+      (stop allowed; `systemd-run` as the exporter refused while stopped; start allowed;
+      another unit, reload, reset-failed, daemon-reload and `systemd-run` refused; exporter
+      active afterwards). Nothing on the nodes depends on the exporter. The only unattended
+      dgx-spark job is `dgx-update.timer` at 04:30 Eastern daily, so the window must sit
+      outside 04:15 to 05:00 Eastern. dgx-spark reads the public key from site-config
+      `secrets/ssh/o11y-fault-drill/id_ed25519.pub` (service name `o11y-fault-drill`).
+      agent-cloud side, this change: the drill's two exporter tasks now run `become: false`
+      (follow-up 1 of `dgx-spark-drill-handoff.md`) and connect with the exporter host's
+      per-service key read from `secret/services/ssh/<its service_name>` (refused before any
+      fault when the service name or key is missing; runner-side 0600 file, wiped after the
+      restore), with tests. Remaining: generate the key
+      and back it up to site-config; site-config PR for a hosts group (the account as
+      `ansible_user`) and the `o11y_fault_drill_exporters` map; dgx-spark applies
+      `drill-access.yml`; verify key-only login to both nodes; a `--check` dry run; one real
+      run in the agreed window and its evidence recorded here. Left unticked.
 - [ ] 2.6 Validation gate: 2.4 proves scenario "All node targets up" and scenario "Boot
       journal is queryable"; 2.5 proves scenario "Missing scrape is a telemetry failure"
       including the alert firing;
@@ -329,7 +387,7 @@
       rules are checked against the same list; the probe's shellcheck and no-literal-key
       check is `test_inference_probe.py`, which the o11y BATS suite pins rather than
       duplicates.
-- [ ] 3.5 Validation gate: wipe and redeploy o11y; the three dashboards render, proving
+- [x] 3.5 Validation gate: wipe and redeploy o11y; the three dashboards render, proving
       scenario "Dashboards render from provisioning alone"; `o11y-fault-drill.yml -e
       drill=probe` points the probe at a model name the server does not serve, starts
       `inference-probe.service` immediately (so the first failed sample does not wait for
@@ -379,6 +437,28 @@
       operator-scheduled, not run), so "Dashboards render from provisioning alone" is not
       proven; and the inference dashboard showing the model as not serving during the fault,
       the rest of "Health up, inference down". Not ticked.
+      2026-10-12: restated by operator decision: the destructive wipe/redeploy is dropped;
+      "Dashboards render from provisioning alone" is accepted on the provisioned-dashboard
+      readback (Deploy o11y (Dev) task 2839, recorded under 3.1 above: it reads back every
+      provisioned dashboard live, the three `inference-*` dashboards included) and tasks
+      3303-3305. Remaining: the probe drill's proof that the inference dashboard shows the model
+      not serving during the fault (in progress: drill change on branch
+      `feat/probe-drill-dashboard-proof`). Not ticked.
+      2026-10-12 (task output read from Semaphore by the lead): PROVEN live. o11y Fault
+      Drill (Dev) `drill=probe` task 4905 at `0d72458a` (dry run 4904): fault induced,
+      `inference_probe_failing` (Synthetic inference probe failing) fired for
+      `o11y-drill-absent-model-bc5ad93e8ef4` and reached Discord naming both, `/health` 200
+      throughout; the panel "Inference probe serving" expression (read from the provisioned
+      dashboard file, evaluated against Prometheus) gave the drill model "not serving" during
+      the fault; restored and verified, failed=0. With the 2026-10-12 operator restatement
+      above (no wipe; dashboards accepted on 2839 and 3303-3305), scenario "Health up,
+      inference down" is proven. The twelve-minute hold ran: 24 health checks at a 30 s pause
+      (`o11y-fault-drill.yml:435-438`), all 24 with `/health` 200 (task 4905, "health check
+      24/24"). `vllm-node` was not restarted by construction, not by a runtime check: probe
+      mode rewrites only the o11y host's probe environment (playbook header) and no
+      probe-mode task targets the DGX nodes. Ticked. Prerequisites that landed: PR #561 (the
+      panel and the drill's proof of it), PR #567 (`delegate_to` fix for ansible-core 2.20,
+      MISTAKES 5.17), and Deploy o11y (Dev) task 4882, which provisioned the panel.
 - [x] 3.6 External liveness watcher on a path the firewall permits: a Semaphore schedule
       runs `check-o11y-liveness.yml` from the Semaphore host every 10 min against the
       Caddy front door, not the VM: Grafana `https://o11y.uhstray.io/api/health` (exempt
@@ -437,6 +517,11 @@
       and static node scrape" in `plan/architecture/06-observability-instrumentation.md` (the
       repo's convention: a section in the numbered doc), with the three rejected alternatives
       from design decisions 1 and 2. Accepted when Joe confirms the text.
+      2026-10-12: accepted. The operator accepted the record (decision of 2026-10-12). The section
+      gains a dated refresh of its stale facts (Tempo and Pyroscope already running, the liveness
+      watcher's scheduled runs recorded, the root filesystem 84.41% free in task 3141 and 84.23%
+      in task 3314) and an appended "Accepted 2026-10-12" line; its heading and Status paragraph
+      are left as written, so the document diff stays append-only (4.4).
 - [ ] 4.4 Validation gate: both plan documents carry the dated lines and `git diff` shows
       only appended text, proving scenario "Status is dated and append-only"; on archive,
       retain the outcome (worked / dead end / corrected) into bank `agent-cloud-750a33b9`

@@ -97,6 +97,7 @@ and why.
 | 3.12 | Launched two `(Dev)` deploys through the API without `service_branch`; Semaphore applies survey defaults only in its form, so both hosts checked out `main` under Dev playbooks | Live state | 1 | Playbook guard (`assert-placement-branch.yml`) + launcher default fill + tests (`test_placement_branch_guard.py`, `test_semaphore_launch.py`, mutation-checked) |
 | 3.13 | The `dev` -> `main` promotion merge let the repo's delete-head-branch-on-merge setting delete `dev`, the long-lived integration branch; the main -> dev sync then failed | Live state | 1 | Ruleset (`protect-dev.json`, deletion rule) + test (`test_ruleset_protect_dev.py`); live since 2026-10-08 |
 | 3.14 | Ran a real rollback drill on the strength of a dry run that skips the step that failed; the gateway came up broken and stayed down ~6 minutes | Live state | 1 | Test (`test_rollback_inference_route.py`: validation before recreate, auto-restore on a failed readiness) |
+| 3.15 | A proof run deployed unproven `dev` merges to production: the second-run proof's real o11y deploy carried a scrape-budget change no real run had loaded, and production telemetry was down ~1h45m | Live state | 1 | Convention (launcher refusal on unproven changes proposed) |
 | 4.1 | `while read` silently dropped an unterminated final line | Data handling | 1 | Convention |
 | 4.2 | Stored `.env` values without stripping surrounding quotes | Data handling | 1 | Convention |
 | 4.3 | Used a real internal IP address as a test vector | Data leak | 1 | Pre-commit (existing) |
@@ -106,7 +107,7 @@ and why.
 | 4.7 | An address edit replaced every matching line and left a production runner declared at the new VM's address | Data handling | 1 | Playbook guard + test (provision-vm address-claim check) |
 | 4.8 | A credential-shaped test fixture was pushed; CI's unscoped all-detectors scan let it fail other PRs | Data handling | 1 | CI (scan scoped to the PR's commits) |
 | 4.9 | **x2** — Private site data in public code: Discord destination IDs in a fixture; the operator's account in a Proxmox token fallback, gateway fixtures and path-derived ids | Data handling | 2 | Test (`test_no_site_identity.py`, the three account shapes); other private values Convention |
-| 4.10 | **x3** — A heredoc script and a stdin redirect both targeted one interpreter; it parsed the operator token file as source and the syntax error printed the token | Secret in transcript | 3 | Convention — **count ≥ 3: the PreToolUse hook is now required, not proposed** |
+| 4.10 | **x4** — A heredoc script and a stdin redirect both targeted one interpreter; it parsed the operator token file as source and the syntax error printed the token | Secret in transcript | 4 | Test + Claude project PreToolUse hook (`.claude/hooks/guard-secret-stdin.py`); Codex hook remains open |
 | 4.11 | A workstation home path reached a committed ledger entry; the audit grep for it ran by hand only | Data handling | 1 | Pre-commit hook (`no-machine-paths`) |
 | 5.1 | Security check duplicated per caller; a fix reached three copies and missed two | Duplication | 1 | Test |
 | 5.2 | Committed while a test was failing, because the check did not gate the commit (repeat 2026-09-25: a merge after a mergeability read, joined by `;`) | Process | 4 | Pre-push hook |
@@ -124,6 +125,9 @@ and why.
 | 5.14 | Wrote a file into a checkout another task owns with a path checkout; widens 5.10 past branch switches | Process | 1 | Convention (hook proposed) |
 | 5.15 | Published AI attribution in a PR body; widens 5.9 from commits to every GitHub artifact | Process | 1 | Convention (`gh` wrapper proposed) |
 | 5.16 | Merged on a PR status rollup that still showed the previous head's checks; CI on the merged head was running | Process | 1 | Convention (operator-side script; `dev` has no required checks) |
+| 5.17 | Upgraded production's ansible-core before CI ran the playbooks on the new version; 2.20 templates `delegate_to` strictly, a probe drill dry run failed | Process | 1 | Test (`test_delegate_to_strict_undefined.py`) + CI pin + Convention (upgrade ordering) |
+| 5.18 | ansible-core 2.20 rejects template delimiters inside a conditional; the Authentik promotion guard's `'{{ '{{' }}'` broke Deploy Authentik on every branch | Process | 1 | Test (`test_no_template_delimiters_in_conditionals.py`) |
+| 5.19 | A worker killed other sessions' test runs and the lead's watchers with `pkill -f` by process-name pattern on the shared machine | Process | 1 | Convention (PreToolUse hook proposed) |
 | 6.1 | Built an edit from an assumed file structure instead of a read one | Process | 1 | Convention |
 | 6.2 | Built an interface the consumer never calls, without reading how it invokes | Process | 1 | Test |
 | 6.3 | Repeated 6.2 — assumed openssl and jq exist on the orchestrator image; neither does — **x3** (CI never installed the playbook collections) | Process | 3 | Convention -> **Test + declared dep**; CI installs `collections/requirements.yml` |
@@ -165,7 +169,8 @@ and why.
 | 10.23 | The main-to-dev sync failed on every workflow-file change from 2026-08-28; a promotion would have reverted two action bumps on `main` | Mechanism never exercised | 1 | CI (`Promotion source (dev -> main)` ancestry step; `test_promotion_source_guard.py`, mutation-checked) |
 | 10.24 | Shipped container jobs on rootless podman with Docker's mount semantics assumed; every `container:` job failed on a missing bind source and on a socket link to root's podman, while the deploy's uid-map check passed | Mechanism never exercised | 1 | Playbook probe (hook-shaped `docker create` in the user manager) + test (`test_service_github_runner.bats`) |
 | 10.25 | The 10.24 probe copied the hooks' `docker create` arguments but ran it with the account's own environment; the hooks pass HOME=/github/home and no XDG directories, so every `container:` job still failed with `cannot resolve /github/home` | Mechanism never exercised | 1 | Playbook probe (wrapper run under `env -i` with the hooks' HOME, one image store for pull and create) + test (`test_service_github_runner.bats`) |
-| 10.26 | Every runner restart under `KillMode=process` signalled `run.sh` only and left the Listener that took every job running since boot; no unit or `.env` change reached it, and the no_new_privs check read `run.sh`, not the Listener | Mechanism never exercised | 1 | Unit (`KillMode=mixed`, `RUNNER_MANUALLY_TRAP_SIG=1`) + playbook (quiesce before start, Listener verify) + test (`test_service_github_runner.bats`, mutation-checked) |
+| 10.26 | Merged an Alloy config change no real Alloy binary had loaded; the rendered config failed to load on v1.5.1 and the production container crash-looped for ~1,000 restarts | Mechanism never exercised | 1 | Test (text guard, `test_o11y_scrape_budgets.py`, mutation-checked) + Convention for the load proof (CI step proposed) |
+| 10.27 | Every runner restart under `KillMode=process` signalled `run.sh` only and left the Listener that took every job running since boot; no unit or `.env` change reached it, and the no_new_privs check read `run.sh`, not the Listener | Mechanism never exercised | 1 | Unit (`KillMode=mixed`, `RUNNER_MANUALLY_TRAP_SIG=1`) + playbook (quiesce before start, Listener verify) + test (`test_service_github_runner.bats`, mutation-checked) |
 | 11.1 | 76 assertions across the suite could never fail — `!` and `[[ ]]` are exempt from `set -e` | False-green test | 1 | **Ratchet test** (`test_assertions_are_real.bats` + `known_inert_assertions.txt`) |
 | 11.2 | Sourced a config file instead of reading it, turning every credential into shell code | Live-state damage | 1 | Test |
 | 11.3 | Committed without running the suite — third occurrence | Process | 1 | Pre-push hook (status note 2026-10-02) |
@@ -2348,6 +2353,38 @@ watch configured file paths: /certs/agw-server/current/cert.pem" (see 1.23). Val
 config first and restoring the replaced one are kept as defence, but neither addressed this failure:
 the previous config was not the problem, and the restore failed the same way.
 
+### 3.15 A proof run deployed unproven `dev` merges to production
+
+**Occurrences: 1** — 2026-10-13
+
+**What happened.** The service-deployment-workflow 7.1 second-run proof launched a real
+`Deploy o11y (Dev)` (Semaphore task 5000) at `dev` commit `4872faad`. The last real o11y deploy
+was task 4882 at `92574e78`; since then `dev` had gained ten commits under the o11y service
+directory (`git log 92574e78..4872faad -- platform/services/o11y`), among them PR #570 (the o11y
+receiver guardrails and scrape budgets) and, at the head, PR #572. They were proven only by dry
+runs (tasks 4949, 4980, 4996), and a dry run never loads Alloy's config. Task 5000 rolled the
+change to production and Alloy rejected its config and restarted in a loop (see 10.26): 1,027
+restarts between the 03:44 UTC recreate (task 5000) and inspect task 5015, which saw Alloy
+started at 04:15:49 UTC, about one restart per 1.9 s (1,909 s / 1,027). Production telemetry was
+down for about 1 hour 45 minutes, until task 5037 restored it.
+
+**Root cause.** The proof script pinned "whatever `dev` is now" and never asked what had
+changed for that service since its last real deploy. Check mode cannot prove a config that the
+service itself must load, so three passing dry runs said nothing about the one thing that
+failed. The proof run became the first live run of someone else's change.
+
+**The rule.** Before any real production run of a `(Dev)` template, list the commits on `dev`
+that touch that service since its last REAL deploy. Any change not yet proven live gets its own
+reviewed decision (owner aware, rollback ready) before the run. A proof run is never the first
+live run of another change. 3.14's rule did not fire because it covers a destructive step's own
+dry run; it does not cover a change someone else merged that has never run live. This is a
+separate, wider rule for that reason.
+
+**Enforced by.** Convention. Proposed guard: the deploy playbooks emit, in their step-result
+evidence, the service paths changed since the revision of the last successful real deploy, and
+the launcher refuses a real run with unproven changes unless an explicit acknowledgement
+variable is set. Related: 3.14, 10.26.
+
 ## 4. Data handling
 
 ### 4.1 `while read` dropping an unterminated final line
@@ -2646,7 +2683,7 @@ convention and review.
 
 ### 4.10 The interpreter read the token file as its program, and its error printed the token
 
-**Occurrences: 3** — 2026-09-25, 2026-09-25, 2026-09-26
+**Occurrences: 4** — 2026-09-25, 2026-09-25, 2026-09-26, 2026-10-12
 
 **What happened.** Verifying the Dev seed rollout, I ran `python3 - <<'EOF' ... EOF <
 site-config/secrets/semaphore/semaphore_api_token.txt`. The heredoc and the redirect both
@@ -2663,9 +2700,12 @@ secret in it) and the secret arrives on stdin or in an environment variable. Nev
 `python3 -` / a heredoc script with a secret on stdin. After any exposure, say so at once and
 name the credential to rotate.
 
-**Enforced by.** Convention. Proposal: a Claude Code PreToolUse hook that refuses a Bash command
-combining an interpreter reading its program from stdin (`python3 -`, `bash -s`, a heredoc
-script) with a redirect from a path under `secrets/`.
+**Enforced in Claude Code by.** The project PreToolUse hook in `.claude/settings.json` runs
+`.claude/hooks/guard-secret-stdin.py`. It blocks Bash commands that combine an interpreter
+program read from stdin (`python3 -`, `bash -s`, or a heredoc) with stdin redirected from a
+`secrets/` path. A script file or `-c` program with the secret on stdin remains allowed. The
+deterministic cases are covered by `platform/tests/test_semaphore_token_rotation_hook.py`.
+This project hook does not cover Codex shell calls; that integration remains open.
 
 **Occurrence 2 — 2026-09-25, a different session the same evening.** To tell whether local
 Semaphore or its Caddy route rejected a token (the collector's local dry run had got HTTP 401),
@@ -2685,10 +2725,16 @@ third time. This came hours after writing occurrence 2, after recording the rule
 `AGENTS.md` and `docs/LOCAL-DEV.md`, and after using the safe shape (a script file, the token
 on stdin) a dozen times in between. Why the rule did not fire: each safe script file served one
 query, so a new question started from a blank inline command again, and reading the rule in
-docs does not reach the moment of typing. With three occurrences, Convention is no longer an
-acceptable enforcement: the PreToolUse hook proposed above is required. Until it exists,
-token-bearing calls go through one reusable script file that takes the query as arguments,
-never a fresh inline program.
+docs does not reach the moment of typing. With three occurrences, Convention is not sufficient:
+the project PreToolUse hook now guards this command shape. Token-bearing calls still use a
+reusable script file, with the secret on stdin, never a fresh inline program.
+
+**Occurrence 4 — 2026-10-12, Codex.** A read-only Semaphore task diagnostic again
+combined `python3 -` with a heredoc and a separate redirect from the production
+operator-token backup. The token text reached the tool transcript. The task was
+stopped, the token was treated as exposed, and the rotation workflow was started.
+The Claude project hook above cannot intercept Codex tool calls; Codex needs an
+equivalent command guard at its own execution boundary.
 
 
 ### 4.11 A workstation home path reached a committed ledger entry; the audit grep was manual
@@ -3123,6 +3169,93 @@ blindly retries an ambiguous result. Read-only validation is the default.
 This remains a convention because `dev` intentionally has no required-check rule: the
 main-to-Dev sync workflow pushes directly to `dev`. A direct merge command can bypass the
 CLI, and a concurrently started rerun or review can race the separate API reads and merge.
+
+### 5.17 Upgraded production's ansible-core before CI exercised the playbooks on the new version
+
+**Occurrences: 1** — 2026-10-12
+
+**What happened.** The production Semaphore runner was upgraded on 2026-10-09 to image v2.19.11,
+taking ansible-core from 2.18.15 to 2.20.8. CI was pinned to 2.20.8 only afterwards (PR #519;
+see 1.22), so for the days between, the playbooks ran in production on a version no test had
+exercised. On 2026-10-12 the dry run of `o11y Fault Drill (Dev)` with `drill=probe` (Semaphore
+task 4888) failed with `object of type 'dict' has no attribute 'host'` on the exporter-only
+stop task, an inventory with no `o11y_fault_drill_exporters`. The same drill had passed on
+2.18.15 (task 3295, 2026-10-07). Reproduced on 2.20.8: `delegate_to: "{{ d.host }}"` on a task
+whose `when` is false fails, bare, inside a block, and in `always:`. 2.20.8
+`executor/task_executor.py` calls `_calculate_delegate_to` (line 458) first, which reaches
+`vars/manager.py:519`, a strict `templar.template(task.delegate_to)`; 2.18.15
+`vars/manager.py:524` passes `fail_on_undefined=False`, so an unresolvable expression stayed
+literal and the skipped task never noticed. Six templated delegations in three playbooks
+(`o11y-fault-drill.yml` twice, `deploy-agentgateway.yml` three times, `verify-o11y-service.yml`
+once) carried the same latent failure; the drill's was the one that surfaced.
+
+**Root cause.** The version gate ran after the upgrade instead of before it. A tool upgrade on
+the orchestrator was treated as an image bump rather than a behaviour change for every playbook
+it runs, and the check-mode and drill templates, which run rarely, were not run on the new
+version first.
+
+**The rule.** Before upgrading the runner's ansible-core, pin CI to the target version and get
+a green run first, then run a check-mode pass of each scheduled and drill template on that
+version. The runner image and the CI pin are bumped together (the rule 1.22 left as
+Convention). A templated `delegate_to` carries a `default(...)` so a skipped task never fails
+on it.
+
+**Enforced by.** Test for the class: `platform/tests/test_delegate_to_strict_undefined.py`
+(every templated `delegate_to` has a default or an audited reason) and
+`test_o11y_fault_drill.py::test_a_probe_dry_run_needs_no_exporter_declaration`; CI pin
+`ansible-core==2.20.8` in `platform/requirements-test.txt`. Convention for the ordering (pin
+CI, green run, then upgrade the runner). Related: 1.22.
+
+### 5.18 ansible-core 2.20 rejects template delimiters inside a conditional
+
+**Occurrences: 1** — 2026-10-12
+
+**What happened.** Prod task 4995, `Deploy Authentik (Dev)` in check mode on the runner's
+ansible-core 2.20.8, failed at `Promotion guard (prod): OIDC prod URLs are set + not
+local-dev defaults` with `[ERROR]: Task failed: Syntax error in expression. Template
+delimiters are not supported in expressions: chunk after expression`. The offender was the
+third `that:` line of `deploy-authentik.yml`, `"'{{ '{{' }}' not in (lookup('vars', item,
+default=''))"`, a way to spell a literal brace pair inside a conditional. The same line was
+on `main`, so the main-bound Deploy Authentik was broken too. A scan of every YAML under
+`platform/playbooks` and `platform/services` for `that`, `when`, `failed_when`,
+`changed_when` and `until` values containing `{{` or `{%` found this one line. Reproduced on
+ansible-core 2.21.0 with a one-task play; the fixed spelling `('{' ~ '{')` evaluates, fails
+the assert for a value that holds a brace pair, and passes for a clean URL.
+
+**Root cause.** The same upgrade class as 5.17: the runner moved to ansible-core 2.20, which
+parses a conditional as one bare expression and refuses a delimiter inside it, where 2.18
+tolerated the spelling. No test read conditionals for delimiters, and the guard only runs
+for a prod (`local_mode` false) deploy, so no local run exercised it.
+
+**The rule.** A conditional never contains `{{`, `{%` or `{#`. Write a literal brace pair as
+a concatenation, `('{' ~ '{')`; use `fail_msg` (not a conditional) for text that interpolates
+variables.
+
+**Enforced by.** Test: `platform/tests/test_no_template_delimiters_in_conditionals.py`
+(static scan of every YAML under `platform/playbooks`, `platform/services` and
+`platform/semaphore`, plus a run of the real guard task through ansible-playbook, plus the
+reproduction of the 2.20 error where the installed ansible-core is 2.20 or newer). CI pin
+`ansible-core==2.20.8` in `platform/requirements-test.txt`. Related: 5.17.
+
+### 5.19 A worker killed other sessions' test runs by process-name pattern
+
+**Occurrences: 1** — 2026-10-12
+
+**What happened.** On 2026-10-12 a wave-3 service-deploy worker cleaned up its own test runs
+with `pkill -f bats` and `pkill -f "pytest -q -n auto"`. On the shared machine those patterns
+matched every session's and every worker's suites. The lead's watcher tasks exited 144, and the
+branch push for PR #569 (`docs/live-proofs-1012-evening`) was aborted.
+
+**Root cause.** A pattern kill matches every process on the machine, not the caller's. Nothing
+in the worker's brief said the machine was shared, and nothing stopped the command.
+
+**The rule.** Kill only PIDs you started and recorded. Never `pkill`, `killall`, or
+`kill $(pgrep ...)` by pattern on a shared machine.
+
+**Enforced by.** Convention. The lead's memory note and the line in worker briefs are
+operator-private and not visible in this repository, so the only repo-visible guard is the
+proposed one: a PreToolUse hook refusing `pkill`, `killall` and `kill $(pgrep ...)`. Related:
+5.10, 5.14.
 
 ## 6. Working from assumptions about files
 
@@ -4515,7 +4648,40 @@ stub podman with the hooks' environment and argument shapes for create, run and 
 (compared byte for byte, including a command after the image that contains `-e PATH`), and
 requires the probe's environment, the absence of a migrate, and the `.env` PATH.
 
-### 10.26 Every runner restart left the old Listener serving
+### 10.26 An Alloy config change merged without the real Alloy binary loading the rendered config
+
+**What happened.** PR #570 (commit `2ce3e074`, "require reviewed finite metric scrape
+budgets") put the five scrape limits into Alloy's local-container scrape as
+`encoding.from_json(sys.env(...))`, including `body_size_limit`. Once `Deploy o11y (Dev)`
+(Semaphore task 5000) rolled that commit to production, `o11y-alloy` crash-looped: task 5015
+read `running exit=0 oom=false restarts=1027 health=starting`. The deploy's verify had
+waited on health and failed with "starting", printing no Alloy log. A local repro found the
+cause: rendering `config.alloy.j2` and running the pinned `docker.io/grafana/alloy:v1.5.1`
+printed `config.alloy:118:21: encoding.from_json(sys.env("O11Y_SCRAPE_BODY_SIZE_LIMIT_BYTES"))
+units: unknown unit  in 16777216`, then "could not perform the initial load successfully".
+Alloy's `body_size_limit` takes a units string such as `16MiB`; the env carries bytes, so a
+bare number is a type error. Appending the `B` unit made the config load and every node
+evaluate; the other four numeric limits had loaded all along.
+
+**Root cause.** Every test of the Alloy config asserted the template's text, or rendered
+it and compared the text. Nothing ran Alloy against the rendered file, so a type error that
+only Alloy's own loader reports could not fail anywhere before production. The deploy's
+verify step could only wait for health, and on failure showed the health state, not the
+reason the process kept exiting.
+
+**The rule.** Any change to an Alloy config is proven by loading the rendered config in the
+pinned Alloy image before merge. A text assertion on the template is a pin on one line,
+not evidence that Alloy accepts it.
+
+**Enforced by.** The text guard is a test:
+`test_alloy_local_scrape_uses_same_finite_bounds_and_existing_sample_ceiling` in
+`test_o11y_scrape_budgets.py` now requires the `body_size_limit` line to append a unit and
+not to be `encoding.from_json(...)` (mutation-checked against the old line). The load proof
+itself is `Convention`. Proposed guard: a CI step or `make` target that renders the config
+and runs the pinned Alloy image on it, and a deploy-verify failure path that dumps the
+redacted Alloy container log so a crash loop names its cause.
+
+### 10.27 Every runner restart left the old Listener serving
 
 **What happened.** After the 10.25 fix was deployed (2026-10-12), container jobs on both
 GitHub runners still failed with `cannot resolve /github/home`, although the `.env` on disk

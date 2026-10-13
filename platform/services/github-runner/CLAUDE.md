@@ -209,7 +209,7 @@ new Listener retries a session conflict for up to four minutes and then exits
 (`src/Runner.Listener/MessageListener.cs`), and `Restart=always` starts another. No unit or `.env` change after the boot-time start reached the
 process that runs jobs, `NoNewPrivileges=false` included. The deploy did not see it: it read
 `NoNewPrivs` from the unit's `MainPID`, which is the fresh `run.sh`, not the Listener
-(`docs/MISTAKES.md` 10.26).
+(`docs/MISTAKES.md` 10.27).
 
 **What a signal does to the Listener** (actions/runner v2.336.0):
 

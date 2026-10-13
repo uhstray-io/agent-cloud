@@ -62,20 +62,24 @@ class API:
         self.base, self.project, self.token = url.rstrip("/"), project, token
         self.open = urllib.request.build_opener(NoRedirect).open
 
-    def __call__(self, path, body=None, project_scoped=True):
+    def __call__(self, path, body=None, project_scoped=True, method=None):
         prefix = f"/api/project/{self.project}" if project_scoped else "/api"
+        display_path = "/user/tokens/{id}" if path.startswith("/user/tokens/") else path
         req = urllib.request.Request(self.base + prefix + path, headers={
             "Authorization": "Bearer " + self.token, "Content-Type": "application/json",
         }, data=None if body is None else json.dumps(body).encode(),
-            method="GET" if body is None else "PUT" if path.startswith("/environment/") else "POST")
+            method=method or ("GET" if body is None else
+                              "PUT" if path.startswith("/environment/") else "POST"))
         try:
             with self.open(req, timeout=30) as response:
                 data = response.read()
                 return json.loads(data) if data else None
         except urllib.error.HTTPError as error:
-            raise Refusal(f"Semaphore HTTP {error.code} on {path}; response body suppressed") from None
+            raise Refusal(f"Semaphore HTTP {error.code} on {display_path}; response body suppressed") from None
         except (OSError, ValueError, http.client.HTTPException):
-            raise Refusal(f"Semaphore request outcome unavailable on {path}; do not retry a write blindly") from None
+            raise Refusal(
+                f"Semaphore request outcome unavailable on {display_path}; do not retry a write blindly"
+            ) from None
 
 
 def submit(api, body, what):

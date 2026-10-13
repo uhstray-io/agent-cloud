@@ -79,6 +79,14 @@
           got target_service '{{ target_service | default('') }}' and
           {{ groups.get('o11y_svc', []) | length }} o11y_svc host(s).
 
+- name: "Validate production scrape budgets before host instrumentation or rendering"
+  hosts: o11y_svc
+  any_errors_fatal: true
+  gather_facts: false
+  become: false
+  tasks:
+    - ansible.builtin.include_tasks: tasks/assert-o11y-scrape-limits.yml
+
 - name: "Run the host exporter on {{ target_service | default('(unset)') }}"
   hosts: "{{ target_service | default('ungrouped') }}"
   gather_facts: false

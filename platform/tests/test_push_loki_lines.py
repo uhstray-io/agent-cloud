@@ -10,7 +10,6 @@ nothing.
 import copy
 import json
 import os
-import shutil
 import subprocess
 import threading
 from http.server import HTTPServer
@@ -19,6 +18,7 @@ from pathlib import Path
 import playbook_yaml
 import pytest
 import yaml
+from ansible_python import needs_ansible
 from fake_http import DrainingHandler
 
 REPO = Path(__file__).resolve().parents[2]
@@ -26,10 +26,6 @@ TASK = REPO / "platform/playbooks/tasks/push-loki-lines.yml"
 COLLECTOR = REPO / "platform/playbooks/collect-service-conformance.yml"
 PUSH_PATH = "/loki/api/v1/push"
 STREAMS = [{"stream": {"job": "fixture", "step": "s1"}, "values": [["1700000000000000000", "line one"]]}]
-
-needs_ansible = pytest.mark.skipif(
-    shutil.which("ansible-playbook") is None, reason="ansible-playbook not installed"
-)
 
 
 def _collector_tasks() -> list[dict]:

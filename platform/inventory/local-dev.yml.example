@@ -392,3 +392,7 @@ all:
           # The orb agent runs with host networking on the engine host: it reaches the local
           # OpenBao on that host's loopback, not by the controller's container network name.
           orb_agent_openbao_addr: "http://127.0.0.1:8200"
+          # Containers `Stop Local Service` stops besides the compose project's own: the orb
+          # agent is started by tasks/deploy-orb-agent.yml, carries no compose label, and so
+          # is not found by the project selector.
+          stop_extra_containers: [netbox-orb-agent]

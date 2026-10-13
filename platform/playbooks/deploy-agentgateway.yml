@@ -268,7 +268,7 @@
           - -O
           - /dev/null
           - http://tempo:3200/ready
-      delegate_to: "{{ groups['o11y_svc'][0] }}"
+      delegate_to: "{{ groups.get('o11y_svc', []) | first | default(inventory_hostname) }}"
       changed_when: false
       check_mode: false
       when: agw_otlp_host | default('') | length > 0
@@ -642,7 +642,7 @@
     - name: "Mark gateway readiness time on the receiver"
       ansible.builtin.command:
         argv: [date, +%s]
-      delegate_to: "{{ groups['o11y_svc'][0] }}"
+      delegate_to: "{{ groups.get('o11y_svc', []) | first | default(inventory_hostname) }}"
       register: _gateway_ready_epoch
       changed_when: false
       check_mode: false
@@ -661,7 +661,7 @@
           - -O
           - '-'
           - "{{ 'http://127.0.0.1:9090/api/v1/query?query=' ~ ('timestamp(agentgateway_config_synchronized{job=\"agentgateway\"}) and agentgateway_config_synchronized{job=\"agentgateway\"} == 1' | urlencode) }}"
-      delegate_to: "{{ groups['o11y_svc'][0] }}"
+      delegate_to: "{{ groups.get('o11y_svc', []) | first | default(inventory_hostname) }}"
       register: _gateway_metric_gate
       changed_when: false
       check_mode: false
@@ -889,6 +889,22 @@
           ({{ _keyed_chat.json.usage.completion_tokens }} completion tokens).
           {% else %}No enrolled identity (agw_clients is empty): the keyed round-trip was not
           run.{% endif %}
+
+    # Last: every verify task above passed (a failure stops the play before this records).
+    # `verified` is false when the keyed round-trip was refused by the gateway's own request
+    # bucket and the run accepted that as unproven (agw_verify_allow_unproven): the evidence key
+    # stays a boolean and does not claim a proof the run did not make.
+    - name: "Gather this host's service-deploy result"
+      ansible.builtin.set_fact:
+        _service_deploy_result:
+          skipped: "{{ _deploy is not defined or _deploy is skipped }}"
+          changed: "{{ (_deploy | default({})).changed | default(false) }}"
+          verified: "{{ not (_verify_refused | default(false) | bool) }}"
+
+    - name: "Record the service-deploy step result"
+      ansible.builtin.include_tasks: tasks/emit-service-deploy-result.yml
+      vars:
+        service_deploy_result_var: _service_deploy_result
 
 # ── Phase 4: Shared-key retirement verdict (gateway task 5.1) ──────────────
 # Last on purpose: a failure here must not stop Phase 2 from removing the expired identity from
