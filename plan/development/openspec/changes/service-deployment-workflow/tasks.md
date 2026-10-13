@@ -450,6 +450,15 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
         Postiz) is PR #587: reviewed in one round with every finding fixed in cb98d760, merge
         pending CI. Production second-run proof for wave 2, and for wave 3 after promotion,
         is still to do. Not ticked
+      - 2026-10-13, production wave 2 (task output read from production Semaphore by the
+        lead): PR #587 merged into dev as a81b0392. Deploy n8n (Dev) at a81b0392: dry run
+        5233 (status skip, check mode); real run 5236 (`DEPLOY_CHANGED=true`, `changed=3`, the
+        rendered .env gained `N8N_LISTEN`); real run 5240 (`DEPLOY_CHANGED=false`,
+        `changed=0`, service-deploy `changed_on_rerun` false, verified true). The n8n
+        second-run proof is COMPLETE. Postiz has no production containers yet, so its
+        production proof (including the podman-compose 1.0.6 recreate with dependents) is an
+        operator follow-up. Wave 3 (NetBox) production proof still waits for promotion. Not
+        ticked
 - [x] 7.2 `provision-vm.yml` sets `onboot`; restart-policy check beside `enable-linger`.
       2026-09-22: onboot with per-host opt-out; `verify-service-persistence.yml` (step
       systemd-enablement) passes on local tududi, normal and check mode (tasks 977, 978)
