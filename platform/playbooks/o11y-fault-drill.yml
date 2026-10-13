@@ -14,6 +14,15 @@
 #             Needs an operator dgx-spark window: refused unless
 #             `-e drill_window_confirmed=true` and the node is declared in
 #             `o11y_fault_drill_exporters` (see below).
+#             The stop and the restart run UNPRIVILEGED (`become: false`) as the connecting
+#             account: on the nodes a polkit rule authorizes that one account to start and
+#             stop that one unit (dgx-spark drill-access.yml). No sudo, and no
+#             unit-file reload (the rule permits start and stop only).
+#             Those two tasks connect with the exporter host's own per-service key
+#             (`secret/services/ssh/<its service_name>`, written to a runner-side 0600 file
+#             for the run and wiped in `always:` after the restore), not Semaphore's
+#             inventory key; a host with no service_name or no readable key is refused
+#             before any fault.
 #   probe     rewrites the synthetic inference probe's model name to one the server does
 #             not serve, starts `inference-probe.service` at once, holds the invalid
 #             target for twelve minutes while `/health` must answer 200 on every check
@@ -121,6 +130,12 @@
     # exporter
     _drill_exporters: "{{ o11y_fault_drill_exporters | default({}) }}"
     _exporter: "{{ _drill_exporters[drill_node | default('')] | default({}) }}"
+    # The nodes authorize the per-service account, not Semaphore's inventory key, so the two
+    # delegated exporter tasks connect with that service's own key (secret/services/ssh/<name>),
+    # named by the exporter host's service_name. Read and materialised for this mode only.
+    _exporter_service: >-
+      {{ (hostvars[_exporter.host].service_name | default(''))
+         if (_exporter.host | default('') in hostvars) else '' }}
     # probe
     _probe_env: "{{ _deploy_dir }}/probe/inference-probe.env"
     _probe_env_backup: "{{ _deploy_dir }}/probe/inference-probe.env.drill-backup"
@@ -250,13 +265,47 @@
       ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
       vars:
         _assert_bao_url: "{{ _bao_url }}"
-      when: drill in ['probe', 'grafana'] and not _restore_only
+      when: (drill in ['probe', 'grafana'] and not _restore_only) or drill == 'exporter'
 
     # Reads the bot token and webhook identity (no_log inside) and marks the newest
     # Discord message, so only messages after the fault count as receipts.
     - name: Verify Discord receipt prerequisites before the fault
       ansible.builtin.include_tasks: tasks/o11y-alert-delivery-preflight.yml
       when: drill in ['probe', 'grafana'] and not _restore_only
+
+    # Exporter mode only. The key is read here, before any fault, so a missing service or an
+    # unreadable key refuses the run with nothing stopped; it is written to a runner-side file
+    # as the first step of the fault section and wiped in its `always:`. A restore-only run
+    # needs it too, so it is not gated on _restore_only. Credential steps carry no_log; the
+    # refusal asserts on the length, never the value.
+    - name: Read the exporter host's per-service key from the secret store
+      ansible.builtin.set_fact:
+        _exporter_key: >-
+          {{ lookup('community.hashi_vault.hashi_vault',
+               'secret/data/services/ssh/' ~ _exporter_service ~ ':private_key',
+               url=_bao_url, auth_method='approle',
+               role_id=_bao_role_id, secret_id=_bao_secret_id,
+               errors='ignore') | default('', true) }}
+      no_log: true
+      when: drill == 'exporter' and _exporter_service is match('^[A-Za-z0-9][A-Za-z0-9._-]*$')
+
+    - name: Record whether the key was found (length only)
+      ansible.builtin.set_fact:
+        _exporter_key_len: "{{ _exporter_key | default('') | length }}"
+      when: drill == 'exporter'
+
+    - name: Require the exporter host's service and its key
+      ansible.builtin.assert:
+        that:
+          - _exporter_service is match('^[A-Za-z0-9][A-Za-z0-9._-]*$')
+          - _exporter_key_len | int > 0
+        fail_msg: >-
+          The exporter host {{ _exporter.host | default('?') }} needs a service_name in the
+          inventory and a private_key at secret/services/ssh/<service_name> in OpenBao: the
+          drill connects with that per-service key, which the DGX nodes authorize. The key is
+          missing or could not be read (an unreachable store or a failed OpenBao login also
+          lands here; the read ignores errors). No fault was induced.
+      when: drill == 'exporter'
 
     - name: Name this run's unservable probe model
       ansible.builtin.command:
@@ -325,12 +374,30 @@
       ignore_unreachable: true
       block:
         # exporter -----------------------------------------------------------------
+        # First in the section, before anything is stopped: a failed write refuses the run
+        # with the exporter untouched; the wipe is in `always:` after the restore.
+        - name: Put the exporter host's per-service key on the runner (0600)
+          ansible.builtin.include_tasks: tasks/materialise-ssh-key.yml
+          vars:
+            ssh_key_content: "{{ _exporter_key }}"
+            ssh_key_result_var: _exporter_ssh
+          when: drill == 'exporter'
+
         - name: Stop the declared DGX node exporter
           ansible.builtin.systemd_service:
             name: "{{ _exporter.unit }}"
             state: stopped
           delegate_to: "{{ _exporter.host | default(inventory_hostname) }}"
-          become: true
+          # A connection variable on a delegated task is templated in the delegated host's
+          # context, where this host's facts do not exist: `_exporter_ssh.key` alone resolved
+          # to '' there and the task silently connected with the inventory key. Read it
+          # through this host's hostvars (test_exporter_tasks_connect_with_the_per_service_key).
+          vars:
+            ansible_ssh_private_key_file: "{{ (hostvars[inventory_hostname]._exporter_ssh | default({})).key | default('') }}"
+            # Offer only that key, never an agent's or the default identities. This replaces
+            # any ansible_ssh_extra_args an inventory sets for the host (none is set today).
+            ansible_ssh_extra_args: "-o IdentitiesOnly=yes"
+          become: false
           register: _exporter_stopped
           when: drill == 'exporter' and not _restore_only
 
@@ -551,8 +618,22 @@
             name: "{{ _exporter.unit }}"
             state: started
           delegate_to: "{{ _exporter.host | default(inventory_hostname) }}"
-          become: true
+          vars:
+            ansible_ssh_private_key_file: "{{ (hostvars[inventory_hostname]._exporter_ssh | default({})).key | default('') }}"
+            # Offer only that key, never an agent's or the default identities.
+            ansible_ssh_extra_args: "-o IdentitiesOnly=yes"
+          become: false
           register: _restore_exporter
+          # A failed (not unreachable) restart would otherwise abort the rest of this section
+          # and leave the key file on the runner; the assert after the gate below fails the run.
+          ignore_errors: true
+          when: drill == 'exporter'
+
+        # After the restore, which needs the key; before the gate, which can fail the run.
+        - name: Remove the exporter host's key from the runner
+          ansible.builtin.include_tasks: tasks/remove-ssh-key.yml
+          vars:
+            ssh_key_result_var: _exporter_ssh
           when: drill == 'exporter'
 
         - name: Check for a kept probe environment
@@ -615,6 +696,15 @@
             fail_msg: >-
               A restore step could not reach its host; the drill={{ drill }} fault may still be
               in place. Re-run the same mode with drill_restore_only=true once the host answers.
+
+        - name: Require the exporter restart to have succeeded
+          ansible.builtin.assert:
+            that: _restore_exporter | default({}) is not failed
+            fail_msg: >-
+              The exporter restart failed on its host; the exporter may still be stopped. The key
+              file is already removed. Once the cause is fixed (for example the polkit rule on the
+              node), re-run drill=exporter with drill_restore_only=true.
+          when: drill == 'exporter'
 
     # ---- Resolved proof (after the restore) -----------------------------------------
     - name: Require Grafana answering again

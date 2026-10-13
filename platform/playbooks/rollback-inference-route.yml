@@ -62,10 +62,16 @@
 #   inference_route_direct_upstream   optional; host:port Caddy dials for vLLM
 #                                     (default: the host:port of the gateway's
 #                                     agw_upstream_base_url, the head node)
-# The read-back after the Caddy run compares every upstream of that one site block with the
-# mode's expected host:port, in the file AND in Caddy's running config (its admin API), so a
-# declaration that ignores the mode, or a process that did not load the file, fails the run
-# instead of reporting a rollback that did not happen.
+# The inference block sends two paths to two places: `/v1/*` follows the mode (the gateway, or
+# vLLM direct), while `/health` ALWAYS goes straight to vLLM in both modes (the gateway's key
+# policy cannot serve a keyless health probe, and the dgx-spark verify reads the public
+# /health). The read-back after the Caddy run therefore judges the block per handler, in the
+# file AND in Caddy's running config (its admin API): `/v1/*` must reach exactly the mode's
+# host:port, `/health` exactly the direct one, and no other handler may proxy anywhere. A
+# declaration that ignores the mode, a `/health` sent through the gateway, a stray third
+# upstream, or a process that did not load the file fails the run instead of reporting a
+# rollback that did not happen. A block that proxies both paths to one upstream (the direct
+# shape) passes in `direct` mode.
 #
 # Check mode: reads run, every write is simulated or skipped. Verification is tagged
 # `verify` (plan/architecture/08, standard 3): `--tags verify` reads the route and the
@@ -127,24 +133,11 @@
     _rb_gw_dialable: >-
       {{ ((inference_route_gateway_upstream | default('', true) | length > 0)
           or (hostvars[_gw].agw_bind | default('') not in ['', '0.0.0.0', '::'])) | bool }}
-    # The upstreams Caddy is DIALLING, from its running config (admin API inside the
-    # container, as manage-caddy-sites.yml reads it): the file can be right while the process
-    # still serves the old route. Every `dial` under the routes matching the inference host;
-    # for `reverse_proxy https://h:p` Caddy dials `h:p` (caddy adapt, v2.11.4).
-    _rb_dial_pat: '"dial":\s*"([^"]+)"'
-    _rb_running_dials: >-
-      {%- set out = [] -%}
-      {%- set cfg = (_rb_running.stdout | default('null', true) | from_json) or {} -%}
-      {%- for srv in ((cfg.get('apps') or {}).get('http') or {}).get('servers', {}).values() -%}
-      {%- for r in srv.routes | default([]) -%}
-      {%- for m in r.match | default([]) -%}
-      {%- if inference_route_address in (m.host | default([])) -%}
-      {%- for d in (r | to_json | regex_findall(_rb_dial_pat)) -%}{%- if out.append(d) -%}{%- endif -%}{%- endfor -%}
-      {%- endif -%}
-      {%- endfor -%}
-      {%- endfor -%}
-      {%- endfor -%}
-      {{ out | unique | list }}
+    # Where Caddy is SENDING /v1/*, /health and everything else, from its running config
+    # (the admin API inside the container, read by the sites tool, which returns only the
+    # upstream lists): the file can be right while the process still serves the old route.
+    _sites_tool: "{{ playbook_dir }}/../services/caddy/deployment/lib/caddyfile_sites.py"
+    _rb_running_routes: "{{ _rb_running.stdout | default('{}', true) | from_json }}"
   tasks:
     - name: "Require the inference route's address"
       tags: [verify]
@@ -192,9 +185,11 @@
           inference_route_direct_upstream) must be set and differ from the gateway upstream
           ('{{ _rb_gateway_upstream }}'), or the read-back could not tell the modes apart.
 
-    - name: "Read Caddy's running config"
+    - name: "Read where Caddy's running config sends the inference route"
       tags: [verify]
-      ansible.builtin.command: "{{ _engine }} exec {{ _container }} wget -qO- http://127.0.0.1:2019/config/"
+      ansible.builtin.script:
+        cmd: "{{ _sites_tool }} running --address {{ inference_route_address }} --engine {{ _engine }} --container {{ _container }}"
+        executable: python3
       register: _rb_running
       changed_when: false
       check_mode: false
@@ -203,21 +198,48 @@
       tags: [verify]
       ansible.builtin.debug:
         msg: >-
-          {{ inference_route_address }} is dialling {{ _rb_running_dials | join(', ') | default('(no upstream)', true) }}:
-          {% if _rb_running_dials == [_rb_direct_upstream] %}direct to vLLM{% elif not (_rb_gw_dialable | bool) %}not vLLM
-          direct (the gateway upstream is undeclared, so a route through the gateway cannot be recognised){% elif _rb_running_dials == [_rb_gateway_upstream] %}through
+          {{ inference_route_address }} sends /v1/* to {{ _rb_running_routes.v1 | join(', ') | default('nothing', true) }}:
+          {% if _rb_running_routes.v1 == [_rb_direct_upstream] %}direct to vLLM{% elif not (_rb_gw_dialable | bool) %}not vLLM
+          direct (the gateway upstream is undeclared, so a route through the gateway cannot be recognised){% elif _rb_running_routes.v1 == [_rb_gateway_upstream] %}through
           the gateway{% else %}NEITHER the gateway ({{ _rb_gateway_upstream }}) nor vLLM ({{ _rb_direct_upstream }}){% endif %}.
-          {% if _rb_mode != 'gateway-config' %}Mode {{ _rb_mode }} routes it {{ inference_route_mode }}.{% endif %}
+          /health goes to {{ _rb_running_routes.health | join(', ') | default('nothing', true) }}:
+          {% if _rb_running_routes.health == [_rb_direct_upstream] %}direct to vLLM, as it always should{% else %}NOT direct to vLLM ({{ _rb_direct_upstream }}),
+          which is where it always belongs{% endif %}.
+          {% if _rb_running_routes.other | length > 0 %}Other upstreams in the block: {{ _rb_running_routes.other | join(', ') }}.{% endif %}
+          {% if _rb_mode != 'gateway-config' %}Mode {{ _rb_mode }} routes /v1/* {{ inference_route_mode }}.{% endif %}
+
+    - name: "Read where the rendered route declaration sends the inference route"
+      # On the controller, with the declaration on stdin: the Caddy host's process listing and
+      # environment never carry it (a delegated task keeps this host's variables).
+      tags: [verify]
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ _sites_tool }}"
+          - declared
+          - --address
+          - "{{ inference_route_address }}"
+        stdin: "{{ caddy_managed_sites | default('') }}"
+      delegate_to: localhost
+      register: _rb_declared
+      changed_when: false
+      check_mode: false
+      when: _rb_mode in ['direct', 'restore']
 
     - name: "Refuse a route declaration that does not follow inference_route_mode"
       ansible.builtin.assert:
-        that: >-
-          (_rb_direct_upstream if inference_route_mode == 'direct' else _rb_gateway_upstream)
-          in caddy_managed_sites | default('')
+        that:
+          - (_rb_declared.stdout | from_json).v1 == [_rb_direct_upstream if inference_route_mode == 'direct' else _rb_gateway_upstream]
+          - (_rb_declared.stdout | from_json).health == [_rb_direct_upstream]
+          - (_rb_declared.stdout | from_json).other == []
         fail_msg: >-
-          caddy_managed_sites rendered with inference_route_mode={{ inference_route_mode }} does not
-          contain {{ _rb_direct_upstream if inference_route_mode == 'direct' else _rb_gateway_upstream }}.
-          The inference block must select its upstream on inference_route_mode; nothing was changed.
+          caddy_managed_sites rendered with inference_route_mode={{ inference_route_mode }} sends
+          /v1/* to {{ (_rb_declared.stdout | from_json).v1 | join(', ') | default('nothing', true) }} and /health to
+          {{ (_rb_declared.stdout | from_json).health | join(', ') | default('nothing', true) }}
+          {{- (', other upstreams ' ~ ((_rb_declared.stdout | from_json).other | join(', '))) if (_rb_declared.stdout | from_json).other else '' }};
+          it must send /v1/* to {{ _rb_direct_upstream if inference_route_mode == 'direct' else _rb_gateway_upstream }}
+          and /health to {{ _rb_direct_upstream }}, with no other upstream. The inference block
+          must select its upstream on inference_route_mode; nothing was changed.
       when: _rb_mode in ['direct', 'restore']
 
 # ── Published copies: read; in `direct`, publish ─────────────────────────────
@@ -780,24 +802,9 @@
     _sites_tool: "{{ playbook_dir }}/../services/caddy/deployment/lib/caddyfile_sites.py"
     _engine: "{{ container_engine | default('podman') }}"
     _container: "{{ caddy_container | default('caddy') }}"
-    # The upstreams Caddy is DIALLING, from its running config (admin API inside the
-    # container, as manage-caddy-sites.yml reads it): the file can be right while the process
-    # still serves the old route. Every `dial` under the routes matching the inference host;
-    # for `reverse_proxy https://h:p` Caddy dials `h:p` (caddy adapt, v2.11.4).
-    _rb_dial_pat: '"dial":\s*"([^"]+)"'
-    _rb_running_dials: >-
-      {%- set out = [] -%}
-      {%- set cfg = (_rb_running.stdout | default('null', true) | from_json) or {} -%}
-      {%- for srv in ((cfg.get('apps') or {}).get('http') or {}).get('servers', {}).values() -%}
-      {%- for r in srv.routes | default([]) -%}
-      {%- for m in r.match | default([]) -%}
-      {%- if inference_route_address in (m.host | default([])) -%}
-      {%- for d in (r | to_json | regex_findall(_rb_dial_pat)) -%}{%- if out.append(d) -%}{%- endif -%}{%- endfor -%}
-      {%- endif -%}
-      {%- endfor -%}
-      {%- endfor -%}
-      {%- endfor -%}
-      {{ out | unique | list }}
+    # Where Caddy is SENDING /v1/*, /health and everything else, from its running config: the
+    # file can be right while the process still serves the old route.
+    _rb_running_routes: "{{ _rb_running.stdout | default('{}', true) | from_json }}"
   tasks:
     # manage-caddy-sites.yml RECORDS its edge-route verdict (the probe of the route a client
     # takes) without failing, so the importer decides: a rollback whose route does not resolve or
@@ -813,52 +820,63 @@
         - not ansible_check_mode
         - _rb_mode in ['direct', 'restore']
 
-    - name: "Read the site blocks after the Caddy run"
+    - name: "Read where the Caddyfile sends the inference route after the Caddy run"
       tags: [verify]
       ansible.builtin.script:
-        cmd: "{{ _sites_tool }} {{ _caddyfile }} list"
+        cmd: "{{ _sites_tool }} {{ _caddyfile }} routes --address {{ inference_route_address }}"
         executable: python3
       register: _rb_sites_after
       changed_when: false
       check_mode: false
 
-    - name: "Require the inference route to dial the mode's upstream, from the managed region"
+    - name: "Require the inference route to send /v1/* to the mode's upstream and /health to vLLM, from the managed region"
       tags: [verify]
       vars:
-        _site: "{{ _rb_sites_after.stdout | from_json | selectattr('addresses', 'contains', inference_route_address) | first | default({}) }}"
-        _netlocs: "{{ (_site.upstreams | default([])) | map('regex_replace', '^[A-Za-z][A-Za-z0-9+.-]*://', '') | map('regex_replace', '/.*$', '') | unique | list }}"
+        _site: "{{ _rb_sites_after.stdout | from_json }}"
       ansible.builtin.assert:
         that:
-          - _site | length > 0
-          - _site.managed | default(false)
-          - _netlocs == [_rb_expected]
+          - _site.found
+          - _site.managed
+          - _site.v1 == [_rb_expected]
+          - _site.health == [_rb_direct_upstream]
+          - _site.other == []
         fail_msg: >-
           {{ inference_route_address }} after the Caddy run:
-          {{ 'no site block' if _site | length == 0 else ('outside the managed region' if not _site.managed
-             else 'dials ' ~ (_netlocs | join(', ') | default('(no upstream)', true))) }};
-          mode {{ _rb_mode }} expects every upstream to be {{ _rb_expected }}.
-        success_msg: "{{ inference_route_address }} is declared to dial {{ _rb_expected }} only."
+          {{ 'no site block' if not _site.found else ('outside the managed region' if not _site.managed
+             else '/v1/* goes to ' ~ (_site.v1 | join(', ') | default('nothing', true))
+                  ~ ', /health to ' ~ (_site.health | join(', ') | default('nothing', true))
+                  ~ (', other upstreams ' ~ (_site.other | join(', ')) if _site.other else '')) }};
+          mode {{ _rb_mode }} expects /v1/* to go to {{ _rb_expected }} only and /health to
+          {{ _rb_direct_upstream }} only (vLLM direct, in every mode), with no other upstream.
+        success_msg: "{{ inference_route_address }} is declared to send /v1/* to {{ _rb_expected }} and /health to {{ _rb_direct_upstream }}, nothing else."
       # A dry run changed nothing, so the file can only show the old route.
       when:
         - not ansible_check_mode
         - _rb_mode in ['direct', 'restore']
 
-    - name: "Read Caddy's running config after the Caddy run"
+    - name: "Read where Caddy's running config sends the inference route after the Caddy run"
       tags: [verify]
-      ansible.builtin.command: "{{ _engine }} exec {{ _container }} wget -qO- http://127.0.0.1:2019/config/"
+      ansible.builtin.script:
+        cmd: "{{ _sites_tool }} running --address {{ inference_route_address }} --engine {{ _engine }} --container {{ _container }}"
+        executable: python3
       register: _rb_running
       changed_when: false
       check_mode: false
 
-    - name: "Require the RUNNING Caddy to dial the mode's upstream for the inference host"
+    - name: "Require the RUNNING Caddy to send /v1/* to the mode's upstream and /health to vLLM"
       tags: [verify]
       ansible.builtin.assert:
-        that: _rb_running_dials == [_rb_expected]
+        that:
+          - _rb_running_routes.v1 == [_rb_expected]
+          - _rb_running_routes.health == [_rb_direct_upstream]
+          - _rb_running_routes.other == []
         fail_msg: >-
-          Caddy's running config has {{ inference_route_address }} dialling
-          {{ _rb_running_dials | join(', ') | default('nothing', true) }}; mode {{ _rb_mode }} expects
-          {{ _rb_expected }} only. The file and the process disagree, or the route was not loaded.
-        success_msg: "{{ inference_route_address }} dials {{ _rb_expected }} only (running config)."
+          Caddy's running config has {{ inference_route_address }} sending /v1/* to
+          {{ _rb_running_routes.v1 | join(', ') | default('nothing', true) }} and /health to
+          {{ _rb_running_routes.health | join(', ') | default('nothing', true) }}{{ (', other upstreams ' ~ (_rb_running_routes.other | join(', '))) if _rb_running_routes.other else '' }};
+          mode {{ _rb_mode }} expects /v1/* to go to {{ _rb_expected }} only and /health to
+          {{ _rb_direct_upstream }} only. The file and the process disagree, or the route was not loaded.
+        success_msg: "{{ inference_route_address }} sends /v1/* to {{ _rb_expected }} and /health to {{ _rb_direct_upstream }} (running config)."
       when:
         - not ansible_check_mode
         - _rb_mode in ['direct', 'restore']
