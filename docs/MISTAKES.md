@@ -2358,11 +2358,14 @@ the previous config was not the problem, and the restore failed the same way.
 
 **What happened.** The service-deployment-workflow 7.1 second-run proof launched a real
 `Deploy o11y (Dev)` (Semaphore task 5000) at `dev` commit `4872faad`. The last real o11y deploy
-was task 4882 at `92574e78`; since then `dev` had gained PR #570 (the o11y receiver guardrails
-and scrape budgets), proven only by dry runs (tasks 4949, 4980, 4996), and a dry run never loads
-Alloy's config. Task 5000 rolled the change to production, Alloy rejected its config and
-restarted every ~2 s (see 10.26), and production telemetry was down for about 1 hour 45
-minutes, until task 5037 restored it.
+was task 4882 at `92574e78`; since then `dev` had gained ten commits under the o11y service
+directory (`git log 92574e78..4872faad -- platform/services/o11y`), among them PR #570 (the o11y
+receiver guardrails and scrape budgets) and, at the head, PR #572. They were proven only by dry
+runs (tasks 4949, 4980, 4996), and a dry run never loads Alloy's config. Task 5000 rolled the
+change to production and Alloy rejected its config and restarted in a loop (see 10.26): 1,027
+restarts between the 03:44 UTC recreate (task 5000) and inspect task 5015, which saw Alloy
+started at 04:15:49 UTC, about one restart per 1.9 s (1,909 s / 1,027). Production telemetry was
+down for about 1 hour 45 minutes, until task 5037 restored it.
 
 **Root cause.** The proof script pinned "whatever `dev` is now" and never asked what had
 changed for that service since its last real deploy. Check mode cannot prove a config that the
@@ -2372,7 +2375,9 @@ failed. The proof run became the first live run of someone else's change.
 **The rule.** Before any real production run of a `(Dev)` template, list the commits on `dev`
 that touch that service since its last REAL deploy. Any change not yet proven live gets its own
 reviewed decision (owner aware, rollback ready) before the run. A proof run is never the first
-live run of another change.
+live run of another change. 3.14's rule did not fire because it covers a destructive step's own
+dry run; it does not cover a change someone else merged that has never run live. This is a
+separate, wider rule for that reason.
 
 **Enforced by.** Convention. Proposed guard: the deploy playbooks emit, in their step-result
 evidence, the service paths changed since the revision of the last successful real deploy, and
@@ -3235,9 +3240,10 @@ reproduction of the 2.20 error where the installed ansible-core is 2.20 or newer
 
 **Occurrences: 1** — 2026-10-12
 
-**What happened.** On 2026-10-12 a dev worker cleaned up its own test runs with `pkill -f bats`
-and `pkill -f "pytest -q -n auto"`. On the shared machine those patterns matched every session's
-and every worker's suites and the lead's watchers (exit 144), and a PR push was aborted.
+**What happened.** On 2026-10-12 a wave-3 service-deploy worker cleaned up its own test runs
+with `pkill -f bats` and `pkill -f "pytest -q -n auto"`. On the shared machine those patterns
+matched every session's and every worker's suites. The lead's watcher tasks exited 144, and the
+branch push for PR #569 (`docs/live-proofs-1012-evening`) was aborted.
 
 **Root cause.** A pattern kill matches every process on the machine, not the caller's. Nothing
 in the worker's brief said the machine was shared, and nothing stopped the command.
@@ -3245,9 +3251,10 @@ in the worker's brief said the machine was shared, and nothing stopped the comma
 **The rule.** Kill only PIDs you started and recorded. Never `pkill`, `killall`, or
 `kill $(pgrep ...)` by pattern on a shared machine.
 
-**Enforced by.** Convention: the lead's memory (`feedback_no_pattern_kill`) and a line in every
-worker brief. Proposed guard: a PreToolUse hook refusing `pkill`, `killall` and
-`kill $(pgrep ...)`. Related: 5.10, 5.14.
+**Enforced by.** Convention. The lead's memory note and the line in worker briefs are
+operator-private and not visible in this repository, so the only repo-visible guard is the
+proposed one: a PreToolUse hook refusing `pkill`, `killall` and `kill $(pgrep ...)`. Related:
+5.10, 5.14.
 
 ## 6. Working from assumptions about files
 

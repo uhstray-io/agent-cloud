@@ -170,7 +170,7 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
 - [x] 2.4 Allowlist in 1.4 is empty; the guard now fails on any new violation
 - [ ] 2.5 Validation gate: spec scenarios "Dry run changes nothing", "Read-only probe is not
       skipped", "Legacy dry-run argument still works" and "Verify-only run" pass
-      - 2026-10-13: evidence so far. The R2 deprecation notice is proven (task 4936). The R3
+      - 2026-10-13 (task output read from Semaphore by the lead): evidence so far. The R2 deprecation notice is proven (task 4936). The R3
         workflow snapshots all succeeded (tasks 4945, 4951, 4953, 4956, 4957, 4958). The operator
         decided verify-only for the remaining check (option A). R1, the safety-default scenario
         through Manage GitHub Runner Group, is BLOCKED: the GitHub App returns 404 on every
@@ -417,7 +417,8 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
       - 2026-10-13: PR #568 (wave 1) merged into dev. The remaining services were regrouped:
         wave 2 is n8n and Postiz, wave 3 is NetBox (a change-aware deploy that, when nothing
         changed, leaves containers and the orb-agent untouched). Not ticked.
-      - 2026-10-13, production: wave 1 second-run proof COMPLETE. Each service's second real
+      - 2026-10-13, production (task output read from Semaphore by the lead): wave 1
+        second-run proof COMPLETE. Each service's second real
         Dev deploy reports `DEPLOY_CHANGED=false` and service-deploy `changed_on_rerun` false:
         tududi 4967 (changed) then 4968 (unchanged); honcho 4977 then 4982; agentgateway 4987
         and 4992, both unchanged; Authentik 5022 (changed) then 5028 (unchanged) after PR #581

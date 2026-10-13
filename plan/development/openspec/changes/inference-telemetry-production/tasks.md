@@ -175,8 +175,9 @@
       2026-10-13, production Alloy outage (task output read from Semaphore by the lead):
       Deploy o11y (Dev) task 5000 (03:44 UTC) rolled `dev` including PR #570's scrape budgets.
       Alloy rejected its config (`body_size_limit` got a bare byte count; Alloy v1.5.1 needs a
-      units string) and restarted about every 2 s: Inspect Service Runtime task 5015 reported
-      `oom=false restarts=1027`. Reproduced locally with the pinned image and fixed by PR #582
+      units string) and restarted in a loop: Inspect Service Runtime task 5015 reported
+      `oom=false restarts=1027`, Alloy started at 04:15:49 UTC, so 1,027 restarts since the
+      03:44 UTC recreate is about one per 1.9 s. Reproduced locally with the pinned image and fixed by PR #582
       (MISTAKES 10.26). Restored by task 5037 at 05:29 UTC (inspect task 5040: alloy healthy,
       restarts 0); task 5042 then reported no change. PR #580 added OOM, health and start
       fields to Inspect Service Runtime for this diagnosis. The telemetry collection gap runs
