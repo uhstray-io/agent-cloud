@@ -256,10 +256,11 @@ def test_inspect_reader_kills_and_reaps_child_on_timeout(monkeypatch):
 
 def test_playbook_is_dev_pinned_single_host_and_read_only():
     playbook = yaml.safe_load(PLAYBOOK.read_text())
-    assert playbook[0]["hosts"] == "localhost"
-    assert playbook[0]["connection"] == "local"
-    assert playbook[0]["tasks"][0]["ansible.builtin.assert"]
-    assert playbook[1]["ansible.builtin.import_playbook"] == "refuse-internal-extra-vars.yml"
+    assert playbook[0]["ansible.builtin.import_playbook"] == "refuse-internal-extra-vars.yml"
+    assert playbook[1]["hosts"] == "localhost"
+    assert playbook[1]["connection"] == "local"
+    assert playbook[1]["tags"] == ["always"]
+    assert playbook[1]["tasks"][0]["ansible.builtin.assert"]
     assert playbook[2]["ansible.builtin.import_playbook"] == "require-reviewed-checkout.yml"
     assert any(
         play.get("ansible.builtin.import_playbook") == "require-reviewed-checkout.yml"
@@ -267,7 +268,7 @@ def test_playbook_is_dev_pinned_single_host_and_read_only():
         == ["platform/playbooks/files/survey-o11y-alloy-health.py"]
         for play in playbook
     )
-    early_guard = playbook[0]["tasks"][0]["ansible.builtin.assert"]["that"]
+    early_guard = playbook[1]["tasks"][0]["ansible.builtin.assert"]["that"]
     assert "_survey_forged_names | length == 0" in early_guard
     assert "_survey_receivers | length == 1" in early_guard
     assert "_survey_receiver_valid | bool" in early_guard
@@ -324,14 +325,18 @@ def test_full_playbook_refuses_context_overrides_before_imported_playbooks(tmp_p
 
 
 @pytest.mark.skipif(ANSIBLE_PLAYBOOK is None, reason="needs ansible-playbook")
-def test_full_playbook_refuses_receiver_local_mode_before_checkout(tmp_path):
+@pytest.mark.parametrize("tags", [None, "verify"], ids=["untagged", "tag-filtered"])
+def test_full_playbook_refuses_receiver_local_mode_before_checkout(tmp_path, tags):
     inventory = tmp_path / "inventory.ini"
     inventory.write_text(
         "[o11y_svc]\n"
         "localhost ansible_connection=local local_mode=true container_engine=podman podman_rootful=false\n"
     )
+    command = [ANSIBLE_PLAYBOOK, "-i", str(inventory), str(PLAYBOOK)]
+    if tags:
+        command.extend(["--tags", tags])
     proc = subprocess.run(
-        [ANSIBLE_PLAYBOOK, "-i", str(inventory), str(PLAYBOOK)],
+        command,
         cwd=ROOT,
         env=_ansible_env(tmp_path / "local-tmp"),
         text=True,
@@ -343,6 +348,7 @@ def test_full_playbook_refuses_receiver_local_mode_before_checkout(tmp_path):
     assert proc.returncode != 0
     assert "Refusing the Alloy survey because its context or receiver scope is unsafe." in output
     assert "Require the reviewed source and helper bytes" not in output
+    assert "Require an exact reviewed commit" not in output
 
 
 @pytest.mark.skipif(ANSIBLE_PLAYBOOK is None, reason="needs ansible-playbook")

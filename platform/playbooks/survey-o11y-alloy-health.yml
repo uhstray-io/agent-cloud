@@ -1,9 +1,13 @@
 # Read-only, exact-SHA-guarded survey of the fixed receiver-side Alloy container.
+- name: Refuse extra vars that set internal names
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
 - name: Refuse unsafe survey context before any Python-based task
   hosts: localhost
   connection: local
   gather_facts: false
   become: false
+  tags: [always]
   vars:
     _survey_receivers: "{{ groups.get('o11y_svc', []) }}"
     _survey_override_names:
@@ -41,9 +45,6 @@
           - _survey_receiver_valid | bool
         fail_msg: "Refusing the Alloy survey because its context or receiver scope is unsafe."
         quiet: true
-
-- name: Refuse extra vars that set internal names
-  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
 
 - name: Require the reviewed source and helper bytes
   ansible.builtin.import_playbook: require-reviewed-checkout.yml
