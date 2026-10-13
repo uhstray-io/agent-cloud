@@ -172,10 +172,14 @@ the production privileged-discovery path.
 
 ## Known facts & decisions discovered in bootstrap bring-up
 
-- **Semaphore image pin:** `semaphoreui/semaphore:v2.18.12-ansible2.16.5`.
-  `latest` (v2.19 beta) **and** the `bolt` dialect both panic
-  (`unknown store type`, pro Terraform-store factory) — the supported embedded
-  store is **SQLite**. The `-ansible` variant ships ansible for task execution.
+- **Semaphore image pin:** `semaphoreui/semaphore:v2.19.11` (the plain tag, the
+  one production runs). The v2.19 beta (`latest` at the time) **and** the `bolt`
+  dialect both panicked (`unknown store type`, pro Terraform-store factory) —
+  the supported embedded store is **SQLite**; v2.19.11 starts on it. Before
+  2026-10-12 the pin was `v2.18.12-ansible2.16.5`.
+  A changed pin is applied by re-running `make local-bootstrap`: it recreates the
+  controller when the image differs and keeps the data volume, so a newer binary
+  migrates the SQLite store forward.
 - Semaphore auto-installs `collections/requirements.yml` from the cloned repo
   per task; the bootstrap additionally installs `hvac` +
   `community.hashi_vault` in the container for `hashi_vault` lookups.

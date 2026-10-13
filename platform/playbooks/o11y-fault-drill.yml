@@ -329,7 +329,7 @@
           ansible.builtin.systemd_service:
             name: "{{ _exporter.unit }}"
             state: stopped
-          delegate_to: "{{ _exporter.host }}"
+          delegate_to: "{{ _exporter.host | default(inventory_hostname) }}"
           become: true
           register: _exporter_stopped
           when: drill == 'exporter' and not _restore_only
@@ -550,7 +550,7 @@
           ansible.builtin.systemd_service:
             name: "{{ _exporter.unit }}"
             state: started
-          delegate_to: "{{ _exporter.host }}"
+          delegate_to: "{{ _exporter.host | default(inventory_hostname) }}"
           become: true
           register: _restore_exporter
           when: drill == 'exporter'

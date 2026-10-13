@@ -61,7 +61,7 @@ def clean_copy(tmp_path_factory):
 
 
 def run(tmp_path, clean_copy, extra, *, check=False, exporter_host="o11y-test", other_hosts=None,
-        expect_dirty=False, engine_script=FAKE_ENGINE):
+        expect_dirty=False, engine_script=FAKE_ENGINE, declare_exporters=True, host_extra=None):
     root, sha = clean_copy
     bindir = tmp_path / "bin"
     bindir.mkdir()
@@ -74,15 +74,19 @@ def run(tmp_path, clean_copy, extra, *, check=False, exporter_host="o11y-test", 
     log = tmp_path / "engine.log"
     log.write_text("")
     inventory = tmp_path / "inventory.yml"
+    host_vars = {
+        "ansible_connection": "local",
+        "ansible_python_interpreter": shutil.which("python3"),
+        "monorepo_deploy_path": "platform/services/o11y/deployment",
+        "dgx_spark_scrape_enabled": True,
+        "dgx_spark_nodes": [{"name": "spark-test", "address": "192.0.2.10"}],
+    }
+    host_vars.update(host_extra or {})
+    if declare_exporters:
+        host_vars["o11y_fault_drill_exporters"] = {
+            "spark-test": {"host": exporter_host, "unit": "node-exporter.service"}}
     inventory.write_text(json.dumps({"all": {"children": {
-        "o11y_svc": {"hosts": {"o11y-test": {
-            "ansible_connection": "local",
-            "ansible_python_interpreter": shutil.which("python3"),
-            "monorepo_deploy_path": "platform/services/o11y/deployment",
-            "dgx_spark_scrape_enabled": True,
-            "dgx_spark_nodes": [{"name": "spark-test", "address": "192.0.2.10"}],
-            "o11y_fault_drill_exporters": {"spark-test": {"host": exporter_host, "unit": "node-exporter.service"}},
-        }}},
+        "o11y_svc": {"hosts": {"o11y-test": host_vars}},
         "dgx": {"hosts": other_hosts or {}},
     }}}))
     env = {k: v for k, v in os.environ.items()
@@ -142,6 +146,20 @@ def test_check_mode_reads_but_induces_nothing(tmp_path, clean_copy):
     assert calls and all(c.startswith("exec o11y-grafana") for c in calls), calls
     assert any("alert-rules/inference_target_down" in c for c in calls)
     assert "systemd" not in " ".join(c for c in calls)
+
+
+def test_a_probe_dry_run_needs_no_exporter_declaration(tmp_path, clean_copy):
+    """Production dry run 4888 (ansible-core 2.20.8): the exporter stop/restore tasks
+    delegate to `_exporter.host`, and 2.19+ templates `delegate_to` strictly even for a task
+    its `when` skips, so a probe drill on an inventory with no
+    `o11y_fault_drill_exporters` died with "object of type 'dict' has no attribute 'host'".
+    ansible-core 2.18 left the unresolved template alone, which is why drill 3295 passed."""
+    rc, out, calls = run(tmp_path, clean_copy, {
+        "drill": "probe", "confirm_fault_drill": "probe", "drill_restore_only": True},
+        check=True, declare_exporters=False, host_extra={"o11y_inference_probe_model": "served-model-a"})
+    assert "has no attribute 'host'" not in out, out
+    assert rc == 0, out
+    assert "systemd" not in " ".join(calls)
 
 
 # ---- structural ----------------------------------------------------------------------
