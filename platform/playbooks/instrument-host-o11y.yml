@@ -81,6 +81,7 @@
 
 - name: "Validate production scrape budgets before host instrumentation or rendering"
   hosts: o11y_svc
+  any_errors_fatal: true
   gather_facts: false
   become: false
   tasks:
