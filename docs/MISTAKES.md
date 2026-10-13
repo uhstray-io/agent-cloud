@@ -4717,9 +4717,11 @@ the cgroup, and `SuccessExitStatus=143` for the trapped exit. `deploy-github-run
 never uses `state: restarted`. It reads `deploy.sh procs` (the main process, every Listener
 and Worker of the account, from `/proc`) and restarts when the unit or `.env` changed or
 when those processes are not in the promised state. A restart is `deploy.sh quiesce`:
-wait (bounded) for no Worker, stop the unit before the daemon reload, SIGINT every Listener
-of the account (in the cgroup or not), then SIGKILL the rest of the cgroup and any Listener
-that survived, and fail unless both are gone. After the
+wait for no Worker for up to `github_runner_drain_seconds` (600 by default), stop the unit
+before the daemon reload, and SIGINT every Listener of the account (in the cgroup or not).
+A job still running when that drain expires is cancelled by this SIGINT: the Listener
+reports it as cancelled. Then SIGKILL the rest of the cgroup and any Listener that
+survived, and fail unless both are gone. After the
 start it fails unless there is exactly one Listener, in the unit's cgroup, started after
 `.env`'s mtime, with no `NoNewPrivs` and no private user namespace on it, its Worker or
 `run.sh`. `test_service_github_runner.bats` holds the unit settings and the task order,
