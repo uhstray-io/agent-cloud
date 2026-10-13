@@ -85,12 +85,13 @@
           - expect_metrics | default('true') | string | lower in ['true', 'false']
           - expect_logs | default('true') | string | lower in ['true', 'false']
           - expect_traces | default('false') | string | lower in ['true', 'false']
+          - expected_log_signal | default('') is match('^([a-z][a-z0-9_-]*)?$')
           - emit_agentgateway_canary | default('false') | string | lower in ['true', 'false']
           - (expect_metrics | default('true') | bool) or (expect_logs | default('true') | bool) or (expect_traces | default('false') | bool)
           - not (emit_agentgateway_canary | default('false') | bool) or expected_service | default('') == 'agentgateway'
           - not (emit_agentgateway_canary | default('false') | bool) or expect_traces | default('false') | bool
           - not (emit_agentgateway_canary | default('false') | bool) or groups.get('agentgateway_svc', []) | length == 1
-        fail_msg: "Declare a lowercase service and at least one expected signal; the canary requires exactly one agentgateway_svc host and Tempo traces."
+        fail_msg: "Declare a lowercase service, a lowercase expected_log_signal or none, and at least one expected signal; the canary requires exactly one agentgateway_svc host and Tempo traces."
       when: o11y_verification_mode | default('legacy') == 'legacy'
 
 - name: Emit an optional gateway trace canary
@@ -184,6 +185,11 @@
   gather_facts: false
   vars:
     _engine: "{{ container_engine | default('podman') }}"
+    # {service="<svc>"}, plus ,signal="<x>" when expected_log_signal names one: a service can ship
+    # several streams (agentgateway's access logs and its span logs), and one proves nothing about the other.
+    _loki_selector: >-
+      {{ '{service="' ~ expected_service ~ '"' ~ ((',signal="' ~ expected_log_signal ~ '"') if (expected_log_signal | default('') | length > 0) else '') ~ '}' }}
+    _signal_label: "{{ (' (signal ' ~ expected_log_signal ~ ')') if (expected_log_signal | default('') | length > 0) else '' }}"
   tasks:
     - name: Query recent Loki logs for the service
       ansible.builtin.command:
@@ -195,7 +201,7 @@
           - -q
           - -O
           - "-"
-          - "http://loki:3100/loki/api/v1/query_range?query={{ ('{service=\"' ~ expected_service ~ '\"}') | urlencode }}&since=15m&limit=1"
+          - "http://loki:3100/loki/api/v1/query_range?query={{ _loki_selector | urlencode }}&since=15m&limit=1"
       register: _service_logs
       changed_when: false
       check_mode: false
@@ -206,7 +212,7 @@
         that:
           - _logs_json.status == 'success'
           - _logs_json.data.result | length > 0
-        fail_msg: "Loki has no {{ expected_service }} log in the last 15 minutes; emit a fresh service log and check Alloy collection."
+        fail_msg: "Loki has no {{ expected_service }}{{ _signal_label }} log in the last 15 minutes; emit a fresh service log and check Alloy collection."
       vars:
         _logs_json: "{{ _service_logs.stdout | from_json }}"
       when: (o11y_verification_mode | default('legacy') == 'legacy') and (expect_logs | default('true') | bool)
@@ -247,7 +253,7 @@
       ansible.builtin.debug:
         msg: >-
           {{ expected_service }} verified:
-          {{ 'recent Loki log' if (expect_logs | default('true') | bool) else 'logs not requested' }},
+          {{ ('recent Loki log' ~ _signal_label) if (expect_logs | default('true') | bool) else 'logs not requested' }},
           {{ 'healthy Prometheus scrape' if (expect_metrics | default('true') | bool) else 'metrics not requested' }},
           {{ 'recent Tempo trace' if (expect_traces | default('false') | bool) else 'traces not requested' }}.
       when: o11y_verification_mode | default('legacy') == 'legacy'
