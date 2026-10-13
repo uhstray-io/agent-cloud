@@ -58,5 +58,20 @@ returns a fixed safe message. Resume is gated on focused offline evidence that
 all missing-input cases refuse before OpenBao, sentinels never appear in output,
 and a refusal from `phase=verified` causes no token-creation request. After those
 offline tests pass and the Dev seed environment is confirmed clean, retry may
-proceed from saved state through the reviewed Dev-bound workflow. This follow-up
-performs no live retry; the task 5013 root cause remains unknown.
+proceed from saved state through the reviewed Dev-bound workflow. At that
+point, this follow-up had performed no live retry; task 5013's root cause
+remains historically unknown.
+
+## Rotation recovery and production check-mode outcome
+
+PR #583 merged to `dev` as `318c7e84baf5e4bdb24277e50738d452465ac976`. The
+saved verified state was resumed without creating another token. Dev-bound
+Semaphore task 5026 succeeded: its isolated encrypted inputs were removed, and
+the protected controller-token comparison matched exactly and updated OpenBao.
+The local backup is mode `0600`; recovery state was removed; replacement-token
+authentication succeeded and the old token was rejected.
+
+Production o11y check-mode task 5027 later failed at the existing Alloy health
+check after eight retries, with health still `starting`; no apply ran. The cause
+remains unknown. Track the separate Alloy diagnostic in task 3.3 of the
+[estate-wide observability OpenSpec](openspec/changes/estate-wide-observability-instrumentation/tasks.md).

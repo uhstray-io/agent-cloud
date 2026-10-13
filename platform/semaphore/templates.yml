@@ -2083,6 +2083,18 @@ templates:
     # Reports fixed driver/source categories and counts only; no logs, paths,
     # addresses, container identities, or stderr are exposed.
 
+  - name: Survey o11y Alloy Health (Dev)
+    playbook: platform/playbooks/survey-o11y-alloy-health.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for the read-only Alloy health survey"
+        type: string
+        required: true
+    # Reports fixed Alloy state fields only; inspect JSON, logs, paths, addresses,
+    # command details, and subprocess output remain private.
+
   - name: Survey o11y Receiver Capabilities (Dev)
     playbook: platform/playbooks/survey-o11y-receiver-capabilities.yml
     repository: agent-cloud dev
