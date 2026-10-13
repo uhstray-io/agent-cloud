@@ -80,10 +80,32 @@ def test_request_presents_the_verifier_leaf_and_trusts_the_internal_ca():
 def test_resolution_is_read_only_and_every_new_task_keeps_the_canary_gate():
     tasks = _play()["tasks"]
     resolution = _task("Resolve the server leaf's name")
-    assert resolution["vars"]["_agwr_check_only"] is True
+    assert resolution["vars"] == {
+        "_agwr_check_only": True,
+        "_agwr_name": "{{ _server_name }}",
+        "_agwr_ip": "{{ _canary_bind }}",
+        "_agwr_expect": "",
+        "_agwr_hosts_file": "/etc/hosts",
+    }
     assert resolution["ansible.builtin.include_tasks"] == "tasks/agw-probe-resolution.yml"
     assert "_tls" in resolution["when"]
     assert "_canary_on" in _play()["vars"]
     for task in tasks:
         assert "_canary_on" in task["when"], task["name"]
     assert "legacy" in _play()["vars"]["_canary_on"] and "emit_agentgateway_canary" in _play()["vars"]["_canary_on"]
+
+
+def test_tls_files_are_read_and_refused_when_missing():
+    stat = _task("Read the verifier leaf and the trust bundle")
+    assert stat["loop"] == [
+        "{{ _leaf_dir }}/current/cert.pem",
+        "{{ _leaf_dir }}/current/key.pem",
+        "{{ _ca }}",
+    ]
+    assert stat["when"] == "_canary_on and _tls"
+    refuse = _task("Refuse a verifier leaf or trust bundle")
+    assert refuse["ansible.builtin.assert"]["that"] == [
+        "_leaf_dir | length > 0",
+        "_tls_files.results | rejectattr('stat.exists') | list | length == 0",
+    ]
+    assert refuse["when"] == "_canary_on and _tls"
