@@ -97,6 +97,7 @@ and why.
 | 3.12 | Launched two `(Dev)` deploys through the API without `service_branch`; Semaphore applies survey defaults only in its form, so both hosts checked out `main` under Dev playbooks | Live state | 1 | Playbook guard (`assert-placement-branch.yml`) + launcher default fill + tests (`test_placement_branch_guard.py`, `test_semaphore_launch.py`, mutation-checked) |
 | 3.13 | The `dev` -> `main` promotion merge let the repo's delete-head-branch-on-merge setting delete `dev`, the long-lived integration branch; the main -> dev sync then failed | Live state | 1 | Ruleset (`protect-dev.json`, deletion rule) + test (`test_ruleset_protect_dev.py`); live since 2026-10-08 |
 | 3.14 | Ran a real rollback drill on the strength of a dry run that skips the step that failed; the gateway came up broken and stayed down ~6 minutes | Live state | 1 | Test (`test_rollback_inference_route.py`: validation before recreate, auto-restore on a failed readiness) |
+| 3.15 | A proof run deployed unproven `dev` merges to production: the second-run proof's real o11y deploy carried a scrape-budget change no real run had loaded, and production telemetry was down ~1h45m | Live state | 1 | Convention (launcher refusal on unproven changes proposed) |
 | 4.1 | `while read` silently dropped an unterminated final line | Data handling | 1 | Convention |
 | 4.2 | Stored `.env` values without stripping surrounding quotes | Data handling | 1 | Convention |
 | 4.3 | Used a real internal IP address as a test vector | Data leak | 1 | Pre-commit (existing) |
@@ -126,6 +127,7 @@ and why.
 | 5.16 | Merged on a PR status rollup that still showed the previous head's checks; CI on the merged head was running | Process | 1 | Convention (operator-side script; `dev` has no required checks) |
 | 5.17 | Upgraded production's ansible-core before CI ran the playbooks on the new version; 2.20 templates `delegate_to` strictly, a probe drill dry run failed | Process | 1 | Test (`test_delegate_to_strict_undefined.py`) + CI pin + Convention (upgrade ordering) |
 | 5.18 | ansible-core 2.20 rejects template delimiters inside a conditional; the Authentik promotion guard's `'{{ '{{' }}'` broke Deploy Authentik on every branch | Process | 1 | Test (`test_no_template_delimiters_in_conditionals.py`) |
+| 5.19 | A worker killed other sessions' test runs and the lead's watchers with `pkill -f` by process-name pattern on the shared machine | Process | 1 | Convention (PreToolUse hook proposed) |
 | 6.1 | Built an edit from an assumed file structure instead of a read one | Process | 1 | Convention |
 | 6.2 | Built an interface the consumer never calls, without reading how it invokes | Process | 1 | Test |
 | 6.3 | Repeated 6.2 — assumed openssl and jq exist on the orchestrator image; neither does — **x3** (CI never installed the playbook collections) | Process | 3 | Convention -> **Test + declared dep**; CI installs `collections/requirements.yml` |
@@ -2350,6 +2352,33 @@ watch configured file paths: /certs/agw-server/current/cert.pem" (see 1.23). Val
 config first and restoring the replaced one are kept as defence, but neither addressed this failure:
 the previous config was not the problem, and the restore failed the same way.
 
+### 3.15 A proof run deployed unproven `dev` merges to production
+
+**Occurrences: 1** — 2026-10-13
+
+**What happened.** The service-deployment-workflow 7.1 second-run proof launched a real
+`Deploy o11y (Dev)` (Semaphore task 5000) at `dev` commit `4872faad`. The last real o11y deploy
+was task 4882 at `92574e78`; since then `dev` had gained PR #570 (the o11y receiver guardrails
+and scrape budgets), proven only by dry runs (tasks 4949, 4980, 4996), and a dry run never loads
+Alloy's config. Task 5000 rolled the change to production, Alloy rejected its config and
+restarted every ~2 s (see 10.26), and production telemetry was down for about 1 hour 45
+minutes, until task 5037 restored it.
+
+**Root cause.** The proof script pinned "whatever `dev` is now" and never asked what had
+changed for that service since its last real deploy. Check mode cannot prove a config that the
+service itself must load, so three passing dry runs said nothing about the one thing that
+failed. The proof run became the first live run of someone else's change.
+
+**The rule.** Before any real production run of a `(Dev)` template, list the commits on `dev`
+that touch that service since its last REAL deploy. Any change not yet proven live gets its own
+reviewed decision (owner aware, rollback ready) before the run. A proof run is never the first
+live run of another change.
+
+**Enforced by.** Convention. Proposed guard: the deploy playbooks emit, in their step-result
+evidence, the service paths changed since the revision of the last successful real deploy, and
+the launcher refuses a real run with unproven changes unless an explicit acknowledgement
+variable is set. Related: 3.14, 10.26.
+
 ## 4. Data handling
 
 ### 4.1 `while read` dropping an unterminated final line
@@ -3201,6 +3230,24 @@ variables.
 `platform/semaphore`, plus a run of the real guard task through ansible-playbook, plus the
 reproduction of the 2.20 error where the installed ansible-core is 2.20 or newer). CI pin
 `ansible-core==2.20.8` in `platform/requirements-test.txt`. Related: 5.17.
+
+### 5.19 A worker killed other sessions' test runs by process-name pattern
+
+**Occurrences: 1** — 2026-10-12
+
+**What happened.** On 2026-10-12 a dev worker cleaned up its own test runs with `pkill -f bats`
+and `pkill -f "pytest -q -n auto"`. On the shared machine those patterns matched every session's
+and every worker's suites and the lead's watchers (exit 144), and a PR push was aborted.
+
+**Root cause.** A pattern kill matches every process on the machine, not the caller's. Nothing
+in the worker's brief said the machine was shared, and nothing stopped the command.
+
+**The rule.** Kill only PIDs you started and recorded. Never `pkill`, `killall`, or
+`kill $(pgrep ...)` by pattern on a shared machine.
+
+**Enforced by.** Convention: the lead's memory (`feedback_no_pattern_kill`) and a line in every
+worker brief. Proposed guard: a PreToolUse hook refusing `pkill`, `killall` and
+`kill $(pgrep ...)`. Related: 5.10, 5.14.
 
 ## 6. Working from assumptions about files
 
