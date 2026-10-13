@@ -367,6 +367,58 @@ assert next(t for t in tasks if t['name'] == 'Require a readable firing receipt 
 PY
 }
 
+@test "o11y: visible Discord receipt assertion emits counts only" {
+  command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
+  local playbook="$BATS_TEST_TMPDIR/discord-count-only.yml"
+  python3 - "$REPO_ROOT/platform/playbooks/tasks/o11y-alert-probe.yml" "$playbook" <<'PY'
+import pathlib
+import sys
+import yaml
+
+probe = yaml.safe_load(pathlib.Path(sys.argv[1]).read_text())
+pending = list(probe)
+tasks = []
+while pending:
+    task = pending.pop(0)
+    if not isinstance(task, dict):
+        continue
+    tasks.append(task)
+    for key in ("block", "rescue", "always", "tasks"):
+        pending[0:0] = task.get(key, [])
+summary = next(task for task in tasks if task.get("name") == "Count the matching Discord receipt without retaining its content")
+assertion = next(task for task in tasks if task.get("name") == "Require a readable firing receipt from the owned webhook")
+play = [{
+    "hosts": "localhost",
+    "gather_facts": False,
+    "vars": {"drill_expect_alert": True},
+    "tasks": [
+        {
+            "name": "seed synthetic protected Discord response",
+            "ansible.builtin.set_fact": {
+                "_discord_messages": {
+                    "failed": True,
+                    "json": [{"webhook_id": "synthetic-webhook", "content": "SYNTHETIC_CONTENT_SECRET"}],
+                    "request": {"headers": {"Authorization": "Bot SYNTHETIC_TOKEN_SECRET"}},
+                },
+                "_webhook_id": "synthetic-webhook",
+            },
+            "no_log": True,
+        },
+        summary,
+        assertion,
+    ],
+}]
+pathlib.Path(sys.argv[2]).write_text(yaml.safe_dump(play), encoding="utf-8")
+PY
+  mkdir -p "$BATS_TEST_TMPDIR/ansible-local"
+  run env ANSIBLE_LOCAL_TEMP="$BATS_TEST_TMPDIR/ansible-local" \
+    ansible-playbook -i localhost, "$playbook"
+  [ "$status" -ne 0 ]
+  assert_contains "$output" "Discord firing receipt absent after the wait: webhook messages=1, readable messages=1"
+  refute_contains "$output" "SYNTHETIC_CONTENT_SECRET"
+  refute_contains "$output" "SYNTHETIC_TOKEN_SECRET"
+}
+
 @test "o11y: delivery canary restores paused rules through the shared task" {
   python3 - "$REPO_ROOT/platform/playbooks/drill-o11y-alert-canary.yml" \
     "$REPO_ROOT/platform/playbooks/restore-o11y-alert-baseline.yml" \

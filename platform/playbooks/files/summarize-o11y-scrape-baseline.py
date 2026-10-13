@@ -234,7 +234,7 @@ def _live_rule_matches_owned(rule: Any, target: dict[str, Any], folder_uid: str)
 
 
 def validate_active_expected_target_rules(input_document: Any) -> dict[str, Any]:
-    """Prove declared active targets and explicit inert tombstones separately."""
+    """Prove active targets, gate-off owners, and explicit inert tombstones separately."""
     if not isinstance(input_document, dict):
         raise Refusal("invalid_live_rules")
     if input_document.get("targets") == [] and input_document.get("retired_uids") == []:
@@ -246,6 +246,15 @@ def validate_active_expected_target_rules(input_document: Any) -> dict[str, Any]
             input_document.get("targets"), input_document.get("retired_uids"),
             reviewed=input_document.get("reviewed"),
         )
+    paused = input_document.get("paused_uids", [])
+    active_uids = {target["uid"] for target in targets}
+    if (
+        not isinstance(paused, list)
+        or any(not isinstance(uid, str) or not EXPECTED_UID.fullmatch(uid) for uid in paused)
+        or len(set(paused)) != len(paused)
+        or set(paused) & (active_uids | set(retired))
+    ):
+        raise Refusal("invalid_declaration")
     rules = input_document.get("live_rules")
     folders = input_document.get("live_folders")
     if (
@@ -261,8 +270,8 @@ def validate_active_expected_target_rules(input_document: Any) -> dict[str, Any]
         raise Refusal("live_folder_drift")
     folder_uid = matching_folders[0]["uid"]
     by_uid = {rule.get("uid"): rule for rule in rules if isinstance(rule, dict)}
-    target_uids = {target["uid"] for target in targets}
-    if len(by_uid) != len(rules) or set(by_uid) != target_uids | set(retired):
+    target_uids = active_uids
+    if len(by_uid) != len(rules) or set(by_uid) != target_uids | set(paused) | set(retired):
         raise Refusal("live_target_drift")
     active_contract = _expected_target_contracts(targets)
     for target in targets:
@@ -277,6 +286,10 @@ def validate_active_expected_target_rules(input_document: Any) -> dict[str, Any]
     for uid in retired:
         rule = by_uid[uid]
         if not _live_rule_matches_owned(rule, {"_inert": True, "_retired": True}, folder_uid):
+            raise Refusal("live_target_drift")
+    for uid in paused:
+        rule = by_uid[uid]
+        if not _live_rule_matches_owned(rule, {"_inert": True, "_retired": False}, folder_uid):
             raise Refusal("live_target_drift")
     return {"status": "validated", "active_count": len(targets), "retired_count": len(retired)}
 
@@ -488,8 +501,42 @@ def prepare_expected_target_transition(input_document: Any) -> dict[str, Any]:
             input_document.get("targets"), input_document.get("retired_uids"), reviewed=True
         )
     live_raw = input_document.get("live_rules")
-    if previous and not live_raw and not check_mode:
+    grafana_running = input_document.get("grafana_running")
+    stopped_preflight = bool(previous and not live_raw and not check_mode and grafana_running is False)
+    if previous and not live_raw and not check_mode and not stopped_preflight:
         raise Refusal("live_rules_unavailable")
+    if stopped_preflight:
+        requested_retired = input_document.get("retired_uids", [])
+        if (
+            not isinstance(requested_retired, list)
+            or any(not isinstance(uid, str) or not EXPECTED_UID.fullmatch(uid) for uid in requested_retired)
+            or len(set(requested_retired)) != len(requested_retired)
+        ):
+            raise Refusal("stopped_grafana_retirement_drift")
+        baselines = [previous, *([pending] if pending else [])]
+        for baseline in baselines:
+            baseline_by_uid = {row["uid"]: row for row in baseline}
+            retired_before = {uid for uid, row in baseline_by_uid.items() if row["_retired"]}
+            if set(requested_retired) - retired_before:
+                raise Refusal("stopped_grafana_retirement_drift")
+            if input_document.get("enabled") is True:
+                current, _ = validate_expected_target_declaration(
+                    input_document.get("targets"), requested_retired, reviewed=True
+                )
+                current_by_uid = {target["uid"]: target for target in current}
+                if set(current_by_uid) & {
+                    uid for uid, row in baseline_by_uid.items() if row["_inert"] and not row["_retired"]
+                }:
+                    raise Refusal("stopped_grafana_reactivation")
+                active_before = {
+                    uid for uid, row in baseline_by_uid.items() if not row["_inert"] and not row["_retired"]
+                }
+                if set(current_by_uid) != active_before:
+                    raise Refusal("stopped_grafana_target_drift")
+                for uid, target in current_by_uid.items():
+                    old = baseline_by_uid[uid]
+                    if any(old[field] != target[field] for field in EXPECTED_IDENTITY_FIELDS):
+                        raise Refusal("target_identity_changed")
     if live_raw:
         try:
             live = json.loads(live_raw)

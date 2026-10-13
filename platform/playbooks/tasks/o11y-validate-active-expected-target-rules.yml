@@ -27,6 +27,7 @@
             if o11y_alerts_enabled | default(false) | bool and
                o11y_expected_metrics_targets_reviewed | default(false) | bool else []),
           'retired_uids': o11y_expected_metrics_targets_retired_uids | default([]),
+          'paused_uids': _o11y_previous_expected_target_uids | default([]),
           'live_rules': (o11y_live_expected_rules_json | from_json |
             selectattr('uid', 'match', '^o11y_missing_') | list),
           'live_folders': (_expected_target_folders.stdout | from_json)} | to_json }}

@@ -303,6 +303,15 @@ def test_expected_target_disable_retry_and_reenable_preserve_only_owned_uid():
     assert paused["data"][0]["model"]["expr"] == "vector(0)"
     assert paused["labels"] == {"severity": "warning", "owner": "platform-operations", "environment": "disabled"}
     assert "notification_settings" not in paused
+    paused_live = _live_rules(disabled)
+    assert SURVEY.validate_active_expected_target_rules({
+        "reviewed": True,
+        "targets": [],
+        "retired_uids": [],
+        "paused_uids": disabled_plan["paused_uids"],
+        "live_rules": paused_live,
+        "live_folders": [{"uid": "agent-cloud-folder", "title": "agent-cloud"}],
+    })["status"] == "validated"
 
     repeated = _transition(disabled, enabled=False, targets="malformed")
     assert repeated["paused_uids"] == [target["uid"]]
@@ -312,6 +321,14 @@ def test_expected_target_disable_retry_and_reenable_preserve_only_owned_uid():
     restored = next(rule for rule in _service_rules(active_again) if rule["uid"] == target["uid"])
     assert restored["isPaused"] is False
     assert restored["data"][0]["model"]["expr"] == original_target_rule["data"][0]["model"]["expr"]
+    assert SURVEY.validate_active_expected_target_rules({
+        "reviewed": True,
+        "targets": [target],
+        "retired_uids": [],
+        "paused_uids": [],
+        "live_rules": _live_rules(active_again),
+        "live_folders": [{"uid": "agent-cloud-folder", "title": "agent-cloud"}],
+    })["status"] == "validated"
 
 
 @pytest.mark.parametrize("targets", [None, "bad", {}, [], [{"uid": "bad"}]])
@@ -541,6 +558,62 @@ def test_active_rule_validation_separates_declared_rules_from_retired_tombstones
             SURVEY.validate_active_expected_target_rules(drifted)
 
 
+def test_active_rule_validation_accepts_gate_off_owners_and_refuses_bad_paused_uids():
+    target = _expected()
+    inert = _render(
+        o11y_alerts_enabled=False,
+        o11y_expected_metrics_targets_reviewed=False,
+        o11y_expected_metrics_targets=[],
+        _o11y_previous_expected_target_uids=[target["uid"]],
+    )
+    input_document = {
+        "reviewed": True,
+        "targets": [],
+        "retired_uids": [],
+        "paused_uids": [target["uid"]],
+        "live_rules": _live_rules(inert),
+        "live_folders": [{"uid": "agent-cloud-folder", "title": "agent-cloud"}],
+    }
+    assert SURVEY.validate_active_expected_target_rules(input_document) == {
+        "status": "validated", "active_count": 0, "retired_count": 0,
+    }
+    for mutate in (
+        lambda rule: rule.update(isPaused=False),
+        lambda rule: rule["data"][0]["model"].update(expr="vector(1)"),
+        lambda rule: rule["labels"].update(environment="prod"),
+    ):
+        drifted = json.loads(json.dumps(input_document))
+        mutate(drifted["live_rules"][0])
+        with pytest.raises(SURVEY.Refusal):
+            SURVEY.validate_active_expected_target_rules(drifted)
+
+    for paused in (None, "not-a-list", ["invalid"], [target["uid"], target["uid"]]):
+        with pytest.raises(SURVEY.Refusal):
+            SURVEY.validate_active_expected_target_rules({**input_document, "paused_uids": paused})
+
+    active = _render(o11y_expected_metrics_targets=[target])
+    with pytest.raises(SURVEY.Refusal):
+        SURVEY.validate_active_expected_target_rules({
+            **input_document,
+            "targets": [target],
+            "paused_uids": [target["uid"]],
+            "live_rules": _live_rules(active),
+        })
+
+    retired = _render(
+        o11y_alerts_enabled=False,
+        o11y_expected_metrics_targets_reviewed=False,
+        o11y_expected_metrics_targets=[],
+        _o11y_retired_expected_target_uids=[target["uid"]],
+    )
+    with pytest.raises(SURVEY.Refusal):
+        SURVEY.validate_active_expected_target_rules({
+            **input_document,
+            "retired_uids": [target["uid"]],
+            "live_rules": _live_rules(retired),
+        })
+
+
 def test_live_expected_target_preflight_requires_exact_folder_and_readback():
     target = _expected()
     previous = _render(o11y_expected_metrics_targets=[target])
@@ -561,6 +634,98 @@ def test_live_expected_target_preflight_requires_exact_folder_and_readback():
             "live_rules": "",
             "live_folders": "",
         })
+
+
+def test_stopped_grafana_allows_only_an_owned_no_change_redeploy():
+    target = _expected()
+    active = _render(o11y_expected_metrics_targets=[target])
+    request = {
+        "enabled": True,
+        "reviewed": True,
+        "targets": [target],
+        "retired_uids": [],
+        "previous_rules": yaml.safe_dump(active),
+        "live_rules": "",
+        "live_folders": "",
+        "grafana_running": False,
+    }
+    assert SURVEY.prepare_expected_target_transition(request)["reason"] == "enabled"
+
+    disabled = SURVEY.prepare_expected_target_transition({
+        **request,
+        "enabled": False,
+        "reviewed": False,
+        "targets": [],
+    })
+    assert disabled["paused_uids"] == [target["uid"]]
+    assert set(disabled["paused_uids"] + disabled["retired_uids"]) == {target["uid"]}
+
+    identity_changed = json.loads(json.dumps(request))
+    changed_target = _expected(instance="changed.example.test:9100")
+    identity_changed["targets"] = [changed_target]
+    with pytest.raises(SURVEY.Refusal, match="target_identity_changed"):
+        SURVEY.prepare_expected_target_transition(identity_changed)
+
+    new_uid = {**request, "targets": [_expected(uid="o11y_missing_new")]}
+    with pytest.raises(SURVEY.Refusal, match="stopped_grafana_target_drift"):
+        SURVEY.prepare_expected_target_transition(new_uid)
+
+    retirement = {
+        **request,
+        "enabled": False,
+        "reviewed": False,
+        "targets": [],
+        "retired_uids": [target["uid"]],
+    }
+    with pytest.raises(SURVEY.Refusal, match="stopped_grafana_retirement_drift"):
+        SURVEY.prepare_expected_target_transition(retirement)
+
+
+def test_stopped_grafana_refuses_api_failure_and_interrupted_reactivation():
+    target = _expected()
+    inert = _render(
+        o11y_alerts_enabled=False,
+        o11y_expected_metrics_targets_reviewed=False,
+        o11y_expected_metrics_targets=[],
+        _o11y_previous_expected_target_uids=[target["uid"]],
+    )
+    active = _render(o11y_expected_metrics_targets=[target])
+    request = {
+        "enabled": True,
+        "reviewed": True,
+        "targets": [target],
+        "retired_uids": [],
+        "previous_rules": yaml.safe_dump(inert),
+        "live_rules": "",
+        "live_folders": "",
+        "grafana_running": False,
+    }
+    with pytest.raises(SURVEY.Refusal, match="stopped_grafana_reactivation"):
+        SURVEY.prepare_expected_target_transition(request)
+
+    interrupted = {
+        **request,
+        "previous_rules": yaml.safe_dump(active),
+        "pending_rules": yaml.safe_dump(inert),
+    }
+    with pytest.raises(SURVEY.Refusal, match="stopped_grafana_reactivation"):
+        SURVEY.prepare_expected_target_transition(interrupted)
+
+    invalid_snapshot = {
+        **interrupted,
+        "pending_rules": yaml.safe_dump({
+            "apiVersion": 1,
+            "groups": [{
+                "orgId": 1, "name": "service-telemetry", "folder": "agent-cloud",
+                "rules": [{"uid": target["uid"], "title": "unexpected"}],
+            }],
+        }),
+    }
+    with pytest.raises(SURVEY.Refusal, match="invalid_previous_rules|invalid_pending_rules"):
+        SURVEY.prepare_expected_target_transition(invalid_snapshot)
+
+    with pytest.raises(SURVEY.Refusal, match="live_rules_unavailable"):
+        SURVEY.prepare_expected_target_transition({**request, "grafana_running": True})
 
 
 def test_private_alert_rule_reads_and_writes_are_hidden_and_check_mode_skips_render():
@@ -589,6 +754,17 @@ def test_private_alert_rule_reads_and_writes_are_hidden_and_check_mode_skips_ren
         "Save only the validated previous expected-target UIDs",
     ):
         assert next(task for task in prepare if task.get("name") == name)["no_log"] is True
+    transition = next(
+        task for task in prepare if task.get("name") == "Prepare the expected-target alert transition privately"
+    )
+    transition_input = transition["ansible.builtin.command"]["stdin"]
+    assert "grafana_running" in transition_input
+    assert "failed_when" in next(
+        task for task in prepare if task.get("name") == "Read live Grafana alert ownership before alert transition"
+    )
+    assert "failed_when" in next(
+        task for task in prepare if task.get("name") == "Read live Grafana folders before alert transition"
+    )
 
     deploy = yaml.safe_load((ROOT / "platform/playbooks/deploy-o11y.yml").read_text())
     phase = next(play for play in deploy if play.get("name") == "Phase 1: Place repo + manage o11y secrets")
@@ -650,6 +826,11 @@ def test_private_alert_rule_reads_and_writes_are_hidden_and_check_mode_skips_ren
         "Require active target declarations and inert retired tombstones to match",
     ):
         assert next(task for task in active_target_validation if task.get("name") == name)["no_log"] is True
+    active_rule_reader = next(
+        task for task in active_target_validation
+        if task.get("name") == "Validate active expected-target rules and retired tombstones privately"
+    )
+    assert "paused_uids" in active_rule_reader["ansible.builtin.command"]["stdin"]
     for relative_path in (
         "platform/playbooks/drill-o11y-active-alert-delivery.yml",
         "platform/playbooks/tasks/o11y-recover-active-alert-drill.yml",
@@ -684,7 +865,6 @@ def test_private_alert_rule_reads_and_writes_are_hidden_and_check_mode_skips_ren
         "Wait for the declared failed scrape",
         "Require the onboarding verifier to refuse the named endpoint",
         "Wait for Grafana's service-down rule to fire for the probe",
-        "Require a readable firing receipt from the owned webhook",
     ):
         task = next(item for item in flat_probe if item.get("name") == name)
         parent = next((item for item in flat_probe if item.get("block") and task in item["block"]), {})
@@ -694,6 +874,17 @@ def test_private_alert_rule_reads_and_writes_are_hidden_and_check_mode_skips_ren
         item for item in flat_probe if item.get("name") == "Report the fired rule and confirmed Discord receipt"
     )
     assert "{{ expected_service }}" not in json.dumps(probe_summary)
+    receipt_summary = next(
+        item for item in flat_probe
+        if item.get("name") == "Count the matching Discord receipt without retaining its content"
+    )
+    receipt_assertion = next(
+        item for item in flat_probe if item.get("name") == "Require a readable firing receipt from the owned webhook"
+    )
+    assert receipt_summary["no_log"] is True
+    assert "no_log" not in receipt_assertion and receipt_assertion["ansible.builtin.assert"]["quiet"] is True
+    assert "_discord_messages" not in json.dumps(receipt_assertion)
+    assert ".content" not in json.dumps(receipt_assertion)
 
     restored = yaml.safe_load(
         (ROOT / "platform/playbooks/tasks/o11y-restore-alert-baseline.yml").read_text()

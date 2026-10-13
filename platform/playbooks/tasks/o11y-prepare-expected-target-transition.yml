@@ -76,10 +76,11 @@
         curl -fsS --config - http://127.0.0.1:3000/api/v1/provisioning/alert-rules
   register: _o11y_live_alert_rules
   changed_when: false
+  failed_when: false
   no_log: true
   when:
     - not ansible_check_mode
-    - _o11y_grafana_running.stdout | default('') | length > 0
+    - _o11y_grafana_running.stdout | default('') | trim | length > 0
 
 - name: Read live Grafana folders before alert transition
   ansible.builtin.command:
@@ -94,10 +95,11 @@
         curl -fsS --config - http://127.0.0.1:3000/api/folders
   register: _o11y_live_alert_folders
   changed_when: false
+  failed_when: false
   no_log: true
   when:
     - not ansible_check_mode
-    - _o11y_grafana_running.stdout | default('') | length > 0
+    - _o11y_grafana_running.stdout | default('') | trim | length > 0
 
 - name: Prepare the expected-target alert transition privately
   ansible.builtin.command:
@@ -113,6 +115,9 @@
           'targets': o11y_expected_metrics_targets | default([]),
           'retired_uids': o11y_expected_metrics_targets_retired_uids | default([]),
           'check_mode': ansible_check_mode,
+          'grafana_running': (not ansible_check_mode and
+            (_o11y_grafana_running.rc | default(1) | int == 0) and
+            (_o11y_grafana_running.stdout | default('') | trim | length > 0)),
           'live_rules': (_o11y_live_alert_rules.stdout | default('')),
           'live_folders': (_o11y_live_alert_folders.stdout | default('')),
           'previous_rules': ((_o11y_pending_expected_rules_file.content | b64decode)

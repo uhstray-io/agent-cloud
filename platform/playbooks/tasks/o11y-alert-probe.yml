@@ -182,23 +182,35 @@
       ignore_errors: true
       when: not ansible_check_mode and (drill_expect_alert | default(false) | bool)
 
+    - name: Count the matching Discord receipt without retaining its content
+      ansible.builtin.set_fact:
+        _discord_receipt_summary:
+          succeeded: "{{ _discord_messages is succeeded }}"
+          webhook_message_count: >-
+            {{ _discord_messages.json | default([]) |
+               selectattr('webhook_id', 'defined') |
+               selectattr('webhook_id', 'equalto', _webhook_id) | list | length }}
+          readable_message_count: >-
+            {{ _discord_messages.json | default([]) |
+               selectattr('webhook_id', 'defined') |
+               selectattr('webhook_id', 'equalto', _webhook_id) |
+               selectattr('content', 'defined') |
+               rejectattr('content', 'equalto', '') | list | length }}
+      no_log: true
+      when: drill_expect_alert | default(false) | bool
+
     - name: Require a readable firing receipt from the owned webhook
       ansible.builtin.assert:
-        that: _discord_messages is succeeded
+        that:
+          - _discord_receipt_summary.succeeded | bool
+          - _discord_receipt_summary.webhook_message_count | int > 0
+          - _discord_receipt_summary.readable_message_count | int > 0
         fail_msg: >-
           Discord firing receipt absent after the wait: webhook messages={{
-          _discord_messages.json | default([]) |
-          selectattr('webhook_id', 'defined') |
-          selectattr('webhook_id', 'equalto', _webhook_id) |
-          list | length }}, readable messages={{
-          _discord_messages.json | default([]) |
-          selectattr('webhook_id', 'defined') |
-          selectattr('webhook_id', 'equalto', _webhook_id) |
-          selectattr('content', 'defined') |
-          rejectattr('content', 'equalto', '') |
-          list | length }}. Check bot message-history and message-content access.
+          _discord_receipt_summary.webhook_message_count }}, readable messages={{
+          _discord_receipt_summary.readable_message_count }}. Check bot message-history and message-content access.
+        quiet: true
       when: drill_expect_alert | default(false) | bool
-      no_log: true
 
     - name: Report the fired rule and confirmed Discord receipt
       ansible.builtin.debug:
