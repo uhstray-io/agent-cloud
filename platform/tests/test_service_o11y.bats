@@ -1775,12 +1775,13 @@ assert any('expect_logs' in item for item in inputs)
 assert any('expect_traces' in item for item in inputs)
 assert any('emit_agentgateway_canary' in item for item in inputs)
 canary = next(p for p in plays if p.get('name') == 'Emit an optional gateway trace canary')
-mark, traffic = canary['tasks']
+mark = canary['tasks'][0]
+traffic = next(t for t in canary['tasks'] if t['name'].startswith('Send anonymous'))
 assert mark['delegate_to'] == "{{ groups.get('o11y_svc', []) | first | default(inventory_hostname) }}"
 assert traffic['ansible.builtin.uri']['status_code'] == 401
 assert traffic['ansible.builtin.uri']['use_netrc'] is False
 assert traffic['ansible.builtin.uri']['use_proxy'] is False
-assert '_canary_bind' in traffic['ansible.builtin.uri']['url']
+assert '_canary_bind' in next(t for t in canary['tasks'] if t['name'].startswith('The gateway base URL'))['ansible.builtin.set_fact']['_gateway_base']
 assert "['0.0.0.0', '::', '']" in canary['vars']['_canary_bind']
 assert traffic['loop'] == '{{ range(100) | list }}'
 assert 'headers' not in traffic['ansible.builtin.uri']
