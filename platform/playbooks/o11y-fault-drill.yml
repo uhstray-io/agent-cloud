@@ -14,6 +14,10 @@
 #             Needs an operator dgx-spark window: refused unless
 #             `-e drill_window_confirmed=true` and the node is declared in
 #             `o11y_fault_drill_exporters` (see below).
+#             The stop and the restart run UNPRIVILEGED (`become: false`) as the connecting
+#             account: on the nodes a polkit rule authorizes that one account to start and
+#             stop that one unit (dgx-spark drill-access.yml). No sudo, and no
+#             unit-file reload (the rule permits start and stop only).
 #   probe     rewrites the synthetic inference probe's model name to one the server does
 #             not serve, starts `inference-probe.service` at once, holds the invalid
 #             target for twelve minutes while `/health` must answer 200 on every check
@@ -330,7 +334,7 @@
             name: "{{ _exporter.unit }}"
             state: stopped
           delegate_to: "{{ _exporter.host | default(inventory_hostname) }}"
-          become: true
+          become: false
           register: _exporter_stopped
           when: drill == 'exporter' and not _restore_only
 
@@ -551,7 +555,7 @@
             name: "{{ _exporter.unit }}"
             state: started
           delegate_to: "{{ _exporter.host | default(inventory_hostname) }}"
-          become: true
+          become: false
           register: _restore_exporter
           when: drill == 'exporter'
 

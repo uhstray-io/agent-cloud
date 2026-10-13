@@ -216,6 +216,29 @@
       exporter tasks (`:282-286`, `:457-461`) move to `become: false` afterwards. The
       request is prepared at `dgx-spark-drill-handoff.md` in this change and is NOT sent,
       per the operator's decision of 2026-10-12. Left unticked.
+      2026-10-12: dgx-spark replied (operator-relayed; branch `feat/o11y-drill-access`,
+      commit `f9967fa`, playbook `drill-access.yml`, NOT applied yet). Account `o11y-drill`
+      on spark-1 and spark-2 (no password, no groups, no sudo, `/bin/bash`). Polkit rule
+      `/etc/polkit-1/rules.d/50-o11y-drill-node-exporter.rules` has the requested shape
+      (action id, `subject.user`, unit equal to `node-exporter.service`, verb `start` or
+      `stop`); installed polkitd `124-2ubuntu1.24.04.4` and systemd `255.4-1ubuntu8.17`;
+      the verbs are `start`, `stop`, `restart`, `try-restart`, `reload` and `reload-or-*`,
+      and only start and stop pass, which `systemd_service` `state=started` and
+      `state=stopped` need. dgx-spark asks that `daemon_reload` is never set. sshd confines
+      the account to the runner's source address, key-only, no forwarding; port 22; the
+      firewall already allows the LAN. dgx-spark's apply runs a boundary proof every time
+      (stop allowed; `systemd-run` as the exporter refused while stopped; start allowed;
+      another unit, reload, reset-failed, daemon-reload and `systemd-run` refused; exporter
+      active afterwards). Nothing on the nodes depends on the exporter. The only unattended
+      dgx-spark job is `dgx-update.timer` at 04:30 Eastern daily, so the window must sit
+      outside 04:15 to 05:00 Eastern. dgx-spark reads the public key from site-config
+      `secrets/ssh/o11y-fault-drill/id_ed25519.pub` (service name `o11y-fault-drill`).
+      agent-cloud side, this change: the drill's two exporter tasks now run `become: false`
+      (follow-up 1 of `dgx-spark-drill-handoff.md`), with tests. Remaining: generate the key
+      and back it up to site-config; site-config PR for a hosts group (the account as
+      `ansible_user`) and the `o11y_fault_drill_exporters` map; dgx-spark applies
+      `drill-access.yml`; verify key-only login to both nodes; a `--check` dry run; one real
+      run in the agreed window and its evidence recorded here. Left unticked.
 - [ ] 2.6 Validation gate: 2.4 proves scenario "All node targets up" and scenario "Boot
       journal is queryable"; 2.5 proves scenario "Missing scrape is a telemetry failure"
       including the alert firing;

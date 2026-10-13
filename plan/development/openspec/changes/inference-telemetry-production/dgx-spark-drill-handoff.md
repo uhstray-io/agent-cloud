@@ -123,7 +123,8 @@ changes the drill to run unprivileged (follow-up 1 below).
 
 None of this is started, and none of it touches a DGX node.
 
-1. `platform/playbooks/o11y-fault-drill.yml`: set `become: false` on the two exporter
+1. **Done 2026-10-12 (branch `feat/drill-exporter-unprivileged`).**
+   `platform/playbooks/o11y-fault-drill.yml`: set `become: false` on the two exporter
    tasks (`:282-286` stop, `:457-461` restore); keep `become: true` on the probe tasks.
    Extend `platform/tests/test_o11y_fault_drill.py`. The change lands only after dgx-spark
    confirms the polkit rule; until then `become: true` on those tasks is what the
@@ -153,3 +154,9 @@ None of this is started, and none of it touches a DGX node.
 - The GPU exporter (deliberately not scraped), vLLM, Ray, and any change to the nodes'
   telemetry configuration.
 - Sending this request. Per the operator it is delivered only on their say-so.
+
+## Reply received
+
+2026-10-12: dgx-spark replied (branch `feat/o11y-drill-access`, commit `f9967fa`); see
+`tasks.md` task 2.5 for the facts and the remaining steps. The "PREPARED, NOT SENT"
+status line at the top records the state when this file was written.

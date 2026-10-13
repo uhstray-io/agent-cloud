@@ -203,6 +203,28 @@ def test_exporter_restore_is_idempotent_start():
     assert task["ansible.builtin.systemd_service"]["state"] == "started"
 
 
+@pytest.mark.parametrize("name", ["Stop the declared DGX node exporter", "Restart the DGX node exporter"])
+def test_exporter_stop_and_restore_run_unprivileged(name):
+    # The nodes authorize one account for start/stop of one unit through polkit; there is
+    # no sudo there, so a privileged module task would be refused on the real nodes.
+    assert _task(name)["become"] is False
+
+
+@pytest.mark.parametrize("name", [
+    "Take the first failing sample now, not at the next timer tick",
+    "Take a good sample with the restored target",
+])
+def test_probe_sample_tasks_keep_become(name):
+    assert _task(name)["become"] is True
+
+
+def test_the_drill_never_reloads_systemd():
+    # The polkit rule on the nodes permits only start and stop of the exporter unit; a
+    # daemon-reload would be refused (dgx-spark: do not set daemon_reload).
+    for task in _walk(_play_tasks()):
+        assert "daemon_reload" not in json.dumps(task), task["name"]
+
+
 def test_template_is_dev_bound_and_asks_for_confirmation():
     templates = yaml.safe_load((ROOT / "platform/semaphore/templates.yml").read_text())["templates"]
     found = [t for t in templates if t["playbook"] == "platform/playbooks/o11y-fault-drill.yml"]

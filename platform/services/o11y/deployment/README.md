@@ -420,6 +420,18 @@ probe environment file holds the inference key, so every task touching it sets
 `diff: false` and `no_log`. The probe restore requires a success sample for the deployed
 model newer than the restore, and the resolved check covers every drill model name.
 
+Exporter mode runs unprivileged. Its stop and restart tasks set `become: false`, so
+`systemd_service` runs as the connecting account on the DGX node, and the node's polkit
+authorizes that one account for the `start` and `stop` verbs on the exporter unit only.
+The drill sets no `daemon_reload`, which that rule would refuse. The per-service account
+and the polkit rule are installed on the nodes by dgx-spark's `drill-access.yml` (not by
+agent-cloud; the nodes are outside its inventory), so the mode needs that applied, the
+node declared in the private `o11y_fault_drill_exporters` map and as a host of a group
+carrying the account as `ansible_user`, and the agreed dgx-spark window (dgx-spark's only
+unattended job there runs daily at 04:30 Eastern, so keep the window clear of 04:15 to
+05:00 Eastern). The probe-mode sample tasks keep `become: true`; they run on the o11y host.
+Evidence and remaining steps: `plan/development/openspec/changes/inference-telemetry-production/tasks.md`, task 2.5.
+
 Dashboard proof (probe mode): the drill also reads the provisioned `inference-fleet-health`
 dashboard's "Inference probe serving" panel from the o11y host, refusing before any fault
 unless it is exactly one stat panel on `inference_probe_success` with no dashboard
