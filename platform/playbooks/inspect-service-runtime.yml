@@ -38,20 +38,20 @@
           Service container listing failed or was empty
           (rc={{ _lsc.rc }}; stderr={{ _lsc.stderr | default('') | trim }}).
 
-    - name: Read state, exit code, OOM flag, restart count, health and engine error
+    - name: Read state, exit code, OOM flag, restart count, health and timestamps
       ansible.builtin.command:
         argv:
           - "{{ _engine }}"
           - inspect
           - --format
-          # Why a container restarts: OOM-killed flag, health, start/finish times and the engine's own
-          # error text. Deliberately no container environment and no logs - this play never prints either.
+          # Why a container restarts: OOM-killed flag, health, start/finish times. Deliberately no
+          # container environment, no logs and no engine error text: that text can quote a command
+          # line, and this output is stored durably by Semaphore with no redaction.
           - >-
             {{ '{{' }}.State.Status{{ '}}' }} exit={{ '{{' }}.State.ExitCode{{ '}}' }}
             oom={{ '{{' }}.State.OOMKilled{{ '}}' }} restarts={{ '{{' }}.RestartCount{{ '}}' }}
             health={{ '{{' }}if .State.Health{{ '}}' }}{{ '{{' }}.State.Health.Status{{ '}}' }}{{ '{{' }}else{{ '}}' }}none{{ '{{' }}end{{ '}}' }}
             started={{ '{{' }}.State.StartedAt{{ '}}' }} finished={{ '{{' }}.State.FinishedAt{{ '}}' }}
-            error={{ '{{' }}.State.Error{{ '}}' }}
           - "{{ item }}"
       loop: "{{ _lsc.stdout_lines }}"
       # The listing runs as root for a rootful service; so must the inspect (PR 284 review).

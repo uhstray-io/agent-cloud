@@ -10,11 +10,11 @@ import pytest
 REPO = Path(__file__).resolve().parents[2]
 PLAYBOOK = REPO / "platform/playbooks/inspect-service-runtime.yml"
 
-# Why a container restarts: OOM flag, health, start/finish, engine error. No environment, no logs.
+# Why a container restarts: OOM flag, health, start/finish. No environment, no logs, no engine error.
 FORMAT = (
     "{{.State.Status}} exit={{.State.ExitCode}} oom={{.State.OOMKilled}} restarts={{.RestartCount}} "
     "health={{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}} "
-    "started={{.State.StartedAt}} finished={{.State.FinishedAt}} error={{.State.Error}}"
+    "started={{.State.StartedAt}} finished={{.State.FinishedAt}}"
 )
 
 pytestmark = pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="needs ansible-playbook")
@@ -34,7 +34,7 @@ def _run(tmp_path, names, target_service="demo_svc"):
         "  inspect)\n"
         "    [ \"$2\" = --format ] || exit 44\n"
         f"    [ \"$3\" = '{FORMAT}' ] || exit 45\n"
-        "    printf 'exited exit=137 oom=true restarts=272 health=none started=t finished=t error=\\n' ;;\n"
+        "    printf 'exited exit=137 oom=true restarts=272 health=none started=t finished=t\\n' ;;\n"
         "  *) exit 99 ;;\n"
         "esac\n"
     )
@@ -66,6 +66,8 @@ def test_inspector_never_reads_environment_or_logs():
     text = PLAYBOOK.read_text()
     assert "Config.Env" not in text
     assert "Config.Cmd" not in text
+    # Engine error text can quote a command line and Semaphore stores output unredacted.
+    assert "State.Error" not in text
     # The only engine subcommands the play runs are ps and inspect; never logs/exec/env.
     for forbidden in ("- logs", "- exec", "--env", "printenv"):
         assert forbidden not in text
