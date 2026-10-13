@@ -164,13 +164,17 @@ setup() {
   assert_grep -qF 'systemd-run --user --wait --pipe --collect --quiet' "$PB"
   assert_grep -qF -- '--property=NoNewPrivileges="$nnp"' "$PB"
   assert_grep -qF 'systemctl --user show --property=NoNewPrivileges --value actions-runner.service' "$PB"
-  assert_grep -qF 'systemctl --user show --property=MainPID --value actions-runner.service' "$PB"
-  assert_grep -qF '"/proc/$pid/status"' "$PB"
-  assert_grep -qF "'NoNewPrivs=0' not in _runner_privs.stdout_lines" "$PB"
-  assert_grep -qF "'userns=host' not in _runner_privs.stdout_lines" "$PB"
+  # The effective bit is read from the kernel for the processes that run jobs (the
+  # Listener and any Worker) as well as the unit's main process, and the deploy fails
+  # unless none carries it (MISTAKES 10.27: MainPID alone is run.sh).
+  assert_grep -qF '"$PROC_ROOT/$pid/status"' "$SH"
+  assert_grep -qF 'for pid in $(account_pids Runner.Listener); do describe_proc listener "$pid"; done' "$SH"
+  assert_grep -qF 'for pid in $(account_pids Runner.Worker); do describe_proc worker "$pid"; done' "$SH"
+  assert_grep -qxF '      - no_new_privs=0' "$PB"
+  assert_grep -qxF '      - private_userns=0' "$PB"
   # A changed unit must reach the running process, which keeps the properties it was
   # started with, so the deploy restarts the service when the unit file changed.
-  assert_grep -qF "if (_runner_unit.changed | default(false))" "$PB"
+  assert_grep -qF "{{ (_runner_unit.changed | default(false))" "$PB"
 }
 
 @test "gh-runner: the deploy requires a subordinate uid and gid range for the account" {
@@ -216,7 +220,7 @@ setup() {
   local PB="$BATS_TEST_DIRNAME/../playbooks/deploy-github-runner.yml"
   assert_grep -qF 'register: _runner_files' "$PB"
   assert_grep -qF "or ('runner-dotenv.j2' in (_runner_files.results | default([])" "$PB"
-  assert_grep -qF "else 'started' }}" "$PB"
+  assert_grep -qF '_runner_restart: >-' "$PB"
 }
 
 @test "gh-runner: the job-started hook is wired and renders a script that makes every bind source" {
@@ -527,4 +531,247 @@ STUB
            "'ping=OK' not in _mountprobe.stdout_lines"; do
     assert_contains "$block" "$r"
   done
+}
+
+# ── restarts reach the Listener (docs/MISTAKES.md 10.27) ─────────────────────────
+# Until 2026-10-12 the unit had KillMode=process and started run.sh, which passes no
+# signal on: every restart signalled run.sh alone, the Listener that held the session
+# kept running and taking jobs, and a new one was stacked beside it. Both hosts carried
+# three Listeners, and the one serving jobs dated from boot, so no unit or .env change
+# since then had reached it.
+
+@test "gh-runner: a stop reaches the Listener through run.sh, and leaves nothing in the cgroup" {
+  local U="$D/templates/actions-runner.service.j2"
+  grep -vE '^[[:space:]]*#' "$U" > "$BATS_TEST_TMPDIR/unit"
+  # run.sh turns TERM into SIGINT for run-helper.sh's process group, the Listener's own
+  # graceful stop, only when this is set (actions/runner run.sh, runWithManualTrap).
+  assert_grep -qxF 'Environment=RUNNER_MANUALLY_TRAP_SIG=1' "$BATS_TEST_TMPDIR/unit"
+  assert_grep -qxF 'ExecStart={{ github_runner_home }}/run.sh' "$BATS_TEST_TMPDIR/unit"
+  # SIGTERM to run.sh only, then SIGKILL to whatever is left in the cgroup.
+  assert_grep -qxF 'KillMode=mixed' "$BATS_TEST_TMPDIR/unit"
+  assert_grep -qxF 'KillSignal=SIGTERM' "$BATS_TEST_TMPDIR/unit"
+  refute_grep -qE '^KillMode=(process|none)' "$BATS_TEST_TMPDIR/unit"
+  refute_grep -qE '^SendSIGKILL=(no|false|off|0)' "$BATS_TEST_TMPDIR/unit"
+  # run.sh exits 143 after a trapped TERM.
+  assert_grep -qxF 'SuccessExitStatus=143' "$BATS_TEST_TMPDIR/unit"
+}
+
+@test "gh-runner: the deploy never restarts the unit in place; it quiesces it, then starts it" {
+  local PB="$BATS_TEST_DIRNAME/../playbooks/deploy-github-runner.yml"
+  grep -vE '^[[:space:]]*#' "$PB" > "$BATS_TEST_TMPDIR/pb"
+  refute_grep -qE "(state: *restarted|'restarted')" "$BATS_TEST_TMPDIR/pb"
+  local q s
+  q=$(grep -nF '    - name: "Drain, stop and empty the runner'"'"'s unit"' "$PB" | cut -d: -f1)
+  s=$(grep -nF '    - name: "Reload the account'"'"'s systemd and start the runner"' "$PB" | cut -d: -f1)
+  [ -n "$q" ]
+  [ -n "$s" ]
+  # The quiesce runs BEFORE the daemon reload: on a host still on the KillMode=process
+  # unit, a reload first would make the stop SIGKILL the Listener that holds the job.
+  [ "$q" -lt "$s" ]
+  local block
+  block=$(sed -n '/^    - name: "Drain, stop and empty the runner.s unit"$/,/^    - name: "Reload the account/p' "$PB")
+  assert_contains "$block" 'ansible.builtin.command: "{{ _deploy_dir }}/deploy.sh quiesce"'
+  assert_contains "$block" 'when: _runner_restart | bool and not ansible_check_mode'
+  assert_contains "$block" "RUNNER_DRAIN_SECONDS: \"{{ github_runner_drain_seconds | default(600) }}\""
+  # A restart is also due when the processes are not in the promised state, so a run
+  # after a failed one converges, not only one that changed a file.
+  assert_grep -qF "or (_runner_converged | difference(_procs_before.stdout_lines) | length > 0)" "$PB"
+  # A dry run reads the host's checkout as it is, which may predate `procs`: it reports a
+  # restart instead of failing. A real run fails on any probe error.
+  assert_grep -qF 'failed_when: _procs_before.rc != 0 and not ansible_check_mode' "$PB"
+  assert_grep -qF 'failed_when: _procs.rc != 0 and not ansible_check_mode' "$PB"
+}
+
+@test "gh-runner: quiesce drains, stops, signals Listeners gracefully, then kills the rest" {
+  local fn
+  fn=$(sed -n '/^cmd_quiesce() {$/,/^}$/p' "$SH")
+  [ -n "$fn" ]
+  assert_contains "$fn" 'account_pids Runner.Worker'
+  assert_contains "$fn" 'systemctl --user stop "$UNIT" || rc=$?'
+  assert_contains "$fn" 'kill -INT $listeners'
+  assert_contains "$fn" 'kill -KILL $left'
+  assert_contains "$fn" 'error "still in the cgroup of $UNIT after SIGKILL: $left"'
+  # Order: drain, stop, SIGINT, SIGKILL.
+  local d st i k
+  d=$(printf '%s\n' "$fn" | grep -nF 'account_pids Runner.Worker' | head -n 1 | cut -d: -f1)
+  st=$(printf '%s\n' "$fn" | grep -nF 'systemctl --user stop' | head -n 1 | cut -d: -f1)
+  i=$(printf '%s\n' "$fn" | grep -nF 'kill -INT' | head -n 1 | cut -d: -f1)
+  k=$(printf '%s\n' "$fn" | grep -nF 'kill -KILL' | head -n 1 | cut -d: -f1)
+  [ "$d" -lt "$st" ]
+  [ "$st" -lt "$i" ]
+  [ "$i" -lt "$k" ]
+}
+
+# A fabricated /proc and a stub systemctl for `deploy.sh procs` and `quiesce`.
+_fake_runner() {
+  F="$BATS_TEST_TMPDIR/fake"
+  P="$F/proc"
+  RH="$F/home"
+  mkdir -p "$P/self/ns" "$RH" "$F/bin" "$F/cgroup"
+  printf 'RUNNER_HOME=%s\nRUNNER_VERSION=2.336.0\nRUNNER_NAME=t\nRUNNER_LABELS=t\nRUNNER_GROUP=t\nRUNNER_ORG_URL=https://example.invalid\nHOOKS_VERSION=0.8.1\n' \
+    "$RH" > "$F/runner.env"
+  : > "$RH/.env"
+  printf 'if [[ -z "$RUNNER_MANUALLY_TRAP_SIG" ]]; then run; else runWithManualTrap; fi\n' > "$RH/run.sh"
+  ENV_MTIME=$(stat -c %Y "$RH/.env" 2>/dev/null || stat -f %m "$RH/.env")
+  HZ=$(getconf CLK_TCK)
+  BTIME=$((ENV_MTIME - 10000))
+  printf 'cpu 0 0 0 0\nbtime %s\n' "$BTIME" > "$P/stat"
+  ln -s 'user:[4026531837]' "$P/self/ns/user"
+  UCG=/user.slice/user-1001.slice/user@1001.service/app.slice/actions-runner.service
+  MAIN=0
+  STOP_RC=0
+}
+
+# _fake_proc PID COMM UID SECONDS_AFTER_ENV CGROUP NNP USERNS
+_fake_proc() {
+  local d="$P/$1" ticks
+  ticks=$(( (10000 + $4) * HZ ))
+  mkdir -p "$d/ns"
+  printf '%s\n' "$2" > "$d/comm"
+  printf 'Name:\t%s\nUid:\t%s\t%s\t%s\t%s\nNoNewPrivs:\t%s\n' "$2" "$3" "$3" "$3" "$3" "$6" > "$d/status"
+  printf '%s (%s) S 1 1 1 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 %s 0 0\n' "$1" "$2" "$ticks" > "$d/stat"
+  printf '0::%s\n' "$5" > "$d/cgroup"
+  ln -s "user:[$7]" "$d/ns/user"
+}
+
+_run_deploy() {
+  cat > "$F/bin/systemctl" <<STUB
+#!/usr/bin/env bash
+case "\$*" in
+  *--property=ControlGroup*) echo "${STUB_CG-$UCG}" ;;
+  *--property=MainPID*) echo "$MAIN" ;;
+  *" stop "*) exit $STOP_RC ;;
+esac
+STUB
+  chmod +x "$F/bin/systemctl"
+  run env PATH="$F/bin:$PATH" RUNNER_ENV_FILE="$F/runner.env" RUNNER_PROC_ROOT="$P" \
+    RUNNER_CGROUP_ROOT="$F/cgroup" RUNNER_DRAIN_SECONDS=0 RUNNER_STOP_GRACE_SECONDS=0 \
+    "$SH" "$@"
+}
+
+@test "gh-runner: procs sees the stacked Listeners that a MainPID check could not" {
+  # The state found on both hosts on 2026-10-12: run.sh fresh from the last restart, the
+  # Listener that holds the session dating from boot with its Worker, and two Listeners
+  # from later restarts. The main process alone reads clean.
+  _fake_runner
+  local me
+  me=$(id -u)
+  MAIN=300
+  _fake_proc 300 bash "$me" 60 "$UCG" 0 4026531837
+  _fake_proc 1020 Runner.Listener "$me" -5000 "$UCG" 1 4026531837
+  _fake_proc 1500 Runner.Worker "$me" 50 "$UCG" 1 4026531837
+  _fake_proc 2001 Runner.Listener "$me" 30 "$UCG" 0 4026531837
+  _fake_proc 2002 Runner.Listener "$me" 70 "$UCG" 0 4026531837
+  _run_deploy procs
+  [ "$status" -eq 0 ]
+  assert_contains "$output" "main pid=300 start=$((ENV_MTIME + 60)) cgroup=$UCG NoNewPrivs=0 userns=host"
+  assert_contains "$output" "listener pid=1020 start=$((ENV_MTIME - 5000)) cgroup=$UCG NoNewPrivs=1 userns=host"
+  printf '%s\n' "$output" > "$BATS_TEST_TMPDIR/out"
+  assert_grep -qxF 'listeners=3' "$BATS_TEST_TMPDIR/out"
+  assert_grep -qxF 'workers=1' "$BATS_TEST_TMPDIR/out"
+  assert_grep -qxF 'outside_cgroup=0' "$BATS_TEST_TMPDIR/out"
+  assert_grep -qxF 'started_before_env=1' "$BATS_TEST_TMPDIR/out"
+  assert_grep -qxF 'no_new_privs=2' "$BATS_TEST_TMPDIR/out"
+  assert_grep -qxF 'private_userns=0' "$BATS_TEST_TMPDIR/out"
+}
+
+@test "gh-runner: procs reports a converged runner with every line the deploy requires" {
+  _fake_runner
+  local me line
+  me=$(id -u)
+  MAIN=300
+  _fake_proc 300 bash "$me" 60 "$UCG" 0 4026531837
+  _fake_proc 301 Runner.Listener "$me" 61 "$UCG" 0 4026531837
+  _fake_proc 302 Runner.Worker "$me" 90 "$UCG" 0 4026531837
+  # Another account's process of the same name is not this runner's.
+  _fake_proc 400 Runner.Listener "$((me + 1))" -5000 /system.slice/other.service 1 4026531837
+  _run_deploy procs
+  [ "$status" -eq 0 ]
+  printf '%s\n' "$output" > "$BATS_TEST_TMPDIR/out"
+  # Every line of the playbook's _runner_converged list, read from the playbook.
+  local PB="$BATS_TEST_DIRNAME/../playbooks/deploy-github-runner.yml"
+  sed -n '/^    _runner_converged:$/,/^$/p' "$PB" | sed -n 's/^      - //p' > "$BATS_TEST_TMPDIR/want"
+  [ "$(wc -l < "$BATS_TEST_TMPDIR/want")" -eq 6 ]
+  while IFS= read -r line; do
+    assert_grep -qxF "$line" "$BATS_TEST_TMPDIR/out"
+  done < "$BATS_TEST_TMPDIR/want"
+}
+
+@test "gh-runner: procs flags a Listener outside the unit's cgroup, in a private namespace, or old" {
+  _fake_runner
+  local me
+  me=$(id -u)
+  _fake_proc 301 Runner.Listener "$me" 61 /user.slice/user-1001.slice/session-3.scope 0 4026532999
+  _fake_proc 302 Runner.Listener "$me" -1 "$UCG" 0 4026531837
+  _run_deploy procs
+  [ "$status" -eq 0 ]
+  printf '%s\n' "$output" > "$BATS_TEST_TMPDIR/out"
+  assert_grep -qxF 'listeners=2' "$BATS_TEST_TMPDIR/out"
+  assert_grep -qxF 'outside_cgroup=1' "$BATS_TEST_TMPDIR/out"
+  assert_grep -qxF 'private_userns=1' "$BATS_TEST_TMPDIR/out"
+  assert_grep -qxF 'started_before_env=1' "$BATS_TEST_TMPDIR/out"
+  # And a run.sh that does not honour the trap variable is reported.
+  : > "$RH/run.sh"
+  _run_deploy procs
+  printf '%s\n' "$output" > "$BATS_TEST_TMPDIR/out"
+  assert_grep -qxF 'run_sh_traps=no' "$BATS_TEST_TMPDIR/out"
+}
+
+@test "gh-runner: quiesce on a first deploy finds nothing to stop, and a failed stop fails it" {
+  _fake_runner
+  STUB_CG='' STOP_RC=5 _run_deploy quiesce
+  [ "$status" -eq 0 ]
+  printf '%s\n' "$output" > "$BATS_TEST_TMPDIR/out"
+  assert_grep -qxF 'drained=yes' "$BATS_TEST_TMPDIR/out"
+  assert_grep -qxF 'signalled=0' "$BATS_TEST_TMPDIR/out"
+  assert_grep -qxF 'remaining=0' "$BATS_TEST_TMPDIR/out"
+  STOP_RC=1 _run_deploy quiesce
+  [ "$status" -ne 0 ]
+}
+
+@test "gh-runner: quiesce with no cgroup found still signals the account's Listeners, and fails closed" {
+  # A cgroup layout the search does not know must not let a leftover Listener through
+  # (CodeRabbit on #563). The fabricated Listener is no real process, so it survives
+  # SIGINT and SIGKILL, and quiesce must fail rather than report success.
+  _fake_runner
+  _fake_proc 999999 Runner.Listener "$(id -u)" -5000 "$UCG" 0 4026531837
+  STUB_CG='' _run_deploy quiesce
+  [ "$status" -ne 0 ]
+  printf '%s\n' "$output" > "$BATS_TEST_TMPDIR/out"
+  assert_grep -qxF 'signalled=1' "$BATS_TEST_TMPDIR/out"
+  assert_grep -qxF 'remaining=1' "$BATS_TEST_TMPDIR/out"
+  assert_grep -qF 'Listeners of this account still running after SIGKILL: 999999' "$BATS_TEST_TMPDIR/out"
+}
+
+@test "gh-runner: quiesce also stops a Listener of the account outside the unit's cgroup" {
+  # procs counts it (outside_cgroup), so quiesce must stop it too, or every later deploy
+  # fails its verify with no way to converge (CodeRabbit on #563).
+  _fake_runner
+  mkdir -p "$F/cgroup$UCG"
+  : > "$F/cgroup$UCG/cgroup.procs"
+  _fake_proc 999998 Runner.Listener "$(id -u)" -5000 /user.slice/user-1001.slice/session-3.scope 0 4026531837
+  _run_deploy quiesce
+  [ "$status" -ne 0 ]
+  printf '%s\n' "$output" > "$BATS_TEST_TMPDIR/out"
+  assert_grep -qxF 'signalled=1' "$BATS_TEST_TMPDIR/out"
+  assert_grep -qxF 'remaining=1' "$BATS_TEST_TMPDIR/out"
+  assert_grep -qF 'Listeners of this account still running after SIGKILL: 999998' "$BATS_TEST_TMPDIR/out"
+}
+
+@test "gh-runner: the deploy verifies the Listener after the start, not only the unit" {
+  local PB="$BATS_TEST_DIRNAME/../playbooks/deploy-github-runner.yml"
+  local block
+  block=$(sed -n '/^    - name: "Require one Listener, in the unit.s cgroup, started after .env, with no no_new_privs"$/,/^    - name: /p' "$PB")
+  [ -n "$block" ]
+  assert_contains "$block" '- _runner_converged | difference(_procs.stdout_lines) | length == 0'
+  assert_contains "$block" 'when: not ansible_check_mode'
+  # The probe it judges is the one taken after the start.
+  local probe
+  probe=$(sed -n '/^    - name: "Read the runner.s Listener and Worker processes after the start"$/,/^    - name: /p' "$PB")
+  assert_contains "$probe" 'ansible.builtin.command: "{{ _deploy_dir }}/deploy.sh procs"'
+  assert_contains "$probe" 'register: _procs'
+  local p v
+  p=$(grep -nF '    - name: "Read the runner'"'"'s Listener and Worker processes after the start"' "$PB" | cut -d: -f1)
+  v=$(grep -nF '    - name: "Reload the account'"'"'s systemd and start the runner"' "$PB" | cut -d: -f1)
+  [ "$v" -lt "$p" ]
 }

@@ -170,6 +170,7 @@ and why.
 | 10.24 | Shipped container jobs on rootless podman with Docker's mount semantics assumed; every `container:` job failed on a missing bind source and on a socket link to root's podman, while the deploy's uid-map check passed | Mechanism never exercised | 1 | Playbook probe (hook-shaped `docker create` in the user manager) + test (`test_service_github_runner.bats`) |
 | 10.25 | The 10.24 probe copied the hooks' `docker create` arguments but ran it with the account's own environment; the hooks pass HOME=/github/home and no XDG directories, so every `container:` job still failed with `cannot resolve /github/home` | Mechanism never exercised | 1 | Playbook probe (wrapper run under `env -i` with the hooks' HOME, one image store for pull and create) + test (`test_service_github_runner.bats`) |
 | 10.26 | Merged an Alloy config change no real Alloy binary had loaded; the rendered config failed to load on v1.5.1 and the production container crash-looped for ~1,000 restarts | Mechanism never exercised | 1 | Test (text guard, `test_o11y_scrape_budgets.py`, mutation-checked) + Convention for the load proof (CI step proposed) |
+| 10.27 | Every runner restart under `KillMode=process` signalled `run.sh` only and left the Listener that took every job running since boot; no unit or `.env` change reached it, and the no_new_privs check read `run.sh`, not the Listener | Mechanism never exercised | 1 | Unit (`KillMode=mixed`, `RUNNER_MANUALLY_TRAP_SIG=1`) + playbook (quiesce before start, Listener verify) + test (`test_service_github_runner.bats`, mutation-checked) |
 | 11.1 | 76 assertions across the suite could never fail — `!` and `[[ ]]` are exempt from `set -e` | False-green test | 1 | **Ratchet test** (`test_assertions_are_real.bats` + `known_inert_assertions.txt`) |
 | 11.2 | Sourced a config file instead of reading it, turning every credential into shell code | Live-state damage | 1 | Test |
 | 11.3 | Committed without running the suite — third occurrence | Process | 1 | Pre-push hook (status note 2026-10-02) |
@@ -4679,6 +4680,53 @@ not to be `encoding.from_json(...)` (mutation-checked against the old line). The
 itself is `Convention`. Proposed guard: a CI step or `make` target that renders the config
 and runs the pinned Alloy image on it, and a deploy-verify failure path that dumps the
 redacted Alloy container log so a crash loop names its cause.
+
+### 10.27 Every runner restart left the old Listener serving
+
+**What happened.** After the 10.25 fix was deployed (2026-10-12), container jobs on both
+GitHub runners still failed with `cannot resolve /github/home`, although the `.env` on disk
+put the wrapper first on PATH. A host job then found three `Runner.Listener` processes on
+each runner, all in the unit's cgroup. The Worker running the job was a child of the
+Listener started at boot on 2026-09-19; the other two had started during the deploy. The
+Listener reads `.env` only when it starts (`Runner.Listener/Program.cs`, `LoadAndSetEnv`), so
+the serving one still had the boot-time PATH and ran `/usr/bin/docker`.
+
+**Root cause.** The unit had `ExecStart=.../run.sh` and `KillMode=process`. With
+`KillMode=process`, systemd signals the main process only, and the main process was
+`run.sh`. `run.sh` and `run-helper.sh` pass no signal on unless `RUNNER_MANUALLY_TRAP_SIG` is
+set (actions/runner v2.336.0, `src/Misc/layoutroot/run.sh`), so `run.sh` died and the
+Listener kept running inside the cgroup of a stopped unit. The deploy's `state: restarted`
+then started a new `run.sh` and a new Listener beside it. Every restart since the unit
+was introduced did the same. So no change that needs a restart reached the process that
+runs jobs, `NoNewPrivileges=false` (2.29) included. The deploy could not see it: its
+no_new_privs check read `/proc/<MainPID>`, which was the fresh `run.sh` with the current
+unit's settings, and its `is-active` check passed on the same `run.sh`. The 10.24 and 10.25
+probes ran in transient units of their own, so they passed as well.
+
+**The rule.** A restart is proved on the process that does the work, not on the unit's
+main process. Name that process, and check that the restart replaced it: that exactly one
+runs, in the unit's cgroup, and that it started after the change it must pick up. A
+service manager's view of a unit (active, MainPID, the unit's settings) says nothing about
+a process the stop did not reach (widens 2.29).
+
+**Enforced by.** The unit sets `Environment=RUNNER_MANUALLY_TRAP_SIG=1`, so `run.sh` turns
+the stop's SIGTERM into SIGINT for `run-helper.sh`'s process group: the Listener's
+graceful stop, which cancels a running job, reports it and deletes the session. It sets
+`KillMode=mixed`, so once `run.sh` has exited, systemd sends SIGKILL to everything left in
+the cgroup, and `SuccessExitStatus=143` for the trapped exit. `deploy-github-runner.yml`
+never uses `state: restarted`. It reads `deploy.sh procs` (the main process, every Listener
+and Worker of the account, from `/proc`) and restarts when the unit or `.env` changed or
+when those processes are not in the promised state. A restart is `deploy.sh quiesce`:
+wait for no Worker for up to `github_runner_drain_seconds` (600 by default), stop the unit
+before the daemon reload, and SIGINT every Listener of the account (in the cgroup or not).
+A job still running when that drain expires is cancelled by this SIGINT: the Listener
+reports it as cancelled. Then SIGKILL the rest of the cgroup and any Listener that
+survived, and fail unless both are gone. After the
+start it fails unless there is exactly one Listener, in the unit's cgroup, started after
+`.env`'s mtime, with no `NoNewPrivs` and no private user namespace on it, its Worker or
+`run.sh`. `test_service_github_runner.bats` holds the unit settings and the task order,
+and runs `deploy.sh procs` against a fabricated `/proc` of the state found on 2026-10-12
+(three Listeners, the serving one from boot with `NoNewPrivs` set, `run.sh` clean).
 
 ## 11. The largest one
 
