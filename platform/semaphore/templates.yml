@@ -890,9 +890,10 @@ templates:
   # Conformance against direct vLLM (change inference-gateway-agentgateway, tasks 2.1/2.2):
   # the same cases to the gateway and to vLLM from the gateway VM, then the comparison. Keys are
   # read from OpenBao by the runner and placed as 0600 files for the run only. Every input is
-  # inventory except one opt-in survey var: the long-stream case (tasks 2.3/2.4) lasts minutes on
-  # each side, so a default run stays the fourteen quick cases. Introduced on dev, so the (Dev)
-  # variant runs before promotion.
+  # inventory except two opt-in survey vars: the long-stream case (tasks 2.3/2.4) lasts minutes on
+  # each side, so a default run stays the fourteen quick cases, and its saturation count makes that
+  # stream queue so vLLM's keep-alive comments appear (it loads the shared upstream, so it is off
+  # by default). Introduced on dev, so the (Dev) variant runs before promotion.
   - name: Run agentgateway Conformance
     playbook: platform/playbooks/run-agw-conformance.yml
     dev_variant: true
@@ -906,6 +907,17 @@ templates:
         values:
           - { name: "No (fourteen quick cases)", value: "false" }
           - { name: "Yes (add stream-long, minutes)", value: "true" }
+      - name: agw_conformance_long_stream_saturate
+        title: "Filler streams to make the long stream queue"
+        description: "Long-stream case only: filler streams started per side so the stream queues and vLLM sends keep-alives. 8 fills its 8 slots. Real load on the shared DGX, about 45 s per side"
+        type: enum
+        required: false
+        default_value: "0"
+        values:
+          - { name: "0 (none; keep-alives stay unproven)", value: "0" }
+          - { name: "8 (fills vLLM's 8 slots)", value: "8" }
+          - { name: "12", value: "12" }
+          - { name: "16 (the maximum)", value: "16" }
 
   # Read-only drill for gateway tasks 6.1 and 6.4: how the production TLS listener treats a client
   # with no certificate and a client leaf that is on no allowlist, with no key and with an invalid
