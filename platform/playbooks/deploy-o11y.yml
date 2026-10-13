@@ -1367,6 +1367,7 @@
 
     - name: Verify Grafana alert provisioning after every real deploy
       when: not ansible_check_mode
+      no_log: true
       block:
         - name: Read live o11y alert rules
           ansible.builtin.command:
@@ -1485,7 +1486,6 @@
           ansible.builtin.assert:
             that: _o11y_contact_count | int == (1 if o11y_alerts_enabled | default(false) | bool else 0)
             fail_msg: "The o11y Discord contact point does not match the configured alert gate."
-      no_log: true
 
     - name: Report the verified alert rule count without identities
       ansible.builtin.debug:

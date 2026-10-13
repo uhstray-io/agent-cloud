@@ -113,6 +113,7 @@
       when: not ansible_check_mode
 
     - name: Require the onboarding verifier to refuse the named endpoint
+      no_log: true
       block:
         - name: Run the same metrics gate used by service onboarding
           ansible.builtin.include_tasks: verify-o11y-metrics.yml
@@ -129,7 +130,6 @@
               - ("'" ~ expected_instance ~ "'") in (ansible_failed_result.msg.split('failing instances=', 1)[1].split(';', 1)[0])
             fail_msg: "The verifier failed without naming the unreachable service and endpoint."
           no_log: true
-      no_log: true
 
     - name: Report the expected verification failure without target identity
       ansible.builtin.debug:

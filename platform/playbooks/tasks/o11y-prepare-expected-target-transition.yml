@@ -56,7 +56,7 @@
 
 - name: Read running Grafana container presence before alert transition
   ansible.builtin.command:
-    argv: ["{{ container_engine | default('podman') }}", ps, --filter, name=^o11y-grafana$, --format, '{{.Names}}']
+    argv: ["{{ container_engine | default('podman') }}", ps, --filter, name=^o11y-grafana$, --format, "{{ '{{.Names}}' }}"]
   register: _o11y_grafana_running
   changed_when: false
   check_mode: false
