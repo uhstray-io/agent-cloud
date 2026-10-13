@@ -21,6 +21,9 @@
       network-unreachable from both the controller and the Caddy host, so this is VM state, not
       credentials; power state not read (no read-only hypervisor-status template). Operator to
       confirm whether these VMs are powered off, moved or retired; 0.2 stays open.
+      2026-10-13: investigation so far (task ids as reported by the coordinator): the nocodb,
+      nemoclaw and openhands VMs were network-unreachable from the controller and from Caddy
+      (tasks 4857-4862). The operator's decision on their VM state is pending. Not ticked.
 - [ ] 0.3 Allocate the o11y VM in site-config `proxmox/vm-specs.yml` (Auxiliary tier,
       Podman) and provision it through the onboarding checklist phases 1 to 2
       2026-10-02 rescope: PARTIAL — the VM is reserved and provisioned under
@@ -169,6 +172,17 @@
       `changed=3`, enabling gateway span logs from site-config #62) each applied a new
       declaration, so they are first runs of a new configuration, not failed second runs.
       Ticked: both scenarios' conditions are met.
+      2026-10-13, production Alloy outage (task output read from Semaphore by the lead):
+      Deploy o11y (Dev) task 5000 (03:44 UTC) rolled `dev` including PR #570's scrape budgets.
+      Alloy rejected its config (`body_size_limit` got a bare byte count; Alloy v1.5.1 needs a
+      units string) and restarted in a loop: Inspect Service Runtime task 5015 reported
+      `oom=false restarts=1027`, Alloy started at 04:15:49 UTC, so 1,027 restarts since the
+      03:44 UTC recreate is about one per 1.9 s. Reproduced locally with the pinned image and fixed by PR #582
+      (MISTAKES 10.26). Restored by task 5037 at 05:29 UTC (inspect task 5040: alloy healthy,
+      restarts 0); task 5042 then reported no change. PR #580 added OOM, health and start
+      fields to Inspect Service Runtime for this diagnosis. The telemetry collection gap runs
+      from about 03:44 to 05:29 UTC. The cause of the outage as a process failure is MISTAKES
+      3.15 (a proof run deployed an unproven merge). The ticked state above is unchanged.
 
 ## 2. Scrape the nodes, receive their logs
 - [x] 2.1 `config/prometheus.yml`: `scrape_config_files: [scrape.d/*.yml]`;

@@ -326,6 +326,11 @@
       generation; vLLM emits `: keep-alive` only after 15 s idle). Stays open until a stream
       with an idle stretch over 15 s (queue wait or long prefill) shows the comments pass
       through.
+      2026-10-13: PR #578 merged. It adds the opt-in `agw_conformance_long_stream_saturate`
+      (0, 8, 12 or 16), which queues the measured stream behind that many filler streams so
+      vLLM emits `: keep-alive` while the measured stream waits. The production run with
+      `agw_conformance_long_stream=true` and saturate=8 is pending: it occupies all 8 DGX
+      slots, so it runs outside busy hours. Not ticked.
 - [x] 2.3a Streams and the budget: confirm whether a streamed completion is charged to the
       per-key budget, and whether a model `overrides: {stream_options: {include_usage: true}}`
       entry makes vLLM report usage on streams without changing the client-visible contract

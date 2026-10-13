@@ -170,6 +170,11 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
 - [x] 2.4 Allowlist in 1.4 is empty; the guard now fails on any new violation
 - [ ] 2.5 Validation gate: spec scenarios "Dry run changes nothing", "Read-only probe is not
       skipped", "Legacy dry-run argument still works" and "Verify-only run" pass
+      - 2026-10-13 (task output read from Semaphore by the lead): evidence so far. The R2 deprecation notice is proven (task 4936). The R3
+        workflow snapshots all succeeded (tasks 4945, 4951, 4953, 4956, 4957, 4958). The operator
+        decided verify-only for the remaining check (option A). R1, the safety-default scenario
+        through Manage GitHub Runner Group, is BLOCKED: the GitHub App returns 404 on every
+        private repo, so the operator must re-grant the App's repository access. Not ticked
 
 ## 3. Local-dev agent runtime (skynet)
 
@@ -342,6 +347,13 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
         it, so the 00:00 UTC scan never ran. The agent was redeployed (local task 5679); the next
         scheduled scan is 04:00 UTC. Wave 3 of 7.1 makes an unchanged NetBox deploy leave the
         agent alone. "Local targets are discovered" still pending that scan. Not ticked
+      - 2026-10-13: "Local targets are discovered" is still unproven. Every agent-cloud local
+        container (foundation, NetBox, orb-agent) stopped on 2026-10-13 at 02:34 UTC: podman
+        events show the containers dying in creation order between 02:34:03 and 02:34:36 UTC,
+        with another project's containers untouched. The cause is not determined; the operator
+        was asked. No 04:00 UTC scan ran. Next: bring up NetBox and the orb-agent before a
+        scheduled scan (`0 */4 * * *` UTC). `Stop Local Service` (PR #579) now exists for
+        spinning down idle local services. Not ticked
 
 ## 7. Executors, snapshots and tracking
 
@@ -405,6 +417,16 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
       - 2026-10-13: PR #568 (wave 1) merged into dev. The remaining services were regrouped:
         wave 2 is n8n and Postiz, wave 3 is NetBox (a change-aware deploy that, when nothing
         changed, leaves containers and the orb-agent untouched). Not ticked.
+      - 2026-10-13, production (task output read from Semaphore by the lead): wave 1
+        second-run proof COMPLETE. Each service's second real
+        Dev deploy reports `DEPLOY_CHANGED=false` and service-deploy `changed_on_rerun` false:
+        tududi 4967 (changed) then 4968 (unchanged); honcho 4977 then 4982; agentgateway 4987
+        and 4992, both unchanged; Authentik 5022 (changed) then 5028 (unchanged) after PR #581
+        (Deploy Authentik had failed on ansible-core 2.20 since 2026-10-09: template delimiters
+        inside an assert, task 4995; MISTAKES 5.18); o11y 5037 (changed, the restore) then 5042
+        (unchanged, ok=156 changed=0). Wave 3 (NetBox change-aware deploy) merged as PR #577;
+        its double-deploy proof waits for promotion, because Deploy NetBox is main-bound. Wave 2
+        (n8n, Postiz) is in progress. Not ticked
 - [x] 7.2 `provision-vm.yml` sets `onboot`; restart-policy check beside `enable-linger`.
       2026-09-22: onboot with per-host opt-out; `verify-service-persistence.yml` (step
       systemd-enablement) passes on local tududi, normal and check mode (tasks 977, 978)
