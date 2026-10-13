@@ -183,6 +183,20 @@ by deployed binaries. Label limits still require review and runtime acceptance.
 Keep task 3.3 open until its full source and live acceptance gates are met.
 Check-mode output is explicitly unverified.
 
+The Dev-bound `Survey o11y Alloy Health (Dev)` is a separate read-only
+diagnostic for the fixed `o11y-alloy` receiver container. It requires the exact
+reviewed controller SHA, one production `o11y_svc` target, and the receiver's
+declared Podman runtime. Its helper inspects only that named container and emits
+presence, run and health status, restart count, OOM state, the last health-probe
+exit code, and an optional coarse started-age bucket. Missing or malformed
+metadata produces a fixed refusal category; inspect JSON, process output, logs,
+paths, addresses, and command details remain private. Check mode skips Podman
+inspection and reports `check_mode_unverified`. This survey does not change
+container state, deployment behavior, or retention. Dev check-mode task 5027 at
+`318c7e84baf5e4bdb24277e50738d452465ac976` failed its Alloy health check after
+eight retries with sanitized health `starting`; the root cause remains unknown,
+and no production apply occurred.
+
 ### Receiver-loss and backend-discard alerts — task 3.3 source slice
 
 The provisioned `service-telemetry` group includes an Alloy receiver-refusal
