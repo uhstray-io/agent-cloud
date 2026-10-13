@@ -7,7 +7,7 @@ import sys
 
 SECRET_INPUT = re.compile(r"(?<!<)<\s*(?:'([^']+)'|\"([^\"]+)\"|([^\s;&|]+))")
 PYTHON = r"(?:python(?:\d+(?:\.\d+)?)?|pypy\d*)"
-PYTHON_OPTIONS = r"(?:\s+-(?:[bdiEIPqSsvx]|O{1,2}|u|[WX](?:\s+[^\s<>|;&]+|[^\s<>|;&]+)))*"
+PYTHON_OPTIONS = r"(?:\s+-(?:[bdiEIPqSsvxBuO]+|[WX](?:\s+[^\s<>|;&]+|[^\s<>|;&]+)))*"
 STDIN_PROGRAM = re.compile(
     rf"(?<![\w.-]){PYTHON}{PYTHON_OPTIONS}\s+-\s*(?=$|[<\s])"
     rf"|\b{PYTHON}{PYTHON_OPTIONS}\s*<<-?\s*[\w'-]+"

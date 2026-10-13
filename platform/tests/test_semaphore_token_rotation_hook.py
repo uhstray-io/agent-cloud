@@ -14,6 +14,8 @@ SPEC.loader.exec_module(guard)
 def test_blocks_heredoc_interpreter_with_secret_file_stdin():
     assert guard.unsafe_command("python3 - <<'PY' < site-config/secrets/operator/token\nprint(1)\nPY")
     assert guard.unsafe_command("python3 -u - <<'PY' < site-config/secrets/operator/token\nprint(1)\nPY")
+    assert guard.unsafe_command("python3 -Bu - <<'PY' < site-config/secrets/operator/token\nprint(1)\nPY")
+    assert guard.unsafe_command("python3 -Iu - <<'PY' < site-config/secrets/operator/token\nprint(1)\nPY")
     assert guard.unsafe_command("python3 -u <<'PY' < site-config/secrets/operator/token\nprint(1)\nPY")
     assert guard.unsafe_command("bash -s <<'SH' < /tmp/secrets/token")
 
@@ -21,6 +23,8 @@ def test_blocks_heredoc_interpreter_with_secret_file_stdin():
 def test_allows_script_file_or_inline_code_with_secret_stdin():
     assert not guard.unsafe_command("python3 scripts/read-token.py < site-config/secrets/operator/token")
     assert not guard.unsafe_command("python3 -c 'print(1)' < site-config/secrets/operator/token")
+    assert not guard.unsafe_command("python3 -Bu -c 'print(1)' < site-config/secrets/operator/token")
+    assert not guard.unsafe_command("python3 -Iu scripts/read-token.py < site-config/secrets/operator/token")
     assert not guard.unsafe_command(
         "python3 scripts/read-token.py < site-config/secrets/operator/token; python3 -u - <<'PY'\nprint(1)\nPY")
 

@@ -76,6 +76,16 @@ def args(tmp_path):
                                      backup=tmp_path / "token", state=tmp_path / "rotation-state")
 
 
+def test_parse_args_rejects_backup_path_reserved_for_rotation_lock(tmp_path):
+    lock = tmp_path / ".semaphore-token-rotation.lock"
+    with pytest.raises(SystemExit, match="2"):
+        rotate.parse_args([
+            "--url", "https://semaphore.test", "--project", "1",
+            "--expected-user-id", "1", "--inventory", "2",
+            "--backup", str(lock), "--state", str(tmp_path / "rotation-state"),
+        ])
+
+
 def install_fake(monkeypatch, server):
     monkeypatch.setattr(rotate.seed, "API", server.client)
     monkeypatch.setattr(rotate.seed, "declaration", lambda _name: {"name": rotate.ROTATION_TEMPLATE})

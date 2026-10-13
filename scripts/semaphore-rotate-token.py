@@ -334,7 +334,9 @@ def parse_args(argv=None):
     parser.add_argument("--state", required=True, type=Path, help="Private resumable state file, mode 0600")
     args = parser.parse_args(argv)
     reserved_lock = args.backup.parent / ".semaphore-token-rotation.lock"
-    if args.backup.resolve() == args.state.resolve() or args.state.resolve() == reserved_lock.resolve():
+    if (args.backup.resolve() == args.state.resolve()
+            or args.backup.resolve() == reserved_lock.resolve()
+            or args.state.resolve() == reserved_lock.resolve()):
         parser.error("backup, state, and lock paths must be different files")
     return args
 
