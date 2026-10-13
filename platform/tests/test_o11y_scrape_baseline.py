@@ -14,6 +14,195 @@ SPEC = importlib.util.spec_from_file_location("scrape_baseline", HELPER)
 assert SPEC and SPEC.loader
 SURVEY = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(SURVEY)
+BUDGET_SPEC = importlib.util.spec_from_file_location(
+    "o11y_scrape_budget", ROOT / "platform/playbooks/filter_plugins/o11y_scrape_budget.py"
+)
+assert BUDGET_SPEC and BUDGET_SPEC.loader
+BUDGET = importlib.util.module_from_spec(BUDGET_SPEC)
+BUDGET_SPEC.loader.exec_module(BUDGET)
+
+
+def _budget_receipt(*jobs):
+    return {
+        "status": "observed",
+        "active_target_count": len(jobs),
+        "jobs": [
+            {
+                "job": job,
+                "active_target_count": 1,
+                "health": {"healthy": 1, "unhealthy": 0},
+                "max_scrape_samples_scraped_24h": 42,
+                "max_scrape_response_body_bytes_point_in_time": 8192,
+                "max_stored_series_label_count_24h": 8,
+                "max_stored_series_label_name_bytes_24h": 32,
+                "max_stored_series_label_value_bytes_24h": 64,
+            }
+            for job in jobs
+        ],
+    }
+
+
+def _budget_limits():
+    return {
+        "body_size_limit_bytes": 16_777_216,
+        "sample_limit": 10_000,
+        "label_limit": 64,
+        "label_name_length_limit": 128,
+        "label_value_length_limit": 2048,
+    }
+
+
+def test_candidate_preview_returns_only_public_categories_and_statuses():
+    receipt = _budget_receipt("grafana", "receiver-host", "host-node", "dgx-spark")
+    result = BUDGET.o11y_scrape_budget_preview(receipt, _budget_limits(), True, 2000)
+
+    assert result == {
+        "status": "compatible",
+        "reason": "strict_headroom_available",
+        "jobs": [
+            {"job": "grafana", "status": "compatible"},
+            {"job": "receiver-host", "status": "compatible"},
+            {"job": "host-node", "status": "compatible"},
+            {"job": "dgx-spark", "status": "compatible"},
+        ],
+    }
+
+
+@pytest.mark.parametrize(
+    ("field", "candidate_field"),
+    [
+        ("max_scrape_samples_scraped_24h", "sample_limit"),
+        ("max_scrape_response_body_bytes_point_in_time", "body_size_limit_bytes"),
+        ("max_stored_series_label_count_24h", "label_limit"),
+        ("max_stored_series_label_name_bytes_24h", "label_name_length_limit"),
+        ("max_stored_series_label_value_bytes_24h", "label_value_length_limit"),
+    ],
+)
+def test_candidate_equal_to_any_observed_maximum_is_incompatible(field, candidate_field):
+    receipt = _budget_receipt("grafana")
+    receipt["jobs"][0][field] = 100
+    limits = _budget_limits()
+    limits[candidate_field] = 100
+
+    result = BUDGET.o11y_scrape_budget_preview(receipt, limits, True)
+
+    assert result == {
+        "status": "incompatible",
+        "reason": "strict_headroom_missing",
+        "jobs": [{"job": "grafana", "status": "incompatible"}],
+    }
+
+
+def test_receiver_and_host_node_use_the_stricter_sample_cap_only():
+    receipt = _budget_receipt("receiver-host", "host-node", "grafana")
+    receipt["jobs"][0]["max_scrape_samples_scraped_24h"] = 2000
+    receipt["jobs"][1]["max_scrape_samples_scraped_24h"] = 2001
+    receipt["jobs"][2]["max_scrape_samples_scraped_24h"] = 9999
+
+    result = BUDGET.o11y_scrape_budget_preview(receipt, _budget_limits(), True, 2000)
+
+    assert result["status"] == "incompatible"
+    assert result["jobs"] == [
+        {"job": "receiver-host", "status": "incompatible"},
+        {"job": "host-node", "status": "incompatible"},
+        {"job": "grafana", "status": "compatible"},
+    ]
+
+
+def test_missing_or_unreviewed_candidates_are_a_fixed_nonblocking_result():
+    expected = {
+        "status": "unavailable",
+        "reason": "candidate_limits_unavailable",
+        "jobs": [],
+    }
+
+    assert BUDGET.o11y_scrape_budget_preview(_budget_receipt("grafana"), {}, False) == expected
+    assert BUDGET.o11y_scrape_budget_preview(_budget_receipt("grafana"), {}, True) == expected
+    assert BUDGET.o11y_scrape_budget_preview(_budget_receipt("grafana"), _budget_limits()) == expected
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [0, -1, True, False, 1.5, float("inf"), "100", None],
+)
+def test_candidate_limits_must_be_bounded_positive_yaml_integers(invalid):
+    limits = _budget_limits()
+    limits["sample_limit"] = invalid
+
+    result = BUDGET.o11y_scrape_budget_preview(_budget_receipt("grafana"), limits, True)
+
+    assert result == {
+        "status": "unavailable",
+        "reason": "invalid_candidate_limits",
+        "jobs": [],
+    }
+
+
+@pytest.mark.parametrize("invalid", [0, -1, True, 20_001, 2000.0, "2000", None])
+def test_receiver_host_sample_cap_must_be_a_bounded_positive_integer(invalid):
+    result = BUDGET.o11y_scrape_budget_preview(_budget_receipt("receiver-host"), _budget_limits(), True, invalid)
+
+    assert result == {
+        "status": "unavailable",
+        "reason": "invalid_candidate_limits",
+        "jobs": [],
+    }
+
+
+def test_receipt_validation_rejects_private_ambiguous_or_unhealthy_shapes():
+    invalid_receipts = []
+    private_job = _budget_receipt("private-target-name")
+    invalid_receipts.append(private_job)
+    duplicate_job = _budget_receipt("grafana", "grafana")
+    invalid_receipts.append(duplicate_job)
+    unhealthy = _budget_receipt("grafana")
+    unhealthy["jobs"][0]["health"]["unhealthy"] = 1
+    invalid_receipts.append(unhealthy)
+    boolean_health = _budget_receipt("grafana")
+    boolean_health["jobs"][0]["health"]["healthy"] = True
+    invalid_receipts.append(boolean_health)
+    boolean_maximum = _budget_receipt("grafana")
+    boolean_maximum["jobs"][0]["max_scrape_samples_scraped_24h"] = True
+    invalid_receipts.append(boolean_maximum)
+    extra_field = _budget_receipt("grafana")
+    extra_field["private_target"] = "private-host"
+    invalid_receipts.append(extra_field)
+
+    for receipt in invalid_receipts:
+        result = BUDGET.o11y_scrape_budget_preview(receipt, _budget_limits(), True)
+        assert result == {
+            "status": "unavailable",
+            "reason": "invalid_baseline_receipt",
+            "jobs": [],
+        }
+        assert "private-host" not in str(result)
+
+
+def test_preview_result_never_returns_candidate_or_observed_values():
+    receipt = _budget_receipt("grafana")
+    limits = _budget_limits()
+    result = BUDGET.o11y_scrape_budget_preview(receipt, limits, True)
+
+    assert not any(isinstance(value, (int, float)) for value in result.values())
+    assert "16777216" not in str(result)
+    assert "8192" not in str(result)
+
+
+def test_survey_candidate_preview_is_optional_protected_and_check_mode_skipped():
+    playbook = yaml.safe_load((ROOT / "platform/playbooks/survey-o11y-scrape-baseline.yml").read_text())
+    receiver = next(play for play in playbook if play.get("name") == "Read and reduce the production scrape baseline")
+    tasks = receiver["tasks"]
+    preview = next(task for task in tasks if task.get("name") == "Compute the source-only candidate budget preview")
+    report = next(task for task in tasks if task.get("name") == "Report the source-only candidate budget preview")
+
+    assert preview["no_log"] is True
+    assert preview["when"] == "not ansible_check_mode"
+    expression = preview["ansible.builtin.set_fact"]["_scrape_budget_candidate_preview"]
+    assert "o11y_scrape_limits | default({})" in expression
+    assert "o11y_scrape_limits_reviewed | default(false)" in expression
+    assert "o11y_scrape_sample_limit | default(2000)" in expression
+    assert report["ansible.builtin.debug"]["msg"] == "{{ _scrape_budget_candidate_preview | to_json }}"
+    assert report["when"] == "not ansible_check_mode"
 
 
 def _targets(rows):
@@ -427,7 +616,13 @@ def test_probe_refusal_output_is_fixed_and_does_not_echo_private_target(monkeypa
 
 def test_playbook_has_one_sensitive_remote_invocation_exact_sha_and_check_mode_gate():
     playbook = yaml.safe_load((ROOT / "platform/playbooks/survey-o11y-scrape-baseline.yml").read_text())
-    assert any(play.get("name") == "Require the reviewed source and survey helper bytes" for play in playbook)
+    source_guard = next(
+        play for play in playbook if play.get("name") == "Require the reviewed source and survey helper bytes"
+    )
+    assert source_guard["vars"]["_reviewed_checkout_payload_paths"] == [
+        "platform/playbooks/files/summarize-o11y-scrape-baseline.py",
+        "platform/playbooks/filter_plugins/o11y_scrape_budget.py",
+    ]
     controller = next(
         play for play in playbook if play.get("name") == "Validate the reviewed production survey context"
     )
@@ -435,7 +630,7 @@ def test_playbook_has_one_sensitive_remote_invocation_exact_sha_and_check_mode_g
 
     receiver = next(play for play in playbook if play.get("name") == "Read and reduce the production scrape baseline")
     protected = [task for task in receiver["tasks"] if task.get("no_log")]
-    assert len(protected) == 2
+    assert len(protected) == 3
     invocation = next(
         task for task in protected if task["name"] == "Collect and sanitize the active scrape baseline on the receiver"
     )

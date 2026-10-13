@@ -142,6 +142,29 @@ scrapes. Live target readback, over-budget refusal checks, and calibration of
 the private values remain open. Prometheus's `body_size_limit` is documented
 as experimental in the pinned v3.1.0 configuration reference.
 
+The Dev-bound survey can also emit an optional **source-only candidate
+compatibility preview** when `o11y_scrape_limits_reviewed` is true and the
+candidate object is complete. It compares every fixed public job category in
+the bounded receipt with the declared global candidates; `receiver-host` and
+`host-node` use the smaller of the global sample limit and
+`o11y_scrape_sample_limit` (whose source default is 2,000). Each observed
+maximum must be strictly below its candidate, so equality reports
+`incompatible`. Missing or unreviewed candidates produce only the fixed
+`unavailable/candidate_limits_unavailable` result and do not fail or alter the
+baseline receipt. The preview prints no limit or observation values. It is a
+comparison of the survey window and source candidates, not live enforcement,
+deployment acceptance, or proof that Prometheus loaded those limits.
+
+Operational evidence through 2026-10-13: Dev task 5057 reported Alloy healthy;
+task 5058 completed the o11y deployment in check mode; and prior real deploys
+5037 and 5042 recorded a changed deployment followed by a no-change rerun.
+Read-only baseline task 5062 reported 11 healthy scrape targets. Its 24-hour
+`scrape_samples_scraped` maxima were 3,059 for Loki and 2,285 for Grafana; the
+DGX category covered three targets and a maximum of 42 stored-series labels in
+the 24-hour series query. Response-body bytes are a separate point-in-time GET
+measurement, not a 24-hour maximum. These values are review inputs and do not
+prove future load, runtime rejection, or loaded configuration.
+
 The Dev-bound read-only `Survey o11y Scrape Baseline (Dev)` queries active targets
 and the 24-hour maximum of `scrape_samples_scraped` from the existing Prometheus
 instance. Prometheus v3.1.0 exposes `scrape_body_size_bytes` only when
@@ -182,6 +205,11 @@ do not establish runtime rejection behavior or acceptance of configured limits
 by deployed binaries. Label limits still require review and runtime acceptance.
 Keep task 3.3 open until its full source and live acceptance gates are met.
 Check-mode output is explicitly unverified.
+
+The survey does not read a mounted scrape file as evidence that Prometheus
+loaded it. No supported per-job loaded-config readback has been established
+for the pinned Prometheus deployment, so effective runtime-limit acceptance
+remains open even when the candidate preview reports strict headroom.
 
 The Dev-bound `Survey o11y Alloy Health (Dev)` is a separate read-only
 diagnostic for the fixed `o11y-alloy` receiver container. It requires the exact

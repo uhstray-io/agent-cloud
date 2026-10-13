@@ -9,6 +9,7 @@
   vars:
     _reviewed_checkout_payload_paths:
       - platform/playbooks/files/summarize-o11y-scrape-baseline.py
+      - platform/playbooks/filter_plugins/o11y_scrape_budget.py
 
 - name: Pre-flight
   ansible.builtin.import_playbook: preflight-target-group.yml
@@ -122,6 +123,22 @@
           - (_scrape_baseline_receipt.jobs | map(attribute='max_stored_series_label_value_bytes_24h') | max) <= 16777216
         fail_msg: "The scrape baseline is unavailable, unhealthy, ambiguous, or outside the bounded public receipt schema."
         quiet: true
+      when: not ansible_check_mode
+
+    - name: Compute the source-only candidate budget preview
+      ansible.builtin.set_fact:
+        _scrape_budget_candidate_preview: >-
+          {{ _scrape_baseline_receipt | o11y_scrape_budget_preview(
+            o11y_scrape_limits | default({}),
+            o11y_scrape_limits_reviewed | default(false),
+            o11y_scrape_sample_limit | default(2000)
+          ) }}
+      no_log: true
+      when: not ansible_check_mode
+
+    - name: Report the source-only candidate budget preview
+      ansible.builtin.debug:
+        msg: "{{ _scrape_budget_candidate_preview | to_json }}"
       when: not ansible_check_mode
 
     - name: Report the bounded baseline receipt

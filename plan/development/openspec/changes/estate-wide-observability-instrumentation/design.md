@@ -586,3 +586,34 @@ Private site-config compatibility is not established by public source or
 synthetic tests. Runtime must refuse any layout that differs from the proposed
 literal schema. Catalog selection does not prove immutability, archive contents,
 isolated restore, cleanup, or restore success; OpenSpec 4.6e remains unchecked.
+## 2026-10-13 observed-window scrape-budget candidate preview
+
+The Dev-bound baseline survey has an optional, source-only candidate preview.
+It validates the existing bounded public receipt and the reviewed finite
+`o11y_scrape_limits` inventory object, then compares all five observed maxima
+for every fixed public job category. `receiver-host` and `host-node` use the
+smaller of the global sample limit and the existing
+`o11y_scrape_sample_limit` candidate (the committed source default is 2,000).
+Strict headroom is required: an observed maximum equal to a candidate is
+incompatible. Missing or unreviewed candidates produce a fixed unavailable
+category without changing or rejecting the existing baseline receipt. The
+preview returns only fixed status/reason values and fixed public job names; it
+does not return private inventory values or measured maxima.
+
+This is not live enforcement or acceptance of Prometheus's effective loaded
+configuration. Prometheus is pinned to v3.1.0; the available status-config
+response has not been proven to expose the effective per-job limits after
+split scrape-config composition. Reading a mounted config file would establish
+only its on-disk contents, not that the running process loaded those bytes.
+Therefore this slice does not upgrade Prometheus, read mounted config as
+runtime proof, or claim loaded-limit acceptance. A supported, exact-job
+readback mechanism and its runtime acceptance gate remain open under task 3.3.
+
+The operational context recorded for this slice is Dev Alloy-health task 5057,
+successful deployment check-mode task 5058, real prior deployment tasks 5037
+and 5042, and baseline task 5062. Task 5062 reported 11 healthy targets, 24-hour
+sample maxima of 3,059 for Loki and 2,285 for Grafana, three DGX-category
+targets, and a 24-hour stored-series label maximum of 42. Response-body size is
+measured by one point-in-time GET and remains distinct from the 24-hour sample
+and series-label observations. These receipts inform candidate review but do
+not close runtime acceptance or task 3.3.
