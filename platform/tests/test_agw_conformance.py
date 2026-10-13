@@ -682,16 +682,27 @@ def test_saturate_a_side_that_refuses_the_fillers_fails_the_case_naming_it(tmp_p
 
 def test_the_fillers_are_reaped_when_the_long_stream_ends_before_they_do(tmp_path, stubs):
     # Free slots, so the measured request does not queue; the fillers (60 s hold, 60 s curl limit)
-    # would run for a minute on each side. Only the reaping ends them with the run. The script runs
-    # unwatched (no pipe to wait on), so a filler left behind is still there when it exits.
+    # would run for a minute on each side. Only the reaping ends them. The script's exit trap reaps
+    # too, so the check that the reaping at the END OF EACH SIDE works is made while the direct side
+    # is measured: the gateway's fillers must already be gone when its measured request arrives.
     roomy = {**QUEUE, "n": 4}
     gw = stubs(key=GW_KEY, long=LONG, quiet_decode=True, slots=roomy)
     direct = stubs(key=UP_KEY, long=LONG, quiet_decode=True, slots=roomy)
+    seen_at_direct_measured = []
+    original = direct.handle
+
+    def handle(h, method, body):
+        if (body or {}).get("max_tokens") == LONG["max_tokens"]:  # the measured stream-long request
+            seen_at_direct_measured.append(gw.fillers_held)
+        return original(h, method, body)
+
+    direct.handle = handle
     env = _script_env(tmp_path, gw, direct, env={**SAT_ENV, "AGW_CONF_LONG_STREAM_SATURATE_S": "60"})
     proc = subprocess.run(["bash", str(SCRIPT), "run"], env=env, stdout=subprocess.DEVNULL,
                           stderr=subprocess.DEVNULL, timeout=180)
     assert proc.returncode == 0
     assert len(_fillers(gw)) == len(_fillers(direct)) == 2
+    assert seen_at_direct_measured == [0], "the gateway's fillers were still running on the direct side"
     assert _settles(gw, 0, 3, "fillers_held") and _settles(direct, 0, 3, "fillers_held")
 
 
@@ -722,6 +733,17 @@ def test_bad_saturation_inputs_stop_before_any_request(tmp_path, stubs, name, va
     gw, direct = stubs(key=GW_KEY), stubs(key=UP_KEY)
     r, lines = _run(tmp_path, gw, direct, env={**LONG_ENV, "AGW_CONF_LONG_STREAM_SATURATE": "2", name: value})
     assert r.returncode == 2 and name in r.stderr, r.stderr
+    assert gw.seen == [] and direct.seen == [] and lines == []
+
+
+@pytest.mark.parametrize("timeout, seconds", [("600", "601"), ("10", "11")])
+def test_a_saturation_lifetime_beyond_the_long_stream_ceiling_is_refused(tmp_path, stubs, timeout, seconds):
+    gw, direct = stubs(key=GW_KEY), stubs(key=UP_KEY)
+    env = {**LONG_ENV, "AGW_CONF_LONG_STREAM_SATURATE": "2", "AGW_CONF_LONG_STREAM_TIMEOUT": timeout,
+           "AGW_CONF_LONG_STREAM_SATURATE_S": seconds}
+    r, lines = _run(tmp_path, gw, direct, env=env)
+    assert r.returncode == 2 and "AGW_CONF_LONG_STREAM_SATURATE_S" in r.stderr, r.stderr
+    assert f"must not exceed AGW_CONF_LONG_STREAM_TIMEOUT ({timeout})" in r.stderr, r.stderr
     assert gw.seen == [] and direct.seen == [] and lines == []
 
 

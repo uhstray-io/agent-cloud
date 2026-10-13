@@ -324,7 +324,7 @@ queue.
 
 - A filler is the stream-long request shaped differently only in size: the same prompt and
   `xhigh` effort, `max_tokens` `agw_conformance_stream_max_tokens` (2048), and a hard curl time
-  limit `agw_conformance_long_stream_saturate_seconds` (45 s). Cutting the client makes vLLM abort
+  limit `agw_conformance_long_stream_saturate_seconds` (45 s; the script refuses more than the long-stream ceiling). Cutting the client makes vLLM abort
   the request and free the slot, so the measured request waits about 45 s on each side: three
   15 s keep-alives. Each filler's key travels exactly as the measured request's does (a pipe,
   never argv), and only its response status line is kept.
@@ -342,7 +342,9 @@ queue.
 - A filler whose side did not answer 2xx (a 429 from the gateway's one global request bucket,
   `agw_rate_requests_per_minute_total`, default 120 a minute, or a spent key budget) means the
   measured request may not have queued: the case fails naming the side, `fillers accepted`, rather
-  than reporting a missing comment as a gateway fault. A filler generates for at most 45 s, a
+  than reporting a missing comment as a gateway fault. "Accepted" means the upstream returned a
+  2xx status line for the filler, so a gateway that holds its response headers until the first
+  token would be under-counted (unverified against vLLM). A filler generates for at most 45 s, a
   few hundred tokens at the 13 tok/s per stream dgx-spark measured
   (`docs/LOAD-TESTING-9-13-26.md:53`), charged to the identity's hourly token budget.
 - **Load on the DGX.** The fillers are real generations on the shared upstream. For about 45 s on

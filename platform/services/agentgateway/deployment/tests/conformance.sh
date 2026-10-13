@@ -93,7 +93,8 @@
 #                                   so it queues (default 0 = none; needs AGW_CONF_LONG_STREAM).
 #                                   It should be at least vLLM's max-num-seqs; every filler is a real
 #                                   generation on the shared upstream
-#   AGW_CONF_LONG_STREAM_SATURATE_S seconds a filler may live (curl --max-time; default 45), so the
+#   AGW_CONF_LONG_STREAM_SATURATE_S seconds a filler may live (curl --max-time; default 45, at most
+#                                   AGW_CONF_LONG_STREAM_TIMEOUT), so the
 #                                   measured request waits about that long on each side
 #   AGW_CONF_LONG_STREAM_SATURATE_SETTLE_S  seconds between starting the fillers and the measured
 #                                   request, and after reaping them (default 2)
@@ -472,6 +473,11 @@ cmd_run() {
 	SATURATE_SETTLE_S="${AGW_CONF_LONG_STREAM_SATURATE_SETTLE_S:-2}"
 	positive_int AGW_CONF_LONG_STREAM_SATURATE_S "$SATURATE_S"
 	positive_int AGW_CONF_LONG_STREAM_SATURATE_SETTLE_S "$SATURATE_SETTLE_S"
+	# A filler that may outlive the measured request's own ceiling would hold the slots past it.
+	# Judged only when fillers are asked for: the default lifetime means nothing with none.
+	if [ "$SATURATE" -gt 0 ] && [ "$SATURATE_S" -gt "$LONG_TIMEOUT" ]; then
+		die "AGW_CONF_LONG_STREAM_SATURATE_S ($SATURATE_S) must not exceed AGW_CONF_LONG_STREAM_TIMEOUT ($LONG_TIMEOUT)"
+	fi
 	GATEWAY_URL="${AGW_CONF_GATEWAY_URL%/}"
 	DIRECT_URL="${AGW_CONF_DIRECT_URL%/}"
 	MODEL="$AGW_CONF_MODEL"
