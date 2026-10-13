@@ -176,6 +176,43 @@ def test_loaded_limit_mismatch_compares_all_five_effective_fields():
         assert result["status"] == "mismatch"
 
 
+def test_compound_body_size_serialization_matches_or_mismatches_reviewed_limit():
+    job = _loaded_config_job(body_size_limit="16MiB1B")
+    inventory = _loaded_inventory()
+    inventory["body_size_limit_bytes"] = 16_777_217
+    matching = BUDGET.o11y_loaded_scrape_limit_coverage(
+        _loaded_readback({"scrape_configs": [job]}),
+        _budget_receipt("prometheus"),
+        inventory,
+        True,
+    )
+    mismatch = BUDGET.o11y_loaded_scrape_limit_coverage(
+        _loaded_readback({"scrape_configs": [job]}),
+        _budget_receipt("prometheus"),
+        _loaded_inventory(),
+        True,
+    )
+
+    assert matching["status"] == "matched"
+    assert mismatch["status"] == "mismatch"
+
+
+@pytest.mark.parametrize(
+    "body_size_limit",
+    ["", "16MiB1MiB", "1B16MiB", "16MiB0B", "16MiB1024B", "16MiB1Bbad", "1024EiB"],
+)
+def test_malformed_compound_body_size_is_unavailable(body_size_limit):
+    job = _loaded_config_job(body_size_limit=body_size_limit)
+    result = BUDGET.o11y_loaded_scrape_limit_coverage(
+        _loaded_readback({"scrape_configs": [job]}),
+        _budget_receipt("prometheus"),
+        _loaded_inventory(),
+        True,
+    )
+
+    assert result == {"status": "unavailable", "reason": "invalid_loaded_limit", "jobs": []}
+
+
 @pytest.mark.parametrize(
     "loaded_field",
     ["body_size_limit", "sample_limit", "label_limit", "label_name_length_limit", "label_value_length_limit"],

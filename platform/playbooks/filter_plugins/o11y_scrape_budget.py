@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
-from decimal import Decimal, InvalidOperation
 from typing import Any
 
 import yaml
@@ -68,7 +67,6 @@ PUBLIC_JOB_ALIASES = {
     "host-node": "host-node",
 }
 HOST_JOB = re.compile(r"host-node-[a-z0-9][a-z0-9_-]{0,31}\Z")
-BYTE_SIZE = re.compile(r"^([0-9]+(?:\.[0-9]+)?)(B|KiB|MiB|GiB|TiB|PiB|EiB)\Z")
 BYTE_MULTIPLIERS = {
     "B": 1,
     "KiB": 1024,
@@ -78,6 +76,10 @@ BYTE_MULTIPLIERS = {
     "PiB": 1024**5,
     "EiB": 1024**6,
 }
+BYTE_UNITS = tuple(BYTE_MULTIPLIERS)
+BYTE_SEGMENT = re.compile(r"([1-9][0-9]{0,3})(EiB|PiB|TiB|GiB|MiB|KiB|B)")
+MAX_BYTE_SIZE_TEXT = len(BYTE_UNITS) * 7
+MAX_BASE2_BYTES = (1 << 63) - 1
 READBACK_REASONS = frozenset(
     {
         "buildinfo_unavailable",
@@ -264,18 +266,27 @@ def _loaded_integer(value: Any, maximum: int) -> int | None:
 def _loaded_body_bytes(value: Any) -> int | None:
     if isinstance(value, int) and not isinstance(value, bool):
         return value if value > 0 else None
-    if not isinstance(value, str):
+    if not isinstance(value, str) or not value or len(value) > MAX_BYTE_SIZE_TEXT:
         return None
-    match = BYTE_SIZE.fullmatch(value)
-    if match is None:
-        return None
-    try:
-        size = Decimal(match.group(1)) * BYTE_MULTIPLIERS[match.group(2)]
-    except InvalidOperation:
-        return None
-    if not size.is_finite() or size != size.to_integral_value() or size <= 0:
-        return None
-    return int(size)
+
+    size = 0
+    position = 0
+    previous_rank = len(BYTE_UNITS)
+    while position < len(value):
+        match = BYTE_SEGMENT.match(value, position)
+        if match is None:
+            return None
+        amount = int(match.group(1))
+        unit = match.group(2)
+        rank = BYTE_UNITS.index(unit)
+        if amount >= 1024 or rank >= previous_rank:
+            return None
+        size += amount * BYTE_MULTIPLIERS[unit]
+        if size > MAX_BASE2_BYTES:
+            return None
+        previous_rank = rank
+        position = match.end()
+    return size if size > 0 else None
 
 
 def _parse_loaded_yaml(config_yaml: Any) -> tuple[dict[str, Any], bool] | None:
