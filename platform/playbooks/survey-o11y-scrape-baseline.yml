@@ -89,7 +89,13 @@
 
     - name: Parse the helper's bounded public projection
       ansible.builtin.set_fact:
-        _scrape_baseline_receipt: "{{ _baseline_run.stdout | from_json }}"
+        _scrape_survey_result: "{{ _baseline_run.stdout | from_json }}"
+      no_log: true
+      when: not ansible_check_mode
+
+    - name: Keep the active scrape baseline separate from loaded-limit evidence
+      ansible.builtin.set_fact:
+        _scrape_baseline_receipt: "{{ _scrape_survey_result.baseline }}"
       no_log: true
       when: not ansible_check_mode
 
@@ -136,9 +142,26 @@
       no_log: true
       when: not ansible_check_mode
 
+    - name: Compute bounded loaded inline scrape-limit coverage
+      ansible.builtin.set_fact:
+        _scrape_loaded_limit_coverage: >-
+          {{ _scrape_survey_result.loaded_limit_readback | o11y_loaded_scrape_limit_coverage(
+            _scrape_baseline_receipt,
+            o11y_scrape_limits | default({}),
+            o11y_scrape_limits_reviewed | default(false),
+            o11y_scrape_sample_limit | default(2000)
+          ) }}
+      no_log: true
+      when: not ansible_check_mode
+
     - name: Report the source-only candidate budget preview
       ansible.builtin.debug:
         msg: "{{ _scrape_budget_candidate_preview | to_json }}"
+      when: not ansible_check_mode
+
+    - name: Report loaded inline scrape-limit coverage
+      ansible.builtin.debug:
+        msg: "{{ _scrape_loaded_limit_coverage | to_json }}"
       when: not ansible_check_mode
 
     - name: Report the bounded baseline receipt
@@ -149,6 +172,14 @@
     - name: Mark check-mode results as unverified
       ansible.builtin.debug:
         msg:
-          status: check_mode_unverified
-          reason: "The read-only Prometheus query and direct HTTP probes are skipped in check mode."
+          baseline:
+            status: check_mode_unverified
+            reason: "Prometheus queries and direct HTTP probes are skipped in check mode."
+          candidate_preview:
+            status: check_mode_unverified
+            reason: "Candidate comparison is skipped in check mode."
+          loaded_limits:
+            status: check_mode_unverified
+            reason: "Prometheus status APIs are skipped in check mode."
+            jobs: []
       when: ansible_check_mode

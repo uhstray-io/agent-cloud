@@ -207,9 +207,37 @@ Keep task 3.3 open until its full source and live acceptance gates are met.
 Check-mode output is explicitly unverified.
 
 The survey does not read a mounted scrape file as evidence that Prometheus
-loaded it. No supported per-job loaded-config readback has been established
-for the pinned Prometheus deployment, so effective runtime-limit acceptance
-remains open even when the candidate preview reports strict headroom.
+loaded it. Its loaded-limit receipt uses the pinned v3.1.0
+`/api/v1/status/buildinfo`, `/api/v1/status/runtimeinfo`, and
+`/api/v1/status/config` endpoints. It requires version `3.1.0`, successful
+reload state, stable process/config timestamps, and byte-identical config
+readbacks around the runtime snapshots. A changed or malformed readback becomes
+a fixed `unavailable` result; this is a bounded consistency check, not an atomic
+snapshot or proof against an unobserved change-and-revert between requests.
+
+Prometheus's status-config endpoint serializes the main in-memory `Config`;
+`scrape_config_files` remains a list of patterns, while loaded file-job
+expansion is exposed separately by `Config.GetScrapeConfigs()` and is not used
+by the endpoint. See the pinned [Prometheus 3.1.0 API handler](https://github.com/prometheus/prometheus/blob/v3.1.0/web/api/v1/api.go#L1531-L1551)
+and [config implementation](https://github.com/prometheus/prometheus/blob/v3.1.0/config/config.go#L283-L331).
+The receipt parses only inline jobs and compares all five effective values
+against the reviewed inventory; `receiver-host` uses the stricter of the
+reviewed global sample limit and `o11y_scrape_sample_limit`. A missing, invalid,
+or mismatched value does not pass. Split scrape-file jobs remain explicitly
+unverified, including DGX and host-node jobs. Raw YAML, targets, limit values,
+paths, and errors remain in protected tasks; the visible loaded-limit receipt
+contains only fixed statuses, reasons, and public job categories.
+
+The candidate preview and active-load baseline remain separate receipts. A
+loaded-limit match proves only the values visible in the inline status-config
+readback match reviewed candidates at that observation point. It does not prove
+over-budget runtime rejection. Verified live Dev survey task 5194 at reviewed
+SHA `ed547385` succeeded with 11 targets across nine public categories and a
+compatible candidate preview for all nine. That task proves the baseline and
+candidate comparison only; it contains no loaded-limit readback or rejection
+evidence. Keep task 3.3 open, retention unchanged, and live acceptance pending.
+Check mode reports the baseline, candidate preview, and loaded limits as
+`check_mode_unverified`.
 
 The Dev-bound `Survey o11y Alloy Health (Dev)` is a separate read-only
 diagnostic for the fixed `o11y-alloy` receiver container. It requires the exact

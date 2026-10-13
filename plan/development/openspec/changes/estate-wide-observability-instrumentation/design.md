@@ -600,14 +600,12 @@ category without changing or rejecting the existing baseline receipt. The
 preview returns only fixed status/reason values and fixed public job names; it
 does not return private inventory values or measured maxima.
 
-This is not live enforcement or acceptance of Prometheus's effective loaded
-configuration. Prometheus is pinned to v3.1.0; the available status-config
-response has not been proven to expose the effective per-job limits after
-split scrape-config composition. Reading a mounted config file would establish
-only its on-disk contents, not that the running process loaded those bytes.
-Therefore this slice does not upgrade Prometheus, read mounted config as
-runtime proof, or claim loaded-limit acceptance. A supported, exact-job
-readback mechanism and its runtime acceptance gate remain open under task 3.3.
+This preview is not live enforcement or acceptance of Prometheus's effective
+loaded configuration. Reading a mounted config file would establish only its
+on-disk contents, not that the running process loaded those bytes. The next
+source slice establishes a bounded read-only status-config receipt for inline
+jobs only; scrape-file jobs remain unverified. It does not upgrade Prometheus,
+read mounted config as runtime proof, or claim runtime rejection.
 
 The operational context recorded for this slice is Dev Alloy-health task 5057,
 successful deployment check-mode task 5058, real prior deployment tasks 5037
@@ -617,3 +615,50 @@ targets, and a 24-hour stored-series label maximum of 42. Response-body size is
 measured by one point-in-time GET and remains distinct from the 24-hour sample
 and series-label observations. These receipts inform candidate review but do
 not close runtime acceptance or task 3.3.
+
+## 2026-10-13 loaded inline scrape-limit coverage source slice
+
+Extend the existing exact-SHA-guarded Dev scrape survey with a best-effort
+loaded-limit receipt, separate from its required active-load baseline and the
+source-only candidate preview. Use the pinned Prometheus v3.1.0 GET APIs
+`/api/v1/status/buildinfo`, `/api/v1/status/runtimeinfo`, and
+`/api/v1/status/config`. The pinned source exposes build `version`, runtime
+`reloadConfigSuccess`/`lastConfigTime`, and config as a YAML string produced
+from the in-memory config object. Bound every response with the survey's
+existing API byte ceiling, timeout, curl transport, and protected helper task.
+Read config twice between runtime snapshots; require version `3.1.0`, successful
+reload state, identical process/config timestamps and config bytes. Any HTTP,
+shape, size, parse, reload, or stability
+failure returns only a fixed `unavailable` reason and cannot suppress the
+existing baseline or candidate preview. The multi-request readback is not an
+atomic Prometheus snapshot and cannot detect an unobserved change-and-revert
+between matching observations; a matched result describes only the checked
+readback point.
+
+Parse the loaded YAML with duplicate-key rejection. Compare the five reviewed
+inventory limits (`body_size_limit`, `sample_limit`, `label_limit`,
+`label_name_length_limit`, and `label_value_length_limit`) against every
+exposed inline scrape job after Prometheus's serialized effective defaults.
+Use the active target's exact `scrapePool` association, not a guessed match
+from labels; reject missing or ambiguous associations. Apply the existing
+stricter `o11y_scrape_sample_limit` to the `receiver-host` pool. Missing,
+invalid, or mismatched loaded values never pass. Emit only fixed overall and
+per-public-category statuses/reasons; never include config, paths, target
+labels, inventory values, raw responses, or exception details.
+
+Prometheus 3.1.0's status-config handler serializes the main `Config` object.
+Its `scrape_config_files` patterns do not expand into the serialized
+`scrape_configs` list, so any pools supplied by scrape files (including
+conditional DGX and host-node jobs) are explicitly `unverified`; do not read
+mounted files or claim coverage for those jobs. This receipt demonstrates
+only that exposed inline loaded values match reviewed candidates at the
+readback point. It does not prove over-budget runtime rejection or close task
+3.3. Preserve the 2026-10-13 observed-window baseline evidence in its separate
+receipt and keep all task 3.3 acceptance gates open.
+
+Verified live evidence supplied for this slice: Dev survey task 5194 at reviewed
+SHA `ed547385` succeeded with 11 targets across nine public categories and a
+compatible candidate preview for all nine. The task predates these source edits
+and did not read loaded limits or prove runtime rejection; it validates only the
+separate baseline and candidate-preview inputs. No live task or deployment is
+part of this source change.

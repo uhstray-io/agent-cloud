@@ -52,6 +52,38 @@ def _budget_limits():
     }
 
 
+def _loaded_config_job(name="prometheus", **overrides):
+    job = {
+        "job_name": name,
+        "body_size_limit": "16MiB",
+        "sample_limit": 10_000,
+        "label_limit": 64,
+        "label_name_length_limit": 128,
+        "label_value_length_limit": 2048,
+    }
+    job.update(overrides)
+    return job
+
+
+def _loaded_readback(config, target_pools=None):
+    return {
+        "status": "observed",
+        "reason": "stable_loaded_config",
+        "config_yaml": yaml.safe_dump(config, sort_keys=False),
+        "target_pools": target_pools or [{"pool": "prometheus", "job": "prometheus"}],
+    }
+
+
+def _loaded_inventory():
+    return {
+        "body_size_limit_bytes": 16_777_216,
+        "sample_limit": 10_000,
+        "label_limit": 64,
+        "label_name_length_limit": 128,
+        "label_value_length_limit": 2048,
+    }
+
+
 def test_candidate_preview_returns_only_public_categories_and_statuses():
     receipt = _budget_receipt("grafana", "receiver-host", "host-node", "dgx-spark")
     result = BUDGET.o11y_scrape_budget_preview(receipt, _budget_limits(), True, 2000)
@@ -66,6 +98,181 @@ def test_candidate_preview_returns_only_public_categories_and_statuses():
             {"job": "dgx-spark", "status": "compatible"},
         ],
     }
+
+
+def test_loaded_inline_limit_receipt_matches_inventory_and_marks_split_jobs_unverified():
+    baseline = _budget_receipt("prometheus", "dgx-spark")
+    config = {
+        "scrape_config_files": ["/private/prometheus/scrape.d/*.yml"],
+        "scrape_configs": [_loaded_config_job()],
+    }
+    result = BUDGET.o11y_loaded_scrape_limit_coverage(
+        _loaded_readback(
+            config,
+            [
+                {"pool": "prometheus", "job": "prometheus"},
+                {"pool": "dgx-spark-gpu", "job": "dgx-spark-gpu"},
+            ],
+        ),
+        baseline,
+        _loaded_inventory(),
+        True,
+    )
+
+    assert result == {
+        "status": "unverified",
+        "reason": "split_scrape_file_jobs_unverified",
+        "jobs": [
+            {"job": "dgx-spark", "status": "unverified", "reason": "split_scrape_file_job"},
+            {
+                "job": "prometheus",
+                "status": "matched",
+                "reason": "limits_match_reviewed_inventory",
+            },
+        ],
+    }
+
+
+def test_loaded_receiver_host_uses_stricter_sample_cap():
+    inventory = _loaded_inventory()
+    receiver = _loaded_config_job("receiver-host", sample_limit=2000)
+    result = BUDGET.o11y_loaded_scrape_limit_coverage(
+        _loaded_readback({"scrape_configs": [receiver]}, [{"pool": "receiver-host", "job": "receiver-host"}]),
+        _budget_receipt("receiver-host"),
+        inventory,
+        True,
+        2000,
+    )
+
+    assert result["status"] == "matched"
+    receiver["sample_limit"] = 2001
+    mismatch = BUDGET.o11y_loaded_scrape_limit_coverage(
+        _loaded_readback({"scrape_configs": [receiver]}, [{"pool": "receiver-host", "job": "receiver-host"}]),
+        _budget_receipt("receiver-host"),
+        inventory,
+        True,
+        2000,
+    )
+    assert mismatch["status"] == "mismatch"
+    assert mismatch["jobs"] == [{"job": "receiver-host", "status": "mismatch", "reason": "loaded_limit_mismatch"}]
+
+
+def test_loaded_limit_mismatch_compares_all_five_effective_fields():
+    pairs = [
+        ("body_size_limit", "body_size_limit_bytes", "17MiB"),
+        ("sample_limit", "sample_limit", 10_001),
+        ("label_limit", "label_limit", 65),
+        ("label_name_length_limit", "label_name_length_limit", 129),
+        ("label_value_length_limit", "label_value_length_limit", 2049),
+    ]
+    for loaded_field, _candidate_field, value in pairs:
+        loaded_job = _loaded_config_job(**{loaded_field: value})
+        result = BUDGET.o11y_loaded_scrape_limit_coverage(
+            _loaded_readback({"scrape_configs": [loaded_job]}),
+            _budget_receipt("prometheus"),
+            _loaded_inventory(),
+            True,
+        )
+        assert result["status"] == "mismatch"
+
+
+@pytest.mark.parametrize(
+    "loaded_field",
+    ["body_size_limit", "sample_limit", "label_limit", "label_name_length_limit", "label_value_length_limit"],
+)
+def test_each_missing_loaded_limit_is_unavailable(loaded_field):
+    job = _loaded_config_job()
+    del job[loaded_field]
+
+    result = BUDGET.o11y_loaded_scrape_limit_coverage(
+        _loaded_readback({"scrape_configs": [job]}),
+        _budget_receipt("prometheus"),
+        _loaded_inventory(),
+        True,
+    )
+
+    assert result == {"status": "unavailable", "reason": "invalid_loaded_limit", "jobs": []}
+
+
+def test_duplicate_loaded_yaml_keys_return_unavailable_without_changing_baseline():
+    baseline = _budget_receipt("prometheus")
+    malformed = {
+        "status": "observed",
+        "reason": "stable_loaded_config",
+        "config_yaml": "scrape_configs:\n  - job_name: prometheus\n    job_name: grafana\n",
+        "target_pools": [{"pool": "prometheus", "job": "prometheus"}],
+    }
+    result = BUDGET.o11y_loaded_scrape_limit_coverage(malformed, baseline, _loaded_inventory(), True)
+
+    assert result == {"status": "unavailable", "reason": "malformed_loaded_config", "jobs": []}
+    assert BUDGET.o11y_scrape_budget_preview(baseline, _budget_limits(), True)["status"] == "compatible"
+
+
+def test_loaded_yaml_alias_returns_fixed_unavailable_without_echoing_raw_config():
+    sentinel = "private-alias-sentinel"
+    malformed = {
+        "status": "observed",
+        "reason": "stable_loaded_config",
+        "config_yaml": (
+            f"external_labels: &private_labels\n  value: {sentinel}\n"
+            "scrape_configs:\n  - job_name: prometheus\n"
+            "copy_of_labels: *private_labels\n"
+        ),
+        "target_pools": [{"pool": "prometheus", "job": "prometheus"}],
+    }
+
+    result = BUDGET.o11y_loaded_scrape_limit_coverage(
+        malformed, _budget_receipt("prometheus"), _loaded_inventory(), True
+    )
+
+    assert result == {"status": "unavailable", "reason": "malformed_loaded_config", "jobs": []}
+    assert sentinel not in json.dumps(result)
+
+
+def test_loaded_yaml_excessive_nesting_returns_fixed_unavailable():
+    nested = "[" * (BUDGET.MAX_CONFIG_NESTING + 1) + "null" + "]" * (BUDGET.MAX_CONFIG_NESTING + 1)
+    malformed = {
+        "status": "observed",
+        "reason": "stable_loaded_config",
+        "config_yaml": f"scrape_configs:\n  - job_name: prometheus\nprivate_data: {nested}\n",
+        "target_pools": [{"pool": "prometheus", "job": "prometheus"}],
+    }
+
+    result = BUDGET.o11y_loaded_scrape_limit_coverage(
+        malformed, _budget_receipt("prometheus"), _loaded_inventory(), True
+    )
+
+    assert result == {"status": "unavailable", "reason": "malformed_loaded_config", "jobs": []}
+
+
+def test_ambiguous_target_pool_and_missing_or_invalid_loaded_limits_are_unavailable():
+    baseline = _budget_receipt("prometheus")
+    config = {"scrape_configs": [_loaded_config_job()]}
+    ambiguous = _loaded_readback(config, [{"pool": "unknown-private-pool", "job": "prometheus"}])
+    assert BUDGET.o11y_loaded_scrape_limit_coverage(
+        ambiguous, baseline, _loaded_inventory(), True
+    ) == {"status": "unavailable", "reason": "ambiguous_target_pool", "jobs": []}
+
+    for invalid in (None, True, 0, "10000"):
+        loaded = _loaded_config_job(sample_limit=invalid)
+        result = BUDGET.o11y_loaded_scrape_limit_coverage(
+            _loaded_readback({"scrape_configs": [loaded]}), baseline, _loaded_inventory(), True
+        )
+        assert result == {"status": "unavailable", "reason": "invalid_loaded_limit", "jobs": []}
+
+
+def test_loaded_coverage_never_echoes_raw_config_sentinel():
+    sentinel = "private-secret-sentinel-please-do-not-print"
+    config = {
+        "external_labels": {"secret": sentinel},
+        "scrape_configs": [_loaded_config_job()],
+    }
+    result = BUDGET.o11y_loaded_scrape_limit_coverage(
+        _loaded_readback(config), _budget_receipt("prometheus"), _loaded_inventory(), True
+    )
+
+    assert sentinel not in json.dumps(result)
+    assert result["status"] == "matched"
 
 
 @pytest.mark.parametrize(
@@ -504,6 +711,94 @@ def test_generated_curl_configs_parse_with_installed_curl(config):
     assert result.returncode == 0, result.stderr.decode(errors="replace")
 
 
+def test_loaded_readback_refuses_version_mismatch_before_config_read(monkeypatch):
+    monkeypatch.setattr(
+        SURVEY,
+        "_status_data",
+        lambda path, _reason: {"version": "3.2.0"} if path.endswith("buildinfo") else pytest.fail(path),
+    )
+
+    with pytest.raises(SURVEY.Refusal, match="prometheus_version_mismatch"):
+        SURVEY._loaded_limit_readback(b"unused")
+
+
+def test_loaded_readback_refuses_changed_runtime_or_config_snapshot(monkeypatch):
+    runtime_a = {
+        "startTime": "2026-10-13T12:00:00Z",
+        "lastConfigTime": "2026-10-13T12:01:00Z",
+        "reloadConfigSuccess": True,
+    }
+    runtime_b = {**runtime_a, "lastConfigTime": "2026-10-13T12:02:00Z"}
+    runtime_values = iter([runtime_a, runtime_a, runtime_b])
+    config_values = iter([{"yaml": "scrape_configs: []\n"}, {"yaml": "scrape_configs: []\n"}])
+
+    def status(path, _reason):
+        if path.endswith("buildinfo"):
+            return {"version": "3.1.0"}
+        if path.endswith("runtimeinfo"):
+            return next(runtime_values)
+        return next(config_values)
+
+    monkeypatch.setattr(SURVEY, "_status_data", status)
+    with pytest.raises(SURVEY.Refusal, match="unstable_loaded_config"):
+        SURVEY._loaded_limit_readback(b"unused")
+
+
+def test_loaded_readback_refuses_different_config_bytes(monkeypatch):
+    runtime = {
+        "startTime": "2026-10-13T12:00:00Z",
+        "lastConfigTime": "2026-10-13T12:01:00Z",
+        "reloadConfigSuccess": True,
+    }
+    config_values = iter([{"yaml": "secret-sentinel-a"}, {"yaml": "secret-sentinel-b"}])
+
+    def status(path, _reason):
+        if path.endswith("buildinfo"):
+            return {"version": "3.1.0"}
+        if path.endswith("runtimeinfo"):
+            return runtime
+        return next(config_values)
+
+    monkeypatch.setattr(SURVEY, "_status_data", status)
+    with pytest.raises(SURVEY.Refusal, match="unstable_loaded_config"):
+        SURVEY._loaded_limit_readback(b"unused")
+
+
+def test_loaded_readback_failure_does_not_suppress_active_baseline(monkeypatch):
+    baseline = _budget_receipt("prometheus")
+    monkeypatch.setattr(SURVEY, "_require_curl_version", lambda: None)
+    monkeypatch.setattr(SURVEY, "_run_api", lambda *_args: b"private api response")
+    monkeypatch.setattr(SURVEY, "summarize", lambda *_args: baseline)
+
+    def unavailable(_targets):
+        raise SURVEY.Refusal("unstable_loaded_config")
+
+    monkeypatch.setattr(SURVEY, "_loaded_limit_readback", unavailable)
+
+    result = SURVEY.collect()
+
+    assert result["baseline"] == baseline
+    assert result["loaded_limit_readback"] == {
+        "status": "unavailable",
+        "reason": "unstable_loaded_config",
+    }
+
+
+def test_loaded_status_readback_rejects_oversized_api_json(monkeypatch):
+    monkeypatch.setattr(SURVEY, "MAX_API_BYTES", 1)
+    monkeypatch.setattr(SURVEY, "_run_api", lambda _path, _reason: b'{"status":"success"}')
+
+    with pytest.raises(SURVEY.Refusal, match="loaded_config_unavailable"):
+        SURVEY._status_data("/api/v1/status/config", "loaded_config_unavailable")
+
+
+def test_loaded_status_readback_refuses_unsupported_api_shape(monkeypatch):
+    monkeypatch.setattr(SURVEY, "_run_api", lambda _path, _reason: b'{"status":"success","data":[]}')
+
+    with pytest.raises(SURVEY.Refusal, match="loaded_config_unavailable"):
+        SURVEY._status_data("/api/v1/status/config", "loaded_config_unavailable")
+
+
 def test_target_and_sample_api_refuses_redirect_even_with_success_json(monkeypatch):
     argv_seen = []
 
@@ -630,22 +925,32 @@ def test_playbook_has_one_sensitive_remote_invocation_exact_sha_and_check_mode_g
 
     receiver = next(play for play in playbook if play.get("name") == "Read and reduce the production scrape baseline")
     protected = [task for task in receiver["tasks"] if task.get("no_log")]
-    assert len(protected) == 3
+    assert len(protected) == 5
     invocation = next(
         task for task in protected if task["name"] == "Collect and sanitize the active scrape baseline on the receiver"
     )
     parse = next(task for task in protected if task["name"] == "Parse the helper's bounded public projection")
+    compare = next(task for task in protected if task["name"] == "Compute bounded loaded inline scrape-limit coverage")
     assert "delegate_to" not in invocation
     assert "ansible.builtin.script" in invocation
+    assert invocation["when"] == "not ansible_check_mode"
     assert parse["no_log"] is True
+    assert compare["no_log"] is True
+    assert "config_yaml" not in str(
+        next(task for task in receiver["tasks"] if task["name"] == "Report loaded inline scrape-limit coverage")
+    )
     visible_assert = next(
         task for task in receiver["tasks"] if task["name"] == "Require a complete and bounded baseline receipt"
     )
     assert "_baseline_run" not in str(visible_assert["ansible.builtin.assert"])
+    assert "_scrape_survey_result" not in str(
+        next(task for task in receiver["tasks"] if task["name"] == "Report loaded inline scrape-limit coverage")
+    )
     assert visible_assert["ansible.builtin.assert"]["fail_msg"] == (
         "The scrape baseline is unavailable, unhealthy, ambiguous, or outside the bounded public receipt schema."
     )
     assert all(task.get("no_log") is not True for task in receiver["tasks"] if task not in protected)
     check_mode = next(task for task in receiver["tasks"] if task.get("name") == "Mark check-mode results as unverified")
     assert check_mode["when"] == "ansible_check_mode"
+    assert check_mode["ansible.builtin.debug"]["msg"]["loaded_limits"]["status"] == "check_mode_unverified"
     assert "scrape_body_size_bytes" not in HELPER.read_text()

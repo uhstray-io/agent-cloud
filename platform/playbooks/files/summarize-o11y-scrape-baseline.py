@@ -10,6 +10,7 @@ import subprocess
 import threading
 import time
 from collections.abc import Callable
+from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
 from urllib.parse import urlencode, urlsplit
@@ -616,7 +617,7 @@ def summarize(
     }
 
 
-def _run_api(path: str) -> bytes:
+def _run_api(path: str, unavailable_reason: str = "query_unavailable") -> bytes:
     argv = [
         ENGINE,
         "exec",
@@ -643,7 +644,7 @@ def _run_api(path: str) -> bytes:
     try:
         process = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     except OSError:
-        raise Refusal("query_unavailable") from None
+        raise Refusal(unavailable_reason) from None
 
     assert process.stdout is not None
     state: dict[str, Any] = {"output": bytearray(), "overflow": False, "error": False}
@@ -678,11 +679,99 @@ def _run_api(path: str) -> bytes:
         return_code = -1
     output = bytes(state["output"])
     if state["overflow"] or state["error"] or return_code != 0 or len(output) < 3:
-        raise Refusal("query_unavailable")
+        raise Refusal(unavailable_reason)
     status_text = output[-3:]
     if not status_text.isdigit() or not 200 <= int(status_text) < 300:
-        raise Refusal("query_unavailable")
+        raise Refusal(unavailable_reason)
     return output[:-3]
+
+
+def _status_data(path: str, unavailable_reason: str) -> dict[str, Any]:
+    response = _json_document(_run_api(path, unavailable_reason), unavailable_reason)
+    data = response.get("data")
+    if not isinstance(data, dict):
+        raise Refusal(unavailable_reason)
+    return data
+
+
+def _runtime_signature(data: Any) -> tuple[str, str]:
+    if not isinstance(data, dict) or data.get("reloadConfigSuccess") is not True:
+        raise Refusal("runtime_config_unavailable")
+    start_time = data.get("startTime")
+    config_time = data.get("lastConfigTime")
+    if not isinstance(start_time, str) or not isinstance(config_time, str):
+        raise Refusal("runtime_config_unavailable")
+    try:
+        start = datetime.fromisoformat(start_time.replace("Z", "+00:00"))
+        config = datetime.fromisoformat(config_time.replace("Z", "+00:00"))
+    except ValueError:
+        raise Refusal("runtime_config_unavailable") from None
+    if start.tzinfo is None or config.tzinfo is None:
+        raise Refusal("runtime_config_unavailable")
+    return start_time, config_time
+
+
+def _active_target_pools(targets_raw: bytes | str) -> list[dict[str, str]]:
+    response = _json_document(targets_raw, "malformed_targets")
+    data = response.get("data")
+    active = data.get("activeTargets") if isinstance(data, dict) else None
+    if not isinstance(active, list) or not active or len(active) > MAX_ROWS:
+        raise Refusal("malformed_targets")
+    pools: dict[str, str] = {}
+    for target in active:
+        if not isinstance(target, dict):
+            raise Refusal("malformed_targets")
+        pool = target.get("scrapePool")
+        labels = target.get("labels")
+        job = labels.get("job") if isinstance(labels, dict) else None
+        if not isinstance(pool, str) or not pool or not isinstance(job, str) or not job:
+            raise Refusal("ambiguous_target_pool")
+        try:
+            pool_category = _public_job(pool)
+            job_category = _public_job(job)
+        except Refusal:
+            raise Refusal("ambiguous_target_pool") from None
+        if pool_category != job_category or (pool in pools and pools[pool] != job):
+            raise Refusal("ambiguous_target_pool")
+        pools[pool] = job
+    return [{"pool": pool, "job": pools[pool]} for pool in sorted(pools)]
+
+
+def _loaded_limit_readback(targets_raw: bytes | str) -> dict[str, Any]:
+    build = _status_data("/api/v1/status/buildinfo", "buildinfo_unavailable")
+    if build.get("version") != "3.1.0":
+        raise Refusal("prometheus_version_mismatch")
+
+    runtime_before = _runtime_signature(
+        _status_data("/api/v1/status/runtimeinfo", "runtime_config_unavailable")
+    )
+    config_before = _status_data("/api/v1/status/config", "loaded_config_unavailable").get("yaml")
+    runtime_middle = _runtime_signature(
+        _status_data("/api/v1/status/runtimeinfo", "runtime_config_unavailable")
+    )
+    config_after = _status_data("/api/v1/status/config", "loaded_config_unavailable").get("yaml")
+    runtime_after = _runtime_signature(
+        _status_data("/api/v1/status/runtimeinfo", "runtime_config_unavailable")
+    )
+
+    if (
+        not isinstance(config_before, str)
+        or not isinstance(config_after, str)
+        or not config_before
+        or len(config_before.encode("utf-8")) > MAX_API_BYTES
+        or len(config_after.encode("utf-8")) > MAX_API_BYTES
+        or config_before != config_after
+        or runtime_before != runtime_middle
+        or runtime_middle != runtime_after
+    ):
+        raise Refusal("unstable_loaded_config")
+
+    return {
+        "status": "observed",
+        "reason": "stable_loaded_config",
+        "config_yaml": config_after,
+        "target_pools": _active_target_pools(targets_raw),
+    }
 
 
 def _require_curl_version() -> None:
@@ -705,7 +794,7 @@ def collect() -> dict[str, Any]:
     targets_raw = _run_api("/api/v1/targets?state=active")
     samples_raw = _run_api("/api/v1/query?query=max_over_time%28scrape_samples_scraped%5B24h%5D%29")
     series_end = int(time.time())
-    return summarize(
+    baseline = summarize(
         targets_raw,
         samples_raw,
         _run_probe,
@@ -713,6 +802,13 @@ def collect() -> dict[str, Any]:
         series_end - 86400,
         series_end,
     )
+    try:
+        loaded_limits = _loaded_limit_readback(targets_raw)
+    except Refusal as error:
+        loaded_limits = {"status": "unavailable", "reason": error.category}
+    except Exception:
+        loaded_limits = {"status": "unavailable", "reason": "loaded_readback_unavailable"}
+    return {"baseline": baseline, "loaded_limit_readback": loaded_limits}
 
 
 def main() -> int:
