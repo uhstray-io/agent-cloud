@@ -151,6 +151,9 @@ def test_n8n_keeps_its_ordered_start_inside_the_change_gate():
     hook = code[code.index("compose_staged_up()"):code.index("main()")]
     stages = ("n8n-postgres n8n-redis n8n", "wait_for_healthy workflow-n8n 300", "up -d n8n-worker")
     assert hook.index(stages[0]) < hook.index(stages[1]) < hook.index(stages[2])
+    # The project name is the directory's basename, shared with other services' compose files: a
+    # project-wide orphan sweep would remove their containers.
+    assert "--remove-orphans" not in hook
     main = code[code.index("main()"):]
     assert "up -d" not in main, "a bare `compose up` outside the hook recreates on every run"
     assert "compose_up_if_changed" in main
@@ -332,3 +335,16 @@ def test_shared_task_refuses_the_input_forged_as_an_extra_var(tmp_path, forge):
     assert proc.returncode != 0
     assert "Refusing to record a service-deploy result" in proc.stdout
     assert not found
+
+
+def test_n8n_published_bind_address_is_rendered_into_the_hashed_env():
+    # compose substitutes ${N8N_LISTEN} into the port publish. The playbook used to export it
+    # into deploy.sh's environment, which the digest cannot see; rendering it into .env (one
+    # source, hashed with the rest) makes a changed n8n_bind recreate the container.
+    template = (SERVICES / "n8n/deployment/templates/n8n.env.j2").read_text()
+    assert "N8N_LISTEN={{ n8n_bind | default('127.0.0.1') }}" in template
+    (task,) = [
+        t for t in playbook_yaml.tasks(playbook_yaml.plays(PLAYBOOKS / "deploy-n8n.yml"))
+        if "deploy.sh" in str(t.get("ansible.builtin.shell", ""))
+    ]
+    assert "N8N_LISTEN" not in task["environment"], "a shell-exported value outranks .env and escapes the digest"

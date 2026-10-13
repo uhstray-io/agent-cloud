@@ -99,7 +99,6 @@
       environment:
         CONTAINER_ENGINE: "{{ container_engine | default('podman') }}"
         LOCAL_MODE: "{{ 'true' if (local_mode | default(false) | bool) else '' }}"
-        N8N_LISTEN: "{{ n8n_bind | default('127.0.0.1') }}"
         # Operator lever (survey `deploy_force_recreate`, only the literal true): recreate even when every input
         # and image matches — clears a stale bind mount a running container still holds.
         FORCE_RECREATE: "{{ 'true' if ((deploy_force_recreate | default('false') | string | lower) == 'true') else '' }}"

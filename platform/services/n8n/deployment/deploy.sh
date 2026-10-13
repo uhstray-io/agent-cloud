@@ -43,8 +43,14 @@ done
 # Removing the old containers first is the recreate: podman-compose 1.0.6 cannot replace a
 # container that has dependents in place, and it makes `up` start every stage fresh. The
 # named volumes (database, redis, n8n_data) are not touched — no -v.
+# No --remove-orphans on `down`: the compose project name is this directory's basename
+# (`deployment`, there is no `name:` and adding one would rename the volumes), which other
+# services' compose files share, and podman-compose removes every container carrying the
+# project label — another service's included. The four containers this stack owns are removed
+# by name below instead. n8n always starts through this hook, so common.sh's one-shot
+# `up --remove-orphans` (the same project-wide scope) never runs for it.
 compose_staged_up() {
-  compose down --remove-orphans || info "WARN: compose down failed; removing the containers by name."
+  compose down || info "WARN: compose down failed; removing the containers by name."
   local c
   for c in workflow-n8n-worker workflow-n8n workflow-n8n-redis workflow-n8n-postgres; do
     $CONTAINER_ENGINE rm -f "$c" >/dev/null 2>&1 || true

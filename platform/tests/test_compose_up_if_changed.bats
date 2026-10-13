@@ -30,6 +30,7 @@ svc_setup() {
   cat > "$T/bin/engine" <<'STUB'
 #!/usr/bin/env bash
 S="$STUB_STATE"
+echo "$*" >> "$S/engine.log"
 if [ "$1" = image ] && [ "$2" = inspect ]; then cat "$S/image_now"; exit 0; fi
 if [ "$1" = rm ]; then rm -rf "$S/c/${@: -1}"; exit 0; fi
 if [ "$1" = ps ]; then
@@ -77,6 +78,7 @@ if ! case " $* " in *" --force-recreate "*) true ;; *) false ;; esac; then
   # A staged `up` (a caller's compose_staged_up hook): it must carry the label overlay, and it
   # creates only the services it names (every labelled one when it names none).
   [ -n "$overlay" ] || { echo "up without the label overlay" >&2; exit 1; }
+  [ -z "${STUB_UP_FAIL:-}" ] || { echo "stub: up failed" >&2; exit 1; }
   named="" seen_up=""
   for a in "$@"; do
     if [ -n "$seen_up" ]; then case "$a" in -*) ;; *) named="$named $a" ;; esac; fi
@@ -440,7 +442,31 @@ n_setup() {
     [ "$(wc -l < "$S/up.log" | tr -d ' ')" -eq 2 ]
     deploy; changed false
   done
+  # Neither compose (down -v) nor the engine (rm -v) may take a volume with the containers.
   refute_grep -q -e ' -v' -e '--volumes' "$S/compose.log"
+  grep -q '^rm ' "$S/engine.log"
+  refute_grep -qE '^rm .*( -v|--volumes| -[a-z]*v)' "$S/engine.log"
+}
+
+@test "n8n: a changed published bind address (N8N_LISTEN in .env) recreates, then is a no-op" {
+  n_setup
+  echo 'N8N_LISTEN=127.0.0.1' >> "$D/.env"
+  deploy; [ "$status" -eq 0 ]; changed true
+  deploy; changed false
+  sed -i.bak 's/^N8N_LISTEN=.*/N8N_LISTEN=0.0.0.0/' "$D/.env"
+  deploy; [ "$status" -eq 0 ]; changed true
+  deploy; changed false
+}
+
+@test "n8n: a failing first up fails the deploy, prints no DEPLOY_CHANGED=true, never starts the worker" {
+  n_setup
+  STUB_UP_FAIL=1 deploy
+  [ "$status" -ne 0 ]
+  refute_grep -q 'DEPLOY_CHANGED=true' <<< "$output"
+  [ ! -e "$S/up.log" ]
+  # It stops at the failed up: no health wait on containers that were never created.
+  refute_grep -q 'State.Health' "$S/engine.log"
+  deploy; [ "$status" -eq 0 ]; changed true
 }
 
 # ── playbooks read the line ──────────────────────────────────────────────────
