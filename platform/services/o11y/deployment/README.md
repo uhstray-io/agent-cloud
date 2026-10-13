@@ -423,7 +423,13 @@ model newer than the restore, and the resolved check covers every drill model na
 Exporter mode runs unprivileged. Its stop and restart tasks set `become: false`, so
 `systemd_service` runs as the connecting account on the DGX node, and the node's polkit
 authorizes that one account for the `start` and `stop` verbs on the exporter unit only.
-The drill sets no `daemon_reload`, which that rule would refuse. The per-service account
+Those two tasks connect with the exporter host's own per-service key, not Semaphore's
+inventory key: the drill reads `secret/services/ssh/<service_name>` (the exporter host's
+`service_name`, expected `o11y-fault-drill`) from OpenBao before any fault, refuses the run
+if the service name or the key is missing, writes the key to a runner-side 0600 file as the
+first step of the fault section and wipes it in `always:` after the restore. Exporter mode
+therefore also needs `openbao_addr` and the controller AppRole. The drill sets no
+`daemon_reload`, which that rule would refuse. The per-service account
 and the polkit rule are installed on the nodes by dgx-spark's `drill-access.yml` (not by
 agent-cloud; the nodes are outside its inventory), so the mode needs that applied, the
 node declared in the private `o11y_fault_drill_exporters` map and as a host of a group

@@ -234,7 +234,10 @@
       outside 04:15 to 05:00 Eastern. dgx-spark reads the public key from site-config
       `secrets/ssh/o11y-fault-drill/id_ed25519.pub` (service name `o11y-fault-drill`).
       agent-cloud side, this change: the drill's two exporter tasks now run `become: false`
-      (follow-up 1 of `dgx-spark-drill-handoff.md`), with tests. Remaining: generate the key
+      (follow-up 1 of `dgx-spark-drill-handoff.md`) and connect with the exporter host's
+      per-service key read from `secret/services/ssh/<its service_name>` (refused before any
+      fault when the service name or key is missing; runner-side 0600 file, wiped after the
+      restore), with tests. Remaining: generate the key
       and back it up to site-config; site-config PR for a hosts group (the account as
       `ansible_user`) and the `o11y_fault_drill_exporters` map; dgx-spark applies
       `drill-access.yml`; verify key-only login to both nodes; a `--check` dry run; one real

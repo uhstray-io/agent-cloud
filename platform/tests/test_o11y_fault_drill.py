@@ -23,6 +23,7 @@ PLAYBOOK = ROOT / "platform/playbooks/o11y-fault-drill.yml"
 # Deterministic unreachable host: Ansible's ssh connection treats exit 255 as
 # UNREACHABLE. Real network routing to a TEST-NET address differs between machines.
 FAKE_SSH = """#!/bin/sh
+printf '%s\\n' "$*" >> "$FAKE_SSH_LOG"
 echo "ssh: connect to host spark-host port 22: Connection timed out" >&2
 exit 255
 """
@@ -34,6 +35,49 @@ case "$*" in
   *) echo '{}' ;;
 esac
 """
+
+
+# A stand-in for community.hashi_vault.hashi_vault, found first on ANSIBLE_COLLECTIONS_PATH
+# (the real lookup needs hvac, which the test environment does not install). It answers from
+# a JSON file of secret paths, returns '' for a missing path or field as `errors='ignore'`
+# does, and logs every read so a test can prove which secrets a mode reads.
+FAKE_LOOKUP = """
+import json
+import os
+
+from ansible.plugins.lookup import LookupBase
+
+DOCUMENTATION = "name: hashi_vault\\nshort_description: test stand-in\\n"
+
+
+class LookupModule(LookupBase):
+    def run(self, terms, variables=None, **kwargs):
+        store = json.load(open(os.environ["FAKE_BAO_STORE"]))
+        out = []
+        for term in terms:
+            path, _, field = term.partition(":")
+            with open(os.environ["FAKE_BAO_LOG"], "a") as log:
+                log.write(path + "\\n")
+            out.append(store.get(path, {}).get(field, "") if field else store.get(path, {}))
+        return out
+"""
+KEY_PATH = "secret/data/services/ssh/o11y-fault-drill"
+KEY_MATERIAL = "SYNTHETIC-PRIVATE-KEY-MATERIAL"
+BAO = "https://bao.invalid"
+
+
+def _fake_store(tmp_path, store):
+    coll = tmp_path / "collections/ansible_collections/community/hashi_vault"
+    (coll / "plugins/lookup").mkdir(parents=True)
+    (coll / "meta").mkdir()
+    (coll / "galaxy.yml").write_text("namespace: community\nname: hashi_vault\nversion: 0.0.0\n")
+    (coll / "meta/runtime.yml").write_text('requires_ansible: ">=2.14"\n')
+    (coll / "plugins/lookup/hashi_vault.py").write_text(FAKE_LOOKUP)
+    (tmp_path / "store.json").write_text(json.dumps(store))
+    return {"ANSIBLE_COLLECTIONS_PATH": str(tmp_path / "collections"),
+            "FAKE_BAO_STORE": str(tmp_path / "store.json"), "FAKE_BAO_LOG": str(tmp_path / "bao.log"),
+            "FAKE_SSH_LOG": str(tmp_path / "ssh.log"),
+            "BAO_ROLE_ID": "synthetic-role", "BAO_SECRET_ID": "synthetic-role-secret"}
 
 
 @pytest.fixture(scope="module")
@@ -61,7 +105,8 @@ def clean_copy(tmp_path_factory):
 
 
 def run(tmp_path, clean_copy, extra, *, check=False, exporter_host="o11y-test", other_hosts=None,
-        expect_dirty=False, engine_script=FAKE_ENGINE, declare_exporters=True, host_extra=None):
+        expect_dirty=False, engine_script=FAKE_ENGINE, declare_exporters=True, host_extra=None,
+        exporter_service="o11y-fault-drill", key_store=None):
     root, sha = clean_copy
     bindir = tmp_path / "bin"
     bindir.mkdir()
@@ -80,7 +125,10 @@ def run(tmp_path, clean_copy, extra, *, check=False, exporter_host="o11y-test", 
         "monorepo_deploy_path": "platform/services/o11y/deployment",
         "dgx_spark_scrape_enabled": True,
         "dgx_spark_nodes": [{"name": "spark-test", "address": "192.0.2.10"}],
+        "openbao_addr": BAO,
     }
+    if exporter_service:
+        host_vars["service_name"] = exporter_service
     host_vars.update(host_extra or {})
     if declare_exporters:
         host_vars["o11y_fault_drill_exporters"] = {
@@ -91,6 +139,8 @@ def run(tmp_path, clean_copy, extra, *, check=False, exporter_host="o11y-test", 
     }}}))
     env = {k: v for k, v in os.environ.items()
            if not k.startswith("GIT_") and k not in ("OPENBAO_ADDR", "BAO_ROLE_ID", "BAO_SECRET_ID")}
+    store = {KEY_PATH: {"private_key": KEY_MATERIAL}} if key_store is None else key_store
+    env.update(_fake_store(tmp_path, store))
     env.update(PATH=f"{bindir}{os.pathsep}{env.get('PATH', '')}", FAKE_ENGINE_LOG=str(log),
                PYTHONDONTWRITEBYTECODE="1", ANSIBLE_SSH_RETRIES="0",
                ANSIBLE_LOCAL_TEMP=str(tmp_path), ANSIBLE_STDOUT_CALLBACK="default", ANSIBLE_NOCOLOR="1")
@@ -158,6 +208,7 @@ def test_a_probe_dry_run_needs_no_exporter_declaration(tmp_path, clean_copy):
         "drill": "probe", "confirm_fault_drill": "probe", "drill_restore_only": True},
         check=True, declare_exporters=False, host_extra={"o11y_inference_probe_model": "served-model-a"})
     assert "has no attribute 'host'" not in out, out
+    assert "services/ssh" not in ((tmp_path / "bao.log").read_text() if (tmp_path / "bao.log").exists() else "")
     assert rc == 0, out
     assert "systemd" not in " ".join(calls)
 
@@ -304,12 +355,18 @@ def test_probe_restore_requires_a_fresh_success_sample():
     assert "_restore_only" not in task["when"]
 
 
+SPARK_HOST = {"spark-host": {"ansible_host": "spark-host.invalid", "ansible_connection": "ssh",
+                             "ansible_ssh_executable": "ssh", "ansible_user": "drill-acct",
+                             "service_name": "o11y-fault-drill"}}
+EXPORTER = {"drill": "exporter", "confirm_fault_drill": "exporter", "drill_node": "spark-test",
+            "drill_window_confirmed": True}
+
+
 def test_unreachable_exporter_host_still_runs_the_restore_and_fails_loudly(tmp_path, clean_copy):
     # The stop AND the restart are unreachable. Without
     # ignore_unreachable the always section would be skipped (Ansible docs).
     # The fake ssh on PATH exits 255 for every connection: unreachable on any machine.
-    unreachable = {"spark-host": {"ansible_host": "spark-host.invalid", "ansible_connection": "ssh",
-                                  "ansible_ssh_executable": "ssh"}}
+    unreachable = dict(SPARK_HOST)
     rc, out, _ = run(tmp_path, clean_copy, {
         "drill": "exporter", "confirm_fault_drill": "exporter", "drill_node": "spark-test",
         "drill_window_confirmed": True}, exporter_host="spark-host", other_hosts=unreachable)
@@ -317,6 +374,82 @@ def test_unreachable_exporter_host_still_runs_the_restore_and_fails_loudly(tmp_p
     assert "TASK [Restart the DGX node exporter]" in out
     assert "A restore step could not reach its host" in out
     assert "UNREACHABLE" in out
+
+
+def _ssh_calls(tmp_path):
+    log = tmp_path / "ssh.log"
+    return log.read_text().splitlines() if log.exists() else []
+
+
+def test_exporter_tasks_connect_with_the_per_service_key_and_remove_it(tmp_path, clean_copy):
+    rc, out, _ = run(tmp_path, clean_copy, EXPORTER, exporter_host="spark-host", other_hosts=dict(SPARK_HOST))
+    calls = _ssh_calls(tmp_path)
+    # The stop and the restart each opened a connection with the one materialised key,
+    # as the account the exporter host declares.
+    keys = {c.split('IdentityFile="')[1].split('"')[0] for c in calls if "IdentityFile=" in c}
+    assert len(keys) == 1, calls
+    key = keys.pop()
+    assert "/.sshkey_" in key
+    with_key = [c for c in calls if f'IdentityFile="{key}"' in c]
+    assert len(with_key) >= 2, calls
+    assert all('User="drill-acct"' in c for c in with_key), with_key
+    assert (tmp_path / "bao.log").read_text().splitlines() == [KEY_PATH]
+    # Wiped after the restore, even though the run failed (the host was unreachable).
+    assert rc != 0
+    assert not Path(key).exists() and not Path(key).parent.exists()
+    assert KEY_MATERIAL not in out
+
+
+@pytest.mark.parametrize(("kwargs", "why"), [
+    ({"exporter_service": None}, "no service_name"),
+    ({"key_store": {}}, "no key in the store"),
+    ({"key_store": {KEY_PATH: {"private_key": ""}}}, "empty key"),
+])
+def test_exporter_without_its_service_key_is_refused_before_any_fault(tmp_path, clean_copy, kwargs, why):
+    rc, out, calls = run(tmp_path, clean_copy, EXPORTER, **kwargs)
+    assert rc != 0, why
+    assert "No fault was induced" in out, why
+    assert "per-service key" in out, why
+    assert "TASK [Stop the declared DGX node exporter]" not in out
+    assert all(c.startswith("exec o11y-grafana") for c in calls), calls
+    assert _ssh_calls(tmp_path) == []
+    assert KEY_MATERIAL not in out
+
+
+def test_check_mode_reads_the_key_but_writes_none(tmp_path, clean_copy):
+    rc, out, _ = run(tmp_path, clean_copy, EXPORTER, check=True)
+    assert rc == 0, out
+    assert (tmp_path / "bao.log").read_text().splitlines() == [KEY_PATH]
+    assert "Materialise SSH key:" not in out  # the key is written only inside the skipped fault section
+    assert _ssh_calls(tmp_path) == []
+    assert KEY_MATERIAL not in out
+
+
+def test_the_key_is_wiped_after_the_restore_and_before_the_gate():
+    block = _fault_block()
+    names = [t["name"] for t in block["always"]]
+    first = [t["name"] for t in block["block"]][0]
+    assert first == "Put the exporter host's per-service key on the runner (0600)"
+    wipe = names.index("Remove the exporter host's key from the runner")
+    assert names.index("Restart the DGX node exporter") < wipe < names.index(
+        "Require every restore to have reached its host")
+    for name in ("Stop the declared DGX node exporter", "Restart the DGX node exporter"):
+        assert _task(name)["vars"]["ansible_ssh_private_key_file"] == (
+            "{{ (hostvars[inventory_hostname]._exporter_ssh | default({})).key | default('') }}")
+
+
+def test_only_exporter_mode_touches_the_per_service_key():
+    for name in ("Read the exporter host's per-service key from the secret store",
+                 "Record whether the key was found (length only)",
+                 "Require the exporter host's service and its key",
+                 "Put the exporter host's per-service key on the runner (0600)",
+                 "Remove the exporter host's key from the runner"):
+        assert str(_task(name)["when"]).startswith("drill == 'exporter'"), name
+    assert _task("Read the exporter host's per-service key from the secret store")["no_log"] is True
+    # The refusal asserts on the length, never the value.
+    that = _task("Require the exporter host's service and its key")["ansible.builtin.assert"]["that"]
+    assert "_exporter_key_len | int > 0" in that
+    assert not [c for c in that if "_exporter_key " in c or c.endswith("_exporter_key")]
 
 
 def test_dirty_checkout_is_refused_before_any_fault(tmp_path, clean_copy):
