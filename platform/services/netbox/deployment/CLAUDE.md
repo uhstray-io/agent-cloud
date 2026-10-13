@@ -77,6 +77,9 @@ mount source is deleted after startup.
 - **The deployed template controls schedules and workers.** `agent.yaml.j2`
   uses runtime `vault://` references and schedules pfSense/Proxmox workers.
   Legacy helpers in `lib/common.sh` do not describe this deployment path.
+- **Never pair `fast_mode` with `ports` in a `network_discovery` scope.** `fast_mode`
+  adds nmap `-F`, which nmap refuses beside an explicit port list, so the scan exits 1
+  on every run and NetBox stays empty (`tests/test_discovery_scan_flags.py`).
 - **Verify the checker revision.** The current source replaces GPS writes with
   bounded read-only evidence and refuses recovery acceptance. An older installed
   revision may still mutate coordinates. Aggregate counts and submission messages

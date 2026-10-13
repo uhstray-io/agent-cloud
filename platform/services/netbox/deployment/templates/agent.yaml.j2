@@ -76,7 +76,11 @@ orb:
             - 8443   # HTTPS alt
             - 9090   # Prometheus
             - 11434  # Ollama
-          fast_mode: true
+          # fast_mode is deliberately NOT set: it adds nmap -F (fewer ports), and nmap
+          # refuses -F together with an explicit -p list ("You cannot use -F (fast scan)
+          # with -p"), so the scan exited 1 on every run. The explicit ports above are
+          # the intent. -F mapping: netboxlabs/orb-agent docs/backends/network_discovery.md
+          # ("fast_mode ... (-F)").
           timing: 3
           max_retries: 2
           use_target_masks: true
