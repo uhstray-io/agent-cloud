@@ -16,9 +16,22 @@
 # `rm`, no volume command, no restart-policy change (`podman update` would drift from the
 # inputs-digest label compose recorded, and survive the next deploy).
 #
-# Bring it back: run the service's own "Deploy <Service> (Local)" template. A stopped container
-# is the "container not running" reason in lib/common.sh _compose_recreate_reason, so the deploy
-# starts it again instead of skipping it as unchanged.
+# Bring it back: run the service's own "Deploy <Service> (Local)" template. How that restarts the
+# stopped containers depends on the service's deploy.sh (read from the scripts, 2026-10-12):
+#   - authentik, honcho, o11y, openhands, tududi call compose_up_if_changed
+#     (lib/common.sh): a not-running container is the reason "container not running", which
+#     recreates the project. agentgateway keeps its own copy of that comparison
+#     ("gateway container not running", deploy.sh:153), and caddy runs
+#     `compose up -d --force-recreate` every time, so both recreate too.
+#   - dns, step-ca, opa, n8n, erpnext, uhhcraft, netbox, postiz (and the other services whose
+#     deploy.sh runs plain `compose up -d`) rely on `compose up -d` to start an existing,
+#     stopped container. unverified: that podman-compose does so. The local Semaphore installs
+#     podman-compose with an unpinned `pip3 install podman-compose` when the image lacks it
+#     (bootstrap-local-dev.yml:853), so which version it runs is not recorded in the repo.
+#   - A container listed in stop_extra_containers is NOT restarted by the service's Deploy: it
+#     was never part of the compose project. NetBox's `netbox-orb-agent` comes back only through
+#     its own "Deploy Orb Agent (Local)" template (deploy-netbox.yml: "Orb Agent is a separate
+#     workflow").
 #
 # LOCAL-DEV ONLY, by design. Every host of the play must be named `<name>-local` (the name every
 # local-dev inventory gives its host: platform/inventory/local-dev.yml.example); anything else
@@ -85,6 +98,42 @@
           Nothing was stopped.
         quiet: true
 
+    - name: "Refuse a connection that is not the local one"
+      # Every local-dev host declares ansible_connection=local (bootstrap-local-dev.yml, the
+      # inventory example). An extra var can override it, and `--limit` skips the guard play, so
+      # the engine calls below are refused unless the run really is on the local connection.
+      ansible.builtin.assert:
+        that: (ansible_connection | default('')) == 'local'
+        fail_msg: >-
+          Refusing: stop-local-service runs over the local connection only; ansible_connection is
+          '{{ ansible_connection | default('') }}'. Nothing was stopped.
+        quiet: true
+
+    - name: "Refuse any internal name that was set from outside the play"
+      # An extra var outranks what this play computes, so `-e _stop_now=[...]` would choose what
+      # is stopped. refuse-internal-extra-vars.yml refuses underscore extra vars, but only in a
+      # play `--limit` does not skip; this repeats the refusal here. Read-only: lookup() writes
+      # nothing, so the include parameters below (_lsc_all, _lsc_fields) are not shadowed.
+      ansible.builtin.assert:
+        that: lookup('ansible.builtin.vars', item, default='__unset__') == '__unset__'
+        fail_msg: >-
+          Refusing: {{ item }} is internal to stop-local-service and was set from outside the
+          play. Nothing was stopped.
+        quiet: true
+      loop:
+        - _stop_all
+        - _stop_running
+        - _stop_present
+        - _stop_now
+        - _stop_result
+        - _stop_engine_all
+        - _stop_engine_running
+        - _lsc
+        - _lsc_fields
+        - _lsc_all
+        - _engine
+        - _deploy_dir
+
     - name: "Refuse an extra-container list that is not a list of plain container names"
       ansible.builtin.assert:
         that:
@@ -108,6 +157,16 @@
         _lsc_fields: [Names]
         _lsc_all: true
 
+    - name: "Require the engine to have answered the listing"
+      ansible.builtin.assert:
+        that: (_lsc.rc | default(1)) == 0
+        fail_msg: >-
+          {{ _engine }} did not answer on {{ inventory_hostname }} (exit {{ _lsc.rc | default('none') }}:
+          {{ (_lsc.stderr | default(_lsc.msg | default(''))) | trim | truncate(300) }}). Is the engine
+          reachable (podman machine running, the socket, podman_rootful for a rootful engine)?
+          Nothing was stopped, and nothing is known about what is running.
+        quiet: true
+
     - name: "Remember the service's containers"
       ansible.builtin.set_fact:
         _stop_all: "{{ _lsc.stdout_lines }}"
@@ -117,6 +176,16 @@
       vars:
         _lsc_fields: [Names]
         _lsc_all: false
+
+    - name: "Require the engine to have answered the running listing"
+      ansible.builtin.assert:
+        that: (_lsc.rc | default(1)) == 0
+        fail_msg: >-
+          {{ _engine }} did not answer on {{ inventory_hostname }} (exit {{ _lsc.rc | default('none') }}:
+          {{ (_lsc.stderr | default(_lsc.msg | default(''))) | trim | truncate(300) }}). Is the engine
+          reachable (podman machine running, the socket, podman_rootful for a rootful engine)?
+          Nothing was stopped, and nothing is known about what is running.
+        quiet: true
 
     - name: "Remember the service's running containers"
       ansible.builtin.set_fact:
@@ -128,6 +197,7 @@
       become: "{{ podman_rootful | default(false) | bool }}"
       register: _stop_engine_all
       changed_when: false
+      failed_when: false
       check_mode: false
       when: stop_extra_containers | default([]) | length > 0
 
@@ -137,7 +207,19 @@
       become: "{{ podman_rootful | default(false) | bool }}"
       register: _stop_engine_running
       changed_when: false
+      failed_when: false
       check_mode: false
+      when: stop_extra_containers | default([]) | length > 0
+
+    - name: "Require the engine to have answered the extra-container listings"
+      ansible.builtin.assert:
+        that:
+          - (_stop_engine_all.rc | default(1)) == 0
+          - (_stop_engine_running.rc | default(1)) == 0
+        fail_msg: >-
+          {{ _engine }} did not list its containers on {{ inventory_hostname }}, so the extra
+          containers cannot be found. Nothing was stopped.
+        quiet: true
       when: stop_extra_containers | default([]) | length > 0
 
     - name: "Work out what to stop and what is already stopped"
@@ -157,8 +239,15 @@
 
     - name: "Report what was stopped"
       ansible.builtin.debug:
-        msg:
-          - "{{ ('Would stop' if ansible_check_mode else 'Stopped') ~ ': ' ~ ((_stop_now | join(', ')) if _stop_now | length > 0 else '(nothing was running)') }}"
-          - "Already stopped or absent: {{ ((_stop_present | difference(_stop_now)) | join(', ')) if (_stop_present | difference(_stop_now)) | length > 0 else '(none)' }}"
-          - "Containers, images and volumes were kept. Bring it back with its Deploy <Service> (Local) template."
-          - "Note: containers with restart policy always can start again at the next machine boot (podman-restart.service); re-run this to stop them again."
+        msg: >-
+          {{ [
+               (('Would stop' if ansible_check_mode else 'Stopped') ~ ': ' ~ (_stop_now | join(', ')))
+                 if _stop_now | length > 0 else 'Nothing was running.',
+               'Already stopped or absent: '
+                 ~ (((_stop_present | difference(_stop_now)) | join(', ')) if (_stop_present | difference(_stop_now)) | length > 0 else '(none)'),
+               'Containers, images and volumes were kept. Bring it back with its Deploy <Service> (Local) template.'
+             ]
+             + ((['The extra containers (' ~ (stop_extra_containers | join(', ')) ~ ') are restarted by their own workflows, not by the service Deploy.']
+                 + (['Orb agent: run Deploy Orb Agent (Local).'] if 'netbox-orb-agent' in stop_extra_containers else []))
+                if stop_extra_containers | default([]) | length > 0 else [])
+             + ['Containers with restart policy always can start again at the next machine boot (podman-restart.service); re-run this to stop them again.'] }}

@@ -316,7 +316,7 @@ data shapes. Full contract + the risk-class table are in the
 | `make local-up` | Foundation plus o11y/OPA/ERPNext, legacy NetBox helper and best-effort n8n |
 | `make local-creds` | show the Authentik SSO logins (`agent-cloud-admin` + `akadmin`) for browser testing |
 | `make local-deploy-<svc>` | deploy a single service through local Semaphore |
-| `make local-service-down SERVICE=<group>` | stop ONE idle service's containers (e.g. `SERVICE=erpnext_svc`); containers, images and volumes are kept and its `local-deploy-<svc>` starts it again. Local hosts only |
+| `make local-service-down SERVICE=<group>` | stop ONE idle service's containers (e.g. `SERVICE=erpnext_svc`); containers, images and volumes are kept. Restart with the service's `make local-deploy-<svc>` (how it restarts a stopped container varies by service; see [Stopping an idle service](docs/LOCAL-DEV.md)); NetBox's orb agent comes back only via `Deploy Orb Agent (Local)`. Local hosts only |
 | `./scripts/local-dev.sh run <playbook> ['{json}']` | run any registered template through local Semaphore; prefix `DRY_RUN=1` for check mode. Runs this checkout's working tree as it is, uncommitted edits included, and authenticates with `~/.agent-cloud-local/credentials.env`, never a `site-config` token (see [Driving the local Semaphore](docs/LOCAL-DEV.md#driving-the-local-semaphore)) |
 | `./scripts/local-dev.sh output <task-id>` | print a local Semaphore task's whole log |
 | `make local-dns` | deploy DNS **and** wire the macOS resolver |

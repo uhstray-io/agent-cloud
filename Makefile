@@ -76,9 +76,11 @@ local-deploy-%: ## Deploy a service through the LOCAL Semaphore (e.g. make local
 local-clean-deploy-%: ## DESTRUCTIVE: wipe a service's containers+volumes, then redeploy; CONFIRM_RESET=<host> required (make local-clean-deploy-dns CONFIRM_RESET=dns-local)
 	@$(LOCAL_DEV) clean-deploy $* "$(CONFIRM_RESET)"
 
-local-service-down: ## Stop ONE idle local service (containers stopped; volumes + containers kept): make local-service-down SERVICE=erpnext_svc. Restart it with its make local-deploy-<service>
-	@test -n "$(SERVICE)" || { echo "usage: make local-service-down SERVICE=<inventory group>  (e.g. erpnext_svc)" >&2; exit 1; }
-	@$(LOCAL_DEV) run stop-local-service.yml '{"target_service":"$(SERVICE)"}'
+local-service-down: ## Stop ONE idle local service (containers stopped; volumes + containers kept): make local-service-down SERVICE=erpnext_svc. Restart it with that service's Deploy (docs/LOCAL-DEV.md)
+	@# SERVICE is read from the environment make exports for a command-line variable, never spliced into the shell text, and must be a plain <service>_svc name before it goes into the JSON.
+	@case "$$SERVICE" in ''|*[!A-Za-z0-9_]*) bad=1 ;; ?*_svc) bad=0 ;; *) bad=1 ;; esac; \
+	  [ "$$bad" = 0 ] || { echo "usage: make local-service-down SERVICE=<inventory group>  (letters, digits and _, ending in _svc, e.g. erpnext_svc)" >&2; exit 1; }; \
+	  $(LOCAL_DEV) run stop-local-service.yml '{"target_service":"'"$$SERVICE"'"}'
 
 local-validate: ## Run Validate All through the LOCAL Semaphore
 	@$(LOCAL_DEV) validate

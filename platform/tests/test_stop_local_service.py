@@ -12,6 +12,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -32,6 +33,9 @@ state_path, log_path = os.environ["FAKE_ENGINE_STATE"], os.environ["FAKE_ENGINE_
 argv = sys.argv[1:]
 with open(log_path, "a") as log:
     log.write(json.dumps(argv) + "\\n")
+if os.environ.get("FAKE_ENGINE_FAIL"):
+    print("Cannot connect to Podman socket", file=sys.stderr)
+    sys.exit(125)
 state = json.load(open(state_path))
 cs = state["containers"]
 if argv[:1] == ["ps"]:
@@ -209,7 +213,7 @@ def test_a_service_with_nothing_running_is_a_clean_no_op(rig):
     proc = rig.run(rig.inventory())
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert _recap(proc)["changed"] == 0
-    assert "nothing was running" in proc.stdout
+    assert "Nothing was running" in proc.stdout
     assert "stop" not in _subcommands(rig.calls())
 
 
@@ -244,12 +248,104 @@ def test_the_semaphore_inventory_the_bootstrap_generates_declares_the_same_extra
     assert "--name netbox-orb-agent" in (PLAYBOOKS / "tasks/deploy-orb-agent.yml").read_text()
 
 
-def test_the_make_target_refuses_an_empty_service():
+def _make_down(*args):
+    """The make target with the dispatcher replaced by an echo, so a launch is visible and no
+    Semaphore is needed."""
     if shutil.which("make") is None:
         pytest.skip("make not installed")
-    import subprocess
     env = {k: v for k, v in os.environ.items() if k != "SERVICE"}
-    proc = subprocess.run(["make", "local-service-down"], cwd=REPO, env=env, text=True,
-                          capture_output=True, check=False, timeout=60)
+    return subprocess.run(["make", "local-service-down", "LOCAL_DEV=echo DISPATCH", *args], cwd=REPO, env=env,
+                          text=True, capture_output=True, check=False, timeout=60)
+
+
+def test_the_make_target_refuses_an_empty_service():
+    proc = _make_down()
     assert proc.returncode != 0
     assert "usage: make local-service-down SERVICE=" in proc.stderr, proc.stderr
+    assert "DISPATCH" not in proc.stdout
+
+
+@pytest.mark.parametrize("service", ['a"b_svc', "x'; echo PWN; '_svc", "erpnext", "_svc", "a b_svc", "a$$(id)_svc",
+                                     "erpnext_svc\nother_svc", "erpnext_svc;"])
+def test_the_make_target_refuses_a_service_that_is_not_a_plain_group_name(service):
+    proc = _make_down(f"SERVICE={service}")
+    assert proc.returncode != 0, proc.stdout
+    assert "usage: make local-service-down SERVICE=" in proc.stderr, proc.stderr
+    assert "DISPATCH" not in proc.stdout and "PWN" not in proc.stdout
+
+
+def test_the_make_target_dispatches_a_plain_group_as_json():
+    proc = _make_down("SERVICE=erpnext_svc")
+    assert proc.returncode == 0, proc.stderr
+    assert 'DISPATCH run stop-local-service.yml {"target_service":"erpnext_svc"}' in proc.stdout, proc.stdout
+
+
+# ── an engine that cannot be reached is a failure, not a clean "nothing was running" ──────────
+@needs_ansible
+@pytest.mark.parametrize("extras", [None, [EXTRA]], ids=["no-extras", "extras"])
+def test_an_unreachable_engine_fails_the_run_and_reports_no_stop(rig, monkeypatch, extras):
+    rig.set_containers([rig.c("erpnext_backend_1")])
+    monkeypatch.setenv("FAKE_ENGINE_FAIL", "1")
+    proc = rig.run(rig.inventory(extras=extras))
+    assert proc.returncode != 0, proc.stdout
+    assert "did not answer" in proc.stdout, proc.stdout
+    assert "Stopped:" not in proc.stdout and "Nothing was running" not in proc.stdout
+    assert "stop" not in _subcommands(rig.calls()), rig.calls()
+
+
+@needs_ansible
+def test_an_engine_that_answers_the_service_listing_but_not_the_extras_fails(rig, monkeypatch, tmp_path):
+    # The extras are listed with a different `ps` (no label filter): a failure there must not
+    # read as "no extra containers".
+    rig.set_containers([rig.c("erpnext_backend_1"), rig.c(EXTRA, unlabelled=True)])
+    for name in ("podman", "docker"):
+        script = (rig.bin / name).read_text().replace(
+            'if argv[:1] == ["ps"]:',
+            'if argv[:1] == ["ps"] and not any(a == "--filter" for a in argv):\n'
+            '    print("boom", file=sys.stderr)\n    sys.exit(125)\nif argv[:1] == ["ps"]:', 1)
+        (rig.bin / name).write_text(script)
+    proc = rig.run(rig.inventory(extras=[EXTRA]))
+    assert proc.returncode != 0, proc.stdout
+    assert "did not list its containers" in proc.stdout, proc.stdout
+    assert "stop" not in _subcommands(rig.calls()), rig.calls()
+
+
+# ── forged inputs that skip the guard play (`--limit` leaves localhost out) ───────────────────
+@needs_ansible
+def test_a_non_local_connection_is_refused_before_any_engine_call(rig):
+    rig.set_containers([rig.c("erpnext_backend_1")])
+    proc = rig.run(rig.inventory(), "--limit", "erpnext-local", "-e", "ansible_connection=ssh")
+    assert proc.returncode != 0, proc.stdout
+    assert "local connection only" in proc.stdout, proc.stdout
+    assert rig.calls() == []
+    assert rig.running() == ["erpnext_backend_1"]
+
+
+@needs_ansible
+@pytest.mark.parametrize("name", ["_stop_now", "_stop_running", "_lsc_all", "_engine"])
+def test_an_internal_name_set_from_outside_is_refused_before_any_engine_call(rig, name):
+    rig.set_containers([rig.c("erpnext_backend_1"), rig.c("bystander", unlabelled=True)])
+    forged = json.dumps({name: ["bystander"] if name == "_stop_now" else "false"})
+    proc = rig.run(rig.inventory(), "--limit", "erpnext-local", "-e", forged)
+    assert proc.returncode != 0, proc.stdout
+    assert f"{name} is internal to stop-local-service" in proc.stdout, proc.stdout
+    assert rig.calls() == []
+    assert rig.running() == ["bystander", "erpnext_backend_1"]
+
+
+# ── privilege: a rootful engine is only visible to root, and the fake engine cannot tell ──────
+def _work_tasks():
+    plays = yaml.safe_load(PLAYBOOK.read_text())
+    return next(p for p in plays if p.get("hosts", "").startswith("{{ target_service")) ["tasks"]
+
+
+def test_every_engine_call_runs_with_become_when_the_engine_is_rootful():
+    want = "{{ podman_rootful | default(false) | bool }}"
+    engine_tasks = [t for t in _work_tasks()
+                    if "ansible.builtin.command" in t and "_engine" in str(t["ansible.builtin.command"])]
+    # The two extra-container listings and the stop itself; the label listings come from
+    # tasks/list-service-containers.yml, which carries the same expression.
+    assert len(engine_tasks) == 3, [t["name"] for t in engine_tasks]
+    assert [t.get("become") for t in engine_tasks] == [want] * 3, [t["name"] for t in engine_tasks]
+    lsc = yaml.safe_load((PLAYBOOKS / "tasks/list-service-containers.yml").read_text())
+    assert [t["become"] for t in lsc if "ansible.builtin.command" in t] == [want]

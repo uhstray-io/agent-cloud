@@ -157,9 +157,21 @@ policy. A re-run changes nothing; `DRY_RUN=1 ./scripts/local-dev.sh run stop-loc
 - **Local only.** Every host of the group must be named `<name>-local`; any other host is
   refused before an engine call. There is no production variant: stopping a production
   service is an outage.
-- **Restarting.** A stopped container is the "container not running" reason in
-  `lib/common.sh` `_compose_recreate_reason`, so the service's normal Deploy starts it
-  again instead of skipping it as unchanged.
+- **Restarting.** Run the service's own Deploy (`make local-deploy-<service>`). What it
+  does with a stopped container depends on that service's `deploy.sh`:
+  - authentik, honcho, o11y, openhands and tududi use `compose_up_if_changed`, where a
+    not-running container is the reason "container not running" (`lib/common.sh`
+    `_compose_recreate_reason`), so the project is recreated. agentgateway has its own
+    copy of that comparison, and caddy runs `compose up -d --force-recreate` every time.
+  - dns, step-ca, opa, n8n, erpnext, uhhcraft, netbox and postiz (and the other services
+    whose `deploy.sh` runs plain `compose up -d`) depend on `compose up -d` starting an
+    existing stopped container. unverified: that podman-compose does that. The local
+    Semaphore installs podman-compose with an unpinned `pip3 install podman-compose`
+    when its image lacks it (`bootstrap-local-dev.yml`), so the version is not recorded
+    in the repo.
+  - **Extra containers are not restarted by the service's Deploy.** `netbox-orb-agent`
+    was never part of the compose project; it comes back only through `Deploy Orb Agent
+    (Local)`. The playbook's report says so whenever `stop_extra_containers` is set.
 - **Known ceiling.** The containers keep `restart: always`. Per podman-run(1), a policy
   does not take effect after `podman stop`, but `always` is restarted after a machine
   reboot by `podman-restart.service` even if the user stopped it. After a reboot, run
