@@ -677,8 +677,9 @@
       # deploy.sh quiesce: waits up to github_runner_drain_seconds for no Worker to run
       # (any stop cancels a running job, so waiting is the only way to let one finish),
       # stops the unit with the configuration systemd has LOADED, sends SIGINT to every
-      # Listener still in the unit's cgroup and waits for them, then sends SIGKILL to what
-      # is left and fails unless the cgroup is empty. It runs before the daemon reload on
+      # Listener of the account and waits for them, then sends SIGKILL to what is left in
+      # the cgroup and to any surviving Listener, and fails unless both are gone. It runs
+      # before the daemon reload on
       # purpose: on a host still running the KillMode=process unit, a reload first would
       # make this stop KillMode=mixed, which sends SIGKILL to the Listener that holds the
       # session and its job instead of letting it cancel the job and report it.

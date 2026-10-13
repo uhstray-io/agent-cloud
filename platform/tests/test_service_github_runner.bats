@@ -740,7 +740,22 @@ STUB
   printf '%s\n' "$output" > "$BATS_TEST_TMPDIR/out"
   assert_grep -qxF 'signalled=1' "$BATS_TEST_TMPDIR/out"
   assert_grep -qxF 'remaining=1' "$BATS_TEST_TMPDIR/out"
-  assert_grep -qF 'no cgroup found for actions-runner.service: 999999' "$BATS_TEST_TMPDIR/out"
+  assert_grep -qF 'Listeners of this account still running after SIGKILL: 999999' "$BATS_TEST_TMPDIR/out"
+}
+
+@test "gh-runner: quiesce also stops a Listener of the account outside the unit's cgroup" {
+  # procs counts it (outside_cgroup), so quiesce must stop it too, or every later deploy
+  # fails its verify with no way to converge (CodeRabbit on #563).
+  _fake_runner
+  mkdir -p "$F/cgroup$UCG"
+  : > "$F/cgroup$UCG/cgroup.procs"
+  _fake_proc 999998 Runner.Listener "$(id -u)" -5000 /user.slice/user-1001.slice/session-3.scope 0 4026531837
+  _run_deploy quiesce
+  [ "$status" -ne 0 ]
+  printf '%s\n' "$output" > "$BATS_TEST_TMPDIR/out"
+  assert_grep -qxF 'signalled=1' "$BATS_TEST_TMPDIR/out"
+  assert_grep -qxF 'remaining=1' "$BATS_TEST_TMPDIR/out"
+  assert_grep -qF 'Listeners of this account still running after SIGKILL: 999998' "$BATS_TEST_TMPDIR/out"
 }
 
 @test "gh-runner: the deploy verifies the Listener after the start, not only the unit" {

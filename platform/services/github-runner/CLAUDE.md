@@ -251,11 +251,11 @@ Listener or any Worker, and a `run.sh` that honours the trap variable. A restart
 2. `systemctl --user stop`, before the daemon reload, so the stop uses the configuration
    the running unit was started with. On a host still on the `KillMode=process` unit, a
    reload first would make this stop send SIGKILL to the Listener that holds the job.
-3. SIGINT to every Listener still in the unit's cgroup (the ones `KillMode=process` left
-   behind), and wait up to 300 s for them.
-4. SIGKILL to whatever is still in the cgroup; the deploy fails unless it is empty. If no
-   cgroup is found, steps 3 and 4 apply to the account's Listeners read from `/proc`, and
-   the deploy fails if one survives.
+3. SIGINT to every Listener of the account, read from `/proc`, in the unit's cgroup or
+   not (the ones `KillMode=process` left behind), and wait up to 300 s for them. The
+   account exists only for this runner, so any Listener of it uses this registration.
+4. SIGKILL to whatever is still in the cgroup and to any Listener that survived; the deploy
+   fails unless both are gone. If no cgroup is found, only the Listeners are handled.
 
 After the start, the deploy reads `deploy.sh procs` again and fails unless every line holds.
 A dry run reads the processes and reports the restart decision; it stops and starts nothing,

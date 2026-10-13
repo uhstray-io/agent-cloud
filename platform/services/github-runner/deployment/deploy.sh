@@ -258,14 +258,15 @@ live_listeners() {
 #      on shutdown, JobDispatcher.cs ShutdownAsync), so waiting is the only way to let
 #      one finish. Bounded, because a busy runner may never be idle.
 #   2. Stop the unit with the configuration systemd has loaded.
-#   3. SIGINT every Listener still in the unit's cgroup: the ones a stop under
-#      KillMode=process left behind. SIGINT is the Listener's own graceful stop (Ctrl-C,
+#   3. SIGINT every Listener of this account, in the unit's cgroup or not: the ones a
+#      stop under KillMode=process left behind. SIGINT is the Listener's own graceful stop (Ctrl-C,
 #      Runner.cs CtrlCHandler): it cancels its job through the Worker, reports it, and
 #      deletes its session. Wait up to RUNNER_STOP_GRACE_SECONDS for them to exit.
-#   4. SIGKILL whatever is still in the cgroup, and require the cgroup to be empty.
+#   4. SIGKILL whatever is still in the cgroup and any Listener that survived, and
+#      require both to be gone.
 cmd_quiesce() {
   local drain="${RUNNER_DRAIN_SECONDS:-600}" grace="${RUNNER_STOP_GRACE_SECONDS:-300}"
-  local uid deadline rc=0 cg procs="" p listeners="" left
+  local uid deadline rc=0 cg procs="" listeners="" left stray
   uid=$(id -u)
 
   deadline=$((SECONDS + drain))
@@ -288,43 +289,15 @@ cmd_quiesce() {
     procs=$(find "$CGROUP_ROOT/user.slice/user-$uid.slice/user@$uid.service" \
       -path "*/$UNIT/cgroup.procs" -type f 2>/dev/null | head -n 1 || true)
   fi
-  if [ -z "$procs" ] || [ ! -r "$procs" ]; then
-    # No cgroup found: an empty, removed cgroup, or a layout the search above does not
-    # know. Fall back to this account's Listeners from /proc, so a leftover Listener is
-    # never skipped, and fail closed if one survives SIGINT and then SIGKILL.
-    listeners=$(account_pids Runner.Listener | tr '\n' ' ')
-    # shellcheck disable=SC2086
-    echo "signalled=$(count $listeners)"
-    left=""
-    if [ -n "$listeners" ]; then
-      # shellcheck disable=SC2086
-      kill -INT $listeners 2>/dev/null || true
-      deadline=$((SECONDS + grace))
-      # shellcheck disable=SC2086
-      while [ -n "$(live_listeners $listeners)" ] && [ "$SECONDS" -lt "$deadline" ]; do sleep 2; done
-      # shellcheck disable=SC2086
-      left=$(live_listeners $listeners | tr '\n' ' ')
-    fi
-    # shellcheck disable=SC2086
-    echo "killed=$(count $left)"
-    if [ -n "$left" ]; then
-      # shellcheck disable=SC2086
-      kill -KILL $left 2>/dev/null || true
-      deadline=$((SECONDS + 30))
-      # shellcheck disable=SC2086
-      while [ -n "$(live_listeners $left)" ] && [ "$SECONDS" -lt "$deadline" ]; do sleep 1; done
-      # shellcheck disable=SC2086
-      left=$(live_listeners $left | tr '\n' ' ')
-    fi
-    # shellcheck disable=SC2086
-    echo "remaining=$(count $left)"
-    [ -z "$left" ] || error "Listeners still running, and no cgroup found for $UNIT: $left"
-    return 0
-  fi
+  # No cgroup found means an empty, removed cgroup, or a layout the search above does not
+  # know. The cgroup sweep is then skipped; the Listeners below are found from /proc
+  # either way.
+  if [ -n "$procs" ] && [ ! -r "$procs" ]; then procs=""; fi
 
-  for p in $(cat "$procs" 2>/dev/null || true); do
-    if [ "$(cat "$PROC_ROOT/$p/comm" 2>/dev/null)" = Runner.Listener ]; then listeners="$listeners $p"; fi
-  done
+  # Every Listener of this account, in the unit's cgroup or not. The account exists only
+  # for this runner, so any Listener of it is this runner's registration, and one left
+  # running beside the next start would hold the session (the 2026-10-12 state).
+  listeners=$(account_pids Runner.Listener | tr '\n' ' ')
   # shellcheck disable=SC2086
   echo "signalled=$(count $listeners)"
   if [ -n "$listeners" ]; then
@@ -335,22 +308,37 @@ cmd_quiesce() {
     while [ -n "$(live_listeners $listeners)" ] && [ "$SECONDS" -lt "$deadline" ]; do sleep 2; done
   fi
 
-  # A Listener's run-helper.sh exits once the Listener has; give the scripts a moment.
-  deadline=$((SECONDS + 10))
-  while [ -n "$(cat "$procs" 2>/dev/null || true)" ] && [ "$SECONDS" -lt "$deadline" ]; do sleep 1; done
-  left=$(cat "$procs" 2>/dev/null || true)
-  # shellcheck disable=SC2086
-  echo "killed=$(count $left)"
-  if [ -n "$left" ]; then
-    # shellcheck disable=SC2086
-    kill -KILL $left 2>/dev/null || true
-    deadline=$((SECONDS + 30))
+  left=""
+  if [ -n "$procs" ]; then
+    # A Listener's run-helper.sh exits once the Listener has; give the scripts a moment.
+    deadline=$((SECONDS + 10))
     while [ -n "$(cat "$procs" 2>/dev/null || true)" ] && [ "$SECONDS" -lt "$deadline" ]; do sleep 1; done
+    left=$(cat "$procs" 2>/dev/null | tr '\n' ' ' || true)
   fi
-  left=$(cat "$procs" 2>/dev/null || true)
+  # Listeners that survived SIGINT, wherever they are, join the SIGKILL.
   # shellcheck disable=SC2086
-  echo "remaining=$(count $left)"
+  stray=$(live_listeners $listeners | tr '\n' ' ')
+  # shellcheck disable=SC2086
+  echo "killed=$(count $left $stray)"
+  if [ -n "$left$stray" ]; then
+    # shellcheck disable=SC2086
+    kill -KILL $left $stray 2>/dev/null || true
+    deadline=$((SECONDS + 30))
+    # shellcheck disable=SC2086
+    while { [ -n "$procs" ] && [ -n "$(cat "$procs" 2>/dev/null || true)" ]; } \
+          || [ -n "$(live_listeners $stray)" ]; do
+      [ "$SECONDS" -lt "$deadline" ] || break
+      sleep 1
+    done
+  fi
+  left=""
+  if [ -n "$procs" ]; then left=$(cat "$procs" 2>/dev/null | tr '\n' ' ' || true); fi
+  # shellcheck disable=SC2086
+  stray=$(live_listeners $stray | tr '\n' ' ')
+  # shellcheck disable=SC2086
+  echo "remaining=$(count $left $stray)"
   [ -z "$left" ] || error "still in the cgroup of $UNIT after SIGKILL: $left"
+  [ -z "$stray" ] || error "Listeners of this account still running after SIGKILL: $stray"
 }
 
 case "${1:-}" in
