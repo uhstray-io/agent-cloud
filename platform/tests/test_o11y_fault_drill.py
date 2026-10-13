@@ -393,6 +393,7 @@ def test_exporter_tasks_connect_with_the_per_service_key_and_remove_it(tmp_path,
     with_key = [c for c in calls if f'IdentityFile="{key}"' in c]
     assert len(with_key) >= 2, calls
     assert all('User="drill-acct"' in c for c in with_key), with_key
+    assert all("-o IdentitiesOnly=yes" in c for c in with_key), with_key
     assert (tmp_path / "bao.log").read_text().splitlines() == [KEY_PATH]
     # Wiped after the restore, even though the run failed (the host was unreachable).
     assert rc != 0
@@ -436,6 +437,7 @@ def test_the_key_is_wiped_after_the_restore_and_before_the_gate():
     for name in ("Stop the declared DGX node exporter", "Restart the DGX node exporter"):
         assert _task(name)["vars"]["ansible_ssh_private_key_file"] == (
             "{{ (hostvars[inventory_hostname]._exporter_ssh | default({})).key | default('') }}")
+        assert _task(name)["vars"]["ansible_ssh_extra_args"] == "-o IdentitiesOnly=yes"
 
 
 def test_only_exporter_mode_touches_the_per_service_key():

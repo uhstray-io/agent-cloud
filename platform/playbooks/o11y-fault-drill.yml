@@ -393,6 +393,8 @@
           # through this host's hostvars (test_exporter_tasks_connect_with_the_per_service_key).
           vars:
             ansible_ssh_private_key_file: "{{ (hostvars[inventory_hostname]._exporter_ssh | default({})).key | default('') }}"
+            # Offer only that key, never an agent's or the default identities.
+            ansible_ssh_extra_args: "-o IdentitiesOnly=yes"
           become: false
           register: _exporter_stopped
           when: drill == 'exporter' and not _restore_only
@@ -616,6 +618,8 @@
           delegate_to: "{{ _exporter.host | default(inventory_hostname) }}"
           vars:
             ansible_ssh_private_key_file: "{{ (hostvars[inventory_hostname]._exporter_ssh | default({})).key | default('') }}"
+            # Offer only that key, never an agent's or the default identities.
+            ansible_ssh_extra_args: "-o IdentitiesOnly=yes"
           become: false
           register: _restore_exporter
           when: drill == 'exporter'
