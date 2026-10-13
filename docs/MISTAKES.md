@@ -106,7 +106,7 @@ and why.
 | 4.7 | An address edit replaced every matching line and left a production runner declared at the new VM's address | Data handling | 1 | Playbook guard + test (provision-vm address-claim check) |
 | 4.8 | A credential-shaped test fixture was pushed; CI's unscoped all-detectors scan let it fail other PRs | Data handling | 1 | CI (scan scoped to the PR's commits) |
 | 4.9 | **x2** — Private site data in public code: Discord destination IDs in a fixture; the operator's account in a Proxmox token fallback, gateway fixtures and path-derived ids | Data handling | 2 | Test (`test_no_site_identity.py`, the three account shapes); other private values Convention |
-| 4.10 | **x3** — A heredoc script and a stdin redirect both targeted one interpreter; it parsed the operator token file as source and the syntax error printed the token | Secret in transcript | 3 | Convention — **count ≥ 3: the PreToolUse hook is now required, not proposed** |
+| 4.10 | **x4** — A heredoc script and a stdin redirect both targeted one interpreter; it parsed the operator token file as source and the syntax error printed the token | Secret in transcript | 4 | Test + Claude project PreToolUse hook (`.claude/hooks/guard-secret-stdin.py`); Codex hook remains open |
 | 4.11 | A workstation home path reached a committed ledger entry; the audit grep for it ran by hand only | Data handling | 1 | Pre-commit hook (`no-machine-paths`) |
 | 5.1 | Security check duplicated per caller; a fix reached three copies and missed two | Duplication | 1 | Test |
 | 5.2 | Committed while a test was failing, because the check did not gate the commit (repeat 2026-09-25: a merge after a mergeability read, joined by `;`) | Process | 4 | Pre-push hook |
@@ -2646,7 +2646,7 @@ convention and review.
 
 ### 4.10 The interpreter read the token file as its program, and its error printed the token
 
-**Occurrences: 3** — 2026-09-25, 2026-09-25, 2026-09-26
+**Occurrences: 4** — 2026-09-25, 2026-09-25, 2026-09-26, 2026-10-12
 
 **What happened.** Verifying the Dev seed rollout, I ran `python3 - <<'EOF' ... EOF <
 site-config/secrets/semaphore/semaphore_api_token.txt`. The heredoc and the redirect both
@@ -2663,9 +2663,12 @@ secret in it) and the secret arrives on stdin or in an environment variable. Nev
 `python3 -` / a heredoc script with a secret on stdin. After any exposure, say so at once and
 name the credential to rotate.
 
-**Enforced by.** Convention. Proposal: a Claude Code PreToolUse hook that refuses a Bash command
-combining an interpreter reading its program from stdin (`python3 -`, `bash -s`, a heredoc
-script) with a redirect from a path under `secrets/`.
+**Enforced in Claude Code by.** The project PreToolUse hook in `.claude/settings.json` runs
+`.claude/hooks/guard-secret-stdin.py`. It blocks Bash commands that combine an interpreter
+program read from stdin (`python3 -`, `bash -s`, or a heredoc) with stdin redirected from a
+`secrets/` path. A script file or `-c` program with the secret on stdin remains allowed. The
+deterministic cases are covered by `platform/tests/test_semaphore_token_rotation_hook.py`.
+This project hook does not cover Codex shell calls; that integration remains open.
 
 **Occurrence 2 — 2026-09-25, a different session the same evening.** To tell whether local
 Semaphore or its Caddy route rejected a token (the collector's local dry run had got HTTP 401),
@@ -2685,10 +2688,16 @@ third time. This came hours after writing occurrence 2, after recording the rule
 `AGENTS.md` and `docs/LOCAL-DEV.md`, and after using the safe shape (a script file, the token
 on stdin) a dozen times in between. Why the rule did not fire: each safe script file served one
 query, so a new question started from a blank inline command again, and reading the rule in
-docs does not reach the moment of typing. With three occurrences, Convention is no longer an
-acceptable enforcement: the PreToolUse hook proposed above is required. Until it exists,
-token-bearing calls go through one reusable script file that takes the query as arguments,
-never a fresh inline program.
+docs does not reach the moment of typing. With three occurrences, Convention is not sufficient:
+the project PreToolUse hook now guards this command shape. Token-bearing calls still use a
+reusable script file, with the secret on stdin, never a fresh inline program.
+
+**Occurrence 4 — 2026-10-12, Codex.** A read-only Semaphore task diagnostic again
+combined `python3 -` with a heredoc and a separate redirect from the production
+operator-token backup. The token text reached the tool transcript. The task was
+stopped, the token was treated as exposed, and the rotation workflow was started.
+The Claude project hook above cannot intercept Codex tool calls; Codex needs an
+equivalent command guard at its own execution boundary.
 
 
 ### 4.11 A workstation home path reached a committed ledger entry; the audit grep was manual
