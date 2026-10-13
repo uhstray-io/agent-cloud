@@ -1523,8 +1523,10 @@ the survey with a fixed category rather than issuing a partial result. For
 verified journald containers, a failed read is unreadable, while timeout or
 malformed metadata is unverified. Dev-bound read-only Semaphore task 5282 at
 reviewed Dev revision `4ed33fa8` observed seven running o11y containers using
-journald, 219 bounded metadata entries, and no read-only Alloy journal-source
-mount. The entry count is a capped sample, not total log volume. Dashboard
+journald, 219 bounded metadata entries, and no readable read-only Alloy journal
+source established. The entry count is a capped sample, not total log volume.
+An existing mount with a missing or unreadable directory can produce the same
+source result; a separate mount readback is needed to distinguish that case. Dashboard
 verifier task 5281 found no `agentgateway` container or access records in its
 six-hour window. The dashboard JSON is unchanged between the receiver checkout
 revision reported by that task and the current reviewed Dev revision, so a
