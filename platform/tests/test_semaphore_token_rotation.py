@@ -194,6 +194,7 @@ def test_actual_playbook_input_preflight_reports_categories_without_values(tmp_p
     inventory.write_text(yaml.safe_dump({"all": inventory_data}))
 
     env = harness_sandbox.env_for(tmp_path)
+    env["OPENBAO_ADDR"] = ""
     env.update(
         SEMAPHORE_OLD_TOKEN="SENTINEL-OLD-ENCRYPTED-TOKEN",
         SEMAPHORE_NEW_TOKEN="SENTINEL-NEW-ENCRYPTED-TOKEN",
