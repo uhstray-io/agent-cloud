@@ -92,6 +92,18 @@ def test_unrecognised_script_fails_instead_of_guessing(on_path):
         helper.ansible_python()
 
 
+def test_malformed_shebang_names_no_interpreter():
+    assert helper.interpreter_from_script("#!/venv/bin/python 'unbalanced\n") is None
+    assert helper.interpreter_from_script("#!/bin/sh\n'''exec' '/venv/bin/python \"$0\"\n") is None
+
+
+@pytest.mark.parametrize("text", ["#!/venv/bin/python 'unbalanced\n", "#!/bin/sh\n'''exec' '/venv/bin/python \"$0\"\n"])
+def test_malformed_script_fails_naming_the_script(on_path, tmp_path, text):
+    on_path(text)
+    with pytest.raises(RuntimeError, match=r"cannot find the interpreter .*ansible-playbook"):
+        helper.ansible_python()
+
+
 def test_missing_ansible_playbook_skips(tmp_path, monkeypatch):
     monkeypatch.setenv("PATH", str(tmp_path))
     with pytest.raises(pytest.skip.Exception, match="ansible-playbook not installed"):

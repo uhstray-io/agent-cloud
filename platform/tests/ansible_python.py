@@ -37,6 +37,14 @@ def _skip_marker() -> pytest.MarkDecorator:
 needs_ansible = _skip_marker()
 
 
+def _split(line: str) -> list[str] | None:
+    """shlex.split, or None for an unbalanced quote: a malformed script names no interpreter."""
+    try:
+        return shlex.split(line)
+    except ValueError:
+        return None
+
+
 def interpreter_from_script(text: str) -> str | None:
     """The interpreter a script's first lines name, or None when they name none.
 
@@ -46,13 +54,13 @@ def interpreter_from_script(text: str) -> str | None:
     lines = text.splitlines()
     if not lines or not lines[0].startswith("#!"):
         return None
-    shebang = shlex.split(lines[0][2:])
+    shebang = _split(lines[0][2:])
     if not shebang:
         return None
     if os.path.basename(shebang[0]) in ("sh", "bash", "dash"):
         if len(lines) < 2 or not lines[1].startswith(_TRAMPOLINE_MARKER):
             return None
-        words = shlex.split(lines[1][len(_TRAMPOLINE_MARKER):])
+        words = _split(lines[1][len(_TRAMPOLINE_MARKER) :])
         return words[0] if words else None
     if os.path.basename(shebang[0]) == "env":
         words = [w for w in shebang[1:] if not w.startswith("-")]
