@@ -307,6 +307,54 @@ comments during this stream; do not close gateway task 2.3 on this run." Task 2.
 run without that warning, which needs a stream that sat idle past 15 s (a queue wait or a long
 prefill).
 
+**Making the stream queue (`agw_conformance_long_stream_saturate`).** Production run task 4910
+passed 15/15 with 0 comments on both sides (`unproven`), because the stream generated steadily.
+The survey var (and playbook var) `agw_conformance_long_stream_saturate`, default 0 = off, an
+integer 0 to 16, fixes that: before each side's `stream-long` request the script starts that many
+filler streams on the SAME side (direct for the direct measurement, the gateway for the gateway
+one), waits 2 s so they reach the scheduler first, then sends the measured request, which waits in
+vLLM's queue with comments flowing. dgx-spark's `vllm.yml:636` public verify play does the same with
+twelve streams at once (`public_probe.py queue --n 12`, `vllm/public_probe.py:46` counts the
+comments; the 2026-09-14 run completed all twelve, the four queued ones after 390 s —
+`docs/TEAM-ENDPOINT.md:91`). Here the queue is sized to the scheduler: dgx-spark's
+`profiles/qwen3.8-flash-next-nvfp4/model.yaml:20` sets `max-num-seqs: 8`, and
+`docs/TEAM-ENDPOINT.md:97` says the scheduler runs 8 at once, so **8 fillers fill every slot** and
+the measured request is the ninth. Use 8 or more; fewer leave a slot free and the stream does not
+queue.
+
+- A filler is the stream-long request shaped differently only in size: the same prompt and
+  `xhigh` effort, `max_tokens` `agw_conformance_stream_max_tokens` (2048), and a hard curl time
+  limit `agw_conformance_long_stream_saturate_seconds` (45 s; the script refuses more than the long-stream ceiling). Cutting the client makes vLLM abort
+  the request and free the slot, so the measured request waits about 45 s on each side: three
+  15 s keep-alives. Each filler's key travels exactly as the measured request's does (a pipe,
+  never argv), and only its response status line is kept.
+- Every filler is killed and waited for as soon as the measured request ends, and again by the
+  script's exit trap, so no path out of the script (a failure, a signal) leaves a generation
+  running on the upstream.
+- The measured request's first line is expected to be a comment about 15 s in, on BOTH sides
+  (vLLM's `--sse-keep-alive-interval 15`, dgx-spark `docs/LOAD-TESTING-9-13-26.md:12`), so the
+  existing relative checks stay sensible: the gateway's first byte and longest silence must be
+  within 2 s of vLLM's, which a gateway that buffers or drops comments still fails (its first
+  byte comes only when the first token does). The keep-alive count check (gateway at least vLLM's,
+  less one) is the one most exposed to noise: the two sides' waits can differ by a whole 15 s
+  interval if another client holds a slot on one side only. A saturated run that fails only on
+  that count should be repeated before it is read as a gateway fault.
+- A filler whose side did not answer 2xx (a 429 from the gateway's one global request bucket,
+  `agw_rate_requests_per_minute_total`, default 120 a minute, or a spent key budget) means the
+  measured request may not have queued: the case fails naming the side, `fillers accepted`, rather
+  than reporting a missing comment as a gateway fault. "Accepted" means the upstream returned a
+  2xx status line for the filler, so a gateway that holds its response headers until the first
+  token would be under-counted (unverified against vLLM). A filler generates for at most 45 s, a
+  few hundred tokens at the 13 tok/s per stream dgx-spark measured
+  (`docs/LOAD-TESTING-9-13-26.md:53`), charged to the identity's hourly token budget.
+- **Load on the DGX.** The fillers are real generations on the shared upstream. For about 45 s on
+  each side, one side after the other (about 100 s of held slots in all), every scheduler slot is held and any other client of the endpoint queues
+  behind them; the endpoint's own guidance is at most 3 streams for latency and 6 for throughput
+  (`docs/TEAM-ENDPOINT.md:98-99`). Run it when nobody else is using the Spark.
+- The report adds `long_stream.saturate` and, per side, `fillers_accepted`; the result line's
+  timing carries `fillers: {requested, accepted, lifetime_s}`. A saturated run with
+  `unproven: []` and no warning is what closes task 2.3.
+
 For each side the report gives `duration_s`, `first_byte_s`, `keepalives` (SSE comment lines) and
 `gap_max_s` (the longest silence between two received lines, comments included). The case passes
 only when every one of these holds; otherwise it fails and `failure` names each that does not:

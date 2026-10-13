@@ -63,6 +63,214 @@ gateway host to `o11y_otlp_bind:4317`. The client-view dashboard plots HTTP and
 model (`agentgateway_gen_ai_server_request_duration`) p95 side by side, and the
 inference latency dashboard links to it.
 
+## OTLP receiver resource bounds — source slice for task 3.3
+
+Both OTLP inputs pass directly through their own Alloy memory limiter before
+the existing gRPC trace/access-log and HTTP conformance-log routes. Each
+limiter checks every second, with a 384 MiB hard heap limit and a 64 MiB spike
+allowance (320 MiB soft threshold). The shared Compose base caps the Alloy
+container at 512 MiB in local and production deployments; the local overlay
+does not set a second Alloy cap. Gateway traces keep the optional
+`o11y_gateway_span_logs_enabled` fan-out after the limiter.
+These are initial source bounds, not measured tuning values; compare them with
+receiver memory headroom before rollout.
+
+The Tempo path batches at most 512 spans per batch (256 triggers a send, with a
+one-second timeout), holds at most 128 queued batches with two consumers, uses
+a 10-second exporter request timeout, and retries up to five minutes with a
+30-second maximum interval. The queue is in memory and does not survive Alloy
+restart. Its item count is bounded, while serialized byte size depends on span
+payloads; the memory limiter and container cap provide the aggregate memory
+bounds. Queue overflow, memory-limiter refusals, and lost data remain possible
+during sustained receiver or Tempo outages; the alert source rules below do not
+prove metric exposition or runtime delivery.
+
+### Loki and Tempo ingestion caps — task 3.3 source slice
+
+The committed Loki and Tempo configs make the pinned images' finite ingestion
+defaults explicit: Loki uses global rate limiting (4 MB/s, 6 MB burst), a
+5,000-stream aggregate limit, 3 MB/s per-stream rate with a 15 MB burst, a
+256 KB line limit, and at most 15 labels per series. Tempo uses its local
+strategy, 15,000,000 bytes/s with a 20,000,000-byte burst, 10,000 live traces
+per user per ingester, and a 5,000,000-byte trace limit. These are aggregate
+default-equivalent caps, not per-target controls; making the defaults explicit
+does not establish a measured target budget or live config acceptance.
+
+Rollout remains gated on measured baselines and follow-on per-target budget and
+alert work. Keep task 3.3 open until its remaining source and live acceptance
+gates are met; do not infer runtime acceptance from parsing these files.
+
+### Per-scrape response and label budgets — task 3.3 source slice
+
+Every declared Prometheus scrape job, including the optional DGX GPU job and
+host-node fragments, and Alloy's local-container scrape use the same private
+inventory object:
+
+```yaml
+o11y_scrape_limits_reviewed: true
+o11y_scrape_limits:
+  body_size_limit_bytes: <integer from 1 to 167772160>
+  sample_limit: <integer from 1 to 100000>
+  label_limit: <integer from 1 to 640>
+  label_name_length_limit: <integer from 1 to 1280>
+  label_value_length_limit: <integer from 1 to 20480>
+```
+
+The object is required and must be marked reviewed before a production render;
+missing or unreviewed production values fail closed before deployment. The
+review flag is an explicit rollout gate, not evidence that a live baseline was
+measured. Until each current production target has a reviewed baseline, keep
+the flag unset and do not deploy the candidate limits. Local mode has finite
+defaults (16 MiB response, 10,000 samples, 64 labels, 128-byte label names,
+2,048-byte label values) for development. Production values must be YAML
+integers, positive, and no greater than ten times those finite local baselines;
+the existing `o11y_scrape_sample_limit`, when set, must be a positive YAML
+integer no greater than 20,000. Missing, unreviewed, malformed, nonpositive,
+or excessive production values are refused before placement or rendering; they
+are never coerced or clamped to one.
+
+Alloy takes `body_size_limit` as a units string (for example `16MiB`), not a
+number, so its config appends the `B` unit to the bytes carried in
+`O11Y_SCRAPE_BODY_SIZE_LIMIT_BYTES`; a bare number fails the config load and
+crash-loops the container. The other four limits stay numeric.
+
+The existing `o11y_scrape_sample_limit` remains the stricter ceiling for the
+receiver-host and host-node exporters. All scrape paths retain the forbidden
+label drop and target identity labels. Per-scrape bounds restrict one response
+at a time; they do not cap lifetime series churn as label values change across
+scrapes. Live target readback, over-budget refusal checks, and calibration of
+the private values remain open. Prometheus's `body_size_limit` is documented
+as experimental in the pinned v3.1.0 configuration reference.
+
+The Dev-bound read-only `Survey o11y Scrape Baseline (Dev)` queries active targets
+and the 24-hour maximum of `scrape_samples_scraped` from the existing Prometheus
+instance. Prometheus v3.1.0 exposes `scrape_body_size_bytes` only when
+`--enable-feature=extra-scrape-metrics` is set, and the committed production
+Compose command does not set it. The survey does not enable that feature or
+change/restart/reload Prometheus. Instead, its receiver-side helper uses the
+active target list, privately joins each target to its 24-hour sample maximum,
+and performs one direct HTTP GET from the existing Grafana container for each
+currently healthy target. The GET sends `Accept-Encoding: identity`, follows no
+redirects, uses no proxy or authentication, and discards the response body while
+counting at most 160 MiB with explicit connect and overall timeouts. The helper
+requires curl 8.4 or newer so the download limit also applies to unknown-length
+responses. It refuses non-HTTP URLs, userinfo, query strings, URL/instance host
+or port mismatches, unsupported jobs, duplicate targets, unhealthy targets,
+missing sample series, empty bodies, non-2xx responses, compressed responses, and
+oversized or incomplete probes. URLs, private labels, response bodies, API
+responses, and subprocess errors stay inside the protected helper invocation.
+
+After validating all active targets, the helper also queries Prometheus
+`/api/v1/series` once per target with a selector fixed to that target's exact
+`job` and `instance` and a 24-hour start/end window. It derives the maximum
+stored-series label count and maximum UTF-8 label-name and label-value byte
+lengths, then aggregates those numeric maxima by the same fixed public job
+categories. The private selector is sent to curl through config on stdin, not
+argv. API responses are capped at 16 MiB and require a successful HTTP status
+and complete, unambiguous series data; any missing or malformed response refuses
+the receipt.
+
+The sanitized receipt groups by fixed public job names, reports active and
+healthy/unhealthy target counts, and shows integer sample maxima for 24 hours,
+point-in-time response-body byte maxima, and 24-hour stored-series label
+maxima. The direct GET is a current observation, not a 24-hour response-size
+maximum. The series API describes stored series metadata selected for the time
+window and may include series without samples in that period; these maxima are
+not proof of every future label value or lifetime series churn. Treat the
+measurements as inputs for reviewing sample, body-size, and label limits. They
+do not establish runtime rejection behavior or acceptance of configured limits
+by deployed binaries. Label limits still require review and runtime acceptance.
+Keep task 3.3 open until its full source and live acceptance gates are met.
+Check-mode output is explicitly unverified.
+
+### Receiver-loss and backend-discard alerts — task 3.3 source slice
+
+The provisioned `service-telemetry` group includes an Alloy receiver-refusal
+alert for `otelcol_receiver_refused_log_records_total` and
+`otelcol_receiver_refused_spans_total`, a Tempo exporter queue-admission alert
+for `otelcol_exporter_enqueue_failed_spans_total`, and a sustained send-failure
+alert for `otelcol_exporter_send_failed_spans_total`. These are the Prometheus
+counter names for the pinned Alloy v1.5.1 / OTel Collector v0.112.0 metrics.
+Each optional counter uses a five-minute window and `or vector(0)`, so an absent
+series contributes zero. The receiver alert adds the two refusal counts; the
+queue-admission alert uses `increase` and the send-failure alert uses `rate`,
+both grouped to avoid per-exporter alert instances. Refusal and enqueue-failure
+rules fire above zero for two minutes; the send-failure rule requires a positive
+rate for ten minutes. All use `service=o11y/alloy`. `enqueue_failed_spans_total`
+means a span could not be admitted to the bounded exporter queue and was lost.
+`send_failed_spans_total` increments when an exporter operation returns a final
+error after retry handling; transient failed attempts followed by a successful
+retry do not increment it. This identifies a final exporter-operation error,
+but does not establish whether the downstream backend received or lost spans.
+The pinned [base-exporter sender chain](https://github.com/open-telemetry/opentelemetry-collector/blob/v0.112.0/exporter/exporterhelper/internal/base_exporter.go)
+and [exporter observation implementation](https://github.com/open-telemetry/opentelemetry-collector/blob/v0.112.0/exporter/exporterhelper/internal/obsexporter.go)
+show the observation/retry boundary.
+Alloy documents that failed batches are discarded after
+`retry_on_failure.max_elapsed_time` if they have not been sent successfully.
+See [OpenTelemetry Collector internal
+telemetry](https://opentelemetry.io/docs/collector/internal-telemetry/) and
+[Alloy OTLP exporter retry behavior](https://grafana.com/docs/alloy/latest/reference/components/otelcol/otelcol.exporter.otlp/).
+Refused log records and spans were rejected at the receiver and were not
+accepted into the pipeline.
+
+The rules remain paused unless private inventory sets
+`o11y_receiver_loss_alerts_reviewed: true`, `o11y_alerts_enabled` is true, and
+the render is production (`local_mode` false, environment `prod`) without an
+alert canary. The new review flag defaults false in the template; do not add it
+to production inventory until metric exposition and alert delivery have been
+verified.
+
+Live acceptance requires reading the exact pinned Alloy `/metrics` endpoint
+and confirming all four counters are exposed, then using a controlled,
+non-sensitive refusal and a bounded queue-pressure scenario to observe the
+corresponding counter increases. After enabling the reviewed inventory flag,
+read back all three provisioned rules from Grafana and prove they can fire and route
+through `agent-cloud-ops`, then verify resolution. For send failures, prove the
+rate rule with a controlled bounded exporter failure and describe the receipt as
+a final exporter-operation error after retry handling; backend receipt or loss
+remains unverified. Do not use secrets, prompts,
+request bodies, or span attributes in these checks. Source rendering does not
+prove metric exposition, delivery, or runtime behavior; those remain
+unverified.
+
+The same group also has one aggregate alert for each backend's discarded data:
+`loki_discarded_samples_total{job="loki"}` and
+`tempo_discarded_spans_total{job="tempo"}`. Each uses
+`sum(increase(metric[5m])) or vector(0)`, fires above zero after two minutes,
+and produces one rule instance per backend rather than one per `reason` label.
+The new `o11y_backend_drop_alerts_reviewed` switch defaults false; both rules
+remain paused unless the existing alerts switch is enabled, the render is
+production and non-local, and no alert canary is set. Active rules use the
+existing low-noise `agent-cloud-ops` grouping. Grafana documents the Loki
+counter and its `reason` label in [Loki monitoring metrics](https://grafana.com/docs/loki/latest/operations/meta-monitoring/metrics/)
+and describes the Tempo counter and `reason` label in [Tempo trace ingestion](https://grafana.com/docs/tempo/latest/operations/manage-trace-ingestion/).
+The self-monitoring dashboard adds rate-by-reason timeseries for both counters
+without moving the existing panels.
+
+Keep the review switch false in production inventory until the exact pinned
+Loki and Tempo metric endpoints expose these counters and a controlled,
+non-sensitive drop increments each counter. Then read the provisioned rules
+back from Grafana and verify firing, `agent-cloud-ops` delivery, and resolution.
+No controlled drop, live alert delivery, or telemetry-privacy proof is claimed
+by this source change.
+
+Task 3.3 still requires nonzero Prometheus size retention, broader receiver
+memory/backpressure and ingestion protections, inventory-driven
+environment/cluster labels across Prometheus and Alloy with dependent
+dashboard/alert migration, and proof that secrets, prompts, and request bodies
+do not enter telemetry. These alert source rules do not close the live metric,
+delivery, or telemetry-privacy gates.
+
+The rollout gate remains: validate rendered River with the exact pinned Alloy
+image, complete final-head review and CI, run the Dev-bound Semaphore check and
+reviewed apply, and prove the exact-target trace path plus refusal/drop behavior
+without sensitive payloads. The local Podman and Docker daemons were
+inaccessible, so cached-image availability and River validation are
+unverified here; no pull was attempted and no rollout is authorized by this
+source change. Complete task 3.3 and its
+separate task 3.4 firewall/budget/runtime gate before expanding the sender
+cohort.
+
 The production Semaphore inventory is a static copy of private site-config. After
 a private inventory change is reviewed and merged, run the code-managed
 operator-side `platform/semaphore/sync-inventory.yml` check and apply from the
@@ -420,6 +628,24 @@ probe environment file holds the inference key, so every task touching it sets
 `diff: false` and `no_log`. The probe restore requires a success sample for the deployed
 model newer than the restore, and the resolved check covers every drill model name.
 
+Exporter mode runs unprivileged. Its stop and restart tasks set `become: false`, so
+`systemd_service` runs as the connecting account on the DGX node, and the node's polkit
+authorizes that one account for the `start` and `stop` verbs on the exporter unit only.
+Those two tasks connect with the exporter host's own per-service key, not Semaphore's
+inventory key: the drill reads `secret/services/ssh/<service_name>` (the exporter host's
+`service_name`, expected `o11y-fault-drill`) from OpenBao before any fault, refuses the run
+if the service name or the key is missing, writes the key to a runner-side 0600 file as the
+first step of the fault section and wipes it in `always:` after the restore. Exporter mode
+therefore also needs `openbao_addr` and the controller AppRole. The drill sets no
+`daemon_reload`, which that rule would refuse. The per-service account
+and the polkit rule are installed on the nodes by dgx-spark's `drill-access.yml` (not by
+agent-cloud; the nodes are outside its inventory), so the mode needs that applied, the
+node declared in the private `o11y_fault_drill_exporters` map and as a host of a group
+carrying the account as `ansible_user`, and the agreed dgx-spark window (dgx-spark's only
+unattended job there runs daily at 04:30 Eastern, so keep the window clear of 04:15 to
+05:00 Eastern). The probe-mode sample tasks keep `become: true`; they run on the o11y host.
+Evidence and remaining steps: `plan/development/openspec/changes/inference-telemetry-production/tasks.md`, task 2.5.
+
 Dashboard proof (probe mode): the drill also reads the provisioned `inference-fleet-health`
 dashboard's "Inference probe serving" panel from the o11y host, refusing before any fault
 unless it is exactly one stat panel on `inference_probe_success` with no dashboard
@@ -524,7 +750,11 @@ The production target is Prometheus 90d, Loki 45d, and Tempo 1080h
 (45d). Keep the current 15d / 7d / 168h tuple until a measured capacity receipt
 is available. A normal deploy refuses any production tuple change unless
 `o11y_prom_retention_size` is nonzero and private inventory contains a numeric
-`o11y_capacity_receipt_id` referencing a separately reviewed successful receipt. Do not create that receipt
+`o11y_capacity_receipt_id` referencing a separately reviewed successful receipt,
+plus a numeric `o11y_backup_restore_receipt_id` reference. The playbook checks only
+that the backup/restore reference is a positive integer; it does not inspect an
+independent receipt or prove a live isolated restore. Do not treat this source-level
+reference guard as retention authorization. Do not create the capacity receipt
 until receiver host metrics have at least seven days of CPU/memory and
 per-backend stored-byte growth, the forecast meets >=30% free disk, >=25%
 memory headroom, and CPU p95 <70%, and any guest filesystem growth is repeatable

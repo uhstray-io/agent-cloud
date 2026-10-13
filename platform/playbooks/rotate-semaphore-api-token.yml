@@ -1,0 +1,129 @@
+---
+# Reconcile the controller's OpenBao token only when it exactly matches the
+# operator token being rotated. Both credentials arrive through the isolated,
+# encrypted seed environment and are never supplied as survey or extra vars.
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: "Compare and conditionally update the Semaphore controller token"
+  hosts: localhost
+  gather_facts: false
+  become: false
+  vars:
+    _rot_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
+    _bao_url: "{{ _rot_url }}"
+    _rot_role_id: "{{ lookup('env', 'BAO_ROLE_ID') }}"
+    _rot_secret_id: "{{ lookup('env', 'BAO_SECRET_ID') }}"
+    _rot_old: "{{ lookup('env', 'SEMAPHORE_OLD_TOKEN') }}"
+    _rot_new: "{{ lookup('env', 'SEMAPHORE_NEW_TOKEN') }}"
+    _rot_path: services/semaphore
+
+  tasks:
+    - name: "Check required rotation input presence without values"
+      ansible.builtin.set_fact:
+        _rot_input_presence:
+          endpoint: "{{ _rot_url | length > 0 }}"
+          old_encrypted_input: "{{ _rot_old | length >= 8 }}"
+          new_encrypted_input: "{{ _rot_new | length >= 8 }}"
+      no_log: true
+
+    - name: "Report bounded rotation input presence"
+      ansible.builtin.debug:
+        msg: >-
+          Rotation input presence: endpoint={{ 'present' if _rot_input_presence.endpoint else 'missing' }};
+          old encrypted input={{ 'present' if _rot_input_presence.old_encrypted_input else 'missing' }};
+          new encrypted input={{ 'present' if _rot_input_presence.new_encrypted_input else 'missing' }}.
+
+    - name: "Refuse missing rotation inputs before OpenBao access"
+      ansible.builtin.assert:
+        that:
+          - _rot_input_presence.endpoint | bool
+          - _rot_input_presence.old_encrypted_input | bool
+          - _rot_input_presence.new_encrypted_input | bool
+        fail_msg: "Rotation refused before OpenBao access because one or more required input categories are missing."
+
+    - name: "List seed input names without values"
+      ansible.builtin.command:
+        argv:
+          - "{{ ansible_playbook_python }}"
+          - -c
+          - |-
+            import os
+            print('\n'.join(sorted(os.environ)))
+      register: _rot_env_names
+      changed_when: false
+      check_mode: false
+      delegate_to: localhost
+      no_log: true
+
+    - name: "Refuse undeclared or leftover secret inputs"
+      vars:
+        _rot_names: "{{ _rot_env_names.stdout_lines | select('match', '^(SEMAPHORE_[A-Z0-9_]+|BAO_VALUE|SEED_[A-Z0-9_]+)$') | list }}"
+      ansible.builtin.assert:
+        that:
+          - _rot_names | sort == ['SEMAPHORE_NEW_TOKEN', 'SEMAPHORE_OLD_TOKEN'] | sort
+        fail_msg: "The rotation environment contains undeclared inputs; reconcile it before retrying."
+      no_log: true
+
+    - name: "Refuse a cleartext OpenBao endpoint"
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _rot_url }}"
+
+    - name: "Refuse an OpenBao address that is not the inventory's"
+      ansible.builtin.include_tasks: tasks/assert-bao-addr-declared.yml
+      vars:
+        _bao_url: "{{ _rot_url }}"
+
+    - name: "Authenticate to OpenBao (AppRole)"
+      ansible.builtin.uri:
+        url: "{{ _rot_url }}/v1/auth/approle/login"
+        method: POST
+        body_format: json
+        body:
+          role_id: "{{ _rot_role_id }}"
+          secret_id: "{{ _rot_secret_id }}"
+      register: _rot_auth
+      no_log: true
+      changed_when: false
+      check_mode: false
+
+    - name: "Read the controller-owned credential"
+      ansible.builtin.uri:
+        url: "{{ _rot_url }}/v1/secret/data/{{ _rot_path }}"
+        method: GET
+        follow_redirects: none
+        unredirected_headers: [X-Vault-Token]
+        headers:
+          X-Vault-Token: "{{ _rot_auth.json.auth.client_token }}"
+        status_code: [200, 404]
+      register: _rot_existing
+      no_log: true
+      check_mode: false
+
+    - name: "Compare the protected values in memory"
+      ansible.builtin.set_fact:
+        _rot_matches: >-
+          {{ _rot_existing.status == 200
+             and _rot_existing.json.data.data.get('api_token', none) == _rot_old }}
+      no_log: true
+
+    - name: "Update OpenBao only when the protected value matches exactly"
+      ansible.builtin.include_tasks: tasks/bao-merge-keys.yml
+      vars:
+        _bm_url: "{{ _rot_url }}"
+        _bm_token: "{{ _rot_auth.json.auth.client_token }}"
+        _bm_path: "{{ _rot_path }}"
+        _bm_data:
+          api_token: "{{ _rot_new }}"
+        _bm_guard_key: api_token
+        _bm_guard_value: "{{ _rot_old }}"
+        _bm_on_missing: fail
+      when: _rot_matches | bool
+
+    - name: "Report the protected comparison result"
+      ansible.builtin.debug:
+        msg: >-
+          {{ 'Controller OpenBao token exactly matched and was compare-and-set updated.'
+             if _rot_matches | bool
+             else 'Controller OpenBao token differed; it was left unchanged.' }}

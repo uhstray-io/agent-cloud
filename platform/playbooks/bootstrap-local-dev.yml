@@ -1370,6 +1370,8 @@
           netbox_build_seccomp_profile=/usr/share/containers/seccomp.json
           netbox_app_container=netbox_netbox_1
           orb_agent_openbao_addr=http://127.0.0.1:8200
+          # The orb agent has no compose label, so Stop Local Service names it.
+          stop_extra_containers=["netbox-orb-agent"]
           discovery_target_subnet={{ hostvars['netbox-local'].discovery_target_subnet | default('') }}
           local_monorepo_dir=/var/lib/agent-cloud-deploy/agent-cloud
           local_home_dir=/var/lib/agent-cloud-deploy

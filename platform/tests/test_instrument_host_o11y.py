@@ -131,7 +131,7 @@ def estate(tmp_path):
         server.shutdown()
 
 
-def _inventory(estate, binds=None, host_vars=None) -> Path:
+def _inventory(estate, binds=None, host_vars=None, receiver_vars="") -> Path:
     tmp = estate["tmp"]
     lines = ["[demo_svc]"]
     for host, server in estate["exporters"].items():
@@ -149,15 +149,16 @@ def _inventory(estate, binds=None, host_vars=None) -> Path:
         "",
         "[o11y_svc]",
         f"receiver ansible_connection=local local_monorepo_dir={tmp / 'repo'} monorepo_deploy_path=o11y "
-        f"o11y_prom_bind=127.0.0.1 o11y_prom_port={estate['prometheus'].server.server_address[1]} local_mode=true",
+        f"o11y_prom_bind=127.0.0.1 o11y_prom_port={estate['prometheus'].server.server_address[1]} local_mode=true "
+        f"{receiver_vars}",
     ]
     inventory = tmp / "inventory.ini"
     inventory.write_text("\n".join(lines) + "\n")
     return inventory
 
 
-def _run(estate, *extra, binds=None, host_vars=None, path_prefix=None) -> subprocess.CompletedProcess:
-    inventory = _inventory(estate, binds, host_vars)
+def _run(estate, *extra, binds=None, host_vars=None, path_prefix=None, receiver_vars="") -> subprocess.CompletedProcess:
+    inventory = _inventory(estate, binds, host_vars, receiver_vars)
     env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
     env["ANSIBLE_NOCOLOR"] = "1"
     if path_prefix:
@@ -431,6 +432,16 @@ def test_refuses_a_target_it_must_not_instrument(estate, target):
     assert proc.returncode != 0
     assert "Pass -e target_service=<group>" in proc.stdout
     assert not estate["fragment"].exists()
+
+
+@needs_ansible
+def test_production_budget_failure_on_distinct_receiver_stops_exporter_play(estate):
+    proc = _run(estate, receiver_vars="local_mode=false")
+
+    assert proc.returncode != 0, proc.stdout[-4000:]
+    assert "Production o11y scrape budgets require" in proc.stdout, proc.stdout[-4000:]
+    assert _engine_calls(estate, "alpha") == []
+    assert _engine_calls(estate, "beta") == []
 
 
 def _defined_names() -> set[str]:

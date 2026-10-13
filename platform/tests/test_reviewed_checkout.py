@@ -153,6 +153,18 @@ def test_untracked_scan_does_not_run_configured_clean_filter(clean_checkout, tmp
     _git(checkout, "update-ref", "refs/remotes/origin/dev", revision, check=True)
     _git(checkout, "config", "filter.marker.clean", filter_command, check=True)
 
+    # Git only runs the clean filter on a tracked file whose stat data no longer
+    # matches the index entry (the "racy git" rule): a stat-clean file is trusted
+    # without being rehashed. Whether the fixture's stat data matched depended on
+    # whether the index was written in the same second as the file, so under load
+    # a plain status skipped the filter and the precondition below failed
+    # intermittently. Force a stat mismatch (mtime only; the bytes are unchanged)
+    # so git must rehash through the filter regardless of timing.
+    tracked = checkout / "tracked.txt"
+    os.utime(tracked, ns=(1_000_000_000_000_000_000, 1_000_000_000_000_000_000))
+    index = checkout / ".git/index"
+    index_before = index.read_bytes()
+
     assert not marker.exists()
     CHECKOUT._run_git(
         checkout,
@@ -161,6 +173,10 @@ def test_untracked_scan_does_not_run_configured_clean_filter(clean_checkout, tmp
     )
     assert marker.exists()
     marker.unlink()
+    # The status above takes no optional locks, so it did not refresh the index:
+    # the stat mismatch is still present and would still trigger the filter if
+    # _verify ran a plain status. Assert that rather than assume it.
+    assert index.read_bytes() == index_before
     assert _verify(checkout, revision)["status"] == "checkout_consistent"
     assert not marker.exists()
 
@@ -238,20 +254,36 @@ def test_bounded_runner_kills_child_after_parent_exits(tmp_path, monkeypatch):
     marker = tmp_path / "child-survived"
     child_pid = tmp_path / "child.pid"
     fake_git.write_text(
-        f"#!/bin/sh\n(sleep 1; touch {shlex.quote(str(marker))}) &\n"
+        f"#!/bin/sh\n(sleep 3; touch {shlex.quote(str(marker))}) &\n"
         f"echo $! > {shlex.quote(str(child_pid))}\nexit 0\n",
         encoding="utf-8",
     )
     fake_git.chmod(0o755)
     monkeypatch.setattr(CHECKOUT, "GIT", str(fake_git))
-    monkeypatch.setattr(CHECKOUT, "COMMAND_TIMEOUT", 0.5)
+    # The timeout must comfortably exceed the time a loaded machine needs to
+    # start the fake git and let it write the pid file (a 0.5 s timeout let the
+    # runner kill it first, so the pid file never appeared). The child's sleep
+    # stays longer than the timeout so a survivor would still touch the marker.
+    monkeypatch.setattr(CHECKOUT, "COMMAND_TIMEOUT", 1.5)
     started = time.monotonic()
     with pytest.raises(CHECKOUT.Refusal, match="checkout_timeout"):
-        CHECKOUT._run_git(Path("/tmp"), ("status",), deadline=time.monotonic() + 1)
-    assert time.monotonic() - started < 2
-    time.sleep(1.2)
+        CHECKOUT._run_git(Path("/tmp"), ("status",), deadline=time.monotonic() + 3)
+    assert time.monotonic() - started < 5
+    time.sleep(3.5)
     assert child_pid.exists()
     assert not marker.exists()
+
+
+def test_terminate_tolerates_eperm_from_killpg(tmp_path, monkeypatch):
+    # macOS raises EPERM from killpg for a group holding only zombies.
+    process = subprocess.Popen(["/bin/sh", "-c", "exit 0"], start_new_session=True)
+
+    def refuse(_pid, _signal):
+        raise PermissionError(1, "Operation not permitted")
+
+    monkeypatch.setattr(CHECKOUT.os, "killpg", refuse)
+    CHECKOUT._terminate(process)
+    assert process.returncode is not None
 
 
 def test_malformed_git_metadata_fails_closed():

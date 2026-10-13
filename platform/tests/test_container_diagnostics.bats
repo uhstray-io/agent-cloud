@@ -11,7 +11,11 @@ setup() {
   cat > "$BATS_TEST_TMPDIR/engine" <<'STUB'
 #!/usr/bin/env bash
 case "$1" in
-  inspect) echo "state=exited exit=1 restarts=3 started=then error=" ;;
+  # The format must carry the OOM flag and health, or a crash loop's cause stays hidden.
+  inspect) case "$*" in
+      *'oom={{.State.OOMKilled}}'*'health={{if .State.Health}}'*) echo "state=exited exit=137 oom=true restarts=3 health=none started=then error=" ;;
+      *) exit 1 ;;
+    esac ;;
   # The scheme is assembled at run time: a literal connection string here trips the
   # repository's secret scanner, which is right to treat that shape as a credential.
   logs) s=postgres; printf 'Error: failed to connect %s://agw:hunter2@db.invalid:5432/agw\nAuthorization: Bearer abc.def\n- key: sk-plaintext-client\nYour CA administrative password is: ca-key-pw\n' "$s" ;;
@@ -51,7 +55,7 @@ redact() { bash -c "source '$COMMON'; redact_secrets" <<<"$1"; }
 @test "dump_container_diagnostics: state and a redacted log tail, never fails" {
   run bash -c "source '$COMMON'; CONTAINER_ENGINE='$BATS_TEST_TMPDIR/engine'; dump_container_diagnostics agentgateway"
   [ "$status" -eq 0 ]
-  assert_contains "$output" "state=exited exit=1 restarts=3"
+  assert_contains "$output" "state=exited exit=137 oom=true restarts=3 health=none"
   assert_contains "$output" "://agw:***@db.invalid"
   refute_contains "$output" "hunter2"
   refute_contains "$output" "abc.def"

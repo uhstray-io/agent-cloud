@@ -106,7 +106,7 @@ and why.
 | 4.7 | An address edit replaced every matching line and left a production runner declared at the new VM's address | Data handling | 1 | Playbook guard + test (provision-vm address-claim check) |
 | 4.8 | A credential-shaped test fixture was pushed; CI's unscoped all-detectors scan let it fail other PRs | Data handling | 1 | CI (scan scoped to the PR's commits) |
 | 4.9 | **x2** — Private site data in public code: Discord destination IDs in a fixture; the operator's account in a Proxmox token fallback, gateway fixtures and path-derived ids | Data handling | 2 | Test (`test_no_site_identity.py`, the three account shapes); other private values Convention |
-| 4.10 | **x3** — A heredoc script and a stdin redirect both targeted one interpreter; it parsed the operator token file as source and the syntax error printed the token | Secret in transcript | 3 | Convention — **count ≥ 3: the PreToolUse hook is now required, not proposed** |
+| 4.10 | **x4** — A heredoc script and a stdin redirect both targeted one interpreter; it parsed the operator token file as source and the syntax error printed the token | Secret in transcript | 4 | Test + Claude project PreToolUse hook (`.claude/hooks/guard-secret-stdin.py`); Codex hook remains open |
 | 4.11 | A workstation home path reached a committed ledger entry; the audit grep for it ran by hand only | Data handling | 1 | Pre-commit hook (`no-machine-paths`) |
 | 5.1 | Security check duplicated per caller; a fix reached three copies and missed two | Duplication | 1 | Test |
 | 5.2 | Committed while a test was failing, because the check did not gate the commit (repeat 2026-09-25: a merge after a mergeability read, joined by `;`) | Process | 4 | Pre-push hook |
@@ -125,6 +125,7 @@ and why.
 | 5.15 | Published AI attribution in a PR body; widens 5.9 from commits to every GitHub artifact | Process | 1 | Convention (`gh` wrapper proposed) |
 | 5.16 | Merged on a PR status rollup that still showed the previous head's checks; CI on the merged head was running | Process | 1 | Convention (operator-side script; `dev` has no required checks) |
 | 5.17 | Upgraded production's ansible-core before CI ran the playbooks on the new version; 2.20 templates `delegate_to` strictly, a probe drill dry run failed | Process | 1 | Test (`test_delegate_to_strict_undefined.py`) + CI pin + Convention (upgrade ordering) |
+| 5.18 | ansible-core 2.20 rejects template delimiters inside a conditional; the Authentik promotion guard's `'{{ '{{' }}'` broke Deploy Authentik on every branch | Process | 1 | Test (`test_no_template_delimiters_in_conditionals.py`) |
 | 6.1 | Built an edit from an assumed file structure instead of a read one | Process | 1 | Convention |
 | 6.2 | Built an interface the consumer never calls, without reading how it invokes | Process | 1 | Test |
 | 6.3 | Repeated 6.2 — assumed openssl and jq exist on the orchestrator image; neither does — **x3** (CI never installed the playbook collections) | Process | 3 | Convention -> **Test + declared dep**; CI installs `collections/requirements.yml` |
@@ -166,6 +167,7 @@ and why.
 | 10.23 | The main-to-dev sync failed on every workflow-file change from 2026-08-28; a promotion would have reverted two action bumps on `main` | Mechanism never exercised | 1 | CI (`Promotion source (dev -> main)` ancestry step; `test_promotion_source_guard.py`, mutation-checked) |
 | 10.24 | Shipped container jobs on rootless podman with Docker's mount semantics assumed; every `container:` job failed on a missing bind source and on a socket link to root's podman, while the deploy's uid-map check passed | Mechanism never exercised | 1 | Playbook probe (hook-shaped `docker create` in the user manager) + test (`test_service_github_runner.bats`) |
 | 10.25 | The 10.24 probe copied the hooks' `docker create` arguments but ran it with the account's own environment; the hooks pass HOME=/github/home and no XDG directories, so every `container:` job still failed with `cannot resolve /github/home` | Mechanism never exercised | 1 | Playbook probe (wrapper run under `env -i` with the hooks' HOME, one image store for pull and create) + test (`test_service_github_runner.bats`) |
+| 10.26 | Merged an Alloy config change no real Alloy binary had loaded; the rendered config failed to load on v1.5.1 and the production container crash-looped for ~1,000 restarts | Mechanism never exercised | 1 | Test (text guard, `test_o11y_scrape_budgets.py`, mutation-checked) + Convention for the load proof (CI step proposed) |
 | 11.1 | 76 assertions across the suite could never fail — `!` and `[[ ]]` are exempt from `set -e` | False-green test | 1 | **Ratchet test** (`test_assertions_are_real.bats` + `known_inert_assertions.txt`) |
 | 11.2 | Sourced a config file instead of reading it, turning every credential into shell code | Live-state damage | 1 | Test |
 | 11.3 | Committed without running the suite — third occurrence | Process | 1 | Pre-push hook (status note 2026-10-02) |
@@ -2646,7 +2648,7 @@ convention and review.
 
 ### 4.10 The interpreter read the token file as its program, and its error printed the token
 
-**Occurrences: 3** — 2026-09-25, 2026-09-25, 2026-09-26
+**Occurrences: 4** — 2026-09-25, 2026-09-25, 2026-09-26, 2026-10-12
 
 **What happened.** Verifying the Dev seed rollout, I ran `python3 - <<'EOF' ... EOF <
 site-config/secrets/semaphore/semaphore_api_token.txt`. The heredoc and the redirect both
@@ -2663,9 +2665,12 @@ secret in it) and the secret arrives on stdin or in an environment variable. Nev
 `python3 -` / a heredoc script with a secret on stdin. After any exposure, say so at once and
 name the credential to rotate.
 
-**Enforced by.** Convention. Proposal: a Claude Code PreToolUse hook that refuses a Bash command
-combining an interpreter reading its program from stdin (`python3 -`, `bash -s`, a heredoc
-script) with a redirect from a path under `secrets/`.
+**Enforced in Claude Code by.** The project PreToolUse hook in `.claude/settings.json` runs
+`.claude/hooks/guard-secret-stdin.py`. It blocks Bash commands that combine an interpreter
+program read from stdin (`python3 -`, `bash -s`, or a heredoc) with stdin redirected from a
+`secrets/` path. A script file or `-c` program with the secret on stdin remains allowed. The
+deterministic cases are covered by `platform/tests/test_semaphore_token_rotation_hook.py`.
+This project hook does not cover Codex shell calls; that integration remains open.
 
 **Occurrence 2 — 2026-09-25, a different session the same evening.** To tell whether local
 Semaphore or its Caddy route rejected a token (the collector's local dry run had got HTTP 401),
@@ -2685,10 +2690,16 @@ third time. This came hours after writing occurrence 2, after recording the rule
 `AGENTS.md` and `docs/LOCAL-DEV.md`, and after using the safe shape (a script file, the token
 on stdin) a dozen times in between. Why the rule did not fire: each safe script file served one
 query, so a new question started from a blank inline command again, and reading the rule in
-docs does not reach the moment of typing. With three occurrences, Convention is no longer an
-acceptable enforcement: the PreToolUse hook proposed above is required. Until it exists,
-token-bearing calls go through one reusable script file that takes the query as arguments,
-never a fresh inline program.
+docs does not reach the moment of typing. With three occurrences, Convention is not sufficient:
+the project PreToolUse hook now guards this command shape. Token-bearing calls still use a
+reusable script file, with the secret on stdin, never a fresh inline program.
+
+**Occurrence 4 — 2026-10-12, Codex.** A read-only Semaphore task diagnostic again
+combined `python3 -` with a heredoc and a separate redirect from the production
+operator-token backup. The token text reached the tool transcript. The task was
+stopped, the token was treated as exposed, and the rotation workflow was started.
+The Claude project hook above cannot intercept Codex tool calls; Codex needs an
+equivalent command guard at its own execution boundary.
 
 
 ### 4.11 A workstation home path reached a committed ledger entry; the audit grep was manual
@@ -3159,6 +3170,37 @@ on it.
 `test_o11y_fault_drill.py::test_a_probe_dry_run_needs_no_exporter_declaration`; CI pin
 `ansible-core==2.20.8` in `platform/requirements-test.txt`. Convention for the ordering (pin
 CI, green run, then upgrade the runner). Related: 1.22.
+
+### 5.18 ansible-core 2.20 rejects template delimiters inside a conditional
+
+**Occurrences: 1** — 2026-10-12
+
+**What happened.** Prod task 4995, `Deploy Authentik (Dev)` in check mode on the runner's
+ansible-core 2.20.8, failed at `Promotion guard (prod): OIDC prod URLs are set + not
+local-dev defaults` with `[ERROR]: Task failed: Syntax error in expression. Template
+delimiters are not supported in expressions: chunk after expression`. The offender was the
+third `that:` line of `deploy-authentik.yml`, `"'{{ '{{' }}' not in (lookup('vars', item,
+default=''))"`, a way to spell a literal brace pair inside a conditional. The same line was
+on `main`, so the main-bound Deploy Authentik was broken too. A scan of every YAML under
+`platform/playbooks` and `platform/services` for `that`, `when`, `failed_when`,
+`changed_when` and `until` values containing `{{` or `{%` found this one line. Reproduced on
+ansible-core 2.21.0 with a one-task play; the fixed spelling `('{' ~ '{')` evaluates, fails
+the assert for a value that holds a brace pair, and passes for a clean URL.
+
+**Root cause.** The same upgrade class as 5.17: the runner moved to ansible-core 2.20, which
+parses a conditional as one bare expression and refuses a delimiter inside it, where 2.18
+tolerated the spelling. No test read conditionals for delimiters, and the guard only runs
+for a prod (`local_mode` false) deploy, so no local run exercised it.
+
+**The rule.** A conditional never contains `{{`, `{%` or `{#`. Write a literal brace pair as
+a concatenation, `('{' ~ '{')`; use `fail_msg` (not a conditional) for text that interpolates
+variables.
+
+**Enforced by.** Test: `platform/tests/test_no_template_delimiters_in_conditionals.py`
+(static scan of every YAML under `platform/playbooks`, `platform/services` and
+`platform/semaphore`, plus a run of the real guard task through ansible-playbook, plus the
+reproduction of the 2.20 error where the installed ansible-core is 2.20 or newer). CI pin
+`ansible-core==2.20.8` in `platform/requirements-test.txt`. Related: 5.17.
 
 ## 6. Working from assumptions about files
 
@@ -4550,6 +4592,39 @@ containers. `test_service_github_runner.bats` renders the wrapper and runs it ag
 stub podman with the hooks' environment and argument shapes for create, run and exec
 (compared byte for byte, including a command after the image that contains `-e PATH`), and
 requires the probe's environment, the absence of a migrate, and the `.env` PATH.
+
+### 10.26 An Alloy config change merged without the real Alloy binary loading the rendered config
+
+**What happened.** PR #570 (commit `2ce3e074`, "require reviewed finite metric scrape
+budgets") put the five scrape limits into Alloy's local-container scrape as
+`encoding.from_json(sys.env(...))`, including `body_size_limit`. Once `Deploy o11y (Dev)`
+(Semaphore task 5000) rolled that commit to production, `o11y-alloy` crash-looped: task 5015
+read `running exit=0 oom=false restarts=1027 health=starting`. The deploy's verify had
+waited on health and failed with "starting", printing no Alloy log. A local repro found the
+cause: rendering `config.alloy.j2` and running the pinned `docker.io/grafana/alloy:v1.5.1`
+printed `config.alloy:118:21: encoding.from_json(sys.env("O11Y_SCRAPE_BODY_SIZE_LIMIT_BYTES"))
+units: unknown unit  in 16777216`, then "could not perform the initial load successfully".
+Alloy's `body_size_limit` takes a units string such as `16MiB`; the env carries bytes, so a
+bare number is a type error. Appending the `B` unit made the config load and every node
+evaluate; the other four numeric limits had loaded all along.
+
+**Root cause.** Every test of the Alloy config asserted the template's text, or rendered
+it and compared the text. Nothing ran Alloy against the rendered file, so a type error that
+only Alloy's own loader reports could not fail anywhere before production. The deploy's
+verify step could only wait for health, and on failure showed the health state, not the
+reason the process kept exiting.
+
+**The rule.** Any change to an Alloy config is proven by loading the rendered config in the
+pinned Alloy image before merge. A text assertion on the template is a pin on one line,
+not evidence that Alloy accepts it.
+
+**Enforced by.** The text guard is a test:
+`test_alloy_local_scrape_uses_same_finite_bounds_and_existing_sample_ceiling` in
+`test_o11y_scrape_budgets.py` now requires the `body_size_limit` line to append a unit and
+not to be `encoding.from_json(...)` (mutation-checked against the old line). The load proof
+itself is `Convention`. Proposed guard: a CI step or `make` target that renders the config
+and runs the pinned Alloy image on it, and a deploy-verify failure path that dumps the
+redacted Alloy container log so a crash loop names its cause.
 
 ## 11. The largest one
 

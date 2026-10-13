@@ -75,11 +75,20 @@ class Stub:
                     (vLLM's keep-alive) halfway through each gap, so the stream lasts about K*G s
     mutate          a function applied to every 2xx JSON body and every stream chunk before it is
                     sent (a gateway adding, dropping or retyping fields)
+    quiet_decode    strip the SSE comments of the generating stream itself (real vLLM sends none
+                    while chunks flow); only the queue wait below can then produce one
+    slots           {"n": K, "filler_max_tokens": M, "queue_ka": S, "filler_hold": H}: vLLM's
+                    scheduler. At most K streams generate at once; a stream that cannot start waits
+                    after its 200, an SSE comment every S seconds (vLLM's keep-alive). A request
+                    with max_tokens M and the long prompt (a conformance filler) takes a slot and
+                    holds it for H seconds or until its client goes away. `held` counts the slots in use now,
+                    `held_peak` the most at once, `fillers_held` those held by fillers
     """
 
     def __init__(self, key=None, drop_reasoning=False, buffer_stream=False, responses_404=False,
                  reorder=False, first_delay=0.4, gap=0.1, models=("m",), cut_stream=False,
-                 mutate=None, usage_chunk=True, drop_keepalives=False, long=None):
+                 mutate=None, usage_chunk=True, drop_keepalives=False, long=None, quiet_decode=False,
+                 slots=None):
         self.key, self.drop_reasoning, self.buffer_stream = key, drop_reasoning, buffer_stream
         self.responses_404, self.reorder = responses_404, reorder
         self.first_delay, self.gap = first_delay, gap
@@ -87,7 +96,11 @@ class Stub:
         self.cut_stream = cut_stream
         self.mutate = mutate
         self.usage_chunk = usage_chunk
-        self.drop_keepalives, self.long = drop_keepalives, long
+        self.drop_keepalives, self.long, self.quiet_decode = drop_keepalives, long, quiet_decode
+        self.slots = slots
+        self.sem = threading.Semaphore(slots["n"]) if slots else None
+        self.held = self.held_peak = self.fillers_held = 0
+        self.lock = threading.Lock()
         self.seen = []
         stub = self
 
@@ -200,21 +213,54 @@ class Stub:
                          "usage": {"prompt_tokens": 9, "completion_tokens": 7, "total_tokens": 16}}
                 parts.append((0.0, ("data: " + json.dumps(event) + "\n\n").encode()))
             parts.append((0.0, b"data: [DONE]\n\n"))
-        if self.drop_keepalives:  # keep each delay, send nothing for the comment
+        if self.drop_keepalives or self.quiet_decode:  # keep each delay, send nothing for the comment
             parts = [(d, b"" if p.startswith(b":") else p) for d, p in parts]
         h.send_response(200)
         h.send_header("Content-Type", "text/event-stream")
         h.send_header("Connection", "close")
         h.end_headers()
-        if self.buffer_stream:
-            time.sleep(sum(d for d, _ in parts))
-            h.wfile.write(b"".join(p for _, p in parts))
-            h.wfile.flush()
-            return
-        for delay, part in parts:
-            time.sleep(delay)
-            h.wfile.write(part)
-            h.wfile.flush()
+        taken = False
+        try:
+            if self.sem is not None:
+                # The scheduler: a stream that finds no free slot waits here, comments flowing.
+                while not self.sem.acquire(timeout=self.slots["queue_ka"]):
+                    if not self.drop_keepalives:
+                        h.wfile.write(b": keep-alive\n\n")
+                        h.wfile.flush()
+                taken = True
+                with self.lock:
+                    self.held += 1
+                    self.held_peak = max(self.held_peak, self.held)
+                if body.get("max_tokens") == self.slots["filler_max_tokens"] \
+                        and "infinitely many primes" in body["messages"][0]["content"]:
+                    end = time.time() + self.slots["filler_hold"]
+                    with self.lock:
+                        self.fillers_held += 1
+                    try:
+                        while time.time() < end:  # a write to a client that went away raises
+                            time.sleep(0.1)
+                            h.wfile.write(b": keep-alive\n\n")
+                            h.wfile.flush()
+                    finally:
+                        with self.lock:
+                            self.fillers_held -= 1
+                    return
+            if self.buffer_stream:
+                time.sleep(sum(d for d, _ in parts))
+                h.wfile.write(b"".join(p for _, p in parts))
+                h.wfile.flush()
+                return
+            for delay, part in parts:
+                time.sleep(delay)
+                h.wfile.write(part)
+                h.wfile.flush()
+        except OSError:
+            pass  # the client went away: a conformance filler reaped, or a stream cut by its ceiling
+        finally:
+            if taken:
+                with self.lock:
+                    self.held -= 1
+                self.sem.release()
 
 
 @pytest.fixture
@@ -245,7 +291,7 @@ def _shim(tmp: Path, exit_code: int | None = None) -> Path:
     return bindir
 
 
-def _run(tmp: Path, gw: Stub, direct: Stub, *, direct_key=True, env=None, shim_exit=None, path_dirs=()):
+def _script_env(tmp: Path, gw: Stub, direct: Stub, *, direct_key=True, env=None, shim_exit=None, path_dirs=()):
     out = tmp / "out"
     out.mkdir(exist_ok=True)
     (tmp / "gw.key").write_text(GW_KEY)
@@ -265,6 +311,13 @@ def _run(tmp: Path, gw: Stub, direct: Stub, *, direct_key=True, env=None, shim_e
         "AGW_CONF_TIMEOUT": "30",
         **(env or {}),
     }
+    return full_env
+
+
+def _run(tmp: Path, gw: Stub, direct: Stub, *, direct_key=True, env=None, shim_exit=None, path_dirs=()):
+    full_env = _script_env(tmp, gw, direct, direct_key=direct_key, env=env, shim_exit=shim_exit,
+                           path_dirs=path_dirs)
+    out = tmp / "out"
     r = subprocess.run(["bash", str(SCRIPT), "run"], env=full_env, capture_output=True, text=True, timeout=180)
     results = out / "results.jsonl"
     lines = [json.loads(x) for x in results.read_text().splitlines()] if results.exists() else []
@@ -529,6 +582,176 @@ def test_bad_long_stream_inputs_stop_before_any_request(tmp_path, stubs, name, v
     gw, direct = stubs(key=GW_KEY), stubs(key=UP_KEY)
     r, lines = _run(tmp_path, gw, direct, env={name: value})
     assert r.returncode == 2 and name in r.stderr, r.stderr
+    assert gw.seen == [] and direct.seen == [] and lines == []
+
+
+
+# ── 2.3: saturating the upstream so the measured stream queues ────────────────
+# vLLM sends a keep-alive comment only after 15 s with no chunk, so a steady stream carries none.
+# AGW_CONF_LONG_STREAM_SATURATE=N starts N filler streams on each side first. The stubs model vLLM's
+# scheduler (`slots`): fillers take the slots, the measured request waits with comments flowing.
+
+FILLER_TOKENS = 555
+QUEUE = {"n": 2, "filler_max_tokens": FILLER_TOKENS, "queue_ka": 0.3, "filler_hold": 60}
+SAT_ENV = {**LONG_ENV, "AGW_CONF_STREAM_MAX_TOKENS": str(FILLER_TOKENS),
+           "AGW_CONF_LONG_STREAM_SATURATE": "2", "AGW_CONF_LONG_STREAM_SATURATE_S": "3",
+           "AGW_CONF_LONG_STREAM_SATURATE_SETTLE_S": "1"}
+
+
+def _fillers(stub):
+    return [x for x in stub.seen if (x["body"] or {}).get("max_tokens") == FILLER_TOKENS
+            and "infinitely many primes" in x["body"]["messages"][0]["content"]]
+
+
+def _settles(stub, held, seconds=5.0, what="held"):
+    end = time.time() + seconds
+    while time.time() < end and getattr(stub, what) != held:
+        time.sleep(0.05)
+    return getattr(stub, what) == held
+
+
+def test_saturating_the_upstream_makes_the_long_stream_queue_and_proves_the_keepalives(tmp_path, stubs):
+    # Steady generation sends no comment (quiet_decode), so the only comments are the queue wait's.
+    gw = stubs(key=GW_KEY, long=LONG, quiet_decode=True, slots=QUEUE)
+    direct = stubs(key=UP_KEY, long=LONG, quiet_decode=True, slots=QUEUE)
+    r, lines = _run(tmp_path, gw, direct, env=SAT_ENV)
+    assert r.returncode == 0, r.stderr
+    report = _diff(tmp_path)
+    c = _case(report, "stream-long")
+    assert report["verdict"] == "pass" and c["verdict"] == "match", c
+    assert report["unproven"] == [], report  # comments were seen from vLLM and passed through
+    ls = c["long_stream"]
+    assert ls["saturate"] == 2 and ls["keepalives_seen_from_vllm"] is True, ls
+    for side, stub in (("gateway", gw), ("direct", direct)):
+        assert ls[side]["keepalives"] >= 3 and ls[side]["fillers_accepted"] == 2, ls
+        assert ls[side]["first_byte_s"] >= 0.25, ls  # the first line is a queue comment, not a token
+        assert stub.held_peak == 2, "the fillers filled every slot, so the measured request queued"
+        assert len(_fillers(stub)) == 2
+        assert {x["auth"] for x in _fillers(stub)} == {f"Bearer {GW_KEY if stub is gw else UP_KEY}"}
+    assert _long(lines, "direct")["timing"]["fillers"] == {"requested": 2, "accepted": 2, "lifetime_s": 3}
+    assert _settles(gw, 0) and _settles(direct, 0)
+    _no_key_anywhere(tmp_path, r)
+
+
+def test_without_saturation_a_steadily_generating_long_stream_stays_unproven_and_starts_no_filler(tmp_path, stubs):
+    gw = stubs(key=GW_KEY, long=LONG, quiet_decode=True, slots=QUEUE)
+    direct = stubs(key=UP_KEY, long=LONG, quiet_decode=True, slots=QUEUE)
+    env = {k: v for k, v in SAT_ENV.items() if not k.startswith("AGW_CONF_LONG_STREAM_SATURATE")}
+    r, lines = _run(tmp_path, gw, direct, env=env)
+    assert r.returncode == 0, r.stderr
+    report = _diff(tmp_path)
+    assert report["unproven"] == ["keepalive"], report
+    assert _case(report, "stream-long")["long_stream"]["saturate"] == 0
+    assert "fillers" not in _long(lines, "direct")["timing"]
+    assert _fillers(gw) == [] and _fillers(direct) == [] and gw.held_peak == direct.held_peak == 1
+
+
+def test_a_gateway_that_drops_the_queue_keepalives_fails_a_saturated_long_stream(tmp_path, stubs):
+    gw = stubs(key=GW_KEY, long=LONG, quiet_decode=True, slots=QUEUE, drop_keepalives=True)
+    direct = stubs(key=UP_KEY, long=LONG, quiet_decode=True, slots=QUEUE)
+    r, _ = _run(tmp_path, gw, direct, env=SAT_ENV)
+    assert r.returncode == 0, r.stderr
+    c = _case(_diff(tmp_path), "stream-long")
+    assert c["verdict"] == "error" and "the gateway dropped keep-alives" in c["failure"], c
+    assert c["long_stream"]["gateway"]["keepalives"] == 0 < c["long_stream"]["direct"]["keepalives"]
+
+
+def test_saturate_a_side_that_refuses_the_fillers_fails_the_case_naming_it(tmp_path, stubs):
+    # Fillers carry the same key as the measured request, so a wrong-keyed filler is a 401: here
+    # that is the gateway refusing them (as a 429 from its request bucket would).
+    refuse = {"n": 2, "filler_max_tokens": FILLER_TOKENS, "queue_ka": 0.3, "filler_hold": 60}
+    gw = stubs(key=GW_KEY, long=LONG, quiet_decode=True, slots=refuse)
+    direct = stubs(key=UP_KEY, long=LONG, quiet_decode=True, slots=refuse)
+    original = gw.handle
+
+    def handle(h, method, body):
+        if method == "POST" and (body or {}).get("max_tokens") == FILLER_TOKENS \
+                and "infinitely many primes" in body["messages"][0]["content"]:
+            gw.seen.append({"method": method, "path": h.path, "auth": h.headers.get("Authorization"), "body": body})
+            return gw.send(h, 429, {"error": {"type": "rate_limit", "code": "rate_limited", "message": "slow"}})
+        return original(h, method, body)
+
+    gw.handle = handle
+    r, _ = _run(tmp_path, gw, direct, env=SAT_ENV)
+    assert r.returncode == 0, r.stderr
+    c = _case(_diff(tmp_path), "stream-long")
+    assert c["verdict"] == "error", c
+    assert c["failure"].startswith(
+        "the gateway accepted 0 of 2 filler streams: the measured request may not have queued"), c
+    assert "vLLM accepted" not in c["failure"] and c["long_stream"]["gateway"]["fillers_accepted"] == 0
+
+
+def test_the_fillers_are_reaped_when_the_long_stream_ends_before_they_do(tmp_path, stubs):
+    # Free slots, so the measured request does not queue; the fillers (60 s hold, 60 s curl limit)
+    # would run for a minute on each side. Only the reaping ends them. The script's exit trap reaps
+    # too, so the check that the reaping at the END OF EACH SIDE works is made while the direct side
+    # is measured: the gateway's fillers must already be gone when its measured request arrives.
+    roomy = {**QUEUE, "n": 4}
+    gw = stubs(key=GW_KEY, long=LONG, quiet_decode=True, slots=roomy)
+    direct = stubs(key=UP_KEY, long=LONG, quiet_decode=True, slots=roomy)
+    seen_at_direct_measured = []
+    original = direct.handle
+
+    def handle(h, method, body):
+        if (body or {}).get("max_tokens") == LONG["max_tokens"]:  # the measured stream-long request
+            seen_at_direct_measured.append(gw.fillers_held)
+        return original(h, method, body)
+
+    direct.handle = handle
+    env = _script_env(tmp_path, gw, direct, env={**SAT_ENV, "AGW_CONF_LONG_STREAM_SATURATE_S": "60"})
+    proc = subprocess.run(["bash", str(SCRIPT), "run"], env=env, stdout=subprocess.DEVNULL,
+                          stderr=subprocess.DEVNULL, timeout=180)
+    assert proc.returncode == 0
+    assert len(_fillers(gw)) == len(_fillers(direct)) == 2
+    assert seen_at_direct_measured == [0], "the gateway's fillers were still running on the direct side"
+    assert _settles(gw, 0, 3, "fillers_held") and _settles(direct, 0, 3, "fillers_held")
+
+
+def test_saturate_fillers_are_reaped_when_the_script_is_stopped_mid_run(tmp_path, stubs):
+    roomy = {**QUEUE, "n": 4, "filler_hold": 60}
+    gw = stubs(key=GW_KEY, long={**LONG, "tokens": 30}, quiet_decode=True, slots=roomy)
+    direct = stubs(key=UP_KEY, long=LONG, quiet_decode=True, slots=roomy)
+    env = _script_env(tmp_path, gw, direct, env={**SAT_ENV, "AGW_CONF_LONG_STREAM_SATURATE_S": "60"})
+    proc = subprocess.Popen(["bash", str(SCRIPT), "run"], env=env, stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL)
+    try:
+        assert _settles(gw, 3, 60) and gw.fillers_held == 2, "two fillers and the measured stream never ran together"
+        proc.terminate()
+        proc.wait(timeout=30)
+        # The measured stream's curl is not the script's to reap (it ends by its own ceiling); the fillers are.
+        assert _settles(gw, 0, 10, "fillers_held"), "a filler outlived the script"
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+
+
+@pytest.mark.parametrize("name, value", [
+    ("AGW_CONF_LONG_STREAM_SATURATE", "x"), ("AGW_CONF_LONG_STREAM_SATURATE", "-1"),
+    ("AGW_CONF_LONG_STREAM_SATURATE", "17"), ("AGW_CONF_LONG_STREAM_SATURATE_S", "0"),
+    ("AGW_CONF_LONG_STREAM_SATURATE_SETTLE_S", "x"),
+])
+def test_bad_saturation_inputs_stop_before_any_request(tmp_path, stubs, name, value):
+    gw, direct = stubs(key=GW_KEY), stubs(key=UP_KEY)
+    r, lines = _run(tmp_path, gw, direct, env={**LONG_ENV, "AGW_CONF_LONG_STREAM_SATURATE": "2", name: value})
+    assert r.returncode == 2 and name in r.stderr, r.stderr
+    assert gw.seen == [] and direct.seen == [] and lines == []
+
+
+@pytest.mark.parametrize("timeout, seconds", [("600", "601"), ("10", "11")])
+def test_a_saturation_lifetime_beyond_the_long_stream_ceiling_is_refused(tmp_path, stubs, timeout, seconds):
+    gw, direct = stubs(key=GW_KEY), stubs(key=UP_KEY)
+    env = {**LONG_ENV, "AGW_CONF_LONG_STREAM_SATURATE": "2", "AGW_CONF_LONG_STREAM_TIMEOUT": timeout,
+           "AGW_CONF_LONG_STREAM_SATURATE_S": seconds}
+    r, lines = _run(tmp_path, gw, direct, env=env)
+    assert r.returncode == 2 and "AGW_CONF_LONG_STREAM_SATURATE_S" in r.stderr, r.stderr
+    assert f"must not exceed AGW_CONF_LONG_STREAM_TIMEOUT ({timeout})" in r.stderr, r.stderr
+    assert gw.seen == [] and direct.seen == [] and lines == []
+
+
+def test_saturation_without_the_long_stream_case_is_refused_not_ignored(tmp_path, stubs):
+    gw, direct = stubs(key=GW_KEY), stubs(key=UP_KEY)
+    r, lines = _run(tmp_path, gw, direct, env={"AGW_CONF_LONG_STREAM_SATURATE": "2"})
+    assert r.returncode == 2 and "needs AGW_CONF_LONG_STREAM=1" in r.stderr, r.stderr
     assert gw.seen == [] and direct.seen == [] and lines == []
 
 
@@ -1156,7 +1379,23 @@ def test_the_playbook_warns_visibly_when_the_long_stream_proved_no_keepalive_pas
     assert rc == 0, out  # a warning, not a failure
     assert f"PASS, {len(CASES) + 1}/{len(CASES) + 1} cases match." in out, out
     assert UNPROVEN in out, out
+    assert "re-run with agw_conformance_long_stream_saturate set" in out.replace("\n", " "), out  # the remedy
     assert '"unproven": [' in out and '"keepalive"' in out  # in the report and the stats
+    assert made and not _left_behind(made)
+
+
+@pytest.mark.parametrize("n", [2, "2"])  # a survey var reaches the play as a string
+def test_the_playbook_saturates_the_long_stream_so_its_keepalives_are_proven(tmp_path, stubs, n):
+    gw = stubs(key=GW_KEY, long=LONG, quiet_decode=True, slots=QUEUE)
+    direct = stubs(key=UP_KEY, long=LONG, quiet_decode=True, slots=QUEUE)
+    rc, out, made = _playbook(tmp_path, gw, direct, extra={
+        "agw_conformance_long_stream": "true", "agw_conformance_long_stream_min_seconds": 3,
+        "agw_conformance_long_stream_max_tokens": 777, "agw_conformance_stream_max_tokens": FILLER_TOKENS,
+        "agw_conformance_long_stream_saturate": n, "agw_conformance_long_stream_saturate_seconds": 3})
+    assert rc == 0, out
+    assert f"PASS, {len(CASES) + 1}/{len(CASES) + 1} cases match." in out, out
+    assert len(_fillers(gw)) == len(_fillers(direct)) == 2
+    assert UNPROVEN not in out  # the queue made vLLM send comments, so pass-through was exercised
     assert made and not _left_behind(made)
 
 
