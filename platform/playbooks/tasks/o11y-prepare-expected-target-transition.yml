@@ -8,6 +8,33 @@
   register: _o11y_previous_rules_stat
   no_log: true
 
+- name: Read pending expected-target ownership snapshot presence privately
+  ansible.builtin.stat:
+    path: "{{ _deploy_dir }}/config/grafana/provisioning/alerting/observability.yml.expected-target-transition"
+    get_checksum: false
+    get_mime: false
+  register: _o11y_pending_expected_rules_stat
+  no_log: true
+
+- name: Require the pending expected-target snapshot to be a regular file
+  ansible.builtin.assert:
+    that:
+      - >-
+        (not (_o11y_pending_expected_rules_stat.stat.exists | default(false) | bool) and
+         not (_o11y_pending_expected_rules_stat.stat.islnk | default(false) | bool)) or
+        ((_o11y_pending_expected_rules_stat.stat.isreg | default(false) | bool) and
+         not (_o11y_pending_expected_rules_stat.stat.islnk | default(false) | bool))
+    fail_msg: "Pending expected-target ownership is unreadable; no alert rules were written."
+    quiet: true
+  no_log: true
+
+- name: Read pending expected-target ownership snapshot privately
+  ansible.builtin.slurp:
+    src: "{{ _deploy_dir }}/config/grafana/provisioning/alerting/observability.yml.expected-target-transition"
+  register: _o11y_pending_expected_rules_file
+  no_log: true
+  when: _o11y_pending_expected_rules_stat.stat.isreg | default(false)
+
 - name: Require the previous alert provisioning path to be a regular file
   ansible.builtin.assert:
     that:
@@ -82,11 +109,17 @@
       {{ {'managed': not (local_mode | default(false) | bool),
           'enabled': (o11y_alerts_enabled | default(false) | bool and
                       o11y_expected_metrics_targets_reviewed | default(false) | bool),
+          'reviewed': o11y_expected_metrics_targets_reviewed | default(false) | bool,
           'targets': o11y_expected_metrics_targets | default([]),
           'retired_uids': o11y_expected_metrics_targets_retired_uids | default([]),
+          'check_mode': ansible_check_mode,
           'live_rules': (_o11y_live_alert_rules.stdout | default('')),
           'live_folders': (_o11y_live_alert_folders.stdout | default('')),
-          'previous_rules': ((_o11y_previous_rules_file.content | b64decode) if _o11y_previous_rules_stat.stat.isreg | default(false) else '')} | to_json }}
+          'previous_rules': ((_o11y_pending_expected_rules_file.content | b64decode)
+            if _o11y_pending_expected_rules_stat.stat.isreg | default(false)
+            else ((_o11y_previous_rules_file.content | b64decode) if _o11y_previous_rules_stat.stat.isreg | default(false) else '')),
+          'pending_rules': ((_o11y_previous_rules_file.content | b64decode)
+            if _o11y_pending_expected_rules_stat.stat.isreg | default(false) and _o11y_previous_rules_stat.stat.isreg | default(false) else '')} | to_json }}
   delegate_to: localhost
   register: _o11y_expected_target_transition
   changed_when: false

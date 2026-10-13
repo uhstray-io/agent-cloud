@@ -60,11 +60,21 @@ def _service_rules(document):
 
 
 def _live_rules(document, folder_uid="agent-cloud-folder"):
-    return [
-        {**rule, "folderUID": folder_uid, "ruleGroup": "service-telemetry"}
-        for rule in _service_rules(document)
-        if rule["uid"].startswith("o11y_missing_")
-    ]
+    result = []
+    for rule in _service_rules(document):
+        if not rule["uid"].startswith("o11y_missing_"):
+            continue
+        serialized = json.loads(json.dumps(rule))
+        serialized.update(folderUID=folder_uid, ruleGroup="service-telemetry")
+        for query in serialized["data"]:
+            query.setdefault("queryType", "")
+            if query["refId"] == "B":
+                query.setdefault("relativeTimeRange", {"from": 0, "to": 0})
+            model = query["model"]
+            model.setdefault("datasource", {"type": query["datasourceUid"], "uid": query["datasourceUid"]})
+            model.setdefault("hide", False)
+        result.append(serialized)
+    return result
 
 
 def test_expected_target_coverage_counts_exact_missing_unexpected_and_unhealthy_identities():
@@ -366,6 +376,124 @@ def test_live_expected_target_contract_must_match_validated_previous_ownership(d
         })
 
 
+@pytest.mark.parametrize("drift", ["condition", "datasource", "threshold"])
+def test_live_expected_target_preflight_rejects_complete_query_contract_drift(drift):
+    previous = _render(o11y_expected_metrics_targets=[_expected()])
+    live = _live_rules(previous)
+    if drift == "condition":
+        live[0]["condition"] = "A"
+    elif drift == "datasource":
+        live[0]["data"][0]["datasourceUid"] = "loki"
+    else:
+        live[0]["data"][1]["model"]["conditions"][0]["evaluator"]["params"] = [1]
+    with pytest.raises(SURVEY.Refusal):
+        _transition(previous, enabled=False, targets=[], live=live)
+
+
+def test_grafana_api_serialization_preserves_the_provisioned_query_contract():
+    previous = _render(o11y_expected_metrics_targets=[_expected()])
+    result = _transition(previous, enabled=False, targets=[], live=_live_rules(previous))
+    assert result["reason"] == "disabled"
+
+
+def test_check_mode_validates_source_without_claiming_live_transition_proof():
+    previous = _render(o11y_expected_metrics_targets=[_expected()])
+    result = SURVEY.prepare_expected_target_transition({
+        "enabled": False,
+        "reviewed": True,
+        "targets": [_expected()],
+        "retired_uids": [],
+        "previous_rules": yaml.safe_dump(previous),
+        "live_rules": "",
+        "live_folders": "",
+        "check_mode": True,
+    })
+    assert result["status"] == "prepared"
+    assert result["reason"] == "check_mode_unverified"
+    assert result["paused_uids"] == [_expected()["uid"]]
+    with pytest.raises(SURVEY.Refusal):
+        SURVEY.prepare_expected_target_transition({
+            "enabled": False,
+            "reviewed": True,
+            "targets": [{**_expected(), "uid": "invalid"}],
+            "retired_uids": [],
+            "previous_rules": yaml.safe_dump(previous),
+            "live_rules": "",
+            "live_folders": "",
+            "check_mode": True,
+        })
+
+
+def test_interrupted_restore_accepts_only_the_exact_pending_paused_transition():
+    target = _expected()
+    active = _render(o11y_expected_metrics_targets=[target])
+    paused = _render(
+        o11y_alerts_enabled=False,
+        o11y_expected_metrics_targets_reviewed=False,
+        o11y_expected_metrics_targets=[],
+        _o11y_previous_expected_target_uids=[target["uid"]],
+    )
+    live_active = _live_rules(active)
+    live_paused = _live_rules(paused)
+
+    def retry(live, pending=paused):
+        return SURVEY.prepare_expected_target_transition({
+            "enabled": False,
+            "targets": [],
+            "retired_uids": [],
+            "previous_rules": yaml.safe_dump(active),
+            "pending_rules": yaml.safe_dump(pending),
+            "live_rules": json.dumps(live),
+            "live_folders": json.dumps([{"uid": "agent-cloud-folder", "title": "agent-cloud"}]),
+        })
+
+    assert retry(live_active)["reason"] == "disabled"
+    assert retry(live_active, pending=active)["reason"] == "disabled"
+    assert retry(live_paused)["reason"] == "disabled"
+    drifted = json.loads(json.dumps(live_paused))
+    drifted[0]["data"][1]["model"]["conditions"][0]["evaluator"]["params"] = [1]
+    with pytest.raises(SURVEY.Refusal):
+        retry(drifted)
+
+
+def test_active_rule_validation_separates_declared_rules_from_retired_tombstones():
+    active_target = _expected()
+    retired_target = _expected(
+        uid="o11y_missing_old_api", instance="old-api.example.test:9100", service="old-api/service",
+    )
+    active = _render(o11y_expected_metrics_targets=[active_target])
+    tombstone_doc = _render(
+        o11y_alerts_enabled=False,
+        o11y_expected_metrics_targets_reviewed=False,
+        o11y_expected_metrics_targets=[],
+        _o11y_retired_expected_target_uids=[retired_target["uid"]],
+    )
+    rules = _live_rules(active) + _live_rules(tombstone_doc)
+    input_document = {
+        "reviewed": True,
+        "targets": [active_target],
+        "retired_uids": [retired_target["uid"]],
+        "live_rules": json.dumps(rules),
+        "live_folders": json.dumps([{"uid": "agent-cloud-folder", "title": "agent-cloud"}]),
+    }
+    assert SURVEY.validate_active_expected_target_rules(input_document) == {
+        "status": "validated", "active_count": 1, "retired_count": 1,
+    }
+
+    for mutate in (
+        lambda rule: rule.update(isPaused=False),
+        lambda rule: rule["data"][0]["model"].update(expr="vector(1)"),
+        lambda rule: rule["labels"].update(environment="prod"),
+        lambda rule: rule.update(notification_settings={"receiver": "unexpected"}),
+    ):
+        drifted = json.loads(json.dumps(input_document))
+        rows = json.loads(drifted["live_rules"])
+        mutate(next(row for row in rows if row["uid"] == retired_target["uid"]))
+        drifted["live_rules"] = json.dumps(rows)
+        with pytest.raises(SURVEY.Refusal):
+            SURVEY.validate_active_expected_target_rules(drifted)
+
+
 def test_live_expected_target_preflight_requires_exact_folder_and_readback():
     target = _expected()
     previous = _render(o11y_expected_metrics_targets=[target])
@@ -402,6 +530,9 @@ def test_private_alert_rule_reads_and_writes_are_hidden_and_check_mode_skips_ren
     prepare = yaml.safe_load(prepare_path.read_text())
     for name in (
         "Read previous alert provisioning file presence privately",
+        "Read pending expected-target ownership snapshot presence privately",
+        "Require the pending expected-target snapshot to be a regular file",
+        "Read pending expected-target ownership snapshot privately",
         "Require the previous alert provisioning path to be a regular file",
         "Read previous alert provisioning rules privately",
         "Read live Grafana alert ownership before alert transition",
@@ -445,6 +576,7 @@ def test_private_alert_rule_reads_and_writes_are_hidden_and_check_mode_skips_ren
             "Read the production service-down rule after drill recovery",
             "Require the production service-down rule to remain active",
             "Read all production o11y alert rules after drill recovery",
+        "Validate expected-target ownership before active-drill recovery",
             "Require every o11y alert rule to remain active",
         ),
     }
@@ -461,6 +593,33 @@ def test_private_alert_rule_reads_and_writes_are_hidden_and_check_mode_skips_ren
             pending = [child for group in pending for child in (group if isinstance(group, list) else [group])]
         for name in names:
             assert next(task for task in flat_tasks if task.get("name") == name)["no_log"] is True
+
+    active_target_validation = yaml.safe_load(
+        (ROOT / "platform/playbooks/tasks/o11y-validate-active-expected-target-rules.yml").read_text()
+    )
+    for name in (
+        "Read the agent-cloud alert folder for target rule validation",
+        "Validate active expected-target rules and retired tombstones privately",
+        "Require active target declarations and inert retired tombstones to match",
+    ):
+        assert next(task for task in active_target_validation if task.get("name") == name)["no_log"] is True
+    for relative_path in (
+        "platform/playbooks/drill-o11y-active-alert-delivery.yml",
+        "platform/playbooks/tasks/o11y-recover-active-alert-drill.yml",
+    ):
+        text = (ROOT / relative_path).read_text()
+        assert "o11y-validate-active-expected-target-rules.yml" in text
+        assert "o11y-prepare-expected-target-transition.yml" in text
+    drill = yaml.safe_load((ROOT / "platform/playbooks/drill-o11y-active-alert-delivery.yml").read_text())
+    drill_tasks = next(
+        play for play in drill
+        if play.get("name") == "Prove production alert delivery while preserving active state"
+    )["tasks"]
+    owner_validation = next(
+        task for task in drill_tasks
+        if task.get("name") == "Validate previous expected-target ownership before the production drill"
+    )
+    assert owner_validation["no_log"] is True
 
     probe = yaml.safe_load((ROOT / "platform/playbooks/tasks/o11y-alert-probe.yml").read_text())
     pending = list(probe)
@@ -492,6 +651,18 @@ def test_private_alert_rule_reads_and_writes_are_hidden_and_check_mode_skips_ren
     restored = yaml.safe_load(
         (ROOT / "platform/playbooks/tasks/o11y-restore-alert-baseline.yml").read_text()
     )
+    restore_names = [task.get("name") for task in restored]
+    assert restore_names.index("Validate alert ownership before restoring the paused baseline") < restore_names.index(
+        "Preserve previous alert ownership before the paused transition"
+    ) < restore_names.index("Render paused Grafana alert rules without OpenBao")
+    assert restore_names.index("Require the canary contact point to be absent again") < restore_names.index(
+        "Remove the expected-target transition snapshot after verified restoration"
+    )
+    snapshot = next(
+        task for task in restored
+        if task.get("name") == "Preserve previous alert ownership before the paused transition"
+    )
+    assert snapshot["no_log"] is True and snapshot["ansible.builtin.copy"]["mode"] == "0600"
     for name in (
         "Require the service-down rule to be paused again",
         "Require every o11y rule to be paused again",
