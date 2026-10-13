@@ -1,11 +1,14 @@
 import fcntl
 import importlib.util
 import os
+import shutil
 import stat
+import subprocess
 import sys
 import urllib.error
 from pathlib import Path
 
+import harness_sandbox
 import pytest
 import yaml
 
@@ -38,9 +41,9 @@ class FakeSemaphore:
                 server.calls.append((token, path, method))
                 if path == "/info":
                     return {"version": "v2.19.11-02309ba-1774450250"}
-                if path == "/user/":
+                if path == "/user":
                     if token not in {OLD, NEW} or (token == OLD and server.deleted):
-                        raise rotate.seed.Refusal("Semaphore HTTP 401 on /user/; response body suppressed")
+                        raise rotate.seed.Refusal("Semaphore HTTP 401 on /user; response body suppressed")
                     return {"id": 1}
                 if path == "/user/tokens" and method == "POST":
                     if server.fail_create:
@@ -96,6 +99,14 @@ def test_backend_version_must_match_pinned_delete_semantics():
     assert rotate.info(lambda *a, **k: {"version": "v2.19.11-02309ba-1774450250"}) == "2.19.11"
     with pytest.raises(rotate.RotationRefusal, match="backend version is unverified"):
         rotate.info(lambda *a, **k: {"version": "2.20.0"})
+
+
+def test_authentication_uses_upstream_user_route_and_fake_contract(monkeypatch, tmp_path):
+    server = FakeSemaphore()
+    install_fake(monkeypatch, server)
+    assert rotate.authenticate(rotate.api_for(args(tmp_path), OLD), 1) == {OLD[:8]}
+    assert any(path == "/user" for _token, path, _method in server.calls)
+    assert all(path != "/user/" for _token, path, _method in server.calls)
 
 
 def test_shared_api_supports_delete_without_leaking_token_prefix():
@@ -156,6 +167,40 @@ def test_dev_template_and_playbook_guard_controller_write():
     merge = yaml.safe_load((ROOT / "platform/playbooks/tasks/bao-merge-keys.yml").read_text())
     guarded_assert = next(task for task in merge if task["name"] == "Require the guarded key to be unchanged")
     assert guarded_assert["no_log"] is True
+    address_guard = next(task for task in tasks
+                         if task["name"] == "Refuse an OpenBao address that is not the inventory's")
+    assert address_guard["vars"]["_bao_url"] == "{{ _rot_url }}"
+
+
+@pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="ansible-playbook not installed")
+def test_actual_playbook_executes_python_command_and_address_guard_offline(tmp_path):
+    inventory = tmp_path / "inventory.yml"
+    inventory.write_text(yaml.safe_dump({"all": {"vars": {"openbao_addr": "https://openbao.test"},
+                                          "hosts": {"localhost": {"ansible_connection": "local"}}}}))
+    env = harness_sandbox.env_for(tmp_path)
+    env.update(SEMAPHORE_OLD_TOKEN="synthetic-old-token", SEMAPHORE_NEW_TOKEN="synthetic-new-token")
+    source = yaml.safe_load((ROOT / "platform/playbooks/rotate-semaphore-api-token.yml").read_text())[-1]
+    names = {"List seed input names without values", "Refuse undeclared or leftover secret inputs",
+             "Refuse an OpenBao address that is not the inventory's"}
+    tasks = [dict(task) for task in source["tasks"] if task["name"] in names]
+    assert len(tasks) == len(names)
+    address = next(task for task in tasks if task["name"] == "Refuse an OpenBao address that is not the inventory's")
+    address["ansible.builtin.include_tasks"] = str(
+        ROOT / "platform/playbooks/tasks/assert-bao-addr-declared.yml"
+    )
+    offline = tmp_path / "offline-rotation-check.yml"
+    offline.write_text(yaml.safe_dump([{"name": "Run rotation preflight tasks offline", "hosts": "localhost",
+                                       "gather_facts": False, "vars": source["vars"], "tasks": tasks}]))
+    result = subprocess.run(
+        ["ansible-playbook", "-i", str(inventory), str(offline)],
+        cwd=ROOT, env=env, text=True, capture_output=True, check=False, timeout=120)
+    if "Local RPC server did not start" in result.stderr:
+        pytest.skip("installed Ansible local executor cannot start its RPC server in this environment")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "List seed input names without values" in result.stdout
+    assert "Refuse an OpenBao address that is not the inventory's" in result.stdout
+    assert "synthetic-old-token" not in result.stdout + result.stderr
+    assert "synthetic-new-token" not in result.stdout + result.stderr
 
 
 def test_state_and_backup_are_atomic_private_files(tmp_path):
@@ -261,4 +306,54 @@ def test_resume_after_backup_replace_recovers_old_token_from_private_state(monke
     assert recovered == OLD
     rotate.rotate(options, recovered)
     assert server.tokens == {NEW[:8]}
+    assert not options.state.exists()
+
+
+@pytest.mark.parametrize("backup_state", ["missing", "wrong-content", "wrong-mode"])
+def test_resume_restores_private_replacement_backup_before_revocation(monkeypatch, tmp_path, backup_state):
+    server = FakeSemaphore(fail_delete_before=True)
+    install_fake(monkeypatch, server)
+    options = args(tmp_path)
+
+    with pytest.raises(rotate.RotationRefusal, match="Revocation outcome is unknown"):
+        rotate.rotate(options, OLD)
+    if backup_state == "missing":
+        options.backup.unlink()
+    elif backup_state == "wrong-content":
+        options.backup.write_text("different\n")
+        options.backup.chmod(0o600)
+    else:
+        options.backup.chmod(0o644)
+
+    delete_old = rotate.delete_old
+
+    def assert_backup_before_revocation(*args, **kwargs):
+        assert options.backup.read_text() == NEW + "\n"
+        assert stat.S_IMODE(options.backup.stat().st_mode) == 0o600
+        delete_old(*args, **kwargs)
+
+    monkeypatch.setattr(rotate, "delete_old", assert_backup_before_revocation)
+
+    rotate.rotate(options, OLD)
+
+    assert options.backup.read_text() == NEW + "\n"
+    assert stat.S_IMODE(options.backup.stat().st_mode) == 0o600
+    assert not options.state.exists()
+
+
+def test_backup_is_rechecked_before_state_deletion(monkeypatch, tmp_path):
+    server = FakeSemaphore()
+    install_fake(monkeypatch, server)
+    options = args(tmp_path)
+    delete_old = rotate.delete_old
+
+    def corrupt_after_revocation(*args, **kwargs):
+        delete_old(*args, **kwargs)
+        options.backup.write_text("corrupted\n")
+        options.backup.chmod(0o600)
+
+    monkeypatch.setattr(rotate, "delete_old", corrupt_after_revocation)
+    rotate.rotate(options, OLD)
+    assert options.backup.read_text() == NEW + "\n"
+    assert stat.S_IMODE(options.backup.stat().st_mode) == 0o600
     assert not options.state.exists()

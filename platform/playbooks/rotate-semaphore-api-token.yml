@@ -11,6 +11,7 @@
   become: false
   vars:
     _rot_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
+    _bao_url: "{{ _rot_url }}"
     _rot_role_id: "{{ lookup('env', 'BAO_ROLE_ID') }}"
     _rot_secret_id: "{{ lookup('env', 'BAO_SECRET_ID') }}"
     _rot_old: "{{ lookup('env', 'SEMAPHORE_OLD_TOKEN') }}"
@@ -32,7 +33,9 @@
         argv:
           - "{{ ansible_playbook_python }}"
           - -c
-          - "import os; print('\n'.join(sorted(os.environ)))"
+          - |-
+            import os
+            print('\n'.join(sorted(os.environ)))
       register: _rot_env_names
       changed_when: false
       check_mode: false
@@ -53,6 +56,8 @@
 
     - name: "Refuse an OpenBao address that is not the inventory's"
       ansible.builtin.include_tasks: tasks/assert-bao-addr-declared.yml
+      vars:
+        _bao_url: "{{ _rot_url }}"
 
     - name: "Authenticate to OpenBao (AppRole)"
       ansible.builtin.uri:

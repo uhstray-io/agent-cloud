@@ -121,6 +121,26 @@ def replace_backup(path, token):
     atomic_private_write(path, (token + "\n").encode())
 
 
+def ensure_replacement_backup(path, token):
+    path = Path(path)
+    expected = (token + "\n").encode()
+    try:
+        info = path.lstat()
+        valid = (stat.S_ISREG(info.st_mode) and stat.S_IMODE(info.st_mode) == 0o600
+                 and path.read_bytes() == expected)
+    except FileNotFoundError:
+        valid = False
+    if not valid:
+        replace_backup(path, token)
+    try:
+        info = path.lstat()
+        if (not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o600
+                or path.read_bytes() != expected):
+            raise RotationRefusal("Replacement backup verification failed; preserve rotation state")
+    except OSError:
+        raise RotationRefusal("Replacement backup verification failed; preserve rotation state") from None
+
+
 def api_for(args, token):
     try:
         return seed.API(args.url, args.project, token)
@@ -130,7 +150,7 @@ def api_for(args, token):
 
 def authenticate(api, expected_user_id):
     info(api)
-    user = api("/user/", project_scoped=False)
+    user = api("/user", project_scoped=False)
     if not isinstance(user, dict) or user.get("id") != expected_user_id:
         raise RotationRefusal("Semaphore operator identity differs; refusing token changes")
     return token_ids(api)
@@ -283,7 +303,9 @@ def rotate_locked(args, old_token):
 
     if state["phase"] not in {"backup_replaced", "revoke_started", "revoke_unknown"}:
         raise RotationRefusal("Rotation phase is not safe to resume")
+    ensure_replacement_backup(args.backup, replacement)
     delete_old(args, new_api, state, old_token)
+    ensure_replacement_backup(args.backup, replacement)
     Path(args.state).unlink()
     print("Semaphore operator token rotation completed; replacement verified and old token rejected.")
 
