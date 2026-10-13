@@ -137,6 +137,47 @@ scrapes. Live target readback, over-budget refusal checks, and calibration of
 the private values remain open. Prometheus's `body_size_limit` is documented
 as experimental in the pinned v3.1.0 configuration reference.
 
+The Dev-bound read-only `Survey o11y Scrape Baseline (Dev)` queries active targets
+and the 24-hour maximum of `scrape_samples_scraped` from the existing Prometheus
+instance. Prometheus v3.1.0 exposes `scrape_body_size_bytes` only when
+`--enable-feature=extra-scrape-metrics` is set, and the committed production
+Compose command does not set it. The survey does not enable that feature or
+change/restart/reload Prometheus. Instead, its receiver-side helper uses the
+active target list, privately joins each target to its 24-hour sample maximum,
+and performs one direct HTTP GET from the existing Grafana container for each
+currently healthy target. The GET sends `Accept-Encoding: identity`, follows no
+redirects, uses no proxy or authentication, and discards the response body while
+counting at most 160 MiB with explicit connect and overall timeouts. The helper
+requires curl 8.4 or newer so the download limit also applies to unknown-length
+responses. It refuses non-HTTP URLs, userinfo, query strings, URL/instance host
+or port mismatches, unsupported jobs, duplicate targets, unhealthy targets,
+missing sample series, empty bodies, non-2xx responses, compressed responses, and
+oversized or incomplete probes. URLs, private labels, response bodies, API
+responses, and subprocess errors stay inside the protected helper invocation.
+
+After validating all active targets, the helper also queries Prometheus
+`/api/v1/series` once per target with a selector fixed to that target's exact
+`job` and `instance` and a 24-hour start/end window. It derives the maximum
+stored-series label count and maximum UTF-8 label-name and label-value byte
+lengths, then aggregates those numeric maxima by the same fixed public job
+categories. The private selector is sent to curl through config on stdin, not
+argv. API responses are capped at 16 MiB and require a successful HTTP status
+and complete, unambiguous series data; any missing or malformed response refuses
+the receipt.
+
+The sanitized receipt groups by fixed public job names, reports active and
+healthy/unhealthy target counts, and shows integer sample maxima for 24 hours,
+point-in-time response-body byte maxima, and 24-hour stored-series label
+maxima. The direct GET is a current observation, not a 24-hour response-size
+maximum. The series API describes stored series metadata selected for the time
+window and may include series without samples in that period; these maxima are
+not proof of every future label value or lifetime series churn. Treat the
+measurements as inputs for reviewing sample, body-size, and label limits. They
+do not establish runtime rejection behavior or acceptance of configured limits
+by deployed binaries. Label limits still require review and runtime acceptance.
+Keep task 3.3 open until its full source and live acceptance gates are met.
+Check-mode output is explicitly unverified.
+
 ### Receiver-loss and backend-discard alerts — task 3.3 source slice
 
 The provisioned `service-telemetry` group includes an Alloy receiver-refusal

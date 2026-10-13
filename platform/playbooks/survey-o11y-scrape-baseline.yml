@@ -1,0 +1,137 @@
+# Read-only, Dev-bound observation of active scrape load and its 24-hour sample maxima.
+# The receiver-side helper keeps target URLs, Prometheus responses, and probe bodies private.
+
+- name: Refuse extra vars that set internal names
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: Require the reviewed source and survey helper bytes
+  ansible.builtin.import_playbook: require-reviewed-checkout.yml
+  vars:
+    _reviewed_checkout_payload_paths:
+      - platform/playbooks/files/summarize-o11y-scrape-baseline.py
+
+- name: Pre-flight
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: o11y_svc
+    preflight_group_expected: o11y_svc
+    _preflight_redact_hostnames: true
+
+- name: Validate the reviewed production survey context
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  vars:
+    _survey_root: "{{ playbook_dir | dirname | dirname }}"
+    _survey_o11y_hosts: "{{ groups.get('o11y_svc', []) }}"
+  tasks:
+    - name: Require one production o11y target and the reviewed Dev revision
+      ansible.builtin.assert:
+        that:
+          - expected_repository_sha | default('') is match('^[0-9a-f]{40}$')
+          - _survey_o11y_hosts | length == 1
+          - not (local_mode | default(false) | bool)
+        fail_msg: "The scrape baseline survey requires one production o11y target and an exact reviewed Dev revision."
+        quiet: true
+
+    - name: Read the controller checkout revision
+      ansible.builtin.command:
+        argv: [git, rev-parse, HEAD]
+        chdir: "{{ _survey_root }}"
+      register: _survey_revision
+      changed_when: false
+      check_mode: false
+
+    - name: Require the controller to match the reviewed Dev revision
+      ansible.builtin.assert:
+        that: _survey_revision.stdout | trim == expected_repository_sha
+        fail_msg: "Semaphore checked out a different reviewed Dev revision; no baseline was produced."
+        quiet: true
+
+- name: Read and reduce the production scrape baseline
+  hosts: o11y_svc
+  gather_facts: false
+  become: false
+  any_errors_fatal: true
+  vars:
+    _survey_engine: "{{ container_engine | default('') }}"
+    _baseline_helper: "{{ playbook_dir }}/files/summarize-o11y-scrape-baseline.py"
+    _survey_public_jobs:
+      - alloy
+      - agentgateway
+      - dgx-spark
+      - grafana
+      - host-node
+      - loki
+      - prometheus
+      - pyroscope
+      - receiver-host
+      - tempo
+  tasks:
+    - name: Require the supported receiver runtime
+      ansible.builtin.assert:
+        that: _survey_engine == 'podman'
+        fail_msg: "The scrape baseline survey requires an explicitly declared Podman receiver."
+        quiet: true
+      when: not ansible_check_mode
+
+    - name: Collect and sanitize the active scrape baseline on the receiver
+      ansible.builtin.script:
+        cmd: "{{ _baseline_helper }}"
+      register: _baseline_run
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+      when: not ansible_check_mode
+
+    - name: Parse the helper's bounded public projection
+      ansible.builtin.set_fact:
+        _scrape_baseline_receipt: "{{ _baseline_run.stdout | from_json }}"
+      no_log: true
+      when: not ansible_check_mode
+
+    - name: Require a complete and bounded baseline receipt
+      ansible.builtin.assert:
+        that:
+          - _scrape_baseline_receipt.status == 'observed'
+          - _scrape_baseline_receipt.active_target_count is integer
+          - _scrape_baseline_receipt.active_target_count > 0
+          - _scrape_baseline_receipt.jobs is sequence
+          - _scrape_baseline_receipt.jobs | length > 0
+          - _scrape_baseline_receipt.jobs | length <= _scrape_baseline_receipt.active_target_count
+          - (_scrape_baseline_receipt.jobs | map(attribute='job') | list | difference(_survey_public_jobs) | length) == 0
+          - (_scrape_baseline_receipt.jobs | selectattr('active_target_count', 'integer') | list | length) == (_scrape_baseline_receipt.jobs | length)
+          - (_scrape_baseline_receipt.jobs | selectattr('health.healthy', 'integer') | list | length) == (_scrape_baseline_receipt.jobs | length)
+          - (_scrape_baseline_receipt.jobs | selectattr('health.unhealthy', 'integer') | list | length) == (_scrape_baseline_receipt.jobs | length)
+          - (_scrape_baseline_receipt.jobs | map(attribute='health.unhealthy') | max) == 0
+          - (_scrape_baseline_receipt.jobs | selectattr('max_scrape_samples_scraped_24h', 'integer') | list | length) == (_scrape_baseline_receipt.jobs | length)
+          - (_scrape_baseline_receipt.jobs | map(attribute='max_scrape_samples_scraped_24h') | min) > 0
+          - (_scrape_baseline_receipt.jobs | selectattr('max_scrape_response_body_bytes_point_in_time', 'integer') | list | length) == (_scrape_baseline_receipt.jobs | length)
+          - (_scrape_baseline_receipt.jobs | map(attribute='max_scrape_response_body_bytes_point_in_time') | min) > 0
+          - (_scrape_baseline_receipt.jobs | map(attribute='max_scrape_response_body_bytes_point_in_time') | max) <= 167772160
+          - (_scrape_baseline_receipt.jobs | selectattr('max_stored_series_label_count_24h', 'integer') | list | length) == (_scrape_baseline_receipt.jobs | length)
+          - (_scrape_baseline_receipt.jobs | map(attribute='max_stored_series_label_count_24h') | min) > 0
+          - (_scrape_baseline_receipt.jobs | map(attribute='max_stored_series_label_count_24h') | max) <= 16777216
+          - (_scrape_baseline_receipt.jobs | selectattr('max_stored_series_label_name_bytes_24h', 'integer') | list | length) == (_scrape_baseline_receipt.jobs | length)
+          - (_scrape_baseline_receipt.jobs | map(attribute='max_stored_series_label_name_bytes_24h') | min) > 0
+          - (_scrape_baseline_receipt.jobs | map(attribute='max_stored_series_label_name_bytes_24h') | max) <= 16777216
+          - (_scrape_baseline_receipt.jobs | selectattr('max_stored_series_label_value_bytes_24h', 'integer') | list | length) == (_scrape_baseline_receipt.jobs | length)
+          - (_scrape_baseline_receipt.jobs | map(attribute='max_stored_series_label_value_bytes_24h') | min) > 0
+          - (_scrape_baseline_receipt.jobs | map(attribute='max_stored_series_label_value_bytes_24h') | max) <= 16777216
+        fail_msg: "The scrape baseline is unavailable, unhealthy, ambiguous, or outside the bounded public receipt schema."
+        quiet: true
+      when: not ansible_check_mode
+
+    - name: Report the bounded baseline receipt
+      ansible.builtin.debug:
+        msg: "{{ _scrape_baseline_receipt | to_json }}"
+      when: not ansible_check_mode
+
+    - name: Mark check-mode results as unverified
+      ansible.builtin.debug:
+        msg:
+          status: check_mode_unverified
+          reason: "The read-only Prometheus query and direct HTTP probes are skipped in check mode."
+      when: ansible_check_mode
