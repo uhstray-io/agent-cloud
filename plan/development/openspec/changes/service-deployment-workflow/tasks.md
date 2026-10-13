@@ -333,6 +333,15 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
         local NetBox holds 0 IP records and 0 devices after 15 minutes, and the policy
         scans on `0 */4 * * *` (UTC) with no scan logged since the agent started (20:49 UTC),
         so the first scheduled scan is 00:00 UTC. The count-and-containment query is still to run after that scan. Not ticked
+      - 2026-10-12, after PR #565 (`place-monorepo` change detection; task output read from
+        Semaphore by the lead): "Local deploy is repeatable" PROVEN by local NetBox deploy tasks
+        5619 and 5620 (local Semaphore v2.19.11). The second run changed only Run deploy.sh, Run
+        post-deploy.sh, Create fresh orb-agent credential and Update .env with credentials (the
+        allowed set); "Copy working tree into place" no longer reports changed (it did in 5593).
+        Side effect found: a NetBox redeploy removes the running orb-agent and nothing redeploys
+        it, so the 00:00 UTC scan never ran. The agent was redeployed (local task 5679); the next
+        scheduled scan is 04:00 UTC. Wave 3 of 7.1 makes an unchanged NetBox deploy leave the
+        agent alone. "Local targets are discovered" still pending that scan. Not ticked
 
 ## 7. Executors, snapshots and tracking
 
@@ -389,6 +398,13 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
         `tasks/emit-step-result.yml` on `main`, and none of its included tasks differs. Not
         stamped: service-deploy (still not re-reviewed), and the reasoning and planned steps.
         7.1 stays open for service-deploy. OPA must be redeployed to pick up `data.json`.
+      - 2026-10-12: service-deploy re-review in progress. Wave 1 (PR #568:
+        `emit-service-deploy-result` and `compose_up_if_changed` for tududi, honcho and
+        openhands) is under review; wave 2 (n8n, NetBox, Postiz) is next; then two Dev
+        deploys per service on production to prove `changed_on_rerun` false. Not ticked.
+      - 2026-10-13: PR #568 (wave 1) merged into dev. The remaining services were regrouped:
+        wave 2 is n8n and Postiz, wave 3 is NetBox (a change-aware deploy that, when nothing
+        changed, leaves containers and the orb-agent untouched). Not ticked.
 - [x] 7.2 `provision-vm.yml` sets `onboot`; restart-policy check beside `enable-linger`.
       2026-09-22: onboot with per-host opt-out; `verify-service-persistence.yml` (step
       systemd-enablement) passes on local tududi, normal and check mode (tasks 977, 978)
