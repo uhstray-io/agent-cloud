@@ -386,7 +386,7 @@
       source that sets that label is the span-log processor in
       `platform/services/o11y/deployment/templates/config.alloy.j2` (the attributes processor
       `gateway_span_logs`): Docker discovery labels only the o11y host's own containers and
-      the journal collector only o11y and alloy. So the line read back is a gateway span log
+      the journal collector only `o11y/alloy`. So the line read back is a gateway span log
       line. The scrape half was proven 2026-10-06 (3142) and the client-view row by 4913
       (task 3.3). Ticked.
 - [x] 3.2 Check whether `localRateLimit` has a log-only mode in the v1.5.0 schema; record
