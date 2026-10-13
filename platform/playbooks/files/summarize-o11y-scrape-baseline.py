@@ -131,7 +131,7 @@ def validate_expected_target_declaration(
     return normalized, list(retired_uids)
 
 
-def _owned_expected_targets(document: Any) -> list[dict[str, str]]:
+def _owned_expected_targets(document: Any) -> list[dict[str, Any]]:
     """Read only exact generated expected-target rules from our provisioning group."""
     if not isinstance(document, dict) or document.get("apiVersion") != 1:
         raise Refusal("invalid_previous_rules")
@@ -149,7 +149,7 @@ def _owned_expected_targets(document: Any) -> list[dict[str, str]]:
     rules = group.get("rules")
     if not isinstance(rules, list) or len(rules) > MAX_ROWS:
         raise Refusal("invalid_previous_rules")
-    owned: list[dict[str, str]] = []
+    owned: list[dict[str, Any]] = []
     for rule in rules:
         if not isinstance(rule, dict) or not str(rule.get("uid", "")).startswith("o11y_missing_"):
             continue
@@ -159,7 +159,10 @@ def _owned_expected_targets(document: Any) -> list[dict[str, str]]:
             raise Refusal("invalid_previous_rules")
         rule_data = rule.get("data")
         if (
-            rule.get("title") == "Expected metrics target previously declared"
+            rule.get("title") in {
+                "Expected metrics target previously declared",
+                "Expected metrics target explicitly retired",
+            }
             and rule.get("isPaused") is True
             and "notification_settings" not in rule
             and labels == {"severity": "warning", "owner": "platform-operations", "environment": "disabled"}
@@ -172,10 +175,18 @@ def _owned_expected_targets(document: Any) -> list[dict[str, str]]:
             and rule.get("for") == "0s"
             and rule.get("annotations") == {
                 "summary": "Expected metrics target rule is disabled.",
-                "description": "No target identity is retained while the reviewed alert gate is disabled.",
+                "description": (
+                    "This owned UID was explicitly retired and remains inert."
+                    if rule.get("title") == "Expected metrics target explicitly retired"
+                    else "No target identity is retained while the reviewed alert gate is disabled."
+                ),
             }
         ):
-            owned.append({"uid": uid})
+            owned.append({
+                "uid": uid,
+                "_inert": True,
+                "_retired": rule["title"] == "Expected metrics target explicitly retired",
+            })
             continue
         if not isinstance(labels, dict):
             raise Refusal("invalid_previous_rules")
@@ -238,19 +249,28 @@ def _owned_expected_targets(document: Any) -> list[dict[str, str]]:
         )
         if not paused_contract and not active_contract:
             raise Refusal("invalid_previous_rules")
-        owned.append(value)
+        owned.append({
+            **value,
+            "_inert": False,
+            "_retired": False,
+            "_title": rule["title"],
+            "_expr": expr,
+            "_labels": labels,
+            "_is_paused": rule["isPaused"],
+            "_notification_settings": rule.get("notification_settings"),
+        })
     if len({row["uid"] for row in owned}) != len(owned):
         raise Refusal("invalid_previous_rules")
     return owned
 
 
 def prepare_expected_target_transition(input_document: Any) -> dict[str, Any]:
-    """Keep exact prior owners paused while disabled; reject silent retirement on re-enable."""
+    """Keep owned UIDs inert until explicitly restored; reject live ownership drift."""
     if not isinstance(input_document, dict):
         raise Refusal("invalid_transition")
     if input_document.get("managed") is False:
         return {"status": "prepared", "reason": "local_compatibility", "paused_uids": [], "retired_uids": []}
-    previous: list[dict[str, str]] = []
+    previous: list[dict[str, Any]] = []
     previous_raw = input_document.get("previous_rules")
     if previous_raw:
         try:
@@ -259,13 +279,26 @@ def prepare_expected_target_transition(input_document: Any) -> dict[str, Any]:
             raise Refusal("invalid_previous_rules") from None
         previous = _owned_expected_targets(previous_doc)
     live_raw = input_document.get("live_rules")
+    if previous and not live_raw:
+        raise Refusal("live_rules_unavailable")
     if live_raw:
         try:
             live = json.loads(live_raw)
+            folders = json.loads(input_document.get("live_folders", ""))
         except (ValueError, TypeError):
             raise Refusal("invalid_live_rules") from None
-        if not isinstance(live, list) or len(live) > MAX_ROWS:
+        if (
+            not isinstance(live, list) or len(live) > MAX_ROWS
+            or not isinstance(folders, list) or len(folders) > MAX_ROWS
+        ):
             raise Refusal("invalid_live_rules")
+        matching_folders = [
+            folder for folder in folders
+            if isinstance(folder, dict) and folder.get("title") == "agent-cloud"
+        ]
+        if len(matching_folders) != 1 or not isinstance(matching_folders[0].get("uid"), str):
+            raise Refusal("live_folder_drift")
+        live_folder_uid = matching_folders[0]["uid"]
         previous_by_uid = {row["uid"]: row for row in previous}
         live_targets = [
             rule for rule in live
@@ -274,25 +307,57 @@ def prepare_expected_target_transition(input_document: Any) -> dict[str, Any]:
         ]
         if len({rule["uid"] for rule in live_targets}) != len(live_targets):
             raise Refusal("invalid_live_rules")
+        if {rule["uid"] for rule in live_targets} != set(previous_by_uid):
+            raise Refusal("live_target_drift")
         for rule in live_targets:
             target = previous_by_uid.get(rule["uid"])
             labels = rule.get("labels")
-            if target is None:
-                raise Refusal("unowned_live_target")
-            if (
-                rule.get("title") == "Expected metrics target previously declared"
-                and rule.get("isPaused") is True
-                and labels == {"severity": "warning", "owner": "platform-operations", "environment": "disabled"}
-                and rule.get("notification_settings") in (None, {})
-            ):
-                continue
-            if not isinstance(labels, dict) or any(field not in target for field in EXPECTED_IDENTITY_FIELDS):
+            if target is None or rule.get("folderUID") != live_folder_uid:
                 raise Refusal("live_target_drift")
-            if any(labels.get(field) != target[field] for field in EXPECTED_IDENTITY_FIELDS):
+            data = rule.get("data")
+            expr = (
+                data[0].get("model", {}).get("expr")
+                if isinstance(data, list) and data and isinstance(data[0], dict)
+                else None
+            )
+            if target["_inert"]:
+                matches = (
+                    rule.get("title") == (
+                        "Expected metrics target explicitly retired"
+                        if target["_retired"] else "Expected metrics target previously declared"
+                    )
+                    and rule.get("isPaused") is True
+                    and labels == {"severity": "warning", "owner": "platform-operations", "environment": "disabled"}
+                    and expr == "vector(0)"
+                    and rule.get("noDataState") == "OK"
+                    and rule.get("execErrState") == "OK"
+                    and rule.get("for") == "0s"
+                    and rule.get("annotations") == {
+                        "summary": "Expected metrics target rule is disabled.",
+                        "description": (
+                            "This owned UID was explicitly retired and remains inert."
+                        if target["_retired"]
+                            else "No target identity is retained while the reviewed alert gate is disabled."
+                        ),
+                    }
+                    and rule.get("notification_settings") in (None, {})
+                )
+            else:
+                matches = (
+                    isinstance(labels, dict)
+                    and all(labels.get(field) == target[field] for field in EXPECTED_IDENTITY_FIELDS)
+                    and labels == target["_labels"]
+                    and rule.get("title") == target["_title"]
+                    and expr == target["_expr"]
+                    and rule.get("isPaused") is target["_is_paused"]
+                    and rule.get("notification_settings") == target["_notification_settings"]
+                    and rule.get("noDataState") == "OK"
+                    and rule.get("execErrState") == "Alerting"
+                    and rule.get("for") == "2m"
+                )
+            if not matches:
                 raise Refusal("live_target_drift")
-            if rule.get("title") != f"Missing telemetry for {target['service']} at {target['instance']}":
-                raise Refusal("live_target_drift")
-            if rule.get("ruleGroup") != "service-telemetry" or not isinstance(rule.get("folderUID"), str):
+            if rule.get("ruleGroup") != "service-telemetry":
                 raise Refusal("live_target_drift")
     if input_document.get("enabled") is True:
         current, retired = validate_expected_target_declaration(
@@ -300,21 +365,39 @@ def prepare_expected_target_transition(input_document: Any) -> dict[str, Any]:
         )
         current_uids = {row["uid"] for row in current}
         previous_uids = {row["uid"] for row in previous}
-        if previous_uids - current_uids - set(retired):
+        previous_active = {
+            row["uid"]: row for row in previous if not row["_inert"]
+        }
+        if any(
+            any(target[field] != previous_active[target["uid"]][field] for field in EXPECTED_IDENTITY_FIELDS)
+            for target in current if target["uid"] in previous_active
+        ):
+            raise Refusal("target_identity_changed")
+        already_retired = {row["uid"] for row in previous if row["_retired"]}
+        if current_uids.intersection(already_retired):
+            raise Refusal("retired_target_reuse")
+        if set(retired) - previous_uids:
+            raise Refusal("unowned_retired_target")
+        if previous_uids - current_uids - set(retired) - already_retired:
             raise Refusal("unretired_previous_target")
-        return {"status": "prepared", "reason": "enabled", "paused_uids": [], "retired_uids": retired}
+        retired_tombstones = list(dict.fromkeys([*already_retired, *retired]))
+        return {
+            "status": "prepared", "reason": "enabled", "paused_uids": [],
+            "retired_uids": retired_tombstones,
+        }
     retired = input_document.get("retired_uids", [])
     if not isinstance(retired, list) or any(
         not isinstance(uid, str) or not EXPECTED_UID.fullmatch(uid) for uid in retired
     ):
         raise Refusal("invalid_transition")
-    if len(set(retired)) != len(retired) or set(retired) - {row["uid"] for row in previous}:
+    previous_by_uid = {row["uid"]: row for row in previous}
+    if len(set(retired)) != len(retired) or set(retired) - set(previous_by_uid):
         raise Refusal("invalid_transition")
     return {
         "status": "prepared",
         "reason": "disabled",
-        "paused_uids": [row["uid"] for row in previous if row["uid"] not in retired],
-        "retired_uids": retired,
+        "paused_uids": [row["uid"] for row in previous if not row["_retired"] and row["uid"] not in retired],
+        "retired_uids": list(dict.fromkeys([*(row["uid"] for row in previous if row["_retired"]), *retired])),
     }
 
 

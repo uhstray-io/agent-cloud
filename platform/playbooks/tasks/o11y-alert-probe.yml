@@ -41,12 +41,14 @@
   changed_when: false
   when: drill_expect_alert | default(false) | bool
   check_mode: false
+  no_log: true
 
 - name: Require an active provisioned rule before injecting the alert fault
   ansible.builtin.assert:
     that: not ((_service_down_rule.stdout | from_json).isPaused | bool)
     fail_msg: "The provisioned service-down rule is paused; no alert fault was injected."
   when: drill_expect_alert | default(false) | bool
+  no_log: true
 
 - name: Exercise the declared unreachable endpoint
   block:
@@ -102,6 +104,7 @@
       # Podman discovery, the 15s scrape, and remote write may span a minute.
       retries: 24
       delay: 5
+      no_log: true
       until: >-
         _probe_scrapes.rc == 0 and
         ((_probe_scrapes.stdout | from_json).data.result |
@@ -125,10 +128,13 @@
               - "'failing instances=' in ansible_failed_result.msg"
               - ("'" ~ expected_instance ~ "'") in (ansible_failed_result.msg.split('failing instances=', 1)[1].split(';', 1)[0])
             fail_msg: "The verifier failed without naming the unreachable service and endpoint."
+          no_log: true
+      no_log: true
 
-        - name: Report the expected verification failure
-          ansible.builtin.debug:
-            msg: "Verified refusal: {{ expected_service }} at {{ expected_instance }} reported up=0."
+    - name: Report the expected verification failure without target identity
+      ansible.builtin.debug:
+        msg: "Verified refusal: the unreachable metrics target was rejected."
+      when: not ansible_check_mode
 
     - name: Wait for Grafana's service-down rule to fire for the probe
       ansible.builtin.command:
@@ -145,6 +151,7 @@
       changed_when: false
       retries: 36
       delay: 10
+      no_log: true
       until: >-
         _firing_alerts.rc == 0 and
         ((_firing_alerts.stdout | from_json).data.alerts |
@@ -191,10 +198,11 @@
           rejectattr('content', 'equalto', '') |
           list | length }}. Check bot message-history and message-content access.
       when: drill_expect_alert | default(false) | bool
+      no_log: true
 
     - name: Report the fired rule and confirmed Discord receipt
       ansible.builtin.debug:
-        msg: "Grafana fired for {{ expected_service }} and its dedicated webhook delivered a matching Discord message."
+        msg: "Grafana fired for the drill and the matching delivery receipt was confirmed."
       when: drill_expect_alert | default(false) | bool
   always:
     - name: Remove only the probe started by this drill

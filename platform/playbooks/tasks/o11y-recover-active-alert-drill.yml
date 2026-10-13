@@ -32,6 +32,7 @@
   register: _active_drill_targets
   changed_when: false
   check_mode: false
+  no_log: true
 
 - name: Require the drill scrape job to be absent
   ansible.builtin.assert:
@@ -40,6 +41,7 @@
       selectattr('scrapePool', 'equalto', 'o11y-production-active-alert-drill') |
       list | length == 0
     fail_msg: "The active-drill scrape target remains loaded; keep the recovery marker and investigate."
+  no_log: true
 
 - name: Read the production service-down rule after drill recovery
   ansible.builtin.command:

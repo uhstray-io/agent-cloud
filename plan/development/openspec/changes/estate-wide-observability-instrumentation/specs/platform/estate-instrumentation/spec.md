@@ -41,7 +41,9 @@ Each missing-target rule SHALL match all five declared identity labels exactly,
 use `absent_over_time(up{...}[5m])`, hold for two minutes, and use the existing
 ops route when active. A target that is still active with `up=0` SHALL remain a
 service-down condition; an absent active target SHALL be a disappeared-target
-condition. Retirement SHALL name only exact owned UIDs through `deleteRules`.
+condition. Retirement SHALL retain the exact owned UID as a generic paused
+`vector(0)` tombstone with no target labels or notification route; it SHALL NOT
+delete a live rule by omission.
 
 A separate read-only survey SHALL compare validated expected identities with
 all active Prometheus target identities, including unhealthy ones. Its public
@@ -69,13 +71,17 @@ loaded-limit, candidate, and alert-input receipts.
 
 #### Scenario: Retire one expected target
 - **WHEN** a reviewed declaration removes one active target and names only its owned stable UID for retirement
-- **THEN** rendered `deleteRules` contains that UID and no unrelated provisioned rule UID
+- **THEN** the generated rule retains that UID as a generic paused `vector(0)` tombstone without identity labels or a notification route
+- **AND** repeated deploy, gate-off, canary restoration, and recovery preserve that tombstone
+- **AND** no live UID is deleted by omission
 
 #### Scenario: Disable and re-enable expected-target alerts
 - **WHEN** either the production alert switch or reviewed-target gate turns off
 - **THEN** every safely owned expected-target UID remains provisioned as a paused `vector(0)` rule with generic labels and no notification route
 - **AND** re-enabling restores the current reviewed rule for each previously owned UID, or requires explicit retirement before omitting it
+- **AND** an explicitly retired UID remains inert across later gate changes and cannot silently become active again under the same UID
 - **AND** malformed prior ownership, an unowned live target UID, or live drift refuses before placement or restart
+- **AND** live folder UID, query, labels, pause state, and owned UID set match the validated prior rule contract
 - **AND** unrelated rules remain unchanged
 
 #### Scenario: Restore or retry a paused expected-target baseline
@@ -83,6 +89,11 @@ loaded-limit, candidate, and alert-input receipts.
 - **THEN** it uses the same validated previous ownership and paused-rule representation
 - **AND** protected rendering/readback emits no private identity in verbose or diff output
 - **AND** check mode does not render or claim live transition verification
+
+#### Scenario: Alert probe and recovery output protect private target identities
+- **WHEN** the unreachable-endpoint probe or active-alert recovery reads Prometheus targets or Grafana rules
+- **THEN** raw registered responses and identity-bearing consumers remain protected from normal and verbose Ansible output
+- **AND** visible success output contains only a fixed receipt without target labels, endpoints, or rule payloads
 
 #### Scenario: Expected-target survey is unverified
 - **WHEN** the declaration is missing, unreviewed, empty, or check mode skips Prometheus access

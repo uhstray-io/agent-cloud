@@ -59,6 +59,14 @@ def _service_rules(document):
     return group["rules"]
 
 
+def _live_rules(document, folder_uid="agent-cloud-folder"):
+    return [
+        {**rule, "folderUID": folder_uid, "ruleGroup": "service-telemetry"}
+        for rule in _service_rules(document)
+        if rule["uid"].startswith("o11y_missing_")
+    ]
+
+
 def test_expected_target_coverage_counts_exact_missing_unexpected_and_unhealthy_identities():
     expected = _expected()
     declaration = {"reviewed": True, "targets": [expected]}
@@ -186,7 +194,7 @@ def test_production_gate_local_compatibility_and_five_exact_matchers():
     assert rule["notification_settings"]["receiver"] == "agent-cloud-ops"
 
 
-def test_canary_pauses_expected_rules_and_retirement_deletes_only_named_uid():
+def test_canary_pauses_expected_rules_and_retirement_keeps_owned_tombstone():
     target = _expected()
     canary = _service_rules(
         _render(o11y_alert_canary_service="canary-probe", o11y_expected_metrics_targets=[target])
@@ -195,26 +203,26 @@ def test_canary_pauses_expected_rules_and_retirement_deletes_only_named_uid():
     assert expected_rule["isPaused"] is True
     assert "notification_settings" not in expected_rule
 
-    retired = "o11y_missing_old_api"
-    document = _render(
-        o11y_alerts_enabled=False,
-        o11y_expected_metrics_targets_reviewed=True,
-        o11y_expected_metrics_targets=[],
-        o11y_expected_metrics_targets_retired_uids=[retired],
-    )
-    deleted = {entry["uid"] for entry in document["deleteRules"]}
-    assert retired in deleted
-    assert "o11y_service_down" not in deleted
+    retired = _transition(_render(o11y_expected_metrics_targets=[_expected()]), enabled=True,
+                          targets=[], retired=[_expected()["uid"]])
+    document = _render(o11y_expected_metrics_targets=[], _o11y_retired_expected_target_uids=retired["retired_uids"])
+    tombstone = next(rule for rule in _service_rules(document) if rule["uid"] == _expected()["uid"])
+    assert tombstone["title"] == "Expected metrics target explicitly retired"
+    assert _expected()["uid"] not in {entry["uid"] for entry in document.get("deleteRules", [])}
 
 
 def _transition(previous, *, enabled, targets=None, retired=None, live=None):
     previous_text = "" if previous is None else yaml.safe_dump(previous, sort_keys=False)
+    live_rules = _live_rules(previous) if live is None and previous is not None else live
     return SURVEY.prepare_expected_target_transition({
         "enabled": enabled,
         "targets": _expected() if targets is None else targets,
         "retired_uids": [] if retired is None else retired,
         "previous_rules": previous_text,
-        "live_rules": "" if live is None else json.dumps(live),
+        "live_rules": "" if live_rules is None else json.dumps(live_rules),
+        "live_folders": "" if live_rules is None else json.dumps(
+            [{"uid": "agent-cloud-folder", "title": "agent-cloud"}]
+        ),
     })
 
 
@@ -266,6 +274,8 @@ def test_transition_refuses_corrupt_or_unretired_ownership_and_preserves_unrelat
         _transition(corrupted, enabled=False, targets=[])
     with pytest.raises(SURVEY.Refusal):
         _transition(previous, enabled=True, targets=[])
+    with pytest.raises(SURVEY.Refusal):
+        _transition(previous, enabled=True, targets=[_expected(instance="changed.example.test:9100")])
 
     explicit = _transition(previous, enabled=True, targets=[], retired=[target["uid"]])
     assert explicit["retired_uids"] == [target["uid"]]
@@ -289,6 +299,95 @@ def test_canary_restore_and_interrupted_retry_retain_expected_target_ownership()
     assert retry_plan == restore_plan
 
 
+def test_retirement_stays_inert_through_gate_off_restore_and_retry():
+    target = _expected()
+    active = _render(o11y_expected_metrics_targets=[target])
+    retired = _transition(active, enabled=True, targets=[], retired=[target["uid"]])
+    assert retired["paused_uids"] == []
+    assert retired["retired_uids"] == [target["uid"]]
+
+    retired_file = _render(
+        o11y_expected_metrics_targets=[],
+        _o11y_retired_expected_target_uids=retired["retired_uids"],
+    )
+    tombstone = next(rule for rule in _service_rules(retired_file) if rule["uid"] == target["uid"])
+    assert tombstone["title"] == "Expected metrics target explicitly retired"
+    assert tombstone["isPaused"] is True
+    assert tombstone["data"][0]["model"]["expr"] == "vector(0)"
+    assert tombstone["labels"] == {"severity": "warning", "owner": "platform-operations", "environment": "disabled"}
+    assert "notification_settings" not in tombstone
+    assert target["uid"] not in {entry["uid"] for entry in retired_file.get("deleteRules", [])}
+
+    gate_off = _transition(retired_file, enabled=False, targets=[])
+    assert gate_off["retired_uids"] == [target["uid"]]
+    restored = _render(
+        o11y_alerts_enabled=False,
+        o11y_expected_metrics_targets_reviewed=False,
+        o11y_expected_metrics_targets=[],
+        _o11y_previous_expected_target_uids=gate_off["paused_uids"],
+        _o11y_retired_expected_target_uids=gate_off["retired_uids"],
+    )
+    assert next(rule for rule in _service_rules(restored) if rule["uid"] == target["uid"]) == tombstone
+    assert _transition(restored, enabled=False, targets=[]) == gate_off
+
+    with pytest.raises(SURVEY.Refusal):
+        _transition(retired_file, enabled=True, targets=[target])
+
+
+@pytest.mark.parametrize(
+    "drift",
+    ["folder", "expression", "labels", "pause", "missing", "unowned"],
+)
+def test_live_expected_target_contract_must_match_validated_previous_ownership(drift):
+    target = _expected()
+    previous = _render(o11y_expected_metrics_targets=[target])
+    live = _live_rules(previous)
+    folders = [{"uid": "agent-cloud-folder", "title": "agent-cloud"}]
+    if drift == "folder":
+        live[0]["folderUID"] = "other-folder"
+    elif drift == "expression":
+        live[0]["data"][0]["model"]["expr"] = "vector(1)"
+    elif drift == "labels":
+        live[0]["labels"]["service"] = "other/service"
+    elif drift == "pause":
+        live[0]["isPaused"] = True
+    elif drift == "missing":
+        live = []
+    else:
+        live.append({**live[0], "uid": "o11y_missing_unowned"})
+    with pytest.raises(SURVEY.Refusal):
+        SURVEY.prepare_expected_target_transition({
+            "enabled": False,
+            "targets": [],
+            "retired_uids": [],
+            "previous_rules": yaml.safe_dump(previous),
+            "live_rules": json.dumps(live),
+            "live_folders": json.dumps(folders),
+        })
+
+
+def test_live_expected_target_preflight_requires_exact_folder_and_readback():
+    target = _expected()
+    previous = _render(o11y_expected_metrics_targets=[target])
+    live = _live_rules(previous)
+    with pytest.raises(SURVEY.Refusal):
+        SURVEY.prepare_expected_target_transition({
+            "enabled": False,
+            "targets": [],
+            "previous_rules": yaml.safe_dump(previous),
+            "live_rules": json.dumps(live),
+            "live_folders": json.dumps([{"uid": "other", "title": "other"}]),
+        })
+    with pytest.raises(SURVEY.Refusal):
+        SURVEY.prepare_expected_target_transition({
+            "enabled": False,
+            "targets": [],
+            "previous_rules": yaml.safe_dump(previous),
+            "live_rules": "",
+            "live_folders": "",
+        })
+
+
 def test_private_alert_rule_reads_and_writes_are_hidden_and_check_mode_skips_render():
     provision = yaml.safe_load((ROOT / "platform/playbooks/tasks/o11y-alert-provision.yml").read_text())
     rule_write = next(task for task in provision if task.get("name") == "Render declarative Grafana alert rules")
@@ -306,6 +405,7 @@ def test_private_alert_rule_reads_and_writes_are_hidden_and_check_mode_skips_ren
         "Require the previous alert provisioning path to be a regular file",
         "Read previous alert provisioning rules privately",
         "Read live Grafana alert ownership before alert transition",
+        "Read live Grafana folders before alert transition",
         "Prepare the expected-target alert transition privately",
         "Require a safe expected-target alert transition",
         "Save only the validated previous expected-target UIDs",
@@ -340,6 +440,8 @@ def test_private_alert_rule_reads_and_writes_are_hidden_and_check_mode_skips_ren
             "Require all provisioned o11y rules to remain active",
         ),
         "platform/playbooks/tasks/o11y-recover-active-alert-drill.yml": (
+            "Read active Prometheus targets after recovery",
+            "Require the drill scrape job to be absent",
             "Read the production service-down rule after drill recovery",
             "Require the production service-down rule to remain active",
             "Read all production o11y alert rules after drill recovery",
@@ -359,6 +461,33 @@ def test_private_alert_rule_reads_and_writes_are_hidden_and_check_mode_skips_ren
             pending = [child for group in pending for child in (group if isinstance(group, list) else [group])]
         for name in names:
             assert next(task for task in flat_tasks if task.get("name") == name)["no_log"] is True
+
+    probe = yaml.safe_load((ROOT / "platform/playbooks/tasks/o11y-alert-probe.yml").read_text())
+    pending = list(probe)
+    flat_probe = []
+    while pending:
+        item = pending.pop()
+        if not isinstance(item, dict):
+            continue
+        flat_probe.append(item)
+        pending.extend(item.get(key, []) for key in ("block", "rescue", "always", "tasks"))
+        pending = [child for group in pending for child in (group if isinstance(group, list) else [group])]
+    for name in (
+        "Read the provisioned service-down rule before the alert drill",
+        "Require an active provisioned rule before injecting the alert fault",
+        "Wait for the declared failed scrape",
+        "Require the onboarding verifier to refuse the named endpoint",
+        "Wait for Grafana's service-down rule to fire for the probe",
+        "Require a readable firing receipt from the owned webhook",
+    ):
+        task = next(item for item in flat_probe if item.get("name") == name)
+        parent = next((item for item in flat_probe if item.get("block") and task in item["block"]), {})
+        assert task.get("no_log") is True or parent.get("no_log") is True
+
+    probe_summary = next(
+        item for item in flat_probe if item.get("name") == "Report the fired rule and confirmed Discord receipt"
+    )
+    assert "{{ expected_service }}" not in json.dumps(probe_summary)
 
     restored = yaml.safe_load(
         (ROOT / "platform/playbooks/tasks/o11y-restore-alert-baseline.yml").read_text()

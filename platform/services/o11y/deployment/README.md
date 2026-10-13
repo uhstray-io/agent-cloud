@@ -436,9 +436,11 @@ but skips rendering and live verification.
 
 For retirement, remove that target from the active list and add only its exact
 `o11y_missing_<stable-suffix>` UID to
-`o11y_expected_metrics_targets_retired_uids`. The preflight refuses duplicate
-or unrelated UIDs, and the generated `deleteRules` contains only the named
-retirements. Do not remove the entire rule group to retire one target.
+`o11y_expected_metrics_targets_retired_uids`. The preflight requires that UID in
+the validated prior ownership record. It renders a generic paused `vector(0)`
+tombstone with no target labels or route. The tombstone remains through gate-off,
+canary restoration, and retries; the retired UID cannot be reused. No live rule
+is deleted by omission, and unrelated rules are never touched.
 
 The Dev-bound `Survey o11y Expected Metrics Targets (Dev)` receipt compares
 the reviewed identities with every active Prometheus target, including

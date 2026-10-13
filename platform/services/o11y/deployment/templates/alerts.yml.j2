@@ -178,11 +178,11 @@ groups:
           repeat_interval: 4h
 {% endif %}
 {% endfor %}
-{# Grafana keeps omitted provisioned rules. Preserve validated owners as inert rules until explicitly retired. #}
+{# Grafana keeps omitted rules; retain validated owners and retired UID tombstones. #}
 {% if not (local_mode | default(false) | bool) %}
-{% for uid in (_o11y_previous_expected_target_uids | default([])) %}
+{% for uid in ((_o11y_previous_expected_target_uids | default([])) + (_o11y_retired_expected_target_uids | default([]))) %}
       - uid: {{ uid }}
-        title: Expected metrics target previously declared
+        title: {{ 'Expected metrics target explicitly retired' if uid in (_o11y_retired_expected_target_uids | default([])) else 'Expected metrics target previously declared' }}
         condition: B
         data:
           - refId: A
@@ -215,7 +215,7 @@ groups:
         for: 0s
         annotations:
           summary: Expected metrics target rule is disabled.
-          description: No target identity is retained while the reviewed alert gate is disabled.
+          description: {{ 'This owned UID was explicitly retired and remains inert.' if uid in (_o11y_retired_expected_target_uids | default([])) else 'No target identity is retained while the reviewed alert gate is disabled.' }}
         labels:
           severity: warning
           owner: platform-operations
@@ -620,13 +620,11 @@ groups:
      'Replace this rule when the dgx-spark benchmark manifest writer publishes a metric.',
      '/d/inference-placement-comparison', paused=true) }}
 {% endif %}
-{# One deleteRules key for every withdrawn rule: the inference rules when the scrape
-   is off, the silent-job rule when no scheduled job is declared. #}
+{# Expected-target retirement stays as a generic inert tombstone; it is never
+   deleted because Grafana may preserve omitted provisioned rules. #}
 {% set _deleted_uids = ([] if _dgx_on else _inference_uids)
      + ([] if _probe_on else _probe_uids)
-     + ([] if _scheduled_jobs | length > 0 else ['o11y_scheduled_job_silent'])
-     + (o11y_expected_metrics_targets_retired_uids | default([])
-        if _expected_targets_reviewed and not (local_mode | default(false) | bool) else []) %}
+     + ([] if _scheduled_jobs | length > 0 else ['o11y_scheduled_job_silent']) %}
 {% if _deleted_uids %}
 deleteRules:
 {% for uid in _deleted_uids %}

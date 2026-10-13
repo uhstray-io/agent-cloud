@@ -1213,7 +1213,7 @@ assert block['no_log'] is True
 env = Environment(undefined=StrictUndefined)
 env.filters['bool'] = bool
 env.filters['to_json'] = json.dumps
-should_verify = [env.compile_expression(condition) for condition in block['when']]
+should_verify = [env.compile_expression(block['when'])]
 assert should_verify[0](ansible_check_mode=False)
 assert not should_verify[0](ansible_check_mode=True)
 tasks = block['block']
@@ -1316,7 +1316,7 @@ for contacts, expected in [
     ([{'uid': 'o11y_ops_discord'}, {'uid': 'o11y_ops_discord'}], False),
 ]:
     selected = count_contacts(_active_contacts={'stdout': json.dumps(contacts)})
-    assert bool(contact_check(_o11y_contact_count=selected)) is expected
+    assert bool(contact_check(_o11y_contact_count=selected, o11y_alerts_enabled=True)) is expected
 PY
 }
 

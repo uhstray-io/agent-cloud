@@ -764,13 +764,20 @@ in the generated file as a paused, unrouted `vector(0)` rule with generic
 metadata. The prior file is the ownership record and is read before placement;
 ownership requires the expected-target rule structure, exact identity labels,
 and the `agent-cloud` / `service-telemetry` folder-group contract. A UID prefix
-alone grants no authority. A malformed prior file, unowned live target UID, or
-drifted live target rule refuses before placement/restart. Re-enabling requires
-the current valid declaration to restore every owned UID or explicitly retire
-it. Only explicit reviewed retirements enter `deleteRules`; unrelated rules are
-preserved. Canary restoration and interrupted retries use the same preparation
-and validation path. Render/readback tasks carrying private identities suppress
+alone grants no authority. Before placement, live rules must have the exact
+owned UID set and match the prior query, labels, pause state, notification
+route, rule group, and the UID of the uniquely resolved `agent-cloud` folder.
+Missing live rules, unowned live target UIDs, folder drift, or rule drift refuse.
+Retired rules remain generic paused `vector(0)` tombstones, making ownership
+durable across gate-off, canary restoration, and interrupted retries without
+deleting live rules. A retired UID cannot be reactivated; a new identity needs a
+new stable UID. Canary restoration and interrupted retries use the same
+preparation and validation path. Render/readback tasks carrying private identities suppress
 Ansible output and diffs; only fixed summaries and counts are visible. Check
 mode performs source validation only, skips rendering, and does not claim a live
 transition. Live acceptance remains separate; task 3.3 and the private rollout
 gate remain open/off.
+
+Alert probes and active-drill recovery also protect raw Prometheus/Grafana
+responses and every identity-bearing assertion. Their visible success receipts
+use fixed wording and contain no target labels or endpoints.
