@@ -106,16 +106,21 @@ def _gate_tasks():
     """The two gated steps, each as a debug task with the playbook's own condition."""
     post = _task(_play("Phase 3"), "Run post-deploy.sh (migrations, superuser, OAuth2)")
     creds = _task(_play("Phase 4"), "Manage Diode orb-agent credentials")
+    mark = _task(_play("Phase 4"), "Record that the orb-agent credential refresh finished")
     return [
         {"name": "post", "ansible.builtin.debug": {"msg": "RAN post"}, "when": post["when"]},
         {"name": "creds", "ansible.builtin.debug": {"msg": "RAN creds"}, "when": creds["when"]},
+        {"name": "mark", "ansible.builtin.debug": {"msg": "RAN mark"}, "when": mark["when"]},
     ]
 
 
-def _owed_creds_fact():
-    """The playbook's own fact task, so a rename of the fact it sets turns this red."""
-    task = _task(_play("Phase 4"), "Is an orb-agent credential stored in OpenBao?")
-    return {k: v for k, v in task.items() if k != "no_log"}
+def _fact_tasks():
+    """The playbook's own fact tasks, so a rename of a fact they set turns this red."""
+    out = []
+    for name in ("Is an orb-agent credential stored in OpenBao?", "Is a credential refresh owed?"):
+        task = _task(_play("Phase 4"), name)
+        out.append({k: v for k, v in task.items() if k != "no_log"})
+    return out
 
 
 UNCHANGED = {"changed": False}
@@ -128,41 +133,60 @@ NO_MARKER = {"stat": {"exists": False}}
 
 @needs_ansible
 @pytest.mark.parametrize(
-    "deploy,marker,resolved,post,creds",
+    "deploy,marker,cred_marker,resolved,post,creds",
     [
         # an unchanged re-run that owes nothing runs neither step
-        (UNCHANGED, MARKER, STORED, False, False),
+        (UNCHANGED, MARKER, MARKER, STORED, False, False),
         # a changed deploy owes both: the stack was recreated and the orb-agent stopped with it
-        (CHANGED, MARKER, STORED, True, True),
+        (CHANGED, MARKER, MARKER, STORED, True, True),
         # a run that died before post-deploy finished is finished by the next one
-        (UNCHANGED, NO_MARKER, STORED, True, True),
+        (UNCHANGED, NO_MARKER, MARKER, STORED, True, True),
+        # a run that died before the credential refresh finished owes it on the next, though
+        # nothing else changed and post-deploy is done
+        (UNCHANGED, MARKER, NO_MARKER, STORED, False, True),
         # a credential that was never stored is minted even on an unchanged stack
-        (UNCHANGED, MARKER, {"orb_agent_client_id": "x"}, False, True),
-        (UNCHANGED, MARKER, {"orb_agent_client_id": "", "orb_agent_client_secret": ""}, False, True),
-        (UNCHANGED, MARKER, {}, False, True),
+        (UNCHANGED, MARKER, MARKER, {"orb_agent_client_id": "x"}, False, True),
+        (UNCHANGED, MARKER, MARKER, {"orb_agent_client_id": "", "orb_agent_client_secret": ""}, False, True),
+        (UNCHANGED, MARKER, MARKER, {}, False, True),
     ],
 )
-def test_post_deploy_and_credential_refresh_run_only_when_owed(tmp_path, deploy, marker, resolved, post, creds):
+def test_post_deploy_and_credential_refresh_run_only_when_owed(
+    tmp_path, deploy, marker, cred_marker, resolved, post, creds
+):
     tasks = [
-        {"name": "creds-fact", **_owed_creds_fact()},
+        *({"name": "fact", **f} for f in _fact_tasks()),
         *_gate_tasks(),
     ]
     ran = _eval_gate(tmp_path, tasks, {
-        "_deploy": deploy, "_post_deploy_marker": marker, "_resolved": resolved,
+        "_deploy": deploy, "_post_deploy_marker": marker, "_credential_marker": cred_marker,
+        "_resolved": resolved,
         # the playbook registers _post_deploy only when post-deploy ran: absent here unless it did
         **({"_post_deploy": CHANGED} if post else {}),
     })
     assert ("post" in ran, "creds" in ran) == (post, creds), ran
+    # the completion marker is written exactly when the refresh ran, never before it succeeded
+    assert ("mark" in ran) == creds, ran
 
 
 @needs_ansible
 def test_a_dry_run_skips_post_deploy_but_still_walks_the_credential_task(tmp_path):
-    tasks = [{"name": "creds-fact", **_owed_creds_fact()}, *_gate_tasks()]
+    tasks = [*({"name": "fact", **f} for f in _fact_tasks()), *_gate_tasks()]
     ran = _eval_gate(
         tmp_path, tasks,
-        {"_deploy": SKIPPED, "_post_deploy_marker": MARKER, "_resolved": STORED}, check=True,
+        {"_deploy": SKIPPED, "_post_deploy_marker": MARKER, "_credential_marker": MARKER, "_resolved": STORED},
+        check=True,
     )
-    assert ran == {"creds"}, ran
+    assert ran == {"creds"}, ran  # a dry run walks the task to report, and writes no marker
+
+
+@needs_ansible
+@pytest.mark.parametrize("stdout,warned", [(["ORB_AGENT_RUNNING=false", "DEPLOY_CHANGED=false"], True),
+                                           (["DEPLOY_CHANGED=false"], False)])
+def test_a_stopped_orb_agent_is_warned_about(tmp_path, stdout, warned):
+    task = _task(_play("Phase 2"), "Warn: discovery is stopped")
+    probe = {"name": "warn", "ansible.builtin.debug": {"msg": "RAN warn"}, "when": task["when"]}
+    ran = _eval_gate(tmp_path, [probe], {"_deploy": {"stdout_lines": stdout, "changed": False}})
+    assert ("warn" in ran) == warned, ran
 
 
 def _code(path: Path) -> str:
@@ -177,3 +201,7 @@ def test_deploy_sh_leaves_everything_alone_before_it_can_stop_anything():
     assert "exit 0" in code[unchanged : unchanged + 60], "the unchanged branch must exit before the stop"
     assert "--force-recreate" not in code
     assert code.rindex('echo "DEPLOY_CHANGED=true"') > code.index("wait_for_healthy")
+    # both branches name a stopped agent before they report: the unchanged branch used to claim it
+    # left the agent alone without looking
+    assert code.count("warn_if_orb_agent_stopped") == 2
+    assert code.index("warn_if_orb_agent_stopped") < unchanged

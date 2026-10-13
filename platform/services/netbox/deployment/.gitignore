@@ -44,3 +44,4 @@ workers/**/*.egg-info/
 # Written by deploy.sh (inputs-digest label overlay) and post-deploy.sh (completion marker)
 .deploy-inputs-label.yml
 .post-deploy-complete
+.credential-refresh-complete

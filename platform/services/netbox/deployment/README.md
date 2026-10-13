@@ -82,8 +82,9 @@ own line, which `deploy-netbox.yml` reads as the task's changed status.
 The inputs are hashed into one sha256 that rides a label
 (`io.agent-cloud.inputs-sha256`) on every container, through a generated overlay
 (`.deploy-inputs-label.yml`, gitignored). The digest covers the compose files in
-effect and `NETBOX_HOST_IP`; `.env` without the orb-agent-only keys (the credential
-refresh rewrites those after every deploy); `env/*.env`; every bind-mounted config
+effect and `NETBOX_HOST_IP`; `.env` without the orb-agent-only keys
+(`ORB_AGENT_CLIENT_ID`/`_SECRET`, which the credential refresh rewrites after a changed
+deploy, and `SNMP_COMMUNITY`, which no compose service reads); `env/*.env`; every bind-mounted config
 input (`netbox-docker/configuration`, `configuration/plugins.py`, the Diode client
 secret file, `discovery/init-db.sh`, `nginx.conf`, `hydra.yaml`); and the image
 build inputs. The stack is recreated when a container is missing, an orphan, not
@@ -96,9 +97,16 @@ no label, or runs an image that is no longer the one its tag names.
 | An input or image changed, or a container is missing or stopped | Orb Agent stopped, stack taken down, staged start, `DEPLOY_CHANGED=true`. Run **Deploy Orb Agent** afterwards |
 
 Post-deploy (migrations, superuser, OAuth2) and the Diode credential refresh run
-when the deploy changed, when `post-deploy.sh` has not finished since the stack
-was last created (it writes `.post-deploy-complete`; `deploy.sh` removes it before a
-recreate), or when no Orb Agent credential is stored in OpenBao yet.
+when the deploy changed, when they have not finished since the stack was last created,
+or (the refresh only) when no Orb Agent credential is stored in OpenBao yet. Each
+records its completion in a gitignored marker (`.post-deploy-complete`,
+`.credential-refresh-complete`) that `deploy.sh` removes before a recreate, so a run
+that died part-way is finished by the next one even though the containers then match
+their inputs.
+
+Both branches of `deploy.sh` print `ORB_AGENT_RUNNING=false` when no standalone
+Orb Agent container is running, and `deploy-netbox.yml` shows a warning: discovery is
+stopped and nothing in this workflow starts it again. Run **Deploy Orb Agent**.
 
 The plugin image is rebuilt only when its build inputs (`Dockerfile-Plugins`,
 `configuration/plugins.py`, the base-image tag) changed or the image is missing.

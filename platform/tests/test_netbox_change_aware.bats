@@ -60,27 +60,33 @@ STUB
   cat > "$T/bin/sudo" <<'STUB'
 #!/usr/bin/env bash
 echo "sudo $*" >> "$STUB_STATE/calls.log"
+# a read-only `inspect` of the orb-agent answers true only while $S/orb_running exists
+case " $* " in
+  *" inspect "*) [ -e "$STUB_STATE/orb_running" ] && echo true || exit 1 ;;
+esac
 exit 0
 STUB
   cat > "$T/bin/engine" <<'STUB'
 #!/usr/bin/env bash
 S="$STUB_STATE"
 echo "engine $*" >> "$S/calls.log"
-ref_of() { case "$1" in netbox|netbox-worker) echo netbox:latest-plugins ;; *) echo other:v1 ;; esac; }
+# image_prefix: podman keeps a short name under localhost/, docker keeps it bare
+pfx() { cat "$S/image_prefix" 2>/dev/null; }
+ref_of() { case "$1" in netbox|netbox-worker) echo "$(pfx)netbox:latest-plugins" ;; *) echo other:v1 ;; esac; }
 mkc() {  # <service> <label>
   local n="netbox-$1-1" c="$S/c/netbox-$1-1"
   rm -rf "$c"; mkdir -p "$c"
   echo "$1" > "$c/service"; echo "$2" > "$c/label"; ref_of "$1" > "$c/ref"
   if [ "$1" = hydra-migrate ]; then echo exited > "$c/status"; echo 0 > "$c/exit"; else echo running > "$c/status"; echo 0 > "$c/exit"; fi
-  if [ "$(cat "$c/ref")" = netbox:latest-plugins ]; then cp "$S/image_id" "$c/image_run"; else echo static-id > "$c/image_run"; fi
+  if [ "$(cat "$c/ref")" = "$(pfx)netbox:latest-plugins" ]; then cp "$S/image_id" "$c/image_run"; else echo static-id > "$c/image_run"; fi
   : "$n"
 }
 case "$1" in
   image)
     [ "$2" = inspect ] || exit 0
     case "$4" in
-      *Labels*) [ -f "$S/image_id" ] || exit 1; cat "$S/image_label" 2>/dev/null; exit 0 ;;
-      *Id*) if [ "$5" = netbox:latest-plugins ]; then [ -f "$S/image_id" ] || exit 1; cat "$S/image_id"; else echo static-id; fi ;;
+      *Labels*) [ -f "$S/image_id" ] && [ "$5" = "$(pfx)netbox:latest-plugins" ] || exit 1; cat "$S/image_label" 2>/dev/null; exit 0 ;;
+      *Id*) if [ "$5" = "$(pfx)netbox:latest-plugins" ]; then [ -f "$S/image_id" ] || exit 1; cat "$S/image_id"; else echo static-id; fi ;;
     esac ;;
   build)
     echo "build $*" >> "$S/builds.log"
@@ -185,7 +191,8 @@ ups() { cat "$S/ups"; }
   deploy
   [ "$status" -eq 0 ]; changed false
   [ "$(builds)" -eq 1 ]
-  refute_grep -qE 'compose down|compose up|^engine build|^sudo|\brm\b|\bstop\b' "$S/calls.log"
+  # the only orb-agent call is the read-only inspect behind the "is it running" warning
+  refute_grep -qE 'compose down|compose up|^engine build|^sudo [^ ]+ (stop|rm) |^engine (rm|stop)' "$S/calls.log"
   printf '%s\n' "${lines[@]}" | refute_grep -q 'Stopping services'
 }
 
@@ -302,17 +309,42 @@ ups() { cat "$S/ups"; }
   deploy; [ "$status" -eq 0 ]; changed true
 }
 
-@test "a changed run owes post-deploy again; an unchanged one leaves the marker alone" {
+@test "a changed run owes post-deploy and the credential refresh again; an unchanged one leaves both markers alone" {
   deploy; [ "$status" -eq 0 ]
-  touch "$D/.post-deploy-complete"
+  touch "$D/.post-deploy-complete" "$D/.credential-refresh-complete"
   deploy; [ "$status" -eq 0 ]; changed false
   [ -e "$D/.post-deploy-complete" ]
+  [ -e "$D/.credential-refresh-complete" ]
   echo "# x" >> "$D/env/netbox.env"
   deploy; [ "$status" -eq 0 ]; changed true
   [ ! -e "$D/.post-deploy-complete" ]
+  [ ! -e "$D/.credential-refresh-complete" ]
 }
 
-@test "post-deploy.sh records completion only after its last step" {
+@test "with no orb-agent running, both branches say so; with one running, neither does" {
+  deploy; [ "$status" -eq 0 ]; changed true
+  printf '%s\n' "${lines[@]}" | grep -x 'ORB_AGENT_RUNNING=false'
+  deploy; [ "$status" -eq 0 ]; changed false
+  printf '%s\n' "${lines[@]}" | grep -x 'ORB_AGENT_RUNNING=false'
+  printf '%s\n' "${lines[@]}" | grep -q 'run Deploy Orb Agent'
+  touch "$S/orb_running"
+  : > "$S/calls.log"
+  deploy; [ "$status" -eq 0 ]; changed false
+  printf '%s\n' "${lines[@]}" | refute_grep -q 'ORB_AGENT_RUNNING'
+  # the check only reads: it never stops, removes or starts the agent
+  assert_grep -q '^sudo .* inspect ' "$S/calls.log"
+  refute_grep -qE '^sudo [^ ]+ (stop|rm|run) ' "$S/calls.log"
+}
+
+@test "podman's localhost/ image name still skips the build when the inputs are unchanged" {
+  echo localhost/ > "$S/image_prefix"
+  deploy; [ "$status" -eq 0 ]; changed true
+  [ "$(builds)" -eq 1 ]
+  deploy; [ "$status" -eq 0 ]; changed false
+  [ "$(builds)" -eq 1 ]
+}
+
+@test "post-deploy.sh touches its completion marker after its steps, once" {
   local code
   code=$(grep -vE '^\s*#' "$SRC/post-deploy.sh")
   [ "$(printf '%s\n' "$code" | grep -c 'touch "\${SCRIPT_DIR}/\${NETBOX_POST_DEPLOY_MARKER}"')" -eq 1 ]

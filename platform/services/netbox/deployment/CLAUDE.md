@@ -39,12 +39,17 @@ stopped, built or removed: the standalone orb-agent is not a compose service,
 - A new bind-mounted config file, a new environment-read compose variable, or a
   new image build input belongs in the digest. One left out changes without the
   containers being recreated.
-- Do not add `.env` keys the credential refresh rewrites (`ORB_AGENT_*`,
-  `SNMP_COMMUNITY`) to the digest: every run would then look changed.
+- Do not add the orb-agent-only `.env` keys to the digest. `ORB_AGENT_CLIENT_ID` and
+  `ORB_AGENT_CLIENT_SECRET` are rewritten by the credential refresh after a changed
+  deploy, so the next run would look changed. `SNMP_COMMUNITY` is not rewritten by it;
+  it is left out because no compose service reads it (only the standalone orb-agent
+  start does), so a change would recreate the stack for nothing.
 - Every `compose up` after the decision carries `.deploy-inputs-label.yml` through
   `COMPOSE_OVERLAYS`; one started without it is recreated by the next run.
 - `netbox_force_rebuild` / `deploy_force_recreate` (literal `true`) are the operator
   levers. A changed deploy stops the orb-agent; the operator runs Deploy Orb Agent.
+  Either branch of `deploy.sh` prints `ORB_AGENT_RUNNING=false` when no orb-agent is
+  running, and `deploy-netbox.yml` shows it as a warning.
 - Never delete or replace a bind-mounted directory under a running stack
   (`platform/tests/test_no_bind_mount_dir_delete.py` covers this service).
   `deploy.sh` forces a recreate when it replaces the `netbox-docker/` clone.

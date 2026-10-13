@@ -448,8 +448,14 @@ build_netbox_image() {
   local version want have
   version=$(_netbox_version)
   want=$(netbox_build_inputs_digest) || exit 1
-  have=$($CONTAINER_ENGINE image inspect --format "{{ index .Config.Labels \"${NETBOX_BUILD_LABEL}\" }}" \
-    "$NETBOX_IMAGE" 2>/dev/null) || have=""
+  # podman stores a short name under localhost/ (docker keeps it bare); ask for both.
+  local ref
+  have=""
+  for ref in "$NETBOX_IMAGE" "localhost/${NETBOX_IMAGE}"; do
+    have=$($CONTAINER_ENGINE image inspect --format "{{ index .Config.Labels \"${NETBOX_BUILD_LABEL}\" }}" \
+      "$ref" 2>/dev/null) || have=""
+    [ -z "$have" ] || break
+  done
   if [ "${NETBOX_FORCE_REBUILD:-}" != "true" ] && [ -n "$have" ] && [ "$have" = "$want" ]; then
     info "NetBox image ${NETBOX_IMAGE} already matches its build inputs; skipping the build (NETBOX_FORCE_REBUILD=true rebuilds)."
     return 0
@@ -485,6 +491,10 @@ build_netbox_image() {
 NETBOX_INPUTS_LABEL="io.agent-cloud.inputs-sha256"
 # The generated overlay carrying the label (gitignored; rewritten by every changed deploy).
 NETBOX_LABEL_OVERLAY=".deploy-inputs-label.yml"
+# Written by deploy-netbox.yml once the orb-agent credential refresh succeeded, removed by
+# deploy.sh before it recreates the stack (same reason as the post-deploy marker below).
+# shellcheck disable=SC2034  # read by deploy.sh, which sources this file
+NETBOX_CREDENTIAL_MARKER=".credential-refresh-complete"
 # Written by post-deploy.sh once it finished, removed by deploy.sh before it recreates the
 # stack: the playbook reads it to run post-deploy again after a run that died part-way,
 # which the container label alone cannot show (the label is set at container creation).
@@ -551,8 +561,10 @@ netbox_build_inputs_digest() {
 # netbox_inputs_digest: one sha256 over every input that decides what the containers run on:
 #   - the compose files in effect (base + COMPOSE_OVERLAYS) and NETBOX_HOST_IP, which the
 #     compose file reads from the environment for the published port
-#   - .env, without the orb-agent-only keys: the credential refresh rewrites those after
-#     every deploy and no compose service reads them, so they would make every run "changed"
+#   - .env, without the orb-agent-only keys. ORB_AGENT_CLIENT_ID/SECRET: the credential
+#     refresh rewrites them after a changed deploy, so they would make the next run "changed".
+#     SNMP_COMMUNITY: no compose service reads it (only start_orb_agent does), so a change
+#     would recreate the stack for nothing
 #   - env/*.env
 #   - every bind-mounted config input (docker-compose.yml `volumes:` with a ./ source)
 #   - the image build inputs (netbox_build_inputs_digest)
@@ -806,6 +818,19 @@ stop_orb_agent() {
   sudo $CONTAINER_ENGINE rm -f "${ORB_AGENT_CONTAINER}" 2>/dev/null || true
   local compose_dir="${SECRETS_DIR%/secrets}"
   rm -f "${compose_dir}/discovery/agent-resolved.yaml" 2>/dev/null || true
+}
+
+# warn_if_orb_agent_stopped
+# Say so when no standalone orb-agent is running: discovery is then stopped and nothing in
+# this workflow starts it again. `ORB_AGENT_RUNNING=false` on its own line is what
+# deploy-netbox.yml reads to show the operator a warning.
+warn_if_orb_agent_stopped() {
+  local running
+  running=$(sudo $CONTAINER_ENGINE inspect --format '{{.State.Running}}' "${ORB_AGENT_CONTAINER}" 2>/dev/null) || running=""
+  if [ "$running" != "true" ]; then
+    echo "ORB_AGENT_RUNNING=false"
+    warn "No orb-agent container is running: discovery is stopped; run Deploy Orb Agent."
+  fi
 }
 
 # wait_for_agent_running [timeout]

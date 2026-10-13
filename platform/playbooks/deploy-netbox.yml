@@ -148,6 +148,15 @@
       ansible.builtin.debug:
         var: _deploy.stdout_lines
 
+    - name: "Warn: discovery is stopped"
+      # Either branch of deploy.sh prints this when no standalone orb-agent is running. The
+      # deploy does not start it (Deploy Orb Agent is its own workflow), so say so out loud.
+      ansible.builtin.debug:
+        msg: "No orb-agent container is running on this host: discovery is stopped. Run Deploy Orb Agent."
+      when:
+        - not ansible_check_mode
+        - "'ORB_AGENT_RUNNING=false' in _deploy.stdout_lines"
+
 # ── Phase 3: Application config (migrations, superuser, OAuth2) ──────
 - name: "Phase 3: Configure NetBox application"
   hosts: netbox_svc
@@ -214,11 +223,19 @@
   become: false
   vars:
     _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+    _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
     _bao_url: "{{ openbao_addr | default('') }}"
     _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
 
   tasks:
+    - name: "Has the orb-agent credential been refreshed since the stack was last created?"
+      # deploy.sh removes the marker whenever it recreates the stack; the task below writes it
+      # only after the refresh succeeded, so a run that died in between is finished by the next.
+      ansible.builtin.stat:
+        path: "{{ _deploy_dir }}/.credential-refresh-complete"
+      register: _credential_marker
+
     - name: "Is an orb-agent credential stored in OpenBao?"
       ansible.builtin.set_fact:
         _orb_credential_missing: >-
@@ -226,18 +243,36 @@
              or ((_resolved | default({})).orb_agent_client_secret | default('') | length == 0) }}
       no_log: true
 
+    - name: "Is a credential refresh owed?"
+      # A plain boolean, no secret: the stack was recreated, post-deploy ran, the refresh never
+      # finished since, or no credential is stored yet.
+      ansible.builtin.set_fact:
+        _orb_refresh_owed: >-
+          {{ (_deploy | default({})) is changed
+             or (_post_deploy | default({})) is changed
+             or not _credential_marker.stat.exists
+             or (_orb_credential_missing | bool) }}
+
     - name: "Manage Diode orb-agent credentials"
       # The task always mints a FRESH credential (the plugin returns a client secret only at
       # creation) and rewrites OpenBao and .env, so it runs only when one is owed: the stack was
       # recreated (the orb-agent was stopped with it and is redeployed with a new credential), or
-      # none is stored yet. An unchanged re-run leaves the stored credential, and the running
-      # orb-agent that holds it, alone. A dry run always walks the task so it can report.
+      # none is stored yet, or the last refresh never finished. An unchanged re-run leaves the
+      # stored credential, and the running orb-agent that holds it, alone. A dry run always
+      # walks the task so it can report.
       ansible.builtin.include_tasks: tasks/manage-diode-credentials.yml
-      when: >-
-        ansible_check_mode
-        or (_deploy | default({})) is changed
-        or (_post_deploy | default({})) is changed
-        or (_orb_credential_missing | bool)
+      when: ansible_check_mode or (_orb_refresh_owed | bool)
+
+    - name: "Record that the orb-agent credential refresh finished"
+      # Reached only when the include above succeeded (a failure stops the play). Carries no
+      # secret, so it is a plain task.
+      ansible.builtin.file:
+        path: "{{ _deploy_dir }}/.credential-refresh-complete"
+        state: touch
+        mode: "0644"
+      when:
+        - not ansible_check_mode
+        - _orb_refresh_owed | bool
 
 # Orb Agent is a separate workflow: deploy-orb-agent.yml
 # Run it after NetBox deploy to start network/SNMP discovery.

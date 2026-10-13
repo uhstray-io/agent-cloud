@@ -144,13 +144,15 @@ else
   reason=$(netbox_recreate_reason "$want_digest" "$compose_svcs")
 fi
 if [ -z "$reason" ]; then
-  info "Every container matches its inputs and image; leaving the stack and the orb-agent alone."
+  info "Every container matches its inputs and image; leaving the stack alone."
+  warn_if_orb_agent_stopped
   echo "DEPLOY_CHANGED=false"
   exit 0
 fi
 info "Recreating the stack (${reason})."
-# The application setup (post-deploy.sh) is owed again until it records that it finished.
-rm -f "${SCRIPT_DIR}/${NETBOX_POST_DEPLOY_MARKER}"
+# The application setup (post-deploy.sh) and the orb-agent credential refresh are owed again
+# until each records that it finished.
+rm -f "${SCRIPT_DIR}/${NETBOX_POST_DEPLOY_MARKER}" "${SCRIPT_DIR}/${NETBOX_CREDENTIAL_MARKER}"
 # Every `compose up` below carries the label: a service started without it differs from its
 # labelled siblings and would be recreated on the next run.
 netbox_write_label_overlay "$want_digest" "$compose_svcs"
@@ -210,4 +212,5 @@ info "  Next: post-deploy.sh (migrations, superuser, OAuth2)"
 info "  Then: deploy-orb-agent.yml (Diode credentials + Orb Agent): this run stopped the agent"
 info ""
 rm -f "${SCRIPT_DIR}/${NETBOX_LABEL_OVERLAY}"
+warn_if_orb_agent_stopped
 echo "DEPLOY_CHANGED=true"
