@@ -801,6 +801,31 @@ def test_loaded_readback_refuses_different_config_bytes(monkeypatch):
         SURVEY._loaded_limit_readback(b"unused")
 
 
+@pytest.mark.parametrize("bad_config", [None, "", 7, "12345", "\ud800"])
+@pytest.mark.parametrize("bad_config_index", [0, 1])
+def test_loaded_readback_refuses_invalid_config_as_unavailable(monkeypatch, bad_config, bad_config_index):
+    monkeypatch.setattr(SURVEY, "MAX_API_BYTES", 4)
+    runtime = {
+        "startTime": "2026-10-13T12:00:00Z",
+        "lastConfigTime": "2026-10-13T12:01:00Z",
+        "reloadConfigSuccess": True,
+    }
+    config_values = ["ok", "ok"]
+    config_values[bad_config_index] = bad_config
+    configs = iter(config_values)
+
+    def status(path, _reason):
+        if path.endswith("buildinfo"):
+            return {"version": "3.1.0"}
+        if path.endswith("runtimeinfo"):
+            return runtime
+        return {"yaml": next(configs)}
+
+    monkeypatch.setattr(SURVEY, "_status_data", status)
+    with pytest.raises(SURVEY.Refusal, match="loaded_config_unavailable"):
+        SURVEY._loaded_limit_readback(b"unused")
+
+
 def test_loaded_readback_failure_does_not_suppress_active_baseline(monkeypatch):
     baseline = _budget_receipt("prometheus")
     monkeypatch.setattr(SURVEY, "_require_curl_version", lambda: None)

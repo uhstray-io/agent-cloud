@@ -754,13 +754,18 @@ def _loaded_limit_readback(targets_raw: bytes | str) -> dict[str, Any]:
         _status_data("/api/v1/status/runtimeinfo", "runtime_config_unavailable")
     )
 
+    for config_yaml in (config_before, config_after):
+        if not isinstance(config_yaml, str) or not config_yaml:
+            raise Refusal("loaded_config_unavailable")
+        try:
+            config_size = len(config_yaml.encode("utf-8"))
+        except UnicodeError:
+            raise Refusal("loaded_config_unavailable") from None
+        if config_size > MAX_API_BYTES:
+            raise Refusal("loaded_config_unavailable")
+
     if (
-        not isinstance(config_before, str)
-        or not isinstance(config_after, str)
-        or not config_before
-        or len(config_before.encode("utf-8")) > MAX_API_BYTES
-        or len(config_after.encode("utf-8")) > MAX_API_BYTES
-        or config_before != config_after
+        config_before != config_after
         or runtime_before != runtime_middle
         or runtime_middle != runtime_after
     ):
