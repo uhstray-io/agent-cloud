@@ -179,7 +179,11 @@ groups:
    'summary': 'Alloy refused log records or spans before accepting them.'},
   {'uid': 'o11y_tempo_exporter_enqueue_failed', 'title': 'Tempo exporter queue lost spans',
    'expr': 'sum(increase(otelcol_exporter_enqueue_failed_spans_total{job="alloy"}[5m])) or vector(0)',
-   'summary': 'Alloy could not enqueue spans for the Tempo exporter; queued spans were lost.'}
+   'summary': 'Alloy could not enqueue spans for the Tempo exporter; queued spans were lost.'},
+  {'uid': 'o11y_tempo_exporter_send_failed', 'title': 'Tempo exporter send failures sustained',
+   'expr': 'sum(rate(otelcol_exporter_send_failed_spans_total{job="alloy"}[5m])) or vector(0)',
+   'summary': 'Alloy observed sustained Tempo exporter span send failures; retries may still deliver spans.',
+   'for': '10m'}
 ] %}
       - uid: {{ loss_rule.uid }}
         title: {{ loss_rule.title | to_json }}
@@ -212,7 +216,7 @@ groups:
               refId: B
         noDataState: OK
         execErrState: Alerting
-        for: 2m
+        for: {{ loss_rule.get('for', '2m') }}
         annotations:
           summary: {{ loss_rule.summary | to_json }}
           dashboard_url: /d/o11y-self-monitoring

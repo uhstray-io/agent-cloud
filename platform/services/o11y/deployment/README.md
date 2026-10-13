@@ -141,16 +141,25 @@ as experimental in the pinned v3.1.0 configuration reference.
 
 The provisioned `service-telemetry` group includes an Alloy receiver-refusal
 alert for `otelcol_receiver_refused_log_records_total` and
-`otelcol_receiver_refused_spans_total`, plus a Tempo exporter queue-loss alert
-for `otelcol_exporter_enqueue_failed_spans_total`. These are the Prometheus
+`otelcol_receiver_refused_spans_total`, a Tempo exporter queue-admission alert
+for `otelcol_exporter_enqueue_failed_spans_total`, and a sustained send-failure
+alert for `otelcol_exporter_send_failed_spans_total`. These are the Prometheus
 counter names for the pinned Alloy v1.5.1 / OTel Collector v0.112.0 metrics.
-Each optional counter is measured as `sum(increase(counter{job="alloy"}[5m]))
-or vector(0)`, so an absent series contributes zero. The receiver alert adds the
-two refusal counts. Both rules fire above zero for two minutes and use the
-`service=o11y/alloy` label. `enqueue_failed_spans_total` means a span could not
-be added to the bounded exporter queue and was lost; exporter send failures are
-not used because retrying may still deliver those spans. Refused log records
-and spans were rejected at the receiver and were not accepted into the pipeline.
+Each optional counter uses a five-minute window and `or vector(0)`, so an absent
+series contributes zero. The receiver alert adds the two refusal counts; the
+queue-admission alert uses `increase` and the send-failure alert uses `rate`,
+both grouped to avoid per-exporter alert instances. Refusal and enqueue-failure
+rules fire above zero for two minutes; the send-failure rule requires a positive
+rate for ten minutes. All use `service=o11y/alloy`. `enqueue_failed_spans_total`
+means a span could not be admitted to the bounded exporter queue and was lost.
+`send_failed_spans_total` counts failed send attempts and signals delivery risk;
+it does not confirm span loss because retries may succeed. Alloy documents that
+failed batches are discarded after `retry_on_failure.max_elapsed_time` if they
+have not been sent successfully. See [OpenTelemetry Collector internal
+telemetry](https://opentelemetry.io/docs/collector/internal-telemetry/) and
+[Alloy OTLP exporter retry behavior](https://grafana.com/docs/alloy/latest/reference/components/otelcol/otelcol.exporter.otlp/).
+Refused log records and spans were rejected at the receiver and were not
+accepted into the pipeline.
 
 The rules remain paused unless private inventory sets
 `o11y_receiver_loss_alerts_reviewed: true`, `o11y_alerts_enabled` is true, and
@@ -160,11 +169,13 @@ to production inventory until metric exposition and alert delivery have been
 verified.
 
 Live acceptance requires reading the exact pinned Alloy `/metrics` endpoint
-and confirming all three counters are exposed, then using a controlled,
+and confirming all four counters are exposed, then using a controlled,
 non-sensitive refusal and a bounded queue-pressure scenario to observe the
 corresponding counter increases. After enabling the reviewed inventory flag,
-read back both provisioned rules from Grafana and prove each can fire and route
-through `agent-cloud-ops`, then verify resolution. Do not use secrets, prompts,
+read back all three provisioned rules from Grafana and prove they can fire and route
+through `agent-cloud-ops`, then verify resolution. For send failures, prove the
+rate rule with a controlled bounded exporter failure and describe the receipt as
+failed attempts/delivery risk, not confirmed loss. Do not use secrets, prompts,
 request bodies, or span attributes in these checks. Source rendering does not
 prove metric exposition, delivery, or runtime behavior; those remain
 unverified.

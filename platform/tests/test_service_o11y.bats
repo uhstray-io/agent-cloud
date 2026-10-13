@@ -871,6 +871,7 @@ for enabled in (False, True):
             'o11y_service_down', 'o11y_receiver_root_disk_low',
         ] + [target['uid'] for target in declared] + [
             'o11y_alloy_receiver_refused', 'o11y_tempo_exporter_enqueue_failed',
+            'o11y_tempo_exporter_send_failed',
             'o11y_loki_discarded_samples', 'o11y_tempo_discarded_spans',
         ]
         assert all(rule['isPaused'] is not enabled for rule in rules)
@@ -919,6 +920,8 @@ assert local_rules[1]['isPaused'] is True
 assert local_rules[2]['uid'] == 'o11y_missing_caddy'
 assert local_rules[3]['uid'] == 'o11y_alloy_receiver_refused'
 assert local_rules[3]['isPaused'] is True
+assert local_rules[5]['uid'] == 'o11y_tempo_exporter_send_failed'
+assert local_rules[5]['isPaused'] is True
 canary = 'o11y-fault-probe-' + 'a' * 12
 canary_rules = yaml.safe_load(template.render(local_mode=True, o11y_alerts_enabled=True,
                                               o11y_alert_canary_service=canary))['groups'][0]['rules']
@@ -928,7 +931,7 @@ assert all(rule['isPaused'] is True and 'notification_settings' not in rule for 
 PY
 }
 
-@test "o11y: Alloy refusal and Tempo queue-loss alerts require reviewed production enablement" {
+@test "o11y: Alloy refusal and Tempo exporter alerts require reviewed production enablement" {
   python3 - "$DEPLOY_DIR/templates/alerts.yml.j2" <<'PY'
 import json
 import sys
@@ -950,9 +953,11 @@ refused_expr = (
     '(sum(increase(otelcol_receiver_refused_spans_total{job="alloy"}[5m])) or vector(0))'
 )
 queue_expr = 'sum(increase(otelcol_exporter_enqueue_failed_spans_total{job="alloy"}[5m])) or vector(0)'
+send_failed_expr = 'sum(rate(otelcol_exporter_send_failed_spans_total{job="alloy"}[5m])) or vector(0)'
 expected = {
     'o11y_alloy_receiver_refused': refused_expr,
     'o11y_tempo_exporter_enqueue_failed': queue_expr,
+    'o11y_tempo_exporter_send_failed': send_failed_expr,
 }
 for enabled in (False, True):
     values = dict(local_mode=False, o11y_alerts_enabled=enabled,
@@ -962,11 +967,15 @@ for enabled in (False, True):
         rule = current[uid]
         assert rule['data'][0]['model']['expr'] == expression
         assert rule['data'][1]['model']['conditions'][0]['evaluator'] == {'type': 'gt', 'params': [0]}
-        assert rule['for'] == '2m'
+        assert rule['for'] == ('10m' if uid == 'o11y_tempo_exporter_send_failed' else '2m')
         assert rule['labels']['service'] == 'o11y/alloy'
         assert rule['labels']['owner'] == 'platform-operations'
         assert rule['isPaused'] is (not enabled)
         assert ('notification_settings' in rule) is enabled
+        if uid == 'o11y_tempo_exporter_send_failed':
+            assert rule['annotations']['summary'] == (
+                'Alloy observed sustained Tempo exporter span send failures; retries may still deliver spans.'
+            )
         if enabled:
             assert rule['notification_settings'] == {
                 'receiver': 'agent-cloud-ops',
