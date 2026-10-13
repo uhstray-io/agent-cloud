@@ -974,7 +974,7 @@ for enabled in (False, True):
         assert ('notification_settings' in rule) is enabled
         if uid == 'o11y_tempo_exporter_send_failed':
             assert rule['annotations']['summary'] == (
-                'Alloy observed sustained Tempo exporter span send failures; retries may still deliver spans.'
+                'Alloy observed sustained final Tempo exporter-operation errors after retry handling; backend receipt or loss is unverified.'
             )
         if enabled:
             assert rule['notification_settings'] == {

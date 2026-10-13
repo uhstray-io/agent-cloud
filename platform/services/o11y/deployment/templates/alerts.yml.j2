@@ -182,7 +182,7 @@ groups:
    'summary': 'Alloy could not enqueue spans for the Tempo exporter; queued spans were lost.'},
   {'uid': 'o11y_tempo_exporter_send_failed', 'title': 'Tempo exporter send failures sustained',
    'expr': 'sum(rate(otelcol_exporter_send_failed_spans_total{job="alloy"}[5m])) or vector(0)',
-   'summary': 'Alloy observed sustained Tempo exporter span send failures; retries may still deliver spans.',
+   'summary': 'Alloy observed sustained final Tempo exporter-operation errors after retry handling; backend receipt or loss is unverified.',
    'for': '10m'}
 ] %}
       - uid: {{ loss_rule.uid }}
