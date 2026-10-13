@@ -290,9 +290,14 @@ def rotate_locked(args, old_token):
     if state["phase"] in {"verified", "reconciled"}:
         decl = seed.declaration(ROTATION_TEMPLATE)
         target = seed.seed_target(new_api, decl, "dev", args.inventory)
-        seed.stage_and_seed(new_api, args.project, target,
-                            {OLD_INPUT: old_token, NEW_INPUT: replacement},
-                            message="Compare and conditionally rotate the Semaphore controller token")
+        try:
+            seed.stage_and_seed(new_api, args.project, target,
+                                {OLD_INPUT: old_token, NEW_INPUT: replacement},
+                                message="Compare and conditionally rotate the Semaphore controller token")
+        except seed.Refusal:
+            raise RotationRefusal(
+                "Semaphore seed reconciliation refused or failed; preserve private state and reconcile before retrying"
+            ) from None
         state["phase"] = "reconciled"
         save_state(args.state, state)
 

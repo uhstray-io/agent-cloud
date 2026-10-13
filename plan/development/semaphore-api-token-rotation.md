@@ -42,3 +42,21 @@ The pinned Semaphore v2.19.11 source defines create/list/delete behavior for
 command must verify the deployed backend and refuse any unproven deletion
 condition. See `platform/semaphore/README.md`, `plan/architecture/04-credentials-access.md`,
 and `docs/MISTAKES.md` §4.10 for the existing credential and incident rules.
+
+## Dev task 5013 follow-up
+
+Task 5013 failed at the first no-log input assertion, before any OpenBao call.
+Both the old and newly created operator tokens still authenticated; the local
+backup remained old; private recovery state remained mode `0600` at phase
+`verified`; and the isolated Semaphore environment was clean. The root cause is
+unknown. Do not infer it from the assertion failure.
+
+The input preflight now checks endpoint and encrypted-token-input presence under
+`no_log`, then prints only the three bounded categories and their present or
+missing status. A preflight refusal preserves the private recovery state and
+returns a fixed safe message. Resume is gated on focused offline evidence that
+all missing-input cases refuse before OpenBao, sentinels never appear in output,
+and a refusal from `phase=verified` causes no token-creation request. After those
+offline tests pass and the Dev seed environment is confirmed clean, retry may
+proceed from saved state through the reviewed Dev-bound workflow. This follow-up
+performs no live retry; the task 5013 root cause remains unknown.
