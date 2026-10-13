@@ -7,6 +7,7 @@ import ipaddress
 import json
 import re
 import subprocess
+import sys
 import threading
 import time
 from collections.abc import Callable
@@ -38,6 +39,10 @@ ALERT_INPUTS = (
     ("loki_discarded_samples_total", "loki"),
     ("tempo_discarded_spans_total", "tempo"),
 )
+EXPECTED_IDENTITY_FIELDS = ("job", "instance", "service", "cluster", "environment")
+EXPECTED_UID = re.compile(r"^o11y_missing_[a-z0-9_]{1,27}\Z")
+SAFE_IDENTITY_VALUE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:/@-]{0,127}\Z")
+MAX_EXPECTED_TARGETS = 100
 
 JOB_ALIASES = {
     "prometheus": "prometheus",
@@ -65,6 +70,142 @@ class Refusal(ValueError):
     def __init__(self, category: str) -> None:
         super().__init__(category)
         self.category = category
+
+
+def validate_expected_target_declaration(
+    targets: Any,
+    retired_uids: Any = None,
+    *,
+    reviewed: Any = True,
+    other_rule_uids: Any = None,
+) -> tuple[list[dict[str, str]], list[str]]:
+    """Validate the bounded private declaration without exposing its values."""
+    retired_uids = [] if retired_uids is None else retired_uids
+    other_rule_uids = [] if other_rule_uids is None else other_rule_uids
+    if reviewed is not True or not isinstance(targets, list) or not isinstance(retired_uids, list):
+        raise Refusal("invalid_declaration")
+    if len(targets) > MAX_EXPECTED_TARGETS or len(retired_uids) > MAX_EXPECTED_TARGETS:
+        raise Refusal("invalid_declaration")
+    if not targets and not retired_uids:
+        raise Refusal("invalid_declaration")
+    if not isinstance(other_rule_uids, list) or len(other_rule_uids) > MAX_ROWS:
+        raise Refusal("invalid_declaration")
+
+    normalized: list[dict[str, str]] = []
+    identities: set[tuple[str, ...]] = set()
+    target_uids: list[str] = []
+    for target in targets:
+        if not isinstance(target, dict) or set(target) != {"uid", *EXPECTED_IDENTITY_FIELDS}:
+            raise Refusal("invalid_declaration")
+        uid = target.get("uid")
+        if not isinstance(uid, str) or not EXPECTED_UID.fullmatch(uid):
+            raise Refusal("invalid_declaration")
+        values: dict[str, str] = {}
+        for field in EXPECTED_IDENTITY_FIELDS:
+            value = target.get(field)
+            if not isinstance(value, str) or not SAFE_IDENTITY_VALUE.fullmatch(value):
+                raise Refusal("invalid_declaration")
+            values[field] = value
+        identity = tuple(values[field] for field in EXPECTED_IDENTITY_FIELDS)
+        if uid in target_uids or identity in identities:
+            raise Refusal("invalid_declaration")
+        target_uids.append(uid)
+        identities.add(identity)
+        normalized.append({"uid": uid, **values})
+
+    if len(set(retired_uids)) != len(retired_uids):
+        raise Refusal("invalid_declaration")
+    if any(not isinstance(uid, str) or not EXPECTED_UID.fullmatch(uid) for uid in retired_uids):
+        raise Refusal("invalid_declaration")
+    if not isinstance(other_rule_uids, list) or any(
+        not isinstance(uid, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,40}", uid) for uid in other_rule_uids
+    ):
+        raise Refusal("invalid_declaration")
+    all_target_uids = set(target_uids) | set(retired_uids)
+    if len(all_target_uids) != len(target_uids) + len(retired_uids):
+        raise Refusal("invalid_declaration")
+    if all_target_uids.intersection(other_rule_uids):
+        raise Refusal("invalid_declaration")
+    return normalized, list(retired_uids)
+
+
+def expected_target_coverage(targets_raw: bytes | str, declaration: Any) -> dict[str, Any]:
+    """Compare validated expected identities to all active target identities."""
+    empty = {
+        "expected_count": 0,
+        "active_target_count": 0,
+        "matched_count": 0,
+        "missing_count": 0,
+        "unexpected_count": 0,
+        "unhealthy_count": 0,
+    }
+    if not isinstance(declaration, dict) or declaration.get("reviewed") is not True:
+        return {"status": "unverified", "reason": "declaration_unreviewed", **empty}
+    if declaration.get("targets") == []:
+        return {"status": "unverified", "reason": "no_expected_targets", **empty}
+    try:
+        expected, _retired = validate_expected_target_declaration(
+            declaration.get("targets"), reviewed=declaration.get("reviewed")
+        )
+    except Refusal:
+        return {"status": "unverified", "reason": "invalid_declaration", **empty}
+    if not expected:
+        return {"status": "unverified", "reason": "no_expected_targets", **empty}
+
+    try:
+        response = _json_document(targets_raw, "malformed_targets")
+        data = response.get("data")
+        active = data.get("activeTargets") if isinstance(data, dict) else None
+        if not isinstance(active, list) or len(active) > MAX_ROWS:
+            raise Refusal("malformed_targets")
+
+        expected_ids = {
+            tuple(target[field] for field in EXPECTED_IDENTITY_FIELDS)
+            for target in expected
+        }
+        active_ids: set[tuple[str, ...]] = set()
+        unhealthy_count = 0
+        for target in active:
+            if not isinstance(target, dict) or target.get("health") not in {"up", "down", "unknown"}:
+                raise Refusal("malformed_targets")
+            labels = target.get("labels")
+            if not isinstance(labels, dict):
+                raise Refusal("malformed_targets")
+            identity = tuple(labels.get(field) for field in EXPECTED_IDENTITY_FIELDS)
+            if any(not isinstance(value, str) or not SAFE_IDENTITY_VALUE.fullmatch(value) for value in identity):
+                raise Refusal("malformed_identity")
+            if identity in active_ids:
+                raise Refusal("ambiguous_target_identity")
+            active_ids.add(identity)
+            unhealthy_count += target["health"] != "up"
+
+        matched = len(expected_ids & active_ids)
+        missing = len(expected_ids - active_ids)
+        unexpected = len(active_ids - expected_ids)
+        identity_drift = missing > 0 or unexpected > 0
+        if identity_drift and unhealthy_count:
+            reason = "identity_drift_and_unhealthy_targets"
+        elif identity_drift:
+            reason = "identity_drift"
+        elif unhealthy_count:
+            reason = "unhealthy_targets"
+        else:
+            reason = "exact_match"
+        return {
+            "status": "observed",
+            "reason": reason,
+            "expected_count": len(expected_ids),
+            "active_target_count": len(active_ids),
+            "matched_count": matched,
+            "missing_count": missing,
+            "unexpected_count": unexpected,
+            "unhealthy_count": unhealthy_count,
+        }
+    except Refusal as error:
+        reason = "ambiguous_target_identity" if error.category == "ambiguous_target_identity" else "malformed_targets"
+        return {"status": "unavailable", "reason": reason, **empty}
+    except Exception:
+        return {"status": "unavailable", "reason": "survey_unavailable", **empty}
 
 
 def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -929,7 +1070,84 @@ def collect() -> dict[str, Any]:
     }
 
 
+def _input_document() -> dict[str, Any]:
+    raw = sys.stdin.buffer.read(1_048_577)
+    if len(raw) > 1_048_576:
+        raise Refusal("invalid_declaration")
+    try:
+        value = json.loads(
+            raw,
+            object_pairs_hook=_unique_object,
+            parse_constant=lambda _value: (_ for _ in ()).throw(ValueError()),
+        )
+    except (ValueError, TypeError, json.JSONDecodeError):
+        raise Refusal("invalid_declaration") from None
+    if not isinstance(value, dict):
+        raise Refusal("invalid_declaration")
+    return value
+
+
+def _expected_target_coverage_action() -> dict[str, Any]:
+    declaration = _input_document()
+    if declaration.get("reviewed") is not True:
+        return expected_target_coverage(b"", declaration)
+    try:
+        validate_expected_target_declaration(
+            declaration.get("targets"), reviewed=declaration.get("reviewed")
+        )
+    except Refusal:
+        return expected_target_coverage(b"", declaration)
+    try:
+        targets_raw = _run_api("/api/v1/targets?state=active", "api_unavailable")
+    except Refusal:
+        return {
+            "status": "unavailable",
+            "reason": "api_unavailable",
+            "expected_count": 0,
+            "active_target_count": 0,
+            "matched_count": 0,
+            "missing_count": 0,
+            "unexpected_count": 0,
+            "unhealthy_count": 0,
+        }
+    return expected_target_coverage(targets_raw, declaration)
+
+
 def main() -> int:
+    if len(sys.argv) == 2 and sys.argv[1] == "--validate-expected-targets":
+        try:
+            declaration = _input_document()
+            validate_expected_target_declaration(
+                declaration.get("targets"),
+                declaration.get("retired_uids"),
+                reviewed=declaration.get("reviewed"),
+            )
+            result = {"status": "valid", "reason": "declaration_valid"}
+            code = 0
+        except Refusal:
+            result = {"status": "refused", "reason": "invalid_declaration"}
+            code = 2
+        except Exception:
+            result = {"status": "refused", "reason": "invalid_declaration"}
+            code = 2
+        print(json.dumps(result, sort_keys=True, separators=(",", ":")))
+        return code
+    if len(sys.argv) == 2 and sys.argv[1] == "--expected-target-coverage":
+        try:
+            result = _expected_target_coverage_action()
+        except Exception:
+            result = {
+                "status": "unavailable",
+                "reason": "survey_unavailable",
+                "expected_count": 0,
+                "active_target_count": 0,
+                "matched_count": 0,
+                "missing_count": 0,
+                "unexpected_count": 0,
+                "unhealthy_count": 0,
+            }
+        print(json.dumps(result, sort_keys=True, separators=(",", ":")))
+        return 0
     try:
         receipt = collect()
     except Refusal as error:

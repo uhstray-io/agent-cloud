@@ -417,6 +417,67 @@
               leaf_name {{ _probe_leaf_name }} after Deploy step-ca (Dev) has the leaf's SANs.
             quiet: true
 
+    - name: Validate the reviewed expected-target declaration before placement
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/files/summarize-o11y-scrape-baseline.py"
+          - --validate-expected-targets
+        stdin: >-
+          {{ {'reviewed': o11y_expected_metrics_targets_reviewed | default(false) | bool,
+              'targets': o11y_expected_metrics_targets | default([]),
+              'retired_uids': o11y_expected_metrics_targets_retired_uids | default([])} | to_json }}
+      delegate_to: localhost
+      register: _o11y_expected_target_validation
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+      when: >-
+        not (local_mode | default(false) | bool) and
+        ((o11y_expected_metrics_targets_reviewed | default(false) | bool and
+          o11y_alerts_enabled | default(false) | bool) or
+         o11y_expected_metrics_targets_retired_uids | default([]) | length > 0)
+
+    - name: Require a safe expected-target declaration before placement
+      ansible.builtin.assert:
+        that: >-
+          _o11y_expected_target_validation.rc == 0 and
+          (_o11y_expected_target_validation.stdout | from_json).status == 'valid'
+        fail_msg: "The reviewed expected-target declaration is invalid; no o11y files were placed."
+        quiet: true
+      no_log: true
+      when: >-
+        not (local_mode | default(false) | bool) and
+        ((o11y_expected_metrics_targets_reviewed | default(false) | bool and
+          o11y_alerts_enabled | default(false) | bool) or
+         o11y_expected_metrics_targets_retired_uids | default([]) | length > 0)
+
+    - name: Compile the in-memory provisioned alert rules for UID checks
+      ansible.builtin.set_fact:
+        _o11y_expected_target_preflight_document: >-
+          {{ lookup('ansible.builtin.template', playbook_dir ~ '/../services/o11y/deployment/templates/alerts.yml.j2') | from_yaml }}
+      no_log: true
+      when: >-
+        not (local_mode | default(false) | bool) and
+        ((o11y_expected_metrics_targets_reviewed | default(false) | bool and
+          o11y_alerts_enabled | default(false) | bool) or
+         o11y_expected_metrics_targets_retired_uids | default([]) | length > 0)
+
+    - name: Refuse expected-target UIDs that collide with provisioned rules
+      ansible.builtin.assert:
+        that:
+          - _o11y_expected_target_preflight_document.groups | map(attribute='rules') | flatten | map(attribute='uid') | list | length == (_o11y_expected_target_preflight_document.groups | map(attribute='rules') | flatten | map(attribute='uid') | list | unique | length)
+          - (o11y_expected_metrics_targets_retired_uids | default([]) | intersect(_o11y_expected_target_preflight_document.groups | map(attribute='rules') | flatten | map(attribute='uid') | list) | length) == 0
+        fail_msg: "An expected-target UID collides with another provisioned rule; no o11y files were placed."
+        quiet: true
+      no_log: true
+      when: >-
+        not (local_mode | default(false) | bool) and
+        ((o11y_expected_metrics_targets_reviewed | default(false) | bool and
+          o11y_alerts_enabled | default(false) | bool) or
+         o11y_expected_metrics_targets_retired_uids | default([]) | length > 0)
+
     - name: "Place the monorepo + ensure podman/compose"
       ansible.builtin.include_tasks: tasks/place-monorepo.yml
 

@@ -1,0 +1,113 @@
+---
+# Read-only comparison of the reviewed expected-target declaration with every
+# active Prometheus target, including targets whose scrape health is not up.
+
+- name: Refuse extra vars that set internal names
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: Require the reviewed source and survey helper bytes
+  ansible.builtin.import_playbook: require-reviewed-checkout.yml
+  vars:
+    _reviewed_checkout_payload_paths:
+      - platform/playbooks/files/summarize-o11y-scrape-baseline.py
+
+- name: Validate the reviewed survey context
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  tasks:
+    - name: Require one production o11y target and the reviewed Dev revision
+      ansible.builtin.assert:
+        that:
+          - expected_repository_sha | default('') is match('^[0-9a-f]{40}$')
+          - groups.get('o11y_svc', []) | length == 1
+          - not (local_mode | default(false) | bool)
+        fail_msg: "Expected-target coverage requires one production receiver and an exact reviewed Dev revision."
+        quiet: true
+
+- name: Compare the declaration with active Prometheus targets
+  hosts: o11y_svc
+  gather_facts: false
+  become: false
+  any_errors_fatal: true
+  vars:
+    _expected_target_helper: "{{ playbook_dir }}/files/summarize-o11y-scrape-baseline.py"
+    _expected_target_reasons:
+      - exact_match
+      - identity_drift
+      - unhealthy_targets
+      - identity_drift_and_unhealthy_targets
+      - declaration_unreviewed
+      - invalid_declaration
+      - no_expected_targets
+      - ambiguous_target_identity
+      - malformed_targets
+      - api_unavailable
+      - survey_unavailable
+  tasks:
+    - name: Require the supported receiver runtime
+      ansible.builtin.assert:
+        that: container_engine | default('') == 'podman'
+        fail_msg: "Expected-target coverage requires the declared Podman receiver."
+        quiet: true
+      when: not ansible_check_mode
+
+    - name: Survey expected-target coverage with private input protected
+      ansible.builtin.command:
+        argv:
+          - python3
+          - -c
+          - "{{ lookup('ansible.builtin.file', _expected_target_helper, rstrip=false) }}"
+          - --expected-target-coverage
+        stdin: >-
+          {{ {'reviewed': o11y_expected_metrics_targets_reviewed | default(false) | bool,
+              'targets': o11y_expected_metrics_targets | default([])} | to_json }}
+      register: _expected_target_coverage_raw
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+      when: not ansible_check_mode
+
+    - name: Keep the validated coverage receipt private until projection
+      ansible.builtin.set_fact:
+        _expected_target_coverage: "{{ _expected_target_coverage_raw.stdout | from_json }}"
+      no_log: true
+      when: not ansible_check_mode
+
+    - name: Validate the bounded expected-target coverage receipt
+      ansible.builtin.assert:
+        that:
+          - _expected_target_coverage.status in ['observed', 'unverified', 'unavailable']
+          - _expected_target_coverage.reason in _expected_target_reasons
+          - _expected_target_coverage | length == 8
+          - _expected_target_coverage.expected_count is integer
+          - _expected_target_coverage.active_target_count is integer
+          - _expected_target_coverage.matched_count is integer
+          - _expected_target_coverage.missing_count is integer
+          - _expected_target_coverage.unexpected_count is integer
+          - _expected_target_coverage.unhealthy_count is integer
+          - (_expected_target_coverage | dict2items | selectattr('value', 'integer') | map(attribute='value') | max) <= 10000
+        fail_msg: "Expected-target coverage did not match its fixed public receipt schema."
+        quiet: true
+      no_log: true
+      when: not ansible_check_mode
+
+    - name: Report expected-target coverage without target labels
+      ansible.builtin.debug:
+        msg: "{{ _expected_target_coverage | to_json }}"
+      when: not ansible_check_mode
+
+    - name: Report check mode as unverified
+      ansible.builtin.debug:
+        msg:
+          status: check_mode_unverified
+          reason: active_target_api_skipped
+          expected_count: 0
+          active_target_count: 0
+          matched_count: 0
+          missing_count: 0
+          unexpected_count: 0
+          unhealthy_count: 0
+      when: ansible_check_mode

@@ -405,6 +405,55 @@ keeps pointing at the deleted inode while every input hashes the same. Deploys c
 directories in place; `platform/tests/test_no_bind_mount_dir_delete.py` fails if a deploy
 task deletes one.
 
+## Expected metrics target contract
+
+Production per-target missing-telemetry rules stay off until private inventory
+sets `o11y_expected_metrics_targets_reviewed: true`. With production alerts
+enabled, the reviewed declaration must contain at least one active target or an
+explicit retirement and may contain at most 100 active and 100 retired entries.
+The public repo contains the schema and validator only; endpoint and identity
+values belong in site-config.
+
+Each active private entry has one stable Grafana `uid` and exact `job`,
+`instance`, `service`, `cluster`, and `environment` values. Keep the UID when an
+endpoint changes: update the reviewed `instance`, verify the new scrape target,
+then deploy the updated rule through Semaphore. Exact matcher values are
+validated before placement and serialized as PromQL/YAML strings. Target rules
+use `absent_over_time(up{...}[5m])` and hold for two minutes. An endpoint that
+still exists with `up=0` remains the service-down condition; a target missing
+from Prometheus for five minutes is the disappeared-target condition.
+
+For retirement, remove that target from the active list and add only its exact
+`o11y_missing_<stable-suffix>` UID to
+`o11y_expected_metrics_targets_retired_uids`. The preflight refuses duplicate
+or unrelated UIDs, and the generated `deleteRules` contains only the named
+retirements. Do not remove the entire rule group to retire one target.
+
+The Dev-bound `Survey o11y Expected Metrics Targets (Dev)` receipt compares
+the reviewed identities with every active Prometheus target, including
+unhealthy targets. It reports fixed status/reason values and bounded expected,
+active, matched, missing, unexpected, and unhealthy counts. Missing or
+unreviewed declarations and check mode are unverified; raw labels, selectors,
+URLs, API responses, inventory values, and exceptions stay protected. A
+coverage match does not replace the separate scrape baseline, loaded-limit,
+candidate, alert-input, or live Grafana rule-readback receipts.
+
+Before production rollout, review the private declaration and rollout flag,
+run focused source validation, merge through the normal branch workflow, then
+use the reviewed Dev-bound Semaphore deploy and coverage survey. Require exact
+coverage with no missing, duplicate, or unexpected identities; resolve unhealthy
+targets separately; and confirm the provisioned rule UID and its evaluation
+after deployment. A config digest change may recreate the receiver Compose
+project. Use only the non-destructive Deploy o11y workflow; do not use a clean
+deploy or remove telemetry volumes for this change.
+
+The reviewed Dev-bound read-only target survey, task 5221, observed 11 healthy
+active targets across nine public categories. Four loss counters had current
+zero samples, while two optional error-only counters had no sample in the
+five-minute lookback. Missing optional counters are not evidence of telemetry
+loss. This receipt predates the expected-target coverage implementation and is
+not live validation of that new survey or of production per-target rules.
+
 ## Inference dashboards and alerts
 
 Three provisioned dashboards cover the DGX Spark pair: `inference-latency-capacity`

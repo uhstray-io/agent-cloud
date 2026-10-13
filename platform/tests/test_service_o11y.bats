@@ -860,16 +860,21 @@ template = env.from_string(
     open(sys.argv[1], encoding='utf-8').read()
 )
 contact_template = env.from_string(open(sys.argv[2], encoding='utf-8').read())
-targets = [{'uid': 'o11y_missing_caddy', 'service': 'caddy-reverse-proxy/caddy', 'instance': 'caddy:2021'}]
+targets = [{'uid': 'o11y_missing_caddy', 'job': 'caddy', 'service': 'caddy-reverse-proxy/caddy',
+            'instance': 'caddy:2021', 'cluster': 'test-cluster', 'environment': 'prod'}]
 for enabled in (False, True):
     for declared in ([], targets):
-        rules = yaml.safe_load(template.render(o11y_expected_metrics_targets=declared, local_mode=False,
+        rules = yaml.safe_load(template.render(o11y_expected_metrics_targets=declared,
+                                              o11y_expected_metrics_targets_reviewed=True,
+                                              o11y_cluster='test-cluster', o11y_environment='prod',
+                                              local_mode=False,
                                               o11y_alerts_enabled=enabled,
                                               o11y_receiver_loss_alerts_reviewed=enabled,
                                               o11y_backend_drop_alerts_reviewed=enabled))['groups'][0]['rules']
+        rendered_targets = declared if enabled else []
         assert [rule['uid'] for rule in rules] == [
             'o11y_service_down', 'o11y_receiver_root_disk_low',
-        ] + [target['uid'] for target in declared] + [
+        ] + [target['uid'] for target in rendered_targets] + [
             'o11y_alloy_receiver_refused', 'o11y_tempo_exporter_enqueue_failed',
             'o11y_tempo_exporter_send_failed',
             'o11y_loki_discarded_samples', 'o11y_tempo_discarded_spans',
@@ -890,10 +895,16 @@ for enabled in (False, True):
         )
         assert disk_rule['data'][1]['model']['conditions'][0]['evaluator'] == {'type': 'lt', 'params': [10]}
         assert disk_rule['noDataState'] == 'Alerting'
-        if declared:
+        if rendered_targets:
             assert rules[2]['annotations']['dashboard_url'] == '/d/service-overview?var-service=caddy-reverse-proxy/caddy'
             assert rules[2]['labels']['service'] == 'caddy-reverse-proxy/caddy'
             assert rules[2]['labels']['owner'] == 'platform-operations'
+            assert rules[2]['for'] == '2m'
+            assert rules[2]['data'][0]['relativeTimeRange'] == {'from': 600, 'to': 0}
+            assert rules[2]['data'][0]['model']['expr'] == (
+                'absent_over_time(up{job="caddy",instance="caddy:2021",service="caddy-reverse-proxy/caddy",'
+                'cluster="test-cluster",environment="prod"}[5m])'
+            )
         if enabled:
             for rule in rules:
                 settings = rule['notification_settings']
@@ -903,8 +914,8 @@ for enabled in (False, True):
                 assert settings['repeat_interval'] == '4h'
         assert 'up{service!=""}' == rules[0]['data'][0]['model']['expr']
         assert rules[0]['data'][1]['model']['conditions'][0]['evaluator'] == {'type': 'lt', 'params': [0.5]}
-        if declared:
-            assert 'absent_over_time(up{service="caddy-reverse-proxy/caddy",instance="caddy:2021"}[5m])' == rules[2]['data'][0]['model']['expr']
+        if rendered_targets:
+            assert 'absent_over_time(up{job="caddy",instance="caddy:2021",service="caddy-reverse-proxy/caddy",cluster="test-cluster",environment="prod"}[5m])' == rules[2]['data'][0]['model']['expr']
     contact = yaml.safe_load(contact_template.render(o11y_alerts_enabled=enabled))
     if enabled:
         receiver = contact['contactPoints'][0]['receivers'][0]
@@ -2089,8 +2100,12 @@ for name in ('scrape-agentgateway.yml.j2', 'scrape-dgx-spark.yml.j2'):
 
 alerts = (deploy / 'templates/alerts.yml.j2').read_text()
 assert f"'service': '{caddy_target['service']}'" in alerts
-assert 'absent_over_time(up{service="{{ target.service }}",instance="{{ target.instance }}"}[5m])' in alerts
-assert 'service: \'{{ target.service }}\'' in alerts
+assert 'target.job | default(\'caddy\')' in alerts
+assert 'target.instance | to_json' in alerts
+assert 'target.service | to_json' in alerts
+assert 'target.cluster | default(o11y_cluster | default(\'agent-cloud-local\'))' in alerts
+assert 'target.environment | default(o11y_environment' in alerts
+assert 'service: {{ target.service | to_json }}' in alerts
 PY
 }
 

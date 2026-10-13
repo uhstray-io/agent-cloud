@@ -115,9 +115,17 @@ groups:
 {% endif %}
 {# The local inventory generated before this rollout still needs the Caddy pilot
    contract; a declared inventory list overrides this default. #}
-{% for target in o11y_expected_metrics_targets | default([{'uid': 'o11y_missing_caddy', 'service': 'caddy-reverse-proxy/caddy', 'instance': 'caddy:2021'}] if local_mode | default(false) | bool else []) %}
+{% set _expected_targets_reviewed = o11y_expected_metrics_targets_reviewed | default(false) | bool %}
+{% if local_mode | default(false) | bool %}
+{% set _missing_targets = o11y_expected_metrics_targets | default([{'uid': 'o11y_missing_caddy', 'job': 'caddy', 'service': 'caddy-reverse-proxy/caddy', 'instance': 'caddy:2021', 'cluster': o11y_cluster | default('agent-cloud-local'), 'environment': o11y_environment | default('local')}]) %}
+{% elif _expected_targets_reviewed and o11y_alerts_enabled | default(false) | bool %}
+{% set _missing_targets = o11y_expected_metrics_targets | default([]) %}
+{% else %}
+{% set _missing_targets = [] %}
+{% endif %}
+{% for target in _missing_targets %}
       - uid: {{ target.uid }}
-        title: Missing telemetry for {{ target.service }} at {{ target.instance }}
+        title: {{ ('Missing telemetry for ' ~ target.service ~ ' at ' ~ target.instance) | to_json }}
         condition: B
         data:
           - refId: A
@@ -125,7 +133,7 @@ groups:
             datasourceUid: prometheus
             model:
               editorMode: code
-              expr: 'absent_over_time(up{service="{{ target.service }}",instance="{{ target.instance }}"}[5m])'
+              expr: {{ ('absent_over_time(up{job=' ~ ((target.job | default('caddy')) | to_json) ~ ',instance=' ~ (target.instance | to_json) ~ ',service=' ~ (target.service | to_json) ~ ',cluster=' ~ ((target.cluster | default(o11y_cluster | default('agent-cloud-local'))) | to_json) ~ ',environment=' ~ ((target.environment | default(o11y_environment | default('local' if local_mode | default(false) | bool else 'prod'))) | to_json) ~ '}[5m])') | to_json }}
               instant: true
               range: false
               intervalMs: 1000
@@ -149,17 +157,19 @@ groups:
         execErrState: Alerting
         for: 2m
         annotations:
-          summary: Expected metrics have disappeared for {{ target.service }}.
-          dashboard_url: /d/service-overview?var-service={{ target.service }}
+          summary: {{ ('Expected metrics have disappeared for ' ~ target.service ~ '.') | to_json }}
+          dashboard_url: {{ ('/d/service-overview?var-service=' ~ target.service) | to_json }}
           description: Check the declared metrics target and its service onboarding receipt.
         labels:
           severity: critical
-          service: '{{ target.service }}'
+          job: {{ (target.job | default('caddy')) | to_json }}
+          instance: {{ target.instance | to_json }}
+          service: {{ target.service | to_json }}
           owner: platform-operations
-          environment: {{ o11y_environment | default('local' if local_mode | default(false) | bool else 'prod') | to_json }}
-          cluster: {{ o11y_cluster | default('agent-cloud-local') | to_json }}
-        isPaused: {{ 'false' if o11y_alerts_enabled | default(false) | bool and o11y_alert_canary_service is not defined else 'true' }}
-{% if o11y_alerts_enabled | default(false) | bool and o11y_alert_canary_service is not defined %}
+          environment: {{ target.environment | default(o11y_environment | default('local' if local_mode | default(false) | bool else 'prod')) | to_json }}
+          cluster: {{ target.cluster | default(o11y_cluster | default('agent-cloud-local')) | to_json }}
+        isPaused: {{ 'false' if o11y_alerts_enabled | default(false) | bool and (local_mode | default(false) | bool or _expected_targets_reviewed) and o11y_alert_canary_service is not defined else 'true' }}
+{% if o11y_alerts_enabled | default(false) | bool and (local_mode | default(false) | bool or _expected_targets_reviewed) and o11y_alert_canary_service is not defined %}
         notification_settings:
           receiver: agent-cloud-ops
           group_by: [service, environment, cluster, alertname]
@@ -569,7 +579,9 @@ groups:
    is off, the silent-job rule when no scheduled job is declared. #}
 {% set _deleted_uids = ([] if _dgx_on else _inference_uids)
      + ([] if _probe_on else _probe_uids)
-     + ([] if _scheduled_jobs | length > 0 else ['o11y_scheduled_job_silent']) %}
+     + ([] if _scheduled_jobs | length > 0 else ['o11y_scheduled_job_silent'])
+     + (o11y_expected_metrics_targets_retired_uids | default([])
+        if _expected_targets_reviewed and not (local_mode | default(false) | bool) else []) %}
 {% if _deleted_uids %}
 deleteRules:
 {% for uid in _deleted_uids %}

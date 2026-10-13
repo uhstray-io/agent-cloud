@@ -1940,6 +1940,17 @@ templates:
     # Reports fixed public job categories, 24-hour sample and stored-series label maxima,
     # plus point-in-time response bytes. Private selectors, URLs, labels and bodies stay protected.
 
+  - name: Survey o11y Expected Metrics Targets (Dev)
+    playbook: platform/playbooks/survey-o11y-expected-metrics-targets.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for the read-only expected-target comparison"
+        type: string
+        required: true
+    # Reports only fixed statuses/reasons and bounded counts; target identities stay protected.
+
   - name: Diagnose o11y Host Storage (Dev)
     playbook: platform/playbooks/diagnose-o11y-host-storage.yml
     repository: agent-cloud dev
