@@ -125,6 +125,7 @@ and why.
 | 5.15 | Published AI attribution in a PR body; widens 5.9 from commits to every GitHub artifact | Process | 1 | Convention (`gh` wrapper proposed) |
 | 5.16 | Merged on a PR status rollup that still showed the previous head's checks; CI on the merged head was running | Process | 1 | Convention (operator-side script; `dev` has no required checks) |
 | 5.17 | Upgraded production's ansible-core before CI ran the playbooks on the new version; 2.20 templates `delegate_to` strictly, a probe drill dry run failed | Process | 1 | Test (`test_delegate_to_strict_undefined.py`) + CI pin + Convention (upgrade ordering) |
+| 5.18 | ansible-core 2.20 rejects template delimiters inside a conditional; the Authentik promotion guard's `'{{ '{{' }}'` broke Deploy Authentik on every branch | Process | 1 | Test (`test_no_template_delimiters_in_conditionals.py`) |
 | 6.1 | Built an edit from an assumed file structure instead of a read one | Process | 1 | Convention |
 | 6.2 | Built an interface the consumer never calls, without reading how it invokes | Process | 1 | Test |
 | 6.3 | Repeated 6.2 — assumed openssl and jq exist on the orchestrator image; neither does — **x3** (CI never installed the playbook collections) | Process | 3 | Convention -> **Test + declared dep**; CI installs `collections/requirements.yml` |
@@ -3168,6 +3169,37 @@ on it.
 `test_o11y_fault_drill.py::test_a_probe_dry_run_needs_no_exporter_declaration`; CI pin
 `ansible-core==2.20.8` in `platform/requirements-test.txt`. Convention for the ordering (pin
 CI, green run, then upgrade the runner). Related: 1.22.
+
+### 5.18 ansible-core 2.20 rejects template delimiters inside a conditional
+
+**Occurrences: 1** — 2026-10-12
+
+**What happened.** Prod task 4995, `Deploy Authentik (Dev)` in check mode on the runner's
+ansible-core 2.20.8, failed at `Promotion guard (prod): OIDC prod URLs are set + not
+local-dev defaults` with `[ERROR]: Task failed: Syntax error in expression. Template
+delimiters are not supported in expressions: chunk after expression`. The offender was the
+third `that:` line of `deploy-authentik.yml`, `"'{{ '{{' }}' not in (lookup('vars', item,
+default=''))"`, a way to spell a literal brace pair inside a conditional. The same line was
+on `main`, so the main-bound Deploy Authentik was broken too. A scan of every YAML under
+`platform/playbooks` and `platform/services` for `that`, `when`, `failed_when`,
+`changed_when` and `until` values containing `{{` or `{%` found this one line. Reproduced on
+ansible-core 2.21.0 with a one-task play; the fixed spelling `('{' ~ '{')` evaluates, fails
+the assert for a value that holds a brace pair, and passes for a clean URL.
+
+**Root cause.** The same upgrade class as 5.17: the runner moved to ansible-core 2.20, which
+parses a conditional as one bare expression and refuses a delimiter inside it, where 2.18
+tolerated the spelling. No test read conditionals for delimiters, and the guard only runs
+for a prod (`local_mode` false) deploy, so no local run exercised it.
+
+**The rule.** A conditional never contains `{{`, `{%` or `{#`. Write a literal brace pair as
+a concatenation, `('{' ~ '{')`; use `fail_msg` (not a conditional) for text that interpolates
+variables.
+
+**Enforced by.** Test: `platform/tests/test_no_template_delimiters_in_conditionals.py`
+(static scan of every YAML under `platform/playbooks`, `platform/services` and
+`platform/semaphore`, plus a run of the real guard task through ansible-playbook, plus the
+reproduction of the 2.20 error where the installed ansible-core is 2.20 or newer). CI pin
+`ansible-core==2.20.8` in `platform/requirements-test.txt`. Related: 5.17.
 
 ## 6. Working from assumptions about files
 

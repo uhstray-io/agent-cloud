@@ -212,10 +212,12 @@
         # passes both checks below with its braces intact and the bug surfaces one
         # phase later in the verifier, where it did (2026-08-27). Resolving here
         # means a broken reference fails at the guard, before anything is applied.
+        # The brace test is a concatenation, not a '{{' literal: ansible-core 2.20 rejects
+        # template delimiters inside a conditional (docs/MISTAKES.md 5.18).
         that:
           - "(lookup('vars', item, default='')) | length > 0"
           - "'agent-cloud.test' not in (lookup('vars', item, default=''))"
-          - "'{{ '{{' }}' not in (lookup('vars', item, default=''))"
+          - "('{' ~ '{') not in (lookup('vars', item, default=''))"
         fail_msg: >-
           Promotion guard: inventory var '{{ item }}' must resolve to a prod URL (in
           site-config), not an agent-cloud.test default and not an unresolved
