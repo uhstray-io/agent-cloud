@@ -76,7 +76,6 @@
         curl -fsS --config - http://127.0.0.1:3000/api/v1/provisioning/alert-rules
   register: _o11y_live_alert_rules
   changed_when: false
-  failed_when: false
   no_log: true
   when:
     - not ansible_check_mode
@@ -95,7 +94,6 @@
         curl -fsS --config - http://127.0.0.1:3000/api/folders
   register: _o11y_live_alert_folders
   changed_when: false
-  failed_when: false
   no_log: true
   when:
     - not ansible_check_mode

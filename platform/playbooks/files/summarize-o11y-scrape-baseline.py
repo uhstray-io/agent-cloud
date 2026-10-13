@@ -537,7 +537,7 @@ def prepare_expected_target_transition(input_document: Any) -> dict[str, Any]:
                     old = baseline_by_uid[uid]
                     if any(old[field] != target[field] for field in EXPECTED_IDENTITY_FIELDS):
                         raise Refusal("target_identity_changed")
-    if live_raw:
+    if (grafana_running is True and not check_mode) or live_raw:
         try:
             live = json.loads(live_raw)
             folders = json.loads(input_document.get("live_folders", ""))

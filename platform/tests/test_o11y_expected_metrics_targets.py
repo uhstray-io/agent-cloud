@@ -636,6 +636,43 @@ def test_live_expected_target_preflight_requires_exact_folder_and_readback():
         })
 
 
+@pytest.mark.parametrize(
+    ("live_rules", "live_folders"),
+    [
+        ("", '[{"uid":"agent-cloud-folder","title":"agent-cloud"}]'),
+        ("not-json", '[{"uid":"agent-cloud-folder","title":"agent-cloud"}]'),
+        ("[]", ""),
+        ("[]", "not-json"),
+    ],
+)
+def test_running_grafana_requires_parseable_live_reads_without_previous_owners(live_rules, live_folders):
+    with pytest.raises(SURVEY.Refusal, match="invalid_live_rules"):
+        SURVEY.prepare_expected_target_transition({
+            "enabled": False,
+            "reviewed": False,
+            "targets": [],
+            "retired_uids": [],
+            "previous_rules": "",
+            "live_rules": live_rules,
+            "live_folders": live_folders,
+            "grafana_running": True,
+        })
+
+
+def test_running_grafana_accepts_successful_empty_live_rules_without_previous_owners():
+    result = SURVEY.prepare_expected_target_transition({
+        "enabled": False,
+        "reviewed": False,
+        "targets": [],
+        "retired_uids": [],
+        "previous_rules": "",
+        "live_rules": "[]",
+        "live_folders": '[{"uid":"agent-cloud-folder","title":"agent-cloud"}]',
+        "grafana_running": True,
+    })
+    assert result["status"] == "prepared"
+
+
 def test_stopped_grafana_allows_only_an_owned_no_change_redeploy():
     target = _expected()
     active = _render(o11y_expected_metrics_targets=[target])
@@ -759,12 +796,13 @@ def test_private_alert_rule_reads_and_writes_are_hidden_and_check_mode_skips_ren
     )
     transition_input = transition["ansible.builtin.command"]["stdin"]
     assert "grafana_running" in transition_input
-    assert "failed_when" in next(
-        task for task in prepare if task.get("name") == "Read live Grafana alert ownership before alert transition"
-    )
-    assert "failed_when" in next(
-        task for task in prepare if task.get("name") == "Read live Grafana folders before alert transition"
-    )
+    for name in (
+        "Read live Grafana alert ownership before alert transition",
+        "Read live Grafana folders before alert transition",
+    ):
+        read = next(task for task in prepare if task.get("name") == name)
+        assert "failed_when" not in read
+        assert read["no_log"] is True
 
     deploy = yaml.safe_load((ROOT / "platform/playbooks/deploy-o11y.yml").read_text())
     phase = next(play for play in deploy if play.get("name") == "Phase 1: Place repo + manage o11y secrets")
