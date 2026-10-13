@@ -402,6 +402,9 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
         `emit-service-deploy-result` and `compose_up_if_changed` for tududi, honcho and
         openhands) is under review; wave 2 (n8n, NetBox, Postiz) is next; then two Dev
         deploys per service on production to prove `changed_on_rerun` false. Not ticked.
+      - 2026-10-13: PR #568 (wave 1) merged into dev. The remaining services were regrouped:
+        wave 2 is n8n and Postiz, wave 3 is NetBox (a change-aware deploy that, when nothing
+        changed, leaves containers and the orb-agent untouched). Not ticked.
 - [x] 7.2 `provision-vm.yml` sets `onboot`; restart-policy check beside `enable-linger`.
       2026-09-22: onboot with per-host opt-out; `verify-service-persistence.yml` (step
       systemd-enablement) passes on local tududi, normal and check mode (tasks 977, 978)
