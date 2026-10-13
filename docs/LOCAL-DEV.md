@@ -164,11 +164,11 @@ policy. A re-run changes nothing; `DRY_RUN=1 ./scripts/local-dev.sh run stop-loc
   does not take effect after `podman stop`, but `always` is restarted after a machine
   reboot by `podman-restart.service` even if the user stopped it. After a reboot, run
   `make local-service-down` again. (Not verified for a Docker engine.)
-- **Known gap: the Semaphore inventory.** The local Semaphore runs with the inventory
-  `bootstrap-local-dev.yml` generates (`_inv_ini`), not `platform/inventory/local-dev.yml`.
-  `stop_extra_containers` is declared only in the latter, so until `_inv_ini`'s
-  `[netbox_svc:vars]` carries it too, a Semaphore-run stop of `netbox_svc` leaves
-  `netbox-orb-agent` running.
+- **Both inventories declare the extras.** The local Semaphore runs with the inventory
+  `bootstrap-local-dev.yml` generates (`_inv_ini`), not `platform/inventory/local-dev.yml`,
+  so `stop_extra_containers` for `netbox-local` is declared in both. An
+  existing local Semaphore picks it up when `make local-bootstrap` re-runs its
+  "Create or update local inventory" step.
 
 The `make` targets (`local-init`, `local-bootstrap`, `local-deploy-<service>`,
 `local-service-down`, `local-validate`, `local-clean`, `promote`) wrap this flow via
