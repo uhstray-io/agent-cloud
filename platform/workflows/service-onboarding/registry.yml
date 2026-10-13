@@ -205,7 +205,7 @@ steps:
       - a second run reports no change
     evidence_keys: [verified, changed_on_rerun]
     reviewed: null
-    review_gap: "waves 1 (merged) and 3 (NetBox) emit; wave 2 (n8n, Postiz) pending; live second-run proof pending"
+    review_gap: "waves 1, 2 and 3 emit (agentgateway, authentik, o11y, tududi, honcho, openhands, github-runner, n8n, postiz, netbox); live second-run proof pending"
 
   - id: service-validate
     order: 14

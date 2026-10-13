@@ -122,6 +122,18 @@ compose() {
 # directory deleted and recreated under a running container, whose mount still references the
 # deleted inode while every digest matches. Any other value leaves the comparison in charge.
 #
+# Staged start (optional): a service whose containers must start in order (a worker only
+# after its app has finished migrating) defines a function `compose_staged_up` before calling
+# this. When the comparison finds a change, the helper calls it INSTEAD of the one-shot
+# `up -d --force-recreate --remove-orphans`; it is never called on an unchanged project. The
+# digest label overlay is already in COMPOSE_OVERLAYS while the hook runs, so every `compose up`
+# inside it labels the containers it creates (without it the next run sees "inputs changed" and
+# recreates again). The hook owns recreating, ordering, waiting and orphan removal; it must
+# return non-zero on failure — the helper calls it where errexit is suspended, so a failing
+# command mid-hook does not stop it unless the hook chains `|| return 1` (`error` and the
+# wait_for_* helpers exit the script themselves). Defined nowhere, the one-shot start runs
+# exactly as before.
+#
 # Prints `DEPLOY_CHANGED=true` or `DEPLOY_CHANGED=false` on its own line; playbooks read it
 # for the task's changed status. Run from the deploy directory, like compose().
 COMPOSE_INPUTS_LABEL="io.agent-cloud.inputs-sha256"
@@ -264,7 +276,14 @@ compose_up_if_changed() {
   # --remove-orphans: a service dropped from the compose files would otherwise leave its old
   # labelled container behind and every later run would recreate (podman-compose 1.6.0 and
   # docker compose v2 both accept it).
-  if ! COMPOSE_OVERLAYS="${COMPOSE_OVERLAYS:-} ${label_dir}/inputs-label.yml" compose up -d --force-recreate --remove-orphans; then
+  if declare -F compose_staged_up >/dev/null; then
+    # The caller's staged start. The label overlay is already in COMPOSE_OVERLAYS for the
+    # whole call, so every `compose up` inside it labels what it creates.
+    if ! COMPOSE_OVERLAYS="${COMPOSE_OVERLAYS:-} ${label_dir}/inputs-label.yml" compose_staged_up; then
+      rm -rf "$label_dir"
+      error "compose_staged_up failed."
+    fi
+  elif ! COMPOSE_OVERLAYS="${COMPOSE_OVERLAYS:-} ${label_dir}/inputs-label.yml" compose up -d --force-recreate --remove-orphans; then
     rm -rf "$label_dir"
     error "compose up --force-recreate failed."
   fi
