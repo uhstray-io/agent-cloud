@@ -15,7 +15,8 @@
 #          report and Loki alike, never erased (PR 195 and PR 258 Codex reviews).
 #   parse  workflows/service-onboarding/lib/step_results.py (select / pick / aggregate): latest
 #          result per service and step; a failed task with no result counts as `fail` with
-#          its last 20 lines. A service is named by its inventory group's service_name; a host
+#          its last 20 lines. A service is named by its inventory group's service_name (its first
+#          tracked host's, so a skipped host listed first does not hide the group); a host
 #          that sets the host var `service_conformance_tracked: false` (default true; the string
 #          "false" counts) is skipped, so a non-service host carrying a service_name never
 #          appears as a service that has not run.
@@ -217,7 +218,7 @@
         headers: "{{ _nb_headers }}"
         status_code: [200]
       # Every inventoried service, including one that has not run a step yet (review of PR
-      # #229), as the PARSER keys them (first host of each group): the write indexes the
+      # #229), as the PARSER keys them (first tracked host of each group): the write indexes the
       # aggregate by these names, so any other list could reach a service it lacks.
       loop: "{{ (_select.stdout | from_json).inventory_services }}"
       register: _vms

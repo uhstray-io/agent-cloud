@@ -311,6 +311,22 @@ def test_groups_map_to_their_hosts_service_name():
         "all": "tududi", "tududi_svc": "tududi", "step_ca_svc": "step-ca"}
 
 
+def test_a_group_takes_its_service_from_its_first_tracked_host():
+    # a host the collector skipped is absent from host_services; it must not hide a tracked peer
+    host_services = {"tracked": "alpha", "other": "beta"}
+    groups = {
+        "opted_out_first": ["skipped", "tracked"],
+        "opted_out_last": ["tracked", "skipped"],
+        "all_opted_out": ["skipped", "skipped2"],
+        "two_tracked": ["tracked", "other"],
+    }
+    assert step_results.group_services(groups, host_services) == {
+        "opted_out_first": "alpha",
+        "opted_out_last": "alpha",
+        "two_tracked": "alpha",
+    }
+
+
 def test_main_runs_the_three_modes_as_the_collector_calls_them():
     inv = {"groups": {"tududi_svc": ["h"], "step_ca_svc": ["s"]}, "host_services": {"h": "tududi", "s": "step-ca"}}
     deploys = sorted(DEPLOYS)
