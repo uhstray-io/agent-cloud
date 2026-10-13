@@ -153,6 +153,18 @@ def test_untracked_scan_does_not_run_configured_clean_filter(clean_checkout, tmp
     _git(checkout, "update-ref", "refs/remotes/origin/dev", revision, check=True)
     _git(checkout, "config", "filter.marker.clean", filter_command, check=True)
 
+    # Git only runs the clean filter on a tracked file whose stat data no longer
+    # matches the index entry (the "racy git" rule): a stat-clean file is trusted
+    # without being rehashed. Whether the fixture's stat data matched depended on
+    # whether the index was written in the same second as the file, so under load
+    # a plain status skipped the filter and the precondition below failed
+    # intermittently. Force a stat mismatch (mtime only; the bytes are unchanged)
+    # so git must rehash through the filter regardless of timing.
+    tracked = checkout / "tracked.txt"
+    os.utime(tracked, ns=(1_000_000_000_000_000_000, 1_000_000_000_000_000_000))
+    index = checkout / ".git/index"
+    index_before = index.read_bytes()
+
     assert not marker.exists()
     CHECKOUT._run_git(
         checkout,
@@ -161,6 +173,10 @@ def test_untracked_scan_does_not_run_configured_clean_filter(clean_checkout, tmp
     )
     assert marker.exists()
     marker.unlink()
+    # The status above takes no optional locks, so it did not refresh the index:
+    # the stat mismatch is still present and would still trigger the filter if
+    # _verify ran a plain status. Assert that rather than assume it.
+    assert index.read_bytes() == index_before
     assert _verify(checkout, revision)["status"] == "checkout_consistent"
     assert not marker.exists()
 
