@@ -254,20 +254,36 @@ def test_bounded_runner_kills_child_after_parent_exits(tmp_path, monkeypatch):
     marker = tmp_path / "child-survived"
     child_pid = tmp_path / "child.pid"
     fake_git.write_text(
-        f"#!/bin/sh\n(sleep 1; touch {shlex.quote(str(marker))}) &\n"
+        f"#!/bin/sh\n(sleep 3; touch {shlex.quote(str(marker))}) &\n"
         f"echo $! > {shlex.quote(str(child_pid))}\nexit 0\n",
         encoding="utf-8",
     )
     fake_git.chmod(0o755)
     monkeypatch.setattr(CHECKOUT, "GIT", str(fake_git))
-    monkeypatch.setattr(CHECKOUT, "COMMAND_TIMEOUT", 0.5)
+    # The timeout must comfortably exceed the time a loaded machine needs to
+    # start the fake git and let it write the pid file (a 0.5 s timeout let the
+    # runner kill it first, so the pid file never appeared). The child's sleep
+    # stays longer than the timeout so a survivor would still touch the marker.
+    monkeypatch.setattr(CHECKOUT, "COMMAND_TIMEOUT", 1.5)
     started = time.monotonic()
     with pytest.raises(CHECKOUT.Refusal, match="checkout_timeout"):
-        CHECKOUT._run_git(Path("/tmp"), ("status",), deadline=time.monotonic() + 1)
-    assert time.monotonic() - started < 2
-    time.sleep(1.2)
+        CHECKOUT._run_git(Path("/tmp"), ("status",), deadline=time.monotonic() + 3)
+    assert time.monotonic() - started < 5
+    time.sleep(3.5)
     assert child_pid.exists()
     assert not marker.exists()
+
+
+def test_terminate_tolerates_eperm_from_killpg(tmp_path, monkeypatch):
+    # macOS raises EPERM from killpg for a group holding only zombies.
+    process = subprocess.Popen(["/bin/sh", "-c", "exit 0"], start_new_session=True)
+
+    def refuse(_pid, _signal):
+        raise PermissionError(1, "Operation not permitted")
+
+    monkeypatch.setattr(CHECKOUT.os, "killpg", refuse)
+    CHECKOUT._terminate(process)
+    assert process.returncode is not None
 
 
 def test_malformed_git_metadata_fails_closed():
