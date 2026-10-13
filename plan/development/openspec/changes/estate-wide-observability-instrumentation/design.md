@@ -702,6 +702,31 @@ for all nine categories. This receipt predates the alert-input source edits and
 does not validate their runtime behavior. No live survey or deployment is part
 of this source change.
 
+## 2026-10-13 split scrape-file source-drift receipt
+
+Extend the same exact-SHA-guarded receiver survey with a separate read-only
+source receipt for the exact generated `agentgateway.yml` and `dgx-spark.yml`
+files in the receiver's declared deployment checkout. Open each file without
+following symlinks; require a regular single-link file, bounded size, valid
+UTF-8/YAML, no aliases or duplicate keys, and only the expected fixed job names.
+Read only the five scrape-limit fields. Compare their finite positive values
+with the reviewed inventory limits using the existing controller filter.
+
+Keep raw bytes, paths, job names beyond the fixed public categories, and limit
+values inside the protected survey task. Its visible result contains only
+`agentgateway` and `dgx-spark` categories with fixed matched/mismatch/unavailable
+statuses and reason codes. An unexpected path or filesystem object, missing
+file, malformed YAML, duplicate or unexpected job, invalid limit, or inventory
+mismatch does not pass. Check mode reports `check_mode_unverified`.
+
+This receipt establishes only that the exact on-disk source files read during
+the survey match the reviewed five-field limits. It does not show that
+Prometheus mounted or loaded those bytes, that its runtime enforces the limits,
+or that an over-budget scrape is rejected. Keep agentgateway and dgx-spark
+`unverified` in the separate loaded-limit receipt, preserve all other survey
+receipts, and leave task 3.3 unchecked. This is a source-only change; no live
+survey or deployment is claimed.
+
 ## 2026-10-13 expected metrics target contract source slice
 
 Keep the production rule path disabled until private inventory review sets

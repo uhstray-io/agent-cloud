@@ -85,6 +85,39 @@ def _loaded_inventory():
     }
 
 
+def _source_config_dir(tmp_path):
+    directory = tmp_path.resolve() / "platform/services/o11y/deployment/config/scrape.d"
+    directory.mkdir(parents=True)
+    return directory
+
+
+def _write_source_configs(directory, *, sample_limit=10_000, extra_agentgateway="", dgx_text=None):
+    agentgateway = f"""scrape_configs:
+  - job_name: agentgateway
+    body_size_limit: 16777216B
+    sample_limit: {sample_limit}
+    label_limit: 64
+    label_name_length_limit: 128
+    label_value_length_limit: 2048
+{extra_agentgateway}"""
+    dgx = dgx_text or """scrape_configs:
+  - job_name: dgx-spark-node
+    body_size_limit: 16777216B
+    sample_limit: 10000
+    label_limit: 64
+    label_name_length_limit: 128
+    label_value_length_limit: 2048
+  - job_name: dgx-spark-vllm
+    body_size_limit: 16777216B
+    sample_limit: 10000
+    label_limit: 64
+    label_name_length_limit: 128
+    label_value_length_limit: 2048
+"""
+    (directory / "agentgateway.yml").write_text(agentgateway, encoding="utf-8")
+    (directory / "dgx-spark.yml").write_text(dgx, encoding="utf-8")
+
+
 def test_candidate_preview_returns_only_public_categories_and_statuses():
     receipt = _budget_receipt("grafana", "receiver-host", "host-node", "dgx-spark")
     result = BUDGET.o11y_scrape_budget_preview(receipt, _budget_limits(), True, 2000)
@@ -132,6 +165,145 @@ def test_loaded_inline_limit_receipt_matches_inventory_and_marks_split_jobs_unve
             },
         ],
     }
+
+
+def test_source_split_limits_match_reviewed_inventory_with_public_only_receipt(tmp_path):
+    directory = _source_config_dir(tmp_path)
+    _write_source_configs(directory)
+
+    internal = SURVEY._source_scrape_limit_readback(str(directory))
+    receipt = BUDGET.o11y_source_scrape_limit_coverage(internal, _loaded_inventory(), True)
+
+    assert receipt == {
+        "status": "matched",
+        "reason": "source_limits_match_reviewed_inventory",
+        "jobs": [
+            {"job": "agentgateway", "status": "matched", "reason": "source_limits_match_reviewed_inventory"},
+            {"job": "dgx-spark", "status": "matched", "reason": "source_limits_match_reviewed_inventory"},
+        ],
+    }
+    assert str(directory) not in json.dumps(receipt)
+    assert "sample_limit" not in json.dumps(receipt)
+
+
+def test_source_split_limit_mismatch_reports_only_fixed_category_and_reason(tmp_path):
+    directory = _source_config_dir(tmp_path)
+    _write_source_configs(directory, sample_limit=10_001)
+
+    receipt = BUDGET.o11y_source_scrape_limit_coverage(
+        SURVEY._source_scrape_limit_readback(str(directory)), _loaded_inventory(), True
+    )
+
+    assert receipt["status"] == "mismatch"
+    assert receipt["jobs"][0] == {
+        "job": "agentgateway", "status": "mismatch", "reason": "source_limit_mismatch"
+    }
+    assert receipt["jobs"][1]["status"] == "matched"
+
+
+@pytest.mark.parametrize(
+    ("agentgateway_text", "expected_reason"),
+    [
+        ("scrape_configs: [broken", "source_yaml_refused"),
+        (
+            "scrape_configs:\n  - job_name: agentgateway\n    job_name: agentgateway\n",
+            "source_yaml_refused",
+        ),
+    ],
+)
+def test_source_split_malformed_yaml_returns_sanitized_refusal(tmp_path, agentgateway_text, expected_reason):
+    directory = _source_config_dir(tmp_path)
+    _write_source_configs(directory)
+    (directory / "agentgateway.yml").write_text(agentgateway_text, encoding="utf-8")
+
+    try:
+        SURVEY._source_scrape_limit_readback(str(directory))
+    except SURVEY.Refusal as error:
+        internal = {"status": "unavailable", "reason": error.category}
+    else:
+        pytest.fail("malformed source was accepted")
+    receipt = BUDGET.o11y_source_scrape_limit_coverage(internal, _loaded_inventory(), True)
+
+    assert receipt == {"status": "unavailable", "reason": expected_reason, "jobs": []}
+    assert agentgateway_text not in json.dumps(receipt)
+
+
+def test_source_split_unsafe_files_and_unexpected_paths_refuse_without_echo(tmp_path):
+    directory = _source_config_dir(tmp_path)
+    _write_source_configs(directory)
+    source = tmp_path / "outside.yml"
+    source.write_text("private-path-sentinel", encoding="utf-8")
+    (directory / "agentgateway.yml").unlink()
+    (directory / "agentgateway.yml").symlink_to(source)
+
+    with pytest.raises(SURVEY.Refusal):
+        SURVEY._source_scrape_limit_readback(str(directory))
+    with pytest.raises(SURVEY.Refusal):
+        SURVEY._source_scrape_limit_readback(str(tmp_path.resolve() / "unexpected"))
+
+    refusal = BUDGET.o11y_source_scrape_limit_coverage(
+        {"status": "unavailable", "reason": "source_file_unavailable"}, _loaded_inventory(), True
+    )
+    assert refusal == {"status": "unavailable", "reason": "source_file_unavailable", "jobs": []}
+    assert "private-path-sentinel" not in json.dumps(refusal)
+
+
+def test_source_split_duplicate_jobs_refuse_with_fixed_reason(tmp_path):
+    directory = _source_config_dir(tmp_path)
+    duplicate_dgx = """scrape_configs:
+  - job_name: dgx-spark-node
+    body_size_limit: 16777216B
+    sample_limit: 10000
+    label_limit: 64
+    label_name_length_limit: 128
+    label_value_length_limit: 2048
+  - job_name: dgx-spark-node
+    body_size_limit: 16777216B
+    sample_limit: 10000
+    label_limit: 64
+    label_name_length_limit: 128
+    label_value_length_limit: 2048
+  - job_name: dgx-spark-vllm
+    body_size_limit: 16777216B
+    sample_limit: 10000
+    label_limit: 64
+    label_name_length_limit: 128
+    label_value_length_limit: 2048
+"""
+    _write_source_configs(directory, dgx_text=duplicate_dgx)
+
+    with pytest.raises(SURVEY.Refusal) as error:
+        SURVEY._source_scrape_limit_readback(str(directory))
+
+    receipt = BUDGET.o11y_source_scrape_limit_coverage(
+        {"status": "unavailable", "reason": error.value.category}, _loaded_inventory(), True
+    )
+    assert receipt == {"status": "unavailable", "reason": "source_job_refused", "jobs": []}
+
+
+@pytest.mark.parametrize("unsupported_limit", ["2026-10-13", "!!binary c2VjcmV0", "!!set {secret: null}"])
+def test_collect_keeps_other_receipts_when_source_limit_scalar_is_not_json_safe(
+    tmp_path, monkeypatch, unsupported_limit
+):
+    directory = _source_config_dir(tmp_path)
+    _write_source_configs(directory, sample_limit=unsupported_limit)
+    baseline = {"status": "observed", "jobs": []}
+    loaded = {"status": "unavailable", "reason": "inline_unverified"}
+    alerts = {"status": "observed", "families": []}
+    monkeypatch.setenv("O11Y_SCRAPE_CONFIG_DIR", str(directory))
+    monkeypatch.setattr(SURVEY, "_require_curl_version", lambda: None)
+    monkeypatch.setattr(SURVEY, "_run_api", lambda *_args, **_kwargs: b"{}")
+    monkeypatch.setattr(SURVEY, "summarize", lambda *_args, **_kwargs: baseline)
+    monkeypatch.setattr(SURVEY, "_loaded_limit_readback", lambda *_args, **_kwargs: loaded)
+    monkeypatch.setattr(SURVEY, "_alert_input_availability", lambda *_args, **_kwargs: alerts)
+
+    receipt = SURVEY.collect()
+
+    assert receipt["baseline"] == baseline
+    assert receipt["loaded_limit_readback"] == loaded
+    assert receipt["alert_input_availability"] == alerts
+    assert receipt["source_limit_readback"] == {"status": "unavailable", "reason": "source_limit_refused"}
+    json.dumps(receipt)
 
 
 def test_loaded_receiver_host_uses_stricter_sample_cap():
@@ -988,12 +1160,15 @@ def test_playbook_has_one_sensitive_remote_invocation_exact_sha_and_check_mode_g
 
     receiver = next(play for play in playbook if play.get("name") == "Read and reduce the production scrape baseline")
     protected = [task for task in receiver["tasks"] if task.get("no_log")]
-    assert len(protected) == 7
+    assert len(protected) == 8
     invocation = next(
         task for task in protected if task["name"] == "Collect and sanitize the active scrape baseline on the receiver"
     )
     parse = next(task for task in protected if task["name"] == "Parse the helper's bounded public projection")
     compare = next(task for task in protected if task["name"] == "Compute bounded loaded inline scrape-limit coverage")
+    source_compare = next(
+        task for task in protected if task["name"] == "Compute bounded on-disk split scrape-limit coverage"
+    )
     alert_projection = next(
         task for task in protected if task["name"] == "Keep alert-input availability independent and bounded"
     )
@@ -1005,6 +1180,7 @@ def test_playbook_has_one_sensitive_remote_invocation_exact_sha_and_check_mode_g
     assert invocation["when"] == "not ansible_check_mode"
     assert parse["no_log"] is True
     assert compare["no_log"] is True
+    assert source_compare["no_log"] is True
     assert alert_projection["no_log"] is True
     assert alert_validation["no_log"] is True
     assert alert_validation["when"] == "not ansible_check_mode"
@@ -1025,6 +1201,7 @@ def test_playbook_has_one_sensitive_remote_invocation_exact_sha_and_check_mode_g
     check_mode = next(task for task in receiver["tasks"] if task.get("name") == "Mark check-mode results as unverified")
     assert check_mode["when"] == "ansible_check_mode"
     assert check_mode["ansible.builtin.debug"]["msg"]["loaded_limits"]["status"] == "check_mode_unverified"
+    assert check_mode["ansible.builtin.debug"]["msg"]["source_limits"]["status"] == "check_mode_unverified"
     assert check_mode["ansible.builtin.debug"]["msg"]["alert_input_availability"]["status"] == "check_mode_unverified"
     assert "scrape_body_size_bytes" not in HELPER.read_text()
 
