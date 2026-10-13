@@ -95,10 +95,14 @@
     _bao_url_host: "http://127.0.0.1:8200"           # from the Mac
     _bao_url_net: "http://local-openbao:8200"        # from containers on _net
     _sem_name: local-semaphore
-    # Pinned: latest (v2.19 beta) and bolt dialect both panic ("unknown store
-    # type", pro Terraform-store factory); sqlite is the supported embedded
-    # store. The -ansible variant ships ansible for task execution.
-    _sem_image: "{{ local_semaphore_image | default('docker.io/semaphoreui/semaphore:v2.18.12-ansible2.16.5') }}"
+    # Pinned to the plain v2.19.11 tag, the one production runs (same branch-override
+    # behaviour, same ansible-core 2.20.8: read from both production containers on
+    # 2026-10-09: `/api/info` v2.19.11-0c3f373 and `ansible --version` core 2.20.8,
+    # recorded in inference-gateway-agentgateway tasks.md 4.6, PR #523). The v2.19
+    # beta and the bolt dialect panicked ("unknown store type", pro Terraform-store
+    # factory); v2.19.11 starts on the sqlite embedded store, which stays the
+    # supported one.
+    _sem_image: "{{ local_semaphore_image | default('docker.io/semaphoreui/semaphore:v2.19.11') }}"
     # Mac-side port Semaphore is published on. The container side stays 3000 (the
     # Caddy route and every in-network caller name local-semaphore:3000); only the
     # host publish moves. An inventory value lets the stack come up when another
@@ -706,10 +710,20 @@
       # A write (sudo mkdir + chmod 1777 on the VM): skipped under --check.
       when: not ansible_check_mode
 
-    - name: "Recreate Semaphore if a required mount, label=disable or the host port is missing"
+    - name: "Recreate Semaphore if a required mount, label=disable, the host port or the image differs"
       ansible.builtin.shell: |
         set -o pipefail
         if podman container exists {{ _sem_name }}; then
+          # Every recreate below removes the running controller, so the desired image must
+          # be local BEFORE anything is removed: a failed pull (offline, bad override) then
+          # fails this task and leaves the working controller in place, the same order as
+          # the production Semaphore upgrade (pull, then replace).
+          if ! podman image exists {{ _sem_image }}; then
+            if ! podman pull {{ _sem_image }} >/dev/null; then
+              echo "cannot pull {{ _sem_image }}; the running {{ _sem_name }} is left in place" >&2
+              exit 1
+            fi
+          fi
           MOUNTS=$(podman inspect {{ _sem_name }} --format '{{ "{{" }}range .Mounts{{ "}}" }}{{ "{{" }}.Destination{{ "}}" }} {{ "{{" }}end{{ "}}" }}')
           SECOPT=$(podman inspect {{ _sem_name }} --format '{{ "{{" }}.HostConfig.SecurityOpt{{ "}}" }}')
           ENV=$(podman inspect {{ _sem_name }} --format '{{ "{{" }}json .Config.Env{{ "}}" }}')
@@ -717,6 +731,20 @@
           # The host publish is fixed at container creation, so a changed
           # local_semaphore_port only takes effect on a recreated container.
           if ! echo "$PORTS" | grep -q '"HostPort":"{{ _sem_port }}"'; then
+            podman rm -f {{ _sem_name }}
+            echo recreated
+            exit 0
+          fi
+          # The image is fixed at creation too, so a changed _sem_image (a bumped pin, an
+          # inventory override) only takes effect on a recreated container. Compare image
+          # IDs, not names: podman normalises a short name to docker.io/..., so a name
+          # compare would recreate on every run for an override spelled without the
+          # registry, while both spellings resolve to one ID. The image was pulled above
+          # if it was missing. The data volume is kept, so a newer binary migrates the
+          # sqlite store forward.
+          WANT_IMAGE=$(podman image inspect {{ _sem_image }} --format '{{ "{{" }}.Id{{ "}}" }}')
+          HAVE_IMAGE=$(podman inspect {{ _sem_name }} --format '{{ "{{" }}.Image{{ "}}" }}')
+          if [ "$WANT_IMAGE" != "$HAVE_IMAGE" ]; then
             podman rm -f {{ _sem_name }}
             echo recreated
             exit 0

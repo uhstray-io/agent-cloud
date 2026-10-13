@@ -19,11 +19,11 @@ Semaphore "Deploy tududi"
      ├─ tasks/place-monorepo.yml     # clone/copy the monorepo, ensure podman + compose
      ├─ tasks/manage-secrets.yml     # OpenBao → templates/env.j2 → .env (session secret,
      │                               #   break-glass admin; OIDC secret shared-read from authentik)
-     ├─ deploy.sh                    # podman compose pull + up -d --force-recreate + wait healthy
+     ├─ deploy.sh                    # podman compose pull + compose_up_if_changed + wait healthy
      └─ verify                       # GET /api/health → 200 (inside the container)
 ```
 
-`deploy.sh` is container lifecycle only — it never generates secrets (Critical Deployment Rule #2). Ansible owns the full credential lifecycle via OpenBao. Clean rebuild: `platform/playbooks/clean-deploy-tududi.yml`.
+`deploy.sh` is container lifecycle only — it never generates secrets (Critical Deployment Rule #2). Ansible owns the full credential lifecycle via OpenBao. Containers are recreated only when `.env`, the compose files or an image changed (`compose_up_if_changed`); the survey `deploy_force_recreate=true` forces it. Clean rebuild: `platform/playbooks/clean-deploy-tududi.yml`.
 
 ## Auth
 

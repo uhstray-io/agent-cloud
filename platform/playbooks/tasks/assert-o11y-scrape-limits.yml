@@ -1,0 +1,49 @@
+---
+- name: "Require reviewed production o11y scrape limits"
+  ansible.builtin.assert:
+    that: o11y_scrape_limits_reviewed | default(false) | bool
+    fail_msg: >-
+      Production o11y scrape budgets require o11y_scrape_limits_reviewed: true after
+      the target baseline has been reviewed.
+  when: not (local_mode | default(false) | bool)
+
+- name: "Require the production o11y scrape limits mapping"
+  ansible.builtin.assert:
+    that: o11y_scrape_limits is mapping
+    fail_msg: >-
+      Production o11y_scrape_limits must be a mapping with body_size_limit_bytes,
+      sample_limit, label_limit, label_name_length_limit and label_value_length_limit.
+  when: not (local_mode | default(false) | bool)
+
+- name: "Require bounded positive YAML integers for production scrape limits"
+  ansible.builtin.assert:
+    that:
+      - >-
+        o11y_scrape_limits.get('body_size_limit_bytes') is integer and
+        not o11y_scrape_limits.get('body_size_limit_bytes') is boolean and
+        1 <= o11y_scrape_limits.get('body_size_limit_bytes') <= 167772160
+      - >-
+        o11y_scrape_limits.get('sample_limit') is integer and
+        not o11y_scrape_limits.get('sample_limit') is boolean and
+        1 <= o11y_scrape_limits.get('sample_limit') <= 100000
+      - >-
+        o11y_scrape_limits.get('label_limit') is integer and
+        not o11y_scrape_limits.get('label_limit') is boolean and
+        1 <= o11y_scrape_limits.get('label_limit') <= 640
+      - >-
+        o11y_scrape_limits.get('label_name_length_limit') is integer and
+        not o11y_scrape_limits.get('label_name_length_limit') is boolean and
+        1 <= o11y_scrape_limits.get('label_name_length_limit') <= 1280
+      - >-
+        o11y_scrape_limits.get('label_value_length_limit') is integer and
+        not o11y_scrape_limits.get('label_value_length_limit') is boolean and
+        1 <= o11y_scrape_limits.get('label_value_length_limit') <= 20480
+      - >-
+        o11y_scrape_sample_limit is not defined or
+        (o11y_scrape_sample_limit is integer and
+         not o11y_scrape_sample_limit is boolean and
+         1 <= o11y_scrape_sample_limit <= 20000)
+    fail_msg: >-
+      Production scrape limits must be positive YAML integers no greater than ten times
+      their finite local baselines; o11y_scrape_sample_limit, when set, must be 1..20000.
+  when: not (local_mode | default(false) | bool)

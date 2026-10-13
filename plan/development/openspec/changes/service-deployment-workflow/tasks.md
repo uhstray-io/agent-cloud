@@ -33,7 +33,7 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
       unchanged (schema-constrained request through the local gateway, then direct).
       2026-09-22: source-level yes at v1.5.0 (`design.md` Context); the live request needs an
       enrolled client key, which has no sanctioned workstation path, so it runs in 3.3
-- [ ] 0.7 Local-dev Semaphore to v2.19.11: bootstrap with `-e
+- [x] 0.7 Local-dev Semaphore to v2.19.11: bootstrap with `-e
       local_semaphore_image=docker.io/semaphoreui/semaphore:v2.19.11-ansible2.16.5`, confirm the
       sqlite store starts (the recorded v2.19-beta panic is gone), then move the default in
       `bootstrap-local-dev.yml`; keeps local and production on one branch-override behaviour
@@ -43,6 +43,23 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
       the coordinator; not re-verified here. Bootstrap's template registration stopped at the
       isolated seed-environment guard (OpenBao address pinned in "OpenBao key seed inputs (Dev)");
       fix in progress. Default in `bootstrap-local-dev.yml` not yet moved. Not ticked.
+      - 2026-10-12: bootstrapped on the PLAIN `docker.io/semaphoreui/semaphore:v2.19.11` tag,
+        not the `-ansible2.16.5` variant this task named: production runs the plain tag
+        (ansible-core 2.20.8, which the local controller now matches), so the variant would
+        have kept local and production on different Ansible. The sqlite store starts: `/api/ping`
+        200, `semaphore version` v2.19.11, no `panic` in the container log, and genesis
+        (`make local-bootstrap`) ended `failed=0` after Provision Seed Environment (local task
+        5586). Default moved in `bootstrap-local-dev.yml` (`_sem_image`) and the pin text in
+        `docs/LOCAL-DEV.md`; `scripts/semaphore-launch.py`'s VERIFIED set keeps v2.18.12 (left
+        alone on purpose). Every local task id recorded below (5591 onward)
+        ran on this controller.
+      - 2026-10-12, review follow-up: the production half of "same ansible-core" is evidence,
+        not assumption: the lead read both production containers on 2026-10-09 (~20:00Z),
+        `/api/info` `v2.19.11-0c3f373` and `ansible --version` core 2.20.8, recorded in
+        `inference-gateway-agentgateway` tasks.md 4.6 ("2026-10-09T19:58Z", PR #523). The
+        recreate check in `bootstrap-local-dev.yml` now compares image IDs, so re-running
+        `make local-bootstrap` replaces a controller still on an older image (data volume
+        kept); a bare re-run before this change would have kept the old container
 - [x] 0.6 Validation gate: `openspec validate service-deployment-workflow --store agent-cloud`
       passes and 0.2 to 0.5 each carry a dated evidence line; proves no scenario yet and
       unblocks every later section
@@ -167,8 +184,20 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
         increment is its own branch cut from `origin/dev` and merged by pull request, so every
         later section-3 branch starts from a `dev` that already carries the gateway.
       - 2026-10-03: recorded by PR #395 (merged)
-- [ ] 3.1 Prove the DGX API is reachable from inside the local controller's container (not
+- [x] 3.1 Prove the DGX API is reachable from inside the local controller's container (not
       only the host); record the result; if unreachable, record the degraded path in design
+      - 2026-10-12, NOT reachable from the container: from inside `local-semaphore`
+        (v2.19.11) a TCP connect to the DGX API port and to its SSH port are both REFUSED,
+        while the same connects succeed from the Mac and `GET /health` answers 200 there. The
+        podman VM itself is refused too (`/dev/tcp`), yet it and the container reach the
+        internet (VM and container to a public :443 both connect), so the path to this LAN
+        address is cut at the VM's user-mode networking, not at the container network or the
+        DGX. Cause not isolated (unverified: whether it is macOS local-network permission for
+        the VM helper or the VM's gateway). Degraded path confirmed usable: from the container
+        the public edge answers `GET /health` 200 and an unauthenticated `GET /v1/models` 401.
+        So section 3's local gateway runs against the public edge (subject to its rate limit)
+        until the VM path is fixed. Ticked once the measured result and the
+        degraded path were recorded in `design.md` (Risks, "Measured 2026-10-12")
 - [ ] 3.2 Local inventory: agentgateway upstream set to the DGX API in `local-dev.yml` only;
       `vllm_api_key` seeded into local OpenBao with `Seed OpenBao Key` from the environment
       secret, never an argv; `agw_clients` gains the four role identities and `skynet-eval`
@@ -275,14 +304,44 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
 - [ ] 6.5 Validation gate: spec scenarios "Local deploy is repeatable", "Target outside
       local-dev is refused", "No targets means no discovery" and "Local targets are
       discovered" pass
-      2026-10-12 (task output read from Semaphore by the lead): "Local deploy is repeatable"
-      PROVEN after PR #565 (`place-monorepo` change detection): local NetBox deploy tasks 5619
-      and 5620 (local Semaphore v2.19.11). The second run changed only Run deploy.sh, Run
-      post-deploy.sh, Create fresh orb-agent credential and Update .env with credentials (the
-      allowed set); "Copy working tree into place" no longer reports changed (it did in 5593
-      before the fix). "Target outside local-dev is refused" proven by task 5608 and "No
-      targets means no discovery" by task 5609 (check mode). "Local targets are discovered"
-      is pending the first scheduled subnet_scan (about 00:00 UTC). Not ticked.
+      - 2026-10-12, local Semaphore v2.19.11, template "Deploy NetBox (Local)": runs 5591 and
+        5593, both success (health OK). The SECOND run (5593) reports 5 changed tasks (play recap `changed=5`)
+        under 5 distinct names, one of which (`Update .env with credentials`) changed for two
+        loop items, so the log shows 6 `changed:` lines. Four names are in the allowed set
+        (container lifecycle scripts, orb-agent credential refresh): `Run deploy.sh
+        (infrastructure)`, `Run post-deploy.sh (migrations, superuser, OAuth2)`, `Create fresh
+        orb-agent credential via Diode plugin`, `Update .env with credentials`. The fifth name,
+        `Copy working tree into place (local mode)`, is NOT allowed, so
+        "Local deploy is repeatable" FAILS as written. Cause (rsync dry run from the
+        controller, nothing written): `rsync -rlpti` itemizes `.L...p` (mode differs)
+        on every `AGENTS.md -> CLAUDE.md` symlink and `.d..t` (mtime differs) on the netbox
+        deployment directory, with no file content to copy, and `changed_when` counts any
+        output. Why the mode and mtime differ each run was not isolated (unverified). Fix belongs in
+        `platform/playbooks/tasks/place-monorepo.yml` (`--omit-dir-times`, and count only
+        file-content lines in `changed_when`), which every local service shares
+      - "Target outside local-dev is refused": live task 5608 (`deploy-orb-agent`, extra var
+        `discovery_targets` = one documentation-range network, no inventory edit) ended `error`
+        in `Local discovery: refuse any target outside local-dev`, naming that target; the
+        running agent was untouched. Earlier evidence: 6.2
+      - "No targets means no discovery": task 5609 (check mode, extra vars emptying
+        `discovery_target_subnet` and `discovery_targets`) ended success with `Local NetBox
+        discovery is DISABLED` and every later step skipped. Check mode on purpose: a real run
+        removes the running agent. Earlier evidence: 6.2 live, and
+        `platform/services/netbox/deployment/tests/test_discovery_scope.py` (5 passed 2026-10-12)
+      - "Local targets are discovered": scope check passed live (tasks 5599 AppRole, 5600
+        orb-agent deploy, `changed=5`, agent up, `subnet_scan` policy applied). NO record yet:
+        local NetBox holds 0 IP records and 0 devices after 15 minutes, and the policy
+        scans on `0 */4 * * *` (UTC) with no scan logged since the agent started (20:49 UTC),
+        so the first scheduled scan is 00:00 UTC. The count-and-containment query is still to run after that scan. Not ticked
+      - 2026-10-12, after PR #565 (`place-monorepo` change detection; task output read from
+        Semaphore by the lead): "Local deploy is repeatable" PROVEN by local NetBox deploy tasks
+        5619 and 5620 (local Semaphore v2.19.11). The second run changed only Run deploy.sh, Run
+        post-deploy.sh, Create fresh orb-agent credential and Update .env with credentials (the
+        allowed set); "Copy working tree into place" no longer reports changed (it did in 5593).
+        Side effect found: a NetBox redeploy removes the running orb-agent and nothing redeploys
+        it, so the 00:00 UTC scan never ran. The agent was redeployed (local task 5679); the next
+        scheduled scan is 04:00 UTC. Wave 3 of 7.1 makes an unchanged NetBox deploy leave the
+        agent alone. "Local targets are discovered" still pending that scan. Not ticked
 
 ## 7. Executors, snapshots and tracking
 
