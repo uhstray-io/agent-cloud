@@ -239,6 +239,28 @@ evidence. Keep task 3.3 open, retention unchanged, and live acceptance pending.
 Check mode reports the baseline, candidate preview, and loaded limits as
 `check_mode_unverified`.
 
+The survey also emits an independent alert-input availability receipt for the
+six raw counters referenced by the existing Alloy receiver/exporter, Loki
+discard, and Tempo discard alerts. Each raw selector query explicitly sets
+`lookback_delta=5m` and omits `or vector(0)`, so an empty vector reports a
+missing or stale input. The helper validates the query response shape, privately
+joins series to active targets, permits multiple distinct reason series, and
+requires finite nonnegative values. Each public row contains only its fixed metric family, status
+(`observed_zero`, `observed_nonzero`, `missing_or_stale`, or `unavailable`), and
+fixed reason. Labels, values, timestamps, selectors, URLs, response bodies, and
+exceptions stay private. Failures remain isolated from the active-load baseline,
+candidate preview, and loaded-limit receipt; check mode reports
+`check_mode_unverified`. This source receipt does not prove metric exposition,
+controlled loss, or alert delivery.
+
+Operator-supplied verified sanitized Dev survey task 5208 evidence reports 11
+healthy targets across nine public categories. Seven inline categories matched
+reviewed loaded limits; agentgateway and dgx-spark remained unverified because
+their jobs come from split scrape files. The separate source-only candidate
+preview was compatible for all nine categories. This evidence predates the new
+alert-input receipt and does not verify its runtime behavior. Task 3.3 remains
+open, split-file jobs remain unverified, and retention is unchanged.
+
 The Dev-bound `Survey o11y Alloy Health (Dev)` is a separate read-only
 diagnostic for the fixed `o11y-alloy` receiver container. It requires the exact
 reviewed controller SHA, one production `o11y_svc` target, and the receiver's

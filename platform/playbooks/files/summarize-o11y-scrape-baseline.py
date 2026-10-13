@@ -30,6 +30,14 @@ TRANSFER_TIMEOUT = 10
 CURL_MIN_VERSION = (8, 4, 0)
 MAX_ROWS = 10000
 MAX_INTEGER_DIGITS = 20
+ALERT_INPUTS = (
+    ("otelcol_receiver_refused_log_records_total", "alloy"),
+    ("otelcol_receiver_refused_spans_total", "alloy"),
+    ("otelcol_exporter_enqueue_failed_spans_total", "alloy"),
+    ("otelcol_exporter_send_failed_spans_total", "alloy"),
+    ("loki_discarded_samples_total", "loki"),
+    ("tempo_discarded_spans_total", "tempo"),
+)
 
 JOB_ALIASES = {
     "prometheus": "prometheus",
@@ -779,6 +787,97 @@ def _loaded_limit_readback(targets_raw: bytes | str) -> dict[str, Any]:
     }
 
 
+def _alert_input_family(
+    raw: bytes,
+    metric_name: str,
+    job: str,
+    active_targets: set[tuple[str, str]],
+) -> dict[str, str]:
+    rows = _api_vector(raw, "malformed_alert_response")
+    if not rows:
+        return {"status": "missing_or_stale", "reason": "no_samples"}
+
+    seen: set[tuple[tuple[str, str], ...]] = set()
+    values: list[Decimal] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            raise Refusal("malformed_alert_response")
+        labels = row.get("metric")
+        if (
+            not isinstance(labels, dict)
+            or labels.get("__name__") != metric_name
+            or any(not isinstance(name, str) or not isinstance(value, str) for name, value in labels.items())
+        ):
+            raise Refusal("malformed_alert_response")
+        key = (labels.get("job"), labels.get("instance"))
+        if not all(isinstance(value, str) and value for value in key):
+            raise Refusal("malformed_alert_response")
+        if key[0] != job or key not in active_targets:
+            raise Refusal("ambiguous_alert_target")
+        identity = tuple(sorted(labels.items()))
+        if identity in seen:
+            raise Refusal("ambiguous_alert_series")
+        seen.add(identity)
+
+        sample = row.get("value")
+        if not isinstance(sample, list) or len(sample) != 2 or isinstance(sample[0], bool):
+            raise Refusal("malformed_alert_sample")
+        try:
+            evaluation_timestamp = Decimal(str(sample[0]))
+            value = Decimal(str(sample[1]))
+        except (InvalidOperation, ValueError):
+            raise Refusal("malformed_alert_sample") from None
+        if not evaluation_timestamp.is_finite() or not value.is_finite() or value < 0:
+            raise Refusal("malformed_alert_sample")
+        values.append(value)
+
+    return {
+        "status": "observed_nonzero" if any(value > 0 for value in values) else "observed_zero",
+        "reason": "samples_present",
+    }
+
+
+def _alert_input_availability(targets_raw: bytes | str) -> dict[str, Any]:
+    try:
+        targets = _targets(targets_raw.encode() if isinstance(targets_raw, str) else targets_raw)
+    except Exception:
+        return {
+            "status": "observed",
+            "families": [
+                {"family": metric_name, "status": "unavailable", "reason": "target_unavailable"}
+                for metric_name, _ in ALERT_INPUTS
+            ],
+        }
+    active_by_job: dict[str, set[tuple[str, str]]] = {}
+    for job, instance in targets:
+        if job in {source_job for _, source_job in ALERT_INPUTS}:
+            active_by_job.setdefault(job, set()).add((job, instance))
+
+    families: list[dict[str, str]] = []
+    for metric_name, job in ALERT_INPUTS:
+        try:
+            if not active_by_job.get(job):
+                raise Refusal("alert_target_unavailable")
+            query = f'{metric_name}{{job="{job}"}}'
+            params = {"query": query, "lookback_delta": "5m"}
+            raw = _run_api("/api/v1/query?" + urlencode(params), "alert_query_unavailable")
+            result = _alert_input_family(raw, metric_name, job, active_by_job[job])
+        except Refusal as error:
+            reason = {
+                "malformed_alert_response": "malformed_response",
+                "malformed_alert_sample": "malformed_sample",
+                "ambiguous_alert_target": "ambiguous_target",
+                "ambiguous_alert_series": "ambiguous_series",
+                "alert_target_unavailable": "target_unavailable",
+                "alert_query_unavailable": "api_unavailable",
+            }.get(error.category, "malformed_response")
+            result = {"status": "unavailable", "reason": reason}
+        except Exception:
+            result = {"status": "unavailable", "reason": "api_unavailable"}
+        families.append({"family": metric_name, **result})
+    return {"status": "observed", "families": families}
+
+
 def _require_curl_version() -> None:
     try:
         completed = subprocess.run(
@@ -813,7 +912,21 @@ def collect() -> dict[str, Any]:
         loaded_limits = {"status": "unavailable", "reason": error.category}
     except Exception:
         loaded_limits = {"status": "unavailable", "reason": "loaded_readback_unavailable"}
-    return {"baseline": baseline, "loaded_limit_readback": loaded_limits}
+    try:
+        alert_inputs = _alert_input_availability(targets_raw)
+    except Exception:
+        alert_inputs = {
+            "status": "observed",
+            "families": [
+                {"family": metric_name, "status": "unavailable", "reason": "api_unavailable"}
+                for metric_name, _ in ALERT_INPUTS
+            ],
+        }
+    return {
+        "baseline": baseline,
+        "loaded_limit_readback": loaded_limits,
+        "alert_input_availability": alert_inputs,
+    }
 
 
 def main() -> int:

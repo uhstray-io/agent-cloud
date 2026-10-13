@@ -662,3 +662,42 @@ compatible candidate preview for all nine. The task predates these source edits
 and did not read loaded limits or prove runtime rejection; it validates only the
 separate baseline and candidate-preview inputs. No live task or deployment is
 part of this source change.
+
+## 2026-10-13 alert-input availability source slice
+
+Extend the same read-only baseline survey with an independent best-effort
+availability receipt for the six fixed raw counter families referenced by the
+provisioned Alloy receiver/exporter, Loki discard, and Tempo discard alerts:
+`otelcol_receiver_refused_log_records_total`,
+`otelcol_receiver_refused_spans_total`,
+`otelcol_exporter_enqueue_failed_spans_total`,
+`otelcol_exporter_send_failed_spans_total`, `loki_discarded_samples_total`,
+and `tempo_discarded_spans_total`. Query each raw family without the alert
+expressions' `or vector(0)` so absence remains visible.
+
+Set `lookback_delta=5m` explicitly on every raw selector query and do not add
+`or vector(0)`. An empty vector is reported as `missing_or_stale`; do not compare
+the response `value[0]` (the query evaluation timestamp) with a local clock or
+claim it is the original sample timestamp. Validate the vector response shape,
+then join each returned `job`/`instance` privately against the exact active-target
+set. Accept multiple distinct reason series; require well-formed unique label
+sets and finite nonnegative counter values. Report one fixed public family/status/reason row per
+family: `observed_zero`, `observed_nonzero`, `missing_or_stale`, or `unavailable`.
+No labels, sample values/timestamps, selectors, URLs, response bodies, or
+exceptions enter the receipt. A per-family query or validation failure does not
+fail or replace the required active-load baseline, source-only candidate
+preview, or loaded-limit receipt. Check mode reports the new receipt as
+`check_mode_unverified`.
+
+This is source-level availability evidence only. It does not prove pinned-image
+metric exposition, controlled refusals/discards, alert firing or delivery, or
+close task 3.3. Agentgateway and DGX split-file jobs remain `unverified`; do not
+promote them into loaded-limit coverage.
+
+Operator-supplied verified sanitized evidence for Dev survey task 5208 reports
+11 healthy targets in nine public categories; seven inline categories matched
+reviewed loaded limits, while agentgateway and dgx-spark remained unverified
+split-file jobs. The independent source-only candidate preview was compatible
+for all nine categories. This receipt predates the alert-input source edits and
+does not validate their runtime behavior. No live survey or deployment is part
+of this source change.
