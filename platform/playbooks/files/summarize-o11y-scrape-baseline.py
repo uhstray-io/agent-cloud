@@ -16,6 +16,8 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 from urllib.parse import urlencode, urlsplit
 
+import yaml
+
 ENGINE = "podman"
 CONTAINER = "o11y-grafana"
 PROMETHEUS = "http://prometheus:9090"
@@ -127,6 +129,193 @@ def validate_expected_target_declaration(
     if all_target_uids.intersection(other_rule_uids):
         raise Refusal("invalid_declaration")
     return normalized, list(retired_uids)
+
+
+def _owned_expected_targets(document: Any) -> list[dict[str, str]]:
+    """Read only exact generated expected-target rules from our provisioning group."""
+    if not isinstance(document, dict) or document.get("apiVersion") != 1:
+        raise Refusal("invalid_previous_rules")
+    groups = document.get("groups")
+    if not isinstance(groups, list) or len(groups) > MAX_ROWS:
+        raise Refusal("invalid_previous_rules")
+    owned_groups = [
+        group for group in groups
+        if isinstance(group, dict)
+        and (group.get("orgId"), group.get("name"), group.get("folder")) == (1, "service-telemetry", "agent-cloud")
+    ]
+    if len(owned_groups) != 1:
+        raise Refusal("invalid_previous_rules")
+    group = owned_groups[0]
+    rules = group.get("rules")
+    if not isinstance(rules, list) or len(rules) > MAX_ROWS:
+        raise Refusal("invalid_previous_rules")
+    owned: list[dict[str, str]] = []
+    for rule in rules:
+        if not isinstance(rule, dict) or not str(rule.get("uid", "")).startswith("o11y_missing_"):
+            continue
+        uid = rule.get("uid")
+        labels = rule.get("labels")
+        if not isinstance(uid, str) or not EXPECTED_UID.fullmatch(uid):
+            raise Refusal("invalid_previous_rules")
+        rule_data = rule.get("data")
+        if (
+            rule.get("title") == "Expected metrics target previously declared"
+            and rule.get("isPaused") is True
+            and "notification_settings" not in rule
+            and labels == {"severity": "warning", "owner": "platform-operations", "environment": "disabled"}
+            and isinstance(rule_data, list)
+            and len(rule_data) == 2
+            and isinstance(rule_data[0], dict)
+            and rule_data[0].get("model", {}).get("expr") == "vector(0)"
+            and rule.get("noDataState") == "OK"
+            and rule.get("execErrState") == "OK"
+            and rule.get("for") == "0s"
+            and rule.get("annotations") == {
+                "summary": "Expected metrics target rule is disabled.",
+                "description": "No target identity is retained while the reviewed alert gate is disabled.",
+            }
+        ):
+            owned.append({"uid": uid})
+            continue
+        if not isinstance(labels, dict):
+            raise Refusal("invalid_previous_rules")
+        if set(labels) != {"severity", "job", "instance", "service", "owner", "environment", "cluster"}:
+            raise Refusal("invalid_previous_rules")
+        target = {"uid": uid, **{field: labels.get(field) for field in EXPECTED_IDENTITY_FIELDS}}
+        try:
+            normalized, _ = validate_expected_target_declaration([target])
+        except Refusal:
+            raise Refusal("invalid_previous_rules") from None
+        value = normalized[0]
+        rule_data = rule.get("data")
+        expr = (
+            rule_data[0].get("model", {}).get("expr")
+            if isinstance(rule_data, list) and rule_data and isinstance(rule_data[0], dict)
+            else None
+        )
+        expected_expr = (
+            "absent_over_time(up{job=" + json.dumps(value["job"]) + ",instance=" + json.dumps(value["instance"])
+            + ",service=" + json.dumps(value["service"]) + ",cluster=" + json.dumps(value["cluster"])
+            + ",environment=" + json.dumps(value["environment"]) + "}[5m])"
+        )
+        paused_contract = False
+        active_contract = (
+            rule.get("title") == f"Missing telemetry for {value['service']} at {value['instance']}"
+            and expr == expected_expr
+            and rule.get("condition") == "B"
+            and rule.get("noDataState") == "OK"
+            and rule.get("execErrState") == "Alerting"
+            and rule.get("for") == "2m"
+            and isinstance(rule.get("data"), list)
+            and len(rule["data"]) == 2
+            and rule["data"][0].get("refId") == "A"
+            and rule["data"][0].get("relativeTimeRange") == {"from": 600, "to": 0}
+            and rule["data"][0].get("datasourceUid") == "prometheus"
+            and rule["data"][0].get("model", {}).get("editorMode") == "code"
+            and rule["data"][0].get("model", {}).get("instant") is True
+            and rule["data"][0].get("model", {}).get("range") is False
+            and rule["data"][1].get("refId") == "B"
+            and rule["data"][1].get("datasourceUid") == "__expr__"
+            and rule.get("isPaused") in (True, False)
+            and set(rule) == {
+                "uid", "title", "condition", "data", "noDataState", "execErrState", "for",
+                "annotations", "labels", "isPaused",
+            } | ({"notification_settings"} if "notification_settings" in rule else set())
+            and rule.get("annotations") == {
+                "summary": f"Expected metrics have disappeared for {value['service']}.",
+                "dashboard_url": f"/d/service-overview?var-service={value['service']}",
+                "description": "Check the declared metrics target and its service onboarding receipt.",
+            }
+            and labels == {
+                "severity": "critical", "job": value["job"], "instance": value["instance"],
+                "service": value["service"], "owner": "platform-operations",
+                "environment": value["environment"], "cluster": value["cluster"],
+            }
+            and ("notification_settings" not in rule or rule["notification_settings"] == {
+                "receiver": "agent-cloud-ops", "group_by": ["service", "environment", "cluster", "alertname"],
+                "group_wait": "30s", "group_interval": "5m", "repeat_interval": "4h",
+            })
+        )
+        if not paused_contract and not active_contract:
+            raise Refusal("invalid_previous_rules")
+        owned.append(value)
+    if len({row["uid"] for row in owned}) != len(owned):
+        raise Refusal("invalid_previous_rules")
+    return owned
+
+
+def prepare_expected_target_transition(input_document: Any) -> dict[str, Any]:
+    """Keep exact prior owners paused while disabled; reject silent retirement on re-enable."""
+    if not isinstance(input_document, dict):
+        raise Refusal("invalid_transition")
+    if input_document.get("managed") is False:
+        return {"status": "prepared", "reason": "local_compatibility", "paused_uids": [], "retired_uids": []}
+    previous: list[dict[str, str]] = []
+    previous_raw = input_document.get("previous_rules")
+    if previous_raw:
+        try:
+            previous_doc = yaml.safe_load(previous_raw)
+        except Exception:
+            raise Refusal("invalid_previous_rules") from None
+        previous = _owned_expected_targets(previous_doc)
+    live_raw = input_document.get("live_rules")
+    if live_raw:
+        try:
+            live = json.loads(live_raw)
+        except (ValueError, TypeError):
+            raise Refusal("invalid_live_rules") from None
+        if not isinstance(live, list) or len(live) > MAX_ROWS:
+            raise Refusal("invalid_live_rules")
+        previous_by_uid = {row["uid"]: row for row in previous}
+        live_targets = [
+            rule for rule in live
+            if isinstance(rule, dict) and isinstance(rule.get("uid"), str)
+            and rule["uid"].startswith("o11y_missing_")
+        ]
+        if len({rule["uid"] for rule in live_targets}) != len(live_targets):
+            raise Refusal("invalid_live_rules")
+        for rule in live_targets:
+            target = previous_by_uid.get(rule["uid"])
+            labels = rule.get("labels")
+            if target is None:
+                raise Refusal("unowned_live_target")
+            if (
+                rule.get("title") == "Expected metrics target previously declared"
+                and rule.get("isPaused") is True
+                and labels == {"severity": "warning", "owner": "platform-operations", "environment": "disabled"}
+                and rule.get("notification_settings") in (None, {})
+            ):
+                continue
+            if not isinstance(labels, dict) or any(field not in target for field in EXPECTED_IDENTITY_FIELDS):
+                raise Refusal("live_target_drift")
+            if any(labels.get(field) != target[field] for field in EXPECTED_IDENTITY_FIELDS):
+                raise Refusal("live_target_drift")
+            if rule.get("title") != f"Missing telemetry for {target['service']} at {target['instance']}":
+                raise Refusal("live_target_drift")
+            if rule.get("ruleGroup") != "service-telemetry" or not isinstance(rule.get("folderUID"), str):
+                raise Refusal("live_target_drift")
+    if input_document.get("enabled") is True:
+        current, retired = validate_expected_target_declaration(
+            input_document.get("targets"), input_document.get("retired_uids"), reviewed=True
+        )
+        current_uids = {row["uid"] for row in current}
+        previous_uids = {row["uid"] for row in previous}
+        if previous_uids - current_uids - set(retired):
+            raise Refusal("unretired_previous_target")
+        return {"status": "prepared", "reason": "enabled", "paused_uids": [], "retired_uids": retired}
+    retired = input_document.get("retired_uids", [])
+    if not isinstance(retired, list) or any(
+        not isinstance(uid, str) or not EXPECTED_UID.fullmatch(uid) for uid in retired
+    ):
+        raise Refusal("invalid_transition")
+    if len(set(retired)) != len(retired) or set(retired) - {row["uid"] for row in previous}:
+        raise Refusal("invalid_transition")
+    return {
+        "status": "prepared",
+        "reason": "disabled",
+        "paused_uids": [row["uid"] for row in previous if row["uid"] not in retired],
+        "retired_uids": retired,
+    }
 
 
 def expected_target_coverage(targets_raw: bytes | str, declaration: Any) -> dict[str, Any]:
@@ -1114,6 +1303,18 @@ def _expected_target_coverage_action() -> dict[str, Any]:
 
 
 def main() -> int:
+    if len(sys.argv) == 2 and sys.argv[1] == "--prepare-expected-target-transition":
+        try:
+            result = prepare_expected_target_transition(_input_document())
+            code = 0
+        except Refusal:
+            result = {"status": "refused", "reason": "unsafe_alert_transition"}
+            code = 2
+        except Exception:
+            result = {"status": "refused", "reason": "unsafe_alert_transition"}
+            code = 2
+        print(json.dumps(result, sort_keys=True, separators=(",", ":")))
+        return code
     if len(sys.argv) == 2 and sys.argv[1] == "--validate-expected-targets":
         try:
             declaration = _input_document()

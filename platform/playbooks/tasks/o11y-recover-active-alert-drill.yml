@@ -55,6 +55,7 @@
   register: _active_drill_rule
   changed_when: false
   check_mode: false
+  no_log: true
 
 - name: Require the production service-down rule to remain active
   ansible.builtin.assert:
@@ -62,6 +63,7 @@
       - (_active_drill_rule.stdout | from_json).uid == 'o11y_service_down'
       - not ((_active_drill_rule.stdout | from_json).isPaused | bool)
     fail_msg: "The active service-down rule was not preserved; keep the recovery marker and investigate."
+  no_log: true
 
 - name: Read all production o11y alert rules after drill recovery
   ansible.builtin.command:
@@ -77,17 +79,25 @@
   register: _active_drill_rules
   changed_when: false
   check_mode: false
+  no_log: true
 
 - name: Require every o11y alert rule to remain active
   ansible.builtin.assert:
     that:
       - _recovered_rules | length > 0
-      - _recovered_rules | selectattr('isPaused', 'defined') | list | length == _recovered_rules | length
-      - _recovered_rules | selectattr('isPaused', 'equalto', false) | list | length == _recovered_rules | length
+      - _recovered_non_target_rules | selectattr('isPaused', 'defined') | list | length == _recovered_non_target_rules | length
+      - _recovered_non_target_rules | selectattr('isPaused', 'equalto', false) | list | length == _recovered_non_target_rules | length
+      - (_recovered_target_rules | map(attribute='uid') | list | sort) == (o11y_expected_metrics_targets | default([]) | map(attribute='uid') | list | sort) if o11y_expected_metrics_targets_reviewed | default(false) | bool else true
+      - _recovered_target_rules | selectattr('isPaused', 'defined') | list | length == _recovered_target_rules | length
+      - _recovered_target_rules | selectattr('isPaused', 'equalto', (not (o11y_expected_metrics_targets_reviewed | default(false) | bool))) | list | length == _recovered_target_rules | length
+      - _recovered_target_rules | selectattr('isPaused', 'equalto', true) | selectattr('notification_settings', 'defined') | list | length == 0
       - _recovered_rules | selectattr('uid', 'equalto', 'o11y_service_down') | list | length == 1
     fail_msg: "An o11y rule is missing or paused after recovery; keep the marker and investigate."
+  no_log: true
   vars:
     _recovered_rules: "{{ _active_drill_rules.stdout | from_json | selectattr('uid', 'match', '^o11y_') | list }}"
+    _recovered_target_rules: "{{ _recovered_rules | selectattr('uid', 'match', '^o11y_missing_') | list }}"
+    _recovered_non_target_rules: "{{ _recovered_rules | rejectattr('uid', 'match', '^o11y_missing_') | list }}"
 
 - name: Read production contact points without displaying webhook settings
   ansible.builtin.command:

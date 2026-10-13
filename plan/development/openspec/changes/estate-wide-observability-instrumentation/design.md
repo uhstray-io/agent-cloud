@@ -755,3 +755,22 @@ digest change may recreate the receiver Compose project; do not clean-deploy,
 delete volumes, or claim data continuity from a container restart. Task 3.3
 remains unchecked; the task 5221 receipt is context, not live acceptance for
 this implementation.
+
+### Expected-target alert disable and restore transition
+
+Grafana retains omitted provisioned rules, so turning off production alerts or
+the reviewed-target gate SHALL keep each previously owned expected-target UID
+in the generated file as a paused, unrouted `vector(0)` rule with generic
+metadata. The prior file is the ownership record and is read before placement;
+ownership requires the expected-target rule structure, exact identity labels,
+and the `agent-cloud` / `service-telemetry` folder-group contract. A UID prefix
+alone grants no authority. A malformed prior file, unowned live target UID, or
+drifted live target rule refuses before placement/restart. Re-enabling requires
+the current valid declaration to restore every owned UID or explicitly retire
+it. Only explicit reviewed retirements enter `deleteRules`; unrelated rules are
+preserved. Canary restoration and interrupted retries use the same preparation
+and validation path. Render/readback tasks carrying private identities suppress
+Ansible output and diffs; only fixed summaries and counts are visible. Check
+mode performs source validation only, skips rendering, and does not claim a live
+transition. Live acceptance remains separate; task 3.3 and the private rollout
+gate remain open/off.

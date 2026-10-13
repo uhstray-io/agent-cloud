@@ -178,6 +178,51 @@ groups:
           repeat_interval: 4h
 {% endif %}
 {% endfor %}
+{# Grafana keeps omitted provisioned rules. Preserve validated owners as inert rules until explicitly retired. #}
+{% if not (local_mode | default(false) | bool) %}
+{% for uid in (_o11y_previous_expected_target_uids | default([])) %}
+      - uid: {{ uid }}
+        title: Expected metrics target previously declared
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: prometheus
+            model:
+              editorMode: code
+              expr: vector(0)
+              instant: true
+              range: false
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              expression: A
+              type: threshold
+              conditions:
+                - evaluator: { type: gt, params: [0.5] }
+                  operator: { type: and }
+                  query: { params: [B] }
+                  reducer: { type: last, params: [] }
+                  type: query
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: B
+        noDataState: OK
+        execErrState: OK
+        for: 0s
+        annotations:
+          summary: Expected metrics target rule is disabled.
+          description: No target identity is retained while the reviewed alert gate is disabled.
+        labels:
+          severity: warning
+          owner: platform-operations
+          environment: disabled
+        isPaused: true
+{% endfor %}
+{% endif %}
 {% set _receiver_loss_active = o11y_alerts_enabled | default(false) | bool
     and o11y_receiver_loss_alerts_reviewed | default(false) | bool
     and not (local_mode | default(false) | bool)

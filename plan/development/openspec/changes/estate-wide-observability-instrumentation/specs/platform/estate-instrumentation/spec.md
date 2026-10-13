@@ -27,9 +27,10 @@ Every deployed target SHALL declare applicable logs, metrics, health, and traces
 - **THEN** the declaration records the reason and an approved alternative signal or manual instrumentation plan, without claiming trace coverage
 
 ### Requirement: Expected metrics targets are reviewed and compared exactly
-Production per-target missing-telemetry rules SHALL render only when
+Production per-target missing-telemetry rules SHALL be active only when
 `o11y_expected_metrics_targets_reviewed` is true and production alerts are
-enabled. The flag SHALL default false. An enabled declaration SHALL be bounded
+enabled. The flag SHALL default false. Previously owned target UIDs SHALL remain
+represented as paused, unrouted inert rules when either gate is off. An enabled declaration SHALL be bounded
 and contain active identities or explicit retirements; each active identity
 SHALL contain one stable rule UID and exact `job`, `instance`, `service`,
 `cluster`, and `environment` values. Invalid or duplicate UIDs, duplicate
@@ -69,6 +70,19 @@ loaded-limit, candidate, and alert-input receipts.
 #### Scenario: Retire one expected target
 - **WHEN** a reviewed declaration removes one active target and names only its owned stable UID for retirement
 - **THEN** rendered `deleteRules` contains that UID and no unrelated provisioned rule UID
+
+#### Scenario: Disable and re-enable expected-target alerts
+- **WHEN** either the production alert switch or reviewed-target gate turns off
+- **THEN** every safely owned expected-target UID remains provisioned as a paused `vector(0)` rule with generic labels and no notification route
+- **AND** re-enabling restores the current reviewed rule for each previously owned UID, or requires explicit retirement before omitting it
+- **AND** malformed prior ownership, an unowned live target UID, or live drift refuses before placement or restart
+- **AND** unrelated rules remain unchanged
+
+#### Scenario: Restore or retry a paused expected-target baseline
+- **WHEN** canary restoration or an interrupted retry runs
+- **THEN** it uses the same validated previous ownership and paused-rule representation
+- **AND** protected rendering/readback emits no private identity in verbose or diff output
+- **AND** check mode does not render or claim live transition verification
 
 #### Scenario: Expected-target survey is unverified
 - **WHEN** the declaration is missing, unreviewed, empty, or check mode skips Prometheus access

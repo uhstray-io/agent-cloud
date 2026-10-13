@@ -142,13 +142,38 @@ def run(tmp_path, binary, *extra, callback=None):
     # The binary's own virtualenv first: ansible-playbook re-reads `ansible-config` and friends
     # from PATH, and a mixed matrix must not pick another version's.
     env["PATH"] = str(Path(binary).parent) + os.pathsep + env.get("PATH", "")
-    env.update(NOLOG_SECRET=SECRET, NOLOG_PLAIN=PLAIN, ANSIBLE_NOCOLOR="1", ANSIBLE_LOCAL_TEMP=str(tmp_path))
+    local_temp = Path("/private/tmp") / f"ansible-local-{tmp_path.name}"
+    local_temp.mkdir(parents=True, exist_ok=True)
+    env.update(
+        NOLOG_SECRET=SECRET,
+        NOLOG_PLAIN=PLAIN,
+        ANSIBLE_NOCOLOR="1",
+        ANSIBLE_LOCAL_TEMP=str(local_temp),
+        TMPDIR="/private/tmp",
+    )
     if callback:
         env["ANSIBLE_STDOUT_CALLBACK"] = callback
     result = subprocess.run([binary, "-i", "localhost,", str(play), *extra], cwd=ROOT, env=env,
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=180,
                             stdin=subprocess.DEVNULL)
     # One stream, so a warning (stderr) sits under the task that raised it.
+    shutil.rmtree(local_temp, ignore_errors=True)
+    return result.returncode, result.stdout
+
+
+def run_custom(tmp_path, binary, play_text, *extra):
+    play = tmp_path / "custom-play.yml"
+    play.write_text(textwrap.dedent(play_text))
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("ANSIBLE_STDOUT_CALLBACK", "ANSIBLE_CONFIG", "ANSIBLE_CALLBACK_PLUGINS")}
+    env["PATH"] = str(Path(binary).parent) + os.pathsep + env.get("PATH", "")
+    local_temp = Path("/private/tmp") / f"ansible-local-{tmp_path.name}"
+    local_temp.mkdir(parents=True, exist_ok=True)
+    env.update(NOLOG_SECRET=SECRET, ANSIBLE_NOCOLOR="1", ANSIBLE_LOCAL_TEMP=str(local_temp), TMPDIR="/private/tmp")
+    result = subprocess.run([binary, "-i", "localhost,", str(play), *extra], cwd=ROOT, env=env,
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=180,
+                            stdin=subprocess.DEVNULL)
+    shutil.rmtree(local_temp, ignore_errors=True)
     return result.returncode, result.stdout
 
 
@@ -208,6 +233,55 @@ def test_the_hidden_error_says_so_on_ansible_core_219_and_later(tmp_path, binary
     assert code != 0, output
     assert "[ERROR]: Task failed: 'to_datetime on the value' (details hidden: the task is no_log)" in output
     assert "details hidden" in output.split("TASK [a visible failure keeps its error]", 1)[0]
+
+
+@pytest.mark.parametrize("binary", BINS)
+@pytest.mark.parametrize("fail", [False, True])
+def test_private_rule_render_and_readback_hide_sentinel_with_diff_and_verbosity(tmp_path, binary, fail):
+    template = tmp_path / "private-rule.yml.j2"
+    template.write_text("private: {{ lookup('env', 'NOLOG_SECRET') }}\n")
+    output_file = tmp_path / "rendered-rule.yml"
+    failure_task = """
+    - name: private rule comparison
+      ansible.builtin.assert:
+        that: private_rule.content | b64decode == lookup('env', 'NOLOG_SECRET') | regex_replace('.', 'x')
+        fail_msg: "private selector {{ lookup('env', 'NOLOG_SECRET') }}"
+      no_log: true
+    """ if fail else """
+    - name: private rule comparison
+      ansible.builtin.assert:
+        that: private_rule.content | b64decode == 'private: ' ~ lookup('env', 'NOLOG_SECRET') ~ '\\n'
+        fail_msg: "private selector mismatch"
+      no_log: true
+    - name: safe count summary
+      ansible.builtin.debug:
+        msg: "Provisioned rule count: 1"
+    """
+    play = f"""
+    - hosts: localhost
+      connection: local
+      gather_facts: false
+      tasks:
+        - name: render private rule
+          ansible.builtin.template:
+            src: {template}
+            dest: {output_file}
+          diff: false
+          no_log: true
+        - name: read private rule
+          ansible.builtin.slurp:
+            src: {output_file}
+          register: private_rule
+          no_log: true
+    {textwrap.indent(textwrap.dedent(failure_task), '    ')}
+    """
+    code, output = run_custom(tmp_path, binary, play, "--diff", "-vvv")
+    if "Local RPC server did not start" in output:
+        pytest.skip("sandbox cannot start ansible-core's localhost RPC worker")
+    assert (code != 0) is fail, output
+    assert SECRET not in output
+    if not fail:
+        assert "Provisioned rule count: 1" in output
 
 
 @pytest.mark.parametrize("binary", BINS)

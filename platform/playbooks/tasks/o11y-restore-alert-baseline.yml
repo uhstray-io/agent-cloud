@@ -11,6 +11,11 @@
     that: _baseline_env.stat.isreg | default(false)
     fail_msg: "The existing o11y .env is absent; restore requires the deployed environment."
 
+- name: Validate alert ownership before restoring the paused baseline
+  ansible.builtin.include_tasks: o11y-prepare-expected-target-transition.yml
+  vars:
+    o11y_alerts_enabled: false
+
 - name: Remove only the generated production canary scrape declaration
   ansible.builtin.file:
     path: "{{ _deploy_dir }}/config/scrape.d/o11y-prod-canary.yml"
@@ -30,6 +35,9 @@
     mode: "0644"
   vars:
     o11y_alerts_enabled: false
+  diff: false
+  no_log: true
+  when: not ansible_check_mode
 
 - name: Render removal of the Discord contact point without OpenBao
   ansible.builtin.template:
@@ -38,6 +46,9 @@
     mode: "0644"
   vars:
     o11y_alerts_enabled: false
+  diff: false
+  no_log: true
+  when: not ansible_check_mode
 
 - name: Remove the canary webhook from the existing runtime environment
   ansible.builtin.lineinfile:
@@ -82,12 +93,15 @@
         curl -fsS --config - http://127.0.0.1:3000/api/v1/provisioning/alert-rules/o11y_service_down
   register: _restored_rule
   changed_when: false
+  no_log: true
   when: not ansible_check_mode
 
 - name: Require the service-down rule to be paused again
   ansible.builtin.assert:
     that: (_restored_rule.stdout | from_json).isPaused | bool
     fail_msg: "The canary could not restore paused alerts; run Restore o11y Alert Baseline (Dev)."
+  no_log: true
+  when: not ansible_check_mode
 
 - name: Read all restored o11y alert rules
   ansible.builtin.command:
@@ -102,6 +116,7 @@
         curl -fsS --config - http://127.0.0.1:3000/api/v1/provisioning/alert-rules
   register: _restored_rules
   changed_when: false
+  no_log: true
   when: not ansible_check_mode
 
 - name: Require every o11y rule to be paused again
@@ -110,8 +125,10 @@
       - _o11y_rules | length > 0
       - _o11y_rules | rejectattr('isPaused', 'equalto', true) | list | length == 0
     fail_msg: "An o11y rule is still active; run Restore o11y Alert Baseline (Dev)."
+  no_log: true
   vars:
     _o11y_rules: "{{ _restored_rules.stdout | from_json | selectattr('uid', 'match', '^o11y_') | list }}"
+  when: not ansible_check_mode
 
 - name: Read restored Grafana contact points without displaying webhook settings
   ansible.builtin.command:
@@ -135,6 +152,8 @@
       _restored_contacts.stdout | from_json |
       selectattr('uid', 'equalto', 'o11y_ops_discord') | list | length == 0
     fail_msg: "The canary contact point remains active; run Restore o11y Alert Baseline (Dev)."
+  no_log: true
+  when: not ansible_check_mode
 
 - name: Clear the production canary marker only after baseline verification
   ansible.builtin.file:

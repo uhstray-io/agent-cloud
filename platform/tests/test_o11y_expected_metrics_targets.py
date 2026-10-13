@@ -207,6 +207,180 @@ def test_canary_pauses_expected_rules_and_retirement_deletes_only_named_uid():
     assert "o11y_service_down" not in deleted
 
 
+def _transition(previous, *, enabled, targets=None, retired=None, live=None):
+    previous_text = "" if previous is None else yaml.safe_dump(previous, sort_keys=False)
+    return SURVEY.prepare_expected_target_transition({
+        "enabled": enabled,
+        "targets": _expected() if targets is None else targets,
+        "retired_uids": [] if retired is None else retired,
+        "previous_rules": previous_text,
+        "live_rules": "" if live is None else json.dumps(live),
+    })
+
+
+def test_expected_target_disable_retry_and_reenable_preserve_only_owned_uid():
+    target = _expected()
+    enabled = _render(o11y_expected_metrics_targets=[target])
+    live = _service_rules(enabled)
+    original_target_rule = next(rule for rule in live if rule["uid"] == target["uid"])
+    assert _transition(None, enabled=True, targets=[target])["reason"] == "enabled"
+
+    disabled_plan = _transition(enabled, enabled=False, targets=[])
+    assert disabled_plan["paused_uids"] == [target["uid"]]
+    disabled = _render(
+        o11y_alerts_enabled=False,
+        o11y_expected_metrics_targets_reviewed=False,
+        o11y_expected_metrics_targets=[],
+        _o11y_previous_expected_target_uids=disabled_plan["paused_uids"],
+    )
+    paused = next(rule for rule in _service_rules(disabled) if rule["uid"] == target["uid"])
+    assert paused["isPaused"] is True
+    assert paused["data"][0]["model"]["expr"] == "vector(0)"
+    assert paused["labels"] == {"severity": "warning", "owner": "platform-operations", "environment": "disabled"}
+    assert "notification_settings" not in paused
+
+    repeated = _transition(disabled, enabled=False, targets="malformed")
+    assert repeated["paused_uids"] == [target["uid"]]
+    enabled_again = _transition(disabled, enabled=True, targets=[target])
+    assert enabled_again["paused_uids"] == []
+    active_again = _render(_o11y_previous_expected_target_uids=[])
+    restored = next(rule for rule in _service_rules(active_again) if rule["uid"] == target["uid"])
+    assert restored["isPaused"] is False
+    assert restored["data"][0]["model"]["expr"] == original_target_rule["data"][0]["model"]["expr"]
+
+
+@pytest.mark.parametrize("targets", [None, "bad", {}, [], [{"uid": "bad"}]])
+def test_disabled_gate_carries_previous_owner_despite_missing_or_malformed_current_list(targets):
+    target = _expected()
+    previous = _render(o11y_expected_metrics_targets=[target])
+    assert _transition(previous, enabled=False, targets=targets)["paused_uids"] == [target["uid"]]
+
+
+def test_transition_refuses_corrupt_or_unretired_ownership_and_preserves_unrelated_rules():
+    target = _expected()
+    previous = _render(o11y_expected_metrics_targets=[target])
+    corrupted = json.loads(json.dumps(previous))
+    owned_rule = next(rule for rule in _service_rules(corrupted) if rule["uid"] == target["uid"])
+    owned_rule["labels"]["service"] = "not-the-rendered-identity"
+    with pytest.raises(SURVEY.Refusal):
+        _transition(corrupted, enabled=False, targets=[])
+    with pytest.raises(SURVEY.Refusal):
+        _transition(previous, enabled=True, targets=[])
+
+    explicit = _transition(previous, enabled=True, targets=[], retired=[target["uid"]])
+    assert explicit["retired_uids"] == [target["uid"]]
+    paused = _transition(previous, enabled=False, targets=[], retired=[target["uid"]])
+    assert paused["paused_uids"] == []
+
+    with pytest.raises(SURVEY.Refusal):
+        _transition(None, enabled=False, targets=[], live=[{"uid": target["uid"], "isPaused": False}])
+    with pytest.raises(SURVEY.Refusal):
+        _transition(previous, enabled=False, targets=[], live=[{"uid": target["uid"], "title": "drift"}])
+
+
+def test_canary_restore_and_interrupted_retry_retain_expected_target_ownership():
+    target = _expected()
+    canary = _render(o11y_alert_canary_service="canary-probe", o11y_expected_metrics_targets=[target])
+    canary_rule = next(rule for rule in _service_rules(canary) if rule["uid"] == target["uid"])
+    assert canary_rule["isPaused"] is True
+    restore_plan = _transition(canary, enabled=False, targets=[])
+    assert restore_plan["paused_uids"] == [target["uid"]]
+    retry_plan = _transition(canary, enabled=False, targets=[])
+    assert retry_plan == restore_plan
+
+
+def test_private_alert_rule_reads_and_writes_are_hidden_and_check_mode_skips_render():
+    provision = yaml.safe_load((ROOT / "platform/playbooks/tasks/o11y-alert-provision.yml").read_text())
+    rule_write = next(task for task in provision if task.get("name") == "Render declarative Grafana alert rules")
+    assert rule_write["no_log"] is True and rule_write["diff"] is False
+    assert rule_write["when"] == "not ansible_check_mode"
+    contact_write = next(
+        task for task in provision if task.get("name") == "Render Discord contact point or its removal"
+    )
+    assert contact_write["no_log"] is True and contact_write["diff"] is False
+
+    prepare_path = ROOT / "platform/playbooks/tasks/o11y-prepare-expected-target-transition.yml"
+    prepare = yaml.safe_load(prepare_path.read_text())
+    for name in (
+        "Read previous alert provisioning file presence privately",
+        "Require the previous alert provisioning path to be a regular file",
+        "Read previous alert provisioning rules privately",
+        "Read live Grafana alert ownership before alert transition",
+        "Prepare the expected-target alert transition privately",
+        "Require a safe expected-target alert transition",
+        "Save only the validated previous expected-target UIDs",
+    ):
+        assert next(task for task in prepare if task.get("name") == name)["no_log"] is True
+
+    deploy = yaml.safe_load((ROOT / "platform/playbooks/deploy-o11y.yml").read_text())
+    phase = next(play for play in deploy if play.get("name") == "Phase 1: Place repo + manage o11y secrets")
+    names = [task.get("name") for task in phase["tasks"]]
+    assert names.index("Validate previous expected-target ownership before placement") < names.index(
+        "Place the monorepo + ensure podman/compose"
+    )
+    verify = next(play for play in deploy if play.get("name") == "Phase 3: Verify o11y")
+    verify_block = next(
+        task
+        for task in verify["tasks"]
+        if task.get("name") == "Verify Grafana alert provisioning after every real deploy"
+    )
+    assert verify_block["when"] == "not ansible_check_mode" and verify_block["no_log"] is True
+
+    protected_tasks = {
+        "platform/playbooks/tasks/o11y-restore-alert-baseline.yml": (
+            "Read the restored service-down rule",
+            "Require the service-down rule to be paused again",
+            "Read all restored o11y alert rules",
+            "Require every o11y rule to be paused again",
+        ),
+        "platform/playbooks/drill-o11y-active-alert-delivery.yml": (
+            "Read the active production service-down rule",
+            "Require exactly one active service-down rule",
+            "Read every provisioned o11y alert rule before the drill",
+            "Require all provisioned o11y rules to remain active",
+        ),
+        "platform/playbooks/tasks/o11y-recover-active-alert-drill.yml": (
+            "Read the production service-down rule after drill recovery",
+            "Require the production service-down rule to remain active",
+            "Read all production o11y alert rules after drill recovery",
+            "Require every o11y alert rule to remain active",
+        ),
+    }
+    for relative_path, names in protected_tasks.items():
+        tasks = yaml.safe_load((ROOT / relative_path).read_text())
+        pending = list(tasks)
+        flat_tasks = []
+        while pending:
+            task = pending.pop()
+            if not isinstance(task, dict):
+                continue
+            flat_tasks.append(task)
+            pending.extend(task.get(key, []) for key in ("block", "rescue", "always", "tasks"))
+            pending = [child for group in pending for child in (group if isinstance(group, list) else [group])]
+        for name in names:
+            assert next(task for task in flat_tasks if task.get("name") == name)["no_log"] is True
+
+    restored = yaml.safe_load(
+        (ROOT / "platform/playbooks/tasks/o11y-restore-alert-baseline.yml").read_text()
+    )
+    for name in (
+        "Require the service-down rule to be paused again",
+        "Require every o11y rule to be paused again",
+        "Require the canary contact point to be absent again",
+    ):
+        task = next(task for task in restored if task.get("name") == name)
+        assert task["when"] == "not ansible_check_mode"
+
+    canary = yaml.safe_load((ROOT / "platform/playbooks/drill-o11y-alert-canary.yml").read_text())
+    canary_phase = next(
+        play for play in canary if play.get("name") == "Prove alert delivery and restore the paused baseline"
+    )
+    canary_names = [task.get("name") for task in canary_phase["tasks"]]
+    preflight = canary_names.index("Validate previous expected-target ownership before activating canary writes")
+    activation = canary_names.index("Activate only the canary rule, prove delivery, and restore the baseline")
+    assert preflight < activation
+
+
 def test_deploy_preflight_precedes_placement_and_survey_output_is_protected():
     deploy = yaml.safe_load((ROOT / "platform/playbooks/deploy-o11y.yml").read_text())
     phase = next(play for play in deploy if play.get("name") == "Phase 1: Place repo + manage o11y secrets")

@@ -423,6 +423,17 @@ use `absent_over_time(up{...}[5m])` and hold for two minutes. An endpoint that
 still exists with `up=0` remains the service-down condition; a target missing
 from Prometheus for five minutes is the disappeared-target condition.
 
+When production alerts or the reviewed-target gate turns off, Grafana's generated
+file keeps every validated previously owned target UID as a paused `vector(0)`
+rule with generic labels and no route. The next deploy or baseline restoration
+reads the prior provisioning file before writes and accepts ownership only when
+the rule matches the expected-target schema, folder, and group. Re-enabling uses
+the current reviewed declaration; every prior UID must either return or be named
+for explicit retirement. A malformed prior file, unowned live expected-target
+UID, or drifted live rule refuses before placement or restart. Unrelated rules
+are never retired by this transition. Check mode validates local declarations
+but skips rendering and live verification.
+
 For retirement, remove that target from the active list and add only its exact
 `o11y_missing_<stable-suffix>` UID to
 `o11y_expected_metrics_targets_retired_uids`. The preflight refuses duplicate

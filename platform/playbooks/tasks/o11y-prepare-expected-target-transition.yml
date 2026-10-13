@@ -1,0 +1,90 @@
+---
+# Keep previous ownership in the generated file; validate it before any overwrite.
+- name: Read previous alert provisioning file presence privately
+  ansible.builtin.stat:
+    path: "{{ _deploy_dir }}/config/grafana/provisioning/alerting/observability.yml"
+    get_checksum: false
+    get_mime: false
+  register: _o11y_previous_rules_stat
+  no_log: true
+
+- name: Require the previous alert provisioning path to be a regular file
+  ansible.builtin.assert:
+    that:
+      - >-
+        (not (_o11y_previous_rules_stat.stat.exists | default(false) | bool) and
+         not (_o11y_previous_rules_stat.stat.islnk | default(false) | bool)) or
+        ((_o11y_previous_rules_stat.stat.isreg | default(false) | bool) and
+         not (_o11y_previous_rules_stat.stat.islnk | default(false) | bool))
+    fail_msg: "Previous expected-target alert ownership is unreadable; no alert rules were written."
+    quiet: true
+  no_log: true
+
+- name: Read previous alert provisioning rules privately
+  ansible.builtin.slurp:
+    src: "{{ _deploy_dir }}/config/grafana/provisioning/alerting/observability.yml"
+  register: _o11y_previous_rules_file
+  no_log: true
+  when: _o11y_previous_rules_stat.stat.isreg | default(false)
+
+- name: Read running Grafana container presence before alert transition
+  ansible.builtin.command:
+    argv: ["{{ container_engine | default('podman') }}", ps, --filter, name=^o11y-grafana$, --format, '{{.Names}}']
+  register: _o11y_grafana_running
+  changed_when: false
+  check_mode: false
+  no_log: true
+  when: not ansible_check_mode
+
+- name: Read live Grafana alert ownership before alert transition
+  ansible.builtin.command:
+    argv:
+      - "{{ container_engine | default('podman') }}"
+      - exec
+      - o11y-grafana
+      - sh
+      - -c
+      - >-
+        printf 'user = "admin:%s"\n' "$GF_SECURITY_ADMIN_PASSWORD" |
+        curl -fsS --config - http://127.0.0.1:3000/api/v1/provisioning/alert-rules
+  register: _o11y_live_alert_rules
+  changed_when: false
+  no_log: true
+  when:
+    - not ansible_check_mode
+    - _o11y_grafana_running.stdout | default('') | length > 0
+
+- name: Prepare the expected-target alert transition privately
+  ansible.builtin.command:
+    argv:
+      - python3
+      - "{{ playbook_dir }}/files/summarize-o11y-scrape-baseline.py"
+      - --prepare-expected-target-transition
+    stdin: >-
+      {{ {'managed': not (local_mode | default(false) | bool),
+          'enabled': (o11y_alerts_enabled | default(false) | bool and
+                      o11y_expected_metrics_targets_reviewed | default(false) | bool),
+          'targets': o11y_expected_metrics_targets | default([]),
+          'retired_uids': o11y_expected_metrics_targets_retired_uids | default([]),
+          'live_rules': (_o11y_live_alert_rules.stdout | default('')),
+          'previous_rules': ((_o11y_previous_rules_file.content | b64decode) if _o11y_previous_rules_stat.stat.isreg | default(false) else '')} | to_json }}
+  delegate_to: localhost
+  register: _o11y_expected_target_transition
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Require a safe expected-target alert transition
+  ansible.builtin.assert:
+    that:
+      - _o11y_expected_target_transition.rc == 0
+      - (_o11y_expected_target_transition.stdout | from_json).status == 'prepared'
+    fail_msg: "Expected-target alert ownership is ambiguous; no alert rules were written."
+    quiet: true
+  no_log: true
+
+- name: Save only the validated previous expected-target UIDs
+  ansible.builtin.set_fact:
+    _o11y_previous_expected_target_uids: "{{ (_o11y_expected_target_transition.stdout | from_json).paused_uids }}"
+  no_log: true

@@ -478,6 +478,9 @@
           o11y_alerts_enabled | default(false) | bool) or
          o11y_expected_metrics_targets_retired_uids | default([]) | length > 0)
 
+    - name: Validate previous expected-target ownership before placement
+      ansible.builtin.include_tasks: tasks/o11y-prepare-expected-target-transition.yml
+
     - name: "Place the monorepo + ensure podman/compose"
       ansible.builtin.include_tasks: tasks/place-monorepo.yml
 
@@ -1362,10 +1365,8 @@
               {{ _dashboard_docs.results | map(attribute='content') | map('b64decode')
                  | map('from_json') | map(attribute='uid') | select | list }}
 
-    - name: Verify enabled Grafana alert provisioning after a real deploy
-      when:
-        - o11y_alerts_enabled | default(false) | bool
-        - not ansible_check_mode
+    - name: Verify Grafana alert provisioning after every real deploy
+      when: not ansible_check_mode
       block:
         - name: Read live o11y alert rules
           ansible.builtin.command:
@@ -1435,7 +1436,6 @@
             that:
               - _o11y_expected_rules | length > 0
               - _o11y_rules | map(attribute='uid') | list == _o11y_expected_rules | map(attribute='uid') | list
-              - _o11y_rules | selectattr('uid', 'equalto', 'o11y_service_down') | selectattr('isPaused', 'defined') | selectattr('isPaused', 'equalto', false) | list | length == 1
               - _active_rules.stdout | from_json | map(attribute='uid') | select('in', _o11y_withdrawn_uids) | list | length == 0
             fail_msg: "Live Grafana alert rules do not match the provisioned rules file (missing, extra or withdrawn)."
 
@@ -1481,10 +1481,16 @@
                  selectattr('uid', 'equalto', 'o11y_ops_discord') | list | length }}
           no_log: true
 
-        - name: Require the o11y Discord contact point to be active
+        - name: Require the o11y Discord contact point to match the alert gate
           ansible.builtin.assert:
-            that: _o11y_contact_count | int == 1
-            fail_msg: "The o11y Discord contact point is absent or duplicated after alert enablement."
+            that: _o11y_contact_count | int == (1 if o11y_alerts_enabled | default(false) | bool else 0)
+            fail_msg: "The o11y Discord contact point does not match the configured alert gate."
+      no_log: true
+
+    - name: Report the verified alert rule count without identities
+      ansible.builtin.debug:
+        msg: "Grafana alert provisioning verified: {{ _o11y_expected_rules | length }} rules."
+      when: not ansible_check_mode
 
     - name: "Report"
       ansible.builtin.debug:

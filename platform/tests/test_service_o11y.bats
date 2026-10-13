@@ -1207,17 +1207,15 @@ from jinja2 import Environment, StrictUndefined
 plays = yaml.safe_load(open(sys.argv[1], encoding='utf-8'))
 alert_template = open(sys.argv[2], encoding='utf-8').read()
 verify = next(play for play in plays if play.get('name') == 'Phase 3: Verify o11y')
-block = next(task for task in verify['tasks'] if task['name'] == 'Verify enabled Grafana alert provisioning after a real deploy')
-assert block['when'] == [
-    'o11y_alerts_enabled | default(false) | bool',
-    'not ansible_check_mode',
-]
+block = next(task for task in verify['tasks'] if task['name'] == 'Verify Grafana alert provisioning after every real deploy')
+assert block['when'] == 'not ansible_check_mode'
+assert block['no_log'] is True
 env = Environment(undefined=StrictUndefined)
 env.filters['bool'] = bool
 env.filters['to_json'] = json.dumps
 should_verify = [env.compile_expression(condition) for condition in block['when']]
-assert all(check(local_mode=False, o11y_alerts_enabled=True, ansible_check_mode=False) for check in should_verify)
-assert all(check(local_mode=True, o11y_alerts_enabled=True, ansible_check_mode=False) for check in should_verify)
+assert should_verify[0](ansible_check_mode=False)
+assert not should_verify[0](ansible_check_mode=True)
 tasks = block['block']
 by_name = {task['name']: task for task in tasks}
 scope = by_name['Scope live rules to the provisioned folders and groups']
@@ -1227,7 +1225,7 @@ slurp = by_name['Read the provisioned alert rules file']
 folders = by_name['Read live Grafana folders']
 assert tasks.index(slurp) < tasks.index(scope) and tasks.index(folders) < tasks.index(scope)
 assert tasks.index(scope) < tasks.index(set_check) < tasks.index(field_check)
-assert slurp['register'] == '_provisioned_rules_file' and 'no_log' not in slurp
+assert slurp['register'] == '_provisioned_rules_file' and block['no_log'] is True
 assert slurp['ansible.builtin.slurp']['src'].endswith('/config/grafana/provisioning/alerting/observability.yml')
 assert '/api/folders' in folders['ansible.builtin.command']['argv'][-1]
 assert 'match' not in json.dumps(scope), 'scope comes from the provisioned file, never a uid pattern'
@@ -1305,7 +1303,7 @@ assert not verify_rules([{k: v for k, v in r.items() if k != 'isPaused'} for r i
 pause_down = lambda rules: [dict(r, isPaused=True) if r['uid'] == 'o11y_service_down' else r for r in rules]
 paused_doc = {**local_doc, 'groups': [dict(g, rules=pause_down(g['rules'])) for g in local_doc['groups']]}
 assert not verify_rules(pause_down(local_live), local_doc)
-assert not verify_rules(live_of(paused_doc), paused_doc)  # file and live agree, service_down still required active
+assert verify_rules(live_of(paused_doc), paused_doc)  # verification follows the rendered pause state
 assert not verify_rules([], {'groups': []})
 contact = next(task for task in tasks if task['name'] == 'Read live Grafana contact points without displaying webhook settings')
 count = next(task for task in tasks if task['name'] == 'Count only the intended contact point without its settings')
