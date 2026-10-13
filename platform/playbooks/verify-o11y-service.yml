@@ -97,7 +97,19 @@
   hosts: agentgateway_svc
   gather_facts: false
   vars:
+    _canary_on: "{{ (o11y_verification_mode | default('legacy') == 'legacy') and (emit_agentgateway_canary | default('false') | bool) }}"
+    # The same listener addressing as probe-agentgateway-gate.yml: with agw_listener_tls the
+    # listener only speaks TLS, so the canary names the server leaf's SAN and trusts the internal CA.
+    _tls: "{{ agw_listener_tls | default(false) | bool }}"
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+    _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path | default('platform/services/agentgateway/deployment') }}"
+    _port: "{{ agw_port | default(4000) }}"
     _canary_bind: "{{ '127.0.0.1' if (agw_bind | default('127.0.0.1')) in ['0.0.0.0', '::', ''] else agw_bind | default('127.0.0.1') }}"
+    _server_name: "{{ agw_tls_server_name | default('gateway.' ~ (dns_site | default('')) ~ '.' ~ (dns_zone | default(''))) }}"
+    _leaf_dir: >-
+      {{ internal_leaves | default([]) | selectattr('name', 'equalto', agw_verifier_leaf | default('agw-verifier'))
+         | map(attribute='dir') | first | default('') }}
+    _ca: "{{ _deploy_dir }}/certs/step-ca-bundle.crt"
   tasks:
     - name: Mark the canary start on the Tempo receiver clock
       ansible.builtin.command: date +%s
@@ -105,13 +117,58 @@
       register: _canary_started
       changed_when: false
       check_mode: false
-      when: (o11y_verification_mode | default('legacy') == 'legacy') and (emit_agentgateway_canary | default('false') | bool)
+      when: _canary_on
 
+    - name: Read the verifier leaf and the trust bundle (listener TLS only)
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - "{{ _leaf_dir }}/current/cert.pem"
+        - "{{ _leaf_dir }}/current/key.pem"
+        - "{{ _ca }}"
+      register: _tls_files
+      when: _canary_on and _tls
+
+    - name: Refuse a verifier leaf or trust bundle that is not on this host
+      ansible.builtin.assert:
+        that:
+          - _leaf_dir | length > 0
+          - _tls_files.results | rejectattr('stat.exists') | list | length == 0
+        fail_msg: >-
+          With agw_listener_tls the canary presents the {{ agw_verifier_leaf | default('agw-verifier') }} leaf and
+          trusts {{ _ca }}; missing: {{ _tls_files.results | rejectattr('stat.exists') | map(attribute='item') | join(', ') }}.
+        quiet: true
+      when: _canary_on and _tls
+
+    # Read-only (check_only writes nothing): a hosts file Deploy agentgateway has not converged
+    # stops the run here, by name, instead of as 100 connection failures.
+    - name: Resolve the server leaf's name read-only (listener TLS only)
+      ansible.builtin.include_tasks: tasks/agw-probe-resolution.yml
+      vars:
+        _agwr_check_only: true
+        _agwr_name: "{{ _server_name }}"
+        _agwr_ip: "{{ _canary_bind }}"
+        _agwr_expect: ""
+        _agwr_hosts_file: /etc/hosts
+      when: _canary_on and _tls and agw_verify_base_url is not defined
+
+    - name: The gateway base URL the canary uses
+      ansible.builtin.set_fact:
+        _gateway_base: >-
+          {{ agw_verify_base_url if (agw_verify_base_url is defined) else
+             (('https://' ~ _server_name ~ ':' ~ _port) if _tls else ('http://' ~ _canary_bind ~ ':' ~ _port)) }}
+      when: _canary_on
+
+    # One direct uri loop, not 100 includes of tasks/agw-probe.yml: the requests carry no key, so
+    # nothing here needs no_log, and a non-401 should fail the run at the request that returned it.
     - name: Send anonymous requests directly to the gateway listener
       ansible.builtin.uri:
-        url: "http://{{ _canary_bind }}:{{ agw_port | default(4000) }}/v1/models"
+        url: "{{ _gateway_base }}/v1/models"
         method: GET
         status_code: 401
+        client_cert: "{{ (_leaf_dir ~ '/current/cert.pem') if _tls else omit }}"
+        client_key: "{{ (_leaf_dir ~ '/current/key.pem') if _tls else omit }}"
+        ca_path: "{{ _ca if _tls else omit }}"
         timeout: 5
         use_netrc: false
         use_proxy: false
@@ -120,7 +177,7 @@
         label: "request {{ item + 1 }}/100"
       changed_when: false
       check_mode: false
-      when: (o11y_verification_mode | default('legacy') == 'legacy') and (emit_agentgateway_canary | default('false') | bool)
+      when: _canary_on
 
 - name: Verify the named service is collected
   hosts: o11y_svc
