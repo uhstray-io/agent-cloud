@@ -79,6 +79,21 @@ def _assert_bounded(job, sample_limit=None):
         assert job[key] == LIMIT_FIELDS[key]
 
 
+def test_alloy_compose_environment_forwards_bounded_scrape_budgets_without_secrets():
+    compose = yaml.safe_load((DEPLOY / "compose.yml").read_text(encoding="utf-8"))
+    alloy = compose["services"]["alloy"]
+    expected = {
+        "O11Y_SCRAPE_SAMPLE_LIMIT": "${O11Y_SCRAPE_SAMPLE_LIMIT:-2000}",
+        "O11Y_SCRAPE_BODY_SIZE_LIMIT_BYTES": "${O11Y_SCRAPE_BODY_SIZE_LIMIT_BYTES:-16777216}",
+        "O11Y_SCRAPE_LABEL_LIMIT": "${O11Y_SCRAPE_LABEL_LIMIT:-64}",
+        "O11Y_SCRAPE_LABEL_NAME_LENGTH_LIMIT": "${O11Y_SCRAPE_LABEL_NAME_LENGTH_LIMIT:-128}",
+        "O11Y_SCRAPE_LABEL_VALUE_LENGTH_LIMIT": "${O11Y_SCRAPE_LABEL_VALUE_LENGTH_LIMIT:-2048}",
+    }
+
+    assert alloy["environment"] == expected
+    assert "env_file" not in alloy
+
+
 def test_all_prometheus_scrape_jobs_render_finite_limits_and_keep_identity_policy():
     base = _render_yaml(
         "prometheus.yml.j2",

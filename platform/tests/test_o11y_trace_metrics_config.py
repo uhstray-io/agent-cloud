@@ -13,6 +13,23 @@ ROOT = Path(__file__).resolve().parents[2]
 DEPLOY = ROOT / "platform/services/o11y/deployment"
 PLAYBOOK = ROOT / "platform/playbooks/deploy-o11y.yml"
 PLUGIN = ROOT / "platform/playbooks/filter_plugins/tempo_config.py"
+SCRAPE_LIMITS = {
+    "body_size_limit_bytes": 16 * 1024 * 1024,
+    "sample_limit": 10000,
+    "label_limit": 64,
+    "label_name_length_limit": 128,
+    "label_value_length_limit": 2048,
+}
+
+
+def _mandatory(value):
+    from jinja2 import Undefined
+
+    if isinstance(value, Undefined):
+        raise ValueError("production scrape budgets must be declared in inventory")
+    return value
+
+
 plugin_spec = importlib.util.spec_from_file_location("tempo_config", PLUGIN)
 tempo_config = importlib.util.module_from_spec(plugin_spec)
 plugin_spec.loader.exec_module(tempo_config)
@@ -22,6 +39,7 @@ def _render_env(derived_metrics: bool) -> dict[str, str]:
     """Render the service environment with derived metrics either disabled or gated on."""
     template = Environment(undefined=StrictUndefined)
     template.filters["bool"] = bool
+    template.filters["mandatory"] = _mandatory
     source = (DEPLOY / "templates/env.j2").read_text(encoding="utf-8")
     rendered = template.from_string(source).render(
         secrets={
@@ -29,6 +47,8 @@ def _render_env(derived_metrics: bool) -> dict[str, str]:
             "grafana_oidc_client_secret": "test-only",
         },
         local_mode=False,
+        o11y_scrape_limits_reviewed=True,
+        o11y_scrape_limits=SCRAPE_LIMITS.copy(),
         o11y_trace_derived_metrics_enabled=derived_metrics,
     )
     return dict(
