@@ -106,7 +106,7 @@ def clean_copy(tmp_path_factory):
 
 def run(tmp_path, clean_copy, extra, *, check=False, exporter_host="o11y-test", other_hosts=None,
         expect_dirty=False, engine_script=FAKE_ENGINE, declare_exporters=True, host_extra=None,
-        exporter_service="o11y-fault-drill", key_store=None):
+        exporter_service="o11y-fault-drill", key_store=None, exporter_unit="node-exporter.service"):
     root, sha = clean_copy
     bindir = tmp_path / "bin"
     bindir.mkdir()
@@ -132,7 +132,7 @@ def run(tmp_path, clean_copy, extra, *, check=False, exporter_host="o11y-test", 
     host_vars.update(host_extra or {})
     if declare_exporters:
         host_vars["o11y_fault_drill_exporters"] = {
-            "spark-test": {"host": exporter_host, "unit": "node-exporter.service"}}
+            "spark-test": {"host": exporter_host, "unit": exporter_unit}}
     inventory.write_text(json.dumps({"all": {"children": {
         "o11y_svc": {"hosts": {"o11y-test": host_vars}},
         "dgx": {"hosts": other_hosts or {}},
@@ -141,6 +141,11 @@ def run(tmp_path, clean_copy, extra, *, check=False, exporter_host="o11y-test", 
            if not k.startswith("GIT_") and k not in ("OPENBAO_ADDR", "BAO_ROLE_ID", "BAO_SECRET_ID")}
     store = {KEY_PATH: {"private_key": KEY_MATERIAL}} if key_store is None else key_store
     env.update(_fake_store(tmp_path, store))
+    # The key's scratch directory is created under TMPDIR; pointing it at a private directory
+    # lets a test prove nothing is left behind without reading a shared /tmp.
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    env["TMPDIR"] = str(scratch)
     env.update(PATH=f"{bindir}{os.pathsep}{env.get('PATH', '')}", FAKE_ENGINE_LOG=str(log),
                PYTHONDONTWRITEBYTECODE="1", ANSIBLE_SSH_RETRIES="0",
                ANSIBLE_LOCAL_TEMP=str(tmp_path), ANSIBLE_STDOUT_CALLBACK="default", ANSIBLE_NOCOLOR="1")
@@ -313,13 +318,16 @@ def test_unreachable_cannot_skip_the_restore():
     registers = [t["register"] for t in block["always"]
                  if any(k.endswith(("systemd_service", "copy", "command")) for k in t)]
     assert len(registers) == 4, registers
-    gate = block["always"][-1]
+    # The reach gate is followed only by the exporter's own failed-restart assert.
+    assert block["always"][-1]["name"] == "Require the exporter restart to have succeeded"
+    assert block["always"][-1]["ansible.builtin.assert"]["that"] == "_restore_exporter | default({}) is not failed"
+    gate = block["always"][-2]
     assert gate["name"] == "Require every restore to have reached its host"
     that = gate["ansible.builtin.assert"]["that"]
     for name in registers:
         assert name in that
     assert "drill_restore_only=true" in gate["ansible.builtin.assert"]["fail_msg"]
-    # Last in always: it runs whether the block failed or not, after every restore.
+    # Late in always: it runs whether the block failed or not, after every restore.
 
 
 def test_every_task_touching_the_probe_env_hides_it():
@@ -398,6 +406,20 @@ def test_exporter_tasks_connect_with_the_per_service_key_and_remove_it(tmp_path,
     # Wiped after the restore, even though the run failed (the host was unreachable).
     assert rc != 0
     assert not Path(key).exists() and not Path(key).parent.exists()
+    assert list((tmp_path / "scratch").glob(".sshkey_*")) == []
+    assert KEY_MATERIAL not in out
+
+
+def test_a_failed_restart_still_wipes_the_key_and_fails_the_run(tmp_path, clean_copy):
+    # The exporter host here is the local one, so the stop and the restart are MODULE
+    # failures (no such unit), not unreachable. A failed restore task used to abort the rest of
+    # `always:`: the key file stayed on the runner and the gate never ran.
+    rc, out, _ = run(tmp_path, clean_copy, EXPORTER, exporter_unit="o11y-drill-absent.service")
+    assert rc != 0
+    assert "TASK [Restart the DGX node exporter]" in out
+    assert "The exporter restart failed on its host" in out
+    assert "Remove SSH key: wipe the runner-local scratch directory" in out
+    assert list((tmp_path / "scratch").glob(".sshkey_*")) == []
     assert KEY_MATERIAL not in out
 
 
@@ -424,6 +446,11 @@ def test_check_mode_reads_the_key_but_writes_none(tmp_path, clean_copy):
     assert "Materialise SSH key:" not in out  # the key is written only inside the skipped fault section
     assert _ssh_calls(tmp_path) == []
     assert KEY_MATERIAL not in out
+
+
+def test_the_restart_cannot_abort_the_rest_of_always():
+    task = next(t for t in _fault_block()["always"] if t["name"] == "Restart the DGX node exporter")
+    assert task["ignore_errors"] is True
 
 
 def test_the_key_is_wiped_after_the_restore_and_before_the_gate():
