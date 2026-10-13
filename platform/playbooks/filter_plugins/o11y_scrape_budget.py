@@ -92,6 +92,23 @@ READBACK_REASONS = frozenset(
         "loaded_readback_unavailable",
     }
 )
+SOURCE_READBACK_REASONS = frozenset(
+    {
+        "source_path_refused",
+        "source_file_unavailable",
+        "source_file_refused",
+        "source_yaml_refused",
+        "source_job_refused",
+        "source_limit_refused",
+        "source_readback_unavailable",
+    }
+)
+SOURCE_JOB_CATEGORIES = {
+    "agentgateway": "agentgateway",
+    "dgx-spark-node": "dgx-spark",
+    "dgx-spark-gpu": "dgx-spark",
+    "dgx-spark-vllm": "dgx-spark",
+}
 
 
 class _UniqueKeyLoader(yaml.SafeLoader):
@@ -268,6 +285,9 @@ def _loaded_body_bytes(value: Any) -> int | None:
         return value if value > 0 else None
     if not isinstance(value, str) or not value or len(value) > MAX_BYTE_SIZE_TEXT:
         return None
+    if re.fullmatch(r"[1-9][0-9]{0,18}B", value):
+        size = int(value[:-1])
+        return size if size <= MAX_BASE2_BYTES else None
 
     size = 0
     position = 0
@@ -451,6 +471,86 @@ def o11y_loaded_scrape_limit_coverage(
         return _loaded_unavailable("loaded_readback_unavailable")
 
 
+def _o11y_source_scrape_limit_coverage(
+    readback: Any,
+    limits: Any,
+    limits_reviewed: Any = False,
+) -> dict[str, Any]:
+    """Compare protected on-disk split-file values and expose only fixed categories."""
+    if limits_reviewed is not True or not _valid_candidates(limits, 2_000):
+        return _loaded_unavailable("candidate_limits_unavailable")
+    if not isinstance(readback, Mapping):
+        return _loaded_unavailable("source_readback_unavailable")
+    if readback.get("status") == "unavailable" and readback.get("reason") in SOURCE_READBACK_REASONS:
+        return _loaded_unavailable(readback["reason"])
+    if (
+        set(readback) != {"status", "reason", "jobs"}
+        or readback.get("status") != "observed"
+        or readback.get("reason") != "source_files_read"
+    ):
+        return _loaded_unavailable("source_readback_unavailable")
+    jobs = readback.get("jobs")
+    if not isinstance(jobs, list) or not 2 <= len(jobs) <= 4:
+        return _loaded_unavailable("source_readback_unavailable")
+
+    seen: set[str] = set()
+    categories: dict[str, list[str]] = {"agentgateway": [], "dgx-spark": []}
+    try:
+        for item in jobs:
+            if not isinstance(item, Mapping) or set(item) != {"job_name", "limits"}:
+                return _loaded_unavailable("source_readback_unavailable")
+            name = item.get("job_name")
+            category = SOURCE_JOB_CATEGORIES.get(name) if isinstance(name, str) else None
+            if category is None or name in seen:
+                return _loaded_unavailable("source_readback_unavailable")
+            seen.add(name)
+            values = item.get("limits")
+            if not isinstance(values, Mapping) or set(values) != set(LOADED_LIMIT_FIELDS):
+                return _loaded_unavailable("source_readback_unavailable")
+            comparisons = []
+            for config_key, (candidate_key, maximum) in LOADED_LIMIT_FIELDS.items():
+                if config_key == "body_size_limit":
+                    loaded = _loaded_body_bytes(values[config_key])
+                else:
+                    loaded = _loaded_integer(values[config_key], maximum)
+                if loaded is None or loaded > maximum:
+                    return _loaded_unavailable("source_limit_refused")
+                comparisons.append(loaded == limits[candidate_key])
+            categories[category].append("matched" if all(comparisons) else "mismatch")
+    except Exception:
+        return _loaded_unavailable("source_readback_unavailable")
+
+    if not {"agentgateway", "dgx-spark-node", "dgx-spark-vllm"}.issubset(seen):
+        return _loaded_unavailable("source_readback_unavailable")
+    results = [
+        {
+            "job": category,
+            "status": "mismatch" if "mismatch" in categories[category] else "matched",
+            "reason": "source_limit_mismatch" if "mismatch" in categories[category]
+            else "source_limits_match_reviewed_inventory",
+        }
+        for category in ("agentgateway", "dgx-spark")
+    ]
+    mismatch = any(item["status"] == "mismatch" for item in results)
+    return {
+        "status": "mismatch" if mismatch else "matched",
+        "reason": "source_limit_mismatch" if mismatch else "source_limits_match_reviewed_inventory",
+        "jobs": results,
+    }
+
+
+def o11y_source_scrape_limit_coverage(
+    readback: Any,
+    limits: Any,
+    limits_reviewed: Any = False,
+) -> dict[str, Any]:
+    """Fail closed to fixed output for any malformed protected helper result."""
+    try:
+        return _o11y_source_scrape_limit_coverage(readback, limits, limits_reviewed)
+    except Exception:
+        return _loaded_unavailable("source_readback_unavailable")
+
+
 class FilterModule:
     """Expose the pure preview as an Ansible filter."""
 
@@ -458,4 +558,5 @@ class FilterModule:
         return {
             "o11y_scrape_budget_preview": o11y_scrape_budget_preview,
             "o11y_loaded_scrape_limit_coverage": o11y_loaded_scrape_limit_coverage,
+            "o11y_source_scrape_limit_coverage": o11y_source_scrape_limit_coverage,
         }

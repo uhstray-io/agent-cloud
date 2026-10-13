@@ -58,6 +58,8 @@
   vars:
     _survey_engine: "{{ container_engine | default('') }}"
     _baseline_helper: "{{ playbook_dir }}/files/summarize-o11y-scrape-baseline.py"
+    _survey_monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+    _survey_scrape_config_dir: "{{ _survey_monorepo_dir }}/{{ monorepo_deploy_path }}/config/scrape.d"
     _survey_public_jobs:
       - alloy
       - agentgateway
@@ -85,6 +87,8 @@
       failed_when: false
       check_mode: false
       no_log: true
+      environment:
+        O11Y_SCRAPE_CONFIG_DIR: "{{ _survey_scrape_config_dir }}"
       when: not ansible_check_mode
 
     - name: Parse the helper's bounded public projection
@@ -154,6 +158,16 @@
       no_log: true
       when: not ansible_check_mode
 
+    - name: Compute bounded on-disk split scrape-limit coverage
+      ansible.builtin.set_fact:
+        _scrape_source_limit_coverage: >-
+          {{ _scrape_survey_result.source_limit_readback | o11y_source_scrape_limit_coverage(
+            o11y_scrape_limits | default({}),
+            o11y_scrape_limits_reviewed | default(false)
+          ) }}
+      no_log: true
+      when: not ansible_check_mode
+
     - name: Keep alert-input availability independent and bounded
       ansible.builtin.set_fact:
         _scrape_alert_input_availability: "{{ _scrape_survey_result.alert_input_availability }}"
@@ -189,6 +203,11 @@
         msg: "{{ _scrape_loaded_limit_coverage | to_json }}"
       when: not ansible_check_mode
 
+    - name: Report on-disk split scrape-limit coverage
+      ansible.builtin.debug:
+        msg: "{{ _scrape_source_limit_coverage | to_json }}"
+      when: not ansible_check_mode
+
     - name: Report bounded alert-input availability
       ansible.builtin.debug:
         msg: "{{ _scrape_alert_input_availability | to_json }}"
@@ -211,6 +230,10 @@
           loaded_limits:
             status: check_mode_unverified
             reason: "Prometheus status APIs are skipped in check mode."
+            jobs: []
+          source_limits:
+            status: check_mode_unverified
+            reason: "Receiver split scrape files are not read in check mode."
             jobs: []
           alert_input_availability:
             status: check_mode_unverified

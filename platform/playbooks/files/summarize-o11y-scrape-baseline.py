@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import os
 import re
+import stat
 import subprocess
 import sys
 import threading
@@ -45,6 +47,19 @@ EXPECTED_IDENTITY_FIELDS = ("job", "instance", "service", "cluster", "environmen
 EXPECTED_UID = re.compile(r"^o11y_missing_[a-z0-9_]{1,27}\Z")
 SAFE_IDENTITY_VALUE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:/@-]{0,127}\Z")
 MAX_EXPECTED_TARGETS = 100
+MAX_SOURCE_CONFIG_BYTES = 1024 * 1024
+SOURCE_CONFIG_SUFFIX = ("platform", "services", "o11y", "deployment", "config", "scrape.d")
+SOURCE_CONFIG_FILES = {
+    "agentgateway.yml": {"agentgateway"},
+    "dgx-spark.yml": {"dgx-spark-node", "dgx-spark-gpu", "dgx-spark-vllm"},
+}
+SOURCE_LIMIT_FIELDS = (
+    "body_size_limit",
+    "sample_limit",
+    "label_limit",
+    "label_name_length_limit",
+    "label_value_length_limit",
+)
 
 JOB_ALIASES = {
     "prometheus": "prometheus",
@@ -72,6 +87,142 @@ class Refusal(ValueError):
     def __init__(self, category: str) -> None:
         super().__init__(category)
         self.category = category
+
+
+class _SourceUniqueKeyLoader(yaml.SafeLoader):
+    """Safe, bounded YAML loader for the two generated scrape fragments."""
+
+    def __init__(self, stream: Any) -> None:
+        super().__init__(stream)
+        self._collection_depth = 0
+
+    def compose_node(self, parent: Any, index: Any) -> yaml.Node:
+        if self.check_event(yaml.AliasEvent):
+            raise yaml.YAMLError("aliases are refused")
+        if not self.check_event(yaml.MappingStartEvent, yaml.SequenceStartEvent):
+            return super().compose_node(parent, index)
+        self._collection_depth += 1
+        try:
+            if self._collection_depth > 64:
+                raise yaml.YAMLError("nesting limit exceeded")
+            return super().compose_node(parent, index)
+        finally:
+            self._collection_depth -= 1
+
+
+def _source_unique_mapping(
+    loader: _SourceUniqueKeyLoader,
+    node: yaml.MappingNode,
+    deep: bool = False,
+) -> dict[Any, Any]:
+    loader.flatten_mapping(node)
+    result: dict[Any, Any] = {}
+    for key_node, value_node in node.value:
+        key = loader.construct_object(key_node, deep=deep)
+        if key in result:
+            raise ValueError("duplicate YAML key")
+        result[key] = loader.construct_object(value_node, deep=deep)
+    return result
+
+
+_SourceUniqueKeyLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _source_unique_mapping)
+
+
+def _open_source_directory(path: str) -> int:
+    """Open the exact expected directory chain without following any symlink."""
+    if not isinstance(path, str) or not path.startswith("/") or "\x00" in path:
+        raise Refusal("source_path_refused")
+    if not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_DIRECTORY"):
+        raise Refusal("source_path_refused")
+    parts = path.split("/")[1:]
+    suffix = tuple(parts[-len(SOURCE_CONFIG_SUFFIX):])
+    if len(parts) < len(SOURCE_CONFIG_SUFFIX) or suffix != SOURCE_CONFIG_SUFFIX:
+        raise Refusal("source_path_refused")
+    if any(part in {"", ".", ".."} for part in parts):
+        raise Refusal("source_path_refused")
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open("/", flags)
+    try:
+        for part in parts:
+            next_fd = os.open(part, flags, dir_fd=fd)
+            os.close(fd)
+            fd = next_fd
+        if not stat.S_ISDIR(os.fstat(fd).st_mode):
+            raise Refusal("source_path_refused")
+        return fd
+    except Exception:
+        os.close(fd)
+        raise
+
+
+def _read_source_file(directory_fd: int, filename: str) -> bytes:
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    try:
+        fd = os.open(filename, flags, dir_fd=directory_fd)
+    except OSError:
+        raise Refusal("source_file_unavailable") from None
+    try:
+        metadata = os.fstat(fd)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_nlink != 1
+            or metadata.st_mode & 0o022
+            or not 0 < metadata.st_size <= MAX_SOURCE_CONFIG_BYTES
+        ):
+            raise Refusal("source_file_refused")
+        chunks = bytearray()
+        while len(chunks) <= MAX_SOURCE_CONFIG_BYTES:
+            chunk = os.read(fd, min(65536, MAX_SOURCE_CONFIG_BYTES + 1 - len(chunks)))
+            if not chunk:
+                break
+            chunks.extend(chunk)
+        if len(chunks) > MAX_SOURCE_CONFIG_BYTES or len(chunks) != metadata.st_size:
+            raise Refusal("source_file_refused")
+        after = os.fstat(fd)
+        before_signature = (
+            metadata.st_dev, metadata.st_ino, metadata.st_size, metadata.st_mtime_ns, metadata.st_ctime_ns
+        )
+        after_signature = (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns)
+        if before_signature != after_signature:
+            raise Refusal("source_file_refused")
+        return bytes(chunks)
+    finally:
+        os.close(fd)
+
+
+def _source_scrape_limit_readback(directory: str) -> dict[str, Any]:
+    """Read only the two generated fragments and retain only job limits privately."""
+    directory_fd = _open_source_directory(directory)
+    jobs: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    try:
+        for filename, allowed_jobs in SOURCE_CONFIG_FILES.items():
+            raw = _read_source_file(directory_fd, filename)
+            try:
+                documents = list(yaml.load_all(raw.decode("utf-8"), Loader=_SourceUniqueKeyLoader))
+            except (UnicodeError, yaml.YAMLError, ValueError, TypeError):
+                raise Refusal("source_yaml_refused") from None
+            if len(documents) != 1 or not isinstance(documents[0], dict) or set(documents[0]) != {"scrape_configs"}:
+                raise Refusal("source_yaml_refused")
+            configured = documents[0]["scrape_configs"]
+            if not isinstance(configured, list) or not configured:
+                raise Refusal("source_yaml_refused")
+            for item in configured:
+                if not isinstance(item, dict):
+                    raise Refusal("source_yaml_refused")
+                job_name = item.get("job_name")
+                if not isinstance(job_name, str) or job_name not in allowed_jobs or job_name in seen:
+                    raise Refusal("source_job_refused")
+                seen.add(job_name)
+                limits = {field: item.get(field) for field in SOURCE_LIMIT_FIELDS}
+                if any(type(value) not in (str, int) for value in limits.values()):
+                    raise Refusal("source_limit_refused")
+                jobs.append({"job_name": job_name, "limits": limits})
+    finally:
+        os.close(directory_fd)
+    if "agentgateway" not in seen or not {"dgx-spark-node", "dgx-spark-vllm"}.issubset(seen):
+        raise Refusal("source_job_refused")
+    return {"status": "observed", "reason": "source_files_read", "jobs": jobs}
 
 
 def validate_expected_target_declaration(
@@ -1556,9 +1707,16 @@ def collect() -> dict[str, Any]:
                 for metric_name, _ in ALERT_INPUTS
             ],
         }
+    try:
+        source_limits = _source_scrape_limit_readback(os.environ.get("O11Y_SCRAPE_CONFIG_DIR", ""))
+    except Refusal as error:
+        source_limits = {"status": "unavailable", "reason": error.category}
+    except Exception:
+        source_limits = {"status": "unavailable", "reason": "source_readback_unavailable"}
     return {
         "baseline": baseline,
         "loaded_limit_readback": loaded_limits,
+        "source_limit_readback": source_limits,
         "alert_input_availability": alert_inputs,
     }
 

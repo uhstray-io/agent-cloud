@@ -261,6 +261,21 @@ preview was compatible for all nine categories. This evidence predates the new
 alert-input receipt and does not verify its runtime behavior. Task 3.3 remains
 open, split-file jobs remain unverified, and retention is unchanged.
 
+**Split scrape-file source drift, 2026-10-13:** The same exact-SHA-guarded
+receiver survey now reads only the generated `agentgateway.yml` and
+`dgx-spark.yml` files from the receiver's declared deployment checkout. It
+opens the expected files without following symlinks, requires bounded regular
+single-link files, rejects malformed YAML, aliases, duplicate keys, duplicate
+or unexpected jobs, and compares all five finite limits with reviewed
+inventory. The protected helper result carries no file paths or raw config;
+the visible receipt contains only fixed `agentgateway` and `dgx-spark`
+categories and fixed status/reason codes. A match proves only on-disk source
+values at that read. It does not establish that Prometheus mounted or loaded
+those bytes or enforces the limits. Keep both categories `unverified` in the
+separate loaded-limit receipt, keep task 3.3 open, and treat check mode as
+`check_mode_unverified`. No live survey or deployment is claimed for this
+source slice.
+
 The Dev-bound `Survey o11y Alloy Health (Dev)` is a separate read-only
 diagnostic for the fixed `o11y-alloy` receiver container. It requires the exact
 reviewed controller SHA, one production `o11y_svc` target, and the receiver's
