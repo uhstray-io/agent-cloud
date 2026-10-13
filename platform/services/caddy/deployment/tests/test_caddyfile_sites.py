@@ -10,6 +10,7 @@ mixed tabs and spaces, `{$VAR}` placeholders that open and close on one line, a
 nested `route {}`, a multi-address block, and a global options block.
 """
 
+import json
 import sys
 from pathlib import Path
 
@@ -17,11 +18,14 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
 
+import caddyfile_sites  # noqa: E402
 from caddyfile_sites import (  # noqa: E402
     _strip_comment,
     find_site,
     parse_sites,
     retire,
+    running_handlers,
+    summarize,
 )
 
 CADDYFILE = """\
@@ -272,3 +276,154 @@ def test_allowlist_site_with_nested_handle_blocks_reports_both_upstreams():
     assert [s["addresses"] for s in sites] == [["inference.example.io"], ["b.example.io"]]
     assert sites[0]["upstreams"] == ["192.0.2.7:8000", "192.0.2.7:8000"]
     assert sites[1]["upstreams"] == ["192.0.2.2:80"]
+
+
+SPLIT = (
+    "inference.example.io {\n"
+    "\t@api path /v1/*\n"
+    "\thandle @api {\n"
+    '\t\t@noauth not header_regexp Authorization "^Bearer [^[:space:]]+$"\n'
+    "\t\trespond @noauth 401\n"
+    "\t\treverse_proxy https://192.0.2.9:4000 {\n\t\t\tflush_interval -1\n\t\t}\n"
+    "\t}\n"
+    "\thandle /health {\n\t\treverse_proxy 192.0.2.7:8000\n\t}\n"
+    "\thandle {\n\t\trespond 404\n\t}\n"
+    "}\n"
+)
+
+
+def test_each_handle_block_reports_its_own_paths_and_upstreams():
+    (site,) = parse_sites(SPLIT)
+    assert site["handlers"] == [
+        {"matcher": "@api", "paths": ["/v1/*"], "upstreams": ["https://192.0.2.9:4000"]},
+        {"matcher": "/health", "paths": ["/health"], "upstreams": ["192.0.2.7:8000"]},
+        {"matcher": None, "paths": [], "upstreams": []},
+    ]
+    assert site["upstreams"] == ["https://192.0.2.9:4000", "192.0.2.7:8000"]
+
+
+def test_a_named_matcher_declared_after_its_handle_still_resolves():
+    (site,) = parse_sites("a.example.io {\n\thandle @late {\n\t\treverse_proxy 192.0.2.1:80\n\t}\n\t@late path /x\n}\n")
+    assert site["handlers"][0]["paths"] == ["/x"]
+
+
+def test_a_matcher_that_is_not_a_path_never_reads_as_a_catch_all():
+    text = "a.example.io {\n\t@h header X-A 1\n\thandle @h {\n\t\treverse_proxy 192.0.2.1:80\n\t}\n}\n"
+    (site,) = parse_sites(text)
+    assert site["handlers"][0]["paths"] == ["@h"]
+    assert summarize(site["handlers"]) == {"v1": [], "health": [], "other": ["192.0.2.1:80"]}
+
+
+def test_a_reverse_proxy_outside_any_handle_is_a_catch_all_handler():
+    (site,) = parse_sites("a.example.io {\n\treverse_proxy 192.0.2.1:80\n}\n")
+    assert site["handlers"] == [{"matcher": None, "paths": [], "upstreams": ["192.0.2.1:80"]}]
+
+
+def test_the_handler_state_does_not_leak_into_the_next_site():
+    text = SPLIT + "b.example.io {\n\treverse_proxy 192.0.2.2:80\n}\n"
+    sites = parse_sites(text)
+    assert sites[1]["handlers"] == [{"matcher": None, "paths": [], "upstreams": ["192.0.2.2:80"]}]
+
+
+def test_summarize_names_where_each_path_goes_and_strips_the_scheme():
+    (site,) = parse_sites(SPLIT)
+    assert summarize(site["handlers"]) == {"v1": ["192.0.2.9:4000"], "health": ["192.0.2.7:8000"], "other": []}
+
+
+def test_a_catch_all_that_proxies_serves_a_path_only_when_nothing_names_it():
+    both = [{"paths": [], "upstreams": ["192.0.2.1:80"]}]
+    assert summarize(both) == {"v1": ["192.0.2.1:80"], "health": ["192.0.2.1:80"], "other": []}
+    named = [
+        {"paths": ["/v1/*"], "upstreams": ["192.0.2.1:80"]},
+        {"paths": ["/health"], "upstreams": ["192.0.2.1:80"]},
+        {"paths": [], "upstreams": ["192.0.2.5:80"]},
+    ]
+    assert summarize(named)["other"] == ["192.0.2.5:80"]
+
+
+def test_a_path_nothing_expects_to_proxy_is_other():
+    handlers = [
+        {"paths": ["/v1/*"], "upstreams": ["192.0.2.9:4000"]},
+        {"paths": ["/health"], "upstreams": ["192.0.2.7:8000"]},
+        {"paths": ["/metrics"], "upstreams": ["192.0.2.7:8000"]},
+    ]
+    assert summarize(handlers)["other"] == ["192.0.2.7:8000"]
+
+
+def _caddy_json(*routes, host="inference.example.io"):
+    return {"apps": {"http": {"servers": {"srv0": {"routes": [{"match": [{"host": [host]}], "handle": [
+        {"handler": "subroute", "routes": list(routes)}]}]}}}}}
+
+
+def _proxied(path, *dials):
+    # `caddy adapt` shape: route (path match) -> subroute -> route -> reverse_proxy
+    route = {"handle": [{"handler": "subroute", "routes": [
+        {"handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": d} for d in dials]}]}]}]}
+    if path:
+        route["match"] = [{"path": [path]}]
+    return route
+
+
+def test_the_running_config_is_read_per_handler_through_nested_subroutes():
+    config = _caddy_json(_proxied("/v1/*", "192.0.2.9:4000"), _proxied("/health", "192.0.2.7:8000"))
+    assert summarize(running_handlers(config, "inference.example.io")) == {
+        "v1": ["192.0.2.9:4000"], "health": ["192.0.2.7:8000"], "other": []}
+
+
+def test_the_running_config_of_another_host_is_not_read():
+    config = _caddy_json(_proxied("/v1/*", "192.0.2.9:4000"), host="b.example.io")
+    assert running_handlers(config, "inference.example.io") == []
+
+
+def test_a_dial_the_walk_cannot_attribute_still_counts_as_other():
+    hidden = _proxied("/v1/*", "192.0.2.9:4000")
+    hidden["handle"][0]["routes"][0]["handle"][0]["handle_response"] = [
+        {"routes": [{"handle": [{"handler": "x", "upstreams": [{"dial": "192.0.2.66:1"}]}]}]}]
+    config = _caddy_json(hidden, _proxied("/health", "192.0.2.7:8000"))
+    assert summarize(running_handlers(config, "inference.example.io"))["other"] == ["192.0.2.66:1"]
+
+
+def test_the_routes_command_reports_the_managed_flag_and_the_summary(tmp_path, capsys, monkeypatch):
+    path = tmp_path / "Caddyfile"
+    path.write_text("# BEGIN ANSIBLE MANAGED\n" + SPLIT + "# END ANSIBLE MANAGED\n")
+    monkeypatch.setattr(sys, "argv", ["x", str(path), "routes", "--address", "inference.example.io"])
+    assert caddyfile_sites.main() == 0
+    assert json.loads(capsys.readouterr().out) == {
+        "found": True, "managed": True, "v1": ["192.0.2.9:4000"], "health": ["192.0.2.7:8000"], "other": []}
+    monkeypatch.setattr(sys, "argv", ["x", str(path), "routes", "--address", "nope.example.io"])
+    assert caddyfile_sites.main() == 0
+    assert json.loads(capsys.readouterr().out) == {
+        "found": False, "managed": False, "v1": [], "health": [], "other": []}
+
+
+def test_the_running_command_prints_the_upstream_lists_and_nothing_from_the_config(tmp_path, capsys, monkeypatch):
+    config = _caddy_json(_proxied("/v1/*", "192.0.2.9:4000"), _proxied("/health", "192.0.2.7:8000"))
+    config["apps"]["tls"] = {"dns_token": "synthetic-secret-value"}
+    engine = tmp_path / "engine"
+    engine.write_text(f"#!/bin/sh\ncat <<'EOF'\n{json.dumps(config)}\nEOF\n")
+    engine.chmod(0o755)
+    monkeypatch.setattr(sys, "argv", ["x", "running", "--address", "inference.example.io",
+                                      "--engine", str(engine), "--container", "caddy"])
+    assert caddyfile_sites.main() == 0
+    out = capsys.readouterr().out
+    assert json.loads(out) == {"v1": ["192.0.2.9:4000"], "health": ["192.0.2.7:8000"], "other": []}
+    assert "synthetic-secret-value" not in out
+
+
+def test_the_running_command_fails_when_the_admin_api_cannot_be_read(tmp_path, capsys, monkeypatch):
+    engine = tmp_path / "engine"
+    engine.write_text("#!/bin/sh\nexit 1\n")
+    engine.chmod(0o755)
+    monkeypatch.setattr(sys, "argv", ["x", "running", "--address", "a", "--engine", str(engine), "--container", "c"])
+    assert caddyfile_sites.main() == 1
+
+
+def test_the_declared_command_reads_a_rendered_declaration_from_the_environment(capsys, monkeypatch):
+    monkeypatch.setenv("SITES_TEXT", SPLIT)
+    monkeypatch.setattr(sys, "argv", ["x", "declared", "--address", "inference.example.io", "--env", "SITES_TEXT"])
+    assert caddyfile_sites.main() == 0
+    assert json.loads(capsys.readouterr().out) == {
+        "found": True, "v1": ["192.0.2.9:4000"], "health": ["192.0.2.7:8000"], "other": []}
+    monkeypatch.setattr(sys, "argv", ["x", "declared", "--address", "nope.example.io", "--env", "SITES_TEXT"])
+    assert caddyfile_sites.main() == 0
+    assert json.loads(capsys.readouterr().out)["found"] is False

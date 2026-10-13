@@ -8,9 +8,13 @@ compared the route to the declaration, because nothing could read the routes.
 
 So this does two things, and only two:
 
-  list   — report every site block: its addresses, its upstreams, and whether it
-           sits inside the ANSIBLE MANAGED region. That is the "read" half, and
-           it is what makes drift between Caddy and the inventory visible.
+  list   — report every site block: its addresses, its upstreams (all together,
+           and per `handle` block), and whether it sits inside the ANSIBLE MANAGED
+           region. That is the "read" half, and it is what makes drift between
+           Caddy and the inventory visible.
+  routes / declared / running — where one address sends /v1/* and /health, read
+           from the file, from a declaration not yet written, or from Caddy's
+           running config (see ROUTES below).
   retire — delete a named site block that sits OUTSIDE the managed region, so the
            managed region can take ownership of that hostname. Caddy refuses a
            file that defines one hostname twice, so migrating a hand-maintained
@@ -28,17 +32,34 @@ Parsing notes, each of which is a real case in this file:
     it; it is not a site and must never be reported or retired as one.
   * A site header may list several comma-separated addresses.
   * Only column-0 headers start a site block; `route {` and `tls {` are nested.
+  * A `handle <matcher> {` block directly inside a site is one handler: the
+    matcher is a literal path or a `@name path ...` declared in the same site,
+    and the upstreams are those of the reverse_proxy lines inside it. A
+    reverse_proxy outside any `handle` is a catch-all handler (no paths).
+
+ROUTES. A route that fronts an API in the allowlist shape sends different paths
+to different upstreams (the inference edge: `/v1/*` follows the gateway/direct
+mode while `/health` always goes straight to vLLM). `summarize` reduces a site's
+handlers, read from the file or from Caddy's running config, to the three sets a
+verifier needs: where `/v1/*` goes, where `/health` goes, and every other
+upstream the block can reach.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
+import subprocess
 import sys
 
 MANAGED_BEGIN = "# BEGIN ANSIBLE MANAGED"
 MANAGED_END = "# END ANSIBLE MANAGED"
+
+# The two paths of the inference allowlist shape that `summarize` reports on.
+API_PATH = "/v1/*"
+HEALTH_PATH = "/health"
 
 # `respond <<HTML` ... a line that is exactly `HTML` ends it.
 _HEREDOC = re.compile(r"(?<!\\)<<([A-Za-z_][A-Za-z0-9_]*)\s*$")
@@ -93,6 +114,17 @@ def _is_site_header(header: str) -> bool:
     return not header.startswith(("(", "&("))
 
 
+def _handler_paths(matcher: str | None, matchers: dict[str, list[str] | None]) -> list[str]:
+    """The paths a `handle` matcher selects; [] is a catch-all. A matcher this module
+    cannot reduce to paths (a header or method matcher) is kept as its own token, so
+    it never reads as a catch-all and never equals a path anyone checks for."""
+    if matcher is None or matcher == "*":
+        return []
+    if matcher.startswith("@"):
+        return matchers.get(matcher) or [matcher]
+    return [matcher]
+
+
 def parse_sites(text: str) -> list[dict]:
     """Return one entry per site block, in file order."""
     sites: list[dict] = []
@@ -100,6 +132,9 @@ def parse_sites(text: str) -> list[dict]:
     managed = False
     cur: dict | None = None
     heredoc: str | None = None
+    matchers: dict[str, list[str] | None] = {}
+    handler: dict | None = None
+    implicit: dict | None = None
 
     for idx, raw in enumerate(text.splitlines()):
         if MANAGED_BEGIN in raw:
@@ -131,21 +166,45 @@ def parse_sites(text: str) -> list[dict]:
                     "start": idx,
                     "end": None,
                     "upstreams": [],
+                    "handlers": [],
                     "managed": managed,
                 }
+                matchers, handler, implicit = {}, None, None
+
+        if cur is not None and depth == 1:
+            parts = stripped.split()
+            if parts and parts[0].startswith("@"):
+                # `@name path /a /b` is resolvable; any other matcher is not.
+                matchers[parts[0]] = parts[2:] if len(parts) > 2 and parts[1] == "path" else None
+            elif parts and parts[0] == "handle":
+                arg = [t for t in parts[1:] if t != "{"]
+                handler = {"matcher": arg[0] if arg else None, "paths": [], "upstreams": []}
+                cur["handlers"].append(handler)
 
         if cur is not None and "reverse_proxy" in stripped:
             parts = stripped.split()
+            target = handler
+            if target is None:
+                if implicit is None:
+                    implicit = {"matcher": None, "paths": [], "upstreams": []}
+                    cur["handlers"].append(implicit)
+                target = implicit
             # `reverse_proxy [matcher] <upstream...> [{`  — take the tokens that
             # look like upstreams, skipping a matcher and a trailing brace.
             for tok in parts[1:]:
                 if tok in ("{", "}") or tok.startswith(("@", "/")):
                     continue
                 cur["upstreams"].append(tok)
+                target["upstreams"].append(tok)
 
         depth += code.count("{") - code.count("}")
 
+        if handler is not None and depth <= 1:
+            handler = None
+
         if cur is not None and depth == 0 and idx >= cur["start"]:
+            for h in cur["handlers"]:
+                h["paths"] = _handler_paths(h["matcher"], matchers)
             cur["end"] = idx
             sites.append(cur)
             cur = None
@@ -154,6 +213,85 @@ def parse_sites(text: str) -> list[dict]:
             managed = False
 
     return sites
+
+
+def _netloc(upstream: str) -> str:
+    """`https://h:p/x` -> `h:p`: Caddy dials the host and port whatever the scheme."""
+    return re.sub(r"/.*$", "", re.sub(r"^[A-Za-z][A-Za-z0-9+.-]*://", "", upstream))
+
+
+def _unique(items) -> list[str]:
+    return list(dict.fromkeys(items))
+
+
+def summarize(handlers: list[dict]) -> dict:
+    """Reduce a route's handlers ({"paths": [...], "upstreams": [...]}) to where each of
+    the two paths of the inference allowlist shape goes.
+
+    `v1` / `health`: the upstreams (host:port) that serve API_PATH / HEALTH_PATH. A
+    handler naming the path serves it; only when none does, the catch-all handlers
+    (no paths) do. `other`: every upstream of a handler that serves neither, i.e. a
+    place the block can send a request that nothing was meant to proxy (a catch-all
+    that also proxies, a /metrics route). Each list is unique, in first-seen order."""
+    used: set[int] = set()
+    out: dict[str, list[str]] = {}
+    for key, path in (("v1", API_PATH), ("health", HEALTH_PATH)):
+        serving = [i for i, h in enumerate(handlers) if path in h["paths"]]
+        if not serving:
+            serving = [i for i, h in enumerate(handlers) if not h["paths"]]
+        used.update(serving)
+        out[key] = _unique(_netloc(u) for i in serving for u in handlers[i]["upstreams"])
+    out["other"] = _unique(
+        _netloc(u) for i, h in enumerate(handlers) if i not in used for u in h["upstreams"]
+    )
+    return out
+
+
+def _dials(node) -> list[str]:
+    """Every `dial` anywhere under a JSON value."""
+    found: list[str] = []
+    if isinstance(node, dict):
+        if isinstance(node.get("dial"), str):
+            found.append(node["dial"])
+        for v in node.values():
+            found.extend(_dials(v))
+    elif isinstance(node, list):
+        for v in node:
+            found.extend(_dials(v))
+    return found
+
+
+def _walk_route(route: dict, paths: list[str], out: list[dict]) -> None:
+    # Caddy nests a `handle` block as route -> subroute -> route -> reverse_proxy; the
+    # path matcher sits on the outer route, so the nearest one above an upstream wins.
+    own = [p for m in route.get("match") or [] for p in m.get("path") or []]
+    paths = own or paths
+    for h in route.get("handle") or []:
+        if h.get("handler") == "reverse_proxy":
+            dials = [u["dial"] for u in h.get("upstreams") or [] if "dial" in u]
+            out.append({"paths": paths, "upstreams": dials})
+        for child in h.get("routes") or []:
+            _walk_route(child, paths, out)
+
+
+def running_handlers(config: dict, address: str) -> list[dict]:
+    """The handlers of the routes Caddy is RUNNING for `address` (its admin API config).
+
+    A dial the walk could not attribute to a handler (reached through a structure this
+    does not follow) is added under a path nothing matches, so it counts as `other`
+    instead of being missed."""
+    out: list[dict] = []
+    for srv in ((config.get("apps") or {}).get("http") or {}).get("servers", {}).values():
+        for route in srv.get("routes") or []:
+            if not any(address in (m.get("host") or []) for m in route.get("match") or []):
+                continue
+            seen: list[dict] = []
+            _walk_route(route, [], seen)
+            missed = [d for d in _dials(route) if d not in {u for h in seen for u in h["upstreams"]}]
+            out.extend(seen)
+            if missed:
+                out.append({"paths": ["<unattributed>"], "upstreams": _unique(missed)})
+    return out
 
 
 def find_site(sites: list[dict], address: str) -> dict | None:
@@ -213,11 +351,52 @@ def retire(text: str, addresses: list[str]) -> tuple[str, list[str], list[str]]:
     return "".join(out), removed, already_managed
 
 
+def running_main(argv: list[str]) -> int:
+    """`running --address A --engine E --container C`: no Caddyfile is involved, so it has
+    its own parser rather than a path argument it would ignore."""
+    ap = argparse.ArgumentParser(prog="caddyfile_sites.py running")
+    ap.add_argument("--address", required=True)
+    ap.add_argument("--engine", required=True)
+    ap.add_argument("--container", required=True)
+    args = ap.parse_args(argv)
+    # Read here, not by the caller: the running config can carry resolved secrets (a
+    # DNS-challenge token), and only the three upstream lists should leave.
+    proc = subprocess.run(
+        [args.engine, "exec", args.container, "wget", "-qO-", "http://127.0.0.1:2019/config/"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        print("could not read Caddy's running config from its admin API", file=sys.stderr)
+        return 1
+    print(json.dumps(summarize(running_handlers(json.loads(proc.stdout or "null") or {}, args.address))))
+    return 0
+
+
+def declared_main(argv: list[str]) -> int:
+    """`declared --address A --env NAME`: where the site blocks in the environment variable
+    NAME (a rendered caddy_managed_sites) send A, before anything is written."""
+    ap = argparse.ArgumentParser(prog="caddyfile_sites.py declared")
+    ap.add_argument("--address", required=True)
+    ap.add_argument("--env", required=True)
+    args = ap.parse_args(argv)
+    site = find_site(parse_sites(os.environ.get(args.env, "")), args.address)
+    print(json.dumps({"found": site is not None, **summarize(site["handlers"] if site else [])}))
+    return 0
+
+
 def main() -> int:
+    if sys.argv[1:2] == ["running"]:
+        return running_main(sys.argv[2:])
+    if sys.argv[1:2] == ["declared"]:
+        return declared_main(sys.argv[2:])
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("path")
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("list")
+    q = sub.add_parser("routes", help="where one site's /v1/* and /health go, from the file")
+    q.add_argument("--address", required=True)
     r = sub.add_parser("retire")
     r.add_argument("--address", action="append", required=True)
     r.add_argument("--write", action="store_true", help="edit in place (default: dry run)")
@@ -225,6 +404,20 @@ def main() -> int:
 
     with open(args.path, encoding="utf-8") as fh:
         text = fh.read()
+
+    if args.cmd == "routes":
+        site = find_site(parse_sites(text), args.address)
+        found = site is not None
+        print(
+            json.dumps(
+                {
+                    "found": found,
+                    "managed": bool(found and site["managed"]),
+                    **summarize(site["handlers"] if found else []),
+                }
+            )
+        )
+        return 0
 
     if args.cmd == "list":
         print(json.dumps(parse_sites(text), indent=2))
