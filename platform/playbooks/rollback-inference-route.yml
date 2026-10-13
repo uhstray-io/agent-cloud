@@ -209,12 +209,18 @@
           {% if _rb_mode != 'gateway-config' %}Mode {{ _rb_mode }} routes /v1/* {{ inference_route_mode }}.{% endif %}
 
     - name: "Read where the rendered route declaration sends the inference route"
+      # On the controller, with the declaration on stdin: the Caddy host's process listing and
+      # environment never carry it (a delegated task keeps this host's variables).
       tags: [verify]
-      ansible.builtin.script:
-        cmd: "{{ _sites_tool }} declared --address {{ inference_route_address }} --env RB_DECLARED_SITES"
-        executable: python3
-      environment:
-        RB_DECLARED_SITES: "{{ caddy_managed_sites | default('') }}"
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ _sites_tool }}"
+          - declared
+          - --address
+          - "{{ inference_route_address }}"
+        stdin: "{{ caddy_managed_sites | default('') }}"
+      delegate_to: localhost
       register: _rb_declared
       changed_when: false
       check_mode: false

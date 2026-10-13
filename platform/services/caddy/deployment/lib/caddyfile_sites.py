@@ -49,7 +49,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import re
 import subprocess
 import sys
@@ -375,13 +374,13 @@ def running_main(argv: list[str]) -> int:
 
 
 def declared_main(argv: list[str]) -> int:
-    """`declared --address A --env NAME`: where the site blocks in the environment variable
-    NAME (a rendered caddy_managed_sites) send A, before anything is written."""
+    """`declared --address A`: where the site blocks on stdin (a rendered caddy_managed_sites)
+    send A, before anything is written. Stdin, not an argument or the environment, so the
+    declaration never lands in a process listing."""
     ap = argparse.ArgumentParser(prog="caddyfile_sites.py declared")
     ap.add_argument("--address", required=True)
-    ap.add_argument("--env", required=True)
     args = ap.parse_args(argv)
-    site = find_site(parse_sites(os.environ.get(args.env, "")), args.address)
+    site = find_site(parse_sites(sys.stdin.read()), args.address)
     print(json.dumps({"found": site is not None, **summarize(site["handlers"] if site else [])}))
     return 0
 

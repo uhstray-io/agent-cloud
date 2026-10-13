@@ -332,6 +332,8 @@ def _run(env, mode=None, check=False, tags=None, caddy=None, gateway=None, group
            *(["--check"] if check else []), *(["--tags", tags] if tags else [])]
     run_env = {**harness_sandbox.env_for(tmp), "STUB_DIR": str(tmp), "STUB_SITES_LIB": SITES_LIB,
                "ANSIBLE_STDOUT_CALLBACK": "default"}
+    if (tmp / "bin").exists():  # the recording python3 shim, ahead of the real one
+        run_env["PATH"] = f"{tmp / 'bin'}{os.pathsep}{run_env['PATH']}"
     r = harness_sandbox.run(cmd, tmp, cwd=playbook_yaml.REPO, env=run_env)
     out = r.stdout + r.stderr
     for value in (LIVE, ROTATED, *seed_harness.NEVER_PRINTED, "synthetic-client-workstation", "synthetic-db"):
@@ -578,6 +580,32 @@ def test_a_declaration_without_the_inference_block_is_refused_before_any_write(e
     rc, out = _run(env, mode="direct", caddy={"caddy_managed_sites": "other.example.test {\n\trespond 404\n}\n"})
     assert rc != 0 and "sends /v1/* to nothing and /health to nothing" in out and "nothing was changed" in out, out
     assert _patches() == [] and not _calls(env[0], "restart")
+
+
+PY_SHIM = r"""#!REAL
+import json, os, subprocess, sys
+data = sys.stdin.buffer.read()
+with open(os.path.join(os.environ["STUB_DIR"], "py_calls"), "a") as f:
+    f.write(json.dumps({"argv": sys.argv[1:], "env": dict(os.environ), "stdin": data.decode(errors="replace")}) + "\n")
+sys.exit(subprocess.run([sys.executable, *sys.argv[1:]], input=data).returncode)
+"""
+
+
+def test_the_declaration_reaches_the_reader_on_stdin_never_in_argv_or_the_environment(env):
+    tmp = env[0]
+    (tmp / "bin").mkdir()
+    shim = tmp / "bin" / "python3"
+    shim.write_text(PY_SHIM.replace("#!REAL", f"#!{sys.executable}", 1))
+    shim.chmod(0o755)
+    marker = "marker-declaration-text-7f3a"
+    rc, out = _run(env, mode="direct", caddy={"caddy_managed_sites": SITES + f"# {marker}\n"})
+    assert rc == 0, out
+    calls = [json.loads(line) for line in (tmp / "py_calls").read_text().splitlines()]
+    declared = [c for c in calls if "declared" in c["argv"]]
+    assert len(declared) == 1 and marker in declared[0]["stdin"]
+    for call in calls:
+        assert marker not in json.dumps(call["argv"]) and marker not in json.dumps(call["env"]), call["argv"]
+    assert marker not in out
 
 
 def test_a_block_with_one_upstream_for_every_path_passes_in_direct_mode(env):

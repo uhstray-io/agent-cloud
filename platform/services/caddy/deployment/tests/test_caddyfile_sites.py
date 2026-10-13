@@ -10,6 +10,7 @@ mixed tabs and spaces, `{$VAR}` placeholders that open and close on one line, a
 nested `route {}`, a multi-address block, and a global options block.
 """
 
+import io
 import json
 import sys
 from pathlib import Path
@@ -418,12 +419,13 @@ def test_the_running_command_fails_when_the_admin_api_cannot_be_read(tmp_path, c
     assert caddyfile_sites.main() == 1
 
 
-def test_the_declared_command_reads_a_rendered_declaration_from_the_environment(capsys, monkeypatch):
-    monkeypatch.setenv("SITES_TEXT", SPLIT)
-    monkeypatch.setattr(sys, "argv", ["x", "declared", "--address", "inference.example.io", "--env", "SITES_TEXT"])
+def test_the_declared_command_reads_a_rendered_declaration_from_stdin(capsys, monkeypatch):
+    monkeypatch.setattr(sys, "stdin", io.StringIO(SPLIT))
+    monkeypatch.setattr(sys, "argv", ["x", "declared", "--address", "inference.example.io"])
     assert caddyfile_sites.main() == 0
     assert json.loads(capsys.readouterr().out) == {
         "found": True, "v1": ["192.0.2.9:4000"], "health": ["192.0.2.7:8000"], "other": []}
-    monkeypatch.setattr(sys, "argv", ["x", "declared", "--address", "nope.example.io", "--env", "SITES_TEXT"])
+    monkeypatch.setattr(sys, "stdin", io.StringIO(SPLIT))
+    monkeypatch.setattr(sys, "argv", ["x", "declared", "--address", "nope.example.io"])
     assert caddyfile_sites.main() == 0
     assert json.loads(capsys.readouterr().out)["found"] is False
