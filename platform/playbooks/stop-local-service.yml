@@ -235,7 +235,11 @@
       become: "{{ podman_rootful | default(false) | bool }}"
       register: _stop_result
       changed_when: true
-      when: _stop_now | length > 0
+      # Skipped under --check on purpose: the report task below says what it would stop.
+      # (check_mode: true would be no guard here: it would make a REAL run skip the stop too.)
+      when:
+        - _stop_now | length > 0
+        - not ansible_check_mode
 
     - name: "Report what was stopped"
       ansible.builtin.debug:
