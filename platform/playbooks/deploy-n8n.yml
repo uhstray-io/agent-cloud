@@ -100,8 +100,13 @@
         CONTAINER_ENGINE: "{{ container_engine | default('podman') }}"
         LOCAL_MODE: "{{ 'true' if (local_mode | default(false) | bool) else '' }}"
         N8N_LISTEN: "{{ n8n_bind | default('127.0.0.1') }}"
+        # Operator lever (survey `deploy_force_recreate`, only the literal true): recreate even when every input
+        # and image matches — clears a stale bind mount a running container still holds.
+        FORCE_RECREATE: "{{ 'true' if ((deploy_force_recreate | default('false') | string | lower) == 'true') else '' }}"
       register: _deploy
-      changed_when: true
+      # deploy.sh recreates only when its inputs or images changed (common.sh
+      # compose_up_if_changed) and says which on its own line.
+      changed_when: "'DEPLOY_CHANGED=true' in _deploy.stdout_lines"
       when: not ansible_check_mode
 
     - name: "Show deploy.sh output"
@@ -178,6 +183,9 @@
               lastName: Admin
               password: "{{ _n8n_secret.json.data.data.owner_password }}"
             status_code: [200]
+          register: _n8n_owner_seed
+          # A uri request never reports changed on its own; this one creates an account.
+          changed_when: true
           no_log: true
           when: not ansible_check_mode
 
@@ -188,3 +196,18 @@
     - name: "Report"
       ansible.builtin.debug:
         msg: "n8n healthy — stack up, /healthz answering (encryption key preserved from OpenBao)."
+
+    # Last: every verify task above passed (a failure stops the play before this records).
+    # The result folds the one post-deploy step that changes state — the owner seed, which runs
+    # only while n8n still shows first-run setup — into the deploy.sh result, so a re-run that
+    # seeded nothing reports no change.
+    - name: "Fold the owner seed into the service-deploy result"
+      ansible.builtin.set_fact:
+        _n8n_service_deploy:
+          skipped: "{{ _deploy is not defined or _deploy is skipped }}"
+          changed: "{{ ((_deploy | default({})).changed | default(false)) or (_n8n_owner_seed is defined and _n8n_owner_seed is changed) }}"
+
+    - name: "Record the service-deploy step result"
+      ansible.builtin.include_tasks: tasks/emit-service-deploy-result.yml
+      vars:
+        service_deploy_result_var: _n8n_service_deploy

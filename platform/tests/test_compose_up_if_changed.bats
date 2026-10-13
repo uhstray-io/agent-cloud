@@ -31,6 +31,7 @@ svc_setup() {
 #!/usr/bin/env bash
 S="$STUB_STATE"
 if [ "$1" = image ] && [ "$2" = inspect ]; then cat "$S/image_now"; exit 0; fi
+if [ "$1" = rm ]; then rm -rf "$S/c/${@: -1}"; exit 0; fi
 if [ "$1" = ps ]; then
   [ "$*" = "ps -a --filter label=com.docker.compose.project.working_dir=$STUB_DIR --format {{.Names}}" ] || exit 0
   for d in "$S"/c/*; do [ -d "$d" ] && basename "$d"; done; exit 0
@@ -70,8 +71,30 @@ if case " $* " in *" config --services "*) true ;; *) false ;; esac; then
   done | awk '!seen[$0]++'
   exit 0
 fi
+if case " $* " in *" down "*) true ;; *) false ;; esac; then rm -rf "$S"/c/*; echo down >> "$S/down.log"; exit 0; fi
 case " $* " in *" up "*) ;; *) exit 0 ;; esac
-case " $* " in *" --force-recreate "*) ;; *) exit 0 ;; esac
+if ! case " $* " in *" --force-recreate "*) true ;; *) false ;; esac; then
+  # A staged `up` (a caller's compose_staged_up hook): it must carry the label overlay, and it
+  # creates only the services it names (every labelled one when it names none).
+  [ -n "$overlay" ] || { echo "up without the label overlay" >&2; exit 1; }
+  named="" seen_up=""
+  for a in "$@"; do
+    if [ -n "$seen_up" ]; then case "$a" in -*) ;; *) named="$named $a" ;; esac; fi
+    [ "$a" = up ] && seen_up=1
+  done
+  label=$(sed -n 's/^ *io\.agent-cloud\.inputs-sha256: "\(.*\)"$/\1/p' "$overlay" | sort -u)
+  [ "$(printf '%s\n' "$label" | grep -c .)" -eq 1 ] || { echo "labels differ" >&2; exit 1; }
+  svcs=$(sed -n 's/^  \([a-z0-9-]*\):$/\1/p' "$overlay")
+  [ -n "$named" ] || named="$svcs"
+  echo "up:$named" >> "$S/up.log"
+  for pair in $STUB_NAMES; do
+    n="${pair%%=*}" svc="${pair#*=}"
+    case " $named " in *" $svc "*) ;; *) continue ;; esac
+    mkdir -p "$S/c/$n"; echo true > "$S/c/$n/running"; echo "$label" > "$S/c/$n/label"
+    echo "$svc" > "$S/c/$n/service"; cp "$S/image_now" "$S/c/$n/image_run"
+  done
+  exit 0
+fi
 [ -n "$overlay" ] || { echo "recreate without the label overlay" >&2; exit 1; }
 label=$(sed -n 's/^ *io\.agent-cloud\.inputs-sha256: "\(.*\)"$/\1/p' "$overlay" | sort -u)
 [ "$(printf '%s\n' "$label" | grep -c .)" -eq 1 ] || { echo "labels differ" >&2; exit 1; }
@@ -320,6 +343,104 @@ SH
   deploy
   [ "$status" -ne 0 ]
   [ "$(recreates)" -eq 1 ]
+}
+
+# ── staged start hook (compose_staged_up) ────────────────────────────────────
+# A deploy that must start in order defines compose_staged_up; the helper then calls it instead
+# of the one-shot recreate, with the digest label overlay already in COMPOSE_OVERLAYS.
+@test "no hook defined: the one-shot recreate runs exactly as before" {
+  a_setup
+  deploy; [ "$status" -eq 0 ]
+  grep -qE ' up -d --force-recreate --remove-orphans$' "$S/compose.log"
+  [ ! -e "$S/up.log" ]
+}
+
+hook_setup() {
+  svc_setup authentik authentik-postgresql=postgresql authentik-redis=redis authentik-server=server authentik-worker=worker
+  cat > "$D/hook-deploy.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")"
+source ../../../lib/common.sh
+compose_staged_up() {
+  echo "hook: overlays=${COMPOSE_OVERLAYS}" >> "$STUB_STATE/hook.log"
+  compose up -d postgresql redis || return 1
+  [ -z "${HOOK_FAIL:-}" ] || return 1
+  compose up -d server worker || return 1
+}
+compose_up_if_changed
+SH
+  SCRIPT=hook-deploy.sh
+}
+
+@test "hook: called instead of the one-shot, each stage labelled, then a true no-op" {
+  hook_setup
+  deploy; [ "$status" -eq 0 ]; changed true
+  [ "$(cat "$S/up.log")" = "$(printf 'up: postgresql redis\nup: server worker')" ]
+  refute_grep -q -e '--force-recreate' -e '--remove-orphans' "$S/compose.log"
+  grep -q 'inputs-label.yml' "$S/hook.log"
+  local c
+  for c in authentik-postgresql authentik-redis authentik-server authentik-worker; do
+    grep -qE '^[0-9a-f]{64}$' "$S/c/$c/label"
+  done
+  : > "$S/compose.log"; rm -f "$S/up.log" "$S/hook.log"
+  deploy; [ "$status" -eq 0 ]; changed false
+  refute_grep -q ' up ' "$S/compose.log"
+  [ ! -e "$S/hook.log" ]
+}
+
+@test "hook: a changed input or FORCE_RECREATE calls it again; an unrelated image id too" {
+  hook_setup
+  deploy; [ "$status" -eq 0 ]
+  echo "# changed" >> "$D/.env"
+  deploy; [ "$status" -eq 0 ]; changed true
+  [ "$(grep -c '^hook:' "$S/hook.log")" -eq 2 ]
+  FORCE=true deploy; changed true
+  [ "$(grep -c '^hook:' "$S/hook.log")" -eq 3 ]
+  echo img-9 > "$S/image_now"
+  deploy; changed true
+  [ "$(grep -c '^hook:' "$S/hook.log")" -eq 4 ]
+}
+
+@test "hook: a failing hook fails the deploy and prints no DEPLOY_CHANGED" {
+  hook_setup
+  HOOK_FAIL=1 run env STUB_STATE="$S" STUB_DIR="$D" STUB_NAMES="$NAMES" CONTAINER_ENGINE="$T/bin/engine" \
+    COMPOSE_CMD="$T/bin/compose" HOOK_FAIL=1 bash "$D/hook-deploy.sh"
+  [ "$status" -ne 0 ]
+  refute_grep -q 'DEPLOY_CHANGED' <<< "$output"
+  # the labels were written by the stages that ran, so the next run still sees the gap
+  deploy; [ "$status" -eq 0 ]; changed true
+}
+
+# ── n8n: ordered start behind the change gate ────────────────────────────────
+n_setup() {
+  svc_setup n8n workflow-n8n-postgres=n8n-postgres workflow-n8n-redis=n8n-redis workflow-n8n=n8n workflow-n8n-worker=n8n-worker
+}
+
+@test "n8n: first deploy starts the stages in order, labelled; the second run touches nothing" {
+  n_setup
+  deploy; [ "$status" -eq 0 ]; changed true
+  [ "$(cat "$S/up.log")" = "$(printf 'up: n8n-postgres n8n-redis n8n\nup: n8n-worker')" ]
+  [ -e "$S/down.log" ]
+  grep -qE '^[0-9a-f]{64}$' "$S/c/workflow-n8n-worker/label"
+  : > "$S/compose.log"; rm -f "$S/up.log" "$S/down.log"
+  deploy; [ "$status" -eq 0 ]; changed false
+  refute_grep -q -e ' up ' -e ' down ' "$S/compose.log"
+  [ ! -e "$S/down.log" ]
+}
+
+@test "n8n: a changed .env or init script restarts the whole ordered stack; the volumes are not removed" {
+  n_setup
+  deploy; [ "$status" -eq 0 ]
+  local f
+  for f in .env config/n8n-init-data.sh; do
+    rm -f "$S/up.log"
+    echo "# changed" >> "$D/$f"
+    deploy; [ "$status" -eq 0 ]; changed true
+    [ "$(wc -l < "$S/up.log" | tr -d ' ')" -eq 2 ]
+    deploy; changed false
+  done
+  refute_grep -q -e ' -v' -e '--volumes' "$S/compose.log"
 }
 
 # ── playbooks read the line ──────────────────────────────────────────────────

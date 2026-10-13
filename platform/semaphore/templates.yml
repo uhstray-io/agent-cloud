@@ -376,6 +376,12 @@ templates:
         type: string
         required: false
         default_value: "main"
+      - name: deploy_force_recreate
+        title: "Force container recreate"
+        description: "true to recreate every container even when inputs and images match (clears a stale bind mount)"
+        type: string
+        required: false
+        default_value: "false"
 
   - name: Deploy Semaphore
     playbook: platform/playbooks/deploy-semaphore.yml
@@ -959,6 +965,12 @@ templates:
         type: string
         required: false
         default_value: "main"
+      - name: deploy_force_recreate
+        title: "Force container recreate"
+        description: "true to recreate every container even when inputs and images match (clears a stale bind mount)"
+        type: string
+        required: false
+        default_value: "false"
 
   - name: Clean Deploy NetBox
     playbook: platform/playbooks/clean-deploy-netbox.yml

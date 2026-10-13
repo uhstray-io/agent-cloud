@@ -27,6 +27,34 @@ for arg in "$@"; do
   esac
 done
 
+# compose_staged_up — the ordered start compose_up_if_changed calls when the project must be
+# recreated (it has already put the digest label overlay in COMPOSE_OVERLAYS, so every `up`
+# here labels what it creates).
+# The worker must NOT boot while the app is still running its DB migrations:
+# two n8n processes racing one migration chain half-apply it (seen live in
+# the prod cutover — a crash mid-chain left a column added but unrecorded,
+# and every later boot failed on "already exists"). compose.yml declares the
+# ordering (worker depends_on n8n: service_healthy), but depends_on
+# conditions cannot be relied on across engines (prod podman-compose 1.0.6
+# ignores them), so the serialization is ALSO enforced here: infrastructure +
+# app first, gate on the app's readiness healthcheck (/healthz/readiness —
+# migrations done), then the worker. 300s covers a long cross-version
+# migration chain.
+# Removing the old containers first is the recreate: podman-compose 1.0.6 cannot replace a
+# container that has dependents in place, and it makes `up` start every stage fresh. The
+# named volumes (database, redis, n8n_data) are not touched — no -v.
+compose_staged_up() {
+  compose down --remove-orphans || info "WARN: compose down failed; removing the containers by name."
+  local c
+  for c in workflow-n8n-worker workflow-n8n workflow-n8n-redis workflow-n8n-postgres; do
+    $CONTAINER_ENGINE rm -f "$c" >/dev/null 2>&1 || true
+  done
+  compose up -d n8n-postgres n8n-redis n8n || return 1
+  wait_for_healthy workflow-n8n-postgres 120
+  wait_for_healthy workflow-n8n 300
+  compose up -d n8n-worker || return 1
+}
+
 main() {
   info "=== n8n deployment (container lifecycle) ==="
   detect_runtime
@@ -41,19 +69,17 @@ main() {
   else
     compose pull || info "WARN: image pull failed (registry rate-limit/offline) — continuing with cached images."
   fi
-  # The worker must NOT boot while the app is still running its DB migrations:
-  # two n8n processes racing one migration chain half-apply it (seen live in
-  # the prod cutover — a crash mid-chain left a column added but unrecorded,
-  # and every later boot failed on "already exists"). compose.yml declares the
-  # ordering (worker depends_on n8n: service_healthy), but depends_on
-  # conditions cannot be relied on across engines, so the serialization is
-  # ALSO enforced here: infrastructure + app first, gate on the app's
-  # readiness healthcheck (/healthz/readiness — migrations done), then the
-  # worker. 300s covers a long cross-version migration chain.
-  compose up -d n8n-postgres n8n-redis n8n
-  wait_for_healthy workflow-n8n-postgres 120
+  # Recreate only when an input or image changed (common.sh compose_up_if_changed, operator
+  # decision 2026-10-04: an unchanged re-run is a true no-op). It hashes the compose files,
+  # .env and the postgres init script the compose file bind-mounts (config/n8n-init-data.sh;
+  # NOT config/n8n.env, the legacy live env the cutover guard reads), so a re-rendered .env
+  # reaches the running processes — plain `up -d` left them on stale env — and prints
+  # DEPLOY_CHANGED=true|false for deploy-n8n.yml. The ordered start below is the helper's
+  # compose_staged_up hook, so it runs only when something changed.
+  compose_up_if_changed config/n8n-init-data.sh
+  # Readiness gate on every run, changed or not: an unchanged stack that is running but not
+  # ready must still fail the deploy here rather than later in the verify phase.
   wait_for_healthy workflow-n8n 300
-  compose up -d n8n-worker
   info "=== n8n container lifecycle complete ==="
 }
 
