@@ -9,20 +9,18 @@ refuses rather than the text it is written in.
 
 import json
 import os
-import shutil
 import subprocess
 from pathlib import Path
 
 import playbook_yaml
 import pytest
+from ansible_python import needs_ansible
 
 REPO = Path(__file__).resolve().parents[2]
 BOOTSTRAP = REPO / "platform/playbooks/bootstrap-local-dev.yml"
 EXAMPLE = REPO / "platform/inventory/local-dev.yml.example"
 VALIDATE = "Assert the local Semaphore host port is a usable unprivileged port"
 START = "Start local Semaphore"
-
-needs_ansible = pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="ansible-playbook not installed")
 
 
 def _play() -> dict:

@@ -16,7 +16,6 @@ is test_netbox_change_aware.bats; this file holds the playbook half:
 import json
 import os
 import re
-import shutil
 import subprocess
 from pathlib import Path
 
@@ -24,12 +23,11 @@ import jinja2
 import playbook_yaml
 import pytest
 import yaml
+from ansible_python import needs_ansible
 
 REPO = Path(__file__).resolve().parents[2]
 PLAYBOOK = REPO / "platform/playbooks/deploy-netbox.yml"
 DEPLOY_SH = REPO / "platform/services/netbox/deployment/deploy.sh"
-
-needs_ansible = pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="ansible-playbook not installed")
 
 
 def _plays():

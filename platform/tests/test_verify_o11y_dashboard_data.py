@@ -22,6 +22,7 @@ from urllib.parse import parse_qs
 import forgeries
 import pytest
 import yaml
+from ansible_python import needs_ansible
 from fake_http import DrainingHandler
 
 REPO = Path(__file__).resolve().parents[2]
@@ -33,8 +34,6 @@ _spec = importlib.util.spec_from_file_location(
 )
 vdd = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(vdd)
-
-needs_ansible = pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="ansible-playbook not installed")
 
 # Label values the fake answers with; none may appear in any report.
 SECRET_LABELS = ("identity-alpha", "identity-bravo", "model-zulu")

@@ -31,6 +31,7 @@ import playbook_yaml
 import pytest
 import seed_harness
 import yaml
+from ansible_python import ansible_python
 from fake_http import DrainingHandler
 
 REPO = playbook_yaml.REPO
@@ -1158,14 +1159,6 @@ print(json.dumps(v["_model"]))
 """
 
 
-def _ansible_python():
-    exe = shutil.which("ansible-playbook")
-    if not exe:
-        pytest.skip("ansible-playbook not installed")
-    first = Path(exe).read_text(errors="replace").splitlines()[0]
-    return first[2:].strip().split()[-1] if first.startswith("#!") else sys.executable
-
-
 _MODELS = [{"name": n} for n in ("a", "b", "c", "d", "e", "f")]
 
 
@@ -1175,7 +1168,7 @@ _MODELS = [{"name": n} for n in ("a", "b", "c", "d", "e", "f")]
     ({"agw_clients": ["workstation"], "agw_models": _MODELS}, "a"),
 ])
 def test_the_conformance_model_is_the_same_under_every_hash_seed(inputs, expected):
-    py = _ansible_python()
+    py = ansible_python()
     picked = set()
     for seed in ("1", "2", "3", "4", "5", "6"):
         r = subprocess.run([py, "-c", _RENDER, str(PLAYBOOK), json.dumps(inputs)], capture_output=True, text=True,
