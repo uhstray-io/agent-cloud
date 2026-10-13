@@ -24,6 +24,7 @@ import harness_sandbox
 import pytest
 import test_check_mode_contract as check_mode_contract
 import yaml
+from ansible_python import needs_ansible
 
 REPO = Path(__file__).resolve().parents[2]
 PLAYBOOKS = REPO / "platform/playbooks"
@@ -68,8 +69,6 @@ def _ansible(tmp_path: Path, args: list[str], tasks, env_extra: dict | None = No
     env.update(env_extra or {})
     return harness_sandbox.run(["ansible-playbook", *args], tmp_path, cwd=REPO, env=env, denied=denied)
 
-
-needs_ansible = pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="needs ansible-playbook")
 
 # Records what the key looked like AT THE MOMENT ssh used it, then answers like a host that
 # refuses passwords and accepts the key (SSH_STUB=ok) or refuses everything (SSH_STUB=fail).
@@ -420,7 +419,6 @@ def test_a_non_default_port_is_pinned_as_host_and_port(tmp_path):
     assert out.returncode == 0, out.stdout[-1500:]
     (seen,) = [c for c in calls if "key" in c]
     assert seen["known_hosts"] == "[192.0.2.10]:2222 " + " ".join(HOSTKEY.split()[:2]) + "\n", seen
-
 
 
 def test_the_harness_refuses_a_write_outside_the_scratch():

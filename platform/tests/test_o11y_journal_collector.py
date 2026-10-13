@@ -5,7 +5,6 @@ import importlib.util
 import json
 import os
 import re
-import shutil
 import stat
 import subprocess
 import sys
@@ -16,8 +15,8 @@ from unittest.mock import Mock
 
 import pytest
 import yaml
+from ansible_python import ansible_python, needs_ansible
 from jinja2 import Environment
-from test_connection_identity_vars import _ansible_python, needs_ansible
 
 ROOT = Path(__file__).resolve().parents[2]
 O11Y = ROOT / "platform/services/o11y/deployment"
@@ -640,7 +639,7 @@ def test_live_positions_debug_rescues_malformed_nested_diagnostic_before_renderi
             "diagnostics": diagnostics,
         }
         done = subprocess.run(
-            [_ansible_python(), "-c", _EVALUATE], input=json.dumps(job), text=True,
+            [ansible_python(), "-c", _EVALUATE], input=json.dumps(job), text=True,
             capture_output=True,
         )
         assert done.returncode == 0, done.stderr
@@ -4291,11 +4290,7 @@ def test_positions_repair_check_mode_preserves_unverified_result_after_skipped_c
 
 
 def test_rollback_health_diagnostic_is_allowlisted_and_fixed_probe_is_gated():
-    ansible_playbook = shutil.which("ansible-playbook")
-    if not ansible_playbook:
-        pytest.skip("ansible-playbook is unavailable")
-    first_line = Path(ansible_playbook).read_text(errors="replace").splitlines()[0]
-    ansible_python = first_line[2:].strip().split()[-1] if first_line.startswith("#!") else sys.executable
+    python = ansible_python()
     state_cases = [
         {
             "rc": 125,
@@ -4614,7 +4609,7 @@ print(json.dumps({
             "ANSIBLE_REMOTE_TEMP": ansible_tmp,
         }
         result = subprocess.run(
-            [ansible_python, "-c", harness, str(PLAYBOOK)],
+            [python, "-c", harness, str(PLAYBOOK)],
             cwd=ROOT,
             env=env,
             input=json.dumps(
