@@ -2,18 +2,25 @@
 
 import importlib.util
 import json
+import os
+import shutil
+import subprocess
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 HELPER = ROOT / "platform/playbooks/files/survey-o11y-alloy-health.py"
 PLAYBOOK = ROOT / "platform/playbooks/survey-o11y-alloy-health.yml"
+CHECKOUT = ROOT / "platform/playbooks/require-reviewed-checkout.yml"
 SPEC = importlib.util.spec_from_file_location("survey_o11y_alloy_health", HELPER)
 SURVEY = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(SURVEY)
+ANSIBLE_PLAYBOOK = shutil.which("ansible-playbook")
 
 
 def inspect_data(**changes):
@@ -182,38 +189,89 @@ def test_inspect_runner_never_returns_raw_error_or_runtime_document(monkeypatch)
     def run(argv, **_kwargs):
         calls.append(argv)
         if argv[1:3] == ["container", "exists"]:
+            assert _kwargs["stdout"] == subprocess.DEVNULL
+            assert _kwargs["stderr"] == subprocess.DEVNULL
             return SimpleNamespace(returncode=0, stdout="", stderr="private stderr")
-        return SimpleNamespace(
-            returncode=0,
-            stdout=json.dumps(inspect_data()),
-            stderr="private inspect stderr",
-        )
+        raise AssertionError("inspect must use the bounded Popen reader")
 
     monkeypatch.setattr(SURVEY.subprocess, "run", run)
+    monkeypatch.setattr(
+        SURVEY,
+        "_read_bounded_stdout",
+        lambda argv, **_kwargs: json.dumps(inspect_data()),
+    )
     report = SURVEY.inspect()
     assert calls == [
         ["podman", "container", "exists", "o11y-alloy"],
-        ["podman", "inspect", "--type", "container", "o11y-alloy"],
     ]
     assert "private" not in json.dumps(report)
     assert "secret-token" not in json.dumps(report)
 
 
+def test_inspect_reader_caps_stream_and_kills_and_reaps_overflow_child(monkeypatch):
+    children = []
+    original_popen = SURVEY.subprocess.Popen
+
+    def track_child(*args, **kwargs):
+        child = original_popen(*args, **kwargs)
+        children.append((child, kwargs))
+        return child
+
+    monkeypatch.setattr(SURVEY.subprocess, "Popen", track_child)
+    with pytest.raises(SURVEY.Refusal, match="^inspect_malformed$"):
+        SURVEY._read_bounded_stdout(
+            [
+                sys.executable,
+                "-c",
+                "import sys; sys.stderr.write('PRIVATE_SENTINEL'); sys.stdout.write('x' * 1000000)",
+            ],
+            timeout=5,
+            max_bytes=1024,
+        )
+    assert len(children) == 1
+    child, options = children[0]
+    assert child.poll() is not None
+    assert options["stdout"] is SURVEY.subprocess.PIPE
+    assert options["stderr"] is SURVEY.subprocess.DEVNULL
+    assert child.stderr is None
+
+
+def test_inspect_reader_kills_and_reaps_child_on_timeout(monkeypatch):
+    children = []
+    original_popen = SURVEY.subprocess.Popen
+
+    def track_child(*args, **kwargs):
+        child = original_popen(*args, **kwargs)
+        children.append(child)
+        return child
+
+    monkeypatch.setattr(SURVEY.subprocess, "Popen", track_child)
+    with pytest.raises(SURVEY.Refusal, match="^inspect_failed$"):
+        SURVEY._read_bounded_stdout(
+            [sys.executable, "-c", "import time; time.sleep(30)"], timeout=0.05
+        )
+    assert len(children) == 1
+    assert children[0].poll() is not None
+
+
 def test_playbook_is_dev_pinned_single_host_and_read_only():
     playbook = yaml.safe_load(PLAYBOOK.read_text())
+    assert playbook[0]["hosts"] == "localhost"
+    assert playbook[0]["connection"] == "local"
+    assert playbook[0]["tasks"][0]["ansible.builtin.assert"]
+    assert playbook[1]["ansible.builtin.import_playbook"] == "refuse-internal-extra-vars.yml"
+    assert playbook[2]["ansible.builtin.import_playbook"] == "require-reviewed-checkout.yml"
     assert any(
         play.get("ansible.builtin.import_playbook") == "require-reviewed-checkout.yml"
         and play.get("vars", {}).get("_reviewed_checkout_payload_paths")
         == ["platform/playbooks/files/survey-o11y-alloy-health.py"]
         for play in playbook
     )
-    assert any(
-        "expected_repository_sha | default('') is match('^[0-9a-f]{40}$')"
-        in task.get("ansible.builtin.assert", {}).get("that", [])
-        and "_survey_receivers | length == 1" in task.get("ansible.builtin.assert", {}).get("that", [])
-        for play in playbook
-        for task in play.get("tasks", [])
-    )
+    early_guard = playbook[0]["tasks"][0]["ansible.builtin.assert"]["that"]
+    assert "_survey_forged_names | length == 0" in early_guard
+    assert "_survey_receivers | length == 1" in early_guard
+    assert "_survey_receiver_valid | bool" in early_guard
+    assert "expected_repository_sha | default('') is match('^[0-9a-f]{40}$')" in CHECKOUT.read_text()
     source = PLAYBOOK.read_text()
     assert "_survey_override_names" in source
     assert "extra_var_names" in source
@@ -224,3 +282,187 @@ def test_playbook_is_dev_pinned_single_host_and_read_only():
     assert all(word not in source for word in forbidden)
     assert "no_log: true" in source
     assert "require-tmpfs-remote-tmp.yml" in source
+    receiver_play = next(play for play in playbook if play.get("hosts") == "o11y_svc")
+    assert receiver_play["vars"]["ansible_become"] is False
+    assert "rescue" in next(
+        task for task in receiver_play["tasks"] if task.get("block") is not None
+    )
+
+
+@pytest.mark.skipif(ANSIBLE_PLAYBOOK is None, reason="needs ansible-playbook")
+@pytest.mark.parametrize(
+    "extra_vars",
+    [
+        {"ansible_python_interpreter": "/nonexistent"},
+        {"ansible_become": True},
+        {"become": True},
+    ],
+    ids=["poisoned-python", "ansible-become", "become"],
+)
+def test_full_playbook_refuses_context_overrides_before_imported_playbooks(tmp_path, extra_vars):
+    proc = subprocess.run(
+        [
+            ANSIBLE_PLAYBOOK,
+            "-i",
+            "localhost,",
+            str(PLAYBOOK),
+            "--extra-vars",
+            json.dumps(extra_vars),
+        ],
+        cwd=ROOT,
+        env=_ansible_env(tmp_path / "local-tmp"),
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=45,
+    )
+    output = proc.stdout + proc.stderr
+    assert proc.returncode != 0
+    assert "Refusing the Alloy survey because its context or receiver scope is unsafe." in output
+    assert "Require the reviewed source and helper bytes" not in output
+    assert "/nonexistent" not in output
+
+
+@pytest.mark.skipif(ANSIBLE_PLAYBOOK is None, reason="needs ansible-playbook")
+def test_full_playbook_refuses_receiver_local_mode_before_checkout(tmp_path):
+    inventory = tmp_path / "inventory.ini"
+    inventory.write_text(
+        "[o11y_svc]\n"
+        "localhost ansible_connection=local local_mode=true container_engine=podman podman_rootful=false\n"
+    )
+    proc = subprocess.run(
+        [ANSIBLE_PLAYBOOK, "-i", str(inventory), str(PLAYBOOK)],
+        cwd=ROOT,
+        env=_ansible_env(tmp_path / "local-tmp"),
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=45,
+    )
+    output = proc.stdout + proc.stderr
+    assert proc.returncode != 0
+    assert "Refusing the Alloy survey because its context or receiver scope is unsafe." in output
+    assert "Require the reviewed source and helper bytes" not in output
+
+
+@pytest.mark.skipif(ANSIBLE_PLAYBOOK is None, reason="needs ansible-playbook")
+def test_remote_play_disables_inventory_become_override(tmp_path):
+    receiver_play = next(
+        play for play in yaml.safe_load(PLAYBOOK.read_text()) if play.get("hosts") == "o11y_svc"
+    )
+    harness = [
+        {
+            "name": "Test receiver privilege policy offline",
+            "hosts": "localhost",
+            "connection": "local",
+            "gather_facts": False,
+            "become": receiver_play["become"],
+            "vars": {
+                "ansible_become": receiver_play["vars"]["ansible_become"],
+                "expected_uid": os.getuid(),
+            },
+            "tasks": [
+                {
+                    "name": "Read the effective process uid",
+                    "ansible.builtin.command": {"argv": ["id", "-u"]},
+                    "changed_when": False,
+                    "register": "_effective_uid",
+                },
+                {
+                    "name": "Require the inventory become override to be disabled",
+                    "ansible.builtin.assert": {
+                        "that": "_effective_uid.stdout | int == expected_uid",
+                        "quiet": True,
+                    },
+                }
+            ],
+        }
+    ]
+    playbook_path = tmp_path / "privilege-check.yml"
+    inventory_path = tmp_path / "inventory.ini"
+    playbook_path.write_text(yaml.safe_dump(harness))
+    inventory_path.write_text("localhost ansible_connection=local ansible_become=true\n")
+    proc = subprocess.run(
+        [ANSIBLE_PLAYBOOK, "-i", str(inventory_path), str(playbook_path)],
+        cwd=ROOT,
+        env=_ansible_env(tmp_path / "local-tmp"),
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=45,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+def _receipt_playbook(harness_path: Path, stdout: str, rc: int) -> None:
+    receiver_play = next(
+        play for play in yaml.safe_load(PLAYBOOK.read_text()) if play.get("hosts") == "o11y_svc"
+    )
+    tasks = receiver_play["tasks"]
+    protected_receipt = next(task for task in tasks if task.get("block") is not None)
+    public_reports = [
+        task
+        for task in tasks
+        if task.get("name")
+        in {
+            "Report the bounded Alloy health receipt",
+            "Report a fixed Alloy health refusal category",
+        }
+    ]
+    harness = [
+        {
+            "name": "Exercise the production receipt parser offline",
+            "hosts": "localhost",
+            "connection": "local",
+            "gather_facts": False,
+            "vars": {
+                "_alloy_health_result": {"stdout": stdout, "rc": rc},
+                "_alloy_health_refusals": receiver_play["vars"]["_alloy_health_refusals"],
+                "_alloy_health_observed_fields": receiver_play["vars"]["_alloy_health_observed_fields"],
+                "_alloy_health_run_states": receiver_play["vars"]["_alloy_health_run_states"],
+                "_alloy_health_states": receiver_play["vars"]["_alloy_health_states"],
+                "_alloy_health_age_buckets": receiver_play["vars"]["_alloy_health_age_buckets"],
+            },
+            "tasks": [protected_receipt, *public_reports],
+        }
+    ]
+    harness_path.write_text(yaml.safe_dump(harness))
+
+
+def _ansible_env(local_temp: Path) -> dict[str, str]:
+    local_temp.mkdir(parents=True, exist_ok=True)
+    return {**os.environ, "ANSIBLE_LOCAL_TEMP": str(local_temp)}
+
+
+@pytest.mark.skipif(ANSIBLE_PLAYBOOK is None, reason="needs ansible-playbook")
+@pytest.mark.parametrize(
+    ("stdout", "rc", "expected"),
+    [
+        ("", 1, "invalid_receipt"),
+        ('{"private":"RAW_SENTINEL"', 1, "invalid_receipt"),
+        ('{"status":"observed","private":"RAW_SENTINEL"}', 0, "invalid_receipt"),
+        ('{"status":"unavailable","reason":"container_missing"}', 1, "container_missing"),
+    ],
+    ids=["empty", "malformed-json", "malformed-schema", "valid-container-missing"],
+)
+def test_ansible_receipt_block_fails_closed_without_echoing_raw_output(tmp_path, stdout, rc, expected):
+    harness_path = tmp_path / "receipt-test.yml"
+    inventory_path = tmp_path / "inventory.ini"
+    inventory_path.write_text("localhost ansible_connection=local\n")
+    _receipt_playbook(harness_path, stdout, rc)
+    proc = subprocess.run(
+        [ANSIBLE_PLAYBOOK, "-i", str(inventory_path), str(harness_path)],
+        cwd=ROOT,
+        env=_ansible_env(tmp_path / "local-tmp"),
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=45,
+    )
+    output = proc.stdout + proc.stderr
+    assert expected in output
+    assert "RAW_SENTINEL" not in output
+    if expected == "invalid_receipt":
+        assert proc.returncode != 0
+    else:
+        assert proc.returncode == 0, output

@@ -4,9 +4,13 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import selectors
+import signal
 import subprocess
 import sys
+import time
 from datetime import UTC, datetime
 
 CONTAINER = "o11y-alloy"
@@ -26,6 +30,75 @@ ZERO_STARTED_AT = re.compile(r"0001-01-01T00:00:00(?:\.0+)?(?:Z|\+00:00)")
 
 class Refusal(Exception):
     """Fixed safe refusal category; never include runtime data."""
+
+
+def _terminate_and_reap(process: subprocess.Popen[bytes]) -> None:
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    except PermissionError:
+        if process.poll() is None:
+            process.kill()
+    process.wait()
+
+
+def _read_bounded_stdout(
+    argv: list[str], *, timeout: float = 8, max_bytes: int = MAX_INSPECT_BYTES
+) -> str:
+    process: subprocess.Popen[bytes] | None = None
+    selector = selectors.DefaultSelector()
+    completed = False
+    try:
+        process = subprocess.Popen(
+            argv,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+            close_fds=True,
+        )
+        assert process.stdout is not None
+        os.set_blocking(process.stdout.fileno(), False)
+        selector.register(process.stdout, selectors.EVENT_READ)
+        output = bytearray()
+        deadline = time.monotonic() + timeout
+        while selector.get_map():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise Refusal("inspect_failed")
+            for key, _ in selector.select(remaining):
+                room = max_bytes + 1 - len(output)
+                chunk = os.read(key.fd, min(65536, room))
+                if not chunk:
+                    selector.unregister(key.fileobj)
+                    continue
+                output.extend(chunk)
+                if len(output) > max_bytes:
+                    raise Refusal("inspect_malformed")
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise Refusal("inspect_failed")
+        try:
+            return_code = process.wait(timeout=remaining)
+        except subprocess.TimeoutExpired as exc:
+            raise Refusal("inspect_failed") from exc
+        if return_code != 0:
+            raise Refusal("inspect_failed")
+        completed = True
+        try:
+            return output.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise Refusal("inspect_malformed") from exc
+    except OSError as exc:
+        raise Refusal("inspect_failed") from exc
+    finally:
+        selector.close()
+        if process is not None:
+            if not completed:
+                _terminate_and_reap(process)
+            if process.stdout is not None:
+                process.stdout.close()
 
 
 def _age_bucket(value: object, now: datetime | None = None) -> str | None:
@@ -111,8 +184,9 @@ def inspect() -> dict[str, object]:
         exists = subprocess.run(
             ["podman", "container", "exists", CONTAINER],
             check=False,
-            capture_output=True,
-            text=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
             timeout=8,
         )
     except subprocess.TimeoutExpired as exc:
@@ -124,23 +198,15 @@ def inspect() -> dict[str, object]:
     if exists.returncode != 0:
         raise Refusal("inspect_failed")
     try:
-        result = subprocess.run(
+        output = _read_bounded_stdout(
             ["podman", "inspect", "--type", "container", CONTAINER],
-            check=False,
-            capture_output=True,
-            text=True,
             timeout=8,
+            max_bytes=MAX_INSPECT_BYTES,
         )
-    except subprocess.TimeoutExpired as exc:
-        raise Refusal("inspect_failed") from exc
-    except OSError as exc:
-        raise Refusal("inspect_failed") from exc
-    if result.returncode != 0:
-        raise Refusal("inspect_failed")
-    if len(result.stdout.encode("utf-8", errors="replace")) > MAX_INSPECT_BYTES:
-        raise Refusal("inspect_malformed")
+    except Refusal:
+        raise
     try:
-        data = json.loads(result.stdout)
+        data = json.loads(output)
     except (TypeError, json.JSONDecodeError) as exc:
         raise Refusal("inspect_malformed") from exc
     return _project(data)
