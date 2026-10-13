@@ -131,15 +131,18 @@
           if _probe_enabled | bool else []) }}
 
   tasks:
-    - name: "Require a capacity receipt and nonzero Prometheus cap for retention expansion"
+    - name: "Require capacity and backup/restore receipt references and nonzero Prometheus cap for retention expansion"
       ansible.builtin.assert:
         that:
           - o11y_prom_retention_size | default('0B') | string | trim is match('^[1-9][0-9]*(B|KB|MB|GB|TB|PB|EB)$')
           - o11y_capacity_receipt_id | default('') | string is match('^[1-9][0-9]*$')
+          - o11y_backup_restore_receipt_id | default('') | string is match('^[1-9][0-9]*$')
         fail_msg: >-
           Production retention differs from the approved 15d / 7d / 168h baseline.
-          A nonzero Prometheus size cap and a numeric o11y_capacity_receipt_id that
-          references a separately reviewed successful capacity receipt are required.
+          A nonzero Prometheus size cap, a numeric o11y_capacity_receipt_id that
+          references a separately reviewed successful capacity receipt, and a numeric
+          o11y_backup_restore_receipt_id are required. The numeric backup/restore ID is
+          only a reference; this gate does not inspect its evidence or prove a live restore.
           The receipt cannot be earned until receiver host metrics,
           seven-day backend growth/CPU/memory history, measured forecast, and the guest
           growth/backup path are verified.
@@ -197,6 +200,9 @@
           - _auth_edge_ip is match('^[0-9]+(\\.[0-9]+){3}$')
         fail_msg: "Production o11y needs its declared DNS zone and one Caddy origin IP; local test URLs are refused."
       when: not (local_mode | default(false) | bool)
+
+    - name: "Validate production scrape budgets before placement or rendering"
+      ansible.builtin.include_tasks: tasks/assert-o11y-scrape-limits.yml
 
     - name: "Inspect an unfinished production alert canary"
       ansible.builtin.stat:
@@ -305,11 +311,11 @@
           - (o11y_environment | default('local' if local_mode | default(false) | bool else 'prod')) in ['local', 'dev', 'prod']
         fail_msg: "Production o11y requires a declared o11y_cluster label containing only letters, digits, dots, underscores, or hyphens."
 
-    - name: "Require numeric capacity and backup/restore receipts before enabling Tempo-derived metrics"
+    - name: "Require numeric capacity and common backup/restore receipt references before enabling Tempo-derived metrics"
       ansible.builtin.assert:
         that:
           - o11y_capacity_receipt_id | default('') | string is match('^[1-9][0-9]*$')
-          - o11y_trace_backup_restore_receipt_id | default('') | string is match('^[1-9][0-9]*$')
+          - o11y_backup_restore_receipt_id | default('') | string is match('^[1-9][0-9]*$')
         fail_msg: >-
           Tempo-derived metrics are opt-in. Production enablement requires numeric
           capacity and backup/isolated-restore Semaphore receipt IDs; the shared trace
