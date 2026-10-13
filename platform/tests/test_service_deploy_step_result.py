@@ -1,4 +1,4 @@
-"""Wave 1 of the `service-deploy` step result (change service-deployment-workflow, task 7.1).
+"""Waves 1 and 2 of the `service-deploy` step result (change service-deployment-workflow, task 7.1).
 
 The registry step `service-deploy` is judged on two criteria: the deploy verify phase passes,
 and a second run reports no change. Both need the deploy playbooks to say so, so this holds
@@ -39,23 +39,26 @@ step_results = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(step_results)
 
 # playbook -> the verify play that records the result (the play's name starts with this).
-# Wave 2 (n8n, postiz) is not here yet: add it as each lands.
 WAVE = {
     "deploy-agentgateway.yml": "Phase 3: Verify agentgateway",
     "deploy-authentik.yml": "Phase 3: Verify authentik",
     "deploy-github-runner.yml": "Deploy GitHub Actions self-hosted runner",
     "deploy-honcho.yml": "Phase 3: Verify honcho",
+    "deploy-n8n.yml": "Phase 3: Verify n8n",
     "deploy-netbox.yml": "Phase 5: Verify deployment",
     "deploy-o11y.yml": "Phase 3: Verify o11y",
     "deploy-openhands.yml": "Phase 3: Verify OpenHands",
+    "deploy-postiz.yml": "Phase 3: Verify postiz",
     "deploy-tududi.yml": "Phase 3: Verify tududi",
 }
-# The wave-1 services whose deploy.sh this change made change-aware, plus the two that already were.
+# The services whose deploy.sh this change made change-aware, plus the two that already were.
 RECREATE_AWARE = {
     "tududi": "deploy-tududi.yml",
     "honcho": "deploy-honcho.yml",
     "openhands": "deploy-openhands.yml",
+    "n8n": "deploy-n8n.yml",
     "netbox": "deploy-netbox.yml",
+    "postiz": "deploy-postiz.yml",
 }
 # NetBox keeps its own compose wrapper and library, so its deploy.sh decides through its own call.
 CHANGE_CALL = {"netbox": "netbox_recreate_reason"}
@@ -121,15 +124,42 @@ def test_deploy_playbook_reads_the_change_line_and_carries_the_lever(service, pl
     assert "deploy_force_recreate" in {v["name"] for v in template["survey_vars"]}, service
 
 
-def test_the_tududi_local_overlay_bind_mount_is_a_digest_input():
-    # The overlay bind-mounts the step-ca bundle; a bind-mounted input left out of the digest
-    # would change without the container being recreated.
-    overlay = yaml.safe_load((SERVICES / "tududi/deployment/compose.local.yml").read_text())
-    mounts = [v for v in overlay["services"]["tududi"].get("volumes", []) if str(v).startswith("./")]
-    assert mounts, "the overlay no longer bind-mounts a file: revisit the digest inputs"
-    code = _code(SERVICES / "tududi/deployment/deploy.sh")
-    for mount in mounts:
-        assert mount.split(":")[0].removeprefix("./") in code, f"{mount} is not passed to compose_up_if_changed"
+@pytest.mark.parametrize("service", ["tududi", "n8n", "postiz"])
+def test_every_bind_mounted_file_is_a_digest_input(service):
+    # A bind-mounted input left out of the digest changes without the container being
+    # recreated. The compose files themselves are always in the digest; the files they mount
+    # are not, unless deploy.sh names them.
+    mounts = set()
+    for compose in (SERVICES / service / "deployment").glob("compose*.yml"):
+        for svc in (yaml.safe_load(compose.read_text()).get("services") or {}).values():
+            mounts |= {str(v).split(":")[0] for v in (svc or {}).get("volumes", []) if str(v).startswith("./")}
+    assert mounts, f"{service}: no compose file bind-mounts a file any more: revisit the digest inputs"
+    code = _code(SERVICES / service / "deployment/deploy.sh")
+    # Only the helper's own argument lists count: deploy.sh also names these files elsewhere
+    # (a presence check before the start).
+    calls = " ".join(line for line in code.splitlines() if "compose_up_if_changed" in line)
+    for mount in sorted(mounts):
+        assert mount.removeprefix("./") in calls, f"{service}: {mount} is not passed to compose_up_if_changed"
+
+
+def test_n8n_keeps_its_ordered_start_inside_the_change_gate():
+    # The worker must not boot while the app migrates, and a recreate must not run unless the
+    # helper found a change: the ordered start is the helper's hook, never a bare call.
+    code = _code(SERVICES / "n8n/deployment/deploy.sh")
+    hook = code[code.index("compose_staged_up()"):code.index("main()")]
+    stages = ("n8n-postgres n8n-redis n8n", "wait_for_healthy workflow-n8n 300", "up -d n8n-worker")
+    assert hook.index(stages[0]) < hook.index(stages[1]) < hook.index(stages[2])
+    # The project name is the directory's basename, shared with other services' compose files: a
+    # project-wide orphan sweep would remove their containers.
+    assert "--remove-orphans" not in hook
+    main = code[code.index("main()"):]
+    assert "up -d" not in main, "a bare `compose up` outside the hook recreates on every run"
+    assert "compose_up_if_changed" in main
+
+
+def test_postiz_has_no_unconditional_recreate_of_the_app():
+    code = _code(SERVICES / "postiz/deployment/deploy.sh")
+    assert "--force-recreate" not in code and "up -d" not in code
 
 
 def _task(playbook: str, name: str) -> dict:
@@ -261,6 +291,30 @@ def test_agentgateway_result_is_unverified_when_an_unproven_429_was_accepted(tmp
 
 
 @needs_ansible
+@pytest.mark.parametrize(
+    "vars_,status,changed",
+    [
+        ({"_deploy": CHANGED}, "pass", True),
+        ({"_deploy": SAME}, "pass", False),
+        ({"_deploy": SAME, "_n8n_owner_seed": {"changed": True}}, "pass", True),  # re-run that seeded the owner
+        ({"_deploy": SAME, "_n8n_owner_seed": {"skipped": True, "changed": False}}, "pass", False),
+        ({"_deploy": SKIPPED}, "skip", False),
+        ({}, "skip", False),
+    ],
+)
+def test_n8n_result_folds_the_owner_seed_into_the_deploy_result(tmp_path, vars_, status, changed):
+    # Rendered exactly as deploy-n8n.yml writes it: the owner seed is the one post-deploy step
+    # that changes state, and renaming a var it reads silently reports "no change".
+    fold = _task("deploy-n8n.yml", "Fold the owner seed into the service-deploy result")
+    proc, found = _run_shared(tmp_path, {"h1": vars_}, var="_n8n_service_deploy", before=[fold])
+    assert proc.returncode == 0, proc.stdout[-3000:]
+    res = _one(found)
+    assert (res["status"], res["evidence"]["changed_on_rerun"]) == (status, changed)
+    include = _task("deploy-n8n.yml", "Record the service-deploy step result")
+    assert include["vars"] == {"service_deploy_result_var": "_n8n_service_deploy"}
+
+
+@needs_ansible
 def test_shared_task_evidence_keys_are_the_registrys():
     registry = yaml.safe_load((REPO / "platform/workflows/service-onboarding/registry.yml").read_text())["steps"]
     keys = next(s for s in registry if s["id"] == "service-deploy")["evidence_keys"]
@@ -279,3 +333,16 @@ def test_shared_task_refuses_the_input_forged_as_an_extra_var(tmp_path, forge):
     assert proc.returncode != 0
     assert "Refusing to record a service-deploy result" in proc.stdout
     assert not found
+
+
+def test_n8n_published_bind_address_is_rendered_into_the_hashed_env():
+    # compose substitutes ${N8N_LISTEN} into the port publish. The playbook used to export it
+    # into deploy.sh's environment, which the digest cannot see; rendering it into .env (one
+    # source, hashed with the rest) makes a changed n8n_bind recreate the container.
+    template = (SERVICES / "n8n/deployment/templates/n8n.env.j2").read_text()
+    assert "N8N_LISTEN={{ n8n_bind | default('127.0.0.1') }}" in template
+    (task,) = [
+        t for t in playbook_yaml.tasks(playbook_yaml.plays(PLAYBOOKS / "deploy-n8n.yml"))
+        if "deploy.sh" in str(t.get("ansible.builtin.shell", ""))
+    ]
+    assert "N8N_LISTEN" not in task["environment"], "a shell-exported value outranks .env and escapes the digest"

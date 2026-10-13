@@ -126,7 +126,8 @@ upgrades. It reads back the effective tmpfiles.d configuration and the link. The
 then runs the hooks' `docker create`, with the full mount set and the deployed
 `job-started.sh`, in a `systemd-run --user` transient unit carrying the runner unit's
 `NoNewPrivileges` value (the reason is in `docs/MISTAKES.md` 2.29), and calls `_ping` on the
-mounted socket path. The runner reads `.env` only at start, so a changed `.env` restarts it.
+mounted socket path. The runner reads `.env` only at start, so a changed `.env` restarts it,
+through the stop described in "Restarting the runner".
 
 ### The engine's environment
 
@@ -189,6 +190,76 @@ GITHUB_ACTIONS=true CI=true` with `-e HOME`, and requires the container to carry
 stops running containers and so could stop a job; it therefore joins the pause process
 the uid-map check left and does not exercise the wrapper's PATH for `newuidmap`. The
 rendered-wrapper bats test covers that PATH.
+
+## Restarting the runner
+
+**The failure.** On 2026-10-12 both hosts ran three `Runner.Listener` processes, all in the
+unit's cgroup. The one that held the session, and so took every job, had started at boot
+on 2026-09-19; the other two came from the deploy of that day. The `.env` on disk was
+correct, but the serving Listener had read it at boot, so container jobs still resolved
+`/usr/bin/docker` and failed with `cannot resolve /github/home`.
+
+**Why.** The unit starts `run.sh`, which starts `run-helper.sh`, which starts
+`bin/Runner.Listener`; the Listener holds the session and starts a `Runner.Worker` per job.
+The unit had `KillMode=process`, so a stop signalled `run.sh` alone. Neither script passes a
+signal on by default (actions/runner v2.336.0, `src/Misc/layoutroot/run.sh`, function
+`run`), so `run.sh` died and the Listener kept running. Every `state: restarted` since the
+unit was introduced stacked a new Listener beside the old one, which kept the session: a
+new Listener retries a session conflict for up to four minutes and then exits
+(`src/Runner.Listener/MessageListener.cs`), and `Restart=always` starts another. No unit or `.env` change after the boot-time start reached the
+process that runs jobs, `NoNewPrivileges=false` included. The deploy did not see it: it read
+`NoNewPrivs` from the unit's `MainPID`, which is the fresh `run.sh`, not the Listener
+(`docs/MISTAKES.md` 10.27).
+
+**What a signal does to the Listener** (actions/runner v2.336.0):
+
+| Signal | Effect |
+|---|---|
+| SIGINT | Graceful stop (`src/Runner.Listener/Runner.cs`, `CtrlCHandler`): no new jobs, a running job is cancelled through the Worker and reported as cancelled, and the session is deleted, so the next Listener is not refused |
+| SIGTERM | The same shutdown, but the Listener waits at most 30 s for it (`Runner_Unloading`, `ExitOnUnloadTimeout` in `src/Runner.Common/Constants.cs`) |
+| SIGKILL | The job is lost and the session stays until the service expires it |
+
+Any stop cancels a running job (`src/Runner.Listener/JobDispatcher.cs`, `ShutdownAsync`).
+No signal lets a job finish; only waiting for the runner to be idle does.
+
+The options, and why this one:
+
+| Option | Result |
+|---|---|
+| GitHub's `svc.sh` shape: `runsvc.sh` with `KillMode=process` | **Rejected.** `runsvc.sh` turns TERM into SIGINT for its node host, which sends the Listener SIGINT and SIGKILL 30 s later (`src/Misc/layoutbin/RunnerService.js`), cutting off a Worker that is still cancelling its job. `KillMode=process` still leaves anything else in the cgroup running after the stop. It also replaces the process chain with node and `--startuptype service`. |
+| `KillMode=control-group` | **Rejected.** Every process in the cgroup gets the stop signal at once, job processes included. With SIGTERM the Listener gets only its 30 s; leftovers that ignore the signal hold the stop for the whole `TimeoutStopSec`. |
+| `KillMode=mixed` alone | **Rejected.** `run.sh` dies on SIGTERM without passing it on, then systemd sends SIGKILL to the Listener and Worker: no job is ever reported cancelled. |
+| `KillMode=mixed` with `RUNNER_MANUALLY_TRAP_SIG=1` | **Chosen.** Upstream's own switch in `run.sh` (`runWithManualTrap`): it runs `run-helper.sh` as its own process group and turns TERM into SIGINT for that group, so the Listener gets its graceful stop. When `run.sh` exits, systemd sends SIGKILL to whatever is left in the cgroup (systemd.kill(5)), so a stop leaves nothing running. `TimeoutStopSec=5min` bounds it. |
+
+The SIGINT reaches the whole process group, so a job's own step processes get it at the
+same time as the Listener, as they would from Ctrl-C on an interactive `./run.sh`. The job
+is cancelled either way. `RUNNER_MANUALLY_TRAP_SIG` is visible to jobs and means nothing to
+anything but `run.sh`. `run.sh` exits 143 after the trapped TERM, so the unit declares
+`SuccessExitStatus=143`.
+
+**How the deploy applies it.** `deploy.sh procs` reads, from `/proc`, the unit's main
+process and every `Runner.Listener` and `Runner.Worker` of the account, and prints one
+verdict per line. The deploy restarts the runner when the unit or `.env` changed, or when
+those lines are not exactly: one Listener, in the unit's cgroup, started after `.env` was
+last written, no `NoNewPrivs` and no private user namespace on the main process, the
+Listener or any Worker, and a `run.sh` that honours the trap variable. A restart is
+`deploy.sh quiesce` and then a start, never `state: restarted`:
+
+1. Wait up to `github_runner_drain_seconds` (default 600) for no Worker to run, so a job in
+   flight can finish. On a busy runner the wait can end with a job still running; it is
+   then cancelled and reported.
+2. `systemctl --user stop`, before the daemon reload, so the stop uses the configuration
+   the running unit was started with. On a host still on the `KillMode=process` unit, a
+   reload first would make this stop send SIGKILL to the Listener that holds the job.
+3. SIGINT to every Listener of the account, read from `/proc`, in the unit's cgroup or
+   not (the ones `KillMode=process` left behind), and wait up to 300 s for them. The
+   account exists only for this runner, so any Listener of it uses this registration.
+4. SIGKILL to whatever is still in the cgroup and to any Listener that survived; the deploy
+   fails unless both are gone. If no cgroup is found, only the Listeners are handled.
+
+After the start, the deploy reads `deploy.sh procs` again and fails unless every line holds.
+A dry run reads the processes and reports the restart decision; it stops and starts nothing,
+so it does not judge the result.
 
 ## Credential chain
 
@@ -269,7 +340,8 @@ yields `<deploy-path>/<deploy-path>/deploy.sh` and `rc=127`.
 Key vars: pinned `github_runner_version` / `github_runner_hooks_version` (an upgrade is a
 declaration change and a review, never something that happens because time passed),
 `github_runner_labels`, `github_runner_group`, `github_runner_account`,
-`podman_docker_cli: true`, and `firewall_deny_egress`.
+`podman_docker_cli: true`, `firewall_deny_egress`, and optionally
+`github_runner_drain_seconds` (how long a restart waits for a running job, default 600).
 
 `firewall_deny_egress` entries must name **single hosts**. A denial broader than
 `firewall_ssh_cidrs` would cut the host off the management network, and the guard rejects
@@ -296,7 +368,9 @@ it — note that every legitimate target sits *inside* that prefix, so a guard p
   login, outside the runner unit, so it inherits none of the unit's properties. On
   2026-10-11 the deploy's `podman unshare` passed that way while every job, a descendant
   of a `NoNewPrivileges=true` unit, failed in `newuidmap`. `deploy-github-runner.yml` now
-  reads the running service's `NoNewPrivs` and user namespace from `/proc/<MainPID>`, runs
+  reads `NoNewPrivs` and the user namespace from `/proc` for the unit's main process, its
+  Listener and any Worker (the main process alone is `run.sh`, see "Restarting the
+  runner"), runs
   the podman mapping check in a `systemd-run --user` transient unit carrying the unit's own
   `NoNewPrivileges` value, and requires at least 65536 ids in both `/etc/subuid` and
   `/etc/subgid` for the account.
@@ -322,7 +396,9 @@ it — note that every legitimate target sits *inside* that prefix, so a guard p
    job may leave a process running after it ends. Both have the same fix — an ephemeral
    runner whose process and filesystem are containerised per job. A best-effort reaper is
    deliberately not shipped: one that cannot tell a leftover process from the runner's own
-   is more dangerous than the gap it closes.
+   is more dangerous than the gap it closes. A stop of the unit is not a per-job reaper:
+   it ends every process in the unit's cgroup, a leftover of a finished job included,
+   because none of them belongs to a running runner any more (`KillMode=mixed`).
 2. Both hosts are on one hypervisor node. The cluster has no shared image storage and the
    only Ubuntu template is node-local, so Proxmox refuses a cross-node clone. Node
    separation needs a second template.

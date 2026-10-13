@@ -91,6 +91,17 @@
     _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
     _branch: "{{ service_branch | default('main') }}"
     _hver: "{{ github_runner_hooks_version | default('0.8.1') }}"
+    # The verdict lines `deploy.sh procs` prints for a runner in the state this deploy
+    # promises: one Listener, in the unit's cgroup, started after .env was last written,
+    # and no no_new_privs or private user namespace on the main process, the Listener or
+    # any Worker. The restart decision and the final verify both compare against it.
+    _runner_converged:
+      - listeners=1
+      - outside_cgroup=0
+      - started_before_env=0
+      - no_new_privs=0
+      - private_userns=0
+      - run_sh_traps=yes
 
   tasks:
     - name: "Validate the declaration"
@@ -617,30 +628,82 @@
         pds_user: "{{ _account }}"
         pds_uid: "{{ _runner_uid }}"
 
+    # ── restart only through a stop that leaves nothing behind ─────────────
+    # Until 2026-10-12 this was a `state: restarted` under KillMode=process: systemd
+    # signalled run.sh alone, the Listener kept running in the unit's cgroup, and each
+    # restart stacked a new Listener beside the one that held the session and took every
+    # job (docs/MISTAKES.md 10.27). No unit or .env change after the boot-time start ever
+    # reached the process that runs jobs. So the deploy reads the Listener itself, before
+    # and after, and a restart is a drain, a stop, and an emptied cgroup, then a start.
+    - name: "Read the runner's Listener and Worker processes"
+      # Read-only, so it also runs in a dry run, where it shows what a real run would do.
+      ansible.builtin.command: "{{ _deploy_dir }}/deploy.sh procs"
+      become: true
+      become_user: "{{ _account }}"
+      # Without XDG_RUNTIME_DIR, `systemctl --user` reports "Failed to connect to bus:
+      # No medium found": sudo does not set it, and lingering creates the runtime
+      # directory but cannot tell a non-login shell where it is.
+      environment:
+        XDG_RUNTIME_DIR: "/run/user/{{ _runner_uid }}"
+        RUNNER_ENV_FILE: "{{ _home }}/config/runner.env"
+      register: _procs_before
+      changed_when: false
+      # A dry run does not update the checkout on the host, so its deploy.sh may predate
+      # `procs`. The decision below then reads no lines and reports a restart.
+      failed_when: _procs_before.rc != 0 and not ansible_check_mode
+      check_mode: false
+
+    - name: "Decide whether the runner must be restarted"
+      # When the unit or .env changed: a running process keeps the properties it was
+      # started with (no_new_privs above all: it can never be cleared), and the Listener
+      # reads .env only when it starts (Runner.Listener/Program.cs, LoadAndSetEnv). And
+      # when the processes are not in the promised state, whatever the cause, so a run
+      # after a failed one still converges.
+      ansible.builtin.set_fact:
+        _runner_restart: >-
+          {{ (_runner_unit.changed | default(false))
+             or ('runner-dotenv.j2' in (_runner_files.results | default([])
+                 | selectattr('changed') | map(attribute='item.src') | list))
+             or (_runner_converged | difference(_procs_before.stdout_lines) | length > 0) }}
+
+    - name: "Report the runner's processes and the restart decision"
+      ansible.builtin.debug:
+        msg: >-
+          restart={{ _runner_restart }}; procs rc={{ _procs_before.rc }};
+          {{ _procs_before.stdout_lines | join('; ') }}
+          {{ (_procs_before.stderr | default('')) | trim }}
+
+    - name: "Drain, stop and empty the runner's unit"
+      # deploy.sh quiesce: waits up to github_runner_drain_seconds for no Worker to run
+      # (any stop cancels a running job, so waiting is the only way to let one finish),
+      # stops the unit with the configuration systemd has LOADED, sends SIGINT to every
+      # Listener of the account and waits for them, then sends SIGKILL to what is left in
+      # the cgroup and to any surviving Listener, and fails unless both are gone. It runs
+      # before the daemon reload on
+      # purpose: on a host still running the KillMode=process unit, a reload first would
+      # make this stop KillMode=mixed, which sends SIGKILL to the Listener that holds the
+      # session and its job instead of letting it cancel the job and report it.
+      ansible.builtin.command: "{{ _deploy_dir }}/deploy.sh quiesce"
+      become: true
+      become_user: "{{ _account }}"
+      environment:
+        XDG_RUNTIME_DIR: "/run/user/{{ _runner_uid }}"
+        RUNNER_ENV_FILE: "{{ _home }}/config/runner.env"
+        RUNNER_DRAIN_SECONDS: "{{ github_runner_drain_seconds | default(600) }}"
+      register: _quiesce
+      changed_when: true
+      when: _runner_restart | bool and not ansible_check_mode
+
     - name: "Reload the account's systemd and start the runner"
       ansible.builtin.systemd_service:
         name: actions-runner.service
         scope: user
         daemon_reload: true
         enabled: true
-        # RESTART when the unit or the runner's .env changed. A running process keeps the
-        # properties it was started with (no_new_privs above all: it can never be
-        # cleared), and the runner reads .env only when it starts
-        # (Runner.Listener/Program.cs), so `started` alone would leave either change inert
-        # on a runner that is already up until the host next reboots. A restart sends
-        # SIGTERM to the runner and waits up to TimeoutStopSec for it, so an in-flight job
-        # on this host may be cut short.
-        state: >-
-          {{ 'restarted'
-             if (_runner_unit.changed | default(false))
-                or ('runner-dotenv.j2' in (_runner_files.results | default([])
-                    | selectattr('changed') | map(attribute='item.src') | list))
-             else 'started' }}
+        # Never `restarted`: a restart is the quiesce above, then this start.
+        state: started
       become: true
       become_user: "{{ _account }}"
-      # Without XDG_RUNTIME_DIR, `systemctl --user` reports "Failed to connect to bus:
-      # No medium found" — sudo does not set it, and lingering creates the runtime
-      # directory but cannot tell a non-login shell where it is.
       environment:
         XDG_RUNTIME_DIR: "/run/user/{{ _runner_uid }}"
 
@@ -666,35 +729,42 @@
     # "rootless containers mapped" on 2026-10-11 while every job, all of them descendants of
     # a unit with NoNewPrivileges=true, failed with "newuidmap: write to uid_map failed:
     # Operation not permitted". Two checks, because each sees what the other cannot.
-    - name: "Confirm the running runner service carries no no_new_privs and no private user namespace"
-      # Read from the kernel, for the service's own main process: every job is a
-      # descendant and inherits exactly this. NoNewPrivs is the effective bit, so it also
-      # catches the unit options that set it implicitly. The user-namespace link must equal
-      # this shell's, which is the host's: PrivateUsers= (and the options that imply it in a
-      # user unit) would put the runner in a namespace that maps no subordinate range.
-      ansible.builtin.shell: |
-        set -euo pipefail
-        pid=$(systemctl --user show --property=MainPID --value actions-runner.service)
-        if [ -z "$pid" ] || [ "$pid" -eq 0 ]; then echo "no main process"; exit 1; fi
-        awk '$1 == "NoNewPrivs:" { print "NoNewPrivs=" $2 }' "/proc/$pid/status"
-        if [ "$(readlink "/proc/$pid/ns/user")" = "$(readlink /proc/self/ns/user)" ]; then
-          echo "userns=host"
-        else
-          echo "userns=private"
-        fi
-      args:
-        executable: /bin/bash
+    - name: "Read the runner's Listener and Worker processes after the start"
+      # Waits for the Listener to appear: run.sh starts run-helper.sh, which starts it.
+      ansible.builtin.command: "{{ _deploy_dir }}/deploy.sh procs"
       become: true
       become_user: "{{ _account }}"
       environment:
         XDG_RUNTIME_DIR: "/run/user/{{ _runner_uid }}"
-      register: _runner_privs
+        RUNNER_ENV_FILE: "{{ _home }}/config/runner.env"
+      register: _procs
       changed_when: false
-      failed_when: >-
-        _runner_privs.rc != 0
-        or 'NoNewPrivs=0' not in _runner_privs.stdout_lines
-        or 'userns=host' not in _runner_privs.stdout_lines
+      failed_when: _procs.rc != 0 and not ansible_check_mode
+      until: ansible_check_mode or ('listeners=0' not in _procs.stdout_lines)
+      retries: 12
+      delay: 5
       check_mode: false
+
+    - name: "Require one Listener, in the unit's cgroup, started after .env, with no no_new_privs"
+      # Read from the kernel, for the processes that run jobs. The check this replaces
+      # read only the unit's MainPID, which is run.sh: each stacked restart gave it a fresh
+      # run.sh carrying the unit's current settings, so it passed while the Listener that
+      # took every job still ran with the settings of its own start (docs/MISTAKES.md
+      # 10.27). Every job is a descendant of the Listener and its Worker and inherits
+      # exactly what they carry. NoNewPrivs is the effective bit, so it also catches the
+      # unit options that set it implicitly. The user namespace must be the host's:
+      # PrivateUsers= (and the options that imply it in a user unit) would put the runner
+      # in a namespace that maps no subordinate range. Skipped in a dry run, which starts
+      # nothing; the restart decision above reports the same lines.
+      ansible.builtin.assert:
+        that:
+          - _runner_converged | difference(_procs.stdout_lines) | length == 0
+        fail_msg: >-
+          The runner's processes are not in the promised state. Missing:
+          {{ _runner_converged | difference(_procs.stdout_lines) | join(', ') }}.
+          Read: {{ _procs.stdout_lines | join('; ') }}
+        success_msg: "One Listener, in the unit's cgroup, started after .env; no no_new_privs on it, its Worker or run.sh."
+      when: not ansible_check_mode
 
     - name: "Confirm rootless podman maps the account's ranges from inside the user manager"
       # Exercises newuidmap/newgidmap for real, in a transient unit of the SAME user
@@ -823,7 +893,8 @@
           {{ github_runner_name }} installed (runner v{{ _rver }}, hooks v{{ _hver }}),
           service {{ _active.stdout | trim }}, labels
           {{ (github_runner_labels | default([])) | join(',') }}, group
-          {{ github_runner_group }}, no_new_privs off on the running service, rootless
+          {{ github_runner_group }}, one Listener started after .env with no_new_privs
+          off, rootless
           containers mapped from inside the user manager
           ({{ _uidmap.stdout_lines.index('gid_map') - _uidmap.stdout_lines.index('uid_map') - 1 }}
           uid map lines), a job container created with the runner's mounts and the

@@ -251,11 +251,13 @@ setup() {
   grep -q 'config/postiz.env' "$f"
 }
 
-@test "postiz: deploy.sh force-recreates so re-rendered config applies" {
+@test "postiz: deploy.sh recreates on a changed config so re-rendered config applies" {
   local f="$DEPLOY_DIR/deploy.sh"
   # A bind-mounted file's CONTENT change is not a compose-spec change, so a
   # plain 'up -d' would leave the old container running with stale config.
-  grep -qE 'compose up -d --force-recreate' "$f"
+  # compose_up_if_changed hashes the file and recreates when it changes.
+  grep -qE '^ *compose_up_if_changed .*config/postiz\.env' "$f"
+  refute_grep -q 'compose up -d' "$f"
 }
 
 @test "postiz: env.j2 carries ONLY compose-substitution values" {
@@ -511,12 +513,13 @@ print('OK' if seed == dep else f'DRIFT seed-only={sorted(seed-dep)} declared-onl
   [ "$secs" -ge 120 ]
 }
 
-@test "postiz: deploy.sh force-recreates because config is a bind-mounted FILE" {
+@test "postiz: deploy.sh hashes the bind-mounted config FILE into the recreate decision" {
   # A change to the CONTENT of a bind-mounted file is not a compose-spec change,
   # so a plain `up -d` leaves the running container with the previous config
-  # loaded — the re-rendered secrets would silently not take effect.
+  # loaded — the re-rendered secrets would silently not take effect. Both the
+  # prod and the local call must name the file.
   local f="$DEPLOY_DIR/deploy.sh"
-  grep -qE 'compose up -d --force-recreate' "$f"
+  [ "$(grep -cE '^ *compose_up_if_changed .*config/postiz\.env' "$f")" -eq 2 ]
 }
 
 @test "postiz: deploy.sh fails loudly when the bind-mount source is missing" {
