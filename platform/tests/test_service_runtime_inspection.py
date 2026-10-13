@@ -10,6 +10,13 @@ import pytest
 REPO = Path(__file__).resolve().parents[2]
 PLAYBOOK = REPO / "platform/playbooks/inspect-service-runtime.yml"
 
+# Why a container restarts: OOM flag, health, start/finish, engine error. No environment, no logs.
+FORMAT = (
+    "{{.State.Status}} exit={{.State.ExitCode}} oom={{.State.OOMKilled}} restarts={{.RestartCount}} "
+    "health={{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}} "
+    "started={{.State.StartedAt}} finished={{.State.FinishedAt}} error={{.State.Error}}"
+)
+
 pytestmark = pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="needs ansible-playbook")
 
 
@@ -26,8 +33,8 @@ def _run(tmp_path, names, target_service="demo_svc"):
         f"    printf '%s' '{names}' ;;\n"
         "  inspect)\n"
         "    [ \"$2\" = --format ] || exit 44\n"
-        "    [ \"$3\" = '{{.State.Status}} {{.State.ExitCode}} {{.RestartCount}}' ] || exit 45\n"
-        "    printf 'exited 1 0\\n' ;;\n"
+        f"    [ \"$3\" = '{FORMAT}' ] || exit 45\n"
+        "    printf 'exited exit=137 oom=true restarts=272 health=none started=t finished=t error=\\n' ;;\n"
         "  *) exit 99 ;;\n"
         "esac\n"
     )
@@ -52,7 +59,16 @@ def _run(tmp_path, names, target_service="demo_svc"):
 def test_stopped_container_is_reported_in_check_mode(tmp_path):
     done = _run(tmp_path, "demo-server\n")
     assert done.returncode == 0, done.stdout[-2000:]
-    assert "demo-server: exited 1 0" in done.stdout
+    assert "demo-server: exited exit=137 oom=true restarts=272 health=none" in done.stdout
+
+
+def test_inspector_never_reads_environment_or_logs():
+    text = PLAYBOOK.read_text()
+    assert "Config.Env" not in text
+    assert "Config.Cmd" not in text
+    # The only engine subcommands the play runs are ps and inspect; never logs/exec/env.
+    for forbidden in ("- logs", "- exec", "--env", "printenv"):
+        assert forbidden not in text
 
 
 def test_empty_listing_fails_closed(tmp_path):
