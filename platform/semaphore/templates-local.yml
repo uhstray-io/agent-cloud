@@ -265,6 +265,18 @@ templates:
         type: string
         required: true
 
+  # Free an idle service's memory without losing its state: stops its containers, keeps the
+  # containers, images and volumes. Local-dev hosts only (refuses any host not named
+  # <name>-local). Reverse it with the service's own Deploy template.
+  - name: "Stop Local Service"
+    playbook: platform/playbooks/stop-local-service.yml
+    survey_vars:
+      - name: target_service
+        title: Target group
+        description: Inventory group of the idle local service to stop (e.g. erpnext_svc)
+        type: string
+        required: true
+
   - name: "Snapshot Firewall (Local)"
     playbook: platform/playbooks/snapshot-firewall.yml
     survey_vars:

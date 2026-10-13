@@ -1,0 +1,164 @@
+---
+# stop-local-service.yml — stop ONE idle local-dev service's containers, keep everything else.
+#
+#   -e target_service=<group>       e.g. erpnext_svc
+#
+# Why it exists: a developer keeps only the services the current work needs running. Before
+# this, the only ways to free a service's memory were clean-deploy-<service>.yml (which deletes
+# its volumes) or a hand-typed `podman stop` (a one-off nobody can reproduce).
+#
+# What it does: `<engine> stop` over the service's RUNNING containers, selected exactly as
+# verify-service-persistence.yml selects them (tasks/list-service-containers.yml: the compose
+# working_dir label), plus the names in the optional host var `stop_extra_containers` for a
+# container the compose project did not create and so carries no label (NetBox's
+# `netbox-orb-agent`, started by tasks/deploy-orb-agent.yml). Containers, images, volumes, the
+# deploy directory, OpenBao state and every rendered file are untouched: no `compose down`, no
+# `rm`, no volume command, no restart-policy change (`podman update` would drift from the
+# inputs-digest label compose recorded, and survive the next deploy).
+#
+# Bring it back: run the service's own "Deploy <Service> (Local)" template. A stopped container
+# is the "container not running" reason in lib/common.sh _compose_recreate_reason, so the deploy
+# starts it again instead of skipping it as unchanged.
+#
+# LOCAL-DEV ONLY, by design. Every host of the play must be named `<name>-local` (the name every
+# local-dev inventory gives its host: platform/inventory/local-dev.yml.example); anything else
+# is refused before any engine call. Production has no idle-stop need, and stopping a
+# production service is an outage. The host names are read from ansible_play_hosts_all, which
+# an extra var cannot set (tasks/clean-service.yml, the same refusal there), never from
+# inventory_hostname.
+#
+# Idempotent: a container already stopped, or absent, is reported and left alone; a second run
+# changes nothing. Under --check it reports what it would stop and stops nothing.
+#
+# KNOWN CEILING (read before relying on it across a reboot). The containers keep their
+# `restart: always` policy. Verified against podman-run(1), `--restart`
+# (https://docs.podman.io/en/latest/markdown/podman-run.1.html, fetched 2026-10-12):
+#   - "Restart policy does not take effect if a container is stopped via the podman kill or
+#     podman stop commands", so the stop sticks for as long as the machine stays up.
+#   - podman-restart.service "restarts containers after a system reboot", and `always`
+#     "restarts containers after a system reboot regardless of whether they were user-stopped"
+#     (that page contrasts it with `unless-stopped`).
+# So a container stopped here can start again the next time the machine reboots; re-run this
+# playbook afterwards. unverified: the exact command podman-restart.service runs, and whether a
+# Docker engine behaves the same (only the podman page was read).
+#
+# No credential is read or written here, so no task carries no_log.
+
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: "Refuse a target group that is not one service's group, or matches no hosts"
+  # A play whose hosts: matches nothing exits 0 having stopped nothing, which reads as success.
+  # `--limit` leaves localhost out and skips this play, so the work play repeats the host-name
+  # refusal as its own first task; this play is the empty-group and group-shape guard.
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: "Require target_service to name one populated <service>_svc group"
+      ansible.builtin.assert:
+        that:
+          - target_service | default('') is match('^[A-Za-z0-9_]+_svc\Z')
+          - (groups.get(target_service | default(''), []) | length) > 0
+        fail_msg: >-
+          Refusing: target_service '{{ target_service | default('') }}' must name one
+          <service>_svc inventory group that holds hosts (for example erpnext_svc). Nothing was
+          stopped.
+        quiet: true
+
+- name: "Stop the idle local-dev service: {{ target_service | default('(unset)') }}"
+  hosts: "{{ target_service | default('ungrouped') }}"
+  gather_facts: false
+  become: false
+  any_errors_fatal: true
+  tasks:
+    - name: "Refuse any host that is not a local-dev host, before any engine call"
+      # ansible_play_hosts_all, not inventory_hostname: an extra var can set the latter.
+      ansible.builtin.assert:
+        that: ansible_play_hosts_all | reject('match', '^[A-Za-z0-9._-]+-local\Z') | list | length == 0
+        fail_msg: >-
+          Refusing: stop-local-service is for local-dev hosts only (named <name>-local), and
+          these hosts of the play are not:
+          {{ ansible_play_hosts_all | reject('match', '^[A-Za-z0-9._-]+-local\Z') | list | join(', ') }}.
+          Nothing was stopped.
+        quiet: true
+
+    - name: "Refuse an extra-container list that is not a list of plain container names"
+      ansible.builtin.assert:
+        that:
+          - stop_extra_containers | default([]) is sequence
+          - stop_extra_containers | default([]) is not string
+          - stop_extra_containers | default([]) | reject('match', '^[A-Za-z0-9][A-Za-z0-9_.-]*\Z') | list | length == 0
+        fail_msg: >-
+          Refusing: stop_extra_containers must be a list of container names (letters, digits,
+          `.`, `_`, `-`, starting with a letter or digit). Nothing was stopped.
+        quiet: true
+
+    - name: "Refuse a container engine that is neither docker nor podman"
+      ansible.builtin.assert:
+        that: (container_engine | default('podman')) in ['docker', 'podman']
+        fail_msg: "Refusing: container_engine must be docker or podman. Nothing was stopped."
+        quiet: true
+
+    - name: "List every container of the service, stopped ones included"
+      ansible.builtin.include_tasks: tasks/list-service-containers.yml
+      vars:
+        _lsc_fields: [Names]
+        _lsc_all: true
+
+    - name: "Remember the service's containers"
+      ansible.builtin.set_fact:
+        _stop_all: "{{ _lsc.stdout_lines }}"
+
+    - name: "List the service's RUNNING containers"
+      ansible.builtin.include_tasks: tasks/list-service-containers.yml
+      vars:
+        _lsc_fields: [Names]
+        _lsc_all: false
+
+    - name: "Remember the service's running containers"
+      ansible.builtin.set_fact:
+        _stop_running: "{{ _lsc.stdout_lines }}"
+
+    - name: "List every container on the engine (the extra containers carry no compose label)"
+      ansible.builtin.command:
+        argv: [ "{{ _engine }}", ps, -a, --format, "{{ '{{' }}.Names{{ '}}' }}" ]
+      become: "{{ podman_rootful | default(false) | bool }}"
+      register: _stop_engine_all
+      changed_when: false
+      check_mode: false
+      when: stop_extra_containers | default([]) | length > 0
+
+    - name: "List the engine's RUNNING containers"
+      ansible.builtin.command:
+        argv: [ "{{ _engine }}", ps, --format, "{{ '{{' }}.Names{{ '}}' }}" ]
+      become: "{{ podman_rootful | default(false) | bool }}"
+      register: _stop_engine_running
+      changed_when: false
+      check_mode: false
+      when: stop_extra_containers | default([]) | length > 0
+
+    - name: "Work out what to stop and what is already stopped"
+      ansible.builtin.set_fact:
+        _stop_present: >-
+          {{ _stop_all + (stop_extra_containers | default([]) | select('in', _stop_engine_all.stdout_lines | default([])) | list) }}
+        _stop_now: >-
+          {{ _stop_running + (stop_extra_containers | default([]) | select('in', _stop_engine_running.stdout_lines | default([])) | list) }}
+
+    - name: "Stop the running containers (nothing is removed)"
+      ansible.builtin.command:
+        argv: "{{ [_engine, 'stop'] + _stop_now }}"
+      become: "{{ podman_rootful | default(false) | bool }}"
+      register: _stop_result
+      changed_when: true
+      when: _stop_now | length > 0
+
+    - name: "Report what was stopped"
+      ansible.builtin.debug:
+        msg:
+          - "{{ ('Would stop' if ansible_check_mode else 'Stopped') ~ ': ' ~ ((_stop_now | join(', ')) if _stop_now | length > 0 else '(nothing was running)') }}"
+          - "Already stopped or absent: {{ ((_stop_present | difference(_stop_now)) | join(', ')) if (_stop_present | difference(_stop_now)) | length > 0 else '(none)' }}"
+          - "Containers, images and volumes were kept. Bring it back with its Deploy <Service> (Local) template."
+          - "Note: containers with restart policy always can start again at the next machine boot (podman-restart.service); re-run this to stop them again."
