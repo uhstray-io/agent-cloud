@@ -115,7 +115,10 @@ discovery.relabel "metrics" {
 prometheus.scrape "local_containers" {
   targets         = discovery.relabel.metrics.output
   scrape_interval = "15s"
-  body_size_limit = encoding.from_json(sys.env("O11Y_SCRAPE_BODY_SIZE_LIMIT_BYTES"))
+  // Alloy's body_size_limit is a units string (for example "16MiB"), not a
+  // number. The env carries bytes, so append the "B" unit; a bare number fails
+  // the config load and crash-loops the container (docs/MISTAKES.md 10.26).
+  body_size_limit = sys.env("O11Y_SCRAPE_BODY_SIZE_LIMIT_BYTES") + "B"
   sample_limit    = encoding.from_json(sys.env("O11Y_SCRAPE_SAMPLE_LIMIT"))
   label_limit     = encoding.from_json(sys.env("O11Y_SCRAPE_LABEL_LIMIT"))
   label_name_length_limit = encoding.from_json(sys.env("O11Y_SCRAPE_LABEL_NAME_LENGTH_LIMIT"))

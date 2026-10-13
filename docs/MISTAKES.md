@@ -166,6 +166,7 @@ and why.
 | 10.23 | The main-to-dev sync failed on every workflow-file change from 2026-08-28; a promotion would have reverted two action bumps on `main` | Mechanism never exercised | 1 | CI (`Promotion source (dev -> main)` ancestry step; `test_promotion_source_guard.py`, mutation-checked) |
 | 10.24 | Shipped container jobs on rootless podman with Docker's mount semantics assumed; every `container:` job failed on a missing bind source and on a socket link to root's podman, while the deploy's uid-map check passed | Mechanism never exercised | 1 | Playbook probe (hook-shaped `docker create` in the user manager) + test (`test_service_github_runner.bats`) |
 | 10.25 | The 10.24 probe copied the hooks' `docker create` arguments but ran it with the account's own environment; the hooks pass HOME=/github/home and no XDG directories, so every `container:` job still failed with `cannot resolve /github/home` | Mechanism never exercised | 1 | Playbook probe (wrapper run under `env -i` with the hooks' HOME, one image store for pull and create) + test (`test_service_github_runner.bats`) |
+| 10.26 | Merged an Alloy config change no real Alloy binary had loaded; the rendered config failed to load on v1.5.1 and the production container crash-looped for ~1,000 restarts | Mechanism never exercised | 1 | Test (text guard, `test_o11y_scrape_budgets.py`, mutation-checked) + Convention for the load proof (CI step proposed) |
 | 11.1 | 76 assertions across the suite could never fail — `!` and `[[ ]]` are exempt from `set -e` | False-green test | 1 | **Ratchet test** (`test_assertions_are_real.bats` + `known_inert_assertions.txt`) |
 | 11.2 | Sourced a config file instead of reading it, turning every credential into shell code | Live-state damage | 1 | Test |
 | 11.3 | Committed without running the suite — third occurrence | Process | 1 | Pre-push hook (status note 2026-10-02) |
@@ -4559,6 +4560,39 @@ containers. `test_service_github_runner.bats` renders the wrapper and runs it ag
 stub podman with the hooks' environment and argument shapes for create, run and exec
 (compared byte for byte, including a command after the image that contains `-e PATH`), and
 requires the probe's environment, the absence of a migrate, and the `.env` PATH.
+
+### 10.26 An Alloy config change merged without the real Alloy binary loading the rendered config
+
+**What happened.** PR #570 (commit `2ce3e074`, "require reviewed finite metric scrape
+budgets") put the five scrape limits into Alloy's local-container scrape as
+`encoding.from_json(sys.env(...))`, including `body_size_limit`. Once `Deploy o11y (Dev)`
+(Semaphore task 5000) rolled that commit to production, `o11y-alloy` crash-looped: task 5015
+read `running exit=0 oom=false restarts=1027 health=starting`. The deploy's verify had
+waited on health and failed with "starting", printing no Alloy log. A local repro found the
+cause: rendering `config.alloy.j2` and running the pinned `docker.io/grafana/alloy:v1.5.1`
+printed `config.alloy:118:21: encoding.from_json(sys.env("O11Y_SCRAPE_BODY_SIZE_LIMIT_BYTES"))
+units: unknown unit  in 16777216`, then "could not perform the initial load successfully".
+Alloy's `body_size_limit` takes a units string such as `16MiB`; the env carries bytes, so a
+bare number is a type error. Appending the `B` unit made the config load and every node
+evaluate; the other four numeric limits had loaded all along.
+
+**Root cause.** Every test of the Alloy config asserted the template's text, or rendered
+it and compared the text. Nothing ran Alloy against the rendered file, so a type error that
+only Alloy's own loader reports could not fail anywhere before production. The deploy's
+verify step could only wait for health, and on failure showed the health state, not the
+reason the process kept exiting.
+
+**The rule.** Any change to an Alloy config is proven by loading the rendered config in the
+pinned Alloy image before merge. A text assertion on the template is a pin on one line,
+not evidence that Alloy accepts it.
+
+**Enforced by.** The text guard is a test:
+`test_alloy_local_scrape_uses_same_finite_bounds_and_existing_sample_ceiling` in
+`test_o11y_scrape_budgets.py` now requires the `body_size_limit` line to append a unit and
+not to be `encoding.from_json(...)` (mutation-checked against the old line). The load proof
+itself is `Convention`. Proposed guard: a CI step or `make` target that renders the config
+and runs the pinned Alloy image on it, and a deploy-verify failure path that dumps the
+redacted Alloy container log so a crash loop names its cause.
 
 ## 11. The largest one
 

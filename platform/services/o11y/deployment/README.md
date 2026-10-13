@@ -129,6 +129,11 @@ integer no greater than 20,000. Missing, unreviewed, malformed, nonpositive,
 or excessive production values are refused before placement or rendering; they
 are never coerced or clamped to one.
 
+Alloy takes `body_size_limit` as a units string (for example `16MiB`), not a
+number, so its config appends the `B` unit to the bytes carried in
+`O11Y_SCRAPE_BODY_SIZE_LIMIT_BYTES`; a bare number fails the config load and
+crash-loops the container. The other four limits stay numeric.
+
 The existing `o11y_scrape_sample_limit` remains the stricter ceiling for the
 receiver-host and host-node exporters. All scrape paths retain the forbidden
 label drop and target identity labels. Per-scrape bounds restrict one response

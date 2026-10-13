@@ -340,7 +340,11 @@ def test_playbooks_run_the_shared_budget_gate_before_owned_actions():
 def test_alloy_local_scrape_uses_same_finite_bounds_and_existing_sample_ceiling():
     alloy = (DEPLOY / "templates/config.alloy.j2").read_text(encoding="utf-8")
     block = alloy.split('prometheus.scrape "local_containers" {', 1)[1].split("\n}", 1)[0]
-    assert 'body_size_limit = encoding.from_json(sys.env("O11Y_SCRAPE_BODY_SIZE_LIMIT_BYTES"))' in block
+    # Alloy's body_size_limit is a units string; a bare number fails the config load
+    # (docs/MISTAKES.md 10.26). The bytes env gets the "B" unit appended.
+    body_line = next(line for line in block.splitlines() if line.strip().startswith("body_size_limit"))
+    assert body_line.strip() == 'body_size_limit = sys.env("O11Y_SCRAPE_BODY_SIZE_LIMIT_BYTES") + "B"'
+    assert "encoding.from_json" not in body_line
     assert 'sample_limit    = encoding.from_json(sys.env("O11Y_SCRAPE_SAMPLE_LIMIT"))' in block
     assert 'label_limit     = encoding.from_json(sys.env("O11Y_SCRAPE_LABEL_LIMIT"))' in block
     assert 'label_name_length_limit = encoding.from_json(sys.env("O11Y_SCRAPE_LABEL_NAME_LENGTH_LIMIT"))' in block
