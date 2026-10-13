@@ -27,6 +27,28 @@ currently have NetBox configured on Docker; production is the current validation
 target. Local app readiness cannot prove the privileged, host-network discovery
 path or production ingestion. This documentation establishes no recovery result.
 
+## Change-aware deploy
+
+`deploy.sh` recreates the stack only when its inputs changed (`lib/common.sh`,
+`netbox_inputs_digest` and `netbox_recreate_reason`; NetBox keeps its own compose
+wrapper, so it does not use `compose_up_if_changed` from `platform/lib/`). An
+unchanged re-run must stop at the `DEPLOY_CHANGED=false` line before anything is
+stopped, built or removed: the standalone orb-agent is not a compose service,
+`stop_orb_agent` removes it, and nothing in this workflow starts it again.
+
+- A new bind-mounted config file, a new environment-read compose variable, or a
+  new image build input belongs in the digest. One left out changes without the
+  containers being recreated.
+- Do not add `.env` keys the credential refresh rewrites (`ORB_AGENT_*`,
+  `SNMP_COMMUNITY`) to the digest: every run would then look changed.
+- Every `compose up` after the decision carries `.deploy-inputs-label.yml` through
+  `COMPOSE_OVERLAYS`; one started without it is recreated by the next run.
+- `netbox_force_rebuild` / `deploy_force_recreate` (literal `true`) are the operator
+  levers. A changed deploy stops the orb-agent; the operator runs Deploy Orb Agent.
+- Never delete or replace a bind-mounted directory under a running stack
+  (`platform/tests/test_no_bind_mount_dir_delete.py` covers this service).
+  `deploy.sh` forces a recreate when it replaces the `netbox-docker/` clone.
+
 ## Responsibilities that must remain separate
 
 | Entry point | Owns |

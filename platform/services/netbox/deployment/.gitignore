@@ -40,3 +40,7 @@ __pycache__/
 # them: it could not, and every placement after an agent start failed with rsync code 23.
 workers/**/build/
 workers/**/*.egg-info/
+
+# Written by deploy.sh (inputs-digest label overlay) and post-deploy.sh (completion marker)
+.deploy-inputs-label.yml
+.post-deploy-complete
