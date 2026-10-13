@@ -154,6 +154,31 @@
       no_log: true
       when: not ansible_check_mode
 
+    - name: Keep alert-input availability independent and bounded
+      ansible.builtin.set_fact:
+        _scrape_alert_input_availability: "{{ _scrape_survey_result.alert_input_availability }}"
+      no_log: true
+      when: not ansible_check_mode
+
+    - name: Validate the fixed alert-input availability projection
+      ansible.builtin.assert:
+        that:
+          - _scrape_alert_input_availability.status == 'observed'
+          - _scrape_alert_input_availability | length == 2
+          - _scrape_alert_input_availability.families is sequence
+          - _scrape_alert_input_availability.families | length == 6
+          - (_scrape_alert_input_availability.families | selectattr('family', 'defined') | list | length) == 6
+          - (_scrape_alert_input_availability.families | selectattr('status', 'defined') | list | length) == 6
+          - (_scrape_alert_input_availability.families | selectattr('reason', 'defined') | list | length) == 6
+          - (_scrape_alert_input_availability.families | map('length') | select('equalto', 3) | list | length) == 6
+          - (_scrape_alert_input_availability.families | map(attribute='family') | list) == ['otelcol_receiver_refused_log_records_total', 'otelcol_receiver_refused_spans_total', 'otelcol_exporter_enqueue_failed_spans_total', 'otelcol_exporter_send_failed_spans_total', 'loki_discarded_samples_total', 'tempo_discarded_spans_total']
+          - (_scrape_alert_input_availability.families | selectattr('status', 'in', ['observed_zero', 'observed_nonzero', 'missing_or_stale', 'unavailable']) | list | length) == 6
+          - (_scrape_alert_input_availability.families | selectattr('reason', 'in', ['samples_present', 'no_samples', 'malformed_response', 'malformed_sample', 'ambiguous_target', 'ambiguous_series', 'target_unavailable', 'api_unavailable']) | list | length) == 6
+        fail_msg: "The alert-input availability receipt is outside its fixed public schema."
+        quiet: true
+      no_log: true
+      when: not ansible_check_mode
+
     - name: Report the source-only candidate budget preview
       ansible.builtin.debug:
         msg: "{{ _scrape_budget_candidate_preview | to_json }}"
@@ -162,6 +187,11 @@
     - name: Report loaded inline scrape-limit coverage
       ansible.builtin.debug:
         msg: "{{ _scrape_loaded_limit_coverage | to_json }}"
+      when: not ansible_check_mode
+
+    - name: Report bounded alert-input availability
+      ansible.builtin.debug:
+        msg: "{{ _scrape_alert_input_availability | to_json }}"
       when: not ansible_check_mode
 
     - name: Report the bounded baseline receipt
@@ -182,4 +212,8 @@
             status: check_mode_unverified
             reason: "Prometheus status APIs are skipped in check mode."
             jobs: []
+          alert_input_availability:
+            status: check_mode_unverified
+            reason: "Prometheus alert-input queries are skipped in check mode."
+            families: []
       when: ansible_check_mode

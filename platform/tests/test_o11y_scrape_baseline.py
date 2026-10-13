@@ -4,6 +4,7 @@ import json
 import shutil
 import subprocess
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 import yaml
@@ -987,17 +988,26 @@ def test_playbook_has_one_sensitive_remote_invocation_exact_sha_and_check_mode_g
 
     receiver = next(play for play in playbook if play.get("name") == "Read and reduce the production scrape baseline")
     protected = [task for task in receiver["tasks"] if task.get("no_log")]
-    assert len(protected) == 5
+    assert len(protected) == 7
     invocation = next(
         task for task in protected if task["name"] == "Collect and sanitize the active scrape baseline on the receiver"
     )
     parse = next(task for task in protected if task["name"] == "Parse the helper's bounded public projection")
     compare = next(task for task in protected if task["name"] == "Compute bounded loaded inline scrape-limit coverage")
+    alert_projection = next(
+        task for task in protected if task["name"] == "Keep alert-input availability independent and bounded"
+    )
+    alert_validation = next(
+        task for task in protected if task["name"] == "Validate the fixed alert-input availability projection"
+    )
     assert "delegate_to" not in invocation
     assert "ansible.builtin.script" in invocation
     assert invocation["when"] == "not ansible_check_mode"
     assert parse["no_log"] is True
     assert compare["no_log"] is True
+    assert alert_projection["no_log"] is True
+    assert alert_validation["no_log"] is True
+    assert alert_validation["when"] == "not ansible_check_mode"
     assert "config_yaml" not in str(
         next(task for task in receiver["tasks"] if task["name"] == "Report loaded inline scrape-limit coverage")
     )
@@ -1015,4 +1025,143 @@ def test_playbook_has_one_sensitive_remote_invocation_exact_sha_and_check_mode_g
     check_mode = next(task for task in receiver["tasks"] if task.get("name") == "Mark check-mode results as unverified")
     assert check_mode["when"] == "ansible_check_mode"
     assert check_mode["ansible.builtin.debug"]["msg"]["loaded_limits"]["status"] == "check_mode_unverified"
+    assert check_mode["ansible.builtin.debug"]["msg"]["alert_input_availability"]["status"] == "check_mode_unverified"
     assert "scrape_body_size_bytes" not in HELPER.read_text()
+
+
+def _alert_metric(family, job, instance, timestamp, value, reason):
+    return {
+        "metric": {"__name__": family, "job": job, "instance": instance, "reason": reason},
+        "value": [timestamp, value],
+    }
+
+
+def test_alert_input_availability_uses_lookback_and_empty_vector_for_missing_or_stale(monkeypatch):
+    targets = [
+        _target("alloy", "alloy-private:4317"),
+        _target("loki", "loki-private:3100"),
+        _target("tempo", "tempo-private:3200"),
+    ]
+    families = [family for family, _job in SURVEY.ALERT_INPUTS]
+    results = {
+        families[0]: [
+            _alert_metric(families[0], "alloy", "alloy-private:4317", 1000, "0", "reason-private-a"),
+            _alert_metric(families[0], "alloy", "alloy-private:4317", 1000, "0", "reason-private-b"),
+        ],
+        families[1]: [_alert_metric(families[1], "alloy", "alloy-private:4317", 700, "2", "private-reason")],
+        families[2]: [],
+        families[3]: [_alert_metric(families[3], "alloy", "alloy-private:4317", 699, "0", "stale")],
+        families[4]: b'{"status":"success","private_payload":"API-BODY-SENTINEL"}',
+        families[5]: SURVEY.Refusal("alert_query_unavailable"),
+    }
+    queries = []
+    lookbacks = []
+
+    def run_api(path, _reason="query_unavailable"):
+        params = parse_qs(urlsplit("http://prometheus" + path).query)
+        query = params["query"][0]
+        queries.append(query)
+        lookbacks.append(params["lookback_delta"])
+        family = next(name for name in families if query.startswith(name + "{"))
+        assert "or vector(0)" not in query
+        result = results[family]
+        if isinstance(result, Exception):
+            raise result
+        if isinstance(result, bytes):
+            return result
+        return _vector(result).encode()
+
+    monkeypatch.setattr(SURVEY, "_run_api", run_api)
+    receipt = SURVEY._alert_input_availability(_targets(targets))
+
+    assert receipt["status"] == "observed"
+    assert receipt["families"] == [
+        {"family": families[0], "status": "observed_zero", "reason": "samples_present"},
+        {"family": families[1], "status": "observed_nonzero", "reason": "samples_present"},
+        {"family": families[2], "status": "missing_or_stale", "reason": "no_samples"},
+        {"family": families[3], "status": "observed_zero", "reason": "samples_present"},
+        {"family": families[4], "status": "unavailable", "reason": "malformed_response"},
+        {"family": families[5], "status": "unavailable", "reason": "api_unavailable"},
+    ]
+    assert len(queries) == 6
+    assert lookbacks == [["5m"]] * 6
+    assert all("or%20vector" not in query for query in queries)
+    public = json.dumps(receipt)
+    for sentinel in ("alloy-private", "loki-private", "tempo-private", "private-reason", "API-BODY-SENTINEL"):
+        assert sentinel not in public
+
+
+@pytest.mark.parametrize(
+    "row,expected_reason",
+    [
+        (_alert_metric("counter", "alloy", "alloy-private:4317", 1000, "-1", "bad"), "malformed_sample"),
+        (_alert_metric("counter", "alloy", "alloy-private:4317", 1000, "Infinity", "bad"), "malformed_sample"),
+        (_alert_metric("counter", "alloy", "alloy-private:4317", "bad-time", "1", "bad"), "malformed_sample"),
+        (_alert_metric("counter", "other", "foreign:4317", 1000, "1", "bad"), "ambiguous_target"),
+    ],
+)
+def test_alert_input_rejects_negative_or_ambiguous_samples_without_echoing_labels(row, expected_reason, monkeypatch):
+    family = SURVEY.ALERT_INPUTS[0]
+    row["metric"]["__name__"] = family[0]
+    targets = _targets([_target("alloy", "alloy-private:4317")])
+    raw = _vector([row]).encode()
+    monkeypatch.setattr(SURVEY, "_run_api", lambda *_args: raw)
+    receipt = SURVEY._alert_input_availability(targets)
+    assert receipt["families"][0] == {
+        "family": family[0], "status": "unavailable", "reason": expected_reason
+    }
+
+
+def test_alert_input_oversized_response_is_unavailable(monkeypatch):
+    monkeypatch.setattr(SURVEY, "MAX_API_BYTES", 1)
+    raw = _vector([]).encode()
+    monkeypatch.setattr(SURVEY, "_targets", lambda _raw: {("alloy", "alloy-private:4317"): ("alloy", "http://alloy-private:4317/metrics")})
+    monkeypatch.setattr(SURVEY, "_run_api", lambda *_args: raw)
+    receipt = SURVEY._alert_input_availability(
+        _targets([_target("alloy", "alloy-private:4317")])
+    )
+    assert receipt["families"][0] == {
+        "family": SURVEY.ALERT_INPUTS[0][0], "status": "unavailable", "reason": "malformed_response"
+    }
+
+
+def test_alert_input_failure_does_not_replace_the_required_baseline(monkeypatch):
+    baseline = {"status": "observed", "active_target_count": 1, "jobs": [{"job": "alloy"}]}
+    targets_raw = _targets([_target("alloy", "alloy-private:4317")]).encode()
+
+    monkeypatch.setattr(SURVEY, "_require_curl_version", lambda: None)
+    monkeypatch.setattr(
+        SURVEY,
+        "_run_api",
+        lambda path, *_args: targets_raw if path == "/api/v1/targets?state=active" else _vector([]).encode(),
+    )
+    monkeypatch.setattr(SURVEY, "summarize", lambda *_args: baseline)
+    monkeypatch.setattr(SURVEY, "_loaded_limit_readback", lambda *_args: {"status": "unavailable", "reason": "test"})
+    def fail_alert_receipt(*_args):
+        raise RuntimeError("secret")
+
+    monkeypatch.setattr(SURVEY, "_alert_input_availability", fail_alert_receipt)
+
+    receipt = SURVEY.collect()
+
+    assert receipt["baseline"] is baseline
+    assert receipt["loaded_limit_readback"] == {"status": "unavailable", "reason": "test"}
+    assert all(family["status"] == "unavailable" for family in receipt["alert_input_availability"]["families"])
+    assert "secret" not in json.dumps(receipt)
+
+
+def test_alert_input_playbook_reports_only_fixed_projection_and_skips_check_mode():
+    playbook = yaml.safe_load((ROOT / "platform/playbooks/survey-o11y-scrape-baseline.yml").read_text())
+    receiver = next(play for play in playbook if play.get("name") == "Read and reduce the production scrape baseline")
+    tasks = receiver["tasks"]
+    report = next(task for task in tasks if task.get("name") == "Report bounded alert-input availability")
+    check_mode = next(task for task in tasks if task.get("name") == "Mark check-mode results as unverified")
+
+    assert report["when"] == "not ansible_check_mode"
+    assert report["ansible.builtin.debug"]["msg"] == "{{ _scrape_alert_input_availability | to_json }}"
+    assert "_scrape_survey_result" not in str(report)
+    assert check_mode["ansible.builtin.debug"]["msg"]["alert_input_availability"] == {
+        "status": "check_mode_unverified",
+        "reason": "Prometheus alert-input queries are skipped in check mode.",
+        "families": [],
+    }
