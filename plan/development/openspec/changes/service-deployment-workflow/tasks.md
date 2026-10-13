@@ -306,7 +306,7 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
       2026-09-22: via the Django shell (the scoped token has no schema permission, 403);
       created in task 995, dry and real re-runs unchanged (997, 998). Also fixed the token
       mint for NetBox 4.5 (no is_staff; v2 tokens stored as nbt_<key>.<token>, sent as Bearer)
-- [ ] 6.5 Validation gate: spec scenarios "Local deploy is repeatable", "Target outside
+- [x] 6.5 Validation gate: spec scenarios "Local deploy is repeatable", "Target outside
       local-dev is refused", "No targets means no discovery" and "Local targets are
       discovered" pass
       - 2026-10-12, local Semaphore v2.19.11, template "Deploy NetBox (Local)": runs 5591 and
@@ -354,6 +354,23 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
         was asked. No 04:00 UTC scan ran. Next: bring up NetBox and the orb-agent before a
         scheduled scan (`0 */4 * * *` UTC). `Stop Local Service` (PR #579) now exists for
         spinning down idle local services. Not ticked
+      - 2026-10-13, later (task output read from local Semaphore by the lead): all four
+        scenarios now have live evidence; ticked. The 08:00 UTC scheduled `subnet_scan`
+        exited 1: the orb-agent `fast_mode: true` setting maps to nmap `-F`, and nmap refuses
+        `-F` together with `-p`. PR #589 removed `fast_mode` from `subnet_scan` in the agent
+        template and the discovery example, with a guard test
+        (`test_discovery_scan_flags.py`). After it merged, the local orb-agent was redeployed
+        from dev and the 12:00 UTC scheduled scan found 12 hosts and ingested 12; the local
+        NetBox count-and-containment query returned 12 IP records inside the local discovery
+        target and 0 outside, so "Local targets are discovered" is PROVEN. Wave 3 (PR #577)
+        also re-proves "Local deploy is repeatable", more strongly than 5619 and 5620: Deploy
+        NetBox (Local) task 5732 changed, then 5734 reported `changed=0`, service-deploy
+        `changed_on_rerun` false, and the orb-agent was not removed or recreated. First live
+        use of `Stop Local Service` (PR #579): task 5864 stopped NetBox and its orb-agent with
+        volumes kept, on the operator's instruction to spin down idle local services. Open
+        operator follow-up, not done: production discovery still runs the old agent config
+        with `fast_mode`; it needs a production `Deploy Orb Agent` run once #589 reaches the
+        branch production deploys from
 
 ## 7. Executors, snapshots and tracking
 
@@ -427,6 +444,12 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
         (unchanged, ok=156 changed=0). Wave 3 (NetBox change-aware deploy) merged as PR #577;
         its double-deploy proof waits for promotion, because Deploy NetBox is main-bound. Wave 2
         (n8n, Postiz) is in progress. Not ticked
+      - 2026-10-13, local proof of wave 3 (task output read from local Semaphore by the lead):
+        Deploy NetBox (Local) task 5732 changed, then 5734 reported `changed=0` with
+        service-deploy `changed_on_rerun` false and the orb-agent untouched. Wave 2 (n8n,
+        Postiz) is PR #587: reviewed in one round with every finding fixed in cb98d760, merge
+        pending CI. Production second-run proof for wave 2, and for wave 3 after promotion,
+        is still to do. Not ticked
 - [x] 7.2 `provision-vm.yml` sets `onboot`; restart-policy check beside `enable-linger`.
       2026-09-22: onboot with per-host opt-out; `verify-service-persistence.yml` (step
       systemd-enablement) passes on local tududi, normal and check mode (tasks 977, 978)
