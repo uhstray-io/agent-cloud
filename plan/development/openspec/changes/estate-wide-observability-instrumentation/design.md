@@ -701,3 +701,83 @@ split-file jobs. The independent source-only candidate preview was compatible
 for all nine categories. This receipt predates the alert-input source edits and
 does not validate their runtime behavior. No live survey or deployment is part
 of this source change.
+
+## 2026-10-13 expected metrics target contract source slice
+
+Keep the production rule path disabled until private inventory review sets
+`o11y_expected_metrics_targets_reviewed: true`; the variable defaults false.
+When production alerts are enabled and the flag is true, the declaration must
+contain one to 100 active targets, or a non-empty explicit retirement set for a
+retirement-only rollout. Each active row contains exactly `uid`, `job`,
+`instance`, `service`, `cluster`, and `environment`. Use a stable UID in the
+owned `o11y_missing_<suffix>` namespace. Identity values are bounded printable
+ASCII restricted to letters, digits, `_`, `.`, `:`, `/`, `@`, and `-`; template
+values are JSON-serialized into YAML and PromQL. Duplicate identities/UIDs,
+invalid values, and more than 100 active or retired entries refuse. An
+in-memory parse of the provisioned alert document then checks that rule UIDs
+remain unique and retired UIDs do not collide with any active provisioned rule
+before repository placement or file writes.
+
+When the reviewed flag is false, the production template does not render
+per-target rules even if unreviewed target values are present. Local mode keeps
+its current Caddy pilot fallback and paused/routed behavior. The existing rule
+uses all five exact matchers in `absent_over_time(up{...}[5m])`, holds for two
+minutes, and uses `agent-cloud-ops` routing. `up=0` remains the endpoint-down
+case; absence from the active target set is the disappeared-target case.
+Explicit retired UIDs use the existing `deleteRules` list and are refused if
+they match another rendered rule; there is no group-wide deletion.
+
+Keep coverage as a separate read-only action, `Survey o11y Expected Metrics
+Targets (Dev)`. It privately reads `/api/v1/targets?state=active`, validates
+each target's five identity labels, includes unhealthy targets, and compares
+unique exact tuples with the reviewed declaration. The receipt exposes only
+status, a fixed reason, and expected/active/matched/missing/unexpected/unhealthy
+counts. Invalid or ambiguous API identities return bounded unavailable output;
+missing/unreviewed declarations and check mode are unverified. Private targets,
+selectors, API payloads, URLs, and exception text stay under `no_log`. This
+action does not alter the scrape baseline, loaded-limit, candidate-preview, or
+alert-input receipts.
+
+Sanitized Dev-bound read-only survey task 5221 observed 11 healthy active
+targets across nine public categories. Four loss counters had current zero
+samples; two optional error-only counters had no sample in a five-minute
+lookback. The latter absence is not telemetry-loss evidence. This receipt
+predates the expected-target survey and does not validate this source slice or
+production rules. Production currently has alerts enabled without an expected
+target declaration, so the reviewed flag remains false until the private
+declaration rollout is separately reviewed.
+
+Live acceptance requires a reviewed private inventory change, a reviewed
+Dev-bound non-destructive Deploy o11y run, exact rule UID/readback, and a fresh
+expected-target survey with all expected identities matched, no missing,
+unexpected, or ambiguous identities, and unhealthy targets resolved. The config
+digest change may recreate the receiver Compose project; do not clean-deploy,
+delete volumes, or claim data continuity from a container restart. Task 3.3
+remains unchecked; the task 5221 receipt is context, not live acceptance for
+this implementation.
+
+### Expected-target alert disable and restore transition
+
+Grafana retains omitted provisioned rules, so turning off production alerts or
+the reviewed-target gate SHALL keep each previously owned expected-target UID
+in the generated file as a paused, unrouted `vector(0)` rule with generic
+metadata. The prior file is the ownership record and is read before placement;
+ownership requires the expected-target rule structure, exact identity labels,
+and the `agent-cloud` / `service-telemetry` folder-group contract. A UID prefix
+alone grants no authority. Before placement, live rules must have the exact
+owned UID set and match the prior query, labels, pause state, notification
+route, rule group, and the UID of the uniquely resolved `agent-cloud` folder.
+Missing live rules, unowned live target UIDs, folder drift, or rule drift refuse.
+Retired rules remain generic paused `vector(0)` tombstones, making ownership
+durable across gate-off, canary restoration, and interrupted retries without
+deleting live rules. A retired UID cannot be reactivated; a new identity needs a
+new stable UID. Canary restoration and interrupted retries use the same
+preparation and validation path. Render/readback tasks carrying private identities suppress
+Ansible output and diffs; only fixed summaries and counts are visible. Check
+mode performs source validation only, skips rendering, and does not claim a live
+transition. Live acceptance remains separate; task 3.3 and the private rollout
+gate remain open/off.
+
+Alert probes and active-drill recovery also protect raw Prometheus/Grafana
+responses and every identity-bearing assertion. Their visible success receipts
+use fixed wording and contain no target labels or endpoints.

@@ -367,6 +367,58 @@ assert next(t for t in tasks if t['name'] == 'Require a readable firing receipt 
 PY
 }
 
+@test "o11y: visible Discord receipt assertion emits counts only" {
+  command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
+  local playbook="$BATS_TEST_TMPDIR/discord-count-only.yml"
+  python3 - "$REPO_ROOT/platform/playbooks/tasks/o11y-alert-probe.yml" "$playbook" <<'PY'
+import pathlib
+import sys
+import yaml
+
+probe = yaml.safe_load(pathlib.Path(sys.argv[1]).read_text())
+pending = list(probe)
+tasks = []
+while pending:
+    task = pending.pop(0)
+    if not isinstance(task, dict):
+        continue
+    tasks.append(task)
+    for key in ("block", "rescue", "always", "tasks"):
+        pending[0:0] = task.get(key, [])
+summary = next(task for task in tasks if task.get("name") == "Count the matching Discord receipt without retaining its content")
+assertion = next(task for task in tasks if task.get("name") == "Require a readable firing receipt from the owned webhook")
+play = [{
+    "hosts": "localhost",
+    "gather_facts": False,
+    "vars": {"drill_expect_alert": True},
+    "tasks": [
+        {
+            "name": "seed synthetic protected Discord response",
+            "ansible.builtin.set_fact": {
+                "_discord_messages": {
+                    "failed": True,
+                    "json": [{"webhook_id": "synthetic-webhook", "content": "SYNTHETIC_CONTENT_SECRET"}],
+                    "request": {"headers": {"Authorization": "Bot SYNTHETIC_TOKEN_SECRET"}},
+                },
+                "_webhook_id": "synthetic-webhook",
+            },
+            "no_log": True,
+        },
+        summary,
+        assertion,
+    ],
+}]
+pathlib.Path(sys.argv[2]).write_text(yaml.safe_dump(play), encoding="utf-8")
+PY
+  mkdir -p "$BATS_TEST_TMPDIR/ansible-local"
+  run env ANSIBLE_LOCAL_TEMP="$BATS_TEST_TMPDIR/ansible-local" \
+    ansible-playbook -i localhost, "$playbook"
+  [ "$status" -ne 0 ]
+  assert_contains "$output" "Discord firing receipt absent after the wait: webhook messages=1, readable messages=1"
+  refute_contains "$output" "SYNTHETIC_CONTENT_SECRET"
+  refute_contains "$output" "SYNTHETIC_TOKEN_SECRET"
+}
+
 @test "o11y: delivery canary restores paused rules through the shared task" {
   python3 - "$REPO_ROOT/platform/playbooks/drill-o11y-alert-canary.yml" \
     "$REPO_ROOT/platform/playbooks/restore-o11y-alert-baseline.yml" \
@@ -860,16 +912,21 @@ template = env.from_string(
     open(sys.argv[1], encoding='utf-8').read()
 )
 contact_template = env.from_string(open(sys.argv[2], encoding='utf-8').read())
-targets = [{'uid': 'o11y_missing_caddy', 'service': 'caddy-reverse-proxy/caddy', 'instance': 'caddy:2021'}]
+targets = [{'uid': 'o11y_missing_caddy', 'job': 'caddy', 'service': 'caddy-reverse-proxy/caddy',
+            'instance': 'caddy:2021', 'cluster': 'test-cluster', 'environment': 'prod'}]
 for enabled in (False, True):
     for declared in ([], targets):
-        rules = yaml.safe_load(template.render(o11y_expected_metrics_targets=declared, local_mode=False,
+        rules = yaml.safe_load(template.render(o11y_expected_metrics_targets=declared,
+                                              o11y_expected_metrics_targets_reviewed=True,
+                                              o11y_cluster='test-cluster', o11y_environment='prod',
+                                              local_mode=False,
                                               o11y_alerts_enabled=enabled,
                                               o11y_receiver_loss_alerts_reviewed=enabled,
                                               o11y_backend_drop_alerts_reviewed=enabled))['groups'][0]['rules']
+        rendered_targets = declared if enabled else []
         assert [rule['uid'] for rule in rules] == [
             'o11y_service_down', 'o11y_receiver_root_disk_low',
-        ] + [target['uid'] for target in declared] + [
+        ] + [target['uid'] for target in rendered_targets] + [
             'o11y_alloy_receiver_refused', 'o11y_tempo_exporter_enqueue_failed',
             'o11y_tempo_exporter_send_failed',
             'o11y_loki_discarded_samples', 'o11y_tempo_discarded_spans',
@@ -890,10 +947,16 @@ for enabled in (False, True):
         )
         assert disk_rule['data'][1]['model']['conditions'][0]['evaluator'] == {'type': 'lt', 'params': [10]}
         assert disk_rule['noDataState'] == 'Alerting'
-        if declared:
+        if rendered_targets:
             assert rules[2]['annotations']['dashboard_url'] == '/d/service-overview?var-service=caddy-reverse-proxy/caddy'
             assert rules[2]['labels']['service'] == 'caddy-reverse-proxy/caddy'
             assert rules[2]['labels']['owner'] == 'platform-operations'
+            assert rules[2]['for'] == '2m'
+            assert rules[2]['data'][0]['relativeTimeRange'] == {'from': 600, 'to': 0}
+            assert rules[2]['data'][0]['model']['expr'] == (
+                'absent_over_time(up{job="caddy",instance="caddy:2021",service="caddy-reverse-proxy/caddy",'
+                'cluster="test-cluster",environment="prod"}[5m])'
+            )
         if enabled:
             for rule in rules:
                 settings = rule['notification_settings']
@@ -903,8 +966,8 @@ for enabled in (False, True):
                 assert settings['repeat_interval'] == '4h'
         assert 'up{service!=""}' == rules[0]['data'][0]['model']['expr']
         assert rules[0]['data'][1]['model']['conditions'][0]['evaluator'] == {'type': 'lt', 'params': [0.5]}
-        if declared:
-            assert 'absent_over_time(up{service="caddy-reverse-proxy/caddy",instance="caddy:2021"}[5m])' == rules[2]['data'][0]['model']['expr']
+        if rendered_targets:
+            assert 'absent_over_time(up{job="caddy",instance="caddy:2021",service="caddy-reverse-proxy/caddy",cluster="test-cluster",environment="prod"}[5m])' == rules[2]['data'][0]['model']['expr']
     contact = yaml.safe_load(contact_template.render(o11y_alerts_enabled=enabled))
     if enabled:
         receiver = contact['contactPoints'][0]['receivers'][0]
@@ -1196,17 +1259,15 @@ from jinja2 import Environment, StrictUndefined
 plays = yaml.safe_load(open(sys.argv[1], encoding='utf-8'))
 alert_template = open(sys.argv[2], encoding='utf-8').read()
 verify = next(play for play in plays if play.get('name') == 'Phase 3: Verify o11y')
-block = next(task for task in verify['tasks'] if task['name'] == 'Verify enabled Grafana alert provisioning after a real deploy')
-assert block['when'] == [
-    'o11y_alerts_enabled | default(false) | bool',
-    'not ansible_check_mode',
-]
+block = next(task for task in verify['tasks'] if task['name'] == 'Verify Grafana alert provisioning after every real deploy')
+assert block['when'] == 'not ansible_check_mode'
+assert block['no_log'] is True
 env = Environment(undefined=StrictUndefined)
 env.filters['bool'] = bool
 env.filters['to_json'] = json.dumps
-should_verify = [env.compile_expression(condition) for condition in block['when']]
-assert all(check(local_mode=False, o11y_alerts_enabled=True, ansible_check_mode=False) for check in should_verify)
-assert all(check(local_mode=True, o11y_alerts_enabled=True, ansible_check_mode=False) for check in should_verify)
+should_verify = [env.compile_expression(block['when'])]
+assert should_verify[0](ansible_check_mode=False)
+assert not should_verify[0](ansible_check_mode=True)
 tasks = block['block']
 by_name = {task['name']: task for task in tasks}
 scope = by_name['Scope live rules to the provisioned folders and groups']
@@ -1216,7 +1277,7 @@ slurp = by_name['Read the provisioned alert rules file']
 folders = by_name['Read live Grafana folders']
 assert tasks.index(slurp) < tasks.index(scope) and tasks.index(folders) < tasks.index(scope)
 assert tasks.index(scope) < tasks.index(set_check) < tasks.index(field_check)
-assert slurp['register'] == '_provisioned_rules_file' and 'no_log' not in slurp
+assert slurp['register'] == '_provisioned_rules_file' and block['no_log'] is True
 assert slurp['ansible.builtin.slurp']['src'].endswith('/config/grafana/provisioning/alerting/observability.yml')
 assert '/api/folders' in folders['ansible.builtin.command']['argv'][-1]
 assert 'match' not in json.dumps(scope), 'scope comes from the provisioned file, never a uid pattern'
@@ -1294,7 +1355,7 @@ assert not verify_rules([{k: v for k, v in r.items() if k != 'isPaused'} for r i
 pause_down = lambda rules: [dict(r, isPaused=True) if r['uid'] == 'o11y_service_down' else r for r in rules]
 paused_doc = {**local_doc, 'groups': [dict(g, rules=pause_down(g['rules'])) for g in local_doc['groups']]}
 assert not verify_rules(pause_down(local_live), local_doc)
-assert not verify_rules(live_of(paused_doc), paused_doc)  # file and live agree, service_down still required active
+assert verify_rules(live_of(paused_doc), paused_doc)  # verification follows the rendered pause state
 assert not verify_rules([], {'groups': []})
 contact = next(task for task in tasks if task['name'] == 'Read live Grafana contact points without displaying webhook settings')
 count = next(task for task in tasks if task['name'] == 'Count only the intended contact point without its settings')
@@ -1307,7 +1368,7 @@ for contacts, expected in [
     ([{'uid': 'o11y_ops_discord'}, {'uid': 'o11y_ops_discord'}], False),
 ]:
     selected = count_contacts(_active_contacts={'stdout': json.dumps(contacts)})
-    assert bool(contact_check(_o11y_contact_count=selected)) is expected
+    assert bool(contact_check(_o11y_contact_count=selected, o11y_alerts_enabled=True)) is expected
 PY
 }
 
@@ -2090,8 +2151,12 @@ for name in ('scrape-agentgateway.yml.j2', 'scrape-dgx-spark.yml.j2'):
 
 alerts = (deploy / 'templates/alerts.yml.j2').read_text()
 assert f"'service': '{caddy_target['service']}'" in alerts
-assert 'absent_over_time(up{service="{{ target.service }}",instance="{{ target.instance }}"}[5m])' in alerts
-assert 'service: \'{{ target.service }}\'' in alerts
+assert 'target.job | default(\'caddy\')' in alerts
+assert 'target.instance | to_json' in alerts
+assert 'target.service | to_json' in alerts
+assert 'target.cluster | default(o11y_cluster | default(\'agent-cloud-local\'))' in alerts
+assert 'target.environment | default(o11y_environment' in alerts
+assert 'service: {{ target.service | to_json }}' in alerts
 PY
 }
 

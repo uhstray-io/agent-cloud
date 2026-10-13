@@ -226,6 +226,11 @@
       check_mode: false
       when: not (local_mode | default(false) | bool)
 
+    - name: Validate previous expected-target ownership before activating canary writes
+      ansible.builtin.include_tasks: tasks/o11y-prepare-expected-target-transition.yml
+      vars:
+        o11y_alerts_enabled: true
+
     - name: Activate only the canary rule, prove delivery, and restore the baseline
       block:
         - name: Block normal deploys until production restoration is verified

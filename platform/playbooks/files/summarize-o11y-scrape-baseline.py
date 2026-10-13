@@ -7,6 +7,7 @@ import ipaddress
 import json
 import re
 import subprocess
+import sys
 import threading
 import time
 from collections.abc import Callable
@@ -14,6 +15,8 @@ from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
 from urllib.parse import urlencode, urlsplit
+
+import yaml
 
 ENGINE = "podman"
 CONTAINER = "o11y-grafana"
@@ -38,6 +41,10 @@ ALERT_INPUTS = (
     ("loki_discarded_samples_total", "loki"),
     ("tempo_discarded_spans_total", "tempo"),
 )
+EXPECTED_IDENTITY_FIELDS = ("job", "instance", "service", "cluster", "environment")
+EXPECTED_UID = re.compile(r"^o11y_missing_[a-z0-9_]{1,27}\Z")
+SAFE_IDENTITY_VALUE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:/@-]{0,127}\Z")
+MAX_EXPECTED_TARGETS = 100
 
 JOB_ALIASES = {
     "prometheus": "prometheus",
@@ -65,6 +72,633 @@ class Refusal(ValueError):
     def __init__(self, category: str) -> None:
         super().__init__(category)
         self.category = category
+
+
+def validate_expected_target_declaration(
+    targets: Any,
+    retired_uids: Any = None,
+    *,
+    reviewed: Any = True,
+    other_rule_uids: Any = None,
+) -> tuple[list[dict[str, str]], list[str]]:
+    """Validate the bounded private declaration without exposing its values."""
+    retired_uids = [] if retired_uids is None else retired_uids
+    other_rule_uids = [] if other_rule_uids is None else other_rule_uids
+    if reviewed is not True or not isinstance(targets, list) or not isinstance(retired_uids, list):
+        raise Refusal("invalid_declaration")
+    if len(targets) > MAX_EXPECTED_TARGETS or len(retired_uids) > MAX_EXPECTED_TARGETS:
+        raise Refusal("invalid_declaration")
+    if not targets and not retired_uids:
+        raise Refusal("invalid_declaration")
+    if not isinstance(other_rule_uids, list) or len(other_rule_uids) > MAX_ROWS:
+        raise Refusal("invalid_declaration")
+
+    normalized: list[dict[str, str]] = []
+    identities: set[tuple[str, ...]] = set()
+    target_uids: list[str] = []
+    for target in targets:
+        if not isinstance(target, dict) or set(target) != {"uid", *EXPECTED_IDENTITY_FIELDS}:
+            raise Refusal("invalid_declaration")
+        uid = target.get("uid")
+        if not isinstance(uid, str) or not EXPECTED_UID.fullmatch(uid):
+            raise Refusal("invalid_declaration")
+        values: dict[str, str] = {}
+        for field in EXPECTED_IDENTITY_FIELDS:
+            value = target.get(field)
+            if not isinstance(value, str) or not SAFE_IDENTITY_VALUE.fullmatch(value):
+                raise Refusal("invalid_declaration")
+            values[field] = value
+        identity = tuple(values[field] for field in EXPECTED_IDENTITY_FIELDS)
+        if uid in target_uids or identity in identities:
+            raise Refusal("invalid_declaration")
+        target_uids.append(uid)
+        identities.add(identity)
+        normalized.append({"uid": uid, **values})
+
+    if len(set(retired_uids)) != len(retired_uids):
+        raise Refusal("invalid_declaration")
+    if any(not isinstance(uid, str) or not EXPECTED_UID.fullmatch(uid) for uid in retired_uids):
+        raise Refusal("invalid_declaration")
+    if not isinstance(other_rule_uids, list) or any(
+        not isinstance(uid, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,40}", uid) for uid in other_rule_uids
+    ):
+        raise Refusal("invalid_declaration")
+    all_target_uids = set(target_uids) | set(retired_uids)
+    if len(all_target_uids) != len(target_uids) + len(retired_uids):
+        raise Refusal("invalid_declaration")
+    if all_target_uids.intersection(other_rule_uids):
+        raise Refusal("invalid_declaration")
+    return normalized, list(retired_uids)
+
+
+def _expected_target_queries_match(data: Any, expression: str) -> bool:
+    """Validate the complete A -> B rule, allowing only Grafana's API metadata."""
+    if not isinstance(data, list) or len(data) != 2:
+        return False
+    expected_rows = (
+        (
+            "A", "prometheus", {"from": 300 if expression == "vector(0)" else 600, "to": 0},
+            {
+                "editorMode": "code", "expr": expression, "instant": True, "range": False,
+                "intervalMs": 1000, "maxDataPoints": 43200, "refId": "A",
+            },
+            "prometheus",
+        ),
+        (
+            "B", "__expr__", {"from": 0, "to": 0},
+            {
+                "expression": "A", "type": "threshold",
+                "conditions": [{
+                    "evaluator": {"type": "gt", "params": [0.5]},
+                    "operator": {"type": "and"}, "query": {"params": ["B"]},
+                    "reducer": {"type": "last", "params": []}, "type": "query",
+                }],
+                "intervalMs": 1000, "maxDataPoints": 43200, "refId": "B",
+            },
+            "__expr__",
+        ),
+    )
+    for index, (ref_id, datasource_uid, time_range, expected_model, datasource_type) in enumerate(expected_rows):
+        row = data[index]
+        if not isinstance(row, dict) or set(row) - {
+            "refId", "datasourceUid", "relativeTimeRange", "model", "queryType",
+        }:
+            return False
+        if (
+            row.get("refId") != ref_id
+            or row.get("datasourceUid") != datasource_uid
+            or ("queryType" in row and row["queryType"] != "")
+        ):
+            return False
+        actual_range = row.get("relativeTimeRange", {"from": 0, "to": 0} if ref_id == "B" else None)
+        if actual_range != time_range:
+            return False
+        model = row.get("model")
+        if not isinstance(model, dict) or set(model) - (set(expected_model) | {"datasource", "hide"}):
+            return False
+        if any(model.get(key) != value for key, value in expected_model.items()):
+            return False
+        if "hide" in model and model["hide"] is not False:
+            return False
+        if "datasource" in model and model["datasource"] != {
+            "type": datasource_type, "uid": datasource_uid,
+        }:
+            return False
+    return True
+
+
+def _live_rule_matches_owned(rule: Any, target: dict[str, Any], folder_uid: str) -> bool:
+    """Compare an API readback with one validated provisioning owner."""
+    if not isinstance(rule, dict) or rule.get("folderUID") != folder_uid:
+        return False
+    if target["_inert"]:
+        retired = target["_retired"]
+        return (
+            rule.get("title") == (
+                "Expected metrics target explicitly retired"
+                if retired else "Expected metrics target previously declared"
+            )
+            and rule.get("condition") == "B"
+            and rule.get("isPaused") is True
+            and rule.get("labels") == {
+                "severity": "warning", "owner": "platform-operations", "environment": "disabled",
+            }
+            and _expected_target_queries_match(rule.get("data"), "vector(0)")
+            and rule.get("noDataState") == "OK"
+            and rule.get("execErrState") == "OK"
+            and rule.get("for") == "0s"
+            and rule.get("annotations") == {
+                "summary": "Expected metrics target rule is disabled.",
+                "description": (
+                    "This owned UID was explicitly retired and remains inert."
+                    if retired else "No target identity is retained while the reviewed alert gate is disabled."
+                ),
+            }
+            and rule.get("notification_settings") in (None, {})
+        )
+    labels = rule.get("labels")
+    return (
+        isinstance(labels, dict)
+        and rule.get("condition") == "B"
+        and all(labels.get(field) == target[field] for field in EXPECTED_IDENTITY_FIELDS)
+        and labels == target["_labels"]
+        and rule.get("title") == target["_title"]
+        and _expected_target_queries_match(rule.get("data"), target["_expr"])
+        and rule.get("annotations") == target["_annotations"]
+        and rule.get("isPaused") is target["_is_paused"]
+        and rule.get("notification_settings") == target["_notification_settings"]
+        and rule.get("noDataState") == "OK"
+        and rule.get("execErrState") == "Alerting"
+        and rule.get("for") == "2m"
+    )
+
+
+def validate_active_expected_target_rules(input_document: Any) -> dict[str, Any]:
+    """Prove active targets, gate-off owners, and explicit inert tombstones separately."""
+    if not isinstance(input_document, dict):
+        raise Refusal("invalid_live_rules")
+    if input_document.get("targets") == [] and input_document.get("retired_uids") == []:
+        targets, retired = [], []
+        if input_document.get("reviewed") is not True:
+            raise Refusal("invalid_declaration")
+    else:
+        targets, retired = validate_expected_target_declaration(
+            input_document.get("targets"), input_document.get("retired_uids"),
+            reviewed=input_document.get("reviewed"),
+        )
+    paused = input_document.get("paused_uids", [])
+    active_uids = {target["uid"] for target in targets}
+    if (
+        not isinstance(paused, list)
+        or any(not isinstance(uid, str) or not EXPECTED_UID.fullmatch(uid) for uid in paused)
+        or len(set(paused)) != len(paused)
+        or set(paused) & (active_uids | set(retired))
+    ):
+        raise Refusal("invalid_declaration")
+    rules = input_document.get("live_rules")
+    folders = input_document.get("live_folders")
+    if (
+        not isinstance(rules, list) or len(rules) > MAX_ROWS
+        or not isinstance(folders, list) or len(folders) > MAX_ROWS
+    ):
+        raise Refusal("invalid_live_rules")
+    matching_folders = [
+        folder for folder in folders
+        if isinstance(folder, dict) and folder.get("title") == "agent-cloud"
+    ]
+    if len(matching_folders) != 1 or not isinstance(matching_folders[0].get("uid"), str):
+        raise Refusal("live_folder_drift")
+    folder_uid = matching_folders[0]["uid"]
+    by_uid = {rule.get("uid"): rule for rule in rules if isinstance(rule, dict)}
+    target_uids = active_uids
+    if len(by_uid) != len(rules) or set(by_uid) != target_uids | set(paused) | set(retired):
+        raise Refusal("live_target_drift")
+    active_contract = _expected_target_contracts(targets)
+    for target in targets:
+        rule = by_uid[target["uid"]]
+        if not _live_rule_matches_owned(rule, active_contract[target["uid"]], folder_uid):
+            raise Refusal("live_target_drift")
+        if rule.get("isPaused") is not False or rule.get("notification_settings") != {
+            "receiver": "agent-cloud-ops", "group_by": ["service", "environment", "cluster", "alertname"],
+            "group_wait": "30s", "group_interval": "5m", "repeat_interval": "4h",
+        }:
+            raise Refusal("live_target_drift")
+    for uid in retired:
+        rule = by_uid[uid]
+        if not _live_rule_matches_owned(rule, {"_inert": True, "_retired": True}, folder_uid):
+            raise Refusal("live_target_drift")
+    for uid in paused:
+        rule = by_uid[uid]
+        if not _live_rule_matches_owned(rule, {"_inert": True, "_retired": False}, folder_uid):
+            raise Refusal("live_target_drift")
+    return {"status": "validated", "active_count": len(targets), "retired_count": len(retired)}
+
+
+def _expected_target_contracts(targets: list[dict[str, str]]) -> dict[str, dict[str, Any]]:
+    """Build the validated alert contract from the reviewed declaration."""
+    contracts = {}
+    for target in targets:
+        expr = (
+            "absent_over_time(up{job=" + json.dumps(target["job"]) + ",instance=" + json.dumps(target["instance"])
+            + ",service=" + json.dumps(target["service"]) + ",cluster=" + json.dumps(target["cluster"])
+            + ",environment=" + json.dumps(target["environment"]) + "}[5m])"
+        )
+        contracts[target["uid"]] = {
+            **target,
+            "_inert": False,
+            "_retired": False,
+            "_title": f"Missing telemetry for {target['service']} at {target['instance']}",
+            "_expr": expr,
+            "_labels": {
+                "severity": "critical", "job": target["job"], "instance": target["instance"],
+                "service": target["service"], "owner": "platform-operations",
+                "environment": target["environment"], "cluster": target["cluster"],
+            },
+            "_annotations": {
+                "summary": f"Expected metrics have disappeared for {target['service']}.",
+                "dashboard_url": f"/d/service-overview?var-service={target['service']}",
+                "description": "Check the declared metrics target and its service onboarding receipt.",
+            },
+            "_is_paused": False,
+            "_notification_settings": {
+                "receiver": "agent-cloud-ops", "group_by": ["service", "environment", "cluster", "alertname"],
+                "group_wait": "30s", "group_interval": "5m", "repeat_interval": "4h",
+            },
+        }
+    return contracts
+
+
+def _owned_expected_targets(document: Any) -> list[dict[str, Any]]:
+    """Read only exact generated expected-target rules from our provisioning group."""
+    if not isinstance(document, dict) or document.get("apiVersion") != 1:
+        raise Refusal("invalid_previous_rules")
+    groups = document.get("groups")
+    if not isinstance(groups, list) or len(groups) > MAX_ROWS:
+        raise Refusal("invalid_previous_rules")
+    owned_groups = [
+        group for group in groups
+        if isinstance(group, dict)
+        and (group.get("orgId"), group.get("name"), group.get("folder")) == (1, "service-telemetry", "agent-cloud")
+    ]
+    if len(owned_groups) != 1:
+        raise Refusal("invalid_previous_rules")
+    group = owned_groups[0]
+    rules = group.get("rules")
+    if not isinstance(rules, list) or len(rules) > MAX_ROWS:
+        raise Refusal("invalid_previous_rules")
+    owned: list[dict[str, Any]] = []
+    for rule in rules:
+        if not isinstance(rule, dict) or not str(rule.get("uid", "")).startswith("o11y_missing_"):
+            continue
+        uid = rule.get("uid")
+        labels = rule.get("labels")
+        if not isinstance(uid, str) or not EXPECTED_UID.fullmatch(uid):
+            raise Refusal("invalid_previous_rules")
+        rule_data = rule.get("data")
+        if (
+            rule.get("title") in {
+                "Expected metrics target previously declared",
+                "Expected metrics target explicitly retired",
+            }
+            and rule.get("isPaused") is True
+            and "notification_settings" not in rule
+            and set(rule) == {
+                "uid", "title", "condition", "data", "noDataState", "execErrState", "for",
+                "annotations", "labels", "isPaused",
+            }
+            and labels == {"severity": "warning", "owner": "platform-operations", "environment": "disabled"}
+            and rule.get("condition") == "B"
+            and _expected_target_queries_match(rule_data, "vector(0)")
+            and rule.get("noDataState") == "OK"
+            and rule.get("execErrState") == "OK"
+            and rule.get("for") == "0s"
+            and rule.get("annotations") == {
+                "summary": "Expected metrics target rule is disabled.",
+                "description": (
+                    "This owned UID was explicitly retired and remains inert."
+                    if rule.get("title") == "Expected metrics target explicitly retired"
+                    else "No target identity is retained while the reviewed alert gate is disabled."
+                ),
+            }
+        ):
+            owned.append({
+                "uid": uid,
+                "_inert": True,
+                "_retired": rule["title"] == "Expected metrics target explicitly retired",
+            })
+            continue
+        if not isinstance(labels, dict):
+            raise Refusal("invalid_previous_rules")
+        if set(labels) != {"severity", "job", "instance", "service", "owner", "environment", "cluster"}:
+            raise Refusal("invalid_previous_rules")
+        target = {"uid": uid, **{field: labels.get(field) for field in EXPECTED_IDENTITY_FIELDS}}
+        try:
+            normalized, _ = validate_expected_target_declaration([target])
+        except Refusal:
+            raise Refusal("invalid_previous_rules") from None
+        value = normalized[0]
+        rule_data = rule.get("data")
+        expr = (
+            rule_data[0].get("model", {}).get("expr")
+            if isinstance(rule_data, list) and rule_data and isinstance(rule_data[0], dict)
+            else None
+        )
+        expected_expr = (
+            "absent_over_time(up{job=" + json.dumps(value["job"]) + ",instance=" + json.dumps(value["instance"])
+            + ",service=" + json.dumps(value["service"]) + ",cluster=" + json.dumps(value["cluster"])
+            + ",environment=" + json.dumps(value["environment"]) + "}[5m])"
+        )
+        paused_contract = False
+        active_contract = (
+            rule.get("title") == f"Missing telemetry for {value['service']} at {value['instance']}"
+            and expr == expected_expr
+            and rule.get("condition") == "B"
+            and _expected_target_queries_match(rule_data, expected_expr)
+            and rule.get("noDataState") == "OK"
+            and rule.get("execErrState") == "Alerting"
+            and rule.get("for") == "2m"
+            and rule.get("isPaused") in (True, False)
+            and set(rule) == {
+                "uid", "title", "condition", "data", "noDataState", "execErrState", "for",
+                "annotations", "labels", "isPaused",
+            } | ({"notification_settings"} if "notification_settings" in rule else set())
+            and rule.get("annotations") == {
+                "summary": f"Expected metrics have disappeared for {value['service']}.",
+                "dashboard_url": f"/d/service-overview?var-service={value['service']}",
+                "description": "Check the declared metrics target and its service onboarding receipt.",
+            }
+            and labels == {
+                "severity": "critical", "job": value["job"], "instance": value["instance"],
+                "service": value["service"], "owner": "platform-operations",
+                "environment": value["environment"], "cluster": value["cluster"],
+            }
+            and ("notification_settings" not in rule or rule["notification_settings"] == {
+                "receiver": "agent-cloud-ops", "group_by": ["service", "environment", "cluster", "alertname"],
+                "group_wait": "30s", "group_interval": "5m", "repeat_interval": "4h",
+            })
+        )
+        if not paused_contract and not active_contract:
+            raise Refusal("invalid_previous_rules")
+        owned.append({
+            **value,
+            "_inert": False,
+            "_retired": False,
+            "_title": rule["title"],
+            "_expr": expr,
+            "_labels": labels,
+            "_is_paused": rule["isPaused"],
+            "_notification_settings": rule.get("notification_settings"),
+            "_annotations": rule["annotations"],
+        })
+    if len({row["uid"] for row in owned}) != len(owned):
+        raise Refusal("invalid_previous_rules")
+    return owned
+
+
+def prepare_expected_target_transition(input_document: Any) -> dict[str, Any]:
+    """Keep owned UIDs inert until explicitly restored; reject live ownership drift."""
+    if not isinstance(input_document, dict):
+        raise Refusal("invalid_transition")
+    if input_document.get("managed") is False:
+        return {"status": "prepared", "reason": "local_compatibility", "paused_uids": [], "retired_uids": []}
+    previous: list[dict[str, Any]] = []
+    previous_raw = input_document.get("previous_rules")
+    if previous_raw:
+        try:
+            previous_doc = yaml.safe_load(previous_raw)
+        except Exception:
+            raise Refusal("invalid_previous_rules") from None
+        previous = _owned_expected_targets(previous_doc)
+    check_mode = input_document.get("check_mode") is True
+    pending: list[dict[str, Any]] = []
+    pending_raw = input_document.get("pending_rules")
+    if pending_raw:
+        try:
+            pending_doc = yaml.safe_load(pending_raw)
+        except Exception:
+            raise Refusal("invalid_pending_rules") from None
+        pending = _owned_expected_targets(pending_doc)
+        previous_by_uid = {row["uid"]: row for row in previous}
+        pending_by_uid = {row["uid"]: row for row in pending}
+        retired_uids = input_document.get("retired_uids", [])
+        same_previous = pending_by_uid == previous_by_uid
+        valid_paused_transition = (
+            set(pending_by_uid) == set(previous_by_uid)
+            and isinstance(retired_uids, list)
+            and all(isinstance(uid, str) and EXPECTED_UID.fullmatch(uid) for uid in retired_uids)
+            and len(set(retired_uids)) == len(retired_uids)
+            and not (set(retired_uids) - set(previous_by_uid))
+            and all(
+                pending_by_uid[uid]["_inert"]
+                and pending_by_uid[uid]["_retired"] == (previous_by_uid[uid]["_retired"] or uid in retired_uids)
+                for uid in previous_by_uid
+            )
+        )
+        if not same_previous and not valid_paused_transition:
+            raise Refusal("invalid_pending_rules")
+    if check_mode and input_document.get("reviewed") is True:
+        validate_expected_target_declaration(
+            input_document.get("targets"), input_document.get("retired_uids"), reviewed=True
+        )
+    live_raw = input_document.get("live_rules")
+    grafana_running = input_document.get("grafana_running")
+    stopped_preflight = bool(previous and not live_raw and not check_mode and grafana_running is False)
+    if previous and not live_raw and not check_mode and not stopped_preflight:
+        raise Refusal("live_rules_unavailable")
+    if stopped_preflight:
+        requested_retired = input_document.get("retired_uids", [])
+        if (
+            not isinstance(requested_retired, list)
+            or any(not isinstance(uid, str) or not EXPECTED_UID.fullmatch(uid) for uid in requested_retired)
+            or len(set(requested_retired)) != len(requested_retired)
+        ):
+            raise Refusal("stopped_grafana_retirement_drift")
+        baselines = [previous, *([pending] if pending else [])]
+        for baseline in baselines:
+            baseline_by_uid = {row["uid"]: row for row in baseline}
+            retired_before = {uid for uid, row in baseline_by_uid.items() if row["_retired"]}
+            if set(requested_retired) - retired_before:
+                raise Refusal("stopped_grafana_retirement_drift")
+            if input_document.get("enabled") is True:
+                current, _ = validate_expected_target_declaration(
+                    input_document.get("targets"), requested_retired, reviewed=True
+                )
+                current_by_uid = {target["uid"]: target for target in current}
+                if set(current_by_uid) & {
+                    uid for uid, row in baseline_by_uid.items() if row["_inert"] and not row["_retired"]
+                }:
+                    raise Refusal("stopped_grafana_reactivation")
+                active_before = {
+                    uid for uid, row in baseline_by_uid.items() if not row["_inert"] and not row["_retired"]
+                }
+                if set(current_by_uid) != active_before:
+                    raise Refusal("stopped_grafana_target_drift")
+                for uid, target in current_by_uid.items():
+                    old = baseline_by_uid[uid]
+                    if any(old[field] != target[field] for field in EXPECTED_IDENTITY_FIELDS):
+                        raise Refusal("target_identity_changed")
+    if (grafana_running is True and not check_mode) or live_raw:
+        try:
+            live = json.loads(live_raw)
+            folders = json.loads(input_document.get("live_folders", ""))
+        except (ValueError, TypeError):
+            raise Refusal("invalid_live_rules") from None
+        if (
+            not isinstance(live, list) or len(live) > MAX_ROWS
+            or not isinstance(folders, list) or len(folders) > MAX_ROWS
+        ):
+            raise Refusal("invalid_live_rules")
+        matching_folders = [
+            folder for folder in folders
+            if isinstance(folder, dict) and folder.get("title") == "agent-cloud"
+        ]
+        if len(matching_folders) != 1 or not isinstance(matching_folders[0].get("uid"), str):
+            raise Refusal("live_folder_drift")
+        live_folder_uid = matching_folders[0]["uid"]
+        previous_by_uid = {row["uid"]: row for row in previous}
+        pending_by_uid = {row["uid"]: row for row in pending}
+        live_targets = [
+            rule for rule in live
+            if isinstance(rule, dict) and isinstance(rule.get("uid"), str)
+            and rule["uid"].startswith("o11y_missing_")
+        ]
+        if len({rule["uid"] for rule in live_targets}) != len(live_targets):
+            raise Refusal("invalid_live_rules")
+        if {rule["uid"] for rule in live_targets} != set(previous_by_uid):
+            raise Refusal("live_target_drift")
+        matches_previous = True
+        matches_pending = bool(pending)
+        for rule in live_targets:
+            target = previous_by_uid.get(rule["uid"])
+            if target is None or rule.get("ruleGroup") != "service-telemetry":
+                raise Refusal("live_target_drift")
+            if rule.get("folderUID") != live_folder_uid:
+                raise Refusal("live_target_drift")
+            matches_previous = matches_previous and _live_rule_matches_owned(rule, target, live_folder_uid)
+            matches_pending = matches_pending and _live_rule_matches_owned(
+                rule, pending_by_uid[rule["uid"]], live_folder_uid
+            )
+        if not matches_previous and not matches_pending:
+            raise Refusal("live_target_drift")
+    if input_document.get("enabled") is True:
+        current, retired = validate_expected_target_declaration(
+            input_document.get("targets"), input_document.get("retired_uids"), reviewed=True
+        )
+        current_uids = {row["uid"] for row in current}
+        previous_uids = {row["uid"] for row in previous}
+        previous_active = {
+            row["uid"]: row for row in previous if not row["_inert"]
+        }
+        if any(
+            any(target[field] != previous_active[target["uid"]][field] for field in EXPECTED_IDENTITY_FIELDS)
+            for target in current if target["uid"] in previous_active
+        ):
+            raise Refusal("target_identity_changed")
+        already_retired = {row["uid"] for row in previous if row["_retired"]}
+        if current_uids.intersection(already_retired):
+            raise Refusal("retired_target_reuse")
+        if set(retired) - previous_uids:
+            raise Refusal("unowned_retired_target")
+        if previous_uids - current_uids - set(retired) - already_retired:
+            raise Refusal("unretired_previous_target")
+        retired_tombstones = list(dict.fromkeys([*already_retired, *retired]))
+        return {
+            "status": "prepared", "reason": "check_mode_unverified" if check_mode else "enabled", "paused_uids": [],
+            "retired_uids": retired_tombstones,
+        }
+    retired = input_document.get("retired_uids", [])
+    if not isinstance(retired, list) or any(
+        not isinstance(uid, str) or not EXPECTED_UID.fullmatch(uid) for uid in retired
+    ):
+        raise Refusal("invalid_transition")
+    previous_by_uid = {row["uid"]: row for row in previous}
+    if len(set(retired)) != len(retired) or set(retired) - set(previous_by_uid):
+        raise Refusal("invalid_transition")
+    return {
+        "status": "prepared",
+        "reason": "check_mode_unverified" if check_mode else "disabled",
+        "paused_uids": [row["uid"] for row in previous if not row["_retired"] and row["uid"] not in retired],
+        "retired_uids": list(dict.fromkeys([*(row["uid"] for row in previous if row["_retired"]), *retired])),
+    }
+
+
+def expected_target_coverage(targets_raw: bytes | str, declaration: Any) -> dict[str, Any]:
+    """Compare validated expected identities to all active target identities."""
+    empty = {
+        "expected_count": 0,
+        "active_target_count": 0,
+        "matched_count": 0,
+        "missing_count": 0,
+        "unexpected_count": 0,
+        "unhealthy_count": 0,
+    }
+    if not isinstance(declaration, dict) or declaration.get("reviewed") is not True:
+        return {"status": "unverified", "reason": "declaration_unreviewed", **empty}
+    if declaration.get("targets") == []:
+        return {"status": "unverified", "reason": "no_expected_targets", **empty}
+    try:
+        expected, _retired = validate_expected_target_declaration(
+            declaration.get("targets"), reviewed=declaration.get("reviewed")
+        )
+    except Refusal:
+        return {"status": "unverified", "reason": "invalid_declaration", **empty}
+    if not expected:
+        return {"status": "unverified", "reason": "no_expected_targets", **empty}
+
+    try:
+        response = _json_document(targets_raw, "malformed_targets")
+        data = response.get("data")
+        active = data.get("activeTargets") if isinstance(data, dict) else None
+        if not isinstance(active, list) or len(active) > MAX_ROWS:
+            raise Refusal("malformed_targets")
+
+        expected_ids = {
+            tuple(target[field] for field in EXPECTED_IDENTITY_FIELDS)
+            for target in expected
+        }
+        active_ids: set[tuple[str, ...]] = set()
+        unhealthy_count = 0
+        for target in active:
+            if not isinstance(target, dict) or target.get("health") not in {"up", "down", "unknown"}:
+                raise Refusal("malformed_targets")
+            labels = target.get("labels")
+            if not isinstance(labels, dict):
+                raise Refusal("malformed_targets")
+            identity = tuple(labels.get(field) for field in EXPECTED_IDENTITY_FIELDS)
+            if any(not isinstance(value, str) or not SAFE_IDENTITY_VALUE.fullmatch(value) for value in identity):
+                raise Refusal("malformed_identity")
+            if identity in active_ids:
+                raise Refusal("ambiguous_target_identity")
+            active_ids.add(identity)
+            unhealthy_count += target["health"] != "up"
+
+        matched = len(expected_ids & active_ids)
+        missing = len(expected_ids - active_ids)
+        unexpected = len(active_ids - expected_ids)
+        identity_drift = missing > 0 or unexpected > 0
+        if identity_drift and unhealthy_count:
+            reason = "identity_drift_and_unhealthy_targets"
+        elif identity_drift:
+            reason = "identity_drift"
+        elif unhealthy_count:
+            reason = "unhealthy_targets"
+        else:
+            reason = "exact_match"
+        return {
+            "status": "observed",
+            "reason": reason,
+            "expected_count": len(expected_ids),
+            "active_target_count": len(active_ids),
+            "matched_count": matched,
+            "missing_count": missing,
+            "unexpected_count": unexpected,
+            "unhealthy_count": unhealthy_count,
+        }
+    except Refusal as error:
+        reason = "ambiguous_target_identity" if error.category == "ambiguous_target_identity" else "malformed_targets"
+        return {"status": "unavailable", "reason": reason, **empty}
+    except Exception:
+        return {"status": "unavailable", "reason": "survey_unavailable", **empty}
 
 
 def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -929,7 +1563,105 @@ def collect() -> dict[str, Any]:
     }
 
 
+def _input_document() -> dict[str, Any]:
+    raw = sys.stdin.buffer.read(1_048_577)
+    if len(raw) > 1_048_576:
+        raise Refusal("invalid_declaration")
+    try:
+        value = json.loads(
+            raw,
+            object_pairs_hook=_unique_object,
+            parse_constant=lambda _value: (_ for _ in ()).throw(ValueError()),
+        )
+    except (ValueError, TypeError, json.JSONDecodeError):
+        raise Refusal("invalid_declaration") from None
+    if not isinstance(value, dict):
+        raise Refusal("invalid_declaration")
+    return value
+
+
+def _expected_target_coverage_action() -> dict[str, Any]:
+    declaration = _input_document()
+    if declaration.get("reviewed") is not True:
+        return expected_target_coverage(b"", declaration)
+    try:
+        validate_expected_target_declaration(
+            declaration.get("targets"), reviewed=declaration.get("reviewed")
+        )
+    except Refusal:
+        return expected_target_coverage(b"", declaration)
+    try:
+        targets_raw = _run_api("/api/v1/targets?state=active", "api_unavailable")
+    except Refusal:
+        return {
+            "status": "unavailable",
+            "reason": "api_unavailable",
+            "expected_count": 0,
+            "active_target_count": 0,
+            "matched_count": 0,
+            "missing_count": 0,
+            "unexpected_count": 0,
+            "unhealthy_count": 0,
+        }
+    return expected_target_coverage(targets_raw, declaration)
+
+
 def main() -> int:
+    if len(sys.argv) == 2 and sys.argv[1] == "--validate-active-expected-target-rules":
+        try:
+            result = validate_active_expected_target_rules(_input_document())
+            code = 0
+        except Exception:
+            result = {"status": "refused", "reason": "unsafe_alert_readback"}
+            code = 2
+        print(json.dumps(result, sort_keys=True, separators=(",", ":")))
+        return code
+    if len(sys.argv) == 2 and sys.argv[1] == "--prepare-expected-target-transition":
+        try:
+            result = prepare_expected_target_transition(_input_document())
+            code = 0
+        except Refusal:
+            result = {"status": "refused", "reason": "unsafe_alert_transition"}
+            code = 2
+        except Exception:
+            result = {"status": "refused", "reason": "unsafe_alert_transition"}
+            code = 2
+        print(json.dumps(result, sort_keys=True, separators=(",", ":")))
+        return code
+    if len(sys.argv) == 2 and sys.argv[1] == "--validate-expected-targets":
+        try:
+            declaration = _input_document()
+            validate_expected_target_declaration(
+                declaration.get("targets"),
+                declaration.get("retired_uids"),
+                reviewed=declaration.get("reviewed"),
+            )
+            result = {"status": "valid", "reason": "declaration_valid"}
+            code = 0
+        except Refusal:
+            result = {"status": "refused", "reason": "invalid_declaration"}
+            code = 2
+        except Exception:
+            result = {"status": "refused", "reason": "invalid_declaration"}
+            code = 2
+        print(json.dumps(result, sort_keys=True, separators=(",", ":")))
+        return code
+    if len(sys.argv) == 2 and sys.argv[1] == "--expected-target-coverage":
+        try:
+            result = _expected_target_coverage_action()
+        except Exception:
+            result = {
+                "status": "unavailable",
+                "reason": "survey_unavailable",
+                "expected_count": 0,
+                "active_target_count": 0,
+                "matched_count": 0,
+                "missing_count": 0,
+                "unexpected_count": 0,
+                "unhealthy_count": 0,
+            }
+        print(json.dumps(result, sort_keys=True, separators=(",", ":")))
+        return 0
     try:
         receipt = collect()
     except Refusal as error:

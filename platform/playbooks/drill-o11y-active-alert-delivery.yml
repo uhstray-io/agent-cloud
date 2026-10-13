@@ -126,6 +126,10 @@
         that: not _active_drill_scrape.stat.exists
         fail_msg: "The active-drill scrape file already exists; use Recover o11y Active Alert Drill (Dev)."
 
+    - name: Validate previous expected-target ownership before the production drill
+      ansible.builtin.include_tasks: tasks/o11y-prepare-expected-target-transition.yml
+      no_log: true
+
     - name: Read the active production service-down rule
       ansible.builtin.command:
         argv:
@@ -140,6 +144,7 @@
       register: _active_service_down_rule
       changed_when: false
       check_mode: false
+      no_log: true
 
     - name: Require exactly one active service-down rule
       ansible.builtin.assert:
@@ -147,6 +152,7 @@
           - (_active_service_down_rule.stdout | from_json).uid == 'o11y_service_down'
           - not ((_active_service_down_rule.stdout | from_json).isPaused | bool)
         fail_msg: "The production service-down alert must already be active; no fault was injected."
+      no_log: true
 
     - name: Read every provisioned o11y alert rule before the drill
       ansible.builtin.command:
@@ -162,17 +168,26 @@
       register: _active_o11y_rules
       changed_when: false
       check_mode: false
+      no_log: true
+
+    - name: Validate active target rules and retired tombstones
+      ansible.builtin.include_tasks: tasks/o11y-validate-active-expected-target-rules.yml
+      no_log: true
+      vars:
+        o11y_live_expected_rules_json: "{{ _active_o11y_rules.stdout }}"
 
     - name: Require all provisioned o11y rules to remain active
       ansible.builtin.assert:
         that:
           - _drill_rules | length > 0
-          - _drill_rules | selectattr('isPaused', 'defined') | list | length == _drill_rules | length
-          - _drill_rules | selectattr('isPaused', 'equalto', false) | list | length == _drill_rules | length
+          - _drill_non_target_rules | selectattr('isPaused', 'defined') | list | length == _drill_non_target_rules | length
+          - _drill_non_target_rules | selectattr('isPaused', 'equalto', false) | list | length == _drill_non_target_rules | length
           - _drill_rules | selectattr('uid', 'equalto', 'o11y_service_down') | list | length == 1
         fail_msg: "Every production o11y rule must be active before the drill; no fault was injected."
+      no_log: true
       vars:
         _drill_rules: "{{ _active_o11y_rules.stdout | from_json | selectattr('uid', 'match', '^o11y_') | list }}"
+        _drill_non_target_rules: "{{ _drill_rules | rejectattr('uid', 'match', '^o11y_missing_') | list }}"
 
     - name: Read active production contacts without displaying webhook settings
       ansible.builtin.command:
