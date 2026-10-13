@@ -23,6 +23,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import textwrap
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -143,22 +144,20 @@ def run(tmp_path, binary, *extra, callback=None):
     # The binary's own virtualenv first: ansible-playbook re-reads `ansible-config` and friends
     # from PATH, and a mixed matrix must not pick another version's.
     env["PATH"] = str(Path(binary).parent) + os.pathsep + env.get("PATH", "")
-    local_temp = Path("/private/tmp") / f"ansible-local-{tmp_path.name}"
-    local_temp.mkdir(parents=True, exist_ok=True)
-    env.update(
-        NOLOG_SECRET=SECRET,
-        NOLOG_PLAIN=PLAIN,
-        ANSIBLE_NOCOLOR="1",
-        ANSIBLE_LOCAL_TEMP=str(local_temp),
-        TMPDIR="/private/tmp",
-    )
-    if callback:
-        env["ANSIBLE_STDOUT_CALLBACK"] = callback
-    result = subprocess.run([binary, "-i", "localhost,", str(play), *extra], cwd=ROOT, env=env,
-                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=180,
-                            stdin=subprocess.DEVNULL)
-    # One stream, so a warning (stderr) sits under the task that raised it.
-    shutil.rmtree(local_temp, ignore_errors=True)
+    with tempfile.TemporaryDirectory(dir=tmp_path) as local_temp:
+        env.update(
+            NOLOG_SECRET=SECRET,
+            NOLOG_PLAIN=PLAIN,
+            ANSIBLE_NOCOLOR="1",
+            ANSIBLE_LOCAL_TEMP=local_temp,
+            TMPDIR=str(tmp_path),
+        )
+        if callback:
+            env["ANSIBLE_STDOUT_CALLBACK"] = callback
+        result = subprocess.run([binary, "-i", "localhost,", str(play), *extra], cwd=ROOT, env=env,
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=180,
+                                stdin=subprocess.DEVNULL)
+        # One stream, so a warning (stderr) sits under the task that raised it.
     return result.returncode, result.stdout
 
 
@@ -168,13 +167,16 @@ def run_custom(tmp_path, binary, play_text, *extra):
     env = {k: v for k, v in os.environ.items()
            if k not in ("ANSIBLE_STDOUT_CALLBACK", "ANSIBLE_CONFIG", "ANSIBLE_CALLBACK_PLUGINS")}
     env["PATH"] = str(Path(binary).parent) + os.pathsep + env.get("PATH", "")
-    local_temp = Path("/private/tmp") / f"ansible-local-{tmp_path.name}"
-    local_temp.mkdir(parents=True, exist_ok=True)
-    env.update(NOLOG_SECRET=SECRET, ANSIBLE_NOCOLOR="1", ANSIBLE_LOCAL_TEMP=str(local_temp), TMPDIR="/private/tmp")
-    result = subprocess.run([binary, "-i", "localhost,", str(play), *extra], cwd=ROOT, env=env,
-                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=180,
-                            stdin=subprocess.DEVNULL)
-    shutil.rmtree(local_temp, ignore_errors=True)
+    with tempfile.TemporaryDirectory(dir=tmp_path) as local_temp:
+        env.update(
+            NOLOG_SECRET=SECRET,
+            ANSIBLE_NOCOLOR="1",
+            ANSIBLE_LOCAL_TEMP=local_temp,
+            TMPDIR=str(tmp_path),
+        )
+        result = subprocess.run([binary, "-i", "localhost,", str(play), *extra], cwd=ROOT, env=env,
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=180,
+                                stdin=subprocess.DEVNULL)
     return result.returncode, result.stdout
 
 
@@ -185,10 +187,11 @@ def require_runtime_started(output):
 
 def _version(binary) -> tuple:
     env = os.environ.copy()
-    env.update(ANSIBLE_LOCAL_TEMP="/private/tmp", TMPDIR="/private/tmp")
-    out = subprocess.run(
-        [binary, "--version"], capture_output=True, text=True, env=env, stdin=subprocess.DEVNULL
-    ).stdout
+    with tempfile.TemporaryDirectory() as local_temp:
+        env.update(ANSIBLE_LOCAL_TEMP=local_temp, TMPDIR=local_temp)
+        out = subprocess.run(
+            [binary, "--version"], capture_output=True, text=True, env=env, stdin=subprocess.DEVNULL
+        ).stdout
     return tuple(int(n) for n in re.search(r"core (\d+)\.(\d+)", out).groups())
 
 
