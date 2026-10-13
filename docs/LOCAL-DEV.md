@@ -135,8 +135,55 @@ interpreter parses the token as code, and its syntax error prints the token
 `scripts/semaphore-launch.py` (a script file, the token on stdin, HTTPS only). See
 "Using Semaphore" in `AGENTS.md`.
 
+### Stopping an idle service (and getting it back)
+
+Keep only the services the current work needs running. To free one service's memory
+without losing its state:
+
+```bash
+make local-service-down SERVICE=erpnext_svc     # SERVICE is the inventory group
+make local-deploy-erpnext                        # bring it back: its normal Deploy
+```
+
+`make local-service-down` runs the `Stop Local Service` template
+(`platform/playbooks/stop-local-service.yml`). It runs `<engine> stop` on the service's
+running containers, found by the compose working-directory label (the selector Verify
+Service Persistence uses), plus any names in the host var `stop_extra_containers` for a
+container compose did not create (NetBox's `netbox-orb-agent`). It never removes a
+container, image or volume, never runs `compose down`, and never changes a restart
+policy. A re-run changes nothing; `DRY_RUN=1 ./scripts/local-dev.sh run stop-local-service
+'{"target_service":"erpnext_svc"}'` lists what it would stop.
+
+- **Local only.** Every host of the group must be named `<name>-local`; any other host is
+  refused before an engine call. There is no production variant: stopping a production
+  service is an outage.
+- **Restarting.** Run the service's own Deploy (`make local-deploy-<service>`). What it
+  does with a stopped container depends on that service's `deploy.sh`:
+  - authentik, honcho, o11y, openhands and tududi use `compose_up_if_changed`, where a
+    not-running container is the reason "container not running" (`lib/common.sh`
+    `_compose_recreate_reason`), so the project is recreated. agentgateway has its own
+    copy of that comparison, and caddy runs `compose up -d --force-recreate` every time.
+  - dns, step-ca, opa, n8n, erpnext, uhhcraft, netbox and postiz (and the other services
+    whose `deploy.sh` runs plain `compose up -d`) depend on `compose up -d` starting an
+    existing stopped container. unverified: that podman-compose does that. The local
+    Semaphore installs podman-compose with an unpinned `pip3 install podman-compose`
+    when its image lacks it (`bootstrap-local-dev.yml`), so the version is not recorded
+    in the repo.
+  - **Extra containers are not restarted by the service's Deploy.** `netbox-orb-agent`
+    was never part of the compose project; it comes back only through `Deploy Orb Agent
+    (Local)`. The playbook's report says so whenever `stop_extra_containers` is set.
+- **Known ceiling.** The containers keep `restart: always`. Per podman-run(1), a policy
+  does not take effect after `podman stop`, but `always` is restarted after a machine
+  reboot by `podman-restart.service` even if the user stopped it. After a reboot, run
+  `make local-service-down` again. (Not verified for a Docker engine.)
+- **Both inventories declare the extras.** The local Semaphore runs with the inventory
+  `bootstrap-local-dev.yml` generates (`_inv_ini`), not `platform/inventory/local-dev.yml`,
+  so `stop_extra_containers` for `netbox-local` is declared in both. An
+  existing local Semaphore picks it up when `make local-bootstrap` re-runs its
+  "Create or update local inventory" step.
+
 The `make` targets (`local-init`, `local-bootstrap`, `local-deploy-<service>`,
-`local-validate`, `local-clean`, `promote`) wrap this flow via
+`local-service-down`, `local-validate`, `local-clean`, `promote`) wrap this flow via
 `scripts/local-dev.sh`, which also enforces the local-only guard (refuses
 non-local inventories and non-local `openbao_addr`).
 
