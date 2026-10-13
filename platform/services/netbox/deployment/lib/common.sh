@@ -423,14 +423,43 @@ sync_postgres_passwords() {
 
 # ─── NetBox image builder ────────────────────────────────────────
 
-# build_netbox_image
-# Extracts VERSION from docker-compose.yml and builds the custom image.
-build_netbox_image() {
-  local compose_dir="${ROOT_DIR:-${SCRIPT_DIR}}"
-  local version
+NETBOX_IMAGE="netbox:latest-plugins"
+# Label the built image carries: the digest of everything the build reads. It is how the next
+# deploy knows the image on this host was built from the inputs it holds now.
+NETBOX_BUILD_LABEL="io.agent-cloud.build-inputs-sha256"
+
+# _netbox_version
+# The NetBox base-image tag, read from docker-compose.yml (the build's VERSION arg).
+_netbox_version() {
+  local compose_dir="${ROOT_DIR:-${SCRIPT_DIR}}" version
   version=$(grep -m1 'VERSION' "${compose_dir}/docker-compose.yml" \
     | grep -o 'v[0-9][^}]*' | head -1 || true)
-  version="${version:-v4.5-4.0.0}"
+  echo "${version:-v4.5-4.0.0}"
+}
+
+# build_netbox_image
+# Builds the custom image, unless the image already on this host was built from the same
+# inputs (netbox_build_inputs_digest) and NETBOX_FORCE_REBUILD is not the literal `true`.
+# A build is always `--no-cache`: the Dockerfile installs the Diode plugin unpinned, and a
+# cached layer would never pick up a newer release. So a build is a deliberate act, taken
+# when its inputs changed, the image is missing, or an operator asks for the refresh.
+build_netbox_image() {
+  local compose_dir="${ROOT_DIR:-${SCRIPT_DIR}}"
+  local version want have
+  version=$(_netbox_version)
+  want=$(netbox_build_inputs_digest) || exit 1
+  # podman stores a short name under localhost/ (docker keeps it bare); ask for both.
+  local ref
+  have=""
+  for ref in "$NETBOX_IMAGE" "localhost/${NETBOX_IMAGE}"; do
+    have=$($CONTAINER_ENGINE image inspect --format "{{ index .Config.Labels \"${NETBOX_BUILD_LABEL}\" }}" \
+      "$ref" 2>/dev/null) || have=""
+    [ -z "$have" ] || break
+  done
+  if [ "${NETBOX_FORCE_REBUILD:-}" != "true" ] && [ -n "$have" ] && [ "$have" = "$want" ]; then
+    info "NetBox image ${NETBOX_IMAGE} already matches its build inputs; skipping the build (NETBOX_FORCE_REBUILD=true rebuilds)."
+    return 0
+  fi
 
   info "Building NetBox image (VERSION=${version})..."
   # NETBOX_BUILD_SECCOMP: a seccomp profile path ON THE ENGINE. The local Semaphore's podman
@@ -441,10 +470,201 @@ build_netbox_image() {
   local sec=()
   [ -n "${NETBOX_BUILD_SECCOMP:-}" ] && sec=(--security-opt "seccomp=${NETBOX_BUILD_SECCOMP}")
   $CONTAINER_ENGINE build --no-cache ${sec[@]+"${sec[@]}"} \
-    -t netbox:latest-plugins \
+    --label "${NETBOX_BUILD_LABEL}=${want}" \
+    -t "$NETBOX_IMAGE" \
     -f "${compose_dir}/Dockerfile-Plugins" \
     --build-arg "VERSION=${version}" \
     "${compose_dir}"
+}
+
+# ─── Change-aware deploy ─────────────────────────────────────────
+# A deploy whose inputs are unchanged must be a no-op: no image build, no `compose down`, no
+# orb-agent stop. Until this existed every run rebuilt the image (a new image ID), took the
+# whole stack down and removed the standalone orb-agent, which nothing then redeployed.
+#
+# The inputs are hashed into one digest that rides a label on every container, through a
+# generated compose overlay. The containers running now are compared with it, so the label
+# on the container, not a file on disk, is the record: a run that fails part-way keeps the old
+# label and the next run still sees the difference. Same semantics as platform/lib/common.sh
+# compose_up_if_changed (NetBox keeps its own compose wrapper, so it keeps its own copy).
+
+NETBOX_INPUTS_LABEL="io.agent-cloud.inputs-sha256"
+# The generated overlay carrying the label (gitignored; rewritten by every changed deploy).
+NETBOX_LABEL_OVERLAY=".deploy-inputs-label.yml"
+# Written by deploy-netbox.yml once the orb-agent credential refresh succeeded, removed by
+# deploy.sh before it recreates the stack (same reason as the post-deploy marker below).
+# shellcheck disable=SC2034  # read by deploy.sh, which sources this file
+NETBOX_CREDENTIAL_MARKER=".credential-refresh-complete"
+# Written by post-deploy.sh once it finished, removed by deploy.sh before it recreates the
+# stack: the playbook reads it to run post-deploy again after a run that died part-way,
+# which the container label alone cannot show (the label is set at container creation).
+# shellcheck disable=SC2034  # read by deploy.sh and post-deploy.sh, which source this file
+NETBOX_POST_DEPLOY_MARKER=".post-deploy-complete"
+# Services that run once and exit (restart "no"): the healthy end state is exited 0.
+NETBOX_ONESHOT_SERVICES="hydra-migrate"
+
+_netbox_sha256() {  # stdin -> hex digest; sha256sum on Linux, shasum where only it exists
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum | cut -d' ' -f1
+  else shasum -a 256 | cut -d' ' -f1; fi
+}
+
+# _netbox_acc <label> <digest>: append one "digest  label" line to the accumulator.
+_NB_ACC=""
+_netbox_acc() { _NB_ACC+="${2}  ${1}"$'\n'; }
+
+# _netbox_acc_file <path relative to the deploy dir> [optional]
+# Add one file's digest. A file that cannot be read is an error, never a skip: a digest over
+# whichever files happened to be readable is a guess, not a comparison. `optional` records
+# "absent" for a file that may legitimately not exist yet.
+_netbox_acc_file() {
+  local dir="${ROOT_DIR:-${SCRIPT_DIR}}" d
+  if [ "${2:-}" = optional ] && [ ! -e "${dir}/$1" ]; then _netbox_acc "$1" absent; return 0; fi
+  [ -f "${dir}/$1" ] || error "Cannot read ${1} to hash the deployment's inputs; refusing to guess whether it changed."
+  d=$(_netbox_sha256 < "${dir}/$1") && [ -n "$d" ] || error "Cannot hash ${1}; refusing to guess whether the deployment's inputs changed."
+  _netbox_acc "$1" "$d"
+}
+
+# _netbox_acc_dir <dir relative to the deploy dir>: every file under it, by path, following
+# symlinks. Bytecode caches are skipped: a read-only bind mount never gets one, and a stray
+# one must not look like a configuration change.
+_netbox_acc_dir() {
+  local dir="${ROOT_DIR:-${SCRIPT_DIR}}" listing f
+  [ -d "${dir}/$1" ] || error "Cannot read directory ${1}; refusing to guess whether the deployment's inputs changed."
+  listing=$(cd "$dir" && find -L "$1" -type f ! -path '*/__pycache__/*' ! -name '*.pyc') \
+    || error "Cannot list ${1}; refusing to guess whether the deployment's inputs changed."
+  listing=$(printf '%s\n' "$listing" | LC_ALL=C sort)
+  while IFS= read -r f; do
+    if [ -n "$f" ]; then _netbox_acc_file "$f"; fi
+  done <<< "$listing"
+}
+
+# _netbox_compose_files: the compose files compose() passes, relative to the deploy dir.
+_netbox_compose_files() {
+  local ov
+  echo docker-compose.yml
+  for ov in ${COMPOSE_OVERLAYS:-}; do
+    [ "$ov" = "$NETBOX_LABEL_OVERLAY" ] || echo "$ov"
+  done
+}
+
+# netbox_build_inputs_digest: one sha256 over everything the image build reads — the
+# Dockerfile, the plugins.py it copies and the base-image tag. There is no requirements file:
+# the Dockerfile names the plugin itself.
+netbox_build_inputs_digest() {
+  _NB_ACC=""
+  _netbox_acc "base-image-version" "$(_netbox_version)"
+  _netbox_acc_file Dockerfile-Plugins
+  _netbox_acc_file configuration/plugins.py
+  printf '%s' "$_NB_ACC" | _netbox_sha256
+}
+
+# netbox_inputs_digest: one sha256 over every input that decides what the containers run on:
+#   - the compose files in effect (base + COMPOSE_OVERLAYS) and NETBOX_HOST_IP, which the
+#     compose file reads from the environment for the published port
+#   - .env, without the orb-agent-only keys. ORB_AGENT_CLIENT_ID/SECRET: the credential
+#     refresh rewrites them after a changed deploy, so they would make the next run "changed".
+#     SNMP_COMMUNITY: no compose service reads it (only start_orb_agent does), so a change
+#     would recreate the stack for nothing
+#   - env/*.env
+#   - every bind-mounted config input (docker-compose.yml `volumes:` with a ./ source)
+#   - the image build inputs (netbox_build_inputs_digest)
+# Only digests are combined; no content is printed.
+netbox_inputs_digest() {
+  local dir="${ROOT_DIR:-${SCRIPT_DIR}}" f d
+  _NB_ACC=""
+  while IFS= read -r f; do _netbox_acc_file "$f"; done < <(_netbox_compose_files)
+  _netbox_acc "NETBOX_HOST_IP" "${NETBOX_HOST_IP:-}"
+  [ -f "${dir}/.env" ] || error "Cannot read .env to hash the deployment's inputs; refusing to guess whether it changed."
+  d=$(sed -E '/^(ORB_AGENT_CLIENT_ID|ORB_AGENT_CLIENT_SECRET|SNMP_COMMUNITY)=/d' "${dir}/.env" | _netbox_sha256) \
+    && [ -n "$d" ] || error "Cannot hash .env; refusing to guess whether the deployment's inputs changed."
+  _netbox_acc ".env" "$d"
+  for f in "${dir}"/env/*.env; do
+    if [ -f "$f" ]; then _netbox_acc_file "env/$(basename "$f")"; fi
+  done
+  _netbox_acc_dir netbox-docker/configuration
+  _netbox_acc_file configuration/plugins.py
+  _netbox_acc_file discovery/init-db.sh
+  _netbox_acc_file discovery/nginx.conf
+  _netbox_acc_file discovery/hydra.yaml
+  _netbox_acc_file secrets/netbox_to_diode_client_secret.txt optional
+  d=$(netbox_build_inputs_digest) || error "Cannot hash the image build inputs; refusing to guess whether they changed."
+  _netbox_acc "image-build" "$d"
+  printf '%s' "$_NB_ACC" | _netbox_sha256
+}
+
+# netbox_compose_services: every service in the effective config, one per line. Both
+# providers print one name per line for `config --services`; if the provider cannot, the
+# top-level service keys of every compose file in effect are parsed instead.
+netbox_compose_services() {
+  local out f dir="${ROOT_DIR:-${SCRIPT_DIR}}"
+  if out=$(compose config --services 2>/dev/null) && [ -n "$out" ]; then
+    printf '%s\n' "$out"; return 0
+  fi
+  while IFS= read -r f; do
+    awk '/^services:[[:space:]]*$/ {s=1; next}
+         s && /^[^[:space:]#]/ {s=0}
+         s && /^  [A-Za-z0-9._-]+:[[:space:]]*$/ {sub(/^  /, ""); sub(/:.*/, ""); print}' "${dir}/${f}"
+  done < <(_netbox_compose_files) | awk '!seen[$0]++'
+}
+
+# netbox_recreate_reason <digest> <services>: empty when every project container matches.
+# A container is a mismatch when its service is no longer declared (an orphan), when it is
+# not running (a one-shot service instead must have exited 0), when its label differs or is
+# absent, or when its image ID is no longer the one its tag names (a re-pulled or rebuilt
+# image). A declared service with no container is a mismatch too.
+netbox_recreate_reason() {
+  local want="$1" services="$2" names name svc state code have ref image_run image_now seen=$'\n'
+  names=$($CONTAINER_ENGINE ps -a --filter "label=com.docker.compose.project=netbox" \
+    --format '{{.Names}}' 2>/dev/null) || names=""
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    svc=$($CONTAINER_ENGINE inspect --format '{{ index .Config.Labels "com.docker.compose.service" }}' "$name" 2>/dev/null) || svc=""
+    case $'\n'"${services}"$'\n' in
+      *$'\n'"${svc}"$'\n'*) ;;
+      *) echo "orphan container: ${name}"; return 0 ;;
+    esac
+    seen+="${svc}"$'\n'
+    state=$($CONTAINER_ENGINE inspect --format '{{.State.Status}}' "$name" 2>/dev/null) || state=""
+    case " ${NETBOX_ONESHOT_SERVICES} " in
+      *" ${svc} "*)
+        code=$($CONTAINER_ENGINE inspect --format '{{.State.ExitCode}}' "$name" 2>/dev/null) || code=""
+        if [ "$state" != "exited" ] || [ "$code" != "0" ]; then echo "one-shot did not complete: ${name}"; return 0; fi
+        ;;
+      *)
+        if [ "$state" != "running" ]; then echo "container not running: ${name}"; return 0; fi
+        ;;
+    esac
+    have=$($CONTAINER_ENGINE inspect --format "{{ index .Config.Labels \"${NETBOX_INPUTS_LABEL}\" }}" "$name" 2>/dev/null) || have=""
+    if [ "$have" != "$want" ]; then echo "inputs changed: ${name}"; return 0; fi
+    ref=$($CONTAINER_ENGINE inspect --format '{{.Config.Image}}' "$name" 2>/dev/null) || ref=""
+    image_run=$($CONTAINER_ENGINE inspect --format '{{.Image}}' "$name" 2>/dev/null) || image_run=""
+    image_now=$($CONTAINER_ENGINE image inspect --format '{{.Id}}' "$ref" 2>/dev/null) || image_now=""
+    if [ -z "$image_now" ] || [ "$image_now" != "$image_run" ]; then echo "image changed: ${name}"; return 0; fi
+  done <<< "$names"
+  while IFS= read -r svc; do
+    [ -n "$svc" ] || continue
+    case "$seen" in
+      *$'\n'"${svc}"$'\n'*) ;;
+      *) echo "no container for service: ${svc}"; return 0 ;;
+    esac
+  done <<< "$services"
+  return 0
+}
+
+# netbox_write_label_overlay <digest> <services>
+# Write the compose overlay that puts the digest on every service, next to the base file
+# (compose() resolves an overlay relative to the deploy dir). The caller adds
+# NETBOX_LABEL_OVERLAY to COMPOSE_OVERLAYS for every `compose up` that follows: a service
+# started without it would differ from its labelled siblings and be recreated.
+netbox_write_label_overlay() {
+  local want="$1" services="$2" svc dir="${ROOT_DIR:-${SCRIPT_DIR}}"
+  {
+    echo "services:"
+    while IFS= read -r svc; do
+      [ -n "$svc" ] || continue
+      printf '  %s:\n    labels:\n      %s: "%s"\n' "$svc" "$NETBOX_INPUTS_LABEL" "$want"
+    done <<< "$services"
+  } > "${dir}/${NETBOX_LABEL_OVERLAY}"
 }
 
 # ─── Deployment helper functions ─────────────────────────────────
@@ -598,6 +818,19 @@ stop_orb_agent() {
   sudo $CONTAINER_ENGINE rm -f "${ORB_AGENT_CONTAINER}" 2>/dev/null || true
   local compose_dir="${SECRETS_DIR%/secrets}"
   rm -f "${compose_dir}/discovery/agent-resolved.yaml" 2>/dev/null || true
+}
+
+# warn_if_orb_agent_stopped
+# Say so when no standalone orb-agent is running: discovery is then stopped and nothing in
+# this workflow starts it again. `ORB_AGENT_RUNNING=false` on its own line is what
+# deploy-netbox.yml reads to show the operator a warning.
+warn_if_orb_agent_stopped() {
+  local running
+  running=$(sudo $CONTAINER_ENGINE inspect --format '{{.State.Running}}' "${ORB_AGENT_CONTAINER}" 2>/dev/null) || running=""
+  if [ "$running" != "true" ]; then
+    echo "ORB_AGENT_RUNNING=false"
+    warn "No orb-agent container is running: discovery is stopped; run Deploy Orb Agent."
+  fi
 }
 
 # wait_for_agent_running [timeout]

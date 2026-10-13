@@ -396,6 +396,18 @@ templates:
         type: string
         required: false
         default_value: "main"
+      - name: deploy_force_recreate
+        title: "Force container recreate"
+        description: "true to recreate every container even when inputs and images match (clears a stale bind mount). This stops the orb-agent: run Deploy Orb Agent afterwards"
+        type: string
+        required: false
+        default_value: "false"
+      - name: netbox_force_rebuild
+        title: "Force plugin image rebuild"
+        description: "true to rebuild the NetBox plugin image even when its build inputs match (takes a newer Diode plugin release; the rebuilt image recreates the stack and stops the orb-agent)"
+        type: string
+        required: false
+        default_value: "false"
 
   - name: Audit NetBox Runtime
     playbook: platform/playbooks/audit-netbox-runtime.yml
