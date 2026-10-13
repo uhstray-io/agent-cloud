@@ -15,7 +15,10 @@
 #          report and Loki alike, never erased (PR 195 and PR 258 Codex reviews).
 #   parse  workflows/service-onboarding/lib/step_results.py (select / pick / aggregate): latest
 #          result per service and step; a failed task with no result counts as `fail` with
-#          its last 20 lines. A service is named by its inventory group's service_name.
+#          its last 20 lines. A service is named by its inventory group's service_name; a host
+#          that sets the host var `service_conformance_tracked: false` (default true; the string
+#          "false" counts) is skipped, so a non-service host carrying a service_name never
+#          appears as a service that has not run.
 #   write  NetBox custom fields on each service's VM (declared in
 #          workflows/service-onboarding/netbox-custom-fields.yml), with the scoped
 #          workflow-collector token (view/change VMs only); in local-dev, one direct Loki line
@@ -111,7 +114,12 @@
       ansible.builtin.set_fact:
         _host_services: "{{ _host_services | default({}) | combine({item: hostvars[item].service_name}) }}"
       loop: "{{ groups['all'] }}"
-      when: hostvars[item].service_name is defined
+      # A host that sets `service_conformance_tracked: false` is not a workflow service (a drill
+      # host that borrows a service_name): it contributes none, so no group, no VM lookup and no
+      # "never run" row exists for it. Every consumer reads this map, so this is the one cut.
+      when:
+        - hostvars[item].service_name is defined
+        - hostvars[item].service_conformance_tracked | default(true) | bool
 
     - name: "Select the workflow templates"
       ansible.builtin.command:
