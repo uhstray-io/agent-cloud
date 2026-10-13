@@ -105,6 +105,7 @@
       - (_bm_current.get(_bm_guard_key) or none) == _bm_guard_value
     fail_msg: "The guarded OpenBao key changed before reconciliation; no write occurred."
   when: _bm_guard_key is defined
+  no_log: true
 
 - name: "Merge the differing keys via KV-v2 PATCH (siblings preserved, no version churn)"
   # Server-side JSON merge-patch: OpenBao merges into the CURRENT version, so a

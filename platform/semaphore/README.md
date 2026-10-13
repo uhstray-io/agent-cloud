@@ -103,6 +103,7 @@ scripted path exist and are recorded here so it is built once, deliberately:
    inside the controller (see the publisher section). A workstation token is an
    operator-held value — provisioned into the workstation environment, never
    into a repo, a survey parameter or a launch argument.
+
 3. **Launch and read back.** `POST /api/project/{project_id}/tasks` with
    `template_id` (or `template_name`) and, for a survey template, `environment`
    as a JSON string of the survey values. Semaphore v2.17.31 merges EVERY key of that
@@ -124,6 +125,48 @@ scripted path exist and are recorded here so it is built once, deliberately:
    from the upstream `api-docs.yml` on the `develop` branch (read 2026-09-14) and
    the `/api/project/{id}/...` prefix the committed playbooks already use;
    confirm against the running version before scripting.
+
+### Operator token rotation
+
+`scripts/semaphore-rotate-token.py` rotates the calling user's workstation token.
+It reads the current backup only from stdin; the mode-`0600` recovery state
+holds both token values until revocation is confirmed, then is removed. The
+replacement is written atomically to the local backup with mode `0600`. The
+command requires the authenticated server's
+`/api/info` version to be exactly `2.19.11`, the version whose token create,
+list, and prefix-delete behavior this workflow has reviewed. It refuses
+wildcard-bearing or ambiguous token IDs and rechecks the complete user-token
+inventory before deletion. It never prints a token or ID prefix.
+
+Run the script from a reviewed checkout after publishing the Dev-bound
+`Rotate Semaphore Operator Token (Dev)` template and provisioning its isolated
+environment. Keep the old token file unchanged as stdin until the command
+completes. Example shape (replace only the non-secret values and file paths):
+
+```sh
+python3 scripts/semaphore-rotate-token.py \
+  --url https://semaphore.example \
+  --project 1 \
+  --expected-user-id 1 \
+  --inventory 1 \
+  --backup "$HOME/.config/semaphore/operator-token" \
+  --state "$HOME/.config/semaphore/operator-token.rotation" \
+  < "$HOME/.config/semaphore/operator-token"
+```
+
+The command verifies the replacement token, runs the guarded Dev playbook, and
+replaces the workstation backup before it attempts to revoke the old token. The
+playbook updates `secret/services/semaphore:api_token` only when its protected
+current value exactly matches the old operator token; a different controller
+token stays unchanged. The state file makes acknowledged create and later steps
+resumable, including a retry after the backup already contains the replacement.
+If the create request has an unknown outcome, the state
+file blocks another create because the API does not return an existing token's
+full value; reconcile that inventory manually before starting a new rotation.
+The command holds a private local lock beside the backup and rechecks the
+inventory before revocation. Run it during an exclusive token-change window:
+the API has no server-side compare-and-delete, so another operator changing
+tokens outside this command cannot honor the local lock.
 
 Until an operator token is provisioned, the honest state is: **operator launches
 from the UI; the agent hands over the exact template name, survey values and the

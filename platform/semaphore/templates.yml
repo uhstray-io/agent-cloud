@@ -1620,6 +1620,14 @@ templates:
         type: string
         default_value: "false"
 
+  - name: Rotate Semaphore Operator Token
+    playbook: platform/playbooks/rotate-semaphore-api-token.yml
+    dev_variant: true
+    isolated_environment: Semaphore token rotation inputs
+    seed_inputs: [SEMAPHORE_OLD_TOKEN, SEMAPHORE_NEW_TOKEN]
+    # Both values are staged as encrypted environment inputs by the operator
+    # rotation command. They are never survey fields or task extra vars.
+
   - name: Reconcile pfSense API Key
     playbook: platform/playbooks/reconcile-pfsense-api-key.yml
     dev_variant: true
