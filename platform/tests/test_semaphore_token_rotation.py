@@ -1,5 +1,6 @@
 import fcntl
 import importlib.util
+import io
 import os
 import shutil
 import stat
@@ -182,6 +183,76 @@ def test_dev_template_and_playbook_guard_controller_write():
     assert address_guard["vars"]["_bao_url"] == "{{ _rot_url }}"
 
 
+@pytest.mark.parametrize("missing", [None, "endpoint", "old_encrypted_input", "new_encrypted_input"])
+@pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="ansible-playbook not installed")
+def test_actual_playbook_input_preflight_reports_categories_without_values(tmp_path, missing):
+    endpoint = None if missing == "endpoint" else "https://SENTINEL-ENDPOINT.test"
+    inventory_data = {"hosts": {"localhost": {"ansible_connection": "local"}}}
+    if endpoint:
+        inventory_data["vars"] = {"openbao_addr": endpoint}
+    inventory = tmp_path / "inventory.yml"
+    inventory.write_text(yaml.safe_dump({"all": inventory_data}))
+
+    env = harness_sandbox.env_for(tmp_path)
+    env.update(
+        SEMAPHORE_OLD_TOKEN="SENTINEL-OLD-ENCRYPTED-TOKEN",
+        SEMAPHORE_NEW_TOKEN="SENTINEL-NEW-ENCRYPTED-TOKEN",
+    )
+    if missing == "old_encrypted_input":
+        env["SEMAPHORE_OLD_TOKEN"] = ""
+    elif missing == "new_encrypted_input":
+        env["SEMAPHORE_NEW_TOKEN"] = ""
+
+    source = yaml.safe_load((ROOT / "platform/playbooks/rotate-semaphore-api-token.yml").read_text())[-1]
+    names = {
+        "Check required rotation input presence without values",
+        "Report bounded rotation input presence",
+        "Refuse missing rotation inputs before OpenBao access",
+        "List seed input names without values",
+        "Refuse undeclared or leftover secret inputs",
+    }
+    tasks = [dict(task) for task in source["tasks"] if task["name"] in names]
+    assert len(tasks) == len(names)
+    auth_index = next(i for i, task in enumerate(source["tasks"])
+                      if task["name"] == "Authenticate to OpenBao (AppRole)")
+    refusal_index = next(i for i, task in enumerate(source["tasks"])
+                         if task["name"] == "Refuse missing rotation inputs before OpenBao access")
+    assert refusal_index < auth_index
+    assert tasks[0]["no_log"] is True
+    assert all(task["no_log"] is True for task in tasks
+               if task["name"] in {"List seed input names without values",
+                                   "Refuse undeclared or leftover secret inputs"})
+
+    offline = tmp_path / "offline-rotation-input-preflight.yml"
+    offline.write_text(yaml.safe_dump([{
+        "name": "Run extracted rotation input preflight tasks offline",
+        "hosts": "localhost",
+        "gather_facts": False,
+        "vars": source["vars"],
+        "tasks": tasks,
+    }]))
+    result = subprocess.run(
+        ["ansible-playbook", "-i", str(inventory), str(offline)],
+        cwd=ROOT, env=env, text=True, capture_output=True, check=False, timeout=120)
+    if "Local RPC server did not start" in result.stderr:
+        pytest.skip("installed Ansible local executor cannot start its RPC server in this environment")
+
+    output = result.stdout + result.stderr
+    for sentinel in ("SENTINEL-ENDPOINT", "SENTINEL-OLD-ENCRYPTED-TOKEN",
+                     "SENTINEL-NEW-ENCRYPTED-TOKEN"):
+        assert sentinel not in output
+    assert "Rotation input presence:" in output
+    if missing is None:
+        assert result.returncode == 0, output
+        assert "endpoint=present" in output
+        assert "old encrypted input=present" in output
+        assert "new encrypted input=present" in output
+    else:
+        assert result.returncode != 0, output
+        assert f"{missing.replace('_', ' ')}=missing" in output
+        assert "before OpenBao access" in output
+
+
 @pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="ansible-playbook not installed")
 def test_actual_playbook_executes_python_command_and_address_guard_offline(tmp_path):
     inventory = tmp_path / "inventory.yml"
@@ -256,6 +327,53 @@ def test_unknown_create_is_durable_and_never_retried(monkeypatch, tmp_path):
     with pytest.raises(rotate.RotationRefusal, match="Create outcome is unknown"):
         rotate.rotate(options, OLD)
     assert len([call for call in server.calls[calls_before:] if call[2] == "POST"]) == 0
+
+
+@pytest.mark.parametrize("seed_error", [
+    "SENTINEL-SEED-REFUSAL",
+    "Seed task 5013 failed; SENTINEL-SEED-FAILURE",
+])
+def test_seed_refusal_or_task_failure_on_verified_resume_is_safe_and_never_creates_another_token(
+        monkeypatch, tmp_path, capsys, seed_error):
+    server = FakeSemaphore(tokens={OLD[:8], NEW[:8]})
+    install_fake(monkeypatch, server)
+    options = args(tmp_path)
+    options.backup.write_text(OLD + "\n")
+    options.backup.chmod(0o600)
+    rotate.save_state(options.state, {
+        "schema": 1,
+        "phase": "verified",
+        "old_id": OLD[:8],
+        "old_token": OLD,
+        "before_ids": [OLD[:8]],
+        "new_id": NEW[:8],
+        "new_token": NEW,
+    })
+
+    def refuse_seed(*_args, **_kwargs):
+        raise rotate.seed.Refusal(seed_error)
+
+    monkeypatch.setattr(rotate.seed, "stage_and_seed", refuse_seed)
+    monkeypatch.setattr("sys.stdin", io.StringIO(OLD + "\n"))
+    status = rotate.main([
+        "--url", "https://semaphore.test", "--project", "1",
+        "--expected-user-id", "1", "--inventory", "2",
+        "--backup", str(options.backup), "--state", str(options.state),
+    ])
+
+    output = capsys.readouterr()
+    assert status == 2
+    assert (
+        "Semaphore seed reconciliation refused or failed; "
+        "preserve private state and reconcile before retrying"
+    ) in output.err
+    assert seed_error not in output.out + output.err
+    assert "stopped unexpectedly" not in output.err
+    assert not any(method == "POST" for _token, _path, method in server.calls)
+    assert server.created is False
+    assert options.backup.read_text() == OLD + "\n"
+    assert stat.S_IMODE(options.backup.stat().st_mode) == 0o600
+    assert rotate.load_state(options.state)["phase"] == "verified"
 
 
 def test_local_lock_refuses_a_concurrent_rotation_before_api_calls(monkeypatch, tmp_path):

@@ -19,14 +19,28 @@
     _rot_path: services/semaphore
 
   tasks:
-    - name: "Validate non-secret inputs"
+    - name: "Check required rotation input presence without values"
+      ansible.builtin.set_fact:
+        _rot_input_presence:
+          endpoint: "{{ _rot_url | length > 0 }}"
+          old_encrypted_input: "{{ _rot_old | length >= 8 }}"
+          new_encrypted_input: "{{ _rot_new | length >= 8 }}"
+      no_log: true
+
+    - name: "Report bounded rotation input presence"
+      ansible.builtin.debug:
+        msg: >-
+          Rotation input presence: endpoint={{ 'present' if _rot_input_presence.endpoint else 'missing' }};
+          old encrypted input={{ 'present' if _rot_input_presence.old_encrypted_input else 'missing' }};
+          new encrypted input={{ 'present' if _rot_input_presence.new_encrypted_input else 'missing' }}.
+
+    - name: "Refuse missing rotation inputs before OpenBao access"
       ansible.builtin.assert:
         that:
-          - _rot_url | length > 0
-          - _rot_old | length >= 8
-          - _rot_new | length >= 8
-        fail_msg: "Rotation requires the declared OpenBao endpoint and both encrypted token inputs."
-      no_log: true
+          - _rot_input_presence.endpoint | bool
+          - _rot_input_presence.old_encrypted_input | bool
+          - _rot_input_presence.new_encrypted_input | bool
+        fail_msg: "Rotation refused before OpenBao access because one or more required input categories are missing."
 
     - name: "List seed input names without values"
       ansible.builtin.command:
@@ -40,6 +54,7 @@
       changed_when: false
       check_mode: false
       delegate_to: localhost
+      no_log: true
 
     - name: "Refuse undeclared or leftover secret inputs"
       vars:
@@ -48,6 +63,7 @@
         that:
           - _rot_names | sort == ['SEMAPHORE_NEW_TOKEN', 'SEMAPHORE_OLD_TOKEN'] | sort
         fail_msg: "The rotation environment contains undeclared inputs; reconcile it before retrying."
+      no_log: true
 
     - name: "Refuse a cleartext OpenBao endpoint"
       ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
