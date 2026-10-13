@@ -360,9 +360,11 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
         `-F` together with `-p`. PR #589 removed `fast_mode` from `subnet_scan` in the agent
         template and the discovery example, with a guard test
         (`test_discovery_scan_flags.py`). After it merged, the local orb-agent was redeployed
-        from dev and the 12:00 UTC scheduled scan found 12 hosts and ingested 12; the local
-        NetBox count-and-containment query returned 12 IP records inside the local discovery
-        target and 0 outside, so "Local targets are discovered" is PROVEN. Wave 3 (PR #577)
+        from dev (local task 5784, success) and the 12:00 UTC scheduled scan (orb-agent
+        container log) found 12 hosts and ingested 12; the local NetBox count-and-containment
+        query returned 12 IP records inside the local discovery target and 0 outside. The
+        deploy-time scope check (task 5599) holds that target inside the local container
+        networks, so "Local targets are discovered" is PROVEN. Wave 3 (PR #577)
         also re-proves "Local deploy is repeatable", more strongly than 5619 and 5620: Deploy
         NetBox (Local) task 5732 changed, then 5734 reported `changed=0`, service-deploy
         `changed_on_rerun` false, and the orb-agent was not removed or recreated. First live
