@@ -22,15 +22,16 @@ exporter, wait past the alert's pending window, see the target at `up == 0` and 
 Two facts block it today:
 
 1. **The nodes are not inventory hosts.** The drill refuses unless the declared exporter
-   host is in the inventory (`platform/playbooks/o11y-fault-drill.yml:179`,
-   `_exporter.host | default('') in groups['all']`). `site-config`
+   host is in the inventory (the task `Require a declared exporter target inside an operator window` in
+   `platform/playbooks/o11y-fault-drill.yml`, `_exporter.host | default('') in groups['all']`). `site-config`
    `inventory/production.yml` has no DGX hosts. It carries only the scrape list
    `dgx_spark_nodes` (name and address for `spark-1` and `spark-2`, `:345-347` on
    `origin/main`) under the o11y service group's variables, which makes the nodes
    scrape targets, not hosts Ansible can reach.
 2. **agent-cloud has no login on the nodes.** The drill stops and starts the unit on the
    exporter host with `delegate_to: "{{ _exporter.host }}"`
-   (`o11y-fault-drill.yml:282-286` stop, `:457-461` restore in the `always:` block).
+   (`o11y-fault-drill.yml`: task `Stop the declared DGX node exporter`; restore task
+   `Restart the DGX node exporter` in the `always:` block).
    dgx-spark's own inventory authenticates with local secret files that agent-cloud must
    not read or copy (OpenBao is the credential source here).
 
@@ -123,8 +124,9 @@ changes the drill to run unprivileged (follow-up 1 below).
 
 None of this is started, and none of it touches a DGX node.
 
-1. `platform/playbooks/o11y-fault-drill.yml`: set `become: false` on the two exporter
-   tasks (`:282-286` stop, `:457-461` restore); keep `become: true` on the probe tasks.
+1. **Done 2026-10-12 (branch `feat/drill-exporter-unprivileged`).**
+   `platform/playbooks/o11y-fault-drill.yml`: set `become: false` on the two exporter
+   tasks (`Stop the declared DGX node exporter`, `Restart the DGX node exporter`); keep `become: true` on the probe tasks.
    Extend `platform/tests/test_o11y_fault_drill.py`. The change lands only after dgx-spark
    confirms the polkit rule; until then `become: true` on those tasks is what the
    playbook does.
@@ -139,7 +141,7 @@ None of this is started, and none of it touches a DGX node.
 5. Declare the map in `site-config`:
    `o11y_fault_drill_exporters: {spark-1: {host: spark-1, unit: node-exporter.service},
    spark-2: {host: spark-2, unit: node-exporter.service}}` (shape per
-   `o11y-fault-drill.yml:37-39`).
+   the Inventory section of the playbook's header comment).
 6. Dry run: `o11y-fault-drill.yml -e drill=exporter` under `--check` from Semaphore
    (every refusal and read runs, the fault block is skipped).
    unverified: that `systemd_service` runs cleanly as an unprivileged user under polkit
@@ -153,3 +155,9 @@ None of this is started, and none of it touches a DGX node.
 - The GPU exporter (deliberately not scraped), vLLM, Ray, and any change to the nodes'
   telemetry configuration.
 - Sending this request. Per the operator it is delivered only on their say-so.
+
+## Reply received
+
+2026-10-12: dgx-spark replied (branch `feat/o11y-drill-access`, commit `f9967fa`); see
+`tasks.md` task 2.5 for the facts and the remaining steps. The "PREPARED, NOT SENT"
+status line at the top records the state when this file was written.
