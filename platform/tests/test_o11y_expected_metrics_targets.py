@@ -159,6 +159,53 @@ def test_validator_cli_reports_only_fixed_refusal_and_hides_input_values():
     assert "private-service-value" not in result.stdout + result.stderr
 
 
+def test_active_expected_target_validator_accepts_the_ansible_stdin_array_shape():
+    target = _expected()
+    active = _render(o11y_expected_metrics_targets=[target])
+    # The Ansible task parses both API responses before to_json serializes stdin.
+    ansible_stdin = json.loads(json.dumps({
+        "reviewed": True,
+        "targets": [target],
+        "retired_uids": [],
+        "live_rules": _live_rules(active),
+        "live_folders": [{"uid": "agent-cloud-folder", "title": "agent-cloud"}],
+    }))
+    result = subprocess.run(
+        ["python3", str(HELPER), "--validate-active-expected-target-rules"],
+        input=json.dumps(ansible_stdin),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0
+    assert result.stdout == '{"active_count":1,"retired_count":0,"status":"validated"}\n'
+
+
+def test_interrupted_restore_accepts_validated_empty_owner_snapshot():
+    empty_rules = _render(o11y_expected_metrics_targets=[])
+    result = SURVEY.prepare_expected_target_transition({
+        "enabled": False,
+        "targets": [],
+        "retired_uids": [],
+        "previous_rules": yaml.safe_dump(empty_rules),
+        "pending_rules": yaml.safe_dump(empty_rules),
+        "live_rules": json.dumps(_live_rules(empty_rules)),
+        "live_folders": json.dumps([{"uid": "agent-cloud-folder", "title": "agent-cloud"}]),
+    })
+    assert result["reason"] == "disabled"
+
+    with pytest.raises(SURVEY.Refusal, match="invalid_pending_rules"):
+        SURVEY.prepare_expected_target_transition({
+            "enabled": False,
+            "targets": [],
+            "retired_uids": [],
+            "previous_rules": yaml.safe_dump(empty_rules),
+            "pending_rules": yaml.safe_dump(_render(o11y_expected_metrics_targets=[_expected()])),
+            "live_rules": json.dumps([]),
+            "live_folders": json.dumps([{"uid": "agent-cloud-folder", "title": "agent-cloud"}]),
+        })
+
+
 def test_production_gate_local_compatibility_and_five_exact_matchers():
     target = _expected()
     paused = _service_rules(
@@ -473,8 +520,8 @@ def test_active_rule_validation_separates_declared_rules_from_retired_tombstones
         "reviewed": True,
         "targets": [active_target],
         "retired_uids": [retired_target["uid"]],
-        "live_rules": json.dumps(rules),
-        "live_folders": json.dumps([{"uid": "agent-cloud-folder", "title": "agent-cloud"}]),
+        "live_rules": rules,
+        "live_folders": [{"uid": "agent-cloud-folder", "title": "agent-cloud"}],
     }
     assert SURVEY.validate_active_expected_target_rules(input_document) == {
         "status": "validated", "active_count": 1, "retired_count": 1,
@@ -487,9 +534,9 @@ def test_active_rule_validation_separates_declared_rules_from_retired_tombstones
         lambda rule: rule.update(notification_settings={"receiver": "unexpected"}),
     ):
         drifted = json.loads(json.dumps(input_document))
-        rows = json.loads(drifted["live_rules"])
+        rows = drifted["live_rules"]
         mutate(next(row for row in rows if row["uid"] == retired_target["uid"]))
-        drifted["live_rules"] = json.dumps(rows)
+        drifted["live_rules"] = rows
         with pytest.raises(SURVEY.Refusal):
             SURVEY.validate_active_expected_target_rules(drifted)
 

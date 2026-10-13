@@ -246,11 +246,8 @@ def validate_active_expected_target_rules(input_document: Any) -> dict[str, Any]
             input_document.get("targets"), input_document.get("retired_uids"),
             reviewed=input_document.get("reviewed"),
         )
-    try:
-        rules = json.loads(input_document.get("live_rules", ""))
-        folders = json.loads(input_document.get("live_folders", ""))
-    except (ValueError, TypeError):
-        raise Refusal("invalid_live_rules") from None
+    rules = input_document.get("live_rules")
+    folders = input_document.get("live_folders")
     if (
         not isinstance(rules, list) or len(rules) > MAX_ROWS
         or not isinstance(folders, list) or len(folders) > MAX_ROWS
@@ -484,10 +481,7 @@ def prepare_expected_target_transition(input_document: Any) -> dict[str, Any]:
                 for uid in previous_by_uid
             )
         )
-        if (
-            not previous
-            or (not same_previous and not valid_paused_transition)
-        ):
+        if not same_previous and not valid_paused_transition:
             raise Refusal("invalid_pending_rules")
     if check_mode and input_document.get("reviewed") is True:
         validate_expected_target_declaration(
