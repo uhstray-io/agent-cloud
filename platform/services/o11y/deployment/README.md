@@ -1042,11 +1042,16 @@ ID to match the cached candidate image ID before calling image parity verified.
 
 Each rendered candidate runs in a short-lived, read-only container with no
 network, socket, or persistent volume, bounded CPU, memory, process count, and
-tmpfs storage. The enabled candidate must expose a healthy
+tmpfs storage. The verifier reads only the five bounded numeric
+`O11Y_SCRAPE_*` values from the running receiver's environment and passes those
+values to both candidates. Podman logging is disabled for both temporary
+containers. The enabled candidate must expose a healthy
 `pyroscope.scrape.alloy_self_profile` component through Alloy's local component
-API; a listening HTTP port alone is not accepted. The receipt also records that
-the disabled candidate loaded without profile components and that the enabled
-candidate contains only the fixed CPU self-profile target and profile type set.
+API; a listening HTTP port alone is not accepted. The disabled candidate must
+show the rendered config's existing `prometheus.scrape.local_containers`
+component and no profile component through that same API. The receipt also
+records that the enabled candidate contains only the fixed CPU self-profile
+target and profile type set.
 Both temporary containers must be absent after checked cleanup; otherwise the
 preflight reports `cleanup_failed`. This proves public-revision-bound rendering,
 candidate config digests, image parity, and isolated config/component loading. It

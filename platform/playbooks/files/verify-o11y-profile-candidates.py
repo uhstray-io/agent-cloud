@@ -15,6 +15,16 @@ import time
 import uuid
 
 IMAGE = "docker.io/grafana/alloy:v1.5.1"
+SCRAPE_ENV_LIMITS = {
+    "O11Y_SCRAPE_SAMPLE_LIMIT": 100_000,
+    "O11Y_SCRAPE_BODY_SIZE_LIMIT_BYTES": 167_772_160,
+    "O11Y_SCRAPE_LABEL_LIMIT": 640,
+    "O11Y_SCRAPE_LABEL_NAME_LENGTH_LIMIT": 1_280,
+    "O11Y_SCRAPE_LABEL_VALUE_LENGTH_LIMIT": 20_480,
+}
+BASELINE_COMPONENT = "prometheus.scrape.local_containers"
+PROFILE_COMPONENT = "pyroscope.scrape.alloy_self_profile"
+API_READ_LOOP = 'while IFS= read -r line || [[ -n $line ]]; do printf \'%s\\n\' "$line"; done'
 IMAGE_TIMEOUT = 8
 STARTUP_SECONDS = 5
 API_SECONDS = 5
@@ -109,6 +119,8 @@ def validate_candidates(disabled: str, enabled: str) -> dict[str, object]:
     if not isinstance(disabled, str) or not isinstance(enabled, str):
         raise Refusal("candidate_invalid")
     if max(len(disabled.encode("utf-8")), len(enabled.encode("utf-8"))) > MAX_CONFIG_BYTES:
+        raise Refusal("candidate_invalid")
+    if not re.search(r'(?m)^\s*prometheus\.scrape\s+"local_containers"\s*\{', disabled):
         raise Refusal("candidate_invalid")
     if _profile_blocks(disabled):
         raise Refusal("candidate_invalid")
@@ -265,7 +277,7 @@ def _wait_for_startup(process: subprocess.Popen[bytes], deadline: float) -> None
         time.sleep(min(0.1, remaining))
 
 
-def _image_identity() -> str:
+def _image_identity() -> tuple[str, str]:
     try:
         return_code, output = _bounded_command(
             ["podman", "image", "inspect", IMAGE, "--format", "{{.Id}} {{json .RepoDigests}}"],
@@ -280,19 +292,20 @@ def _image_identity() -> str:
         inspected = output.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise Refusal("image_unpinned") from exc
-    match = re.fullmatch(r"(sha256:[0-9a-f]{64})\s+(\[.*\])\s*", inspected)
+    match = re.fullmatch(r"((?:sha256:)?[0-9a-f]{64})\s+(\[.*\])\s*", inspected)
     if not match:
         raise Refusal("image_unpinned")
     try:
         digests = json.loads(match.group(2))
     except json.JSONDecodeError as exc:
         raise Refusal("image_unpinned") from exc
-    if not isinstance(digests, list) or not any(
-        isinstance(value, str) and re.fullmatch(r"docker\.io/grafana/alloy@sha256:[0-9a-f]{64}", value)
-        for value in digests
-    ):
+    repo_digest = next((
+        value for value in digests if isinstance(value, str)
+        and re.fullmatch(r"docker\.io/grafana/alloy@sha256:[0-9a-f]{64}", value)
+    ), None) if isinstance(digests, list) else None
+    if repo_digest is None:
         raise Refusal("image_unpinned")
-    return match.group(1)
+    return f"sha256:{match.group(1).removeprefix('sha256:')}", repo_digest
 
 
 def _live_receiver_image_identity() -> str:
@@ -312,9 +325,41 @@ def _live_receiver_image_identity() -> str:
         raise Refusal("image_unavailable") from exc
     except ValueError as exc:
         raise Refusal("image_unavailable") from exc
-    if state != "running" or not re.fullmatch(r"sha256:[0-9a-f]{64}", image_id):
+    if state != "running" or not re.fullmatch(r"(?:sha256:)?[0-9a-f]{64}", image_id):
         raise Refusal("image_unavailable")
-    return image_id
+    return f"sha256:{image_id.removeprefix('sha256:')}"
+
+
+def _receiver_scrape_environment() -> dict[str, str]:
+    try:
+        return_code, output = _bounded_command(
+            ["podman", "container", "inspect", "o11y-alloy", "--format", "{{json .Config.Env}}"],
+            timeout=IMAGE_TIMEOUT,
+            max_bytes=16_384,
+        )
+    except Refusal as exc:
+        raise Refusal("image_unavailable") from exc
+    if return_code != 0:
+        raise Refusal("image_unavailable")
+    try:
+        entries = json.loads(output)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise Refusal("candidate_invalid") from exc
+    if not isinstance(entries, list) or len(entries) > 512 or any(not isinstance(entry, str) for entry in entries):
+        raise Refusal("candidate_invalid")
+    values = {}
+    for entry in entries:
+        key, separator, value = entry.partition("=")
+        if key in SCRAPE_ENV_LIMITS:
+            if not separator or key in values or not re.fullmatch(r"[1-9][0-9]*", value):
+                raise Refusal("candidate_invalid")
+            number = int(value)
+            if number > SCRAPE_ENV_LIMITS[key]:
+                raise Refusal("candidate_invalid")
+            values[key] = value
+    if set(values) != set(SCRAPE_ENV_LIMITS):
+        raise Refusal("candidate_invalid")
+    return values
 
 
 def _cleanup_container(container: str) -> None:
@@ -335,16 +380,24 @@ def _cleanup_container(container: str) -> None:
         raise Refusal("cleanup_failed")
 
 
-def _component_health(name: str, config: str, image_id: str) -> str:
-    container = f"o11y-profile-candidate-{uuid.uuid4().hex[:12]}"
-    command = [
-        "podman", "run", "--rm", "--interactive", "--pull=never", "--name", container,
+def _candidate_command(container: str, image_ref: str, scrape_env: dict[str, str]) -> list[str]:
+    if set(scrape_env) != set(SCRAPE_ENV_LIMITS):
+        raise Refusal("candidate_invalid")
+    env_args = [arg for key, value in scrape_env.items() for arg in ("--env", f"{key}={value}")]
+    return [
+        "podman", "run", "--rm", "--interactive", "--pull=never", "--log-driver=none", "--name", container,
         "--network=none", "--add-host=alloy:127.0.0.1", "--read-only", "--tmpfs",
         "/tmp:rw,noexec,nosuid,size=32m,mode=0700",
         "--pids-limit=64", "--memory=256m", "--cpus=1", "--cap-drop=all", "--security-opt=no-new-privileges",
-        "--user=0:0", image_id, "run", "--disable-reporting", "--disable-support-bundle",
+        *env_args,
+        "--user=0:0", image_ref, "run", "--disable-reporting", "--server.http.disable-support-bundle",
         "--storage.path=/tmp/alloy", "--server.http.listen-addr=127.0.0.1:12345", "/dev/stdin",
     ]
+
+
+def _component_states(config: str, image_ref: str, scrape_env: dict[str, str], *, disabled: bool) -> str:
+    container = f"o11y-profile-candidate-{uuid.uuid4().hex[:12]}"
+    command = _candidate_command(container, image_ref, scrape_env)
     process: subprocess.Popen[bytes] | None = None
     try:
         try:
@@ -362,7 +415,7 @@ def _component_health(name: str, config: str, image_id: str) -> str:
         api_script = (
             "exec 3<>/dev/tcp/127.0.0.1/12345 || exit 10; "
             "printf 'GET /api/v0/web/components HTTP/1.0\\r\\nHost: localhost\\r\\n\\r\\n' >&3; "
-            "while IFS= read -r line <&3; do printf '%s\\n' \"$line\"; done"
+            f"{API_READ_LOOP} <&3"
         )
         try:
             api_rc, api_bytes = _bounded_command(
@@ -378,7 +431,13 @@ def _component_health(name: str, config: str, image_id: str) -> str:
             headers, separator, body = api_bytes.partition(b"\n\n")
         if not separator:
             raise Refusal("component_status_invalid")
-        return _parse_component_response(headers, body, name)
+        components = _parse_component_response(headers, body)
+        if disabled:
+            return _project_disabled_components(components)
+        states = _component_health_map(components)
+        if BASELINE_COMPONENT not in states:
+            raise Refusal("component_status_invalid")
+        return _project_component_health(components, PROFILE_COMPONENT)
     finally:
         try:
             if process is not None:
@@ -415,7 +474,7 @@ def _project_component_health(components: object, name: str) -> str:
     raise Refusal("component_status_invalid")
 
 
-def _parse_component_response(headers: bytes, body: bytes, name: str) -> str:
+def _parse_component_response(headers: bytes, body: bytes) -> list[object]:
     try:
         status_line = headers.splitlines()[0].decode("ascii")
     except (IndexError, UnicodeDecodeError) as exc:
@@ -426,27 +485,45 @@ def _parse_component_response(headers: bytes, body: bytes, name: str) -> str:
         components = json.loads(body)
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise Refusal("component_status_invalid") from exc
-    return _project_component_health(components, name)
+    _component_health_map(components)
+    return components
+
+
+def _component_health_map(components: object) -> dict[str, object]:
+    if not isinstance(components, list) or len(components) > 4096:
+        raise Refusal("component_status_invalid")
+    result = {}
+    for component in components:
+        if not isinstance(component, dict):
+            raise Refusal("component_status_invalid")
+        component_id = component.get("component_id", component.get("ComponentID", component.get("localID")))
+        if not isinstance(component_id, str) or not component_id or len(component_id) > 256 or component_id in result:
+            raise Refusal("component_status_invalid")
+        result[component_id] = component
+    return result
+
+
+def _project_disabled_components(components: object) -> str:
+    states = _component_health_map(components)
+    if BASELINE_COMPONENT not in states or PROFILE_COMPONENT in states:
+        raise Refusal("component_status_invalid")
+    return "loaded_without_profile"
 
 
 def validate_runtime(payload: object) -> dict[str, object]:
     if not isinstance(payload, dict) or set(payload) != {"disabled", "enabled"}:
         raise Refusal("candidate_invalid")
     structure = validate_candidates(payload["disabled"], payload["enabled"])
-    image_id = _image_identity()
+    image_id, image_ref = _image_identity()
     live_image_id = _live_receiver_image_identity()
     if live_image_id != image_id:
         raise Refusal("image_mismatch")
+    scrape_env = _receiver_scrape_environment()
     checks = {}
     for candidate, config in (("disabled", payload["disabled"]), ("enabled", payload["enabled"])):
-        health = (
-            _component_health("pyroscope.scrape.alloy_self_profile", config, image_id)
-            if candidate == "enabled" else None
+        health = _component_states(
+            config, image_ref, scrape_env, disabled=(candidate == "disabled")
         )
-        # The disabled config has no profile component; Alloy's initial-load exit
-        # behavior is observed by running it for the same bounded startup window.
-        if candidate == "disabled":
-            health = _run_disabled(config, image_id)
         checks[candidate] = health
     if checks["enabled"] != "healthy":
         raise Refusal("component_unhealthy")
@@ -471,35 +548,8 @@ def validate_runtime(payload: object) -> dict[str, object]:
     }
 
 
-def _run_disabled(config: str, image_id: str) -> str:
-    # Same no-network, no-volume constraints; absence of all profile components is
-    # structurally checked before this starts. A simple running process proves load.
-    container = f"o11y-profile-disabled-{uuid.uuid4().hex[:12]}"
-    command = [
-        "podman", "run", "--rm", "--interactive", "--pull=never", "--name", container,
-        "--network=none", "--read-only", "--tmpfs", "/tmp:rw,noexec,nosuid,size=32m,mode=0700",
-        "--pids-limit=64", "--memory=256m", "--cpus=1", "--cap-drop=all", "--security-opt=no-new-privileges",
-        "--user=0:0", image_id, "run", "--disable-reporting", "--disable-support-bundle",
-        "--storage.path=/tmp/alloy", "--server.http.listen-addr=127.0.0.1:12345", "/dev/stdin",
-    ]
-    process: subprocess.Popen[bytes] | None = None
-    try:
-        try:
-            process = subprocess.Popen(
-                command, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                start_new_session=True, close_fds=True,
-            )
-            deadline = _transfer_config(process, config)
-            _wait_for_startup(process, deadline)
-            return "loaded_without_profile"
-        except OSError as exc:
-            raise Refusal("container_start_failed") from exc
-    finally:
-        try:
-            if process is not None:
-                _stop_process(process)
-        finally:
-            _cleanup_container(container)
+def _run_disabled(config: str, image_ref: str, scrape_env: dict[str, str]) -> str:
+    return _component_states(config, image_ref, scrape_env, disabled=True)
 
 
 def main() -> int:

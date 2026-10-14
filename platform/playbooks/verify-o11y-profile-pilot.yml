@@ -65,6 +65,8 @@
   gather_facts: false
   become: false
   any_errors_fatal: true
+  vars_files:
+    - vars/o11y-metric-labels.yml
   environment:
     TMPDIR: /dev/shm/ansible-tmp
   vars:

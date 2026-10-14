@@ -4,6 +4,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import subprocess
 import time
 from pathlib import Path
 
@@ -53,7 +54,8 @@ pyroscope.scrape "alloy_self_profile" {
   }
 }
 """
-    return "prometheus.scrape \"other\" {}\n", "prometheus.scrape \"other\" {}\n" + profiles
+    baseline = 'prometheus.scrape "local_containers" {}\n'
+    return baseline, baseline + profiles
 
 
 def render_alloy_template(profile_enabled):
@@ -63,11 +65,16 @@ def render_alloy_template(profile_enabled):
     env.filters["bool"] = bool
     env.filters["to_json"] = json.dumps
     template = env.from_string(ALLOY_TEMPLATE.read_text(encoding="utf-8"))
+    play = yaml.safe_load(PLAYBOOK.read_text(encoding="utf-8"))[-1]
+    assert play["vars_files"] == ["vars/o11y-metric-labels.yml"]
+    loaded_vars = {}
+    for vars_file in play["vars_files"]:
+        loaded_vars.update(yaml.safe_load((PLAYBOOK.parent / vars_file).read_text(encoding="utf-8")))
     return template.render(
+        **loaded_vars,
         local_mode=False,
         o11y_cluster="test-cluster",
         o11y_environment="dev",
-        _o11y_forbidden_metric_label_names_regex="request_id|user_id",
         o11y_gateway_span_logs_enabled=False,
         o11y_alloy_profile_pilot_enabled=profile_enabled,
     )
@@ -154,10 +161,16 @@ def test_balanced_block_parser_ignores_braces_in_comments_and_strings():
 
 def test_runtime_receipt_is_fixed_and_does_not_claim_sampling(monkeypatch):
     disabled, enabled = configs()
-    monkeypatch.setattr(CHECK, "_image_identity", lambda: "sha256:" + "a" * 64)
+    monkeypatch.setattr(
+        CHECK, "_image_identity",
+        lambda: ("sha256:" + "a" * 64, "docker.io/grafana/alloy@sha256:" + "b" * 64),
+    )
     monkeypatch.setattr(CHECK, "_live_receiver_image_identity", lambda: "sha256:" + "a" * 64)
-    monkeypatch.setattr(CHECK, "_component_health", lambda _name, _config, _image: "healthy")
-    monkeypatch.setattr(CHECK, "_run_disabled", lambda _config, _image: "loaded_without_profile")
+    monkeypatch.setattr(CHECK, "_receiver_scrape_environment", lambda: scrape_env())
+    monkeypatch.setattr(
+        CHECK, "_component_states",
+        lambda _config, _image, _env, *, disabled: "loaded_without_profile" if disabled else "healthy",
+    )
 
     receipt = CHECK.validate_runtime({"disabled": disabled, "enabled": enabled})
 
@@ -175,10 +188,16 @@ def test_runtime_receipt_is_fixed_and_does_not_claim_sampling(monkeypatch):
 
 def test_runtime_refuses_unhealthy_profile_component(monkeypatch):
     disabled, enabled = configs()
-    monkeypatch.setattr(CHECK, "_image_identity", lambda: "sha256:" + "a" * 64)
+    monkeypatch.setattr(
+        CHECK, "_image_identity",
+        lambda: ("sha256:" + "a" * 64, "docker.io/grafana/alloy@sha256:" + "b" * 64),
+    )
     monkeypatch.setattr(CHECK, "_live_receiver_image_identity", lambda: "sha256:" + "a" * 64)
-    monkeypatch.setattr(CHECK, "_component_health", lambda _name, _config, _image: "unhealthy")
-    monkeypatch.setattr(CHECK, "_run_disabled", lambda _config, _image: "loaded_without_profile")
+    monkeypatch.setattr(CHECK, "_receiver_scrape_environment", lambda: scrape_env())
+    monkeypatch.setattr(
+        CHECK, "_component_states",
+        lambda _config, _image, _env, *, disabled: "loaded_without_profile" if disabled else "unhealthy",
+    )
 
     with pytest.raises(CHECK.Refusal, match="component_unhealthy"):
         CHECK.validate_runtime({"disabled": disabled, "enabled": enabled})
@@ -186,7 +205,10 @@ def test_runtime_refuses_unhealthy_profile_component(monkeypatch):
 
 def test_runtime_refuses_candidate_image_that_differs_from_live_receiver(monkeypatch):
     disabled, enabled = configs()
-    monkeypatch.setattr(CHECK, "_image_identity", lambda: "sha256:" + "a" * 64)
+    monkeypatch.setattr(
+        CHECK, "_image_identity",
+        lambda: ("sha256:" + "a" * 64, "docker.io/grafana/alloy@sha256:" + "b" * 64),
+    )
     monkeypatch.setattr(CHECK, "_live_receiver_image_identity", lambda: "sha256:" + "b" * 64)
 
     with pytest.raises(CHECK.Refusal, match="image_mismatch"):
@@ -198,7 +220,7 @@ def test_live_receiver_image_identity_uses_fixed_read_only_inspect(monkeypatch):
 
     def bounded(argv, **kwargs):
         calls.append((argv, kwargs))
-        return 0, ("sha256:" + "a" * 64 + " running\n").encode()
+        return 0, ("a" * 64 + " running\n").encode()
 
     monkeypatch.setattr(CHECK, "_bounded_command", bounded)
 
@@ -210,6 +232,97 @@ def test_live_receiver_image_identity_uses_fixed_read_only_inspect(monkeypatch):
         ],
         {"timeout": CHECK.IMAGE_TIMEOUT, "max_bytes": 512},
     )]
+
+
+def scrape_env():
+    return {
+        "O11Y_SCRAPE_SAMPLE_LIMIT": "2000",
+        "O11Y_SCRAPE_BODY_SIZE_LIMIT_BYTES": "16777216",
+        "O11Y_SCRAPE_LABEL_LIMIT": "64",
+        "O11Y_SCRAPE_LABEL_NAME_LENGTH_LIMIT": "128",
+        "O11Y_SCRAPE_LABEL_VALUE_LENGTH_LIMIT": "2048",
+    }
+
+
+@pytest.mark.parametrize("image_id", ["a" * 64, "sha256:" + "a" * 64])
+def test_cached_image_inspect_normalizes_id_and_preserves_repo_digest(monkeypatch, image_id):
+    repo_digest = "docker.io/grafana/alloy@sha256:" + "b" * 64
+    monkeypatch.setattr(
+        CHECK, "_bounded_command",
+        lambda *_args, **_kwargs: (0, f'{image_id} ["{repo_digest}"]\n'.encode()),
+    )
+
+    assert CHECK._image_identity() == ("sha256:" + "a" * 64, repo_digest)
+
+
+def test_receiver_environment_projects_only_the_five_bounded_scrape_values(monkeypatch):
+    calls = []
+    entries = [f"{key}={value}" for key, value in scrape_env().items()]
+    entries.append("PRIVATE_TOKEN=not-forwarded")
+
+    def bounded(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return 0, json.dumps(entries).encode()
+
+    monkeypatch.setattr(CHECK, "_bounded_command", bounded)
+
+    assert CHECK._receiver_scrape_environment() == scrape_env()
+    assert calls == [(
+        ["podman", "container", "inspect", "o11y-alloy", "--format", "{{json .Config.Env}}"],
+        {"timeout": CHECK.IMAGE_TIMEOUT, "max_bytes": 16_384},
+    )]
+
+
+@pytest.mark.parametrize("key", CHECK.SCRAPE_ENV_LIMITS)
+def test_receiver_scrape_environment_refuses_each_missing_value(key, monkeypatch):
+    entries = [f"{name}={value}" for name, value in scrape_env().items() if name != key]
+    monkeypatch.setattr(CHECK, "_bounded_command", lambda *_args, **_kwargs: (0, json.dumps(entries).encode()))
+
+    with pytest.raises(CHECK.Refusal, match="candidate_invalid"):
+        CHECK._receiver_scrape_environment()
+
+
+@pytest.mark.parametrize("key", CHECK.SCRAPE_ENV_LIMITS)
+def test_receiver_scrape_environment_refuses_each_malformed_value(key, monkeypatch):
+    entries = [f"{name}={value}" for name, value in scrape_env().items() if name != key]
+    entries.append(f"{key}=malformed")
+    monkeypatch.setattr(CHECK, "_bounded_command", lambda *_args, **_kwargs: (0, json.dumps(entries).encode()))
+
+    with pytest.raises(CHECK.Refusal, match="candidate_invalid"):
+        CHECK._receiver_scrape_environment()
+
+
+@pytest.mark.parametrize("key,limit", CHECK.SCRAPE_ENV_LIMITS.items())
+def test_receiver_scrape_environment_refuses_each_out_of_range_value(key, limit, monkeypatch):
+    entries = [f"{name}={value}" for name, value in scrape_env().items() if name != key]
+    entries.append(f"{key}={limit + 1}")
+    monkeypatch.setattr(CHECK, "_bounded_command", lambda *_args, **_kwargs: (0, json.dumps(entries).encode()))
+
+    with pytest.raises(CHECK.Refusal, match="candidate_invalid"):
+        CHECK._receiver_scrape_environment()
+
+
+def test_candidate_argv_is_immutable_isolated_and_has_exact_scrape_environment():
+    command = CHECK._candidate_command(
+        "o11y-profile-candidate-abc123", "docker.io/grafana/alloy@sha256:" + "a" * 64, scrape_env()
+    )
+
+    assert "--log-driver=none" in command
+    assert "--network=none" in command
+    assert "--add-host=alloy:127.0.0.1" in command
+    assert "--server.http.disable-support-bundle" in command
+    assert "--disable-support-bundle" not in command
+    assert command.count("--env") == 5
+    passed = [command[index + 1] for index, arg in enumerate(command[:-1]) if arg == "--env"]
+    assert passed == [f"{key}={value}" for key, value in scrape_env().items()]
+    assert command[command.index("--user=0:0") + 1] == "docker.io/grafana/alloy@sha256:" + "a" * 64
+
+
+def test_disabled_api_evidence_requires_baseline_and_profile_absence():
+    assert CHECK._project_disabled_components([{"localID": CHECK.BASELINE_COMPONENT}]) == "loaded_without_profile"
+    for components in ([], [{"localID": CHECK.PROFILE_COMPONENT}], [{"localID": "x"}]):
+        with pytest.raises(CHECK.Refusal, match="component_status_invalid"):
+            CHECK._project_disabled_components(components)
 
 
 def test_component_api_health_is_required_and_reduced_to_one_state():
@@ -233,18 +346,24 @@ def test_component_api_requires_http_200_and_bounded_json_shape():
     body = json.dumps([{"localID": "pyroscope.scrape.alloy_self_profile", "health": "healthy"}]).encode()
     assert CHECK._parse_component_response(
         b"HTTP/1.1 200 OK\r\nContent-Type: application/json", body,
-        "pyroscope.scrape.alloy_self_profile",
-    ) == "healthy"
+    ) == json.loads(body)
     with pytest.raises(CHECK.Refusal, match="component_status_invalid"):
         CHECK._parse_component_response(
             b"HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json", body,
-            "pyroscope.scrape.alloy_self_profile",
         )
     too_many = json.dumps([{}] * 4097).encode()
     with pytest.raises(CHECK.Refusal, match="component_status_invalid"):
         CHECK._parse_component_response(
-            b"HTTP/1.1 200 OK", too_many, "pyroscope.scrape.alloy_self_profile",
+            b"HTTP/1.1 200 OK", too_many,
         )
+
+
+def test_shell_http_reader_preserves_final_unterminated_json_body():
+    response = subprocess.run(
+        ["bash", "-c", CHECK.API_READ_LOOP], input=b"[]", capture_output=True, check=True,
+    )
+
+    assert response.stdout == b"[]\n"
 
 
 @pytest.mark.parametrize("runner", ["component", "disabled"])
@@ -282,12 +401,16 @@ def test_config_transfer_stall_refuses_within_startup_deadline(monkeypatch, runn
 
     with pytest.raises(CHECK.Refusal, match="container_start_failed"):
         if runner == "component":
-            CHECK._component_health(
-                "pyroscope.scrape.alloy_self_profile", "x" * CHECK.MAX_CONFIG_BYTES,
-                "sha256:" + "a" * 64,
+            CHECK._component_states(
+                "x" * CHECK.MAX_CONFIG_BYTES, "docker.io/grafana/alloy@sha256:" + "a" * 64,
+                scrape_env(), disabled=False,
             )
         else:
-            CHECK._run_disabled("x" * CHECK.MAX_CONFIG_BYTES, "sha256:" + "a" * 64)
+            CHECK._run_disabled(
+                "x" * CHECK.MAX_CONFIG_BYTES,
+                "docker.io/grafana/alloy@sha256:" + "a" * 64,
+                scrape_env(),
+            )
 
     assert time.monotonic() - started < 1
     for process in processes:
@@ -386,7 +509,7 @@ def test_cleanup_failure_blocks_each_candidate_success(monkeypatch, runner):
     if runner == "component":
         response = (
             b"HTTP/1.1 200 OK\r\n\r\n"
-            b'[{"localID":"pyroscope.scrape.alloy_self_profile","health":"healthy"}]'
+            b'[{"localID":"prometheus.scrape.local_containers"},{"localID":"pyroscope.scrape.alloy_self_profile","health":"healthy"}]'
         )
         monkeypatch.setattr(
             CHECK,
@@ -394,12 +517,12 @@ def test_cleanup_failure_blocks_each_candidate_success(monkeypatch, runner):
             lambda *_args, **_kwargs: (0, response),
         )
         with pytest.raises(CHECK.Refusal, match="cleanup_failed"):
-            CHECK._component_health(
-                "pyroscope.scrape.alloy_self_profile", enabled, "sha256:" + "a" * 64
+            CHECK._component_states(
+                enabled, "docker.io/grafana/alloy@sha256:" + "a" * 64, scrape_env(), disabled=False
             )
     else:
         with pytest.raises(CHECK.Refusal, match="cleanup_failed"):
-            CHECK._run_disabled(disabled, "sha256:" + "a" * 64)
+            CHECK._run_disabled(disabled, "docker.io/grafana/alloy@sha256:" + "a" * 64, scrape_env())
 
 
 def test_candidate_payload_size_is_bounded():
