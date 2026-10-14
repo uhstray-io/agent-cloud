@@ -342,7 +342,11 @@
       in all. `keepalives_seen_from_vllm` true, and the "keep-alive pass-through is unproven"
       warning task was skipped. vLLM's 15 s keep-alive interval (dgx-spark
       `sse-keep-alive-interval` 15, on the chat and completions routes) reaches the client
-      through the gateway unchanged. Ticked.
+      through the gateway: the same number of comment lines, the same longest gap and first
+      byte, and no buffering. Scope: `conformance.sh` counts lines that start with `:` and
+      compares counts and timings. It does not compare the comment bytes, so "unchanged"
+      holds for count and cadence, which is what a keep-alive is for (clients ignore SSE
+      comments). Ticked on that scope.
 - [x] 2.3a Streams and the budget: confirm whether a streamed completion is charged to the
       per-key budget, and whether a model `overrides: {stream_options: {include_usage: true}}`
       entry makes vLLM report usage on streams without changing the client-visible contract
@@ -362,7 +366,8 @@
       2026-10-12: "Stream is not buffered" is proven by task 4910 (see 2.3); 2.4 waits on
       2.3's keep-alive half. Not ticked.
       2026-10-13: 2.2 proved "Conformance against direct vLLM" (task 2709); "Stream is not
-      buffered" is proven by 4910 and the keep-alive half by 5311 (2.3). Ticked.
+      buffered" is proven by 4910 and the keep-alive half by 5311 (2.3; keep-alive count and
+      cadence, not comment bytes). Ticked.
 
 ## 3. Telemetry
 - [x] 3.1 o11y: `scrape.d/agentgateway.yml.j2` for the stats endpoint (`/metrics` on the
