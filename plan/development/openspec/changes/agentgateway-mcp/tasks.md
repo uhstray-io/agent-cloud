@@ -226,7 +226,7 @@ finding that contradicts a decision stops the work and reopens that decision.
       `-32003` and the gateway's own 429 are unproven and fail the deploy unless `agw_verify_allow_unproven`, and are
       reflected in the result's `verified`. The identity is never `mcp-self`. No new `no_log` task, no loop over a
       protected result; `test_no_request_in_loop_items.py` passes. Not done: the session-id carry (stateless returns
-      none, spike 1.6, so it could not be exercised) and the model call through `/mcp` (4.6). Tests:
+      none, spike 1.6, so it could not be exercised); the model call through `/mcp` is 4.6. Tests:
       `test_agw_mcp_verify.py` runs the real tasks against a fake gateway; updated BATS counts (keyed probe tasks
       2 to 5, `_agwp_out` keys, rate-limit literal 2 to 4). Mutations red: keyless assert, tool-listed assert,
       unproven gate, initialize status, not-served status and body, `data:` parse, caller headers, mcp-self identity,
@@ -312,7 +312,16 @@ finding that contradicts a decision stops the work and reopens that decision.
       listener from another container is refused, proving scenario
       "The loopback listener refuses other containers"; the 3.9 BATS (loopback rule, attachment, flag scope, unpublished port,
       target allowlist) pass and each mutation fails
-
+      Evidence 2026-10-14, task output read from the local Semaphore by the lead (NOT ticked: the legacy-key leg is
+      not proven live). Local deploy 6583 (flag on, admin gate on, placeholder admins): verify "/mcp without a key is
+      401; as stray initialize returned a session and tools/list listed list_models, chat_completions". Direct
+      probes against the local gateway: no key 401, unknown key 401, `mcp-self` 401 on `/mcp` and 200 on `/v1`, the
+      service client `dev-local` 401 on `/mcp` (admin-only admission). Local 6584 (flag off): "MCP is disabled: a
+      keyed initialize at /mcp is not an MCP reply (HTTP 400)". From a neighbour container on the gateway network:
+      loopback port 4002 is 403. Dry run 6582 failed (the schema was read on the target, which `--check` does not
+      place), fixed by `03e9d32f`; 6585 passed with the schema absent on the target. The legacy shared key on `/mcp`
+      is NOT proven live (local has no grace period): render tests only, the production rollout proves it. The
+      no-key-policy failure ("Deploy fails when /mcp answers without a key") is proven on a scratch gateway only.
 ## 4. The OpenAPI target over `/v1`
 - [x] 4.1 The OpenAPI schema file in the repository (proposed under
       `platform/services/agentgateway/deployment/`): chat completions and model listing
@@ -350,12 +359,27 @@ finding that contradicts a decision stops the work and reopens that decision.
       no target or schema addresses the admin port or `/config_dump`. Mutations red: the value as the
       `backendAuth` value, the plaintext exemption removed, a `/config_dump` operation in the schema, the env line
       dropped.
-- [ ] 4.6 Extend the verify: `tools/list` shows the chat tool; one model call through
+- [x] 4.6 Extend the verify: `tools/list` shows the chat tool; one model call through
       `/mcp` returns a completion; the access log line for the resulting `/v1` request
       carries `mcp-self` as `identity` (names only in the report)
-- [ ] 4.7 With an enrolled key list every tool and call each whose name or description
+      Done 2026-10-14 (`4b396795`): after `tools/list` the verify requires the chat tool to be listed (an
+      `operationId` ending in `chat_completions`), makes one `tools/call` as the admin probe identity (`max_tokens` 16,
+      the first declared model) and requires no JSON-RPC error, `isError` false and a completion in
+      `structuredContent.choices`; the gateway's rate-limit refusal (`-32003`, or its own 429) is unproven, as for the
+      other MCP probes. It then reads the gateway's access log since the call (engine clock taken before it, a hidden
+      task) and requires a line for `/v1/chat/completions` on the loopback listener as `identity="mcp-self"`; only a
+      count leaves the task, no log line is printed. Tests: `test_agw_mcp_verify.py` (fake gateway and a stand-in
+      engine, plain and colour-coded log lines). Mutations red: log check dropped, completion check, `isError` check,
+      chat-tool check, log match ignoring the identity, colour stripping removed, log read not hidden (BATS
+      no_log set), rate-limited call not unproven. Lead manual run, local: a `tools/call` as `stray` returned a
+      completion with `choices`; the access log showed `identity="mcp-self"`, `listener=loopback`, path
+      `/v1/chat/completions`.
+- [x] 4.7 With an enrolled key list every tool and call each whose name or description
       mentions configuration, admin or dump; from another container confirm the admin port
       is refused
+      Done 2026-10-14, read by the lead from the local gateway: only two tools exist (`list_models`,
+      `chat_completions`), none mentions configuration, admin or dump; the admin port 15000 from a neighbour
+      container is connection refused.
 - [ ] 4.8 Validation gate, local: `tools/list` returns the chat and model-listing tools,
       proving scenario "An enrolled identity lists tools"; a model request through MCP is
       attributed to `mcp-self`, proving scenario "A model request through MCP is charged
@@ -363,7 +387,9 @@ finding that contradicts a decision stops the work and reopens that decision.
       committed templates and the docs, proving scenario "The internal identity is never
       handed out"; no tool returns configuration and the admin port is refused, proving
       scenario "No tool exposes the configuration dump"
-
+      Status 2026-10-14: the lead's manual run showed the chat call attributed to `mcp-self` (4.6 evidence) and
+      the tools and admin-port checks (4.7). Stays open until the lead reruns the local deploy with the 4.6 verify
+      (`4b396795`) and reads its output.
 ## 5. Edge: Caddy and Cloudflare
 - [ ] 5.1 `Caddyfile.local.j2`: a route flag (proposed `mcp_api`) rendering the allowlist
       shape for the exact path `/mcp`: Bearer-shape 401 inside the handle block, `reverse_proxy`
