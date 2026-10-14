@@ -35,7 +35,12 @@ agentgateway alongside skynet" (Proposed until the operator confirms). OpenSpec 
 - Policy `apiKey`, `mode: strict`, header `Authorization: Bearer <key>`.
 - One identity per name in `agw_identities`: inventory `agw_clients` plus one personal identity
   per entry of the declared admin list `platform_admins` (the list the Authentik admin entries are
-  rendered from; the identity is the entry's `agw_identity` when set, else its `username`).
+  rendered from, `vars/platform-admins.yml`; the identity is the entry's `agw_identity` when set,
+  else its `username`, service accounts included). The derivation is GATED by
+  `agw_admin_identities_enabled` (default false): the list is non-empty by default, so with the
+  gate off `agw_identities` equals `agw_clients` exactly, the list is not read and the render is
+  unchanged; the deploy and the key-management playbook load the file only when it is on, and say
+  so when it is missing.
   `agw_identities` is computed once in `vars/secret-declarations/agentgateway.yml` and read by the
   secret declaration, the name checks, the key loop in `config.yaml.j2` and
   `manage-agentgateway-client-key.yml`. `platform_admins` absent or empty leaves it equal to

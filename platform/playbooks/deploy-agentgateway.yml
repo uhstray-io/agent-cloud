@@ -25,11 +25,13 @@
 #                          http://host.containers.internal:1234/v1 (local LM Studio)
 #   agw_models             [{name, upstream_model?}] one entry per served name
 #   agw_clients            [names] one API-key identity each -> secret field client_<name>
-#   platform_admins        (optional, the declared admin list the Authentik admin entries are rendered
-#                          from) one personal identity per entry: its `agw_identity` if set, else its
-#                          `username`. Merged with agw_clients into agw_identities
-#                          (vars/secret-declarations/agentgateway.yml); a name in both is one identity
-#                          (the same client_<name>), reported as an overlap. Empty/absent = agw_clients only
+#   agw_admin_identities_enabled (default false) gate for the next var: off, agw_identities == agw_clients
+#   platform_admins        (read only when the gate is on: vars/platform-admins.yml, the declared admin
+#                          list the Authentik admin entries are rendered from) one personal identity
+#                          per entry: its `agw_identity` if set, else its `username`. Merged with
+#                          agw_clients into agw_identities (vars/secret-declarations/agentgateway.yml);
+#                          a name in both is one identity (the same client_<name>), reported as an
+#                          overlap. Empty/absent = agw_clients only
 #   agw_client_policies    (optional) {name: {allowed_models: [...], tokens_per_hour: N}}
 #                          rotate/revoke: manage-agentgateway-client-key.yml
 #   legacy_shared_expires  (optional) ISO date ending the shared-key grace period: before it the
@@ -74,6 +76,8 @@
     _branch: "{{ service_branch | default('main') }}"
     _bao_url: "{{ openbao_addr | default('') }}"
     _tls: "{{ agw_listener_tls | default(false) | bool }}"
+    # The shared admin list next to the playbooks, or '' when there is none (the task below says so).
+    _agw_admins_file: "{{ lookup('ansible.builtin.first_found', ['vars/platform-admins.yml'], paths=[playbook_dir], skip=True) | default('', true) }}"
     _server_leaf: "{{ agw_server_leaf | default('agw-server') }}"
     _verifier_leaf: "{{ agw_verifier_leaf | default('agw-verifier') }}"
     _allowlist: "{{ agw_client_cert_allowlist | default(['caddy']) }}"
@@ -119,6 +123,26 @@
         fail_msg: >-
           agentgateway_svc needs agw_upstream_base_url and a non-empty agw_models
           list in inventory — an empty gateway would answer 404 for every model.
+
+    # The declared admin list is a shared vars file, loaded only when admin identities are enabled
+    # (agw_admin_identities_enabled, default false: the list is non-empty by default and a gateway deploy
+    # would mint a key for every admin before the operator rollout). A missing file is reported, never
+    # fatal, and leaves platform_admins as the inventory has it (absent = no admin identities).
+    - name: "Load the shared platform admin list"
+      ansible.builtin.include_vars:
+        file: "{{ _agw_admins_file }}"
+      when:
+        - agw_admin_identities_enabled | default(false) | bool
+        - _agw_admins_file | length > 0
+
+    - name: "Report that the shared platform admin list is missing"
+      ansible.builtin.debug:
+        msg: >-
+          agw_admin_identities_enabled is true but vars/platform-admins.yml was not found next to the
+          playbooks: no admin identities are derived from it (platform_admins from the inventory, if any, applies).
+      when:
+        - agw_admin_identities_enabled | default(false) | bool
+        - _agw_admins_file | length == 0
 
     # One personal identity per declared platform admin joins agw_clients in agw_identities
     # (vars/secret-declarations/agentgateway.yml). A derived name that repeats, is reserved

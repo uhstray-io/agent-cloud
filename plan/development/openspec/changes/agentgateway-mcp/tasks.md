@@ -96,6 +96,8 @@ finding that contradicts a decision stops the work and reopens that decision.
       `vars/secret-declarations/agentgateway.yml`, the name assert, the `llm` key loop in
       `config.yaml.j2`, the verify's default identity, `manage-agentgateway-client-key.yml`
       (rotate needs the name in the merged list; revoke needs it removed from it)
+      The derivation is gated by `agw_admin_identities_enabled` (default false) so the next
+      production gateway deploy mints nothing before the section 6 rollout.
       The verify's default identity stays the first `agw_clients` entry
       (unchanged behaviour). Readers outside this change's files still read `agw_clients`:
       `run-agw-conformance.yml`, `rollback-inference-route.yml`, `deploy-o11y.yml`

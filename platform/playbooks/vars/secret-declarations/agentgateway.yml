@@ -10,18 +10,24 @@
 # Client keys are `random`: generated ONCE per identity and reused on every
 # later run, which is exactly "mint if absent, keep if present" (task 4.1);
 # rotation is a deliberate separate run, never implicit in a deploy.
-# Identities: one personal identity per declared platform admin (inventory `platform_admins`, the
-# list the Authentik admin entries are rendered from), merged with the service identities in
-# `agw_clients` into `agw_identities`. It is computed HERE, once, and every reader takes it from
-# here: the declaration below, deploy-agentgateway.yml's name checks and render check, the key loop in
-# config.yaml.j2 and manage-agentgateway-client-key.yml. An identity's name is the entry's
-# `agw_identity` when set, else its `username`; an identity already in `agw_clients` keeps its
-# place, and a name in both is merged once (the same `client_<name>` field, so nothing is minted
-# twice). `platform_admins` absent or empty leaves `agw_identities` equal to `agw_clients`.
+# Identities: one personal identity per declared platform admin (`platform_admins`, the list the
+# Authentik admin entries are rendered from: vars/platform-admins.yml, loaded by the playbooks, or
+# an inventory value), merged with the service identities in `agw_clients` into `agw_identities`.
+# It is computed HERE, once, and every reader takes it from here: the declaration below,
+# deploy-agentgateway.yml's name checks and render check, the key loop in config.yaml.j2 and
+# manage-agentgateway-client-key.yml. An identity's name is the entry's `agw_identity` when set,
+# else its `username`; an identity already in `agw_clients` keeps its place, and a name in both is
+# merged once (the same `client_<name>` field, so nothing is minted twice).
+#
+# GATED by `agw_admin_identities_enabled` (default false): the list is non-empty by default, so a
+# gateway deploy would otherwise mint a key for every admin before the operator rollout. Off,
+# `agw_identities` equals `agw_clients` exactly and the render is what it was before. On, every
+# list entry gets an identity (service accounts included) and a bad name is refused.
 # Native LISTS built in statement blocks, as below.
+_agw_admins: "{{ (platform_admins | default([])) if (agw_admin_identities_enabled | default(false) | bool) else [] }}"
 _agw_admin_identities: >-
   {%- set out = [] -%}
-  {%- for a in platform_admins | default([]) -%}
+  {%- for a in _agw_admins -%}
     {%- if out.append({'key': (a['key'] | default('', true)) | string,
                        'name': (a['agw_identity'] | default(a['username'] | default('', true), true)) | string}) -%}{%- endif -%}
   {%- endfor -%}

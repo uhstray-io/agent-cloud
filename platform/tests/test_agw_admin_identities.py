@@ -33,6 +33,8 @@ CONFIG = REPO / "platform/services/agentgateway/deployment/templates/config.yaml
 PHASE1 = next(p for p in yaml.safe_load(DEPLOY.read_text()) if p.get("name", "").startswith("Phase 1"))
 MANAGE_PLAY = next(p for p in yaml.safe_load(MANAGE.read_text()) if p.get("name", "").startswith("Rotate or revoke"))
 
+LOAD_TASK = "Load the shared platform admin list"
+MISSING_TASK = "Report that the shared platform admin list is missing"
 PROBLEMS_TASK = "Refuse derived admin identities that collide, are reserved or are malformed"
 OVERLAP_TASK = "Report identities declared in both platform_admins and agw_clients"
 CHARSET_TASK = "Refuse identity or group names outside the safe charset"
@@ -49,6 +51,11 @@ def admin(key: str, username: str, **extra) -> dict:
 
 
 def _ansible(tmp: Path, host_vars: dict, tasks: list, play_vars: dict | None = None):
+    # A test that declares an admin list means to derive from it: the gate is on unless it says.
+    # `agw_admin_identities_enabled: None` leaves the variable undefined.
+    if "platform_admins" in host_vars:
+        host_vars = {"agw_admin_identities_enabled": True, **host_vars}
+    host_vars = {k: v for k, v in host_vars.items() if not (k == "agw_admin_identities_enabled" and v is None)}
     inv = {"all": {"hosts": {"gw": {"ansible_connection": "local", **host_vars}}}}
     (tmp / "inv.yml").write_text(yaml.safe_dump(inv))
     (tmp / "play.yml").write_text(
@@ -376,3 +383,87 @@ def test_the_render_check_expects_legacy_shared_only_while_its_grace_period_runs
     assert _check(tmp_path, text, HV, legacy_active=True).returncode == 0
     r = _check(tmp_path, text, HV, legacy_active=False)
     assert r.returncode != 0 and "Extra: legacy-shared" in r.stdout + r.stderr
+
+
+# ── The gate and the shared list (agw_admin_identities_enabled) ───────────────
+
+BAD = [admin("brk", "legacy-shared"), admin("dup", "x"), admin("dup2", "x")]
+
+
+@pytest.mark.parametrize("gate", [{"agw_admin_identities_enabled": None}, {"agw_admin_identities_enabled": False}])
+def test_the_gate_off_derives_nothing_and_checks_nothing(tmp_path, gate):
+    # The list is non-empty by default; off, the gateway must behave exactly as before. Even a list
+    # that would be refused is ignored, because it is not read.
+    hv = {"agw_clients": ["workstation"], "platform_admins": [admin("alice", "alice"), *BAD], **gate}
+    got = _eval(tmp_path, hv)
+    assert got["identities"] == ["workstation"] and got["problems"] == [] and got["overlap"] == []
+    assert got["defs"][-1:] == ["client_workstation"]
+    r = _guard(tmp_path, hv, (PROBLEMS_TASK, CHARSET_TASK))
+    assert r.returncode == 0, r.stdout + r.stderr
+
+
+def test_the_gate_off_renders_exactly_what_a_deploy_without_a_list_renders(tmp_path):
+    off = _render(
+        tmp_path, agw_clients=["skynet"], platform_admins=[admin("a", "alice")], agw_admin_identities_enabled=False
+    )
+    d = tmp_path / "bare"
+    d.mkdir()
+    assert _render(d, agw_clients=["skynet"]) == off
+    assert set(_hash_lines(off)) == {"skynet"}
+
+
+def test_the_gate_on_derives_for_every_entry_service_accounts_included(tmp_path):
+    svc = admin("svc", "svc-automation-user", type="service_account")
+    hv = {"agw_clients": ["skynet"], "platform_admins": [admin("alice", "alice"), svc]}
+    got = _eval(tmp_path, hv)
+    assert got["identities"] == ["skynet", "alice", "svc-automation-user"]
+    assert got["defs"][-2:] == ["client_alice", "client_svc-automation-user"]
+    d = tmp_path / "render"
+    d.mkdir()
+    assert set(_hash_lines(_render(d, **hv, secrets={**SECRETS, "client_svc-automation-user": "k"}))) == {
+        "skynet",
+        "alice",
+        "svc-automation-user",
+    }
+
+
+def _load(tmp: Path, host_vars: dict, shared: list | None):
+    """Run the deploy's load tasks in a directory that holds (or lacks) vars/platform-admins.yml, then
+    write what the vars file computed."""
+    if shared is not None:
+        (tmp / "vars").mkdir(exist_ok=True)
+        (tmp / "vars/platform-admins.yml").write_text(yaml.safe_dump({"platform_admins": shared}))
+    out = tmp / "loaded.json"
+    expr = "{{ {'identities': agw_identities, 'loaded': platform_admins | default('UNSET')} | to_json }}"
+    tasks = [_task(PHASE1, LOAD_TASK), _task(PHASE1, MISSING_TASK)]
+    tasks.append({"ansible.builtin.copy": {"content": expr, "dest": str(out)}})
+    r = _ansible(tmp, host_vars, tasks, {"_agw_admins_file": PHASE1["vars"]["_agw_admins_file"]})
+    assert r.returncode == 0, r.stdout + r.stderr
+    got = json.loads(out.read_text())
+    return got["identities"], r.stdout, got["loaded"]
+
+
+def test_the_gate_on_loads_the_shared_list_next_to_the_playbooks(tmp_path):
+    ids, out, _ = _load(
+        tmp_path,
+        {"agw_clients": ["skynet"], "agw_admin_identities_enabled": True},
+        [admin("alice", "alice"), admin("bob", "bob.smith", agw_identity="bob")],
+    )
+    assert ids == ["skynet", "alice", "bob"] and "was not found" not in out
+
+
+def test_the_gate_off_does_not_load_the_shared_list(tmp_path):
+    ids, out, loaded = _load(tmp_path, {"agw_clients": ["skynet"]}, [admin("alice", "alice")])
+    assert ids == ["skynet"] and "was not found" not in out
+    assert loaded == "UNSET"  # the file itself was not read
+
+
+def test_the_gate_on_with_no_shared_list_says_so_and_derives_nothing(tmp_path):
+    ids, out, _ = _load(tmp_path, {"agw_clients": ["skynet"], "agw_admin_identities_enabled": True}, None)
+    assert ids == ["skynet"] and "vars/platform-admins.yml was not found" in out
+
+
+def test_both_playbooks_load_the_list_before_the_refusal():
+    for play in (PHASE1, MANAGE_PLAY):
+        names = [t.get("name") for t in play["tasks"]]
+        assert names.index(LOAD_TASK) < names.index(PROBLEMS_TASK)
