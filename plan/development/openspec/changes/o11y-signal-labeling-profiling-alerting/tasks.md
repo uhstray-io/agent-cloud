@@ -8,6 +8,8 @@
 
 - [x] 2.1 Provision private persistent Pyroscope, its Grafana datasource, and non-destructive deploy/read-back verification.
 - [x] 2.2 Add inventory-gated Alloy self-profile scrape and write pipeline with bounded labels and documented resource/privacy budget.
+- [ ] 2.2a Prioritize Grafana API access for `mcp-grafana`: add the authorization-header-gated `o11y.uhstray.io/api/` Cloudflare challenge skip to the managed OpenTofu WAF ruleset, review and merge it through `dev`, then run the Dev-bound Semaphore OpenTofu plan and apply only after the plan shows that exact in-place rule addition. Verify token-bearing API requests reach Grafana, requests without an Authorization header remain challenged, and a follow-up plan is zero-diff. Preserve the existing Caddy-only Grafana ingress.
+- [ ] 2.2b After 2.2a is applied, provision a production `mcp-grafana` Grafana service account with the requested Editor role through reviewed Semaphore automation; store its token in OpenBao and install a local 0600 client copy at `~/.config/mcp-grafana/prod.token` without printing it. Verify an authenticated Grafana API request through the Cloudflare edge. Keep the token outside Git and task logs.
 - [ ] 2.3 Validate config and runtime sampling, storage persistence, and the spec scenarios “Profile pilot is disabled” and “Profile pilot is enabled.”
 
 ## 3. Actionable alerts
