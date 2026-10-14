@@ -49,12 +49,15 @@ build on.
 - **The identity gap.** Authentik users and groups are declared as code
   (`platform/services/authentik/deployment/blueprints/platform-users.yaml:1-24`: one
   fixed block per person, identity values from `!Env`, real values from site-config via
-  the Authentik `env.j2`); RBAC is `platform-groups.yaml`; the blueprint files under
-  `platform/services/authentik/deployment/blueprints/` that name `platform-admins` are
-  `platform-users.yaml` (the admin blocks), `agent-cloud-admin.yaml`, the operator-admin
-  blueprint, `service-account.yaml` (a service account, not a person) and
-  `openbao-oidc.yaml` (read 2026-10-14 by grep; which of them put a user in the group, as
-  opposed to gating on it, is task 2.1). The gateway UI gates on
+  the Authentik `env.j2`); RBAC is `platform-groups.yaml` (the group is defined at `:18`). Read
+  2026-10-14 under
+  `platform/services/authentik/deployment/blueprints/`, the files that put a user in
+  `platform-admins` as a fixed block are `platform-users.yaml` (the admin blocks, `:39` and
+  `:74`), `stray-admin.yaml:25` (the operator's admin), `agent-cloud-admin.yaml:35` (the
+  day-to-day admin) and `service-account.yaml:22` (a service account, not a person);
+  `openbao-oidc.yaml:44` only maps the group, it does not add a user. Each fixed-block
+  file must either move into the declared list or be named as an explicit exception (task
+  2.1 decides which, Open Question 1). The gateway UI gates on
   `platform-admins` (`config.yaml.j2:105-107`). The API identities are the separate list
   `agw_clients`.
 - **Handout today.** `Back Up Credentials to site-config` with
@@ -91,8 +94,8 @@ re-verified by task 7.1 before a template depends on it):
   `-s user|project|local`; `.mcp.json` expands `${VAR}` in `url` and headers; a
   `headersHelper` command prints JSON headers on every connect (10 s limit); a project
   `.mcp.json` is auto-loaded in non-interactive and SDK sessions; environment variables
-  named `ANTHROPIC_*` are read empty in remote headers, so the key variable is
-  `AGW_MCP_KEY`.
+  named `ANTHROPIC_*` are read empty in remote headers, so the fallback variable (D4) is
+  not named that.
 - pi client (`pi` from badlogic/pi-mono; this workstation runs the `pi-mcp-adapter` npm
   package at 5.1.0 in place of the built-in MCP): streamable HTTP supported, SSE rejected;
   `headers`/bearer values accept `!command` (10 s) or `${VAR}`; the user-level
@@ -163,7 +166,7 @@ Rejected:
 gateway has no MCP tools of its own (Context), "the endpoint as a target" cannot mean tools
 supplied by the gateway; it means the virtual MCP server that multiplexes whatever targets
 are declared. Whether declaring a target that points back at the same `/mcp` listener
-terminates or recurses is a spike item (3.5); if it recurses, (a) is delivered as the
+terminates or recurses is a spike item (1.5); if it recurses, (a) is delivered as the
 served endpoint plus target (b), and nothing is declared that points at `/mcp`.
 
 (b) An `openapi` target over the gateway's own OpenAI-compatible `/v1`, from a schema file
@@ -204,7 +207,20 @@ Authentik group membership and the gateway's identities.
 - `deploy-agentgateway.yml` derives the personal identities from the list and merges them
   with the service identities in `agw_clients` into one `agw_identities` list that the
   secret-declaration loop, the name assert, the `llm` key loop and the new `mcp` key loop
-  all read. A name present in both sources, or twice, is refused before any restart.
+  all read. A name twice in the list, a list name equal to a reserved internal identity
+  (`legacy-shared`, `mcp-self`), or a name outside the charset is refused before any
+  restart. A name present in BOTH the list and `agw_clients` is the same identity, so it is
+  merged once and reported by name as a migration overlap; this is what lets the code that
+  derives identities be deployed before site-config removes the derived names (Migration
+  Plan).
+- **A drift guard keeps the list and the group in agreement.** The Authentik deploy's
+  read-back verify (`verify-users.py.j2`, run inside the server container) additionally
+  asserts the members of `platform-admins` equal the declared admin list plus an explicit
+  declared exceptions list (break-glass and service accounts, names only, in site-config);
+  the gateway deploy asserts the personal identities it derived equal the declared admin
+  list. A member added by hand in the Authentik UI, or a blueprint block added outside the
+  list, fails the verify instead of silently holding an admin tier with no gateway
+  identity (task 2.9).
 - Declaring an admin mints `client_<name>` on the next gateway deploy; handout is
   `Back Up Credentials to site-config (Dev)`. The same identities are admitted on `/mcp`.
 - Removing an admin from the list drops the hash from the next render, so the key stops
@@ -224,11 +240,17 @@ Rejected:
 Templates live in `platform/services/agentgateway/context/clients/` (`claude-code.json`,
 `pi-mcp.json`). One `make` target (proposed `agw-mcp-client`) runs an installer that merges
 the agentgateway entry into the user-level configuration: `~/.claude.json` through
-`claude mcp add -s user` (or the equivalent merge) and `~/.pi/agent/mcp.json` by JSON merge
-that never rewrites another server. The key is read at connect time by a command reference
-(`headersHelper` for Claude Code, `!command` for pi) from the handed-out site-config file
-or the macOS Keychain, exported to the harness as `AGW_MCP_KEY`. The installer has a
-removal mode and prints names only.
+`claude mcp add -s user` (the harness's own CLI wherever it exists) and
+`~/.pi/agent/mcp.json` by JSON merge that never rewrites another server. The templates
+carry a placeholder URL; the installer takes the MCP hostname as an argument, because the
+repository is public and a workstation has no inventory. The key mechanism is one: a
+command the harness runs at connect time (`headersHelper` for Claude Code, `!command` for
+pi) reads the key from the macOS Keychain or the handed-out site-config file and prints the
+`Authorization` header as the harness expects. Nothing is exported to the environment and
+nothing is written to a configuration file. `${AGW_MCP_KEY}` is a documented fallback only
+where `headersHelper` is unavailable, flagged as weaker because an exported variable is
+visible to every process the user starts. The installer has a removal mode and prints
+names only.
 
 Rejected:
 - **A committed repo-root `.mcp.json`.** Claude Code auto-loads a project `.mcp.json` in
@@ -272,14 +294,18 @@ the orchestrator can overrule any of them.
 - **G1. Attach to `default` only, serve `/mcp` only at the edge.** `mcp.gateways:
   [default]` explicitly, so `/mcp` is not also served on the UI listener behind
   `admin.inference`. The schema also serves `/sse`; the MCP Caddy site is an allowlist
-  (`handle /mcp*` with a Bearer-shape 401, bare `handle { respond 404 }`), so `/sse` is
+  (exact `handle /mcp` with a Bearer-shape 401, bare `handle { respond 404 }`; if the
+  streamable-HTTP transport needs any sub-path, spike item 1.6 decides and the spec
+  changes with it), so `/sse` is
   not reachable through the edge even though the gateway answers it.
-- **G2. The legacy shared key is not admitted on `/mcp`.** The shared macro takes the
-  identity list as a parameter, and the `mcp` call passes the merged identities without
-  `legacy-shared`. Whether budgets carry over to MCP traffic is spike item 1.4; if they do
+- **G2. The legacy shared key and `mcp-self` are not admitted on `/mcp`.** The shared macro
+  takes the identity list as a parameter, and the `mcp` call passes the merged identities
+  without `legacy-shared` and without `mcp-self`, which exists only as the target's
+  `backendAuth` identity for the self-call and must never authenticate a client. Whether budgets
+  carry over to MCP traffic is spike item 1.4; if they do
   not, `mcp-self` is the only budgeted path and its budget is the control.
 - **G3. Cloudflare: one new skip rule and exactly one new rate-limit rule.** A separate
-  `mcp-api-bypass-challenge` skip rule on the MCP host's `/mcp` path (the inference rule's
+  `mcp-api-bypass-challenge` skip rule on the MCP host's exact `/mcp` path (the inference rule's
   expression is not widened), and one new rate-limit rule with its own bucket, figures set
   after the spike measures a real session's handshake burst (initialize, initialized
   notification, tool listing). That uses the zone's last free rate-limit slot; the
@@ -330,8 +356,9 @@ scenario that fails an `agw_clients` entry named `user-x`. This change is a comp
   Authentik deploy's read-back verify (every blueprint `successful`, every declared account
   present, active and in a group) fails the deploy on a miss.
 - **A key on a workstation.** The installer never writes the key; the helper reads it at
-  connect time. A user who exports `AGW_MCP_KEY` into a shell profile has defeated that;
-  the documentation says not to.
+  connect time. A user who falls back to `${AGW_MCP_KEY}` (D4) and exports it into a shell profile
+  has
+  chosen the weaker path; the documentation says so.
 - **Rate-limit slot.** G3 uses the last free slot on the zone.
 - **The internal key and the empty-fields handout.** See Open Question 6.
 - **Mutual TLS for the self-call.** If the listener cannot admit the gateway's own call
@@ -342,10 +369,14 @@ scenario that fails an `agw_clients` entry named `user-x`. This change is a comp
 
 1. Spike (section 1), findings recorded below.
 2. Land the admin list and the Authentik render with no change in outcome (section 2.1 to
-   2.6); migrate existing identity names (2.7) in one site-config change, so no key is
-   re-minted.
+   2.6, drift guard 2.9). The code that derives identities merges overlapping names (D3),
+   so it is merged AND deployed before any site-config change removes a derived name from
+   `agw_clients`.
 3. Land the gateway merge and the `mcp` block flagged off (sections 2 and 3); deploy
-   through the `(Dev)` template, dry run first; verify asserts MCP is not served.
+   through the `(Dev)` template, dry run first, checking the rendered key-hash count does
+   not drop; verify asserts MCP is not served. Only then does a second site-config change
+   remove the derived names from `agw_clients` (task 6.8), held until the deployed branch
+   carries the derivation.
 4. Add the first target (section 4), then the edge (section 5): Cloudflare plan then
    apply, Caddy managed site dry run then apply.
 5. Flip `agw_mcp_enabled`, deploy, verify, hand out keys (section 6).
@@ -354,8 +385,11 @@ scenario that fails an `agw_clients` entry named `user-x`. This change is a comp
 ## Open Questions
 
 1. Does the declared admin list include the bootstrap and break-glass accounts? Those
-   blueprint files also put a user in `platform-admins`. Default proposed: only accounts a
-   person signs in with; a service or break-glass account is not given an API key.
+   blueprint files also put a user in `platform-admins` (`stray-admin.yaml:25`,
+   `agent-cloud-admin.yaml:35`, `service-account.yaml:22`). Each must move into the list or
+   be named in the declared exceptions list the drift guard reads (D3). Default proposed:
+   only accounts a person signs in with are in the list; a service or break-glass account
+   is an exception and is not given an API key.
 2. Per-caller attribution for model requests made through MCP: pass the caller's identity
    to the self-call, or accept `mcp-self`? Out of scope here.
 3. When `inference-personal-keys` lands, do admins keep the derived identity or move to
@@ -369,6 +403,10 @@ scenario that fails an `agw_clients` entry named `user-x`. This change is a comp
    include the internal `client_mcp-self` key and the upstream key. Existing behaviour, not
    introduced here; whether to add a field denylist is the operator's decision. Until then
    the documentation names fields explicitly and never shows an empty list.
+7. D2(a) is read as "the served `/mcp` endpoint", not "a target that points at it", because
+   the gateway has no MCP tools of its own and a self-target may recurse. The operator
+   confirms the reading (task 0.4); spike item 1.5 settles whether the literal form is even
+   possible.
 
 ## Findings
 

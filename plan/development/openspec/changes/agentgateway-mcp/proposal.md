@@ -46,7 +46,8 @@ harnesses (Claude Code, pi) are the consumers the inference-gateway change named
 - **A key-gated `/mcp` surface on the gateway (D5, D6).** An `mcp:` block on the
   `default` gateway only (never the UI listener), its `policies.apiKey` built from a
   shared Jinja macro that also renders the `llm` key loop, so the two lists cannot drift.
-  Off by default behind an inventory flag; the legacy shared key is not admitted on it.
+  Off by default behind an inventory flag; neither the legacy shared key nor `mcp-self`
+  is admitted on it.
   The configuration dump and admin API are not exposed as MCP tools.
 - **Two first targets (D2).** The gateway's own `/mcp` endpoint is what clients connect to
   (the gateway has no tools of its own); the first target is an OpenAPI target over the
@@ -62,7 +63,9 @@ harnesses (Claude Code, pi) are the consumers the inference-gateway change named
 - **One declared admin list (D3).** A single list in site-config drives both the Authentik
   group membership of platform admins and the gateway's personal identities. The Authentik
   admin entries are rendered from it; the gateway deploy derives one identity per entry and
-  merges them with the service identities in `agw_clients`, refusing duplicates. Declaring
+  merges them with the service identities in `agw_clients`, refusing a duplicate within the
+  list and reporting an overlap with `agw_clients` by name; a drift guard fails the Authentik
+  and gateway deploys when `platform-admins` and the list disagree. Declaring
   an admin therefore mints their `client_<name>` on the next gateway deploy, an existing
   identity keeps its key, and handout stays `Back Up Credentials to site-config (Dev)`.
   The same identities are admitted on `/mcp`.

@@ -11,8 +11,9 @@ The gateway SHALL serve MCP only on its `default` listener, only when the invent
 `agw_mcp_enabled` is true, and SHALL authenticate every `/mcp` request with a strict API-key
 policy built from the same identity list and the same rendering as the `llm` key policy. A
 request with no key or an unknown key MUST be answered 401 by the gateway before any target
-is contacted. The legacy shared key MUST NOT be admitted on `/mcp`. With the flag false the
-rendered configuration SHALL carry no MCP block.
+is contacted. The legacy shared key and the internal self-call identity MUST NOT be
+admitted on `/mcp`. With the flag false the rendered configuration SHALL carry no MCP
+block.
 
 #### Scenario: Unauthenticated MCP request is refused
 - WHEN a client sends an MCP `initialize` request to `/mcp` with no `Authorization` header
@@ -33,6 +34,11 @@ rendered configuration SHALL carry no MCP block.
 - WHEN a client presents the legacy shared key to `/mcp` while that key is still admitted
   on `/v1`
 - THEN the gateway answers 401 on `/mcp`
+
+#### Scenario: The internal identity is refused on the MCP endpoint
+- WHEN a client presents the internal self-call identity's key to `/mcp`
+- THEN the gateway answers 401, and the same key is still honoured on the `/v1` request the
+  self-call makes
 
 #### Scenario: Disabling MCP removes the endpoint
 - WHEN the deploy runs with `agw_mcp_enabled` false
@@ -61,8 +67,12 @@ and the gateway's personal identities. The gateway deploy SHALL derive one ident
 list entry, named by the entry's explicit gateway name or else its Authentik username,
 merge them with the service identities into one list, and use that list for the secret
 declarations, the name check, the `llm` key policy and the `mcp` key policy. A name that
-appears twice, or in both sources, or outside the permitted charset MUST fail the deploy
-before any restart. An identity that already has a stored key SHALL keep it.
+appears twice in the list, equals a reserved internal identity, or falls outside the
+permitted charset MUST fail the deploy before any restart; a name present in both the list
+and the service identities SHALL be merged once and reported by name as an overlap. An
+identity that already has a stored key SHALL keep it. The Authentik verify SHALL assert the
+members of `platform-admins` equal the declared admin list plus a declared exceptions list,
+and the gateway deploy SHALL assert its derived identities equal the declared admin list.
 
 #### Scenario: A declared admin gets an identity on the next deploy
 - WHEN a new admin is added to the declared list and the gateway deploy runs
@@ -71,18 +81,26 @@ before any restart. An identity that already has a stored key SHALL keep it.
   admin's key is retrievable through the credential handout template
 
 #### Scenario: A name collision is refused
-- WHEN the same name appears in the service identities and the declared admin list
+- WHEN the same name appears twice in the declared admin list, or a list entry's name is
+  `mcp-self` or `legacy-shared`
 - THEN the deploy fails before any container is recreated and names the colliding entry
 
 #### Scenario: An existing identity keeps its key
-- WHEN an admin whose identity already has a stored key is moved from the service
-  identities to the declared list under the same name
-- THEN the deploy reuses the stored key, mints nothing, and the key the admin already holds
-  still authenticates
+- WHEN an admin whose identity already has a stored key is declared in the list under the
+  same name, first while the name is still in the service identities and then after it is
+  removed from them
+- THEN each deploy reuses the stored key, mints nothing, the rendered key-hash count does
+  not drop, and the key the admin already holds still authenticates
 
 #### Scenario: Removing an admin ends their access
 - WHEN an admin is removed from the declared list and the gateway deploy runs
 - THEN the admin's key is answered 401 on both `/v1` and `/mcp`
+
+#### Scenario: Admin membership and the declared list agree
+- WHEN a user is added to `platform-admins` outside the declared list and exceptions list,
+  or a declared admin is missing from the group
+- THEN the Authentik deploy's verify fails naming the account, and the gateway deploy
+  fails if its derived identities differ from the declared admin list
 
 #### Scenario: The rendered admin accounts match the fixed blocks
 - WHEN the Authentik admin entries are rendered from the declared list for the inputs the
@@ -146,8 +164,11 @@ and proven; the admin listener MUST remain bound to the container loopback.
 ### Requirement: Harness client configuration carries no secret
 The repository SHALL ship Claude Code and pi MCP client templates and one idempotent
 installer that merges the agentgateway server entry into each harness's user-level
-configuration, reading the key at connect time by command reference from the handed-out
-site-config file or the macOS Keychain. No template, installer output or repository file
+configuration (through the harness's own CLI where it has one), taking the MCP hostname as
+an argument and leaving the template URL a placeholder, and the harness SHALL read the key
+at connect time by a command that prints the authorization header from the handed-out
+site-config file or the macOS Keychain, with no key exported or written to any file. No template,
+installer output or repository file
 SHALL contain a key value, and the repository SHALL NOT contain a live repo-root
 `.mcp.json`.
 
@@ -158,8 +179,8 @@ SHALL contain a key value, and the repository SHALL NOT contain a live repo-root
 
 #### Scenario: Installing client configuration preserves existing servers
 - WHEN the installer runs against a user configuration that already holds other MCP servers
-- THEN every other server entry is byte-identical afterwards and only the agentgateway
-  entry is added or updated
+- THEN every other server entry is unchanged as parsed JSON (entry-equal) afterwards and
+  only the agentgateway entry is added or updated
 
 #### Scenario: Installing client configuration twice changes nothing
 - WHEN the installer runs a second time with the same inputs
