@@ -362,16 +362,17 @@ finding that contradicts a decision stops the work and reopens that decision.
 - [x] 4.6 Extend the verify: `tools/list` shows the chat tool; one model call through
       `/mcp` returns a completion; the access log line for the resulting `/v1` request
       carries `mcp-self` as `identity` (names only in the report)
-      Done 2026-10-14 (`4b396795`): after `tools/list` the verify requires the chat tool to be listed (an
+      Done 2026-10-14 (`4b396795`, log read reworked in `deeec981`): after `tools/list` the verify requires the chat tool to be listed (an
       `operationId` ending in `chat_completions`), makes one `tools/call` as the admin probe identity (`max_tokens` 16,
       the first declared model) and requires no JSON-RPC error, `isError` false and a completion in
       `structuredContent.choices`; the gateway's rate-limit refusal (`-32003`, or its own 429) is unproven, as for the
-      other MCP probes. It then reads the gateway's access log since the call (engine clock taken before it, a hidden
-      task) and requires a line for `/v1/chat/completions` on the loopback listener as `identity="mcp-self"`; only a
-      count leaves the task, no log line is printed. Tests: `test_agw_mcp_verify.py` (fake gateway and a stand-in
+      other MCP probes. It then counts, on the host in one shell task (awk, colour codes stripped, `pipefail`, no
+      `no_log`), the access-log lines since the call (engine clock taken before it) for `/v1/chat/completions` on the
+      loopback listener as `identity="mcp-self"` and requires at least one; the registered stdout is that number, so no
+      log line is printed. Tests: `test_agw_mcp_verify.py` (fake gateway and a stand-in
       engine, plain and colour-coded log lines). Mutations red: log check dropped, completion check, `isError` check,
-      chat-tool check, log match ignoring the identity, colour stripping removed, log read not hidden (BATS
-      no_log set), rate-limited call not unproven. Lead manual run, local: a `tools/call` as `stray` returned a
+      chat-tool check, log match ignoring the identity, colour stripping removed, the count task printing the raw
+      line, rate-limited call not unproven. Lead manual run, local: a `tools/call` as `stray` returned a
       completion with `choices`; the access log showed `identity="mcp-self"`, `listener=loopback`, path
       `/v1/chat/completions`.
 - [x] 4.7 With an enrolled key list every tool and call each whose name or description
