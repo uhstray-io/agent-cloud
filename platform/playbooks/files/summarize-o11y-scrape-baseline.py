@@ -47,8 +47,18 @@ ALERT_INPUTS = (
 EXPECTED_IDENTITY_FIELDS = ("job", "instance", "service", "cluster", "environment")
 EXPECTED_UID = re.compile(r"^o11y_missing_[a-z0-9_]{1,27}\Z")
 EXPECTED_GROUP_UID = re.compile(r"^o11y_missing_g[a-f0-9]{26}\Z")
-SAFE_IDENTITY_VALUE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:/@-]{0,127}\Z")
+MAX_IDENTITY_VALUE_LENGTH = 128
+SAFE_IDENTITY_VALUE = re.compile(
+    rf"^[A-Za-z0-9][A-Za-z0-9_.:/@-]{{0,{MAX_IDENTITY_VALUE_LENGTH - 1}}}\Z"
+)
 MAX_EXPECTED_TARGETS = 100
+MAX_EXPECTED_GROUP_EXPRESSION_LENGTH = (
+    MAX_EXPECTED_TARGETS * (
+        len('absent_over_time(up{job="",instance="",service="",cluster="",environment=""}[5m])')
+        + len(EXPECTED_IDENTITY_FIELDS) * MAX_IDENTITY_VALUE_LENGTH
+    )
+    + (MAX_EXPECTED_TARGETS - 1) * len(" or ")
+)
 MAX_SOURCE_CONFIG_BYTES = 1024 * 1024
 SOURCE_CONFIG_SUFFIX = ("platform", "services", "o11y", "deployment", "config", "scrape.d")
 SOURCE_CONFIG_FILES = {
@@ -376,7 +386,7 @@ def _group_from_rule(rule: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(data, list) or not data or not isinstance(data[0], dict):
         raise Refusal("invalid_previous_rules")
     expression = data[0].get("model", {}).get("expr")
-    if not isinstance(expression, str) or len(expression) > 32768:
+    if not isinstance(expression, str) or len(expression) > MAX_EXPECTED_GROUP_EXPRESSION_LENGTH:
         raise Refusal("invalid_previous_rules")
     member_rows = []
     for term in expression.split(" or "):

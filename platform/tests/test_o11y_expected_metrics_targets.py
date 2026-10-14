@@ -342,11 +342,11 @@ def test_expected_group_uids_fail_closed_on_hash_or_target_uid_collision(monkeyp
     with pytest.raises(SURVEY.Refusal):
         SURVEY.validate_expected_target_declaration([colliding])
 
-    class SameDigest:
+    class CollisionDigest:
         def hexdigest(self):
             return "b" * 64
 
-    monkeypatch.setattr(SURVEY.hashlib, "sha256", lambda _value: SameDigest())
+    monkeypatch.setattr(SURVEY.hashlib, "sha256", lambda _value: CollisionDigest())
     first = _expected()
     previous_grouped = _grouped_render([first])
     changed_identity = _expected(uid="o11y_missing_new_identity", service="api/other")
@@ -447,6 +447,41 @@ def test_group_rollback_ignores_retired_target_tombstones_for_identity_match():
     )
     assert retired["uid"] in rollback["retired_uids"]
     assert group_uid in rollback["paused_uids"]
+
+
+def test_maximum_group_expression_round_trips_and_rejects_over_limit_target_count():
+    def max_value(prefix, index):
+        suffix = f"{index:03d}"
+        return prefix + suffix + "x" * (SURVEY.MAX_IDENTITY_VALUE_LENGTH - len(prefix) - len(suffix))
+
+    targets = [
+        _expected(
+            uid=f"o11y_missing_t{index:03d}",
+            job=max_value("job", index),
+            instance=max_value("host", index),
+            service="s" * SURVEY.MAX_IDENTITY_VALUE_LENGTH,
+            cluster="c" * SURVEY.MAX_IDENTITY_VALUE_LENGTH,
+            environment="e" * SURVEY.MAX_IDENTITY_VALUE_LENGTH,
+        )
+        for index in range(SURVEY.MAX_EXPECTED_TARGETS)
+    ]
+    grouped = _grouped_render(targets)
+    expression = SURVEY.expected_target_groups(targets)[0]
+    expression_length = len(SURVEY.expected_target_group_expression(expression))
+    assert expression_length == SURVEY.MAX_EXPECTED_GROUP_EXPRESSION_LENGTH
+    assert expression_length > 32768
+    assert _transition(grouped, enabled=True, targets=targets, mode="grouped")["reason"] == "enabled"
+
+    overlong_rule = next(
+        rule for rule in _service_rules(grouped)
+        if rule["uid"] == SURVEY.expected_target_groups(targets)[0]["uid"]
+    )
+    overlong_rule["data"][0]["model"]["expr"] += " "
+    with pytest.raises(SURVEY.Refusal, match="invalid_previous_rules"):
+        SURVEY._group_from_rule(overlong_rule)
+
+    with pytest.raises(SURVEY.Refusal, match="invalid_declaration"):
+        SURVEY.validate_expected_target_declaration([*targets, _expected(uid="o11y_missing_over")])
 
 
 def test_grouped_migration_accepts_the_dev_per_target_summary_contract():
