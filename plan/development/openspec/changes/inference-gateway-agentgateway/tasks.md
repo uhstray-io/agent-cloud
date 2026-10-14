@@ -656,6 +656,10 @@
       agentgateway (Dev) real run 5357 reported it.
 
 ## 5. Retire the shared key, records
+      2026-10-14 (task output read from production Semaphore by the lead): the expiry is now
+      2026-11-13, not the 2026-10-28 above. site-config #81 moved `legacy_shared_expires`; Deploy
+      agentgateway (Dev) 5523 applied it and 5643 reconfirmed it ("The shared key is admitted as
+      legacy-shared until 2026-11-13."). dgx-spark's TEAM-ENDPOINT.md (PR #33) states 2026-11-13.
 - [ ] 5.1 Retirement, enforced by the deploy rather than remembered: the config template
       renders `legacy-shared` only while today is before `legacy_shared_expires`; a deploy
       on or after that date drops the identity and fails if the vLLM key in OpenBao still

@@ -271,7 +271,8 @@
       `drill-access.yml`; verify key-only login to both nodes; a `--check` dry run; one real
       run in the agreed window and its evidence recorded here. Left unticked.
       2026-10-14 evening (prerequisites done; reported by the dgx-spark session): dgx-spark
-      drill access applied 2026-10-14 16:52 EDT, dgx-spark PR #32 merged as `51faf88`: account
+      drill access applied from its branch 2026-10-14 16:52 EDT, then dgx-spark PR #32 merged
+      as `51faf88` (17:18 EDT): account
       `o11y-drill` on both nodes, key-only, sshd reachable from the Semaphore host only, and
       polkit limited to starting and stopping `node-exporter.service`. site-config #74 merged
       as `433aa4f5` (the `dgx_drill_svc` group and `o11y_fault_drill_exporters`); the
