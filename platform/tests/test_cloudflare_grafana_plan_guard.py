@@ -98,19 +98,55 @@ def test_root_field_diagnostic_uses_fixed_marker_for_unknown_field_names():
     assert "sensitive value" not in json.dumps(receipt)
 
 
-@pytest.mark.parametrize("missing_from", ["before", "after"])
-def test_computed_unknown_root_field_presence_change_is_rejected(missing_from):
+@pytest.mark.parametrize(("field", "missing_from"), [
+    ("version", "before"),
+    ("version", "after"),
+    ("last_updated", "before"),
+    ("last_updated", "after"),
+])
+def test_explicitly_unknown_computed_root_field_may_be_absent_or_null(field, missing_from):
     plan = _plan()
     change = plan["resource_changes"][0]["change"]
-    change["after_unknown"]["version"] = True
-    change[missing_from].pop("version")
+    change["after_unknown"][field] = True
+    change[missing_from].pop(field)
     if missing_from == "before":
-        change["after"]["version"] = None
+        change["after"][field] = None
+
+    receipt = guard.inspect_plan(plan, "plan")
+
+    assert receipt["safe"] and receipt["status"] == "insert"
+    assert receipt["root_field_changes"] == []
+
+
+def test_computed_resource_identity_presence_change_still_refuses():
+    plan = _plan()
+    change = plan["resource_changes"][0]["change"]
+    change["after_unknown"]["id"] = True
+    change["after"].pop("id")
 
     receipt = guard.inspect_plan(plan, "plan")
 
     assert not receipt["safe"] and receipt["reason"] == "root_field_change"
-    assert receipt["root_field_changes"] == ["version"]
+    assert receipt["root_field_changes"] == ["id"]
+
+
+def test_provider_computed_metadata_absent_after_is_accepted_when_marked_unknown():
+    plan = _plan()
+    change = plan["resource_changes"][0]["change"]
+    for field in ("last_updated", "version"):
+        change["after_unknown"][field] = True
+        change["after"].pop(field)
+
+    receipt = guard.inspect_plan(plan, "plan")
+
+    assert receipt["safe"] and receipt["status"] == "insert"
+    assert receipt["root_field_changes"] == []
+
+
+def _change_computed_root_value_without_unknown(plan):
+    change = plan["resource_changes"][0]["change"]
+    change["after_unknown"].pop("version")
+    change["after"]["version"] = "2"
 
 
 @pytest.mark.parametrize("mutate,reason", [
@@ -120,6 +156,7 @@ def test_computed_unknown_root_field_presence_change_is_rejected(missing_from):
     (lambda p: p.update(resource_drift=[{"address": "cloudflare_record.drift"}]), "resource_drift"),
     (lambda p: p["resource_changes"][0]["change"]["after"].update(description="unrelated root drift"),
      "root_field_change"),
+    (_change_computed_root_value_without_unknown, "root_field_change"),
     (lambda p: p["resource_changes"][0]["change"]["after"]["rules"][5].update(expression="changed"),
      "not_exact_rule_insertion"),
     (_move_rule_before, "not_exact_rule_insertion"),
@@ -168,6 +205,7 @@ def test_unset_null_rule_fields_are_ignored_recursively(mutate):
 
 @pytest.mark.parametrize("mutate", [
     lambda p: p["resource_changes"][0]["change"]["after_unknown"].update(name=True),
+    lambda p: p["resource_changes"][0]["change"]["after_unknown"].update(version={"nested": True}),
     lambda p: p["resource_changes"][0]["change"]["after"]["rules"][5].update(custom_field="populated"),
     lambda p: p["resource_changes"][0]["change"]["after"]["rules"][5].update(ratelimit={"requests_per_period": 10}),
     lambda p: p["resource_changes"][0]["change"]["after"]["rules"][5]["action_parameters"].update(

@@ -12,6 +12,7 @@ RULE_REF = "o11y-api-bypass-challenge"
 RULE_INDEX = 5
 # These computed fields and the nested nullable field are pinned to provider v5.21.1.
 PROVIDER_COMPUTED_ROOT_FIELDS = {"id", "version", "last_updated"}
+PROVIDER_COMPUTED_ROOT_METADATA_FIELDS = {"version", "last_updated"}
 PROVIDER_COMPUTED_RULE_FIELDS = {"id"}
 # Only provider v5.21.1's top-level ruleset field names may leave the plan boundary.
 PROVIDER_ROOT_FIELD_NAMES = {
@@ -50,6 +51,8 @@ def _root_field_changes(before, after, computed_unknown):
     changed = set()
     for key in before.keys() | after.keys():
         if key not in before or key not in after:
+            if key in PROVIDER_COMPUTED_ROOT_METADATA_FIELDS and key in computed_unknown:
+                continue
             changed.add(key if key in PROVIDER_ROOT_FIELD_NAMES else UNKNOWN_FIELD_MARKER)
             continue
         if key == "rules" and key in before and key in after:
