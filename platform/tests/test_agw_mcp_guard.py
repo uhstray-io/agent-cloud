@@ -11,6 +11,7 @@ harness_sandbox. What is pinned:
   (without it /mcp answers every request, spike 1.1), and exactly the client identities enrolled on it.
 """
 
+import base64
 import json
 import re
 import sys
@@ -61,7 +62,7 @@ def _task(name: str) -> dict:
     return next(t for t in PHASE1["tasks"] if t.get("name") == name)
 
 
-def _play(tmp: Path, host_vars: dict, tasks: list, play_vars: dict | None = None):
+def _play(tmp: Path, host_vars: dict, tasks: list, play_vars: dict | None = None, args: tuple = ()):
     inv = {
         "all": {
             "hosts": {"gw": {"ansible_connection": "local", "ansible_python_interpreter": sys.executable, **host_vars}}
@@ -82,7 +83,7 @@ def _play(tmp: Path, host_vars: dict, tasks: list, play_vars: dict | None = None
         )
     )
     return harness_sandbox.run(
-        ["ansible-playbook", "-i", str(tmp / "inv.yml"), str(tmp / "play.yml")],
+        ["ansible-playbook", "-i", str(tmp / "inv.yml"), str(tmp / "play.yml"), *args],
         tmp,
         cwd=REPO,
         env={**harness_sandbox.env_for(tmp), "ANSIBLE_STDOUT_CALLBACK": "default"},
@@ -260,30 +261,47 @@ def test_a_person_cannot_be_declared_as_the_internal_identity(tmp_path):
 SCHEMA_TASKS = [READ_SCHEMA, CHECK_SCHEMA, HOLD_SCHEMA]
 
 
-def _read_schemas(tmp: Path, deploy_dir: Path, hv: dict):
+def _read_schemas(tmp: Path, schema_dir: Path, hv: dict, args: tuple = (), deploy_dir: Path | None = None):
+    """The schema tasks with the controller-side schema directory `schema_dir`; `deploy_dir` is the target's."""
     out = tmp / "schemas.json"
+    expr = "{{ (_agw_mcp_schemas | default({})) | to_json }}"
     tasks = [_task(n) for n in SCHEMA_TASKS]
+    tasks.append({"ansible.builtin.copy": {"content": expr, "dest": str(out)}})
     tasks.append(
-        {"ansible.builtin.copy": {"content": "{{ (_agw_mcp_schemas | default({})) | to_json }}", "dest": str(out)}}
+        {"ansible.builtin.debug": {"msg": "SCHEMAS_B64={{ (_agw_mcp_schemas | default({})) | to_json | b64encode }}"}}
     )
-    r = _play(tmp, hv, tasks, {"_deploy_dir": str(deploy_dir)})
+    play_vars = {"_agw_mcp_schema_dir": str(schema_dir), "_deploy_dir": str(deploy_dir or tmp / "no-such-target")}
+    r = _play(tmp, hv, tasks, play_vars, args)
     return r, (json.loads(out.read_text()) if out.exists() else None)
 
 
 def test_the_shipped_schema_reaches_the_render_as_compact_json(tmp_path):
-    r, schemas = _read_schemas(tmp_path, DEPLOY_DIR, OK)
+    r, schemas = _read_schemas(tmp_path, DEPLOY_DIR / "mcp-schemas", OK)
     assert r.returncode == 0, r.stdout + r.stderr
     assert schemas == {SCHEMA_FILE: SCHEMA_TEXT}
 
 
+def test_a_dry_run_reads_the_schema_from_the_controller_when_the_target_has_none(tmp_path):
+    """--check places no monorepo, so the target has no mcp-schemas/: the read must not depend on it."""
+    r, _ = _read_schemas(tmp_path, DEPLOY_DIR / "mcp-schemas", OK, args=("--check",))
+    assert r.returncode == 0, r.stdout + r.stderr
+    encoded = re.search(r"SCHEMAS_B64=([A-Za-z0-9+/=]+)", r.stdout).group(1)
+    assert json.loads(base64.b64decode(encoded)) == {SCHEMA_FILE: SCHEMA_TEXT}
+
+
+def test_the_schema_directory_is_the_controllers_checkout_beside_the_template():
+    var = PHASE1["vars"]["_agw_mcp_schema_dir"]
+    assert var == "{{ playbook_dir ~ '/../services/' ~ service_name ~ '/deployment/mcp-schemas' }}"
+
+
 def test_with_the_flag_false_nothing_is_read(tmp_path):
-    r, schemas = _read_schemas(tmp_path, DEPLOY_DIR, {**OK, "agw_mcp_enabled": False})
+    r, schemas = _read_schemas(tmp_path, DEPLOY_DIR / "mcp-schemas", {**OK, "agw_mcp_enabled": False})
     assert r.returncode == 0, r.stdout + r.stderr
     assert schemas == {}
 
 
 def test_without_any_declaration_and_the_flag_false_the_read_does_not_need_one(tmp_path):
-    r, schemas = _read_schemas(tmp_path, DEPLOY_DIR, {"agw_clients": ["a"]})
+    r, schemas = _read_schemas(tmp_path, DEPLOY_DIR / "mcp-schemas", {"agw_clients": ["a"]})
     assert r.returncode == 0, r.stdout + r.stderr
     assert schemas == {}
 
@@ -293,14 +311,14 @@ def test_a_schema_that_is_not_an_openapi_document_with_paths_is_refused(tmp_path
     d = tmp_path / "deploy"
     (d / "mcp-schemas").mkdir(parents=True)
     (d / "mcp-schemas" / SCHEMA_FILE).write_text(content)
-    r, _ = _read_schemas(tmp_path, d, OK)
+    r, _ = _read_schemas(tmp_path, d / "mcp-schemas", OK)
     assert r.returncode != 0 and "is not an OpenAPI document with paths" in r.stdout + r.stderr
 
 
 def test_a_declared_schema_that_is_not_shipped_fails_before_the_render(tmp_path):
     d = tmp_path / "deploy"
     (d / "mcp-schemas").mkdir(parents=True)
-    r, _ = _read_schemas(tmp_path, d, OK)
+    r, _ = _read_schemas(tmp_path, d / "mcp-schemas", OK)
     assert r.returncode != 0
 
 

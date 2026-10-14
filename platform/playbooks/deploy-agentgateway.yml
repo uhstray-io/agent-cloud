@@ -87,6 +87,8 @@
   vars:
     _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
     _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
+    # The shipped MCP target schemas, on the controller beside config.yaml.j2 (the template src's directory).
+    _agw_mcp_schema_dir: "{{ playbook_dir ~ '/../services/' ~ service_name ~ '/deployment/mcp-schemas' }}"
     _branch: "{{ service_branch | default('main') }}"
     _bao_url: "{{ openbao_addr | default('') }}"
     _tls: "{{ agw_listener_tls | default(false) | bool }}"
@@ -414,37 +416,41 @@
       changed_when: false
       when: _keep_previous and not ansible_check_mode and not _cfg_before.results[0].stat.exists
 
-    # The shipped schema of each declared MCP target, read from the placed monorepo and embedded in the
-    # render as one compact JSON string (nothing to mount, and a schema edit is a config change the
+    # The shipped schema of each declared MCP target, read on the CONTROLLER from the same checkout that
+    # holds config.yaml.j2 (the template `src` is controller-side too), so it is the same revision as the
+    # template and exists under --check, which places no monorepo on the target (a first dry run of a
+    # revision that adds a schema would otherwise fail on a file the target does not have yet). It is embedded
+    # in the render as one compact JSON string (nothing to mount, and a schema edit is a config change the
     # change-aware deploy sees). The name is a bare file name by the refusal above, so it cannot leave
     # mcp-schemas/. The content is public (an OpenAPI description), so these tasks are visible.
     - name: "Read the shipped OpenAPI schema of each declared MCP target"
-      ansible.builtin.slurp:
-        src: "{{ _deploy_dir }}/mcp-schemas/{{ item.schema }}"
-      loop: "{{ agw_mcp_openapi_targets | default([]) }}"
-      loop_control:
-        label: "{{ item.name }}"
-      register: _agw_mcp_schema_files
+      ansible.builtin.set_fact:
+        _agw_mcp_schema_raw: >-
+          {%- set out = {} -%}
+          {%- for t in agw_mcp_openapi_targets -%}
+            {%- if out.update({t.schema: lookup('ansible.builtin.file', _agw_mcp_schema_dir ~ '/' ~ t.schema)}) -%}{%- endif -%}
+          {%- endfor -%}
+          {{ out }}
       when: agw_mcp_enabled | default(false) | bool
 
     - name: "Refuse a target schema that is not an OpenAPI document with paths"
       ansible.builtin.assert:
         that:
-          - (item.content | b64decode | from_json).openapi is defined
-          - (item.content | b64decode | from_json).paths | length > 0
-        fail_msg: "The schema of MCP target {{ item.item.name }} ({{ item.item.schema }}) is not an OpenAPI document with paths."
+          - (_agw_mcp_schema_raw[item.schema] | from_json).openapi is defined
+          - (_agw_mcp_schema_raw[item.schema] | from_json).paths | length > 0
+        fail_msg: "The schema of MCP target {{ item.name }} ({{ item.schema }}) is not an OpenAPI document with paths."
         quiet: true
-      loop: "{{ _agw_mcp_schema_files.results }}"
+      loop: "{{ agw_mcp_openapi_targets | default([]) }}"
       loop_control:
-        label: "{{ item.item.name }}"
+        label: "{{ item.name }}"
       when: agw_mcp_enabled | default(false) | bool
 
     - name: "Hold each schema as compact JSON for the render"
       ansible.builtin.set_fact:
         _agw_mcp_schemas: >-
           {%- set out = {} -%}
-          {%- for r in _agw_mcp_schema_files.results -%}
-            {%- if out.update({r.item.schema: (r.content | b64decode | from_json | to_json(separators=(',', ':')))}) -%}{%- endif -%}
+          {%- for name, text in _agw_mcp_schema_raw.items() -%}
+            {%- if out.update({name: (text | from_json | to_json(separators=(',', ':')))}) -%}{%- endif -%}
           {%- endfor -%}
           {{ out }}
       when: agw_mcp_enabled | default(false) | bool
