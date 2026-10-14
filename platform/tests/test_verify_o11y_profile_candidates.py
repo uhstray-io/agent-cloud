@@ -511,11 +511,10 @@ def test_cleanup_failure_blocks_each_candidate_success(monkeypatch, runner):
             b"HTTP/1.1 200 OK\r\n\r\n"
             b'[{"localID":"prometheus.scrape.local_containers"},{"localID":"pyroscope.scrape.alloy_self_profile","health":"healthy"}]'
         )
-        monkeypatch.setattr(
-            CHECK,
-            "_bounded_command",
-            lambda *_args, **_kwargs: (0, response),
-        )
+    else:
+        response = b'HTTP/1.1 200 OK\r\n\r\n[{"localID":"prometheus.scrape.local_containers"}]'
+    monkeypatch.setattr(CHECK, "_bounded_command", lambda *_args, **_kwargs: (0, response))
+    if runner == "component":
         with pytest.raises(CHECK.Refusal, match="cleanup_failed"):
             CHECK._component_states(
                 enabled, "docker.io/grafana/alloy@sha256:" + "a" * 64, scrape_env(), disabled=False
