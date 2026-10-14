@@ -31,9 +31,11 @@ from reconcile_proxmox_backup_job import (  # noqa: E402
     prepare_node_failure_plan,
     prepare_node_task_query,
     prepare_plan,
+    summarize_node_failure_identity,
     summarize_node_failure_log,
     summarize_node_task_history,
     summarize_scheduler_state,
+    summarize_selected_storage,
     summarize_task_history,
     verify_readback,
 )
@@ -1023,6 +1025,247 @@ def test_task_log_cli_output_and_malformed_input_are_fixed_and_redacted(monkeypa
     assert "private payload" not in captured.out
 
 
+def identity_payload(line, *, job_id="nightly-o11y", vmid="200", detail_status=200):
+    return {
+        "job_id": job_id,
+        "vmid": vmid,
+        "jobs": [{"id": job_id, "storage": "backup-store"}],
+        "job_detail_response": {
+            "status": detail_status,
+            "json": {"data": {"id": job_id, "storage": "backup-store"}},
+        },
+        "metadata_response": {
+            "status": 200,
+            "json": {"total": 5, "data": [{"n": 1, "t": line}]},
+        },
+    }
+
+
+def test_node_failure_identity_compares_exact_job_vmid_and_storage_without_echoing_values():
+    line = (
+        "INFO: starting new backup job: vzdump 200 --job-id nightly-o11y "
+        "--storage backup-store --mode snapshot"
+    )
+    result = summarize_node_failure_identity(identity_payload(line))
+
+    assert result == {
+        "status": "compared",
+        "selected_job_id_match": True,
+        "declared_vmid_match": True,
+        "selected_storage_match": True,
+    }
+    assert all(value not in json.dumps(result) for value in ("nightly-o11y", "200", "backup-store", line))
+
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        (
+            "INFO: starting new backup job: vzdump 200 --storage backup-store",
+            {"status": "job_id_unavailable", "selected_job_id_match": None,
+             "declared_vmid_match": True, "selected_storage_match": True},
+        ),
+        (
+            "INFO: starting new backup job: vzdump 201 --job-id another --storage backup-store",
+            {"status": "compared", "selected_job_id_match": False,
+             "declared_vmid_match": False, "selected_storage_match": True},
+        ),
+        (
+            "INFO: starting new backup job: vzdump 200 201 --job-id nightly-o11y --storage backup-store",
+            {"status": "compared", "selected_job_id_match": True,
+             "declared_vmid_match": True, "selected_storage_match": True},
+        ),
+        (
+            "INFO: starting new backup job: vzdump 200 --job-id nightly-o11y --storage other-store",
+            {"status": "compared", "selected_job_id_match": True,
+             "declared_vmid_match": True, "selected_storage_match": False},
+        ),
+        (
+            "INFO: starting new backup job: vzdump 200 --job-id nightly-o11y --job-id other --storage backup-store",
+            {"status": "unknown", "selected_job_id_match": None,
+             "declared_vmid_match": None, "selected_storage_match": None},
+        ),
+        (
+            "INFO: starting new backup job: vzdump 200 200 --job-id nightly-o11y --storage backup-store",
+            {"status": "unknown", "selected_job_id_match": None,
+             "declared_vmid_match": None, "selected_storage_match": None},
+        ),
+        (
+            "INFO: starting new backup job: vzdump 200 --storage backup-store --storage other-store",
+            {"status": "unknown", "selected_job_id_match": None,
+             "declared_vmid_match": None, "selected_storage_match": None},
+        ),
+        (
+            "INFO: starting new backup job: vzdump 200 --job-id --storage backup-store",
+            {"status": "unknown", "selected_job_id_match": None,
+             "declared_vmid_match": None, "selected_storage_match": None},
+        ),
+        (
+            "synthetic task log text",
+            {"status": "unknown", "selected_job_id_match": None,
+             "declared_vmid_match": None, "selected_storage_match": None},
+        ),
+        (
+            "INFO: starting new vzdump worker: vzdump 200 --job-id nightly-o11y --storage backup-store",
+            {"status": "unknown", "selected_job_id_match": None,
+             "declared_vmid_match": None, "selected_storage_match": None},
+        ),
+        (
+            "INFO: starting new backup job: vzdump 200 --job-id 'unterminated --storage backup-store",
+            {"status": "unknown", "selected_job_id_match": None,
+             "declared_vmid_match": None, "selected_storage_match": None},
+        ),
+    ],
+)
+def test_node_failure_identity_is_fail_closed_for_absent_malformed_duplicate_and_mismatched_fields(line, expected):
+    assert summarize_node_failure_identity(identity_payload(line)) == expected
+
+
+def test_node_failure_identity_rejects_malformed_details_synthetic_rows_and_oversized_lines():
+    line = "INFO: starting new backup job: vzdump 200 --job-id nightly-o11y --storage backup-store"
+    expected = {
+        "status": "unknown", "selected_job_id_match": None,
+        "declared_vmid_match": None, "selected_storage_match": None,
+    }
+    assert summarize_node_failure_identity(identity_payload(line, detail_status=True)) == expected
+    assert summarize_node_failure_identity(identity_payload(line, job_id="bad job id")) == expected
+    assert summarize_node_failure_identity(identity_payload(line, vmid="0200")) == expected
+    oversized = "INFO: starting new backup job: vzdump 200 " + ("x" * 4096)
+    assert summarize_node_failure_identity(identity_payload(oversized)) == expected
+    payload = identity_payload(line)
+    payload["metadata_response"]["json"]["data"][0]["t"] = "unable to open file: private path"
+    assert summarize_node_failure_identity(payload) == expected
+
+
+@pytest.mark.parametrize("jobs", [
+    [{"id": "nightly-o11y", "storage": "backup-store"},
+     {"id": "nightly-o11y", "storage": "other-store"}],
+    [{"id": "nightly-o11y", "storage": "backup-store"},
+     {"id": "other-job"}, {"id": "other-job"}],
+    [{"id": "nightly-o11y", "storage": "backup-store"}, {"id": "bad id"}],
+])
+def test_node_failure_identity_refuses_ambiguous_or_malformed_list_identities(jobs):
+    line = "INFO: starting new backup job: vzdump 200 --job-id nightly-o11y --storage backup-store"
+    payload = identity_payload(line)
+    payload["jobs"] = jobs
+    assert summarize_node_failure_identity(payload) == {
+        "status": "unknown", "selected_job_id_match": None,
+        "declared_vmid_match": None, "selected_storage_match": None,
+    }
+
+
+def test_node_failure_identity_refuses_selected_detail_configuration_drift():
+    line = "INFO: starting new backup job: vzdump 200 --job-id nightly-o11y --storage backup-store"
+    payload = identity_payload(line)
+    payload["jobs"][0]["enabled"] = 0
+    assert summarize_node_failure_identity(payload) == {
+        "status": "unknown", "selected_job_id_match": None,
+        "declared_vmid_match": None, "selected_storage_match": None,
+    }
+
+
+def selected_storage_payload(*, job_id="nightly-o11y", detail_id="nightly-o11y", storage_id="backup-store",
+                             rows=None, detail_status=200, storage_status=200):
+    if rows is None:
+        rows = [{"storage": storage_id, "active": 1, "content": "backup,iso", "total": 1000, "avail": 300}]
+    return {
+        "job_id": job_id,
+        "jobs": [{"id": job_id, "storage": storage_id}],
+        "job_detail_response": {
+            "status": detail_status,
+            "json": {"data": {"id": detail_id, "storage": storage_id}},
+        },
+        "storage_response": {"status": storage_status, "json": {"data": rows}},
+    }
+
+
+@pytest.mark.parametrize(
+    ("available", "expected"),
+    [(0, "zero"), (99, "below_10_percent"), (100, "10_to_30_percent"),
+     (299, "10_to_30_percent"), (300, "at_least_30_percent")],
+)
+def test_selected_storage_reports_only_coarse_free_bands(available, expected):
+    payload = selected_storage_payload(rows=[{
+        "storage": "backup-store", "active": 1, "content": "backup,iso",
+        "total": 1000, "avail": available,
+    }])
+    assert summarize_selected_storage(payload) == {
+        "destination_state": "active_backup_capable", "free_band": expected,
+    }
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected"),
+    [
+        (selected_storage_payload(job_id=""), {"destination_state": "unknown", "free_band": "unknown"}),
+        (selected_storage_payload(detail_id="other-job"), {"destination_state": "unknown", "free_band": "unknown"}),
+        (selected_storage_payload(detail_status=403), {"destination_state": "unknown", "free_band": "unknown"}),
+        (selected_storage_payload(storage_status=True), {"destination_state": "unknown", "free_band": "unknown"}),
+        (selected_storage_payload(rows={"storage": "backup-store"}),
+         {"destination_state": "unknown", "free_band": "unknown"}),
+        (selected_storage_payload(rows=[{"storage": "backup-store", "active": True,
+                                        "content": "backup", "total": 1000, "avail": 500}]),
+         {"destination_state": "unknown", "free_band": "unknown"}),
+        (selected_storage_payload(rows=[{"storage": "backup-store", "active": 1,
+                                        "content": "images", "total": 1000, "avail": 500}]),
+         {"destination_state": "not_active_backup_capable", "free_band": "unknown"}),
+        (selected_storage_payload(rows=[{"storage": "backup-store", "active": 0,
+                                        "content": "backup", "total": 1000, "avail": 500}]),
+         {"destination_state": "not_active_backup_capable", "free_band": "unknown"}),
+        (selected_storage_payload(rows=[{"storage": "backup-store", "active": 1,
+                                        "content": "backup", "total": True, "avail": 500}]),
+         {"destination_state": "unknown", "free_band": "unknown"}),
+        (selected_storage_payload(rows=[{"storage": "backup-store", "active": 1,
+                                        "content": "backup", "total": 1000, "avail": False}]),
+         {"destination_state": "unknown", "free_band": "unknown"}),
+        (selected_storage_payload(rows=[{"storage": "backup-store", "active": 1,
+                                        "content": "backup", "total": 1000, "avail": 1001}]),
+         {"destination_state": "unknown", "free_band": "unknown"}),
+        (selected_storage_payload(rows=[
+            {"storage": "backup-store", "active": 1, "content": "backup", "total": 1000, "avail": 500},
+            {"storage": "backup-store", "active": 1, "content": "backup", "total": 1000, "avail": 500},
+        ]), {"destination_state": "unknown", "free_band": "unknown"}),
+        (selected_storage_payload(rows=[{"storage": "backup-store", "active": 1,
+                                        "content": "backup", "total": 1000}]),
+         {"destination_state": "unknown", "free_band": "unknown"}),
+    ],
+)
+def test_selected_storage_missing_malformed_duplicate_or_partial_data_has_exact_result(payload, expected):
+    assert summarize_selected_storage(payload) == expected
+
+
+def test_selected_storage_does_not_use_capacity_from_another_destination_or_echo_identifiers():
+    payload = selected_storage_payload(storage_id="private-store", rows=[
+        {"storage": "other-store", "active": 1, "content": "backup", "total": 1000, "avail": 900},
+    ])
+    result = summarize_selected_storage(payload)
+    assert result == {"destination_state": "unknown", "free_band": "unknown"}
+    assert "private-store" not in json.dumps(result) and "other-store" not in json.dumps(result)
+
+
+@pytest.mark.parametrize("jobs", [
+    [{"id": "nightly-o11y", "storage": "backup-store"},
+     {"id": "nightly-o11y", "storage": "other-store"}],
+    [{"id": "nightly-o11y", "storage": "backup-store"},
+     {"id": "other-job"}, {"id": "other-job"}],
+    [{"id": "nightly-o11y", "storage": "backup-store"}, {"id": "bad id"}],
+])
+def test_selected_storage_refuses_ambiguous_or_malformed_list_identities(jobs):
+    payload = selected_storage_payload()
+    payload["jobs"] = jobs
+    assert summarize_selected_storage(payload) == {
+        "destination_state": "unknown", "free_band": "unknown",
+    }
+
+
+def test_selected_storage_refuses_selected_detail_configuration_drift():
+    payload = selected_storage_payload()
+    payload["jobs"][0]["enabled"] = 0
+    assert summarize_selected_storage(payload) == {
+        "destination_state": "unknown", "free_band": "unknown",
+    }
+
+
 @pytest.mark.parametrize(("operation", "expected"), [
     ("node-failure-plan", {
         "read_allowed": False,
@@ -1035,6 +1278,11 @@ def test_task_log_cli_output_and_malformed_input_are_fixed_and_redacted(monkeypa
     ("node-failure-summary", {
         "status": "unknown", "reason": "log_invalid", "failure_hint": "unknown",
     }),
+    ("node-failure-identity", {
+        "status": "unknown", "selected_job_id_match": None,
+        "declared_vmid_match": None, "selected_storage_match": None,
+    }),
+    ("storage-summary", {"destination_state": "unknown", "free_band": "unknown"}),
 ])
 def test_node_failure_cli_rejects_non_mapping_json_with_fixed_output(
     operation, expected, monkeypatch, capsys,
@@ -1149,11 +1397,34 @@ def test_playbook_requires_reviewed_dev_and_guards_every_mutation():
 
     names = list(by_name)
     assert names.index("Build a sanitized backup-job candidate report") < names.index(
+        "Require safe backup-job inspection data"
+    ) < names.index("Keep the sanitized backup-job candidate report private to this run") < names.index(
+        "Read the privately selected backup-job detail for inspection"
+    ) < names.index("Read storage available to the declared node for destination inspection") < names.index(
         "Report backup-job candidates for inventory selection"
     ) < names.index("End after read-only backup-job inspection") < names.index(
         "Require one exact private selected backup job"
     ) < names.index("Read the selected backup-job detail")
     assert by_name["End after read-only backup-job inspection"][1]["when"] == "_inspect_only"
+    selected_detail = by_name["Read the privately selected backup-job detail for inspection"][1]
+    assert selected_detail["ansible.builtin.uri"]["method"] == "GET"
+    assert "/api2/json/cluster/backup/{{ _backup_job_id }}" in selected_detail["ansible.builtin.uri"]["url"]
+    assert selected_detail["when"] == [
+        "_inspect_only",
+        "_backup_job_id is match('^[A-Za-z0-9._-]{1,64}$')",
+        "(_backup_inspection.candidates | selectattr('id', 'equalto', _backup_job_id) | list | length) == 1",
+    ]
+    assert selected_detail["no_log"] is True and selected_detail["check_mode"] is False
+    storage_get = by_name["Read storage available to the declared node for destination inspection"][1]
+    assert storage_get["ansible.builtin.uri"]["method"] == "GET"
+    assert "/api2/json/nodes/{{ _node }}/storage" in storage_get["ansible.builtin.uri"]["url"]
+    assert storage_get["when"] == selected_detail["when"]
+    assert storage_get["no_log"] is True and storage_get["check_mode"] is False
+    storage_summary = by_name["Summarize the selected job destination without exposing its identity"][1]
+    assert storage_summary["ansible.builtin.command"]["argv"][2] == "storage-summary"
+    assert storage_summary["no_log"] is True
+    assert "'jobs': _backup_jobs.json.data" in storage_summary["ansible.builtin.command"]["stdin"]
+    assert by_name["Keep the sanitized selected-destination state"][1]["no_log"] is True
     history_get = by_name["Read the first archived vzdump task page"][1]
     assert history_get["ansible.builtin.uri"]["method"] == "GET"
     assert history_get["when"] == "_inspect_only and _backup_history_query.read_allowed | bool"
@@ -1208,6 +1479,11 @@ def test_playbook_requires_reviewed_dev_and_guards_every_mutation():
     assert "metadata_path" in metadata_get["ansible.builtin.uri"]["url"]
     assert metadata_get["no_log"] is True and metadata_get["check_mode"] is False
     assert "read_allowed" in metadata_get["when"]
+    identity = by_name["Compare task metadata with private selected backup identity"][1]
+    assert identity["ansible.builtin.command"]["argv"][2] == "node-failure-identity"
+    assert identity["no_log"] is True and identity["when"] == "_inspect_only"
+    assert "'jobs': _backup_jobs.json.data" in identity["ansible.builtin.command"]["stdin"]
+    assert by_name["Keep sanitized task identity comparisons"][1]["no_log"] is True
     log_plan = by_name["Plan the bounded final task-log page"][1]
     assert log_plan["ansible.builtin.command"]["argv"][2] == "node-failure-pages"
     assert log_plan["no_log"] is True
@@ -1230,6 +1506,8 @@ def test_playbook_requires_reviewed_dev_and_guards_every_mutation():
     assert "proxmox_node_task_failure_diagnostic" in by_name[
         "Report backup-job candidates for inventory selection"
     ][1]["ansible.builtin.debug"]["msg"]
+    report = by_name["Report backup-job candidates for inventory selection"][1]["ansible.builtin.debug"]["msg"]
+    assert "proxmox_node_task_identity" in report and "selected_backup_destination" in report
     assert "verified_o11y_vmid" not in by_name[
         "Report backup-job candidates for inventory selection"
     ][1]["ansible.builtin.debug"]["msg"]

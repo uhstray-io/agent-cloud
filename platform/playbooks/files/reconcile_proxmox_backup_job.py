@@ -6,12 +6,14 @@ from __future__ import annotations
 import copy
 import json
 import re
+import shlex
 import sys
 import time
 from collections.abc import Mapping
 from urllib.parse import quote
 
 JOB_ID = re.compile(r"[A-Za-z0-9._-]{1,64}")
+STORAGE_ID = re.compile(r"[A-Za-z0-9._-]{1,64}")
 VMID_LIST = re.compile(r"[1-9][0-9]*(?:,[1-9][0-9]*)*")
 VMID = re.compile(r"[1-9][0-9]*")
 NODE_NAME = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?")
@@ -119,6 +121,27 @@ def _stable_config(job: Mapping[str, object]) -> dict[str, object]:
         if stable.get(selector) in (None, ""):
             stable.pop(selector, None)
     return stable
+
+
+def _selected_detail_matches_list(
+    job_id: object, jobs: object, detail_response: object,
+) -> Mapping[str, object] | None:
+    if (not isinstance(job_id, str) or JOB_ID.fullmatch(job_id) is None
+            or not isinstance(jobs, list) or any(not isinstance(job, Mapping) for job in jobs)):
+        return None
+    identities = [job.get("id") for job in jobs]
+    if (any(not isinstance(identity, str) or JOB_ID.fullmatch(identity) is None for identity in identities)
+            or len(set(identities)) != len(identities)):
+        return None
+    matches = [job for job in jobs if job.get("id") == job_id]
+    body = detail_response.get("json") if isinstance(detail_response, Mapping) else None
+    detail = body.get("data") if isinstance(body, Mapping) else None
+    if (len(matches) != 1 or not isinstance(detail_response, Mapping)
+            or type(detail_response.get("status")) is not int or detail_response["status"] != 200
+            or not isinstance(detail, Mapping) or detail.get("id") != job_id
+            or _stable_config(matches[0]) != _stable_config(detail)):
+        return None
+    return detail
 
 
 def _safe_refusal(exc: BaseException) -> str:
@@ -788,12 +811,156 @@ def summarize_node_failure_log(payload: Mapping[str, object]) -> dict[str, objec
     return _task_log_result("diagnosed", None, hint)
 
 
+def summarize_node_failure_identity(payload: Mapping[str, object]) -> dict[str, object]:
+    """Compare the private declared job, VMID, and storage with a bounded task metadata line."""
+    result = {
+        "status": "unknown",
+        "selected_job_id_match": None,
+        "declared_vmid_match": None,
+        "selected_storage_match": None,
+    }
+    response = payload.get("metadata_response")
+    body = response.get("json") if isinstance(response, Mapping) else None
+    rows = body.get("data") if isinstance(body, Mapping) else None
+    if (not isinstance(response, Mapping) or type(response.get("status")) is not int
+            or response["status"] != 200 or not isinstance(body, Mapping)
+            or type(body.get("total")) is not int or not 0 < body["total"] <= TASK_LOG_MAX_TOTAL_LINES
+            or not isinstance(rows, list) or len(rows) != 1 or not _valid_task_log_row(rows[0], 1)):
+        return result
+    line = rows[0]["t"]
+    prefix = "INFO: starting new backup job: vzdump "
+    if ("\n" in line or "\r" in line or "\x00" in line
+            or line.startswith("unable to open file") or line.strip().lower() == "no content"
+            or not line.startswith(prefix)):
+        return result
+    try:
+        tokens = shlex.split(line[len(prefix):], posix=True)
+    except ValueError:
+        return result
+
+    options: dict[str, list[str]] = {"--job-id": [], "--storage": []}
+    positionals: list[str] = []
+    options_started = False
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if token in options:
+            options_started = True
+            if index + 1 >= len(tokens) or not tokens[index + 1] or tokens[index + 1].startswith("-"):
+                return result
+            options[token].append(tokens[index + 1])
+            index += 2
+        elif token.startswith(("--job-id=", "--storage=")):
+            name, value = token.split("=", 1)
+            if not value:
+                return result
+            options[name].append(value)
+            options_started = True
+            index += 1
+        elif token.startswith("-"):
+            options_started = True
+            if index + 1 < len(tokens) and not tokens[index + 1].startswith("-"):
+                index += 2
+            else:
+                index += 1
+        else:
+            if options_started:
+                return result
+            positionals.append(token)
+            index += 1
+    if (not positionals or len(set(positionals)) != len(positionals)
+            or any(VMID.fullmatch(value) is None for value in positionals)
+            or any(len(values) > 1 for values in options.values())):
+        return result
+    if (any(value and pattern.fullmatch(value) is None
+                   for name, pattern in (("--job-id", JOB_ID), ("--storage", STORAGE_ID))
+                   for value in options[name])):
+        return result
+
+    declared_job = payload.get("job_id")
+    declared_vmid = payload.get("vmid")
+    job_data = _selected_detail_matches_list(
+        declared_job, payload.get("jobs"), payload.get("job_detail_response"),
+    )
+    selected_storage = job_data.get("storage") if isinstance(job_data, Mapping) else None
+    if (not isinstance(declared_job, str) or JOB_ID.fullmatch(declared_job) is None
+            or not isinstance(declared_vmid, str) or VMID.fullmatch(declared_vmid) is None
+            or not isinstance(job_data, Mapping)):
+        return result
+    if isinstance(declared_job, str) and JOB_ID.fullmatch(declared_job) and options["--job-id"]:
+        result["selected_job_id_match"] = options["--job-id"][0] == declared_job
+    result["declared_vmid_match"] = declared_vmid in positionals
+    if isinstance(selected_storage, str) and STORAGE_ID.fullmatch(selected_storage) and options["--storage"]:
+        result["selected_storage_match"] = options["--storage"][0] == selected_storage
+    if result["selected_job_id_match"] is not None:
+        result["status"] = "compared"
+    elif result["declared_vmid_match"] is not None or result["selected_storage_match"] is not None:
+        result["status"] = "job_id_unavailable"
+    return result
+
+
+def summarize_selected_storage(payload: Mapping[str, object]) -> dict[str, str]:
+    """Report a coarse free-space band for the exact selected job destination only."""
+    unknown = {"destination_state": "unknown", "free_band": "unknown"}
+    job_id = payload.get("job_id")
+    if not isinstance(job_id, str) or JOB_ID.fullmatch(job_id) is None:
+        return unknown
+    detail = _selected_detail_matches_list(
+        job_id, payload.get("jobs"), payload.get("job_detail_response"),
+    )
+    storage_id = detail.get("storage") if isinstance(detail, Mapping) else None
+    if (not isinstance(detail, Mapping) or not isinstance(storage_id, str)
+            or STORAGE_ID.fullmatch(storage_id) is None):
+        return unknown
+
+    response = payload.get("storage_response")
+    body = response.get("json") if isinstance(response, Mapping) else None
+    rows = body.get("data") if isinstance(body, Mapping) else None
+    if (not isinstance(response, Mapping) or type(response.get("status")) is not int
+            or response["status"] != 200 or not isinstance(rows, list)
+            or any(not isinstance(row, Mapping) for row in rows)):
+        return unknown
+    seen: set[str] = set()
+    matches: list[Mapping[str, object]] = []
+    for row in rows:
+        identity, active, content = row.get("storage"), row.get("active"), row.get("content")
+        if (not isinstance(identity, str) or STORAGE_ID.fullmatch(identity) is None
+                or identity in seen or type(active) is not int or active not in {0, 1}
+                or not isinstance(content, str)):
+            return unknown
+        seen.add(identity)
+        if identity == storage_id:
+            matches.append(row)
+    if len(matches) != 1:
+        return unknown
+    selected = matches[0]
+    contents = {part.strip() for part in selected["content"].split(",") if part.strip()}
+    if selected["active"] != 1 or "backup" not in contents:
+        return {"destination_state": "not_active_backup_capable", "free_band": "unknown"}
+    total, available = selected.get("total"), selected.get("avail")
+    if (type(total) is not int or total <= 0 or type(available) is not int
+            or available < 0 or available > total):
+        return unknown
+    if available == 0:
+        band = "zero"
+    elif available * 10 < total:
+        band = "below_10_percent"
+    elif available * 10 < total * 3:
+        band = "10_to_30_percent"
+    else:
+        band = "at_least_30_percent"
+    return {"destination_state": "active_backup_capable", "free_band": band}
+
+
 def main() -> int:
     operation = sys.argv[1] if len(sys.argv) > 1 else ""
     try:
         payload = json.load(sys.stdin)
         if (
-            operation in {"node-failure-plan", "node-failure-pages", "node-failure-summary"}
+            operation in {
+                "node-failure-plan", "node-failure-pages", "node-failure-summary",
+                "node-failure-identity", "storage-summary",
+            }
             and not isinstance(payload, Mapping)
         ):
             raise TypeError("Invalid operation input.")
@@ -823,6 +990,10 @@ def main() -> int:
             result = plan_node_failure_log_page(payload)
         elif operation == "node-failure-summary":
             result = summarize_node_failure_log(payload)
+        elif operation == "node-failure-identity":
+            result = summarize_node_failure_identity(payload)
+        elif operation == "storage-summary":
+            result = summarize_selected_storage(payload)
         else:
             raise ValueError("Unsupported reconciliation operation.")
     except (IndexError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
@@ -838,6 +1009,13 @@ def main() -> int:
             }
         elif operation == "node-failure-summary":
             result = _task_log_result("unknown", "log_invalid")
+        elif operation == "node-failure-identity":
+            result = {
+                "status": "unknown", "selected_job_id_match": None,
+                "declared_vmid_match": None, "selected_storage_match": None,
+            }
+        elif operation == "storage-summary":
+            result = {"destination_state": "unknown", "free_band": "unknown"}
         else:
             print(json.dumps({"refusal": _safe_refusal(exc)}, separators=(",", ":")))
             return 2
