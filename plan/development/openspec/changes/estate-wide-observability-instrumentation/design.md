@@ -996,3 +996,22 @@ diagnostic separates the candidate-presence and config/status comparison
 outcomes. Task 4.6d1 is complete based on selector task 5616; tasks 4.6c, 4.6d,
 and 4.6e remain unchecked pending their separate proof gates. Backing media,
 allocation, PBS readiness, and restore remain unverified.
+
+**Order-insensitive list comparison follow-up (2026-10-14):** Dev-bound
+GET-only survey task 5631 succeeded at merged `dev` SHA
+`17390a4735b7525fec8499d5efea45bd82a92f45`. The receipt found one visible
+eligible candidate, confirmed the declared candidate was in that set, and
+reported matching status/config content, while required and optional detail
+config comparisons remained false. Proxmox source shows `/storage` index and
+`/storage/{id}` read both call `api_storage_config`
+([Config.pm lines 24-37, 140-158, 161-180](https://github.com/proxmox/pve-storage/blob/master/src/PVE/API2/Storage/Config.pm));
+the shared encoder joins `nodes` from hash keys and `content_hash_to_string`
+also iterates unsorted hash keys
+([Plugin.pm lines 249-257, 526-539](https://github.com/proxmox/pve-storage/blob/master/src/PVE/Storage/Plugin.pm)).
+This is a source-supported explanation for order-only false mismatches, not
+proof that either live mismatch was only ordering. Compare validated `content`
+and optional `nodes` sets across the protected responses; malformed or changed
+sets remain mismatches. Keep scalar comparisons, exact-match/headroom gates, and
+all allocation, backing, readiness, and write-authority fields fail-closed. The
+survey and source review add no Proxmox reads or writes and do not complete
+parent tasks 4.6c, 4.6d, or 4.6e.
