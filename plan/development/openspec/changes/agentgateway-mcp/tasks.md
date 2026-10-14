@@ -513,24 +513,24 @@ operator's go for it. site-config changes land through its own pull requests.
       authenticated initialize"
 
 ## 7. Client templates and installer
-- [ ] 7.1 Re-verify the client facts against the live documentation and the installed
+- [x] 7.1 Re-verify the client facts against the live documentation and the installed
       versions before any template depends on them (the Research bullets in `design.md`):
       `claude mcp add` flags and `-s user`, `headersHelper` and its time limit, `${VAR}`
       expansion, the `ANTHROPIC_*` header caveat; pi's `!command` and `${VAR}` forms,
       SSE rejection and the user-level file path; the Keychain read command on macOS. Record
       each with its date and source; a differing fact amends the template, not the design
-- [ ] 7.2 Templates under `platform/services/agentgateway/context/clients/`
+- [x] 7.2 Templates under `platform/services/agentgateway/context/clients/`
       (`claude-code.json`, `pi-mcp.json`): a placeholder URL (the installer takes the
       hostname as an argument; the repository is public and a workstation has no
       inventory), the key by command reference, no value
-- [ ] 7.3 The installer (proposed `scripts/agw-mcp-client.py`, Python standard library):
+- [x] 7.3 The installer (proposed `scripts/agw-mcp-client.py`, Python standard library):
       takes the MCP hostname as an argument; uses the harness CLI where one exists
       (`claude mcp add -s user`, `claude mcp remove`) and a merge-only JSON edit for pi's
       user-level file, atomic write preserving the file's mode; `--dry-run` showing which entries
       would change, a removal mode deleting exactly
       the agentgateway entry, names only in all output, exit non-zero when a harness file
       is unparseable rather than rewriting it
-- [ ] 7.4 The key helper, the one mechanism for both harnesses (Claude Code
+- [x] 7.4 The key helper, the one mechanism for both harnesses (Claude Code
       `headersHelper`, pi `!command`): at connect time reads the key from the Keychain or
       the site-config handout file (`secrets/agentgateway/client_<name>.txt` in the
       operator's clone) and prints the `Authorization` header JSON the harness expects, with
@@ -538,9 +538,9 @@ operator's go for it. site-config changes land through its own pull requests.
       fallback only where `headersHelper` is unavailable. It prints only what the harness
       requires on stdout, nothing on stderr but names, and
       fails with a names-only message when neither exists
-- [ ] 7.5 `make` targets with `##` help text (proposed `agw-mcp-client` and
+- [x] 7.5 `make` targets with `##` help text (proposed `agw-mcp-client` and
       `agw-mcp-client-remove`); `.gitignore` gains the repo-root `.mcp.json`
-- [ ] 7.6 Tests with a temporary home: every other server entry is unchanged as parsed JSON
+- [x] 7.6 Tests with a temporary home: every other server entry is unchanged as parsed JSON
       (entry-equal) after install, a second install changes nothing, removal restores the
       original parsed content, an unparseable file is left untouched. A scan test: no Bearer value
       or key-shaped string in any
