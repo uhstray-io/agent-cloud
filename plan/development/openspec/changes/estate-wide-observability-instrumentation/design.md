@@ -505,6 +505,25 @@ retention, or other job option, reads the job back, and converges to a no-op
 on a second run. Check mode issues no write. Backup artifact and isolated
 restore validation remain independent follow-on gates.
 
+### Archived task history recency summary
+
+The inspect-only archived `vzdump` summary adds exactly one sanitized field,
+`latest_success_within_26h`. It reuses the latest task's validated `starttime`
+and the existing archive query's `until` cutoff; it adds no API request and
+does not expose either timestamp or a computed age. The cutoff must be a
+positive integer (with booleans, strings, and other coercible values rejected).
+The fixed window is 93,600 seconds, inclusive at both ends: the field is
+`true` only for a classified success whose age is from zero through 93,600
+seconds, and `false` for a known failure or warning, an older success, or a
+verified empty archive. It is `null` whenever the existing outcome is unknown,
+including permission, request, pagination, identity, schema, cutoff, or
+conflicting-latest-status ambiguity. Existing outcome, reason, task count,
+`job_attribution: unavailable`, the 30-day query, and inspect-only guards stay
+unchanged. Task rows remain VM-scoped and cannot establish which scheduled job
+produced an archive; this field is not job attribution, artifact presence,
+immutability, or restore readiness. Parent task 4.5a and every restore gate
+remain open.
+
 ## 2026-09-29 production disk-alert receipt
 
 Non-destructive production deploy task 1830 and read-only budget task 1831
