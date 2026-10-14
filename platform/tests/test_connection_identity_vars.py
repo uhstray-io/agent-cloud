@@ -12,7 +12,6 @@ of pinning its version, and unit-test the filter's two rules: names only, fail c
 import json
 import os
 import re
-import shutil
 import subprocess
 from pathlib import Path
 
@@ -20,14 +19,12 @@ import forgeries
 import playbook_yaml
 import pytest
 import yaml
+from ansible_python import ansible_python, needs_ansible
 
 REPO = Path(__file__).resolve().parents[2]
 PLAYBOOKS = REPO / "platform/playbooks"
 GUARD = PLAYBOOKS / "refuse-internal-extra-vars.yml"
 PLUGIN = PLAYBOOKS / "filter_plugins/extra_var_names.py"
-
-needs_ansible = pytest.mark.skipif(shutil.which("ansible-playbook") is None,
-                                   reason="ansible-playbook not installed")
 
 # Every public connection and become option except the passwords (those are refused by the
 # guard's pattern) and the underscore names. Task 7.10 lists them.
@@ -85,8 +82,7 @@ def test_the_guard_covers_what_ansible_reads_a_connection_from():
         "    for opt in yaml.safe_load(mod.DOCUMENTATION)['options'].values():\n"
         "        names |= {v['name'] for v in opt.get('vars', [])}\n"
         "print(' '.join(sorted(names)))")
-    python = Path(shutil.which("ansible-playbook")).read_text().splitlines()[0].removeprefix("#!").strip()
-    read = subprocess.run([python, "-c", script], text=True, capture_output=True, check=True).stdout.split()
+    read = subprocess.run([ansible_python(), "-c", script], text=True, capture_output=True, check=True).stdout.split()
     # ansible-core 2.19 also lists expressions such as "delegated_vars['ansible_host']" as host
     # sources. They read a name already listed here, so only plain variable names are judged.
     read = [n for n in read if re.fullmatch(r"[A-Za-z_]\w*", n)]
@@ -180,10 +176,6 @@ def test_a_nested_guard_run_still_skips_and_the_importer_still_refuses(tmp_path)
 
 # The filter in isolation: names only, and fail closed. Run in the interpreter ansible-playbook
 # uses (the test interpreter need not have ansible-core installed).
-def _ansible_python() -> str:
-    return Path(shutil.which("ansible-playbook")).read_text().splitlines()[0].removeprefix("#!").strip()
-
-
 def _call_filter(fault: str) -> subprocess.CompletedProcess:
     script = f"""
 import importlib.util, sys
@@ -206,7 +198,7 @@ try:
 except AnsibleFilterError as exc:
     print("ERROR", exc, "| cause:", exc.__cause__, "| suppressed:", exc.__suppress_context__)
 """
-    return subprocess.run([_ansible_python(), "-c", script], text=True, capture_output=True, check=True,
+    return subprocess.run([ansible_python(), "-c", script], text=True, capture_output=True, check=True,
                           stdin=subprocess.DEVNULL)
 
 

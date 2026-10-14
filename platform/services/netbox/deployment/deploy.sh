@@ -12,11 +12,18 @@
 #   2. Copy .example templates (non-secret config only)
 #   3. Verify env files present (fail if Ansible didn't run)
 #   4. Pull latest images (unless --no-pull)
-#   5. Build custom NetBox image with plugins
-#   6. Stop the stack gracefully
+#   5. Build custom NetBox image with plugins (skipped when its inputs are unchanged)
+#   6. Compare the inputs with the running containers. UNCHANGED: stop here, touching
+#      nothing (the standalone orb-agent included). CHANGED: stop the stack gracefully
 #   7. Sync DB passwords to existing Postgres volume
 #   8. Start services (staged: backing → Hydra → application)
 #   9. Wait for NetBox to become healthy
+#
+# Prints `DEPLOY_CHANGED=true` or `DEPLOY_CHANGED=false` on its own line; deploy-netbox.yml
+# reads it for the task's changed status and to decide whether post-deploy has to run.
+# Operator levers (env, only the literal `true`): FORCE_RECREATE recreates even when every
+# input matches (a container holding a stale bind mount); NETBOX_FORCE_REBUILD rebuilds the
+# plugin image even when its build inputs match (refreshes the unpinned plugin install).
 
 set -euo pipefail
 
@@ -56,6 +63,9 @@ info "Step 1/9: Updating netbox-docker upstream repository..."
 NETBOX_DOCKER_DIR="${SCRIPT_DIR}/netbox-docker"
 NETBOX_DOCKER_REPO="https://github.com/netbox-community/netbox-docker.git"
 NETBOX_DOCKER_BRANCH="release"
+# Set when step 1 replaces the clone: a running container keeps the replaced directory's
+# inode on its bind mount, so only a recreate points it at the new one.
+CLONE_REPLACED=false
 
 if [ -d "${NETBOX_DOCKER_DIR}/.git" ]; then
   git -C "${NETBOX_DOCKER_DIR}" fetch origin "${NETBOX_DOCKER_BRANCH}" --quiet
@@ -75,6 +85,7 @@ else
     stale="${NETBOX_DOCKER_DIR}.stale-$(date +%Y%m%dT%H%M%S)"
     warn "${NETBOX_DOCKER_DIR} is not a git clone; moving it to ${stale}"
     mv "${NETBOX_DOCKER_DIR}" "${stale}"
+    CLONE_REPLACED=true
   fi
   info "Cloning netbox-docker upstream repository..."
   git clone --branch "${NETBOX_DOCKER_BRANCH}" "${NETBOX_DOCKER_REPO}" "${NETBOX_DOCKER_DIR}"
@@ -116,7 +127,37 @@ fi
 info "Step 5/9: Building custom NetBox image with plugins..."
 build_netbox_image
 
-# ─── Step 6: Stop the stack ─────────────────────────────────────────
+# ─── Step 6: Decide, then stop the stack ────────────────────────────
+# Compare what the containers run on with the inputs held now (lib/common.sh,
+# netbox_recreate_reason). Nothing changed: leave everything running and say so. That includes
+# the standalone orb-agent, which `compose down` below does not own but stop_orb_agent removes
+# and nothing in this workflow starts again (Deploy Orb Agent is its own workflow).
+info "Step 6/9: Comparing the deployment's inputs with the running containers..."
+want_digest=$(netbox_inputs_digest) || exit 1
+compose_svcs=$(netbox_compose_services)
+[ -n "$compose_svcs" ] || error "No services found in the compose files; refusing to guess."
+if [ "${FORCE_RECREATE:-}" = "true" ]; then
+  reason="operator requested FORCE_RECREATE=true"
+elif [ "$CLONE_REPLACED" = "true" ]; then
+  reason="the netbox-docker clone was replaced, so running containers hold the old directory"
+else
+  reason=$(netbox_recreate_reason "$want_digest" "$compose_svcs")
+fi
+if [ -z "$reason" ]; then
+  info "Every container matches its inputs and image; leaving the stack alone."
+  warn_if_orb_agent_stopped
+  echo "DEPLOY_CHANGED=false"
+  exit 0
+fi
+info "Recreating the stack (${reason})."
+# The application setup (post-deploy.sh) and the orb-agent credential refresh are owed again
+# until each records that it finished.
+rm -f "${SCRIPT_DIR}/${NETBOX_POST_DEPLOY_MARKER}" "${SCRIPT_DIR}/${NETBOX_CREDENTIAL_MARKER}"
+# Every `compose up` below carries the label: a service started without it differs from its
+# labelled siblings and would be recreated on the next run.
+netbox_write_label_overlay "$want_digest" "$compose_svcs"
+export COMPOSE_OVERLAYS="${COMPOSE_OVERLAYS:-} ${NETBOX_LABEL_OVERLAY}"
+
 # podman-compose down may silently leave containers behind when pod dependency
 # chains block removal (e.g., after a volume-mount path change). If any project
 # containers remain after compose down, force-remove them so step 8 creates
@@ -168,5 +209,8 @@ info ""
 info "=== deploy.sh complete (infrastructure ready) ==="
 info "  NetBox is healthy at ${NETBOX_URL}"
 info "  Next: post-deploy.sh (migrations, superuser, OAuth2)"
-info "  Then: deploy-orb-agent.yml (Diode credentials + Orb Agent)"
+info "  Then: deploy-orb-agent.yml (Diode credentials + Orb Agent): this run stopped the agent"
 info ""
+rm -f "${SCRIPT_DIR}/${NETBOX_LABEL_OVERLAY}"
+warn_if_orb_agent_stopped
+echo "DEPLOY_CHANGED=true"

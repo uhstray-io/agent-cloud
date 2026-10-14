@@ -1310,3 +1310,223 @@ Private site-config compatibility is not established by public source or
 synthetic tests. Runtime must refuse any layout that differs from the proposed
 literal schema. Catalog selection does not prove immutability, archive contents,
 isolated restore, cleanup, or restore success; OpenSpec 4.6e remains unchecked.
+## 2026-10-13 observed-window scrape-budget candidate preview
+
+The Dev-bound baseline survey has an optional, source-only candidate preview.
+It validates the existing bounded public receipt and the reviewed finite
+`o11y_scrape_limits` inventory object, then compares all five observed maxima
+for every fixed public job category. `receiver-host` and `host-node` use the
+smaller of the global sample limit and the existing
+`o11y_scrape_sample_limit` candidate (the committed source default is 2,000).
+Strict headroom is required: an observed maximum equal to a candidate is
+incompatible. Missing or unreviewed candidates produce a fixed unavailable
+category without changing or rejecting the existing baseline receipt. The
+preview returns only fixed status/reason values and fixed public job names; it
+does not return private inventory values or measured maxima.
+
+This preview is not live enforcement or acceptance of Prometheus's effective
+loaded configuration. Reading a mounted config file would establish only its
+on-disk contents, not that the running process loaded those bytes. The next
+source slice establishes a bounded read-only status-config receipt for inline
+jobs only; scrape-file jobs remain unverified. It does not upgrade Prometheus,
+read mounted config as runtime proof, or claim runtime rejection.
+
+The operational context recorded for this slice is Dev Alloy-health task 5057,
+successful deployment check-mode task 5058, real prior deployment tasks 5037
+and 5042, and baseline task 5062. Task 5062 reported 11 healthy targets, 24-hour
+sample maxima of 3,059 for Loki and 2,285 for Grafana, three DGX-category
+targets, and a 24-hour stored-series label maximum of 42. Response-body size is
+measured by one point-in-time GET and remains distinct from the 24-hour sample
+and series-label observations. These receipts inform candidate review but do
+not close runtime acceptance or task 3.3.
+
+## 2026-10-13 loaded inline scrape-limit coverage source slice
+
+Extend the existing exact-SHA-guarded Dev scrape survey with a best-effort
+loaded-limit receipt, separate from its required active-load baseline and the
+source-only candidate preview. Use the pinned Prometheus v3.1.0 GET APIs
+`/api/v1/status/buildinfo`, `/api/v1/status/runtimeinfo`, and
+`/api/v1/status/config`. The pinned source exposes build `version`, runtime
+`reloadConfigSuccess`/`lastConfigTime`, and config as a YAML string produced
+from the in-memory config object. Bound every response with the survey's
+existing API byte ceiling, timeout, curl transport, and protected helper task.
+Read config twice between runtime snapshots; require version `3.1.0`, successful
+reload state, identical process/config timestamps and config bytes. Any HTTP,
+shape, size, parse, reload, or stability
+failure returns only a fixed `unavailable` reason and cannot suppress the
+existing baseline or candidate preview. The multi-request readback is not an
+atomic Prometheus snapshot and cannot detect an unobserved change-and-revert
+between matching observations; a matched result describes only the checked
+readback point.
+
+Parse the loaded YAML with duplicate-key rejection. Compare the five reviewed
+inventory limits (`body_size_limit`, `sample_limit`, `label_limit`,
+`label_name_length_limit`, and `label_value_length_limit`) against every
+exposed inline scrape job after Prometheus's serialized effective defaults.
+Use the active target's exact `scrapePool` association, not a guessed match
+from labels; reject missing or ambiguous associations. Apply the existing
+stricter `o11y_scrape_sample_limit` to the `receiver-host` pool. Missing,
+invalid, or mismatched loaded values never pass. Emit only fixed overall and
+per-public-category statuses/reasons; never include config, paths, target
+labels, inventory values, raw responses, or exception details.
+
+Prometheus 3.1.0's status-config handler serializes the main `Config` object.
+Its `scrape_config_files` patterns do not expand into the serialized
+`scrape_configs` list, so any pools supplied by scrape files (including
+conditional DGX and host-node jobs) are explicitly `unverified`; do not read
+mounted files or claim coverage for those jobs. This receipt demonstrates
+only that exposed inline loaded values match reviewed candidates at the
+readback point. It does not prove over-budget runtime rejection or close task
+3.3. Preserve the 2026-10-13 observed-window baseline evidence in its separate
+receipt and keep all task 3.3 acceptance gates open.
+
+Verified live evidence supplied for this slice: Dev survey task 5194 at reviewed
+SHA `ed547385` succeeded with 11 targets across nine public categories and a
+compatible candidate preview for all nine. The task predates these source edits
+and did not read loaded limits or prove runtime rejection; it validates only the
+separate baseline and candidate-preview inputs. No live task or deployment is
+part of this source change.
+
+## 2026-10-13 alert-input availability source slice
+
+Extend the same read-only baseline survey with an independent best-effort
+availability receipt for the six fixed raw counter families referenced by the
+provisioned Alloy receiver/exporter, Loki discard, and Tempo discard alerts:
+`otelcol_receiver_refused_log_records_total`,
+`otelcol_receiver_refused_spans_total`,
+`otelcol_exporter_enqueue_failed_spans_total`,
+`otelcol_exporter_send_failed_spans_total`, `loki_discarded_samples_total`,
+and `tempo_discarded_spans_total`. Query each raw family without the alert
+expressions' `or vector(0)` so absence remains visible.
+
+Set `lookback_delta=5m` explicitly on every raw selector query and do not add
+`or vector(0)`. An empty vector is reported as `missing_or_stale`; do not compare
+the response `value[0]` (the query evaluation timestamp) with a local clock or
+claim it is the original sample timestamp. Validate the vector response shape,
+then join each returned `job`/`instance` privately against the exact active-target
+set. Accept multiple distinct reason series; require well-formed unique label
+sets and finite nonnegative counter values. Report one fixed public family/status/reason row per
+family: `observed_zero`, `observed_nonzero`, `missing_or_stale`, or `unavailable`.
+No labels, sample values/timestamps, selectors, URLs, response bodies, or
+exceptions enter the receipt. A per-family query or validation failure does not
+fail or replace the required active-load baseline, source-only candidate
+preview, or loaded-limit receipt. Check mode reports the new receipt as
+`check_mode_unverified`.
+
+This is source-level availability evidence only. It does not prove pinned-image
+metric exposition, controlled refusals/discards, alert firing or delivery, or
+close task 3.3. Agentgateway and DGX split-file jobs remain `unverified`; do not
+promote them into loaded-limit coverage.
+
+Operator-supplied verified sanitized evidence for Dev survey task 5208 reports
+11 healthy targets in nine public categories; seven inline categories matched
+reviewed loaded limits, while agentgateway and dgx-spark remained unverified
+split-file jobs. The independent source-only candidate preview was compatible
+for all nine categories. This receipt predates the alert-input source edits and
+does not validate their runtime behavior. No live survey or deployment is part
+of this source change.
+
+## 2026-10-13 split scrape-file source-drift receipt
+
+Extend the same exact-SHA-guarded receiver survey with a separate read-only
+source receipt for the exact generated `agentgateway.yml` and `dgx-spark.yml`
+files in the receiver's declared deployment checkout. Open each file without
+following symlinks; require a regular single-link file, bounded size, valid
+UTF-8/YAML, no aliases or duplicate keys, and only the expected fixed job names.
+Read only the five scrape-limit fields. Compare their finite positive values
+with the reviewed inventory limits using the existing controller filter.
+
+Keep raw bytes, paths, job names beyond the fixed public categories, and limit
+values inside the protected survey task. Its visible result contains only
+`agentgateway` and `dgx-spark` categories with fixed matched/mismatch/unavailable
+statuses and reason codes. An unexpected path or filesystem object, missing
+file, malformed YAML, duplicate or unexpected job, invalid limit, or inventory
+mismatch does not pass. Check mode reports `check_mode_unverified`.
+
+This receipt establishes only that the exact on-disk source files read during
+the survey match the reviewed five-field limits. It does not show that
+Prometheus mounted or loaded those bytes, that its runtime enforces the limits,
+or that an over-budget scrape is rejected. Keep agentgateway and dgx-spark
+`unverified` in the separate loaded-limit receipt, preserve all other survey
+receipts, and leave task 3.3 unchecked. This is a source-only change; no live
+survey or deployment is claimed.
+
+## 2026-10-13 expected metrics target contract source slice
+
+Keep the production rule path disabled until private inventory review sets
+`o11y_expected_metrics_targets_reviewed: true`; the variable defaults false.
+When production alerts are enabled and the flag is true, the declaration must
+contain one to 100 active targets, or a non-empty explicit retirement set for a
+retirement-only rollout. Each active row contains exactly `uid`, `job`,
+`instance`, `service`, `cluster`, and `environment`. Use a stable UID in the
+owned `o11y_missing_<suffix>` namespace. Identity values are bounded printable
+ASCII restricted to letters, digits, `_`, `.`, `:`, `/`, `@`, and `-`; template
+values are JSON-serialized into YAML and PromQL. Duplicate identities/UIDs,
+invalid values, and more than 100 active or retired entries refuse. An
+in-memory parse of the provisioned alert document then checks that rule UIDs
+remain unique and retired UIDs do not collide with any active provisioned rule
+before repository placement or file writes.
+
+When the reviewed flag is false, the production template does not render
+per-target rules even if unreviewed target values are present. Local mode keeps
+its current Caddy pilot fallback and paused/routed behavior. The existing rule
+uses all five exact matchers in `absent_over_time(up{...}[5m])`, holds for two
+minutes, and uses `agent-cloud-ops` routing. `up=0` remains the endpoint-down
+case; absence from the active target set is the disappeared-target case.
+Explicit retired UIDs use the existing `deleteRules` list and are refused if
+they match another rendered rule; there is no group-wide deletion.
+
+Keep coverage as a separate read-only action, `Survey o11y Expected Metrics
+Targets (Dev)`. It privately reads `/api/v1/targets?state=active`, validates
+each target's five identity labels, includes unhealthy targets, and compares
+unique exact tuples with the reviewed declaration. The receipt exposes only
+status, a fixed reason, and expected/active/matched/missing/unexpected/unhealthy
+counts. Invalid or ambiguous API identities return bounded unavailable output;
+missing/unreviewed declarations and check mode are unverified. Private targets,
+selectors, API payloads, URLs, and exception text stay under `no_log`. This
+action does not alter the scrape baseline, loaded-limit, candidate-preview, or
+alert-input receipts.
+
+Sanitized Dev-bound read-only survey task 5221 observed 11 healthy active
+targets across nine public categories. Four loss counters had current zero
+samples; two optional error-only counters had no sample in a five-minute
+lookback. The latter absence is not telemetry-loss evidence. This receipt
+predates the expected-target survey and does not validate this source slice or
+production rules. Production currently has alerts enabled without an expected
+target declaration, so the reviewed flag remains false until the private
+declaration rollout is separately reviewed.
+
+Live acceptance requires a reviewed private inventory change, a reviewed
+Dev-bound non-destructive Deploy o11y run, exact rule UID/readback, and a fresh
+expected-target survey with all expected identities matched, no missing,
+unexpected, or ambiguous identities, and unhealthy targets resolved. The config
+digest change may recreate the receiver Compose project; do not clean-deploy,
+delete volumes, or claim data continuity from a container restart. Task 3.3
+remains unchecked; the task 5221 receipt is context, not live acceptance for
+this implementation.
+
+### Expected-target alert disable and restore transition
+
+Grafana retains omitted provisioned rules, so turning off production alerts or
+the reviewed-target gate SHALL keep each previously owned expected-target UID
+in the generated file as a paused, unrouted `vector(0)` rule with generic
+metadata. The prior file is the ownership record and is read before placement;
+ownership requires the expected-target rule structure, exact identity labels,
+and the `agent-cloud` / `service-telemetry` folder-group contract. A UID prefix
+alone grants no authority. Before placement, live rules must have the exact
+owned UID set and match the prior query, labels, pause state, notification
+route, rule group, and the UID of the uniquely resolved `agent-cloud` folder.
+Missing live rules, unowned live target UIDs, folder drift, or rule drift refuse.
+Retired rules remain generic paused `vector(0)` tombstones, making ownership
+durable across gate-off, canary restoration, and interrupted retries without
+deleting live rules. A retired UID cannot be reactivated; a new identity needs a
+new stable UID. Canary restoration and interrupted retries use the same
+preparation and validation path. Render/readback tasks carrying private identities suppress
+Ansible output and diffs; only fixed summaries and counts are visible. Check
+mode performs source validation only, skips rendering, and does not claim a live
+transition. Live acceptance remains separate; task 3.3 and the private rollout
+gate remain open/off.
+
+Alert probes and active-drill recovery also protect raw Prometheus/Grafana
+responses and every identity-bearing assertion. Their visible success receipts
+use fixed wording and contain no target labels or endpoints.

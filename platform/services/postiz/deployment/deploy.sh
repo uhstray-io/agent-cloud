@@ -57,17 +57,23 @@ step_pull_images() {
 
 step_start() {
   info "Step 3: Starting postiz (app + postgres + redis + temporal + temporal-postgresql [+ search node])..."
-  # Two invocations, deliberately. `up -d` converges the whole stack. Then the
-  # APP ALONE is force-recreated: it reads runtime config from a bind-mounted
-  # file, and a change to that file's CONTENT is not a compose-spec change, so
-  # a plain `up -d` would leave it running with stale configuration. The blanket
-  # --force-recreate this replaces also tore down the datastores, the engine and
-  # the search node's JVM on every no-op redeploy — none of which read that file.
-  # --remove-orphans: flipping the search-node gate OFF removes the overlay
-  # from the file set, and without this the existing temporal-elasticsearch
-  # container would simply be left running outside the model.
-  compose up -d --remove-orphans
-  compose up -d --force-recreate postiz
+  # compose_up_if_changed (common.sh) recreates only when an input or image changed, so an
+  # unchanged re-run recreates nothing (operator decision 2026-10-04) and prints
+  # DEPLOY_CHANGED=true|false for deploy-postiz.yml. It hashes the compose files in effect
+  # (compose.yml, the local overlay and the search-node overlay COMPOSE_OVERLAYS names), .env
+  # and the two files the app bind-mounts: config/postiz.env, which the app reads at start (a
+  # change to its CONTENT is not a compose-spec change, so a plain `up -d` left the app on
+  # stale configuration), and, in local mode only, the step-ca bundle the local overlay mounts.
+  # Trade-off: a changed input recreates the WHOLE project, datastores, workflow engine and
+  # search node included — the earlier "recreate only the app" step is gone because the
+  # helper labels and compares every container. Their data lives in named volumes, so a
+  # recreate restarts the processes and loses nothing. The helper's --remove-orphans also
+  # covers flipping the search-node gate OFF, which removes that overlay from the file set.
+  if [ "${LOCAL_MODE:-}" = "true" ] && [ -f compose.local.yml ]; then
+    compose_up_if_changed config/postiz.env certs/step-ca-bundle.crt
+  else
+    compose_up_if_changed config/postiz.env
+  fi
 }
 
 step_wait_healthy() {

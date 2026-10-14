@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from ansible_python import ansible_python
 from jinja2 import Environment
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -317,10 +318,7 @@ def test_validator_failure_diagnostics_use_only_fixed_exit_code_categories():
 
 
 def test_validator_diagnostic_b64_stdin_round_trips_through_ansible_templar(tmp_path):
-    ansible_playbook = shutil.which("ansible-playbook")
-    if not ansible_playbook:
-        pytest.skip("ansible-playbook is unavailable")
-    ansible_python = Path(ansible_playbook).read_text().splitlines()[0].removeprefix("#!")
+    python = ansible_python()
     harness = r'''
 import json
 import subprocess
@@ -376,7 +374,7 @@ print(category)
         )
         for rc, secret_shaped_output, expected_category in cases:
             result = subprocess.run(
-                [ansible_python, "-c", harness, str(SHARED_VALIDATION)],
+                [python, "-c", harness, str(SHARED_VALIDATION)],
                 cwd=tmp_path,
                 env=env,
                 input=json.dumps({

@@ -91,6 +91,17 @@
     _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
     _branch: "{{ service_branch | default('main') }}"
     _hver: "{{ github_runner_hooks_version | default('0.8.1') }}"
+    # The verdict lines `deploy.sh procs` prints for a runner in the state this deploy
+    # promises: one Listener, in the unit's cgroup, started after .env was last written,
+    # and no no_new_privs or private user namespace on the main process, the Listener or
+    # any Worker. The restart decision and the final verify both compare against it.
+    _runner_converged:
+      - listeners=1
+      - outside_cgroup=0
+      - started_before_env=0
+      - no_new_privs=0
+      - private_userns=0
+      - run_sh_traps=yes
 
   tasks:
     - name: "Validate the declaration"
@@ -461,7 +472,19 @@
         group: "{{ _account }}"
         mode: "0750"
 
-    - name: "Template the runner's declaration, job env, cleanup hook and unit"
+    - name: "Pin the resolved values the templates read"
+      # The templates read the RAW inventory names, and the play's `_`-prefixed copies are
+      # defined FROM those names (`_rver: github_runner_version | default(...)`). Mapping a
+      # raw name back to its copy in a task's `vars` makes the name refer to itself, and
+      # ansible-core fails the render with "Recursive loop detected in template". set_fact
+      # resolves each copy once, here, where the raw name is not yet shadowed.
+      ansible.builtin.set_fact:
+        _tpl_home: "{{ _home }}"
+        _tpl_org: "{{ _org }}"
+        _tpl_rver: "{{ _rver }}"
+        _tpl_hver: "{{ _hver }}"
+
+    - name: "Template the runner's declaration, job env and job hooks"
       ansible.builtin.template:
         src: "{{ playbook_dir }}/../services/github-runner/deployment/templates/{{ item.src }}"
         dest: "{{ item.dest }}"
@@ -473,16 +496,18 @@
       # default still renders — otherwise the first host to omit, say,
       # github_runner_hooks_version fails with an undefined-variable error at render time.
       vars:
-        github_runner_home: "{{ _home }}"
-        github_org: "{{ _org }}"
-        github_runner_version: "{{ _rver }}"
-        github_runner_hooks_version: "{{ _hver }}"
+        github_runner_home: "{{ _tpl_home }}"
+        github_org: "{{ _tpl_org }}"
+        github_runner_version: "{{ _tpl_rver }}"
+        github_runner_hooks_version: "{{ _tpl_hver }}"
       loop:
         - { src: "runner.env.j2", dest: "{{ _home }}/config/runner.env", mode: "0640" }
         - { src: "runner-dotenv.j2", dest: "{{ _home }}/.env", mode: "0640" }
         - { src: "job-cleanup.sh.j2", dest: "{{ _home }}/job-cleanup.sh", mode: "0750" }
+        - { src: "job-started.sh.j2", dest: "{{ _home }}/job-started.sh", mode: "0750" }
       loop_control:
         label: "{{ item.dest }}"
+      register: _runner_files
 
     - name: "Create the account's systemd user-unit directory"
       # systemd --user only reads units from this path, and it does not exist on a fresh
@@ -503,8 +528,7 @@
         group: "{{ _account }}"
         mode: "0644"
       vars:
-        github_runner_home: "{{ _home }}"
-        github_runner_name: "{{ github_runner_name }}"
+        github_runner_home: "{{ _tpl_home }}"
       register: _runner_unit
 
     # ── install + register ─────────────────────────────────────────────────
@@ -545,6 +569,10 @@
           - (_configured.rc | default(1)) == 0
         fail_msg: "The runner did not register — see the reported rc and output above."
         success_msg: "Runner registered."
+      # The register step is skipped under --check, so it leaves no rc to judge. Without
+      # this guard every dry run stopped here (Semaphore task 4631), before the read-only
+      # service checks below, which do run in check mode.
+      when: not ansible_check_mode
 
     - name: "Resolve the runner account's uid"
       # Looked up, not assumed. systemd --user talks to a bus under /run/user/<uid>, and
@@ -558,23 +586,124 @@
       ansible.builtin.set_fact:
         _runner_uid: "{{ getent_passwd[_account][1] }}"
 
+    - name: "Create the directory for the runner's own docker wrapper"
+      # Not the runner's bin/: that holds the runner's own binaries, from its archive.
+      ansible.builtin.file:
+        path: "{{ _home }}/_bin"
+        state: directory
+        owner: "{{ _account }}"
+        group: "{{ _account }}"
+        mode: "0750"
+
+    - name: "Install the docker wrapper the container hooks run"
+      # The hooks start `docker` with only the job's environment variables, which include
+      # HOME=/github/home and no XDG_* directories, so rootless podman looked for its
+      # configuration and its image store under a path that exists only inside the job
+      # container. Every container job failed in "Initialize containers" with `cannot
+      # resolve /github/home`. The wrapper sets the account's own directories and runs
+      # podman unchanged; the runner's PATH (.env) lists _bin first. Templated after the
+      # uid lookup because XDG_RUNTIME_DIR is /run/user/<uid>. The full reasoning is in
+      # docker-wrapper.sh.j2 and the service CLAUDE.md, "Container jobs under rootless
+      # podman".
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../services/github-runner/deployment/templates/docker-wrapper.sh.j2"
+        dest: "{{ _home }}/_bin/docker"
+        owner: "{{ _account }}"
+        group: "{{ _account }}"
+        mode: "0750"
+      vars:
+        github_runner_home: "{{ _tpl_home }}"
+        github_runner_uid: "{{ _runner_uid }}"
+
+    - name: "Give job containers the runner account's own podman socket, never root's"
+      # The runner mounts /var/run/docker.sock into every job container; the path is
+      # hardcoded upstream and no setting removes it (see the task file). podman-docker
+      # links it to root's socket, which the account cannot reach, so every container job
+      # failed in "Initialize containers". Pointed at the account's rootless socket, a job
+      # container gets what a plain job on this host already has (it runs as this
+      # account), and no account gets root's socket. Options weighed and isolation
+      # reasoning: the service CLAUDE.md, "Container jobs under rootless podman".
+      ansible.builtin.include_tasks: tasks/podman-user-docker-socket.yml
+      vars:
+        pds_user: "{{ _account }}"
+        pds_uid: "{{ _runner_uid }}"
+
+    # ── restart only through a stop that leaves nothing behind ─────────────
+    # Until 2026-10-12 this was a `state: restarted` under KillMode=process: systemd
+    # signalled run.sh alone, the Listener kept running in the unit's cgroup, and each
+    # restart stacked a new Listener beside the one that held the session and took every
+    # job (docs/MISTAKES.md 10.27). No unit or .env change after the boot-time start ever
+    # reached the process that runs jobs. So the deploy reads the Listener itself, before
+    # and after, and a restart is a drain, a stop, and an emptied cgroup, then a start.
+    - name: "Read the runner's Listener and Worker processes"
+      # Read-only, so it also runs in a dry run, where it shows what a real run would do.
+      ansible.builtin.command: "{{ _deploy_dir }}/deploy.sh procs"
+      become: true
+      become_user: "{{ _account }}"
+      # Without XDG_RUNTIME_DIR, `systemctl --user` reports "Failed to connect to bus:
+      # No medium found": sudo does not set it, and lingering creates the runtime
+      # directory but cannot tell a non-login shell where it is.
+      environment:
+        XDG_RUNTIME_DIR: "/run/user/{{ _runner_uid }}"
+        RUNNER_ENV_FILE: "{{ _home }}/config/runner.env"
+      register: _procs_before
+      changed_when: false
+      # A dry run does not update the checkout on the host, so its deploy.sh may predate
+      # `procs`. The decision below then reads no lines and reports a restart.
+      failed_when: _procs_before.rc != 0 and not ansible_check_mode
+      check_mode: false
+
+    - name: "Decide whether the runner must be restarted"
+      # When the unit or .env changed: a running process keeps the properties it was
+      # started with (no_new_privs above all: it can never be cleared), and the Listener
+      # reads .env only when it starts (Runner.Listener/Program.cs, LoadAndSetEnv). And
+      # when the processes are not in the promised state, whatever the cause, so a run
+      # after a failed one still converges.
+      ansible.builtin.set_fact:
+        _runner_restart: >-
+          {{ (_runner_unit.changed | default(false))
+             or ('runner-dotenv.j2' in (_runner_files.results | default([])
+                 | selectattr('changed') | map(attribute='item.src') | list))
+             or (_runner_converged | difference(_procs_before.stdout_lines) | length > 0) }}
+
+    - name: "Report the runner's processes and the restart decision"
+      ansible.builtin.debug:
+        msg: >-
+          restart={{ _runner_restart }}; procs rc={{ _procs_before.rc }};
+          {{ _procs_before.stdout_lines | join('; ') }}
+          {{ (_procs_before.stderr | default('')) | trim }}
+
+    - name: "Drain, stop and empty the runner's unit"
+      # deploy.sh quiesce: waits up to github_runner_drain_seconds for no Worker to run
+      # (any stop cancels a running job, so waiting is the only way to let one finish),
+      # stops the unit with the configuration systemd has LOADED, sends SIGINT to every
+      # Listener of the account and waits for them, then sends SIGKILL to what is left in
+      # the cgroup and to any surviving Listener, and fails unless both are gone. It runs
+      # before the daemon reload on
+      # purpose: on a host still running the KillMode=process unit, a reload first would
+      # make this stop KillMode=mixed, which sends SIGKILL to the Listener that holds the
+      # session and its job instead of letting it cancel the job and report it.
+      ansible.builtin.command: "{{ _deploy_dir }}/deploy.sh quiesce"
+      become: true
+      become_user: "{{ _account }}"
+      environment:
+        XDG_RUNTIME_DIR: "/run/user/{{ _runner_uid }}"
+        RUNNER_ENV_FILE: "{{ _home }}/config/runner.env"
+        RUNNER_DRAIN_SECONDS: "{{ github_runner_drain_seconds | default(600) }}"
+      register: _quiesce
+      changed_when: true
+      when: _runner_restart | bool and not ansible_check_mode
+
     - name: "Reload the account's systemd and start the runner"
       ansible.builtin.systemd_service:
         name: actions-runner.service
         scope: user
         daemon_reload: true
         enabled: true
-        # RESTART when the unit changed. A running process keeps the properties it was
-        # started with (no_new_privs above all: it can never be cleared), so `started`
-        # alone would leave a changed unit inert on a runner that is already up until the
-        # host next reboots. A restart sends SIGTERM to the runner and waits up to
-        # TimeoutStopSec for it, so an in-flight job on this host may be cut short.
-        state: "{{ 'restarted' if (_runner_unit.changed | default(false)) else 'started' }}"
+        # Never `restarted`: a restart is the quiesce above, then this start.
+        state: started
       become: true
       become_user: "{{ _account }}"
-      # Without XDG_RUNTIME_DIR, `systemctl --user` reports "Failed to connect to bus:
-      # No medium found" — sudo does not set it, and lingering creates the runtime
-      # directory but cannot tell a non-login shell where it is.
       environment:
         XDG_RUNTIME_DIR: "/run/user/{{ _runner_uid }}"
 
@@ -600,35 +729,42 @@
     # "rootless containers mapped" on 2026-10-11 while every job, all of them descendants of
     # a unit with NoNewPrivileges=true, failed with "newuidmap: write to uid_map failed:
     # Operation not permitted". Two checks, because each sees what the other cannot.
-    - name: "Confirm the running runner service carries no no_new_privs and no private user namespace"
-      # Read from the kernel, for the service's own main process: every job is a
-      # descendant and inherits exactly this. NoNewPrivs is the effective bit, so it also
-      # catches the unit options that set it implicitly. The user-namespace link must equal
-      # this shell's, which is the host's: PrivateUsers= (and the options that imply it in a
-      # user unit) would put the runner in a namespace that maps no subordinate range.
-      ansible.builtin.shell: |
-        set -euo pipefail
-        pid=$(systemctl --user show --property=MainPID --value actions-runner.service)
-        if [ -z "$pid" ] || [ "$pid" -eq 0 ]; then echo "no main process"; exit 1; fi
-        awk '$1 == "NoNewPrivs:" { print "NoNewPrivs=" $2 }' "/proc/$pid/status"
-        if [ "$(readlink "/proc/$pid/ns/user")" = "$(readlink /proc/self/ns/user)" ]; then
-          echo "userns=host"
-        else
-          echo "userns=private"
-        fi
-      args:
-        executable: /bin/bash
+    - name: "Read the runner's Listener and Worker processes after the start"
+      # Waits for the Listener to appear: run.sh starts run-helper.sh, which starts it.
+      ansible.builtin.command: "{{ _deploy_dir }}/deploy.sh procs"
       become: true
       become_user: "{{ _account }}"
       environment:
         XDG_RUNTIME_DIR: "/run/user/{{ _runner_uid }}"
-      register: _runner_privs
+        RUNNER_ENV_FILE: "{{ _home }}/config/runner.env"
+      register: _procs
       changed_when: false
-      failed_when: >-
-        _runner_privs.rc != 0
-        or 'NoNewPrivs=0' not in _runner_privs.stdout_lines
-        or 'userns=host' not in _runner_privs.stdout_lines
+      failed_when: _procs.rc != 0 and not ansible_check_mode
+      until: ansible_check_mode or ('listeners=0' not in _procs.stdout_lines)
+      retries: 12
+      delay: 5
       check_mode: false
+
+    - name: "Require one Listener, in the unit's cgroup, started after .env, with no no_new_privs"
+      # Read from the kernel, for the processes that run jobs. The check this replaces
+      # read only the unit's MainPID, which is run.sh: each stacked restart gave it a fresh
+      # run.sh carrying the unit's current settings, so it passed while the Listener that
+      # took every job still ran with the settings of its own start (docs/MISTAKES.md
+      # 10.27). Every job is a descendant of the Listener and its Worker and inherits
+      # exactly what they carry. NoNewPrivs is the effective bit, so it also catches the
+      # unit options that set it implicitly. The user namespace must be the host's:
+      # PrivateUsers= (and the options that imply it in a user unit) would put the runner
+      # in a namespace that maps no subordinate range. Skipped in a dry run, which starts
+      # nothing; the restart decision above reports the same lines.
+      ansible.builtin.assert:
+        that:
+          - _runner_converged | difference(_procs.stdout_lines) | length == 0
+        fail_msg: >-
+          The runner's processes are not in the promised state. Missing:
+          {{ _runner_converged | difference(_procs.stdout_lines) | join(', ') }}.
+          Read: {{ _procs.stdout_lines | join('; ') }}
+        success_msg: "One Listener, in the unit's cgroup, started after .env; no no_new_privs on it, its Worker or run.sh."
+      when: not ansible_check_mode
 
     - name: "Confirm rootless podman maps the account's ranges from inside the user manager"
       # Exercises newuidmap/newgidmap for real, in a transient unit of the SAME user
@@ -663,14 +799,123 @@
         or ((_uidmap.stdout_lines | length) - _uidmap.stdout_lines.index('gid_map') - 1) < 2
       check_mode: false
 
+    - name: "Confirm a job container can be created with the runner's mounts, from inside the user manager"
+      # The uid-map check above passed while every `container:` job still failed in
+      # "Initialize containers" (2026-10-11): podman refused bind sources that Docker would
+      # have created, and the Docker socket path led to root's socket. This repeats the
+      # hooks' own `docker create`, with the mount set the runner hands them
+      # (ContainerOperationProvider.cs:301-318, ContainerInfo.cs:59), in a transient unit of
+      # the same user manager with the runner unit's NoNewPrivileges value, after running
+      # the deployed job-started hook exactly as a job runs it. The image is imported from a
+      # one-file archive, so no registry is involved; the container is created, never
+      # started, then removed. `_ping` on the mounted socket path must reach the account's
+      # own podman.
+      #
+      # Hook-shaped in ENVIRONMENT too, not only in arguments. The hooks resolve `docker`
+      # with the runner's PATH and then start it with the job's variables only
+      # (runner-container-hooks v0.8.1, utils.ts optionsWithDockerEnvs): `create` gets
+      # HOME=/github/home and nothing else of the runner's, while `pull` gets no HOME at
+      # all. The first version of this probe ran `docker` with the user manager's own
+      # environment, passed, and every container job still failed with `cannot resolve
+      # /github/home` (docs/MISTAKES.md 10.25). So `docker` is resolved from the PATH in
+      # the deployed .env and must be the wrapper; the import runs under `env -i` as the
+      # hooks' pull does; the create runs under `env -i HOME=/github/home
+      # GITHUB_ACTIONS=true CI=true` with `-e HOME`, and must find the imported image, so
+      # both calls use one store; and the created container must carry HOME=/github/home,
+      # so the wrapper did not change the job's HOME. No second `system migrate` here:
+      # it stops running containers, so it could stop a job that started after the
+      # uid-map check. The cost: this probe joins the pause process that check left, so
+      # it does not exercise the wrapper's PATH for newuidmap; the bats test of the
+      # rendered wrapper covers that PATH.
+      ansible.builtin.shell: |
+        set -euo pipefail
+        nnp=$(systemctl --user show --property=NoNewPrivileges --value actions-runner.service)
+        systemd-run --user --wait --pipe --collect --quiet \
+          --property=NoNewPrivileges="$nnp" \
+          /bin/bash -s <<'PROBE'
+        set -euo pipefail
+        H={{ _home | quote }}
+        W="$H/_work"
+        "$H/job-started.sh"
+        runner_path=$(sed -n 's/^PATH=//p' "$H/.env")
+        dk=$(PATH="$runner_path" command -v docker)
+        echo "docker=$dk"
+        [ "$dk" = "$H/_bin/docker" ]
+        probe="gh-runner-mount-probe-$$"
+        img="localhost/$probe:latest"
+        src=$(mktemp -d)
+        trap 'env -i "$dk" rm -f "$probe" >/dev/null 2>&1 || true; env -i "$dk" rmi -f "$img" >/dev/null 2>&1 || true; rm -rf "$src"' EXIT
+        mkdir "$src/root"
+        : > "$src/root/.probe"
+        tar -C "$src/root" -cf "$src/rootfs.tar" .
+        env -i "$dk" import "$src/rootfs.tar" "$img" >/dev/null
+        env -i "$dk" image exists "$img"
+        echo "import=ok"
+        env -i HOME=/github/home GITHUB_ACTIONS=true CI=true "$dk" create --name "$probe" \
+          -e HOME -e GITHUB_ACTIONS=true -e CI=true \
+          -v=/var/run/docker.sock:/var/run/docker.sock \
+          -v="$W":/__w \
+          -v="$H/externals":/__e:ro \
+          -v="$W/_temp":/__w/_temp \
+          -v="$W/_actions":/__w/_actions \
+          -v="$W/_tool":/__w/_tool \
+          -v="$W/_temp/_github_home":/github/home \
+          -v="$W/_temp/_github_workflow":/github/workflow \
+          --entrypoint tail "$img" -f /dev/null >/dev/null
+        echo "create=ok"
+        cfg=$(env -i "$dk" inspect "$probe")
+        if grep -qF '"HOME=/github/home"' <<<"$cfg"; then
+          echo "home=job"
+        fi
+        echo "ping=$(curl -sf --unix-socket /var/run/docker.sock http://d/_ping)"
+        PROBE
+      args:
+        executable: /bin/bash
+      become: true
+      become_user: "{{ _account }}"
+      environment:
+        XDG_RUNTIME_DIR: "/run/user/{{ _runner_uid }}"
+      register: _mountprobe
+      changed_when: false
+      failed_when: >-
+        _mountprobe.rc != 0
+        or ('docker=' ~ _home ~ '/_bin/docker') not in _mountprobe.stdout_lines
+        or 'import=ok' not in _mountprobe.stdout_lines
+        or 'create=ok' not in _mountprobe.stdout_lines
+        or 'home=job' not in _mountprobe.stdout_lines
+        or 'ping=OK' not in _mountprobe.stdout_lines
+      # It creates and removes a container, so a dry run skips it.
+      when: not ansible_check_mode
+
     - name: "Report"
       ansible.builtin.debug:
         msg: >-
           {{ github_runner_name }} installed (runner v{{ _rver }}, hooks v{{ _hver }}),
           service {{ _active.stdout | trim }}, labels
           {{ (github_runner_labels | default([])) | join(',') }}, group
-          {{ github_runner_group }}, no_new_privs off on the running service, rootless
+          {{ github_runner_group }}, one Listener started after .env with no_new_privs
+          off, rootless
           containers mapped from inside the user manager
           ({{ _uidmap.stdout_lines.index('gid_map') - _uidmap.stdout_lines.index('uid_map') - 1 }}
-          uid map lines). Confirm it is ONLINE at the organisation with
+          uid map lines), a job container created with the runner's mounts and the
+          account's own podman socket, through the runner's docker wrapper with the
+          hooks' own environment. Confirm it is ONLINE at the organisation with
           verify-github-runners.yml before routing work to it.
+
+    # Last: every verify task above passed. The per-host result carries only the flags the
+    # shared task reads, never _configured, whose task is no_log because it handled the
+    # registration token. "Changed" is any of the three things this deploy installs: a
+    # registration, the systemd unit, or a rendered declaration/env/hook file. `_configured`
+    # is skipped under --check, and undefined when the run was limited away from it.
+    - name: "Gather this host's service-deploy result"
+      ansible.builtin.set_fact:
+        _service_deploy_result:
+          skipped: "{{ _configured is not defined or _configured is skipped }}"
+          changed: >-
+            {{ (_configured.changed | default(false)) or (_runner_unit.changed | default(false))
+               or (_runner_files.changed | default(false)) }}
+
+    - name: "Record the service-deploy step result"
+      ansible.builtin.include_tasks: tasks/emit-service-deploy-result.yml
+      vars:
+        service_deploy_result_var: _service_deploy_result

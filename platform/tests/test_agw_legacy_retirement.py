@@ -150,7 +150,10 @@ def test_a_fingerprint_recorded_after_the_read_is_not_overwritten(tmp_path, bao)
     # refuses instead of overwriting it.
     r = _run(tmp_path, bao, OLD, "-e", "agw_today=2026-10-01", live_fp=OTHER_FP, legacy_shared_expires=EXPIRES)
     assert r.returncode != 0
-    assert "guarded OpenBao key changed" in r.stdout
+    guard_task = r.stdout.split("TASK [Require the guarded key to be unchanged]", 1)[1]
+    guard_result = guard_task.split("TASK [", 1)[0]
+    assert "fatal: [gw]: FAILED!" in guard_result
+    assert "censored" in guard_result and "no_log: true" in guard_result
     assert Bao.store["legacy_shared_key_sha256"] == OTHER_FP and _writes() == []
     _no_secret(r)
 

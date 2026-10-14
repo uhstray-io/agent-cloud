@@ -43,10 +43,13 @@ step_pull_image() {
 
 step_start() {
   info "Step 3: Starting openhands..."
-  # --force-recreate: the container reads runtime config from env_file: .env; an
-  # env_file change is not a compose-spec change, so plain `up -d` would keep the
-  # old container with stale env. Force-recreate so a re-rendered .env applies.
-  compose up -d --force-recreate
+  # The container reads runtime config from env_file: .env; an env_file change is not a
+  # compose-spec change, so plain `up -d` would keep the old container with stale env.
+  # compose_up_if_changed hashes .env with the compose file and recreates only when that
+  # digest or the image changed, so a re-rendered .env still applies and an unchanged
+  # re-run recreates nothing (it prints DEPLOY_CHANGED=true|false for the playbook). The
+  # only bind mount is the Docker socket, which is not a config input.
+  compose_up_if_changed
 }
 
 step_wait_healthy() {

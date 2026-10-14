@@ -8,12 +8,12 @@ proven without tofu or Cloudflare. Requires ansible-playbook.
 import importlib.util
 import json
 import os
-import shutil
 import subprocess
 from pathlib import Path
 
 import playbook_yaml
 import pytest
+from ansible_python import needs_ansible
 
 REPO = Path(__file__).resolve().parents[2]
 PLAYBOOK = REPO / "platform/playbooks/apply-cloudflare-tofu.yml"
@@ -23,8 +23,6 @@ _spec = importlib.util.spec_from_file_location(
 )
 step_results = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(step_results)
-
-needs_ansible = pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="needs ansible-playbook")
 
 SKIPPED = {"skipped": True, "changed": False}
 CHANGES = "Plan: 1 to add, 2 to change, 0 to destroy.\n"

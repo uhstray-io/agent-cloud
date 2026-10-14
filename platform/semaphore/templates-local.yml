@@ -244,6 +244,19 @@ templates:
   # section 6). Replaces the Mac-driven scripts/local-netbox-up.sh path.
   - name: "Deploy NetBox (Local)"
     playbook: platform/playbooks/deploy-netbox.yml
+    survey_vars:
+      - name: deploy_force_recreate
+        title: "Force container recreate"
+        description: "true to recreate every container even when inputs and images match (clears a stale bind mount). This stops the orb-agent: run Deploy Orb Agent afterwards"
+        type: string
+        required: false
+        default_value: "false"
+      - name: netbox_force_rebuild
+        title: "Force plugin image rebuild"
+        description: "true to rebuild the NetBox plugin image even when its build inputs match (takes a newer Diode plugin release; the rebuilt image recreates the stack and stops the orb-agent)"
+        type: string
+        required: false
+        default_value: "false"
 
   # Local NetBox answers the IPAM read; local inventory declares no vm_* spec, so a local
   # run records the step's refusal, which is the path worth proving here.
@@ -262,6 +275,18 @@ templates:
       - name: target_service
         title: Target group
         description: Inventory group of the service to check (e.g. tududi_svc)
+        type: string
+        required: true
+
+  # Free an idle service's memory without losing its state: stops its containers, keeps the
+  # containers, images and volumes. Local-dev hosts only (refuses any host not named
+  # <name>-local). Reverse it with the service's own Deploy template.
+  - name: "Stop Local Service"
+    playbook: platform/playbooks/stop-local-service.yml
+    survey_vars:
+      - name: target_service
+        title: Target group
+        description: Inventory group of the idle local service to stop (e.g. erpnext_svc)
         type: string
         required: true
 

@@ -14,7 +14,7 @@ It also becomes the migration sink for NocoDB work data — weft writes via `POS
 ## Conventions specific to this service
 
 ### deploy.sh is lifecycle only
-No secret generation, no OpenBao calls (Critical Deployment Rule #2). `deploy-tududi.yml` renders `.env` from OpenBao via `manage-secrets`; `deploy.sh` only pulls, `up -d --force-recreate`, and waits healthy. `--force-recreate` is deliberate — an `env_file` content change is not a compose-spec change, so plain `up -d` would run with a stale `.env`.
+No secret generation, no OpenBao calls (Critical Deployment Rule #2). `deploy-tududi.yml` renders `.env` from OpenBao via `manage-secrets`; `deploy.sh` only pulls, runs `compose_up_if_changed` (`platform/lib/common.sh`), and waits healthy. An `env_file` content change is not a compose-spec change, so plain `up -d` would run with a stale `.env`; `compose_up_if_changed` hashes `.env` and the compose files (plus the local-mode step-ca bundle) and recreates only when that digest or an image changed, printing `DEPLOY_CHANGED=true|false`, which `deploy-tududi.yml` reads into `changed_when` and the `service-deploy` step result's `changed_on_rerun`. A re-run with nothing changed recreates nothing. The Semaphore survey `deploy_force_recreate=true` forces a recreate anyway (clears a stale bind mount).
 
 ### SSO-only with a break-glass admin
 `PASSWORD_AUTH_ENABLED=false` — login is OIDC-only. The break-glass local admin (`TUDUDI_USER_EMAIL` / `TUDUDI_USER_PASSWORD`, password from OpenBao) is the recovery path if the IdP is down. `TUDUDI_TRUST_PROXY=true` is mandatory behind Caddy or SSO sessions 401.

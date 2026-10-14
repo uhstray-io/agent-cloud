@@ -1,0 +1,181 @@
+# Read-only, exact-SHA-guarded survey of the fixed receiver-side Alloy container.
+- name: Refuse extra vars that set internal names
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: Refuse unsafe survey context before any Python-based task
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  tags: [always]
+  vars:
+    _survey_receivers: "{{ groups.get('o11y_svc', []) }}"
+    _survey_override_names:
+      - local_mode
+      - container_engine
+      - podman_rootful
+      - local_monorepo_dir
+      - ansible_python_interpreter
+      - ansible_connection
+      - connection
+      - ansible_host
+      - ansible_user
+      - ansible_port
+      - ansible_become
+      - become
+      - ansible_become_user
+      - become_user
+      - ansible_become_method
+      - become_method
+      - ansible_become_flags
+      - become_flags
+      - ansible_remote_tmp
+    _survey_forged_names: "{{ _survey_override_names | intersect('' | extra_var_names) }}"
+    _survey_receiver_valid: >-
+      {{ _survey_receivers | length == 1 and
+         not (hostvars[_survey_receivers | first].local_mode | default(false) | bool) and
+         hostvars[_survey_receivers | first].container_engine | default('') == 'podman' and
+         not (hostvars[_survey_receivers | first].podman_rootful | default(false) | bool) }}
+  tasks:
+    - name: Refuse extra-var or receiver-scope overrides
+      ansible.builtin.assert:
+        that:
+          - _survey_forged_names | length == 0
+          - _survey_receivers | length == 1
+          - _survey_receiver_valid | bool
+        fail_msg: "Refusing the Alloy survey because its context or receiver scope is unsafe."
+        quiet: true
+
+- name: Require the reviewed source and helper bytes
+  ansible.builtin.import_playbook: require-reviewed-checkout.yml
+  vars:
+    _reviewed_checkout_payload_paths:
+      - platform/playbooks/files/survey-o11y-alloy-health.py
+
+- name: Pre-flight
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: o11y_svc
+    preflight_group_expected: o11y_svc
+    _preflight_redact_hostnames: true
+
+- name: Read and reduce fixed Alloy health metadata
+  hosts: o11y_svc
+  gather_facts: false
+  become: false
+  any_errors_fatal: true
+  environment:
+    TMPDIR: /dev/shm/ansible-tmp
+  vars:
+    ansible_remote_tmp: /dev/shm/ansible-tmp
+    ansible_become: false
+    _alloy_health_helper: "{{ hostvars['localhost']._reviewed_checkout_payloads['platform/playbooks/files/survey-o11y-alloy-health.py'] | b64decode(encoding='utf-8') }}"
+    _alloy_health_refusals:
+      - container_missing
+      - inspect_failed
+      - inspect_malformed
+      - inspect_ambiguous
+      - survey_failed
+    _alloy_health_observed_fields:
+      - container_present
+      - health_status
+      - last_health_exit_code
+      - oom_killed
+      - restart_count
+      - run_status
+      - started_age_bucket
+      - status
+    _alloy_health_run_states: [configured, created, running, stopped, exited, paused, unknown]
+    _alloy_health_states: [healthy, unhealthy, starting, none, unknown]
+    _alloy_health_age_buckets: [under_1h, 1_to_24h, 1_to_7d, 7d_or_more]
+  tasks:
+    - name: Require writable tmpfs for Ansible remote temporary files
+      ansible.builtin.import_tasks: tasks/require-tmpfs-remote-tmp.yml
+
+    - name: Require declared Podman receiver runtime
+      ansible.builtin.assert:
+        that: (container_engine | default('')) == 'podman'
+        fail_msg: "The Alloy health survey requires an explicitly declared Podman receiver."
+        quiet: true
+
+    - name: Collect sanitized Alloy health fields
+      ansible.builtin.command:
+        argv: [python3, -]
+        stdin: "{{ _alloy_health_helper }}"
+        stdin_add_newline: false
+      register: _alloy_health_result
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+      when: not ansible_check_mode
+
+    - name: Parse and verify the sanitized Alloy health receipt
+      block:
+        - name: Parse the sanitized Alloy health receipt
+          ansible.builtin.set_fact:
+            _alloy_health_receipt: "{{ _alloy_health_result.stdout | from_json }}"
+          no_log: true
+          when: not ansible_check_mode
+
+        - name: Require a complete bounded Alloy health receipt
+          ansible.builtin.assert:
+            that:
+              - _alloy_health_receipt.status == 'observed' or _alloy_health_receipt.status == 'unavailable'
+              - >-
+                (_alloy_health_receipt.status == 'unavailable'
+                and _alloy_health_receipt.keys() | list | sort == ['reason', 'status']
+                and _alloy_health_receipt.reason in _alloy_health_refusals)
+                or
+                (_alloy_health_receipt.status == 'observed'
+                and _alloy_health_result.rc == 0
+                and _alloy_health_receipt.keys() | list | sort == _alloy_health_observed_fields
+                and _alloy_health_receipt.container_present is sameas true
+                and _alloy_health_receipt.run_status in _alloy_health_run_states
+                and _alloy_health_receipt.health_status in _alloy_health_states
+                and _alloy_health_receipt.restart_count is integer
+                and _alloy_health_receipt.restart_count >= 0
+                and _alloy_health_receipt.oom_killed is boolean
+                and (_alloy_health_receipt.last_health_exit_code is none or
+                (_alloy_health_receipt.last_health_exit_code is integer and
+                _alloy_health_receipt.last_health_exit_code >= 0 and
+                _alloy_health_receipt.last_health_exit_code <= 255))
+                and (_alloy_health_receipt.started_age_bucket is none or
+                _alloy_health_receipt.started_age_bucket in _alloy_health_age_buckets))
+            fail_msg: "The Alloy health survey returned an invalid bounded receipt."
+            quiet: true
+          no_log: true
+          when: not ansible_check_mode
+      rescue:
+        - name: Report a fixed invalid receipt category
+          ansible.builtin.debug:
+            msg:
+              status: unavailable
+              reason: invalid_receipt
+
+        - name: Fail closed after invalid receipt
+          ansible.builtin.fail:
+            msg: "The Alloy health receipt was invalid (invalid_receipt). Raw output is suppressed."
+          when: not ansible_check_mode
+
+    - name: Report the bounded Alloy health receipt
+      ansible.builtin.debug:
+        msg: "{{ _alloy_health_receipt | to_json }}"
+      changed_when: false
+      when: not ansible_check_mode and _alloy_health_receipt.status == 'observed'
+
+    - name: Report a fixed Alloy health refusal category
+      ansible.builtin.debug:
+        msg:
+          status: unavailable
+          reason: "{{ _alloy_health_receipt.reason }}"
+      changed_when: false
+      when: not ansible_check_mode and _alloy_health_receipt.status == 'unavailable'
+
+    - name: Mark check-mode observation unverified
+      ansible.builtin.debug:
+        msg:
+          status: check_mode_unverified
+          reason: "Podman inspection is skipped in Ansible check mode."
+      changed_when: false
+      when: ansible_check_mode

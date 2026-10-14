@@ -199,8 +199,13 @@
         # ship prod the exact failure this change fixed. postiz_temporal_search
         # stays as an OPT-OUT for a future release where the trim suffices.
         COMPOSE_OVERLAYS: "{{ 'compose.search.yml' if (postiz_temporal_search | default(true) | bool) else '' }}"
+        # Operator lever (survey `deploy_force_recreate`, only the literal true): recreate even when every input
+        # and image matches — clears a stale bind mount a running container still holds.
+        FORCE_RECREATE: "{{ 'true' if ((deploy_force_recreate | default('false') | string | lower) == 'true') else '' }}"
       register: _deploy
-      changed_when: true
+      # deploy.sh recreates only when its inputs or images changed (common.sh
+      # compose_up_if_changed) and says which on its own line.
+      changed_when: "'DEPLOY_CHANGED=true' in _deploy.stdout_lines"
       when: not ansible_check_mode
 
     - name: "Show deploy.sh output"
@@ -267,3 +272,9 @@
           postiz healthy — app answering on :5000 (behind Caddy for TLS; in-app
           Authentik OIDC, API-key automation on /api/public/v1) and the workflow
           engine reports healthy, so scheduled publishing can execute.
+
+    # Last: every verify task above passed (a failure stops the play before this records).
+    - name: "Record the service-deploy step result"
+      ansible.builtin.include_tasks: tasks/emit-service-deploy-result.yml
+      vars:
+        service_deploy_result_var: _deploy

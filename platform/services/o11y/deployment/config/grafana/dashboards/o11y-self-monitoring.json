@@ -164,6 +164,26 @@
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 53 },
       "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
       "targets": [{ "refId": "A", "expr": "node_load1{job=\"receiver-host\"}" }]
+    },
+    {
+      "id": 17,
+      "title": "Loki discarded log lines / sec by reason",
+      "type": "timeseries",
+      "description": "Rate of Loki-discarded log lines split by the backend reason label.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 61 },
+      "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] },
+      "targets": [{ "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum by (reason) (rate(loki_discarded_samples_total{job=\"loki\"}[5m]))" }]
+    },
+    {
+      "id": 18,
+      "title": "Tempo discarded spans / sec by reason",
+      "type": "timeseries",
+      "description": "Rate of Tempo-discarded spans split by the backend reason label.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 61 },
+      "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] },
+      "targets": [{ "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum by (reason) (rate(tempo_discarded_spans_total{job=\"tempo\"}[5m]))" }]
     }
   ],
   "schemaVersion": 39,

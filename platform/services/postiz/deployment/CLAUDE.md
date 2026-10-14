@@ -46,10 +46,18 @@ retried ten times against an engine that was answering `SERVING` throughout. Bot
 loopback bind comes from `POSTIZ_BIND`/`POSTIZ_PORT` in `.env`. Adding a `ports:` entry
 to `compose.local.yml` publishes a *second* port; it does not replace the first.
 
-**`--force-recreate` in `deploy.sh` is required.** The app reads config from a
-bind-mounted file. Changing that file's *content* is not a compose-spec change, so a
-plain `up -d` leaves the old container running with stale config — a redeploy that
-appears to succeed and changes nothing.
+**`deploy.sh` must recreate when `config/postiz.env` changes — through `compose_up_if_changed`.**
+The app reads config from a bind-mounted file. Changing that file's *content* is not a
+compose-spec change, so a plain `up -d` leaves the old container running with stale
+config — a redeploy that appears to succeed and changes nothing. `compose_up_if_changed`
+(`platform/lib/common.sh`) hashes the compose files in effect (including `compose.search.yml`),
+`.env`, `config/postiz.env` and, in local mode, the step-ca bundle, and recreates only when
+that digest or an image changed, printing `DEPLOY_CHANGED=true|false`; `deploy-postiz.yml`
+reads it into `changed_when` and the `service-deploy` step result's `changed_on_rerun`. The
+Semaphore survey `deploy_force_recreate=true` forces a recreate anyway. Accepted trade-off:
+a changed input recreates the WHOLE project (datastores, the workflow engine and the search
+node too, where the earlier script recreated only the app); their data is in named volumes,
+so only the processes restart. An unchanged re-run recreates nothing.
 
 **No workflow UI, no admin tooling — and the Elasticsearch gate FIRED.** The trim's
 add-back condition was met on 2026-08-30: postiz v2.23.0's backend registers >3 `Text`

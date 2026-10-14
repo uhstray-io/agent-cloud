@@ -1,7 +1,7 @@
 # Slim overlay (local_mode) — appended by platform/lib/common.sh:compose().
 # Images/ports are env-parameterized in the BASE (.env). This overlay carries
-# memory caps, the SELinux opt (the podman-machine VM enforces SELinux on bind
-# mounts + the socket), and the extra networks so Alloy can scrape opted-in
+# local-only memory caps, SELinux opts (the podman-machine VM enforces SELinux
+# on bind mounts + the socket), and extra networks so Alloy can scrape opted-in
 # local services and Caddy can reach Grafana by name.
 
 networks:
@@ -26,7 +26,6 @@ services:
     security_opt:
       - label=disable
   alloy:
-    mem_limit: 192m
     security_opt:
       - label=disable
     networks:

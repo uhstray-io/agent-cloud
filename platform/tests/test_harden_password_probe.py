@@ -12,13 +12,13 @@ These lift the real tasks out of harden-ssh.yml and run them on localhost with `
 """
 
 import os
-import shutil
 from pathlib import Path
 
 import harness_sandbox
 import pytest
 import test_check_mode_contract as check_mode_contract
 import yaml
+from ansible_python import needs_ansible
 
 REPO = Path(__file__).resolve().parents[2]
 PLAYBOOK = REPO / "platform/playbooks/harden-ssh.yml"
@@ -30,8 +30,6 @@ TASKS = [
     "Lockdown complete",
 ]
 LOCKED = "port 22\npasswordauthentication no\nkbdinteractiveauthentication no\npubkeyauthentication yes\n"
-
-needs_ansible = pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="needs ansible-playbook")
 
 # SSH_STUB_METHODS: the list the server advertises, or `unreachable`, or `login` (rc 0).
 SSH_STUB = r'''#!/bin/sh

@@ -8,7 +8,6 @@ first play, refuses it before any other play starts.
 """
 
 import os
-import shutil
 import subprocess
 from pathlib import Path
 
@@ -16,12 +15,10 @@ import forgeries
 import playbook_yaml
 import pytest
 import yaml
+from ansible_python import needs_ansible
 
 REPO = Path(__file__).resolve().parents[2]
 PLAYBOOK = REPO / "platform/playbooks/verify-o11y-production-budgets.yml"
-
-needs_ansible = pytest.mark.skipif(shutil.which("ansible-playbook") is None,
-                                   reason="ansible-playbook not installed")
 
 # The memory verdict and the readings it is computed from. rc 0 alone passes the gate; the
 # forgeries carry no nested JSON because forgeries.py refuses quotes and backslashes.

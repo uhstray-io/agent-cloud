@@ -67,7 +67,11 @@ def _git_argv(root: Path, *args: str) -> list[str]:
 def _terminate(process: subprocess.Popen[bytes]) -> None:
     try:
         os.killpg(process.pid, signal.SIGKILL)
-    except ProcessLookupError:
+    except (ProcessLookupError, PermissionError):
+        # macOS returns EPERM from killpg when the group holds only zombies
+        # (the leader has exited). The group is our own start_new_session
+        # child, so EPERM here means nothing is left to kill; the wait/kill
+        # below still reaps the process.
         pass
     try:
         process.wait(timeout=0.5)

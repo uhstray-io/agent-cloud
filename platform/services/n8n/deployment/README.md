@@ -30,8 +30,23 @@ READY, enforced at three layers: the compose healthcheck probes
 migrations), the worker's `depends_on` requires `service_healthy`, and
 `deploy.sh` serializes `up` app-first regardless of whether the compose shim
 honours conditions (prod runs podman-compose 1.0.6, which does not, and whose
-recreate also cannot replace containers that have dependents — remove the
-containers first when the config hash changes; volumes carry the data).
+recreate also cannot replace containers that have dependents — so the ordered
+start removes the containers first; volumes carry the data).
+
+## Recreate only on change
+
+`deploy.sh` starts the stack through `compose_up_if_changed` (`platform/lib/common.sh`),
+with the ordered start above as its `compose_staged_up` hook. The helper hashes the compose
+files in effect, `.env` and `config/n8n-init-data.sh` (the postgres init script the compose
+file bind-mounts; not `config/n8n.env`, the legacy live env the cutover guard reads), and
+labels every container with the digest. An unchanged re-run recreates nothing and prints
+`DEPLOY_CHANGED=false`; a changed input or image (or the Semaphore survey
+`deploy_force_recreate=true`) removes the four containers and starts them in order again.
+That is also what makes a re-rendered `.env` reach the running processes. The first run after
+this lands recreates once, because the running containers carry no label yet. `deploy-n8n.yml`
+reads the line into `changed_when` and the `service-deploy` step result; the owner seed (only
+while n8n still shows first-run setup) counts toward `changed_on_rerun`, a re-run that
+seeds nothing does not.
 
 ## Upgrade runbook (designed for, not aspirational)
 

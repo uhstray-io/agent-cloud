@@ -1,0 +1,189 @@
+---
+# probe-agentgateway-gate.yml — read-only gate probe for the route switch (change
+# inference-gateway-agentgateway, tasks 4.5 and 6.4, and the route-switch runbook's open item
+# on /health).
+#
+# Three requests to the gateway from the gateway VM, through the one probe path every other
+# check uses (tasks/agw-probe.yml), presenting the verifier leaf the gateway's SAN rule admits,
+# so the key check is the layer that answers:
+#
+#   1. GET /v1/models, no key                          must be 401 (task 6.4: a keyless client is refused)
+#   2. GET /v1/models, `Bearer drill-invalid-key`      must be 401 (task 4.5: a key the gateway does not hold)
+#   3. GET /health, no key                             RECORDED, never asserted
+#
+# Probe 3 answers the runbook question "does a public /health survive gateway mode". The gateway
+# config has no /health route and the key policy is strict on the listener, so the expected answer
+# is 401; the probe records what the gateway actually does. 200 means the endpoint survives; any
+# other status means the route switch needs a /health handler.
+#
+# Pass: probes 1 and 2 are each answered HTTP 401. Any other status (a 2xx is admission) or a
+# transport failure fails the run. Probe 3 never fails the run, but the report is printed first,
+# so a failing run still carries it.
+#
+# Nothing here prints a response body, a header or a key: the report carries statuses and, for a
+# transport failure, the error text. The invalid key is a literal that is no credential. No
+# OpenBao call. Read-only on the gateway; the resolution step is its read-only mode (Deploy
+# agentgateway is its one writer). A dry run (--check) runs the file checks and sends nothing.
+#
+# Inventory (agentgateway_svc host), all read by the deploy and the conformance run too:
+#   agw_listener_tls, agw_verifier_leaf (default agw-verifier), internal_leaves, agw_tls_server_name,
+#   agw_bind, agw_port, agw_verify_base_url, agw_internal_dns_authoritative, monorepo_deploy_path
+
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: "Pre-flight"
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: agentgateway_svc
+    preflight_group_expected: agentgateway_svc
+
+- name: "Probe the gateway's key gate and its /health before the route switch"
+  hosts: agentgateway_svc
+  gather_facts: false
+  become: false
+  vars:
+    _tls: "{{ agw_listener_tls | default(false) | bool }}"
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+    _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path | default('platform/services/agentgateway/deployment') }}"
+    _port: "{{ agw_port | default('4000') }}"
+    _probe_ip: "{{ '127.0.0.1' if (agw_bind | default('127.0.0.1')) in ['0.0.0.0', '::', ''] else agw_bind | default('127.0.0.1') }}"
+    _server_name: "{{ agw_tls_server_name | default('gateway.' ~ (dns_site | default('')) ~ '.' ~ (dns_zone | default(''))) }}"
+    _leaf_dir: >-
+      {{ internal_leaves | default([]) | selectattr('name', 'equalto', agw_verifier_leaf | default('agw-verifier'))
+         | map(attribute='dir') | first | default('') }}
+    _ca: "{{ _deploy_dir }}/certs/step-ca-bundle.crt"
+    # Not a credential. Sent only to prove a key the gateway does not hold is refused.
+    _invalid_key: drill-invalid-key
+
+  tasks:
+    - name: "Require one gateway host"
+      ansible.builtin.assert:
+        that: groups['agentgateway_svc'] | length == 1
+        fail_msg: "This probe runs against exactly one agentgateway_svc host."
+        quiet: true
+
+    - name: "Read the verifier leaf and the trust bundle (listener TLS only)"
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - "{{ _leaf_dir }}/current/cert.pem"
+        - "{{ _leaf_dir }}/current/key.pem"
+        - "{{ _ca }}"
+      register: _tls_files
+      when: _tls
+
+    - name: "Refuse a verifier leaf or trust bundle that is not on this host"
+      ansible.builtin.assert:
+        that:
+          - _leaf_dir | length > 0
+          - _tls_files.results | rejectattr('stat.exists') | list | length == 0
+        fail_msg: >-
+          With agw_listener_tls the probe presents the {{ agw_verifier_leaf | default('agw-verifier') }} leaf and
+          trusts {{ _ca }}; missing: {{ _tls_files.results | rejectattr('stat.exists') | map(attribute='item') | join(', ') }}.
+        quiet: true
+      when: _tls
+
+    - name: "Dry run: report (the probes are requests to the gateway)"
+      ansible.builtin.debug:
+        msg: >-
+          check mode: the run would send GET /v1/models with no key, GET /v1/models with an invalid key and
+          GET /health with no key to {{ agw_verify_base_url | default('https://' ~ _server_name ~ ':' ~ _port) }}.
+          Nothing was sent.
+      when: ansible_check_mode
+
+    - name: "Probe the gateway"
+      when: not ansible_check_mode
+      block:
+        # The same resolution the deploy converges, read-only: a hosts file the deploy has not
+        # converged, or a name the internal zone does not answer, stops the run here, by name.
+        - name: "Probe path: resolve the server leaf's name (task 7.2)"
+          ansible.builtin.include_tasks: tasks/agw-probe-resolution.yml
+          vars:
+            _agwr_check_only: true
+            _agwr_name: "{{ _server_name }}"
+            _agwr_ip: "{{ _probe_ip }}"
+            _agwr_expect: ""
+            _agwr_hosts_file: /etc/hosts
+          when: _tls and agw_verify_base_url is not defined
+
+        - name: "The gateway base URL the probes use"
+          ansible.builtin.set_fact:
+            _gateway_base: >-
+              {{ agw_verify_base_url if (agw_verify_base_url is defined) else
+                 (('https://' ~ _server_name ~ ':' ~ _port) if _tls else ('http://' ~ _probe_ip ~ ':' ~ _port)) }}
+
+        - name: "Probe 1: /v1/models, no key"
+          ansible.builtin.include_tasks: tasks/agw-probe.yml
+          vars:
+            _agwp_base: "{{ _gateway_base }}"
+            _agwp_path: /v1/models
+            _agwp_status: [200, 401, 403, 404]
+            _agwp_key: ""
+            _agwp_method: GET
+            _agwp_timeout: 10
+            _agwp_leaf_dir: "{{ _leaf_dir }}"
+            _agwp_ca: "{{ _ca }}"
+
+        - name: "Probe 1: keep the status and the failure text"
+          ansible.builtin.set_fact:
+            _gp_r1: "{{ {'status': _agwp_out.status | int, 'msg': _agwp_out.msg | string} }}"
+
+        - name: "Probe 2: /v1/models, an invalid key"
+          ansible.builtin.include_tasks: tasks/agw-probe.yml
+          vars:
+            _agwp_base: "{{ _gateway_base }}"
+            _agwp_path: /v1/models
+            _agwp_status: [200, 401, 403, 404]
+            _agwp_key: "{{ _invalid_key }}"
+            _agwp_method: GET
+            _agwp_timeout: 10
+            _agwp_leaf_dir: "{{ _leaf_dir }}"
+            _agwp_ca: "{{ _ca }}"
+
+        - name: "Probe 2: keep the status and the failure text"
+          ansible.builtin.set_fact:
+            _gp_r2: "{{ {'status': _agwp_out.status | int, 'msg': _agwp_out.msg | string} }}"
+
+        - name: "Probe 3: /health, no key (recorded, not asserted)"
+          ansible.builtin.include_tasks: tasks/agw-probe.yml
+          vars:
+            _agwp_base: "{{ _gateway_base }}"
+            _agwp_path: /health
+            _agwp_status: [200, 401, 403, 404]
+            _agwp_key: ""
+            _agwp_method: GET
+            _agwp_timeout: 10
+            _agwp_leaf_dir: "{{ _leaf_dir }}"
+            _agwp_ca: "{{ _ca }}"
+
+        - name: "Probe 3: keep the status and the failure text"
+          ansible.builtin.set_fact:
+            _gp_r3: "{{ {'status': _agwp_out.status | int, 'msg': _agwp_out.msg | string} }}"
+
+        # Statuses only. A status of -1 is a transport failure: no HTTP answer, the error text
+        # is the finding. Printed before the assertions, so a failing run still carries it.
+        - name: "Report"
+          ansible.builtin.debug:
+            msg:
+              - "gateway: {{ _gateway_base }}"
+              - "1. keyless /v1/models: {{ _gp_s1 }} (want 401)"
+              - "2. invalid-key /v1/models: {{ _gp_s2 }} (want 401)"
+              - "health: {{ _gp_s3 }} (200 = public /health survives gateway mode; else the switch needs a /health handler)"
+          vars:
+            _gp_s1: "{{ ('HTTP ' ~ _gp_r1.status) if _gp_r1.status > 0 else ('no HTTP answer (' ~ (_gp_r1.msg | truncate(160, true)) ~ ')') }}"
+            _gp_s2: "{{ ('HTTP ' ~ _gp_r2.status) if _gp_r2.status > 0 else ('no HTTP answer (' ~ (_gp_r2.msg | truncate(160, true)) ~ ')') }}"
+            _gp_s3: "{{ ('HTTP ' ~ _gp_r3.status) if _gp_r3.status > 0 else ('no HTTP answer (' ~ (_gp_r3.msg | truncate(160, true)) ~ ')') }}"
+
+        - name: "Require both /v1/models refusals to be HTTP 401"
+          ansible.builtin.assert:
+            that:
+              - (_gp_r1.status | int) == 401
+              - (_gp_r2.status | int) == 401
+            fail_msg: >-
+              Gate failed: keyless /v1/models answered {{ _gp_r1.status }} and the invalid-key request
+              answered {{ _gp_r2.status }}; both must be 401 (a 2xx is admission; -1 is a transport
+              failure that proves nothing). See the report above.
+            quiet: true

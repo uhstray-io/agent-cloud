@@ -20,6 +20,7 @@ import forgeries
 import playbook_yaml
 import pytest
 import yaml
+from ansible_python import needs_ansible
 from test_executor_internal_overrides import (
     PLAYBOOKS,
     REPO,
@@ -27,7 +28,6 @@ from test_executor_internal_overrides import (
     _fake_engines,
     _prod_inventory,
     _run,
-    needs_ansible,
 )
 
 CLEAN_SERVICE = PLAYBOOKS / "tasks/clean-service.yml"

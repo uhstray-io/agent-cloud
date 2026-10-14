@@ -23,11 +23,13 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import textwrap
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
 import pytest
+import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 SECRET = "ZZ-SYNTHETIC-RUNTIME-VALUE-7c2e"
@@ -142,18 +144,54 @@ def run(tmp_path, binary, *extra, callback=None):
     # The binary's own virtualenv first: ansible-playbook re-reads `ansible-config` and friends
     # from PATH, and a mixed matrix must not pick another version's.
     env["PATH"] = str(Path(binary).parent) + os.pathsep + env.get("PATH", "")
-    env.update(NOLOG_SECRET=SECRET, NOLOG_PLAIN=PLAIN, ANSIBLE_NOCOLOR="1", ANSIBLE_LOCAL_TEMP=str(tmp_path))
-    if callback:
-        env["ANSIBLE_STDOUT_CALLBACK"] = callback
-    result = subprocess.run([binary, "-i", "localhost,", str(play), *extra], cwd=ROOT, env=env,
-                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=180,
-                            stdin=subprocess.DEVNULL)
-    # One stream, so a warning (stderr) sits under the task that raised it.
+    with tempfile.TemporaryDirectory(dir=tmp_path) as local_temp:
+        env.update(
+            NOLOG_SECRET=SECRET,
+            NOLOG_PLAIN=PLAIN,
+            ANSIBLE_NOCOLOR="1",
+            ANSIBLE_LOCAL_TEMP=local_temp,
+            TMPDIR=str(tmp_path),
+        )
+        if callback:
+            env["ANSIBLE_STDOUT_CALLBACK"] = callback
+        result = subprocess.run([binary, "-i", "localhost,", str(play), *extra], cwd=ROOT, env=env,
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=180,
+                                stdin=subprocess.DEVNULL)
+        # One stream, so a warning (stderr) sits under the task that raised it.
     return result.returncode, result.stdout
 
 
+def run_custom(tmp_path, binary, play_text, *extra):
+    play = tmp_path / "custom-play.yml"
+    play.write_text(textwrap.dedent(play_text))
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("ANSIBLE_STDOUT_CALLBACK", "ANSIBLE_CONFIG", "ANSIBLE_CALLBACK_PLUGINS")}
+    env["PATH"] = str(Path(binary).parent) + os.pathsep + env.get("PATH", "")
+    with tempfile.TemporaryDirectory(dir=tmp_path) as local_temp:
+        env.update(
+            NOLOG_SECRET=SECRET,
+            ANSIBLE_NOCOLOR="1",
+            ANSIBLE_LOCAL_TEMP=local_temp,
+            TMPDIR=str(tmp_path),
+        )
+        result = subprocess.run([binary, "-i", "localhost,", str(play), *extra], cwd=ROOT, env=env,
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=180,
+                                stdin=subprocess.DEVNULL)
+    return result.returncode, result.stdout
+
+
+def require_runtime_started(output):
+    if "Local RPC server did not start" in output:
+        pytest.skip("sandbox cannot start ansible-core's localhost RPC worker")
+
+
 def _version(binary) -> tuple:
-    out = subprocess.run([binary, "--version"], capture_output=True, text=True, stdin=subprocess.DEVNULL).stdout
+    env = os.environ.copy()
+    with tempfile.TemporaryDirectory() as local_temp:
+        env.update(ANSIBLE_LOCAL_TEMP=local_temp, TMPDIR=local_temp)
+        out = subprocess.run(
+            [binary, "--version"], capture_output=True, text=True, env=env, stdin=subprocess.DEVNULL
+        ).stdout
     return tuple(int(n) for n in re.search(r"core (\d+)\.(\d+)", out).groups())
 
 
@@ -164,6 +202,7 @@ pytestmark = pytest.mark.skipif(not BINS, reason="ansible-playbook not installed
 @pytest.mark.parametrize("binary", BINS)
 def test_a_failed_no_log_task_prints_no_runtime_value(tmp_path, binary, verbosity):
     code, output = run(tmp_path, binary, *verbosity)
+    require_runtime_started(output)
     assert code != 0, output  # the last task ends the run, so every earlier one ran
     assert "a failure no_log hides and no ignore_errors ends the run" in output
     assert SECRET not in output
@@ -172,6 +211,7 @@ def test_a_failed_no_log_task_prints_no_runtime_value(tmp_path, binary, verbosit
 @pytest.mark.parametrize("binary", BINS)
 def test_a_visible_failure_still_shows_its_error(tmp_path, binary):
     code, output = run(tmp_path, binary)
+    require_runtime_started(output)
     assert code != 0, output
     task = output.split("TASK [a visible failure keeps its error]", 1)[1].split("TASK [", 1)[0]
     assert PLAIN in task, task  # the error names the value it could not parse
@@ -181,6 +221,7 @@ def test_a_visible_failure_still_shows_its_error(tmp_path, binary):
 @pytest.mark.parametrize("binary", BINS)
 def test_a_visible_warning_still_shows(tmp_path, binary):
     code, output = run(tmp_path, binary)
+    require_runtime_started(output)
     assert code != 0, output
     task = output.split("TASK [warnings of a visible task stay]", 1)[1].split("TASK [", 1)[0]
     assert f"warned about {PLAIN}" in task, task
@@ -194,6 +235,7 @@ def test_a_hidden_warning_says_so_on_ansible_core_219_and_later(tmp_path, binary
     if _version(binary) < (2, 19):
         pytest.skip("2.18 censors the warnings away; there is nothing to replace")
     code, output = run(tmp_path, binary)
+    require_runtime_started(output)
     assert code != 0, output
     section = output.split(f"TASK [{task}]", 1)[1].split("TASK [", 1)[0]
     assert re.search(rf"\[WARNING\]: '{task}' emitted \d+ warning\(s\)/deprecation\(s\); hidden: the task is no_log",
@@ -205,9 +247,64 @@ def test_the_hidden_error_says_so_on_ansible_core_219_and_later(tmp_path, binary
     if _version(binary) < (2, 19):
         pytest.skip("2.18 prints no error detail for a censored result; there is nothing to replace")
     code, output = run(tmp_path, binary)
+    require_runtime_started(output)
     assert code != 0, output
     assert "[ERROR]: Task failed: 'to_datetime on the value' (details hidden: the task is no_log)" in output
     assert "details hidden" in output.split("TASK [a visible failure keeps its error]", 1)[0]
+
+
+@pytest.mark.parametrize("binary", BINS)
+@pytest.mark.parametrize("fail", [False, True])
+def test_private_rule_render_and_readback_hide_sentinel_with_diff_and_verbosity(tmp_path, binary, fail):
+    template = tmp_path / "private-rule.yml.j2"
+    template.write_text("private: {{ lookup('env', 'NOLOG_SECRET') }}\n")
+    output_file = tmp_path / "rendered-rule.yml"
+    tasks = [
+        {
+            "name": "render private rule",
+            "ansible.builtin.template": {"src": str(template), "dest": str(output_file)},
+            "diff": False,
+            "no_log": True,
+        },
+        {
+            "name": "read private rule",
+            "ansible.builtin.slurp": {"src": str(output_file)},
+            "register": "private_rule",
+            "no_log": True,
+        },
+        {
+            "name": "private rule comparison",
+            "ansible.builtin.assert": {
+                "that": "false" if fail else (
+                    "private_rule.content | b64decode == 'private: ' ~ lookup('env', 'NOLOG_SECRET') ~ '\\n'"
+                ),
+                "fail_msg": "private selector " + ("{{ lookup('env', 'NOLOG_SECRET') }}" if fail else "mismatch"),
+            },
+            "no_log": True,
+        },
+    ]
+    if not fail:
+        tasks.append({"name": "safe count summary", "ansible.builtin.debug": {"msg": "Provisioned rule count: 1"}})
+    play = yaml.safe_dump([{
+        "hosts": "localhost",
+        "connection": "local",
+        "gather_facts": False,
+        "tasks": tasks,
+    }], sort_keys=False)
+    # Parse before execution so malformed YAML cannot satisfy the redaction assertion.
+    assert yaml.safe_load(play)[0]["tasks"][-2 if not fail else -1]["name"] == "private rule comparison"
+    code, output = run_custom(tmp_path, binary, play, "--diff", "-vvv")
+    if "Local RPC server did not start" in output:
+        pytest.skip("sandbox cannot start ansible-core's localhost RPC worker")
+    assert (code != 0) is fail, output
+    assert SECRET not in output
+    if fail:
+        assert "TASK [private rule comparison]" in output, output
+        assert "failed=1" in output, output
+        if _version(binary) >= (2, 19):
+            assert "details hidden: the task is no_log" in output, output
+    if not fail:
+        assert "Provisioned rule count: 1" in output
 
 
 @pytest.mark.parametrize("binary", BINS)

@@ -1,6 +1,10 @@
 ---
 # Converge the production receiver back to its active alert baseline. Safe to
 # rerun after controller interruption; this never touches TSDB, Loki, or Tempo.
+- name: Validate expected-target ownership before active-drill recovery
+  ansible.builtin.include_tasks: o11y-prepare-expected-target-transition.yml
+  no_log: true
+
 - name: Remove only the active-drill scrape declaration
   ansible.builtin.file:
     path: "{{ _deploy_dir }}/config/scrape.d/o11y-prod-alert-drill.yml"
@@ -32,6 +36,7 @@
   register: _active_drill_targets
   changed_when: false
   check_mode: false
+  no_log: true
 
 - name: Require the drill scrape job to be absent
   ansible.builtin.assert:
@@ -40,6 +45,7 @@
       selectattr('scrapePool', 'equalto', 'o11y-production-active-alert-drill') |
       list | length == 0
     fail_msg: "The active-drill scrape target remains loaded; keep the recovery marker and investigate."
+  no_log: true
 
 - name: Read the production service-down rule after drill recovery
   ansible.builtin.command:
@@ -55,6 +61,7 @@
   register: _active_drill_rule
   changed_when: false
   check_mode: false
+  no_log: true
 
 - name: Require the production service-down rule to remain active
   ansible.builtin.assert:
@@ -62,6 +69,7 @@
       - (_active_drill_rule.stdout | from_json).uid == 'o11y_service_down'
       - not ((_active_drill_rule.stdout | from_json).isPaused | bool)
     fail_msg: "The active service-down rule was not preserved; keep the recovery marker and investigate."
+  no_log: true
 
 - name: Read all production o11y alert rules after drill recovery
   ansible.builtin.command:
@@ -77,17 +85,26 @@
   register: _active_drill_rules
   changed_when: false
   check_mode: false
+  no_log: true
+
+- name: Validate active target rules and retired tombstones
+  ansible.builtin.include_tasks: o11y-validate-active-expected-target-rules.yml
+  no_log: true
+  vars:
+    o11y_live_expected_rules_json: "{{ _active_drill_rules.stdout }}"
 
 - name: Require every o11y alert rule to remain active
   ansible.builtin.assert:
     that:
       - _recovered_rules | length > 0
-      - _recovered_rules | selectattr('isPaused', 'defined') | list | length == _recovered_rules | length
-      - _recovered_rules | selectattr('isPaused', 'equalto', false) | list | length == _recovered_rules | length
+      - _recovered_non_target_rules | selectattr('isPaused', 'defined') | list | length == _recovered_non_target_rules | length
+      - _recovered_non_target_rules | selectattr('isPaused', 'equalto', false) | list | length == _recovered_non_target_rules | length
       - _recovered_rules | selectattr('uid', 'equalto', 'o11y_service_down') | list | length == 1
     fail_msg: "An o11y rule is missing or paused after recovery; keep the marker and investigate."
+  no_log: true
   vars:
     _recovered_rules: "{{ _active_drill_rules.stdout | from_json | selectattr('uid', 'match', '^o11y_') | list }}"
+    _recovered_non_target_rules: "{{ _recovered_rules | rejectattr('uid', 'match', '^o11y_missing_') | list }}"
 
 - name: Read production contact points without displaying webhook settings
   ansible.builtin.command:

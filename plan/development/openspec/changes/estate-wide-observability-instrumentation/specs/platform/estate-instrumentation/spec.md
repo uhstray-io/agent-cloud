@@ -41,6 +41,79 @@ The Dev-bound bootstrap SHALL create `/var/lib/agent-cloud/o11y-journal-position
 - **AND** contention, a missing inode, or an unsafe inode fails closed without positions-volume writes, a container run, a mount, or a new worker
 - **AND** apply, repair, proof, stop, and ordinary survey remain refused pending host-wide admission
 
+### Requirement: Expected metrics targets are reviewed and compared exactly
+Production per-target missing-telemetry rules SHALL be active only when
+`o11y_expected_metrics_targets_reviewed` is true and production alerts are
+enabled. The flag SHALL default false. Previously owned target UIDs SHALL remain
+represented as paused, unrouted inert rules when either gate is off. An enabled declaration SHALL be bounded
+and contain active identities or explicit retirements; each active identity
+SHALL contain one stable rule UID and exact `job`, `instance`, `service`,
+`cluster`, and `environment` values. Invalid or duplicate UIDs, duplicate
+identities, unsafe matcher/YAML values, and collisions with other provisioned
+rule UIDs SHALL fail before placement. Local behavior SHALL remain compatible.
+
+Each missing-target rule SHALL match all five declared identity labels exactly,
+use `absent_over_time(up{...}[5m])`, hold for two minutes, and use the existing
+ops route when active. A target that is still active with `up=0` SHALL remain a
+service-down condition; an absent active target SHALL be a disappeared-target
+condition. Retirement SHALL retain the exact owned UID as a generic paused
+`vector(0)` tombstone with no target labels or notification route; it SHALL NOT
+delete a live rule by omission.
+
+A separate read-only survey SHALL compare validated expected identities with
+all active Prometheus target identities, including unhealthy ones. Its public
+receipt SHALL contain only fixed status/reason values and bounded counts. Raw
+labels, selectors, URLs, API responses, private inventory values, and
+exceptions SHALL remain protected. Missing/unreviewed declarations and check
+mode SHALL be unverified. This receipt SHALL remain independent of baseline,
+loaded-limit, candidate, and alert-input receipts.
+
+#### Scenario: Production target rules remain gated
+- **WHEN** production alerts are enabled and the reviewed flag is false
+- **THEN** no per-target missing-telemetry rules are rendered
+- **AND** when the flag is true, an empty active-and-retired declaration or an invalid declaration refuses before placement
+
+#### Scenario: Expected target is down or disappears
+- **WHEN** the exact target remains active with `up=0`
+- **THEN** coverage counts it as matched and unhealthy while the service-down rule remains responsible for endpoint failure
+- **WHEN** the target is absent from active Prometheus targets
+- **THEN** coverage counts it as missing and the five-minute absent rule evaluates independently
+
+#### Scenario: Active target identity is unexpected or ambiguous
+- **WHEN** an active target identity differs from the reviewed declaration
+- **THEN** the survey reports bounded matched, missing, unexpected, and unhealthy counts without target labels
+- **AND** duplicate active identities return a fixed ambiguous/unavailable result
+
+#### Scenario: Retire one expected target
+- **WHEN** a reviewed declaration removes one active target and names only its owned stable UID for retirement
+- **THEN** the generated rule retains that UID as a generic paused `vector(0)` tombstone without identity labels or a notification route
+- **AND** repeated deploy, gate-off, canary restoration, and recovery preserve that tombstone
+- **AND** no live UID is deleted by omission
+
+#### Scenario: Disable and re-enable expected-target alerts
+- **WHEN** either the production alert switch or reviewed-target gate turns off
+- **THEN** every safely owned expected-target UID remains provisioned as a paused `vector(0)` rule with generic labels and no notification route
+- **AND** re-enabling restores the current reviewed rule for each previously owned UID, or requires explicit retirement before omitting it
+- **AND** an explicitly retired UID remains inert across later gate changes and cannot silently become active again under the same UID
+- **AND** malformed prior ownership, an unowned live target UID, or live drift refuses before placement or restart
+- **AND** live folder UID, query, labels, pause state, and owned UID set match the validated prior rule contract
+- **AND** unrelated rules remain unchanged
+
+#### Scenario: Restore or retry a paused expected-target baseline
+- **WHEN** canary restoration or an interrupted retry runs
+- **THEN** it uses the same validated previous ownership and paused-rule representation
+- **AND** protected rendering/readback emits no private identity in verbose or diff output
+- **AND** check mode does not render or claim live transition verification
+
+#### Scenario: Alert probe and recovery output protect private target identities
+- **WHEN** the unreachable-endpoint probe or active-alert recovery reads Prometheus targets or Grafana rules
+- **THEN** raw registered responses and identity-bearing consumers remain protected from normal and verbose Ansible output
+- **AND** visible success output contains only a fixed receipt without target labels, endpoints, or rule payloads
+
+#### Scenario: Expected-target survey is unverified
+- **WHEN** the declaration is missing, unreviewed, empty, or check mode skips Prometheus access
+- **THEN** the survey reports an unverified status rather than coverage success
+
 ### Requirement: Receiver journal positions state is surveyed and repaired safely
 The repair clauses below retain the bounded historical repair contract; they SHALL NOT authorize touching the protected legacy volume or repairing/normalizing fresh state in the selected direct Podman workflow. Its preservation and creation-receipt requirements below take precedence.
 

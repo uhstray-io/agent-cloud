@@ -18,6 +18,7 @@ from urllib.parse import unquote
 
 import pytest
 import yaml
+from ansible_python import needs_ansible
 from jinja2 import Environment, StrictUndefined
 
 REPO = Path(__file__).resolve().parents[2]
@@ -442,9 +443,6 @@ def test_every_probe_task_is_gated_on_the_inventory_flag():
     assert "o11y_inference_probe_enabled | default(false) | bool" in verify["when"]
     assert "not ansible_check_mode" in verify["when"]
     assert p1["vars"]["_probe_textfile_dir"] == TEXTFILE_DIR
-
-
-needs_ansible = pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="needs ansible-playbook")
 
 
 def _evaluate(tmp_path, host_vars):

@@ -41,11 +41,18 @@ step_pull_image() {
 
 step_start() {
   info "Step 3: Starting tududi..."
-  # --force-recreate: tududi reads runtime config (session/OIDC secrets, BASE_URL)
-  # from `env_file: .env`. An env_file content change is NOT a compose-spec change,
-  # so plain `up -d` leaves the old container running with stale env. Force-recreate
-  # so a re-rendered .env always applies.
-  compose up -d --force-recreate
+  # tududi reads runtime config (session/OIDC secrets, BASE_URL) from `env_file: .env`.
+  # An env_file content change is NOT a compose-spec change, so plain `up -d` leaves the
+  # old container running with stale env. compose_up_if_changed hashes .env with the
+  # compose files and recreates only when that digest or an image changed, so a
+  # re-rendered .env still applies and an unchanged re-run recreates nothing (it prints
+  # DEPLOY_CHANGED=true|false for the playbook). The local overlay bind-mounts the
+  # step-ca bundle, so that file is an input there; prod has no such mount.
+  if [ "${LOCAL_MODE:-}" = "true" ] && [ -f compose.local.yml ]; then
+    compose_up_if_changed certs/step-ca-bundle.crt
+  else
+    compose_up_if_changed
+  fi
 }
 
 step_wait_healthy() {

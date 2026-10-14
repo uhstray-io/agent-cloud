@@ -49,7 +49,7 @@ the template's role in the registry, not by status, a snapshot's pass or skip la
 never in conformance; a snapshot that fails is still the step's failure, since the
 assessment then has no input (PR 195 Codex review).
 
-An inventory group is mapped to its first host's service_name (groups + host_services, both
+An inventory group is mapped to its first tracked host's service_name (groups + host_services, both
 plain data: hostvars themselves never cross), so a service is named the way its own step
 results name it (step_ca_svc -> step-ca), never by string surgery.
 """
@@ -164,8 +164,21 @@ def _service_of(task: dict, by_group: dict) -> str | None:
     return by_group.get(match.group(1).replace("-", "_") + "_svc") if match else None
 
 
+# Ansible builds these itself; neither is ever one service, and a launch that falls back to
+# target_service "ungrouped" must stay unattributed rather than land on whichever host is first.
+_IMPLICIT_GROUPS = frozenset({"all", "ungrouped"})
+
+
 def group_services(groups: dict, host_services: dict) -> dict:
-    return {g: host_services[hosts[0]] for g, hosts in groups.items() if hosts and hosts[0] in host_services}
+    """A group's service is its first TRACKED host's: a host the collector skipped (opted out
+    with service_conformance_tracked: false, or with no service_name) is not in host_services,
+    so it never hides the service of a tracked host listed after it. The implicit groups `all`
+    and `ungrouped` map to no service."""
+    return {
+        g: services[0]
+        for g, hosts in groups.items()
+        if g not in _IMPLICIT_GROUPS and (services := [host_services[h] for h in hosts if h in host_services])
+    }
 
 
 def inventory_services(by_group: dict) -> list[str]:

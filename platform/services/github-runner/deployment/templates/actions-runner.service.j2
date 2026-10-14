@@ -37,12 +37,39 @@ RestartSec=5
 # job, and the deploy removes the setuid bit from the helpers a runner host never needs.
 # What this concedes: a job can execute the setuid programs that remain (sudo, mount,
 # umount, fusermount3, newuidmap, newgidmap), so a local privilege-escalation bug in one of
-# them is reachable from repository code. The deploy reads the running service's
-# NoNewPrivs status and fails if this ever comes back.
+# them is reachable from repository code. The deploy reads the NoNewPrivs status of the
+# unit's main process, its Listener and any Worker, and fails if this ever comes back.
 NoNewPrivileges=false
-KillMode=process
+# How a stop reaches the runner (docs/MISTAKES.md 10.27). The main process is run.sh, which
+# starts run-helper.sh, which starts bin/Runner.Listener; the Listener holds the session
+# and starts a Runner.Worker per job. Neither script passes a signal on, unless
+# RUNNER_MANUALLY_TRAP_SIG is set: then run.sh runs run-helper.sh as its own process group
+# and turns TERM or INT into SIGINT for that group (actions/runner v2.336.0,
+# src/Misc/layoutroot/run.sh, runWithManualTrap). SIGINT is the Listener's graceful stop
+# (src/Runner.Listener/Runner.cs, CtrlCHandler): it stops taking jobs, cancels a running
+# job through the Worker so GitHub records it as cancelled rather than lost, and deletes
+# its session, so the next Listener is not refused with a session conflict. SIGTERM is not
+# as good: the Listener then waits at most 30 s (Runner_Unloading, ExitOnUnloadTimeout).
+# The variable is also visible to jobs; it means nothing to anything but run.sh.
+#
+# KillMode=mixed: the stop's SIGTERM goes to run.sh alone, and once run.sh has exited
+# systemd sends SIGKILL to everything still in the unit's cgroup, including a process a
+# job left running (systemd.kill(5)). Until 2026-10-12 this was KillMode=process: systemd
+# signalled run.sh only, run.sh died without passing the signal on, and the Listener kept
+# running in the cgroup of a stopped unit. Every restart stacked a new Listener beside the
+# one that still held the session and took every job, so no change to this unit or to
+# .env reached the process that runs jobs. systemd.kill(5) itself advises against
+# KillMode=process for this reason. GitHub's own svc.sh template uses KillMode=process
+# with runsvc.sh, whose node host sends the Listener SIGINT and then SIGKILL after 30 s
+# (src/Misc/layoutbin/RunnerService.js), and leaves the rest of the cgroup running.
+Environment=RUNNER_MANUALLY_TRAP_SIG=1
+KillMode=mixed
 KillSignal=SIGTERM
-# Long enough for an in-flight job to finish rather than being severed mid-build.
+# run.sh exits 128+15 after a trapped TERM: a requested stop, not a failure.
+SuccessExitStatus=143
+# The bound on the graceful stop above. A Listener waits for its Worker to cancel the
+# job; past this, systemd sends SIGKILL to the whole cgroup. The deploy waits for an idle
+# runner before it stops one (deploy.sh quiesce), because any stop cancels a running job.
 TimeoutStopSec=5min
 
 [Install]

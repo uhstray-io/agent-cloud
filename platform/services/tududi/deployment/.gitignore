@@ -1,0 +1,7 @@
+# step-ca trust bundle, distributed per-deploy by tasks/distribute-ca-root.yml in local_mode
+# only — the app makes server-side OIDC calls to the internal IdP. compose.local.yml
+# bind-mounts it, and deploy.sh passes it to compose_up_if_changed as a digest input.
+# Ignored so rsync --delete (tasks/place-monorepo.yml honours .gitignore) leaves the mounted
+# directory alone instead of replacing it under a container that is no longer recreated on
+# every deploy.
+certs/

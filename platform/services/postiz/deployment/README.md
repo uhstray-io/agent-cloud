@@ -67,7 +67,10 @@ Through Semaphore only — never by SSH-ing in and running `deploy.sh`.
 | `Deploy Postiz` | secrets → render both env files → `deploy.sh` → verify health |
 | `Clean Deploy Postiz` | **destructive**: wipe containers + volumes, then redeploy |
 
-`deploy.sh` is container lifecycle only — pull, up, wait healthy. It generates no
+`deploy.sh` is container lifecycle only — pull, `compose_up_if_changed`, wait healthy. It
+recreates containers only when `.env`, the compose files, `config/postiz.env` or an image
+changed (an unchanged re-run is a no-op; the survey `deploy_force_recreate=true` forces it;
+a change recreates the datastores, Temporal and the search node with the app). It generates no
 secrets and talks to no vault. It refuses to start if either rendered file is missing,
 deliberately: a missing bind source would otherwise be created as a *directory* and the
 app would boot with no configuration at all.

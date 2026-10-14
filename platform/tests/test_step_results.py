@@ -298,8 +298,24 @@ def test_conformance_json_body_format_matches_loki_dashboard_extraction():
     failure_state = expressions["Current failed step states"]
     assert failure_state.index("last_over_time") < failure_state.index("== bool 0")
     assert 'status="fail"' not in failure_state
-    assert dashboard["panels"][[p["title"] for p in dashboard["panels"]].index(
-        "Recent failed task snapshots")]["timeFrom"] == "7d"
+    failure_panel = dashboard["panels"][[p["title"] for p in dashboard["panels"]].index(
+        "Recent failed task snapshots")]
+    assert failure_panel["timeFrom"] == "7d"
+    assert failure_panel["targets"][0]["maxLines"] == 100
+    assert failure_panel["targets"][0]["expr"] == (
+        '{job="agent-cloud-conformance", status="fail"} | json | '
+        'line_format "{{.service}}/{{.step}} task={{.task_id}}: '
+        '{{printf \\\"%.180s\\\" .error}}" | keep job, service, step, status'
+    )
+    unicode_boundary = "a" * 179 + "é"
+    assert len(unicode_boundary) == 180 and unicode_boundary[:180].endswith("é")
+    assert len(unicode_boundary.encode("utf-8")[:180].decode("utf-8", errors="ignore")) == 179
+    assert failure_panel["options"]["dedupStrategy"] == "exact"
+    assert "180 Unicode characters" in failure_panel["description"]
+    assert "full original record remains stored" in failure_panel["description"]
+    assert "adjacent returned lines only" in failure_panel["description"]
+    assert "interleaved repeats can remain" in failure_panel["description"]
+    assert "100-line limit still applies" in failure_panel["description"]
     assert '| json |' in expressions["Services not yet run"]
     assert '| unwrap inventory_code' in expressions["Services not yet run"]
     assert "marker_time_seconds" in expressions["Services tracked"]
@@ -308,7 +324,33 @@ def test_conformance_json_body_format_matches_loki_dashboard_extraction():
 def test_groups_map_to_their_hosts_service_name():
     groups = {"all": ["a", "b"], "tududi_svc": ["a"], "step_ca_svc": ["b"], "ungrouped": [], "misc": ["c"]}
     assert step_results.group_services(groups, {"a": "tududi", "b": "step-ca"}) == {
-        "all": "tududi", "tududi_svc": "tududi", "step_ca_svc": "step-ca"}
+        "tududi_svc": "tududi", "step_ca_svc": "step-ca"}
+
+
+def test_implicit_groups_never_map_to_a_service():
+    groups = {"all": ["a", "b"], "ungrouped": ["a"], "tududi_svc": ["a"]}
+    by_group = step_results.group_services(groups, {"a": "tududi", "b": "step-ca"})
+    assert by_group == {"tududi_svc": "tududi"}
+    # a launch whose target_service fell back to "ungrouped" stays unattributed
+    task = {"environment": json.dumps({"target_service": "ungrouped"})}
+    assert step_results._service_of(task, by_group) is None
+    assert step_results._service_of({"environment": json.dumps({"target_service": "all"})}, by_group) is None
+
+
+def test_a_group_takes_its_service_from_its_first_tracked_host():
+    # a host the collector skipped is absent from host_services; it must not hide a tracked peer
+    host_services = {"tracked": "alpha", "other": "beta"}
+    groups = {
+        "opted_out_first": ["skipped", "tracked"],
+        "opted_out_last": ["tracked", "skipped"],
+        "all_opted_out": ["skipped", "skipped2"],
+        "two_tracked": ["tracked", "other"],
+    }
+    assert step_results.group_services(groups, host_services) == {
+        "opted_out_first": "alpha",
+        "opted_out_last": "alpha",
+        "two_tracked": "alpha",
+    }
 
 
 def test_main_runs_the_three_modes_as_the_collector_calls_them():

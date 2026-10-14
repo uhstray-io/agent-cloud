@@ -1,0 +1,237 @@
+#!/bin/sh
+# docker: the `docker` the container hooks run. Rendered by Ansible; do not edit on the host.
+#
+# It gives rootless podman the runner account's own directories, then runs podman with
+# the arguments unchanged. It changes no argument, no mount and no image: only the
+# environment of the engine process.
+#
+# Why it exists. The container hooks start `docker` with an environment built from the
+# job alone: for `docker create`, `exec` and `run` it is exactly the job container's
+# variables plus the DOCKER_* variables, and for every other call (`pull`, `network`,
+# `rm`) it is the DOCKER_* variables only (runner-container-hooks v0.8.1,
+# packages/docker/src/utils.ts, optionsWithDockerEnvs). Nothing else of the runner's
+# environment reaches the engine: no PATH, no XDG_* directories. And the job's variables
+# include HOME=/github/home, because that is how `-e HOME` gives the container its home.
+# Rootless podman reads its directories from that environment:
+#   - its configuration directory from XDG_CONFIG_HOME, else from HOME, which it must
+#     resolve on the host (podman v4.9.3, pkg/util/utils_supported.go:81-92). With
+#     HOME=/github/home every container job failed in "Initialize containers" with
+#     `cannot resolve /github/home: lstat /github: no such file or directory`.
+#   - its image store from XDG_DATA_HOME, else from HOME, else from the passwd entry
+#     (containers/storage v1.51.0, pkg/homedir/homedir.go:28-37,
+#     pkg/unshare/unshare.go:17-23). A `pull` (no HOME) and a `create` (HOME=/github/home)
+#     would use two different stores, and the image pulled in one would be absent in
+#     the other.
+#   - newuidmap and newgidmap from PATH (podman v4.9.3, pkg/rootless/rootless_linux.go:
+#     104-106). With no PATH, podman fails to map the account's subordinate range
+#     whenever no podman pause process is already running.
+#
+# So the three directories are ALWAYS set to the account's own, the same values a
+# podman command run by the account in its own session uses. They are never taken from
+# the caller: the hooks' environment never carries the correct ones. PATH is ALWAYS the
+# fixed system list, for the same reason and because the shell's own PATH is no guide:
+# a shell gives itself a default PATH when none is passed, without exporting it, and the
+# default differs between shells (bash's includes "."). Podman needs no directory of the
+# caller's; its helpers are in the system directories. The list leaves out this
+# wrapper's own directory, so podman can never run this file again.
+#
+# The JOB keeps its own values of these four names. The hooks pass each job variable as
+# a bare `-e NAME` (container.ts: `dockerArgs.push('-e', key)`), and the engine fills a
+# bare `-e NAME` from its own environment, which this file replaces. So a job that sets
+# PATH or an XDG variable would get the host's value in its container. Before
+# replacing them, the caller's values are read from the real environment (printenv, not
+# the shell's variables), and a bare `-e NAME`, `-e=NAME`, `--env NAME` or `--env=NAME`
+# for one of the four names becomes `-e NAME=<the caller's value>`, or is dropped when
+# the caller had none, as docker does for a bare `-e` of an unset variable. Every other
+# argument passes through unchanged.
+#
+# The rewrite touches only the OPTIONS of `create`, `run` and `exec`, the three calls
+# that carry the job's variables (container.ts: containerCreate, containerRun,
+# containerExecStep). Podman stops parsing options at the first positional argument
+# (`flags.SetInterspersed(false)` in cmd/podman/containers/create.go:75, run.go:60,
+# exec.go:59), so that argument, the IMAGE (or the CONTAINER for exec), and everything
+# after it are the container's command and are never changed: `echo -e PATH` stays
+# `echo -e PATH`. To find that argument, the loop knows which options take a separate
+# value. The lists below are podman v4.9.3's own flag definitions, read from
+# cmd/podman/common/create.go, cmd/podman/common/netflags.go and
+# cmd/podman/containers/{create,run,exec}.go (plus --entrypoint and --conmon-pidfile,
+# whose names are assigned conditionally there, and exec's --latest/-l from
+# cmd/podman/validate). It fails safe: an option it does not know, written without
+# `=`, a combined short form such as `-it`, or `--` ends the rewrite and the rest
+# passes through unchanged. Stopping early can only hand that job the host's value for
+# one of the four names; it can never change the container's command.
+#
+# HOME is NOT changed. The engine copies `-e HOME` from its own HOME into the container,
+# and that must stay the job's /github/home, not this account's home directory.
+#
+# The runner finds this file because the runner's PATH (.env) lists its directory
+# first; the hooks resolve `docker` with the runner's PATH, not with the job's. The
+# deploy's mount probe runs it with the environment the hooks give it.
+
+# The caller's value of one name, byte for byte (a trailing newline survives the
+# command substitution through the `x` guard). Sets `found` and `val`.
+caller_value() {
+  if /usr/bin/printenv "$1" >/dev/null 2>&1; then
+    found=1
+    val=$(/usr/bin/printenv "$1"; echo x)
+    val=${val%x}
+    val=${val%?}
+  else
+    found=
+    val=
+  fi
+}
+caller_value PATH; c_found_PATH=$found; c_PATH=$val
+caller_value XDG_CONFIG_HOME; c_found_XDG_CONFIG_HOME=$found; c_XDG_CONFIG_HOME=$val
+caller_value XDG_DATA_HOME; c_found_XDG_DATA_HOME=$found; c_XDG_DATA_HOME=$val
+caller_value XDG_RUNTIME_DIR; c_found_XDG_RUNTIME_DIR=$found; c_XDG_RUNTIME_DIR=$val
+
+# Looks up a captured name. Returns 1 for any name this file does not set.
+captured() {
+  case $1 in
+    PATH) found=$c_found_PATH; val=$c_PATH ;;
+    XDG_CONFIG_HOME) found=$c_found_XDG_CONFIG_HOME; val=$c_XDG_CONFIG_HOME ;;
+    XDG_DATA_HOME) found=$c_found_XDG_DATA_HOME; val=$c_XDG_DATA_HOME ;;
+    XDG_RUNTIME_DIR) found=$c_found_XDG_RUNTIME_DIR; val=$c_XDG_RUNTIME_DIR ;;
+    *) return 1 ;;
+  esac
+}
+
+# Options of create/run that take a separate value (podman v4.9.3, see above).
+takes_value_create() {
+  case $1 in
+    -a | -c | -e | -h | -l | -m | -p | -u | -v | -w | --add-host | --annotation | --arch | \
+    --attach | --authfile | --blkio-weight | --blkio-weight-device | --cap-add | \
+    --cap-drop | --cgroup-conf | --cgroup-parent | --cgroupns | --cgroups | --chrootdirs | \
+    --cidfile | --conmon-pidfile | --cpu-period | --cpu-quota | --cpu-rt-period | \
+    --cpu-rt-runtime | --cpu-shares | --cpus | --cpuset-cpus | --cpuset-mems | \
+    --decryption-key | --detach-keys | --device | --device-cgroup-rule | \
+    --device-read-bps | --device-read-iops | --device-write-bps | --device-write-iops | \
+    --dns | --dns-option | --dns-search | --entrypoint | --env | --env-file | --env-merge | \
+    --expose | --gidmap | --gpus | --group-add | --group-entry | --health-cmd | \
+    --health-interval | --health-on-failure | --health-retries | --health-start-period | \
+    --health-startup-cmd | --health-startup-interval | --health-startup-retries | \
+    --health-startup-success | --health-startup-timeout | --health-timeout | --hostname | \
+    --hostuser | --image-volume | --infra-command | --infra-conmon-pidfile | --init-ctr | \
+    --init-path | --ip | --ip6 | --ipc | --kernel-memory | --label | --label-file | \
+    --log-driver | --log-opt | --mac-address | --memory | --memory-reservation | \
+    --memory-swap | --memory-swappiness | --mount | --name | --network | --network-alias | \
+    --oom-score-adj | --os | --passwd-entry | --personality | --pid | --pidfile | \
+    --pids-limit | --platform | --pod | --pod-id-file | --preserve-fds | --publish | --pull | \
+    --rdt-class | --requires | --restart | --sdnotify | --seccomp-policy | --secret | \
+    --security-opt | --shm-size | --shm-size-systemd | --signature-policy | --stop-signal | \
+    --stop-timeout | --subgidname | --subuidname | --sysctl | --systemd | --timeout | \
+    --tmpfs | --tz | --uidmap | --ulimit | --umask | --unsetenv | --user | --userns | --uts | \
+    --variant | --volume | --volumes-from | --workdir) return 0 ;;
+  esac
+  return 1
+}
+# Boolean options of create/run (take no separate value).
+is_switch_create() {
+  case $1 in
+    -P | -d | -i | -q | -t | --detach | --disable-content-trust | --env-host | --help | \
+    --http-proxy | --init | --interactive | --no-healthcheck | --no-hosts | \
+    --oom-kill-disable | --passwd | --privileged | --publish-all | --quiet | --read-only | \
+    --read-only-tmpfs | --replace | --rm | --rmi | --rootfs | --sig-proxy | --tty | \
+    --unsetenv-all) return 0 ;;
+  esac
+  return 1
+}
+takes_value_exec() {
+  case $1 in
+    -e | -u | -w | --detach-keys | --env | --env-file | --preserve-fds | --user | --wait | \
+    --workdir) return 0 ;;
+  esac
+  return 1
+}
+is_switch_exec() {
+  case $1 in
+    -d | -i | -l | -t | --detach | --interactive | --latest | --privileged | --tty) return 0 ;;
+  esac
+  return 1
+}
+
+# Rebuilds "$@" in place: each argument is shifted off the front and appended, changed
+# only when it is a bare -e/--env of a captured name in the option section.
+#   state: scanning (reading options), want_value (next word is an option's value),
+#   want_env (next word is the NAME of a bare -e/--env), passthrough (pass everything
+#   through unchanged).
+mode=
+case ${1-} in
+  create | run) mode=create ;;
+  exec) mode='exec' ;;
+esac
+state=passthrough
+if [ -n "$mode" ]; then state=scanning; fi
+n=$#
+i=0
+flag=
+while [ "$i" -lt "$n" ]; do
+  a=$1
+  shift
+  i=$((i + 1))
+  if [ "$i" -eq 1 ]; then
+    set -- "$@" "$a"
+    continue
+  fi
+  case $state in
+    passthrough)
+      set -- "$@" "$a"
+      continue
+      ;;
+    want_value)
+      set -- "$@" "$a"
+      state=scanning
+      continue
+      ;;
+    want_env)
+      if captured "$a"; then
+        if [ -n "$found" ]; then set -- "$@" "$flag" "$a=$val"; fi
+      else
+        set -- "$@" "$flag" "$a"
+      fi
+      state=scanning
+      continue
+      ;;
+  esac
+  case $a in
+    -e | --env)
+      if [ "$i" -lt "$n" ]; then
+        flag=$a
+        state=want_env
+        continue
+      fi
+      state=passthrough
+      ;;
+    -e=* | --env=*)
+      if captured "${a#*=}"; then
+        if [ -n "$found" ]; then set -- "$@" "${a%%=*}" "${a#*=}=$val"; fi
+        continue
+      fi
+      ;;
+    --?*=* | -?=*)
+      # An option with its value attached: nothing separate to skip.
+      ;;
+    -?*)
+      # Includes `--` and combined short forms such as `-it`: neither is in a list, so
+      # both end the rewrite.
+      if "takes_value_$mode" "$a"; then
+        state=want_value
+      elif ! "is_switch_$mode" "$a"; then
+        state=passthrough
+      fi
+      ;;
+    *)
+      # The first positional argument: the IMAGE, or the CONTAINER for exec.
+      state=passthrough
+      ;;
+  esac
+  set -- "$@" "$a"
+done
+
+XDG_CONFIG_HOME="{{ github_runner_home }}/.config"
+XDG_DATA_HOME="{{ github_runner_home }}/.local/share"
+XDG_RUNTIME_DIR="/run/user/{{ github_runner_uid }}"
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export XDG_CONFIG_HOME XDG_DATA_HOME XDG_RUNTIME_DIR PATH
+exec /usr/bin/podman "$@"
