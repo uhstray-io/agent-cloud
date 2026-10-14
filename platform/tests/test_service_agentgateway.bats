@@ -137,13 +137,34 @@ setup() {
   assert_grep -qF "keyHash: sha256:{{ secrets['client_' ~ c] | hash('sha256') }}" "$CONFIG"
   # A plaintext `key:` exists only inside the local-dev-only flag branch, default off.
   # ...and only together with local_mode, so a prod inventory cannot enable it.
-  assert_grep -qF "{% if (agw_plaintext_keys | default(false) | bool) and (local_mode | default(false) | bool) %}" "$CONFIG"
+  assert_grep -qF "{% if (agw_plaintext_keys | default(false) | bool) and (local_mode | default(false) | bool) and c not in _internal_ids %}" "$CONFIG"
   [ "$(grep -cE '^\s*-\s*key:\s' "$CONFIG")" -eq 1 ]
   # The deploy refuses the flag outside local_mode instead of silently ignoring it.
   assert_grep -qF "not (agw_plaintext_keys | default(false) | bool) or (local_mode | default(false) | bool)" "$REPO_ROOT/platform/playbooks/deploy-agentgateway.yml"
   # strict: an unknown key is 401 at the gateway.
   assert_grep -qE '^\s*mode: strict' "$CONFIG"
   refute_grep -E '192\.168\.|10\.[0-9]+\.' "$CONFIG"
+}
+
+@test "agentgateway: the key loop is written once, in the shared macro every apiKey policy calls" {
+  # llm and mcp authenticate with the same key list; a second loop is where they would drift.
+  python3 - "$CONFIG" <<'PY'
+import re
+import sys
+text = open(sys.argv[1], encoding='utf-8').read()
+macro = re.search(r"\{% macro apikey_policy\(.*?\{% endmacro %\}", text, re.S)
+assert macro, "no apikey_policy macro"
+inside, outside = macro.group(0), text.replace(macro.group(0), "")
+assert text.count("{% macro apikey_policy(") == 1
+# The loop, and every place a key or its hash is written, are inside the macro and nowhere else.
+for needle in ("{% for c in identities %}", "secrets['client_' ~ c]", "keyHash: sha256:{{", "- key: {{"):
+    assert needle in inside, needle
+for needle in ("{% for c in", "secrets['client_'", "keyHash: sha256:{{", "- key: {{"):
+    assert needle not in outside, needle
+# The llm policy calls it with the legacy block and the limits.
+llm = text.split("\nllm:\n", 1)[1]
+assert re.search(r"\{\{ apikey_policy\(agw_identities \| default\(agw_clients \| default\(\[\]\)\), true, true\) \| trim\('\\n'\) \}\}", llm), "llm call shape"
+PY
 }
 
 @test "agentgateway: observability — identity label on metrics and logs, never prompt content" {
