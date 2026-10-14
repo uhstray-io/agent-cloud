@@ -298,8 +298,18 @@ def test_conformance_json_body_format_matches_loki_dashboard_extraction():
     failure_state = expressions["Current failed step states"]
     assert failure_state.index("last_over_time") < failure_state.index("== bool 0")
     assert 'status="fail"' not in failure_state
-    assert dashboard["panels"][[p["title"] for p in dashboard["panels"]].index(
-        "Recent failed task snapshots")]["timeFrom"] == "7d"
+    failure_panel = dashboard["panels"][[p["title"] for p in dashboard["panels"]].index(
+        "Recent failed task snapshots")]
+    assert failure_panel["timeFrom"] == "7d"
+    assert failure_panel["targets"][0]["maxLines"] == 100
+    assert failure_panel["targets"][0]["expr"] == (
+        '{job="agent-cloud-conformance", status="fail"} | json | '
+        'line_format "{{.service}}/{{.step}} task={{.task_id}}: {{.error | trunc 180}}"'
+    )
+    assert failure_panel["options"]["dedupStrategy"] == "exact"
+    assert "180-character error excerpt" in failure_panel["description"]
+    assert "full original record remains stored" in failure_panel["description"]
+    assert "visual display only" in failure_panel["description"]
     assert '| json |' in expressions["Services not yet run"]
     assert '| unwrap inventory_code' in expressions["Services not yet run"]
     assert "marker_time_seconds" in expressions["Services tracked"]

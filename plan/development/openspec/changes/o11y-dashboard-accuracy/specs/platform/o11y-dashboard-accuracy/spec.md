@@ -30,6 +30,20 @@ The dashboard SHALL show the latest recorded pass, fail or skip state after coll
 - **THEN** the dashboard shows that state for the service and step
 - **AND** it identifies incomplete history separately when the collector marks it incomplete
 
+### Requirement: Historical conformance failures remain bounded and task-keyed
+
+The historical failure panel SHALL read failed conformance records through Loki query-time JSON parsing and format each result with its service, step, task ID, and an error excerpt truncated to 180 characters. The full original record SHALL remain stored and queryable in Loki Explore. Grafana SHALL use exact deduplication for visual display in this panel only; it MUST NOT remove or deduplicate stored records. The panel SHALL retain its seven-day time scope and 100-line maximum. Query-time formatting and visual display deduplication MUST NOT change collector output, Loki ingestion, stored log bodies, or bounded Loki labels. Current workflow state MUST remain a separate view.
+
+#### Scenario: Repeated historical failures are readable without losing task identity
+
+- **WHEN** the seven-day history contains repeated snapshots of the same failed task and other failed tasks
+- **THEN** each displayed line is keyed by service, step, and task ID and includes at most the first 180 characters of its error text
+- **AND** the full original record remains stored and can be queried in Loki Explore
+- **AND** Grafana exact deduplication affects visual display only; stored records remain unchanged
+- **AND** distinct task IDs remain distinct in the display
+- **AND** the query stays within the seven-day and 100-line bounds
+- **AND** current failed step states remain independent of historical failures
+
 ### Requirement: Latest workflow result age and provenance are truthful
 
 Each conformance step record from a current task SHALL carry the workflow completion time as a
