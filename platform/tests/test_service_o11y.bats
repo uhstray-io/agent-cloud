@@ -964,9 +964,7 @@ for enabled in (False, True):
         if enabled:
             for rule in rules:
                 settings = rule['notification_settings']
-                expected_group_by = ['service', 'environment', 'cluster']
-                if not rule['uid'].startswith('o11y_missing_'):
-                    expected_group_by.append('alertname')
+                expected_group_by = ['service', 'environment', 'cluster', 'alertname']
                 assert settings['group_by'] == expected_group_by
                 assert settings['group_wait'] == '30s'
                 assert settings['group_interval'] == '5m'
@@ -1006,6 +1004,7 @@ related_render = template.render(
     o11y_expected_metrics_targets=related_targets,
     o11y_expected_metrics_targets_reviewed=True,
     o11y_cluster='test-cluster', o11y_environment='prod',
+    o11y_expected_metrics_targets_mode='legacy',
     local_mode=False, o11y_alerts_enabled=True,
 )
 related_rules = yaml.safe_load(related_render)['groups'][0]['rules']
@@ -1018,7 +1017,7 @@ assert all(rule['labels']['service'] == 'caddy-reverse-proxy/caddy' for rule in 
 assert all(rule['labels']['environment'] == 'prod' for rule in target_rules)
 assert all(rule['labels']['cluster'] == 'test-cluster' for rule in target_rules)
 assert all(
-    rule['notification_settings']['group_by'] == ['service', 'environment', 'cluster']
+    rule['notification_settings']['group_by'] == ['service', 'environment', 'cluster', 'alertname']
     for rule in target_rules
 )
 assert all(rule['labels']['instance'] in rule['annotations']['summary'] for rule in target_rules)
@@ -2937,7 +2936,17 @@ assert grafana_interpolate('{{ $labels.job }}') == '{{ .job }}'
 assert grafana_interpolate('{{ $$labels.job }}') == '{{ $labels.job }}'
 for values in (dict(local_mode=False, o11y_alerts_enabled=True, dgx_spark_scrape_enabled=True),
                dict(local_mode=True, o11y_alerts_enabled=True),
-               dict(local_mode=False, o11y_scheduled_jobs=[{'job': 'a', 'max_silence_hours': 1}])):
+               dict(local_mode=False, o11y_scheduled_jobs=[{'job': 'a', 'max_silence_hours': 1}]),
+               dict(local_mode=False, o11y_alerts_enabled=True,
+                    o11y_expected_metrics_targets_reviewed=True,
+                    o11y_expected_metrics_targets=[{'uid': 'o11y_missing_api', 'job': 'api',
+                      'instance': 'api:9100', 'service': 'api/service', 'environment': 'prod',
+                      'cluster': 'prod-west'}],
+                    _o11y_expected_target_mode='grouped',
+                    _o11y_expected_target_groups=[{'uid': 'o11y_missing_g' + 'a' * 26,
+                      'service': 'api/service', 'environment': 'prod', 'cluster': 'prod-west',
+                      'expr': 'absent_over_time(up{job="api",instance="api:9100",service="api/service",'
+                              'cluster="prod-west",environment="prod"}[5m])'}])):
     doc = yaml.safe_load(template.render(**values))
     for rule in (rule for group in doc['groups'] for rule in group['rules']):
         for key, value in rule['labels'].items():
@@ -2946,6 +2955,18 @@ for values in (dict(local_mode=False, o11y_alerts_enabled=True, dgx_spark_scrape
 silent = next(rule for group in yaml.safe_load(template.render(local_mode=False))['groups']
               for rule in group['rules'] if rule['uid'] == 'o11y_scheduled_job_silent')
 assert grafana_interpolate(silent['labels']['service']) == '{{ $labels.job }}'
+grouped = next(rule for group in yaml.safe_load(template.render(
+    local_mode=False, o11y_alerts_enabled=True, o11y_expected_metrics_targets_reviewed=True,
+    o11y_expected_metrics_targets=[{'uid': 'o11y_missing_api', 'job': 'api', 'instance': 'api:9100',
+      'service': 'api/service', 'environment': 'prod', 'cluster': 'prod-west'}],
+    _o11y_expected_target_mode='grouped',
+    _o11y_expected_target_groups=[{'uid': 'o11y_missing_g' + 'a' * 26, 'service': 'api/service',
+      'environment': 'prod', 'cluster': 'prod-west',
+      'expr': 'absent_over_time(up{job="api",instance="api:9100",service="api/service",'
+              'cluster="prod-west",environment="prod"}[5m])'}],
+))['groups'] for rule in group['rules'] if rule['uid'].startswith('o11y_missing_g'))
+assert grafana_interpolate(grouped['labels']['job']) == '{{ $labels.job }}'
+assert grafana_interpolate(grouped['labels']['instance']) == '{{ $labels.instance }}'
 PY
 }
 

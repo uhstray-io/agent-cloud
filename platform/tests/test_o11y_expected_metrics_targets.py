@@ -87,6 +87,10 @@ def _live_rules(document, folder_uid="agent-cloud-folder"):
             continue
         serialized = json.loads(json.dumps(rule))
         serialized.update(folderUID=folder_uid, ruleGroup="service-telemetry")
+        serialized["labels"] = {
+            key: value.replace("$$", "$") if isinstance(value, str) else value
+            for key, value in serialized["labels"].items()
+        }
         for query in serialized["data"]:
             query.setdefault("queryType", "")
             if query["refId"] == "B":
@@ -306,8 +310,11 @@ def test_grouped_expected_targets_share_one_rule_and_keep_uid_qualified_tombston
     grouped = SURVEY.expected_target_groups([first, second])
     assert len(grouped) == 1
     assert group["data"][0]["model"]["expr"] == SURVEY.expected_target_group_expression(grouped[0])
-    assert group["labels"]["instance"] == "{{ $labels.instance }}"
-    assert group["labels"]["job"] == "{{ $labels.job }}"
+    assert group["labels"]["instance"] == "{{ $$labels.instance }}"
+    assert group["labels"]["job"] == "{{ $$labels.job }}"
+    live_group = next(rule for rule in _live_rules(document) if rule["uid"] == group["uid"])
+    assert live_group["labels"]["instance"] == "{{ $labels.instance }}"
+    assert live_group["labels"]["job"] == "{{ $labels.job }}"
     assert group["notification_settings"]["group_by"] == [
         "service", "environment", "cluster", "alertname",
     ]
@@ -390,8 +397,44 @@ def test_group_migration_and_reviewed_rollback_keep_both_uid_families_owned():
         "live_folders": [{"uid": "agent-cloud-folder", "title": "agent-cloud"}],
     })["status"] == "validated"
 
+    # Retry after Grafana has provisioned the explicit group tombstone.
+    rollback_retry = _transition(legacy_rollback, enabled=True, targets=targets, mode="legacy")
+    assert group_uid in rollback_retry["paused_uids"]
+    assert group_uid in {row["uid"] for row in rollback_retry["tombstones"]}
+
     with pytest.raises(SURVEY.Refusal, match="group_rollback_not_explicit"):
         _transition(grouped, enabled=True, targets=targets, mode="legacy")
+
+
+def test_grouped_migration_accepts_the_dev_per_target_summary_contract():
+    target = _expected()
+    previous = _render(o11y_expected_metrics_targets=[target])
+    legacy_rule = next(rule for rule in _service_rules(previous) if rule["uid"] == target["uid"])
+    legacy_rule["annotations"]["summary"] = f"Expected metrics have disappeared for {target['service']}."
+
+    migration = _transition(previous, enabled=True, targets=[target], mode="grouped")
+    assert migration["paused_uids"] == [target["uid"]]
+    assert migration["tombstones"][0]["uid"] == target["uid"]
+
+
+def test_target_uid_with_group_prefix_remains_a_per_target_owner():
+    target = _expected(uid="o11y_missing_gateway")
+    previous = _render(o11y_expected_metrics_targets=[target])
+    migration = _transition(previous, enabled=True, targets=[target], mode="grouped")
+    tombstone = next(row for row in migration["tombstones"] if row["uid"] == target["uid"])
+    assert tombstone["labels"]["job"] == target["job"]
+    assert tombstone["labels"]["instance"] == target["instance"]
+
+
+def test_interrupted_grouped_transition_accepts_live_pending_grouped_ownership():
+    targets = [_expected(), _expected(uid="o11y_missing_api_backup", instance="api-backup.example.test:9100")]
+    previous = _render(o11y_expected_metrics_targets=targets)
+    pending = _grouped_render(targets)
+    prepared = _transition(
+        previous, pending=pending, enabled=True, targets=targets, mode="grouped",
+        live=_live_rules(pending),
+    )
+    assert set(prepared["paused_uids"]) == {target["uid"] for target in targets}
 
 
 def test_grouped_live_readback_refuses_rule_contract_drift():
@@ -421,8 +464,10 @@ def test_grouped_live_readback_refuses_rule_contract_drift():
             SURVEY.validate_active_expected_target_rules(drifted)
 
 
-def _transition(previous, *, enabled, targets=None, retired=None, group_retired=None, mode="legacy", live=None):
+def _transition(previous, *, enabled, targets=None, retired=None, group_retired=None, mode="legacy",
+                live=None, pending=None):
     previous_text = "" if previous is None else yaml.safe_dump(previous, sort_keys=False)
+    pending_text = "" if pending is None else yaml.safe_dump(pending, sort_keys=False)
     live_rules = _live_rules(previous) if live is None and previous is not None else live
     return SURVEY.prepare_expected_target_transition({
         "enabled": enabled,
@@ -431,6 +476,7 @@ def _transition(previous, *, enabled, targets=None, retired=None, group_retired=
         "group_retired_uids": [] if group_retired is None else group_retired,
         "mode": mode,
         "previous_rules": previous_text,
+        "pending_rules": pending_text,
         "live_rules": "" if live_rules is None else json.dumps(live_rules),
         "live_folders": "" if live_rules is None else json.dumps(
             [{"uid": "agent-cloud-folder", "title": "agent-cloud"}]
@@ -544,12 +590,17 @@ def test_retirement_stays_inert_through_gate_off_restore_and_retry():
     retired_file = _render(
         o11y_expected_metrics_targets=[],
         _o11y_retired_expected_target_uids=retired["retired_uids"],
+        _o11y_expected_target_tombstones=retired["tombstones"],
     )
     tombstone = next(rule for rule in _service_rules(retired_file) if rule["uid"] == target["uid"])
     assert tombstone["title"] == f"Expected target retired ({target['uid']})"
     assert tombstone["isPaused"] is True
     assert tombstone["data"][0]["model"]["expr"] == "vector(0)"
-    assert tombstone["labels"] == {"severity": "warning", "owner": "platform-operations", "environment": "disabled"}
+    assert tombstone["labels"] == {
+        "severity": "warning", "job": target["job"], "instance": target["instance"],
+        "service": target["service"], "cluster": target["cluster"],
+        "owner": "platform-operations", "environment": target["environment"],
+    }
     assert "notification_settings" not in tombstone
     assert target["uid"] not in {entry["uid"] for entry in retired_file.get("deleteRules", [])}
 

@@ -219,8 +219,8 @@ groups:
           description: Check the declared metrics target and its service onboarding receipt.
         labels:
           severity: critical
-          job: {{ '{{ $labels.job }}' | to_json }}
-          instance: {{ '{{ $labels.instance }}' | to_json }}
+          job: {{ '{{ $$labels.job }}' | to_json }}
+          instance: {{ '{{ $$labels.instance }}' | to_json }}
           service: {{ target_group.service | to_json }}
           owner: platform-operations
           environment: {{ target_group.environment | to_json }}
