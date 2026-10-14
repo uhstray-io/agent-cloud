@@ -887,6 +887,44 @@ def test_active_rule_validation_separates_declared_rules_from_retired_tombstones
             SURVEY.validate_active_expected_target_rules(drifted)
 
 
+def test_active_rule_readback_uses_prepared_retired_uid_union():
+    target = _expected(uid="o11y_missing_retired_api")
+    previous = _render(o11y_expected_metrics_targets=[target])
+    transition = _transition(previous, enabled=False, targets=[], retired=[target["uid"]])
+    rendered = _render(
+        o11y_alerts_enabled=False,
+        o11y_expected_metrics_targets_reviewed=False,
+        o11y_expected_metrics_targets=[],
+        _o11y_previous_expected_target_uids=transition["paused_uids"],
+        _o11y_retired_expected_target_uids=transition["retired_uids"],
+        _o11y_expected_target_tombstones=transition["tombstones"],
+    )
+    readback = {
+        "reviewed": True,
+        "mode": "legacy",
+        "targets": [],
+        "retired_uids": transition["retired_uids"],
+        "paused_uids": transition["paused_uids"],
+        "tombstones": transition["tombstones"],
+        "live_rules": _live_rules(rendered),
+        "live_folders": [{"uid": "agent-cloud-folder", "title": "agent-cloud"}],
+    }
+    assert SURVEY.validate_active_expected_target_rules(readback) == {
+        "status": "validated", "active_count": 0, "retired_count": 1,
+    }
+    with pytest.raises(SURVEY.Refusal, match="live_target_drift"):
+        SURVEY.validate_active_expected_target_rules({**readback, "retired_uids": []})
+
+    task_file = ROOT / "platform/playbooks/tasks/o11y-validate-active-expected-target-rules.yml"
+    tasks = yaml.safe_load(task_file.read_text())
+    validate_task = next(
+        task for task in tasks
+        if task.get("name") == "Validate active expected-target rules and retired tombstones privately"
+    )
+    stdin_expression = validate_task["ansible.builtin.command"]["stdin"]
+    assert "'retired_uids': _o11y_retired_expected_target_uids | default([])" in stdin_expression
+
+
 def test_active_rule_validation_accepts_gate_off_owners_and_refuses_bad_paused_uids():
     target = _expected()
     inert = _render(
