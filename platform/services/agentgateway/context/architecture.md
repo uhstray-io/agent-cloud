@@ -194,6 +194,17 @@ route and the key policy is strict on the listener, so the probe records what it
 (200 means a public `/health` survives gateway mode; any other status means the route switch needs a
 `/health` handler). The report prints before the assertion. Read-only, no OpenBao call, no survey.
 
+Per-identity isolation (task 4.5, scenario "One client cannot exceed its share"): the Semaphore
+template `Probe agentgateway Isolation (Dev)` (`platform/playbooks/probe-agentgateway-isolation.yml`)
+sends up to five small chat completions as `agw_isolation_burst`, then one as `agw_isolation_control`.
+It passes when the burst identity gets HTTP 429 with error code `budget_exceeded` and the control
+identity gets 200. A 429 without that code is the global request bucket, not isolation, and fails.
+The burst identity must declare `agw_client_policies.<name>.tokens_per_hour` of at most 1000, so
+a run can never exhaust a real client's budget or burn meaningful GPU time. The budget window is a
+rolling hour, so a burst identity already exhausted answers 429 on its first request, which still
+counts. Both keys are read from OpenBao in `no_log` tasks; the report carries statuses and error
+codes only.
+
 A case **matches** when both targets succeeded (curl exit 0, a 2xx status, and for the stream
 an ending `[DONE]` with no error event) and returned the
 same status, the same body shape (every leaf path and its JSON type) and the same semantic fields:
