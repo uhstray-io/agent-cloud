@@ -75,6 +75,53 @@ agentgateway alongside skynet" (Proposed until the operator confirms). OpenSpec 
 - No log-only mode exists for `localRateLimit` in v1.5.0; the first week runs with a
   loose figure and tightens from observed rates (design open question, answered).
 
+## MCP (change `agentgateway-mcp`, gateway side)
+
+The gateway serves MCP as a second surface of the same process, behind the inventory flag
+`agw_mcp_enabled` (default `false`). With the flag false nothing below renders and the verify asserts
+`/mcp` is not served. Spike findings (v1.5.0, measured 2026-10-14) are in
+`plan/development/openspec/changes/agentgateway-mcp/design.md`, "Findings". The edge (Caddy hostname,
+Cloudflare record and rules) and the harness client templates are later sections of that change and
+are not described here.
+
+| Piece | Where | Notes |
+|---|---|---|
+| Endpoint | `/mcp` on gateway `default` only (`mcp.gateways: [default]`) | Not on the `ui` listener. `statefulMode: stateless`: no session id and no held server stream, `GET /mcp` is 405. `prefixMode: conditional`: a tool is named by its OpenAPI `operationId` while there is one target, prefixed with the target name once there are several. `dnsRebindingProtection` unset (the gateway is reached by a non-local Host) |
+| Authentication | `mcp.policies.apiKey`, `mode: strict`, the same header and the same key list as `/v1` | Rendered by the one `apikey_policy` macro in `config.yaml.j2` that `llm` also calls, so the lists cannot drift. Over the admin-derived personal identities ONLY (`_agw_admin_identities`, never an `agw_clients` service client: the chat tool's self-call runs as `mcp-self`, so a service client admitted here would escape its own `allowedModels` and hourly budget; an admin's model spend through MCP is bounded by `mcp-self`'s budget, not their own). Never `legacy-shared`, never `mcp-self`, and with no `budgets` or `allowedModels` (a budget under the MCP policy is accepted and never charged, spike 1.4). An `mcp` block with no key policy answers every request (spike 1.1), so the deploy asserts the policy is rendered whenever the flag is true |
+| Loopback gateway | `gateways.loopback`, container port `agw_loopback_port` (default `4002`), rendered only with the flag | Plain HTTP, attached to `llm` only (`llm.gateways` gains `loopback`; `mcp` and `ui` never do), `authorization` rule `source.address == "127.0.0.1"` because v1.5.0 gateways have no bind address (a neighbour container is 403 with or without a key, spike 1.5). Never in any compose file's `ports:`. Needs no client certificate, so `agw_client_cert_allowlist` is not widened for the self-call |
+| Target | `agw_mcp_openapi_targets`: a list of `{name, schema}` | Rendered as an `openapi` target whose `host` is `127.0.0.1:<agw_loopback_port>` and whose `schema` is the shipped file `deployment/mcp-schemas/<schema>` read by the deploy and embedded in `config.yaml` as one compact JSON string (nothing to mount; a schema edit is a config change the change-aware deploy sees). Its `backendAuth` is the `mcp-self` key by environment reference |
+| Shipped schema | `deployment/mcp-schemas/agentgateway-v1.json` | `/v1/models` (`list_models`) and `/v1/chat/completions` (`chat_completions`) only, no `servers` |
+| Internal identity | `mcp-self` in `agw_clients`, budget from `agw_client_policies.mcp-self` | Its key is `AGW_MCP_SELF_KEY` in the 0600 `.env`; `config.yaml` carries `$AGW_MCP_SELF_KEY` only. It is a hash even under the local-dev `agw_plaintext_keys` flag. Refused on `/mcp` (401), honoured on the `/v1` request the self-call makes, so a model request through MCP is charged to and logged as `mcp-self`. Never handed out: hand out keys with `Back Up Credentials to site-config` and an explicit `credential_fields` list |
+
+What the deploy refuses, before anything is rendered or restarted, naming the entry
+(`_agw_mcp_problems` in `vars/secret-declarations/agentgateway.yml`): an allowlist, not a denylist.
+A target is exactly `name` and `schema`: an `mcp`, `sse` or `stdio` kind, a `host` and a `port` are
+not accepted, because a target aimed at the gateway's own external listener or at `/mcp` recurses
+without a bound (spike 1.5) and a string check cannot enumerate every alias of that listener. The
+schema is a bare `*.json` file name, so it cannot leave `mcp-schemas/`. The loopback port must be an
+integer from 1024 to 65535 other than `4000`, `4001`, `15000`, `19001`, `19002`. The flag true needs
+at least one target, `mcp-self` in the merged identities with `agw_client_policies.mcp-self.tokens_per_hour`
+set, a non-empty admin-derived identity list (`agw_admin_identities_enabled` and `platform_admins`; the
+refusal names both), and no `allowed_models` on an admin identity (MCP would widen it). The rendered file is checked against the
+flag (no `mcp` block and no loopback gateway with the flag false; a strict key policy on any `mcp`
+block; exactly the client identities on it), then validated by the pinned image as for every render.
+
+Verify (`deploy-agentgateway.yml`, Phase 3, through the one probe path): flag true, a request with no
+key is 401, an authenticated `initialize` returns a session, and `tools/list` lists at least one tool
+(the validator accepts an `mcpAuthorization` rule naming a wrong field, which then denies every tool
+silently). Flag false, a keyed `initialize` must not be an MCP reply (keyless is 401 either way). The
+verdicts read the response body: the gateway's own rate-limit refusal is HTTP 200 with JSON-RPC error
+`-32003`, reported as unproven, which fails the deploy unless `-e agw_verify_allow_unproven=true`.
+The probing identity is `agw_verify_client`, else the first merged identity, never `mcp-self`; with MCP on it is
+an admin-derived identity (`agw_verify_client` if it is one, else the first admin). After `tools/list` the verify makes one chat
+call and requires the gateway's access log to show the `/v1` request as `mcp-self` on the loopback listener.
+
+Rollback across the flag: with `agw_mcp_enabled` OFF live, a previous config that has the `mcp` block is refused by the
+validator (it references `$AGW_MCP_SELF_KEY`, which the flag-off `.env` does not carry); the reverse, flag ON live and a
+previous config without the block, validates and is put back, which drops `/mcp`. Both measured with `--validate-only`
+on the pinned image. Crossing back needs a redeploy of the older flag state (`agw_mcp_enabled`), not a
+`rollback-inference-route.yml` gateway-config rollback.
+
 ## Virtual-key lifecycle (aligned with vLLM's single key)
 
 vLLM accepts one static `--api-key` and knows nothing about clients; the gateway owns the
@@ -90,6 +137,19 @@ per-client layer. Everything is inventory-driven code (design §10):
 | UI key editor | Disabled on purpose: `UI_READ_ONLY=true` in `.env` puts the config store in read-only mode (writes get 403), and `config.yaml` is mounted `:ro`; configuration is code |
 | Saved keys in the playground | Local-dev only: `agw_plaintext_keys: true` renders values instead of hashes so the UI can offer them. Prod stays on hashes |
 | Upstream key | `vllm_api_key` (`existing`, seeded separately) → `params.apiKey: $VLLM_API_KEY`; omitted when the upstream takes no key (LM Studio locally); rotated on vLLM's schedule (task 5.1) |
+
+### Admin UI (production v1.5.0)
+
+- The Routes page shows nothing (operator report, 2026-10-14). This config declares no `binds:` or
+  routes: it uses the top-level `llm:` block, which the upstream LLM docs contrast with "traditional
+  HTTP routing configuration" (https://agentgateway.dev/docs/standalone/latest/llm/). An empty
+  Routes page does not mean traffic is
+  unrouted; the keyed deploy verify proves the `/v1` path end to end.
+- The Playground needs a pasted raw key: production config holds sha256 hashes only. Local-dev
+  sets `agw_plaintext_keys: true`, which renders values, so the local UI lists saved keys.
+- Two `agw_models` entries (`nvidia/Qwen3.8-Flash-Next-NVFP4` and `qwen3.8-flash-next`) are
+  declared; the operator asked (2026-10-14) to keep only the one active for the DGX
+  deployment; which name stays waits on dgx-spark.
 
 ## Shared-key retirement (gateway task 5.1)
 
@@ -448,6 +508,19 @@ only when every one of these holds; otherwise it fails and `failure` names each 
 The two bodies are not compared: generation over thousands of tokens is not bit-identical even at
 temperature 0 with a seed, and the usage-chunk check belongs to `stream-xhigh`. No result is
 recorded here yet; the first production run's task number and figures go in this section.
+
+Per-identity isolation (task 4.5, scenario "One client cannot exceed its share"): the Semaphore
+template `Probe agentgateway Isolation (Dev)` (`platform/playbooks/probe-agentgateway-isolation.yml`)
+sends up to five small chat completions as `agw_isolation_burst`, then one as `agw_isolation_control`.
+It passes when the burst identity gets HTTP 429 with error code `budget_exceeded` and the control
+identity gets 200. A 429 without that code is the global request bucket, not isolation, and fails.
+The burst identity must declare `agw_client_policies.<name>.tokens_per_hour` of at most 1000, so
+a run can never exhaust a real client's budget or burn meaningful GPU time. The budget window is a
+rolling hour, so a burst identity already exhausted answers 429 on its first request, which still
+counts. Both keys are read from OpenBao in `no_log` tasks; the report carries statuses and error
+codes only. A workable probe budget is below about five times the per-request charge of the chosen
+model (local-dev uses 50 against roughly 94 tokens per completion); a budget above what five attempts
+can exhaust ends the run "NOT proven", loudly, never as a false pass.
 
 ## Verification log
 

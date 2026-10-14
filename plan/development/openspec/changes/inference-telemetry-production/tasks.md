@@ -122,6 +122,10 @@
       because it requires a failure category (`diagnose-o11y-grafana-auth.yml:85-97`). Next: the
       operator attempts a Grafana sign-in and, if it fails, reruns the diagnostic inside the window.
       Not ticked.
+      2026-10-14: half of the incident's phase 3 acceptance is met: the operator confirmed
+      Grafana's Authentik sign-in on 2026-10-09 (recorded in `estate-wide-observability-instrumentation`
+      tasks.md 1.1). The other half, the operator confirming direct Authentik sign-in, is outstanding
+      (O11Y-GRAFANA-AUTH-INCIDENT.md stays PROPOSED). Manual receipt only. Not ticked.
 - [x] 1.4 `firewall_allow_rules` on the o11y host: Grafana port from the Caddy host; Loki
       push port from the two node addresses; `apply-firewall.yml` through Semaphore
       2026-10-02 rescope: rules declared in site-config#36 and applied by firewall tasks 1661
@@ -266,6 +270,19 @@
       `ansible_user`) and the `o11y_fault_drill_exporters` map; dgx-spark applies
       `drill-access.yml`; verify key-only login to both nodes; a `--check` dry run; one real
       run in the agreed window and its evidence recorded here. Left unticked.
+      2026-10-14 evening (prerequisites done; reported by the dgx-spark session): dgx-spark
+      drill access applied from its branch 2026-10-14 16:52 EDT, then dgx-spark PR #32 merged
+      as `51faf88` (17:18 EDT): account
+      `o11y-drill` on both nodes, key-only, sshd reachable from the Semaphore host only, and
+      polkit limited to starting and stopping `node-exporter.service`. site-config #74 merged
+      as `433aa4f5` (the `dgx_drill_svc` group and `o11y_fault_drill_exporters`); the
+      inventory was synced (task output read from production Semaphore by the lead). Verify
+      Host Access cannot prove key-only login for `o11y-drill`: its first probe uses
+      Semaphore's own key and the account has no sudo, so the drill run itself is the proof.
+      o11y Fault Drill (Dev) task 5648 (check mode) refused by design without
+      `drill_window_confirmed=true` ("No fault was induced"; same source). Remaining: the
+      operator names a window outside 04:15 to 05:00 EDT, then a dry run and the real run.
+      Not ticked.
 - [ ] 2.6 Validation gate: 2.4 proves scenario "All node targets up" and scenario "Boot
       journal is queryable"; 2.5 proves scenario "Missing scrape is a telemetry failure"
       including the alert firing;
@@ -542,6 +559,10 @@
       110,843,256 bytes and 60,863 lines in 24 h. Live and declared retention still match at
       Prometheus 15d (0B size cap), Loki 7d, and Tempo 168h. These are one-day observations,
       not the seven-day capacity forecast or isolated-restore proof; 4.1 remains open.
+      2026-10-14: the threshold half is live. PR #610 (the `inference_queue_depth_high` queue
+      alert) was deployed by Deploy o11y (Dev) task 5525 at 11019dd9 (task output read from
+      production Semaphore by the lead). The remaining half, the retention increase, stays
+      blocked on the estate-wide 4.6e isolated-restore receipt. Not ticked.
 - [x] 4.2 Append dated status lines to `plan/development/05-observability.md` and
       `plan/architecture/06-observability-instrumentation.md`
       2026-10-02 rescope: PARTIAL — 05-observability.md carries the dated production lines

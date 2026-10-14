@@ -11,6 +11,7 @@ from collections.abc import Mapping
 NODE_NAME = re.compile(r"[A-Za-z0-9._-]{1,64}")
 STORAGE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 VG_NAME = re.compile(r"[A-Za-z0-9+_.-]{1,127}")
+CONTENT_TOKEN = re.compile(r"[A-Za-z][A-Za-z0-9_-]{0,31}")
 PATH = re.compile(r"/[A-Za-z0-9._/+:-]{1,255}")
 SIZE_BANDS = ((100 * 1024**3, "under-100-GiB"), (1024**4, "100-GiB-to-under-1-TiB"))
 PROPOSED_DISK_SIZES = (256, 512, 1024)
@@ -107,6 +108,24 @@ def _storage_applies_to_node(config: Mapping, target_node: str) -> bool:
         "Proxmox returned a malformed cluster storage node scope.",
     )
     return target_node in node_names
+
+
+def _comma_separated_set(value: object, token_pattern: re.Pattern[str]) -> set[str] | None:
+    if not isinstance(value, str):
+        return None
+    tokens = value.split(",")
+    if (
+        any(
+            not token
+            or token != token.strip()
+            or token_pattern.fullmatch(token) is None
+            or (token_pattern is NODE_NAME and token in {".", ".."})
+            for token in tokens
+        )
+        or len(set(tokens)) != len(tokens)
+    ):
+        return None
+    return set(tokens)
 
 
 def validate_node(payload: object) -> dict[str, object]:
@@ -702,28 +721,41 @@ def _thick_lvm_facts(
     declared_candidate_exact_match = False
     if declared_candidate is not None:
         candidate_config, candidate_status, _ = declared_candidate
-        required_config_fields_match = all(
-            declared_config_detail.get(field) == candidate_config.get(field)
-            for field in ("type", "content", "vgname")
+        detail_content = _comma_separated_set(
+            declared_config_detail.get("content"), CONTENT_TOKEN
         )
-        optional_config_fields_match = all(
-            (field in declared_config_detail) == (field in candidate_config)
-            and declared_config_detail.get(field) == candidate_config.get(field)
-            for field in ("nodes", "disable")
+        configured_content = _comma_separated_set(candidate_config.get("content"), CONTENT_TOKEN)
+        status_content = _comma_separated_set(candidate_status.get("content"), CONTENT_TOKEN)
+        required_config_fields_match = (
+            declared_config_detail.get("type") == candidate_config.get("type")
+            and declared_config_detail.get("vgname") == candidate_config.get("vgname")
+            and detail_content is not None
+            and detail_content == configured_content
         )
-        configured_content = candidate_config.get("content")
-        status_content = candidate_status.get("content")
-        content_matches = (
-            isinstance(configured_content, str)
-            and isinstance(status_content, str)
-            and set(configured_content.split(",")) == set(status_content.split(","))
+        nodes_match = ("nodes" in declared_config_detail) == ("nodes" in candidate_config)
+        if nodes_match and "nodes" in candidate_config:
+            detail_nodes = _comma_separated_set(declared_config_detail.get("nodes"), NODE_NAME)
+            configured_nodes = _comma_separated_set(candidate_config.get("nodes"), NODE_NAME)
+            nodes_match = (
+                detail_nodes is not None
+                and configured_nodes is not None
+                and detail_nodes == configured_nodes
+            )
+        optional_config_fields_match = (
+            nodes_match
+            and ("disable" in declared_config_detail) == ("disable" in candidate_config)
+            and declared_config_detail.get("disable") == candidate_config.get("disable")
         )
-        status_content_matches_config = content_matches
+        status_content_matches_config = (
+            configured_content is not None
+            and status_content is not None
+            and configured_content == status_content
+        )
         declared_candidate_exact_match = (
             declared_config_detail.get("type") == "lvm"
             and required_config_fields_match
             and optional_config_fields_match
-            and content_matches
+            and status_content_matches_config
         )
 
     result: dict[str, object] = {

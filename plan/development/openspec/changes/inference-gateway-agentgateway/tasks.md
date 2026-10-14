@@ -486,6 +486,13 @@
       review): 10M tokens per hour per identity, 120 requests per minute, and `o11y-probe`
       pinned at 2M. Deriving them from the measured capacity ceiling is still pending. Not
       ticked.
+      2026-10-14 (task output read from production Semaphore by the lead): site-config #78
+      merged, and Deploy agentgateway (Dev) task 5523 at 11019dd9 applied it: 10M tokens per
+      hour per identity, 120 requests per minute globally, `o11y-probe` 2M, `legacy-shared`
+      30M. `legacy-shared` 30M is sized at about 1.6x the measured 19.0M/h 7-day peak (see
+      note above); 10M/h per identity, 120 req/min and `o11y-probe` 2M are the figures drafted
+      in site-config #78, not derived in this repo from a capacity ceiling. Remaining: the
+      ceiling derivation. Not ticked.
 - [x] 4.3 site-config: production Caddy block upstream to the gateway; `Caddyfile.local.j2`
       `inference_api` unchanged in shape (upstream already comes from `r.upstream`);
       redeploy Caddy through Semaphore
@@ -519,10 +526,29 @@
       vLLM. This tick is on config scope: the declared block, the Caddy redeploy and route
       report 5370, which reads upstream destinations only. A keyed request through the public
       edge is 4.5's proof and is still owed.
-- [ ] 4.4 Run dgx-spark's public-path verify play against the live hostname; update
+      2026-10-14 (task output read from production Semaphore by the lead; model names): site-config
+      #85 merged as `a38c60a3`: `agw_models` lists only `qwen3.8-flash-next` (vLLM serves both
+      aliases; that is the canonical client id per dgx-spark). The inventory was synced; the
+      key-path diff was exactly `agw_models`. Deploy agentgateway (Dev) dry run 5642 and real
+      run 5643: as `stray`, `/v1/models` lists `qwen3.8-flash-next`, and a chat completion
+      (32 tokens) came back from the upstream model `nvidia/Qwen3.8-Flash-Next-NVFP4`.
+      dgx-spark (reported by the dgx-spark session) verified that the long alias answers 404
+      through the gateway. Already ticked; this is a dated record only.
+- [x] 4.4 Run dgx-spark's public-path verify play against the live hostname; update
       dgx-spark `docs/TEAM-ENDPOINT.md` (key changes, base URL does not)
       2026-10-14: dgx-spark's public-path verify play is requested; no result yet. Not
       ticked.
+      2026-10-14: the operator reported that dgx-spark's public-path verify play passes. There
+      is no Semaphore task id for it, and the update to dgx-spark `docs/TEAM-ENDPOINT.md` is
+      unconfirmed. Not ticked.
+      2026-10-14 (reported by the dgx-spark session): after the route flip, dgx-spark's
+      public-path verify play PASSED, 16:39 to 16:49 EDT, against the public `/v1` base URL
+      with the shared key: `/health` 200, keyless `/v1/models` 401, 7 of 7 reasoning efforts
+      200, a long stream of 289.9 s (first token 0.48 s, 3625 chunks) that crossed the 125 s
+      proxy timer alive, and 2 of 2 concurrent streams. The 12-stream burst was not run (it
+      needs an operator window). dgx-spark `docs/TEAM-ENDPOINT.md` is updated: dgx-spark PR
+      #33, merged as `0479c96`. Ticked: the verify play ran against the live hostname and the
+      endpoint doc is updated.
 - [ ] 4.5 Validation gate: an unenrolled key gets 401 at the gateway with no vLLM log
       line, proving scenario "Unknown key is rejected"; a burst from one identity gets
       429 while another identity is served, proving scenario "One client cannot exceed its
@@ -537,6 +563,10 @@
       (`/v1/models` 401 after Caddy run 5366). The rollback path is proven by the 4.6 drill,
       but through the playbook, not as "one inventory change and a Caddy redeploy". The 429
       isolation scenario and the access-log scenario are not proven. Not ticked.
+      2026-10-14 (evening): PR #632 (the isolation probe) encodes the scenario "One client
+      cannot exceed its share". Local proof tasks 6565 and 6566: the burst got 200 then 429
+      `budget_exceeded`, and the control identity got 200. The production leg needs a
+      low-budget probe identity in site-config, which does not exist yet. Not ticked.
 - [ ] 4.6 `rollback-inference-route.yml` with `mode=gateway-config|direct|restore` as in the
       proposal's Rollback Plan, each mode idempotent (re-run converges, no duplicate key
       publication, `restore` is a no-op once the upstream is the gateway and the key is
@@ -612,6 +642,12 @@
       Caddy restart. RESIDUAL: five copies of the live vLLM key sit in OpenBao as `direct_<name>`
       until dgx-spark rotates the key (5.1); a `restore` after that rotation retires them. The
       scenario "Rollback after retirement is the playbook" needs that rotation. Not ticked.
+      2026-10-14 (task output read from production Semaphore by the lead): Rollback Inference
+      Route (Dev) task 5385 (`mode=restore`) changed and restarted Caddy, and the route was
+      verified back on the gateway (declared and running config). The task then failed BY
+      DESIGN at the grace-period check: the five `direct_*` OpenBao fields still hold the live
+      vLLM key, so it must be rotated first. Red until that rotation; not a regression. Not
+      ticked.
 
 - [x] 4.7 `legacy_shared_expires` = the route-switch date + 14 days (operator decision
       2026-09-27), set in site-config in the same change that switches the route
@@ -620,6 +656,10 @@
       agentgateway (Dev) real run 5357 reported it.
 
 ## 5. Retire the shared key, records
+      2026-10-14 (task output read from production Semaphore by the lead): the expiry is now
+      2026-11-13, not the 2026-10-28 above. site-config #81 moved `legacy_shared_expires`; Deploy
+      agentgateway (Dev) 5523 applied it and 5643 reconfirmed it ("The shared key is admitted as
+      legacy-shared until 2026-11-13."). dgx-spark's TEAM-ENDPOINT.md (PR #33) states 2026-11-13.
 - [ ] 5.1 Retirement, enforced by the deploy rather than remembered: the config template
       renders `legacy-shared` only while today is before `legacy_shared_expires`; a deploy
       on or after that date drops the identity and fails if the vLLM key in OpenBao still
@@ -643,6 +683,10 @@
       false-reds if the vLLM key is rotated BEFORE `legacy_shared_expires`, because the stored
       fingerprint pins the old key. Rotate after the expiry, or skip the probe when the
       fingerprints differ. Not ticked.
+      2026-10-14: the expiry moved. site-config #81 set `legacy_shared_expires` to 2026-11-13
+      (it was 2026-10-28) and Deploy agentgateway (Dev) task 5523 at 11019dd9 applied it (task
+      output read from production Semaphore by the lead). Earlier notes naming 2026-10-28 are
+      left as written. Not ticked.
 - [x] 5.2 Accept the architecture record; append a dated pointer line to
       `plan/development/06-inference-skynet.md`; `platform/services/inference/` stub
       gains a README pointing at the gateway service and the dgx-spark roadmap record
@@ -662,6 +706,8 @@
       plan 06 line prove scenario "Decision is findable and plan 06 is amended"; on
       archive, retain the outcome (worked / dead end / corrected) into bank
       `agent-cloud-750a33b9`
+      2026-10-14: the date this gate waits on is now 2026-11-13, not 2026-10-28 (see the 5.1
+      note). Not ticked.
 
 ## 6. Transport security (decisions of 2026-09-27; needs `production-internal-ca`)
 - [x] 6.1 Gateway API and UI listeners serve HTTPS from step-ca-issued certificates in a

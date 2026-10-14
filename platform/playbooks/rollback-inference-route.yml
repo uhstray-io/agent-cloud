@@ -19,13 +19,20 @@
 #                   replaces is kept for the run as config.yaml.rollback-from (never when it
 #                   holds a raw key); if the gateway does not become ready on the previous
 #                   config, that one is put back, the gateway recreated on it, and the run
-#                   still FAILS, naming whether the restore held.
+#                   still FAILS, naming whether the restore held. The MCP flag (agw_mcp_enabled)
+#                   is not crossed by this mode: with the flag OFF live, a previous config that has
+#                   the mcp block is refused by the validator (it references $AGW_MCP_SELF_KEY, which
+#                   the flag-off .env does not carry; measured on the pinned image); the reverse (flag ON
+#                   live, previous config without the mcp block) validates and is put back, which drops
+#                   /mcp. Going back across the flag needs a redeploy of the older flag state, not a
+#                   gateway-config rollback.
 #   direct          Publish the CURRENT vLLM key into each enrolled client's field in the
 #                   gateway's OpenBao path (`direct_<name>` beside `client_<name>`, handed out
 #                   through the same channel: backup-credentials-to-site-config.yml), THEN
 #                   point the route at the head node and redeploy Caddy through
 #                   manage-caddy-sites.yml. Copies for names no longer in agw_identities are
-#                   removed in the same write.
+#                   removed in the same write. The internal MCP identity `mcp-self` is not a
+#                   client and gets no copy.
 #   restore         Point the route back at the gateway and redeploy Caddy, then retire the
 #                   published copies. A copy is removed only once the vLLM key it holds is no
 #                   longer the live one, and the gateway holds the live one, both in its
@@ -258,7 +265,10 @@
     _bao_url: "{{ openbao_addr | default('') }}"
     _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
-    _declared: "{{ agw_identities }}"
+    # The enrolled CLIENTS: agw_identities without the internal MCP self-call identity (config.yaml.j2
+    # `_internal_ids`), which no client holds, so a `direct_mcp-self` copy of the vLLM key would be
+    # published for nobody (and one already there is withdrawn).
+    _declared: "{{ agw_identities | reject('in', ['mcp-self']) | list }}"
   tasks:
     - name: "Load the shared platform admin list"
       tags: [verify]
