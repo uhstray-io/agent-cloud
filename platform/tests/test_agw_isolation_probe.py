@@ -305,7 +305,7 @@ def test_an_unsafe_or_incomplete_input_is_refused_before_any_request(tmp_path, g
 def test_a_cleartext_public_gateway_is_refused_before_a_key_is_read(tmp_path, gateway):
     gw = gateway()
     rc, out, bao = _run(tmp_path, gw, host={"agw_verify_base_url": "http://gateway.example.com:4000"})
-    assert rc != 0 and "gateway" in out, out
+    assert rc != 0 and "Refusing to send secret material to the gateway at an invalid endpoint" in _flat(out), out
     assert gw.seen == [] and bao == []
 
 
