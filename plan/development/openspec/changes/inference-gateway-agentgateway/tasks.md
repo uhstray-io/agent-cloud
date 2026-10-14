@@ -486,6 +486,13 @@
       review): 10M tokens per hour per identity, 120 requests per minute, and `o11y-probe`
       pinned at 2M. Deriving them from the measured capacity ceiling is still pending. Not
       ticked.
+      2026-10-14 (task output read from production Semaphore by the lead): site-config #78
+      merged, and Deploy agentgateway (Dev) task 5523 at 11019dd9 applied it: 10M tokens per
+      hour per identity, 120 requests per minute globally, `o11y-probe` 2M, `legacy-shared`
+      30M. `legacy-shared` 30M is sized at about 1.6x the measured 19.0M/h 7-day peak (see
+      note above); 10M/h per identity, 120 req/min and `o11y-probe` 2M are the figures drafted
+      in site-config #78, not derived in this repo from a capacity ceiling. Remaining: the
+      ceiling derivation. Not ticked.
 - [x] 4.3 site-config: production Caddy block upstream to the gateway; `Caddyfile.local.j2`
       `inference_api` unchanged in shape (upstream already comes from `r.upstream`);
       redeploy Caddy through Semaphore
@@ -523,6 +530,9 @@
       dgx-spark `docs/TEAM-ENDPOINT.md` (key changes, base URL does not)
       2026-10-14: dgx-spark's public-path verify play is requested; no result yet. Not
       ticked.
+      2026-10-14: the operator reported that dgx-spark's public-path verify play passes. There
+      is no Semaphore task id for it, and the update to dgx-spark `docs/TEAM-ENDPOINT.md` is
+      unconfirmed. Not ticked.
 - [ ] 4.5 Validation gate: an unenrolled key gets 401 at the gateway with no vLLM log
       line, proving scenario "Unknown key is rejected"; a burst from one identity gets
       429 while another identity is served, proving scenario "One client cannot exceed its
@@ -612,6 +622,12 @@
       Caddy restart. RESIDUAL: five copies of the live vLLM key sit in OpenBao as `direct_<name>`
       until dgx-spark rotates the key (5.1); a `restore` after that rotation retires them. The
       scenario "Rollback after retirement is the playbook" needs that rotation. Not ticked.
+      2026-10-14 (task output read from production Semaphore by the lead): Rollback Inference
+      Route (Dev) task 5385 (`mode=restore`) changed and restarted Caddy, and the route was
+      verified back on the gateway (declared and running config). The task then failed BY
+      DESIGN at the grace-period check: the five `direct_*` OpenBao fields still hold the live
+      vLLM key, so it must be rotated first. Red until that rotation; not a regression. Not
+      ticked.
 
 - [x] 4.7 `legacy_shared_expires` = the route-switch date + 14 days (operator decision
       2026-09-27), set in site-config in the same change that switches the route
@@ -643,6 +659,10 @@
       false-reds if the vLLM key is rotated BEFORE `legacy_shared_expires`, because the stored
       fingerprint pins the old key. Rotate after the expiry, or skip the probe when the
       fingerprints differ. Not ticked.
+      2026-10-14: the expiry moved. site-config #81 set `legacy_shared_expires` to 2026-11-13
+      (it was 2026-10-28) and Deploy agentgateway (Dev) task 5523 at 11019dd9 applied it (task
+      output read from production Semaphore by the lead). Earlier notes naming 2026-10-28 are
+      left as written. Not ticked.
 - [x] 5.2 Accept the architecture record; append a dated pointer line to
       `plan/development/06-inference-skynet.md`; `platform/services/inference/` stub
       gains a README pointing at the gateway service and the dgx-spark roadmap record
@@ -662,6 +682,8 @@
       plan 06 line prove scenario "Decision is findable and plan 06 is amended"; on
       archive, retain the outcome (worked / dead end / corrected) into bank
       `agent-cloud-750a33b9`
+      2026-10-14: the date this gate waits on is now 2026-11-13, not 2026-10-28 (see the 5.1
+      note). Not ticked.
 
 ## 6. Transport security (decisions of 2026-09-27; needs `production-internal-ca`)
 - [x] 6.1 Gateway API and UI listeners serve HTTPS from step-ca-issued certificates in a

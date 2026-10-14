@@ -45,6 +45,8 @@ Diagnostic run, 2026-10-04: `Diagnose Grafana OAuth Failure (Dev)` task 2746 on 
 
 Operator report, 2026-10-08/09: Grafana's Authentik sign-in button now signs in. Direct Authentik sign-in and the original root cause remain unverified; bounded diagnostic task 2746 found no failure in its observation window. This report does not establish which change resolved the issue.
 
+Progress, 2026-10-14: not resolved yet. Phase 3 acceptance needs two things: Grafana opens an authenticated page, which the operator confirmed on 2026-10-09 (recorded in `estate-wide-observability-instrumentation` tasks.md 1.1), and the operator confirming direct Authentik sign-in, which is still outstanding. Once the operator confirms direct sign-in, this incident is RESOLVED and `inference-telemetry-production` task 1.3 can be ticked. The original root cause was never identified, and no automated OAuth validation is claimed.
+
 ### Privileged root-LVM survey plan and current evidence
 
 Semaphore task 2115 succeeded on the exact reviewed `dev` checkout `2d567d86eef1f2cd9f7cda63ba0ac03f6663d642`. Its sanitized readback showed a full ext4 root filesystem of about 9.75 GiB, a reported 10 GiB LVM root block, an approximately 18.2 GiB partition, and a 100 GiB virtual disk. Rootless Podman volumes share the full root filesystem. The unprivileged LVM join returned `root_logical_volume_unresolved`, so the LV-to-root-device correlation and VG free space remain unverified; no disk, partition, LV, or filesystem was changed.
