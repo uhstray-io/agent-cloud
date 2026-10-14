@@ -514,9 +514,10 @@ leaves the file, so turning a flag off would otherwise leave the rules live and 
 
 - `inference-failing`: requests are waiting while vLLM has generated no tokens for five
   minutes (`inference_queue_stalled`, DGX scrape). Health can still answer while this
-  fires. `inference_queue_depth_high` is a warning (10 minutes) when more than 6 requests
-  are waiting, twice the 7-day peak of 3 in the production baseline (task 5349); override
-  the line with `o11y_inference_queue_waiting_warn`. With the probe on, two more rules read the probe's samples from the
+  fires. `inference_queue_depth_high` is a warning (10 minutes) when more requests are
+  waiting than `o11y_inference_queue_waiting_warn` (default 6: twice the 7-day peak of 3 in
+  the production baseline, task 5349; an override replaces it and the alert text follows).
+  With the probe on, two more rules read the probe's samples from the
   `receiver-host` job, per `model_name`: `inference_probe_failing` when
   `inference_probe_success` stays 0 for five minutes, and `inference_probe_stale` when the
   newest `inference_probe_last_run_timestamp_seconds` is more than 15 minutes old, or no
