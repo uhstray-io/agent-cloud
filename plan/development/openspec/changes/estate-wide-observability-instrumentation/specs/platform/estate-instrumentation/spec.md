@@ -337,6 +337,14 @@ The platform SHALL use a reviewed, Dev-bound, GET-only survey before considering
 - **AND** `/storage` and node storage status may silently omit rows without `Datastore.Audit` or `Datastore.AllocateSpace` on the store, so counts describe visible stores and may be incomplete; `shared=0` does not prove local physical backing or rule out thin allocation behind a SAN/LUN
 - **AND** no storage/VG name or ID, exact capacity, device path, serial, or private topology is reported; raw API responses remain hidden by `no_log`
 
+#### Scenario: Dedicated selector reports one candidate ID for private review
+- **WHEN** an operator runs the separate Dev-bound candidate-identification workflow
+- **THEN** it imports the existing GET-only physical-storage survey and reuses its protected API responses without issuing duplicate Proxmox reads
+- **AND** it reports one candidate storage ID only when visible config/VG mappings are complete, every candidate PV has complete exact disk-path lineage with reported `used=LVM`, and exactly one candidate meets the reported 1024-GiB VG-headroom threshold
+- **AND** ambiguous candidates, malformed or incomplete inventory/lineage, or insufficient headroom produce one fixed refusal without private identifiers or topology
+- **AND** the regular aggregate survey continues to emit no storage IDs, and the selector emits no node, VG, PV, path, serial, or exact capacity
+- **AND** backing media, device safety, filesystem readiness, PBS suitability/readiness, allocation, write authorization, immutable restore, VM growth, and retention remain unverified or false; the selector makes no Proxmox mutation and does not complete tasks 4.6c, 4.6d, or 4.6e
+
 #### Scenario: Candidate thick-LVM PV path lineage reports inventory facts only
 - **WHEN** the survey has a non-empty set of eligible visible thick-LVM candidates
 - **THEN** it joins candidate VG PV `name` values against the already-fetched disk inventory by exact path and reports aggregate PV count, exact direct disk-path joins, exact partition-to-parent joins, `thick_lvm_pv_path_join_unknown_used_count`, missing paths, unverifiable joins, and candidate VGs with missing or empty PV-child inventories
@@ -349,7 +357,11 @@ The platform SHALL use a reviewed, Dev-bound, GET-only survey before considering
 #### Scenario: Private declared thick-LVM store reports fixed reported-headroom facts
 - **WHEN** the private declared PBS VM-image store is an LVM-thin store or an eligible thick-LVM store
 - **THEN** the existing LVM-thin snapshot-unverified path retains its current behavior, while the thick-LVM path requires an exact match between the private declared storage ID's detail config, its visible cluster config, its target-node status row, and the linked VG candidate facts
-- **AND** it reports only `declared_thick_lvm_candidate_exact_match` and fixed `declared_thick_lvm_reported_vg_headroom_passes_{256,512,1024}_gib` booleans for an eligible exact match; absent, non-eligible, or inconsistent declarations leave these facts false
+- **AND** it reports `declared_thick_lvm_candidate_in_visible_eligible_set`, `declared_thick_lvm_required_config_fields_match`, `declared_thick_lvm_optional_config_fields_match`, and `declared_thick_lvm_status_content_matches_config` as fixed-schema booleans that decompose the exact-match diagnosis without exposing identifiers
+- **AND** required `content` and optional `nodes` lists are validated for non-empty, unique, whitespace-free well-formed members, then compared as sets regardless of order; missing-versus-present `nodes`, malformed lists, and changed sets do not match
+- **AND** `type`, `vgname`, and optional `disable` retain literal value and presence comparisons
+- **AND** `declared_thick_lvm_candidate_exact_match` remains fail-closed and is true only when the declared candidate is in the visible eligible set and all three config/status comparisons match; absent or non-eligible candidates leave the diagnostic booleans false
+- **AND** it reports fixed `declared_thick_lvm_reported_vg_headroom_passes_{256,512,1024}_gib` booleans only for an eligible exact match; mismatches leave these facts false
 - **AND** fixed headroom booleans describe reported VG free extents after a hypothetical allocation retaining at least 30% of reported VG size; they do not reserve capacity or authorize allocation
 - **AND** `storage_allocation_authorized`, `thick_lvm_allocation_authorized`, `thick_lvm_backing_media_verified`, `pbs_readiness_verified`, and `write_authorized` remain false, and no store ID, VG name, path, or exact capacity is reported
 

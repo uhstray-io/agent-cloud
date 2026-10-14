@@ -130,6 +130,19 @@ per-client layer. Everything is inventory-driven code (design §10):
 | Saved keys in the playground | Local-dev only: `agw_plaintext_keys: true` renders values instead of hashes so the UI can offer them. Prod stays on hashes |
 | Upstream key | `vllm_api_key` (`existing`, seeded separately) → `params.apiKey: $VLLM_API_KEY`; omitted when the upstream takes no key (LM Studio locally); rotated on vLLM's schedule (task 5.1) |
 
+### Admin UI (production v1.5.0)
+
+- The Routes page shows nothing (operator report, 2026-10-14). This config declares no `binds:` or
+  routes: it uses the top-level `llm:` block, which the upstream LLM docs contrast with "traditional
+  HTTP routing configuration" (https://agentgateway.dev/docs/standalone/latest/llm/). An empty
+  Routes page does not mean traffic is
+  unrouted; the keyed deploy verify proves the `/v1` path end to end.
+- The Playground needs a pasted raw key: production config holds sha256 hashes only. Local-dev
+  sets `agw_plaintext_keys: true`, which renders values, so the local UI lists saved keys.
+- Two `agw_models` entries (`nvidia/Qwen3.8-Flash-Next-NVFP4` and `qwen3.8-flash-next`) are
+  declared; the operator asked (2026-10-14) to keep only the one active for the DGX
+  deployment; which name stays waits on dgx-spark.
+
 ## Shared-key retirement (gateway task 5.1)
 
 Before the gateway, every client sent vLLM's one `--api-key`. During a dated grace period the
@@ -433,6 +446,19 @@ only when every one of these holds; otherwise it fails and `failure` names each 
 The two bodies are not compared: generation over thousands of tokens is not bit-identical even at
 temperature 0 with a seed, and the usage-chunk check belongs to `stream-xhigh`. No result is
 recorded here yet; the first production run's task number and figures go in this section.
+
+Per-identity isolation (task 4.5, scenario "One client cannot exceed its share"): the Semaphore
+template `Probe agentgateway Isolation (Dev)` (`platform/playbooks/probe-agentgateway-isolation.yml`)
+sends up to five small chat completions as `agw_isolation_burst`, then one as `agw_isolation_control`.
+It passes when the burst identity gets HTTP 429 with error code `budget_exceeded` and the control
+identity gets 200. A 429 without that code is the global request bucket, not isolation, and fails.
+The burst identity must declare `agw_client_policies.<name>.tokens_per_hour` of at most 1000, so
+a run can never exhaust a real client's budget or burn meaningful GPU time. The budget window is a
+rolling hour, so a burst identity already exhausted answers 429 on its first request, which still
+counts. Both keys are read from OpenBao in `no_log` tasks; the report carries statuses and error
+codes only. A workable probe budget is below about five times the per-request charge of the chosen
+model (local-dev uses 50 against roughly 94 tokens per completion); a budget above what five attempts
+can exhaust ends the run "NOT proven", loudly, never as a false pass.
 
 ## Verification log
 

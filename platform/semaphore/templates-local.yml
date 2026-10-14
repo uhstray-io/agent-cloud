@@ -106,6 +106,8 @@ templates:
     playbook: platform/playbooks/deploy-agentgateway.yml
   - name: "Manage agentgateway Client Key (Local)"
     playbook: platform/playbooks/manage-agentgateway-client-key.yml
+  - name: "Probe agentgateway Isolation (Local)"
+    playbook: platform/playbooks/probe-agentgateway-isolation.yml
 
   # postiz - social publishing (app + postgres + redis + temporal + temporal-pg;
   # native OIDC, API-key automation endpoint ungated at the edge).

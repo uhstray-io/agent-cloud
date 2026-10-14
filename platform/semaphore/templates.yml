@@ -981,6 +981,25 @@ templates:
     playbook: platform/playbooks/probe-agentgateway-gate.yml
     repository: agent-cloud dev
 
+  # Encoded proof of gateway task 4.5 "One client cannot exceed its share": drive one low-budget
+  # identity to HTTP 429 budget_exceeded and show a second identity is still served 200. Real
+  # (tiny) completions; refuses an identity whose budget is above 1000 tokens/hour. Reads the two
+  # client keys from OpenBao in no_log tasks, never prints one. Dev-bound until promotion.
+  - name: Probe agentgateway Isolation (Dev)
+    playbook: platform/playbooks/probe-agentgateway-isolation.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: agw_isolation_burst
+        title: "Burst identity"
+        description: "A dedicated probe identity declared in agw_clients with agw_client_policies.<name>.tokens_per_hour of at most 1000 (the probe drives it past its budget)"
+        type: string
+        required: true
+      - name: agw_isolation_control
+        title: "Control identity"
+        description: "The identity that must stay served (leave blank for the first other declared identity)"
+        type: string
+        required: false
+
   - name: Deploy honcho
     playbook: platform/playbooks/deploy-honcho.yml
     dev_variant: true
@@ -2105,6 +2124,19 @@ templates:
     # Uses the private proxmox_pbs_storage_node declaration on the sole o11y_svc
     # host. Reports coarse aggregate counts/bands only; no node, device, storage,
     # capacity value, or private identifier is visible. No selection or writes.
+
+  - name: Identify o11y PBS Storage Candidate (Dev)
+    playbook: platform/playbooks/survey-o11y-pbs-storage-candidate.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for the read-only storage-candidate selector"
+        type: string
+        required: true
+    # Reuses the protected physical-storage survey. Reports only the candidate
+    # storage ID for private review; no selection is written and no Proxmox API
+    # mutation is performed.
 
   - name: Survey o11y Log Source (Dev)
     playbook: platform/playbooks/survey-o11y-log-source.yml

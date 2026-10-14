@@ -285,13 +285,18 @@ all:
           # into secret/services/agentgateway and reuses it on every deploy.
           agw_clients:
             - dev-local
+            - isolation-probe
             # The MCP target's own identity (agentgateway-mcp task 4.2): the gateway presents its key
             # to its own /v1 over the loopback listener, so a model request made through MCP is
             # charged to it and logged as `mcp-self`. Never handed out, and refused on /mcp. Enrolled
             # on /v1 whether or not MCP is on; keep it AFTER the person identities (the deploy's verify
             # defaults to the first one).
             - mcp-self
+          # isolation-probe: local probe identity for "Probe agentgateway Isolation (Dev)", a budget
+          # small enough to exhaust in two requests. Prod declares its own probe identity in site-config.
           agw_client_policies:
+            isolation-probe:
+              tokens_per_hour: 50
             mcp-self: { tokens_per_hour: 500000 }
           # MCP (agentgateway-mcp): the key-gated /mcp endpoint on the default gateway. OFF by default:
           # false renders no mcp block and no loopback gateway, and the verify asserts /mcp is not served.

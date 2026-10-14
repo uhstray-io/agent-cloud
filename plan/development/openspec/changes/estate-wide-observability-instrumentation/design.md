@@ -944,3 +944,74 @@ succeeded with six dated candidates, the newest about 225.3 hours old, and all
 protected flags unknown. No evidence ties that failure to the selected job or
 o11y VM. Backup readiness, immutability, isolated restore, capacity, and
 retention gates remain open.
+
+## 2026-10-14 thick-LVM candidate identification source slice
+
+Add a dedicated Dev-bound Semaphore template and importing playbook for private
+review of the single eligible thick-LVM image-store candidate. The wrapper imports
+the existing GET-only physical-storage survey, then invokes its inspector against
+the already registered, protected response payload; it makes no duplicate API
+reads. Refactor `_thick_lvm_facts` to return the same validated candidate rows
+alongside its sanitized aggregate facts. Normal `inspect` continues to emit no
+candidate IDs. The selector requires complete visible config/VG mappings, complete
+PV-child inventory and exact disk-path lineage with reported `used=LVM` for each
+candidate, plus exactly one candidate meeting the existing 1024-GiB reported VG
+headroom rule. Its only successful identifier is the storage ID; ambiguity,
+malformed input, incomplete lineage, or insufficient headroom yields one fixed
+refusal.
+
+This is candidate identification for a later reviewed private `site-config`
+declaration only. It does not establish local physical media, device safety,
+allocation, PBS suitability/readiness, guest filesystem readiness, backup
+immutability, restore success, VM growth, or retention eligibility. It performs no
+Proxmox mutation. The reviewed Dev-bound selector acceptance is recorded below;
+parent tasks 4.6c, 4.6d, and 4.6e remain unchecked.
+
+PR #628 merged to `dev` as `36c89cbc6d0bc9bbe3a16f62c7002e93706ff347` after
+independent approval and green CI. Semaphore publisher check 5614 and apply 5615
+passed, and unique-candidate selector task 5616 succeeded at that revision.
+Private site-config PR #84 selected the candidate, and official inventory-sync
+readback matched the merged source. This proves 4.6d1's unique-selector
+acceptance only; it does not establish physical backing, allocation authority,
+PBS readiness, restore, disk growth, or retention eligibility.
+
+### Declaring thick-LVM exact-match diagnostics
+
+The regular survey exposes four identifier-free booleans alongside the existing
+exact-match and headroom results: whether the declared storage ID is in the
+visible eligible candidate set; whether the required detail fields (`type`,
+`content`, `vgname`) match visible cluster config; whether optional `nodes` and
+`disable` fields match in both presence and value; and whether target-node status
+content matches visible config content. If there is no visible eligible
+candidate, all four diagnostics remain false. The exact-match result still
+requires candidate presence and every comparison, and declared headroom remains
+false unless exact match passes. These facts reuse existing protected responses;
+they add no reads, selection, authorization, or private values to output.
+
+Dev-bound GET-only survey task 5621 succeeded after private inventory
+synchronization. Its sanitized outcome was one visible eligible thick-LVM image
+candidate meeting the fixed 1024-GiB headroom threshold, while declared
+exact-match and all declared headroom booleans remained false. This source
+diagnostic separates the candidate-presence and config/status comparison
+outcomes. Task 4.6d1 is complete based on selector task 5616; tasks 4.6c, 4.6d,
+and 4.6e remain unchecked pending their separate proof gates. Backing media,
+allocation, PBS readiness, and restore remain unverified.
+
+**Order-insensitive list comparison follow-up (2026-10-14):** Dev-bound
+GET-only survey task 5631 succeeded at merged `dev` SHA
+`17390a4735b7525fec8499d5efea45bd82a92f45`. The receipt found one visible
+eligible candidate, confirmed the declared candidate was in that set, and
+reported matching status/config content, while required and optional detail
+config comparisons remained false. Proxmox source shows `/storage` index and
+`/storage/{id}` read both call `api_storage_config`
+([Config.pm lines 24-37, 140-158, 161-180](https://github.com/proxmox/pve-storage/blob/master/src/PVE/API2/Storage/Config.pm));
+the shared encoder joins `nodes` from hash keys and `content_hash_to_string`
+also iterates unsorted hash keys
+([Plugin.pm lines 249-257, 526-539](https://github.com/proxmox/pve-storage/blob/master/src/PVE/Storage/Plugin.pm)).
+This is a source-supported explanation for order-only false mismatches, not
+proof that either live mismatch was only ordering. Compare validated `content`
+and optional `nodes` sets across the protected responses; malformed or changed
+sets remain mismatches. Keep scalar comparisons, exact-match/headroom gates, and
+all allocation, backing, readiness, and write-authority fields fail-closed. The
+survey and source review add no Proxmox reads or writes and do not complete
+parent tasks 4.6c, 4.6d, or 4.6e.

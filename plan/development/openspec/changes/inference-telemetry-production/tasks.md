@@ -122,6 +122,10 @@
       because it requires a failure category (`diagnose-o11y-grafana-auth.yml:85-97`). Next: the
       operator attempts a Grafana sign-in and, if it fails, reruns the diagnostic inside the window.
       Not ticked.
+      2026-10-14: half of the incident's phase 3 acceptance is met: the operator confirmed
+      Grafana's Authentik sign-in on 2026-10-09 (recorded in `estate-wide-observability-instrumentation`
+      tasks.md 1.1). The other half, the operator confirming direct Authentik sign-in, is outstanding
+      (O11Y-GRAFANA-AUTH-INCIDENT.md stays PROPOSED). Manual receipt only. Not ticked.
 - [x] 1.4 `firewall_allow_rules` on the o11y host: Grafana port from the Caddy host; Loki
       push port from the two node addresses; `apply-firewall.yml` through Semaphore
       2026-10-02 rescope: rules declared in site-config#36 and applied by firewall tasks 1661
@@ -542,6 +546,10 @@
       110,843,256 bytes and 60,863 lines in 24 h. Live and declared retention still match at
       Prometheus 15d (0B size cap), Loki 7d, and Tempo 168h. These are one-day observations,
       not the seven-day capacity forecast or isolated-restore proof; 4.1 remains open.
+      2026-10-14: the threshold half is live. PR #610 (the `inference_queue_depth_high` queue
+      alert) was deployed by Deploy o11y (Dev) task 5525 at 11019dd9 (task output read from
+      production Semaphore by the lead). The remaining half, the retention increase, stays
+      blocked on the estate-wide 4.6e isolated-restore receipt. Not ticked.
 - [x] 4.2 Append dated status lines to `plan/development/05-observability.md` and
       `plan/architecture/06-observability-instrumentation.md`
       2026-10-02 rescope: PARTIAL — 05-observability.md carries the dated production lines
