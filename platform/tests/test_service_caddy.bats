@@ -121,7 +121,10 @@ _render_caddy() {  # renders $DEPLOY_DIR/templates/Caddyfile.local.j2 with the g
   tasks:
     - ansible.builtin.template: {src: "$DEPLOY_DIR/templates/Caddyfile.local.j2", dest: "$BATS_TEST_TMPDIR/Caddyfile", mode: "0644"}
 YML
-  ansible-playbook -i localhost, -c local "$BATS_TEST_TMPDIR/render.yml" >/dev/null
+  # The output is kept in render.log: a test that expects a refusal checks ITS message there, because a
+  # nonzero status alone also comes from a broken render and would pass for the wrong reason.
+  ansible-playbook -i localhost, -c local "$BATS_TEST_TMPDIR/render.yml" </dev/null >"$BATS_TEST_TMPDIR/render.log" 2>&1 \
+    || { cat "$BATS_TEST_TMPDIR/render.log" >&2; return 1; }
 }
 
 @test "caddy: an upstream_tls route proxies over mutual TLS with the mounted client leaf (task 6.2)" {
@@ -215,6 +218,20 @@ _render_mcp() {
   assert_grep -qE '^[[:space:]]*tls_server_name gateway\.dc1\.example\.internal$' "$t"
   assert_grep -qE '^[[:space:]]*tls_client_auth /etc/caddy/certs/caddy/current/cert\.pem /etc/caddy/certs/caddy/current/key\.pem$' "$t"
   assert_grep -qE '^[[:space:]]*flush_interval -1$' "$t"
+}
+
+@test "caddy: a route that sets both edge flags, or mcp_api with forward_auth, is refused at render time" {
+  # Without the refusal the if/elif chain lets the first flag win silently, and mcp_api would
+  # drop the forward_auth gate the route asked for.
+  run _render_caddy '[{host: b.test, upstream: "x:1", inference_api: true, mcp_api: true}]'
+  [ "$status" -ne 0 ]
+  assert_grep -qF 'b.test sets both inference_api and mcp_api' "$BATS_TEST_TMPDIR/render.log"
+  run _render_caddy '[{host: f.test, upstream: "x:1", mcp_api: true, forward_auth: "a:1"}]'
+  [ "$status" -ne 0 ]
+  assert_grep -qF 'f.test sets mcp_api with forward_auth' "$BATS_TEST_TMPDIR/render.log"
+  # A route that sets one edge flag still renders.
+  _render_caddy '[{host: ok.test, upstream: "x:1", mcp_api: true}, {host: ok2.test, upstream: "x:1", inference_api: true}]'
+  assert_grep -qF 'ok.test {' "$BATS_TEST_TMPDIR/Caddyfile"
 }
 
 @test "caddy: env template prod defaults match the compose defaults" {

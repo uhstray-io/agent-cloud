@@ -431,7 +431,8 @@ finding that contradicts a decision stops the work and reopens that decision.
       own bucket from finding 1.7 (G3). `tofu fmt -check` and `tofu validate` pass
       Done 2026-10-14: one expression (`local.mcp_endpoint`: host `mcp.<zone>` and path equal
       `/mcp`) feeds both the skip rule (appended LAST in `waf.tf`, so no existing rule moves) and
-      the rate-limit rule (second, last Pro slot, so the zone holds two). The bucket
+      the rate-limit rule (second, last Pro slot, so the zone holds two; `action = "log"` first,
+      like the inference rule's rollout, flipped to `block` after 6.6 measures). The bucket
       (`mcp_bucket`: per `cf.colo.id` + `ip.src`, 10 requests / 10 s, 10 s mitigation) is
       PROVISIONAL: finding 1.7 measured the three-request handshake but set no ceiling, so it
       reuses the inference bucket's shape; tasks 6.6 and 7.7 correct it from measurement.

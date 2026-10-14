@@ -30,7 +30,8 @@
    every other path, including /sse which the gateway also serves, /v1/*, /metrics and
    /health, answers 404 at the edge. No /health handle. inference_api and mcp_api share
    one macro (api_edge): the 401 gate, the streaming transport and the 404 fallthrough
-   are one definition, so the two edges cannot drift. A route sets one flag, not both.
+   are one definition, so the two edges cannot drift. A route sets one flag, not both, and
+   mcp_api takes no forward_auth: either combination is refused when the template renders.
    Optional {upstream_tls: {server_name, client_leaf}} proxies to the upstream over mutual
    TLS (gateway task 6.2, Caddy 2.11.4): `https://`, the server verified by `server_name`
    against the internal bundle in /etc/caddy/certs, and the named client leaf presented from
@@ -111,6 +112,13 @@ http://:2021 {
 }
 
 {% for r in caddy_routes | default([]) %}
+{# Refuse a route whose flags contradict each other at RENDER time, before Caddy ever loads
+   it. The branches below are an if/elif chain, so without this the first flag would win
+   silently: mcp_api next to forward_auth would drop the Authentik gate the route asked
+   for, and inference_api next to mcp_api would serve whichever branch comes first.
+   `mandatory` on a name that is never defined raises the message as a template error. #}
+{% if (r.inference_api | default(false)) and (r.mcp_api | default(false)) %}{{ caddy_route_flag_conflict | mandatory('caddy_routes: ' ~ r.host ~ ' sets both inference_api and mcp_api; a route is one allowlist edge or the other') }}{% endif %}
+{% if (r.mcp_api | default(false)) and (r.forward_auth | default('')) %}{{ caddy_route_flag_conflict | mandatory('caddy_routes: ' ~ r.host ~ ' sets mcp_api with forward_auth; the MCP edge authenticates at the gateway, and forward_auth would be silently dropped') }}{% endif %}
 {# A route may opt into a second, internal-only HTTPS listener (e.g. :8443) so
    in-network OIDC clients reach the IdP at the SAME host:port the browser uses
    — Caddy publishes host:8443 -> container:443, but in-network peers hit the

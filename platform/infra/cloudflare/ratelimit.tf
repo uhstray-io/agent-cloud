@@ -92,11 +92,25 @@ resource "cloudflare_ruleset" "ratelimit" {
     },
     # The agentgateway MCP endpoint — the zone's second and LAST Pro rate-limit rule slot.
     # Source-address bucket like the inference rule (the only characteristic the plan offers).
+    #
+    # LOG FIRST, the inference rule's own rollout (see the ROLLOUT RECORD above): the bucket is
+    # provisional and no real harness has run against it, so the rule observes until a measured
+    # figure exists and blocks nothing. FLIP `action` to "block" (and the ref to
+    # "mcp-api-ratelimit-block") after agentgateway-mcp task 6.6 measures the production
+    # handshake. The period and mitigation fields stay: the block needs them and the API accepted
+    # them on the inference log twin (no `logging` block, which only skip rules take).
+    #
+    # Case: this expression is a case-sensitive `eq "/mcp"`, while Caddy's `path` matcher is not,
+    # so `/MCP` is not counted here. ACCEPTED: `/MCP` does not match the challenge skip rule in
+    # waf.tf either, so a machine client sending it is answered by the managed challenge before
+    # Caddy, and a request that does reach Caddy is still gated by the gateway's own key check.
+    # No lower() on the path: widening the expression to the casings Caddy tolerates would widen
+    # the challenge bypass with it.
     {
-      ref         = "mcp-api-ratelimit-block"
-      action      = "block"
+      ref         = "mcp-api-ratelimit-log"
+      action      = "log"
       enabled     = true
-      description = "MCP API - block a source exceeding 10 req / 10 s on /mcp (10 s mitigation; provisional)"
+      description = "MCP API - log a source exceeding 10 req / 10 s on /mcp (observe only until measured; provisional)"
       expression  = local.mcp_endpoint
       ratelimit   = local.mcp_bucket
     },

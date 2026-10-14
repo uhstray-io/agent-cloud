@@ -60,12 +60,17 @@ _rule() {
   refute_grep -qiE 'mcp' "$BATS_TEST_TMPDIR/inf-locals.tf"
 }
 
-@test "cloudflare mcp: exactly one MCP rate-limit rule, its own bucket, and two rules on the zone (Pro cap)" {
-  _rule "$CF/ratelimit.tf" mcp-api-ratelimit-block > "$BATS_TEST_TMPDIR/mcp-rl.tf"
+@test "cloudflare mcp: exactly one MCP rate-limit rule, log-first, its own bucket, two rules on the zone (Pro cap)" {
+  _rule "$CF/ratelimit.tf" mcp-api-ratelimit-log > "$BATS_TEST_TMPDIR/mcp-rl.tf"
   [ -s "$BATS_TEST_TMPDIR/mcp-rl.tf" ]
+  # Observe only until agentgateway-mcp task 6.6 measures a real handshake: the bucket is provisional.
+  assert_grep -qE '^[[:space:]]*action[[:space:]]+= "log"$' "$BATS_TEST_TMPDIR/mcp-rl.tf"
+  refute_grep -qE '"block"' "$BATS_TEST_TMPDIR/mcp-rl.tf"
   assert_grep -qE '^[[:space:]]*expression[[:space:]]+= local\.mcp_endpoint$' "$BATS_TEST_TMPDIR/mcp-rl.tf"
   assert_grep -qE '^[[:space:]]*ratelimit[[:space:]]+= local\.mcp_bucket$' "$BATS_TEST_TMPDIR/mcp-rl.tf"
-  [ "$(grep -c 'mcp-api-ratelimit-block' "$CF/ratelimit.tf")" -eq 1 ]
+  # The API accepts `logging` only on skip rules (error 20018); a rate-limit rule must not carry it.
+  refute_grep -qE 'logging' "$BATS_TEST_TMPDIR/mcp-rl.tf"
+  [ "$(grep -c 'ref *= "mcp-api-ratelimit' "$CF/ratelimit.tf")" -eq 1 ]
   # The zone is on the Pro tier: two http_ratelimit rules at most. A third would fail at apply.
   [ "$(grep -cE '^      ref +=' "$CF/ratelimit.tf")" -eq 2 ]
   # A bucket of its own, with the IP characteristic the plan allows and a legal period.
