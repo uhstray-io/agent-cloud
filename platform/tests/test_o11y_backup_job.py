@@ -19,13 +19,20 @@ from reconcile_proxmox_backup_job import (  # noqa: E402
     HISTORY_MAX_ROWS,
     HISTORY_PAGE_SIZE,
     HISTORY_RECENCY_SECONDS,
+    NODE_TASK_LOOKBACK_SECONDS,
+    TASK_LOG_MAX_LINES,
     _safe_refusal,
     assert_unchanged,
     inspect_candidates,
     main,
     plan_history_pages,
+    plan_node_failure_log_page,
     prepare_history_query,
+    prepare_node_failure_plan,
+    prepare_node_task_query,
     prepare_plan,
+    summarize_node_failure_log,
+    summarize_node_task_history,
     summarize_scheduler_state,
     summarize_task_history,
     verify_readback,
@@ -278,6 +285,7 @@ def history_plan(until=2_000):
 
 def test_history_query_requires_positive_node_scoped_sys_audit():
     for permissions in (
+        permission_response({"Sys.Audit": 0}),
         permission_response({"Sys.Audit": True}),
         permission_response({"Sys.Audit": False}),
         permission_response({"Sys.Audit": "1"}),
@@ -285,6 +293,8 @@ def test_history_query_requires_positive_node_scoped_sys_audit():
         permission_response({}),
         permission_response({"Sys.Audit": 1}, path="/nodes/other-node"),
         permission_response(status=403),
+        {"status": True, "json": {"data": {"/nodes/node-a": {"Sys.Audit": 1}}}},
+        {"status": "200", "json": {"data": {"/nodes/node-a": {"Sys.Audit": 1}}}},
         {"status": 200, "json": {"data": []}},
     ):
         result = prepare_history_query({
@@ -303,11 +313,10 @@ def test_history_query_requires_positive_node_scoped_sys_audit():
         assert "/nodes/other-node" not in json.dumps(result)
 
 
-@pytest.mark.parametrize("propagation", [0, 1])
-def test_history_query_accepts_valid_sys_audit_propagation_flags(propagation):
+def test_history_query_accepts_only_integer_one_for_sys_audit():
     result = prepare_history_query({
         "node": "node-a", "vmid": "200", "until": 2_000,
-        "permissions_response": permission_response({"Sys.Audit": propagation}),
+        "permissions_response": permission_response({"Sys.Audit": 1}),
     })
 
     assert result["read_allowed"] is True
@@ -616,6 +625,503 @@ def test_scheduler_state_invalid_or_contradictory_combinations_remain_unknown(
     assert result == {"status": "unknown", "reason": "state_unavailable"}
 
 
+def node_history_plan(until=2_000):
+    return prepare_node_task_query({
+        "node": "node-a", "vmid": "200", "until": until,
+        "permissions_response": permission_response(),
+    })
+
+
+def node_task_row(index, **overrides):
+    row = {
+        "starttime": 1_000 + index,
+        "endtime": 1_001 + index, "type": "vzdump", "id": "201", "status": "OK",
+    }
+    row.update(overrides)
+    if "endtime" not in overrides:
+        row["endtime"] = row["starttime"] + 1
+    row.setdefault(
+        "upid",
+        f"UPID:node-a:00000001:00000001:{row['starttime']:08x}:vzdump:{row['id'] or ''}:root@pam:",
+    )
+    return row
+
+
+def test_node_history_query_requires_existing_exact_node_scoped_sys_audit():
+    for permissions in (
+        permission_response({"Sys.Audit": 0}),
+        permission_response({"Sys.Audit": True}),
+        permission_response({"Sys.Audit": False}),
+        permission_response({"Sys.Audit": "1"}),
+        permission_response({}),
+        permission_response(path="/nodes/other-node"),
+        permission_response(status=403),
+        {"status": True, "json": {"data": {"/nodes/node-a": {"Sys.Audit": 1}}}},
+        {"status": "200", "json": {"data": {"/nodes/node-a": {"Sys.Audit": 1}}}},
+        {"status": 200, "json": {"data": []}},
+    ):
+        result = prepare_node_task_query({
+            "node": "node-a", "vmid": "200", "until": 2_000,
+            "permissions_response": permissions,
+        })
+        assert result["read_allowed"] is False
+        assert result["summary"]["status"] == "unknown"
+        assert result["summary"]["reason"] == "permission_unverified"
+
+
+def test_node_history_query_uses_fixed_72_hour_window_without_vmid_filter():
+    until = 2_000_000_000
+    result = prepare_node_task_query({
+        "node": "node-a", "vmid": "200", "until": until,
+        "permissions_response": permission_response(),
+    })
+
+    assert result["read_allowed"] is True
+    assert result["query"] == {
+        "source": "archive", "typefilter": "vzdump",
+        "since": until - NODE_TASK_LOOKBACK_SECONDS, "until": until,
+        "start": 0, "limit": HISTORY_PAGE_SIZE,
+    }
+    assert NODE_TASK_LOOKBACK_SECONDS == 72 * 60 * 60
+    assert "vmid" not in result["query"]
+
+
+@pytest.mark.parametrize("node", ["../node-a", "node/a", "node.a", "node-a/"])
+def test_node_history_query_rejects_nodes_outside_proxmox_node_syntax(node):
+    with pytest.raises(ValueError):
+        prepare_node_task_query({
+            "node": node, "vmid": "200", "until": 2_000,
+            "permissions_response": permission_response(),
+        })
+
+
+def test_node_history_query_accepts_only_integer_one_for_sys_audit():
+    result = prepare_node_task_query({
+        "node": "node-a", "vmid": "200", "until": 2_000,
+        "permissions_response": permission_response({"Sys.Audit": 1}),
+    })
+
+    assert result["read_allowed"] is True
+
+
+def test_node_history_empty_and_target_plus_missing_id_rows_are_allowlisted():
+    plan = node_history_plan()
+    empty = summarize_node_task_history({
+        "plan": plan, "first_page": task_page([], 0), "later_pages": [],
+    })
+    rows = [
+        node_task_row(1, starttime=1_800, endtime=1_801, id="200", user="private-user"),
+        node_task_row(
+            2, starttime=1_900, endtime=1_901, id=None,
+            status="ERROR: private-status-detail", user="private-user",
+        ),
+        node_task_row(3, starttime=1_950, endtime=1_951, id=""),
+    ]
+    result = summarize_node_task_history({
+        "plan": plan, "first_page": task_page(rows, 3), "later_pages": [],
+    })
+
+    assert empty["total_recent_node_vzdump_tasks"] == 0
+    assert empty["latest_task_outcome"] == "none"
+    assert result == {
+        "status": "complete", "reason": None,
+        "total_recent_node_vzdump_tasks": 3,
+        "target_vmid_task_id_count": 1,
+        "potential_multi_vm_or_unattributed_task_count": 2,
+        "job_attribution": "unavailable",
+        "latest_task_outcome": "success", "latest_task_recency": "within_26h",
+    }
+    encoded = json.dumps(result)
+    for private in ("UPID:", '"id"', "node-a", "200", "private-user", "private-status-detail"):
+        assert private not in encoded
+
+
+def test_node_history_unknown_latest_status_returns_fixed_unknown_receipt():
+    result = summarize_node_task_history({
+        "plan": node_history_plan(),
+        "first_page": task_page([node_task_row(1, status="unexpected status")], 1),
+        "later_pages": [],
+    })
+
+    assert result == {
+        "status": "unknown", "reason": "task_status_unavailable",
+        "job_attribution": "unavailable",
+        "total_recent_node_vzdump_tasks": None,
+        "target_vmid_task_id_count": None,
+        "potential_multi_vm_or_unattributed_task_count": None,
+        "latest_task_outcome": "unknown", "latest_task_recency": "unknown",
+    }
+    assert "private-UPID" not in json.dumps(result)
+
+
+def test_node_failure_selection_requires_permission_valid_unique_recent_failure():
+    plan = node_history_plan()
+    failed = node_task_row(1, starttime=1_900, status="ERROR: secret detail")
+    result = prepare_node_failure_plan({
+        "plan": plan, "first_page": task_page([failed], 1), "later_pages": [],
+    })
+
+    assert result["read_allowed"] is True
+    assert result["metadata_path"].startswith("/api2/json/nodes/node-a/tasks/UPID%3A")
+    assert "UPID:node-a" not in result["metadata_path"]
+    assert "secret detail" not in json.dumps(result)
+
+    for old_plan, row in (
+        (plan, node_task_row(2, starttime=1_900, status="OK")),
+        (node_history_plan(until=200_000), node_task_row(3, starttime=1_000, status="ERROR: old")),
+    ):
+        not_applicable = prepare_node_failure_plan({
+            "plan": old_plan, "first_page": task_page([row], 1), "later_pages": [],
+        })
+        assert not_applicable["read_allowed"] is False
+        assert "metadata_path" not in not_applicable
+        assert not_applicable["diagnostic"]["status"] == "not_applicable"
+
+    ambiguous = prepare_node_failure_plan({
+        "plan": plan,
+        "first_page": task_page([
+            node_task_row(4, starttime=1_900, id="201", status="ERROR: one"),
+            node_task_row(5, starttime=1_900, id="202", status="ERROR: two"),
+        ], 2),
+        "later_pages": [],
+    })
+    assert ambiguous["read_allowed"] is False
+    assert ambiguous["diagnostic"] == {
+        "status": "unknown", "reason": "ambiguous_latest_task", "failure_hint": "unknown",
+    }
+
+    denied = dict(plan, read_allowed=False)
+    refused = prepare_node_failure_plan({"plan": denied, "first_page": task_page([failed], 1), "later_pages": []})
+    assert refused["read_allowed"] is False
+    assert refused["diagnostic"]["reason"] == "permission_unverified"
+
+
+def test_unprefixed_proxmox_job_error_plans_only_the_bounded_metadata_get():
+    result = prepare_node_failure_plan({
+        "plan": node_history_plan(),
+        "first_page": task_page([node_task_row(1, starttime=1_900, status="job errors")], 1),
+        "later_pages": [],
+    })
+
+    assert result["read_allowed"] is True
+    assert result["metadata_path"].startswith("/api2/json/nodes/node-a/tasks/UPID%3A")
+    assert result["metadata_path"].endswith("/log?start=0&limit=1")
+    assert "job%20errors" not in result["metadata_path"]
+    assert "job errors" not in json.dumps(result)
+
+
+def test_node_failure_selection_refuses_malformed_task_identity_and_listing_drift():
+    malformed = node_task_row(1, starttime=1_900, status="ERROR: private", upid="private-UPID")
+    result = prepare_node_failure_plan({
+        "plan": node_history_plan(), "first_page": task_page([malformed], 1), "later_pages": [],
+    })
+    assert result["read_allowed"] is False
+    assert result["diagnostic"]["reason"] == "node_history_unavailable"
+    assert "private-UPID" not in json.dumps(result)
+
+    drift = prepare_node_failure_plan({
+        "plan": node_history_plan(), "first_page": task_page([node_task_row(1)], 2), "later_pages": [],
+    })
+    assert drift["read_allowed"] is False
+    assert "metadata_path" not in drift
+
+
+@pytest.mark.parametrize("upid", [
+    "UPID:node-a:0000001:00000001:0000076c:vzdump:200:root@pam:",
+    "UPID:node-a:00000001:0000000010:0000076c:vzdump:200:root@pam:",
+    "UPID:node-a:00000001:00000001:000076c:vzdump:200:root@pam:",
+    "UPID:node-a:00000001:00000001:0000076c:vzdump:../200:root@pam:",
+    "UPID:node-a:00000001:00000001:0000076c:vzdump:200/../201:root@pam:",
+    "UPID:node-a:00000001:00000001:0000076c:vzdump:200?:root@pam:",
+    "UPID:node-a:00000001:00000001:0000076c:vzdump:200#root@pam:",
+    "UPID:node-a:00000001:00000001:0000076c:vzdump:200%2froot@pam:",
+    "UPID:node-b:00000001:00000001:0000076c:vzdump:200:root@pam:",
+    "UPID:node-a:00000001:00000001:0000076c:other:200:root@pam:",
+    "UPID:node-a:00000001:00000001:0000076c:vzdump:200:unsupported-user:",
+    "UPID:node-a:00000001:00000001:0000076c:vzdump:200:root@pam",
+    "UPID:node-a:00000001:00000001:0000076c:vzdump:200:root@pam:trailing",
+])
+def test_node_failure_selection_rejects_malformed_or_path_injected_upids(upid):
+    result = prepare_node_failure_plan({
+        "plan": node_history_plan(),
+        "first_page": task_page([node_task_row(1, starttime=1_900, status="job errors", upid=upid)], 1),
+        "later_pages": [],
+    })
+
+    assert result["read_allowed"] is False
+    assert result["diagnostic"]["reason"] == "node_history_unavailable"
+    assert "metadata_path" not in result
+
+
+@pytest.mark.parametrize("user", ["root@pam", "operator@pam!automation"])
+def test_node_failure_selection_accepts_supported_upid_users(user):
+    upid = f"UPID:node-a:00000001:00000001:0000076c:vzdump::{user}:"
+    result = prepare_node_failure_plan({
+        "plan": node_history_plan(),
+        "first_page": task_page([node_task_row(1, starttime=1_900, status="job errors", upid=upid)], 1),
+        "later_pages": [],
+    })
+
+    assert result["read_allowed"] is True
+
+
+def test_task_log_metadata_read_plans_only_the_last_bounded_page():
+    selected = prepare_node_failure_plan({
+        "plan": node_history_plan(),
+        "first_page": task_page([node_task_row(1, starttime=1_900, status="ERROR: private")], 1),
+        "later_pages": [],
+    })
+    result = plan_node_failure_log_page({
+        **selected,
+        "metadata_response": {"status": 200, "json": {"total": 150, "data": [{"n": 1, "t": "private first line"}]}},
+    })
+
+    assert result["read_allowed"] is True
+    assert result["start"] == 50
+    assert result["limit"] == TASK_LOG_MAX_LINES
+    assert "start=50&limit=100" in result["log_path"]
+    assert "private first line" not in json.dumps(result)
+
+    small = plan_node_failure_log_page({
+        **selected,
+        "metadata_response": {"status": 200, "json": {"total": 3, "data": [{"n": 1, "t": "secret"}]}},
+    })
+    assert small["start"] == 0
+    assert small["limit"] == 3
+
+
+def test_task_log_accepts_realistic_one_based_proxmox_rows_and_rejects_zero_based_rows():
+    metadata = plan_node_failure_log_page({
+        "read_allowed": True,
+        "metadata_path": "/api2/json/nodes/node-a/tasks/UPID%3Ax/log?start=0&limit=1",
+        "metadata_response": {"status": 200, "json": {"total": 3, "data": [{"n": 1, "t": "first"}]}},
+    })
+    assert metadata["read_allowed"] is True
+    assert metadata["start"] == 0
+    assert metadata["limit"] == 3
+
+    summary = summarize_node_failure_log({
+        "page_plan": metadata,
+        "log_response": {
+            "status": 200,
+            "json": {"total": 3, "data": [
+                {"n": 1, "t": "starting backup"},
+                {"n": 2, "t": "No space left on device"},
+                {"n": 3, "t": "finished with errors"},
+            ]},
+        },
+    })
+    assert summary == {"status": "diagnosed", "reason": None, "failure_hint": "no_space"}
+
+    final_page = summarize_node_failure_log({
+        "page_plan": {"read_allowed": True, "total": 150, "start": 50, "limit": 100},
+        "log_response": {"status": 200, "json": {"total": 150, "data": [
+            {"n": index + 51, "t": "No space left on device" if index == 49 else "backup output"}
+            for index in range(100)
+        ]}},
+    })
+    assert final_page == {"status": "diagnosed", "reason": None, "failure_hint": "no_space"}
+
+    zero_based_metadata = plan_node_failure_log_page({
+        "read_allowed": True,
+        "metadata_path": "/api2/json/nodes/node-a/tasks/UPID%3Ax/log?start=0&limit=1",
+        "metadata_response": {"status": 200, "json": {"total": 3, "data": [{"n": 0, "t": "first"}]}},
+    })
+    assert zero_based_metadata["read_allowed"] is False
+    assert zero_based_metadata["diagnostic"]["status"] == "unknown"
+
+    zero_based_page = summarize_node_failure_log({
+        "page_plan": {"read_allowed": True, "total": 101, "start": 1, "limit": 100},
+        "log_response": {"status": 200, "json": {"total": 101, "data": [
+            {"n": index + 1, "t": "No space left on device" if index == 0 else "backup output"}
+            for index in range(100)
+        ]}},
+    })
+    assert zero_based_page == {"status": "unknown", "reason": "log_invalid", "failure_hint": "unknown"}
+
+
+@pytest.mark.parametrize("text", ["no content", "unable to open file - private path"])
+def test_task_log_synthetic_empty_or_missing_file_rows_are_never_diagnosed(text):
+    result = summarize_node_failure_log({
+        "page_plan": {"read_allowed": True, "total": 1, "start": 0, "limit": 1},
+        "log_response": {"status": 200, "json": {"total": 1, "data": [{"n": 1, "t": text}]}},
+    })
+    assert result == {"status": "unknown", "reason": "log_invalid", "failure_hint": "unknown"}
+    assert text not in json.dumps(result)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"total": True, "data": [{"n": 1, "t": "secret"}]},
+        {"total": 10_000_001, "data": [{"n": 1, "t": "secret"}]},
+        {"total": 2, "data": []},
+        {"total": 2, "data": [{"n": 2, "t": "secret"}]},
+        {"total": 2, "data": [{"n": 1, "t": "x" * 4097}]},
+        {"total": 2, "data": [{"n": 1, "t": "secret", "private": "value"}]},
+        {"total": 1, "data": [{"n": 1, "t": "no content"}]},
+        {"total": 1, "data": [{"n": 1, "t": "unable to open file - private path"}]},
+    ],
+)
+def test_task_log_metadata_schema_and_size_fail_closed(body):
+    selected = {
+        "read_allowed": True,
+        "metadata_path": "/api2/json/nodes/node-a/tasks/UPID%3Ax/log?start=0&limit=1",
+    }
+    result = plan_node_failure_log_page({
+        **selected, "metadata_response": {"status": 200, "json": body},
+    })
+    assert result["read_allowed"] is False
+    assert result["diagnostic"] == {
+        "status": "unknown", "reason": "metadata_invalid", "failure_hint": "unknown",
+    }
+    assert "secret" not in json.dumps(result)
+
+
+@pytest.mark.parametrize(
+    ("line", "hint"),
+    [
+        ("No space left on device at /private/path", "no_space"),
+        ("storage unavailable: private-storage", "storage_unavailable"),
+        ("Permission denied for user@example", "permission_denied"),
+        ("unable to acquire lock for VM 200", "guest_lock"),
+        ("connection timed out to https://private", "transport"),
+        ("failure detail with secret=private-value", "unknown"),
+    ],
+)
+def test_task_log_failure_hint_is_allowlisted_and_redacts_raw_content(line, hint):
+    page_plan = {"read_allowed": True, "total": 1, "start": 0, "limit": 1}
+    result = summarize_node_failure_log({
+        "page_plan": page_plan,
+        "log_response": {"status": 200, "json": {"total": 1, "data": [{"n": 1, "t": line}]}},
+    })
+    assert result == {"status": "diagnosed", "reason": None, "failure_hint": hint}
+    assert line not in json.dumps(result)
+    assert "/private/" not in json.dumps(result)
+    assert "private-value" not in json.dumps(result)
+
+
+def test_task_log_cli_output_and_malformed_input_are_fixed_and_redacted(monkeypatch, capsys):
+    line = "No space left at /private/storage with token=secret-value"
+    monkeypatch.setattr(sys, "argv", ["reconcile_proxmox_backup_job.py", "node-failure-summary"])
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps({
+        "page_plan": {"read_allowed": True, "total": 1, "start": 0, "limit": 1},
+        "log_response": {"status": 200, "json": {"total": 1, "data": [{"n": 1, "t": line}]}},
+    })))
+    assert main() == 0
+    captured = capsys.readouterr()
+    assert json.loads(captured.out) == {"status": "diagnosed", "reason": None, "failure_hint": "no_space"}
+    assert captured.err == ""
+    assert line not in captured.out and "/private/storage" not in captured.out and "secret-value" not in captured.out
+
+    monkeypatch.setattr(sys, "argv", ["reconcile_proxmox_backup_job.py", "node-failure-summary"])
+    monkeypatch.setattr(sys, "stdin", io.StringIO("malformed private payload"))
+    assert main() == 0
+    captured = capsys.readouterr()
+    assert json.loads(captured.out) == {"status": "unknown", "reason": "log_invalid", "failure_hint": "unknown"}
+    assert captured.err == ""
+    assert "private payload" not in captured.out
+
+
+@pytest.mark.parametrize(("operation", "expected"), [
+    ("node-failure-plan", {
+        "read_allowed": False,
+        "diagnostic": {"status": "unknown", "reason": "node_history_unavailable", "failure_hint": "unknown"},
+    }),
+    ("node-failure-pages", {
+        "read_allowed": False,
+        "diagnostic": {"status": "unknown", "reason": "metadata_invalid", "failure_hint": "unknown"},
+    }),
+    ("node-failure-summary", {
+        "status": "unknown", "reason": "log_invalid", "failure_hint": "unknown",
+    }),
+])
+def test_node_failure_cli_rejects_non_mapping_json_with_fixed_output(
+    operation, expected, monkeypatch, capsys,
+):
+    monkeypatch.setattr(sys, "argv", ["reconcile_proxmox_backup_job.py", operation])
+    monkeypatch.setattr(sys, "stdin", io.StringIO('["private input"]'))
+
+    assert main() == 0
+    captured = capsys.readouterr()
+    assert json.loads(captured.out) == expected
+    assert captured.err == ""
+    assert "private input" not in captured.out
+
+
+def test_task_log_rejects_pagination_drift_numbering_and_unbounded_responses():
+    page_plan = {"read_allowed": True, "total": 101, "start": 1, "limit": 100}
+    for total, rows in (
+        (102, [{"n": 1, "t": "secret"}] * 100),
+        (101, [{"n": index + 3, "t": "secret"} for index in range(100)]),
+        (101, [{"n": index + 1, "t": "secret"} for index in range(100)]),
+        (101, [{"n": index + 2, "t": "x" * 4097} for index in range(100)]),
+    ):
+        result = summarize_node_failure_log({
+            "page_plan": page_plan,
+            "log_response": {"status": 200, "json": {"total": total, "data": rows}},
+        })
+        assert result == {"status": "unknown", "reason": "log_invalid", "failure_hint": "unknown"}
+        assert "secret" not in json.dumps(result)
+
+
+@pytest.mark.parametrize(
+    "rows",
+    [
+        [node_task_row(1, type="other")],
+        [node_task_row(1, starttime=2_001)],
+        [node_task_row(1, status=None)],
+        [node_task_row(1), node_task_row(1)],
+        [node_task_row(1, id="private-id")],
+    ],
+)
+def test_node_history_malformed_rows_become_sanitized_unknown(rows):
+    result = summarize_node_task_history({
+        "plan": node_history_plan(), "first_page": task_page(rows, len(rows)), "later_pages": [],
+    })
+
+    assert result["status"] == "unknown"
+    assert result["total_recent_node_vzdump_tasks"] is None
+    assert "private" not in json.dumps(result)
+    assert "UPID" not in json.dumps(result)
+
+
+def test_node_history_unbounded_incomplete_and_failed_responses_are_unknown():
+    plan = node_history_plan()
+    over_bound = task_page([node_task_row(i) for i in range(HISTORY_PAGE_SIZE)], HISTORY_MAX_ROWS + 1)
+    incomplete = summarize_node_task_history({
+        "plan": plan, "first_page": task_page([node_task_row(i) for i in range(HISTORY_PAGE_SIZE)], 51),
+        "later_pages": [],
+    })
+    bounded = summarize_node_task_history({
+        "plan": plan, "first_page": over_bound, "later_pages": [],
+    })
+    failed = summarize_node_task_history({
+        "plan": plan, "first_page": {"status": 403, "json": {}}, "later_pages": [],
+    })
+
+    assert incomplete["reason"] == "pagination_incomplete"
+    assert bounded["reason"] == "pagination_limit_exceeded"
+    assert failed["reason"] == "request_failed"
+
+
+def test_node_history_summarizes_complete_multi_page_response():
+    plan = node_history_plan()
+    rows = [node_task_row(index) for index in range(HISTORY_PAGE_SIZE + 1)]
+    result = summarize_node_task_history({
+        "plan": plan,
+        "first_page": task_page(rows[:HISTORY_PAGE_SIZE], len(rows)),
+        "later_pages": [task_page(rows[HISTORY_PAGE_SIZE:], len(rows))],
+    })
+
+    assert result["status"] == "complete"
+    assert result["total_recent_node_vzdump_tasks"] == HISTORY_PAGE_SIZE + 1
+    assert result["target_vmid_task_id_count"] == 0
+    assert result["potential_multi_vm_or_unattributed_task_count"] == 0
+    assert result["job_attribution"] == "unavailable"
+    assert "private-UPID" not in json.dumps(result)
+
+
 def test_playbook_requires_reviewed_dev_and_guards_every_mutation():
     plays = yaml.safe_load((ROOT / "platform/playbooks/reconcile-o11y-backup-job.yml").read_text())
     play = next(item for item in plays if item.get("name") == "Reconcile the declared o11y backup job")
@@ -648,6 +1154,10 @@ def test_playbook_requires_reviewed_dev_and_guards_every_mutation():
         "Require one exact private selected backup job"
     ) < names.index("Read the selected backup-job detail")
     assert by_name["End after read-only backup-job inspection"][1]["when"] == "_inspect_only"
+    history_get = by_name["Read the first archived vzdump task page"][1]
+    assert history_get["ansible.builtin.uri"]["method"] == "GET"
+    assert history_get["when"] == "_inspect_only and _backup_history_query.read_allowed | bool"
+    assert history_get["no_log"] is True and history_get["check_mode"] is False
     scheduler_get = by_name["Read pvescheduler state after verified node-scoped permission"][1]
     assert scheduler_get["ansible.builtin.uri"]["method"] == "GET"
     assert "/api2/json/nodes/{{ _node }}/services/pvescheduler/state" in scheduler_get[
@@ -663,6 +1173,66 @@ def test_playbook_requires_reviewed_dev_and_guards_every_mutation():
     assert scheduler_parse["no_log"] is True
     assert scheduler_parse["when"] == "_inspect_only"
     assert by_name["Keep the sanitized scheduler state private to this run"][1]["no_log"] is True
+    node_query = by_name["Plan bounded node-wide archived vzdump history inspection"][1]
+    assert node_query["ansible.builtin.command"]["argv"][2] == "node-history-query"
+    assert node_query["no_log"] is True
+    assert node_query["when"] == "_inspect_only"
+    node_get = by_name["Read the first node-wide archived vzdump task page"][1]
+    node_url = node_get["ansible.builtin.uri"]["url"]
+    assert node_get["ansible.builtin.uri"]["method"] == "GET"
+    assert "source=archive" in node_url and "typefilter=vzdump" in node_url
+    assert "since=" in node_url and "until=" in node_url
+    assert "start=0&limit=50" in node_url and "vmid" not in node_url
+    assert node_get["when"] == "_inspect_only and _backup_node_history_query.read_allowed | bool"
+    assert node_get["no_log"] is True and node_get["check_mode"] is False
+    node_pages = by_name["Plan remaining bounded node-history pages"][1]
+    assert node_pages["ansible.builtin.command"]["argv"][2] == "history-pages"
+    node_later = by_name["Read later node-wide archived vzdump task pages"][1]
+    assert node_later["loop"] == "{{ _backup_node_history_pages.page_starts }}"
+    assert "start=' ~ item ~ '&limit=50'" in node_later["ansible.builtin.uri"]["url"]
+    assert "vmid" not in node_later["ansible.builtin.uri"]["url"]
+    assert node_later["no_log"] is True and node_later["check_mode"] is False
+    node_summary = by_name[
+        "Summarize node-wide archived task history without task identity or details"
+    ][1]
+    assert node_summary["ansible.builtin.command"]["argv"][2] == "node-history-summary"
+    assert node_summary["no_log"] is True
+    assert "no_log" not in by_name[
+        "Keep the sanitized node-history summary private to this run"
+    ][1]
+    failure_select = by_name["Select one recent failed node task for a bounded diagnostic"][1]
+    assert failure_select["ansible.builtin.command"]["argv"][2] == "node-failure-plan"
+    assert failure_select["no_log"] is True and failure_select["when"] == "_inspect_only"
+    metadata_get = by_name["Read one task-log metadata line for a recent unique failure"][1]
+    assert metadata_get["ansible.builtin.uri"]["method"] == "GET"
+    assert "metadata_path" in metadata_get["ansible.builtin.uri"]["url"]
+    assert metadata_get["no_log"] is True and metadata_get["check_mode"] is False
+    assert "read_allowed" in metadata_get["when"]
+    log_plan = by_name["Plan the bounded final task-log page"][1]
+    assert log_plan["ansible.builtin.command"]["argv"][2] == "node-failure-pages"
+    assert log_plan["no_log"] is True
+    log_get = by_name["Read the bounded final task-log lines"][1]
+    assert log_get["ansible.builtin.uri"]["method"] == "GET"
+    assert log_get["no_log"] is True and log_get["check_mode"] is False
+    assert "read_allowed" in log_get["when"]
+    log_summary = by_name["Classify task log into a fixed failure hint"][1]
+    assert log_summary["ansible.builtin.command"]["argv"][2] == "node-failure-summary"
+    assert log_summary["no_log"] is True
+    assert "no_log" not in by_name["Keep sanitized node-task failure diagnostic"][1]
+    assert names.index("Read effective permissions on the declared Proxmox node") < names.index(
+        "Plan bounded node-wide archived vzdump history inspection"
+    ) < names.index("Read the first node-wide archived vzdump task page") < names.index(
+        "Report backup-job candidates for inventory selection"
+    )
+    assert "proxmox_node_task_history" in by_name[
+        "Report backup-job candidates for inventory selection"
+    ][1]["ansible.builtin.debug"]["msg"]
+    assert "proxmox_node_task_failure_diagnostic" in by_name[
+        "Report backup-job candidates for inventory selection"
+    ][1]["ansible.builtin.debug"]["msg"]
+    assert "verified_o11y_vmid" not in by_name[
+        "Report backup-job candidates for inventory selection"
+    ][1]["ansible.builtin.debug"]["msg"]
     assert names.index("Read effective permissions on the declared Proxmox node") < names.index(
         "Read pvescheduler state after verified node-scoped permission"
     ) < names.index("Report backup-job candidates for inventory selection")

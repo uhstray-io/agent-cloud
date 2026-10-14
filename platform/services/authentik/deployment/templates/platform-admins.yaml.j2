@@ -1,0 +1,61 @@
+#jinja2: lstrip_blocks: True
+# Authentik blueprint — the platform administrators (config-as-code, idempotent).
+# RENDERED by deploy-authentik.yml from the declared administrator list
+# (platform/playbooks/vars/platform-admins.yml), one authentik_core.user per entry, each
+# a member of platform-admins (the Authentik superuser group; the top role in every SSO'd
+# app via the group contract in platform-groups.yaml). This replaces the fixed blocks that
+# were in stray-admin.yaml, agent-cloud-admin.yaml, service-account.yaml and
+# platform-users.yaml, so the list is the ONE place an administrator is declared: the
+# gateway derives its per-person identities from the same list.
+#
+# Identity (username, name, email) is baked in at render time from the inventory — never a
+# password: passwords stay `!Env <KEY>_PASSWORD`, resolved by the worker from the .env that
+# env.j2 renders (OpenBao-generated, stable across redeploys, so a re-apply never resets a
+# login). This rendered file is world-readable on the host.
+#
+# Values are emitted as JSON strings, which are valid YAML scalars, so a name or address
+# carrying a colon or a quote cannot break the document.
+#
+# To add an administrator: append an entry to the list in site-config. Nothing else — the
+# password secret and the env line are derived from the same entry.
+version: 1
+metadata:
+  name: agent-cloud - platform administrators
+entries:
+{% for a in _platform_admins %}
+{% set svc = (a.type | default('user')) == 'service_account' %}
+  # {{ a.key }}
+  - model: authentik_core.user
+{% if svc %}
+    id: {{ a.key | replace('_', '-') }}-user
+{% endif %}
+    identifiers:
+      username: {{ a.username | tojson }}
+    attrs:
+      name: {{ a.name | tojson }}
+{% if svc %}
+      type: service_account
+{% endif %}
+{% if a.email | default('') %}
+      email: {{ a.email | tojson }}
+{% endif %}
+      is_active: true
+      path: {{ 'users/service-accounts' if svc else 'users' }}
+{% if not svc %}
+      password: !Env {{ a.key | upper }}_PASSWORD
+{% endif %}
+      groups:
+        - !Find [authentik_core.group, [name, platform-admins]]
+{% if svc %}
+  - model: authentik_core.token
+    identifiers:
+      identifier: {{ a.key | replace('_', '-') }}-api-token
+    attrs:
+      user: !KeyOf {{ a.key | replace('_', '-') }}-user
+      intent: api
+      # Value is the OpenBao-managed SERVICE_ACCOUNT_TOKEN in the worker env.
+      key: !Env SERVICE_ACCOUNT_TOKEN
+      expiring: false
+      description: Platform automation API token (managed in OpenBao)
+{% endif %}
+{% endfor %}

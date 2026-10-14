@@ -37,6 +37,28 @@ all:
     local_home_dir: "__GENESIS_DIR__"
     ansible_python_interpreter: "{{ ansible_playbook_python }}"
 
+    # The platform administrators (members of the Authentik platform-admins group) are ONE
+    # declared list, read by the Authentik deploy (accounts, passwords) and the agentgateway
+    # deploy (a gateway identity per entry). It is NOT set here: with no `platform_admins` the
+    # committed default in platform/playbooks/vars/platform-admins.yml applies, built from the
+    # per-user vars (wisward_*, jacob_*, stray_admin_email). Declaring it in an inventory
+    # REPLACES that default entirely; production declares its real list in site-config. The
+    # default's shape, with placeholders only:
+    #   platform_admins:
+    #   - { key: stray_admin, username: stray, name: stray, email: stray@agent-cloud.test }
+    #   - { key: agent_cloud_admin, username: agent-cloud-admin, name: "agent-cloud Admin", email: agent-cloud-admin@agent-cloud.test }
+    #   - { key: wisward, username: wisward, name: "Platform Admin", email: wisward@agent-cloud.test }
+    #   - { key: jacob, username: jacob, name: "Platform Admin 2", email: jacob@agent-cloud.test }
+    #   - { key: svc_automation, username: svc-automation, name: "Platform Service Account", type: service_account }
+    # `key` (lowercase) names the existing OpenBao field `<key>_password` and the worker env
+    # prefix, so it must equal today's name: renaming one re-keys a stored password.
+    # `type: service_account` is Authentik-only (no email, no password); `agw_identity` is
+    # optional and gateway-only. What the credential print playbook may print is NOT driven by
+    # this list: it is a committed constant (`_platform_admins_printable_keys`) next to the
+    # default, because the list is launcher-controllable. `platform_admins_exceptions` (names only, default empty)
+    # lists platform-admins members that are deliberately not in the list; the Authentik
+    # verify accepts them and fails on any other member.
+
   children:
     # Local DNS (hickory-dns) — authoritative for the dev zone, forwards the rest.
     # Local zone: `agent-cloud.test` — under the RFC 6761 reserved `.test` TLD

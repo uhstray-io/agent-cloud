@@ -532,10 +532,37 @@ verified empty archive. It is `null` whenever the existing outcome is unknown,
 including permission, request, pagination, identity, schema, cutoff, or
 conflicting-latest-status ambiguity. Existing outcome, reason, task count,
 `job_attribution: unavailable`, the 30-day query, and inspect-only guards stay
-unchanged. Task rows remain VM-scoped and cannot establish which scheduled job
-produced an archive; this field is not job attribution, artifact presence,
-immutability, or restore readiness. Parent task 4.5a and every restore gate
-remain open.
+unchanged. Task rows remain VMID-filtered and cannot establish which scheduled
+job produced an archive; this field is not job attribution, artifact presence,
+immutability, or restore readiness. An empty result or stale latest task means
+only that no recent VMID-identified task was returned by this query.
+
+### Bounded node-wide archived vzdump history diagnostic
+
+Inspect mode MAY issue an additional read-only `GET /nodes/{node}/tasks` using
+the existing OpenBao Proxmox token only after the existing exact-node
+`/access/permissions?path=/nodes/{node}` check reports integer `Sys.Audit: 1`.
+Zero, booleans, strings, missing rights, a different path, or a failed
+permission response return `permission_unverified` without issuing the task
+GET. The query
+fixes `source=archive`, `typefilter=vzdump`, a 72-hour `since`/`until` window,
+and omits `vmid`. Reuse the existing 50-row page size and 250-row total cap;
+failed, malformed, truncated, or over-cap responses return a fixed `unknown`
+reason with all counts and recency unknown. Validate every row's `vzdump`
+type, unique task identifier, start time within the fixed window, task-ID
+shape, and nonempty status before summarizing. Keep raw API data, task
+identifiers, node, VMID, status text, and credentials under `no_log`.
+
+The sanitized receipt may report only total recent node-level `vzdump` tasks,
+the count whose task ID equals the declared VMID, and
+`potential_multi_vm_or_unattributed_task_count`, which counts rows with a
+missing or empty task ID. A missing task ID is not proof of a multi-VM run.
+Every receipt fixes `job_attribution` to `unavailable`; it cannot prove the
+selected job ran or included o11y. If the latest task outcome is unknown, return
+the fixed `task_status_unavailable` unknown receipt with counts and recency
+unknown. Task success is not backup success without a matching fresh artifact.
+This is a source-only diagnostic, not live proof, and does not close parent
+4.6e, immutable-artifact, isolated-restore, capacity, or retention gates.
 
 ## 2026-09-29 production disk-alert receipt
 
@@ -838,3 +865,38 @@ gate remain open/off.
 Alert probes and active-drill recovery also protect raw Prometheus/Grafana
 responses and every identity-bearing assertion. Their visible success receipts
 use fixed wording and contain no target labels or endpoints.
+
+## 2026-10-14 bounded Proxmox backup-task failure diagnostic
+
+Extend inspect-only backup reconciliation only after its exact-node
+`Sys.Audit=1` permission check and complete bounded 72-hour node-task listing
+pass. A unique latest failed `vzdump` task within 26 hours permits a read-only
+task-log GET: read one line to obtain `total`, then fetch at most the last 100
+lines. Proxmox `start` is a zero-based offset while returned `n` values are
+one-based (`n = start + 1` for the first returned row); require contiguous
+one-based numbering on metadata and final pages. Reject malformed UPIDs,
+unknown statuses, ties, synthetic `no content` or `unable to open file` rows,
+invalid numbering or schema, oversized output, and changed totals. Match the
+upstream UPID shape exactly: validated node, eight-hex PID, eight- or nine-hex
+process start, eight-hex start time, `vzdump`, an empty or decimal VMID, a
+supported `user@realm` or `user@realm!tokenid`, and a final colon. Classify
+status using Proxmox's normalization: `OK` is success, `WARNINGS: N` is
+incomplete, exact `unexpected status` is unknown, and other nonempty status
+text is failure ([`PVE::UPID`](https://raw.githubusercontent.com/proxmox/pve-common/master/src/PVE/UPID.pm#L15-L97)).
+Keep task identity, status, raw log, URL, URI result, parser input/output, and errors
+under scoped `no_log`; keep only sanitized history and diagnostic `set_fact`
+results visible. Publish only fixed status/reason and `no_space`,
+`storage_unavailable`, `permission_denied`, `guest_lock`, `transport`, or
+`unknown` hints. Without an eligible unique recent failure, do not request the
+task log.
+
+At exact Dev merge `5b628700fccb2abdae1961428783a9e1c9f9a39e`, inspect-only task
+5571 succeeded: scheduler running; one enabled explicit-VMID job included
+o11y; VMID-filtered history count was one with no success in 26 hours; and the
+72-hour node archive contained three tasks, zero task IDs matching the declared
+VMID, three missing/empty IDs, and a latest failure within 26 hours. Job
+attribution remained unavailable. Read-only artifact-details task 5572
+succeeded with six dated candidates, the newest about 225.3 hours old, and all
+protected flags unknown. No evidence ties that failure to the selected job or
+o11y VM. Backup readiness, immutability, isolated restore, capacity, and
+retention gates remain open.
