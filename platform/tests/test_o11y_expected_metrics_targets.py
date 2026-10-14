@@ -398,12 +398,55 @@ def test_group_migration_and_reviewed_rollback_keep_both_uid_families_owned():
     })["status"] == "validated"
 
     # Retry after Grafana has provisioned the explicit group tombstone.
-    rollback_retry = _transition(legacy_rollback, enabled=True, targets=targets, mode="legacy")
+    rollback_retry = _transition(
+        legacy_rollback, enabled=True, targets=targets, mode="legacy", group_retired=[group_uid],
+    )
     assert group_uid in rollback_retry["paused_uids"]
     assert group_uid in {row["uid"] for row in rollback_retry["tombstones"]}
 
     with pytest.raises(SURVEY.Refusal, match="group_rollback_not_explicit"):
         _transition(grouped, enabled=True, targets=targets, mode="legacy")
+    with pytest.raises(SURVEY.Refusal, match="group_rollback_not_explicit"):
+        _transition(
+            grouped, enabled=True, targets=targets, mode="legacy",
+            group_retired=["o11y_missing_g00000000000000000000000000"],
+        )
+
+
+def test_stopped_grafana_allows_unchanged_grouped_reactivation():
+    target = _expected()
+    grouped = _grouped_render([target])
+    result = _transition(
+        grouped, enabled=True, targets=[target], mode="grouped", grafana_running=False, live="",
+    )
+    assert result["reason"] == "enabled"
+    assert result["paused_uids"] == [target["uid"]]
+
+    changed = _expected(instance="changed.example.test:9100")
+    with pytest.raises(SURVEY.Refusal, match="stopped_grafana_target_drift"):
+        _transition(
+            grouped, enabled=True, targets=[changed], mode="grouped", grafana_running=False, live="",
+        )
+
+
+def test_group_rollback_ignores_retired_target_tombstones_for_identity_match():
+    active = _expected()
+    retired = _expected(uid="o11y_missing_retired", instance="retired.example.test:9100")
+    targets = [active, retired]
+    grouped = _grouped_render(targets)
+    group_uid = SURVEY.expected_target_groups(targets)[0]["uid"]
+    retire = _transition(
+        grouped, enabled=True, targets=[active], retired=[retired["uid"]], mode="grouped",
+    )
+    retired_grouped = _grouped_render(
+        [active], _o11y_expected_target_tombstones=retire["tombstones"],
+    )
+    rollback = _transition(
+        retired_grouped, enabled=True, targets=[active], retired=[retired["uid"]],
+        mode="legacy", group_retired=[group_uid],
+    )
+    assert retired["uid"] in rollback["retired_uids"]
+    assert group_uid in rollback["paused_uids"]
 
 
 def test_grouped_migration_accepts_the_dev_per_target_summary_contract():
@@ -465,7 +508,7 @@ def test_grouped_live_readback_refuses_rule_contract_drift():
 
 
 def _transition(previous, *, enabled, targets=None, retired=None, group_retired=None, mode="legacy",
-                live=None, pending=None):
+                live=None, pending=None, grafana_running=None):
     previous_text = "" if previous is None else yaml.safe_dump(previous, sort_keys=False)
     pending_text = "" if pending is None else yaml.safe_dump(pending, sort_keys=False)
     live_rules = _live_rules(previous) if live is None and previous is not None else live
@@ -477,7 +520,8 @@ def _transition(previous, *, enabled, targets=None, retired=None, group_retired=
         "mode": mode,
         "previous_rules": previous_text,
         "pending_rules": pending_text,
-        "live_rules": "" if live_rules is None else json.dumps(live_rules),
+        "grafana_running": grafana_running,
+        "live_rules": "" if live_rules is None or live_rules == "" else json.dumps(live_rules),
         "live_folders": "" if live_rules is None else json.dumps(
             [{"uid": "agent-cloud-folder", "title": "agent-cloud"}]
         ),

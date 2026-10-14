@@ -980,19 +980,61 @@ def prepare_expected_target_transition(input_document: Any) -> dict[str, Any]:
                     input_document.get("targets"), requested_retired, reviewed=True
                 )
                 current_by_uid = {target["uid"]: target for target in current}
-                if set(current_by_uid) & {
-                    uid for uid, row in baseline_by_uid.items() if row["_inert"] and not row["_retired"]
-                }:
-                    raise Refusal("stopped_grafana_reactivation")
-                active_before = {
-                    uid for uid, row in baseline_by_uid.items() if not row["_inert"] and not row["_retired"]
-                }
-                if set(current_by_uid) != active_before:
-                    raise Refusal("stopped_grafana_target_drift")
-                for uid, target in current_by_uid.items():
-                    old = baseline_by_uid[uid]
-                    if any(old[field] != target[field] for field in EXPECTED_IDENTITY_FIELDS):
-                        raise Refusal("target_identity_changed")
+                if input_document.get("mode", "legacy") == "grouped":
+                    active_groups = {
+                        uid: row for uid, row in baseline_by_uid.items()
+                        if row.get("_kind") == "group" and not row["_inert"] and not row["_retired"]
+                    }
+                    active_targets = {
+                        uid: row for uid, row in baseline_by_uid.items()
+                        if row.get("_kind") == "target" and not row["_inert"] and not row["_retired"]
+                    }
+                    if active_groups and not active_targets:
+                        expected_groups = expected_target_groups(current)
+                        if set(active_groups) != {row["uid"] for row in expected_groups}:
+                            raise Refusal("stopped_grafana_target_drift")
+                        current_identities = {
+                            tuple(target[field] for field in EXPECTED_IDENTITY_FIELDS) for target in current
+                        }
+                        previous_identities = {
+                            tuple(target[field] for field in EXPECTED_IDENTITY_FIELDS)
+                            for row in active_groups.values() for target in row["targets"]
+                        }
+                        if current_identities != previous_identities:
+                            raise Refusal("stopped_grafana_target_drift")
+                    elif not active_groups and active_targets:
+                        current_identities = {
+                            tuple(target[field] for field in EXPECTED_IDENTITY_FIELDS) for target in current
+                        }
+                        previous_identities = {
+                            tuple(row[field] for field in EXPECTED_IDENTITY_FIELDS)
+                            for row in active_targets.values()
+                        }
+                        if current_identities != previous_identities:
+                            raise Refusal("stopped_grafana_target_drift")
+                    else:
+                        raise Refusal("stopped_grafana_target_drift")
+                    if any(
+                        row.get("_kind") == "target" and row["_retired"]
+                        for uid, row in baseline_by_uid.items() if uid in current_by_uid
+                    ):
+                        raise Refusal("stopped_grafana_reactivation")
+                else:
+                    if set(current_by_uid) & {
+                        uid for uid, row in baseline_by_uid.items()
+                        if row["_inert"] and not row["_retired"]
+                    }:
+                        raise Refusal("stopped_grafana_reactivation")
+                    active_before = {
+                        uid for uid, row in baseline_by_uid.items()
+                        if not row["_inert"] and not row["_retired"]
+                    }
+                    if set(current_by_uid) != active_before:
+                        raise Refusal("stopped_grafana_target_drift")
+                    for uid, target in current_by_uid.items():
+                        old = baseline_by_uid[uid]
+                        if any(old[field] != target[field] for field in EXPECTED_IDENTITY_FIELDS):
+                            raise Refusal("target_identity_changed")
     if (grafana_running is True and not check_mode) or live_raw:
         try:
             live = json.loads(live_raw)
@@ -1103,11 +1145,14 @@ def prepare_expected_target_transition(input_document: Any) -> dict[str, Any]:
         raise Refusal("unexpected_group_retirement")
     if mode == "legacy":
         active_previous_groups = {uid for uid, row in previous_groups.items() if not row["_inert"]}
-        if active_previous_groups != set(group_retired):
+        if (
+            not active_previous_groups.issubset(set(group_retired))
+            or set(group_retired) - set(previous_groups)
+        ):
             raise Refusal("group_rollback_not_explicit")
         previous_target_identities = {
             tuple(row[field] for field in EXPECTED_IDENTITY_FIELDS)
-            for row in previous_targets.values() if row.get("job")
+            for row in previous_targets.values() if row.get("job") and not row["_retired"]
         }
         current_identities = {tuple(row[field] for field in EXPECTED_IDENTITY_FIELDS) for row in current}
         if previous_groups and previous_target_identities and previous_target_identities != current_identities:
