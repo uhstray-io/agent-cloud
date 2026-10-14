@@ -292,7 +292,19 @@ all:
           # and a key present in OpenBao is still sent (LM Studio with auth on needs it).
           # Prod leaves this unset (true = refuse an empty key).
           agw_upstream_requires_key: false
-
+          # OpenRouter models (change agentgateway-openrouter), OFF here: nothing below is declared
+          # until you uncomment it. It is billed per token, so a model is listed by name with its
+          # OpenRouter id and only the identities named in agw_openrouter_identities may call it
+          # (every other identity is denied it in config.yaml). Needs
+          # secret/services/agentgateway:openrouter_api_key (Seed OpenBao Key). A local gateway
+          # cannot verify openrouter.ai's certificate: compose.local.yml points SSL_CERT_FILE at the
+          # step-ca bundle only, so use this against production-shaped inventory, not here.
+          #   agw_models:
+          #     - { name: gpt-oss-20b, upstream_model: openai/gpt-oss-20b }
+          #     - { name: or-mini, provider: openrouter, upstream_model: openai/gpt-4o-mini }
+          #   agw_openrouter_identities: [dev-local]
+          #   agw_openrouter_admins: false   # true: every admin-derived identity may call them too
+          #   agw_verify_openrouter: false   # true: the deploy spends one 8-token completion to prove it
 
     # honcho - memory API (api + deriver on the CI-built GHCR image, own
     # pgvector Postgres + redis, all internal but the api). /v3 is JWT; /docs

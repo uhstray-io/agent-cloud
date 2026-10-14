@@ -42,6 +42,22 @@
 {% set _allow_sans = internal_leaves | default([]) | selectattr('profile', 'equalto', 'client')
      | selectattr('name', 'in', agw_client_cert_allowlist | default(['caddy']))
      | map(attribute='sans') | flatten | unique | sort %}
+{# OpenRouter models (agentgateway-openrouter): an agw_models entry with `provider: openrouter` is
+   served by the gateway's native OpenRouter provider; every other entry renders exactly as before.
+   OpenRouter bills per token, so it is denied to every identity not named in
+   agw_openrouter_identities or, with agw_openrouter_admins true, derived from platform_admins
+   (_agw_admin_identities, from the vars file; absent there, only the explicit list counts): each key entry's allowedModels below drops the OpenRouter names for
+   it (starting from its agw_client_policies allow-list, else every declared model). With no
+   OpenRouter model declared, `_or_names` is empty and this changes nothing. Computed here from
+   agw_models, not read from the vars file, so a caller that renders without that file is denied too
+   instead of silently allowed. The deploy refuses an empty union; an undeclared one renders as
+   "nobody". #}
+{% set _or_names = agw_models | selectattr('provider', 'defined') | selectattr('provider', 'equalto', 'openrouter')
+     | map(attribute='name') | list %}
+{% set _or_ids = (agw_openrouter_identities | default([]))
+     + ((_agw_admin_identities | default([]) | map(attribute='name') | list)
+        if (agw_openrouter_admins | default(false) | bool) else []) %}
+{% set _all_names = agw_models | map(attribute='name') | list %}
 {% macro listener_tls() %}
     tls:
       cert: /certs/{{ agw_server_leaf | default('agw-server') }}/current/cert.pem
@@ -201,9 +217,15 @@ llm:
 {% endif %}
         metadata:
           name: {{ c }}
-{% if _pol.allowed_models is defined %}
+{% set _has_am = _pol.allowed_models is defined %}
+{% set _am = _pol.allowed_models | default([]) %}
+{% if _or_names and c not in _or_ids %}
+{% set _has_am = true %}
+{% set _am = (_am if _pol.allowed_models is defined else _all_names) | reject('in', _or_names) | list %}
+{% endif %}
+{% if _has_am %}
         # Per-identity model allow-list (inventory agw_client_policies.<name>.allowed_models).
-        allowedModels: {{ _pol.allowed_models | to_json }}
+        allowedModels: {{ _am | to_json }}
 {% endif %}
         # Per-identity token budget, BEST-EFFORT: a rolling UTC-hour window charged
         # AFTER each response from the upstream's reported usage (upstream docs,
@@ -234,8 +256,14 @@ llm:
       - keyHash: sha256:{{ _legacy_fp_recorded | default('', true) or (secrets.vllm_api_key | hash('sha256')) }}
         metadata:
           name: legacy-shared
-{% if _lp.allowed_models is defined %}
-        allowedModels: {{ _lp.allowed_models | to_json }}
+{% set _has_am = _lp.allowed_models is defined %}
+{% set _am = _lp.allowed_models | default([]) %}
+{% if _or_names and 'legacy-shared' not in _or_ids %}
+{% set _has_am = true %}
+{% set _am = (_am if _lp.allowed_models is defined else _all_names) | reject('in', _or_names) | list %}
+{% endif %}
+{% if _has_am %}
+        allowedModels: {{ _am | to_json }}
 {% endif %}
         budgets:
         - name: hourly-tokens
@@ -262,6 +290,28 @@ llm:
         fillInterval: 60s
   models:
 {% for m in agw_models %}
+{% if (m.provider | default('')) == 'openrouter' %}
+  # OpenRouter model (agentgateway-openrouter): the native `openrouter` provider is a custom-provider
+  # preset in v1.5.0 that supplies the base URL https://openrouter.ai/api/v1 (HTTPS, so backend TLS
+  # follows) and the OpenAI-compatible formats; crates/llm/src/custom.rs:52-67,81,144-153 and
+  # crates/agentgateway/src/types/local.rs:872-875,1020-1022,1062-1064. `name` is what clients send,
+  # params.model the OpenRouter id (vendor/model). The key is an env reference expanded by the
+  # gateway from the 0600 .env; this file holds no credential. The deploy refuses a wildcard name
+  # and an empty upstream_model, so exactly the models listed here are reachable, and the key
+  # entries above allow them only to agw_openrouter_identities.
+  - name: {{ m.name }}
+    provider: openrouter
+    params:
+      model: {{ m.upstream_model }}
+      apiKey: $OPENROUTER_API_KEY
+    # Streamed chat is sent with include_usage so the per-key token budget charges it. Unlike the
+    # vLLM models above there is no continuous_usage_stats: that field is a vLLM extension and
+    # OpenRouter's tolerance of it is unverified, so usage arrives only on the final chunk and a
+    # client that disconnects before it is not charged. The same CEL shape otherwise (chat only,
+    # a client's other stream_options keys kept).
+    transformation:
+      stream_options: 'has(llmRequest.messages) && has(llmRequest.stream) && llmRequest.stream == true ? (has(llmRequest.stream_options) && type(llmRequest.stream_options) == map ? llmRequest.stream_options : {}).merge({"include_usage": true}) : llmRequest.stream_options'
+{% else %}
   # The gateway's model name equals the upstream's served name unless
   # `upstream_model` remaps it (local-dev: gpt-oss-20b -> openai/gpt-oss-20b).
   - name: {{ m.name }}
@@ -304,4 +354,5 @@ llm:
     # charged with this, and not without it (platform/tests/test_agw_stream_usage.py).
     transformation:
       stream_options: 'has(llmRequest.messages) && has(llmRequest.stream) && llmRequest.stream == true ? (has(llmRequest.stream_options) && type(llmRequest.stream_options) == map ? llmRequest.stream_options : {}).merge({"include_usage": true, "continuous_usage_stats": true}) : llmRequest.stream_options'
+{% endif %}
 {% endfor %}

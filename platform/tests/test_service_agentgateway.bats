@@ -233,8 +233,8 @@ setup() {
 
 @test "agentgateway: playbook verifies through the one probe path, asserts the 401, puts no key on an argv" {
   # Every gateway probe outside Caddy is tasks/agw-probe.yml (task 6.1a). The client key reaches
-  # exactly two tasks, both includes of that file, and inside it only a no_log `uri` header: no
-  # command or shell task ever sees it (a shell probe put it on wget's argv, PR 221 Codex review).
+  # exactly three tasks (listing, completion, and the opt-in OpenRouter completion), all includes of
+  # that file, and inside it only a no_log `uri` header: no command or shell task ever sees it (a shell probe put it on wget's argv, PR 221 Codex review).
   PROBE="$REPO_ROOT/platform/playbooks/tasks/agw-probe.yml"
   python3 - "$PLAYBOOK" "$PROBE" <<'PY'
 import sys, yaml
@@ -249,7 +249,7 @@ for play in yaml.safe_load(open(sys.argv[1])):
         body = {k: v for k, v in t.items() if k not in ("name", "when")}
         if "_resolved['client_" in str(body):
             keyed.append(t)
-assert len(keyed) == 2, [t.get("name") for t in keyed]
+assert len(keyed) == 3, [t.get("name") for t in keyed]
 for t in keyed:
     assert t.get("ansible.builtin.include_tasks") == "tasks/agw-probe.yml", t.get("name")
     assert "_resolved['client_" in t["vars"]["_agwp_key"], t.get("name")
@@ -355,7 +355,8 @@ PY
 
 @test "agentgateway: per-identity policy overrides render from inventory (allowedModels, budget)" {
   assert_grep -qF 'agw_client_policies' "$CONFIG"
-  assert_grep -qF 'allowedModels: {{ _pol.allowed_models | to_json }}' "$CONFIG"
+  assert_grep -qF 'allowedModels: {{ _am | to_json }}' "$CONFIG"
+  assert_grep -qF '_pol.allowed_models | default([])' "$CONFIG"
   assert_grep -qF '_pol.tokens_per_hour | default(agw_rate_tokens_per_hour' "$CONFIG"
 }
 

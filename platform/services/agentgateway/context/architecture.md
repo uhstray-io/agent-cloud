@@ -146,6 +146,60 @@ in place until that run reports them.
 | local-dev | `http://host.containers.internal:1234/v1` (LM Studio on the Mac) | LM Studio's API token, seeded as `vllm_api_key` with `seed-openbao-key.yml` (2026-09-17); before that, none — `params.apiKey` omitted |
 | prod | `http://<spark-1>:8000/v1` (site-config) | `secret/services/agentgateway:vllm_api_key`, seeded by a separate playbook |
 
+## OpenRouter models (change `agentgateway-openrouter`)
+
+An `agw_models` entry with `provider: openrouter` is served by agentgateway's native OpenRouter
+provider instead of the vLLM upstream, on the same `/v1`, behind the same per-identity keys and
+budgets. Entries without `provider` render exactly as before.
+
+```yaml
+agw_models:
+  - { name: gpt-oss-120b }                                                  # vLLM, as ever
+  - { name: or-mini, provider: openrouter, upstream_model: openai/gpt-4o-mini }  # name -> OpenRouter id
+agw_openrouter_identities: [skynet]   # who may call OpenRouter models
+agw_openrouter_admins: false          # true: also every admin-derived identity (default false)
+```
+
+- **Provider.** In v1.5.0 `provider: openrouter` (lowercase string) is a preset of the custom
+  provider: it supplies the base URL `https://openrouter.ai/api/v1`, so backend TLS follows from
+  the `https` scheme, and the formats completions, messages, responses, embeddings and rerank
+  (`crates/llm/src/custom.rs:52-67,81,144-153`; `crates/agentgateway/src/types/local.rs:872-875,
+  1020-1022,1062-1064`). Verified 2026-10-14 on the pinned image with `--validate-only`;
+  `openRouter` and `Openrouter` are rejected. `name` is what clients send, `params.model` the
+  OpenRouter id (`vendor/model`).
+- **Key.** `secret/services/agentgateway:openrouter_api_key`, an `existing` secret like
+  `vllm_api_key`: seeded with `Seed OpenBao Key`, never generated. It is declared and required only
+  while an OpenRouter model is declared (manage-secrets refuses its absence before any write),
+  rendered into the 0600 `.env` as `OPENROUTER_API_KEY`, and referenced from `config.yaml` as
+  `$OPENROUTER_API_KEY`; the config holds no credential.
+- **Cost guard.** OpenRouter is billed per token on the operator's account, so it is opt-in twice.
+  The deploy refuses a wildcard name, an empty or malformed `upstream_model`, an unsupported
+  `provider` value, a duplicated name, and an empty union of who may call them. The union is the
+  explicit `agw_openrouter_identities` list plus, with `agw_openrouter_admins: true` (default
+  false), every admin-derived identity (`_agw_admin_identities`, from `platform_admins` once
+  `agw_admin_identities_enabled` derives them; service clients in `agw_clients` are not in it), each
+  name once. `config.yaml.j2` then removes every OpenRouter name from the
+  `allowedModels` of each identity outside the union, including `legacy-shared`, starting
+  from its `agw_client_policies` allow-list or, with none, every declared model. The per-key
+  allow-list is checked on the requested model before any routing
+  (`crates/agentgateway/src/llm/model_router.rs:173-183`).
+- **Budget charging.** Each OpenRouter model carries the same streamed-usage transformation as the
+  vLLM models but with `include_usage` only: `continuous_usage_stats` is a vLLM extension and
+  OpenRouter's tolerance of it is unverified. Usage then arrives on the final chunk, so a client
+  that disconnects before it is not charged on an OpenRouter stream (the vLLM models keep the
+  every-chunk behaviour above).
+- **Verify.** The keyed `/v1/models` listing must include every OpenRouter model the verifying
+  identity may use, and the default completion is always a non-OpenRouter model. `-e
+  agw_verify_openrouter=true` (or the inventory flag) adds ONE completion with `max_tokens: 8` to
+  the first OpenRouter model that identity may use.
+- **Local-dev.** `compose.local.yml` sets `SSL_CERT_FILE` to the step-ca bundle, which replaces the
+  system roots, so a local gateway cannot verify `openrouter.ai`'s certificate. The commented
+  example in `platform/inventory/local-dev.yml.example` is off for that reason. Production sets no
+  `SSL_CERT_FILE`, and the image ships public roots (`/etc/ssl/certs/ca-certificates.crt`).
+- **Not covered.** `run-agw-conformance.yml` compares gateway and direct vLLM for the first model
+  an identity may use; with an OpenRouter model first in that list it would try to reach it directly
+  at vLLM. Set `agw_conformance_model` to a vLLM model.
+
 ## Conformance against direct vLLM (tasks 2.1, 2.2)
 
 **Results.** The first production run (Semaphore task 2592, sent as an enrolled identity for
