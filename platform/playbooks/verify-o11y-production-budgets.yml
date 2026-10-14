@@ -300,14 +300,14 @@
     - name: Fold the daily ingestion readings into named figures
       ansible.builtin.set_fact:
         _daily_ingestion: >-
-          {% set figures = {} %}
-          {% for read in _daily_ingestion_reads.results %}
-          {% set series = ((read.stdout | from_json).get('data') or {}).get('result') or [] %}
-          {% set raw = (series[0].value[1] | string) if series | length > 0 else '' %}
-          {% set number = raw is match('^-?[0-9]+([.][0-9]+)?([eE][+-]?[0-9]+)?$') %}
-          {% set _ = figures.update({read.item.name: (raw | float | round | int) if number else 'unavailable'}) %}
-          {% endfor %}
-          {{ figures | to_json }}
+          {%- set figures = {} -%}
+          {%- for read in _daily_ingestion_reads.results -%}
+          {%- set series = ((read.stdout | from_json).get('data') or {}).get('result') or [] -%}
+          {%- set raw = (series[0].value[1] | string) if series | length > 0 else '' -%}
+          {%- set number = raw is match('^-?[0-9]+([.][0-9]+)?([eE][+-]?[0-9]+)?$') -%}
+          {%- set _ = figures.update({read.item.name: (raw | float | round | int) if number else 'unavailable'}) -%}
+          {%- endfor -%}
+          {{- figures }}
 
     - name: Report sanitized sample-limit and series diagnostics
       ansible.builtin.debug:
@@ -338,6 +338,4 @@
           guest_memory_headroom_percent: "{{ _guest_memory_headroom.stdout | float }}"
           o11y_volume_capacity: "{{ _volume_capacity.stdout | from_json }}"
           o11y_container_memory_mib: "{{ (_container_memory.stdout | from_json).containers }}"
-          # set_fact keeps the JSON text a string on some ansible-core releases and parses it into a
-          # mapping on others; accept both.
-          daily_ingestion: "{{ _daily_ingestion if _daily_ingestion is mapping else _daily_ingestion | from_json }}"
+          daily_ingestion: "{{ _daily_ingestion }}"

@@ -89,6 +89,7 @@ def test_figures_are_numbers_and_an_empty_vector_is_unavailable(tmp_path):
         "vars": {"_daily_ingestion_reads": {"results": readings}},
         "tasks": [
             _task(FOLD),
+            {"name": "fold is a mapping", "ansible.builtin.assert": {"that": "_daily_ingestion is mapping"}},
             {"name": "report", "ansible.builtin.set_fact":
                 {"_figures": _task(REPORT)["ansible.builtin.debug"]["msg"]["daily_ingestion"]}},
             {"name": "show", "ansible.builtin.debug": {"var": "_figures"}},
@@ -104,6 +105,7 @@ def test_figures_are_numbers_and_an_empty_vector_is_unavailable(tmp_path):
     assert proc.returncode == 0, proc.stdout + proc.stderr
     tasks = json.loads(proc.stdout)["plays"][0]["tasks"]
     shown = next(t for t in tasks if t["task"]["name"] == "show")["hosts"]["localhost"]["_figures"]
+    assert isinstance(shown, dict)
     assert shown == {
         "loki_ingested_bytes_24h": 1235,
         "loki_ingested_lines_24h": "unavailable",
