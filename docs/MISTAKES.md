@@ -129,6 +129,7 @@ and why.
 | 5.17 | Upgraded production's ansible-core before CI ran the playbooks on the new version; 2.20 templates `delegate_to` strictly, a probe drill dry run failed | Process | 1 | Test (`test_delegate_to_strict_undefined.py`) + CI pin + Convention (upgrade ordering) |
 | 5.18 | ansible-core 2.20 rejects template delimiters inside a conditional; the Authentik promotion guard's `'{{ '{{' }}'` broke Deploy Authentik on every branch | Process | 1 | Test (`test_no_template_delimiters_in_conditionals.py`) |
 | 5.19 | A worker killed other sessions' test runs and the lead's watchers with `pkill -f` by process-name pattern on the shared machine | Process | 1 | Convention (PreToolUse hook proposed) |
+| 5.20 | A promotion merged a head newer than the one its review covered; widens 5.16 from feature-to-dev merges to `dev` to `main` promotions | Process | 1 | Convention (the pin is an operator-side practice) |
 | 6.1 | Built an edit from an assumed file structure instead of a read one | Process | 1 | Convention |
 | 6.2 | Built an interface the consumer never calls, without reading how it invokes | Process | 1 | Test |
 | 6.3 | Repeated 6.2 — assumed openssl and jq exist on the orchestrator image; neither does — **x3** (CI never installed the playbook collections) | Process | 3 | Convention -> **Test + declared dep**; CI installs `collections/requirements.yml` |
@@ -3210,6 +3211,8 @@ This remains a convention because `dev` intentionally has no required-check rule
 main-to-Dev sync workflow pushes directly to `dev`. A direct merge command can bypass the
 CLI, and a concurrently started rerun or review can race the separate API reads and merge.
 
+Widened by 5.20 (2026-10-14): the same pin applies to promotions.
+
 ### 5.17 Upgraded production's ansible-core before CI exercised the playbooks on the new version
 
 **Occurrences: 1** — 2026-10-12
@@ -3296,6 +3299,27 @@ in the worker's brief said the machine was shared, and nothing stopped the comma
 operator-private and not visible in this repository, so the only repo-visible guard is the
 proposed one: a PreToolUse hook refusing `pkill`, `killall` and `kill $(pgrep ...)`. Related:
 5.10, 5.14.
+
+### 5.20 A promotion merged a head newer than the one its review covered (widens 5.16)
+
+**What happened.** On 2026-10-14 the `dev` to `main` promotion, PR #607, was merged through
+merge-when-green, which was given the PR's live head `4e365db4`. The review and its last note
+covered `2b58f5ce`. In between, a peer PR (#608, the Cloudflare Grafana API skip rule, with
+CodeRabbit changes requested on it) merged to `dev` at 05:11 UTC, so it reached `main` without
+the promotion's review. It changed the main-bound Apply Cloudflare Tofu playbook. That playbook
+has no schedule and was not run, so there was no production effect.
+
+**Root cause.** 5.16's rule, pin the merge to the exact reviewed head with
+`--match-head-commit FULL_HEAD_SHA`, is written for feature-to-Dev merges. The promotion merge
+passed the live head rather than the reviewed one, so the pin compared the head to itself and
+checked nothing.
+
+**The rule.** Every merge, including a `dev` to `main` promotion, passes the full SHA that the
+last review, or its last note, covered. A head newer than that SHA gets its delta reviewed
+first. Widens 5.16.
+
+**Enforced by.** Convention. The pin is an operator-side practice; nothing refuses a merge
+whose head is newer than the reviewed one when the caller passes the live head.
 
 ## 6. Working from assumptions about files
 

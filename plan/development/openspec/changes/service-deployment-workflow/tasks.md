@@ -464,6 +464,13 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
         production proof (including the podman-compose 1.0.6 recreate with dependents) is an
         operator follow-up. Wave 3 (NetBox) production proof still waits for promotion. Not
         ticked
+      - 2026-10-14 (task output read from production Semaphore by the lead): the promotion is
+        done: PR #607 (dev to main) merged as 67ce3d4d. The NetBox production double-deploy
+        proof is now blocked by the NetBox outage, not by promotion: Deploy NetBox dry run 5389
+        from main 67ce3d4d failed at "Health check (login page)" (/login timed out five times),
+        and Inspect Service Runtime (Dev) task 5393 found the NetBox app container running
+        unhealthy since 2026-09-23 with its worker restarted 20,601 times. Postiz is still
+        undeployed. Not ticked.
 - [x] 7.2 `provision-vm.yml` sets `onboot`; restart-policy check beside `enable-linger`.
       2026-09-22: onboot with per-host opt-out; `verify-service-persistence.yml` (step
       systemd-enablement) passes on local tududi, normal and check mode (tasks 977, 978)
