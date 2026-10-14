@@ -1,0 +1,82 @@
+#!/usr/bin/env python3
+"""Print the agentgateway MCP Authorization header for one harness, at connect time.
+
+The one key mechanism for both MCP clients (Claude Code `headersHelper`, pi `!command`):
+the harness runs this per connect, so the key never sits in a configuration file or the
+environment. Source order: the macOS Keychain item (service agentgateway-mcp, account
+<identity>), then the handout file named by --key-file or AGW_MCP_KEY_FILE (a path, never
+the key). Stdout carries only what the harness reads; stderr carries names only; nothing is
+written to disk.
+"""
+
+import argparse
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+
+KEYCHAIN_SERVICE = "agentgateway-mcp"
+IDENTITY = re.compile(r"[A-Za-z0-9._-]+")
+KEY_SHAPE = re.compile(r"\S+")
+
+
+def keychain_key(identity):
+    security = shutil.which("security")
+    if not security:
+        return None
+    try:
+        done = subprocess.run(
+            [security, "find-generic-password", "-s", KEYCHAIN_SERVICE, "-a", identity, "-w"],
+            capture_output=True,
+            text=True,
+            timeout=8,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return done.stdout.strip() if done.returncode == 0 else None
+
+
+def file_key(path):
+    try:
+        with open(path, encoding="utf-8") as handle:
+            return handle.read().strip()
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--format", choices=("claude", "pi"), required=True)
+    parser.add_argument("--identity", required=True)
+    parser.add_argument("--key-file", default=os.environ.get("AGW_MCP_KEY_FILE"))
+    args = parser.parse_args(argv)
+    if not IDENTITY.fullmatch(args.identity):
+        print("agw-mcp-key: identity must match [A-Za-z0-9._-]+", file=sys.stderr)
+        return 2
+
+    tried = []
+    key = keychain_key(args.identity)
+    tried.append(f"keychain item {KEYCHAIN_SERVICE}/{args.identity}")
+    if not (key and KEY_SHAPE.fullmatch(key)):
+        key = None
+        if args.key_file:
+            key = file_key(args.key_file)
+            tried.append("key file")
+            if not (key and KEY_SHAPE.fullmatch(key)):
+                key = None
+        else:
+            tried.append("no key file given (--key-file or AGW_MCP_KEY_FILE)")
+    if key is None:
+        print(f"agw-mcp-key: no usable key for identity {args.identity}; tried: " + "; ".join(tried), file=sys.stderr)
+        return 1
+
+    bearer = f"Bearer {key}"
+    print(json.dumps({"Authorization": bearer}) if args.format == "claude" else bearer)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

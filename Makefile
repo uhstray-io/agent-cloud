@@ -5,6 +5,7 @@ LOCAL_DEV := scripts/local-dev.sh
 
 .PHONY: help local-preflight local-init local-bootstrap local-up local-all local-creds local-validate local-templates local-dns local-dns-resolver local-https local-https-down local-tls-trust local-tls-untrust local-clean local-o11y-render-proof promote
 .PHONY: local-deploy-% local-clean-deploy-% local-service-down local-foundation-down git-setup
+.PHONY: agw-mcp-client agw-mcp-client-remove
 
 help: ## Show available targets
 	@grep -E '^[a-zA-Z%-]+:.*##' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "  %-22s %s\n", $$1, $$2}'
@@ -127,3 +128,11 @@ local-clean: ## Remove the local control plane (containers, volume, state)
 
 promote: ## Fast checks, push feature branch, open PR into dev
 	@$(LOCAL_DEV) promote
+
+agw-mcp-client: ## Install the agentgateway MCP server into Claude Code + pi, key by command (HOST=, IDENTITY=, [KEY_FILE=], [HARNESS=], [DRY_RUN=1])
+	@test -n "$(HOST)" -a -n "$(IDENTITY)" || { echo 'usage: make agw-mcp-client HOST=<mcp hostname> IDENTITY=<name> [KEY_FILE=<handout file>]'; exit 2; }
+	@python3 scripts/agw-mcp-client.py --host "$(HOST)" --identity "$(IDENTITY)" \
+		$(if $(KEY_FILE),--key-file "$(KEY_FILE)") $(if $(HARNESS),--harness "$(HARNESS)") $(if $(DRY_RUN),--dry-run)
+
+agw-mcp-client-remove: ## Remove exactly the agentgateway MCP entry from Claude Code + pi ([HARNESS=], [DRY_RUN=1])
+	@python3 scripts/agw-mcp-client.py --remove $(if $(HARNESS),--harness "$(HARNESS)") $(if $(DRY_RUN),--dry-run)
