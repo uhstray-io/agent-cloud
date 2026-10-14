@@ -270,6 +270,18 @@
       `ansible_user`) and the `o11y_fault_drill_exporters` map; dgx-spark applies
       `drill-access.yml`; verify key-only login to both nodes; a `--check` dry run; one real
       run in the agreed window and its evidence recorded here. Left unticked.
+      2026-10-14 evening (prerequisites done; reported by the dgx-spark session): dgx-spark
+      drill access applied 2026-10-14 16:52 EDT, dgx-spark PR #32 merged as `51faf88`: account
+      `o11y-drill` on both nodes, key-only, sshd reachable from the Semaphore host only, and
+      polkit limited to starting and stopping `node-exporter.service`. site-config #74 merged
+      as `433aa4f5` (the `dgx_drill_svc` group and `o11y_fault_drill_exporters`); the
+      inventory was synced (task output read from production Semaphore by the lead). Verify
+      Host Access cannot prove key-only login for `o11y-drill`: its first probe uses
+      Semaphore's own key and the account has no sudo, so the drill run itself is the proof.
+      o11y Fault Drill (Dev) task 5648 (check mode) refused by design without
+      `drill_window_confirmed=true` ("No fault was induced"; same source). Remaining: the
+      operator names a window outside 04:15 to 05:00 EDT, then a dry run and the real run.
+      Not ticked.
 - [ ] 2.6 Validation gate: 2.4 proves scenario "All node targets up" and scenario "Boot
       journal is queryable"; 2.5 proves scenario "Missing scrape is a telemetry failure"
       including the alert firing;

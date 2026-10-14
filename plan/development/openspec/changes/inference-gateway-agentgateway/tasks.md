@@ -526,13 +526,29 @@
       vLLM. This tick is on config scope: the declared block, the Caddy redeploy and route
       report 5370, which reads upstream destinations only. A keyed request through the public
       edge is 4.5's proof and is still owed.
-- [ ] 4.4 Run dgx-spark's public-path verify play against the live hostname; update
+      2026-10-14 (task output read from production Semaphore by the lead; model names): site-config
+      #85 merged as `a38c60a3`: `agw_models` lists only `qwen3.8-flash-next` (vLLM serves both
+      aliases; that is the canonical client id per dgx-spark). The inventory was synced; the
+      key-path diff was exactly `agw_models`. Deploy agentgateway (Dev) dry run 5642 and real
+      run 5643: as `stray`, `/v1/models` lists `qwen3.8-flash-next`, and a chat completion
+      (32 tokens) came back from the upstream model `nvidia/Qwen3.8-Flash-Next-NVFP4`.
+      dgx-spark (reported by the dgx-spark session) verified that the long alias answers 404
+      through the gateway. Already ticked; this is a dated record only.
+- [x] 4.4 Run dgx-spark's public-path verify play against the live hostname; update
       dgx-spark `docs/TEAM-ENDPOINT.md` (key changes, base URL does not)
       2026-10-14: dgx-spark's public-path verify play is requested; no result yet. Not
       ticked.
       2026-10-14: the operator reported that dgx-spark's public-path verify play passes. There
       is no Semaphore task id for it, and the update to dgx-spark `docs/TEAM-ENDPOINT.md` is
       unconfirmed. Not ticked.
+      2026-10-14 (reported by the dgx-spark session): after the route flip, dgx-spark's
+      public-path verify play PASSED, 16:39 to 16:49 EDT, against the public `/v1` base URL
+      with the shared key: `/health` 200, keyless `/v1/models` 401, 7 of 7 reasoning efforts
+      200, a long stream of 289.9 s (first token 0.48 s, 3625 chunks) that crossed the 125 s
+      proxy timer alive, and 2 of 2 concurrent streams. The 12-stream burst was not run (it
+      needs an operator window). dgx-spark `docs/TEAM-ENDPOINT.md` is updated: dgx-spark PR
+      #33, merged as `0479c96`. Ticked: the verify play ran against the live hostname and the
+      endpoint doc is updated.
 - [ ] 4.5 Validation gate: an unenrolled key gets 401 at the gateway with no vLLM log
       line, proving scenario "Unknown key is rejected"; a burst from one identity gets
       429 while another identity is served, proving scenario "One client cannot exceed its
@@ -547,6 +563,10 @@
       (`/v1/models` 401 after Caddy run 5366). The rollback path is proven by the 4.6 drill,
       but through the playbook, not as "one inventory change and a Caddy redeploy". The 429
       isolation scenario and the access-log scenario are not proven. Not ticked.
+      2026-10-14 (evening): PR #632 (the isolation probe) encodes the scenario "One client
+      cannot exceed its share". Local proof tasks 6565 and 6566: the burst got 200 then 429
+      `budget_exceeded`, and the control identity got 200. The production leg needs a
+      low-budget probe identity in site-config, which does not exist yet. Not ticked.
 - [ ] 4.6 `rollback-inference-route.yml` with `mode=gateway-config|direct|restore` as in the
       proposal's Rollback Plan, each mode idempotent (re-run converges, no duplicate key
       publication, `restore` is a no-op once the upstream is the gateway and the key is
