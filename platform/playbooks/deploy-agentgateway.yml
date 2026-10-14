@@ -15,6 +15,8 @@
 #          then the keyed round-trip as one enrolled identity: /v1/models lists every
 #          model it may use and one chat completion comes back from the upstream. The
 #          key travels as a `uri` header from the target, never on any process's argv.
+#          With agw_mcp_enabled the verify also proves /mcp: keyless 401, an authenticated `initialize`
+#          and a non-empty `tools/list`; with it false, that a keyed `initialize` is not an MCP reply.
 #          Skipped under --check (nothing new to prove).
 #
 # Change: plan/development/openspec/changes/inference-gateway-agentgateway
@@ -49,6 +51,14 @@
 #   agw_otlp_host          (optional) declared o11y Alloy OTLP host:port
 #   agw_oidc_issuer / agw_ui_redirect_uri / agw_ui_admin_group  operator UI OIDC (defaults local)
 #   agw_ui_enabled                       (default true) false = no UI listener, no OIDC, no Authentik read
+#   agw_mcp_enabled                      (default false) serve MCP at /mcp on the default gateway (key-gated by the same
+#                                        identities as /v1, minus legacy-shared and mcp-self) and render the loopback
+#                                        gateway its target calls; false renders none of it and the verify asserts /mcp
+#                                        is not served
+#   agw_mcp_openapi_targets              (required when enabled) [{name, schema}]: each an OpenAPI target over this
+#                                        gateway's own /v1, the schema a .json file in deployment/mcp-schemas/; nothing
+#                                        else is accepted (_agw_mcp_problems)
+#   agw_loopback_port                    (default 4002) the loopback gateway's port, never published
 
 # An extra var outranks every value this playbook computes, so refuse any that sets an
 # internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
@@ -161,6 +171,15 @@
           agw_identities (agw_clients plus the names derived from platform_admins) and agw_ui_admin_group
           must match ^[a-z0-9][a-z0-9-]*$
           (offending identities: {{ agw_identities | reject('match', '^[a-z0-9][a-z0-9-]*$') | list }}).
+
+    # The MCP declaration (agentgateway-mcp tasks 3.2, 3.7, 3.8): an allowlist, refused before anything is
+    # rendered or restarted, naming the entry. A target is only {name, schema}; its kind, host and the
+    # listener it reaches are not inputs (vars/secret-declarations/agentgateway.yml, _agw_mcp_problems).
+    - name: "Refuse an MCP declaration that cannot render a safe target"
+      ansible.builtin.assert:
+        that: _agw_mcp_problems | length == 0
+        fail_msg: "agw_mcp_enabled cannot be rendered: {{ _agw_mcp_problems | join('; ') }}."
+        quiet: true
 
     # `legacy-shared` is rendered from the vLLM key's fingerprint, never minted as a client key,
     # and its expiry must be a real calendar date in ISO form, or the string comparison above
@@ -395,6 +414,41 @@
       changed_when: false
       when: _keep_previous and not ansible_check_mode and not _cfg_before.results[0].stat.exists
 
+    # The shipped schema of each declared MCP target, read from the placed monorepo and embedded in the
+    # render as one compact JSON string (nothing to mount, and a schema edit is a config change the
+    # change-aware deploy sees). The name is a bare file name by the refusal above, so it cannot leave
+    # mcp-schemas/. The content is public (an OpenAPI description), so these tasks are visible.
+    - name: "Read the shipped OpenAPI schema of each declared MCP target"
+      ansible.builtin.slurp:
+        src: "{{ _deploy_dir }}/mcp-schemas/{{ item.schema }}"
+      loop: "{{ agw_mcp_openapi_targets | default([]) }}"
+      loop_control:
+        label: "{{ item.name }}"
+      register: _agw_mcp_schema_files
+      when: agw_mcp_enabled | default(false) | bool
+
+    - name: "Refuse a target schema that is not an OpenAPI document with paths"
+      ansible.builtin.assert:
+        that:
+          - (item.content | b64decode | from_json).openapi is defined
+          - (item.content | b64decode | from_json).paths | length > 0
+        fail_msg: "The schema of MCP target {{ item.item.name }} ({{ item.item.schema }}) is not an OpenAPI document with paths."
+        quiet: true
+      loop: "{{ _agw_mcp_schema_files.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+      when: agw_mcp_enabled | default(false) | bool
+
+    - name: "Hold each schema as compact JSON for the render"
+      ansible.builtin.set_fact:
+        _agw_mcp_schemas: >-
+          {%- set out = {} -%}
+          {%- for r in _agw_mcp_schema_files.results -%}
+            {%- if out.update({r.item.schema: (r.content | b64decode | from_json | to_json(separators=(',', ':')))}) -%}{%- endif -%}
+          {%- endfor -%}
+          {{ out }}
+      when: agw_mcp_enabled | default(false) | bool
+
     - name: "Manage secrets and render env + config"
       ansible.builtin.include_tasks: tasks/manage-secrets.yml
 
@@ -451,9 +505,20 @@
             # key list (the mcp one) is never counted as this one's.
             block = text.split("\nllm:\n", 1)[1] if "\nllm:\n" in text else ""
             block = re.split(r"^[^\s#]", block, maxsplit=1, flags=re.M)[0]
+            # The mcp block the same way, and the loopback gateway: whether each was rendered, whether the
+            # mcp block carries its own strict key policy, and the identities that policy enrols.
+            mcp = text.split("\nmcp:\n", 1)[1] if "\nmcp:\n" in text else None
+            if mcp is not None:
+                mcp = re.split(r"^[^\s#]", mcp, maxsplit=1, flags=re.M)[0]
+            names = r"^[ \t]+metadata:\n[ \t]+name: (\S+)[ \t]*$"
             print(json.dumps({
-                "names": re.findall(r"^[ \t]+metadata:\n[ \t]+name: (\S+)[ \t]*$", block, re.M),
+                "names": re.findall(names, block, re.M),
                 "entries": len(re.findall(r"^[ \t]*- (?:keyHash|key):", block, re.M)),
+                "mcp": mcp is not None,
+                "mcp_apikey": bool(mcp and re.search(r"^    apiKey:$", mcp, re.M) and re.search(r"^      mode: strict$", mcp, re.M)),
+                "mcp_names": re.findall(names, mcp, re.M) if mcp else [],
+                "mcp_entries": len(re.findall(r"^[ \t]*- (?:keyHash|key):", mcp, re.M)) if mcp else 0,
+                "loopback": bool(re.search(r"^  loopback:$", text, re.M)),
             }))
           - "{{ _deploy_dir }}/config.yaml"
       register: _agw_render_read
@@ -493,6 +558,53 @@
       vars:
         _expected: "{{ agw_identities + (['legacy-shared'] if _legacy_shared_active | bool else []) }}"
       when: not ansible_check_mode
+
+    # The MCP surface in the render (agentgateway-mcp tasks 3.2, 3.7). One assert per property again. Names and
+    # counts only. The first two are the fail-closed ones: an mcp block with no key policy answers every
+    # request (spike 1.1), so it must never reach a restart; and with the flag false nothing MCP may render.
+    - name: "Require the rendered MCP surface to match agw_mcp_enabled"
+      ansible.builtin.assert:
+        that:
+          - _render.mcp | bool == (agw_mcp_enabled | default(false) | bool)
+          - _render.loopback | bool == (agw_mcp_enabled | default(false) | bool)
+        fail_msg: >-
+          The rendered config.yaml has an mcp block: {{ _render.mcp }}, a loopback gateway: {{ _render.loopback }},
+          but agw_mcp_enabled is {{ agw_mcp_enabled | default(false) | bool }}; the two must agree.
+        quiet: true
+      vars:
+        _render: "{{ _agw_render_read.stdout | from_json }}"
+      when: not ansible_check_mode
+
+    - name: "Require the rendered mcp block to carry its own strict key policy"
+      ansible.builtin.assert:
+        that: not (_render.mcp | bool) or (_render.mcp_apikey | bool)
+        fail_msg: >-
+          The rendered config.yaml has an mcp block with no strict apiKey policy: /mcp would answer every
+          request without a key.
+        quiet: true
+      vars:
+        _render: "{{ _agw_render_read.stdout | from_json }}"
+      when: not ansible_check_mode
+
+    - name: "Require the mcp key policy to enrol exactly the client identities"
+      ansible.builtin.assert:
+        that:
+          - _missing | length == 0
+          - _extra | length == 0
+          - _render.mcp_entries | int == _expected | length
+        fail_msg: >-
+          The rendered mcp key policy does not enrol the client identities (every declared identity except
+          mcp-self, never legacy-shared): missing {{ _missing | join(', ') }}; not allowed
+          {{ _extra | join(', ') }}; {{ _render.mcp_entries }} key entries for {{ _expected | length }} identities.
+        quiet: true
+      vars:
+        _render: "{{ _agw_render_read.stdout | from_json }}"
+        _expected: "{{ agw_identities | reject('equalto', 'mcp-self') | list }}"
+        _missing: "{{ _expected | difference(_render.mcp_names) | sort }}"
+        _extra: "{{ _render.mcp_names | difference(_expected) | sort }}"
+      when:
+        - not ansible_check_mode
+        - agw_mcp_enabled | default(false) | bool
 
     # vllm_api_key is `existing`: manage-secrets renders it empty when the store has
     # none, and an empty key starts a gateway that is ready but answers every client
@@ -1051,6 +1163,220 @@
         - _verify_client | length > 0
         - not (_verify_refused | bool)
 
+    # ── MCP (agentgateway-mcp task 3.4) ─────────────────────────────────────────────────────────
+    # agw_mcp_enabled true: a request with no key is 401 (answered before any target is contacted), an
+    # authenticated `initialize` returns an MCP session, and `tools/list` shows at least one tool. The last
+    # is a check of its own because the validator accepts an mcpAuthorization rule that names a wrong field,
+    # which then denies every tool without a word (spike 1.1, 1.3): an empty list fails the deploy, it does
+    # not pass. agw_mcp_enabled false: a KEYED `initialize` must not be an MCP reply (keyless is 401 with MCP
+    # on or off, since the /v1 route answers any path with the key check first, so it proves nothing).
+    # Every verdict reads the BODY: a self-call 401/403 comes back as HTTP 200 with the error in a tool
+    # result, and the gateway's own rate-limit refusal is HTTP 200 with JSON-RPC error -32003 (spike 1.5,
+    # 1.7). The identity is never mcp-self (its key is refused on /mcp). A check that cannot run reports
+    # itself unproven, and an unproven MCP check fails the deploy unless agw_verify_allow_unproven accepts it,
+    # exactly as the keyed /v1 round-trip does. Every call is the one probe path: the key is a `uri` header
+    # from this host, never any process's argv, and no key-bearing step is added to the no_log set.
+    - name: "MCP probes: pick the identity and the requests"
+      ansible.builtin.set_fact:
+        _mcp_client: >-
+          {%- set pick = agw_verify_client | default(_verify_default) -%}
+          {{ pick if pick != 'mcp-self' else ((agw_identities | default(agw_clients | default([]))) | reject('equalto', 'mcp-self') | first | default('')) }}
+        _mcp_headers: {Accept: "application/json, text/event-stream"}
+        _mcp_initialize:
+          jsonrpc: "2.0"
+          id: 1
+          method: initialize
+          params: {protocolVersion: "2025-03-26", capabilities: {}, clientInfo: {name: agw-verify, version: "1"}}
+        _mcp_tools_list: {jsonrpc: "2.0", id: 2, method: tools/list}
+        _mcp_unproven: false
+      when: not ansible_check_mode
+
+    - name: "MCP: a request with no key is refused before any target is contacted"
+      ansible.builtin.include_tasks: tasks/agw-probe.yml
+      vars:
+        _agwp_path: /mcp
+        _agwp_method: POST
+        _agwp_status: [200, 400, 401, 403, 429]
+        _agwp_headers: "{{ _mcp_headers }}"
+        _agwp_body: "{{ _mcp_initialize }}"
+      when:
+        - not ansible_check_mode
+        - agw_mcp_enabled | default(false) | bool
+
+    - name: "Require the keyless MCP refusal"
+      ansible.builtin.assert:
+        that: (_agwp_out.status | int) == 401
+        fail_msg: >-
+          Keyless POST /mcp at {{ _agwp_base }} answered {{ _agwp_out.status }}; with MCP enabled the
+          gateway must refuse a request with no key with 401 and reach no target (an mcp block with no key
+          policy answers every request).
+        quiet: true
+      when:
+        - not ansible_check_mode
+        - agw_mcp_enabled | default(false) | bool
+
+    - name: "MCP: an enrolled identity initialises a session"
+      ansible.builtin.include_tasks: tasks/agw-probe.yml
+      vars:
+        _agwp_path: /mcp
+        _agwp_method: POST
+        _agwp_status: [200, 400, 401, 403, 429]
+        _agwp_headers: "{{ _mcp_headers }}"
+        _agwp_body: "{{ _mcp_initialize }}"
+        _agwp_rpc: true
+        _agwp_key: "{{ _resolved['client_' ~ _mcp_client] }}"
+      when:
+        - not ansible_check_mode
+        - agw_mcp_enabled | default(false) | bool
+        - _mcp_client | length > 0
+
+    - name: "MCP: keep the initialize response"
+      ansible.builtin.set_fact:
+        _mcp_init: "{{ _agwp_out }}"
+        _mcp_init_refused: >-
+          {{ (_agwp_out.rpc.get('error', {}).get('code', 0) | int) == -32003
+             or ((_agwp_out.status | int) == 429 and (_agwp_out.content | default('') | trim) == 'rate limit exceeded') }}
+      when:
+        - not ansible_check_mode
+        - agw_mcp_enabled | default(false) | bool
+        - _mcp_client | length > 0
+
+    - name: "Require an MCP session for an enrolled identity"
+      ansible.builtin.assert:
+        that:
+          - (_mcp_init.status | int) == 200
+          - _mcp_init.rpc.get('result', {}).get('serverInfo') is not none
+          - "'error' not in _mcp_init.rpc"
+        fail_msg: >-
+          Authenticated MCP initialize as {{ _mcp_client }} at {{ _agwp_base }}/mcp answered HTTP
+          {{ _mcp_init.status }}{{ ' (JSON-RPC error ' ~ _mcp_init.rpc.error.get('code', '') ~ ')' if 'error' in _mcp_init.rpc else '' }};
+          an enrolled identity must get an MCP session.
+        quiet: true
+      when:
+        - not ansible_check_mode
+        - agw_mcp_enabled | default(false) | bool
+        - _mcp_client | length > 0
+        - not (_mcp_init_refused | bool)
+
+    - name: "MCP: an enrolled identity lists the tools"
+      ansible.builtin.include_tasks: tasks/agw-probe.yml
+      vars:
+        _agwp_path: /mcp
+        _agwp_method: POST
+        _agwp_status: [200, 400, 401, 403, 429]
+        _agwp_headers: "{{ _mcp_headers }}"
+        _agwp_body: "{{ _mcp_tools_list }}"
+        _agwp_rpc: true
+        _agwp_key: "{{ _resolved['client_' ~ _mcp_client] }}"
+      when:
+        - not ansible_check_mode
+        - agw_mcp_enabled | default(false) | bool
+        - _mcp_client | length > 0
+        - not (_mcp_init_refused | bool)
+
+    - name: "MCP: keep the tool listing"
+      ansible.builtin.set_fact:
+        _mcp_tools: "{{ _agwp_out }}"
+        _mcp_tools_refused: >-
+          {{ (_agwp_out.rpc.get('error', {}).get('code', 0) | int) == -32003
+             or ((_agwp_out.status | int) == 429 and (_agwp_out.content | default('') | trim) == 'rate limit exceeded') }}
+      when:
+        - not ansible_check_mode
+        - agw_mcp_enabled | default(false) | bool
+        - _mcp_client | length > 0
+        - not (_mcp_init_refused | bool)
+
+    - name: "Require an authorised tool to be listed"
+      ansible.builtin.assert:
+        that:
+          - (_mcp_tools.status | int) == 200
+          - "'error' not in _mcp_tools.rpc"
+          - _mcp_tools.rpc.get('result', {}).get('tools', []) | length > 0
+        fail_msg: >-
+          MCP tools/list as {{ _mcp_client }} at {{ _agwp_base }}/mcp listed no tool (HTTP {{ _mcp_tools.status }}).
+          An authorization rule that names a wrong field denies every tool without an error, so an empty
+          listing is a failed deploy.
+        quiet: true
+      when:
+        - not ansible_check_mode
+        - agw_mcp_enabled | default(false) | bool
+        - _mcp_client | length > 0
+        - not (_mcp_init_refused | bool)
+        - not (_mcp_tools_refused | bool)
+
+    - name: "MCP: with MCP disabled a keyed initialize is not an MCP reply"
+      ansible.builtin.include_tasks: tasks/agw-probe.yml
+      vars:
+        _agwp_path: /mcp
+        _agwp_method: POST
+        _agwp_status: [200, 202, 400, 401, 403, 404, 405, 415, 422, 429]
+        _agwp_headers: "{{ _mcp_headers }}"
+        _agwp_body: "{{ _mcp_initialize }}"
+        _agwp_rpc: true
+        _agwp_key: "{{ _resolved['client_' ~ _mcp_client] }}"
+      when:
+        - not ansible_check_mode
+        - not (agw_mcp_enabled | default(false) | bool)
+        - _mcp_client | length > 0
+
+    - name: "MCP: keep the disabled-endpoint response"
+      ansible.builtin.set_fact:
+        _mcp_off: "{{ _agwp_out }}"
+      when:
+        - not ansible_check_mode
+        - not (agw_mcp_enabled | default(false) | bool)
+        - _mcp_client | length > 0
+
+    - name: "Require /mcp not to be served while MCP is disabled"
+      ansible.builtin.assert:
+        that:
+          - (_mcp_off.status | int) not in [200, 202]
+          - "'result' not in _mcp_off.rpc"
+        fail_msg: >-
+          Keyed POST /mcp at {{ _agwp_base }} as {{ _mcp_client }} answered HTTP {{ _mcp_off.status }} with an
+          MCP reply although agw_mcp_enabled is false; the endpoint must not be served.
+        quiet: true
+      when:
+        - not ansible_check_mode
+        - not (agw_mcp_enabled | default(false) | bool)
+        - _mcp_client | length > 0
+        - (_mcp_off.status | int) != 429
+
+    # Unproven, never passed: MCP on with no identity that may call it, or the gateway's own bucket refusing
+    # a probe; MCP off with the probe refused by that bucket. (MCP off and no identity at all is the same
+    # "not run" the keyed /v1 round-trip reports, and does not fail a gateway with no clients.)
+    - name: "MCP: record whether the checks were proven"
+      ansible.builtin.set_fact:
+        _mcp_unproven: >-
+          {{ (agw_mcp_enabled | default(false) | bool)
+               and (_mcp_client | length == 0 or (_mcp_init_refused | default(false) | bool) or (_mcp_tools_refused | default(false) | bool))
+             or (not (agw_mcp_enabled | default(false) | bool)
+               and _mcp_client | length > 0 and ((_mcp_off | default({})).get('status', 0) | int) == 429) }}
+      when: not ansible_check_mode
+
+    - name: "Refuse an unproven MCP check unless it is accepted"
+      ansible.builtin.assert:
+        that: not (_mcp_unproven | bool) or (agw_verify_allow_unproven | default(false) | bool)
+        fail_msg: >-
+          The MCP checks were not proven on this run (no identity that may call /mcp, or the gateway's own
+          request bucket refused a probe). Rerun after the window, or -e agw_verify_allow_unproven=true to
+          accept an unproven redeploy.
+        quiet: true
+      when: not ansible_check_mode
+
+    - name: "Report the MCP checks"
+      ansible.builtin.debug:
+        msg: >-
+          {% if ansible_check_mode %}Check mode: the MCP checks run only in a real run.
+          {% elif agw_mcp_enabled | default(false) | bool and (_mcp_unproven | bool) %}WARNING: the MCP checks were
+          NOT proven on this run (accepted by agw_verify_allow_unproven).
+          {% elif agw_mcp_enabled | default(false) | bool %}MCP: /mcp without a key is 401; as {{ _mcp_client }}
+          initialize returned a session and tools/list listed
+          {{ _mcp_tools.rpc.result.tools | map(attribute='name') | join(', ') }}.
+          {% elif _mcp_client | length > 0 %}MCP is disabled: a keyed initialize at /mcp is not an MCP reply (HTTP
+          {{ _mcp_off.status }}).
+          {% else %}MCP is disabled; no enrolled identity, so /mcp was not probed.{% endif %}
+
     - name: "Report"
       ansible.builtin.debug:
         msg: >-
@@ -1078,7 +1404,7 @@
         _service_deploy_result:
           skipped: "{{ _deploy is not defined or _deploy is skipped }}"
           changed: "{{ (_deploy | default({})).changed | default(false) }}"
-          verified: "{{ not (_verify_refused | default(false) | bool) }}"
+          verified: "{{ not (_verify_refused | default(false) | bool) and not (_mcp_unproven | default(false) | bool) }}"
 
     - name: "Record the service-deploy step result"
       ansible.builtin.include_tasks: tasks/emit-service-deploy-result.yml
