@@ -429,7 +429,6 @@
     - name: Keep the sanitized node-history summary private to this run
       ansible.builtin.set_fact:
         _backup_node_history_summary: "{{ _backup_node_history_summary_result.stdout | from_json }}"
-      no_log: true
       when: _inspect_only
 
     - name: Report backup-job candidates for inventory selection

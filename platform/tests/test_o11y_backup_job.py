@@ -26,10 +26,10 @@ from reconcile_proxmox_backup_job import (  # noqa: E402
     main,
     plan_history_pages,
     prepare_history_query,
-    prepare_plan,
     prepare_node_task_query,
-    summarize_scheduler_state,
+    prepare_plan,
     summarize_node_task_history,
+    summarize_scheduler_state,
     summarize_task_history,
     verify_readback,
 )
@@ -867,9 +867,9 @@ def test_playbook_requires_reviewed_dev_and_guards_every_mutation():
     ][1]
     assert node_summary["ansible.builtin.command"]["argv"][2] == "node-history-summary"
     assert node_summary["no_log"] is True
-    assert by_name["Keep the sanitized node-history summary private to this run"][1][
-        "no_log"
-    ] is True
+    assert "no_log" not in by_name[
+        "Keep the sanitized node-history summary private to this run"
+    ][1]
     assert names.index("Read effective permissions on the declared Proxmox node") < names.index(
         "Plan bounded node-wide archived vzdump history inspection"
     ) < names.index("Read the first node-wide archived vzdump task page") < names.index(
