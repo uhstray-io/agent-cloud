@@ -7,6 +7,7 @@ import copy
 import json
 import re
 import sys
+import time
 from collections.abc import Mapping
 
 JOB_ID = re.compile(r"[A-Za-z0-9._-]{1,64}")
@@ -36,6 +37,19 @@ SAFE_REFUSALS = {
     "Unsupported reconciliation operation.",
 }
 FALLBACK_REFUSAL = "Backup-job reconciliation refused because Proxmox returned invalid data."
+HISTORY_PAGE_SIZE = 50
+HISTORY_MAX_ROWS = 250
+HISTORY_LOOKBACK_SECONDS = 30 * 24 * 60 * 60
+HISTORY_REASONS = {
+    "permission_unverified",
+    "response_invalid",
+    "request_failed",
+    "pagination_incomplete",
+    "pagination_limit_exceeded",
+    "task_schema_invalid",
+    "task_identity_invalid",
+    "task_status_unavailable",
+}
 
 
 def _require(condition: bool, message: str) -> None:
@@ -205,6 +219,180 @@ def verify_readback(plan: Mapping[str, object], refreshed: object) -> dict[str, 
     }
 
 
+def _history_unknown(reason: str) -> dict[str, object]:
+    if reason not in HISTORY_REASONS:
+        reason = "response_invalid"
+    return {
+        "outcome": "unknown",
+        "reason": reason,
+        "task_count": None,
+        "job_attribution": "unavailable",
+    }
+
+
+def prepare_history_query(payload: Mapping[str, object]) -> dict[str, object]:
+    """Build a bounded archive query only with verified node-scoped Sys.Audit."""
+    node = payload.get("node")
+    vmid = payload.get("vmid")
+    _require(isinstance(node, str) and re.fullmatch(r"[A-Za-z0-9._-]+", node) is not None,
+             "The declared VM node is malformed.")
+    target_vmid = _parse_vmid(str(vmid or ""))
+    path = f"/nodes/{node}"
+    wrapper = payload.get("permissions_response")
+    if not isinstance(wrapper, Mapping) or wrapper.get("status") != 200:
+        return {"read_allowed": False, "summary": _history_unknown("permission_unverified")}
+    body = wrapper.get("json")
+    data = body.get("data") if isinstance(body, Mapping) else None
+    rights = data.get(path) if isinstance(data, Mapping) else None
+    audit = rights.get("Sys.Audit") if isinstance(rights, Mapping) else None
+    if type(audit) is not int or audit not in (0, 1):
+        return {"read_allowed": False, "summary": _history_unknown("permission_unverified")}
+    until = payload.get("until", int(time.time()))
+    if type(until) is not int or until <= 0:
+        return {"read_allowed": False, "summary": _history_unknown("response_invalid")}
+    return {
+        "read_allowed": True,
+        "query": {
+            "source": "archive",
+            "typefilter": "vzdump",
+            "vmid": target_vmid,
+            "since": max(0, until - HISTORY_LOOKBACK_SECONDS),
+            "until": until,
+            "start": 0,
+            "limit": HISTORY_PAGE_SIZE,
+        },
+        "summary": None,
+    }
+
+
+def plan_history_pages(payload: Mapping[str, object]) -> dict[str, object]:
+    """Validate the first archive page and return bounded offsets or unknown."""
+    if payload.get("read_allowed") is not True:
+        return {"page_starts": [], "summary": _history_unknown("permission_unverified")}
+    response = payload.get("first_page")
+    if isinstance(response, Mapping) and response.get("status") != 200:
+        return {"page_starts": [], "summary": _history_unknown("request_failed")}
+    page = _valid_task_page(response)
+    if page is None:
+        return {"page_starts": [], "summary": _history_unknown("response_invalid")}
+    total = page["total"]
+    if total > HISTORY_MAX_ROWS:
+        return {"page_starts": [], "summary": _history_unknown("pagination_limit_exceeded")}
+    return {
+        "page_starts": list(range(HISTORY_PAGE_SIZE, total, HISTORY_PAGE_SIZE)),
+        "summary": None,
+    }
+
+
+def _valid_task_page(response: object) -> dict[str, object] | None:
+    if not isinstance(response, Mapping) or response.get("status") != 200:
+        return None
+    body = response.get("json")
+    if not isinstance(body, Mapping):
+        return None
+    rows = body.get("data")
+    total = body.get("total")
+    if isinstance(rows, list) and not rows and "total" not in body:
+        total = 0
+    if (not isinstance(rows, list) or type(total) is not int or total < 0
+            or len(rows) > HISTORY_PAGE_SIZE):
+        return None
+    return {"rows": rows, "total": total}
+
+
+def summarize_task_history(payload: Mapping[str, object]) -> dict[str, object]:
+    """Classify the latest archived vzdump task without exposing row identity or text."""
+    plan = payload.get("plan")
+    if not isinstance(plan, Mapping) or plan.get("read_allowed") is not True:
+        return _history_unknown("permission_unverified")
+    first_response = payload.get("first_page")
+    if isinstance(first_response, Mapping) and first_response.get("status") != 200:
+        return _history_unknown("request_failed")
+    first = _valid_task_page(first_response)
+    if first is None:
+        return _history_unknown("response_invalid")
+    total = first["total"]
+    if total > HISTORY_MAX_ROWS:
+        return _history_unknown("pagination_limit_exceeded")
+    later = payload.get("later_pages", [])
+    if not isinstance(later, list):
+        return _history_unknown("pagination_incomplete")
+    expected_pages = (total + HISTORY_PAGE_SIZE - 1) // HISTORY_PAGE_SIZE
+    if len(later) != max(0, expected_pages - 1):
+        return _history_unknown("pagination_incomplete")
+    pages = [first]
+    for response in later:
+        if isinstance(response, Mapping) and response.get("status") != 200:
+            return _history_unknown("request_failed")
+        page = _valid_task_page(response)
+        if page is None or page["total"] != total:
+            return _history_unknown("pagination_incomplete")
+        pages.append(page)
+    rows: list[Mapping[str, object]] = []
+    for index, page in enumerate(pages):
+        offset = index * HISTORY_PAGE_SIZE
+        expected_count = min(HISTORY_PAGE_SIZE, max(0, total - offset))
+        page_rows = page["rows"]
+        if len(page_rows) != expected_count or any(not isinstance(row, Mapping) for row in page_rows):
+            return _history_unknown("pagination_incomplete")
+        rows.extend(page_rows)
+    if len(rows) != total:
+        return _history_unknown("pagination_incomplete")
+
+    query = plan.get("query")
+    if not isinstance(query, Mapping):
+        return _history_unknown("response_invalid")
+    try:
+        vmid = str(query["vmid"])
+        since = int(query["since"])
+        until = int(query["until"])
+    except (KeyError, TypeError, ValueError):
+        return _history_unknown("response_invalid")
+    seen_upids: set[str] = set()
+    for row in rows:
+        upid, task_type, task_id = row.get("upid"), row.get("type"), row.get("id")
+        starttime = row.get("starttime")
+        if (not isinstance(upid, str) or not upid or upid in seen_upids
+                or task_type != "vzdump" or str(task_id) != vmid
+                or type(starttime) is not int or not since <= starttime <= until):
+            return _history_unknown("task_identity_invalid")
+        if "endtime" in row and (type(row["endtime"]) is not int or row["endtime"] < starttime):
+            return _history_unknown("task_schema_invalid")
+        seen_upids.add(upid)
+    if not rows:
+        return {
+            "outcome": "no_archived_task_in_lookback",
+            "reason": None,
+            "task_count": 0,
+            "job_attribution": "unavailable",
+        }
+    latest_time = max(int(row["starttime"]) for row in rows)
+    latest = [row for row in rows if row["starttime"] == latest_time]
+    outcomes = {_classify_task_status(row.get("status")) for row in latest}
+    outcome = outcomes.pop() if len(outcomes) == 1 else "unknown"
+    reason = None if outcome != "unknown" else "task_status_unavailable"
+    return {
+        "outcome": outcome,
+        "reason": reason,
+        "task_count": total,
+        "job_attribution": "unavailable",
+    }
+
+
+def _classify_task_status(status: object) -> str:
+    if not isinstance(status, str) or not status:
+        return "unknown"
+    if status == "OK":
+        return "success"
+    if re.fullmatch(r"WARNINGS:\s*[0-9]+", status):
+        return "incomplete"
+    if status == "unexpected status":
+        return "unknown"
+    # PVE normalizes other non-empty task status strings to error. Do not return
+    # the raw status: it can contain a private task failure detail.
+    return "failed"
+
+
 def main() -> int:
     try:
         operation = sys.argv[1]
@@ -217,6 +405,12 @@ def main() -> int:
             result = assert_unchanged(payload["plan"], payload["detail"])
         elif operation == "verify":
             result = verify_readback(payload["plan"], payload["detail"])
+        elif operation == "history-query":
+            result = prepare_history_query(payload)
+        elif operation == "history-pages":
+            result = plan_history_pages(payload)
+        elif operation == "history-summary":
+            result = summarize_task_history(payload)
         else:
             raise ValueError("Unsupported reconciliation operation.")
     except (IndexError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
