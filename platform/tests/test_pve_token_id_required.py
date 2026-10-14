@@ -13,18 +13,16 @@ import copy
 import json
 import os
 import re
-import shutil
 import subprocess
 from pathlib import Path
 
 import playbook_yaml
 import pytest
 import yaml
+from ansible_python import needs_ansible
 
 REPO = Path(__file__).resolve().parents[2]
 PLAYBOOKS = REPO / "platform/playbooks"
-needs_ansible = pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="needs ansible-playbook")
-
 # Every play that builds a PVEAPIToken header, and the variable that carries its token id there.
 TOKEN_ID_VAR = {
     "destroy-vm.yml": "_pve_token_id",

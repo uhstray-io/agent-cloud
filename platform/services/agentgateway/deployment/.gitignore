@@ -8,4 +8,7 @@ config.yaml
 # rsync --delete (tasks/place-monorepo.yml honours .gitignore) leaves them in the deploy dir.
 config.yaml.previous
 config.yaml.replaced
+# The config a gateway-config rollback replaces, kept for that one run so a gateway that is not
+# ready on the previous config can be put back on it (never written when it holds a raw key).
+config.yaml.rollback-from
 certs/

@@ -136,7 +136,10 @@ def test_production_overlay_mounts_the_directory_and_keeps_the_process_non_root(
     assert svc["volumes"] == ["./certs:/certs:ro"]
     phase2 = next(p for p in yaml.safe_load(DEPLOY.read_text()) if p.get("name", "").startswith("Phase 2"))
     env = next(t for t in phase2["tasks"] if t["name"] == "Run deploy.sh (container lifecycle)")["environment"]
-    assert "compose.tls.yml" in env["COMPOSE_OVERLAYS"] and "not (local_mode" in env["COMPOSE_OVERLAYS"]
+    # The environment is the one mapping every deploy.sh caller shares (test_agw_deploy_env.py).
+    assert env == "{{ _agw_deploy_env }}"
+    shared = yaml.safe_load((DEPLOY.parent / "vars/agw-deploy-env.yml").read_text())["_agw_deploy_env"]
+    assert "compose.tls.yml" in shared["COMPOSE_OVERLAYS"] and "not (local_mode" in shared["COMPOSE_OVERLAYS"]
 
 
 class _ComposeLoader(yaml.SafeLoader):

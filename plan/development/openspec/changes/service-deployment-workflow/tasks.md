@@ -33,10 +33,33 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
       unchanged (schema-constrained request through the local gateway, then direct).
       2026-09-22: source-level yes at v1.5.0 (`design.md` Context); the live request needs an
       enrolled client key, which has no sanctioned workstation path, so it runs in 3.3
-- [ ] 0.7 Local-dev Semaphore to v2.19.11: bootstrap with `-e
+- [x] 0.7 Local-dev Semaphore to v2.19.11: bootstrap with `-e
       local_semaphore_image=docker.io/semaphoreui/semaphore:v2.19.11-ansible2.16.5`, confirm the
       sqlite store starts (the recorded v2.19-beta panic is gone), then move the default in
       `bootstrap-local-dev.yml`; keeps local and production on one branch-override behaviour
+      2026-10-12: local Semaphore bootstrapped on v2.19.11 (plain tag, the image production runs,
+      ansible-core 2.20.8 — the `-ansible2.16.5` variant named above would have kept local on a
+      third, older core); `/api/ping` 200, no panic in the log, sqlite store starts. Reported by
+      the coordinator; not re-verified here. Bootstrap's template registration stopped at the
+      isolated seed-environment guard (OpenBao address pinned in "OpenBao key seed inputs (Dev)");
+      fix in progress. Default in `bootstrap-local-dev.yml` not yet moved. Not ticked.
+      - 2026-10-12: bootstrapped on the PLAIN `docker.io/semaphoreui/semaphore:v2.19.11` tag,
+        not the `-ansible2.16.5` variant this task named: production runs the plain tag
+        (ansible-core 2.20.8, which the local controller now matches), so the variant would
+        have kept local and production on different Ansible. The sqlite store starts: `/api/ping`
+        200, `semaphore version` v2.19.11, no `panic` in the container log, and genesis
+        (`make local-bootstrap`) ended `failed=0` after Provision Seed Environment (local task
+        5586). Default moved in `bootstrap-local-dev.yml` (`_sem_image`) and the pin text in
+        `docs/LOCAL-DEV.md`; `scripts/semaphore-launch.py`'s VERIFIED set keeps v2.18.12 (left
+        alone on purpose). Every local task id recorded below (5591 onward)
+        ran on this controller.
+      - 2026-10-12, review follow-up: the production half of "same ansible-core" is evidence,
+        not assumption: the lead read both production containers on 2026-10-09 (~20:00Z),
+        `/api/info` `v2.19.11-0c3f373` and `ansible --version` core 2.20.8, recorded in
+        `inference-gateway-agentgateway` tasks.md 4.6 ("2026-10-09T19:58Z", PR #523). The
+        recreate check in `bootstrap-local-dev.yml` now compares image IDs, so re-running
+        `make local-bootstrap` replaces a controller still on an older image (data volume
+        kept); a bare re-run before this change would have kept the old container
 - [x] 0.6 Validation gate: `openspec validate service-deployment-workflow --store agent-cloud`
       passes and 0.2 to 0.5 each carry a dated evidence line; proves no scenario yet and
       unblocks every later section
@@ -80,7 +103,7 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
       Deprecated `dry_run` only where it defaulted to false (create-netbox-device); the runner
       group and NetBox cleanup keep `dry_run=true` as their safety default (spec scenario
       "A dry-by-default playbook keeps its safety default")
-- [ ] 2.2 Run every wave-1 playbook on local-dev three ways (normal, `--check`,
+- [x] 2.2 Run every wave-1 playbook on local-dev three ways (normal, `--check`,
       `--tags verify`) and record the result per playbook in `design.md`. 2026-09-22: the
       local-runnable ones are recorded (design "Wave-1 check-mode results"); `--tags verify`
       is proven by `--list-tasks`, since Semaphore cannot launch a tag override. REMAINING:
@@ -133,6 +156,12 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
         `1c735290`, PR #491) recorded `vm-template` `pass` with evidence `cloudinit_drive: ide0`,
         `template_vmid: 9000`, against the unchanged template that failed in task 3287. Output
         read from Semaphore. 2.2 stays open only for Destroy VM (Dev), held for the operator.
+      - 2026-10-12: ticked. Destroy VM (Dev) dry run only, by operator decision: task 4856, target
+        o11y, `confirm_destroy` 219, `params.dry_run` true recorded; reported "check mode: VM 219
+        on alphacentauri would be destroyed (purge=1) ... Nothing was changed." No real run, by
+        decision. Task id and output as reported by the coordinator; not read from Semaphore here.
+        Every wave-1 playbook now has its runs; 2.2 ticked. Row added to `design.md`, "Production
+        `(Dev)` dry runs — 2026-10-12".
 - [x] 2.3 Wave 2, the remaining playbooks, grouped by service; same patterns and runs.
       2026-09-22: 67 files (161 reads, 27 logins, 125 skips) applied from the guard's own
       findings; normal runs are unchanged by construction (every guard is inert without
@@ -141,6 +170,11 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
 - [x] 2.4 Allowlist in 1.4 is empty; the guard now fails on any new violation
 - [ ] 2.5 Validation gate: spec scenarios "Dry run changes nothing", "Read-only probe is not
       skipped", "Legacy dry-run argument still works" and "Verify-only run" pass
+      - 2026-10-13 (task output read from Semaphore by the lead): evidence so far. The R2 deprecation notice is proven (task 4936). The R3
+        workflow snapshots all succeeded (tasks 4945, 4951, 4953, 4956, 4957, 4958). The operator
+        decided verify-only for the remaining check (option A). R1, the safety-default scenario
+        through Manage GitHub Runner Group, is BLOCKED: the GitHub App returns 404 on every
+        private repo, so the operator must re-grant the App's repository access. Not ticked
 
 ## 3. Local-dev agent runtime (skynet)
 
@@ -155,8 +189,20 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
         increment is its own branch cut from `origin/dev` and merged by pull request, so every
         later section-3 branch starts from a `dev` that already carries the gateway.
       - 2026-10-03: recorded by PR #395 (merged)
-- [ ] 3.1 Prove the DGX API is reachable from inside the local controller's container (not
+- [x] 3.1 Prove the DGX API is reachable from inside the local controller's container (not
       only the host); record the result; if unreachable, record the degraded path in design
+      - 2026-10-12, NOT reachable from the container: from inside `local-semaphore`
+        (v2.19.11) a TCP connect to the DGX API port and to its SSH port are both REFUSED,
+        while the same connects succeed from the Mac and `GET /health` answers 200 there. The
+        podman VM itself is refused too (`/dev/tcp`), yet it and the container reach the
+        internet (VM and container to a public :443 both connect), so the path to this LAN
+        address is cut at the VM's user-mode networking, not at the container network or the
+        DGX. Cause not isolated (unverified: whether it is macOS local-network permission for
+        the VM helper or the VM's gateway). Degraded path confirmed usable: from the container
+        the public edge answers `GET /health` 200 and an unauthenticated `GET /v1/models` 401.
+        So section 3's local gateway runs against the public edge (subject to its rate limit)
+        until the VM path is fixed. Ticked once the measured result and the
+        degraded path were recorded in `design.md` (Risks, "Measured 2026-10-12")
 - [ ] 3.2 Local inventory: agentgateway upstream set to the DGX API in `local-dev.yml` only;
       `vllm_api_key` seeded into local OpenBao with `Seed OpenBao Key` from the environment
       secret, never an argv; `agw_clients` gains the four role identities and `skynet-eval`
@@ -260,9 +306,76 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
       2026-09-22: via the Django shell (the scoped token has no schema permission, 403);
       created in task 995, dry and real re-runs unchanged (997, 998). Also fixed the token
       mint for NetBox 4.5 (no is_staff; v2 tokens stored as nbt_<key>.<token>, sent as Bearer)
-- [ ] 6.5 Validation gate: spec scenarios "Local deploy is repeatable", "Target outside
+- [x] 6.5 Validation gate: spec scenarios "Local deploy is repeatable", "Target outside
       local-dev is refused", "No targets means no discovery" and "Local targets are
       discovered" pass
+      - 2026-10-12, local Semaphore v2.19.11, template "Deploy NetBox (Local)": runs 5591 and
+        5593, both success (health OK). The SECOND run (5593) reports 5 changed tasks (play recap `changed=5`)
+        under 5 distinct names, one of which (`Update .env with credentials`) changed for two
+        loop items, so the log shows 6 `changed:` lines. Four names are in the allowed set
+        (container lifecycle scripts, orb-agent credential refresh): `Run deploy.sh
+        (infrastructure)`, `Run post-deploy.sh (migrations, superuser, OAuth2)`, `Create fresh
+        orb-agent credential via Diode plugin`, `Update .env with credentials`. The fifth name,
+        `Copy working tree into place (local mode)`, is NOT allowed, so
+        "Local deploy is repeatable" FAILS as written. Cause (rsync dry run from the
+        controller, nothing written): `rsync -rlpti` itemizes `.L...p` (mode differs)
+        on every `AGENTS.md -> CLAUDE.md` symlink and `.d..t` (mtime differs) on the netbox
+        deployment directory, with no file content to copy, and `changed_when` counts any
+        output. Why the mode and mtime differ each run was not isolated (unverified). Fix belongs in
+        `platform/playbooks/tasks/place-monorepo.yml` (`--omit-dir-times`, and count only
+        file-content lines in `changed_when`), which every local service shares
+      - "Target outside local-dev is refused": live task 5608 (`deploy-orb-agent`, extra var
+        `discovery_targets` = one documentation-range network, no inventory edit) ended `error`
+        in `Local discovery: refuse any target outside local-dev`, naming that target; the
+        running agent was untouched. Earlier evidence: 6.2
+      - "No targets means no discovery": task 5609 (check mode, extra vars emptying
+        `discovery_target_subnet` and `discovery_targets`) ended success with `Local NetBox
+        discovery is DISABLED` and every later step skipped. Check mode on purpose: a real run
+        removes the running agent. Earlier evidence: 6.2 live, and
+        `platform/services/netbox/deployment/tests/test_discovery_scope.py` (5 passed 2026-10-12)
+      - "Local targets are discovered": scope check passed live (tasks 5599 AppRole, 5600
+        orb-agent deploy, `changed=5`, agent up, `subnet_scan` policy applied). NO record yet:
+        local NetBox holds 0 IP records and 0 devices after 15 minutes, and the policy
+        scans on `0 */4 * * *` (UTC) with no scan logged since the agent started (20:49 UTC),
+        so the first scheduled scan is 00:00 UTC. The count-and-containment query is still to run after that scan. Not ticked
+      - 2026-10-12, after PR #565 (`place-monorepo` change detection; task output read from
+        Semaphore by the lead): "Local deploy is repeatable" PROVEN by local NetBox deploy tasks
+        5619 and 5620 (local Semaphore v2.19.11). The second run changed only Run deploy.sh, Run
+        post-deploy.sh, Create fresh orb-agent credential and Update .env with credentials (the
+        allowed set); "Copy working tree into place" no longer reports changed (it did in 5593).
+        Side effect found: a NetBox redeploy removes the running orb-agent and nothing redeploys
+        it, so the 00:00 UTC scan never ran. The agent was redeployed (local task 5679); the next
+        scheduled scan is 04:00 UTC. Wave 3 of 7.1 makes an unchanged NetBox deploy leave the
+        agent alone. "Local targets are discovered" still pending that scan. Not ticked
+      - 2026-10-13: "Local targets are discovered" is still unproven. Every agent-cloud local
+        container (foundation, NetBox, orb-agent) stopped on 2026-10-13 at 02:34 UTC: podman
+        events show the containers dying in creation order between 02:34:03 and 02:34:36 UTC,
+        with another project's containers untouched. The cause is not determined; the operator
+        was asked. No 04:00 UTC scan ran. Next: bring up NetBox and the orb-agent before a
+        scheduled scan (`0 */4 * * *` UTC). `Stop Local Service` (PR #579) now exists for
+        spinning down idle local services. Not ticked
+      - 2026-10-13, later (task output read from local Semaphore by the lead): all four
+        scenarios now have live evidence; ticked. The 08:00 UTC scheduled `subnet_scan`
+        exited 1: the orb-agent `fast_mode: true` setting maps to nmap `-F`, and nmap refuses
+        `-F` together with `-p`. PR #589 removed `fast_mode` from `subnet_scan` in the agent
+        template and the discovery example, with a guard test
+        (`test_discovery_scan_flags.py`). After it merged, the local orb-agent was redeployed
+        from dev (local task 5784, success) and the 12:00 UTC scheduled scan (orb-agent
+        container log) found 12 hosts and ingested 12; the local NetBox count-and-containment
+        query returned 12 IP records inside the local discovery target and 0 outside. The
+        deploy-time scope check (task 5599) holds that target inside the local container
+        networks, so "Local targets are discovered" is PROVEN. Wave 3 (PR #577)
+        also re-proves "Local deploy is repeatable", more strongly than 5619 and 5620: Deploy
+        NetBox (Local) task 5732 changed, then 5734 reported `changed=0`, service-deploy
+        `changed_on_rerun` false, and the orb-agent was not removed or recreated. First live
+        use of `Stop Local Service` (PR #579): task 5864 stopped NetBox and its orb-agent with
+        volumes kept, on the operator's instruction to spin down idle local services. Open
+        operator follow-up, not done: production discovery still runs the old agent config
+        with `fast_mode`; it needs a production `Deploy Orb Agent` run once #589 reaches the
+        branch production deploys from
+      - 2026-10-13, update: the operator did not stop the local stack on 2026-10-13 at
+        02:34 UTC. They suggested another agent session working on this machine may have.
+        Not verified; the cause stays undetermined
 
 ## 7. Executors, snapshots and tracking
 
@@ -319,6 +432,38 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
         `tasks/emit-step-result.yml` on `main`, and none of its included tasks differs. Not
         stamped: service-deploy (still not re-reviewed), and the reasoning and planned steps.
         7.1 stays open for service-deploy. OPA must be redeployed to pick up `data.json`.
+      - 2026-10-12: service-deploy re-review in progress. Wave 1 (PR #568:
+        `emit-service-deploy-result` and `compose_up_if_changed` for tududi, honcho and
+        openhands) is under review; wave 2 (n8n, NetBox, Postiz) is next; then two Dev
+        deploys per service on production to prove `changed_on_rerun` false. Not ticked.
+      - 2026-10-13: PR #568 (wave 1) merged into dev. The remaining services were regrouped:
+        wave 2 is n8n and Postiz, wave 3 is NetBox (a change-aware deploy that, when nothing
+        changed, leaves containers and the orb-agent untouched). Not ticked.
+      - 2026-10-13, production (task output read from Semaphore by the lead): wave 1
+        second-run proof COMPLETE. Each service's second real
+        Dev deploy reports `DEPLOY_CHANGED=false` and service-deploy `changed_on_rerun` false:
+        tududi 4967 (changed) then 4968 (unchanged); honcho 4977 then 4982; agentgateway 4987
+        and 4992, both unchanged; Authentik 5022 (changed) then 5028 (unchanged) after PR #581
+        (Deploy Authentik had failed on ansible-core 2.20 since 2026-10-09: template delimiters
+        inside an assert, task 4995; MISTAKES 5.18); o11y 5037 (changed, the restore) then 5042
+        (unchanged, ok=156 changed=0). Wave 3 (NetBox change-aware deploy) merged as PR #577;
+        its double-deploy proof waits for promotion, because Deploy NetBox is main-bound. Wave 2
+        (n8n, Postiz) is in progress. Not ticked
+      - 2026-10-13, local proof of wave 3 (task output read from local Semaphore by the lead):
+        Deploy NetBox (Local) task 5732 changed, then 5734 reported `changed=0` with
+        service-deploy `changed_on_rerun` false and the orb-agent untouched. Wave 2 (n8n,
+        Postiz) is PR #587: reviewed in one round with every finding fixed in cb98d760, merge
+        pending CI. Production second-run proof for wave 2, and for wave 3 after promotion,
+        is still to do. Not ticked
+      - 2026-10-13, production wave 2 (task output read from production Semaphore by the
+        lead): PR #587 merged into dev as a81b0392. Deploy n8n (Dev) at a81b0392: dry run
+        5233 (status skip, check mode); real run 5236 (`DEPLOY_CHANGED=true`, `changed=3`, the
+        rendered .env gained `N8N_LISTEN`); real run 5240 (`DEPLOY_CHANGED=false`,
+        `changed=0`, service-deploy `changed_on_rerun` false, verified true). The n8n
+        second-run proof is COMPLETE. Postiz has no production containers yet, so its
+        production proof (including the podman-compose 1.0.6 recreate with dependents) is an
+        operator follow-up. Wave 3 (NetBox) production proof still waits for promotion. Not
+        ticked
 - [x] 7.2 `provision-vm.yml` sets `onboot`; restart-policy check beside `enable-linger`.
       2026-09-22: onboot with per-host opt-out; `verify-service-persistence.yml` (step
       systemd-enablement) passes on local tududi, normal and check mode (tasks 977, 978)

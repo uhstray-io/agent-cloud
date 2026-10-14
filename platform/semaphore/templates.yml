@@ -122,6 +122,12 @@ templates:
         type: string
         required: false
         default_value: "true"
+      - name: expected_log_signal
+        title: "Log signal"
+        description: "Optional Loki signal label the recent log line must carry, e.g. span; empty accepts any"
+        type: string
+        required: false
+        default_value: ""
       - name: expect_traces
         title: "Expect recent traces"
         description: "true to require a service.name trace in Tempo from the last hour"
@@ -181,6 +187,7 @@ templates:
           - { name: "Metrics", value: "metrics" }
           - { name: "Health", value: "health" }
           - { name: "Traces", value: "traces" }
+          - { name: "Profiles", value: "profiles" }
       - name: signal_selector
         title: "Exact signal selector"
         description: "Selector declared in private inventory and containing the bounded target_id label"
@@ -285,6 +292,11 @@ templates:
         description: "Exact panel titles to verify; empty verifies all Prometheus panels. Name Loki panels explicitly."
         type: string
         required: false
+      - name: expected_empty_panels
+        title: "Expected-empty panels (JSON list)"
+        description: "Exact selected panel titles allowed to return no data; every target must be empty and error-free."
+        type: string
+        required: false
       - name: dashboard_variables
         title: "Template variables (JSON object)"
         description: "Overrides for template variables, e.g. {\"compare_offset\": \"7d\"}"
@@ -370,6 +382,12 @@ templates:
         type: string
         required: false
         default_value: "main"
+      - name: deploy_force_recreate
+        title: "Force container recreate"
+        description: "true to recreate every container even when inputs and images match (clears a stale bind mount)"
+        type: string
+        required: false
+        default_value: "false"
 
   - name: Deploy Semaphore
     playbook: platform/playbooks/deploy-semaphore.yml
@@ -390,6 +408,18 @@ templates:
         type: string
         required: false
         default_value: "main"
+      - name: deploy_force_recreate
+        title: "Force container recreate"
+        description: "true to recreate every container even when inputs and images match (clears a stale bind mount). This stops the orb-agent: run Deploy Orb Agent afterwards"
+        type: string
+        required: false
+        default_value: "false"
+      - name: netbox_force_rebuild
+        title: "Force plugin image rebuild"
+        description: "true to rebuild the NetBox plugin image even when its build inputs match (takes a newer Diode plugin release; the rebuilt image recreates the stack and stops the orb-agent)"
+        type: string
+        required: false
+        default_value: "false"
 
   - name: Audit NetBox Runtime
     playbook: platform/playbooks/audit-netbox-runtime.yml
@@ -721,6 +751,12 @@ templates:
         type: string
         required: false
         default_value: "main"
+      - name: deploy_force_recreate
+        title: "Force container recreate"
+        description: "true to recreate every container even when inputs and images match (clears a stale bind mount)"
+        type: string
+        required: false
+        default_value: "false"
 
   - name: Deploy WisBot
     playbook: platform/playbooks/deploy-wisbot.yml
@@ -742,6 +778,12 @@ templates:
         type: string
         required: false
         default_value: "main"
+      - name: deploy_force_recreate
+        title: "Force container recreate"
+        description: "true to recreate every container even when inputs and images match (clears a stale bind mount)"
+        type: string
+        required: false
+        default_value: "false"
 
   - name: Deploy agentgateway
     playbook: platform/playbooks/deploy-agentgateway.yml
@@ -883,11 +925,35 @@ templates:
 
   # Conformance against direct vLLM (change inference-gateway-agentgateway, tasks 2.1/2.2):
   # the same cases to the gateway and to vLLM from the gateway VM, then the comparison. Keys are
-  # read from OpenBao by the runner and placed as 0600 files for the run only; no survey, because
-  # every input is inventory. Introduced on dev, so the (Dev) variant runs before promotion.
+  # read from OpenBao by the runner and placed as 0600 files for the run only. Every input is
+  # inventory except two opt-in survey vars: the long-stream case (tasks 2.3/2.4) lasts minutes on
+  # each side, so a default run stays the fourteen quick cases, and its saturation count makes that
+  # stream queue so vLLM's keep-alive comments appear (it loads the shared upstream, so it is off
+  # by default). Introduced on dev, so the (Dev) variant runs before promotion.
   - name: Run agentgateway Conformance
     playbook: platform/playbooks/run-agw-conformance.yml
     dev_variant: true
+    survey_vars:
+      - name: agw_conformance_long_stream
+        title: "Long-stream case"
+        description: "Add the stream-long case: one streamed request past 130 s through the gateway and straight to vLLM (minutes of generation on each side). Leave false for the fourteen quick cases"
+        type: enum
+        required: false
+        default_value: "false"
+        values:
+          - { name: "No (fourteen quick cases)", value: "false" }
+          - { name: "Yes (add stream-long, minutes)", value: "true" }
+      - name: agw_conformance_long_stream_saturate
+        title: "Filler streams to make the long stream queue"
+        description: "Long-stream case only: filler streams started per side so the stream queues and vLLM sends keep-alives. 8 fills its 8 slots. Real load on the shared DGX, about 45 s per side"
+        type: enum
+        required: false
+        default_value: "0"
+        values:
+          - { name: "0 (none; keep-alives stay unproven)", value: "0" }
+          - { name: "8 (fills vLLM's 8 slots)", value: "8" }
+          - { name: "12", value: "12" }
+          - { name: "16 (the maximum)", value: "16" }
 
   # Read-only drill for gateway tasks 6.1 and 6.4: how the production TLS listener treats a client
   # with no certificate and a client leaf that is on no allowlist, with no key and with an invalid
@@ -902,6 +968,13 @@ templates:
         type: string
         required: true
 
+  # Read-only gate probe for the route switch (gateway tasks 4.5 and 6.4): keyless and invalid-key
+  # /v1/models must each be 401, and keyless /health is recorded (does a public /health survive
+  # gateway mode). No survey, no OpenBao call, no key material. Dev-bound until promotion.
+  - name: Probe agentgateway Gate (Dev)
+    playbook: platform/playbooks/probe-agentgateway-gate.yml
+    repository: agent-cloud dev
+
   - name: Deploy honcho
     playbook: platform/playbooks/deploy-honcho.yml
     dev_variant: true
@@ -912,6 +985,12 @@ templates:
         type: string
         required: false
         default_value: "main"
+      - name: deploy_force_recreate
+        title: "Force container recreate"
+        description: "true to recreate every container even when inputs and images match (clears a stale bind mount)"
+        type: string
+        required: false
+        default_value: "false"
 
   - name: Deploy Postiz
     playbook: platform/playbooks/deploy-postiz.yml
@@ -928,6 +1007,12 @@ templates:
         type: string
         required: false
         default_value: "main"
+      - name: deploy_force_recreate
+        title: "Force container recreate"
+        description: "true to recreate every container even when inputs and images match (clears a stale bind mount)"
+        type: string
+        required: false
+        default_value: "false"
 
   - name: Clean Deploy NetBox
     playbook: platform/playbooks/clean-deploy-netbox.yml
@@ -1577,6 +1662,14 @@ templates:
         type: string
         default_value: "false"
 
+  - name: Rotate Semaphore Operator Token
+    playbook: platform/playbooks/rotate-semaphore-api-token.yml
+    dev_variant: true
+    isolated_environment: Semaphore token rotation inputs
+    seed_inputs: [SEMAPHORE_OLD_TOKEN, SEMAPHORE_NEW_TOKEN]
+    # Both values are staged as encrypted environment inputs by the operator
+    # rotation command. They are never survey fields or task extra vars.
+
   - name: Reconcile pfSense API Key
     playbook: platform/playbooks/reconcile-pfsense-api-key.yml
     dev_variant: true
@@ -1853,6 +1946,29 @@ templates:
         type: string
         required: true
 
+  - name: Survey o11y Scrape Baseline (Dev)
+    playbook: platform/playbooks/survey-o11y-scrape-baseline.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for the read-only scrape baseline survey"
+        type: string
+        required: true
+    # Reports fixed public job categories, 24-hour sample and stored-series label maxima,
+    # plus point-in-time response bytes. Private selectors, URLs, labels and bodies stay protected.
+
+  - name: Survey o11y Expected Metrics Targets (Dev)
+    playbook: platform/playbooks/survey-o11y-expected-metrics-targets.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for the read-only expected-target comparison"
+        type: string
+        required: true
+    # Reports only fixed statuses/reasons and bounded counts; target identities stay protected.
+
   - name: Diagnose o11y Host Storage (Dev)
     playbook: platform/playbooks/diagnose-o11y-host-storage.yml
     repository: agent-cloud dev
@@ -1874,6 +1990,18 @@ templates:
   # (partition -> PV -> root LV + ext4). Dev-bound; dry run shows the chain and steps.
   - name: Grow o11y Root (Dev)
     playbook: platform/playbooks/grow-o11y-root.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "The exact dev commit the grow was reviewed at; any other checkout is refused"
+        type: string
+        required: true
+
+  # Grow each self-hosted runner's root filesystem into its virtual disk, online (same
+  # helper as Grow o11y Root). Dev-bound; dry run shows each host's chain and steps.
+  - name: Grow GitHub Runner Root (Dev)
+    playbook: platform/playbooks/grow-github-runner-root.yml
     repository: agent-cloud dev
     survey_vars:
       - name: expected_repository_sha
@@ -1909,6 +2037,56 @@ templates:
     # are shown. A VMID is not reserved;
     # missing protection stays unknown, and this task never writes PVE.
 
+  - name: Capture o11y Backup Artifact Catalog (Dev)
+    playbook: platform/playbooks/capture-o11y-backup-artifacts.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for the GET-only capture and private catalog branch"
+        type: string
+        required: true
+      - name: site_config_base_branch
+        title: "Reviewed site-config base branch"
+        description: "Exact private integration branch name whose tip equals the reviewed base SHA"
+        type: string
+        required: true
+      - name: site_config_base_sha
+        title: "Reviewed site-config base SHA"
+        description: "Full commit ID of the private integration branch tip"
+        type: string
+        required: true
+
+  - name: Propose o11y Backup Artifact Selector (Dev)
+    playbook: platform/playbooks/propose-o11y-backup-artifact.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for the GET-only census and selector proposal"
+        type: string
+        required: true
+      - name: site_config_base_branch
+        title: "Reviewed site-config base branch"
+        description: "Exact private integration branch name whose tip equals the reviewed base SHA"
+        type: string
+        required: true
+      - name: site_config_base_sha
+        title: "Reviewed site-config base SHA"
+        description: "Full commit ID recorded in the capture catalog and equal to the current private branch tip"
+        type: string
+        required: true
+      - name: capture_commit_sha
+        title: "Private capture commit SHA"
+        description: "Full site-config capture commit containing the fixed artifact catalog"
+        type: string
+        required: true
+      - name: artifact_row
+        title: "Explicit artifact row number"
+        description: "One-based row number from the sanitized capture report"
+        type: string
+        required: true
+
   - name: Survey o11y PBS Physical Storage (Dev)
     playbook: platform/playbooks/survey-o11y-pbs-physical-storage.yml
     repository: agent-cloud dev
@@ -1933,6 +2111,30 @@ templates:
         required: true
     # Reports fixed driver/source categories and counts only; no logs, paths,
     # addresses, container identities, or stderr are exposed.
+
+  - name: Survey o11y Alloy Health (Dev)
+    playbook: platform/playbooks/survey-o11y-alloy-health.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for the read-only Alloy health survey"
+        type: string
+        required: true
+    # Reports fixed Alloy state fields only; inspect JSON, logs, paths, addresses,
+    # command details, and subprocess output remain private.
+
+  - name: Survey o11y Receiver Capabilities (Dev)
+    playbook: platform/playbooks/survey-o11y-receiver-capabilities.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for the read-only receiver capability survey"
+        type: string
+        required: true
+    # Linux/systemd/cgroup and declared receiver-user categories only; no
+    # Podman-store access, service mutation, paths, IDs, command output, or stderr.
 
   - name: Reconcile o11y Backup Job (Dev)
     playbook: platform/playbooks/reconcile-o11y-backup-job.yml
@@ -1970,14 +2172,32 @@ templates:
     dev_variant: true
     # OpenBao-wrapper around the platform/infra/cloudflare OpenTofu root: fetches
     # the CF token + R2 keys from OpenBao, runs tofu against the R2 backend.
-    # tofu_action=plan (safe, default) or apply (gated change; run after review).
+    # tofu_action=plan (safe, default) or apply (generic reviewed change).
     survey_vars:
       - name: tofu_action
         title: "Action"
-        description: "plan (read-only, default) or apply (gated change)"
+        description: "plan (read-only, default) or apply a reviewed Cloudflare change"
         type: string
         required: false
         default_value: "plan"
+
+  - name: Apply Grafana API Cloudflare Tofu (Dev)
+    playbook: platform/playbooks/apply-cloudflare-grafana-api-tofu.yml
+    repository: agent-cloud dev
+    # The wrapper fixes the internal Grafana guard mode; only this Dev operation
+    # accepts the reviewed-plan digest and enforces the exact saved-plan contract.
+    survey_vars:
+      - name: tofu_action
+        title: "Action"
+        description: "plan (read-only, default) or apply the exact Grafana API rule insertion or zero-diff rerun"
+        type: string
+        required: false
+        default_value: "plan"
+      - name: reviewed_plan_digest
+        title: "Reviewed plan digest"
+        description: "SHA-256 receipt from a reviewed Grafana API plan; required for apply"
+        type: string
+        required: false
 
   - name: Publish Semaphore Template Surveys
     playbook: platform/playbooks/publish-semaphore-templates.yml
@@ -2316,12 +2536,32 @@ templates:
     # dev-bound variant was the only way to exercise it (setup-templates.yml emits "<name> (Dev)").
     dev_variant: true
     survey_vars:
+      - name: github_app_client_id
+        title: "App client id"
+        description: "JWT issuer — the App's client id (NOT the client secret, which is unused)"
+        type: string
+        required: true
       - name: dry_run
         title: "Dry run"
         description: "true = resolve + report, change nothing"
         type: string
         required: false
         default_value: "true"
+
+  - name: Grant GitHub Runner App Repository (Dev)
+    playbook: platform/playbooks/grant-github-runner-app-repository.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed Dev commit SHA"
+        description: "Exact clean Dev revision containing the reviewed grant playbook"
+        type: string
+        required: true
+      - name: github_app_client_id
+        title: "Runner App client id"
+        description: "JWT issuer for uhstray-io-runner-automation"
+        type: string
+        required: true
 
   - name: Deploy GitHub Runner
     playbook: platform/playbooks/deploy-github-runner.yml

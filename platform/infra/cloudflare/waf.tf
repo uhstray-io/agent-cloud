@@ -82,6 +82,25 @@ resource "cloudflare_ruleset" "custom_firewall" {
         enabled = true
       }
     },
+    # Grafana API clients carry a service-account token, but Cloudflare's
+    # managed challenge rejects them before Grafana can authenticate the request.
+    # Keep browser and credential-less traffic challenged: only this host's
+    # /api/ path with an Authorization header skips SBFM/BIC/security level.
+    # Earlier regional and AI-crawler block rules continue to apply.
+    {
+      ref         = "o11y-api-bypass-challenge"
+      action      = "skip"
+      enabled     = true
+      description = "Grafana API - bypass challenge for token-bearing non-browser clients"
+      expression  = "(http.host eq \"o11y.uhstray.io\" and starts_with(http.request.uri.path, \"/api/\") and len(http.request.headers[\"authorization\"]) > 0)"
+      action_parameters = {
+        phases   = ["http_request_sbfm"]
+        products = ["bic", "securityLevel"]
+      }
+      logging = {
+        enabled = true
+      }
+    },
     # Inference API (vLLM on the DGX Spark pair) — bypass the managed challenge
     # for non-browser clients.
     #

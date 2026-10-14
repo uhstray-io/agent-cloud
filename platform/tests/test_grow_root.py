@@ -1,8 +1,9 @@
-"""grow-o11y-root.yml and files/grow-root-lvm.py: grow the o11y receiver's full root, online.
+"""grow-*-root.yml, tasks/grow-root-lvm.yml and files/grow-root-lvm.py: grow a host's root, online.
 
-The helper runs as root on the receiver, so here its commands are faked: each case gives the
+The helper runs as root on the host, so here its commands are faked: each case gives the
 findmnt/lsblk/LVM reports and growpart's answers, and checks the plan or the exact commands
-an apply would run. The playbook is checked for the guards that make it safe to launch.
+an apply would run. Every grow playbook is checked for the guards that make it safe to
+launch, and the shared task file for the ones that make the grow itself safe.
 """
 
 import importlib.util
@@ -14,7 +15,12 @@ import yaml
 
 ROOT = playbook_yaml.REPO
 HELPER = ROOT / "platform/playbooks/files/grow-root-lvm.py"
-PLAYBOOK = ROOT / "platform/playbooks/grow-o11y-root.yml"
+TASKS = ROOT / "platform/playbooks/tasks/grow-root-lvm.yml"
+# Each grow playbook: its literal target group and its Semaphore template.
+PLAYBOOKS = {
+    "grow-o11y-root.yml": ("o11y_svc", "Grow o11y Root (Dev)"),
+    "grow-github-runner-root.yml": ("github_runner_svc", "Grow GitHub Runner Root (Dev)"),
+}
 GiB = 1024 ** 3
 
 
@@ -131,60 +137,92 @@ def test_a_missing_growpart_is_refused(monkeypatch):
         mod.main("plan")
 
 
-# ── The playbook ──────────────────────────────────────────────────────────────
+# ── The playbooks ─────────────────────────────────────────────────────────────
 
-PLAYS = playbook_yaml.plays(PLAYBOOK)
-
-
-MAIN = PLAYS[2]
+GROW = yaml.safe_load(TASKS.read_text())
 
 
-def test_the_preflight_guards_the_literal_receiver_group_under_every_tag():
-    pre = PLAYS[0]
+def _plays(name):
+    return yaml.safe_load((ROOT / "platform/playbooks" / name).read_text())
+
+
+def _imported(plays, playbook):
+    return next(p for p in plays if p.get("ansible.builtin.import_playbook") == playbook)
+
+
+def _main(plays):
+    (play,) = [p for p in plays if "hosts" in p]
+    return play
+
+
+@pytest.mark.parametrize("name", PLAYBOOKS)
+def test_internal_names_are_refused_before_anything_else(name):
+    assert _plays(name)[0]["ansible.builtin.import_playbook"] == "refuse-internal-extra-vars.yml"
+
+
+@pytest.mark.parametrize("name", PLAYBOOKS)
+def test_the_preflight_guards_the_literal_group_under_every_tag(name):
+    group, _ = PLAYBOOKS[name]
+    plays = _plays(name)
+    pre = _imported(plays, "preflight-target-group.yml")
     assert pre["ansible.builtin.import_playbook"] == "preflight-target-group.yml"
-    assert pre["vars"] == {"preflight_group": "o11y_svc", "preflight_group_expected": "o11y_svc"}
+    assert pre["vars"] == {"preflight_group": group, "preflight_group_expected": group}
     assert pre["tags"] == ["always"]
-    assert MAIN["hosts"] == "o11y_svc"
+    assert _main(plays)["hosts"] == group
 
 
-def test_the_run_is_bound_to_the_reviewed_commit():
+@pytest.mark.parametrize("name", PLAYBOOKS)
+def test_the_run_is_bound_to_the_reviewed_commit(name):
     # Review of 99666377: a Dev template's moving checkout could run unreviewed code.
-    assert PLAYS[1]["ansible.builtin.import_playbook"] == "require-reviewed-checkout.yml"
+    _, template = PLAYBOOKS[name]
+    plays = _plays(name)
+    assert _imported(plays, "require-reviewed-checkout.yml")
+    # The checkout gate runs before the play that touches the host.
+    assert plays.index(_imported(plays, "require-reviewed-checkout.yml")) < plays.index(_main(plays))
     tpl = next(t for t in yaml.safe_load((ROOT / "platform/semaphore/templates.yml").read_text())["templates"]
-               if t["name"] == "Grow o11y Root (Dev)")
+               if t["name"] == template)
+    assert tpl["playbook"] == f"platform/playbooks/{name}"
     sha = next(v for v in tpl["survey_vars"] if v["name"] == "expected_repository_sha")
     assert sha["required"] is True
 
 
-def test_remote_temp_is_tmpfs_and_proven_before_any_module_runs():
-    play = MAIN
+@pytest.mark.parametrize("name", PLAYBOOKS)
+def test_the_play_puts_remote_temp_on_tmpfs_and_imports_the_grow_statically(name):
+    play = _main(_plays(name))
+    assert play["become"] is False
     assert play["vars"]["ansible_remote_tmp"] == "/dev/shm/ansible-tmp"
     assert play["environment"]["TMPDIR"] == "/dev/shm/ansible-tmp"
-    assert play["tasks"][0]["ansible.builtin.import_tasks"] == "tasks/require-tmpfs-remote-tmp.yml"
+    assert "grow-root-lvm.py" in play["vars"]["_helper"]
+    # Static and untagged, so each task keeps its own verify tag.
+    (grow,) = play["tasks"]
+    assert grow["ansible.builtin.import_tasks"] == "tasks/grow-root-lvm.yml"
+    assert "tags" not in grow
+
+
+def test_remote_temp_is_proven_tmpfs_before_any_module_runs():
+    assert GROW[0]["ansible.builtin.import_tasks"] == "require-tmpfs-remote-tmp.yml"
 
 
 def test_only_the_helper_tasks_escalate_and_the_apply_is_check_mode_guarded():
-    play = MAIN
-    assert play["become"] is False
-    escalated = [t["name"] for t in play["tasks"] if t.get("become")]
+    escalated = [t["name"] for t in GROW if t.get("become")]
     assert escalated == ["Plan the grow (reads only)", "Grow partition, PV and root LV with its filesystem",
                          "Re-read the chain"]
-    apply = next(t for t in play["tasks"] if t["name"].startswith("Grow partition"))
+    apply = next(t for t in GROW if t["name"].startswith("Grow partition"))
     assert apply["when"].startswith("not ansible_check_mode")
-    plan = next(t for t in play["tasks"] if t["name"].startswith("Plan the grow"))
+    plan = next(t for t in GROW if t["name"].startswith("Plan the grow"))
     assert plan["ansible.builtin.command"]["argv"] == ["python3", "-", "plan"] and plan["check_mode"] is False
 
 
 def test_a_verify_run_reads_and_checks_but_never_applies():
     # Standard 3 (08-ansible-automation-standards.md): --tags verify makes no change.
-    tagged = {t["name"]: "verify" in t.get("tags", []) for t in MAIN["tasks"]}
+    tagged = {t["name"]: "verify" in t.get("tags", []) for t in GROW}
     assert tagged["Grow partition, PV and root LV with its filesystem"] is False
     assert all(tagged[n] for n in ["Require writable tmpfs for Ansible's remote temp",
                                    "Resolve the sudo password through OpenBao", "Plan the grow (reads only)",
                                    "Re-read the chain", "Refuse a root that still has room to grow"])
     # Static, so the tag reaches the tasks inside (a dynamic include's tags stop at the include).
-    sudo = next(t for t in MAIN["tasks"] if t["name"] == "Resolve the sudo password through OpenBao")
-    assert "ansible.builtin.import_tasks" in sudo
+    sudo = next(t for t in GROW if t["name"] == "Resolve the sudo password through OpenBao")
+    assert sudo["ansible.builtin.import_tasks"] == "resolve-become-password.yml"
 
 
 def test_an_lv_grown_without_its_filesystem_is_finished_by_resize2fs(monkeypatch):

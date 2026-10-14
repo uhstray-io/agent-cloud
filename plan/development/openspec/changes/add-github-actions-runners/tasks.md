@@ -21,6 +21,18 @@
       against that rootless socket with a trivial job payload. Record verbatim what
       works and what fails — in particular container create, exec, volume mount of the
       work directory, and cleanup.
+      **Findings so far (2026-10-12), from the live runners and upstream source; still
+      open: the end-to-end result after the next deploy, then 1.3.** On both runners (rootless
+      podman 4.9.3 through podman-docker, hooks v0.8.1, runner 2.336.0) container create
+      failed three ways, recorded in `docs/MISTAKES.md` 10.24 and 10.25:
+      (a) `cannot resolve /github/home: lstat /github: no such file or directory`: the
+      hooks give `docker create` only the job's variables, with HOME=/github/home and no
+      XDG directory (fix: the runner's `docker` wrapper, `_bin/docker`);
+      (b) `statfs .../_work/_actions: no such file or directory`: podman refuses a missing
+      bind source (fix: `job-started.sh`);
+      (c) `statfs /var/run/docker.sock: permission denied`: the hardcoded socket mount led
+      to root's socket (fix: the account's own podman socket at that path).
+      Exec and cleanup through the hooks are not yet observed.
 - [ ] 1.3 Write the outcome into `design.md` under D4 as a resolved decision (replacing
       the "unverified" wording) — either "rootless podman compatibility socket works,
       platform norm holds" or "rootless podman insufficient because <verbatim failure>;
@@ -305,3 +317,41 @@
       `verify-github-runners.yml`, and spec scenarios **"Two hosts installed at
       different times match"** and **"The running version does not drift"** are verified
       (both hosts report the declared pinned version with self-update disabled).
+
+## 11. Dedicated runner App administration credential follow-up
+
+The runner App installation grant must not reuse `secret/services/github:pat`: that
+shared credential also serves GHCR, and a scope change could disrupt package pulls.
+Keep the grant-only `installation_admin_token` in `secret/services/github-runner`; the
+helper accepts only a dedicated `ghp_` classic PAT with the `repo` scope and refuses to
+write unless its user has admin permission on the private target repository. Keep the
+shared `secret/services/github:pat` unchanged for GHCR.
+
+- [ ] 11.1 After the reviewed code merges into Dev, seed only the dedicated classic PAT as
+      `installation_admin_token` into `secret/services/github-runner` through the governed
+      `seed-openbao-key.yml` flow, using `scripts/semaphore-seed-input.py` with an encrypted
+      isolated Semaphore environment. Do not seed a CLI OAuth token or replace/rewrite
+      `secret/services/github:pat`.
+- [ ] 11.2 Run the reviewed Dev grant template in check mode; confirm it previews the
+      fixed repository without a PUT and emits no credential material.
+- [ ] 11.3 Run the reviewed Dev grant template normally; confirm the additive grant and
+      fresh installation-token readback report `site-config` present.
+- [ ] 11.4 Run the `site-config` runner CI workflow and confirm it completes on the
+      declared self-hosted runner group.
+
+## 12. Future work — per-job ephemeral runners
+
+The accepted interim boundary is that the six permitted private repositories share the
+runner trust boundary, and jobs can leave processes behind.
+
+- [ ] 12.1 Migrate to per-job ephemeral runners. `--ephemeral` registration alone is
+      insufficient: isolate and destroy the runner process and filesystem after every
+      job, including failed or cancelled jobs.
+- [ ] 12.2 Acceptance: in each of two cases, have the first job from one permitted
+      private repository write a unique workspace marker and start a uniquely identifiable
+      background process; fail it in one case and cancel it in the other. After each
+      outcome, run a job from a different permitted private repository on the same runner
+      host and prove it cannot read the marker or observe or attach to the process. Preserve
+      the runner group access limits and
+      `agent-cloud`'s public-repository exclusion. Deploy through reviewed config-as-code
+      and Semaphore changes, with final-head CI and review green before rollout.

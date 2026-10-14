@@ -55,6 +55,8 @@ Verified on 2026-09-22:
   v2.19 (then a beta) panicked on the local sqlite store (`bootstrap-local-dev.yml:95-98`), and
   whether 2.19.11 still does is unverified. Local moves only after a local bootstrap on
   2.19.11 starts cleanly; until then local and production differ on branch override.
+  - 2026-10-12: resolved. Local now runs v2.19.11 (`tasks.md` 0.7), so local and production
+    share the branch-override behaviour above.
 - **The template's "allow override branch" flag is enforced only in the web UI** (v2.18.12).
   `web/src/components/TaskForm.vue:123` hides the branch field unless the flag is set; the
   API path validates only the branch name's syntax (`db/git_branch.go`,
@@ -148,6 +150,15 @@ against the o11y service. Each result is identified by its Semaphore task id.
 | Harden SSH (Dev) | o11y_svc | dry run `skip` (2859) | key-only login proven first (`key_only_proven` true, #430); `skip` with a would-change list, not `pass` (#439). A real run is the operator's |
 | Destroy VM (Dev) | | **held** | still waits on the operator |
 | Snapshot VM, Create VM Template | | not run | still no `(Dev)` variant |
+
+### Production `(Dev)` dry runs — 2026-10-12
+
+Task id and output as reported by the coordinator; not read from Semaphore here. Nothing was
+changed in production: the run is a dry run by operator decision, with no real run.
+
+| Template | Target | Result | Notes |
+|---|---|---|---|
+| Destroy VM (Dev) | o11y (`confirm_destroy` 219) | dry run pass (4856) | `params.dry_run` true recorded; reported "check mode: VM 219 on alphacentauri would be destroyed (purge=1) ... Nothing was changed." No real run, by operator decision. Closes the wave-1 production dry runs (task 2.2) |
 
 ## Goals / Non-Goals
 
@@ -326,6 +337,14 @@ overlapping snapshots and a rendered Grafana matrix before calling the correctio
 - [Local controller container cannot reach the DGX] → the gateway upstream falls back to the
   public edge for local-dev runs, which is subject to the edge rate limit; recorded as a
   degraded mode, not the design.
+  - Measured 2026-10-12: the risk is real. The DGX API is refused from inside the local
+    `local-semaphore` container AND from the podman VM itself (TCP to the API port and to the
+    node's SSH port both refused), while the Mac reaches it (`/health` 200). The VM and the
+    container do reach the internet, so the cut is on the VM's path to this LAN address
+    (user-mode networking, gvproxy), not the container network or the DGX. Cause not isolated;
+    candidates: macOS Local Network permission for the VM helper, or gvproxy. Degraded path,
+    measured from the container: the public edge answers `/health` 200 and a keyless
+    `/v1/models` 401, with the edge rate limit applying. Evidence: tasks.md 3.1.
 - [Removing OPA's human gate on reasoning steps] → content rules plus template allowlists
   bound what an approved proposal can do; the destructive-template gate is unchanged.
 

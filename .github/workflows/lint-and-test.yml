@@ -208,7 +208,7 @@ jobs:
 
       - uses: actions/setup-python@v7
         with:
-          python-version: "3.11"
+          python-version: "3.12"
 
       - name: Install test dependencies
         run: |
@@ -227,8 +227,8 @@ jobs:
           ansible-galaxy collection install -r collections/requirements.yml
 
       # Keep pytest's configured root testpaths active so newly registered suites
-      # remain covered. Deselect only NetBox and Semaphore node IDs; --ignore does not
-      # remove a directory listed directly in testpaths. Each has its own job below.
+      # remain covered. Deselect only the bounded NetBox, Semaphore, and playbook
+      # safety slices; each has its own job below.
       #
       # `-n auto`, one worker per core: the slow tests are independent ansible-playbook
       # subprocesses, so they spread across cores instead of queueing behind each other.
@@ -245,6 +245,33 @@ jobs:
           pytest -v -x -n auto --dist worksteal --durations=20
           --deselect=platform/services/netbox/deployment/tests/
           --deselect=platform/semaphore/tests/
+          --deselect=platform/tests/test_rollback_inference_route.py
+          --deselect=platform/tests/test_executor_internal_overrides.py
+
+  python-playbook-safety:
+    name: Python Playbook Safety
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install test dependencies
+        run: |
+          pip install -r platform/requirements-test.txt
+          pip install -r platform/requirements-controller.txt
+          ansible-galaxy collection install -r collections/requirements.yml
+
+      - name: Run Python Playbook Safety tests
+        run: >-
+          pytest -v -x -n auto --dist worksteal --durations=20
+          platform/tests/test_rollback_inference_route.py
+          platform/tests/test_executor_internal_overrides.py
 
   python-semaphore:
     name: Python Semaphore
@@ -255,7 +282,7 @@ jobs:
 
       - uses: actions/setup-python@v7
         with:
-          python-version: "3.11"
+          python-version: "3.12"
 
       - name: Install test dependencies
         run: |
@@ -274,7 +301,7 @@ jobs:
 
       - uses: actions/setup-python@v7
         with:
-          python-version: "3.11"
+          python-version: "3.12"
 
       - name: Install test dependencies
         run: |
@@ -289,12 +316,13 @@ jobs:
   bats:
     name: Bash Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
 
       - uses: actions/setup-python@v7
         with:
-          python-version: "3.11"
+          python-version: "3.12"
 
       - name: Install test dependencies
         run: |
@@ -310,37 +338,48 @@ jobs:
   rego:
     name: Rego Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
 
-      # The Rego authorization policy had tests that ran only at deploy time
-      # (deploy-opa.yml) and on a workstation, so a rule could merge broken. Run them
-      # here in the image the OPA service pins (compose.yml OPA_IMAGE default). `check
-      # --strict` also catches a non-policy JSON file in the tree, which OPA loads as
-      # data and rejects with "merge error" (found 2026-09-22).
+      - name: Install verified OPA 1.0.0
+        env:
+          OPA_SHA256: 3985fb4814b3860511beac516f59c5509eee9fdc83dbe910b67f3999f743b901
+        run: |
+          opa="$RUNNER_TEMP/opa"
+          curl --fail --location --silent --show-error \
+            --retry 3 --retry-all-errors --retry-delay 2 \
+            --connect-timeout 10 --max-time 60 \
+            --output "$opa" \
+            https://openpolicyagent.org/downloads/v1.0.0/opa_linux_amd64_static
+          echo "$OPA_SHA256  $opa" | sha256sum --check
+          chmod 755 "$opa"
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+
       - name: Run Rego tests
         run: |
-          img=openpolicyagent/opa:1.0.0-static
-          docker run --rm -v "$PWD/platform/services/opa/deployment/policies:/p:ro" "$img" check --strict /p
-          docker run --rm -v "$PWD/platform/services/opa/deployment/policies:/p:ro" "$img" test /p -v
+          opa check --strict platform/services/opa/deployment/policies
+          opa test platform/services/opa/deployment/policies -v
 
   test:
     name: Unit Tests
     if: always()
-    needs: [python-core, python-netbox, python-semaphore, bats, rego]
+    needs: [python-core, python-playbook-safety, python-netbox, python-semaphore, bats, rego]
     runs-on: ubuntu-latest
     steps:
       - name: Require every test group to succeed
         env:
           PYTHON_CORE_RESULT: ${{ needs.python-core.result }}
+          PYTHON_PLAYBOOK_SAFETY_RESULT: ${{ needs.python-playbook-safety.result }}
           PYTHON_NETBOX_RESULT: ${{ needs.python-netbox.result }}
           PYTHON_SEMAPHORE_RESULT: ${{ needs.python-semaphore.result }}
           BATS_RESULT: ${{ needs.bats.result }}
           REGO_RESULT: ${{ needs.rego.result }}
         run: |
-          printf 'Python core: %s\nPython NetBox: %s\nPython Semaphore: %s\nBATS: %s\nRego: %s\n' \
-            "$PYTHON_CORE_RESULT" "$PYTHON_NETBOX_RESULT" "$PYTHON_SEMAPHORE_RESULT" "$BATS_RESULT" "$REGO_RESULT"
+          printf 'Python core: %s\nPython Playbook Safety: %s\nPython NetBox: %s\nPython Semaphore: %s\nBATS: %s\nRego: %s\n' \
+            "$PYTHON_CORE_RESULT" "$PYTHON_PLAYBOOK_SAFETY_RESULT" "$PYTHON_NETBOX_RESULT" "$PYTHON_SEMAPHORE_RESULT" "$BATS_RESULT" "$REGO_RESULT"
           test "$PYTHON_CORE_RESULT" = success
+          test "$PYTHON_PLAYBOOK_SAFETY_RESULT" = success
           test "$PYTHON_NETBOX_RESULT" = success
           test "$PYTHON_SEMAPHORE_RESULT" = success
           test "$BATS_RESULT" = success

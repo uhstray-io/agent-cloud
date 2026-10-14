@@ -16,7 +16,7 @@ services:
       - ALL
     command:
       - run
-      - --storage.path=/var/lib/alloy/data
+      - --storage.path=/alloy-state
       - --server.http.listen-addr=127.0.0.1:12345
       - /etc/alloy/journal.alloy
     environment:
@@ -30,7 +30,7 @@ services:
         read_only: true
         bind:
           create_host_path: false
-      - journal-collector-state:/var/lib/alloy/data
+      - journal-collector-state:/alloy-state
       - ./config/journal.alloy:/etc/alloy/journal.alloy:ro
     networks:
       - o11y

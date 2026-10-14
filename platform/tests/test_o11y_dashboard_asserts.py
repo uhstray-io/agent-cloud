@@ -141,6 +141,126 @@ def test_panel_inside_a_collapsed_row_is_reported(copies):
     assert len(found) == 1 and "collapsed row 'Build'" in found[0], found
 
 
+def _dashboard(name: str) -> dict:
+    return json.loads((DASHBOARDS / name).read_text())
+
+
+def _panel(dashboard: dict, title: str) -> dict:
+    (panel,) = [p for p in dashboard["panels"] if p["title"] == title]
+    return panel
+
+
+def _selector(expr: str) -> str:
+    return re.search(r"\{[^{}]+\}", expr).group(0)
+
+
+def test_service_dashboard_identities_and_selected_service_names_are_explicit():
+    conformance = _dashboard("service-conformance.json")
+    overview = _dashboard("service-overview.json")
+    assert conformance["uid"] == "service-conformance"
+    assert overview["uid"] == "service-overview"
+    assert all(target["datasource"]["uid"] == "loki"
+               for panel in conformance["panels"] for target in panel["targets"])
+    assert _panel(overview, "Scrape target health")["datasource"]["uid"] == "prometheus"
+    assert _panel(overview, "Selected source records observed (5m)")["datasource"]["uid"] == "loki"
+    variables = {item["name"]: item["label"] for item in overview["templating"]["list"]}
+    assert variables == {"service": "Metrics service", "log_service": "Logs service"}
+    content = _panel(overview, "Selected service identities")["options"]["content"]
+    assert "$service" in content and "$log_service" in content
+
+
+def test_unknown_newest_step_completion_replaces_older_known_age_without_fallback():
+    dashboard = _dashboard("service-conformance.json")
+    marker_age = _panel(dashboard, "Latest inventory marker age")["targets"][0]["expr"]
+    workflow_age = _panel(dashboard, "Latest workflow completion age")["targets"][0]["expr"]
+    step_ages = _panel(dashboard, "Latest workflow completion age by service and step")
+    step_age_expr = step_ages["targets"][0]["expr"]
+    provenance = _panel(dashboard, "Workflow completion and task provenance")
+    provenance_expr = provenance["targets"][0]["expr"]
+    assert "marker_time_seconds" in marker_age
+    assert "completed_at_seconds" in workflow_age and "marker_time_seconds" not in workflow_age
+    for expr in (workflow_age, step_age_expr):
+        assert expr.index("| json completed_at_seconds") < expr.index("| label_format age_seconds=")
+        assert expr.index("| json completed_at_seconds") < expr.index("| drop status")
+        assert expr.index("| drop status") < expr.index("| label_format age_seconds=")
+        assert 'default "unknown") "unknown"}}-1' in expr
+        assert "| unwrap age_seconds" in expr
+        assert "[45m]) by (service, step)" in expr
+        assert "completed_at_seconds=~" not in expr
+    assert ") by (service, step) > -1)" in workflow_age
+    assert step_age_expr.endswith("by (service, step)")
+    assert step_ages["fieldConfig"]["defaults"]["mappings"][0]["options"]["-1"] == {
+        "text": "Unknown", "color": "gray"
+    }
+    transformations = step_ages["transformations"]
+    assert [item["id"] for item in transformations] == [
+        "labelsToFields", "merge", "organize", "renameByRegex"
+    ]
+    assert transformations[0]["options"] == {"mode": "columns"}
+    assert transformations[2]["options"]["excludeByName"] == {"Time": True}
+    assert transformations[-1]["options"]["renamePattern"] == "Age"
+    assert "Latest step status by service" in step_ages["description"]
+    assert "task_id, completed_at_seconds" in provenance_expr
+    assert 'step!="none"' in provenance_expr
+    assert "unknown" in provenance["description"]
+    assert "collector" in provenance["description"].lower()
+    assert "not workflow completion" in provenance["description"]
+
+
+def test_overview_source_status_queries_match_disjoint_aggregate_selectors_and_show_empty():
+    dashboard = _dashboard("service-overview.json")
+    aggregate = _panel(dashboard, "Log volume by source")
+    status = _panel(dashboard, "Selected source records observed (5m)")
+    aggregate_by_source = {
+        target["legendFormat"].split(" · ", 1)[0]: _selector(target["expr"])
+        for target in aggregate["targets"]
+    }
+    status_by_source = {target["legendFormat"]: _selector(target["expr"])
+                        for target in status["targets"]}
+    assert len(aggregate_by_source) == len(status_by_source) == 5
+    assert aggregate_by_source == status_by_source
+    assert 'container=~".+"' in aggregate_by_source["Legacy container"]
+    assert 'signal!~"^(container|access-log|span)$"' in aggregate_by_source["Legacy container"]
+    assert 'signal="container"' in aggregate_by_source["Journal container"]
+    assert 'signal="access-log"' in aggregate_by_source["Access"]
+    assert 'signal="span"' in aggregate_by_source["Span"]
+    assert 'job="agent-cloud-conformance"' in aggregate_by_source["Conformance"]
+    assert (
+        _selector(_panel(dashboard, "All Loki streams (mixed-source drill-down)")["targets"][0]["expr"])
+        not in aggregate_by_source.values()
+    )
+    assert all("or on() vector(0)" in target["expr"] for target in status["targets"])
+    mappings = status["fieldConfig"]["defaults"]["mappings"]
+    assert mappings[0]["options"]["0"]["text"] == "No records"
+    assert mappings[0]["options"]["0"]["color"] == "gray"
+    assert mappings[1]["options"]["result"]["text"] == "Records observed"
+    assert "ingestion diagnosis" in status["description"]
+
+    sources = {
+        "Legacy container": lambda labels: bool(labels.get("container"))
+            and labels.get("signal", "") not in {"container", "access-log", "span"}
+            and labels.get("job") != "agent-cloud-conformance",
+        "Journal container": lambda labels: labels.get("signal") == "container"
+            and labels.get("job") != "agent-cloud-conformance",
+        "Access": lambda labels: labels.get("signal") == "access-log"
+            and labels.get("job") != "agent-cloud-conformance",
+        "Span": lambda labels: labels.get("signal") == "span"
+            and labels.get("job") != "agent-cloud-conformance",
+        "Conformance": lambda labels: labels.get("job") == "agent-cloud-conformance",
+    }
+    records = [
+        {"container": "app", "signal": "legacy", "job": "alloy"},
+        {"container": "app", "signal": "container", "job": "alloy"},
+        {"signal": "container", "job": "alloy"},
+        {"signal": "access-log", "job": "alloy"},
+        {"signal": "span", "job": "alloy"},
+        {"job": "agent-cloud-conformance"},
+        {"container": "app", "signal": "other", "job": "agent-cloud-conformance"},
+        {"job": "alloy"},
+    ]
+    assert [sum(match(record) for match in sources.values()) for record in records] == [1, 1, 1, 1, 1, 1, 1, 0]
+
+
 @pytest.mark.parametrize("title, status", [("4xx request ratio", "4.."), ("5xx request ratio", "5..")])
 def test_client_view_error_ratio_numerator_is_zero_when_no_error_series(title, status):
     # With no 4xx/5xx series the numerator is an empty vector and the division returns

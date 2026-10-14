@@ -1,6 +1,25 @@
 ---
 # Reuse an injected runtime token or the controller's existing OpenBao AppRole.
 # Never extract browser credentials or read a workstation cache/backup file.
+#
+# The first task names an unparsed inventory before anything judges the OpenBao address.
+# Without it, a task whose inventory file Semaphore lost (concurrent tasks share
+# /tmp/semaphore/project_<n>/inventory_<id>; one finishing removes it before another parses
+# it) has no local_mode, so a correct local single-label OpenBao URL is refused with
+# "Refusing to send secret material ... invalid endpoint" — true, and not the cause.
+#
+# The check applies whenever the run was GIVEN an inventory (-i), and Semaphore always gives
+# one. ansible_inventory_sources keeps the path it was given even when the file has vanished,
+# so a lost file is still seen as "given". An operator-side tool started from a workstation
+# with no -i has only Ansible's configured default source (DEFAULT_HOST_LIST) and legitimately
+# has no hosts, so it is not asked for one. Decided by how the run was started, never by a
+# flag the calling playbook sets: a flag leaks into every playbook that imports it (the
+# publisher template imports setup-templates.yml). ANSIBLE_INVENTORY set in the environment
+# moves the configured default with it, so that route is treated as "not given".
+- name: "Require the inventory to have parsed"
+  ansible.builtin.include_tasks: ../../playbooks/tasks/require-parsed-inventory.yml
+  when: (ansible_inventory_sources | default([]) | list) != (lookup('ansible.builtin.config', 'DEFAULT_HOST_LIST') | list)
+
 - name: "Require a non-cleartext transport to Semaphore"
   ansible.builtin.assert:
     that:

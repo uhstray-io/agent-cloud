@@ -50,8 +50,10 @@ and why.
 | 1.18 | Listed an auth failure's causes from the code, missed the database-error 401, and chased credentials while the orchestrator's disk was full | Unverified claim | 1 | Convention (disk alert proposed) |
 | 1.19 | A negative claim about a host's state from evidence that cannot establish it (widens 1.6) | Unverified claim | 1 | Convention |
 | 1.20 | Assumed Semaphore injected a task-id environment variable; the first production drill printed a blank receipt ID | Unverified runtime assumption | 1 | Test (o11y receipt checks) |
-| 1.21 | Said the live alert readback proved the inference alert groups; it filtered rule uids to `o11y_` and never read them, and no dashboard check covered the inference boards | Unverified claim | 1 | Test (`test_service_o11y.bats` readback mirror) |
-| 1.22 | Stated the runner's ansible-core version twice (2.16 from a relayed comment, then 2.20.8 from a compose default); the live server runs v2.17.31, whose image ships 2.18.15 | Unverified claim | 1 | Convention (version-report template + pinned CI proposed) |
+| 1.21 | **x2** — Said the live alert readback proved the inference alert groups; it filtered rule uids to `o11y_` and never read them, and no dashboard check covered the inference boards | Unverified claim | 2 | Test (`test_service_o11y.bats` readback mirror); selector choice Convention |
+| 1.22 | Stated the runner's ansible-core version twice (2.16 from a relayed comment, then 2.20.8 from a compose default); the live server runs v2.17.31, whose image ships 2.18.15 | Unverified claim | 1 | CI pin (requirements-test.txt) + Convention |
+| 1.23 | Named an incident's cause (a config the pinned image would reject) without reading the failing task's own stderr, which printed the real one: the rollback recreated the gateway without the TLS compose overlay | Unverified claim | 1 | Convention |
+| 1.24 | Projected 90-day Prometheus disk from a net 24 h block delta that retention was already offsetting; 2.4 GB stated where the at-rest size gives about 6 GB | Unverified claim | 1 | Convention |
 | 2.1 | Test compiled a pattern as raw file text, not as the runtime decodes it | False-green test | 1 | Test |
 | 2.2 | Test pinned the vulnerable form of a security check in place | False-green test | 1 | Test |
 | 2.3 | Negative assertion aborted under `set -e` because a no-match grep exits 1 | False-green test | 1 | Convention |
@@ -80,6 +82,8 @@ and why.
 | 2.26 | A fixture placed an inventory variable where production does not; the planning play saw it in tests and nothing in prod (widens 2.22) | False-green fixture | 1 | Test (one playbook); class Convention |
 | 2.27 | A run that matched its hosts, found nothing to do, and reported success (widens 2.21) | Wrong-reason pass | 1 | Test (one playbook); class Convention, lint proposed |
 | 2.28 | A clean-copy test passed only where the copy carried bytecode caches; refusal tests matched text every refusal prints | Wrong-reason pass | 1 | Test (`test_o11y_fault_drill.py`) |
+| 2.29 | A deploy proved rootless podman from a sudo session while every job, under a `NoNewPrivileges=true` unit, failed in `newuidmap`; a test had pinned the breaking directive | Wrong-reason pass | 1 | Playbook checks in the service context + test (`test_service_github_runner.bats`) |
+| 2.30 | A deploy task mapped template vars back to the defaulted copies defined from them; ansible-core failed the render with a recursive loop, and no test rendered the step | Unrunnable playbook, green suite | 1 | Test (`test_no_recursive_task_vars.py`) |
 | 3.1 | Wrote a probe value over a real credential in a live secret store | Live-state damage | 1 | OPA (`agent_actions.rego`; inert until callers send fields) |
 | 3.2 | Attempted to mutate a shared orchestrator credential without asking | Live-state damage | 1 | Sandbox + OPA (`agent_actions.rego`; inert until callers send grants) |
 | 3.3 | Treated failed workstation login as a controller access prerequisite | Wrong executor boundary | 1 | Test + convention |
@@ -93,6 +97,8 @@ and why.
 | 3.11 | Made a deploy stop recreating containers without auditing a step that relied on it; a directory reset under a live bind mount emptied Authentik's custom blueprints in prod | Live state | 1 | Test (`test_no_bind_mount_dir_delete.py` + FORCE_RECREATE case in `test_compose_up_if_changed.bats`) |
 | 3.12 | Launched two `(Dev)` deploys through the API without `service_branch`; Semaphore applies survey defaults only in its form, so both hosts checked out `main` under Dev playbooks | Live state | 1 | Playbook guard (`assert-placement-branch.yml`) + launcher default fill + tests (`test_placement_branch_guard.py`, `test_semaphore_launch.py`, mutation-checked) |
 | 3.13 | The `dev` -> `main` promotion merge let the repo's delete-head-branch-on-merge setting delete `dev`, the long-lived integration branch; the main -> dev sync then failed | Live state | 1 | Ruleset (`protect-dev.json`, deletion rule) + test (`test_ruleset_protect_dev.py`); live since 2026-10-08 |
+| 3.14 | Ran a real rollback drill on the strength of a dry run that skips the step that failed; the gateway came up broken and stayed down ~6 minutes | Live state | 1 | Test (`test_rollback_inference_route.py`: validation before recreate, auto-restore on a failed readiness) |
+| 3.15 | A proof run deployed unproven `dev` merges to production: the second-run proof's real o11y deploy carried a scrape-budget change no real run had loaded, and production telemetry was down ~1h45m | Live state | 1 | Convention (launcher refusal on unproven changes proposed) |
 | 4.1 | `while read` silently dropped an unterminated final line | Data handling | 1 | Convention |
 | 4.2 | Stored `.env` values without stripping surrounding quotes | Data handling | 1 | Convention |
 | 4.3 | Used a real internal IP address as a test vector | Data leak | 1 | Pre-commit (existing) |
@@ -102,7 +108,7 @@ and why.
 | 4.7 | An address edit replaced every matching line and left a production runner declared at the new VM's address | Data handling | 1 | Playbook guard + test (provision-vm address-claim check) |
 | 4.8 | A credential-shaped test fixture was pushed; CI's unscoped all-detectors scan let it fail other PRs | Data handling | 1 | CI (scan scoped to the PR's commits) |
 | 4.9 | **x2** — Private site data in public code: Discord destination IDs in a fixture; the operator's account in a Proxmox token fallback, gateway fixtures and path-derived ids | Data handling | 2 | Test (`test_no_site_identity.py`, the three account shapes); other private values Convention |
-| 4.10 | **x3** — A heredoc script and a stdin redirect both targeted one interpreter; it parsed the operator token file as source and the syntax error printed the token | Secret in transcript | 3 | Convention — **count ≥ 3: the PreToolUse hook is now required, not proposed** |
+| 4.10 | **x4** — A heredoc script and a stdin redirect both targeted one interpreter; it parsed the operator token file as source and the syntax error printed the token | Secret in transcript | 4 | Test + Claude project PreToolUse hook (`.claude/hooks/guard-secret-stdin.py`); Codex hook remains open |
 | 4.11 | A workstation home path reached a committed ledger entry; the audit grep for it ran by hand only | Data handling | 1 | Pre-commit hook (`no-machine-paths`) |
 | 5.1 | Security check duplicated per caller; a fix reached three copies and missed two | Duplication | 1 | Test |
 | 5.2 | Committed while a test was failing, because the check did not gate the commit (repeat 2026-09-25: a merge after a mergeability read, joined by `;`) | Process | 4 | Pre-push hook |
@@ -120,6 +126,9 @@ and why.
 | 5.14 | Wrote a file into a checkout another task owns with a path checkout; widens 5.10 past branch switches | Process | 1 | Convention (hook proposed) |
 | 5.15 | Published AI attribution in a PR body; widens 5.9 from commits to every GitHub artifact | Process | 1 | Convention (`gh` wrapper proposed) |
 | 5.16 | Merged on a PR status rollup that still showed the previous head's checks; CI on the merged head was running | Process | 1 | Convention (operator-side script; `dev` has no required checks) |
+| 5.17 | Upgraded production's ansible-core before CI ran the playbooks on the new version; 2.20 templates `delegate_to` strictly, a probe drill dry run failed | Process | 1 | Test (`test_delegate_to_strict_undefined.py`) + CI pin + Convention (upgrade ordering) |
+| 5.18 | ansible-core 2.20 rejects template delimiters inside a conditional; the Authentik promotion guard's `'{{ '{{' }}'` broke Deploy Authentik on every branch | Process | 1 | Test (`test_no_template_delimiters_in_conditionals.py`) |
+| 5.19 | A worker killed other sessions' test runs and the lead's watchers with `pkill -f` by process-name pattern on the shared machine | Process | 1 | Convention (PreToolUse hook proposed) |
 | 6.1 | Built an edit from an assumed file structure instead of a read one | Process | 1 | Convention |
 | 6.2 | Built an interface the consumer never calls, without reading how it invokes | Process | 1 | Test |
 | 6.3 | Repeated 6.2 — assumed openssl and jq exist on the orchestrator image; neither does — **x3** (CI never installed the playbook collections) | Process | 3 | Convention -> **Test + declared dep**; CI installs `collections/requirements.yml` |
@@ -159,6 +168,10 @@ and why.
 | 10.21 | Checked-in ruleset declared `active`; the live one was `evaluate` and `main` was unprotected | Config drift | 1 | Convention (scheduled live-vs-JSON check proposed) |
 | 10.22 | A dashboard panel was renamed and the deploy's verify kept the old title; only a production run compared them | Mechanism never exercised | 1 | Test (`test_o11y_dashboard_asserts.py`, mutation-checked) |
 | 10.23 | The main-to-dev sync failed on every workflow-file change from 2026-08-28; a promotion would have reverted two action bumps on `main` | Mechanism never exercised | 1 | CI (`Promotion source (dev -> main)` ancestry step; `test_promotion_source_guard.py`, mutation-checked) |
+| 10.24 | Shipped container jobs on rootless podman with Docker's mount semantics assumed; every `container:` job failed on a missing bind source and on a socket link to root's podman, while the deploy's uid-map check passed | Mechanism never exercised | 1 | Playbook probe (hook-shaped `docker create` in the user manager) + test (`test_service_github_runner.bats`) |
+| 10.25 | The 10.24 probe copied the hooks' `docker create` arguments but ran it with the account's own environment; the hooks pass HOME=/github/home and no XDG directories, so every `container:` job still failed with `cannot resolve /github/home` | Mechanism never exercised | 1 | Playbook probe (wrapper run under `env -i` with the hooks' HOME, one image store for pull and create) + test (`test_service_github_runner.bats`) |
+| 10.26 | Merged an Alloy config change no real Alloy binary had loaded; the rendered config failed to load on v1.5.1 and the production container crash-looped for ~1,000 restarts | Mechanism never exercised | 1 | Test (text guard, `test_o11y_scrape_budgets.py`, mutation-checked) + Convention for the load proof (CI step proposed) |
+| 10.27 | Every runner restart under `KillMode=process` signalled `run.sh` only and left the Listener that took every job running since boot; no unit or `.env` change reached it, and the no_new_privs check read `run.sh`, not the Listener | Mechanism never exercised | 1 | Unit (`KillMode=mixed`, `RUNNER_MANUALLY_TRAP_SIG=1`) + playbook (quiesce before start, Listener verify) + test (`test_service_github_runner.bats`, mutation-checked) |
 | 11.1 | 76 assertions across the suite could never fail — `!` and `[[ ]]` are exempt from `set -e` | False-green test | 1 | **Ratchet test** (`test_assertions_are_real.bats` + `known_inert_assertions.txt`) |
 | 11.2 | Sourced a config file instead of reading it, turning every credential into shell code | Live-state damage | 1 | Test |
 | 11.3 | Committed without running the suite — third occurrence | Process | 1 | Pre-push hook (status note 2026-10-02) |
@@ -883,6 +896,21 @@ live rule and contact state", "real deploy verifies every provisioned dashboard 
 renders the alert file with the inference scrape and probe enabled and fails when an
 `inference_*` rule is missing or unrouted live, or a dashboard file's uid is not live.
 
+**Occurrences: 2** — 2026-10-04, 2026-10-13
+
+**Occurrence 2 — 2026-10-13.** Verify o11y Service (Dev) tasks 5257 and 5262 passed with the
+agentgateway canary, and the operator was told the Loki line read back "is a span log", so
+gateway task 3.1 (spans reach Loki as log lines) was ticked in PR #595. The check's Loki selector
+is `{service="agentgateway"}`. The lead searched only the Docker relabel and the journal
+collector for other sources of that label, and missed the gateway's own OTLP access logs, which
+reach Loki with the same `service` label through the `gateway_logs` attributes processor in
+`config.alloy.j2`. The pass therefore did not distinguish an access record from a span log. The
+pull-request review caught it before merge. The rule did not fire because the lead read what the
+check selects and then wrongly enumerated what else matches it. Reading the producers of the
+selected label means every pipeline that writes it, not the ones already in mind. The fix gives
+the check a discriminating selector (`signal="span"`, PR #597; proven by task 5299).
+Choosing it is still Convention.
+
 ### 1.22 A runner's tool version stated twice without reading the running system
 
 **What happened.** While diagnosing why a production dry run of `Rollback Inference Route (Dev)`
@@ -911,6 +939,66 @@ itself, which 1.14 did not mention, so it did not fire.
 **Enforced by.** Convention. Proposed (not built): a read-only Semaphore template that reports the
 runner's `ansible_version`, and a CI job pinned to that version (CI installs an unpinned
 ansible-core, 2.19 at the time, while the runner image ships 2.18).
+
+**Occurrence note, 2026-10-09 -- guard built.** CI now pins `ansible-core==2.20.8`
+(`platform/requirements-test.txt`) on Python 3.12, read live from the prod runner after the
+v2.19.11 upgrade (PR #519). The bump-together rule (runner image and CI pin) stays Convention.
+
+### 1.23 Incident cause asserted without reading the failing task's own diagnostics
+
+**Occurrences: 1** — 2026-10-09
+
+**What happened.** The `gateway-config` rollback failed twice on production (Semaphore tasks 3844 and
+3904): the gateway was recreated, readiness never answered, and each failed task's own stderr printed
+`Error: failed to watch configured file paths: /certs/agw-server/current/cert.pem ... No path was found`.
+The failure was attributed, without reading that output, to the previous config being something the
+pinned image would reject, and a fix was built on that (PR #517: validate the previous config first,
+restore the replaced one on a failed readiness). The real cause: the production gateway gets `./certs`
+only from the `compose.tls.yml` overlay, which `deploy-agentgateway.yml` selects through the
+`COMPOSE_OVERLAYS` environment variable it passes to `deploy.sh`; both of the rollback's `deploy.sh`
+calls spelled the environment out themselves and left it off, so the rollback recreated the gateway
+with no certificate files and it exited at start. The restore failed for the same reason.
+
+**Root cause.** A cause was named from the shape of the failure ("readiness did not answer after a
+config change") instead of from the failing task's own error text, which was available in the task
+output. The rollback's environment was also a hand-copied subset of the deploy's, so nothing tied the
+two together.
+
+**The rule.** Before naming a cause for a failed run, read the failing task's own output (stderr, the
+log tail the script prints) and quote the line that establishes it. A hypothesis that the output does
+not contain is labelled `unverified:` and is not built on. The environment a script runs under is
+defined once and shared by every caller (`platform/playbooks/vars/agw-deploy-env.yml`), never copied.
+
+**Enforced by.** For the environment half: `platform/tests/test_agw_deploy_env.py` (every task in a
+gateway play that runs `deploy.sh` must set `environment` to exactly `{{ _agw_deploy_env }}`, parsed
+from the YAML) and `platform/tests/test_rollback_inference_route.py` (both rollback recreates run under
+the deploy's environment, `compose.tls.yml` included). Mutation-checked: dropping `COMPOSE_OVERLAYS`
+from the shared mapping, or inlining the environment on a rollback task, fails them. The reading habit
+(read the failing output before naming a cause) is Convention.
+
+### 1.24 A growth projection extrapolated from a net change that retention was already offsetting
+
+**What happened.** The first daily o11y baseline (production receipt task 5329, 2026-10-13) reported
+Prometheus block bytes of 992,962,502 and a 24 h change of +26,487,309, read with
+`delta(prometheus_tsdb_storage_blocks_bytes[24h])`. The operator was told, and a records PR stated,
+that Prometheus grows about 26.5 MB a day, so 90-day retention needs about 2.4 GB. The receiver had
+run 17 days against 15-day retention, so blocks were already being deleted. The delta is net of
+those deletions and excludes the head, which makes it a lower bound. The at-rest size gives about
+66 MB a day, or about 6 GB for 90 days (slightly high: whole-block deletion lets the span exceed
+15 days). The pull-request review caught it before merge. The conclusion (disk is not the
+blocker) held at either figure.
+
+**Root cause.** The figure was read by its label ("change in 24 h") and multiplied out, without
+asking what the query measures: a net delta of a gauge that retention and compaction both move.
+The same receipt's other numbers (at-rest size against the retention span, samples appended)
+contradicted it, and nobody cross-checked them.
+
+**The rule.** Before projecting a rate forward, name what the measured quantity is net of
+(deletion, compaction, restarts) and cross-check it against an independent figure from the same
+reading. When they disagree, report the bound each one gives, not the product of one. Related to
+1.21 (cite only what the check measures); this is the arithmetic form.
+
+**Enforced by.** Convention.
 
 ## 2. Tests that would have passed for the wrong reason
 
@@ -1784,6 +1872,54 @@ run's output that "Controller checkout has uncommitted files" is absent unless t
 itself. The refusal-path cases still assert only the shared "no fault was induced" text; the
 every-run assertion is what stops a clean-checkout refusal from passing them.
 
+### 2.29 The rootless-podman check ran outside the context jobs run in
+
+**What happened.** Container jobs on the GitHub runners failed with `exec: "newuidmap":
+executable file not found`. The fix installed `uidmap` and added a deploy check, `podman
+unshare cat /proc/self/uid_map` through `become_user`, which passed. On 2026-10-11 every
+`podman build` in weft's CI still failed on both runners, now with `newuidmap: write to
+uid_map failed: Operation not permitted`. The runner's systemd user unit set
+`NoNewPrivileges=true`. no_new_privs makes setuid bits inert on `execve` and is inherited by
+every descendant (prctl(2)), and the kernel accepts a multi-range `uid_map` only from a
+writer with `CAP_SETUID` in the parent namespace (user_namespaces(7)), which `newuidmap`
+gets only from its setuid bit. A bats test asserted `NoNewPrivileges=true`.
+
+**Root cause.** The check ran in a sudo session started from the SSH login. That session
+is not a descendant of the runner unit, so it inherited none of the unit's properties and
+could not see the one that broke every job. The test pinned a hardening directive without
+anyone measuring what it broke.
+
+**The rule.** A deploy check that stands for "jobs can do X" runs in the jobs' context:
+under the same service manager, with the unit's properties, or it reads the property from
+the running service itself. A sudo or SSH session proves only what a sudo or SSH session
+can do. A hardening directive is added with a measurement of what it breaks, not only a test
+that it is present.
+
+**Enforced by.** `deploy-github-runner.yml` reads `NoNewPrivs` and the user namespace of
+the service's main process from `/proc`, and runs the podman mapping in a
+`systemd-run --user` transient unit carrying the unit's own `NoNewPrivileges` value.
+`test_service_github_runner.bats` requires both checks, requires `NoNewPrivileges=false`, and
+refuses the unit options that set no_new_privs implicitly or imply `PrivateUsers=`.
+
+### 2.30 A task var mapped a name back to its own defaulted copy
+
+**What happened.** The first Deploy GitHub Runner dry run after 2.29 (Semaphore task 4609,
+2026-10-11) passed every new check, then failed both hosts at the template step with
+`Recursive loop detected in template: maximum recursion depth exceeded`. The task's `vars:`
+set `github_runner_version: "{{ _rver }}"` while the play defined `_rver: "{{
+github_runner_version | default('2.336.0') }}"`, and the unit template step set
+`github_runner_name: "{{ github_runner_name }}"`. Reproduced on ansible-core 2.20 and 2.21.
+
+**Root cause.** Ansible templates lazily. Inside the task, the task-level name shadows the
+play's, so resolving it goes through the copy and lands on itself. Nothing rendered these
+templates in CI, so the deploy's last real run was the first to evaluate them.
+
+**The rule.** A task never maps a name to an expression that resolves back to that name.
+Pin the defaulted copy with `set_fact` first and map the raw name to the pinned fact.
+
+**Enforced by.** `platform/tests/test_no_recursive_task_vars.py`, which follows each task
+var through the play's vars across every playbook.
+
 ## 3. Acting on live state
 
 ### 3.1 Overwriting a real credential with a probe value
@@ -2213,6 +2349,82 @@ and `.github/rulesets/check-drift.sh` reports `OK [protect-dev] live ruleset mat
 unverified: that it blocks the automatic head-branch deletion in practice; the next
 `dev` -> `main` promotion is the test.
 
+**Status — 2026-10-09.** Proven in practice: PR #515 (`dev` -> `main`, head `dev`) merged at
+2026-10-09T19:25:41Z as `293b1e0c` with `delete_branch_on_merge` still `true`, and `dev` survived
+(`gh api repos/uhstray-io/agent-cloud/branches/dev` resolves). The `sync-main-to-dev.yml` run for
+`293b1e0c` succeeded, where the 2026-10-08 run for `c81ada2a` failed on the missing branch.
+
+### 3.14 Ran a real rollback drill on the strength of a dry run that skips the step that failed
+
+**Occurrences: 1** — 2026-10-09
+
+**What happened.** On 2026-10-09 the `gateway-config` mode of "Rollback Inference Route (Dev)" was
+run for real on production (Semaphore task 3844) after its dry run (task 3843) passed. The run
+put `config.yaml.previous` in place and `deploy.sh --no-pull` recreated the gateway; the
+database container was healthy and `ERROR: agentgateway readiness did not respond within 90s`
+failed the run. The gateway stayed down for about six minutes, until Deploy agentgateway (Dev)
+(task 3846) restored the current config. The public route was unaffected: it went direct to
+vLLM. Why the previous config failed is not established.
+
+**Root cause.** The dry run was read as evidence for the real run, but check mode skips exactly
+the steps that could fail: the recreate and the readiness wait. The rollback also never asked
+the pinned gateway image whether it accepts the config it was about to start (the deploy does,
+before it recreates), and when the recreate failed nothing put the working config back, so
+recovery was a manual second run.
+
+**The rule.** A dry run proves only the steps check mode executes. Before a real run of a
+destructive step, list what the dry run skipped and cover each with a check that does run under
+`--check` (here: the pinned image's `--validate-only` on the config about to be started) or with
+a recovery that runs by itself (here: restore the replaced config and recreate on it). A step that
+replaces a working config keeps the old one for the run and puts it back when readiness fails,
+then still fails the run, naming whether the restore held.
+
+**Enforced by.** `platform/tests/test_rollback_inference_route.py`: a previous config the pinned
+image rejects is refused with nothing moved and no `deploy.sh` call, also under `--check`; a
+gateway that is not ready on the previous config gets the replaced config back and the run fails
+saying so; a restore that is not ready either fails naming Deploy agentgateway; a replaced config
+holding a raw key is never kept. Mutation-checked: skipping the validation fails the first set,
+skipping the restore fails the second, and treating a raw-key copy as restorable fails the last.
+
+**Correction — 2026-10-09.** The cause of tasks 3844 and 3904 is now established, and it is not the one
+this entry's root cause names: the rollback's `deploy.sh` calls omitted `COMPOSE_OVERLAYS`, so the
+gateway was recreated without `compose.tls.yml` and its `./certs` mount and exited with "failed to
+watch configured file paths: /certs/agw-server/current/cert.pem" (see 1.23). Validating the previous
+config first and restoring the replaced one are kept as defence, but neither addressed this failure:
+the previous config was not the problem, and the restore failed the same way.
+
+### 3.15 A proof run deployed unproven `dev` merges to production
+
+**Occurrences: 1** — 2026-10-13
+
+**What happened.** The service-deployment-workflow 7.1 second-run proof launched a real
+`Deploy o11y (Dev)` (Semaphore task 5000) at `dev` commit `4872faad`. The last real o11y deploy
+was task 4882 at `92574e78`; since then `dev` had gained ten commits under the o11y service
+directory (`git log 92574e78..4872faad -- platform/services/o11y`), among them PR #570 (the o11y
+receiver guardrails and scrape budgets) and, at the head, PR #572. They were proven only by dry
+runs (tasks 4949, 4980, 4996), and a dry run never loads Alloy's config. Task 5000 rolled the
+change to production and Alloy rejected its config and restarted in a loop (see 10.26): 1,027
+restarts between the 03:44 UTC recreate (task 5000) and inspect task 5015, which saw Alloy
+started at 04:15:49 UTC, about one restart per 1.9 s (1,909 s / 1,027). Production telemetry was
+down for about 1 hour 45 minutes, until task 5037 restored it.
+
+**Root cause.** The proof script pinned "whatever `dev` is now" and never asked what had
+changed for that service since its last real deploy. Check mode cannot prove a config that the
+service itself must load, so three passing dry runs said nothing about the one thing that
+failed. The proof run became the first live run of someone else's change.
+
+**The rule.** Before any real production run of a `(Dev)` template, list the commits on `dev`
+that touch that service since its last REAL deploy. Any change not yet proven live gets its own
+reviewed decision (owner aware, rollback ready) before the run. A proof run is never the first
+live run of another change. 3.14's rule did not fire because it covers a destructive step's own
+dry run; it does not cover a change someone else merged that has never run live. This is a
+separate, wider rule for that reason.
+
+**Enforced by.** Convention. Proposed guard: the deploy playbooks emit, in their step-result
+evidence, the service paths changed since the revision of the last successful real deploy, and
+the launcher refuses a real run with unproven changes unless an explicit acknowledgement
+variable is set. Related: 3.14, 10.26.
+
 ## 4. Data handling
 
 ### 4.1 `while read` dropping an unterminated final line
@@ -2511,7 +2723,7 @@ convention and review.
 
 ### 4.10 The interpreter read the token file as its program, and its error printed the token
 
-**Occurrences: 3** — 2026-09-25, 2026-09-25, 2026-09-26
+**Occurrences: 4** — 2026-09-25, 2026-09-25, 2026-09-26, 2026-10-12
 
 **What happened.** Verifying the Dev seed rollout, I ran `python3 - <<'EOF' ... EOF <
 site-config/secrets/semaphore/semaphore_api_token.txt`. The heredoc and the redirect both
@@ -2528,9 +2740,12 @@ secret in it) and the secret arrives on stdin or in an environment variable. Nev
 `python3 -` / a heredoc script with a secret on stdin. After any exposure, say so at once and
 name the credential to rotate.
 
-**Enforced by.** Convention. Proposal: a Claude Code PreToolUse hook that refuses a Bash command
-combining an interpreter reading its program from stdin (`python3 -`, `bash -s`, a heredoc
-script) with a redirect from a path under `secrets/`.
+**Enforced in Claude Code by.** The project PreToolUse hook in `.claude/settings.json` runs
+`.claude/hooks/guard-secret-stdin.py`. It blocks Bash commands that combine an interpreter
+program read from stdin (`python3 -`, `bash -s`, or a heredoc) with stdin redirected from a
+`secrets/` path. A script file or `-c` program with the secret on stdin remains allowed. The
+deterministic cases are covered by `platform/tests/test_semaphore_token_rotation_hook.py`.
+This project hook does not cover Codex shell calls; that integration remains open.
 
 **Occurrence 2 — 2026-09-25, a different session the same evening.** To tell whether local
 Semaphore or its Caddy route rejected a token (the collector's local dry run had got HTTP 401),
@@ -2550,10 +2765,16 @@ third time. This came hours after writing occurrence 2, after recording the rule
 `AGENTS.md` and `docs/LOCAL-DEV.md`, and after using the safe shape (a script file, the token
 on stdin) a dozen times in between. Why the rule did not fire: each safe script file served one
 query, so a new question started from a blank inline command again, and reading the rule in
-docs does not reach the moment of typing. With three occurrences, Convention is no longer an
-acceptable enforcement: the PreToolUse hook proposed above is required. Until it exists,
-token-bearing calls go through one reusable script file that takes the query as arguments,
-never a fresh inline program.
+docs does not reach the moment of typing. With three occurrences, Convention is not sufficient:
+the project PreToolUse hook now guards this command shape. Token-bearing calls still use a
+reusable script file, with the secret on stdin, never a fresh inline program.
+
+**Occurrence 4 — 2026-10-12, Codex.** A read-only Semaphore task diagnostic again
+combined `python3 -` with a heredoc and a separate redirect from the production
+operator-token backup. The token text reached the tool transcript. The task was
+stopped, the token was treated as exposed, and the rotation workflow was started.
+The Claude project hook above cannot intercept Codex tool calls; Codex needs an
+equivalent command guard at its own execution boundary.
 
 
 ### 4.11 A workstation home path reached a committed ledger entry; the audit grep was manual
@@ -2965,19 +3186,116 @@ pattern over the `--body`/`--body-file` and `--title` of a `gh pr create|edit` o
 `32b455bb` was still running (Bash Tests, Python core, Security Scan and Static Analysis in
 progress). The merge script judged the PR's status rollup, which just after a push still
 showed the previous head's completed checks. CI on the new head passed afterwards, so nothing
-broken landed, but the merge rested on no evidence about the code merged.
+broken landed, but the merge rested on no evidence about the code merged. The same failure
+recurred on PR #531: `gh pr merge --auto --squash` merged at 2026-10-11T02:48:51Z while Bash
+and Python core were running; Python core was still running at dispatch. Bash passed after
+merge. Do not claim final-head CI success from that timeline.
 
 **Root cause.** The rollup is not keyed to the commit being merged. Right after a push it
 reports the last finished runs, which belong to the old head.
 
-**The rule.** A merge decision reads the check runs of the exact head SHA being merged
-(`commits/<sha>/check-runs`), takes the latest run per check name, and waits until every one
-is complete and passing. "Never merge a PR before its checks have completed and passed"
-(AGENTS.md) means the checks of that head.
+**The rule.** A feature-to-Dev merge decision uses
+`python3 scripts/merge-when-green.py --pr PR_NUMBER --head FULL_HEAD_SHA`. It verifies the
+open same-repository PR and exact head, the latest applicable workflow execution, every
+expected job's exact-head check run, one independent approval on that head, cleared review
+threads and changes requests, and an operator attestation that actionable feedback is
+addressed. A skipped Go job is accepted only when complete changed-file evidence proves its
+declared path condition false. The tool re-reads all gates immediately before one explicit
+`gh pr merge --merge --match-head-commit FULL_HEAD_SHA`; it never enables auto-merge/admin or
+blindly retries an ambiguous result. Read-only validation is the default.
 
-**Enforced by.** Convention. The merge script is operator-side, outside this repository, and
-now judges the head's check runs as above. No repository gate applies: `protect-main` includes
-only the default branch, so `dev` has no required-checks rule.
+**Enforced by.** Operator CLI: `scripts/merge-when-green.py`; tests:
+`platform/tests/test_merge_when_green.py`; workflow: `plan/development/dev-merge-guard.md`.
+This remains a convention because `dev` intentionally has no required-check rule: the
+main-to-Dev sync workflow pushes directly to `dev`. A direct merge command can bypass the
+CLI, and a concurrently started rerun or review can race the separate API reads and merge.
+
+### 5.17 Upgraded production's ansible-core before CI exercised the playbooks on the new version
+
+**Occurrences: 1** — 2026-10-12
+
+**What happened.** The production Semaphore runner was upgraded on 2026-10-09 to image v2.19.11,
+taking ansible-core from 2.18.15 to 2.20.8. CI was pinned to 2.20.8 only afterwards (PR #519;
+see 1.22), so for the days between, the playbooks ran in production on a version no test had
+exercised. On 2026-10-12 the dry run of `o11y Fault Drill (Dev)` with `drill=probe` (Semaphore
+task 4888) failed with `object of type 'dict' has no attribute 'host'` on the exporter-only
+stop task, an inventory with no `o11y_fault_drill_exporters`. The same drill had passed on
+2.18.15 (task 3295, 2026-10-07). Reproduced on 2.20.8: `delegate_to: "{{ d.host }}"` on a task
+whose `when` is false fails, bare, inside a block, and in `always:`. 2.20.8
+`executor/task_executor.py` calls `_calculate_delegate_to` (line 458) first, which reaches
+`vars/manager.py:519`, a strict `templar.template(task.delegate_to)`; 2.18.15
+`vars/manager.py:524` passes `fail_on_undefined=False`, so an unresolvable expression stayed
+literal and the skipped task never noticed. Six templated delegations in three playbooks
+(`o11y-fault-drill.yml` twice, `deploy-agentgateway.yml` three times, `verify-o11y-service.yml`
+once) carried the same latent failure; the drill's was the one that surfaced.
+
+**Root cause.** The version gate ran after the upgrade instead of before it. A tool upgrade on
+the orchestrator was treated as an image bump rather than a behaviour change for every playbook
+it runs, and the check-mode and drill templates, which run rarely, were not run on the new
+version first.
+
+**The rule.** Before upgrading the runner's ansible-core, pin CI to the target version and get
+a green run first, then run a check-mode pass of each scheduled and drill template on that
+version. The runner image and the CI pin are bumped together (the rule 1.22 left as
+Convention). A templated `delegate_to` carries a `default(...)` so a skipped task never fails
+on it.
+
+**Enforced by.** Test for the class: `platform/tests/test_delegate_to_strict_undefined.py`
+(every templated `delegate_to` has a default or an audited reason) and
+`test_o11y_fault_drill.py::test_a_probe_dry_run_needs_no_exporter_declaration`; CI pin
+`ansible-core==2.20.8` in `platform/requirements-test.txt`. Convention for the ordering (pin
+CI, green run, then upgrade the runner). Related: 1.22.
+
+### 5.18 ansible-core 2.20 rejects template delimiters inside a conditional
+
+**Occurrences: 1** — 2026-10-12
+
+**What happened.** Prod task 4995, `Deploy Authentik (Dev)` in check mode on the runner's
+ansible-core 2.20.8, failed at `Promotion guard (prod): OIDC prod URLs are set + not
+local-dev defaults` with `[ERROR]: Task failed: Syntax error in expression. Template
+delimiters are not supported in expressions: chunk after expression`. The offender was the
+third `that:` line of `deploy-authentik.yml`, `"'{{ '{{' }}' not in (lookup('vars', item,
+default=''))"`, a way to spell a literal brace pair inside a conditional. The same line was
+on `main`, so the main-bound Deploy Authentik was broken too. A scan of every YAML under
+`platform/playbooks` and `platform/services` for `that`, `when`, `failed_when`,
+`changed_when` and `until` values containing `{{` or `{%` found this one line. Reproduced on
+ansible-core 2.21.0 with a one-task play; the fixed spelling `('{' ~ '{')` evaluates, fails
+the assert for a value that holds a brace pair, and passes for a clean URL.
+
+**Root cause.** The same upgrade class as 5.17: the runner moved to ansible-core 2.20, which
+parses a conditional as one bare expression and refuses a delimiter inside it, where 2.18
+tolerated the spelling. No test read conditionals for delimiters, and the guard only runs
+for a prod (`local_mode` false) deploy, so no local run exercised it.
+
+**The rule.** A conditional never contains `{{`, `{%` or `{#`. Write a literal brace pair as
+a concatenation, `('{' ~ '{')`; use `fail_msg` (not a conditional) for text that interpolates
+variables.
+
+**Enforced by.** Test: `platform/tests/test_no_template_delimiters_in_conditionals.py`
+(static scan of every YAML under `platform/playbooks`, `platform/services` and
+`platform/semaphore`, plus a run of the real guard task through ansible-playbook, plus the
+reproduction of the 2.20 error where the installed ansible-core is 2.20 or newer). CI pin
+`ansible-core==2.20.8` in `platform/requirements-test.txt`. Related: 5.17.
+
+### 5.19 A worker killed other sessions' test runs by process-name pattern
+
+**Occurrences: 1** — 2026-10-12
+
+**What happened.** On 2026-10-12 a wave-3 service-deploy worker cleaned up its own test runs
+with `pkill -f bats` and `pkill -f "pytest -q -n auto"`. On the shared machine those patterns
+matched every session's and every worker's suites. The lead's watcher tasks exited 144, and the
+branch push for PR #569 (`docs/live-proofs-1012-evening`) was aborted.
+
+**Root cause.** A pattern kill matches every process on the machine, not the caller's. Nothing
+in the worker's brief said the machine was shared, and nothing stopped the command.
+
+**The rule.** Kill only PIDs you started and recorded. Never `pkill`, `killall`, or
+`kill $(pgrep ...)` by pattern on a shared machine.
+
+**Enforced by.** Convention. The lead's memory note and the line in worker briefs are
+operator-private and not visible in this repository, so the only repo-visible guard is the
+proposed one: a PreToolUse hook refusing `pkill`, `killall` and `kill $(pgrep ...)`. Related:
+5.10, 5.14.
 
 ## 6. Working from assumptions about files
 
@@ -4291,6 +4609,164 @@ promoting. Do not assume the sync ran; its job is a convenience, not the guarant
 `platform/tests/test_promotion_source_guard.py` runs that step's own script against
 throwaway repositories; removing the fetch, the `exit 1`, the error/non-ancestor split or the
 full-history checkout each turns one of its tests red.
+
+### 10.24 Container jobs were shipped on rootless podman with Docker's mount semantics assumed
+
+**What happened.** After the 2.29 fix, the deploy's uid-map check passed on both GitHub
+runners, and every job that declared `container:` still failed in "Initialize containers"
+(weft run 38153546438, 2026-10-11): `cannot resolve /github/home: lstat /github: no such file
+or directory`. A diagnostic workflow repeated the hooks' `docker create` inside a job on each
+runner. It failed with `statfs .../_work/_actions: no such file or directory`; after the
+missing sources were made it failed again with `statfs /var/run/docker.sock: permission
+denied`. The runner deletes `_actions` at the start of every job and makes the tool cache
+only on demand, and Docker creates a missing bind source where podman refuses it. The runner
+also mounts `/var/run/docker.sock` into every job container, a hardcoded path, and
+podman-docker links it to root's socket, which the runner account cannot reach.
+
+**Root cause.** The design's spike (task 1.2: run the hooks against rootless podman "with a
+trivial job payload", recording the volume mount of the work directory) is still unchecked in
+`tasks.md`, and the hooks were enabled on the strength of the podman-docker shim being
+present. The deploy
+proved the parts it could see (the shim, the uid map) and nothing created a container with
+the mounts a job actually gets.
+
+**The rule.** A compatibility layer is proved with the exact call its client makes, not by
+its presence. For container jobs that is the hooks' `docker create` with the runner's full
+mount set, in the jobs' context (2.29).
+
+**Enforced by.** `deploy-github-runner.yml` runs the deployed `job-started.sh` and then a
+hook-shaped `docker create` with all eight runner mounts in a `systemd-run --user` transient
+unit, and calls `_ping` on the mounted socket path; the deploy fails unless both succeed.
+`tasks/podman-user-docker-socket.yml` reads back the effective tmpfiles.d lines for the
+socket path. `test_service_github_runner.bats` renders and runs the job-started hook, and
+requires the probe's mount set, the user-socket link, and that root's socket is never a
+link target.
+
+### 10.25 The hook-shaped probe copied the hooks' arguments but not their environment
+
+**What happened.** After the 10.24 fix was deployed and its probe passed on both GitHub
+runners, every job that declared `container:` still failed in "Initialize containers" with
+the error 10.24 quotes first: `cannot resolve /github/home: lstat /github: no such file or
+directory`. That error was never a mount error. The container hooks start `docker` with an
+environment built from the job alone: for `create`, `exec` and `run` it is exactly the job
+container's variables plus the `DOCKER_*` variables, and for every other call it is the
+`DOCKER_*` variables only (runner-container-hooks v0.8.1, `packages/docker/src/utils.ts`,
+`optionsWithDockerEnvs`). The job's variables include `HOME=/github/home`, which is how `-e
+HOME` hands the container its home. Rootless podman resolves HOME on the host when
+`XDG_CONFIG_HOME` is unset and fails with exactly this message (podman v4.9.3,
+`pkg/util/utils_supported.go:81-92`), and it also places its image store under HOME when
+`XDG_DATA_HOME` is unset (containers/storage v1.51.0, `pkg/homedir/homedir.go:28-37`). So
+even past the error, a `pull` (no HOME, so the passwd home) and a `create` (HOME=/github/home)
+would use two different image stores. The diagnostic workflow in 10.24 ran its `docker
+create` inside a job step, whose HOME is the runner account's home, so it saw only the two
+errors behind this one.
+
+**Root cause.** The probe 10.24 added repeated the hooks' `docker create` with their full
+mount set, but ran it with the user manager's environment: the account's HOME, a PATH and
+the XDG directories. It never set `HOME=/github/home` and never cleared the rest, so it could
+not fail the way the hooks fail. The probe was hook-shaped in arguments only.
+
+**The rule.** A probe of a client's call copies the client's whole invocation: arguments,
+environment and the way the binary is found. A probe that inherits a richer environment than
+the client gives proves the probe, not the client (widens 10.24).
+
+**Enforced by.** The runner's `docker` is now a deployed wrapper (`docker-wrapper.sh.j2`,
+first on the runner's PATH through `.env`) that always sets the account's own
+`XDG_CONFIG_HOME`, `XDG_DATA_HOME` and `XDG_RUNTIME_DIR` and the fixed system PATH, leaves
+HOME alone and runs `/usr/bin/podman`. Because the hooks pass job variables as bare `-e
+NAME`, the wrapper first rewrites a bare `-e` of one of those four names into the caller's
+own value (or drops it when the caller had none), so a job's own PATH or XDG value still
+reaches its container. It does so only in the options of `create`, `run` and `exec`, and
+stops at the IMAGE (CONTAINER for exec), so the container's command is never changed;
+an option outside podman v4.9.3's flag lists ends the rewrite early. `deploy-github-runner.yml` resolves `docker` from the PATH in the
+deployed `.env` and requires the wrapper, imports the probe image under `env -i` (as the
+hooks' `pull` runs), creates the container under `env -i HOME=/github/home
+GITHUB_ACTIONS=true CI=true` with `-e HOME`, and requires the created container to carry
+`HOME=/github/home`. It runs no `podman system migrate`, which would stop a running job's
+containers. `test_service_github_runner.bats` renders the wrapper and runs it against a
+stub podman with the hooks' environment and argument shapes for create, run and exec
+(compared byte for byte, including a command after the image that contains `-e PATH`), and
+requires the probe's environment, the absence of a migrate, and the `.env` PATH.
+
+### 10.26 An Alloy config change merged without the real Alloy binary loading the rendered config
+
+**What happened.** PR #570 (commit `2ce3e074`, "require reviewed finite metric scrape
+budgets") put the five scrape limits into Alloy's local-container scrape as
+`encoding.from_json(sys.env(...))`, including `body_size_limit`. Once `Deploy o11y (Dev)`
+(Semaphore task 5000) rolled that commit to production, `o11y-alloy` crash-looped: task 5015
+read `running exit=0 oom=false restarts=1027 health=starting`. The deploy's verify had
+waited on health and failed with "starting", printing no Alloy log. A local repro found the
+cause: rendering `config.alloy.j2` and running the pinned `docker.io/grafana/alloy:v1.5.1`
+printed `config.alloy:118:21: encoding.from_json(sys.env("O11Y_SCRAPE_BODY_SIZE_LIMIT_BYTES"))
+units: unknown unit  in 16777216`, then "could not perform the initial load successfully".
+Alloy's `body_size_limit` takes a units string such as `16MiB`; the env carries bytes, so a
+bare number is a type error. Appending the `B` unit made the config load and every node
+evaluate; the other four numeric limits had loaded all along.
+
+**Root cause.** Every test of the Alloy config asserted the template's text, or rendered
+it and compared the text. Nothing ran Alloy against the rendered file, so a type error that
+only Alloy's own loader reports could not fail anywhere before production. The deploy's
+verify step could only wait for health, and on failure showed the health state, not the
+reason the process kept exiting.
+
+**The rule.** Any change to an Alloy config is proven by loading the rendered config in the
+pinned Alloy image before merge. A text assertion on the template is a pin on one line,
+not evidence that Alloy accepts it.
+
+**Enforced by.** The text guard is a test:
+`test_alloy_local_scrape_uses_same_finite_bounds_and_existing_sample_ceiling` in
+`test_o11y_scrape_budgets.py` now requires the `body_size_limit` line to append a unit and
+not to be `encoding.from_json(...)` (mutation-checked against the old line). The load proof
+itself is `Convention`. Proposed guard: a CI step or `make` target that renders the config
+and runs the pinned Alloy image on it, and a deploy-verify failure path that dumps the
+redacted Alloy container log so a crash loop names its cause.
+
+### 10.27 Every runner restart left the old Listener serving
+
+**What happened.** After the 10.25 fix was deployed (2026-10-12), container jobs on both
+GitHub runners still failed with `cannot resolve /github/home`, although the `.env` on disk
+put the wrapper first on PATH. A host job then found three `Runner.Listener` processes on
+each runner, all in the unit's cgroup. The Worker running the job was a child of the
+Listener started at boot on 2026-09-19; the other two had started during the deploy. The
+Listener reads `.env` only when it starts (`Runner.Listener/Program.cs`, `LoadAndSetEnv`), so
+the serving one still had the boot-time PATH and ran `/usr/bin/docker`.
+
+**Root cause.** The unit had `ExecStart=.../run.sh` and `KillMode=process`. With
+`KillMode=process`, systemd signals the main process only, and the main process was
+`run.sh`. `run.sh` and `run-helper.sh` pass no signal on unless `RUNNER_MANUALLY_TRAP_SIG` is
+set (actions/runner v2.336.0, `src/Misc/layoutroot/run.sh`), so `run.sh` died and the
+Listener kept running inside the cgroup of a stopped unit. The deploy's `state: restarted`
+then started a new `run.sh` and a new Listener beside it. Every restart since the unit
+was introduced did the same. So no change that needs a restart reached the process that
+runs jobs, `NoNewPrivileges=false` (2.29) included. The deploy could not see it: its
+no_new_privs check read `/proc/<MainPID>`, which was the fresh `run.sh` with the current
+unit's settings, and its `is-active` check passed on the same `run.sh`. The 10.24 and 10.25
+probes ran in transient units of their own, so they passed as well.
+
+**The rule.** A restart is proved on the process that does the work, not on the unit's
+main process. Name that process, and check that the restart replaced it: that exactly one
+runs, in the unit's cgroup, and that it started after the change it must pick up. A
+service manager's view of a unit (active, MainPID, the unit's settings) says nothing about
+a process the stop did not reach (widens 2.29).
+
+**Enforced by.** The unit sets `Environment=RUNNER_MANUALLY_TRAP_SIG=1`, so `run.sh` turns
+the stop's SIGTERM into SIGINT for `run-helper.sh`'s process group: the Listener's
+graceful stop, which cancels a running job, reports it and deletes the session. It sets
+`KillMode=mixed`, so once `run.sh` has exited, systemd sends SIGKILL to everything left in
+the cgroup, and `SuccessExitStatus=143` for the trapped exit. `deploy-github-runner.yml`
+never uses `state: restarted`. It reads `deploy.sh procs` (the main process, every Listener
+and Worker of the account, from `/proc`) and restarts when the unit or `.env` changed or
+when those processes are not in the promised state. A restart is `deploy.sh quiesce`:
+wait for no Worker for up to `github_runner_drain_seconds` (600 by default), stop the unit
+before the daemon reload, and SIGINT every Listener of the account (in the cgroup or not).
+A job still running when that drain expires is cancelled by this SIGINT: the Listener
+reports it as cancelled. Then SIGKILL the rest of the cgroup and any Listener that
+survived, and fail unless both are gone. After the
+start it fails unless there is exactly one Listener, in the unit's cgroup, started after
+`.env`'s mtime, with no `NoNewPrivs` and no private user namespace on it, its Worker or
+`run.sh`. `test_service_github_runner.bats` holds the unit settings and the task order,
+and runs `deploy.sh procs` against a fabricated `/proc` of the state found on 2026-10-12
+(three Listeners, the serving one from boot with `NoNewPrivs` set, `run.sh` clean).
 
 ## 11. The largest one
 

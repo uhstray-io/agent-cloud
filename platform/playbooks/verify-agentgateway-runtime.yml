@@ -24,6 +24,8 @@
   gather_facts: false
   become: false
   any_errors_fatal: true
+  vars_files:
+    - vars/agw-deploy-env.yml
   vars:
     _engine: "{{ container_engine | default('podman') }}"
     _repo: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
@@ -217,13 +219,7 @@
       ansible.builtin.command:
         argv: [bash, deploy.sh, --verify-only]
         chdir: "{{ _deploy_dir }}"
-      environment:
-        CONTAINER_ENGINE: "{{ _engine }}"
-        LOCAL_MODE: "{{ 'true' if (local_mode | default(false) | bool) else '' }}"
-        COMPOSE_CMD: "{{ local_compose_cmd | default('') }}"
-        COMPOSE_OVERLAYS: >-
-          {{ 'compose.tls.yml' if ((agw_listener_tls | default(false) | bool)
-             and not (local_mode | default(false) | bool)) else '' }}
+      environment: "{{ _agw_deploy_env }}"
       register: _agw_runtime_match
       changed_when: false
       failed_when: false

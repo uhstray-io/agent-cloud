@@ -12,6 +12,8 @@ Input (stdin, JSON):
   lookback         Prometheus duration, one unit: 30m, 1h, 2d (the dashboard time range)
   panel_titles     optional exact panel titles; empty means every Prometheus panel, while
                    Loki panels must be explicitly selected by title
+  expected_empty_panels  optional exact selected panel titles whose empty results are allowed;
+                   every queried target in an allowed panel must be empty and error-free
   variables        optional {name: value} overriding a template variable's saved default;
                    substituted as written, as Grafana substitutes a custom All value, but
                    never one that could change the query's structure (see below)
@@ -39,8 +41,9 @@ Grafana semantics reproduced, and where they come from:
   - A target or panel with no datasource uses the default one, which is Prometheus
     (datasources.yml, isDefault). Loki targets are evaluated only when their panel title is
     explicitly named in `panel_titles`; whole-dashboard runs skip Loki and unsupported data sources.
-  - What this script does not reproduce, an evaluated panel may not use: a panel's own
-    time range (timeFrom, timeShift), its query options (maxDataPoints, a min interval on
+  - A panel's timeFrom is reproduced when it is one Prometheus duration unit; it sets that
+    panel's relative lookback, query step and $__range builtins. Instant queries still run at
+    the current end time. A panel may not use timeShift, its query options (maxDataPoints, a min interval on
     the panel or a target, intervalFactor), repetition (repeat, on the panel or its row) and
     library panels (whose queries live outside the dashboard file). Each is refused. A
     library panel is refused whatever its datasource, since the file does not say.
@@ -63,9 +66,11 @@ encodes NaN as a string (https://prometheus.io/docs/prometheus/latest/querying/a
 histogram_quantile over a window with no traffic returns NaN, which a panel draws as a gap.
 A native histogram sample (the `histogram` key of a vector series, `histograms` of a matrix
 series, same page) counts when its observation count is finite.
-A panel passes when every queried Prometheus or Loki target has data; the run passes when at
-least one panel is evaluated and every evaluated panel passes. Whole-dashboard runs evaluate
-Prometheus panels; Loki panels require explicit title selection.
+A panel passes when every queried Prometheus or Loki target has data. A named expected-empty
+panel passes only when every queried target is empty and error-free; mixed data and empty
+targets still fail. The run passes when at least one panel is evaluated and every evaluated
+panel passes or is explicitly expected empty. Whole-dashboard runs evaluate Prometheus
+panels; Loki panels require explicit title selection.
 
 Exit status: 0 pass, 1 a panel has no data or a query failed, 2 refused (bad input).
 """
@@ -107,7 +112,7 @@ OVERRIDE_FORBIDDEN = re.compile(r'["{}()\\\r\n]')
 # A value substituted outside a string literal: a duration or a number, nothing else.
 BARE_VALUE = re.compile(r"^[0-9]+(?:\.[0-9]+)?(?:ms|s|m|h|d|w|y)?$")
 # Panel and target fields whose effect this script does not reproduce.
-PANEL_UNSUPPORTED = ("maxDataPoints", "interval", "timeFrom", "timeShift", "repeat", "libraryPanel")
+PANEL_UNSUPPORTED = ("maxDataPoints", "interval", "timeShift", "repeat", "libraryPanel")
 TARGET_UNSUPPORTED = ("interval",)
 
 
@@ -269,21 +274,7 @@ def interpolate(expr: str, values: dict[str, str], builtins: dict[str, str]) -> 
     return REFERENCE.sub(replace, expr)
 
 
-def plan(payload: dict[str, Any]) -> dict[str, Any]:
-    """Resolve every selected panel's queries without contacting either backend."""
-    lookback = duration_seconds(payload.get("lookback"))
-    scrape = int(payload.get("scrape_interval_seconds") or 0)
-    if scrape <= 0:
-        raise Refused("scrape_interval_seconds must be a positive integer")
-    titles = payload.get("panel_titles") or []
-    overrides = payload.get("variables") or {}
-    if not isinstance(titles, list) or not all(isinstance(t, str) and t for t in titles):
-        raise Refused("panel_titles must be a list of exact panel titles")
-    if not isinstance(overrides, dict) or not all(VARIABLE_NAME.fullmatch(str(k)) for k in overrides):
-        raise Refused("dashboard_variables must map variable names to values")
-
-    dashboard = load_dashboard(str(payload.get("dashboards_dir", "")), str(payload.get("dashboard_uid", "")))
-    values, sources = template_values(dashboard, overrides)
+def grafana_builtins(lookback: int, scrape: int) -> tuple[int, dict[str, str]]:
     step = max(scrape, math.ceil(lookback / POINTS_PER_PANEL))
     builtins = {
         "__interval": f"{step}s",
@@ -293,6 +284,30 @@ def plan(payload: dict[str, Any]) -> dict[str, Any]:
         "__range_s": str(lookback),
         "__range_ms": str(lookback * 1000),
     }
+    return step, builtins
+
+
+def plan(payload: dict[str, Any]) -> dict[str, Any]:
+    """Resolve every selected panel's queries without contacting either backend."""
+    lookback = duration_seconds(payload.get("lookback"))
+    scrape = int(payload.get("scrape_interval_seconds") or 0)
+    if scrape <= 0:
+        raise Refused("scrape_interval_seconds must be a positive integer")
+    titles = payload.get("panel_titles") or []
+    overrides = payload.get("variables") or {}
+    expected_empty = payload.get("expected_empty_panels", [])
+    if not isinstance(titles, list) or not all(isinstance(t, str) and t for t in titles):
+        raise Refused("panel_titles must be a list of exact panel titles")
+    if not isinstance(expected_empty, list) or not all(isinstance(t, str) and t for t in expected_empty):
+        raise Refused("expected_empty_panels must be a list of exact panel titles")
+    if len(expected_empty) != len(set(expected_empty)):
+        raise Refused("expected_empty_panels must not contain duplicates")
+    if not isinstance(overrides, dict) or not all(VARIABLE_NAME.fullmatch(str(k)) for k in overrides):
+        raise Refused("dashboard_variables must map variable names to values")
+
+    dashboard = load_dashboard(str(payload.get("dashboards_dir", "")), str(payload.get("dashboard_uid", "")))
+    values, sources = template_values(dashboard, overrides)
+    step, _ = grafana_builtins(lookback, scrape)
 
     panels = flatten_panels(dashboard.get("panels", []))
     missing = [t for t in titles if t not in {p.get("title") for p in panels}]
@@ -321,7 +336,18 @@ def plan(payload: dict[str, Any]) -> dict[str, Any]:
         ]
         if evaluated:
             refuse_unsupported(panel, evaluated)
-        entry: dict[str, Any] = {"title": panel.get("title", ""), "targets": []}
+        panel_lookback = (
+            duration_seconds(panel["timeFrom"])
+            if evaluated and _set(panel.get("timeFrom"))
+            else lookback
+        )
+        panel_step, builtins = grafana_builtins(panel_lookback, scrape)
+        entry: dict[str, Any] = {
+            "title": panel.get("title", ""),
+            "lookback": panel_lookback,
+            "step": panel_step,
+            "targets": [],
+        }
         for target in targets:
             kind = datasource_type(target, panel)
             ref = target.get("refId", "")
@@ -360,11 +386,20 @@ def plan(payload: dict[str, Any]) -> dict[str, Any]:
         planned.append(entry)
     if not any(t.get("expr") for p in planned for t in p["targets"]):
         raise Refused("no supported Prometheus or Loki query is selected on this dashboard")
+    dashboard_titles = {p.get("title") for p in panels}
+    missing_expected = sorted(set(expected_empty) - dashboard_titles)
+    if missing_expected:
+        raise Refused(f"expected_empty_panels {missing_expected} are not on this dashboard")
+    queryable_titles = {p["title"] for p in planned if any("expr" in t for t in p["targets"])}
+    unselected_expected = sorted(set(expected_empty) - queryable_titles)
+    if unselected_expected:
+        raise Refused(f"expected_empty_panels {unselected_expected} are not selected for evaluation")
     return {
         "dashboard": dashboard,
         "lookback": lookback,
         "step": step,
         "variables": sources,
+        "expected_empty_panels": expected_empty,
         "panels": planned,
     }
 
@@ -465,7 +500,7 @@ def evaluate(payload: dict[str, Any], now: float | None = None) -> dict[str, Any
             for mode in target["modes"]:
                 answer = _query(
                     bases[target["datasource"]], target["datasource"], mode, target["expr"], end,
-                    planned["lookback"], planned["step"],
+                    entry["lookback"], entry["step"],
                 )
                 row = {"ref": target["ref"], "mode": mode}
                 if "error" in answer:
@@ -485,12 +520,19 @@ def evaluate(payload: dict[str, Any], now: float | None = None) -> dict[str, Any
             status = "pass"
         elif any(t["status"] == "error" for t in queried):
             status = "error"
+        elif all(t["status"] == "empty" for t in queried) and entry["title"] in planned["expected_empty_panels"]:
+            status = "expected_empty"
         else:
-            status = "empty"
-        panels.append({"title": entry["title"], "status": status, "targets": targets})
+            status = "empty" if all(t["status"] == "empty" for t in queried) else "partial"
+        panels.append({
+            "title": entry["title"],
+            "status": status,
+            "lookback_seconds": entry["lookback"],
+            "targets": targets,
+        })
 
     verified = [p for p in panels if p["status"] != "skipped"]
-    failing = [p["title"] for p in verified if p["status"] != "pass"]
+    failing = [p["title"] for p in verified if p["status"] not in ("pass", "expected_empty")]
     return {
         "status": "pass" if verified and not failing else "fail",
         "dashboard_uid": planned["dashboard"].get("uid"),
@@ -501,6 +543,7 @@ def evaluate(payload: dict[str, Any], now: float | None = None) -> dict[str, Any
         "panels_verified": len(verified),
         "verified_panel_titles": [p["title"] for p in verified],
         "panels_skipped": len(panels) - len(verified),
+        "expected_empty_panel_titles": [p["title"] for p in verified if p["status"] == "expected_empty"],
         "panels_failing": failing,
         "panels": panels,
     }

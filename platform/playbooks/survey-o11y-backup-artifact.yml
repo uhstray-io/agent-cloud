@@ -168,6 +168,8 @@
               'node': _node,
               'vms': _pve_vms.json.data,
               'storages': _backup_storages,
+              'artifact_selector_defined': o11y_backup_artifact_selector is defined,
+              'artifact_selector': o11y_backup_artifact_selector | default(none),
               'content_reads': _backup_content_reads.results,
               'vm_config': {'status': _vm_config.status, 'data': _vm_config.json.data}}
              | to_json }}
@@ -275,6 +277,9 @@
         stdin: >-
           {{ {'artifact_receipt': _artifact_receipt,
               'source_node': _node,
+              'selected_artifact': ({'index': _artifact_receipt.selected_candidate_index,
+                                     'candidate': _artifact_receipt.selected_candidate}
+                                    if _artifact_receipt.selected_candidate_index is defined else none),
               'nodes': _validated_node_listing.nodes,
               'storage_reads': _restore_storage_facts,
               'nextid': {'status': _pve_nextid.status,

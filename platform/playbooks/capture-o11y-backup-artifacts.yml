@@ -1,0 +1,13 @@
+---
+- name: Refuse internal extra vars
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: Capture numbered private artifact catalog
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    operation: capture
+  tasks:
+    - name: Capture and push the private catalog on a fresh reviewed-base branch
+      ansible.builtin.include_tasks: tasks/o11y-private-artifact-operation.yml

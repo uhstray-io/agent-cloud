@@ -1,0 +1,67 @@
+{
+  "provider_version": "5.21.1",
+  "resource_changes": [
+    {
+      "address": "cloudflare_ruleset.custom_firewall",
+      "change": {
+        "actions": ["update"],
+        "before": {
+          "id": "11111111111111111111111111111111",
+          "zone_id": "22222222222222222222222222222222",
+          "account_id": null,
+          "name": "default",
+          "description": "managed rules",
+          "kind": "zone",
+          "phase": "http_request_firewall_custom",
+          "version": "1",
+          "last_updated": "2026-10-12T00:00:00Z",
+          "rules": [
+            {"id": "00000000000000000000000000000000", "ref": "old-0", "action": "skip", "enabled": true, "expression": "old-0"},
+            {"id": "00000000000000000000000000000001", "ref": "old-1", "action": "skip", "enabled": true, "expression": "old-1"},
+            {"id": "00000000000000000000000000000002", "ref": "old-2", "action": "skip", "enabled": true, "expression": "old-2"},
+            {"id": "00000000000000000000000000000003", "ref": "old-3", "action": "skip", "enabled": true, "expression": "old-3"},
+            {"id": "00000000000000000000000000000004", "ref": "old-4", "action": "skip", "enabled": true, "expression": "old-4"},
+            {"id": "00000000000000000000000000000005", "ref": "old-5", "action": "skip", "enabled": true, "expression": "old-5"},
+            {"id": "00000000000000000000000000000006", "ref": "old-6", "action": "skip", "enabled": true, "expression": "old-6"}
+          ]
+        },
+        "after": {
+          "id": null,
+          "zone_id": "22222222222222222222222222222222",
+          "account_id": null,
+          "name": "default",
+          "description": "managed rules",
+          "kind": "zone",
+          "phase": "http_request_firewall_custom",
+          "version": null,
+          "last_updated": null,
+          "rules": [
+            {"id": "00000000000000000000000000000000", "ref": "old-0", "action": "skip", "enabled": true, "expression": "old-0"},
+            {"id": "00000000000000000000000000000001", "ref": "old-1", "action": "skip", "enabled": true, "expression": "old-1"},
+            {"id": "00000000000000000000000000000002", "ref": "old-2", "action": "skip", "enabled": true, "expression": "old-2"},
+            {"id": "00000000000000000000000000000003", "ref": "old-3", "action": "skip", "enabled": true, "expression": "old-3"},
+            {"id": "00000000000000000000000000000004", "ref": "old-4", "action": "skip", "enabled": true, "expression": "old-4"},
+            {
+              "id": null,
+              "ref": "o11y-api-bypass-challenge",
+              "action": "skip",
+              "enabled": true,
+              "description": "Grafana API - bypass challenge for token-bearing non-browser clients",
+              "expression": "(http.host eq \"o11y.uhstray.io\" and starts_with(http.request.uri.path, \"/api/\") and len(http.request.headers[\"authorization\"]) > 0)",
+              "action_parameters": {"phases": ["http_request_sbfm"], "products": ["bic", "securityLevel"], "ruleset": null},
+              "logging": {"enabled": true}
+            },
+            {"id": "00000000000000000000000000000005", "ref": "old-5", "action": "skip", "enabled": true, "expression": "old-5"},
+            {"id": "00000000000000000000000000000006", "ref": "old-6", "action": "skip", "enabled": true, "expression": "old-6"}
+          ]
+        },
+        "after_unknown": {
+          "id": true,
+          "version": true,
+          "last_updated": true,
+          "rules": [{}, {}, {}, {}, {}, {"id": true}, {}, {}]
+        }
+      }
+    }
+  ]
+}

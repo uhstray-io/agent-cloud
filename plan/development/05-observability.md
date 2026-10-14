@@ -1521,10 +1521,18 @@ count; only known non-journald drivers produce unsupported. A zero-container
 listing, malformed or failed container inspect, or uncertain Alloy state refuses
 the survey with a fixed category rather than issuing a partial result. For
 verified journald containers, a failed read is unreadable, while timeout or
-malformed metadata is unverified. The implementation and focused tests are source
-evidence only; no Semaphore survey run or receiver result is claimed. Keep task 7.4 open until
-the reviewed Dev source survey and dashboard readback establish container-log
-source support or document its limitation. The survey does not explain or fix
+malformed metadata is unverified. Dev-bound read-only Semaphore task 5282 at
+reviewed Dev revision `4ed33fa8` observed seven running o11y containers using
+journald, 219 bounded metadata entries, and no readable read-only Alloy journal
+source established. The entry count is a capped sample, not total log volume.
+An existing mount with a missing or unreadable directory can produce the same
+source result; a separate mount readback is needed to distinguish that case. Dashboard
+verifier task 5281 found no `agentgateway` container or access records in its
+six-hour window. The dashboard JSON is unchanged between the receiver checkout
+revision reported by that task and the current reviewed Dev revision, so a
+dashboard-only redeploy has no evidenced source fix. Keep task 7.4 open until
+the independent, reviewed journal collector is deployed through Semaphore and
+fresh container records are verified in Loki. The survey does not explain or fix
 gateway OTLP access records: their `signal="access-log"` discriminator remains
 owned by the separate gateway change and must be verified there.
 
@@ -1536,3 +1544,7 @@ snapshots and long error bodies dominate the separate history panel. Keep that
 workflow-context/dashboard correction separate from the container log-source
 survey. Operator-confirmed Grafana Authentik sign-in succeeds; this narrows the
 authentication symptom but does not establish a cause for the missing streams.
+Read-only Dev-bound verifier task 5286 on 2026-10-13 found data for four
+conformance panels over 24 hours, including 33 latest service/step status
+series. It did not inspect table rendering or report the count of failed
+steps; the earlier browser counts must not be treated as current values.

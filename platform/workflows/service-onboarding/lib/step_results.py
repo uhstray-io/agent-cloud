@@ -49,7 +49,7 @@ the template's role in the registry, not by status, a snapshot's pass or skip la
 never in conformance; a snapshot that fails is still the step's failure, since the
 assessment then has no input (PR 195 Codex review).
 
-An inventory group is mapped to its first host's service_name (groups + host_services, both
+An inventory group is mapped to its first tracked host's service_name (groups + host_services, both
 plain data: hostvars themselves never cross), so a service is named the way its own step
 results name it (step_ca_svc -> step-ca), never by string surgery.
 """
@@ -57,6 +57,7 @@ results name it (step_ca_svc -> step-ca), never by string surgery.
 import json
 import re
 import sys
+from datetime import datetime
 
 RUN = re.compile(r"^\s*RUN:\s*(\{.*\})\s*$")
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
@@ -163,8 +164,21 @@ def _service_of(task: dict, by_group: dict) -> str | None:
     return by_group.get(match.group(1).replace("-", "_") + "_svc") if match else None
 
 
+# Ansible builds these itself; neither is ever one service, and a launch that falls back to
+# target_service "ungrouped" must stay unattributed rather than land on whichever host is first.
+_IMPLICIT_GROUPS = frozenset({"all", "ungrouped"})
+
+
 def group_services(groups: dict, host_services: dict) -> dict:
-    return {g: host_services[hosts[0]] for g, hosts in groups.items() if hosts and hosts[0] in host_services}
+    """A group's service is its first TRACKED host's: a host the collector skipped (opted out
+    with service_conformance_tracked: false, or with no service_name) is not in host_services,
+    so it never hides the service of a tracked host listed after it. The implicit groups `all`
+    and `ungrouped` map to no service."""
+    return {
+        g: services[0]
+        for g, hosts in groups.items()
+        if g not in _IMPLICIT_GROUPS and (services := [host_services[h] for h in hosts if h in host_services])
+    }
 
 
 def inventory_services(by_group: dict) -> list[str]:
@@ -176,6 +190,19 @@ def inventory_services(by_group: dict) -> list[str]:
 def is_check_mode(task: dict) -> bool:
     """Semaphore records Ansible check mode on the task as params.dry_run (v2.17 db/Task.go)."""
     return bool((task.get("params") or {}).get("dry_run"))
+
+
+def _completion_time_seconds(value: object) -> int | str:
+    """Return a timezone-aware task end time as Unix seconds, or `unknown`."""
+    if not isinstance(value, str) or not value:
+        return "unknown"
+    try:
+        timestamp = datetime.fromisoformat(value[:-1] + "+00:00" if value.endswith("Z") else value)
+        if timestamp.tzinfo is None or timestamp.utcoffset() is None:
+            return "unknown"
+        return int(timestamp.timestamp())
+    except (OverflowError, OSError, ValueError):
+        return "unknown"
 
 
 def pick(histories: list[list[dict]], by_group: dict) -> list[dict]:
@@ -319,12 +346,19 @@ def loki_streams(agg: dict, now_ns: int) -> list[dict]:
         streams.append({"stream": {"job": "agent-cloud-conformance", "service": service, "step": "none",
                                    "status": marker},
                         "values": [[str(now_ns), json.dumps({marker: True,
-                                                              "inventory_code": INVENTORY_CODES[marker]})]]})
+                                                              "inventory_code": INVENTORY_CODES[marker],
+                                                              "marker_time_seconds": now_ns // 1_000_000_000})]]})
     for service, steps in sorted(agg["services"].items()):
         for step, result in sorted(steps.items()):
-            payload = {"task_id": result["task_id"], "error": result["error"],
+            retained = result.get("retained")
+            task_id = result.get("task_id")
+            if retained or not isinstance(task_id, int) or isinstance(task_id, bool) or task_id <= 0:
+                task_id = "unknown"
+            completed_at = "unknown" if retained else _completion_time_seconds(result.get("end"))
+            payload = {"task_id": task_id, "completed_at_seconds": completed_at,
+                       "error": result["error"],
                        "check_mode": result["check_mode"], "state_code": STATE_CODES[result["status"]]}
-            if result.get("retained"):
+            if retained:
                 payload["retained"] = True
             line = json.dumps(payload, sort_keys=True)
             streams.append({

@@ -1,0 +1,110 @@
+---
+- name: Validate the reviewed public checkout and unique private target
+  ansible.builtin.set_fact:
+    _o11y_hosts: "{{ groups['o11y_svc'] | default([]) }}"
+    _o11y_host: "{{ (groups['o11y_svc'] | default([]) | first) | default('') }}"
+    _vmid: "{{ hostvars[(groups['o11y_svc'] | default([]) | first)].vm_vmid | default('') if (groups['o11y_svc'] | default([]) | length > 0) else '' }}"
+    _node: "{{ hostvars[(groups['o11y_svc'] | default([]) | first)].vm_node | default('') if (groups['o11y_svc'] | default([]) | length > 0) else '' }}"
+  no_log: true
+
+- name: Require exact reviewed checkout and one declared o11y VM
+  ansible.builtin.assert:
+    that:
+      - expected_repository_sha is match('^[0-9a-f]{40}$')
+      - not ansible_check_mode
+      - not (local_mode | default(false) | bool)
+      - _o11y_hosts | length == 1
+      - _vmid | string is match('^[1-9][0-9]{0,8}$')
+      - _node | string is match('^[A-Za-z0-9._-]+$')
+      - _node not in ['.', '..']
+    fail_msg: "Private artifact census requires one declared production o11y VM and an exact reviewed revision."
+
+- name: Refuse public cleartext OpenBao transport for Proxmox credentials
+  ansible.builtin.include_tasks: assert-bao-transport.yml
+  vars:
+    _assert_bao_url: "{{ openbao_addr | default('') }}"
+
+- name: Read Proxmox credentials from OpenBao
+  ansible.builtin.set_fact:
+    _pve_data: "{{ lookup('community.hashi_vault.hashi_vault', 'secret/data/services/proxmox', url=openbao_addr, auth_method='approle', role_id=bao_role_id | default(lookup('env', 'BAO_ROLE_ID')), secret_id=bao_secret_id | default(lookup('env', 'BAO_SECRET_ID'))) }}"
+  no_log: true
+
+- name: Keep Proxmox API connection values hidden
+  ansible.builtin.set_fact:
+    _pve_host: "{{ _pve_data.url | default('') }}"
+    _pve_token_id: "{{ _pve_data.token_id | default('') }}"
+    _pve_secret: "{{ _pve_data.api_token }}"
+  no_log: true
+
+- name: Require Proxmox HTTPS endpoint and token identity
+  ansible.builtin.assert:
+    that:
+      - _pve_host is match('^https://')
+      - _pve_token_id | length > 0
+    fail_msg: "OpenBao must provide an HTTPS Proxmox endpoint and token ID."
+
+- name: Read Proxmox VM listing
+  ansible.builtin.uri:
+    url: "{{ _pve_host }}/api2/json/cluster/resources?type=vm"
+    method: GET
+    validate_certs: "{{ proxmox_validate_certs | default(false) | bool }}"
+    follow_redirects: none
+    status_code: 200
+    headers:
+      Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+  register: _pve_vms
+  no_log: true
+  check_mode: false
+
+- name: Read storage available on the declared node
+  ansible.builtin.uri:
+    url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/storage"
+    method: GET
+    validate_certs: "{{ proxmox_validate_certs | default(false) | bool }}"
+    follow_redirects: none
+    status_code: 200
+    headers:
+      Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+  register: _node_storage
+  no_log: true
+  check_mode: false
+
+- name: Select active backup-capable node storage
+  ansible.builtin.set_fact:
+    _backup_storages: >-
+      {{ _node_storage.json.data
+         | selectattr('active', 'defined')
+         | selectattr('active', 'equalto', 1)
+         | selectattr('content', 'defined')
+         | selectattr('content', 'search', '(^|,)backup(,|$)')
+         | list }}
+  no_log: true
+
+- name: Read backup content from each selected storage
+  ansible.builtin.uri:
+    url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/storage/{{ item.storage | urlencode }}/content?content=backup&vmid={{ _vmid }}"
+    method: GET
+    validate_certs: "{{ proxmox_validate_certs | default(false) | bool }}"
+    follow_redirects: none
+    status_code: 200
+    headers:
+      Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+  loop: "{{ _backup_storages }}"
+  loop_control:
+    label: "backup-content read"
+  register: _backup_content_reads
+  no_log: true
+  check_mode: false
+
+- name: Read declared VM disk configuration
+  ansible.builtin.uri:
+    url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/config"
+    method: GET
+    validate_certs: "{{ proxmox_validate_certs | default(false) | bool }}"
+    follow_redirects: none
+    status_code: 200
+    headers:
+      Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+  register: _vm_config
+  no_log: true
+  check_mode: false

@@ -57,13 +57,41 @@ Alternative rejected: mark every repository directory covered. Several are scaff
 
 Container stdout/stderr and journald/file logs go through a least-privilege, independently deployable host collector where central socket discovery cannot reach the host; the production receiver is the first such pilot because its engine socket is not mounted. Host collectors send OTLP logs and traces to receiver Alloy, which forwards them internally to Loki and Tempo. Native application/exporter `/metrics` is preferred over a second instrumentation library; two existing required opt-in labels (`scrape`, `port`) and optional `path`/`high_churn` labels serve co-located local containers, while remote targets use private inventory-rendered Prometheus scrape declarations. Do not expose Loki push or Prometheus remote-write as new external ingress. A process that serves HTTP/RPC requests gets a compatibility pilot for the current [OpenTelemetry zero-code mechanism](https://opentelemetry.io/docs/concepts/instrumentation/zero-code/) of its runtime, using deployment parameters rather than a source fork. Zero-code covers supported libraries, not the application's own domain operations; add a small explicit span only for a critical unobserved boundary. Default to no body/prompt/token capture, stable resource attributes, context propagation, bounded attribute values, and sampled traces. Do not inject unreviewed agents into privileged control-plane processes or require eBPF privileges across the fleet.
 
+**Receiver capability survey prerequisite (source only, 2026-10-11):** The generic shared checkout guard compares the pinned commit tree, index entries/flags, and raw tracked worktree bytes/types/modes under bounded non-writing Git reads (10 seconds per Git command, 30 seconds total, 1 MiB metadata, 8,192 entries, 4 MiB per blob, 64 MiB aggregate); split-index and unsupported index formats refuse without repair. It does not impose a remote-ref policy on its five callers. The receiver survey retains its local `origin/dev`-to-reviewed-SHA gate and receives only helper bytes captured from the checked commit; check mode skips receiver probes. This is conditional checkout consistency, assuming a trusted launcher and verifier, not authenticated pre-execution launch or proof that the loaded Ansible config/plugins and playbook were approved. The survey reports bounded Linux, systemd, cgroup, and declared receiver-user categories; it does not inspect the Podman store or service configuration, and its checkout/category report proves neither journal delivery nor restart, delegation, cancellation, or containment. Keep the separate 1.2a admission/lifecycle work incomplete and task 1.2 open until their existing telemetry and baseline acceptance gates pass.
+
+**Coverage receipt checkout prerequisite (source only, 2026-10-11):** Reuse `require-reviewed-checkout.yml` before Census can read OpenBao credentials or execute its Semaphore receipt helper. The strict exact-target verifier imports the same guard only in strict mode, before inventory-digest calculation and receiver helper execution; legacy verification keeps its prior path. The guard establishes conditional consistency of the pinned commit, index, and tracked checkout bytes, types, and modes under the existing trusted-launcher boundary. This does not authenticate the Semaphore launch or close tasks 2.2/2.3: private inventory reconciliation and installed acceptance remain required.
+
 **Receiver-host journal pilot decision (2026-10-09):** Dev-bound Semaphore survey 3662 at reviewed `dev` revision `7c863948` observed rootless Podman's `journald` default, seven running o11y containers using that driver, and 216 exact-name entries in a bounded user-journal metadata read. Receiver Alloy has no read-only host journal mount. This proves a journal source exists for the receiver host; it does not prove container-side file access or log delivery. Pilot an independent Alloy v1.9.2 collector with only declared read-only journal directories, persistent collector state, no engine socket, no host network, and no published listener. Use [Alloy's journal source](https://grafana.com/docs/alloy/latest/reference/components/loki/loki.source.journal/) and [Loki-to-OTLP bridge](https://grafana.com/docs/alloy/latest/reference/components/otelcol/otelcol.receiver.loki/) to send bounded, allowlisted container records to the existing private receiver OTLP endpoint. Keep `service`, `signal`, `cluster`, and `environment` bounded; exclude raw journal fields, request identifiers, and content from labels. The read-only survey uses only a cached receiver Alloy v1.5.1 image, with `--pull=never`, as a rootless UID `0:0` file-read probe; it does not validate collector configuration. If that cached probe image is absent, report the fixed `probe_unavailable` result and do not pull. Apply separately acquires the exact Alloy v1.9.2 collector image if absent, then runs the official [Alloy `validate` command](https://grafana.com/docs/alloy/latest/reference/cli/validate/) before any collector recreation. The command performs supported static configuration validation of syntax, components, and properties, with runtime stability flags matched; v1.9.2's [official changelog](https://github.com/grafana/alloy/blob/main/CHANGELOG.md) includes a validator fix for `livedebugging` blocks. First prove the exact host journal directory exists and is readable by the rootless collector, then require a receiver-side Loki query for the declared pilot container. Refuse ambiguous directories, permissions, an empty source, or a missing receiver receipt. Explicit stop and failed-delivery rollback stop and remove only the pilot container without `podman rm -v`, verify that it is absent from Podman's reboot restart set, and verify the named positions volume remains. This matches [Podman's restart behavior](https://docs.podman.io/en/latest/markdown/podman-create.1.html) and [container removal semantics](https://docs.podman.io/en/latest/markdown/podman-rm.1.html). Deploy and rollback through separate Dev-bound Semaphore workflows without changing or deleting the receiver's volumes. The current local socket pipeline remains local-only; a later cohort may reuse this collector mechanism after its privacy and volume gates pass.
 
-**Positions-volume survey and repair gate (2026-10-09):** The explicit `survey` action also resolves the one existing local `journal-collector-state` volume by its Compose project and logical-volume labels, even when the journal collector container is absent. It reads only bounded root and direct-child metadata in the rootless Podman user namespace; it does not mount the volume, initialize it, or read positions-file content. Repair is a separate `repair-positions` action. It refuses shared/in-use or ambiguously identified volumes, initialization-required volumes, ACLs, mount boundaries, symlinks, non-regular children, hard links, child ownership mismatches, and any root mode where assigning owner `0:0` would not provide the collector's required access. After a fresh metadata/user/mount recheck, it changes only the volume-root owner/group to `0:0`, reads the root back, and runs a temporary create/write/rename/delete probe in the cached Alloy v1.9.2 image with collector UID and filesystem restrictions. Check mode reports `check_mode_unverified`; it does not run the helper. Apply has its own read-only positions identity/access gate before collector configuration or Compose changes; live verification accepts only the bounded Alloy layout: optional `alloy_seed.json` and the `loki.source.journal.o11y_alloy/` directory with its optional `positions.yml` file, while repair continues to refuse directory children. Post-start apply separately verifies the actual RW mount, user namespace mapping, and effective write/rename access. A repair result does not prove collector health or log delivery, and OpenSpec task 1.2 stays open until an exact production Loki receipt exists.
+**Positions-volume survey and repair gate (2026-10-09):** The explicit `survey` action resolves the one existing local `journal-collector-state` volume by Compose project and logical-volume labels, including when the journal collector is absent. It reads bounded root and direct-child metadata in the rootless Podman user namespace and never mounts the volume or reads positions content. A fixed `podman volume inspect --format` template reads `NeedsChown` and `NeedsCopyUp` as literal `false`/`true`; JSON field presence remains a separate diagnostic because Podman v4.9.3 may omit false-valued fields. Inventory, named JSON reads before/after the template, and template identity are cross-checked; invalid output or identity races refuse every gate. The separate `repair-positions` action retains its initialized-volume path: after fresh evidence proves an unused initialized volume's root ownership alone blocks `0:0`, it changes only root owner/group, verifies readback, and runs the restricted Alloy create/write/rename/delete probe. **Narrow pending-volume exception:** for exactly one empty unused volume with `NeedsChown=false`, `NeedsCopyUp=true`, blocked non-`0:0` root ownership, and fresh identity/metadata checks, repair may change only the root owner/group to `0:0` when mode is already safe. The source-level pending mode-reduction implementation additionally permits clearing only group/other write bits before that owner change; reviewed live Semaphore repair and collector/Loki acceptance remain pending. It performs no access-probe mount, preserves contents, and verifies identity, owner, the exact expected mode, and emptiness; repair success does not authorize first mount or collector apply; after any pending-volume mutation, failure preserves the volume and returns bounded uncertain status; no automatic owner restoration is attempted because a mount followed by removal cannot be ruled out from current state. No owner rollback or state deletion is permitted after Compose's first mount. Free-byte and free-inode thresholds are checked independently from stable metadata: above-threshold counter changes do not invalidate root/child/ACL/mount evidence, while low or unavailable counters refuse repair. Pending repair checks both GraphRoot and volume-filesystem capacity; initialized repair checks the volume filesystem. Both paths refuse ACLs, mount boundaries, symlinks, non-regular or multiply linked children, and child ownership mismatch. Unsafe modes refuse except for the implemented pending-only group/other write reduction; initialized-volume repair retains mode unchanged. Check mode reports `check_mode_unverified` without Podman or filesystem calls.
 
-**First-start bootstrap and bounded survey fallback (2026-10-09):** The pre-apply and immediately-before-start read-only gates may return `bootstrap_allowed` for a missing expected volume only when the bounded volume inventory is complete, the expected name has no collision, and an all-container inventory (including stopped containers) proves the journal collector is absent. For an existing volume awaiting initialization, the gate also requires one exact local volume identity, zero users and mounts, exact boolean initialization flags, and an observed empty root owned by `0:0` with owner RWX and no group/other write, special bits, ACL, nested mount, or metadata ambiguity; a missing legacy volume-key label is accepted only with the exact expected name and matching project label, while a conflicting label refuses. These gates are the sole exception to the normal initialization-required-volume refusal: Compose `up` remains the only creation/initialization operation. The immediate pre-start check runs outside rollback handling, and post-start verification requires `ready` plus the live mount/access, health, receiver-preservation, and exact-target Loki checks. Unexpected `survey` exceptions return the bounded unavailable summary with fixed reason `survey_failed`; check mode remains `check_mode_unverified` and nonmutating. These are source-level implementation facts, not live receiver evidence; task 1.2 remains open until a production exact-target Loki receipt and its other acceptance evidence are recorded.
+**Pending-volume repair diagnostics (2026-10-09):** Survey and the initial `pending_volume_unsupported` refusal share one fixed checklist derived from the strict pending owner-only gate. The implemented mode-reduction exception evaluates the same checks while permitting only the combined write/special-bit check to fail from group/other write bits alone; a present write-bit diagnostic remains unsafe until actual reduction and fresh readback prove otherwise. Expose only owner-RWX and unsafe-mode-bit enums, separate volume/GraphRoot byte and inode categories (`sufficient`, `low`, `unverified`), and the bounded `failed_checks` enum list. The diagnostic uses the existing discovery snapshot; it adds no Podman command, probe mount, content read, or ownership change. Repair refusal remains `refused`; the receipt explains only the initial observation and does not replace fresh identity rechecks or authorize mutation. Check mode and exception fallback preserve the schema with all evidence unverified.
 
-**Positions initialization-schema diagnostic follow-up (2026-10-09):** Dev survey 3856 succeeded with `volume_initialization_unverified`, zero consumers and entries, root owner mismatch, blocked access, ACL absent, clear mount state, and safe direct children. The journal source was available while the target positions path was denied. Keep initialization flags fail-closed for every gate. The survey alone adds a second exact-name volume inspection and Podman client/server version query after unique volume identity is established; it reports only field presence/type, actual boolean values, named-query outcome, identity comparison, and validated bounded version strings. Unrecognized values, command failures, and malformed or duplicate named results remain categorical/unavailable. Check mode performs no Podman calls and returns the same diagnostic shape as unverified. These observations explain schema evidence only and never change verify, repair, bootstrap, or apply decisions.
+**Pending-volume mode-bit follow-up (2026-10-09):** The Dev-bound read-only survey 3917 at exact merged Dev SHA `63946505875639b8b0080a045fa1e0ae08ab4a9b` confirmed the existing combined group/other-write-or-special-bit check failed while the pending volume remained otherwise available for diagnosis. Add five separate fixed categories (`group_write`, `other_write`, `setuid`, `setgid`, and `sticky`) from the same metadata snapshot. Preserve the combined category and `failed_checks` predicate; these extra fields explain the combined result but do not alter any acceptance or repair condition. Missing mode, check mode, and survey exception output use `unverified`. No raw mode, ownership, path, or capacity values are exposed, and the change adds no runtime probe or mutation.
+
+**Pending mode reduction implementation (2026-10-09):** User-supplied sanitized evidence records successful read-only Dev-bound Semaphore task 3925 at exact merged Dev SHA `8050f2768903e09f68285f90c1598cb120006219`: the pending positions volume was unused, empty and unmounted, owner mismatched, owner RWX complete, ACL absent, collector absent, and volume/GraphRoot byte and inode capacity sufficient. Only `group_other_write_or_special_absent` failed; `group_write` was present while `other_write`, `setuid`, `setgid`, and `sticky` were absent. Earlier repair task 3899 refused before mutation. These receipts were supplied by the user, not independently reread here; they bound the implemented exception but do not authorize mutation, establish repair readback, collector readiness, or Loki delivery.
+
+Retain the safe-mode pending owner-only path and the initialized-volume path. Add only an explicit pending repair exception when fresh evidence proves exactly one local expected volume, `NeedsChown=false`, `NeedsCopyUp=true`, no collector in all containers (including stopped), zero consumers/mounts, exactly empty root, owner mismatch with collector access blocked, complete owner RWX, ACL absent, and all identity, metadata and capacity guards passing. The only permitted initial failed check is `group_other_write_or_special_absent`, and its cause must be proven group/other write alone: special bits absent and mode an exact integer in `0..0o7777`. Unknown or malformed observations refuse. Derive `target_mode = original_mode & ~0o022`; never substitute a fixed `0700`, add owner permissions, strip group/other read/search, clear special bits to make an unsafe case eligible, or apply this exception to initialized/nonempty state. Keep the combined diagnostic and failed-check list truthful for the original snapshot; separate mode-bit diagnostics do not authorize repair.
+
+Pin the volume creation timestamp, configuration, expected name/project and mountpoint, root device/inode, original owner/group and mode. The mode and owner changes use separate rootless helper processes, so one open descriptor cannot span the required full Podman discovery between mutations. Before each mutation, open the exact directory without following symlinks and compare descriptor metadata with the pinned root device/inode and the exact expected owner/mode. The first helper reduces permissions to `original_mode & ~0o022` and verifies exact target mode plus unchanged identity/owner/emptiness. Then repeat full discovery and emptiness/ACL/use/mount/capacity checks with the reduced mode as the sole expected metadata change. Only after that readback passes may the second helper change root owner/group to `0:0`; it independently pins and rechecks the same root device/inode before changing ownership. Verify fresh discovered identity, exact target mode, new owner, empty contents, initialization flags, collector absence, zero consumers/mounts, ACL absence and capacity. No recursive operation, content read/write, probe mount, volume creation/deletion, or Compose start belongs to pending repair. A rerun of an already converged safe volume must not mutate it again or start a collector.
+
+Any failure before mutation refuses with no change. Once permission reduction or ownership change may have occurred, every command failure, exception, identity/metadata drift or failed readback returns bounded `uncertain`, preserves the volume, and never automatically restores mode or owner. Descriptor pinning protects the selected inode but does not serialize Podman, other same-user processes, child creation, ACL changes, or mount history; repeated snapshots cannot rule out mount-then-remove races. Require an operator-controlled quiescent repair window and fresh checks; refuse observed races, retain uncertainty after mutation, and require separately reviewed recovery if certainty cannot be re-established. No claim of atomicity or historical first-mount proof is made.
+
+Alternatives rejected: fixed `0700` removes unrequested read/search permissions; owner-first leaves write exposure during the owner transition; automatic restoration can reintroduce write permissions or alter state after an unobserved mount; broad mode normalization admits unsafe special-bit or owner-access cases. The permission reduction is deliberately limited to the empty pending root.
+
+Implementation: the pending branch retains the original failed-check list and permits only exact write-bit reduction for an empty, unused pending volume when it is the sole failed guard. The mode helper pins and verifies the root descriptor; complete fresh discovery/readback then gates the existing owner helper, which independently pins the same device/inode. Post-mutation failures return bounded `uncertain` with no restore. Focused coverage includes write-bit combinations with read/search preservation, safe-mode owner-only behavior, initialized-path behavior, converged rerun, malformed/special modes, missing owner RWX, unrelated failed guards, pre/post-mutation races, readback, capacity and sanitized failure results. Check mode remains unverified and runtime-free. Source-level validation does not accept the live repair: after independent exact-head review and green CI, run the Dev-bound check-mode workflow, a fresh read-only survey at exact merged SHA, a separately selected `repair-positions` task, and a separate read-only post-repair survey. Record sanitized task IDs/SHA and safe-mode `0:0` readback; this implementation session runs none of those live tasks. Only a separately authorized later collector-apply task, with its full pre-apply and immediate pre-start gates, may perform Compose's first mount. Require live mount/cursor/access/health, unchanged receiver set and fresh exact-target Loki delivery before closing task 1.2.
+
+**First-start bootstrap and bounded survey fallback (2026-10-09):** The pre-apply and immediately-before-start read-only gates may return `bootstrap_allowed` for a missing expected volume only after complete bounded inventory, no expected-name collision, and an all-container inventory (including stopped containers) proves the journal collector absent. An existing pending volume is eligible only with one exact local identity, zero users and mounts, effective `NeedsChown=false` and `NeedsCopyUp=true`, and an empty, unambiguous root already owned by `0:0` with owner RWX and no group/other write, special bits, ACL, nested mount, or metadata ambiguity. The narrowly scoped root-only repair and implemented mode-reduction exception above may establish that same safe ownership and mode before first mount only after comparing volume `CreatedAt`, volume configuration, and root device/inode across observations; Compose `up` remains the sole creator/initializer. The first-mount headroom gate requires at least 16 MiB available and 128 available inodes on both GraphRoot and the pending volume filesystem; this does not replace or weaken the independent 30% retention headroom gate. The immediate pre-start check runs outside rollback handling. After Compose's first mount, a persistent `NeedsCopyUp=true` flag is not success by itself: require the exact live RW mount, namespace create/write/rename/delete, bounded allowlisted Alloy layout, the parsed `positions.yml` map entry for `cursor-loki.source.journal.o11y_alloy` with an empty label set and a valid journal cursor, collector health, unchanged seven receiver containers, and a fresh exact-target Loki receipt. Empty image destination can leave copy-up pending; partial copy or unexpected files refuse and preserve the volume. Rollback removes only the pilot container, without `-v`; it never restores ownership or deletes copied state. The strict cursor gate can expose first-start failure or replay risk when initialization is partial. Unexpected survey exceptions remain bounded as `survey_failed`; the positions helper remains `check_mode_unverified` in check mode without its own Podman or filesystem operations. These are source-level facts, not live receiver evidence; task 1.2 remains open.
+
+The helper's `verify` action is the pre-start gate; `verify-live` is the post-start gate. Pre-start may return `ready` without a cursor only for a complete observed volume with both initialization flags false, no collector in the all-container inventory, zero consumers and mounts, an exact safe identity, root `0:0`, access and capacity evidence on GraphRoot and the volume filesystem, no ACL or nested mount, an allowlisted empty/seed/component layout, and explicitly observed absence of `positions.yml`. This permits one bounded Compose start attempt and is not delivery proof. A present invalid or unreadable file, unknown cursor presence, or incomplete/unsafe component layout refuses. Here, partial copy means a present invalid/unreadable cursor file, a pending temporary positions file, or any layout outside the allowlist; proven cursor absence before start is a separate retry case. Post-start always requires the valid parsed cursor plus the live mount and access evidence; it never returns `bootstrap_allowed`. No phase deletes or replaces positions state or automatically restores ownership after pending mutation. Empty or allowlisted state cannot establish historical copy-up or cursor-loss history, so replay/loss safety remains unproven until live evidence is recorded.
+
+**Collector state-path permission correction (2026-10-09):** The pinned [Alloy v1.9.2 Dockerfile](https://github.com/grafana/alloy/blob/v1.9.2/Dockerfile) creates `/var/lib/alloy` for UID/GID 473 with mode `770`. The journal pilot intentionally runs as `0:0` with all capabilities dropped, so its named state volume must not sit below that image-owned parent. Keep the existing named volume and mount it at `/alloy-state`, set `--storage.path=/alloy-state`, and require the helper's exact destination check plus the playbook's live write probe and rollback volume lookup to use that same path. This avoids relying on copy-up through an inaccessible image ancestor and preserves the UID/capability boundary. Dev task 3973 failed health and rolled back after 80 permission-denied log lines, with the fixed positions target and fixed TCP readiness probe both failing; read-only task 3977 found the collector absent and the existing named volume empty, unused, unmounted, owned by UID 0 with RWX mode and no ACL. These receipts do not establish successful collector health or Loki delivery; task 1.2 remains open.
+
+**Positions initialization-schema diagnostic follow-up (2026-10-09):** Dev survey 3856 succeeded with `volume_initialization_unverified`, zero consumers and entries, root owner mismatch, blocked access, ACL absent, clear mount state, and safe direct children. The journal source was available while the target positions path was denied. Keep initialization flags fail-closed for every gate. The survey alone adds a second exact-name volume inspection and Podman client/server version query after unique volume identity is established; it reports only field presence/type, actual boolean values, named-query outcome, identity comparison, and validated bounded version strings. Unrecognized values, command failures, and malformed or duplicate named results remain categorical/unavailable. Check mode performs no Podman calls and returns the same diagnostic shape as unverified. The extra named-volume identity diagnostic and version query run only during survey and never change gate decisions; the identity-bracketed initialization-flag read is required by every gate and does control decisions.
+
+**Extra positions-directory diagnostic (2026-10-10):** Our read-only Dev-bound Semaphore API survey task 4009 succeeded at merged Dev SHA `9bc543d7d0f80be77ddab3983f9db6a983257f06`. The receipt reported a pending initialization volume with three top-level entries: the seed file, the existing journal component directory, and one unidentified other directory. It also reported no collector or volume users, matching root owner, RWX, no ACL, clear mount, sufficient free space, ambiguous children, unavailable cursor, and live mount/namespace fields unverified or not run. The third directory's identity and purpose remain unknown; do not infer a persistent queue or any other state from its existence. A diagnostic-only extension compares only the exact public `otelcol.receiver.loki.journal` and `otelcol.exporter.otlp.journal` component names. It emits bounded fixed-role counts and, for a matching directory, owner/access, ACL, mount, and direct-child categories. Reads are descriptor-relative with no-follow opens and identity rechecks; unsafe links, metadata errors, and races return `unverified`. Unknown names remain aggregated. Recognized and unknown extra directories both keep `component_layout=false`; no pre-start or live acceptance predicate changes. The extension adds no survey write, probe, or mount. Task 1.2 remains open.
+
+**Unmatched-directory metadata and Dev receipt (2026-10-10):** Our read-only Dev-bound Semaphore API survey task 4016 succeeded at exact Dev merge `736af5b16917f28a243b3715d56c76c00bfe7a8a`. The sanitized receipt reported `volume_initialization_pending`, no collector, no valid cursor, three direct entries, `seed_file=1`, `journal_component=1`, `other_directories=1`, and zero recognized receiver/exporter directories. Volume identity, capacity, root owner, and root RWX were good; `NeedsCopyUp=true` and the `NeedsChown` field was missing. `component_layout` failed. The pending-repair `failed_checks` included `children_empty`, `child_count_zero`, `owner_mismatch`, and `collector_access_blocked`. These are our API-observed sanitized results, not user-provided evidence. The helper now reports aggregate categorical owner/access/ACL/mount/direct-child-empty status over anonymous unmatched direct child directories, bounded by the existing 32-entry cap. Descriptor-pinned no-follow access and post-observation identity/listing checks make races, symlink substitutions, ACL or mount ambiguity, malformed data, and incomplete observations `unverified`. This is diagnostic only: unmatched directories remain outside the accepted layout and cannot pass repair, pre-start, or live gates. Stop on remaining or unverified entries; do not infer queue state or mutate/apply the volume. Obtain a fresh reviewed Dev survey after merge. Task 1.2 remains unchecked.
 
 Signal selection per cohort:
 
@@ -85,7 +113,19 @@ Alternative rejected: allow every discovered host to export all telemetry. It ex
 
 ### 4. Resize from evidence, not a guessed VM size
 
-First deploy and verify a receiver-host node metric source through Semaphore; the current five-component scrapes do not provide VM CPU, memory, or filesystem capacity. This bounded source is the only sender allowed before the baseline. Start the representative seven-day clock at its first successful exact-target receipt, then measure peak log bytes/day, active and new Prometheus series, samples/s, Tempo spans/s and bytes/span, p95 host CPU/memory, guest disk use and growth by backend, Alloy drops/queue, and dashboard query pressure. Extend the window if traffic is unrepresentative. Pilot one workload in each cohort to estimate the next wave. Extend the existing production budget verifier and comparator for a read-only forecast rather than creating a parallel receipt path. Forecast retained bytes using measured ingestion and compression per backend multiplied by the declared retention, then add the pilot's peak factor and at least 30% free disk headroom. Require at least 25% memory headroom at observed peak and p95 CPU below 70%; a refusal/drop or unhealthy query is a stop even if the numeric margins pass. Record the forecast, assumptions, and receipt without private addresses in the public repo.
+First deploy and verify a receiver-host node metric source through Semaphore; the current five-component scrapes do not provide VM CPU, memory, or filesystem capacity. This bounded source is the only sender allowed before the baseline. Extend the existing production budget verifier and comparator for a read-only forecast rather than creating a parallel receipt path. The forecast has separate **live readback** and **candidate proposal** inputs: live retention and size cap are read from the current receiver, normalized, and compared with their separate current private declarations; proposed retention and the proposed Prometheus size cap are separate private candidate values and are never written by this operation. The documented 90d Prometheus / 45d Loki / 45d Tempo target and a nonzero Prometheus cap are candidates only. A reviewed live-setting change is evaluated against its updated declaration and its own gates. A forecast pass grants no permission to change retention, resize a VM, or enable a sender.
+
+The initial baseline starts at the first successful exact-target receiver-host receipt. Later wave forecasts use the most recent independently observed complete seven-consecutive-day window after that receipt. Windows and bins are UTC timestamps on a 24-hour grid anchored to the first receipt; all seven bins must be complete and contiguous. A window ends no more than 24 hours before evaluation; live capacity and health readback is no older than 15 minutes. Require at least 95% of cadence-expected samples and no observed gap over one hour. Missing, stale, incomplete, nonfinite, negative, or invalidly timestamped evidence makes the forecast `unavailable`; never turn missing data into zero. A measured zero is valid only when an actual sample records zero. The declared pilot sources and schedules must cover known peak periods, with owner confirmation that no outage, maintenance, or abnormal operation invalidated the window. Otherwise extend and recapture; do not extrapolate from a shorter or unrepresentative sample.
+
+Keep timestamp provenance explicit: raw scrape timestamps identify source observations, while Prometheus `query_range` timestamps identify query evaluation times and do not prove distinct scrapes. Preserve source timestamps and deduplicate reused observations; do not relabel evaluation timestamps as scrape receipts. Prometheus sample counters count samples, not bytes. Loki and Tempo received-byte counters describe received input and are not proof of end-to-end persisted bytes.
+
+The current shared running backends cannot prove same-batch persisted-byte conversion or transient compaction allowance through the existing read-only interface. Background ingestion, older-block compaction, retention deletion, and temporary allocations are not attributable to one pilot batch through those readbacks. Therefore the forecast remains `unavailable` until an independently observed seven-day baseline and either a repeatable isolated calibration or a separately proven conservative storage upper bound establish all required inputs. The planned calibration path follows a verified backup and isolated restore: run the pinned runtime and configuration on a restored or disposable isolated target, submit an attributable batch, observe accepted input and persisted bytes after normal compaction, and measure peak transient storage through that cycle. Keep unrelated writers and retention deletion out of the calibration interval. Record private evidence and expose only sanitized projections. A conservative-bound route is a later reviewed alternative, not the default path; no assumed multiplier or ratio substitutes for evidence.
+
+For each backend, derive peak incoming bytes per day as the maximum of seven timestamped complete 24-hour totals in the accepted window. Measure the conversion ratio only from the isolated same-batch calibration above. Require the exact-target task receipt to be no older than 15 minutes and carry a positive numeric Semaphore task ID. Measure pilot-to-wave ingest, series/cardinality, CPU p95, and peak-memory increments against a comparable baseline, bound to the deployed receiver runtime/configuration and accepted window. Missing or incomparable pilot evidence makes the forecast `unavailable`.
+
+Normalize live retention and size-cap readback to days and bytes and compare with separate current private declarations to verify the current configuration; use separate candidate 90d Prometheus / 45d Loki / 45d Tempo retention and candidate Prometheus cap for projection and the candidate gate. A later reviewed live change passes only when fresh readback matches its changed declaration. Keep candidate retention fixed at 90d Prometheus / 45d Loki / 45d Tempo with a nonzero Prometheus cap. Calculate full projected retained bytes as `(baseline_peak_ingest_bytes_per_day + scaled_wave_ingest_bytes_per_day) * candidate_retention_days * measured_storage_conversion_ratio + transient_allowance_bytes`. Compare full projected Prometheus retained bytes with the candidate cap. Charge each backend's full projected retained bytes, including the full candidate-retention baseline, scaled wave, and transient allowance, against current filesystem free bytes; grant no resident-byte credit unless a separately specified and independently verified resident-byte measurement proves it. This intentionally double-counts bytes already resident in the backend because current free space already reflects them. Obtain filesystem groups only from the current complete five-volume named-volume receipt and join backend volumes by their known volume names; never accept a group from backend forecast input. Group all backend volumes by their shared backing filesystem, sum each backend's full projected retained bytes exactly once, and subtract that sum once per filesystem. Hypothetical deletion, cleanup, retention expiry, or moving data receives no capacity credit. Require `(current_free_bytes - summed_full_projected_retained_bytes) / filesystem_total_bytes >= 0.30` for every affected filesystem, projected peak memory headroom of at least 25% of declared VM memory, and projected CPU p95 below 70% of declared VM CPU capacity. A measured drop/refusal or unhealthy representative backend query refuses the wave regardless of numeric margins. Missing or stale query-health evidence is `unavailable`; an observed unhealthy result is `refused`.
+
+Keep the controller and deployed-receiver Git SHAs separate from the 64-character effective-inventory digest; they identify different evidence and must not be copied into one another's fields. Require a successful exact-target receipt with a positive numeric Semaphore task ID and bind it through an independent trusted verifier. A standalone evaluator or source fixture can establish arithmetic and validation behavior only, never production measurements or live capacity. Emit a versioned sanitized `pass`, `refused`, or `unavailable` receipt with fixed categories, bounded windows, assumptions, projections, and margins; omit private topology, raw backend responses, identifiers, credentials, and exception text. Live acceptance requires a fresh read-only Dev-bound Semaphore run tied to reviewed source and effective-inventory evidence. Forecast evaluation never changes retention, resizes a VM, or enables a sender. A separate live resize still requires the existing VM/guest readback, isolated restore, and preserved-telemetry gates.
 
 If the capacity gate fails, change `site-config` VM resource declarations and inventory together, review them, then run existing `platform/playbooks/resize-vm.yml` through its Dev-bound Semaphore template. That playbook grows only the Proxmox disk; before any disk resize, implement and check an idempotent Semaphore-managed guest partition/LV/filesystem growth path for the receiver's actual layout. Refuse unsupported layouts and require a backup/restore receipt. The receipt must identify an immutable backup artifact and exact source disk/layout, prove restoration to an isolated target, validate the restored guest filesystem and preserved telemetry-volume access, and record cleanup of the isolated target. Snapshot creation and snapshot-list presence are insufficient: existing `snapshot-vm.yml` does not restore data. No such restore-test workflow currently exists, so guest growth remains prohibited until it is designed, reviewed, and successfully exercised. Its reboot remains opt-in; first read the current-vs-desired diff and confirm Proxmox storage, schedule any required reboot, then read back VM capacity, guest filesystem capacity, stack readiness, and preserved telemetry. A size increase is a measured gate, not a preselected number. Tempo's own [sizing guidance](https://grafana.com/docs/tempo/latest/set-up-for-tracing/setup-tempo/plan/size/) depends on span rate, span size, query rate, and retention; the same variables are recorded here.
 
@@ -181,6 +221,22 @@ reported image-storage capacity facts, but did not inspect physical disks, LVM,
 or filesystems. Use these facts to declare any artifact selector and then
 design the isolated target and immutable storage mechanism in private
 site-config before implementing a restore workflow.
+
+**Private selector proposal compatibility (task 4359, 2026-10-11):** the
+proposal refused before recensus and before any private inventory write. After
+flow-style sequences were admitted, valid nested flow mappings in firewall
+lists and coverage records still failed the global mapping-style guard; after
+that guard was scoped, a standard finite YAML float in an unrelated gateway
+sampling value failed the tag whitelist. The insertion validator now requires
+block style for the root, each mapping along the literal
+`agent_cloud.children.o11y_svc.hosts` path, and the target-host mapping. It
+recursively validates all nodes, accepts nested flow
+maps/lists and standard finite floats elsewhere (including below the target
+host), and continues to refuse duplicate keys, aliases, merge keys, custom
+tags, nonfinite floats, an existing selector, or semantic changes beyond the
+new selector. In-memory private-catalog and inventory compatibility passed
+without printing values. This parser compatibility result does not establish
+private-layout acceptance, select an artifact, or complete OpenSpec `4.6e`.
 
 The follow-on restore-feasibility receipt is deliberately narrow. It reports
 source-layout parse and size completeness separately from whether exactly one
@@ -460,3 +516,293 @@ the existing ops contact, and matching Discord delivery was independently
 verified. This verifies the low-space warning and delivery path for this event.
 It does not establish a seven-day capacity forecast, backup/restore readiness,
 or delivery of other alert classes.
+
+## 2026-10-10 exact artifact selection preflight
+
+The read-only artifact survey accepts an optional private inventory selector with
+exactly `volid`, `backend`, `format`, `creation_time_epoch`, and `size_bytes`.
+It validates strict field types and schema, then requires those values to match
+exactly one artifact in the complete VM/store enumeration. An absent selector
+preserves the existing census; the survey never chooses the newest candidate.
+Missing, duplicate, stale, or mutated selections fail with fixed sanitized
+refusals. The protected inspector receipt adds only the selected candidate's
+zero-based census index and already-sanitized metadata; it never returns its
+identifier. The feasibility inspector receives that index and metadata and
+revalidates them against the census while retaining the total candidate count.
+Selecting an artifact does not establish immutability or restore success, and
+the source VM's current `backup` flags cannot prove the selected archive's disk
+contents, so `backup_inclusion_verified` remains false for a selected artifact.
+Raw API rows, private selector values, and helper stderr remain protected from
+visible task output. This work adds no Proxmox write, secret change, restore,
+provisioning, or site-config declaration.
+
+The root agent's sanitized read-only receipts 4293, 4295, and 4296 ran at exact
+Dev SHA `7362aaa7080d87b91606c4d6a65f884dbf67b0b0`; the reported census had six
+non-PBS `vma.zst` candidates. This count does not select an artifact or prove
+archive disk inclusion, immutability, an isolated restore, or restore cleanup.
+
+## 2026-10-10 private artifact capture and selector proposal slice
+
+The public automation adds distinct Dev-bound capture and proposal playbooks.
+Both use the existing artifact inspector and the same GET-only VM, node-storage,
+backup-content, and VM-config census inputs. An exact existing proposal is
+verified before any Proxmox request; new work validates the complete census and
+stores a versioned catalog at the fixed private path
+`catalogs/o11y/backup-artifacts.json`. The private catalog holds the exact
+volid-to-row mapping, target identity, storage scope, runner-generated UTC epoch,
+and reviewed public/private base SHAs. Its visible report contains only ordered
+row numbers and sanitized metadata.
+
+Proposal requires the full capture commit, explicit one-based row, reviewed
+public revision, and reviewed private integration branch/base. The capture
+commit must have one parent at that private base and change only the fixed
+catalog. A new proposal repeats the GET-only census, requires age 0–1,800 seconds,
+and compares complete normalized storage and artifact sets independent of API
+ordering. It writes only `inventory/production.yml`, adding the existing
+five-field selector to the literal sole-host location proposed for
+`agent_cloud.children.o11y_svc.hosts`. The root, each mapping along that path,
+and the target-host mapping must use block style; unrelated or descendant flow
+maps and sequences and standard finite YAML floats are accepted. Recursive
+validation refuses duplicate YAML keys, aliases, anchors, merge keys, custom
+tags, nonfinite floats, alternate layouts, identity mismatch, an existing
+selector, and any semantic diff beyond that selector. Task 4359 refused before
+recensus and before a private write: after flow sequences were admitted, valid
+nested flow maps in firewall lists and coverage records failed the global
+mapping-style guard; after that guard was scoped, an unrelated gateway sampling
+float failed the tag whitelist. In-memory private compatibility passed without
+printing values; actual private-layout acceptance remains unverified.
+
+The deterministic proposal ref is
+`proposal/o11y-artifact-<capture-commit>-row-<row>`. A matching existing branch
+is accepted only after its base, one-parent provenance, exact one-file diff,
+commit metadata, remote tip, and reconstructed inventory bytes agree. It returns
+the existing branch and commit without a new commit or freshness claim. The
+shared Git helpers add optional reviewed-base and deterministic-ref handling;
+legacy fresh-branch callers keep their existing mode. Base-tip checks before
+and after push detect observed drift but are not atomic with the separate
+proposal-ref update. A post-push drift refuses and preserves the unmerged branch.
+
+Private site-config compatibility is not established by public source or
+synthetic tests. Runtime must refuse any layout that differs from the proposed
+literal schema. Catalog selection does not prove immutability, archive contents,
+isolated restore, cleanup, or restore success; OpenSpec 4.6e remains unchecked.
+## 2026-10-13 observed-window scrape-budget candidate preview
+
+The Dev-bound baseline survey has an optional, source-only candidate preview.
+It validates the existing bounded public receipt and the reviewed finite
+`o11y_scrape_limits` inventory object, then compares all five observed maxima
+for every fixed public job category. `receiver-host` and `host-node` use the
+smaller of the global sample limit and the existing
+`o11y_scrape_sample_limit` candidate (the committed source default is 2,000).
+Strict headroom is required: an observed maximum equal to a candidate is
+incompatible. Missing or unreviewed candidates produce a fixed unavailable
+category without changing or rejecting the existing baseline receipt. The
+preview returns only fixed status/reason values and fixed public job names; it
+does not return private inventory values or measured maxima.
+
+This preview is not live enforcement or acceptance of Prometheus's effective
+loaded configuration. Reading a mounted config file would establish only its
+on-disk contents, not that the running process loaded those bytes. The next
+source slice establishes a bounded read-only status-config receipt for inline
+jobs only; scrape-file jobs remain unverified. It does not upgrade Prometheus,
+read mounted config as runtime proof, or claim runtime rejection.
+
+The operational context recorded for this slice is Dev Alloy-health task 5057,
+successful deployment check-mode task 5058, real prior deployment tasks 5037
+and 5042, and baseline task 5062. Task 5062 reported 11 healthy targets, 24-hour
+sample maxima of 3,059 for Loki and 2,285 for Grafana, three DGX-category
+targets, and a 24-hour stored-series label maximum of 42. Response-body size is
+measured by one point-in-time GET and remains distinct from the 24-hour sample
+and series-label observations. These receipts inform candidate review but do
+not close runtime acceptance or task 3.3.
+
+## 2026-10-13 loaded inline scrape-limit coverage source slice
+
+Extend the existing exact-SHA-guarded Dev scrape survey with a best-effort
+loaded-limit receipt, separate from its required active-load baseline and the
+source-only candidate preview. Use the pinned Prometheus v3.1.0 GET APIs
+`/api/v1/status/buildinfo`, `/api/v1/status/runtimeinfo`, and
+`/api/v1/status/config`. The pinned source exposes build `version`, runtime
+`reloadConfigSuccess`/`lastConfigTime`, and config as a YAML string produced
+from the in-memory config object. Bound every response with the survey's
+existing API byte ceiling, timeout, curl transport, and protected helper task.
+Read config twice between runtime snapshots; require version `3.1.0`, successful
+reload state, identical process/config timestamps and config bytes. Any HTTP,
+shape, size, parse, reload, or stability
+failure returns only a fixed `unavailable` reason and cannot suppress the
+existing baseline or candidate preview. The multi-request readback is not an
+atomic Prometheus snapshot and cannot detect an unobserved change-and-revert
+between matching observations; a matched result describes only the checked
+readback point.
+
+Parse the loaded YAML with duplicate-key rejection. Compare the five reviewed
+inventory limits (`body_size_limit`, `sample_limit`, `label_limit`,
+`label_name_length_limit`, and `label_value_length_limit`) against every
+exposed inline scrape job after Prometheus's serialized effective defaults.
+Use the active target's exact `scrapePool` association, not a guessed match
+from labels; reject missing or ambiguous associations. Apply the existing
+stricter `o11y_scrape_sample_limit` to the `receiver-host` pool. Missing,
+invalid, or mismatched loaded values never pass. Emit only fixed overall and
+per-public-category statuses/reasons; never include config, paths, target
+labels, inventory values, raw responses, or exception details.
+
+Prometheus 3.1.0's status-config handler serializes the main `Config` object.
+Its `scrape_config_files` patterns do not expand into the serialized
+`scrape_configs` list, so any pools supplied by scrape files (including
+conditional DGX and host-node jobs) are explicitly `unverified`; do not read
+mounted files or claim coverage for those jobs. This receipt demonstrates
+only that exposed inline loaded values match reviewed candidates at the
+readback point. It does not prove over-budget runtime rejection or close task
+3.3. Preserve the 2026-10-13 observed-window baseline evidence in its separate
+receipt and keep all task 3.3 acceptance gates open.
+
+Verified live evidence supplied for this slice: Dev survey task 5194 at reviewed
+SHA `ed547385` succeeded with 11 targets across nine public categories and a
+compatible candidate preview for all nine. The task predates these source edits
+and did not read loaded limits or prove runtime rejection; it validates only the
+separate baseline and candidate-preview inputs. No live task or deployment is
+part of this source change.
+
+## 2026-10-13 alert-input availability source slice
+
+Extend the same read-only baseline survey with an independent best-effort
+availability receipt for the six fixed raw counter families referenced by the
+provisioned Alloy receiver/exporter, Loki discard, and Tempo discard alerts:
+`otelcol_receiver_refused_log_records_total`,
+`otelcol_receiver_refused_spans_total`,
+`otelcol_exporter_enqueue_failed_spans_total`,
+`otelcol_exporter_send_failed_spans_total`, `loki_discarded_samples_total`,
+and `tempo_discarded_spans_total`. Query each raw family without the alert
+expressions' `or vector(0)` so absence remains visible.
+
+Set `lookback_delta=5m` explicitly on every raw selector query and do not add
+`or vector(0)`. An empty vector is reported as `missing_or_stale`; do not compare
+the response `value[0]` (the query evaluation timestamp) with a local clock or
+claim it is the original sample timestamp. Validate the vector response shape,
+then join each returned `job`/`instance` privately against the exact active-target
+set. Accept multiple distinct reason series; require well-formed unique label
+sets and finite nonnegative counter values. Report one fixed public family/status/reason row per
+family: `observed_zero`, `observed_nonzero`, `missing_or_stale`, or `unavailable`.
+No labels, sample values/timestamps, selectors, URLs, response bodies, or
+exceptions enter the receipt. A per-family query or validation failure does not
+fail or replace the required active-load baseline, source-only candidate
+preview, or loaded-limit receipt. Check mode reports the new receipt as
+`check_mode_unverified`.
+
+This is source-level availability evidence only. It does not prove pinned-image
+metric exposition, controlled refusals/discards, alert firing or delivery, or
+close task 3.3. Agentgateway and DGX split-file jobs remain `unverified`; do not
+promote them into loaded-limit coverage.
+
+Operator-supplied verified sanitized evidence for Dev survey task 5208 reports
+11 healthy targets in nine public categories; seven inline categories matched
+reviewed loaded limits, while agentgateway and dgx-spark remained unverified
+split-file jobs. The independent source-only candidate preview was compatible
+for all nine categories. This receipt predates the alert-input source edits and
+does not validate their runtime behavior. No live survey or deployment is part
+of this source change.
+
+## 2026-10-13 split scrape-file source-drift receipt
+
+Extend the same exact-SHA-guarded receiver survey with a separate read-only
+source receipt for the exact generated `agentgateway.yml` and `dgx-spark.yml`
+files in the receiver's declared deployment checkout. Open each file without
+following symlinks; require a regular single-link file, bounded size, valid
+UTF-8/YAML, no aliases or duplicate keys, and only the expected fixed job names.
+Read only the five scrape-limit fields. Compare their finite positive values
+with the reviewed inventory limits using the existing controller filter.
+
+Keep raw bytes, paths, job names beyond the fixed public categories, and limit
+values inside the protected survey task. Its visible result contains only
+`agentgateway` and `dgx-spark` categories with fixed matched/mismatch/unavailable
+statuses and reason codes. An unexpected path or filesystem object, missing
+file, malformed YAML, duplicate or unexpected job, invalid limit, or inventory
+mismatch does not pass. Check mode reports `check_mode_unverified`.
+
+This receipt establishes only that the exact on-disk source files read during
+the survey match the reviewed five-field limits. It does not show that
+Prometheus mounted or loaded those bytes, that its runtime enforces the limits,
+or that an over-budget scrape is rejected. Keep agentgateway and dgx-spark
+`unverified` in the separate loaded-limit receipt, preserve all other survey
+receipts, and leave task 3.3 unchecked. This is a source-only change; no live
+survey or deployment is claimed.
+
+## 2026-10-13 expected metrics target contract source slice
+
+Keep the production rule path disabled until private inventory review sets
+`o11y_expected_metrics_targets_reviewed: true`; the variable defaults false.
+When production alerts are enabled and the flag is true, the declaration must
+contain one to 100 active targets, or a non-empty explicit retirement set for a
+retirement-only rollout. Each active row contains exactly `uid`, `job`,
+`instance`, `service`, `cluster`, and `environment`. Use a stable UID in the
+owned `o11y_missing_<suffix>` namespace. Identity values are bounded printable
+ASCII restricted to letters, digits, `_`, `.`, `:`, `/`, `@`, and `-`; template
+values are JSON-serialized into YAML and PromQL. Duplicate identities/UIDs,
+invalid values, and more than 100 active or retired entries refuse. An
+in-memory parse of the provisioned alert document then checks that rule UIDs
+remain unique and retired UIDs do not collide with any active provisioned rule
+before repository placement or file writes.
+
+When the reviewed flag is false, the production template does not render
+per-target rules even if unreviewed target values are present. Local mode keeps
+its current Caddy pilot fallback and paused/routed behavior. The existing rule
+uses all five exact matchers in `absent_over_time(up{...}[5m])`, holds for two
+minutes, and uses `agent-cloud-ops` routing. `up=0` remains the endpoint-down
+case; absence from the active target set is the disappeared-target case.
+Explicit retired UIDs use the existing `deleteRules` list and are refused if
+they match another rendered rule; there is no group-wide deletion.
+
+Keep coverage as a separate read-only action, `Survey o11y Expected Metrics
+Targets (Dev)`. It privately reads `/api/v1/targets?state=active`, validates
+each target's five identity labels, includes unhealthy targets, and compares
+unique exact tuples with the reviewed declaration. The receipt exposes only
+status, a fixed reason, and expected/active/matched/missing/unexpected/unhealthy
+counts. Invalid or ambiguous API identities return bounded unavailable output;
+missing/unreviewed declarations and check mode are unverified. Private targets,
+selectors, API payloads, URLs, and exception text stay under `no_log`. This
+action does not alter the scrape baseline, loaded-limit, candidate-preview, or
+alert-input receipts.
+
+Sanitized Dev-bound read-only survey task 5221 observed 11 healthy active
+targets across nine public categories. Four loss counters had current zero
+samples; two optional error-only counters had no sample in a five-minute
+lookback. The latter absence is not telemetry-loss evidence. This receipt
+predates the expected-target survey and does not validate this source slice or
+production rules. Production currently has alerts enabled without an expected
+target declaration, so the reviewed flag remains false until the private
+declaration rollout is separately reviewed.
+
+Live acceptance requires a reviewed private inventory change, a reviewed
+Dev-bound non-destructive Deploy o11y run, exact rule UID/readback, and a fresh
+expected-target survey with all expected identities matched, no missing,
+unexpected, or ambiguous identities, and unhealthy targets resolved. The config
+digest change may recreate the receiver Compose project; do not clean-deploy,
+delete volumes, or claim data continuity from a container restart. Task 3.3
+remains unchecked; the task 5221 receipt is context, not live acceptance for
+this implementation.
+
+### Expected-target alert disable and restore transition
+
+Grafana retains omitted provisioned rules, so turning off production alerts or
+the reviewed-target gate SHALL keep each previously owned expected-target UID
+in the generated file as a paused, unrouted `vector(0)` rule with generic
+metadata. The prior file is the ownership record and is read before placement;
+ownership requires the expected-target rule structure, exact identity labels,
+and the `agent-cloud` / `service-telemetry` folder-group contract. A UID prefix
+alone grants no authority. Before placement, live rules must have the exact
+owned UID set and match the prior query, labels, pause state, notification
+route, rule group, and the UID of the uniquely resolved `agent-cloud` folder.
+Missing live rules, unowned live target UIDs, folder drift, or rule drift refuse.
+Retired rules remain generic paused `vector(0)` tombstones, making ownership
+durable across gate-off, canary restoration, and interrupted retries without
+deleting live rules. A retired UID cannot be reactivated; a new identity needs a
+new stable UID. Canary restoration and interrupted retries use the same
+preparation and validation path. Render/readback tasks carrying private identities suppress
+Ansible output and diffs; only fixed summaries and counts are visible. Check
+mode performs source validation only, skips rendering, and does not claim a live
+transition. Live acceptance remains separate; task 3.3 and the private rollout
+gate remain open/off.
+
+Alert probes and active-drill recovery also protect raw Prometheus/Grafana
+responses and every identity-bearing assertion. Their visible success receipts
+use fixed wording and contain no target labels or endpoints.

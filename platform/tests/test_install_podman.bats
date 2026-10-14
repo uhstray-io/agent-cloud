@@ -118,3 +118,9 @@ PYSCRIPT
   assert_grep -qF 'linger_user | default(ansible_user)' "$LINGER"
   refute_grep -qE 'loginctl (show-user|enable-linger) \{\{ ansible_user \}\}' "$LINGER"
 }
+
+@test "install-podman: installs uidmap, without which rootless podman cannot start a container" {
+  # podman only RECOMMENDS uidmap. Both GitHub runners lacked it (2026-10-10), and every
+  # job that declared a container failed on a missing newuidmap.
+  assert_grep -qE '^\s+- uidmap$' "$PB"
+}

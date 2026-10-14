@@ -90,6 +90,99 @@ def test_inspection_reports_decision_facts_without_storage_or_free_form_values()
     assert "volid" not in str(result)
 
 
+def _selector(candidate=None):
+    candidate = candidate or payload()["content_reads"][0]["json"]["data"][0]
+    return {
+        "volid": candidate["volid"],
+        "backend": "non-pbs",
+        "format": candidate["format"],
+        "creation_time_epoch": candidate["ctime"],
+        "size_bytes": candidate["size"],
+    }
+
+
+def test_absent_selector_preserves_census_and_does_not_choose_candidate():
+    result = inspect(payload())
+
+    assert result["candidate_artifact_count"] == 1
+    assert "selected_candidate_index" not in result
+    assert "selected_candidate" not in result
+
+
+def test_exact_selector_selects_one_candidate_without_exposing_its_identity():
+    data = payload()
+    second = dict(data["content_reads"][0]["json"]["data"][0])
+    second.update(
+        volid="private-store:backup/vzdump-qemu-100-2026_09_29-01_00_00.vma.zst",
+        size=123456,
+        ctime=1_790_640_000,
+    )
+    data["content_reads"][0]["json"]["data"].append(second)
+    data["artifact_selector"] = _selector(second)
+
+    result = inspect(data)
+
+    assert result["candidate_artifact_count"] == 2
+    assert result["selected_candidate_index"] == 1
+    assert result["selected_candidate"]["size_bytes"] == 123456
+    assert "private-store" not in str(result)
+    assert "vzdump-qemu" not in str(result)
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda selector: selector.update(size_bytes=1),
+        lambda selector: selector.update(creation_time_epoch=1),
+        lambda selector: selector.update(format="tar"),
+        lambda selector: selector.update(backend="pbs"),
+        lambda selector: selector.update(volid="private-store:stale"),
+        lambda selector: selector.update(extra="private-value"),
+        lambda selector: selector.update(size_bytes=True),
+        lambda selector: selector.pop("volid"),
+    ],
+)
+def test_stale_or_malformed_selector_fails_closed_without_echoing_private_values(
+    mutate, capsys, monkeypatch
+):
+    data = payload()
+    selector = _selector()
+    mutate(selector)
+    data["artifact_selector"] = selector
+    monkeypatch.setattr(sys, "argv", ["inspect_o11y_backup_artifact.py", "inspect"])
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(data)))
+    assert main() == 2
+    captured = capsys.readouterr()
+    refusal = json.loads(captured.out)["refusal"]
+    assert refusal in {
+        "The declared backup artifact selection is malformed.",
+        "The declared backup artifact selection does not match exactly one enumerated candidate.",
+    }
+    assert "private-store" not in captured.out
+    assert "stale" not in captured.out
+    assert "private-value" not in captured.out
+    assert captured.err == ""
+
+
+def test_duplicate_candidate_identity_fails_closed_with_fixed_reason():
+    data = payload()
+    candidate = data["content_reads"][0]["json"]["data"][0]
+    data["artifact_selector"] = _selector(candidate)
+    data["content_reads"][0]["json"]["data"].append(dict(candidate))
+
+    with pytest.raises(ValueError, match="duplicate backup artifact identities"):
+        inspect(data)
+
+
+def test_explicit_null_selector_is_malformed_instead_of_absent():
+    data = payload()
+    data["artifact_selector_defined"] = True
+    data["artifact_selector"] = None
+
+    with pytest.raises(ValueError, match="selection is malformed"):
+        inspect(data)
+
+
 @pytest.mark.parametrize(
     ("mutate", "message"),
     [
@@ -218,12 +311,22 @@ def test_playbook_is_dev_bound_read_only_and_keeps_raw_api_results_hidden():
     helper = next(task for task in tasks if task["name"] == "Build the sanitized artifact and disk-layout inspection")
     assert helper.get("no_log") is True
     assert "_inspector" in str(helper)
+    assert "artifact_selector" in str(helper)
+    assert "artifact_selector_defined" in str(helper)
     report = next(
         task for task in tasks
         if task["name"] == "Report private artifact decision facts without storage names or paths"
     )
     assert "_artifact_receipt" in str(report)
     assert not any(task["ansible.builtin.uri"]["method"] in {"POST", "PUT", "DELETE"} for task in api_reads)
+    preflight = next(task for task in tasks if task["name"].startswith("Require an exact reviewed"))
+    assert "not ansible_check_mode" in str(preflight["ansible.builtin.assert"]["that"])
+    assert tasks.index(preflight) < min(tasks.index(task) for task in api_reads)
+    feasibility = next(
+        task for task in tasks if task["name"] == "Build sanitized restore-target feasibility facts"
+    )
+    assert feasibility.get("no_log") is True
+    assert "selected_artifact" in str(feasibility)
 
 
 def test_semaphore_template_is_dev_bound_and_requires_the_reviewed_sha():

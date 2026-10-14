@@ -13,7 +13,7 @@ DIRECTORIES = ("/var/log/journal", "/run/log/journal")
 MAX_DIAGNOSTIC_ENTRIES = 80
 PERMISSION_TARGETS = {
     "journal": ("/var/log/journal", "/run/log/journal", "journald"),
-    "positions": ("/var/lib/alloy/data", "positions"),
+    "positions": ("/var/lib/alloy/data", "/alloy-state", "positions"),
     "config": ("/etc/alloy/journal.alloy", "journal.alloy", "config"),
 }
 READ_SCRIPT = (

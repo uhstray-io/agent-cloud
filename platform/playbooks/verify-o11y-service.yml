@@ -7,6 +7,10 @@
 - name: "Refuse extra vars that set internal names"
   ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
 
+- name: Require the reviewed checkout for strict verification
+  ansible.builtin.import_playbook: require-reviewed-checkout.yml
+  when: o11y_verification_mode | default('legacy') == 'strict'
+
 - name: Require a declared o11y receiver and a service identity
   hosts: localhost
   connection: local
@@ -26,10 +30,11 @@
           - expected_inventory_revision is defined and expected_inventory_revision is match('^[0-9a-f]{64}$')
           - groups.get('o11y_svc', []) | length == 1
           - expected_target_id is defined and expected_target_id is match('^(service|agent|vm|guest|runner|network|dgx):[a-z][a-z0-9_-]{1,63}$')
-          - expected_signal is defined and expected_signal in ['logs', 'metrics', 'health', 'traces']
+          - expected_signal is defined and expected_signal in ['logs', 'metrics', 'health', 'traces', 'profiles']
           - signal_selector is defined and signal_selector | length <= 512
-          - freshness_seconds is defined and freshness_seconds | int >= 60 and freshness_seconds | int <= 86400
-          - observation_window_seconds is defined and observation_window_seconds | int >= 60 and observation_window_seconds | int <= 3600 and observation_window_seconds | int <= freshness_seconds | int
+          - freshness_seconds is integer and freshness_seconds is not boolean and freshness_seconds >= 60 and freshness_seconds <= 86400
+          - observation_window_seconds is integer and observation_window_seconds is not boolean and observation_window_seconds >= 60 and observation_window_seconds <= 3600
+          - freshness_seconds is integer and freshness_seconds is not boolean and observation_window_seconds is integer and observation_window_seconds is not boolean and observation_window_seconds < freshness_seconds
         fail_msg: "Strict signal observation requires reviewed repository and inventory revisions, one exact target/signal selector, and bounded freshness."
       when: o11y_verification_mode | default('legacy') == 'strict'
 
@@ -80,33 +85,91 @@
           - expect_metrics | default('true') | string | lower in ['true', 'false']
           - expect_logs | default('true') | string | lower in ['true', 'false']
           - expect_traces | default('false') | string | lower in ['true', 'false']
+          - expected_log_signal | default('') is match('^([a-z][a-z0-9_-]*)?$')
           - emit_agentgateway_canary | default('false') | string | lower in ['true', 'false']
           - (expect_metrics | default('true') | bool) or (expect_logs | default('true') | bool) or (expect_traces | default('false') | bool)
           - not (emit_agentgateway_canary | default('false') | bool) or expected_service | default('') == 'agentgateway'
           - not (emit_agentgateway_canary | default('false') | bool) or expect_traces | default('false') | bool
           - not (emit_agentgateway_canary | default('false') | bool) or groups.get('agentgateway_svc', []) | length == 1
-        fail_msg: "Declare a lowercase service and at least one expected signal; the canary requires exactly one agentgateway_svc host and Tempo traces."
+        fail_msg: "Declare a lowercase service, a lowercase expected_log_signal or none, and at least one expected signal; the canary requires exactly one agentgateway_svc host and Tempo traces."
       when: o11y_verification_mode | default('legacy') == 'legacy'
 
 - name: Emit an optional gateway trace canary
   hosts: agentgateway_svc
   gather_facts: false
   vars:
+    _canary_on: "{{ (o11y_verification_mode | default('legacy') == 'legacy') and (emit_agentgateway_canary | default('false') | bool) }}"
+    # The same listener addressing as probe-agentgateway-gate.yml: with agw_listener_tls the
+    # listener only speaks TLS, so the canary names the server leaf's SAN and trusts the internal CA.
+    _tls: "{{ agw_listener_tls | default(false) | bool }}"
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+    _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path | default('platform/services/agentgateway/deployment') }}"
+    _port: "{{ agw_port | default(4000) }}"
     _canary_bind: "{{ '127.0.0.1' if (agw_bind | default('127.0.0.1')) in ['0.0.0.0', '::', ''] else agw_bind | default('127.0.0.1') }}"
+    _server_name: "{{ agw_tls_server_name | default('gateway.' ~ (dns_site | default('')) ~ '.' ~ (dns_zone | default(''))) }}"
+    _leaf_dir: >-
+      {{ internal_leaves | default([]) | selectattr('name', 'equalto', agw_verifier_leaf | default('agw-verifier'))
+         | map(attribute='dir') | first | default('') }}
+    _ca: "{{ _deploy_dir }}/certs/step-ca-bundle.crt"
   tasks:
     - name: Mark the canary start on the Tempo receiver clock
       ansible.builtin.command: date +%s
-      delegate_to: "{{ groups['o11y_svc'][0] }}"
+      delegate_to: "{{ groups.get('o11y_svc', []) | first | default(inventory_hostname) }}"
       register: _canary_started
       changed_when: false
       check_mode: false
-      when: (o11y_verification_mode | default('legacy') == 'legacy') and (emit_agentgateway_canary | default('false') | bool)
+      when: _canary_on
 
+    - name: Read the verifier leaf and the trust bundle (listener TLS only)
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - "{{ _leaf_dir }}/current/cert.pem"
+        - "{{ _leaf_dir }}/current/key.pem"
+        - "{{ _ca }}"
+      register: _tls_files
+      when: _canary_on and _tls
+
+    - name: Refuse a verifier leaf or trust bundle that is not on this host
+      ansible.builtin.assert:
+        that:
+          - _leaf_dir | length > 0
+          - _tls_files.results | rejectattr('stat.exists') | list | length == 0
+        fail_msg: >-
+          With agw_listener_tls the canary presents the {{ agw_verifier_leaf | default('agw-verifier') }} leaf and
+          trusts {{ _ca }}; missing: {{ _tls_files.results | rejectattr('stat.exists') | map(attribute='item') | join(', ') }}.
+        quiet: true
+      when: _canary_on and _tls
+
+    # Read-only (check_only writes nothing): a hosts file Deploy agentgateway has not converged
+    # stops the run here, by name, instead of as 100 connection failures.
+    - name: Resolve the server leaf's name read-only (listener TLS only)
+      ansible.builtin.include_tasks: tasks/agw-probe-resolution.yml
+      vars:
+        _agwr_check_only: true
+        _agwr_name: "{{ _server_name }}"
+        _agwr_ip: "{{ _canary_bind }}"
+        _agwr_expect: ""
+        _agwr_hosts_file: /etc/hosts
+      when: _canary_on and _tls and agw_verify_base_url is not defined
+
+    - name: The gateway base URL the canary uses
+      ansible.builtin.set_fact:
+        _gateway_base: >-
+          {{ agw_verify_base_url if (agw_verify_base_url is defined) else
+             (('https://' ~ _server_name ~ ':' ~ _port) if _tls else ('http://' ~ _canary_bind ~ ':' ~ _port)) }}
+      when: _canary_on
+
+    # One direct uri loop, not 100 includes of tasks/agw-probe.yml: the requests carry no key, so
+    # nothing here needs no_log, and a non-401 should fail the run at the request that returned it.
     - name: Send anonymous requests directly to the gateway listener
       ansible.builtin.uri:
-        url: "http://{{ _canary_bind }}:{{ agw_port | default(4000) }}/v1/models"
+        url: "{{ _gateway_base }}/v1/models"
         method: GET
         status_code: 401
+        client_cert: "{{ (_leaf_dir ~ '/current/cert.pem') if _tls else omit }}"
+        client_key: "{{ (_leaf_dir ~ '/current/key.pem') if _tls else omit }}"
+        ca_path: "{{ _ca if _tls else omit }}"
         timeout: 5
         use_netrc: false
         use_proxy: false
@@ -115,13 +178,18 @@
         label: "request {{ item + 1 }}/100"
       changed_when: false
       check_mode: false
-      when: (o11y_verification_mode | default('legacy') == 'legacy') and (emit_agentgateway_canary | default('false') | bool)
+      when: _canary_on
 
 - name: Verify the named service is collected
   hosts: o11y_svc
   gather_facts: false
   vars:
     _engine: "{{ container_engine | default('podman') }}"
+    # {service="<svc>"}, plus ,signal="<x>" when expected_log_signal names one: a service can ship
+    # several streams (agentgateway's access logs and its span logs), and one proves nothing about the other.
+    _loki_selector: >-
+      {{ '{service="' ~ expected_service ~ '"' ~ ((',signal="' ~ expected_log_signal ~ '"') if (expected_log_signal | default('') | length > 0) else '') ~ '}' }}
+    _signal_label: "{{ (' (signal ' ~ expected_log_signal ~ ')') if (expected_log_signal | default('') | length > 0) else '' }}"
   tasks:
     - name: Query recent Loki logs for the service
       ansible.builtin.command:
@@ -133,7 +201,7 @@
           - -q
           - -O
           - "-"
-          - "http://loki:3100/loki/api/v1/query_range?query={{ ('{service=\"' ~ expected_service ~ '\"}') | urlencode }}&since=15m&limit=1"
+          - "http://loki:3100/loki/api/v1/query_range?query={{ _loki_selector | urlencode }}&since=15m&limit=1"
       register: _service_logs
       changed_when: false
       check_mode: false
@@ -144,7 +212,7 @@
         that:
           - _logs_json.status == 'success'
           - _logs_json.data.result | length > 0
-        fail_msg: "Loki has no {{ expected_service }} log in the last 15 minutes; emit a fresh service log and check Alloy collection."
+        fail_msg: "Loki has no {{ expected_service }}{{ _signal_label }} log in the last 15 minutes; emit a fresh service log and check Alloy collection."
       vars:
         _logs_json: "{{ _service_logs.stdout | from_json }}"
       when: (o11y_verification_mode | default('legacy') == 'legacy') and (expect_logs | default('true') | bool)
@@ -185,7 +253,7 @@
       ansible.builtin.debug:
         msg: >-
           {{ expected_service }} verified:
-          {{ 'recent Loki log' if (expect_logs | default('true') | bool) else 'logs not requested' }},
+          {{ ('recent Loki log' ~ _signal_label) if (expect_logs | default('true') | bool) else 'logs not requested' }},
           {{ 'healthy Prometheus scrape' if (expect_metrics | default('true') | bool) else 'metrics not requested' }},
           {{ 'recent Tempo trace' if (expect_traces | default('false') | bool) else 'traces not requested' }}.
       when: o11y_verification_mode | default('legacy') == 'legacy'
@@ -247,10 +315,27 @@
         fail_msg: "unverifiable_target: this signal selector is not declared for the exact target."
       when: o11y_verification_mode | default('legacy') == 'strict'
 
+    - name: Require the requested and declared freshness to match exactly
+      ansible.builtin.assert:
+        that:
+          - _coverage_target.signals[expected_signal].freshness_seconds is integer
+          - _coverage_target.signals[expected_signal].freshness_seconds is not boolean
+          - freshness_seconds == _coverage_target.signals[expected_signal].freshness_seconds
+        fail_msg: "unverifiable_target: requested freshness does not match the declared signal contract."
+      when: o11y_verification_mode | default('legacy') == 'strict'
+
+    - name: Require the pinned profile type for profile receipts
+      ansible.builtin.assert:
+        that:
+          - expected_signal != 'profiles' or _coverage_target.signals.profiles.profile_type_id == 'process_cpu:cpu:nanoseconds:cpu:nanoseconds'
+        fail_msg: "unverifiable_target: profiles require the pinned CPU profile type."
+      when: o11y_verification_mode | default('legacy') == 'strict'
+
     - name: Refuse selectors without the bounded target identity label
       ansible.builtin.assert:
         that:
           - expected_signal == 'traces' or ('target_id="' ~ expected_target_id ~ '"') in signal_selector
+          - expected_signal != 'profiles' or signal_selector == '{target_id="' ~ expected_target_id ~ '"}'
           - expected_signal != 'traces' or signal_selector == '{ resource.target_id = "' ~ expected_target_id ~ '" }'
           - expected_signal not in ['metrics', 'health'] or signal_selector is match('^\\s*[a-zA-Z_:][a-zA-Z0-9_:]*\\s*\\{[^{}]*\\}\\s*$')
           - expected_signal not in ['metrics', 'health'] or signal_selector is search('(?:\\{|,)\\s*target_id\\s*=\\s*"' ~ expected_target_id ~ '"\\s*(?:,|\\})')

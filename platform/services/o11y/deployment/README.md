@@ -63,6 +63,321 @@ gateway host to `o11y_otlp_bind:4317`. The client-view dashboard plots HTTP and
 model (`agentgateway_gen_ai_server_request_duration`) p95 side by side, and the
 inference latency dashboard links to it.
 
+## OTLP receiver resource bounds — source slice for task 3.3
+
+Both OTLP inputs pass directly through their own Alloy memory limiter before
+the existing gRPC trace/access-log and HTTP conformance-log routes. Each
+limiter checks every second, with a 384 MiB hard heap limit and a 64 MiB spike
+allowance (320 MiB soft threshold). The shared Compose base caps the Alloy
+container at 512 MiB in local and production deployments; the local overlay
+does not set a second Alloy cap. Gateway traces keep the optional
+`o11y_gateway_span_logs_enabled` fan-out after the limiter.
+These are initial source bounds, not measured tuning values; compare them with
+receiver memory headroom before rollout.
+
+The Tempo path batches at most 512 spans per batch (256 triggers a send, with a
+one-second timeout), holds at most 128 queued batches with two consumers, uses
+a 10-second exporter request timeout, and retries up to five minutes with a
+30-second maximum interval. The queue is in memory and does not survive Alloy
+restart. Its item count is bounded, while serialized byte size depends on span
+payloads; the memory limiter and container cap provide the aggregate memory
+bounds. Queue overflow, memory-limiter refusals, and lost data remain possible
+during sustained receiver or Tempo outages; the alert source rules below do not
+prove metric exposition or runtime delivery.
+
+### Loki and Tempo ingestion caps — task 3.3 source slice
+
+The committed Loki and Tempo configs make the pinned images' finite ingestion
+defaults explicit: Loki uses global rate limiting (4 MB/s, 6 MB burst), a
+5,000-stream aggregate limit, 3 MB/s per-stream rate with a 15 MB burst, a
+256 KB line limit, and at most 15 labels per series. Tempo uses its local
+strategy, 15,000,000 bytes/s with a 20,000,000-byte burst, 10,000 live traces
+per user per ingester, and a 5,000,000-byte trace limit. These are aggregate
+default-equivalent caps, not per-target controls; making the defaults explicit
+does not establish a measured target budget or live config acceptance.
+
+Rollout remains gated on measured baselines and follow-on per-target budget and
+alert work. Keep task 3.3 open until its remaining source and live acceptance
+gates are met; do not infer runtime acceptance from parsing these files.
+
+### Per-scrape response and label budgets — task 3.3 source slice
+
+Every declared Prometheus scrape job, including the optional DGX GPU job and
+host-node fragments, and Alloy's local-container scrape use the same private
+inventory object:
+
+```yaml
+o11y_scrape_limits_reviewed: true
+o11y_scrape_limits:
+  body_size_limit_bytes: <integer from 1 to 167772160>
+  sample_limit: <integer from 1 to 100000>
+  label_limit: <integer from 1 to 640>
+  label_name_length_limit: <integer from 1 to 1280>
+  label_value_length_limit: <integer from 1 to 20480>
+```
+
+The object is required and must be marked reviewed before a production render;
+missing or unreviewed production values fail closed before deployment. The
+review flag is an explicit rollout gate, not evidence that a live baseline was
+measured. Until each current production target has a reviewed baseline, keep
+the flag unset and do not deploy the candidate limits. Local mode has finite
+defaults (16 MiB response, 10,000 samples, 64 labels, 128-byte label names,
+2,048-byte label values) for development. Production values must be YAML
+integers, positive, and no greater than ten times those finite local baselines;
+the existing `o11y_scrape_sample_limit`, when set, must be a positive YAML
+integer no greater than 20,000. Missing, unreviewed, malformed, nonpositive,
+or excessive production values are refused before placement or rendering; they
+are never coerced or clamped to one.
+
+Alloy takes `body_size_limit` as a units string (for example `16MiB`), not a
+number, so its config appends the `B` unit to the bytes carried in
+`O11Y_SCRAPE_BODY_SIZE_LIMIT_BYTES`; a bare number fails the config load and
+crash-loops the container. The other four limits stay numeric.
+
+The existing `o11y_scrape_sample_limit` remains the stricter ceiling for the
+receiver-host and host-node exporters. All scrape paths retain the forbidden
+label drop and target identity labels. Per-scrape bounds restrict one response
+at a time; they do not cap lifetime series churn as label values change across
+scrapes. Live target readback, over-budget refusal checks, and calibration of
+the private values remain open. Prometheus's `body_size_limit` is documented
+as experimental in the pinned v3.1.0 configuration reference.
+
+The Dev-bound survey can also emit an optional **source-only candidate
+compatibility preview** when `o11y_scrape_limits_reviewed` is true and the
+candidate object is complete. It compares every fixed public job category in
+the bounded receipt with the declared global candidates; `receiver-host` and
+`host-node` use the smaller of the global sample limit and
+`o11y_scrape_sample_limit` (whose source default is 2,000). Each observed
+maximum must be strictly below its candidate, so equality reports
+`incompatible`. Missing or unreviewed candidates produce only the fixed
+`unavailable/candidate_limits_unavailable` result and do not fail or alter the
+baseline receipt. The preview prints no limit or observation values. It is a
+comparison of the survey window and source candidates, not live enforcement,
+deployment acceptance, or proof that Prometheus loaded those limits.
+
+Operational evidence through 2026-10-13: Dev task 5057 reported Alloy healthy;
+task 5058 completed the o11y deployment in check mode; and prior real deploys
+5037 and 5042 recorded a changed deployment followed by a no-change rerun.
+Read-only baseline task 5062 reported 11 healthy scrape targets. Its 24-hour
+`scrape_samples_scraped` maxima were 3,059 for Loki and 2,285 for Grafana; the
+DGX category covered three targets and a maximum of 42 stored-series labels in
+the 24-hour series query. Response-body bytes are a separate point-in-time GET
+measurement, not a 24-hour maximum. These values are review inputs and do not
+prove future load, runtime rejection, or loaded configuration.
+
+The Dev-bound read-only `Survey o11y Scrape Baseline (Dev)` queries active targets
+and the 24-hour maximum of `scrape_samples_scraped` from the existing Prometheus
+instance. Prometheus v3.1.0 exposes `scrape_body_size_bytes` only when
+`--enable-feature=extra-scrape-metrics` is set, and the committed production
+Compose command does not set it. The survey does not enable that feature or
+change/restart/reload Prometheus. Instead, its receiver-side helper uses the
+active target list, privately joins each target to its 24-hour sample maximum,
+and performs one direct HTTP GET from the existing Grafana container for each
+currently healthy target. The GET sends `Accept-Encoding: identity`, follows no
+redirects, uses no proxy or authentication, and discards the response body while
+counting at most 160 MiB with explicit connect and overall timeouts. The helper
+requires curl 8.4 or newer so the download limit also applies to unknown-length
+responses. It refuses non-HTTP URLs, userinfo, query strings, URL/instance host
+or port mismatches, unsupported jobs, duplicate targets, unhealthy targets,
+missing sample series, empty bodies, non-2xx responses, compressed responses, and
+oversized or incomplete probes. URLs, private labels, response bodies, API
+responses, and subprocess errors stay inside the protected helper invocation.
+
+After validating all active targets, the helper also queries Prometheus
+`/api/v1/series` once per target with a selector fixed to that target's exact
+`job` and `instance` and a 24-hour start/end window. It derives the maximum
+stored-series label count and maximum UTF-8 label-name and label-value byte
+lengths, then aggregates those numeric maxima by the same fixed public job
+categories. The private selector is sent to curl through config on stdin, not
+argv. API responses are capped at 16 MiB and require a successful HTTP status
+and complete, unambiguous series data; any missing or malformed response refuses
+the receipt.
+
+The sanitized receipt groups by fixed public job names, reports active and
+healthy/unhealthy target counts, and shows integer sample maxima for 24 hours,
+point-in-time response-body byte maxima, and 24-hour stored-series label
+maxima. The direct GET is a current observation, not a 24-hour response-size
+maximum. The series API describes stored series metadata selected for the time
+window and may include series without samples in that period; these maxima are
+not proof of every future label value or lifetime series churn. Treat the
+measurements as inputs for reviewing sample, body-size, and label limits. They
+do not establish runtime rejection behavior or acceptance of configured limits
+by deployed binaries. Label limits still require review and runtime acceptance.
+Keep task 3.3 open until its full source and live acceptance gates are met.
+Check-mode output is explicitly unverified.
+
+The survey does not read a mounted scrape file as evidence that Prometheus
+loaded it. Its loaded-limit receipt uses the pinned v3.1.0
+`/api/v1/status/buildinfo`, `/api/v1/status/runtimeinfo`, and
+`/api/v1/status/config` endpoints. It requires version `3.1.0`, successful
+reload state, stable process/config timestamps, and byte-identical config
+readbacks around the runtime snapshots. A changed or malformed readback becomes
+a fixed `unavailable` result; this is a bounded consistency check, not an atomic
+snapshot or proof against an unobserved change-and-revert between requests.
+
+Prometheus's status-config endpoint serializes the main in-memory `Config`;
+`scrape_config_files` remains a list of patterns, while loaded file-job
+expansion is exposed separately by `Config.GetScrapeConfigs()` and is not used
+by the endpoint. See the pinned [Prometheus 3.1.0 API handler](https://github.com/prometheus/prometheus/blob/v3.1.0/web/api/v1/api.go#L1531-L1551)
+and [config implementation](https://github.com/prometheus/prometheus/blob/v3.1.0/config/config.go#L283-L331).
+The receipt parses only inline jobs and compares all five effective values
+against the reviewed inventory; `receiver-host` uses the stricter of the
+reviewed global sample limit and `o11y_scrape_sample_limit`. A missing, invalid,
+or mismatched value does not pass. Split scrape-file jobs remain explicitly
+unverified, including DGX and host-node jobs. Raw YAML, targets, limit values,
+paths, and errors remain in protected tasks; the visible loaded-limit receipt
+contains only fixed statuses, reasons, and public job categories.
+
+The candidate preview and active-load baseline remain separate receipts. A
+loaded-limit match proves only the values visible in the inline status-config
+readback match reviewed candidates at that observation point. It does not prove
+over-budget runtime rejection. Verified live Dev survey task 5194 at reviewed
+SHA `ed547385` succeeded with 11 targets across nine public categories and a
+compatible candidate preview for all nine. That task proves the baseline and
+candidate comparison only; it contains no loaded-limit readback or rejection
+evidence. Keep task 3.3 open, retention unchanged, and live acceptance pending.
+Check mode reports the baseline, candidate preview, and loaded limits as
+`check_mode_unverified`.
+
+The survey also emits an independent alert-input availability receipt for the
+six raw counters referenced by the existing Alloy receiver/exporter, Loki
+discard, and Tempo discard alerts. Each raw selector query explicitly sets
+`lookback_delta=5m` and omits `or vector(0)`, so an empty vector reports a
+missing or stale input. The helper validates the query response shape, privately
+joins series to active targets, permits multiple distinct reason series, and
+requires finite nonnegative values. Each public row contains only its fixed metric family, status
+(`observed_zero`, `observed_nonzero`, `missing_or_stale`, or `unavailable`), and
+fixed reason. Labels, values, timestamps, selectors, URLs, response bodies, and
+exceptions stay private. Failures remain isolated from the active-load baseline,
+candidate preview, and loaded-limit receipt; check mode reports
+`check_mode_unverified`. This source receipt does not prove metric exposition,
+controlled loss, or alert delivery.
+
+Operator-supplied verified sanitized Dev survey task 5208 evidence reports 11
+healthy targets across nine public categories. Seven inline categories matched
+reviewed loaded limits; agentgateway and dgx-spark remained unverified because
+their jobs come from split scrape files. The separate source-only candidate
+preview was compatible for all nine categories. This evidence predates the new
+alert-input receipt and does not verify its runtime behavior. Task 3.3 remains
+open, split-file jobs remain unverified, and retention is unchanged.
+
+**Split scrape-file source drift, 2026-10-13:** The same exact-SHA-guarded
+receiver survey now reads only the generated `agentgateway.yml` and
+`dgx-spark.yml` files from the receiver's declared deployment checkout. It
+opens the expected files without following symlinks, requires bounded regular
+single-link files, rejects malformed YAML, aliases, duplicate keys, duplicate
+or unexpected jobs, and compares all five finite limits with reviewed
+inventory. The protected helper result carries no file paths or raw config;
+the visible receipt contains only fixed `agentgateway` and `dgx-spark`
+categories and fixed status/reason codes. A match proves only on-disk source
+values at that read. It does not establish that Prometheus mounted or loaded
+those bytes or enforces the limits. Keep both categories `unverified` in the
+separate loaded-limit receipt, keep task 3.3 open, and treat check mode as
+`check_mode_unverified`. No live survey or deployment is claimed for this
+source slice.
+
+The Dev-bound `Survey o11y Alloy Health (Dev)` is a separate read-only
+diagnostic for the fixed `o11y-alloy` receiver container. It requires the exact
+reviewed controller SHA, one production `o11y_svc` target, and the receiver's
+declared Podman runtime. Its helper inspects only that named container and emits
+presence, run and health status, restart count, OOM state, the last health-probe
+exit code, and an optional coarse started-age bucket. Missing or malformed
+metadata produces a fixed refusal category; inspect JSON, process output, logs,
+paths, addresses, and command details remain private. Check mode skips Podman
+inspection and reports `check_mode_unverified`. This survey does not change
+container state, deployment behavior, or retention. Dev check-mode task 5027 at
+`318c7e84baf5e4bdb24277e50738d452465ac976` failed its Alloy health check after
+eight retries with sanitized health `starting`; the root cause remains unknown,
+and no production apply occurred.
+
+### Receiver-loss and backend-discard alerts — task 3.3 source slice
+
+The provisioned `service-telemetry` group includes an Alloy receiver-refusal
+alert for `otelcol_receiver_refused_log_records_total` and
+`otelcol_receiver_refused_spans_total`, a Tempo exporter queue-admission alert
+for `otelcol_exporter_enqueue_failed_spans_total`, and a sustained send-failure
+alert for `otelcol_exporter_send_failed_spans_total`. These are the Prometheus
+counter names for the pinned Alloy v1.5.1 / OTel Collector v0.112.0 metrics.
+Each optional counter uses a five-minute window and `or vector(0)`, so an absent
+series contributes zero. The receiver alert adds the two refusal counts; the
+queue-admission alert uses `increase` and the send-failure alert uses `rate`,
+both grouped to avoid per-exporter alert instances. Refusal and enqueue-failure
+rules fire above zero for two minutes; the send-failure rule requires a positive
+rate for ten minutes. All use `service=o11y/alloy`. `enqueue_failed_spans_total`
+means a span could not be admitted to the bounded exporter queue and was lost.
+`send_failed_spans_total` increments when an exporter operation returns a final
+error after retry handling; transient failed attempts followed by a successful
+retry do not increment it. This identifies a final exporter-operation error,
+but does not establish whether the downstream backend received or lost spans.
+The pinned [base-exporter sender chain](https://github.com/open-telemetry/opentelemetry-collector/blob/v0.112.0/exporter/exporterhelper/internal/base_exporter.go)
+and [exporter observation implementation](https://github.com/open-telemetry/opentelemetry-collector/blob/v0.112.0/exporter/exporterhelper/internal/obsexporter.go)
+show the observation/retry boundary.
+Alloy documents that failed batches are discarded after
+`retry_on_failure.max_elapsed_time` if they have not been sent successfully.
+See [OpenTelemetry Collector internal
+telemetry](https://opentelemetry.io/docs/collector/internal-telemetry/) and
+[Alloy OTLP exporter retry behavior](https://grafana.com/docs/alloy/latest/reference/components/otelcol/otelcol.exporter.otlp/).
+Refused log records and spans were rejected at the receiver and were not
+accepted into the pipeline.
+
+The rules remain paused unless private inventory sets
+`o11y_receiver_loss_alerts_reviewed: true`, `o11y_alerts_enabled` is true, and
+the render is production (`local_mode` false, environment `prod`) without an
+alert canary. The new review flag defaults false in the template; do not add it
+to production inventory until metric exposition and alert delivery have been
+verified.
+
+Live acceptance requires reading the exact pinned Alloy `/metrics` endpoint
+and confirming all four counters are exposed, then using a controlled,
+non-sensitive refusal and a bounded queue-pressure scenario to observe the
+corresponding counter increases. After enabling the reviewed inventory flag,
+read back all three provisioned rules from Grafana and prove they can fire and route
+through `agent-cloud-ops`, then verify resolution. For send failures, prove the
+rate rule with a controlled bounded exporter failure and describe the receipt as
+a final exporter-operation error after retry handling; backend receipt or loss
+remains unverified. Do not use secrets, prompts,
+request bodies, or span attributes in these checks. Source rendering does not
+prove metric exposition, delivery, or runtime behavior; those remain
+unverified.
+
+The same group also has one aggregate alert for each backend's discarded data:
+`loki_discarded_samples_total{job="loki"}` and
+`tempo_discarded_spans_total{job="tempo"}`. Each uses
+`sum(increase(metric[5m])) or vector(0)`, fires above zero after two minutes,
+and produces one rule instance per backend rather than one per `reason` label.
+The new `o11y_backend_drop_alerts_reviewed` switch defaults false; both rules
+remain paused unless the existing alerts switch is enabled, the render is
+production and non-local, and no alert canary is set. Active rules use the
+existing low-noise `agent-cloud-ops` grouping. Grafana documents the Loki
+counter and its `reason` label in [Loki monitoring metrics](https://grafana.com/docs/loki/latest/operations/meta-monitoring/metrics/)
+and describes the Tempo counter and `reason` label in [Tempo trace ingestion](https://grafana.com/docs/tempo/latest/operations/manage-trace-ingestion/).
+The self-monitoring dashboard adds rate-by-reason timeseries for both counters
+without moving the existing panels.
+
+Keep the review switch false in production inventory until the exact pinned
+Loki and Tempo metric endpoints expose these counters and a controlled,
+non-sensitive drop increments each counter. Then read the provisioned rules
+back from Grafana and verify firing, `agent-cloud-ops` delivery, and resolution.
+No controlled drop, live alert delivery, or telemetry-privacy proof is claimed
+by this source change.
+
+Task 3.3 still requires nonzero Prometheus size retention, broader receiver
+memory/backpressure and ingestion protections, inventory-driven
+environment/cluster labels across Prometheus and Alloy with dependent
+dashboard/alert migration, and proof that secrets, prompts, and request bodies
+do not enter telemetry. These alert source rules do not close the live metric,
+delivery, or telemetry-privacy gates.
+
+The rollout gate remains: validate rendered River with the exact pinned Alloy
+image, complete final-head review and CI, run the Dev-bound Semaphore check and
+reviewed apply, and prove the exact-target trace path plus refusal/drop behavior
+without sensitive payloads. The local Podman and Docker daemons were
+inaccessible, so cached-image availability and River validation are
+unverified here; no pull was attempted and no rollout is authorized by this
+source change. Complete task 3.3 and its
+separate task 3.4 firewall/budget/runtime gate before expanding the sender
+cohort.
+
 The production Semaphore inventory is a static copy of private site-config. After
 a private inventory change is reviewed and merged, run the code-managed
 operator-side `platform/semaphore/sync-inventory.yml` check and apply from the
@@ -105,13 +420,80 @@ keeps pointing at the deleted inode while every input hashes the same. Deploys c
 directories in place; `platform/tests/test_no_bind_mount_dir_delete.py` fails if a deploy
 task deletes one.
 
+## Expected metrics target contract
+
+Production per-target missing-telemetry rules stay off until private inventory
+sets `o11y_expected_metrics_targets_reviewed: true`. With production alerts
+enabled, the reviewed declaration must contain at least one active target or an
+explicit retirement and may contain at most 100 active and 100 retired entries.
+The public repo contains the schema and validator only; endpoint and identity
+values belong in site-config.
+
+Each active private entry has one stable Grafana `uid` and exact `job`,
+`instance`, `service`, `cluster`, and `environment` values. Keep the UID when an
+endpoint changes: update the reviewed `instance`, verify the new scrape target,
+then deploy the updated rule through Semaphore. Exact matcher values are
+validated before placement and serialized as PromQL/YAML strings. Target rules
+use `absent_over_time(up{...}[5m])` and hold for two minutes. An endpoint that
+still exists with `up=0` remains the service-down condition; a target missing
+from Prometheus for five minutes is the disappeared-target condition.
+
+When production alerts or the reviewed-target gate turns off, Grafana's generated
+file keeps every validated previously owned target UID as a paused `vector(0)`
+rule with generic labels and no route. The next deploy or baseline restoration
+reads the prior provisioning file before writes and accepts ownership only when
+the rule matches the expected-target schema, folder, and group. Re-enabling uses
+the current reviewed declaration; every prior UID must either return or be named
+for explicit retirement. A malformed prior file, unowned live expected-target
+UID, or drifted live rule refuses before placement or restart. Unrelated rules
+are never retired by this transition. Check mode validates local declarations
+but skips rendering and live verification.
+
+For retirement, remove that target from the active list and add only its exact
+`o11y_missing_<stable-suffix>` UID to
+`o11y_expected_metrics_targets_retired_uids`. The preflight requires that UID in
+the validated prior ownership record. It renders a generic paused `vector(0)`
+tombstone with no target labels or route. The tombstone remains through gate-off,
+canary restoration, and retries; the retired UID cannot be reused. No live rule
+is deleted by omission, and unrelated rules are never touched.
+
+The Dev-bound `Survey o11y Expected Metrics Targets (Dev)` receipt compares
+the reviewed identities with every active Prometheus target, including
+unhealthy targets. It reports fixed status/reason values and bounded expected,
+active, matched, missing, unexpected, and unhealthy counts. Missing or
+unreviewed declarations and check mode are unverified; raw labels, selectors,
+URLs, API responses, inventory values, and exceptions stay protected. A
+coverage match does not replace the separate scrape baseline, loaded-limit,
+candidate, alert-input, or live Grafana rule-readback receipts.
+
+Before production rollout, review the private declaration and rollout flag,
+run focused source validation, merge through the normal branch workflow, then
+use the reviewed Dev-bound Semaphore deploy and coverage survey. Require exact
+coverage with no missing, duplicate, or unexpected identities; resolve unhealthy
+targets separately; and confirm the provisioned rule UID and its evaluation
+after deployment. A config digest change may recreate the receiver Compose
+project. Use only the non-destructive Deploy o11y workflow; do not use a clean
+deploy or remove telemetry volumes for this change.
+
+The reviewed Dev-bound read-only target survey, task 5221, observed 11 healthy
+active targets across nine public categories. Four loss counters had current
+zero samples, while two optional error-only counters had no sample in the
+five-minute lookback. Missing optional counters are not evidence of telemetry
+loss. This receipt predates the expected-target coverage implementation and is
+not live validation of that new survey or of production per-target rules.
+
 ## Inference dashboards and alerts
 
 Three provisioned dashboards cover the DGX Spark pair: `inference-latency-capacity`
 (first-token, end-to-end, inter-token, queue, prefill and decode latency; running and
 waiting requests; KV-cache use; preemptions; token throughput), `inference-fleet-health`
 (scrape health, memory headroom against the memory guard's thresholds, CPU, load, root
-filesystem and the vLLM journal from Loki), and `inference-placement-comparison`
+filesystem and the vLLM journal from Loki, plus the "Inference probe serving" panel: the
+synthetic probe's result per model, 0 shown as "not serving" and 1 as "serving", which can
+be red while every scrape panel is green; the probe drill below asserts against it; the
+panel has data only where `o11y_inference_probe_enabled` is true and the probe has taken
+its first sample, so a whole-dashboard `Verify o11y Dashboard Data` of `inference-fleet-health`
+needs the probe on, or `expected_empty_panels=["Inference probe serving"]`), and `inference-placement-comparison`
 (the same signals against an earlier window, with a link to the dgx-spark `results/`
 run manifests). Each has a `model_alias` variable. vLLM labels its series with
 `model_name`, which carries the served model name, so the variable filters on that
@@ -415,6 +797,36 @@ probe environment file holds the inference key, so every task touching it sets
 `diff: false` and `no_log`. The probe restore requires a success sample for the deployed
 model newer than the restore, and the resolved check covers every drill model name.
 
+Exporter mode runs unprivileged. Its stop and restart tasks set `become: false`, so
+`systemd_service` runs as the connecting account on the DGX node, and the node's polkit
+authorizes that one account for the `start` and `stop` verbs on the exporter unit only.
+Those two tasks connect with the exporter host's own per-service key, not Semaphore's
+inventory key: the drill reads `secret/services/ssh/<service_name>` (the exporter host's
+`service_name`, expected `o11y-fault-drill`) from OpenBao before any fault, refuses the run
+if the service name or the key is missing, writes the key to a runner-side 0600 file as the
+first step of the fault section and wipes it in `always:` after the restore. Exporter mode
+therefore also needs `openbao_addr` and the controller AppRole. The drill sets no
+`daemon_reload`, which that rule would refuse. The per-service account
+and the polkit rule are installed on the nodes by dgx-spark's `drill-access.yml` (not by
+agent-cloud; the nodes are outside its inventory), so the mode needs that applied, the
+node declared in the private `o11y_fault_drill_exporters` map and as a host of a group
+carrying the account as `ansible_user`, and the agreed dgx-spark window (dgx-spark's only
+unattended job there runs daily at 04:30 Eastern, so keep the window clear of 04:15 to
+05:00 Eastern). The probe-mode sample tasks keep `become: true`; they run on the o11y host.
+Evidence and remaining steps: `plan/development/openspec/changes/inference-telemetry-production/tasks.md`, task 2.5.
+
+Dashboard proof (probe mode): the drill also reads the provisioned `inference-fleet-health`
+dashboard's "Inference probe serving" panel from the o11y host, refusing before any fault
+unless it is exactly one stat panel on `inference_probe_success` with no dashboard
+variables and the mappings 0 "not serving" and 1 "serving". During the fault it evaluates
+that panel's own expression (read from the provisioned dashboard file) against Prometheus
+and requires the drill model to read 0 (not serving) while `/health` stays 200; after the
+restore it requires the deployed model to read 1 again. It does not query Grafana's
+rendered panel. The expression comes from the dashboard JSON, never from the playbook, and
+only the panel title, the model name and the mapped text are printed. The probe must be
+deployed and sampled for the panel to have data (`o11y_inference_probe_enabled`). A `drill_restore_only=true` run
+reads no dashboard.
+
 Alert identity: Grafana sets an alert's `alertname` label to its rule's title, so the drill
 reads that title back from the provisioned rule (refusing a rule without one before any
 fault) and a firing alert counts only when that name and the fault's own labels (node, or
@@ -507,7 +919,11 @@ The production target is Prometheus 90d, Loki 45d, and Tempo 1080h
 (45d). Keep the current 15d / 7d / 168h tuple until a measured capacity receipt
 is available. A normal deploy refuses any production tuple change unless
 `o11y_prom_retention_size` is nonzero and private inventory contains a numeric
-`o11y_capacity_receipt_id` referencing a separately reviewed successful receipt. Do not create that receipt
+`o11y_capacity_receipt_id` referencing a separately reviewed successful receipt,
+plus a numeric `o11y_backup_restore_receipt_id` reference. The playbook checks only
+that the backup/restore reference is a positive integer; it does not inspect an
+independent receipt or prove a live isolated restore. Do not treat this source-level
+reference guard as retention authorization. Do not create the capacity receipt
 until receiver host metrics have at least seven days of CPU/memory and
 per-backend stored-byte growth, the forecast meets >=30% free disk, >=25%
 memory headroom, and CPU p95 <70%, and any guest filesystem growth is repeatable
@@ -707,36 +1123,185 @@ Local development keeps the loopback direct-Loki path.
 
 The `Deploy o11y Journal Collector (Dev)` apply action gates the named
 `journal-collector-state` volume before it starts the collector. A missing volume
-can bootstrap only after bounded volume inventory proves the exact expected
-project name is unused and an all-container query proves
-`o11y-journal-collector` absent, including stopped containers. A pre-existing
-empty local volume can bootstrap only with exact project/name identity, zero
-consumers and mounts, boolean `NeedsChown` and `NeedsCopyUp` fields, and a
-read-only root observation proving owner `0:0`, owner RWX, no group/other write
-or special bits, no ACL or nested mount, and no contents. Unknown labels, flags,
-ownership, consumers, mounts, or metadata refuse the start.
+can bootstrap only after bounded volume inventory proves no exact-name collision
+and an all-container query, including stopped containers, proves
+`o11y-journal-collector` absent. An existing pending volume can bootstrap only
+with exact project/name identity, zero consumers and mounts, effective template
+flags `NeedsChown=false` and `NeedsCopyUp=true`, and a read-only observation of
+an empty root owned by `0:0`, owner RWX, no group/other write or special bits,
+no ACL or nested mount, and no metadata ambiguity. Require at least 16 MiB free
+bytes and 128 free inodes both on GraphRoot and on the pending volume filesystem
+for this small first mount; this gate is separate from the 30% retention headroom gate.
 
-Compose `up` is the only volume create/initialization action. Compose declares
-the volume-key label for new volumes. An existing volume without that label is
-accepted only when its exact expected name and project label match; a conflicting
-label refuses. The immediate pre-start check runs outside rollback handling, so
-an existing collector cannot be removed when that check refuses before startup.
-After startup, helper status must be `ready`, and the playbook separately checks
-the actual RW mount, UID mapping, effective write/rename access, health, receiver
-container preservation, and fresh exact-target Loki delivery. Check mode stays
-`check_mode_unverified` and does not mount or mutate the volume. Survey exceptions
-produce a bounded unavailable receipt with fixed reason `survey_failed`.
+Podman may omit false-valued initialization flags from JSON. The helper therefore
+uses one fixed `podman volume inspect --format` template, accepts only literal
+`false` or `true`, and brackets it with named JSON identity reads. It keeps raw
+JSON field presence separate from effective values and refuses unknown template
+output, identity mismatch, or a race. A missing Compose volume-key label is
+accepted only for the exact expected name and matching project; a conflicting
+label refuses. Pending repair compares `CreatedAt`, volume configuration, and
+root device/inode across pre-mutation observations; missing or changed creation
+identity refuses.
 
-Dev positions survey 3856 reported `volume_initialization_unverified`, zero
+Repair checks free bytes and inodes independently from stable metadata equality.
+Pending repair requires the threshold on both GraphRoot and the volume filesystem;
+initialized repair requires it on the volume filesystem. Counter changes above
+threshold do not invalidate root, child, ACL, or mount evidence, while a below-
+threshold reading refuses the repair.
+
+The separate `repair-positions` action keeps its initialized-volume behavior:
+fresh evidence must prove an unused root with only safe regular direct files has
+an owner mismatch that alone blocks collector access; repair changes only root
+owner/group, reads it back, and runs the restricted write/rename/delete probe in
+the cached Alloy image. A narrow pending exception permits the owner/group change
+only for the exact empty, unused `NeedsChown=false` / `NeedsCopyUp=true` state. If
+group/other write bits are the only failed guard, the helper may first clear only
+those bits with `original_mode & ~0o022`; it preserves read/search bits and refuses
+special bits, incomplete owner RWX, malformed mode or any unrelated failed check.
+The mode reduction and owner change each use a no-follow directory descriptor
+pinned to the same verified device/inode, with a full discovery and exact readback
+between them. This branch does not mount a probe container or change contents. It
+verifies the empty volume before first mount. After either pending-volume mutation
+may have occurred, a failure preserves the volume and returns `uncertain`; no
+mode/owner restoration or copied-state deletion is automatic because first-mount
+history cannot be proved from a later empty state. A converged rerun reports
+`already_correct` without another mutation.
+
+Compose `up` is the only volume creation/initialization action. The pre-apply and
+immediate pre-start `verify` gates accept `bootstrap_allowed` only for the proven
+missing-volume or safe pending-volume cases above. They also permit a bounded
+cursorless retry when a complete read-only observation proves an exact volume
+with both initialization flags false, the
+collector absent from all containers, zero consumers and mounts, safe `0:0` root
+and allowlisted layout, `positions.yml` absent, access, ACL/mount checks, and
+capacity on GraphRoot and the volume filesystem. This `ready` result authorizes
+only a start attempt; it does not prove delivery. A present invalid or unreadable
+cursor, unknown cursor presence, or any incomplete evidence refuses. `cursor_checked`
+is true only when the safe, bounded file was read completely with stable identity
+and its contents were parsed; absent, unsafe, oversized, or unreadable files leave
+validity `unverified`. The read-only survey still does not inspect cursor contents.
+The apply, immediate pre-mount, and post-start live gates parse positions output in
+protected tasks; malformed or non-object JSON becomes fixed `unavailable`, and the
+assertions still require normalized `ready`/`bootstrap_allowed` before start and
+`ready` after start. The live diagnostic reads only the normalized result. The
+immediate pre-start check runs outside rollback handling. After startup, `verify-live` is a
+separate strict gate; a lingering
+`NeedsCopyUp=true` is not success by itself: require the collector to be present
+as the single consumer and mount, with the exact live RW mount,
+namespace write/rename/delete, bounded Alloy layout, and a parsed `positions.yml`
+entry for `cursor-loki.source.journal.o11y_alloy` with an empty label set and a
+valid journal cursor. Also require healthy status, unchanged seven receiver
+containers, and a fresh exact-target Loki receipt. An empty image destination
+may leave copy-up pending. After start, an absent cursor, a present invalid or
+unreadable cursor file, a pending temporary positions file, or any layout outside
+the allowlist refuses as incomplete state; the cursorless pre-start retry is not
+post-start acceptance. Failed-start rollback removes only the pilot container
+without `-v`. The positions helper reports `check_mode_unverified` without its
+own Podman or filesystem operations; the surrounding playbook may still run
+other checks. Survey exceptions produce a bounded unavailable receipt
+with fixed reason `survey_failed`.
+
+The positions survey also emits a bounded `pending_repair_diagnostic` derived
+from the same conjuncts as the pending repair gate. It classifies owner RWX,
+the combined group/other write or special-bit result, each of group write,
+other write, setuid, setgid, and sticky independently, and volume and GraphRoot
+bytes/inodes; it lists failed checks from a fixed allowlist. Missing mode or
+counters are `unverified`; no
+paths, ownership IDs, modes, or counter values are emitted. A pending repair
+refusal keeps `status=refused` and `reason=pending_volume_unsupported`; its
+receipt carries the diagnostic categories and the refusal message lists the
+bounded `failed_checks`. This snapshot
+does not cover the repair's later identity rechecks and does not authorize a
+repair. Check mode and survey exceptions use the same keys with unverified
+categories. No additional Podman call, mount, content read, or ownership change
+is part of this diagnostic.
+
+The post-start `verify-live` receipt now adds `live_diagnostic`: fixed helper
+status/reason and failed metadata categories, exact collector mount destination,
+volume name/source/type/RW and configured-user comparisons, the expected seed
+file and journal-component counts, and aggregate other-entry counts by kind.
+It emits no entry names, paths, IDs, modes, or contents. Host and collector UID
+maps remain under `no_log`; the visible receipt reports only availability and
+equality. The existing namespace write/rename/delete probe remains part of the
+live gate and emits only a fixed failing stage (`identity`, `create`, `write`,
+`rename`, or `cleanup`) or `passed`. None of these diagnostics changes the
+acceptance predicates.
+
+The read-only positions survey may report top-level entry roles and aggregate
+entry kinds, but it does not inspect cursor contents or run a namespace probe.
+It compares extra directories only against the two exact public journal receiver
+and OTLP exporter component roles. Matching directories get bounded owner,
+access, ACL, mount, and direct-child categories. Unmatched direct child
+directories also receive aggregate owner/access/ACL/mount/empty-or-nonempty
+counts, without names, paths, hashes, contents, numeric identities, or exception
+details. A race, symlink substitution, ACL/mount ambiguity, malformed metadata,
+or incomplete observation makes that directory's categories `unverified`.
+Both recognized and unknown extra directories remain outside the accepted
+component layout. Its live receipt marks host/collector UID maps, equality, and
+the namespace probe `not_run`. If the collector is absent, mount comparisons are
+`unverified`; survey evidence cannot satisfy the live gate.
+
+**Dev collector gate diagnostic (2026-10-09):** User-provided task 3986 check
+mode and task 3987 survey precede task 3988, which started the collector and
+passed health/readiness but refused the strict live mount/namespace gate and
+rolled back safely. Task 3989 found the collector absent and the named volume
+preserved with three entries; entry children and cursor evidence were
+ambiguous/unavailable. Those receipts do not identify the failed live
+predicate. The next action is a reviewed diagnostic survey at a fresh merged
+Dev revision; do not apply again until its evidence is reviewed. Task 1.2 stays
+open.
+
+**Dev positions extra-directory diagnostic (2026-10-10):** Our read-only
+Dev-bound Semaphore API survey task 4009 succeeded at merged Dev SHA
+`9bc543d7d0f80be77ddab3983f9db6a983257f06`. It reported
+`volume_initialization_pending`, collector absent, zero volume users, three
+entries, matching root owner, RWX access, ACL absent, mount clear, sufficient
+free space, ambiguous children, and unavailable journal cursor. Its bounded
+top-level categories were one seed file, one existing journal component, one
+other directory, and zero other files, symlinks, or kinds. This receipt does
+not identify the extra directory: live component mounts and namespace fields
+were unverified/not run. The follow-up compares only the exact public receiver
+and exporter component roles and reports bounded metadata categories; an
+unmatched directory remains anonymous. It does not infer queue state, alter
+pre-start or verify-live acceptance, mount or write the volume, or authorize
+collector apply. Task 1.2 remains open; do not apply until the fresh diagnostic
+receipt and remaining live gates are reviewed.
+
+**Dev unknown-directory metadata receipt (2026-10-10):** Our read-only
+Dev-bound Semaphore API survey task 4016 succeeded at exact Dev merge
+`736af5b16917f28a243b3715d56c76c00bfe7a8a`. Its sanitized receipt reported a
+pending-initialization volume, no collector, no valid cursor, and three direct
+entries: one seed file, one journal component, and one unmatched directory; the
+recognized receiver and exporter directory counts were zero. Volume identity,
+capacity, root ownership, and root RWX checks were good. `NeedsCopyUp` was true
+and the `NeedsChown` field was missing. The component-layout check failed; the
+pending-repair diagnostic listed `children_empty`, `child_count_zero`,
+`owner_mismatch`, and `collector_access_blocked` among its failed checks. This is
+our API-observed sanitized evidence, not user-provided evidence. The follow-up
+reports only aggregate categorical metadata for unmatched direct child
+directories. It does not identify the directory or infer queue state. Stop:
+keep repair and apply refused while unmatched entries remain or any category is
+unverified; collect and review a fresh survey after this change reaches Dev.
+Task 1.2 remains unchecked.
+
+The live Dev survey 3925 at reviewed SHA `8050f2768903e09f68285f90c1598cb120006219`
+(sanitized receipt supplied for this implementation; not rerun here) reported
+the exact empty, unused pending volume with owner mismatch, owner RWX, no ACL or
+mount ambiguity, no collector, and sufficient volume/GraphRoot capacity. Group
+write was the only present write/special bit; other write and special bits were
+absent. This supports the narrow code path but does not authorize a live mutation,
+prove repair readback, or close the delivery gate. The earlier live Dev survey
+3865 (user-provided evidence; not rerun by this source-only change) reported
+Podman client 4.9.3 with server unavailable, exact all/named volume identity,
+omitted `NeedsChown` and `NeedsCopyUp` JSON fields, effective `NeedsChown=false`
+and `NeedsCopyUp=true`, an empty unused volume with owner mismatch and blocked
+access, and no ACL or mount ambiguity. Earlier Dev positions survey 3856
+reported `volume_initialization_unverified`, zero
 consumers and entries, root owner mismatch, blocked access, no ACL, a clear
 mount, and safe direct children. The journal source was available, but access
 to the target positions path was denied. The explicit survey adds sanitized
-initialization field presence/type and genuine boolean values, an exact-name
-volume inspection for identity comparison, and bounded Podman client/server
-versions. Invalid values, malformed or duplicate results, and unavailable
-commands appear only as fixed categories; raw Podman output is never reported.
-These diagnostics do not change verify, repair, bootstrap, or apply decisions.
-Check mode reports the diagnostic shape as unverified without querying Podman.
+initialization field presence/type, template values, identity comparisons, and
+bounded Podman versions. Raw Podman output is never reported.
 
 OpenSpec task 1.2 remains unchecked until the reviewed Semaphore run records the
 production runtime and Loki evidence. Unit tests and metadata-only survey results

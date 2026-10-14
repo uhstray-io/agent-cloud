@@ -108,8 +108,11 @@ from jinja2 import Environment, StrictUndefined
 
 env = Environment(undefined=StrictUndefined)
 env.filters['bool'] = bool
+env.filters['mandatory'] = lambda value: value
 template = env.from_string(open(sys.argv[1], encoding='utf-8').read())
 secrets = {'grafana_admin_password': 'test-only', 'grafana_oidc_client_secret': 'test-only'}
+limits = {'body_size_limit_bytes': 16777216, 'sample_limit': 10000, 'label_limit': 64,
+          'label_name_length_limit': 128, 'label_value_length_limit': 2048}
 
 def values(**kwargs):
     rendered = template.render(secrets=secrets, **kwargs)
@@ -122,7 +125,8 @@ assert local['GF_AUTH_GENERIC_OAUTH_TOKEN_URL'] == 'http://authentik-server:9000
 assert local['GF_AUTH_GENERIC_OAUTH_API_URL'] == 'http://authentik-server:9000/application/o/userinfo/'
 assert 'O11Y_AUTHENTIK_EDGE_IP' not in local
 
-prod = values(local_mode=False, o11y_zone='uhstray.io', _auth_edge_ip='192.0.2.10')
+prod = values(local_mode=False, o11y_zone='uhstray.io', _auth_edge_ip='192.0.2.10',
+              o11y_scrape_limits=limits, o11y_scrape_limits_reviewed=True)
 assert prod['GF_SERVER_ROOT_URL'] == 'https://o11y.uhstray.io/'
 assert prod['GF_AUTH_GENERIC_OAUTH_AUTH_URL'] == 'https://auth.uhstray.io/application/o/authorize/'
 assert prod['GF_AUTH_GENERIC_OAUTH_TOKEN_URL'] == 'https://auth.uhstray.io/application/o/token/'
@@ -363,6 +367,58 @@ assert next(t for t in tasks if t['name'] == 'Require a readable firing receipt 
 PY
 }
 
+@test "o11y: visible Discord receipt assertion emits counts only" {
+  command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
+  local playbook="$BATS_TEST_TMPDIR/discord-count-only.yml"
+  python3 - "$REPO_ROOT/platform/playbooks/tasks/o11y-alert-probe.yml" "$playbook" <<'PY'
+import pathlib
+import sys
+import yaml
+
+probe = yaml.safe_load(pathlib.Path(sys.argv[1]).read_text())
+pending = list(probe)
+tasks = []
+while pending:
+    task = pending.pop(0)
+    if not isinstance(task, dict):
+        continue
+    tasks.append(task)
+    for key in ("block", "rescue", "always", "tasks"):
+        pending[0:0] = task.get(key, [])
+summary = next(task for task in tasks if task.get("name") == "Count the matching Discord receipt without retaining its content")
+assertion = next(task for task in tasks if task.get("name") == "Require a readable firing receipt from the owned webhook")
+play = [{
+    "hosts": "localhost",
+    "gather_facts": False,
+    "vars": {"drill_expect_alert": True},
+    "tasks": [
+        {
+            "name": "seed synthetic protected Discord response",
+            "ansible.builtin.set_fact": {
+                "_discord_messages": {
+                    "failed": True,
+                    "json": [{"webhook_id": "synthetic-webhook", "content": "SYNTHETIC_CONTENT_SECRET"}],
+                    "request": {"headers": {"Authorization": "Bot SYNTHETIC_TOKEN_SECRET"}},
+                },
+                "_webhook_id": "synthetic-webhook",
+            },
+            "no_log": True,
+        },
+        summary,
+        assertion,
+    ],
+}]
+pathlib.Path(sys.argv[2]).write_text(yaml.safe_dump(play), encoding="utf-8")
+PY
+  mkdir -p "$BATS_TEST_TMPDIR/ansible-local"
+  run env ANSIBLE_LOCAL_TEMP="$BATS_TEST_TMPDIR/ansible-local" \
+    ansible-playbook -i localhost, "$playbook"
+  [ "$status" -ne 0 ]
+  assert_contains "$output" "Discord firing receipt absent after the wait: webhook messages=1, readable messages=1"
+  refute_contains "$output" "SYNTHETIC_CONTENT_SECRET"
+  refute_contains "$output" "SYNTHETIC_TOKEN_SECRET"
+}
+
 @test "o11y: delivery canary restores paused rules through the shared task" {
   python3 - "$REPO_ROOT/platform/playbooks/drill-o11y-alert-canary.yml" \
     "$REPO_ROOT/platform/playbooks/restore-o11y-alert-baseline.yml" \
@@ -519,6 +575,54 @@ PY
   grep -q 'retention_period: ${O11Y_LOKI_RETENTION:-7d}' "$DEPLOY_DIR/config/loki-config.yml"
 }
 
+@test "o11y: Loki and Tempo aggregate ingestion defaults are explicit" {
+  python3 - "$DEPLOY_DIR/config/loki-config.yml" "$DEPLOY_DIR/config/tempo-config.yml" <<'PY'
+import sys
+import yaml
+
+loki = yaml.safe_load(open(sys.argv[1], encoding='utf-8'))
+limits = loki['limits_config']
+assert {key: limits[key] for key in (
+    'ingestion_rate_strategy', 'ingestion_rate_mb', 'ingestion_burst_size_mb',
+    'max_global_streams_per_user', 'per_stream_rate_limit',
+    'per_stream_rate_limit_burst', 'max_line_size', 'max_label_names_per_series',
+)} == {
+    'ingestion_rate_strategy': 'global', 'ingestion_rate_mb': 4,
+    'ingestion_burst_size_mb': 6, 'max_global_streams_per_user': 5000,
+    'per_stream_rate_limit': '3MB', 'per_stream_rate_limit_burst': '15MB',
+    'max_line_size': '256KB', 'max_label_names_per_series': 15,
+}
+assert limits['retention_period'] == '${O11Y_LOKI_RETENTION:-7d}'
+assert limits['reject_old_samples_max_age'] == '${O11Y_LOKI_RETENTION:-7d}'
+
+tempo = yaml.safe_load(open(sys.argv[2], encoding='utf-8'))
+defaults = tempo['overrides']['defaults']
+assert defaults['ingestion'] == {
+    'rate_strategy': 'local', 'rate_limit_bytes': 15000000,
+    'burst_size_bytes': 20000000, 'max_traces_per_user': 10000,
+}
+assert defaults['global'] == {'max_bytes_per_trace': 5000000}
+assert tempo['compactor']['compaction']['block_retention'] == '${O11Y_TEMPO_RETENTION:-168h}'
+assert tempo['metrics_generator']['storage'] == {
+    'path': '/var/tempo/generator/wal',
+    'remote_write': [{'url': 'http://prometheus:9090/api/v1/write'}],
+}
+assert tempo['metrics_generator']['processor']['service_graphs'] == {
+    'max_items': 1000, 'workers': 2,
+}
+assert tempo['metrics_generator']['processor']['span_metrics'] == {
+    'intrinsic_dimensions': {
+        'service': True, 'span_name': False, 'span_kind': True,
+        'status_code': True, 'status_message': False,
+    },
+    'histogram_buckets': [0.05, 0.1, 0.25, 0.5, 1, 2, 5],
+}
+assert defaults['metrics_generator'] == {
+    'processors': '${O11Y_TEMPO_METRIC_PROCESSORS:-[]}', 'max_active_series': 2000,
+}
+PY
+}
+
 @test "o11y: committed config-as-code present (prometheus/loki/alloy/grafana)" {
   # Prometheus self-scrape is the committed config-as-code. Per-target scrapes
   # (Caddy :2019, cAdvisor, ...) are deferred to Phase 2 in the Prometheus template
@@ -542,6 +646,7 @@ from jinja2 import Environment, StrictUndefined
 env = Environment(undefined=StrictUndefined)
 env.filters['to_json'] = json.dumps
 env.filters['bool'] = bool
+env.filters['mandatory'] = lambda value: value
 plays = yaml.safe_load(open(sys.argv[2], encoding='utf-8'))
 phase_one = next(play for play in plays if play.get('name') == 'Phase 1: Place repo + manage o11y secrets')
 assert 'vars/o11y-metric-labels.yml' in phase_one['vars_files']
@@ -557,6 +662,9 @@ values = {
     'dgx_spark_head_address': '192.0.2.1',
     'dgx_spark_head_name': 'spark-1',
     'dgx_spark_api_port': 8000,
+    'o11y_scrape_limits': {'body_size_limit_bytes': 16777216, 'sample_limit': 10000, 'label_limit': 64,
+                           'label_name_length_limit': 128, 'label_value_length_limit': 2048},
+    'o11y_scrape_limits_reviewed': True,
     '_o11y_forbidden_metric_label_names_regex': policy,
 }
 
@@ -649,6 +757,13 @@ all:
           dgx_spark_head_name: spark-1
           dgx_spark_head_address: "192.0.2.1"
           dgx_spark_api_port: 8000
+          o11y_scrape_limits:
+            body_size_limit_bytes: 16777216
+            sample_limit: 10000
+            label_limit: 64
+            label_name_length_limit: 128
+            label_value_length_limit: 2048
+          o11y_scrape_limits_reviewed: true
     agentgateway_svc:
       hosts:
         gateway:
@@ -755,6 +870,7 @@ from jinja2 import Environment, StrictUndefined
 env = Environment(undefined=StrictUndefined)
 env.filters['to_json'] = json.dumps
 env.filters['bool'] = bool
+env.filters['mandatory'] = lambda value: value
 plays = yaml.safe_load(open(sys.argv[2], encoding='utf-8'))
 phase_one = next(play for play in plays if play.get('name') == 'Phase 1: Place repo + manage o11y secrets')
 assert 'vars/o11y-metric-labels.yml' in phase_one['vars_files']
@@ -765,6 +881,9 @@ config = yaml.safe_load(env.from_string(open(sys.argv[1], encoding='utf-8').read
     o11y_cluster='test-cluster',
     o11y_environment='prod',
     local_mode=False,
+    o11y_scrape_limits={'body_size_limit_bytes': 16777216, 'sample_limit': 10000, 'label_limit': 64,
+                        'label_name_length_limit': 128, 'label_value_length_limit': 2048},
+    o11y_scrape_limits_reviewed=True,
     _o11y_forbidden_metric_label_names_regex=policy,
 ))
 job = config['scrape_configs'][0]
@@ -793,11 +912,25 @@ template = env.from_string(
     open(sys.argv[1], encoding='utf-8').read()
 )
 contact_template = env.from_string(open(sys.argv[2], encoding='utf-8').read())
-targets = [{'uid': 'o11y_missing_caddy', 'service': 'caddy-reverse-proxy/caddy', 'instance': 'caddy:2021'}]
+targets = [{'uid': 'o11y_missing_caddy', 'job': 'caddy', 'service': 'caddy-reverse-proxy/caddy',
+            'instance': 'caddy:2021', 'cluster': 'test-cluster', 'environment': 'prod'}]
 for enabled in (False, True):
     for declared in ([], targets):
-        rules = yaml.safe_load(template.render(o11y_expected_metrics_targets=declared, local_mode=False, o11y_alerts_enabled=enabled))['groups'][0]['rules']
-        assert [rule['uid'] for rule in rules] == ['o11y_service_down', 'o11y_receiver_root_disk_low'] + [target['uid'] for target in declared]
+        rules = yaml.safe_load(template.render(o11y_expected_metrics_targets=declared,
+                                              o11y_expected_metrics_targets_reviewed=True,
+                                              o11y_cluster='test-cluster', o11y_environment='prod',
+                                              local_mode=False,
+                                              o11y_alerts_enabled=enabled,
+                                              o11y_receiver_loss_alerts_reviewed=enabled,
+                                              o11y_backend_drop_alerts_reviewed=enabled))['groups'][0]['rules']
+        rendered_targets = declared if enabled else []
+        assert [rule['uid'] for rule in rules] == [
+            'o11y_service_down', 'o11y_receiver_root_disk_low',
+        ] + [target['uid'] for target in rendered_targets] + [
+            'o11y_alloy_receiver_refused', 'o11y_tempo_exporter_enqueue_failed',
+            'o11y_tempo_exporter_send_failed',
+            'o11y_loki_discarded_samples', 'o11y_tempo_discarded_spans',
+        ]
         assert all(rule['isPaused'] is not enabled for rule in rules)
         assert all(('notification_settings' in rule) is enabled for rule in rules)
         assert rules[0]['annotations']['dashboard_url'] == '/d/service-overview?var-service={{ $labels.service }}'
@@ -814,10 +947,16 @@ for enabled in (False, True):
         )
         assert disk_rule['data'][1]['model']['conditions'][0]['evaluator'] == {'type': 'lt', 'params': [10]}
         assert disk_rule['noDataState'] == 'Alerting'
-        if declared:
+        if rendered_targets:
             assert rules[2]['annotations']['dashboard_url'] == '/d/service-overview?var-service=caddy-reverse-proxy/caddy'
             assert rules[2]['labels']['service'] == 'caddy-reverse-proxy/caddy'
             assert rules[2]['labels']['owner'] == 'platform-operations'
+            assert rules[2]['for'] == '2m'
+            assert rules[2]['data'][0]['relativeTimeRange'] == {'from': 600, 'to': 0}
+            assert rules[2]['data'][0]['model']['expr'] == (
+                'absent_over_time(up{job="caddy",instance="caddy:2021",service="caddy-reverse-proxy/caddy",'
+                'cluster="test-cluster",environment="prod"}[5m])'
+            )
         if enabled:
             for rule in rules:
                 settings = rule['notification_settings']
@@ -827,8 +966,8 @@ for enabled in (False, True):
                 assert settings['repeat_interval'] == '4h'
         assert 'up{service!=""}' == rules[0]['data'][0]['model']['expr']
         assert rules[0]['data'][1]['model']['conditions'][0]['evaluator'] == {'type': 'lt', 'params': [0.5]}
-        if declared:
-            assert 'absent_over_time(up{service="caddy-reverse-proxy/caddy",instance="caddy:2021"}[5m])' == rules[2]['data'][0]['model']['expr']
+        if rendered_targets:
+            assert 'absent_over_time(up{job="caddy",instance="caddy:2021",service="caddy-reverse-proxy/caddy",cluster="test-cluster",environment="prod"}[5m])' == rules[2]['data'][0]['model']['expr']
     contact = yaml.safe_load(contact_template.render(o11y_alerts_enabled=enabled))
     if enabled:
         receiver = contact['contactPoints'][0]['receivers'][0]
@@ -842,12 +981,155 @@ local_rules = yaml.safe_load(template.render(local_mode=True))['groups'][0]['rul
 assert local_rules[1]['uid'] == 'o11y_receiver_root_disk_low'
 assert local_rules[1]['isPaused'] is True
 assert local_rules[2]['uid'] == 'o11y_missing_caddy'
+assert local_rules[3]['uid'] == 'o11y_alloy_receiver_refused'
+assert local_rules[3]['isPaused'] is True
+assert local_rules[5]['uid'] == 'o11y_tempo_exporter_send_failed'
+assert local_rules[5]['isPaused'] is True
 canary = 'o11y-fault-probe-' + 'a' * 12
 canary_rules = yaml.safe_load(template.render(local_mode=True, o11y_alerts_enabled=True,
                                               o11y_alert_canary_service=canary))['groups'][0]['rules']
 assert canary_rules[0]['data'][0]['model']['expr'] == f'up{{service="{canary}"}}'
 assert canary_rules[0]['isPaused'] is False
 assert all(rule['isPaused'] is True and 'notification_settings' not in rule for rule in canary_rules[1:])
+PY
+}
+
+@test "o11y: Alloy refusal and Tempo exporter alerts require reviewed production enablement" {
+  python3 - "$DEPLOY_DIR/templates/alerts.yml.j2" <<'PY'
+import json
+import sys
+
+import yaml
+from jinja2 import Environment, StrictUndefined
+
+env = Environment(undefined=StrictUndefined, trim_blocks=True)
+env.filters['bool'] = bool
+env.filters['to_json'] = json.dumps
+template = env.from_string(open(sys.argv[1], encoding='utf-8').read())
+
+def rules(**values):
+    values.setdefault('o11y_expected_metrics_targets', [])
+    return {rule['uid']: rule for rule in yaml.safe_load(template.render(**values))['groups'][0]['rules']}
+
+refused_expr = (
+    '(sum(increase(otelcol_receiver_refused_log_records_total{job="alloy"}[5m])) or vector(0)) + '
+    '(sum(increase(otelcol_receiver_refused_spans_total{job="alloy"}[5m])) or vector(0))'
+)
+queue_expr = 'sum(increase(otelcol_exporter_enqueue_failed_spans_total{job="alloy"}[5m])) or vector(0)'
+send_failed_expr = 'sum(rate(otelcol_exporter_send_failed_spans_total{job="alloy"}[5m])) or vector(0)'
+expected = {
+    'o11y_alloy_receiver_refused': refused_expr,
+    'o11y_tempo_exporter_enqueue_failed': queue_expr,
+    'o11y_tempo_exporter_send_failed': send_failed_expr,
+}
+for enabled in (False, True):
+    values = dict(local_mode=False, o11y_alerts_enabled=enabled,
+                  o11y_receiver_loss_alerts_reviewed=enabled, o11y_environment='prod')
+    current = rules(**values)
+    for uid, expression in expected.items():
+        rule = current[uid]
+        assert rule['data'][0]['model']['expr'] == expression
+        assert rule['data'][1]['model']['conditions'][0]['evaluator'] == {'type': 'gt', 'params': [0]}
+        assert rule['for'] == ('10m' if uid == 'o11y_tempo_exporter_send_failed' else '2m')
+        assert rule['labels']['service'] == 'o11y/alloy'
+        assert rule['labels']['owner'] == 'platform-operations'
+        assert rule['isPaused'] is (not enabled)
+        assert ('notification_settings' in rule) is enabled
+        if uid == 'o11y_tempo_exporter_send_failed':
+            assert rule['annotations']['summary'] == (
+                'Alloy observed sustained final Tempo exporter-operation errors after retry handling; backend receipt or loss is unverified.'
+            )
+        if enabled:
+            assert rule['notification_settings'] == {
+                'receiver': 'agent-cloud-ops',
+                'group_by': ['service', 'environment', 'cluster', 'alertname'],
+                'group_wait': '30s', 'group_interval': '5m', 'repeat_interval': '4h'}
+
+for values in (
+    dict(local_mode=False, o11y_alerts_enabled=True, o11y_environment='prod'),
+    dict(local_mode=False, o11y_alerts_enabled=False, o11y_receiver_loss_alerts_reviewed=True,
+         o11y_environment='prod'),
+    dict(local_mode=True, o11y_alerts_enabled=True, o11y_receiver_loss_alerts_reviewed=True),
+    dict(local_mode=False, o11y_alerts_enabled=True, o11y_receiver_loss_alerts_reviewed=True,
+         o11y_environment='staging'),
+    dict(local_mode=False, o11y_alerts_enabled=True, o11y_receiver_loss_alerts_reviewed=True,
+         o11y_environment='prod', o11y_alert_canary_service='o11y-fault-probe-' + 'd' * 12),
+):
+    for uid in expected:
+        rule = rules(**values)[uid]
+        assert rule['isPaused'] is True, values
+        assert 'notification_settings' not in rule, values
+PY
+}
+
+@test "o11y: backend discard alerts are guarded and dashboard preserves existing panels" {
+  python3 - "$DEPLOY_DIR/templates/alerts.yml.j2" "$DEPLOY_DIR/config/grafana/dashboards/o11y-self-monitoring.json" <<'PY'
+import json
+import sys
+
+import yaml
+from jinja2 import Environment, StrictUndefined
+
+env = Environment(undefined=StrictUndefined, trim_blocks=True)
+env.filters['bool'] = bool
+env.filters['to_json'] = json.dumps
+template = env.from_string(open(sys.argv[1], encoding='utf-8').read())
+
+def rules(**values):
+    values.setdefault('o11y_expected_metrics_targets', [])
+    return {rule['uid']: rule for rule in yaml.safe_load(template.render(**values))['groups'][0]['rules']}
+
+expected = {
+    'o11y_loki_discarded_samples': 'sum(increase(loki_discarded_samples_total{job="loki"}[5m])) or vector(0)',
+    'o11y_tempo_discarded_spans': 'sum(increase(tempo_discarded_spans_total{job="tempo"}[5m])) or vector(0)',
+}
+disabled_cases = (
+    {},
+    {'local_mode': False, 'o11y_alerts_enabled': True, 'o11y_environment': 'prod'},
+    {'local_mode': False, 'o11y_alerts_enabled': False, 'o11y_backend_drop_alerts_reviewed': True,
+     'o11y_environment': 'prod'},
+    {'local_mode': True, 'o11y_alerts_enabled': True, 'o11y_backend_drop_alerts_reviewed': True},
+    {'local_mode': False, 'o11y_alerts_enabled': True, 'o11y_backend_drop_alerts_reviewed': True,
+     'o11y_environment': 'staging'},
+    {'local_mode': False, 'o11y_alerts_enabled': True, 'o11y_backend_drop_alerts_reviewed': True,
+     'o11y_environment': 'prod', 'o11y_alert_canary_service': 'o11y-fault-probe-' + 'e' * 12},
+)
+for values in disabled_cases:
+    for uid in expected:
+        rule = rules(**values)[uid]
+        assert rule['isPaused'] is True, (uid, values)
+        assert 'notification_settings' not in rule, (uid, values)
+
+active = rules(local_mode=False, o11y_alerts_enabled=True, o11y_backend_drop_alerts_reviewed=True,
+               o11y_environment='prod')
+for uid, expression in expected.items():
+    rule = active[uid]
+    assert rule['data'][0]['model']['expr'] == expression
+    assert rule['data'][1]['model']['conditions'][0]['evaluator'] == {'type': 'gt', 'params': [0]}
+    assert rule['for'] == '2m'
+    assert rule['isPaused'] is False
+    assert rule['labels']['severity'] == 'warning'
+    assert rule['labels']['service'] in {'o11y/loki', 'o11y/tempo'}
+    assert rule['labels']['owner'] == 'platform-operations'
+    assert rule['notification_settings'] == {
+        'receiver': 'agent-cloud-ops',
+        'group_by': ['service', 'environment', 'cluster', 'alertname'],
+        'group_wait': '30s', 'group_interval': '5m', 'repeat_interval': '4h'}
+
+dashboard = json.load(open(sys.argv[2], encoding='utf-8'))
+panel_list = dashboard['panels']
+panel_ids = [panel['id'] for panel in panel_list]
+assert len(panel_ids) == len(set(panel_ids))
+assert sorted(panel_ids) == list(range(1, 19))
+panels = {panel['id']: panel for panel in panel_list}
+assert panels[16]['gridPos'] == {'h': 8, 'w': 12, 'x': 12, 'y': 53}
+assert panels[17]['gridPos'] == {'h': 8, 'w': 12, 'x': 0, 'y': 61}
+assert panels[18]['gridPos'] == {'h': 8, 'w': 12, 'x': 12, 'y': 61}
+assert panels[17]['type'] == panels[18]['type'] == 'timeseries'
+assert panels[17]['targets'][0]['expr'] == (
+    'sum by (reason) (rate(loki_discarded_samples_total{job="loki"}[5m]))')
+assert panels[18]['targets'][0]['expr'] == (
+    'sum by (reason) (rate(tempo_discarded_spans_total{job="tempo"}[5m]))')
 PY
 }
 
@@ -977,17 +1259,15 @@ from jinja2 import Environment, StrictUndefined
 plays = yaml.safe_load(open(sys.argv[1], encoding='utf-8'))
 alert_template = open(sys.argv[2], encoding='utf-8').read()
 verify = next(play for play in plays if play.get('name') == 'Phase 3: Verify o11y')
-block = next(task for task in verify['tasks'] if task['name'] == 'Verify enabled Grafana alert provisioning after a real deploy')
-assert block['when'] == [
-    'o11y_alerts_enabled | default(false) | bool',
-    'not ansible_check_mode',
-]
+block = next(task for task in verify['tasks'] if task['name'] == 'Verify Grafana alert provisioning after every real deploy')
+assert block['when'] == 'not ansible_check_mode'
+assert block['no_log'] is True
 env = Environment(undefined=StrictUndefined)
 env.filters['bool'] = bool
 env.filters['to_json'] = json.dumps
-should_verify = [env.compile_expression(condition) for condition in block['when']]
-assert all(check(local_mode=False, o11y_alerts_enabled=True, ansible_check_mode=False) for check in should_verify)
-assert all(check(local_mode=True, o11y_alerts_enabled=True, ansible_check_mode=False) for check in should_verify)
+should_verify = [env.compile_expression(block['when'])]
+assert should_verify[0](ansible_check_mode=False)
+assert not should_verify[0](ansible_check_mode=True)
 tasks = block['block']
 by_name = {task['name']: task for task in tasks}
 scope = by_name['Scope live rules to the provisioned folders and groups']
@@ -997,7 +1277,7 @@ slurp = by_name['Read the provisioned alert rules file']
 folders = by_name['Read live Grafana folders']
 assert tasks.index(slurp) < tasks.index(scope) and tasks.index(folders) < tasks.index(scope)
 assert tasks.index(scope) < tasks.index(set_check) < tasks.index(field_check)
-assert slurp['register'] == '_provisioned_rules_file' and 'no_log' not in slurp
+assert slurp['register'] == '_provisioned_rules_file' and block['no_log'] is True
 assert slurp['ansible.builtin.slurp']['src'].endswith('/config/grafana/provisioning/alerting/observability.yml')
 assert '/api/folders' in folders['ansible.builtin.command']['argv'][-1]
 assert 'match' not in json.dumps(scope), 'scope comes from the provisioned file, never a uid pattern'
@@ -1075,7 +1355,7 @@ assert not verify_rules([{k: v for k, v in r.items() if k != 'isPaused'} for r i
 pause_down = lambda rules: [dict(r, isPaused=True) if r['uid'] == 'o11y_service_down' else r for r in rules]
 paused_doc = {**local_doc, 'groups': [dict(g, rules=pause_down(g['rules'])) for g in local_doc['groups']]}
 assert not verify_rules(pause_down(local_live), local_doc)
-assert not verify_rules(live_of(paused_doc), paused_doc)  # file and live agree, service_down still required active
+assert verify_rules(live_of(paused_doc), paused_doc)  # verification follows the rendered pause state
 assert not verify_rules([], {'groups': []})
 contact = next(task for task in tasks if task['name'] == 'Read live Grafana contact points without displaying webhook settings')
 count = next(task for task in tasks if task['name'] == 'Count only the intended contact point without its settings')
@@ -1088,7 +1368,7 @@ for contacts, expected in [
     ([{'uid': 'o11y_ops_discord'}, {'uid': 'o11y_ops_discord'}], False),
 ]:
     selected = count_contacts(_active_contacts={'stdout': json.dumps(contacts)})
-    assert bool(contact_check(_o11y_contact_count=selected)) is expected
+    assert bool(contact_check(_o11y_contact_count=selected, o11y_alerts_enabled=True)) is expected
 PY
 }
 
@@ -1120,6 +1400,7 @@ checks = [env.compile_expression(expr) for expr in check['ansible.builtin.assert
 files = sorted(glob.glob(sys.argv[2] + '/*.json'))
 uids = [json.load(open(f))['uid'] for f in files]
 assert {'inference-fleet-health', 'inference-latency-capacity', 'inference-placement-comparison'} <= set(uids)
+assert {'service-conformance', 'service-overview'} <= set(uids)
 docs = {'results': [{'content': base64.b64encode(open(f, 'rb').read()).decode()} for f in files]}
 def ok(live):
     names = {'_dashboard_docs': docs, '_dashboard_files': {'files': [{'path': f} for f in files]},
@@ -1156,6 +1437,7 @@ deploy = pathlib.Path(sys.argv[1])
 env = Environment(undefined=StrictUndefined)
 env.filters['to_json'] = json.dumps
 env.filters['bool'] = bool
+env.filters['mandatory'] = lambda value: value
 plays = yaml.safe_load(pathlib.Path(sys.argv[2]).read_text())
 phase_one = next(play for play in plays if play.get('name') == 'Phase 1: Place repo + manage o11y secrets')
 assert 'vars/o11y-metric-labels.yml' in phase_one['vars_files']
@@ -1163,6 +1445,9 @@ policy = yaml.safe_load(open(sys.argv[2].rsplit('/', 1)[0] + '/vars/o11y-metric-
 prometheus_template = (deploy / 'templates/prometheus.yml.j2').read_text()
 rendered_prometheus = env.from_string(prometheus_template).render(
     o11y_cluster='test-cluster', o11y_environment='prod', local_mode=False,
+    o11y_scrape_limits={'body_size_limit_bytes': 16777216, 'sample_limit': 10000, 'label_limit': 64,
+                        'label_name_length_limit': 128, 'label_value_length_limit': 2048},
+    o11y_scrape_limits_reviewed=True,
     _o11y_forbidden_metric_label_names_regex=policy,
 )
 prometheus_config = yaml.safe_load(rendered_prometheus)
@@ -1381,6 +1666,11 @@ from jinja2 import Environment, StrictUndefined
 
 deploy = pathlib.Path(sys.argv[1])
 compose = yaml.safe_load((deploy / 'compose.yml').read_text())
+local_compose = yaml.safe_load((deploy / 'compose.local.yml').read_text())
+prod_compose = yaml.safe_load((deploy / 'compose.prod.yml').read_text())
+assert compose['services']['alloy']['mem_limit'] == '512m'
+assert 'mem_limit' not in local_compose['services']['alloy']
+assert 'mem_limit' not in prod_compose.get('services', {}).get('alloy', {})
 assert compose['services']['tempo']['image'].endswith('grafana/tempo:2.10.8}')
 assert 'tempo-data:/var/tempo' in compose['services']['tempo']['volumes']
 assert not compose['services']['tempo'].get('ports')
@@ -1405,13 +1695,22 @@ profiled_alloy = env.from_string(alloy_template).render(
     o11y_cluster='test-cluster',
     _o11y_forbidden_metric_label_names_regex=r'(?i)(request|user|client|session|trace|email|api[_-]?key)',
     o11y_alloy_profile_pilot_enabled=True,
+    o11y_gateway_span_logs_enabled=True,
 )
 assert 'pyroscope.scrape "alloy_self_profile"' in profiled_alloy
-assert '"__address__" = "alloy:12345", "service_name" = "o11y/alloy"' in profiled_alloy
+assert '"__address__" = "alloy:12345", "service_name" = "o11y/alloy", "target_id" = "service:o11y"' in profiled_alloy
 assert 'scrape_interval = "60s"' in profiled_alloy
 assert 'pyroscope.write.private.receiver' in profiled_alloy
+profiled_gateway_limiter = profiled_alloy.split('otelcol.processor.memory_limiter "gateway" {', 1)[1].split('\n}\n', 1)[0]
+assert 'otelcol.connector.spanlogs.gateway.input' in profiled_gateway_limiter
 assert 'otelcol.receiver.otlp "traces"' in alloy
 assert 'grpc {\n    endpoint = "0.0.0.0:4317"' in alloy
+assert 'logs   = [otelcol.processor.memory_limiter.gateway.input]' in alloy
+assert 'traces = [otelcol.processor.memory_limiter.gateway.input]' in alloy
+gateway_limiter = alloy.split('otelcol.processor.memory_limiter "gateway" {', 1)[1].split('\n}\n', 1)[0]
+assert 'check_interval = "1s"' in gateway_limiter
+assert 'limit = "384MiB"' in gateway_limiter and 'spike_limit = "64MiB"' in gateway_limiter
+assert 'otelcol.processor.attributes.gateway_logs.input' in gateway_limiter
 assert 'otelcol.processor.attributes.gateway_logs.input' in alloy
 assert 'otelcol.exporter.loki "gateway"' in alloy
 assert 'loki.attribute.labels' in alloy
@@ -1420,8 +1719,19 @@ assert 'cluster = "test-cluster"' in alloy
 assert 'otelcol.processor.batch.traces.input' in alloy
 assert 'otelcol.exporter.otlp.tempo.input' in alloy
 assert 'endpoint = "tempo:4317"' in alloy
+trace_batch = alloy.split('otelcol.processor.batch "traces" {', 1)[1].split('\n}\n', 1)[0]
+assert 'timeout = "1s"' in trace_batch
+assert 'send_batch_size = 256' in trace_batch and 'send_batch_max_size = 512' in trace_batch
+tempo_exporter = alloy.split('otelcol.exporter.otlp "tempo" {', 1)[1].split('\n}\n', 1)[0]
+assert 'timeout = "10s"' in tempo_exporter
+assert 'num_consumers = 2' in tempo_exporter and 'queue_size = 128' in tempo_exporter
+assert 'max_elapsed_time = "5m"' in tempo_exporter and 'max_interval = "30s"' in tempo_exporter
 assert 'otelcol.receiver.otlp "conformance"' in alloy
 assert 'http {\n    endpoint = "0.0.0.0:4318"' in alloy
+assert 'logs = [otelcol.processor.memory_limiter.conformance.input]' in alloy
+conformance_limiter = alloy.split('otelcol.processor.memory_limiter "conformance" {', 1)[1].split('\n}\n', 1)[0]
+assert 'limit = "384MiB"' in conformance_limiter and 'spike_limit = "64MiB"' in conformance_limiter
+assert 'otelcol.processor.attributes.conformance_logs.input' in conformance_limiter
 assert 'otelcol.processor.attributes.conformance_logs.input' in alloy
 assert 'otelcol.exporter.loki "conformance"' in alloy
 assert 'action = "upsert"' in alloy
@@ -1459,18 +1769,19 @@ PY
   python3 - "$REPO_ROOT/platform/playbooks/verify-o11y-service.yml" "$REPO_ROOT/platform/semaphore/templates.yml" <<'PY'
 import sys
 import yaml
-plays = yaml.safe_load(open(sys.argv[1], encoding='utf-8'))[1:]  # [0] imports the extra-var guard
-inputs = plays[0]['tasks'][-1]['ansible.builtin.assert']['that']
+plays = yaml.safe_load(open(sys.argv[1], encoding='utf-8'))
+inputs = next(p for p in plays if p.get('name') == 'Require a declared o11y receiver and a service identity')['tasks'][-1]['ansible.builtin.assert']['that']
 assert any('expect_logs' in item for item in inputs)
 assert any('expect_traces' in item for item in inputs)
 assert any('emit_agentgateway_canary' in item for item in inputs)
 canary = next(p for p in plays if p.get('name') == 'Emit an optional gateway trace canary')
-mark, traffic = canary['tasks']
-assert mark['delegate_to'] == "{{ groups['o11y_svc'][0] }}"
+mark = canary['tasks'][0]
+traffic = next(t for t in canary['tasks'] if t['name'].startswith('Send anonymous'))
+assert mark['delegate_to'] == "{{ groups.get('o11y_svc', []) | first | default(inventory_hostname) }}"
 assert traffic['ansible.builtin.uri']['status_code'] == 401
 assert traffic['ansible.builtin.uri']['use_netrc'] is False
 assert traffic['ansible.builtin.uri']['use_proxy'] is False
-assert '_canary_bind' in traffic['ansible.builtin.uri']['url']
+assert '_canary_bind' in next(t for t in canary['tasks'] if t['name'].startswith('The gateway base URL'))['ansible.builtin.set_fact']['_gateway_base']
 assert "['0.0.0.0', '::', '']" in canary['vars']['_canary_bind']
 assert traffic['loop'] == '{{ range(100) | list }}'
 assert 'headers' not in traffic['ansible.builtin.uri']
@@ -1666,7 +1977,8 @@ assert set(summary) == {'status', 'receipt_instruction', 'prometheus_retention',
     'prometheus_retention_size', 'loki_retention', 'tempo_retention',
     'scrape_sample_limit', 'active_prometheus_series',
     'guest_root_filesystem_total_bytes', 'guest_root_filesystem_available_bytes',
-    'guest_memory_headroom_percent', 'o11y_volume_capacity', 'o11y_container_memory_mib'}
+    'guest_memory_headroom_percent', 'o11y_volume_capacity', 'o11y_container_memory_mib',
+    'daily_ingestion', 'inference_peak_7d'}
 assert 'http://' not in str(summary)
 assert not any(any(key in task for key in ('ansible.builtin.file', 'ansible.builtin.copy',
     'ansible.builtin.template', 'ansible.builtin.uri')) for task in tasks)
@@ -1689,7 +2001,7 @@ assert result.returncode != 0 and 'tempo_time' in result.stderr
 PY
 }
 
-@test "o11y: changed production retention refuses missing capacity receipt before deploy writes" {
+@test "o11y: changed production retention refuses missing capacity or backup restore receipts before writes" {
   python3 - "$REPO_ROOT/platform/playbooks/deploy-o11y.yml" <<'PY'
 import pathlib
 import re
@@ -1700,7 +2012,7 @@ from jinja2 import Environment
 plays = yaml.safe_load(pathlib.Path(sys.argv[1]).read_text())
 phase = next(play for play in plays if play.get('name') == 'Phase 1: Place repo + manage o11y secrets')
 tasks = phase['tasks']
-gate = next(task for task in tasks if task.get('name') == 'Require a capacity receipt and nonzero Prometheus cap for retention expansion')
+gate = next(task for task in tasks if task.get('name') == 'Require capacity and backup/restore receipt references and nonzero Prometheus cap for retention expansion')
 gate_index = tasks.index(gate)
 write_index = next(index for index, task in enumerate(tasks)
                    if task.get('ansible.builtin.include_tasks') == 'tasks/place-monorepo.yml'
@@ -1710,6 +2022,9 @@ assert '_o11y_retention_expansion' in gate['when']
 assert 'local_mode' in gate['when']
 message = gate['ansible.builtin.assert']['fail_msg'].lower()
 assert 'o11y_capacity_receipt_id' in message
+assert 'o11y_backup_restore_receipt_id' in message
+assert 'only a reference' in message
+assert 'does not inspect its evidence' in message
 assert 'seven-day backend growth' in message
 assert 'backup' in message
 assert 'separately reviewed successful capacity receipt' in message
@@ -1733,11 +2048,15 @@ assert evaluate(gate['when'], _o11y_retention_expansion=True, local_mode=False)
 assert not evaluate(gate['when'], _o11y_retention_expansion=False, local_mode=False)
 assert not evaluate(gate['when'], _o11y_retention_expansion=True, local_mode=True)
 requirements = gate['ansible.builtin.assert']['that']
-assert len(requirements) == 2
+assert len(requirements) == 3
 assert not evaluate(requirements[0], o11y_prom_retention_size='0B')
 assert not evaluate(requirements[1], o11y_capacity_receipt_id='')
+assert not evaluate(requirements[2])
+assert not evaluate(requirements[2], o11y_backup_restore_receipt_id='malformed')
+assert not evaluate(requirements[2], o11y_backup_restore_receipt_id='0')
 assert evaluate(requirements[0], o11y_prom_retention_size='100GB')
 assert evaluate(requirements[1], o11y_capacity_receipt_id='1776')
+assert evaluate(requirements[2], o11y_backup_restore_receipt_id='1777')
 PY
 }
 
@@ -1780,7 +2099,9 @@ log_service = next(variable for variable in overview['templating']['list'] if va
 assert log_service['datasource']['uid'] == 'loki'
 assert log_service['query'] == 'label_values({service=~".+"}, service)'
 assert log_service['label'] == 'Logs service'
-metric_queries = [target['expr'] for panel in overview['panels'] if panel['datasource']['type'] == 'prometheus'
+assert any(panel['type'] == 'text' and panel['datasource']['type'] == 'prometheus' and 'targets' not in panel
+           for panel in overview['panels'])
+metric_queries = [target['expr'] for panel in overview['panels'] if panel['datasource']['type'] == 'prometheus' and panel['type'] != 'text'
                   for target in panel['targets']]
 loki_queries = [target['expr'] for panel in overview['panels'] if panel['datasource']['type'] == 'loki'
                 for target in panel['targets']]
@@ -1788,11 +2109,13 @@ assert all('{service=~"$service"}' in query or 'service=~"$service"' in query fo
 assert all('$log_service' in query for query in loki_queries)
 assert all('container=' not in query for query in metric_queries)
 log_rate = next(panel for panel in overview['panels'] if panel['title'] == 'Log volume by source')
-assert len(log_rate['targets']) == 4
+assert len(log_rate['targets']) == 5
 assert 'container=~".+"' in log_rate['targets'][0]['expr']
-assert 'signal="access-log"' in log_rate['targets'][1]['expr']
-assert 'signal="span"' in log_rate['targets'][2]['expr']
-assert 'job="agent-cloud-conformance"' in log_rate['targets'][3]['expr']
+assert 'signal!~"^(container|access-log|span)$"' in log_rate['targets'][0]['expr']
+assert 'signal="container"' in log_rate['targets'][1]['expr']
+assert 'signal="access-log"' in log_rate['targets'][2]['expr']
+assert 'signal="span"' in log_rate['targets'][3]['expr']
+assert 'job="agent-cloud-conformance"' in log_rate['targets'][4]['expr']
 
 alloy_template = (deploy / 'templates/config.alloy.j2').read_text()
 env = Environment(undefined=StrictUndefined)
@@ -1829,8 +2152,12 @@ for name in ('scrape-agentgateway.yml.j2', 'scrape-dgx-spark.yml.j2'):
 
 alerts = (deploy / 'templates/alerts.yml.j2').read_text()
 assert f"'service': '{caddy_target['service']}'" in alerts
-assert 'absent_over_time(up{service="{{ target.service }}",instance="{{ target.instance }}"}[5m])' in alerts
-assert 'service: \'{{ target.service }}\'' in alerts
+assert 'target.job | default(\'caddy\')' in alerts
+assert 'target.instance | to_json' in alerts
+assert 'target.service | to_json' in alerts
+assert 'target.cluster | default(o11y_cluster | default(\'agent-cloud-local\'))' in alerts
+assert 'target.environment | default(o11y_environment' in alerts
+assert 'service: {{ target.service | to_json }}' in alerts
 PY
 }
 
@@ -2011,6 +2338,7 @@ with contextlib.redirect_stdout(captured):
 receipt = json.loads(captured.getvalue())
 assert receipt['status'] == 'observed' and len(receipt['volumes']) == 5
 assert receipt['guest_root_filesystem_available_bytes'] == 500
+assert [volume['backing_filesystem_group'] for volume in receipt['volumes']] == [1] * 5
 assert [volume['stored_bytes'] for volume in receipt['volumes']] == [24] * 5
 assert len(du_calls) == 5 and all(
     call[0] == 'podman' and call[1][1:] == ('du', '-s', '-B1', '--', '/tmp')
@@ -2080,7 +2408,35 @@ with contextlib.redirect_stdout(captured):
 threshold_receipt = json.loads(captured.getvalue())
 assert threshold_receipt['status'] == 'observed'
 assert all('stored_bytes' not in volume for volume in threshold_receipt['volumes'])
+module.allocated_bytes = original_allocated_bytes
+module.sys.argv = [str(script), 'podman']
+readbacks = iter([
+    (2000, 400, 987654321),
+    (1000, 500, 123456789),
+    (2000, 300, 987654321),
+    (1000, 400, 123456789),
+    (1000, 450, 135792468),
+    (2000, 350, 987654321),
+])
+module.fs_capacity = lambda _path: next(readbacks)
+captured = io.StringIO()
+with contextlib.redirect_stdout(captured):
+    assert module.main() == 0
+grouped_receipt = json.loads(captured.getvalue())
+assert [volume['backing_filesystem_group'] for volume in grouped_receipt['volumes']] == [1, 2, 1, 3, 2]
+assert [volume['backing_filesystem_available_bytes'] for volume in grouped_receipt['volumes']] == [400, 300, 400, 450, 300]
+assert [volume['backing_filesystem_free_percent'] for volume in grouped_receipt['volumes']] == [40, 15, 40, 45, 15]
+assert all(str(fsid) not in captured.getvalue() for fsid in (123456789, 987654321, 246813579, 135792468))
+readbacks = iter([(2000, 400, 987654321), (1000, 500, 123456789), (1999, 300, 987654321)])
+module.fs_capacity = lambda _path: next(readbacks)
+captured = io.StringIO()
+with contextlib.redirect_stdout(captured):
+    assert module.main() == 1
+failure = json.loads(captured.getvalue())
+assert failure['reason'] == 'backing_filesystem_readback_inconsistent'
+assert all(str(fsid) not in captured.getvalue() for fsid in (123456789, 987654321))
 no_containers = True
+module.sys.argv = [str(script), 'podman', '30']
 module.allocated_bytes = original_allocated_bytes
 module.fs_capacity = lambda _path: (1000, 200, 1)
 captured = io.StringIO()
@@ -2103,7 +2459,7 @@ assert engine_guard['ansible.builtin.assert']['that'] == "_engine == 'podman'"
 deploy = yaml.safe_load(deploy_path.read_text())
 phase_one = next(play for play in deploy if play.get('name') == 'Phase 1: Place repo + manage o11y secrets')
 names_in_phase = [task['name'] for task in phase_one['tasks']]
-receipt_gate = phase_one['tasks'][names_in_phase.index('Require a capacity receipt and nonzero Prometheus cap for retention expansion')]
+receipt_gate = phase_one['tasks'][names_in_phase.index('Require capacity and backup/restore receipt references and nonzero Prometheus cap for retention expansion')]
 expansion_expression = Environment().compile_expression(
     phase_one['vars']['_o11y_retention_expansion'].removeprefix('{{').removesuffix('}}').strip()
 )
@@ -2184,6 +2540,12 @@ for uid, path in files.items():
                 assert target['expr'].startswith('{cluster="dgx-spark", service="vllm"}'), target['expr']
                 continue
             exprs.append(target['expr'])
+            if panel['title'] == 'Inference probe serving':
+                # The one panel not scraped from the DGX pair: the synthetic probe on the o11y
+                # host, which o11y-fault-drill.yml reads back by this title during its fault.
+                assert uid == 'inference-fleet-health'
+                assert target['expr'] == 'max by (model_name) (inference_probe_success{job="receiver-host"})'
+                continue
             assert 'job="dgx-spark-' in target['expr'], (uid, panel['title'])
             if 'vllm:' in target['expr']:
                 assert 'model_name=~"$model_alias"' in target['expr'], (uid, panel['title'])

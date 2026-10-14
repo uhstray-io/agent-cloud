@@ -961,10 +961,10 @@ bats platform/tests/
 ### Python Tests (pytest)
 
 ```bash
-# Requires Python 3.11+
+# Requires Python 3.12+
 cd platform/services/netbox/deployment
 PYTHONPATH=workers/proxmox_discovery:workers/pfsense_sync \
-  python3.11 -m pytest tests/ -v
+  python3.12 -m pytest tests/ -v
 ```
 
 ### Secret Scanning (TruffleHog)
@@ -1054,7 +1054,7 @@ find platform/services/openbao -name '*.hcl' -exec vault fmt -check {} +
 
 # 7. Python tests
 cd platform/services/netbox/deployment
-PYTHONPATH=workers/proxmox_discovery:workers/pfsense_sync python3.11 -m pytest tests/ -v
+PYTHONPATH=workers/proxmox_discovery:workers/pfsense_sync python3.12 -m pytest tests/ -v
 cd -
 
 # 8. Bash tests
@@ -1078,7 +1078,7 @@ Tests use `@pytest.mark.parametrize` for composability — each function covers 
 | `test_proxmox_helpers.py` | `_int`, `_mb_to_gb`, `_bytes_to_gb`, `_should_skip_iface`, `_iface_type`, `_prefix_len`, `_sanitize_description`, `_pick_primary_ipv4` | 66 |
 | `test_pfsense_helpers.py` | `_is_valid_ip` | 13 |
 
-**Requires:** Python 3.11+ and `pip install -r platform/requirements-test.txt`.
+**Requires:** Python 3.12+ and `pip install -r platform/requirements-test.txt`.
 
 The `conftest.py` stubs the orb-agent runtime modules (`worker.backend`, `worker.models`) that aren't pip-installable. The real Diode SDK is installed for entity constructor validation.
 

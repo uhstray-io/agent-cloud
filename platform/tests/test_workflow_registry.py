@@ -105,15 +105,35 @@ def test_conformance_collection_and_dashboard_absence_are_explicit():
     assert not any(template["name"] == "Collect Service Conformance" for template in catalog)
 
     conformance = json.loads(CONFORMANCE_DASHBOARD.read_text())
+    assert conformance["uid"] == "service-conformance"
     stats = {panel["title"]: panel for panel in conformance["panels"] if panel["type"] == "stat"}
     assert stats["Current failed step states"]["fieldConfig"]["defaults"]["noValue"] == "No recent data"
     assert stats["Services tracked"]["fieldConfig"]["defaults"]["noValue"] == "No recent data"
+    tracked_query = stats["Services tracked"]["targets"][0]["expr"]
+    assert 'step="none"' in tracked_query
+    assert 'status=~"^(no_history|has_history|history_incomplete)$"' in tracked_query
+    assert 'inventory_code=~"^(0|1|2)$"' in tracked_query
+    assert 'marker_time_seconds=~"^[0-9]+$"' in tracked_query
+    assert "count by (service)" in tracked_query and "[45m]" in tracked_query
+    assert " or " not in tracked_query, "no inventory markers must remain no data, not zero"
+    marker_age = stats["Latest inventory marker age"]
+    age_query = marker_age["targets"][0]["expr"]
+    assert "marker_time_seconds" in age_query and "unixEpoch now" in age_query
+    assert "[45m]" in age_query
+    assert marker_age["fieldConfig"]["defaults"]["unit"] == "s"
+    assert marker_age["fieldConfig"]["defaults"]["thresholds"]["steps"][-1] == {
+        "color": "red", "value": 1800
+    }
+    assert marker_age["fieldConfig"]["defaults"]["noValue"] == "No valid marker in 45m"
+    assert all(target["datasource"]["uid"] == "loki"
+               for panel in conformance["panels"] for target in panel.get("targets", []))
     failure_query = stats["Current failed step states"]["targets"][0]["expr"]
     assert "last_over_time" in failure_query
     assert '| json state_code | unwrap state_code' in failure_query
     assert "by (service, step) == bool 0" in failure_query
     assert "count_over_time" not in failure_query, "old records must not imply a healthy zero"
-    assert "| json inventory_code | unwrap inventory_code" in failure_query
+    assert "| json |" in failure_query
+    assert "| unwrap inventory_code" in failure_query
     current_failures, no_failures = failure_query.split(" or ", 1)
     assert current_failures.startswith("sum(last_over_time(")
     assert no_failures.startswith("(sum(last_over_time(")
@@ -153,11 +173,15 @@ def test_conformance_collection_and_dashboard_absence_are_explicit():
     incomplete = marker_panels["History incomplete"]["targets"][0]["expr"]
     for query, code in ((no_history, 0), (incomplete, 2)):
         assert "last_over_time" in query
-        assert '| json inventory_code | unwrap inventory_code' in query
+        assert '| json |' in query
+        assert '| unwrap inventory_code' in query
         assert f"by (service) == {code}" in query
         assert " or " not in query, "empty collector data must stay no data"
+    assert all("[45m]" in target["expr"] for panel in conformance["panels"]
+               for target in panel.get("targets", []) if target.get("queryType") == "instant")
 
     overview = json.loads(SERVICE_OVERVIEW_DASHBOARD.read_text())
+    assert overview["uid"] == "service-overview"
     health = next(panel for panel in overview["panels"] if panel["title"] == "Scrape target health")
     assert health["targets"][0]["expr"] == 'min by (service) (up{service=~"$service"})'
     failed = next(panel for panel in overview["panels"] if panel["title"] == "Unhealthy scrape targets")
@@ -169,16 +193,56 @@ def test_conformance_collection_and_dashboard_absence_are_explicit():
     assert variables["log_service"]["datasource"]["uid"] == "loki"
     assert "label_values" in variables["log_service"]["query"]
     loki_panels = [panel for panel in overview["panels"] if panel["datasource"]["type"] == "loki"]
-    assert len(loki_panels) == 6
+    assert len(loki_panels) == 7
     assert all("selected Logs service" in panel["description"] for panel in loki_panels)
     source_panels = {panel["title"]: panel for panel in loki_panels}
-    assert '{service=~"$log_service", container=~".+"}' in source_panels["Recent container logs"]["targets"][0]["expr"]
+    container_query = source_panels["Recent container logs"]["targets"][0]["expr"]
+    assert container_query.startswith(
+        '{service=~"$log_service", job!="agent-cloud-conformance"} | ('
+    )
+    assert container_query.count("{") == 1
+    assert (
+        'signal="container" or (container=~".+" and signal!~"^(container|access-log|span)$")'
+        in container_query
+    )
+    assert container_query.endswith(")")
+    assert "} or {" not in container_query
     assert 'signal="access-log"' in source_panels["Recent gateway access records"]["targets"][0]["expr"]
     assert 'signal="span"' in source_panels["Recent optional span logs"]["targets"][0]["expr"]
     assert 'job="agent-cloud-conformance"' in source_panels["Recent workflow conformance records"]["targets"][0]["expr"]
     all_streams = source_panels["All Loki streams (mixed-source drill-down)"]
     assert all_streams["targets"][0]["expr"] == '{service=~"$log_service"}'
     assert all_streams["targets"][0]["maxLines"] == 100
+    volume_targets = {target["legendFormat"].split(" · ", 1)[0]: target["expr"]
+                      for target in next(p for p in overview["panels"]
+                                         if p["title"] == "Log volume by source")["targets"]}
+    assert set(volume_targets) == {"Legacy container", "Journal container", "Access", "Span", "Conformance"}
+    assert 'signal!~"^(container|access-log|span)$"' in volume_targets["Legacy container"]
+    assert 'signal="container"' in volume_targets["Journal container"]
+    assert all('job!="agent-cloud-conformance"' in volume_targets[source]
+               for source in ("Legacy container", "Journal container", "Access", "Span"))
+    # Label combinations that carry more than one source hint still contribute once.
+    records = [
+        {"container": "app", "signal": ""},
+        {"container": "alloy", "signal": "container"},
+        {"container": "gateway", "signal": "access-log"},
+        {"container": "gateway", "signal": "span"},
+        {"container": "alloy", "signal": "container", "job": "agent-cloud-conformance"},
+    ]
+    selected = [
+        [i for i, row in enumerate(records) if row.get("container") and
+         row.get("signal", "") not in {"container", "access-log", "span"} and
+         row.get("job") != "agent-cloud-conformance"],
+        [i for i, row in enumerate(records) if row.get("signal") == "container" and
+         row.get("job") != "agent-cloud-conformance"],
+        [i for i, row in enumerate(records) if row.get("signal") == "access-log" and
+         row.get("job") != "agent-cloud-conformance"],
+        [i for i, row in enumerate(records) if row.get("signal") == "span" and
+         row.get("job") != "agent-cloud-conformance"],
+        [i for i, row in enumerate(records) if row.get("job") == "agent-cloud-conformance"],
+    ]
+    assert sorted(i for source in selected for i in source) == list(range(len(records)))
+    assert sum(map(len, selected)) == len({i for source in selected for i in source})
     assert all("$service" not in target["expr"] and "$log_service" in target["expr"]
                for panel in loki_panels for target in panel["targets"])
 
@@ -244,7 +308,9 @@ def test_only_the_collector_writes_workflow_status():
     code = {f: "\n".join(ln for ln in text.splitlines() if not ln.lstrip().startswith("#"))
             for f, text in files.items()}
     assert sorted(f for f, text in code.items() if "_agg.loki_streams" in text) == [collector]
-    assert not [f for f, text in files.items() if "agent-cloud-conformance" in text]
+    assert sorted(f for f, text in code.items() if "agent-cloud-conformance" in text) == [
+        "platform/playbooks/deploy-o11y.yml"
+    ]  # The dashboard read-back may name the stream; only the collector writes it.
 
 
 def test_production_conformance_uses_the_exact_private_otlp_receiver():
@@ -326,13 +392,21 @@ def test_production_collector_refuses_missing_or_mismatched_host_destination(tmp
         assert "Production conformance delivery requires collector_otlp_url" in output
 
 
-def _run_with_broken_inventory(tmp_path, playbook, extra=None):
-    inventory_path = tmp_path / "inventory.yml"
-    inventory_path.write_text("not: [valid\n")
+def _run_with_broken_inventory(tmp_path, playbook, extra=None, environment=None, inventory="broken"):
+    """Run a playbook. inventory: "broken" (unparseable file), "missing" (path that does not
+    exist, what a Semaphore task is left with when another task removed the shared file) or
+    None (no -i at all, as an operator-side tool is started)."""
     env = os.environ.copy()
     env.update(ANSIBLE_LOCAL_TEMP=str(tmp_path), ANSIBLE_REMOTE_TEMP=str(tmp_path),
-               ANSIBLE_STDOUT_CALLBACK="default", ANSIBLE_NOCOLOR="1")
-    cmd = ["ansible-playbook", "-i", str(inventory_path), str(REPO / playbook)]
+               ANSIBLE_STDOUT_CALLBACK="default", ANSIBLE_NOCOLOR="1", **(environment or {}))
+    cmd = ["ansible-playbook"]
+    if inventory == "broken":
+        inventory_path = tmp_path / "inventory.yml"
+        inventory_path.write_text("not: [valid\n")
+        cmd += ["-i", str(inventory_path)]
+    elif inventory == "missing":
+        cmd += ["-i", str(tmp_path / "inventory_2.yml")]
+    cmd.append(str(REPO / playbook))
     if extra is not None:
         cmd += ["-e", json.dumps(extra)]
     result = subprocess.run(cmd, cwd=REPO, env=env, capture_output=True, text=True, timeout=60)
@@ -351,7 +425,9 @@ def test_production_collector_names_an_unparsed_inventory(tmp_path):
     assert "Production conformance delivery requires collector_otlp_url" not in output
 
 
-def test_local_collector_does_not_require_a_parsed_inventory():
+def test_local_collector_skips_the_parsed_inventory_guard_in_local_mode():
+    # A local inventory always holds localhost (bootstrap-local-dev.yml), so the guard is
+    # unnecessary there; production, where an empty inventory is an error, keeps it.
     collector = playbook_yaml.plays(REPO / "platform/playbooks/collect-service-conformance.yml")[0]
     guard = next(t for t in collector["tasks"] if t.get("name") == "Require the inventory to have parsed")
     assert guard["ansible.builtin.include_tasks"] == "tasks/require-parsed-inventory.yml"
@@ -371,6 +447,63 @@ def test_scheduled_callers_name_an_unparsed_inventory(tmp_path, playbook, extra)
     rc, output = _run_with_broken_inventory(tmp_path, playbook, extra)
     assert rc != 0
     assert UNPARSED in output
+
+
+# A local controller's OpenBao address (a single-label name) is only legal under local_mode,
+# which an unparsed inventory does not supply. Before the parse check ran first, that
+# surfaced as a transport refusal and hid the real cause (local tasks 5583/5585, prod 3878).
+LOCAL_OPENBAO_NO_TOKEN = {"OPENBAO_ADDR": "http://local-openbao:8200", "SEMAPHORE_TOKEN": ""}
+TRANSPORT_REFUSAL = "Refusing to send secret material"
+
+
+RUNTIME_ACCESS_CALLERS = [
+    ("platform/playbooks/inspect-discovery-metadata.yml", {"discovery_project_id": "1"}),
+    ("platform/playbooks/manage-semaphore-access.yml", None),
+    # The publisher template imports setup-templates.yml (an operator-side tool that is
+    # legitimately run with no inventory); a Semaphore launch of it must still be checked.
+    ("platform/playbooks/publish-semaphore-templates.yml",
+     {"semaphore_template_names_json": json.dumps(["Publish Semaphore Template Surveys (Dev)"])}),
+]
+
+
+@pytest.mark.parametrize("inventory", ["broken", "missing"])
+@pytest.mark.parametrize("playbook, extra", RUNTIME_ACCESS_CALLERS)
+def test_runtime_access_names_an_unparsed_inventory_before_the_transport_check(
+        tmp_path, playbook, extra, inventory):
+    rc, output = _run_with_broken_inventory(
+        tmp_path, playbook, extra, LOCAL_OPENBAO_NO_TOKEN, inventory=inventory)
+    assert rc != 0
+    assert UNPARSED in output
+    assert TRANSPORT_REFUSAL not in output
+
+
+@pytest.mark.parametrize("playbook", [
+    "platform/semaphore/setup-templates.yml",
+    "platform/semaphore/bootstrap-semaphore-repositories.yml",
+    "platform/semaphore/sync-inventory.yml",
+])
+def test_operator_side_tools_started_without_an_inventory_are_not_asked_for_one(tmp_path, playbook):
+    """They run from a workstation with no -i, so runtime-access must not demand one."""
+    rc, output = _run_with_broken_inventory(
+        tmp_path, playbook, None,
+        {"SEMAPHORE_URL": "http://127.0.0.1:9", "SEMAPHORE_TOKEN": "not-a-real-token"},
+        inventory=None)
+    assert UNPARSED not in output
+
+
+@pytest.mark.parametrize("playbook", [
+    "platform/semaphore/setup-templates.yml",
+    "platform/semaphore/bootstrap-semaphore-repositories.yml",
+    "platform/semaphore/sync-inventory.yml",
+    "platform/playbooks/inspect-discovery-metadata.yml",
+    "platform/playbooks/manage-semaphore-access.yml",
+    "platform/playbooks/collect-service-conformance.yml",
+    "platform/semaphore/provision-seed-environment.yml",
+])
+def test_no_playbook_decides_for_itself_whether_an_inventory_is_needed(playbook):
+    """The decision is made by runtime-access from how the run was started; a play var
+    would leak into every playbook that imports the play that set it."""
+    assert "runtime_access_inventory_optional" not in (REPO / playbook).read_text()
 
 
 @pytest.mark.parametrize(
