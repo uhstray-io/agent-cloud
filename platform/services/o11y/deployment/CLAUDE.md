@@ -137,6 +137,7 @@ All default off, so declaring a value alone never starts a scrape or pages anyon
 | `o11y_alerts_enabled` | Unpauses the rendered rules and routes them to the Discord contact point, except the `benchmark-gate` placeholder, which stays paused and unrouted (`templates/alerts.yml.j2:340-349,428-432`) |
 | `o11y_expected_metrics_targets_reviewed` | Defaults false; enables production per-target missing-telemetry rules only with alerts enabled and a reviewed bounded five-label target declaration. See README, “Expected metrics target contract.” |
 | `o11y_gateway_span_logs_enabled` | Also writes one Loki line per gateway span |
+| `o11y_inference_queue_waiting_warn` | Threshold (default 6) for the `inference_queue_depth_high` warning: requests waiting on vLLM for 10 minutes. A number, not a switch; the rule renders only with `dgx_spark_scrape_enabled` |
 
 ## Conventions specific to this service
 

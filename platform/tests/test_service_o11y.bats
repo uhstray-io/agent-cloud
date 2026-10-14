@@ -1320,7 +1320,7 @@ inf_doc = yaml.safe_load(render_alerts.render(local_mode=False, o11y_alerts_enab
                                               dgx_spark_scrape_enabled=True, o11y_inference_probe_enabled=True))
 local_live, prod_live, inf_live = live_of(local_doc), live_of(prod_doc), live_of(inf_doc)
 inference = [rule for rule in inf_live if rule['uid'].startswith('inference_')]
-assert len(inference) == 8, [rule['uid'] for rule in inference]
+assert len(inference) == 9, [rule['uid'] for rule in inference]
 assert next(rule for rule in local_live if rule['uid'] == 'o11y_receiver_root_disk_low')['isPaused'] is True
 assert verify_rules(local_live, local_doc)
 assert verify_rules(prod_live, prod_doc)
@@ -2611,7 +2611,7 @@ for enabled in (False, True):
             values['o11y_alert_canary_service'] = canary
         groups = own(yaml.safe_load(template.render(**values))['groups'])
         rules = {group['name']: group['rules'] for group in groups[1:]}
-        assert [rule['uid'] for rule in rules['inference-failing']] == ['inference_queue_stalled']
+        assert [rule['uid'] for rule in rules['inference-failing']] == ['inference_queue_stalled', 'inference_queue_depth_high']
         assert [rule['uid'] for rule in rules['telemetry-missing']] == ['inference_target_down', 'inference_vllm_metrics_absent']
         assert [rule['uid'] for rule in rules['memory-thermal']] == ['inference_node_memavailable_low', 'inference_node_memfree_low']
         assert [rule['uid'] for rule in rules['benchmark-gate']] == [placeholder]
@@ -2643,6 +2643,23 @@ assert memory['inference_node_memfree_low']['data'][1]['model']['conditions'][0]
 stalled = rules['inference-failing'][0]['data'][0]['model']['expr']
 assert 'vllm:num_requests_waiting{job="dgx-spark-vllm",cluster="dgx-spark"}' in stalled
 assert 'rate(vllm:generation_tokens_total{job="dgx-spark-vllm",cluster="dgx-spark"}[5m])) == 0' in stalled
+depth = rules['inference-failing'][1]
+assert depth['data'][0]['model']['expr'] == 'sum by (model_name, node) (vllm:num_requests_waiting{job="dgx-spark-vllm",cluster="dgx-spark"})'
+assert depth['data'][1]['model']['conditions'][0]['evaluator'] == {'type': 'gt', 'params': [6]}
+assert depth['for'] == '10m' and depth['labels']['severity'] == 'warning'
+assert depth['annotations']['dashboard_url'] == '/d/inference-latency-capacity'
+deeper = own(yaml.safe_load(template.render(local_mode=False, o11y_alerts_enabled=True, o11y_expected_metrics_targets=[],
+                                            dgx_spark_scrape_enabled=True,
+                                            o11y_inference_queue_waiting_warn=12))['groups'])[1]['rules']
+assert deeper[1]['uid'] == 'inference_queue_depth_high'
+assert deeper[1]['data'][1]['model']['conditions'][0]['evaluator'] == {'type': 'gt', 'params': [12]}
+assert deeper[0]['data'][1]['model']['conditions'][0]['evaluator'] == {'type': 'gt', 'params': [0]}
+# The alert text follows the threshold in use: the override appears, the default does not.
+assert '12' in deeper[1]['annotations']['summary'] and '12' in deeper[1]['annotations']['description']
+assert 'over the configured threshold of 12 ' in deeper[1]['annotations']['description']
+assert '6' not in deeper[1]['annotations']['summary'] + deeper[1]['annotations']['description']
+assert 'More than 6 requests' in depth['annotations']['summary'] and 'threshold of 6 ' in depth['annotations']['description']
+assert 'Every serving slot' not in depth['annotations']['description']
 tuned = own(yaml.safe_load(template.render(local_mode=False, o11y_alerts_enabled=True, o11y_expected_metrics_targets=[],
                                            dgx_spark_scrape_enabled=True,
                                            o11y_dgx_spark_memfree_floor_bytes=2147483648))['groups'])[3]['rules']
@@ -2821,7 +2838,7 @@ assert listed['o11y_scheduled_job_silent']['data'][0]['relativeTimeRange'] == {'
 
 # An empty declaration withdraws the rule through the file's single deleteRules key,
 # alongside the inference rules when the scrape is off.
-inference = ['inference_queue_stalled', 'inference_target_down', 'inference_vllm_metrics_absent',
+inference = ['inference_queue_stalled', 'inference_queue_depth_high', 'inference_target_down', 'inference_vllm_metrics_absent',
              'inference_node_memavailable_low', 'inference_node_memfree_low',
              'inference_benchmark_gate_placeholder']
 probe = ['inference_probe_failing', 'inference_probe_stale']
