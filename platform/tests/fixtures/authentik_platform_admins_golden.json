@@ -1,0 +1,195 @@
+{
+  "_provenance": "normalised from the fixed blocks at 724528c7 (stray-admin, agent-cloud-admin, service-account, platform-users wisward+jacob) with the same synthetic inputs; regenerate only by re-reading that commit",
+  "cases": {
+    "per-user-overrides": [
+      {
+        "description": "Platform automation API token (managed in OpenBao)",
+        "expiring": false,
+        "identifier": "svc-automation-api-token",
+        "intent": "api",
+        "key": {
+          "env": "SERVICE_ACCOUNT_TOKEN",
+          "value": "S_service_account_token"
+        },
+        "kind": "token",
+        "user": "svc-automation"
+      },
+      {
+        "email": "agent-cloud-admin@agent-cloud.test",
+        "groups": [
+          "platform-admins"
+        ],
+        "is_active": true,
+        "kind": "user",
+        "name": "agent-cloud Admin",
+        "password": {
+          "env": "AGENT_CLOUD_ADMIN_PASSWORD",
+          "field_declared": true,
+          "value": "S_agent_cloud_admin_password"
+        },
+        "path": "users",
+        "type": "internal",
+        "username": "agent-cloud-admin"
+      },
+      {
+        "email": "stray.synthetic@example.invalid",
+        "groups": [
+          "platform-admins"
+        ],
+        "is_active": true,
+        "kind": "user",
+        "name": "stray",
+        "password": {
+          "env": "STRAY_ADMIN_PASSWORD",
+          "field_declared": true,
+          "value": "S_stray_admin_password"
+        },
+        "path": "users",
+        "type": "internal",
+        "username": "stray"
+      },
+      {
+        "email": null,
+        "groups": [
+          "platform-admins"
+        ],
+        "is_active": true,
+        "kind": "user",
+        "name": "Platform Service Account",
+        "password": null,
+        "path": "users/service-accounts",
+        "type": "service_account",
+        "username": "svc-automation"
+      },
+      {
+        "email": "synthetic.alpha@example.invalid",
+        "groups": [
+          "platform-admins"
+        ],
+        "is_active": true,
+        "kind": "user",
+        "name": "Synthetic Alpha",
+        "password": {
+          "env": "WISWARD_PASSWORD",
+          "field_declared": true,
+          "value": "S_wisward_password"
+        },
+        "path": "users",
+        "type": "internal",
+        "username": "synthetic.alpha"
+      },
+      {
+        "email": "synthetic.beta@example.invalid",
+        "groups": [
+          "platform-admins"
+        ],
+        "is_active": true,
+        "kind": "user",
+        "name": "Synthetic Beta",
+        "password": {
+          "env": "JACOB_PASSWORD",
+          "field_declared": true,
+          "value": "S_jacob_password"
+        },
+        "path": "users",
+        "type": "internal",
+        "username": "synthetic.beta"
+      }
+    ],
+    "placeholder-defaults": [
+      {
+        "description": "Platform automation API token (managed in OpenBao)",
+        "expiring": false,
+        "identifier": "svc-automation-api-token",
+        "intent": "api",
+        "key": {
+          "env": "SERVICE_ACCOUNT_TOKEN",
+          "value": "S_service_account_token"
+        },
+        "kind": "token",
+        "user": "svc-automation"
+      },
+      {
+        "email": "agent-cloud-admin@agent-cloud.test",
+        "groups": [
+          "platform-admins"
+        ],
+        "is_active": true,
+        "kind": "user",
+        "name": "agent-cloud Admin",
+        "password": {
+          "env": "AGENT_CLOUD_ADMIN_PASSWORD",
+          "field_declared": true,
+          "value": "S_agent_cloud_admin_password"
+        },
+        "path": "users",
+        "type": "internal",
+        "username": "agent-cloud-admin"
+      },
+      {
+        "email": "jacob@agent-cloud.test",
+        "groups": [
+          "platform-admins"
+        ],
+        "is_active": true,
+        "kind": "user",
+        "name": "Platform Admin 2",
+        "password": {
+          "env": "JACOB_PASSWORD",
+          "field_declared": true,
+          "value": "S_jacob_password"
+        },
+        "path": "users",
+        "type": "internal",
+        "username": "jacob"
+      },
+      {
+        "email": "stray@agent-cloud.test",
+        "groups": [
+          "platform-admins"
+        ],
+        "is_active": true,
+        "kind": "user",
+        "name": "stray",
+        "password": {
+          "env": "STRAY_ADMIN_PASSWORD",
+          "field_declared": true,
+          "value": "S_stray_admin_password"
+        },
+        "path": "users",
+        "type": "internal",
+        "username": "stray"
+      },
+      {
+        "email": null,
+        "groups": [
+          "platform-admins"
+        ],
+        "is_active": true,
+        "kind": "user",
+        "name": "Platform Service Account",
+        "password": null,
+        "path": "users/service-accounts",
+        "type": "service_account",
+        "username": "svc-automation"
+      },
+      {
+        "email": "wisward@agent-cloud.test",
+        "groups": [
+          "platform-admins"
+        ],
+        "is_active": true,
+        "kind": "user",
+        "name": "Platform Admin",
+        "password": {
+          "env": "WISWARD_PASSWORD",
+          "field_declared": true,
+          "value": "S_wisward_password"
+        },
+        "path": "users",
+        "type": "internal",
+        "username": "wisward"
+      }
+    ]
+  }
+}

@@ -72,16 +72,16 @@ finding that contradicts a decision stops the work and reopens that decision.
       tools, proving scenario "An enrolled identity lists tools"
 
 ## 2. Identities from the admin list
-- [ ] 2.1 Move every fixed-block member of `platform-admins` into the declared list
+- [x] 2.1 Move every fixed-block member of `platform-admins` into the declared list
       (`platform-users.yaml:39,74`, `stray-admin.yaml:25`, `agent-cloud-admin.yaml:35`,
       `service-account.yaml:22`), the break-glass account and the service account included:
       the operator's answer to Open Question 1 (2026-10-14). The declared exceptions list
       stays as the drift guard's mechanism and is empty by default; `openbao-oidc.yaml:44`
       only maps the group. No fixed block stays outside the list
-- [ ] 2.2 Define the declared list's shape (proposed variable `platform_admins`; each entry
+- [x] 2.2 Define the declared list's shape (proposed variable `platform_admins`; each entry
       the Authentik username, display name, email and an optional `agw_identity`) in the
       local inventory example and the Authentik README; real values stay in site-config
-- [ ] 2.3 Render the Authentik admin entries from the list: a templated blueprint, the
+- [x] 2.3 Render the Authentik admin entries from the list: a templated blueprint, the
       per-entry password secret definitions looped in `deploy-authentik.yml`, the
       environment lines looped in the Authentik `env.j2`. The existing OpenBao field names
       are kept so no password changes
@@ -99,7 +99,11 @@ finding that contradicts a decision stops the work and reopens that decision.
 - [ ] 2.6 Equivalence proof: render the Authentik admin entries both ways for the same
       inputs and diff them (username, name, email, active, path, groups, password field);
       run the local Authentik deploy twice, the second reporting nothing changed and the
-      read-back verify passing
+      read-back verify passing. Render equivalence done (the old fixed blocks at 724528c7
+      against the template, for the placeholder defaults and a synthetic per-user override
+      set; `platform/tests/test_authentik_platform_admins.py` holds the golden). The twice-run
+      local deploy is PENDING: the local Semaphore mounts another checkout, so it runs only
+      after this merges
 - [ ] 2.7 Local migration: declare each person identity in the list under its existing
       name, first with the name still in `agw_clients` (overlap reported) and then with it
       removed. Prove no key is re-minted and the rendered key-hash count does not drop by
@@ -117,7 +121,8 @@ finding that contradicts a decision stops the work and reopens that decision.
       identity list), not a second membership guard: "derived equals declared" is true by
       construction. BATS for both; mutation-check the verify by adding a member outside both
       lists and by dropping a list entry, and the render check by dropping one rendered key,
-      watching each fail
+      watching each fail. The Authentik half (verify + BATS + mutations) is done; the gateway
+      render check remains
 - [ ] 2.10 Validation gate, local: the rendered admin entries equal the fixed blocks and the
       verify passes, proving scenario "The rendered admin accounts match the fixed blocks";
       a new list entry mints a `client_<name>` and its hash is enrolled on the next
@@ -293,6 +298,22 @@ operator's go for it. site-config changes land through its own pull requests.
       untouched in this change
 - [ ] 6.2 `Deploy Authentik (Dev)`: dry run, apply; the read-back verify passes (including
       the drift guard, task 2.9) and no user changes (task 2.6's equality, live)
+      - [ ] 6.2a Preflight, before the FIRST production Authentik deploy of this change: read
+        the production `platform-admins` membership read-only (the group's member names, no
+        values) and compare it with the declared list. Any member the list does not cover is
+        declared in `platform_admins_exceptions` in site-config first; otherwise the drift
+        guard fails the deploy after the blueprints have already applied
+      - [ ] 6.2b Preflight, before turning on `agw_admin_identities_enabled` in production:
+        site-config declares `platform_admins` EXPLICITLY, at a scope both the Authentik and
+        the agentgateway hosts see (the `agent_cloud` group vars or `all`). The shared default
+        list is built from per-user vars (`wisward_*`, `jacob_*`, `stray_admin_email`) that
+        site-config sets on the Authentik host only; on the gateway host they are undefined,
+        so the default would yield placeholder usernames and the wrong identities. Guard task
+        idea: the gateway deploy, with the gate on, refuses when `platform_admins` is not
+        explicitly defined (that is, when it would fall back to the built default).
+        Which administrators the credential print may print is NOT part of that list: it is the
+        committed constant `_platform_admins_printable_keys`, changed by pull request, never by
+        site-config or an extra var.
 - [ ] 6.3 `Deploy agentgateway (Dev)` with the flag false, from a branch that carries the
       derivation (task 2.4): dry run; apply; then read the rendered config on the host (or
       the deploy's own report), counting `keyHash` lines and never printing them: the count
