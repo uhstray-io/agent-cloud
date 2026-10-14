@@ -213,6 +213,43 @@
       no_log: true
       when: _inspect_only
 
+    - name: Read pvescheduler state after verified node-scoped permission
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/services/pvescheduler/state"
+        method: GET
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      register: _backup_scheduler_state
+      failed_when: false
+      changed_when: false
+      check_mode: false
+      no_log: true
+      when:
+        - _inspect_only
+        - _backup_history_query.read_allowed | default(false) | bool
+
+    - name: Summarize pvescheduler state without exposing the API response
+      ansible.builtin.command:
+        argv: [python3, "{{ _planner }}", scheduler-state]
+        stdin: >-
+          {{ {'permissions_verified': _backup_history_query.read_allowed | default(false) | bool,
+              'response': {
+                'status': _backup_scheduler_state.status | default(0),
+                'json': _backup_scheduler_state.json | default({})
+              }} | to_json }}
+      register: _backup_scheduler_state_result
+      failed_when: false
+      changed_when: false
+      check_mode: false
+      no_log: true
+      when: _inspect_only
+
+    - name: Keep the sanitized scheduler state private to this run
+      ansible.builtin.set_fact:
+        _backup_scheduler_state_summary: "{{ _backup_scheduler_state_result.stdout | from_json }}"
+      no_log: true
+      when: _inspect_only
+
     - name: Read the first archived vzdump task page
       ansible.builtin.uri:
         url: >-
@@ -301,6 +338,7 @@
           candidate_count: "{{ _backup_inspection.candidate_count }}"
           candidates: "{{ _backup_inspection.candidates }}"
           backup_task_history: "{{ _backup_history_summary }}"
+          proxmox_scheduler_state: "{{ _backup_scheduler_state_summary }}"
       when: _inspect_only
 
     - name: End after read-only backup-job inspection

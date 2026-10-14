@@ -51,6 +51,29 @@ HISTORY_REASONS = {
     "task_identity_invalid",
     "task_status_unavailable",
 }
+SCHEDULER_REASONS = {
+    "permission_unverified",
+    "request_failed",
+    "response_invalid",
+    "service_identity_invalid",
+    "state_unavailable",
+}
+SCHEDULER_ACTIVE_STATES = {
+    "active", "inactive", "failed", "activating", "deactivating", "maintenance",
+    "reloading", "refreshing", "unknown",
+}
+SCHEDULER_STATES = {
+    "dead", "condition", "start-pre", "start", "start-post", "running", "exited",
+    "reload", "reload-signal", "reload-notify", "mounting", "stop", "stop-watchdog",
+    "stop-sigterm", "stop-sigkill", "stop-post", "final-watchdog", "final-sigterm",
+    "final-sigkill", "failed", "dead-before-auto-restart", "failed-before-auto-restart",
+    "dead-resources-pinned", "auto-restart", "auto-restart-queued", "cleaning", "unknown",
+}
+SCHEDULER_UNIT_STATES = {
+    "enabled", "enabled-runtime", "linked", "linked-runtime", "alias", "masked",
+    "masked-runtime", "static", "disabled", "indirect", "generated", "transient",
+    "bad", "not-found", "unknown",
+}
 
 
 def _require(condition: bool, message: str) -> None:
@@ -230,6 +253,52 @@ def _history_unknown(reason: str) -> dict[str, object]:
         "job_attribution": "unavailable",
         "latest_success_within_26h": None,
     }
+
+
+def _scheduler_unknown(reason: str) -> dict[str, object]:
+    if reason not in SCHEDULER_REASONS:
+        reason = "response_invalid"
+    return {"status": "unknown", "reason": reason}
+
+
+def summarize_scheduler_state(payload: Mapping[str, object]) -> dict[str, object]:
+    """Return a fixed status for one permission-verified pvescheduler snapshot."""
+    if not isinstance(payload, Mapping):
+        return _scheduler_unknown("response_invalid")
+    if payload.get("permissions_verified") is not True:
+        return _scheduler_unknown("permission_unverified")
+
+    response = payload.get("response")
+    if not isinstance(response, Mapping) or type(response.get("status")) is not int:
+        return _scheduler_unknown("response_invalid")
+    if response["status"] != 200:
+        return _scheduler_unknown("request_failed")
+
+    body = response.get("json")
+    data = body.get("data") if isinstance(body, Mapping) else None
+    if not isinstance(data, Mapping):
+        return _scheduler_unknown("response_invalid")
+
+    expected_fields = {"service", "name", "desc", "active-state", "state", "unit-state"}
+    if set(data) != expected_fields or any(not isinstance(data.get(key), str) for key in expected_fields):
+        return _scheduler_unknown("response_invalid")
+    if data["service"] != "pvescheduler" or data["name"] != "pvescheduler":
+        return _scheduler_unknown("service_identity_invalid")
+
+    active_state = data["active-state"]
+    state = data["state"]
+    unit_state = data["unit-state"]
+    if (active_state not in SCHEDULER_ACTIVE_STATES
+            or state not in SCHEDULER_STATES
+            or unit_state not in SCHEDULER_UNIT_STATES):
+        return _scheduler_unknown("state_unavailable")
+    if unit_state in {"bad", "not-found"}:
+        return _scheduler_unknown("state_unavailable")
+    if active_state == "active" and state == "running":
+        return {"status": "running", "reason": None}
+    if (active_state, state) in {("inactive", "dead"), ("failed", "failed")}:
+        return {"status": "not_running", "reason": None}
+    return _scheduler_unknown("state_unavailable")
 
 
 def prepare_history_query(payload: Mapping[str, object]) -> dict[str, object]:
@@ -420,6 +489,8 @@ def main() -> int:
             result = plan_history_pages(payload)
         elif operation == "history-summary":
             result = summarize_task_history(payload)
+        elif operation == "scheduler-state":
+            result = summarize_scheduler_state(payload)
         else:
             raise ValueError("Unsupported reconciliation operation.")
     except (IndexError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
