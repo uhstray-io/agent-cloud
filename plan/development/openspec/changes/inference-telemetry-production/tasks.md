@@ -517,8 +517,10 @@
       15d (size cap 0B), Tempo 168h. The +26.5 MB is the NET 24 h change in compacted block
       bytes, after 15d retention was already deleting blocks (the receiver has run since
       2026-09-26), so it is a lower bound, not the growth rate. The at-rest size gives the
-      better bound: 993 MB holds at most 15 days, so at least about 66 MB/day, and 90d needs
-      about 6 GB or more. Loki at 107 MB/day raw needs at most about 4.8 GB for 45d before
+      better estimate: 993 MB over the 15d retention span is about 66 MB/day, or about 6 GB
+      for 90d. Prometheus deletes whole blocks only, so the span on disk can run slightly past
+      15d and the true rate slightly below that; 90d therefore lands between the 2.4 GB floor
+      and about 6 GB. Loki at 107 MB/day raw needs at most about 4.8 GB for 45d before
       compression. Both are small against the free space; disk is not the blocker. A
       multi-day baseline would firm up the Prometheus rate. Remaining: alert thresholds from the
       baseline (operator decision on the figures), and the retention increase, still blocked
