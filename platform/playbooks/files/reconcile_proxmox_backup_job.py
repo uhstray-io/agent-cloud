@@ -844,25 +844,24 @@ def summarize_node_failure_identity(payload: Mapping[str, object]) -> dict[str, 
     index = 0
     while index < len(tokens):
         token = tokens[index]
-        if token in options:
+        if token.startswith("--"):
             options_started = True
-            if index + 1 >= len(tokens) or not tokens[index + 1] or tokens[index + 1].startswith("-"):
+            name, separator, value = token.partition("=")
+            if re.fullmatch(r"--[A-Za-z][A-Za-z0-9-]*", name) is None:
                 return result
-            options[token].append(tokens[index + 1])
-            index += 2
-        elif token.startswith(("--job-id=", "--storage=")):
-            name, value = token.split("=", 1)
-            if not value:
-                return result
-            options[name].append(value)
-            options_started = True
-            index += 1
-        elif token.startswith("-"):
-            options_started = True
-            if index + 1 < len(tokens) and not tokens[index + 1].startswith("-"):
-                index += 2
-            else:
+            if separator:
+                if not value:
+                    return result
                 index += 1
+            else:
+                if index + 1 >= len(tokens) or not tokens[index + 1]:
+                    return result
+                value = tokens[index + 1]
+                index += 2
+            if name in options:
+                options[name].append(value)
+        elif token.startswith("-"):
+            return result
         else:
             if options_started:
                 return result

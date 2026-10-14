@@ -570,9 +570,14 @@ The inspect-only workflow may compare the unique recent failed task's already
 protected one-line metadata response with the private selected job and o11y
 VM. Parse only a line beginning with the exact Proxmox
 `INFO: starting new backup job: vzdump ` prefix, using `shlex.split` as a
-parser only; never execute its contents. Compare the exact declared VMID
-against unique positional VMIDs, and compare only one `--job-id` value and
-one `--storage` value with the private
+parser only; never execute its contents. Accept options only as `--name value`
+or `--name=value`; every standalone option consumes the next token literally,
+including values beginning with `-`. Reject malformed option names, empty or
+missing values, short options, and positional VMIDs after the first option.
+Interpret `--job-id` and `--storage` only when they are option names, never
+when those strings occur inside another option's value. Compare the exact
+declared VMID against unique positional VMIDs, and compare only one
+`--job-id` value and one `--storage` value with the private
 declared VMID, selected job ID, and the exact selected job detail's storage.
 Duplicate or malformed compared options, malformed/oversized/synthetic lines,
 invalid private inputs, unavailable metadata, or an unreadable job detail

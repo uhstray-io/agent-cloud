@@ -1081,6 +1081,53 @@ def test_node_failure_identity_compares_exact_job_vmid_and_storage_without_echoi
              "declared_vmid_match": True, "selected_storage_match": False},
         ),
         (
+            "INFO: starting new backup job: vzdump 200 --job-id=nightly-o11y --storage=backup-store",
+            {"status": "compared", "selected_job_id_match": True,
+             "declared_vmid_match": True, "selected_storage_match": True},
+        ),
+        (
+            "INFO: starting new backup job: vzdump 200 --notes-template '--job-id=nightly-o11y' "
+            "--storage backup-store",
+            {"status": "job_id_unavailable", "selected_job_id_match": None,
+             "declared_vmid_match": True, "selected_storage_match": True},
+        ),
+        (
+            "INFO: starting new backup job: vzdump 200 --job-id nightly-o11y "
+            "--notes-template '--storage=backup-store'",
+            {"status": "compared", "selected_job_id_match": True,
+             "declared_vmid_match": True, "selected_storage_match": None},
+        ),
+        (
+            "INFO: starting new backup job: vzdump 200 --job-id --storage backup-store",
+            {"status": "unknown", "selected_job_id_match": None,
+             "declared_vmid_match": None, "selected_storage_match": None},
+        ),
+        (
+            "INFO: starting new backup job: vzdump 200 --storage --job-id=nightly-o11y",
+            {"status": "unknown", "selected_job_id_match": None,
+             "declared_vmid_match": None, "selected_storage_match": None},
+        ),
+        (
+            "INFO: starting new backup job: vzdump 200 --job-id",
+            {"status": "unknown", "selected_job_id_match": None,
+             "declared_vmid_match": None, "selected_storage_match": None},
+        ),
+        (
+            "INFO: starting new backup job: vzdump 200 --storage",
+            {"status": "unknown", "selected_job_id_match": None,
+             "declared_vmid_match": None, "selected_storage_match": None},
+        ),
+        (
+            "INFO: starting new backup job: vzdump 200 --unknown",
+            {"status": "unknown", "selected_job_id_match": None,
+             "declared_vmid_match": None, "selected_storage_match": None},
+        ),
+        (
+            "INFO: starting new backup job: vzdump 200 --job-id nightly-o11y 201",
+            {"status": "unknown", "selected_job_id_match": None,
+             "declared_vmid_match": None, "selected_storage_match": None},
+        ),
+        (
             "INFO: starting new backup job: vzdump 200 --job-id nightly-o11y --job-id other --storage backup-store",
             {"status": "unknown", "selected_job_id_match": None,
              "declared_vmid_match": None, "selected_storage_match": None},
