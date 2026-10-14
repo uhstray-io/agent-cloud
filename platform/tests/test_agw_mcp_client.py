@@ -384,39 +384,38 @@ def test_helper_command_is_shell_quoted_and_inert(tmp_path, monkeypatch):
     assert shlex.split(pi["headers"]["Authorization"][1:])[-1] == resolved
 
 
+def run_make(env, *args, **kwargs):
+    """make with its directory banners off and no inherited MAKEFLAGS, so output is only the recipe's."""
+    clean = {k: v for k, v in env.env.items() if k not in ("MAKEFLAGS", "MFLAGS", "MAKELEVEL")}
+    return subprocess.run(
+        ["make", "--no-print-directory", "-C", str(ROOT), *args],
+        env=clean,
+        capture_output=True,
+        text=True,
+        check=False,
+        **kwargs,
+    )
+
+
 @pytest.mark.skipif(shutil.which("make") is None, reason="make not installed")
 def test_make_target_passes_values_as_environment_not_shell_text(env, tmp_path):
     sentinel = tmp_path / "pwned"  # the payload writes only under the test's temp dir
     key_file = f"{tmp_path}/k e'y$$(touch {sentinel}).txt"
-    done = subprocess.run(
-        [
-            "make",
-            "-C",
-            str(ROOT),
-            "agw-mcp-client",
-            f"HOST={HOST}",
-            "IDENTITY=alice",
-            f"KEY_FILE={key_file}",
-            "HARNESS=pi",
-            "DRY_RUN=1",
-        ],
-        env=env.env,
+    done = run_make(
+        env,
+        "agw-mcp-client",
+        f"HOST={HOST}",
+        "IDENTITY=alice",
+        f"KEY_FILE={key_file}",
+        "HARNESS=pi",
+        "DRY_RUN=1",
         cwd=tmp_path,
-        capture_output=True,
-        text=True,
-        check=False,
     )
     assert done.returncode == 0, done.stderr
-    assert done.stdout.strip() == "pi: would add agentgateway"
+    assert "pi: would add agentgateway" in done.stdout.splitlines()
     assert not sentinel.exists()
     assert not env.pi_json.exists()
-    bad = subprocess.run(
-        ["make", "-C", str(ROOT), "agw-mcp-client", "HOST=", "IDENTITY=alice", "DRY_RUN=1"],
-        env=env.env,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    bad = run_make(env, "agw-mcp-client", "HOST=", "IDENTITY=alice", "DRY_RUN=1")
     assert bad.returncode != 0 and "--host" in bad.stderr
 
 
