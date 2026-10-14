@@ -14,6 +14,8 @@ keyed `initialize` that comes back as an MCP reply fails the deploy.
 """
 
 import json
+import os
+import re
 import sys
 import threading
 from http.server import ThreadingHTTPServer
@@ -35,6 +37,19 @@ GATHER = "Gather this host's service-deploy result"
 PHASE3 = next(p for p in yaml.safe_load(DEPLOY.read_text()) if p.get("name", "").startswith("Phase 3"))
 NAMES = [t["name"] for t in PHASE3["tasks"]]
 TOOLS = [{"name": "chat_completions", "description": "d", "inputSchema": {"type": "object"}}]
+COMPLETION = {
+    "content": [{"type": "text", "text": "{}"}],
+    "structuredContent": {"choices": [{"message": {"content": "pong"}}], "usage": {"total_tokens": 3}},
+    "isError": False,
+}
+MARKER = "SYNTHETIC-LOG-LINE-MARKER"
+LOOPBACK_LINE = (
+    "2026-10-14T00:00:01Z info request gateway=default/default listener=loopback route=internal/llm:request "
+    'http.method=POST http.status=200 protocol=llm identity="mcp-self" http.path="/v1/chat/completions" ' + MARKER
+)
+COLOURED = LOOPBACK_LINE.replace("listener=loopback", "\x1b[3mlistener\x1b[0m\x1b[2m=\x1b[0mloopback").replace(
+    'identity="mcp-self"', '\x1b[3midentity\x1b[0m\x1b[2m=\x1b[0m"mcp-self"'
+)
 INIT_REPLY = {
     "jsonrpc": "2.0",
     "id": 1,
@@ -54,8 +69,9 @@ class Gateway(ThreadingHTTPServer):
     """mode: normal | open | empty | ratelimit | stream-error | init-500, or with MCP off:
     off | off-served | off-200 | off-result-in-400."""
 
-    def __init__(self, mode):
-        self.mode, self.seen = mode, []
+    def __init__(self, mode, call="ok"):
+        """call (the model call): ok | tool-error | no-choices | ratelimit | no-chat (the tool is not listed)."""
+        self.mode, self.call, self.seen = mode, call, []
         super().__init__(("127.0.0.1", 0), self._handler())
 
     def _handler(self):
@@ -81,6 +97,7 @@ class Gateway(ThreadingHTTPServer):
                         "auth": auth,
                         "accept": self.headers.get("accept", ""),
                         "method": body.get("method"),
+                        "params": body.get("params"),
                     }
                 )
                 keyed = auth in (f"Bearer {KEY}", f"Bearer {OTHER}")
@@ -113,7 +130,7 @@ class Gateway(ThreadingHTTPServer):
                 if body.get("method") == "initialize":
                     return self._send(500 if mode == "init-500" else 200, _frame(INIT_REPLY), "text/event-stream")
                 if body.get("method") == "tools/list":
-                    tools = [] if mode == "empty" else TOOLS
+                    tools = [] if mode == "empty" else ([{"name": "other"}] if server.call == "no-chat" else TOOLS)
                     if mode == "stream-error":
                         return self._send(
                             200,
@@ -122,6 +139,19 @@ class Gateway(ThreadingHTTPServer):
                         )
                     return self._send(
                         200, _frame({"jsonrpc": "2.0", "id": 2, "result": {"tools": tools}}), "text/event-stream"
+                    )
+                if body.get("method") == "tools/call":
+                    if server.call == "ratelimit":
+                        err = {"jsonrpc": "2.0", "id": 3, "error": {"code": -32003, "message": "rate limit exceeded"}}
+                        return self._send(200, json.dumps(err).encode(), "application/json")
+                    result = {
+                        "tool-error": {**COMPLETION, "isError": True},
+                        "no-choices": {**COMPLETION, "structuredContent": {}},
+                    }
+                    return self._send(
+                        200,
+                        _frame({"jsonrpc": "2.0", "id": 3, "result": result.get(server.call, COMPLETION)}),
+                        "text/event-stream",
                     )
                 return self._send(400, b"{}", "application/json")
 
@@ -132,8 +162,8 @@ class Gateway(ThreadingHTTPServer):
 def gateway():
     made = []
 
-    def start(mode):
-        gw = Gateway(mode)
+    def start(mode, call="ok"):
+        gw = Gateway(mode, call)
         threading.Thread(target=gw.serve_forever, daemon=True).start()
         made.append(gw)
         return gw
@@ -152,7 +182,38 @@ def _tasks() -> list:
     return out
 
 
-def _run(tmp_path, gw, enabled=True, identities=("alice", "mcp-self"), extra=None, check=False, admins=None):
+def _engine(tmp_path, log: str, clock: str = "2026-10-14T00:00:00Z"):
+    """A stand-in container engine named `podman` on a PATH directory: `exec ... date` prints `clock`, `logs`
+    prints `log`; every call's argv is recorded. Returns the engine name the playbook uses."""
+    (tmp_path / "gateway.log").write_text(log)
+    (tmp_path / "clock.txt").write_text(clock)
+    bindir = tmp_path / "bin"
+    bindir.mkdir(exist_ok=True)
+    stub = bindir / "podman"
+    stub.write_text(
+        "#!/bin/sh\n"
+        f'echo "$@" >> "{tmp_path}/engine.calls"\n'
+        'case "$1" in\n'
+        f'  exec) cat "{tmp_path}/clock.txt" ;;\n'
+        f'  logs) printf "%b" "$(cat "{tmp_path}/gateway.log")" ;;\n'
+        "esac\n"
+    )
+    stub.chmod(0o755)
+    return "podman"
+
+
+def _run(
+    tmp_path,
+    gw,
+    enabled=True,
+    identities=("alice", "mcp-self"),
+    extra=None,
+    check=False,
+    admins=None,
+    log=LOOPBACK_LINE,
+    clock="2026-10-14T00:00:00Z",
+    engine=None,
+):
     """`admins` are the identities derived from platform_admins (the only ones /mcp admits); by default every
     identity but the internal one and the service client `svc`."""
     if admins is None:
@@ -164,6 +225,9 @@ def _run(tmp_path, gw, enabled=True, identities=("alice", "mcp-self"), extra=Non
         "_agw_admin_identities": [{"key": a, "name": a} for a in admins],
         "_verify_default": identities[0] if identities else "",
         "agw_mcp_enabled": enabled,
+        "_engine": engine if engine is not None else _engine(tmp_path, log, clock),
+        "agw_models": [{"name": "m1"}, {"name": "m2"}],
+        "_mcp_log_hits": PHASE3["vars"]["_mcp_log_hits"],
         **(extra or {}),
     }
     inv = {
@@ -178,13 +242,17 @@ def _run(tmp_path, gw, enabled=True, identities=("alice", "mcp-self"), extra=Non
         args,
         tmp_path,
         cwd=REPO,
-        env={**harness_sandbox.env_for(tmp_path), "ANSIBLE_STDOUT_CALLBACK": "default"},
+        env={
+            **harness_sandbox.env_for(tmp_path),
+            "ANSIBLE_STDOUT_CALLBACK": "default",
+            "PATH": f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}",
+        },
         timeout=180,
     )
     out = r.stdout + r.stderr
-    assert KEY not in out and OTHER not in out and SVC not in out and "SYNTHETIC-SELF" not in out, (
-        "a key reached the task output"
-    )
+    assert (
+        MARKER not in out and KEY not in out and OTHER not in out and SVC not in out and "SYNTHETIC-SELF" not in out
+    ), "a key reached the task output"
     return r.returncode, out
 
 
@@ -199,7 +267,11 @@ def test_a_correct_gateway_passes_and_is_probed_keyless_then_keyed(tmp_path, gat
         ("initialize", False),
         ("initialize", True),
         ("tools/list", True),
+        ("tools/call", True),
     ]
+    call = gw.seen[-1]["params"]
+    assert call["name"] == "chat_completions"
+    assert call["arguments"]["body"]["max_tokens"] == 16 and call["arguments"]["body"]["model"] == "m1"
     assert {s["path"] for s in gw.seen} == {"/mcp"}
     assert all("application/json" in s["accept"] and "text/event-stream" in s["accept"] for s in gw.seen)
     assert {s["auth"] for s in gw.seen if s["auth"]} == {f"Bearer {KEY}"}
@@ -224,6 +296,86 @@ def test_a_gateway_raised_error_in_the_stream_fails_the_listing(tmp_path, gatewa
 def test_an_initialize_answered_with_an_error_status_fails_even_with_a_valid_body(tmp_path, gateway):
     rc, out = _run(tmp_path, gateway("init-500"))
     assert rc != 0 and "must get an MCP session" in out and "HTTP\n" not in out, out
+
+
+def test_the_chat_tool_must_be_listed(tmp_path, gateway):
+    rc, out = _run(tmp_path, gateway("normal", call="no-chat"))
+    assert rc != 0 and "does not show the chat tool" in out, out
+
+
+@pytest.mark.parametrize("call", ["tool-error", "no-choices"])
+def test_a_model_call_that_returns_no_completion_fails_the_deploy(tmp_path, gateway, call):
+    """A self-call refusal is HTTP 200 with the error in the result (spike 1.5): the verdict reads the body."""
+    rc, out = _run(tmp_path, gateway("normal", call=call))
+    assert rc != 0 and "returned no completion" in out, out
+
+
+def test_a_rate_limited_model_call_is_unproven_not_passed(tmp_path, gateway):
+    rc, out = _run(tmp_path, gateway("normal", call="ratelimit"))
+    assert rc != 0 and "were not proven" in out, out
+    rc, out = _run(tmp_path, gateway("normal", call="ratelimit"), extra={"agw_verify_allow_unproven": True})
+    assert rc == 0 and "NOT proven" in out, out
+
+
+@pytest.mark.parametrize("log", [LOOPBACK_LINE, COLOURED], ids=["plain", "coloured"])
+def test_the_calls_v1_request_must_be_logged_as_mcp_self_on_the_loopback_listener(tmp_path, gateway, log):
+    rc, out = _run(tmp_path, gateway("normal"), log=log)
+    assert rc == 0, out
+    calls = (tmp_path / "engine.calls").read_text()
+    assert "logs --since 2026-10-14T00:00:00Z agentgateway" in calls
+    assert "logged as mcp-self on the loopback listener" in out
+
+
+@pytest.mark.parametrize(
+    "clock",
+    [
+        pytest.param("2026-10-14T00:00:00Z'; touch {tmp}/pwned; '", id="a-quote-breakout"),
+        pytest.param("2026-10-14T00:00:00Z $(touch {tmp}/pwned)", id="a-command-substitution"),
+        pytest.param("2026-10-14T00:00:00Z\ntouch {tmp}/pwned", id="a-second-line"),
+        pytest.param("", id="empty"),
+        pytest.param("yesterday", id="not-a-time"),
+    ],
+)
+def test_a_malformed_engine_clock_is_refused_before_any_shell_runs(tmp_path, gateway, clock):
+    rc, out = _run(tmp_path, gateway("normal"), clock=clock.format(tmp=tmp_path))
+    assert rc != 0 and "Require a well-formed engine clock" in out, out
+    assert not (tmp_path / "pwned").exists()
+    assert "logs" not in (tmp_path / "engine.calls").read_text().split()  # the log read never started
+
+
+@pytest.mark.parametrize("engine", ["podman; touch {tmp}/pwned", "/tmp/evil", "podman --version", ""])
+def test_an_unknown_engine_is_refused_before_any_command_is_built(tmp_path, gateway, engine):
+    rc, out = _run(tmp_path, gateway("normal"), engine=engine.format(tmp=tmp_path))
+    assert rc != 0 and "must be podman or docker" in out, out
+    assert not (tmp_path / "pwned").exists() and not (tmp_path / "engine.calls").exists()
+
+
+def test_the_log_count_command_interpolates_only_two_quoted_values():
+    """Defence in depth behind the two asserts: the shell text names exactly the engine and the clock, quoted."""
+    task = next(t for t in PHASE3["tasks"] if t["name"].startswith("MCP: count the access-log lines"))
+    values = re.findall(r"\{\{(.*?)\}\}", task["ansible.builtin.shell"]["cmd"])
+    assert [v.strip() for v in values] == ["_engine | quote", "(_mcp_clock.stdout | trim) | quote"]
+
+
+def test_a_docker_engine_is_accepted(tmp_path, gateway):
+    """The guard is a two-name allowlist; docker passes it (the stub is named podman, so the run itself fails later)."""
+    rc, out = _run(tmp_path, gateway("normal"), engine="docker")
+    assert "must be podman or docker" not in out
+
+
+@pytest.mark.parametrize(
+    "log",
+    [
+        pytest.param("", id="no-log-line"),
+        pytest.param(LOOPBACK_LINE.replace('identity="mcp-self"', 'identity="alice"'), id="another-identity"),
+        pytest.param(LOOPBACK_LINE.replace("listener=loopback", "listener=default"), id="another-listener"),
+        pytest.param(LOOPBACK_LINE.replace("/v1/chat/completions", "/mcp"), id="another-path"),
+    ],
+)
+def test_a_missing_or_wrong_access_log_line_fails_and_no_log_line_is_printed(tmp_path, gateway, log):
+    rc, out = _run(tmp_path, gateway("normal"), log=log)
+    assert rc != 0 and "attributed to the internal identity" in out, out
+    assert MARKER not in out  # _run asserts it too; the line never reaches the output
 
 
 def test_a_rate_limit_refusal_is_unproven_not_passed(tmp_path, gateway):
@@ -354,6 +506,7 @@ def test_every_task_that_carries_the_mcp_key_is_a_probe_include_with_the_key_in_
     assert [t["name"] for t in keyed] == [
         "MCP: an enrolled identity initialises a session",
         "MCP: an enrolled identity lists the tools",
+        "MCP: an enrolled identity makes one model call through the chat tool",
         "MCP: with MCP disabled a keyed initialize is not an MCP reply",
     ]
     assert all(str(PROBE) in t["ansible.builtin.include_tasks"] and "no_log" not in t for t in keyed)
