@@ -125,7 +125,7 @@ groups:
 {% endif %}
 {% for target in _missing_targets %}
       - uid: {{ target.uid }}
-        title: {{ ('Missing telemetry for ' ~ target.service ~ ' at ' ~ target.instance) | to_json }}
+        title: {{ ('Missing telemetry for ' ~ target.service) | to_json }}
         condition: B
         data:
           - refId: A
@@ -157,7 +157,7 @@ groups:
         execErrState: Alerting
         for: 2m
         annotations:
-          summary: {{ ('Expected metrics have disappeared for ' ~ target.service ~ '.') | to_json }}
+          summary: {{ ('Expected metrics have disappeared for ' ~ target.service ~ ' at ' ~ target.instance ~ '.') | to_json }}
           dashboard_url: {{ ('/d/service-overview?var-service=' ~ target.service) | to_json }}
           description: Check the declared metrics target and its service onboarding receipt.
         labels:

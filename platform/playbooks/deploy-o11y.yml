@@ -1441,14 +1441,29 @@
             fail_msg: "Live Grafana alert rules do not match the provisioned rules file (missing, extra or withdrawn)."
 
         # Same uid order on both sides (asserted above), so each field compares rule by
-        # rule; an absent or null notification_settings, or field, compares as ''. The
-        # durations are strings in the 11.4 AlertRuleNotificationSettings schema.
-        - name: Require each live rule's pause and routing to equal the provisioned rule's
+        # rule; absent or null maps compare as empty maps. The durations are strings in
+        # the 11.4 AlertRuleNotificationSettings schema.
+        - name: Require each live rule's pause, labels, annotations and duration to equal the provisioned rule's
           ansible.builtin.assert:
             that:
               - _o11y_rules | map(attribute='isPaused', default='') | list == _o11y_expected_rules | map(attribute='isPaused', default='') | list
+              - >-
+                _o11y_rules | map(attribute='labels', default={}) | map('default', {}, true) | list ==
+                _o11y_expected_rules | map(attribute='labels', default={}) | map('default', {}, true) | list
+              - >-
+                _o11y_rules | map(attribute='annotations', default={}) | map('default', {}, true) | list ==
+                _o11y_expected_rules | map(attribute='annotations', default={}) | map('default', {}, true) | list
+              - _o11y_rules | map(attribute='for', default='') | list ==
+                _o11y_expected_rules | map(attribute='for', default='') | list
+            fail_msg: >-
+              Live Grafana rules differ from the provisioned file in pause state,
+              labels, annotations or duration.
+
+        - name: Require each live rule's notification settings to equal the provisioned rule's
+          ansible.builtin.assert:
+            that:
               - _live_settings | map(attribute=item, default='') | list == _file_settings | map(attribute=item, default='') | list
-            fail_msg: "Live Grafana rules differ from the provisioned file in isPaused or notification_settings.{{ item }}."
+            fail_msg: "Live Grafana rules differ from the provisioned file in notification_settings.{{ item }}."
           vars:
             _live_settings: "{{ _o11y_rules | map(attribute='notification_settings', default={}) | map('default', {}, true) | list }}"
             _file_settings: "{{ _o11y_expected_rules | map(attribute='notification_settings', default={}) | map('default', {}, true) | list }}"

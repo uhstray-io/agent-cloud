@@ -949,6 +949,10 @@ for enabled in (False, True):
         assert disk_rule['noDataState'] == 'Alerting'
         if rendered_targets:
             assert rules[2]['annotations']['dashboard_url'] == '/d/service-overview?var-service=caddy-reverse-proxy/caddy'
+            assert rules[2]['title'] == 'Missing telemetry for caddy-reverse-proxy/caddy'
+            assert rules[2]['annotations']['summary'] == (
+                'Expected metrics have disappeared for caddy-reverse-proxy/caddy at caddy:2021.'
+            )
             assert rules[2]['labels']['service'] == 'caddy-reverse-proxy/caddy'
             assert rules[2]['labels']['owner'] == 'platform-operations'
             assert rules[2]['for'] == '2m'
@@ -991,6 +995,27 @@ canary_rules = yaml.safe_load(template.render(local_mode=True, o11y_alerts_enabl
 assert canary_rules[0]['data'][0]['model']['expr'] == f'up{{service="{canary}"}}'
 assert canary_rules[0]['isPaused'] is False
 assert all(rule['isPaused'] is True and 'notification_settings' not in rule for rule in canary_rules[1:])
+related_targets = [
+    targets[0],
+    {**targets[0], 'uid': 'o11y_missing_caddy_secondary', 'instance': 'caddy-backup:2021'},
+]
+related_render = template.render(
+    o11y_expected_metrics_targets=related_targets,
+    o11y_expected_metrics_targets_reviewed=True,
+    o11y_cluster='test-cluster', o11y_environment='prod',
+    local_mode=False, o11y_alerts_enabled=True,
+)
+related_rules = yaml.safe_load(related_render)['groups'][0]['rules']
+target_rules = [rule for rule in related_rules if rule['uid'].startswith('o11y_missing_caddy')]
+assert len(target_rules) == 2
+assert len({rule['title'] for rule in target_rules}) == 1
+assert len({rule['labels']['instance'] for rule in target_rules}) == 2
+assert all(rule['labels']['service'] == 'caddy-reverse-proxy/caddy' for rule in target_rules)
+assert all(
+    rule['notification_settings']['group_by'] == ['service', 'environment', 'cluster', 'alertname']
+    for rule in target_rules
+)
+assert all(rule['labels']['instance'] in rule['annotations']['summary'] for rule in target_rules)
 PY
 }
 
@@ -1272,11 +1297,12 @@ tasks = block['block']
 by_name = {task['name']: task for task in tasks}
 scope = by_name['Scope live rules to the provisioned folders and groups']
 set_check = by_name['Require the live rule set to equal the provisioned rules']
-field_check = by_name["Require each live rule's pause and routing to equal the provisioned rule's"]
+field_check = by_name["Require each live rule's pause, labels, annotations and duration to equal the provisioned rule's"]
+settings_check = by_name["Require each live rule's notification settings to equal the provisioned rule's"]
 slurp = by_name['Read the provisioned alert rules file']
 folders = by_name['Read live Grafana folders']
 assert tasks.index(slurp) < tasks.index(scope) and tasks.index(folders) < tasks.index(scope)
-assert tasks.index(scope) < tasks.index(set_check) < tasks.index(field_check)
+assert tasks.index(scope) < tasks.index(set_check) < tasks.index(field_check) < tasks.index(settings_check)
 assert slurp['register'] == '_provisioned_rules_file' and block['no_log'] is True
 assert slurp['ansible.builtin.slurp']['src'].endswith('/config/grafana/provisioning/alerting/observability.yml')
 assert '/api/folders' in folders['ansible.builtin.command']['argv'][-1]
@@ -1288,8 +1314,9 @@ env.filters['flatten'] = lambda value: [item for sub in value for item in sub]
 env.tests['in'] = lambda value, seq: value in seq
 compile_value = lambda value: env.compile_expression(value.strip().removeprefix('{{').removesuffix('}}').strip())
 set_checks = [env.compile_expression(expr) for expr in set_check['ansible.builtin.assert']['that']]
-field_exprs = [env.compile_expression(expr) for expr in field_check['ansible.builtin.assert']['that']]
-fields = field_check['loop']
+direct_exprs = [env.compile_expression(expr) for expr in field_check['ansible.builtin.assert']['that']]
+field_exprs = [env.compile_expression(expr) for expr in settings_check['ansible.builtin.assert']['that']]
+fields = settings_check['loop']
 assert {'receiver', 'group_by', 'group_wait', 'group_interval', 'repeat_interval', 'mute_time_intervals'} == set(fields)
 
 def live_of(doc, folder_uid='f1'):
@@ -1305,7 +1332,9 @@ def verify_rules(rules, provisioned, live_folders=({'uid': 'f1', 'title': 'agent
         names[key] = compile_value(expr)(**names)
     if not all(bool(check(**names)) for check in set_checks):
         return False
-    for key, expr in field_check['vars'].items():
+    if not all(bool(check(**names)) for check in direct_exprs):
+        return False
+    for key, expr in settings_check['vars'].items():
         names[key] = compile_value(expr)(**names)
     return all(bool(check(item=item, **names)) for item in fields for check in field_exprs)
 
@@ -1339,6 +1368,9 @@ assert not verify_rules(swap(lambda r: {k: v for k, v in r.items() if k != 'noti
 assert not verify_rules(swap(ns(group_by=['instance'])), inf_doc)
 assert not verify_rules(swap(ns(receiver='other')), inf_doc)
 assert not verify_rules(swap(ns(mute_time_intervals=['maintenance'])), inf_doc)
+assert not verify_rules(swap(lambda r: dict(r, labels=r['labels'] | {'owner': 'unexpected'})), inf_doc)
+assert not verify_rules(swap(lambda r: dict(r, annotations=r['annotations'] | {'dashboard_url': '/unexpected'})), inf_doc)
+assert not verify_rules(swap(lambda r: dict(r, **{'for': '45s'})), inf_doc)
 # Routing values come from the file, not a parallel list: rendered 45s vs live 30s fails,
 # and a file that says 45s passes when live says 45s.
 wait45 = {**inf_doc, 'groups': [dict(g, rules=[dict(r, notification_settings=r['notification_settings'] | {'group_wait': '45s'})

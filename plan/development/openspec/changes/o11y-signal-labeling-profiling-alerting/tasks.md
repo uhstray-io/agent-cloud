@@ -15,12 +15,12 @@
 ## 3. Actionable alerts
 
 - [x] 3.1 Add bounded ownership/context labels, dashboard/runbook annotations, and rule-level grouping/timing to existing Grafana rules without provisioning the policy tree.
-- [ ] 3.2 Extend deploy read-back and focused tests for rule settings and run a bounded Discord delivery drill.
-- [ ] 3.3 Validate the spec scenarios “Several target failures occur in one service” and “A notification change is deployed.”
+- [ ] 3.2 Extend deploy read-back and focused tests for rule settings and run a bounded Discord delivery drill. Source tests now cover exact labels, annotations, duration, and routing drift; live deploy read-back and the delivery drill remain pending.
+- [ ] 3.3 Validate the spec scenarios “Several target failures occur in one service” and “A notification change is deployed.” Source tests now verify same-service rules share a title/group identity while retaining each instance. The separate estate inventory acceptance is recorded in the related OpenSpec evidence; grouped alerting and notification-change receipts remain pending.
 
 ## 4. Promotion and evidence
 
-- [ ] 4.1 Run focused tests, lint, and strict OpenSpec validation; review the diff for secrets, volume preservation, and architecture compliance.
+- [x] 4.1 Run focused tests, lint, and strict OpenSpec validation; review the diff for secrets, volume preservation, and architecture compliance. Focused alert-render/read-back BATS tests passed 2/2, the full `test_service_o11y.bats` suite passed 58/58, Ansible lint passed, yamllint exited 0 with existing line-length warnings, and strict OpenSpec validation passed on an exact temporary copy of the change.
 - [ ] 4.2 Push one PR against `dev`, obtain one CodeRabbit or Claude review, resolve feedback, and merge only with green CI.
 - [ ] 4.3 Deploy non-destructively through Semaphore from `dev`, record runtime and resource evidence, and validate the spec scenario “Configuration is promoted.”
 
