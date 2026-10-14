@@ -10,12 +10,62 @@
 # Client keys are `random`: generated ONCE per identity and reused on every
 # later run, which is exactly "mint if absent, keep if present" (task 4.1);
 # rotation is a deliberate separate run, never implicit in a deploy.
+# Identities: one personal identity per declared platform admin (inventory `platform_admins`, the
+# list the Authentik admin entries are rendered from), merged with the service identities in
+# `agw_clients` into `agw_identities`. It is computed HERE, once, and every reader takes it from
+# here: the declaration below, deploy-agentgateway.yml's name checks and render check, the key loop in
+# config.yaml.j2 and manage-agentgateway-client-key.yml. An identity's name is the entry's
+# `agw_identity` when set, else its `username`; an identity already in `agw_clients` keeps its
+# place, and a name in both is merged once (the same `client_<name>` field, so nothing is minted
+# twice). `platform_admins` absent or empty leaves `agw_identities` equal to `agw_clients`.
+# Native LISTS built in statement blocks, as below.
+_agw_admin_identities: >-
+  {%- set out = [] -%}
+  {%- for a in platform_admins | default([]) -%}
+    {%- if out.append({'key': (a['key'] | default('', true)) | string,
+                       'name': (a['agw_identity'] | default(a['username'] | default('', true), true)) | string}) -%}{%- endif -%}
+  {%- endfor -%}
+  {{ out }}
+agw_identities: >-
+  {%- set out = [] -%}
+  {%- for c in agw_clients | default([]) -%}
+    {%- if out.append(c) -%}{%- endif -%}
+  {%- endfor -%}
+  {%- for a in _agw_admin_identities -%}
+    {%- if a['name'] not in out and out.append(a['name']) -%}{%- endif -%}
+  {%- endfor -%}
+  {{ out }}
+# Derived names that are also service identities: merged once, reported by name (never refused).
+_agw_identity_overlap: >-
+  {%- set out = [] -%}
+  {%- for a in _agw_admin_identities -%}
+    {%- if a['name'] in (agw_clients | default([])) and out.append(a['name']) -%}{%- endif -%}
+  {%- endfor -%}
+  {{ out }}
+# What is wrong with the derived names, one sentence per offending entry (the entry's `key`, else
+# its position), empty when nothing is. The playbooks refuse a non-empty list before any restart or
+# store write. A reserved name is refused for a derived identity only: `legacy-shared` is rendered
+# from the shared vLLM key and `mcp-self` is the gateway's own MCP self-call identity.
+_agw_identity_problems: >-
+  {%- set out = [] -%}
+  {%- for a in _agw_admin_identities -%}
+    {%- set who = ('platform_admins entry ' ~ a['key']) if a['key'] else ('platform_admins entry #' ~ loop.index) -%}
+    {%- if (_agw_admin_identities | selectattr('name', 'equalto', a['name']) | list | length) > 1
+           and out.append(who ~ ': the gateway identity "' ~ a['name'] ~ '" is declared more than once') -%}{%- endif -%}
+    {%- if a['name'] in ['legacy-shared', 'mcp-self']
+           and out.append(who ~ ': the gateway identity "' ~ a['name']
+                          ~ '" is reserved for an internal identity; set agw_identity') -%}{%- endif -%}
+    {%- if not (a['name'] is match('^[a-z0-9][a-z0-9-]*$'))
+           and out.append(who ~ ': the gateway identity "' ~ a['name']
+                          ~ '" is outside ^[a-z0-9][a-z0-9-]*$; set agw_identity to a name that matches') -%}{%- endif -%}
+  {%- endfor -%}
+  {{ out }}
 # A native LIST, built in a statement block whose only output is the list itself (no
 # community.general, which is not a declared dependency). Text-built JSON broke on ansible-core
 # 2.19+ (PR 213; MISTAKES 10.16).
 _client_defs: >-
   {%- set out = [] -%}
-  {%- for c in agw_clients | default([]) -%}
+  {%- for c in agw_identities -%}
     {%- if out.append({'name': 'client_' ~ c, 'type': 'random', 'length': 48}) -%}{%- endif -%}
   {%- endfor -%}
   {{ out }}

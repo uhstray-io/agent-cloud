@@ -85,17 +85,20 @@ finding that contradicts a decision stops the work and reopens that decision.
       per-entry password secret definitions looped in `deploy-authentik.yml`, the
       environment lines looped in the Authentik `env.j2`. The existing OpenBao field names
       are kept so no password changes
-- [ ] 2.4 `deploy-agentgateway.yml`: derive one identity per list entry (explicit
+- [x] 2.4 `deploy-agentgateway.yml`: derive one identity per list entry (explicit
       `agw_identity`, else the username), merge with `agw_clients` into `agw_identities`;
       refuse a duplicate within the list, a name outside `^[a-z0-9][a-z0-9-]*$`,
       `legacy-shared` and `mcp-self`, each before any restart, naming the entry. A name in
       both the list and `agw_clients` is merged once and reported by name as an overlap
       (the same `client_<name>` field, so nothing is minted twice); this is what allows the
       derivation to be deployed before the site-config removal (task 6.8)
-- [ ] 2.5 Point every reader at the merged list: the `_client_defs` loop in
+- [x] 2.5 Point every reader at the merged list: the `_client_defs` loop in
       `vars/secret-declarations/agentgateway.yml`, the name assert, the `llm` key loop in
       `config.yaml.j2`, the verify's default identity, `manage-agentgateway-client-key.yml`
       (rotate needs the name in the merged list; revoke needs it removed from it)
+      The verify's default identity stays the first `agw_clients` entry
+      (unchanged behaviour). Readers outside this change's files still read `agw_clients`:
+      `run-agw-conformance.yml`, `rollback-inference-route.yml`, `deploy-o11y.yml`
 - [ ] 2.6 Equivalence proof: render the Authentik admin entries both ways for the same
       inputs and diff them (username, name, email, active, path, groups, password field);
       run the local Authentik deploy twice, the second reporting nothing changed and the
@@ -105,10 +108,15 @@ finding that contradicts a decision stops the work and reopens that decision.
       removed. Prove no key is re-minted and the rendered key-hash count does not drop by
       comparing each identity's `keyHash` before and after each step (the hash line, never
       the key)
-- [ ] 2.8 BATS: derivation, override name, in-list duplicate refusal, overlap merged once
+      Render level done (`platform/tests/test_agw_admin_identities.py`: the identical `keyHash`
+      line per identity through overlap and removal, count never drops); the run against a
+      local gateway is not
+- [x] 2.8 BATS: derivation, override name, in-list duplicate refusal, overlap merged once
       and reported, charset refusal, `legacy-shared` and `mcp-self` refusals, revoke needing
       removal from the merged list.
       Mutation-check each refusal: break it, watch its test fail, restore it byte-exact
+      Done as pytest in `platform/tests/test_agw_admin_identities.py` (the repo's harness
+      runs the real guard tasks)
 - [ ] 2.9 The drift guard (D3), which is the Authentik verify alone: extend the read-back
       verify (`verify-users.py.j2`, run inside the server container) to assert the members
       of `platform-admins` equal the declared admin list plus the declared exceptions list,
@@ -118,6 +126,9 @@ finding that contradicts a decision stops the work and reopens that decision.
       construction. BATS for both; mutation-check the verify by adding a member outside both
       lists and by dropping a list entry, and the render check by dropping one rendered key,
       watching each fail
+      Gateway half done (the render check in `deploy-agentgateway.yml`, pytest in
+      `platform/tests/test_agw_admin_identities.py`, mutation-checked); the Authentik verify
+      half is not
 - [ ] 2.10 Validation gate, local: the rendered admin entries equal the fixed blocks and the
       verify passes, proving scenario "The rendered admin accounts match the fixed blocks";
       a new list entry mints a `client_<name>` and its hash is enrolled on the next

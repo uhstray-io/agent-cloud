@@ -25,6 +25,11 @@
 #                          http://host.containers.internal:1234/v1 (local LM Studio)
 #   agw_models             [{name, upstream_model?}] one entry per served name
 #   agw_clients            [names] one API-key identity each -> secret field client_<name>
+#   platform_admins        (optional, the declared admin list the Authentik admin entries are rendered
+#                          from) one personal identity per entry: its `agw_identity` if set, else its
+#                          `username`. Merged with agw_clients into agw_identities
+#                          (vars/secret-declarations/agentgateway.yml); a name in both is one identity
+#                          (the same client_<name>), reported as an overlap. Empty/absent = agw_clients only
 #   agw_client_policies    (optional) {name: {allowed_models: [...], tokens_per_hour: N}}
 #                          rotate/revoke: manage-agentgateway-client-key.yml
 #   legacy_shared_expires  (optional) ISO date ending the shared-key grace period: before it the
@@ -115,16 +120,36 @@
           agentgateway_svc needs agw_upstream_base_url and a non-empty agw_models
           list in inventory — an empty gateway would answer 404 for every model.
 
+    # One personal identity per declared platform admin joins agw_clients in agw_identities
+    # (vars/secret-declarations/agentgateway.yml). A derived name that repeats, is reserved
+    # (legacy-shared, mcp-self) or falls outside the charset below is refused here, naming the
+    # entry, before anything is rendered or restarted.
+    - name: "Refuse derived admin identities that collide, are reserved or are malformed"
+      ansible.builtin.assert:
+        that: _agw_identity_problems | length == 0
+        fail_msg: >-
+          platform_admins cannot be turned into gateway identities: {{ _agw_identity_problems | join('; ') }}.
+        quiet: true
+
+    # A name in both platform_admins and agw_clients is the same identity (the same client_<name>
+    # field), merged once. Reported by name so the migration overlap is visible; names only.
+    - name: "Report identities declared in both platform_admins and agw_clients"
+      ansible.builtin.debug:
+        msg: >-
+          Merged once, migration overlap (platform_admins and agw_clients): {{ _agw_identity_overlap | join(', ') }}.
+      when: _agw_identity_overlap | length > 0
+
     # Names are interpolated into YAML, JSON (the secret definitions) and a CEL
     # string literal; restrict them to a charset that is inert in all three.
     - name: "Refuse identity or group names outside the safe charset"
       ansible.builtin.assert:
         that:
-          - (agw_clients | default([]) | reject('match', '^[a-z0-9][a-z0-9-]*$') | list) | length == 0
+          - (agw_identities | reject('match', '^[a-z0-9][a-z0-9-]*$') | list) | length == 0
           - agw_ui_admin_group | default('platform-admins') is match('^[a-z0-9][a-z0-9-]*$')
         fail_msg: >-
-          agw_clients entries and agw_ui_admin_group must match ^[a-z0-9][a-z0-9-]*$
-          (offending clients: {{ agw_clients | default([]) | reject('match', '^[a-z0-9][a-z0-9-]*$') | list }}).
+          agw_identities (agw_clients plus the names derived from platform_admins) and agw_ui_admin_group
+          must match ^[a-z0-9][a-z0-9-]*$
+          (offending identities: {{ agw_identities | reject('match', '^[a-z0-9][a-z0-9-]*$') | list }}).
 
     # `legacy-shared` is rendered from the vLLM key's fingerprint, never minted as a client key,
     # and its expiry must be a real calendar date in ISO form, or the string comparison above
@@ -396,6 +421,48 @@
         state: absent
       changed_when: false
       when: _keep_previous and not ansible_check_mode
+
+    # The render must enrol exactly the identities declared: every name in agw_identities (plus
+    # `legacy-shared` while its grace period runs) with one key entry each, nothing else. That
+    # catches a templating fault (a key loop that skips or repeats a name), not a membership
+    # drift: the identities are derived from the declared admin list, so "derived equals
+    # declared" holds by construction (the Authentik verify is the drift guard). The reader prints
+    # names and a count only, never a hash or key, so the task needs no no_log.
+    - name: "Read the identity names and key-entry count the render wrote"
+      ansible.builtin.command:
+        argv:
+          - python3
+          - -c
+          - |
+            import json, re, sys
+            text = open(sys.argv[1], encoding="utf-8").read()
+            print(json.dumps({
+                "names": re.findall(r"^[ \t]+metadata:\n[ \t]+name: (\S+)[ \t]*$", text, re.M),
+                "entries": len(re.findall(r"^[ \t]*- (?:keyHash|key):", text, re.M)),
+            }))
+          - "{{ _deploy_dir }}/config.yaml"
+      register: _agw_render_read
+      changed_when: false
+      check_mode: false
+      when: not ansible_check_mode
+
+    - name: "Require the rendered config to enrol exactly the declared identities"
+      ansible.builtin.assert:
+        that:
+          - _missing | length == 0
+          - _extra | length == 0
+          - _rendered.entries | int == _expected | length
+        fail_msg: >-
+          The rendered config.yaml does not enrol the declared identities. Missing:
+          {{ _missing | join(', ') | default('none', true) }}. Extra: {{ _extra | join(', ') | default('none', true) }}.
+          Key entries rendered {{ _rendered.entries }}, identities expected {{ _expected | length }}.
+        quiet: true
+      vars:
+        _rendered: "{{ _agw_render_read.stdout | from_json }}"
+        _expected: "{{ agw_identities + (['legacy-shared'] if _legacy_shared_active | bool else []) }}"
+        _missing: "{{ _expected | difference(_rendered.names) | sort }}"
+        _extra: "{{ _rendered.names | difference(_expected) | sort }}"
+      when: not ansible_check_mode
 
     # vllm_api_key is `existing`: manage-secrets renders it empty when the store has
     # none, and an empty key starts a gateway that is ready but answers every client

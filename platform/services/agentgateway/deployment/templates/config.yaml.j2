@@ -18,6 +18,10 @@
    Deliberately absent (design §3): `retry` (a retried partial stream repeats tool
    side effects) and `timeout.requestTimeout` / `backendRequestTimeout` (streams
    run past any fixed value; the upstream keep-alive owns idle).
+   The key loop reads `agw_identities`: inventory agw_clients plus one personal identity per
+   declared platform_admins entry (vars/secret-declarations/agentgateway.yml). The fallback to
+   agw_clients is for a caller that renders this file without that vars file; the deploy checks
+   the render against agw_identities (deploy-agentgateway.yml).
    Do NOT edit by hand — re-run the playbook. #}
 {# agw_ui_enabled (default true): false renders no UI listener and no OIDC block,
    so /v1 can be deployed and proven before the Authentik client exists. The
@@ -185,7 +189,7 @@ llm:
           name: authorization
           prefix: 'Bearer '
       keys:
-{% for c in agw_clients | default([]) %}
+{% for c in agw_identities | default(agw_clients | default([])) %}
 {% set _pol = (agw_client_policies | default({}))[c] | default({}) %}
 {% if (agw_plaintext_keys | default(false) | bool) and (local_mode | default(false) | bool) %}
       # LOCAL-DEV ONLY (inventory agw_plaintext_keys: true): the value itself, so the
