@@ -312,7 +312,7 @@
         "x": 0,
         "y": 22
       },
-      "description": "Bounded history of failed workflow task records received in the last seven days, including a 180-character error excerpt and the Semaphore task ID when present. The full original record remains stored and can be queried in Loki Explore. Exact dedup affects visual display only and does not remove stored records. The collector may repeat a historical failure across snapshots; these rows are historical workflow evidence, not current service health; they are not new-event counts. Use Latest step status by service for current recorded workflow state.",
+      "description": "Bounded history of failed workflow task records received in the last seven days, including an error excerpt of at most 180 Unicode characters and the Semaphore task ID when present. The full original record remains stored and can be queried in Loki Explore. Exact dedup compares adjacent returned lines only: interleaved repeats can remain, and hidden duplicates do not cause replacement lines to be fetched; the 100-line limit still applies. The collector may repeat a historical failure across snapshots; these rows are historical workflow evidence, not current service health; they are not new-event counts. Use Latest step status by service for current recorded workflow state.",
       "options": {
         "showLabels": true,
         "wrapLogMessage": false,
@@ -327,7 +327,7 @@
             "uid": "loki"
           },
           "queryType": "range",
-          "expr": "{job=\"agent-cloud-conformance\", status=\"fail\"} | json | line_format \"{{.service}}/{{.step}} task={{.task_id}}: {{.error | trunc 180}}\"",
+          "expr": "{job=\"agent-cloud-conformance\", status=\"fail\"} | json | line_format \"{{.service}}/{{.step}} task={{.task_id}}: {{printf \\\"%.180s\\\" .error}}\" | keep job, service, step, status",
           "maxLines": 100
         }
       ],

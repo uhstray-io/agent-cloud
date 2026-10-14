@@ -304,12 +304,18 @@ def test_conformance_json_body_format_matches_loki_dashboard_extraction():
     assert failure_panel["targets"][0]["maxLines"] == 100
     assert failure_panel["targets"][0]["expr"] == (
         '{job="agent-cloud-conformance", status="fail"} | json | '
-        'line_format "{{.service}}/{{.step}} task={{.task_id}}: {{.error | trunc 180}}"'
+        'line_format "{{.service}}/{{.step}} task={{.task_id}}: '
+        '{{printf \\\"%.180s\\\" .error}}" | keep job, service, step, status'
     )
+    unicode_boundary = "a" * 179 + "é"
+    assert len(unicode_boundary) == 180 and unicode_boundary[:180].endswith("é")
+    assert len(unicode_boundary.encode("utf-8")[:180].decode("utf-8", errors="ignore")) == 179
     assert failure_panel["options"]["dedupStrategy"] == "exact"
-    assert "180-character error excerpt" in failure_panel["description"]
+    assert "180 Unicode characters" in failure_panel["description"]
     assert "full original record remains stored" in failure_panel["description"]
-    assert "visual display only" in failure_panel["description"]
+    assert "adjacent returned lines only" in failure_panel["description"]
+    assert "interleaved repeats can remain" in failure_panel["description"]
+    assert "100-line limit still applies" in failure_panel["description"]
     assert '| json |' in expressions["Services not yet run"]
     assert '| unwrap inventory_code' in expressions["Services not yet run"]
     assert "marker_time_seconds" in expressions["Services tracked"]

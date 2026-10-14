@@ -32,14 +32,16 @@ The dashboard SHALL show the latest recorded pass, fail or skip state after coll
 
 ### Requirement: Historical conformance failures remain bounded and task-keyed
 
-The historical failure panel SHALL read failed conformance records through Loki query-time JSON parsing and format each result with its service, step, task ID, and an error excerpt truncated to 180 characters. The full original record SHALL remain stored and queryable in Loki Explore. Grafana SHALL use exact deduplication for visual display in this panel only; it MUST NOT remove or deduplicate stored records. The panel SHALL retain its seven-day time scope and 100-line maximum. Query-time formatting and visual display deduplication MUST NOT change collector output, Loki ingestion, stored log bodies, or bounded Loki labels. Current workflow state MUST remain a separate view.
+The historical failure panel SHALL read failed conformance records through Loki query-time JSON parsing and format each result with its service, step, task ID, and an error excerpt truncated to 180 Unicode characters using Go `printf` rune precision. After formatting, the Loki pipeline SHALL keep only the original `job`, `service`, `step`, and `status` labels so extracted JSON fields such as the full `error` do not appear as result labels. The full original record SHALL remain stored and queryable in Loki Explore. Grafana SHALL use exact deduplication for visual display in this panel only; exact deduplication compares adjacent returned lines, can leave interleaved repeats, and does not replenish lines suppressed at the 100-line query cap. It MUST NOT remove or deduplicate stored records. The panel SHALL retain its seven-day time scope and 100-line maximum. Query-time formatting and visual display deduplication MUST NOT change collector output, Loki ingestion, stored log bodies, or bounded Loki labels. Current workflow state MUST remain a separate view.
 
 #### Scenario: Repeated historical failures are readable without losing task identity
 
 - **WHEN** the seven-day history contains repeated snapshots of the same failed task and other failed tasks
-- **THEN** each displayed line is keyed by service, step, and task ID and includes at most the first 180 characters of its error text
+- **THEN** each displayed line is keyed by service, step, and task ID and includes at most the first 180 Unicode characters of its error text
+- **AND** the 180-character boundary preserves a character after 179 ASCII characters, including a multibyte character such as `é`
+- **AND** the query result retains only the original `job`, `service`, `step`, and `status` labels after formatting
 - **AND** the full original record remains stored and can be queried in Loki Explore
-- **AND** Grafana exact deduplication affects visual display only; stored records remain unchanged
+- **AND** Grafana exact deduplication compares adjacent returned lines only, so interleaved repeats may remain and duplicates do not cause replacement lines to be fetched
 - **AND** distinct task IDs remain distinct in the display
 - **AND** the query stays within the seven-day and 100-line bounds
 - **AND** current failed step states remain independent of historical failures
