@@ -800,6 +800,14 @@
     # enrolled. The fallback to agw_clients is for a caller that lacks the declaration.
     _verify_default: "{{ (agw_identities | default(agw_clients | default([]))) | first | default('') }}"
     _engine: "{{ container_engine | default('podman') }}"
+    # The access-log lines of the MCP chat call's own /v1 request: the internal identity, on the loopback listener,
+    # on the chat path. Colour codes are stripped first. Read from the hidden `_mcp_log` result; only this count
+    # ever leaves it (task 4.6).
+    _mcp_log_hits: >-
+      {{ ((_mcp_log.stdout | default('')) ~ '\n' ~ (_mcp_log.stderr | default('')))
+         | regex_replace('\x1b\[[0-9;]*m', '') | split('\n')
+         | select('search', 'listener=loopback') | select('search', 'identity="mcp-self"')
+         | select('search', 'http.path="/v1/chat/completions"') | list | length }}
     _probe: "{{ _engine }} exec agentgateway-db wget -q -O - -T 5"
     _tls: "{{ agw_listener_tls | default(false) | bool }}"
     # The name the probes use with listener TLS: one of the server leaf's SANs, and the name
@@ -1315,6 +1323,154 @@
         - not (_mcp_init_refused | bool)
         - not (_mcp_tools_refused | bool)
 
+    # Task 4.6: one model call through the chat tool, as the admin identity that listed the tools. Body-based
+    # (a self-call refusal is HTTP 200 with the error in the result, spike 1.5): the result must not be an error
+    # and must carry a completion. Then the gateway's access log must show the /v1 request the self-call made:
+    # identity mcp-self, listener loopback, the chat path. Only the count of matching lines is kept, never a line.
+    - name: "MCP: pick the chat tool and the model"
+      ansible.builtin.set_fact:
+        _mcp_chat_tool: >-
+          {{ _mcp_tools.rpc.get('result', {}).get('tools', []) | map(attribute='name')
+             | select('search', '(^|_)chat_completions$') | first | default('') }}
+        _mcp_model: "{{ agw_models | map(attribute='name') | first }}"
+      when:
+        - not ansible_check_mode
+        - agw_mcp_enabled | default(false) | bool
+        - _mcp_client | length > 0
+        - not (_mcp_init_refused | bool)
+        - not (_mcp_tools_refused | bool)
+
+    - name: "Require the chat tool to be listed"
+      ansible.builtin.assert:
+        that: _mcp_chat_tool | length > 0
+        fail_msg: >-
+          MCP tools/list as {{ _mcp_client }} does not show the chat tool (an operationId ending in
+          chat_completions); the first MCP target is the gateway's own /v1 schema.
+        quiet: true
+      when:
+        - not ansible_check_mode
+        - agw_mcp_enabled | default(false) | bool
+        - _mcp_client | length > 0
+        - not (_mcp_init_refused | bool)
+        - not (_mcp_tools_refused | bool)
+
+    - name: "MCP: read the engine's clock before the model call"
+      ansible.builtin.command:
+        argv: ["{{ _engine }}", exec, agentgateway-db, date, -u, "+%Y-%m-%dT%H:%M:%SZ"]
+      register: _mcp_clock
+      changed_when: false
+      check_mode: false
+      when:
+        - not ansible_check_mode
+        - agw_mcp_enabled | default(false) | bool
+        - _mcp_client | length > 0
+        - not (_mcp_init_refused | bool)
+        - not (_mcp_tools_refused | bool)
+
+    - name: "MCP: an enrolled identity makes one model call through the chat tool"
+      ansible.builtin.include_tasks: tasks/agw-probe.yml
+      vars:
+        _agwp_path: /mcp
+        _agwp_method: POST
+        _agwp_status: [200, 400, 401, 403, 429]
+        _agwp_timeout: 120
+        _agwp_headers: "{{ _mcp_headers }}"
+        _agwp_rpc: true
+        _agwp_key: "{{ _resolved['client_' ~ _mcp_client] }}"
+        _agwp_body:
+          jsonrpc: "2.0"
+          id: 3
+          method: tools/call
+          params:
+            name: "{{ _mcp_chat_tool }}"
+            arguments:
+              body:
+                model: "{{ _mcp_model }}"
+                max_tokens: 16
+                messages: [{role: user, content: "Reply with one word: pong"}]
+      when:
+        - not ansible_check_mode
+        - agw_mcp_enabled | default(false) | bool
+        - _mcp_client | length > 0
+        - not (_mcp_init_refused | bool)
+        - not (_mcp_tools_refused | bool)
+        - _mcp_chat_tool | length > 0
+
+    - name: "MCP: keep the model call's response"
+      ansible.builtin.set_fact:
+        _mcp_call: "{{ _agwp_out }}"
+        _mcp_call_refused: >-
+          {{ (_agwp_out.rpc.get('error', {}).get('code', 0) | int) == -32003
+             or ((_agwp_out.status | int) == 429 and (_agwp_out.content | default('') | trim) == 'rate limit exceeded') }}
+      when:
+        - not ansible_check_mode
+        - agw_mcp_enabled | default(false) | bool
+        - _mcp_client | length > 0
+        - not (_mcp_init_refused | bool)
+        - not (_mcp_tools_refused | bool)
+        - _mcp_chat_tool | length > 0
+
+    - name: "Require a completion from the chat tool"
+      ansible.builtin.assert:
+        that:
+          - (_mcp_call.status | int) == 200
+          - "'error' not in _mcp_call.rpc"
+          - not (_mcp_call.rpc.get('result', {}).get('isError', false) | bool)
+          - _mcp_call.rpc.get('result', {}).get('structuredContent', {}).get('choices', []) | length > 0
+        fail_msg: >-
+          The MCP chat tool call as {{ _mcp_client }} at {{ _agwp_base }}/mcp for {{ _mcp_model }} returned no
+          completion (HTTP {{ _mcp_call.status }}, tool error: {{ _mcp_call.rpc.get('result', {}).get('isError', false) }}).
+          A self-call refusal comes back as HTTP 200 with the error in the tool result.
+        quiet: true
+      when:
+        - not ansible_check_mode
+        - agw_mcp_enabled | default(false) | bool
+        - _mcp_client | length > 0
+        - not (_mcp_init_refused | bool)
+        - not (_mcp_tools_refused | bool)
+        - _mcp_chat_tool | length > 0
+        - not (_mcp_call_refused | bool)
+
+    # Hidden: the gateway's log lines are not credentials, but they carry client addresses and paths, and the
+    # report is names and counts only (_mcp_log_hits holds the one number that leaves). The line is written when
+    # the self-call's response completes, so allow it a moment to appear.
+    - name: "MCP: read the gateway's access log since the call (hidden; only a count leaves)"
+      ansible.builtin.command:
+        argv: ["{{ _engine }}", logs, --since, "{{ _mcp_clock.stdout | trim }}", agentgateway]
+      register: _mcp_log
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+      retries: 5
+      delay: 2
+      until: (_mcp_log_hits | int) > 0
+      when:
+        - not ansible_check_mode
+        - agw_mcp_enabled | default(false) | bool
+        - _mcp_client | length > 0
+        - not (_mcp_init_refused | bool)
+        - not (_mcp_tools_refused | bool)
+        - _mcp_chat_tool | length > 0
+        - not (_mcp_call_refused | bool)
+
+    - name: "Require the model call's /v1 request to be logged as mcp-self on the loopback listener"
+      ansible.builtin.assert:
+        that: (_mcp_log_hits | int) > 0
+        fail_msg: >-
+          No access-log line from the last minutes shows a /v1/chat/completions request on the loopback
+          listener as identity mcp-self ({{ _mcp_log_hits }} matching lines), so the MCP chat call was not
+          attributed to the internal identity. Log lines are not printed.
+        quiet: true
+      when:
+        - not ansible_check_mode
+        - agw_mcp_enabled | default(false) | bool
+        - _mcp_client | length > 0
+        - not (_mcp_init_refused | bool)
+        - not (_mcp_tools_refused | bool)
+        - _mcp_chat_tool | length > 0
+        - not (_mcp_call_refused | bool)
+
     - name: "MCP: with MCP disabled a keyed initialize is not an MCP reply"
       ansible.builtin.include_tasks: tasks/agw-probe.yml
       vars:
@@ -1360,7 +1516,7 @@
       ansible.builtin.set_fact:
         _mcp_unproven: >-
           {{ (agw_mcp_enabled | default(false) | bool)
-               and (_mcp_client | length == 0 or (_mcp_init_refused | default(false) | bool) or (_mcp_tools_refused | default(false) | bool))
+               and (_mcp_client | length == 0 or (_mcp_init_refused | default(false) | bool) or (_mcp_tools_refused | default(false) | bool) or (_mcp_call_refused | default(false) | bool))
              or (not (agw_mcp_enabled | default(false) | bool)
                and _mcp_client | length > 0 and ((_mcp_off | default({})).get('status', 0) | int) == 429) }}
       when: not ansible_check_mode
@@ -1382,8 +1538,9 @@
           {% elif agw_mcp_enabled | default(false) | bool and (_mcp_unproven | bool) %}WARNING: the MCP checks were
           NOT proven on this run (accepted by agw_verify_allow_unproven).
           {% elif agw_mcp_enabled | default(false) | bool %}MCP: /mcp without a key is 401; as {{ _mcp_client }}
-          initialize returned a session and tools/list listed
-          {{ _mcp_tools.rpc.result.tools | map(attribute='name') | join(', ') }}.
+          initialize returned a session, tools/list listed
+          {{ _mcp_tools.rpc.result.tools | map(attribute='name') | join(', ') }}, and one chat call returned a
+          completion logged as mcp-self on the loopback listener.
           {% elif _mcp_client | length > 0 %}MCP is disabled: a keyed initialize at /mcp is not an MCP reply (HTTP
           {{ _mcp_off.status }}).
           {% else %}MCP is disabled; no enrolled identity, so /mcp was not probed.{% endif %}

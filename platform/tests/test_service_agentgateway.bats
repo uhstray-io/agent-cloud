@@ -305,7 +305,7 @@ PY
 
 @test "agentgateway: playbook verifies through the one probe path, asserts the 401, puts no key on an argv" {
   # Every gateway probe outside Caddy is tasks/agw-probe.yml (task 6.1a). The client key reaches
-  # exactly five tasks (the keyed /v1 listing and completion, and the three keyed MCP probes), all
+  # exactly six tasks (the keyed /v1 listing and completion, and the four keyed MCP probes), all
   # includes of that file, and inside it only a no_log `uri` header: no command or shell task ever
   # sees it (a shell probe put it on wget's argv, PR 221 Codex review).
   PROBE="$REPO_ROOT/platform/playbooks/tasks/agw-probe.yml"
@@ -327,6 +327,7 @@ assert [t.get("name") for t in keyed] == [
     "An enrolled identity completes one chat request through the upstream",
     "MCP: an enrolled identity initialises a session",
     "MCP: an enrolled identity lists the tools",
+    "MCP: an enrolled identity makes one model call through the chat tool",
     "MCP: with MCP disabled a keyed initialize is not an MCP reply",
 ], [t.get("name") for t in keyed]
 for t in keyed:
@@ -362,6 +363,8 @@ assert no_log_tasks == {
     validation.get('name'),
     'Classify the validator result without exposing its output',
     'Normalize validator diagnostics to a protected allowlisted category',
+    # The MCP verify's log read (task 4.6): hidden because log lines carry addresses and paths; only a count leaves.
+    "MCP: read the gateway's access log since the call (hidden; only a count leaves)",
 }
 PY
   refute_grep -qE "secrets\['client_" "$PLAYBOOK"
@@ -372,8 +375,8 @@ PY
   assert_grep -qF 'model: "{{ _verify_models[0] }}"' "$PLAYBOOK"
   assert_grep -qF '(_keyed_models.status | default(-1) | int) == 429' "$PLAYBOOK"
   # Only the gateway's own refusal body counts; a 429 relayed from the upstream fails. Two checks on
-  # the keyed /v1 round-trip, and the same two on the MCP initialize and tool listing.
-  [ "$(grep -cF "| trim) == 'rate limit exceeded'" "$PLAYBOOK")" -eq 4 ]
+  # the keyed /v1 round-trip, and the same on the MCP initialize, tool listing and model call.
+  [ "$(grep -cF "| trim) == 'rate limit exceeded'" "$PLAYBOOK")" -eq 5 ]
   assert_grep -qF 'round-trip was NOT proven on this run' "$PLAYBOOK"
   # An unproven round-trip fails the deploy unless the operator accepts it, and that refusal
   # runs before the completion assert it would otherwise skip.
