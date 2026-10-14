@@ -311,6 +311,9 @@ operator's go for it. site-config changes land through its own pull requests.
         so the default would yield placeholder usernames and the wrong identities. Guard task
         idea: the gateway deploy, with the gate on, refuses when `platform_admins` is not
         explicitly defined (that is, when it would fall back to the built default).
+        Which administrators the credential print may print is NOT part of that list: it is the
+        committed constant `_platform_admins_printable_keys`, changed by pull request, never by
+        site-config or an extra var.
 - [ ] 6.3 `Deploy agentgateway (Dev)` with the flag false, from a branch that carries the
       derivation (task 2.4): dry run; apply; then read the rendered config on the host (or
       the deploy's own report), counting `keyHash` lines and never printing them: the count
