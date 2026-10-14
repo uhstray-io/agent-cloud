@@ -270,6 +270,19 @@ finding that contradicts a decision stops the work and reopens that decision.
       committed templates and the docs, proving scenario "The internal identity is never
       handed out"; no tool returns configuration and the admin port is refused, proving
       scenario "No tool exposes the configuration dump"
+      2026-10-14 evening (task output read from the LOCAL Semaphore by the lead, task 6601;
+      no production run): local deploy of the local Semaphore's repository state
+      at local merge `3a586151`, which contains `feat/agw-mcp-gateway` at `a2b23a42`, with
+      the flag on. Later commits on that branch (the merge of `dev` and the review fixes) are
+      not exercised by this run. Its verify: "MCP: /mcp without a key is 401; as stray initialize returned a
+      session, tools/list listed list_models, chat_completions, and one chat call returned a
+      completion logged as mcp-self on the loopback listener." Scenario evidence: tools listed
+      (yes); a model request through MCP is charged to `mcp-self` (log identity `mcp-self`,
+      loopback listener); the key value is absent from the rendered config (only the
+      `mcp-self` key hash; the value sits in the 0600 `.env`) and from committed files (tests
+      in PR #634); no tool returns configuration (only two tools exist) and the admin port is
+      refused from a neighbour container (connection refused, the lead's probe). Not ticked:
+      PR #634 is not merged.
 
 ## 5. Edge: Caddy and Cloudflare
 - [ ] 5.1 `Caddyfile.local.j2`: a route flag (proposed `mcp_api`) rendering the allowlist
