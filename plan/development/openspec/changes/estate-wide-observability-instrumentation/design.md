@@ -564,6 +564,50 @@ unknown. Task success is not backup success without a matching fresh artifact.
 This is a source-only diagnostic, not live proof, and does not close parent
 4.6e, immutable-artifact, isolated-restore, capacity, or retention gates.
 
+### Failed-task identity and selected destination capacity snapshot
+
+The inspect-only workflow may compare the unique recent failed task's already
+protected one-line metadata response with the private selected job and o11y
+VM. Parse only a line beginning with the exact Proxmox
+`INFO: starting new backup job: vzdump ` prefix, using `shlex.split` as a
+parser only; never execute its contents. Accept options only as `--name value`
+or `--name=value`; every standalone option consumes the next token literally,
+including values beginning with `-`. Reject malformed option names, empty or
+missing values, short options, and positional VMIDs after the first option.
+Interpret `--job-id` and `--storage` only when they are option names, never
+when those strings occur inside another option's value. Compare the exact
+declared VMID against unique positional VMIDs, and compare only one
+`--job-id` value and one `--storage` value with the private
+declared VMID, selected job ID, and the exact selected job detail's storage.
+Duplicate or malformed compared options, malformed/oversized/synthetic lines,
+invalid private inputs, unavailable metadata, or an unreadable job detail
+produce unknown/null fields. Before any comparison, require every backup-list
+row to have a unique well-formed ID and require the one exact selected list row
+to match the selected detail under the existing `_stable_config` convention;
+malformed or duplicate identities anywhere in the list, missing/duplicate
+selection, or stable-configuration drift make every comparison unknown/null.
+An absent `--job-id` is unavailable. Matching
+VMID or storage does not establish selected-job attribution. Emit only
+fixed-schema comparison outcomes; never expose the command, identifiers,
+UPID, raw line, or API response. Keep the existing final-100-line `no_space`
+classifier unchanged.
+
+In inspect mode, read `/nodes/{declared node}/storage` through the existing
+protected Proxmox token. Compare the storage value from the exact selected job
+detail only after its stable configuration matches the unique exact-ID row in
+the protected backup-job list, and only with one exact storage ID in a
+complete, well-formed response;
+require that row to be active and declare `backup` content. Missing/ambiguous
+job identity or storage, failed response, absent selected row, malformed or
+duplicate rows, missing capacity fields, or permission-limited visibility
+produce `unknown`; capacity is never inferred from another visible row. Report
+only the destination state and a coarse free-space band
+(`zero`, `below_10_percent`, `10_to_30_percent`, `at_least_30_percent`, or
+`unknown`); never emit storage IDs, sizes, node, URL, or raw data. This is a
+point-in-time observation and is not proof that a full backup will fit or that
+the prior `no_space` failure came from this destination. It does not authorize
+backup execution, immutability, restore, VM growth, or retention changes.
+
 ## 2026-09-29 production disk-alert receipt
 
 Non-destructive production deploy task 1830 and read-only budget task 1831

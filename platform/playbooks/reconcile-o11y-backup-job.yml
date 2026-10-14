@@ -178,6 +178,65 @@
         _backup_inspection: "{{ _backup_inspection_result.stdout | from_json }}"
       no_log: true
 
+    - name: Read the privately selected backup-job detail for inspection
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/cluster/backup/{{ _backup_job_id }}"
+        method: GET
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      register: _backup_inspect_job_detail
+      failed_when: false
+      changed_when: false
+      check_mode: false
+      no_log: true
+      when:
+        - _inspect_only
+        - _backup_job_id is match('^[A-Za-z0-9._-]{1,64}$')
+        - "(_backup_inspection.candidates | selectattr('id', 'equalto', _backup_job_id) | list | length) == 1"
+
+    - name: Read storage available to the declared node for destination inspection
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/storage"
+        method: GET
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      register: _backup_node_storage
+      failed_when: false
+      changed_when: false
+      check_mode: false
+      no_log: true
+      when:
+        - _inspect_only
+        - _backup_job_id is match('^[A-Za-z0-9._-]{1,64}$')
+        - "(_backup_inspection.candidates | selectattr('id', 'equalto', _backup_job_id) | list | length) == 1"
+
+    - name: Summarize the selected job destination without exposing its identity
+      ansible.builtin.command:
+        argv: [python3, "{{ _planner }}", storage-summary]
+        stdin: >-
+          {{ {'job_id': _backup_job_id,
+              'jobs': _backup_jobs.json.data,
+              'job_detail_response': {
+                'status': _backup_inspect_job_detail.status | default(0),
+                'json': _backup_inspect_job_detail.json | default({})
+              },
+              'storage_response': {
+                'status': _backup_node_storage.status | default(0),
+                'json': _backup_node_storage.json | default({})
+              }} | to_json }}
+      register: _backup_selected_destination_result
+      failed_when: false
+      changed_when: false
+      check_mode: false
+      no_log: true
+      when: _inspect_only
+
+    - name: Keep the sanitized selected-destination state
+      ansible.builtin.set_fact:
+        _backup_selected_destination: "{{ _backup_selected_destination_result.stdout | from_json }}"
+      no_log: true
+      when: _inspect_only
+
     - name: Read effective permissions on the declared Proxmox node
       ansible.builtin.uri:
         url: "{{ _pve_host }}/api2/json/access/permissions?path={{ ('/nodes/' ~ _node) | urlencode }}"
@@ -467,6 +526,33 @@
       no_log: true
       when: _inspect_only and _backup_node_failure_plan.read_allowed | default(false) | bool
 
+    - name: Compare task metadata with private selected backup identity
+      ansible.builtin.command:
+        argv: [python3, "{{ _planner }}", node-failure-identity]
+        stdin: >-
+          {{ {'job_id': _backup_job_id, 'vmid': _vmid,
+              'jobs': _backup_jobs.json.data,
+              'job_detail_response': {
+                'status': _backup_inspect_job_detail.status | default(0),
+                'json': _backup_inspect_job_detail.json | default({})
+              },
+              'metadata_response': {
+                'status': _backup_node_failure_metadata.status | default(0),
+                'json': _backup_node_failure_metadata.json | default({})
+              }} | to_json }}
+      register: _backup_node_failure_identity_result
+      failed_when: false
+      changed_when: false
+      check_mode: false
+      no_log: true
+      when: _inspect_only
+
+    - name: Keep sanitized task identity comparisons
+      ansible.builtin.set_fact:
+        _backup_node_failure_identity: "{{ _backup_node_failure_identity_result.stdout | from_json }}"
+      no_log: true
+      when: _inspect_only
+
     - name: Plan the bounded final task-log page
       ansible.builtin.command:
         argv: [python3, "{{ _planner }}", node-failure-pages]
@@ -534,6 +620,8 @@
           backup_task_history: "{{ _backup_history_summary }}"
           proxmox_node_task_history: "{{ _backup_node_history_summary }}"
           proxmox_node_task_failure_diagnostic: "{{ _backup_node_failure_diagnostic }}"
+          proxmox_node_task_identity: "{{ _backup_node_failure_identity }}"
+          selected_backup_destination: "{{ _backup_selected_destination }}"
           proxmox_scheduler_state: "{{ _backup_scheduler_state_summary }}"
       when: _inspect_only
 
