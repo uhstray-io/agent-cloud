@@ -8,7 +8,7 @@
 
 - [x] 2.1 Provision private persistent Pyroscope, its Grafana datasource, and non-destructive deploy/read-back verification.
 - [x] 2.2 Add inventory-gated Alloy self-profile scrape and write pipeline with bounded labels and documented resource/privacy budget.
-- [ ] 2.3 Validate config and runtime sampling, storage persistence, and the spec scenarios “Profile pilot is disabled” and “Profile pilot is enabled.”
+- [ ] 2.3 Complete live acceptance for the disabled and enabled profile-pilot scenarios: validate the live config, sampling, delivery, and storage persistence after a shared Alloy-only operation guard covers both deploy and clean-deploy workflows and separate private-inventory provenance is verified. The source-level candidate preflight is prerequisite evidence only; it does not activate the receiver or complete this task. Keep this item open until the live acceptance evidence is recorded.
 
 ## 3. Actionable alerts
 

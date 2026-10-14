@@ -2124,6 +2124,18 @@ templates:
     # Reports fixed Alloy state fields only; inspect JSON, logs, paths, addresses,
     # command details, and subprocess output remain private.
 
+  - name: Verify o11y Profile Pilot Candidates (Dev)
+    playbook: platform/playbooks/verify-o11y-profile-pilot.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed agent-cloud commit SHA"
+        description: "Exact reviewed public revision required on the controller"
+        type: string
+        required: true
+    # Public SHA is guarded; the receipt fingerprints rendered candidates and reports
+    # private inventory revision as unverified for separate reviewed comparison.
+
   - name: Survey o11y Receiver Capabilities (Dev)
     playbook: platform/playbooks/survey-o11y-receiver-capabilities.yml
     repository: agent-cloud dev

@@ -1,0 +1,434 @@
+"""Static contract and sanitized-runtime tests for the profile preflight."""
+
+import hashlib
+import importlib.util
+import json
+import os
+import time
+from pathlib import Path
+
+import pytest
+import yaml
+
+ROOT = Path(__file__).resolve().parents[2]
+HELPER = ROOT / "platform/playbooks/files/verify-o11y-profile-candidates.py"
+PLAYBOOK = ROOT / "platform/playbooks/verify-o11y-profile-pilot.yml"
+TEMPLATES = ROOT / "platform/semaphore/templates.yml"
+ALLOY_TEMPLATE = ROOT / "platform/services/o11y/deployment/templates/config.alloy.j2"
+SPEC = importlib.util.spec_from_file_location("verify_o11y_profile_candidates", HELPER)
+CHECK = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(CHECK)
+
+
+def configs():
+    profiles = """
+pyroscope.write "private" {
+  endpoint {
+    url = "http://pyroscope:4040"
+  }
+  external_labels = { cluster = "test", environment = "dev" }
+}
+
+pyroscope.scrape "alloy_self_profile" {
+  job_name = "o11y/alloy"
+  targets = [
+    { "__address__" = "alloy:12345", "service_name" = "o11y/alloy", "target_id" = "service:o11y" },
+  ]
+  scrape_interval = "60s"
+  scrape_timeout = "10s"
+  delta_profiling_duration = "5s"
+  follow_redirects = false
+  proxy_from_environment = false
+  forward_to = [pyroscope.write.private.receiver]
+  profiling_config {
+    profile.process_cpu { enabled = true }
+    profile.memory { enabled = false }
+    profile.block { enabled = false }
+    profile.goroutine { enabled = false }
+    profile.mutex { enabled = false }
+    profile.fgprof { enabled = false }
+    profile.godeltaprof_memory { enabled = false }
+    profile.godeltaprof_mutex { enabled = false }
+    profile.godeltaprof_block { enabled = false }
+  }
+}
+"""
+    return "prometheus.scrape \"other\" {}\n", "prometheus.scrape \"other\" {}\n" + profiles
+
+
+def render_alloy_template(profile_enabled):
+    from jinja2 import Environment
+
+    env = Environment(keep_trailing_newline=True)
+    env.filters["bool"] = bool
+    env.filters["to_json"] = json.dumps
+    template = env.from_string(ALLOY_TEMPLATE.read_text(encoding="utf-8"))
+    return template.render(
+        local_mode=False,
+        o11y_cluster="test-cluster",
+        o11y_environment="dev",
+        _o11y_forbidden_metric_label_names_regex="request_id|user_id",
+        o11y_gateway_span_logs_enabled=False,
+        o11y_alloy_profile_pilot_enabled=profile_enabled,
+    )
+
+
+def test_candidate_structure_accepts_only_cpu_self_profile():
+    disabled, enabled = configs()
+
+    result = CHECK.validate_candidates(disabled, enabled)
+
+    assert result == {
+        "target_count": 1,
+        "profile_type_count": 9,
+        "profile_types": [
+            "process_cpu", "memory", "block", "goroutine", "mutex", "fgprof",
+            "godeltaprof_memory", "godeltaprof_mutex", "godeltaprof_block",
+        ],
+    }
+
+
+def test_rendered_template_candidates_match_outside_profile_blocks():
+    disabled = render_alloy_template(False)
+    enabled = render_alloy_template(True)
+
+    result = CHECK.validate_candidates(disabled, enabled)
+
+    assert result["target_count"] == 1
+    assert result["profile_type_count"] == 9
+
+
+def test_candidate_structure_refuses_enabled_only_change_outside_profile_blocks():
+    disabled = render_alloy_template(False)
+    enabled = render_alloy_template(True).replace(
+        'scrape_interval = "15s"', 'scrape_interval = "30s"', 1
+    )
+
+    with pytest.raises(CHECK.Refusal, match="candidate_invalid"):
+        CHECK.validate_candidates(disabled, enabled)
+
+
+@pytest.mark.parametrize(
+    "replacement",
+    [
+        ('"__address__" = "alloy:12345"', '"__address__" = "other:12345"'),
+        ('"service_name" = "o11y/alloy"', '"service_name" = "other"'),
+        ('profile.process_cpu { enabled = true }', 'profile.process_cpu { enabled = false }'),
+        ('profile.memory { enabled = false }', 'profile.memory { enabled = true }'),
+        ('scrape_interval = "60s"', 'scrape_interval = "30s"'),
+        ('follow_redirects = false', 'follow_redirects = true'),
+        ('url = "http://pyroscope:4040"', 'url = "https://example.invalid"'),
+    ],
+)
+def test_candidate_structure_refuses_unapproved_target_or_profile(replacement):
+    disabled, enabled = configs()
+    old, new = replacement
+    assert old in enabled
+    enabled = enabled.replace(old, new, 1)
+
+    with pytest.raises(CHECK.Refusal, match="candidate_invalid"):
+        CHECK.validate_candidates(disabled, enabled)
+
+
+def test_candidate_structure_refuses_extra_target_or_profile_component():
+    disabled, enabled = configs()
+    enabled = enabled.replace(
+        '"target_id" = "service:o11y"',
+        '"target_id" = "service:o11y" }, { "__address__" = "extra:12345", '
+        '"service_name" = "extra", "target_id" = "service:extra"',
+        1,
+    )
+
+    with pytest.raises(CHECK.Refusal, match="candidate_invalid"):
+        CHECK.validate_candidates(disabled, enabled)
+
+
+def test_balanced_block_parser_ignores_braces_in_comments_and_strings():
+    disabled, enabled = configs()
+    enabled += '\n// } pyroscope.scrape "fake" {\nlocal.file "brace" { path = "}" }\n'
+
+    assert set(CHECK._profile_blocks(enabled)) == {
+        "pyroscope.write.private", "pyroscope.scrape.alloy_self_profile",
+    }
+
+
+def test_runtime_receipt_is_fixed_and_does_not_claim_sampling(monkeypatch):
+    disabled, enabled = configs()
+    monkeypatch.setattr(CHECK, "_image_identity", lambda: "sha256:" + "a" * 64)
+    monkeypatch.setattr(CHECK, "_live_receiver_image_identity", lambda: "sha256:" + "a" * 64)
+    monkeypatch.setattr(CHECK, "_component_health", lambda _name, _config, _image: "healthy")
+    monkeypatch.setattr(CHECK, "_run_disabled", lambda _config, _image: "loaded_without_profile")
+
+    receipt = CHECK.validate_runtime({"disabled": disabled, "enabled": enabled})
+
+    assert receipt["status"] == "validated"
+    assert receipt["network"] == "none"
+    assert receipt["pull"] == "never"
+    assert receipt["sampling_or_delivery"] == "not_proven"
+    assert receipt["persistence"] == "not_proven"
+    assert receipt["image_parity"] == "verified"
+    assert receipt["live_receiver_image_id"] == receipt["image_id"]
+    assert receipt["disabled_config_sha256"] == hashlib.sha256(disabled.encode()).hexdigest()
+    assert receipt["enabled_config_sha256"] == hashlib.sha256(enabled.encode()).hexdigest()
+    assert "raw_config" not in receipt and "logs" not in receipt
+
+
+def test_runtime_refuses_unhealthy_profile_component(monkeypatch):
+    disabled, enabled = configs()
+    monkeypatch.setattr(CHECK, "_image_identity", lambda: "sha256:" + "a" * 64)
+    monkeypatch.setattr(CHECK, "_live_receiver_image_identity", lambda: "sha256:" + "a" * 64)
+    monkeypatch.setattr(CHECK, "_component_health", lambda _name, _config, _image: "unhealthy")
+    monkeypatch.setattr(CHECK, "_run_disabled", lambda _config, _image: "loaded_without_profile")
+
+    with pytest.raises(CHECK.Refusal, match="component_unhealthy"):
+        CHECK.validate_runtime({"disabled": disabled, "enabled": enabled})
+
+
+def test_runtime_refuses_candidate_image_that_differs_from_live_receiver(monkeypatch):
+    disabled, enabled = configs()
+    monkeypatch.setattr(CHECK, "_image_identity", lambda: "sha256:" + "a" * 64)
+    monkeypatch.setattr(CHECK, "_live_receiver_image_identity", lambda: "sha256:" + "b" * 64)
+
+    with pytest.raises(CHECK.Refusal, match="image_mismatch"):
+        CHECK.validate_runtime({"disabled": disabled, "enabled": enabled})
+
+
+def test_live_receiver_image_identity_uses_fixed_read_only_inspect(monkeypatch):
+    calls = []
+
+    def bounded(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return 0, ("sha256:" + "a" * 64 + " running\n").encode()
+
+    monkeypatch.setattr(CHECK, "_bounded_command", bounded)
+
+    assert CHECK._live_receiver_image_identity() == "sha256:" + "a" * 64
+    assert calls == [(
+        [
+            "podman", "container", "inspect", "o11y-alloy", "--format",
+            "{{.Image}} {{.State.Status}}",
+        ],
+        {"timeout": CHECK.IMAGE_TIMEOUT, "max_bytes": 512},
+    )]
+
+
+def test_component_api_health_is_required_and_reduced_to_one_state():
+    assert CHECK._project_component_health(
+        [{"localID": "pyroscope.scrape.alloy_self_profile", "health": {"state": "healthy"}}],
+        "pyroscope.scrape.alloy_self_profile",
+    ) == "healthy"
+    with pytest.raises(CHECK.Refusal, match="component_status_invalid"):
+        CHECK._project_component_health([], "pyroscope.scrape.alloy_self_profile")
+    with pytest.raises(CHECK.Refusal, match="component_status_invalid"):
+        CHECK._project_component_health(
+            [
+                {"localID": "pyroscope.scrape.alloy_self_profile", "health": {"state": "healthy"}},
+                {"localID": "pyroscope.scrape.alloy_self_profile", "health": {"state": "healthy"}},
+            ],
+            "pyroscope.scrape.alloy_self_profile",
+        )
+
+
+def test_component_api_requires_http_200_and_bounded_json_shape():
+    body = json.dumps([{"localID": "pyroscope.scrape.alloy_self_profile", "health": "healthy"}]).encode()
+    assert CHECK._parse_component_response(
+        b"HTTP/1.1 200 OK\r\nContent-Type: application/json", body,
+        "pyroscope.scrape.alloy_self_profile",
+    ) == "healthy"
+    with pytest.raises(CHECK.Refusal, match="component_status_invalid"):
+        CHECK._parse_component_response(
+            b"HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json", body,
+            "pyroscope.scrape.alloy_self_profile",
+        )
+    too_many = json.dumps([{}] * 4097).encode()
+    with pytest.raises(CHECK.Refusal, match="component_status_invalid"):
+        CHECK._parse_component_response(
+            b"HTTP/1.1 200 OK", too_many, "pyroscope.scrape.alloy_self_profile",
+        )
+
+
+@pytest.mark.parametrize("runner", ["component", "disabled"])
+def test_config_transfer_stall_refuses_within_startup_deadline(monkeypatch, runner):
+    disabled, enabled = configs()
+    processes = []
+
+    class Process:
+        pid = 123
+        stdout = None
+
+        def __init__(self):
+            read_fd, write_fd = os.pipe()
+            self.read_fd = read_fd
+            self.stdin = os.fdopen(write_fd, "wb", buffering=0)
+
+        @staticmethod
+        def poll():
+            return None
+
+        @staticmethod
+        def wait(*_args, **_kwargs):
+            return 0
+
+    def popen(*_args, **_kwargs):
+        process = Process()
+        processes.append(process)
+        return process
+
+    monkeypatch.setattr(CHECK.subprocess, "Popen", popen)
+    monkeypatch.setattr(CHECK, "STARTUP_SECONDS", 0.05)
+    monkeypatch.setattr(CHECK.os, "killpg", lambda *_args: None)
+    monkeypatch.setattr(CHECK, "_cleanup_container", lambda _name: None)
+    started = time.monotonic()
+
+    with pytest.raises(CHECK.Refusal, match="container_start_failed"):
+        if runner == "component":
+            CHECK._component_health(
+                "pyroscope.scrape.alloy_self_profile", "x" * CHECK.MAX_CONFIG_BYTES,
+                "sha256:" + "a" * 64,
+            )
+        else:
+            CHECK._run_disabled("x" * CHECK.MAX_CONFIG_BYTES, "sha256:" + "a" * 64)
+
+    assert time.monotonic() - started < 1
+    for process in processes:
+        os.close(process.read_fd)
+
+
+def test_process_cleanup_bounds_term_and_kill_waits(monkeypatch):
+    class Process:
+        pid = 123
+        stdin = None
+
+        @staticmethod
+        def poll():
+            return None
+
+        @staticmethod
+        def wait(*, timeout):
+            waits.append(timeout)
+            raise CHECK.subprocess.TimeoutExpired("podman", timeout)
+
+    waits = []
+    signals = []
+    monkeypatch.setattr(CHECK.os, "killpg", lambda _pid, sig: signals.append(sig))
+
+    with pytest.raises(CHECK.Refusal, match="cleanup_failed"):
+        CHECK._stop_process(Process())
+
+    assert waits == [2, 2]
+    assert signals == [CHECK.signal.SIGTERM, CHECK.signal.SIGKILL]
+
+
+@pytest.mark.parametrize("returncode", [0, 1, 2, 125])
+def test_cleanup_requires_podman_exact_name_to_be_absent(monkeypatch, returncode):
+    calls = []
+
+    def run(argv, **_kwargs):
+        calls.append(argv)
+        return type("Result", (), {"returncode": 0 if argv[1] == "rm" else returncode})()
+
+    monkeypatch.setattr(CHECK.subprocess, "run", run)
+    if returncode == 1:
+        CHECK._cleanup_container("o11y-profile-candidate-abc123")
+    else:
+        with pytest.raises(CHECK.Refusal, match="cleanup_failed"):
+            CHECK._cleanup_container("o11y-profile-candidate-abc123")
+    assert calls == [
+        ["podman", "rm", "--force", "o11y-profile-candidate-abc123"],
+        ["podman", "container", "exists", "o11y-profile-candidate-abc123"],
+    ]
+
+
+@pytest.mark.parametrize("fail_call", [1, 2])
+@pytest.mark.parametrize("failure", [OSError("unavailable"), CHECK.subprocess.TimeoutExpired("podman", 5)])
+def test_cleanup_command_error_or_timeout_refuses(monkeypatch, failure, fail_call):
+    calls = 0
+
+    def run(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == fail_call:
+            raise failure
+        return type("Result", (), {"returncode": 0 if calls == 1 else 1})()
+
+    monkeypatch.setattr(CHECK.subprocess, "run", run)
+
+    with pytest.raises(CHECK.Refusal, match="cleanup_failed"):
+        CHECK._cleanup_container("o11y-profile-disabled-abc123")
+
+
+@pytest.mark.parametrize("runner", ["component", "disabled"])
+def test_cleanup_failure_blocks_each_candidate_success(monkeypatch, runner):
+    disabled, enabled = configs()
+
+    class Process:
+        stdin = type("Stdin", (), {"write": lambda *_: None, "close": lambda *_: None})()
+        pid = 123
+
+        @staticmethod
+        def poll():
+            return None
+
+        @staticmethod
+        def wait(*_args, **_kwargs):
+            return 0
+
+    monkeypatch.setattr(CHECK.subprocess, "Popen", lambda *_args, **_kwargs: Process())
+    monkeypatch.setattr(CHECK.os, "killpg", lambda *_args: None)
+    monkeypatch.setattr(CHECK, "STARTUP_SECONDS", 0)
+    monkeypatch.setattr(CHECK, "_transfer_config", lambda *_args: 1)
+    monkeypatch.setattr(CHECK, "_wait_for_startup", lambda *_args: None)
+
+    def fail_cleanup(_name):
+        raise CHECK.Refusal("cleanup_failed")
+
+    monkeypatch.setattr(CHECK, "_cleanup_container", fail_cleanup)
+    if runner == "component":
+        response = (
+            b"HTTP/1.1 200 OK\r\n\r\n"
+            b'[{"localID":"pyroscope.scrape.alloy_self_profile","health":"healthy"}]'
+        )
+        monkeypatch.setattr(
+            CHECK,
+            "_bounded_command",
+            lambda *_args, **_kwargs: (0, response),
+        )
+        with pytest.raises(CHECK.Refusal, match="cleanup_failed"):
+            CHECK._component_health(
+                "pyroscope.scrape.alloy_self_profile", enabled, "sha256:" + "a" * 64
+            )
+    else:
+        with pytest.raises(CHECK.Refusal, match="cleanup_failed"):
+            CHECK._run_disabled(disabled, "sha256:" + "a" * 64)
+
+
+def test_candidate_payload_size_is_bounded():
+    with pytest.raises(CHECK.Refusal, match="candidate_invalid"):
+        CHECK.validate_candidates("x" * (CHECK.MAX_CONFIG_BYTES + 1), "")
+
+
+def test_playbook_is_read_only_exact_revision_pinned_and_check_mode_safe():
+    playbook = yaml.safe_load(PLAYBOOK.read_text())
+    rendered = PLAYBOOK.read_text()
+
+    assert playbook[1]["vars"]["_reviewed_checkout_payload_paths"] == [
+        "platform/playbooks/files/verify-o11y-profile-candidates.py",
+        "platform/services/o11y/deployment/templates/config.alloy.j2",
+    ]
+    assert "expected_site_config_sha" not in rendered
+    assert "private_revision: unverified" in rendered
+    assert "disabled_config_sha256" in rendered
+    assert "enabled_config_sha256" in rendered
+    assert "when: ansible_check_mode" in rendered
+    assert "when: not ansible_check_mode" in rendered
+    assert "network: \"none\"" not in rendered
+    assert "state: absent" in rendered
+
+
+def test_semaphore_entry_is_dev_bound_and_requires_only_public_revision():
+    templates = yaml.safe_load(TEMPLATES.read_text())["templates"]
+    entry = next(item for item in templates if item["name"] == "Verify o11y Profile Pilot Candidates (Dev)")
+
+    assert entry["repository"] == "agent-cloud dev"
+    assert entry["playbook"] == "platform/playbooks/verify-o11y-profile-pilot.yml"
+    assert [item["name"] for item in entry["survey_vars"]] == ["expected_repository_sha"]
