@@ -15,6 +15,7 @@ keyed `initialize` that comes back as an MCP reply fails the deploy.
 
 import json
 import os
+import re
 import sys
 import threading
 from http.server import ThreadingHTTPServer
@@ -347,6 +348,13 @@ def test_an_unknown_engine_is_refused_before_any_command_is_built(tmp_path, gate
     rc, out = _run(tmp_path, gateway("normal"), engine=engine.format(tmp=tmp_path))
     assert rc != 0 and "must be podman or docker" in out, out
     assert not (tmp_path / "pwned").exists() and not (tmp_path / "engine.calls").exists()
+
+
+def test_the_log_count_command_interpolates_only_two_quoted_values():
+    """Defence in depth behind the two asserts: the shell text names exactly the engine and the clock, quoted."""
+    task = next(t for t in PHASE3["tasks"] if t["name"].startswith("MCP: count the access-log lines"))
+    values = re.findall(r"\{\{(.*?)\}\}", task["ansible.builtin.shell"]["cmd"])
+    assert [v.strip() for v in values] == ["_engine | quote", "(_mcp_clock.stdout | trim) | quote"]
 
 
 def test_a_docker_engine_is_accepted(tmp_path, gateway):
