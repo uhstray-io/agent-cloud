@@ -507,6 +507,18 @@
       in MiB: alloy 49.5, grafana 69.2, loki 99.9, node-exporter 7.7, prometheus 99.9.
       Remaining: per-day ingestion and the alert thresholds from the baseline week; the
       retention increase stays blocked on the estate-wide 4.6e isolated-restore receipt.
+      2026-10-13 (task output read from production Semaphore by the lead): PR #602 (merged as
+      658f3ed9) added per-day figures to `Verify o11y Production Budgets`. Task 5329
+      (repository 3e7ce6cc, receiver 95554ab4): Loki ingested 107,044,302 bytes and 58,490
+      lines in 24 h; Prometheus appended 69,589,789 samples in 24 h; TSDB blocks 992,962,502
+      bytes, +26,487,309 in 24 h; 13,717 active series against the 2000 per-target
+      `sample_limit` (matches); root filesystem 84.2 GB free of 103.7 GB (81.22% free; all
+      five o11y volumes share it); memory headroom 86.22%; retention Loki 7d, Prometheus 15d
+      (size cap 0B), Tempo 168h. At these rates the 90d/45d target needs about 2.4 GB of
+      Prometheus blocks and at most about 4.8 GB of raw Loki intake before compression, well
+      inside the free space; disk is not the blocker. Remaining: alert thresholds from the
+      baseline (operator decision on the figures), and the retention increase, still blocked
+      on the estate-wide 4.6e isolated-restore receipt. Not ticked.
 - [x] 4.2 Append dated status lines to `plan/development/05-observability.md` and
       `plan/architecture/06-observability-instrumentation.md`
       2026-10-02 rescope: PARTIAL — 05-observability.md carries the dated production lines
