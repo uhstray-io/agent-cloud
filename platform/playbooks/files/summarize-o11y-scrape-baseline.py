@@ -943,7 +943,10 @@ def prepare_expected_target_transition(input_document: Any) -> dict[str, Any]:
     if not isinstance(input_document, dict):
         raise Refusal("invalid_transition")
     if input_document.get("managed") is False:
-        return {"status": "prepared", "reason": "local_compatibility", "paused_uids": [], "retired_uids": []}
+        return {
+            "status": "prepared", "reason": "local_compatibility", "paused_uids": [],
+            "retired_uids": [], "tombstones": [],
+        }
     previous: list[dict[str, Any]] = []
     previous_raw = input_document.get("previous_rules")
     if previous_raw:

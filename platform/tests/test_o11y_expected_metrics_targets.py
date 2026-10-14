@@ -280,6 +280,40 @@ def test_production_gate_local_compatibility_and_five_exact_matchers():
     assert rule["notification_settings"]["receiver"] == "agent-cloud-ops"
 
 
+def test_local_compatibility_transition_returns_the_complete_task_result_schema():
+    result = SURVEY.prepare_expected_target_transition({"managed": False})
+    assert result == {
+        "status": "prepared",
+        "reason": "local_compatibility",
+        "paused_uids": [],
+        "retired_uids": [],
+        "tombstones": [],
+    }
+
+
+def test_local_compatibility_cli_result_supplies_every_unconditional_ansible_consumer():
+    result = subprocess.run(
+        ["python3", str(HELPER), "--prepare-expected-target-transition"],
+        input=json.dumps({"managed": False}),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+
+    task_file = ROOT / "platform/playbooks/tasks/o11y-prepare-expected-target-transition.yml"
+    tasks = yaml.safe_load(task_file.read_text())
+    save_task = next(
+        task for task in tasks
+        if task.get("name") == "Save only the validated previous expected-target UIDs"
+    )
+    assignments = save_task["ansible.builtin.set_fact"]
+    for result_key in ("paused_uids", "retired_uids", "tombstones"):
+        assert result_key in payload
+        assert any(f").{result_key}" in expression for expression in assignments.values())
+
+
 def test_canary_pauses_expected_rules_and_retirement_keeps_owned_tombstone():
     target = _expected()
     canary = _service_rules(
