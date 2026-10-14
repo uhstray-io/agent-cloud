@@ -223,8 +223,11 @@ PY_DEF
   s_line=$(grep -n 'name: "Split them into the accounts being kept' "$DEPLOY" | cut -d: -f1)
   [ -n "$v_line" ] && [ -n "$s_line" ] && [ "$v_line" -lt "$s_line" ]
   assert_grep -q 'tasks/validate-platform-admins.yml' "$DEPLOY"
-  # the SAME file guards the credential print, which reads names back out of OpenBao
-  assert_grep -q 'tasks/validate-platform-admins.yml' "${BATS_TEST_DIRNAME}/../playbooks/print-platform-user-credentials.yml"
+  # the credential print does NOT read the (launcher-controllable) list: its allow-list is a
+  # committed constant, so it neither includes the validation nor mentions platform_admins
+  local pr="${BATS_TEST_DIRNAME}/../playbooks/print-platform-user-credentials.yml"
+  assert_grep -q '_platform_admins_printable_keys' "$pr"
+  refute_grep -qE '(^|[^_a-z])_?platform_admins([^_a-z]|$)' <(grep -vE '^\s*#' "$pr")
   assert_grep -q 'Refuse a malformed administrator list' "$shared"
   # no computed declaration is left in the playbook's own vars (check-secrets would fail closed)
   refute_grep -qE '^    _secret_definitions:' "$DEPLOY"

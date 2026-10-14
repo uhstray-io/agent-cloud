@@ -17,6 +17,7 @@ import re
 import subprocess
 from pathlib import Path
 
+import forgeries
 import pytest
 import yaml
 from ansible_python import needs_ansible
@@ -555,31 +556,6 @@ def _failed_task(done: subprocess.CompletedProcess) -> str:
     return ""
 
 
-@pytest.mark.parametrize("key", HOSTILE_KEYS)
-def test_a_crafted_admin_key_cannot_make_the_print_read_a_non_user_secret(tmp_path, key):
-    # An extra var `platform_admins` reaches the print playbook. The refusal is the list validation,
-    # which runs before any OpenBao call: the run never gets as far as authenticating.
-    done = _print_playbook(tmp_path, {"platform_admins": [_entry(key=key)], "credential_users": key.split("/")[0]})
-    assert done.returncode != 0, done.stdout
-    assert "Validate the declared administrator list" in _failed_task(done) or "Refuse a malformed" in _failed_task(
-        done
-    ), (_failed_task(done), done.stdout[-600:])
-    assert "Authenticate to OpenBao" not in done.stdout
-
-
-def test_a_normal_admin_key_is_still_allowed_to_print(tmp_path):
-    # The guards pass for the committed default and a normal declared list; the run proceeds to the
-    # store, which here is unreachable, so the failure is the authentication task.
-    for extra in (
-        {"credential_users": "wisward"},
-        {"credential_users": "jacob"},
-        {"platform_admins": [_entry(credential_print=True)], "credential_users": "carol"},
-    ):
-        done = _print_playbook(tmp_path, extra)
-        assert done.returncode != 0
-        assert "Authenticate to OpenBao" in _failed_task(done), (extra, _failed_task(done), done.stdout[-800:])
-
-
 def _refused_by_the_allow_list(done: subprocess.CompletedProcess) -> bool:
     """The run stopped at one of the two allow-list refusals, before it touched the store."""
     failed = _failed_task(done)
@@ -588,31 +564,73 @@ def _refused_by_the_allow_list(done: subprocess.CompletedProcess) -> bool:
     )
 
 
+# Keys a launcher might declare to reach a non-user secret, plus ordinary-looking person keys.
+@pytest.mark.parametrize("key", HOSTILE_KEYS + ["stray_admin", "agent_cloud_admin", "carol", "svc_automation"])
+def test_a_launcher_declared_admin_list_never_makes_anything_printable(tmp_path, key):
+    # `platform_admins` is launcher-controllable. The print's allow-list does not read it at all, so
+    # a declared entry (even one asking to be printable) is refused before any OpenBao call.
+    entry = _entry(key=key, credential_print=True)
+    done = _print_playbook(tmp_path, {"platform_admins": [entry], "credential_users": key.split("/")[0]})
+    assert done.returncode != 0, done.stdout
+    assert _refused_by_the_allow_list(done), (_failed_task(done), done.stdout[-600:])
+
+
+@pytest.mark.parametrize("who", ["wisward", "jacob"])
+def test_the_two_previously_printable_admins_still_print(tmp_path, who):
+    # They reach the store (unreachable here), so the failure is the authentication task, not a guard.
+    done = _print_playbook(tmp_path, {"credential_users": who})
+    assert done.returncode != 0
+    assert "Authenticate to OpenBao" in _failed_task(done), (who, _failed_task(done), done.stdout[-800:])
+
+
 @pytest.mark.parametrize("who", ["stray_admin", "agent_cloud_admin"])
 def test_the_break_glass_and_operator_admins_are_not_printable(tmp_path, who):
-    # Declaring an administrator must not widen what the print can read: only an explicit
-    # credential_print opt-in (set for wisward and jacob in the default) makes one printable.
     done = _print_playbook(tmp_path, {"credential_users": who})
     assert done.returncode != 0
     assert _refused_by_the_allow_list(done), _failed_task(done)
+
+
+@pytest.mark.parametrize(
+    "forge", forgeries.templated_forgeries("_platform_admins_printable_keys", ["wisward", "jacob"], ["stray_admin"])
+)
+def test_the_printable_constant_cannot_be_overridden_as_an_extra_var(tmp_path, forge):
+    # An underscore name is refused as an extra var by name, before anything renders
+    # (refuse-internal-extra-vars.yml), so even a templated forgery (plain, context-keyed or
+    # stateful) never makes stray_admin printable: the run stops before the store is touched.
+    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
+    env["ANSIBLE_NOCOLOR"] = "1"
+    base = json.dumps(
+        {
+            "openbao_addr": "http://127.0.0.1:9",
+            "i_understand_this_prints_secrets": True,
+            "credential_users": "stray_admin",
+        }
+    )
+    done = subprocess.run(
+        [
+            "ansible-playbook",
+            "-i",
+            "localhost,",
+            str(PLAYBOOKS / "print-platform-user-credentials.yml"),
+            "-e",
+            base,
+            "-e",
+            forge(tmp_path),
+        ],
+        cwd=REPO,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=120,
+    )
+    assert done.returncode != 0, done.stdout
+    assert "_platform_admins_printable_keys" in done.stdout + done.stderr, done.stdout[-600:]
     assert "Authenticate to OpenBao" not in done.stdout
 
 
-def test_a_declared_admin_without_the_opt_in_is_not_printable(tmp_path):
-    done = _print_playbook(tmp_path, {"platform_admins": [_entry()], "credential_users": "carol"})
-    assert done.returncode != 0
-    assert _refused_by_the_allow_list(done), _failed_task(done)
-
-
-def test_a_non_boolean_credential_print_is_refused(tmp_path):
-    done = _validate(tmp_path, {"platform_admins": [_entry(credential_print="yes please")]})
-    assert done.returncode != 0
-
-
-@pytest.mark.parametrize("key", ["db", "bootstrap", "secret_key", ".*", "../etc", "a b"])
-def test_the_allow_list_itself_never_admits_a_static_secret(tmp_path, key):
-    # Defence in depth: even with the validation removed, `_allowed` is built only from keys whose
-    # `<key>_password` is a per-user field the declaration generates and not a static secret.
+def _evaluate_allowed(tmp_path: Path, facts: dict, extra: dict) -> list:
+    """Evaluate the print playbook's own `_allowed`, with `facts` set the way set_fact would (above vars_files)."""
     plays = yaml.safe_load((PLAYBOOKS / "print-platform-user-credentials.yml").read_text())
     play = next(p for p in plays if "vars" in p)
     (tmp_path / "vars").symlink_to(PLAYBOOKS / "vars")
@@ -630,26 +648,20 @@ def test_the_allow_list_itself_never_admits_a_static_secret(tmp_path, key):
                 "_allowed": play["vars"]["_allowed"],
             },
             "tasks": [
+                {"ansible.builtin.set_fact": facts or {"_harness_marker": True}},
                 {
                     "ansible.builtin.copy": {
                         "dest": str(tmp_path / "allowed.json"),
                         "content": "{{ _allowed | to_json }}",
                     }
-                }
+                },
             ],
         }
     ]
     (tmp_path / "h.yml").write_text(yaml.safe_dump(harness))
     env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
     done = subprocess.run(
-        [
-            "ansible-playbook",
-            "-i",
-            "localhost,",
-            str(tmp_path / "h.yml"),
-            "-e",
-            json.dumps({"platform_admins": [_entry(key=key, credential_print=True), _entry(credential_print=True)]}),
-        ],
+        ["ansible-playbook", "-i", "localhost,", str(tmp_path / "h.yml"), "-e", json.dumps(extra)],
         cwd=tmp_path,
         env=env,
         text=True,
@@ -657,8 +669,26 @@ def test_the_allow_list_itself_never_admits_a_static_secret(tmp_path, key):
         check=False,
     )
     assert done.returncode == 0, done.stdout + done.stderr
-    allowed = json.loads((tmp_path / "allowed.json").read_text())
-    assert key not in allowed and "carol" in allowed, allowed
+    return json.loads((tmp_path / "allowed.json").read_text())
+
+
+def test_the_allow_list_ignores_the_administrator_list_entirely(tmp_path):
+    # Whatever the list says, `_allowed` is the blueprint's entries plus the committed constant.
+    crafted = [_entry(key=k, credential_print=True) for k in ("db", "stray_admin", "agent_cloud_admin", "carol")]
+    allowed = _evaluate_allowed(tmp_path, {}, {"platform_admins": crafted})
+    assert sorted(allowed) == ["andrew", "jacob", "wisward"], allowed
+
+
+@pytest.mark.parametrize("key", ["db", "bootstrap", "secret_key", "db_password", ".*", "../etc", "a b"])
+def test_a_bad_key_in_the_committed_constant_would_still_be_refused(tmp_path, key):
+    # Defence in depth: each constant key must be a plain slug naming no static secret.
+    allowed = _evaluate_allowed(tmp_path, {"_platform_admins_printable_keys": [key, "wisward"]}, {})
+    assert key not in allowed and "wisward" in allowed, allowed
+
+
+def test_the_committed_printable_constant_is_exactly_wisward_and_jacob():
+    consts = yaml.safe_load((PLAYBOOKS / "vars/platform-admins.yml").read_text())["_platform_admins_printable_keys"]
+    assert consts == ["wisward", "jacob"]
 
 
 def test_the_list_is_validated_before_the_guard_reads_its_usernames(tmp_path):

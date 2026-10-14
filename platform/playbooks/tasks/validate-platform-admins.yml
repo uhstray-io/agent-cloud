@@ -3,12 +3,12 @@
 #
 # The list (`_platform_admins`, vars/platform-admins.yml) is declared in inventory, which an
 # extra var can also set, and every entry's `key` is used to BUILD a secret field name
-# (`<key>_password`), a worker env name and, in the credential print, an allow-listed name to
-# read back out of OpenBao. A crafted key such as `db` or `bootstrap` would otherwise name the
-# Authentik database or akadmin bootstrap password as if it were a person's. So the list is
-# validated before anything acts on it, by the one task file both consumers include:
-#   deploy-authentik.yml            (accounts, env lines, password secrets)
-#   print-platform-user-credentials.yml  (the allow-list it reads from OpenBao)
+# (`<key>_password`) and a worker env name. A crafted key such as `db` or `bootstrap` would
+# otherwise collide with the Authentik database or akadmin bootstrap password. So the list is
+# validated before anything acts on it; deploy-authentik.yml includes this file.
+#
+# The credential print (print-platform-user-credentials.yml) does NOT read this list: what it may
+# print is a committed constant, because the list is launcher-controllable.
 #
 # Needs in scope: _platform_admins (vars/platform-admins.yml) and, from
 # vars/secret-declarations/authentik.yml, _static_secret_definitions + _secret_definitions.
@@ -23,7 +23,6 @@
       - item.name is defined and (item.name | string | trim | length) > 0
       - (item.type | default('user')) in ['user', 'service_account']
       - (item.type | default('user')) == 'service_account' or (item.email | default('') | string | trim | length) > 0
-      - item.credential_print is not defined or item.credential_print in [true, false]
       - ((item.key | default('') | string) ~ '_password') not in (_static_secret_definitions | map(attribute='name') | list)
       - (item.key | default('') | string) not in (_static_secret_definitions | map(attribute='name') | list)
     fail_msg: >-
@@ -31,7 +30,7 @@
       lowercase key (letters, digits, underscore) whose `<key>_password` field and own name are
       not an existing non-user secret (database, bootstrap, secret key, OIDC client secrets,
       service-account token, another user's password), a username, a name, a type of user or
-      service_account, an email unless it is a service account, and a boolean credential_print when set.
+      service_account, and an email unless it is a service account.
     quiet: true
   loop: "{{ _platform_admins }}"
   loop_control:

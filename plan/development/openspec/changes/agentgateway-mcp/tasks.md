@@ -310,9 +310,7 @@ operator's go for it. site-config changes land through its own pull requests.
         site-config sets on the Authentik host only; on the gateway host they are undefined,
         so the default would yield placeholder usernames and the wrong identities. Guard task
         idea: the gateway deploy, with the gate on, refuses when `platform_admins` is not
-        explicitly defined (that is, when it would fall back to the built default). An
-        explicit list must also set `credential_print: true` on any entry whose initial
-        password the credential print should still reach
+        explicitly defined (that is, when it would fall back to the built default).
 - [ ] 6.3 `Deploy agentgateway (Dev)` with the flag false, from a branch that carries the
       derivation (task 2.4): dry run; apply; then read the rendered config on the host (or
       the deploy's own report), counting `keyHash` lines and never printing them: the count
