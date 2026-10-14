@@ -482,6 +482,12 @@
       gateway's readiness endpoint. Also Probe Reachability (Dev) task 4851: caddy to
       gateway:4000 open; Verify agentgateway Runtime (Dev) task 4854: receipt matches the
       deployed revision `2e1799a3`. Not ticked.
+      2026-10-13: the `/health` handler named above already exists on the route-switch branch:
+      site-config `feat/inference-route-mode` commit bb54629 serves `/health` from the vLLM
+      head node in BOTH route modes (only `/v1/*` follows `inference_route_mode`); the
+      gateway's readiness port stays off the public edge. Gateway mode therefore keeps
+      Caddy's path to vLLM `/health` open. Remaining: the operator's go on site-config #66,
+      then the Caddy redeploy. Not ticked.
 - [ ] 4.4 Run dgx-spark's public-path verify play against the live hostname; update
       dgx-spark `docs/TEAM-ENDPOINT.md` (key changes, base URL does not)
 - [ ] 4.5 Validation gate: an unenrolled key gets 401 at the gateway with no vLLM log
