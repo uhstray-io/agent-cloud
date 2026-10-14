@@ -205,6 +205,10 @@ def test_report_is_allowlisted_and_has_no_private_topology_or_exact_capacity():
         "snapshot_unverified_visible_volume_preflight_passes_512_gib_disk": False,
         "snapshot_unverified_visible_volume_preflight_passes_1024_gib_disk": False,
         "storage_allocation_authorized": False,
+        "declared_thick_lvm_candidate_in_visible_eligible_set": False,
+        "declared_thick_lvm_required_config_fields_match": False,
+        "declared_thick_lvm_optional_config_fields_match": False,
+        "declared_thick_lvm_status_content_matches_config": False,
         "declared_thick_lvm_candidate_exact_match": False,
         "declared_thick_lvm_reported_vg_headroom_passes_256_gib": False,
         "declared_thick_lvm_reported_vg_headroom_passes_512_gib": False,
@@ -259,7 +263,10 @@ def test_report_is_allowlisted_and_has_no_private_topology_or_exact_capacity():
         "snapshot_unverified_visible_volume_preflight_passes_256_gib_disk",
         "snapshot_unverified_visible_volume_preflight_passes_512_gib_disk",
         "snapshot_unverified_visible_volume_preflight_passes_1024_gib_disk",
-        "storage_allocation_authorized", "declared_thick_lvm_candidate_exact_match",
+        "storage_allocation_authorized", "declared_thick_lvm_candidate_in_visible_eligible_set",
+        "declared_thick_lvm_required_config_fields_match",
+        "declared_thick_lvm_optional_config_fields_match",
+        "declared_thick_lvm_status_content_matches_config", "declared_thick_lvm_candidate_exact_match",
         "declared_thick_lvm_reported_vg_headroom_passes_256_gib",
         "declared_thick_lvm_reported_vg_headroom_passes_512_gib",
         "declared_thick_lvm_reported_vg_headroom_passes_1024_gib", "device_selected",
@@ -388,6 +395,10 @@ def test_declared_thick_lvm_store_matches_visible_candidate_and_reports_fixed_he
     result = inspect(data)
 
     assert result["declared_thick_lvm_candidate_exact_match"] is True
+    assert result["declared_thick_lvm_candidate_in_visible_eligible_set"] is True
+    assert result["declared_thick_lvm_required_config_fields_match"] is True
+    assert result["declared_thick_lvm_optional_config_fields_match"] is True
+    assert result["declared_thick_lvm_status_content_matches_config"] is True
     assert result["declared_thick_lvm_reported_vg_headroom_passes_256_gib"] is True
     assert result["declared_thick_lvm_reported_vg_headroom_passes_512_gib"] is True
     assert result["declared_thick_lvm_reported_vg_headroom_passes_1024_gib"] is True
@@ -433,15 +444,17 @@ def test_unrelated_thick_lvm_headroom_cannot_pass_declared_store_gate():
 
 
 @pytest.mark.parametrize(
-    "detail_override",
+    ("detail_override", "expected_required", "expected_optional"),
     (
-        {"vgname": "other-vg"},
-        {"content": "images"},
-        {"disable": 0},
-        {"nodes": "private-node"},
+        ({"vgname": "other-vg"}, False, True),
+        ({"content": "images"}, False, True),
+        ({"disable": 0}, True, False),
+        ({"nodes": "private-node"}, True, False),
     ),
 )
-def test_declared_thick_lvm_config_mismatch_never_sets_exact_or_headroom(detail_override):
+def test_declared_thick_lvm_config_mismatch_is_diagnosed_without_passing_headroom(
+    detail_override, expected_required, expected_optional
+):
     data = sample()
     declare_thick_candidate(data)
     data["storage_config"]["json"]["data"].update(detail_override)
@@ -451,6 +464,10 @@ def test_declared_thick_lvm_config_mismatch_never_sets_exact_or_headroom(detail_
     result = inspect(data)
 
     assert result["visible_thick_lvm_image_store_count"] == 1
+    assert result["declared_thick_lvm_candidate_in_visible_eligible_set"] is True
+    assert result["declared_thick_lvm_required_config_fields_match"] is expected_required
+    assert result["declared_thick_lvm_optional_config_fields_match"] is expected_optional
+    assert result["declared_thick_lvm_status_content_matches_config"] is True
     assert result["declared_thick_lvm_candidate_exact_match"] is False
     assert all(
         result[f"declared_thick_lvm_reported_vg_headroom_passes_{size}_gib"] is False
@@ -478,6 +495,10 @@ def test_declared_thick_lvm_status_config_mismatch_never_sets_exact_or_headroom(
     result = inspect(data)
 
     assert result["visible_thick_lvm_image_store_count"] == 1
+    assert result["declared_thick_lvm_candidate_in_visible_eligible_set"] is True
+    assert result["declared_thick_lvm_required_config_fields_match"] is True
+    assert result["declared_thick_lvm_optional_config_fields_match"] is True
+    assert result["declared_thick_lvm_status_content_matches_config"] is False
     assert result["declared_thick_lvm_candidate_exact_match"] is False
     assert all(
         result[f"declared_thick_lvm_reported_vg_headroom_passes_{size}_gib"] is False
@@ -496,6 +517,10 @@ def test_declared_thick_lvm_noneligible_shared_store_is_not_an_exact_candidate()
     result = inspect(data)
 
     assert result["visible_thick_lvm_image_store_count"] == 0
+    assert result["declared_thick_lvm_candidate_in_visible_eligible_set"] is False
+    assert result["declared_thick_lvm_required_config_fields_match"] is False
+    assert result["declared_thick_lvm_optional_config_fields_match"] is False
+    assert result["declared_thick_lvm_status_content_matches_config"] is False
     assert result["declared_thick_lvm_candidate_exact_match"] is False
     assert all(
         result[f"declared_thick_lvm_reported_vg_headroom_passes_{size}_gib"] is False

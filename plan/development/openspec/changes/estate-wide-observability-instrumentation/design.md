@@ -964,5 +964,35 @@ This is candidate identification for a later reviewed private `site-config`
 declaration only. It does not establish local physical media, device safety,
 allocation, PBS suitability/readiness, guest filesystem readiness, backup
 immutability, restore success, VM growth, or retention eligibility. It performs no
-Proxmox mutation and has no live receipt. Keep parent tasks 4.6c, 4.6d, and 4.6e
-unchecked.
+Proxmox mutation. The reviewed Dev-bound selector acceptance is recorded below;
+parent tasks 4.6c, 4.6d, and 4.6e remain unchecked.
+
+PR #628 merged to `dev` as `36c89cbc6d0bc9bbe3a16f62c7002e93706ff347` after
+independent approval and green CI. Semaphore publisher check 5614 and apply 5615
+passed, and unique-candidate selector task 5616 succeeded at that revision.
+Private site-config PR #84 selected the candidate, and official inventory-sync
+readback matched the merged source. This proves 4.6d1's unique-selector
+acceptance only; it does not establish physical backing, allocation authority,
+PBS readiness, restore, disk growth, or retention eligibility.
+
+### Declaring thick-LVM exact-match diagnostics
+
+The regular survey exposes four identifier-free booleans alongside the existing
+exact-match and headroom results: whether the declared storage ID is in the
+visible eligible candidate set; whether the required detail fields (`type`,
+`content`, `vgname`) match visible cluster config; whether optional `nodes` and
+`disable` fields match in both presence and value; and whether target-node status
+content matches visible config content. If there is no visible eligible
+candidate, all four diagnostics remain false. The exact-match result still
+requires candidate presence and every comparison, and declared headroom remains
+false unless exact match passes. These facts reuse existing protected responses;
+they add no reads, selection, authorization, or private values to output.
+
+Dev-bound GET-only survey task 5621 succeeded after private inventory
+synchronization. Its sanitized outcome was one visible eligible thick-LVM image
+candidate meeting the fixed 1024-GiB headroom threshold, while declared
+exact-match and all declared headroom booleans remained false. This source
+diagnostic separates the candidate-presence and config/status comparison
+outcomes. Task 4.6d1 is complete based on selector task 5616; tasks 4.6c, 4.6d,
+and 4.6e remain unchecked pending their separate proof gates. Backing media,
+allocation, PBS readiness, and restore remain unverified.

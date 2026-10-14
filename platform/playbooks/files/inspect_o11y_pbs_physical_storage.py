@@ -695,6 +695,10 @@ def _thick_lvm_facts(
     declared_config_detail = _api_data(
         declared_config_response, section="declared storage config", expected=Mapping
     )
+    declared_candidate_in_visible_eligible_set = declared_candidate is not None
+    required_config_fields_match = False
+    optional_config_fields_match = False
+    status_content_matches_config = False
     declared_candidate_exact_match = False
     if declared_candidate is not None:
         candidate_config, candidate_status, _ = declared_candidate
@@ -714,6 +718,7 @@ def _thick_lvm_facts(
             and isinstance(status_content, str)
             and set(configured_content.split(",")) == set(status_content.split(","))
         )
+        status_content_matches_config = content_matches
         declared_candidate_exact_match = (
             declared_config_detail.get("type") == "lvm"
             and required_config_fields_match
@@ -732,6 +737,10 @@ def _thick_lvm_facts(
         "thick_lvm_reported_vg_headroom_candidate_count_256_gib": 0,
         "thick_lvm_reported_vg_headroom_candidate_count_512_gib": 0,
         "thick_lvm_reported_vg_headroom_candidate_count_1024_gib": 0,
+        "declared_thick_lvm_candidate_in_visible_eligible_set": declared_candidate_in_visible_eligible_set,
+        "declared_thick_lvm_required_config_fields_match": required_config_fields_match,
+        "declared_thick_lvm_optional_config_fields_match": optional_config_fields_match,
+        "declared_thick_lvm_status_content_matches_config": status_content_matches_config,
         "declared_thick_lvm_candidate_exact_match": declared_candidate_exact_match,
         "declared_thick_lvm_reported_vg_headroom_passes_256_gib": False,
         "declared_thick_lvm_reported_vg_headroom_passes_512_gib": False,
