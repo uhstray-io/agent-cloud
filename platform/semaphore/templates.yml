@@ -2172,14 +2172,32 @@ templates:
     dev_variant: true
     # OpenBao-wrapper around the platform/infra/cloudflare OpenTofu root: fetches
     # the CF token + R2 keys from OpenBao, runs tofu against the R2 backend.
-    # tofu_action=plan (safe, default) or apply (gated change; run after review).
+    # tofu_action=plan (safe, default) or apply (generic reviewed change).
     survey_vars:
       - name: tofu_action
         title: "Action"
-        description: "plan (read-only, default) or apply (gated change)"
+        description: "plan (read-only, default) or apply a reviewed Cloudflare change"
         type: string
         required: false
         default_value: "plan"
+
+  - name: Apply Grafana API Cloudflare Tofu (Dev)
+    playbook: platform/playbooks/apply-cloudflare-grafana-api-tofu.yml
+    repository: agent-cloud dev
+    # The wrapper fixes the internal Grafana guard mode; only this Dev operation
+    # accepts the reviewed-plan digest and enforces the exact saved-plan contract.
+    survey_vars:
+      - name: tofu_action
+        title: "Action"
+        description: "plan (read-only, default) or apply the exact Grafana API rule insertion or zero-diff rerun"
+        type: string
+        required: false
+        default_value: "plan"
+      - name: reviewed_plan_digest
+        title: "Reviewed plan digest"
+        description: "SHA-256 receipt from a reviewed Grafana API plan; required for apply"
+        type: string
+        required: false
 
   - name: Publish Semaphore Template Surveys
     playbook: platform/playbooks/publish-semaphore-templates.yml
