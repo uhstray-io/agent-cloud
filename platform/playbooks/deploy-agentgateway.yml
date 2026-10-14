@@ -801,13 +801,9 @@
     _verify_default: "{{ (agw_identities | default(agw_clients | default([]))) | first | default('') }}"
     _engine: "{{ container_engine | default('podman') }}"
     # The access-log lines of the MCP chat call's own /v1 request: the internal identity, on the loopback listener,
-    # on the chat path. Colour codes are stripped first. Read from the hidden `_mcp_log` result; only this count
-    # ever leaves it (task 4.6).
-    _mcp_log_hits: >-
-      {{ ((_mcp_log.stdout | default('')) ~ '\n' ~ (_mcp_log.stderr | default('')))
-         | regex_replace('\x1b\[[0-9;]*m', '') | split('\n')
-         | select('search', 'listener=loopback') | select('search', 'identity="mcp-self"')
-         | select('search', 'http.path="/v1/chat/completions"') | list | length }}
+    # on the chat path. The match runs on the host (awk, colour codes stripped), so the registered stdout is the
+    # one number `_mcp_log_hits` reads and no log line ever reaches the task output (task 4.6).
+    _mcp_log_hits: "{{ (_mcp_log.stdout | default('0')) | trim | int }}"
     _probe: "{{ _engine }} exec agentgateway-db wget -q -O - -T 5"
     _tls: "{{ agw_listener_tls | default(false) | bool }}"
     # The name the probes use with listener TLS: one of the server leaf's SANs, and the name
@@ -1431,17 +1427,24 @@
         - _mcp_chat_tool | length > 0
         - not (_mcp_call_refused | bool)
 
-    # Hidden: the gateway's log lines are not credentials, but they carry client addresses and paths, and the
-    # report is names and counts only (_mcp_log_hits holds the one number that leaves). The line is written when
-    # the self-call's response completes, so allow it a moment to appear.
-    - name: "MCP: read the gateway's access log since the call (hidden; only a count leaves)"
-      ansible.builtin.command:
-        argv: ["{{ _engine }}", logs, --since, "{{ _mcp_clock.stdout | trim }}", agentgateway]
+    # The match runs on the host and prints a count, so no log line (client addresses, paths) can reach the task
+    # output, with or without a failure: the task needs no no_log. pipefail makes a failed `logs` fail the task
+    # instead of counting zero lines. The line is written when the self-call's response completes, so allow it a
+    # moment to appear.
+    - name: "MCP: count the access-log lines of the model call's /v1 request"
+      ansible.builtin.shell:
+        executable: /bin/bash
+        cmd: |
+          set -o pipefail
+          {{ _engine }} logs --since '{{ _mcp_clock.stdout | trim }}' agentgateway 2>&1 \
+            | awk '{ gsub(/\033\[[0-9;]*m/, "") }
+                   /listener=loopback/ && /identity="mcp-self"/ && /http\.path="\/v1\/chat\/completions"/ { n++ }
+                   END { print n + 0 }'
       register: _mcp_log
       changed_when: false
+      # Retries exhausted is not a failure of this task: the assert below judges the count and names it.
       failed_when: false
       check_mode: false
-      no_log: true
       retries: 5
       delay: 2
       until: (_mcp_log_hits | int) > 0
@@ -1459,8 +1462,8 @@
         that: (_mcp_log_hits | int) > 0
         fail_msg: >-
           No access-log line from the last minutes shows a /v1/chat/completions request on the loopback
-          listener as identity mcp-self ({{ _mcp_log_hits }} matching lines), so the MCP chat call was not
-          attributed to the internal identity. Log lines are not printed.
+          listener as identity mcp-self ({{ _mcp_log_hits }} matching lines; log read exit {{ _mcp_log.rc | default('?') }}), so the MCP chat call was not
+          attributed to the internal identity. Log lines are never printed.
         quiet: true
       when:
         - not ansible_check_mode

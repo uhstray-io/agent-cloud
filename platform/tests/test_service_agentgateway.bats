@@ -363,8 +363,6 @@ assert no_log_tasks == {
     validation.get('name'),
     'Classify the validator result without exposing its output',
     'Normalize validator diagnostics to a protected allowlisted category',
-    # The MCP verify's log read (task 4.6): hidden because log lines carry addresses and paths; only a count leaves.
-    "MCP: read the gateway's access log since the call (hidden; only a count leaves)",
 }
 PY
   refute_grep -qE "secrets\['client_" "$PLAYBOOK"
