@@ -9,16 +9,23 @@ from pathlib import Path
 
 import pytest
 import yaml
+from jinja2 import Environment, StrictUndefined
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "platform/playbooks/files"))
 
 from reconcile_proxmox_backup_job import (  # noqa: E402
+    HISTORY_LOOKBACK_SECONDS,
+    HISTORY_MAX_ROWS,
+    HISTORY_PAGE_SIZE,
     _safe_refusal,
     assert_unchanged,
     inspect_candidates,
     main,
+    plan_history_pages,
+    prepare_history_query,
     prepare_plan,
+    summarize_task_history,
     verify_readback,
 )
 
@@ -237,6 +244,180 @@ def test_cli_refusal_reports_only_allow_listed_text(monkeypatch, capsys):
     assert "private operator note" not in captured.out
 
 
+def permission_response(rights=None, status=200, path="/nodes/node-a"):
+    return {"status": status, "json": {"data": {path: rights or {"Sys.Audit": 1}}}}
+
+
+def task_row(index, status="OK", **overrides):
+    row = {
+        "upid": f"UPID:node-a:task-{index}",
+        "starttime": 1_000 + index,
+        "endtime": 1_001 + index,
+        "type": "vzdump",
+        "id": "200",
+        "status": status,
+    }
+    row.update(overrides)
+    return row
+
+
+def task_page(rows, total):
+    return {"status": 200, "json": {"data": rows, "total": total}}
+
+
+def history_plan(until=2_000):
+    return prepare_history_query({
+        "node": "node-a",
+        "vmid": "200",
+        "until": until,
+        "permissions_response": permission_response(),
+    })
+
+
+def test_history_query_requires_positive_node_scoped_sys_audit():
+    for permissions in (
+        permission_response({"Sys.Audit": 0}),
+        permission_response({"Sys.Audit": True}),
+        permission_response({"Sys.Audit": 1}, path="/nodes/other-node"),
+        permission_response(status=403),
+        {"status": 200, "json": {"data": []}},
+    ):
+        result = prepare_history_query({
+            "node": "node-a", "vmid": "200", "until": 2_000,
+            "permissions_response": permissions,
+        })
+        assert result == {
+            "read_allowed": False,
+            "summary": {
+                "outcome": "unknown", "reason": "permission_unverified",
+                "task_count": None, "job_attribution": "unavailable",
+            },
+        }
+        assert "Sys.Audit" not in json.dumps(result)
+        assert "/nodes/other-node" not in json.dumps(result)
+
+
+def test_history_query_uses_archived_vzdump_vm_window_and_30_day_lookback():
+    result = history_plan()
+
+    assert result["read_allowed"] is True
+    assert result["query"] == {
+        "source": "archive", "typefilter": "vzdump", "vmid": 200,
+        "since": max(0, 2_000 - HISTORY_LOOKBACK_SECONDS), "until": 2_000,
+        "start": 0, "limit": HISTORY_PAGE_SIZE,
+    }
+    assert result["summary"] is None
+
+
+def test_history_empty_result_requires_permission_and_reports_no_job_attribution():
+    plan = history_plan()
+    result = summarize_task_history({
+        "plan": plan, "first_page": task_page([], 0), "later_pages": [],
+    })
+
+    assert result == {
+        "outcome": "no_archived_task_in_lookback", "reason": None,
+        "task_count": 0, "job_attribution": "unavailable",
+    }
+
+
+def test_history_exact_upper_bound_is_paginated_and_accepted():
+    plan = history_plan()
+    rows = [task_row(index) for index in range(HISTORY_MAX_ROWS)]
+    first = task_page(rows[:HISTORY_PAGE_SIZE], HISTORY_MAX_ROWS)
+    page_plan = plan_history_pages({"read_allowed": True, "first_page": first})
+    assert page_plan == {
+        "page_starts": [50, 100, 150, 200], "summary": None,
+    }
+    later = [
+        task_page(rows[offset:offset + HISTORY_PAGE_SIZE], HISTORY_MAX_ROWS)
+        for offset in range(HISTORY_PAGE_SIZE, HISTORY_MAX_ROWS, HISTORY_PAGE_SIZE)
+    ]
+
+    result = summarize_task_history({"plan": plan, "first_page": first, "later_pages": later})
+    assert result == {
+        "outcome": "success", "reason": None, "task_count": HISTORY_MAX_ROWS,
+        "job_attribution": "unavailable",
+    }
+
+
+def test_history_over_bound_and_incomplete_pages_are_unknown():
+    plan = history_plan()
+    over_bound = task_page([task_row(index) for index in range(HISTORY_PAGE_SIZE)], HISTORY_MAX_ROWS + 1)
+    assert plan_history_pages({"read_allowed": True, "first_page": over_bound}) == {
+        "page_starts": [],
+        "summary": {
+            "outcome": "unknown", "reason": "pagination_limit_exceeded",
+            "task_count": None, "job_attribution": "unavailable",
+        },
+    }
+    assert summarize_task_history({"plan": plan, "first_page": over_bound})["outcome"] == "unknown"
+
+    first = task_page([task_row(index) for index in range(HISTORY_PAGE_SIZE)], 51)
+    gap = summarize_task_history({"plan": plan, "first_page": first, "later_pages": []})
+    malformed = summarize_task_history({
+        "plan": plan, "first_page": {"status": 200, "json": {"data": [], "total": "0"}},
+    })
+    request_failed = summarize_task_history({
+        "plan": plan, "first_page": {"status": 403, "json": {}},
+    })
+    mismatch = summarize_task_history({
+        "plan": plan,
+        "first_page": first,
+        "later_pages": [task_page([task_row(50)], 52)],
+    })
+    assert [gap["reason"], malformed["reason"], mismatch["reason"]] == [
+        "pagination_incomplete", "response_invalid", "pagination_incomplete",
+    ]
+    assert request_failed == {
+        "outcome": "unknown", "reason": "request_failed", "task_count": None,
+        "job_attribution": "unavailable",
+    }
+
+
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [
+        ("OK", "success"),
+        ("WARNINGS: 2", "incomplete"),
+        ("ERROR: private backup path failed", "failed"),
+        (None, "unknown"),
+        ("unexpected status", "unknown"),
+    ],
+)
+def test_history_classifies_latest_status_without_exposing_it(status, expected):
+    plan = history_plan()
+    result = summarize_task_history({
+        "plan": plan,
+        "first_page": task_page([task_row(1, status=status)], 1),
+        "later_pages": [],
+    })
+    encoded = json.dumps(result)
+    assert result["outcome"] == expected
+    assert result["job_attribution"] == "unavailable"
+    assert "private backup path failed" not in encoded
+    assert "UPID:" not in encoded
+
+
+def test_history_schema_gaps_and_wrong_identity_fail_closed_without_echo():
+    plan = history_plan()
+    malformed = summarize_task_history({
+        "plan": plan,
+        "first_page": task_page([task_row(1, comment="private detail", endtime="bad")], 1),
+        "later_pages": [],
+    })
+    wrong_id = summarize_task_history({
+        "plan": plan,
+        "first_page": task_page([task_row(1, id="201", status="ERROR: private")], 1),
+        "later_pages": [],
+    })
+    assert malformed["outcome"] == "unknown"
+    assert malformed["reason"] == "task_schema_invalid"
+    assert wrong_id["outcome"] == "unknown"
+    assert wrong_id["reason"] == "task_identity_invalid"
+    assert "private" not in json.dumps(malformed | wrong_id)
+
+
 def test_playbook_requires_reviewed_dev_and_guards_every_mutation():
     plays = yaml.safe_load((ROOT / "platform/playbooks/reconcile-o11y-backup-job.yml").read_text())
     play = next(item for item in plays if item.get("name") == "Reconcile the declared o11y backup job")
@@ -269,6 +450,49 @@ def test_playbook_requires_reviewed_dev_and_guards_every_mutation():
         "Require one exact private selected backup job"
     ) < names.index("Read the selected backup-job detail")
     assert by_name["End after read-only backup-job inspection"][1]["when"] == "_inspect_only"
+    history_tasks = [
+        task for task in tasks
+        if task.get("name", "").startswith((
+            "Read effective permissions on the declared Proxmox node",
+            "Read the first archived vzdump task page",
+            "Read later archived vzdump task pages",
+        ))
+    ]
+    assert len(history_tasks) == 3
+    assert all(task.get("no_log") is True for task in history_tasks)
+    assert all(task.get("check_mode") is False for task in history_tasks)
+    assert history_tasks[0]["when"] == "_inspect_only"
+    assert "_inspect_only" in history_tasks[1]["when"]
+    assert "_inspect_only" in history_tasks[2]["when"]
+    for task_name in (
+        "Plan bounded archived backup-task history inspection",
+        "Keep the bounded backup-task history query private to this run",
+        "Plan remaining bounded task-history pages",
+        "Keep the task-history pagination plan private to this run",
+        "Summarize archived task history without exposing task identity or details",
+        "Keep the sanitized task-history summary private to this run",
+    ):
+        assert by_name[task_name][1]["when"] == "_inspect_only"
+    assert "source=archive" in history_tasks[1]["ansible.builtin.uri"]["url"]
+    assert "typefilter=vzdump" in history_tasks[1]["ansible.builtin.uri"]["url"]
+    assert "~ item ~ '&limit=50'" in history_tasks[2]["ansible.builtin.uri"]["url"]
+    query_vars = {
+        "_pve_host": "https://pve.example",
+        "_node": "node-a",
+        "_vmid": "200",
+        "_backup_history_query": {"query": {"since": 1_700_000_000, "until": 1_702_592_000}},
+    }
+    first_url = Environment(undefined=StrictUndefined).from_string(
+        history_tasks[1]["ansible.builtin.uri"]["url"]
+    ).render(query_vars)
+    later_url = Environment(undefined=StrictUndefined).from_string(
+        history_tasks[2]["ansible.builtin.uri"]["url"]
+    ).render(query_vars | {"item": 50})
+    assert first_url == (
+        "https://pve.example/api2/json/nodes/node-a/tasks?source=archive&typefilter=vzdump&vmid=200"
+        "&since=1700000000&until=1702592000&start=0&limit=50"
+    )
+    assert later_url.endswith("&since=1700000000&until=1702592000&start=50&limit=50")
     assert names.index("Refresh the selected backup job immediately before a write") < names.index(
         "Refuse a backup job changed after inspection"
     ) < names.index("Add the o11y VM to the explicit VMID list")
@@ -297,7 +521,9 @@ def test_playbook_requires_reviewed_dev_and_guards_every_mutation():
         assert "stderr" not in task["ansible.builtin.assert"]["fail_msg"]
     for task in tasks:
         argv = task.get("ansible.builtin.command", {}).get("argv", [])
-        if len(argv) > 2 and argv[2] in {"inspect", "plan", "recheck", "verify"}:
+        if len(argv) > 2 and argv[2] in {
+            "inspect", "plan", "recheck", "verify", "history-query", "history-pages", "history-summary",
+        }:
             assert task.get("no_log") is True
 
 
