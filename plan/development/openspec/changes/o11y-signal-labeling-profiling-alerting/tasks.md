@@ -15,12 +15,12 @@
 ## 3. Actionable alerts
 
 - [x] 3.1 Add bounded ownership/context labels, dashboard/runbook annotations, and rule-level grouping/timing to existing Grafana rules without provisioning the policy tree.
-- [ ] 3.2 Extend deploy read-back and focused tests for rule settings and run a bounded Discord delivery drill. Source tests now cover exact labels, annotations, duration, and routing drift; live deploy read-back and the delivery drill remain pending.
-- [ ] 3.3 Validate the spec scenarios “Several target failures occur in one service” and “A notification change is deployed.” Source tests now verify same-service rules share service/environment/cluster grouping while retaining unique per-instance titles and details. The separate estate inventory acceptance is recorded in the related OpenSpec evidence; grouped alerting and notification-change receipts remain pending.
+- [ ] 3.2 Extend deploy read-back and focused tests for rule settings and run a bounded Discord delivery drill. Source validation now compares grouped and legacy rule labels, annotations, duration, pause state, notification settings, and explicit target/group tombstones; focused tests inject label, annotation, duration, pause, and routing drift and cover migration plus reviewed rollback. Live deploy read-back and the delivery drill remain pending.
+- [ ] 3.3 Validate the spec scenarios “Several target failures occur in one service” and “A notification change is deployed.” Source tests now verify one deterministic rule per service/environment/cluster, exact per-target selectors and instance labels, and explicit tombstoning of grouped UIDs before legacy rollback. The separate estate inventory acceptance is recorded in the related OpenSpec evidence; live grouped alerting and notification-change receipts remain pending.
 
 ## 4. Promotion and evidence
 
-- [x] 4.1 Run focused tests, lint, and strict OpenSpec validation; review the diff for secrets, volume preservation, and architecture compliance. Focused alert-render/read-back BATS tests passed 2/2, the full `test_service_o11y.bats` suite passed 58/58, Ansible lint passed, yamllint exited 0 with existing line-length warnings, and strict OpenSpec validation passed on an exact temporary copy of the change.
+- [x] 4.1 Run focused tests, lint, and strict OpenSpec validation; review the diff for secrets, volume preservation, and architecture compliance. The expected-target Python suite passed 53 tests, including exact grouped expressions, UID collision refusal, migration and explicit rollback, plus grouped live-readback drift; focused alert-readback BATS passed 1/1, Ansible lint passed, yamllint exited 0 with existing line-length warnings, and strict OpenSpec validation passed on an exact temporary copy of the change. Live acceptance remains under 3.2/3.3 and 4.3.
 - [ ] 4.2 Push one PR against `dev`, obtain one CodeRabbit or Claude review, resolve feedback, and merge only with green CI.
 - [ ] 4.3 Deploy non-destructively through Semaphore from `dev`, record runtime and resource evidence, and validate the spec scenario “Configuration is promoted.”
 

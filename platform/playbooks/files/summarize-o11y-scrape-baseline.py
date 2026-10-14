@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import ipaddress
+import hashlib
 import json
 import os
 import re
@@ -279,7 +280,128 @@ def validate_expected_target_declaration(
         raise Refusal("invalid_declaration")
     if all_target_uids.intersection(other_rule_uids):
         raise Refusal("invalid_declaration")
+    group_uids = [group["uid"] for group in expected_target_groups(normalized)]
+    if len(set(group_uids)) != len(group_uids) or set(group_uids) & all_target_uids:
+        raise Refusal("invalid_declaration")
+    if set(group_uids).intersection(other_rule_uids):
+        raise Refusal("invalid_declaration")
     return normalized, list(retired_uids)
+
+
+def expected_target_groups(targets: list[dict[str, str]]) -> list[dict[str, Any]]:
+    """Group targets by stable routing identity and assign a deterministic rule UID."""
+    grouped: dict[tuple[str, str, str], list[dict[str, str]]] = {}
+    for target in targets:
+        key = (target["service"], target["environment"], target["cluster"])
+        grouped.setdefault(key, []).append(target)
+    result = []
+    for (service, environment, cluster), members in sorted(grouped.items()):
+        canonical_key = json.dumps([service, environment, cluster], ensure_ascii=True, separators=(",", ":"))
+        digest = hashlib.sha256(canonical_key.encode("utf-8")).hexdigest()[:26]
+        uid = f"o11y_missing_g{digest}"
+        result.append({
+            "uid": uid,
+            "service": service,
+            "environment": environment,
+            "cluster": cluster,
+            "targets": sorted(members, key=lambda target: (target["job"], target["instance"])),
+        })
+    return result
+
+
+def expected_target_group_expression(group: dict[str, Any]) -> str:
+    """Emit one absent series per exact expected target selector."""
+    expressions = []
+    for target in group["targets"]:
+        matchers = ",".join(
+            f"{field}={json.dumps(target[field], ensure_ascii=True)}"
+            for field in ("job", "instance", "service", "cluster", "environment")
+        )
+        expressions.append(f"absent_over_time(up{{{matchers}}}[5m])")
+    return " or ".join(expressions)
+
+
+def _tombstone_title(uid: str, *, retired: bool = False) -> str:
+    state = "retired" if retired else "paused"
+    return f"Expected target {state} ({uid})"
+
+
+def _group_tombstone_title(uid: str) -> str:
+    return f"Expected target group paused ({uid})"
+
+
+def _as_tombstone(row: dict[str, Any], *, retired: bool = False) -> dict[str, Any]:
+    if row.get("_kind") == "group" or row.get("uid", "").startswith("o11y_missing_g"):
+        return {
+            "uid": row["uid"], "title": _group_tombstone_title(row["uid"]),
+            "summary": "Expected target group rule is paused.",
+            "description": "The group UID remains owned and inert for a reviewed rollback or disable transition.",
+            "labels": {"severity": "warning", "service": row["service"],
+                       "environment": row["environment"], "cluster": row["cluster"]},
+        }
+    identity = {field: row[field] for field in EXPECTED_IDENTITY_FIELDS if row.get(field)}
+    labels = {"severity": "warning", **identity,
+              "environment": identity.get("environment", "disabled")}
+    return {
+        "uid": row["uid"], "title": _tombstone_title(row["uid"], retired=retired),
+        "summary": "Expected metrics target rule is disabled.",
+        "description": "This owned UID was explicitly retired and remains inert." if retired
+        else ("The original target identity remains owned and inert." if identity else
+              "No target identity is retained while the reviewed alert gate is disabled."),
+        "labels": labels,
+    }
+
+
+def _group_from_rule(rule: dict[str, Any]) -> dict[str, Any]:
+    """Validate the generated group identity and recover its exact selector members."""
+    uid = rule.get("uid")
+    labels = rule.get("labels")
+    if not isinstance(uid, str) or not EXPECTED_UID.fullmatch(uid) or not isinstance(labels, dict):
+        raise Refusal("invalid_previous_rules")
+    service, environment, cluster = (labels.get(key) for key in ("service", "environment", "cluster"))
+    if any(not isinstance(value, str) or not SAFE_IDENTITY_VALUE.fullmatch(value)
+           for value in (service, environment, cluster)):
+        raise Refusal("invalid_previous_rules")
+    expected_group = expected_target_groups([{
+        "uid": "o11y_missing_internal",
+        "job": "internal", "instance": "internal:1", "service": service,
+        "environment": environment, "cluster": cluster,
+    }])[0]
+    if uid != expected_group["uid"]:
+        raise Refusal("invalid_previous_rules")
+    data = rule.get("data")
+    if not isinstance(data, list) or not data or not isinstance(data[0], dict):
+        raise Refusal("invalid_previous_rules")
+    expression = data[0].get("model", {}).get("expr")
+    if not isinstance(expression, str) or len(expression) > 32768:
+        raise Refusal("invalid_previous_rules")
+    member_rows = []
+    for term in expression.split(" or "):
+        match = re.fullmatch(
+            r'absent_over_time\(up\{job="([A-Za-z0-9][A-Za-z0-9_.:/@-]{0,127})",'
+            r'instance="([A-Za-z0-9][A-Za-z0-9_.:/@-]{0,127})",'
+            r'service="([A-Za-z0-9][A-Za-z0-9_.:/@-]{0,127})",'
+            r'cluster="([A-Za-z0-9][A-Za-z0-9_.:/@-]{0,127})",'
+            r'environment="([A-Za-z0-9][A-Za-z0-9_.:/@-]{0,127})"\}\[5m\]\)',
+            term,
+        )
+        if not match:
+            raise Refusal("invalid_previous_rules")
+        member = dict(zip(EXPECTED_IDENTITY_FIELDS, (match[1], match[2], match[3], match[4], match[5])))
+        if (member["service"], member["environment"], member["cluster"]) != (service, environment, cluster):
+            raise Refusal("invalid_previous_rules")
+        member_rows.append(member)
+    if not member_rows or len({tuple(row[field] for field in EXPECTED_IDENTITY_FIELDS) for row in member_rows}) != len(member_rows):
+        raise Refusal("invalid_previous_rules")
+    if expression != " or ".join(
+        f'absent_over_time(up{{job={json.dumps(row["job"])},instance={json.dumps(row["instance"])},'
+        f'service={json.dumps(row["service"])},cluster={json.dumps(row["cluster"])},'
+        f'environment={json.dumps(row["environment"])}}}[5m])'
+        for row in member_rows
+    ):
+        raise Refusal("invalid_previous_rules")
+    return {"uid": uid, "service": service, "environment": environment, "cluster": cluster,
+            "targets": member_rows, "_expr": expression}
 
 
 def _expected_target_queries_match(data: Any, expression: str) -> bool:
@@ -342,18 +464,47 @@ def _live_rule_matches_owned(rule: Any, target: dict[str, Any], folder_uid: str)
     """Compare an API readback with one validated provisioning owner."""
     if not isinstance(rule, dict) or rule.get("folderUID") != folder_uid:
         return False
+    if target.get("_kind") == "group":
+        if target["_inert"]:
+            return (
+                rule.get("title") == _group_tombstone_title(target["uid"])
+                and rule.get("condition") == "B" and rule.get("isPaused") is True
+                and rule.get("labels") == {
+                    "severity": "warning", "service": target["service"],
+                    "environment": target["environment"], "cluster": target["cluster"],
+                    "owner": "platform-operations",
+                }
+                and _expected_target_queries_match(rule.get("data"), "vector(0)")
+                and rule.get("noDataState") == "OK" and rule.get("execErrState") == "OK"
+                and rule.get("for") == "0s"
+                and rule.get("annotations") == {
+                    "summary": "Expected target group rule is paused.",
+                    "description": "The group UID remains owned and inert for a reviewed rollback or disable transition.",
+                }
+                and rule.get("notification_settings") in (None, {})
+            )
+        return (
+            rule.get("title") == target["_title"]
+            and rule.get("condition") == "B"
+            and rule.get("labels") == target["_labels"]
+            and _expected_target_queries_match(rule.get("data"), target["_expr"])
+            and rule.get("annotations") == target["_annotations"]
+            and rule.get("isPaused") is target["_is_paused"]
+            and rule.get("notification_settings") == target["_notification_settings"]
+            and rule.get("noDataState") == "OK" and rule.get("execErrState") == "Alerting"
+            and rule.get("for") == "2m"
+        )
     if target["_inert"]:
         retired = target["_retired"]
         return (
             rule.get("title") == (
-                "Expected metrics target explicitly retired"
-                if retired else "Expected metrics target previously declared"
+                target.get("_title") or _tombstone_title(target["uid"], retired=retired)
             )
             and rule.get("condition") == "B"
             and rule.get("isPaused") is True
-            and rule.get("labels") == {
+            and rule.get("labels") == target.get("_labels", {
                 "severity": "warning", "owner": "platform-operations", "environment": "disabled",
-            }
+            })
             and _expected_target_queries_match(rule.get("data"), "vector(0)")
             and rule.get("noDataState") == "OK"
             and rule.get("execErrState") == "OK"
@@ -362,7 +513,9 @@ def _live_rule_matches_owned(rule: Any, target: dict[str, Any], folder_uid: str)
                 "summary": "Expected metrics target rule is disabled.",
                 "description": (
                     "This owned UID was explicitly retired and remains inert."
-                    if retired else "No target identity is retained while the reviewed alert gate is disabled."
+                    if retired else ("The original target identity remains owned and inert."
+                                     if target.get("job") else
+                                     "No target identity is retained while the reviewed alert gate is disabled.")
                 ),
             }
             and rule.get("notification_settings") in (None, {})
@@ -397,8 +550,15 @@ def validate_active_expected_target_rules(input_document: Any) -> dict[str, Any]
             input_document.get("targets"), input_document.get("retired_uids"),
             reviewed=input_document.get("reviewed"),
         )
+    mode = input_document.get("mode", "legacy")
+    if mode not in {"grouped", "legacy"}:
+        raise Refusal("invalid_declaration")
+    groups = expected_target_groups(targets)
+    active_target_rows = targets if mode == "legacy" else []
+    active_group_rows = groups if mode == "grouped" else []
     paused = input_document.get("paused_uids", [])
-    active_uids = {target["uid"] for target in targets}
+    tombstones = input_document.get("tombstones", [])
+    active_uids = {row["uid"] for row in [*active_target_rows, *active_group_rows]}
     if (
         not isinstance(paused, list)
         or any(not isinstance(uid, str) or not EXPECTED_UID.fullmatch(uid) for uid in paused)
@@ -421,28 +581,82 @@ def validate_active_expected_target_rules(input_document: Any) -> dict[str, Any]
         raise Refusal("live_folder_drift")
     folder_uid = matching_folders[0]["uid"]
     by_uid = {rule.get("uid"): rule for rule in rules if isinstance(rule, dict)}
-    target_uids = active_uids
-    if len(by_uid) != len(rules) or set(by_uid) != target_uids | set(paused) | set(retired):
-        raise Refusal("live_target_drift")
-    active_contract = _expected_target_contracts(targets)
+    expected_tombstones = {row.get("uid"): row for row in tombstones if isinstance(row, dict)}
     for target in targets:
+        if mode == "grouped":
+            expected_tombstones[target["uid"]] = _as_tombstone({"_kind": "target", **target})
+    for uid in retired:
+        expected_tombstones.setdefault(uid, _as_tombstone({"uid": uid}, retired=True))
+    expected_ids = active_uids | set(paused) | set(retired)
+    if len(by_uid) != len(rules) or set(by_uid) != expected_ids:
+        raise Refusal("live_target_drift")
+    active_target_contracts = _expected_target_contracts(active_target_rows)
+    active_group_contracts = _expected_group_contracts(active_group_rows)
+    for target in active_target_rows:
         rule = by_uid[target["uid"]]
-        if not _live_rule_matches_owned(rule, active_contract[target["uid"]], folder_uid):
+        if not _live_rule_matches_owned(rule, active_target_contracts[target["uid"]], folder_uid):
             raise Refusal("live_target_drift")
         if rule.get("isPaused") is not False or rule.get("notification_settings") != {
             "receiver": "agent-cloud-ops", "group_by": ["service", "environment", "cluster", "alertname"],
             "group_wait": "30s", "group_interval": "5m", "repeat_interval": "4h",
         }:
             raise Refusal("live_target_drift")
-    for uid in retired:
-        rule = by_uid[uid]
-        if not _live_rule_matches_owned(rule, {"_inert": True, "_retired": True}, folder_uid):
+    for group in active_group_rows:
+        if not _live_rule_matches_owned(by_uid[group["uid"]], active_group_contracts[group["uid"]], folder_uid):
             raise Refusal("live_target_drift")
-    for uid in paused:
-        rule = by_uid[uid]
-        if not _live_rule_matches_owned(rule, {"_inert": True, "_retired": False}, folder_uid):
+        if by_uid[group["uid"]].get("isPaused") is not False or by_uid[group["uid"]].get("notification_settings") != {
+            "receiver": "agent-cloud-ops", "group_by": ["service", "environment", "cluster", "alertname"],
+            "group_wait": "30s", "group_interval": "5m", "repeat_interval": "4h",
+        }:
             raise Refusal("live_target_drift")
-    return {"status": "validated", "active_count": len(targets), "retired_count": len(retired)}
+    for uid in set(paused) | set(retired):
+        rule = by_uid[uid]
+        tombstone = expected_tombstones.get(uid)
+        if tombstone is None:
+            raise Refusal("live_target_drift")
+        if tombstone["uid"].startswith("o11y_missing_g"):
+            expected = {
+                "uid": uid, "_kind": "group", "_inert": True, "_retired": False,
+                "service": tombstone["labels"]["service"],
+                "environment": tombstone["labels"]["environment"],
+                "cluster": tombstone["labels"]["cluster"],
+            }
+        else:
+            expected = {"uid": uid, "_kind": "target", **{
+                field: tombstone["labels"].get(field) for field in EXPECTED_IDENTITY_FIELDS
+                if tombstone["labels"].get(field)
+            }, "_title": tombstone["title"], "_labels": {
+                **tombstone["labels"], "owner": "platform-operations",
+            }, "_inert": True, "_retired": uid in retired}
+        if not _live_rule_matches_owned(rule, expected, folder_uid):
+            raise Refusal("live_target_drift")
+    return {"status": "validated", "active_count": len(active_uids), "retired_count": len(retired)}
+
+
+def _expected_group_contracts(groups: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    contracts = {}
+    for group in groups:
+        expr = expected_target_group_expression(group)
+        contracts[group["uid"]] = {
+            **group, "_kind": "group", "_inert": False, "_retired": False,
+            "_title": f"Missing telemetry group ({group['uid']})", "_expr": expr,
+            "_labels": {
+                "severity": "critical", "job": "{{ $labels.job }}", "instance": "{{ $labels.instance }}",
+                "service": group["service"], "owner": "platform-operations",
+                "environment": group["environment"], "cluster": group["cluster"],
+            },
+            "_annotations": {
+                "summary": "Expected metrics have disappeared for {{ $labels.service }} at {{ $labels.instance }}.",
+                "dashboard_url": f"/d/service-overview?var-service={group['service']}",
+                "description": "Check the declared metrics target and its service onboarding receipt.",
+            },
+            "_is_paused": False,
+            "_notification_settings": {
+                "receiver": "agent-cloud-ops", "group_by": ["service", "environment", "cluster", "alertname"],
+                "group_wait": "30s", "group_interval": "5m", "repeat_interval": "4h",
+            },
+        }
+    return contracts
 
 
 def _expected_target_contracts(targets: list[dict[str, str]]) -> dict[str, dict[str, Any]]:
@@ -466,7 +680,7 @@ def _expected_target_contracts(targets: list[dict[str, str]]) -> dict[str, dict[
                 "environment": target["environment"], "cluster": target["cluster"],
             },
             "_annotations": {
-                "summary": f"Expected metrics have disappeared for {target['service']}.",
+                "summary": f"Expected metrics have disappeared for {target['service']} at {target['instance']}.",
                 "dashboard_url": f"/d/service-overview?var-service={target['service']}",
                 "description": "Check the declared metrics target and its service onboarding receipt.",
             },
@@ -506,38 +720,115 @@ def _owned_expected_targets(document: Any) -> list[dict[str, Any]]:
         if not isinstance(uid, str) or not EXPECTED_UID.fullmatch(uid):
             raise Refusal("invalid_previous_rules")
         rule_data = rule.get("data")
-        if (
-            rule.get("title") in {
-                "Expected metrics target previously declared",
-                "Expected metrics target explicitly retired",
+        if uid.startswith("o11y_missing_g"):
+            if rule.get("title") == _group_tombstone_title(uid):
+                service, environment, cluster = (labels.get(key) for key in ("service", "environment", "cluster"))
+                group = _group_from_rule({"uid": uid, "labels": labels, "data": [
+                    {"model": {"expr": "absent_over_time(up{job=\"tombstone\",instance=\"tombstone:1\","
+                     f"service={json.dumps(service)},cluster={json.dumps(cluster)},"
+                     f"environment={json.dumps(environment)}[5m])"}}
+                ]})
+                expected_labels = {"severity": "warning", "service": service,
+                                   "environment": environment, "cluster": cluster,
+                                   "owner": "platform-operations"}
+                if (
+                    rule.get("isPaused") is True
+                    and "notification_settings" not in rule
+                    and rule.get("condition") == "B"
+                    and _expected_target_queries_match(rule_data, "vector(0)")
+                    and rule.get("noDataState") == "OK" and rule.get("execErrState") == "OK"
+                    and rule.get("for") == "0s" and labels == expected_labels
+                    and rule.get("annotations") == {
+                        "summary": "Expected target group rule is paused.",
+                        "description": "The group UID remains owned and inert for a reviewed rollback or disable transition.",
+                    }
+                ):
+                    owned.append({**group, "_kind": "group", "_inert": True, "_retired": False})
+                    continue
+                raise Refusal("invalid_previous_rules")
+            group = _group_from_rule(rule)
+            expected_labels = {
+                "severity": "critical", "job": "{{ $labels.job }}", "instance": "{{ $labels.instance }}",
+                "service": group["service"], "owner": "platform-operations",
+                "environment": group["environment"], "cluster": group["cluster"],
             }
-            and rule.get("isPaused") is True
-            and "notification_settings" not in rule
-            and set(rule) == {
-                "uid", "title", "condition", "data", "noDataState", "execErrState", "for",
-                "annotations", "labels", "isPaused",
+            expected_annotations = {
+                "summary": "Expected metrics have disappeared for {{ $labels.service }} at {{ $labels.instance }}.",
+                "dashboard_url": f"/d/service-overview?var-service={group['service']}",
+                "description": "Check the declared metrics target and its service onboarding receipt.",
             }
-            and labels == {"severity": "warning", "owner": "platform-operations", "environment": "disabled"}
-            and rule.get("condition") == "B"
-            and _expected_target_queries_match(rule_data, "vector(0)")
-            and rule.get("noDataState") == "OK"
-            and rule.get("execErrState") == "OK"
-            and rule.get("for") == "0s"
-            and rule.get("annotations") == {
-                "summary": "Expected metrics target rule is disabled.",
-                "description": (
-                    "This owned UID was explicitly retired and remains inert."
-                    if rule.get("title") == "Expected metrics target explicitly retired"
-                    else "No target identity is retained while the reviewed alert gate is disabled."
-                ),
-            }
-        ):
-            owned.append({
-                "uid": uid,
-                "_inert": True,
-                "_retired": rule["title"] == "Expected metrics target explicitly retired",
-            })
+            active_group = (
+                rule.get("title") == f"Missing telemetry group ({uid})"
+                and labels == expected_labels and rule.get("condition") == "B"
+                and _expected_target_queries_match(rule_data, group["_expr"])
+                and rule.get("noDataState") == "OK" and rule.get("execErrState") == "Alerting"
+                and rule.get("for") == "2m" and rule.get("isPaused") in (True, False)
+                and rule.get("annotations") == expected_annotations
+                and set(rule) == {
+                    "uid", "title", "condition", "data", "noDataState", "execErrState", "for",
+                    "annotations", "labels", "isPaused",
+                } | ({"notification_settings"} if "notification_settings" in rule else set())
+                and ("notification_settings" not in rule or rule["notification_settings"] == {
+                    "receiver": "agent-cloud-ops", "group_by": ["service", "environment", "cluster", "alertname"],
+                    "group_wait": "30s", "group_interval": "5m", "repeat_interval": "4h",
+                })
+            )
+            if not active_group:
+                raise Refusal("invalid_previous_rules")
+            owned.append({**group, "_kind": "group", "_inert": False, "_retired": False,
+                          "_title": rule["title"], "_labels": labels, "_is_paused": rule["isPaused"],
+                          "_annotations": rule["annotations"],
+                          "_notification_settings": rule.get("notification_settings")})
             continue
+        old_inert_title = rule.get("title") in {
+            "Expected metrics target previously declared", "Expected metrics target explicitly retired",
+        }
+        new_inert_title = rule.get("title") in {_tombstone_title(uid), _tombstone_title(uid, retired=True)}
+        if (old_inert_title or new_inert_title) and rule.get("isPaused") is True:
+            retired = rule.get("title") in {"Expected metrics target explicitly retired", _tombstone_title(uid, retired=True)}
+            if labels == {"severity": "warning", "owner": "platform-operations", "environment": "disabled"}:
+                identity = {}
+            else:
+                if not isinstance(labels, dict) or set(labels) != {
+                    "severity", "job", "instance", "service", "cluster", "owner", "environment",
+                }:
+                    raise Refusal("invalid_previous_rules")
+                identity = {field: labels.get(field) for field in EXPECTED_IDENTITY_FIELDS}
+                try:
+                    normalized, _ = validate_expected_target_declaration([{"uid": uid, **identity}])
+                except Refusal:
+                    raise Refusal("invalid_previous_rules") from None
+                identity = normalized[0]
+            title_ok = old_inert_title or rule.get("title") == _tombstone_title(uid, retired=retired)
+            expected_annotations = {
+                "summary": "Expected metrics target rule is disabled.",
+                "description": "This owned UID was explicitly retired and remains inert." if retired
+                else "No target identity is retained while the reviewed alert gate is disabled.",
+            }
+            if identity:
+                expected_annotations["description"] = "The original target identity remains owned and inert."
+            if (
+                "notification_settings" not in rule and rule.get("condition") == "B"
+                and _expected_target_queries_match(rule_data, "vector(0)")
+                and rule.get("noDataState") == "OK" and rule.get("execErrState") == "OK"
+                and rule.get("for") == "0s" and rule.get("annotations") == expected_annotations
+                and title_ok and rule.get("title") in {_tombstone_title(uid), _tombstone_title(uid, retired=True)}
+                or (old_inert_title and rule.get("title") in {
+                    "Expected metrics target previously declared", "Expected metrics target explicitly retired",
+                } and labels == {"severity": "warning", "owner": "platform-operations", "environment": "disabled"}
+                and "notification_settings" not in rule and rule.get("condition") == "B"
+                and _expected_target_queries_match(rule_data, "vector(0)") and rule.get("noDataState") == "OK"
+                and rule.get("execErrState") == "OK" and rule.get("for") == "0s"
+                and rule.get("annotations") == {
+                    "summary": "Expected metrics target rule is disabled.",
+                    "description": "This owned UID was explicitly retired and remains inert." if retired
+                    else "No target identity is retained while the reviewed alert gate is disabled.",
+                })
+            ):
+                owned.append({"uid": uid, "_kind": "target", **identity, "_inert": True, "_retired": retired,
+                              "_title": rule.get("title"), "_labels": labels})
+                continue
+            raise Refusal("invalid_previous_rules")
         if not isinstance(labels, dict):
             raise Refusal("invalid_previous_rules")
         if set(labels) != {"severity", "job", "instance", "service", "owner", "environment", "cluster"}:
@@ -574,7 +865,7 @@ def _owned_expected_targets(document: Any) -> list[dict[str, Any]]:
                 "annotations", "labels", "isPaused",
             } | ({"notification_settings"} if "notification_settings" in rule else set())
             and rule.get("annotations") == {
-                "summary": f"Expected metrics have disappeared for {value['service']}.",
+                "summary": f"Expected metrics have disappeared for {value['service']} at {value['instance']}.",
                 "dashboard_url": f"/d/service-overview?var-service={value['service']}",
                 "description": "Check the declared metrics target and its service onboarding receipt.",
             }
@@ -592,6 +883,7 @@ def _owned_expected_targets(document: Any) -> list[dict[str, Any]]:
             raise Refusal("invalid_previous_rules")
         owned.append({
             **value,
+            "_kind": "target",
             "_inert": False,
             "_retired": False,
             "_title": rule["title"],
@@ -632,20 +924,9 @@ def prepare_expected_target_transition(input_document: Any) -> dict[str, Any]:
         previous_by_uid = {row["uid"]: row for row in previous}
         pending_by_uid = {row["uid"]: row for row in pending}
         retired_uids = input_document.get("retired_uids", [])
-        same_previous = pending_by_uid == previous_by_uid
-        valid_paused_transition = (
-            set(pending_by_uid) == set(previous_by_uid)
-            and isinstance(retired_uids, list)
-            and all(isinstance(uid, str) and EXPECTED_UID.fullmatch(uid) for uid in retired_uids)
-            and len(set(retired_uids)) == len(retired_uids)
-            and not (set(retired_uids) - set(previous_by_uid))
-            and all(
-                pending_by_uid[uid]["_inert"]
-                and pending_by_uid[uid]["_retired"] == (previous_by_uid[uid]["_retired"] or uid in retired_uids)
-                for uid in previous_by_uid
-            )
-        )
-        if not same_previous and not valid_paused_transition:
+        if not isinstance(retired_uids, list):
+            raise Refusal("invalid_pending_rules")
+        if input_document.get("enabled") is not True and set(pending_by_uid) != set(previous_by_uid):
             raise Refusal("invalid_pending_rules")
     if check_mode and input_document.get("reviewed") is True:
         validate_expected_target_declaration(
@@ -715,7 +996,10 @@ def prepare_expected_target_transition(input_document: Any) -> dict[str, Any]:
         ]
         if len({rule["uid"] for rule in live_targets}) != len(live_targets):
             raise Refusal("invalid_live_rules")
-        if {rule["uid"] for rule in live_targets} != set(previous_by_uid):
+        accepted_live_sets = [set(previous_by_uid)]
+        if pending_raw:
+            accepted_live_sets.append(set(pending_by_uid))
+        if {rule["uid"] for rule in live_targets} not in accepted_live_sets:
             raise Refusal("live_target_drift")
         matches_previous = True
         matches_pending = bool(pending)
@@ -731,45 +1015,102 @@ def prepare_expected_target_transition(input_document: Any) -> dict[str, Any]:
             )
         if not matches_previous and not matches_pending:
             raise Refusal("live_target_drift")
-    if input_document.get("enabled") is True:
-        current, retired = validate_expected_target_declaration(
-            input_document.get("targets"), input_document.get("retired_uids"), reviewed=True
-        )
-        current_uids = {row["uid"] for row in current}
-        previous_uids = {row["uid"] for row in previous}
-        previous_active = {
-            row["uid"]: row for row in previous if not row["_inert"]
-        }
-        if any(
-            any(target[field] != previous_active[target["uid"]][field] for field in EXPECTED_IDENTITY_FIELDS)
-            for target in current if target["uid"] in previous_active
-        ):
-            raise Refusal("target_identity_changed")
-        already_retired = {row["uid"] for row in previous if row["_retired"]}
-        if current_uids.intersection(already_retired):
-            raise Refusal("retired_target_reuse")
-        if set(retired) - previous_uids:
-            raise Refusal("unowned_retired_target")
-        if previous_uids - current_uids - set(retired) - already_retired:
-            raise Refusal("unretired_previous_target")
-        retired_tombstones = list(dict.fromkeys([*already_retired, *retired]))
-        return {
-            "status": "prepared", "reason": "check_mode_unverified" if check_mode else "enabled", "paused_uids": [],
-            "retired_uids": retired_tombstones,
-        }
     retired = input_document.get("retired_uids", [])
-    if not isinstance(retired, list) or any(
-        not isinstance(uid, str) or not EXPECTED_UID.fullmatch(uid) for uid in retired
+    mode = input_document.get("mode", "legacy")
+    group_retired = input_document.get("group_retired_uids", [])
+    if (
+        not isinstance(retired, list) or any(not isinstance(uid, str) or not EXPECTED_UID.fullmatch(uid) for uid in retired)
+        or len(set(retired)) != len(retired)
+        or not isinstance(group_retired, list)
+        or any(not isinstance(uid, str) or not re.fullmatch(r"o11y_missing_g[a-f0-9]{26}", uid) for uid in group_retired)
+        or len(set(group_retired)) != len(group_retired)
+        or mode not in {"grouped", "legacy"}
     ):
         raise Refusal("invalid_transition")
     previous_by_uid = {row["uid"]: row for row in previous}
-    if len(set(retired)) != len(retired) or set(retired) - set(previous_by_uid):
-        raise Refusal("invalid_transition")
+    if input_document.get("enabled") is not True:
+        if set(retired) - set(previous_by_uid):
+            raise Refusal("invalid_transition")
+        retired_ids = {row["uid"] for row in previous if row["_retired"]} | set(retired)
+        tombstone_rows = [
+            _as_tombstone(row, retired=row["uid"] in retired_ids)
+            for row in previous
+        ]
+        return {
+            "status": "prepared", "reason": "check_mode_unverified" if check_mode else "disabled",
+            "paused_uids": [uid for uid in previous_by_uid if uid not in retired_ids],
+            "retired_uids": sorted(retired_ids), "tombstones": tombstone_rows,
+        }
+
+    current, retired = validate_expected_target_declaration(
+        input_document.get("targets"), retired, reviewed=True
+    )
+    groups = expected_target_groups(current)
+    current_target_uids = {row["uid"] for row in current}
+    current_group_uids = {row["uid"] for row in groups}
+    previous_targets = {row["uid"]: row for row in previous if row.get("_kind") == "target"}
+    previous_groups = {row["uid"]: row for row in previous if row.get("_kind") == "group"}
+    current_groups_by_uid = {row["uid"]: row for row in groups}
+    for uid, previous_group in previous_groups.items():
+        current_group = current_groups_by_uid.get(uid)
+        if current_group and any(
+            previous_group[field] != current_group[field] for field in ("service", "environment", "cluster")
+        ):
+            raise Refusal("group_uid_collision")
+    if any(
+        uid in previous_targets and previous_targets[uid].get("job")
+        and any(previous_targets[uid][field] != target[field] for field in EXPECTED_IDENTITY_FIELDS)
+        for target in current for uid in [target["uid"]]
+    ):
+        raise Refusal("target_identity_changed")
+    already_retired = {uid for uid, row in previous_targets.items() if row["_retired"]}
+    if current_target_uids & already_retired:
+        raise Refusal("retired_target_reuse")
+    if set(retired) - set(previous_targets):
+        raise Refusal("unowned_retired_target")
+    if set(previous_targets) - current_target_uids - set(retired) - already_retired:
+        raise Refusal("unretired_previous_target")
+    if mode == "grouped" and group_retired:
+        raise Refusal("unexpected_group_retirement")
+    if mode == "legacy":
+        active_previous_groups = {uid for uid, row in previous_groups.items() if not row["_inert"]}
+        if active_previous_groups != set(group_retired):
+            raise Refusal("group_rollback_not_explicit")
+        previous_target_identities = {
+            tuple(row[field] for field in EXPECTED_IDENTITY_FIELDS)
+            for row in previous_targets.values() if row.get("job")
+        }
+        current_identities = {tuple(row[field] for field in EXPECTED_IDENTITY_FIELDS) for row in current}
+        if previous_groups and previous_target_identities and previous_target_identities != current_identities:
+            raise Refusal("group_rollback_target_drift")
+    else:
+        if set(group_retired) - set(previous_groups):
+            raise Refusal("unowned_group_retirement")
+
+    retired_ids = already_retired | set(retired)
+    if mode == "grouped":
+        tombstone_rows = [_as_tombstone({"_kind": "target", **target}) for target in current]
+        paused_ids = set(current_target_uids)
+        for uid, row in previous_groups.items():
+            if uid not in current_group_uids:
+                paused_ids.add(uid)
+                tombstone_rows.append(_as_tombstone(row))
+        # A previously inert group in the current identity may be safely reactivated.
+        tombstone_rows.extend(_as_tombstone(row, retired=True) for uid, row in previous_targets.items()
+                              if uid in retired_ids and uid not in current_target_uids)
+    else:
+        tombstone_rows = [_as_tombstone(row) for row in previous_groups.values()]
+        paused_ids = set(previous_groups)
+        tombstone_rows.extend(_as_tombstone(row, retired=True) for uid, row in previous_targets.items()
+                              if uid in retired_ids)
+    # Preserve already-retired UIDs and never omit their inert owners.
+    for uid, row in previous_targets.items():
+        if uid in retired_ids and uid not in {item["uid"] for item in tombstone_rows}:
+            tombstone_rows.append(_as_tombstone(row, retired=True))
     return {
-        "status": "prepared",
-        "reason": "check_mode_unverified" if check_mode else "disabled",
-        "paused_uids": [row["uid"] for row in previous if not row["_retired"] and row["uid"] not in retired],
-        "retired_uids": list(dict.fromkeys([*(row["uid"] for row in previous if row["_retired"]), *retired])),
+        "status": "prepared", "reason": "check_mode_unverified" if check_mode else "enabled",
+        "paused_uids": sorted(paused_ids), "retired_uids": sorted(retired_ids),
+        "tombstones": sorted(tombstone_rows, key=lambda row: row["uid"]),
     }
 
 
@@ -1789,7 +2130,7 @@ def main() -> int:
     if len(sys.argv) == 2 and sys.argv[1] == "--validate-expected-targets":
         try:
             declaration = _input_document()
-            validate_expected_target_declaration(
+            targets, _retired = validate_expected_target_declaration(
                 declaration.get("targets"),
                 declaration.get("retired_uids"),
                 reviewed=declaration.get("reviewed"),
@@ -1801,6 +2142,23 @@ def main() -> int:
             code = 2
         except Exception:
             result = {"status": "refused", "reason": "invalid_declaration"}
+            code = 2
+        print(json.dumps(result, sort_keys=True, separators=(",", ":")))
+        return code
+    if len(sys.argv) == 2 and sys.argv[1] == "--group-expected-targets":
+        try:
+            declaration = _input_document()
+            targets, _retired = validate_expected_target_declaration(
+                declaration.get("targets"), declaration.get("retired_uids"),
+                reviewed=declaration.get("reviewed"),
+            )
+            groups = expected_target_groups(targets)
+            for group in groups:
+                group["expr"] = expected_target_group_expression(group)
+            result = {"groups": groups}
+            code = 0
+        except Exception:
+            result = {"groups": []}
             code = 2
         print(json.dumps(result, sort_keys=True, separators=(",", ":")))
         return code

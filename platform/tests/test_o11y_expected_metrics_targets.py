@@ -51,12 +51,33 @@ def _render(**values):
         "o11y_environment": "prod",
     }
     defaults.update(values)
+    if "_o11y_expected_target_tombstones" not in values:
+        tombstones = []
+        known = {target["uid"]: target for target in defaults.get("o11y_expected_metrics_targets", [])}
+        retired_uids = defaults.get("_o11y_retired_expected_target_uids", []) or []
+        for uid in (defaults.get("_o11y_previous_expected_target_uids", []) or []) + retired_uids:
+            tombstones.append(SURVEY._as_tombstone(known.get(uid, {"uid": uid}), retired=uid in retired_uids))
+        defaults["_o11y_expected_target_tombstones"] = tombstones
     return yaml.safe_load(template.render(**defaults))
 
 
 def _service_rules(document):
     group = next(group for group in document["groups"] if group["name"] == "service-telemetry")
     return group["rules"]
+
+
+def _grouped_render(targets, **values):
+    groups = SURVEY.expected_target_groups(targets)
+    for group in groups:
+        group["expr"] = SURVEY.expected_target_group_expression(group)
+    values.setdefault("_o11y_expected_target_tombstones",
+                      [SURVEY._as_tombstone({"_kind": "target", **target}) for target in targets])
+    return _render(
+        o11y_expected_metrics_targets=targets,
+        _o11y_expected_target_mode="grouped",
+        _o11y_expected_target_groups=groups,
+        **values,
+    )
 
 
 def _live_rules(document, folder_uid="agent-cloud-folder"):
@@ -155,7 +176,9 @@ def test_validator_cli_reports_only_fixed_refusal_and_hides_input_values():
         check=False,
     )
     assert result.returncode == 0
-    assert result.stdout == '{"reason":"declaration_valid","status":"valid"}\n'
+    parsed = json.loads(result.stdout)
+    assert parsed["reason"] == "declaration_valid" and parsed["status"] == "valid"
+    assert parsed == {"reason": "declaration_valid", "status": "valid"}
     assert "private-service-value" not in result.stdout + result.stderr
 
 
@@ -262,19 +285,151 @@ def test_canary_pauses_expected_rules_and_retirement_keeps_owned_tombstone():
 
     retired = _transition(_render(o11y_expected_metrics_targets=[_expected()]), enabled=True,
                           targets=[], retired=[_expected()["uid"]])
-    document = _render(o11y_expected_metrics_targets=[], _o11y_retired_expected_target_uids=retired["retired_uids"])
+    document = _render(o11y_expected_metrics_targets=[], _o11y_retired_expected_target_uids=retired["retired_uids"],
+                       _o11y_expected_target_tombstones=retired["tombstones"])
     tombstone = next(rule for rule in _service_rules(document) if rule["uid"] == _expected()["uid"])
-    assert tombstone["title"] == "Expected metrics target explicitly retired"
+    assert tombstone["title"] == f"Expected target retired ({target['uid']})"
     assert _expected()["uid"] not in {entry["uid"] for entry in document.get("deleteRules", [])}
 
 
-def _transition(previous, *, enabled, targets=None, retired=None, live=None):
+def test_grouped_expected_targets_share_one_rule_and_keep_uid_qualified_tombstones():
+    first = _expected()
+    second = _expected(uid="o11y_missing_api_backup", instance="api-backup.example.test:9100")
+    document = _grouped_render([first, second])
+    rules = [rule for rule in _service_rules(document) if rule["uid"].startswith("o11y_missing_")]
+    active = [rule for rule in rules if not rule["isPaused"]]
+    tombstones = [rule for rule in rules if rule["isPaused"]]
+    assert len(active) == 1
+    group = active[0]
+    assert group["uid"].startswith("o11y_missing_g")
+    assert group["title"] == f"Missing telemetry group ({group['uid']})"
+    grouped = SURVEY.expected_target_groups([first, second])
+    assert len(grouped) == 1
+    assert group["data"][0]["model"]["expr"] == SURVEY.expected_target_group_expression(grouped[0])
+    assert group["labels"]["instance"] == "{{ $labels.instance }}"
+    assert group["labels"]["job"] == "{{ $labels.job }}"
+    assert group["notification_settings"]["group_by"] == [
+        "service", "environment", "cluster", "alertname",
+    ]
+    assert len(tombstones) == 2
+    assert {rule["uid"] for rule in tombstones} == {first["uid"], second["uid"]}
+    assert len({rule["title"] for rule in rules}) == len(rules)
+    assert all(rule["title"].endswith(f"({rule['uid']})") for rule in tombstones)
+
+
+def test_expected_group_uids_fail_closed_on_hash_or_target_uid_collision(monkeypatch):
+    first = _expected()
+    second = _expected(uid="o11y_missing_other", service="api/other")
+
+    class SameDigest:
+        def hexdigest(self):
+            return "a" * 64
+
+    monkeypatch.setattr(SURVEY.hashlib, "sha256", lambda _value: SameDigest())
+    with pytest.raises(SURVEY.Refusal):
+        SURVEY.validate_expected_target_declaration([first, second])
+
+    monkeypatch.undo()
+    group_uid = SURVEY.expected_target_groups([first])[0]["uid"]
+    colliding = {**_expected(), "uid": group_uid}
+    with pytest.raises(SURVEY.Refusal):
+        SURVEY.validate_expected_target_declaration([colliding])
+
+    class SameDigest:
+        def hexdigest(self):
+            return "b" * 64
+
+    monkeypatch.setattr(SURVEY.hashlib, "sha256", lambda _value: SameDigest())
+    first = _expected()
+    previous_grouped = _grouped_render([first])
+    changed_identity = _expected(uid="o11y_missing_new_identity", service="api/other")
+    with pytest.raises(SURVEY.Refusal, match="group_uid_collision"):
+        _transition(previous_grouped, enabled=True, targets=[changed_identity], mode="grouped")
+
+
+def test_group_migration_and_reviewed_rollback_keep_both_uid_families_owned():
+    targets = [
+        _expected(),
+        _expected(uid="o11y_missing_api_backup", instance="api-backup.example.test:9100"),
+    ]
+    legacy = _render(o11y_expected_metrics_targets=targets)
+    migration = _transition(legacy, enabled=True, targets=targets, mode="grouped")
+    grouped = _grouped_render(
+        targets,
+        _o11y_expected_target_tombstones=migration["tombstones"],
+    )
+    group_uid = SURVEY.expected_target_groups(targets)[0]["uid"]
+    assert migration["paused_uids"] == sorted(target["uid"] for target in targets)
+    assert group_uid in {rule["uid"] for rule in _service_rules(grouped)}
+    assert SURVEY.validate_active_expected_target_rules({
+        "reviewed": True, "mode": "grouped", "targets": targets, "retired_uids": [],
+        "paused_uids": migration["paused_uids"], "tombstones": migration["tombstones"],
+        "live_rules": _live_rules(grouped),
+        "live_folders": [{"uid": "agent-cloud-folder", "title": "agent-cloud"}],
+    })["status"] == "validated"
+
+    rollback = _transition(
+        grouped, enabled=True, targets=targets, mode="legacy", group_retired=[group_uid],
+    )
+    legacy_rollback = _render(
+        o11y_expected_metrics_targets=targets,
+        _o11y_expected_target_mode="legacy",
+        _o11y_previous_expected_target_uids=rollback["paused_uids"],
+        _o11y_expected_target_tombstones=rollback["tombstones"],
+    )
+    rollback_rules = [rule for rule in _service_rules(legacy_rollback)
+                      if rule["uid"].startswith("o11y_missing_")]
+    assert {rule["uid"] for rule in rollback_rules if rule["isPaused"]} == {group_uid}
+    assert {rule["uid"] for rule in rollback_rules if not rule["isPaused"]} == {
+        target["uid"] for target in targets
+    }
+    assert SURVEY.validate_active_expected_target_rules({
+        "reviewed": True, "mode": "legacy", "targets": targets, "retired_uids": [],
+        "paused_uids": rollback["paused_uids"], "tombstones": rollback["tombstones"],
+        "live_rules": _live_rules(legacy_rollback),
+        "live_folders": [{"uid": "agent-cloud-folder", "title": "agent-cloud"}],
+    })["status"] == "validated"
+
+    with pytest.raises(SURVEY.Refusal, match="group_rollback_not_explicit"):
+        _transition(grouped, enabled=True, targets=targets, mode="legacy")
+
+
+def test_grouped_live_readback_refuses_rule_contract_drift():
+    targets = [_expected(), _expected(uid="o11y_missing_api_backup", instance="api-backup.example.test:9100")]
+    document = _grouped_render(targets)
+    input_document = {
+        "reviewed": True,
+        "mode": "grouped",
+        "targets": targets,
+        "retired_uids": [],
+        "paused_uids": [target["uid"] for target in targets],
+        "tombstones": [SURVEY._as_tombstone({"_kind": "target", **target}) for target in targets],
+        "live_rules": _live_rules(document),
+        "live_folders": [{"uid": "agent-cloud-folder", "title": "agent-cloud"}],
+    }
+    for mutate in (
+        lambda rule: rule["labels"].update(instance="wrong-instance:9100"),
+        lambda rule: rule["annotations"].update(summary="wrong summary"),
+        lambda rule: rule.update(**{"for": "3m"}),
+        lambda rule: rule.update(isPaused=True),
+        lambda rule: rule["notification_settings"].update(group_by=["service", "alertname"]),
+    ):
+        drifted = json.loads(json.dumps(input_document))
+        group_rule = next(rule for rule in drifted["live_rules"] if rule["uid"].startswith("o11y_missing_g"))
+        mutate(group_rule)
+        with pytest.raises(SURVEY.Refusal, match="live_target_drift"):
+            SURVEY.validate_active_expected_target_rules(drifted)
+
+
+def _transition(previous, *, enabled, targets=None, retired=None, group_retired=None, mode="legacy", live=None):
     previous_text = "" if previous is None else yaml.safe_dump(previous, sort_keys=False)
     live_rules = _live_rules(previous) if live is None and previous is not None else live
     return SURVEY.prepare_expected_target_transition({
         "enabled": enabled,
         "targets": _expected() if targets is None else targets,
         "retired_uids": [] if retired is None else retired,
+        "group_retired_uids": [] if group_retired is None else group_retired,
+        "mode": mode,
         "previous_rules": previous_text,
         "live_rules": "" if live_rules is None else json.dumps(live_rules),
         "live_folders": "" if live_rules is None else json.dumps(
@@ -297,11 +452,16 @@ def test_expected_target_disable_retry_and_reenable_preserve_only_owned_uid():
         o11y_expected_metrics_targets_reviewed=False,
         o11y_expected_metrics_targets=[],
         _o11y_previous_expected_target_uids=disabled_plan["paused_uids"],
+        _o11y_expected_target_tombstones=disabled_plan["tombstones"],
     )
     paused = next(rule for rule in _service_rules(disabled) if rule["uid"] == target["uid"])
     assert paused["isPaused"] is True
     assert paused["data"][0]["model"]["expr"] == "vector(0)"
-    assert paused["labels"] == {"severity": "warning", "owner": "platform-operations", "environment": "disabled"}
+    assert paused["labels"] == {
+        "severity": "warning", "job": target["job"], "instance": target["instance"],
+        "service": target["service"], "cluster": target["cluster"],
+        "owner": "platform-operations", "environment": target["environment"],
+    }
     assert "notification_settings" not in paused
     paused_live = _live_rules(disabled)
     assert SURVEY.validate_active_expected_target_rules({
@@ -309,6 +469,7 @@ def test_expected_target_disable_retry_and_reenable_preserve_only_owned_uid():
         "targets": [],
         "retired_uids": [],
         "paused_uids": disabled_plan["paused_uids"],
+        "tombstones": disabled_plan["tombstones"],
         "live_rules": paused_live,
         "live_folders": [{"uid": "agent-cloud-folder", "title": "agent-cloud"}],
     })["status"] == "validated"
@@ -385,7 +546,7 @@ def test_retirement_stays_inert_through_gate_off_restore_and_retry():
         _o11y_retired_expected_target_uids=retired["retired_uids"],
     )
     tombstone = next(rule for rule in _service_rules(retired_file) if rule["uid"] == target["uid"])
-    assert tombstone["title"] == "Expected metrics target explicitly retired"
+    assert tombstone["title"] == f"Expected target retired ({target['uid']})"
     assert tombstone["isPaused"] is True
     assert tombstone["data"][0]["model"]["expr"] == "vector(0)"
     assert tombstone["labels"] == {"severity": "warning", "owner": "platform-operations", "environment": "disabled"}
@@ -400,6 +561,7 @@ def test_retirement_stays_inert_through_gate_off_restore_and_retry():
         o11y_expected_metrics_targets=[],
         _o11y_previous_expected_target_uids=gate_off["paused_uids"],
         _o11y_retired_expected_target_uids=gate_off["retired_uids"],
+        _o11y_expected_target_tombstones=gate_off["tombstones"],
     )
     assert next(rule for rule in _service_rules(restored) if rule["uid"] == target["uid"]) == tombstone
     assert _transition(restored, enabled=False, targets=[]) == gate_off
@@ -496,6 +658,7 @@ def test_interrupted_restore_accepts_only_the_exact_pending_paused_transition():
         o11y_expected_metrics_targets_reviewed=False,
         o11y_expected_metrics_targets=[],
         _o11y_previous_expected_target_uids=[target["uid"]],
+        _o11y_expected_target_tombstones=[SURVEY._as_tombstone(target)],
     )
     live_active = _live_rules(active)
     live_paused = _live_rules(paused)
@@ -547,7 +710,7 @@ def test_active_rule_validation_separates_declared_rules_from_retired_tombstones
     for mutate in (
         lambda rule: rule.update(isPaused=False),
         lambda rule: rule["data"][0]["model"].update(expr="vector(1)"),
-        lambda rule: rule["labels"].update(environment="prod"),
+        lambda rule: rule["labels"].update(environment="staging"),
         lambda rule: rule.update(notification_settings={"receiver": "unexpected"}),
     ):
         drifted = json.loads(json.dumps(input_document))
@@ -565,12 +728,14 @@ def test_active_rule_validation_accepts_gate_off_owners_and_refuses_bad_paused_u
         o11y_expected_metrics_targets_reviewed=False,
         o11y_expected_metrics_targets=[],
         _o11y_previous_expected_target_uids=[target["uid"]],
+        _o11y_expected_target_tombstones=[SURVEY._as_tombstone(target)],
     )
     input_document = {
         "reviewed": True,
         "targets": [],
         "retired_uids": [],
         "paused_uids": [target["uid"]],
+        "tombstones": [SURVEY._as_tombstone(target)],
         "live_rules": _live_rules(inert),
         "live_folders": [{"uid": "agent-cloud-folder", "title": "agent-cloud"}],
     }
@@ -580,7 +745,7 @@ def test_active_rule_validation_accepts_gate_off_owners_and_refuses_bad_paused_u
     for mutate in (
         lambda rule: rule.update(isPaused=False),
         lambda rule: rule["data"][0]["model"].update(expr="vector(1)"),
-        lambda rule: rule["labels"].update(environment="prod"),
+        lambda rule: rule["labels"].update(environment="staging"),
     ):
         drifted = json.loads(json.dumps(input_document))
         mutate(drifted["live_rules"][0])
@@ -816,7 +981,7 @@ def test_private_alert_rule_reads_and_writes_are_hidden_and_check_mode_skips_ren
         for task in verify["tasks"]
         if task.get("name") == "Verify Grafana alert provisioning after every real deploy"
     )
-    assert verify_block["when"] == "not ansible_check_mode" and verify_block["no_log"] is True
+    assert verify_block["when"] == "not ansible_check_mode" and not verify_block.get("no_log", False)
 
     protected_tasks = {
         "platform/playbooks/tasks/o11y-restore-alert-baseline.yml": (

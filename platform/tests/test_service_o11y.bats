@@ -1292,7 +1292,7 @@ alert_template = open(sys.argv[2], encoding='utf-8').read()
 verify = next(play for play in plays if play.get('name') == 'Phase 3: Verify o11y')
 block = next(task for task in verify['tasks'] if task['name'] == 'Verify Grafana alert provisioning after every real deploy')
 assert block['when'] == 'not ansible_check_mode'
-assert block['no_log'] is True
+assert not block.get('no_log', False)
 env = Environment(undefined=StrictUndefined)
 env.filters['bool'] = bool
 env.filters['to_json'] = json.dumps
@@ -1305,11 +1305,14 @@ scope = by_name['Scope live rules to the provisioned folders and groups']
 set_check = by_name['Require the live rule set to equal the provisioned rules']
 field_check = by_name["Require each live rule's pause, labels, annotations and duration to equal the provisioned rule's"]
 settings_check = by_name["Require each live rule's notification settings to equal the provisioned rule's"]
+live_rules = by_name['Read live o11y alert rules']
 slurp = by_name['Read the provisioned alert rules file']
 folders = by_name['Read live Grafana folders']
 assert tasks.index(slurp) < tasks.index(scope) and tasks.index(folders) < tasks.index(scope)
 assert tasks.index(scope) < tasks.index(set_check) < tasks.index(field_check) < tasks.index(settings_check)
-assert slurp['register'] == '_provisioned_rules_file' and block['no_log'] is True
+assert slurp['register'] == '_provisioned_rules_file' and not block.get('no_log', False)
+assert live_rules['no_log'] is True and folders['no_log'] is True
+assert 'no_log' not in field_check and 'no_log' not in settings_check
 assert slurp['ansible.builtin.slurp']['src'].endswith('/config/grafana/provisioning/alerting/observability.yml')
 assert '/api/folders' in folders['ansible.builtin.command']['argv'][-1]
 assert 'match' not in json.dumps(scope), 'scope comes from the provisioned file, never a uid pattern'

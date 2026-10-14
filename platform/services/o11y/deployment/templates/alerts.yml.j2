@@ -123,6 +123,7 @@ groups:
 {% else %}
 {% set _missing_targets = [] %}
 {% endif %}
+{% if local_mode | default(false) | bool or _o11y_expected_target_mode | default(o11y_expected_metrics_targets_mode | default('legacy')) == 'legacy' %}
 {% for target in _missing_targets %}
       - uid: {{ target.uid }}
         title: {{ ('Missing telemetry for ' ~ target.service ~ ' at ' ~ target.instance) | to_json }}
@@ -169,20 +170,77 @@ groups:
           environment: {{ target.environment | default(o11y_environment | default('local' if local_mode | default(false) | bool else 'prod')) | to_json }}
           cluster: {{ target.cluster | default(o11y_cluster | default('agent-cloud-local')) | to_json }}
         isPaused: {{ 'false' if o11y_alerts_enabled | default(false) | bool and (local_mode | default(false) | bool or _expected_targets_reviewed) and o11y_alert_canary_service is not defined else 'true' }}
-{% if o11y_alerts_enabled | default(false) | bool and (local_mode | default(false) | bool or _expected_targets_reviewed) and o11y_alert_canary_service is not defined %}
+{% if o11y_alerts_enabled | default(false) | bool and (local_mode | default(false) | bool or _expected_targets_reviewed) and o11y_alert_canary_service is not defined and (local_mode | default(false) | bool or _o11y_expected_target_mode | default(o11y_expected_metrics_targets_mode | default('legacy')) == 'legacy') %}
         notification_settings:
           receiver: agent-cloud-ops
-          group_by: [service, environment, cluster]
+          group_by: [service, environment, cluster, alertname]
           group_wait: 30s
           group_interval: 5m
           repeat_interval: 4h
 {% endif %}
 {% endfor %}
+{% else %}
+{% for target_group in (_o11y_expected_target_groups | default([])) %}
+      - uid: {{ target_group.uid }}
+        title: {{ ('Missing telemetry group (' ~ target_group.uid ~ ')') | to_json }}
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: prometheus
+            model:
+              editorMode: code
+              expr: {{ target_group.expr | to_json }}
+              instant: true
+              range: false
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              expression: A
+              type: threshold
+              conditions:
+                - evaluator: { type: gt, params: [0.5] }
+                  operator: { type: and }
+                  query: { params: [B] }
+                  reducer: { type: last, params: [] }
+                  type: query
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: B
+        noDataState: OK
+        execErrState: Alerting
+        for: 2m
+        annotations:
+          summary: {{ 'Expected metrics have disappeared for {{ $labels.service }} at {{ $labels.instance }}.' | to_json }}
+          dashboard_url: {{ ('/d/service-overview?var-service=' ~ target_group.service) | to_json }}
+          description: Check the declared metrics target and its service onboarding receipt.
+        labels:
+          severity: critical
+          job: {{ '{{ $labels.job }}' | to_json }}
+          instance: {{ '{{ $labels.instance }}' | to_json }}
+          service: {{ target_group.service | to_json }}
+          owner: platform-operations
+          environment: {{ target_group.environment | to_json }}
+          cluster: {{ target_group.cluster | to_json }}
+        isPaused: {{ 'false' if o11y_alerts_enabled | default(false) | bool and _expected_targets_reviewed and o11y_alert_canary_service is not defined else 'true' }}
+{% if o11y_alerts_enabled | default(false) | bool and _expected_targets_reviewed and o11y_alert_canary_service is not defined %}
+        notification_settings:
+          receiver: agent-cloud-ops
+          group_by: [service, environment, cluster, alertname]
+          group_wait: 30s
+          group_interval: 5m
+          repeat_interval: 4h
+{% endif %}
+{% endfor %}
+{% endif %}
 {# Grafana keeps omitted rules; retain validated owners and retired UID tombstones. #}
 {% if not (local_mode | default(false) | bool) %}
-{% for uid in ((_o11y_previous_expected_target_uids | default([])) + (_o11y_retired_expected_target_uids | default([]))) %}
-      - uid: {{ uid }}
-        title: {{ 'Expected metrics target explicitly retired' if uid in (_o11y_retired_expected_target_uids | default([])) else 'Expected metrics target previously declared' }}
+{% for tombstone in (_o11y_expected_target_tombstones | default([])) %}
+      - uid: {{ tombstone.uid }}
+        title: {{ tombstone.title | to_json }}
         condition: B
         data:
           - refId: A
@@ -214,12 +272,21 @@ groups:
         execErrState: OK
         for: 0s
         annotations:
-          summary: Expected metrics target rule is disabled.
-          description: {{ 'This owned UID was explicitly retired and remains inert.' if uid in (_o11y_retired_expected_target_uids | default([])) else 'No target identity is retained while the reviewed alert gate is disabled.' }}
+          summary: {{ tombstone.summary | to_json }}
+          description: {{ tombstone.description | to_json }}
         labels:
-          severity: warning
+          severity: {{ tombstone.labels.severity | to_json }}
+{% if tombstone.labels.job is defined %}
+          job: {{ tombstone.labels.job | to_json }}
+          instance: {{ tombstone.labels.instance | to_json }}
+          service: {{ tombstone.labels.service | to_json }}
+          cluster: {{ tombstone.labels.cluster | to_json }}
+{% elif tombstone.labels.service is defined %}
+          service: {{ tombstone.labels.service | to_json }}
+          cluster: {{ tombstone.labels.cluster | to_json }}
+{% endif %}
           owner: platform-operations
-          environment: disabled
+          environment: {{ tombstone.labels.environment | to_json }}
         isPaused: true
 {% endfor %}
 {% endif %}
