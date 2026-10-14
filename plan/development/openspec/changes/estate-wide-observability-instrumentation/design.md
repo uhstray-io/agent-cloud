@@ -288,6 +288,17 @@ Ansible mutations does not satisfy this contract. Until both decisions are
 implemented and independently verified, the supervisor refuses receiver
 mutation requests and no journal runtime gate opens.
 
+**Independent design-gate review (2026-10-14):** A read-only Sol Medium review at
+journal source `0c25a1d4` against pinned Dev `bac2e451` found all three
+prerequisites unresolved: authenticated task/context and consumed-input binding,
+complete worker-tree cancellation/quiescence, and trusted supervisor
+bootstrap/upgrade. The diagnostic attribution's `partial` marker and the
+diagnostic lock are not mutation authority. Before any permit, inspect the
+installed signer/JWT, runner and token isolation, effective permissions, and
+protected task/context readback; then design and independently review those
+three mechanisms. No receiver/journal mutation or live cancellation test was
+performed by this review, and the current runtime refusal remains required.
+
 Root owns admission, durable intent, and fixed privileged host handlers. The
 receiver's Podman operations run only in the verified declared receiver
 identity and its bound storage/environment context. A root supervisor may
