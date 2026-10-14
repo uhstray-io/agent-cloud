@@ -203,6 +203,7 @@ and launches each with a forged internal name.
 | `manage-semaphore-access.yml` | Hold the Semaphore project team, system admins and integrations to the private declarations `semaphore_project_members` and `semaphore_admin_users`: launch rights are runner rights. Check mode reports; a real run converges the team and reads it back; an undeclared admin or any integration fails by name |
 | `provision-seed-environment.yml` | Give ONE seed template that declares `isolated_environment` its own environment holding an encrypted copy of the controller AppRole, then bind it. Controller loopback API only; wraps `platform/semaphore/provision-seed-environment.yml` |
 | `provision-o11y-watcher-token.yml` | Mint the liveness watcher's read-only Grafana service-account token inside the Grafana container and store it at `secret/services/o11y:watcher_token`; a stored token Grafana still accepts is reused |
+| `provision-o11y-mcp-grafana-token.yml` | Provision the `mcp-grafana` Editor service account; reuse an accepted token unless `mcp_grafana_token_candidate` is explicitly staged, then verify/promote that candidate and remove the staging field in the same OpenBao merge. Staging authorizes rotation even while the active token works; old Grafana tokens remain live for explicit cleanup |
 | `sync-secrets-to-openbao.yml` | Push VM-local secrets to OpenBao (recovery/migration) |
 | `sync-netbox-secrets.yml` | Sync NetBox-specific secrets to OpenBao |
 | `update-proxmox-token.yml` | Update Proxmox API token in OpenBao |
@@ -214,6 +215,23 @@ and launches each with a forged internal name.
 | `apply-policy-uhhcraft.yml` | Apply UhhCraft policy (reserved) |
 | `apply-policy-inference-comfyui.yml` | Apply ComfyUI sidecar policy (reserved) |
 | `apply-policy-inference-hunyuan3d.yml` | Apply Hunyuan3D sidecar policy (reserved) |
+
+For the one-time Grafana token handoff, create the service-account token in Grafana's
+UI and copy it to the clipboard. Save it locally without printing it:
+
+```sh
+umask 077
+mkdir -p ~/.config/mcp-grafana
+pbpaste > ~/.config/mcp-grafana/prod.token
+chmod 600 ~/.config/mcp-grafana/prod.token
+```
+
+Use the isolated `Seed OpenBao Key` template with
+`bao_path=services/o11y` and `bao_key=mcp_grafana_token_candidate`, staging the local
+file as `BAO_VALUE` through `scripts/semaphore-seed-input.py`. This keeps the value
+out of Git, task output, and Semaphore survey/extra-var storage. Run the provisioning
+template to verify and promote the candidate; it leaves the previous Grafana token
+untouched for explicit cleanup after the new token is confirmed.
 
 ### Validation & Provisioning
 | Playbook | Purpose |
