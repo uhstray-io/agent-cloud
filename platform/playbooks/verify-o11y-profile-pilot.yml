@@ -149,10 +149,41 @@
           check_mode: false
           no_log: true
 
+        - name: Validate candidate receipt JSON without displaying verifier output
+          ansible.builtin.command:
+            argv: [python3, -c, "import json,sys; json.load(sys.stdin)"]
+            stdin: "{{ _profile_raw_receipt.stdout | default('', true) }}"
+            stdin_add_newline: false
+          register: _profile_receipt_json_check
+          changed_when: false
+          failed_when: false
+          check_mode: false
+          no_log: true
+
+        - name: Require verifier stdout to contain valid JSON
+          ansible.builtin.assert:
+            that:
+              - _profile_raw_receipt.stdout is defined
+              - (_profile_raw_receipt.stdout | default('', true) | length) > 0
+              - _profile_receipt_json_check.rc == 0
+            fail_msg: "The Alloy profile candidate verifier did not return a valid JSON receipt."
+            quiet: true
+
         - name: Parse the fixed sanitized candidate receipt
           ansible.builtin.set_fact:
             _profile_receipt: "{{ _profile_raw_receipt.stdout | from_json }}"
           no_log: true
+
+        - name: Require verifier success or an expected sanitized refusal
+          ansible.builtin.assert:
+            that:
+              - >-
+                _profile_raw_receipt.rc == 0 or
+                (_profile_receipt is mapping and
+                 _profile_receipt.get('status', '') == 'unavailable' and
+                 _profile_receipt.get('reason', '') in _profile_candidate_refusals)
+            fail_msg: "The Alloy profile candidate verifier failed or returned an invalid receipt."
+            quiet: true
 
         - name: Require an exact and complete receipt
           ansible.builtin.assert:

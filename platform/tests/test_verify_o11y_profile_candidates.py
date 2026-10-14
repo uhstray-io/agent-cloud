@@ -548,6 +548,72 @@ def test_playbook_is_read_only_exact_revision_pinned_and_check_mode_safe():
     assert "state: absent" in rendered
 
 
+@pytest.mark.parametrize("stdout", ["", "not-json"])
+def test_playbook_refuses_invalid_receipt_before_from_json(stdout):
+    from jinja2 import Environment
+
+    playbook = yaml.safe_load(PLAYBOOK.read_text())
+    tasks = playbook[-1]["tasks"][-1]["block"]
+    names = [task["name"] for task in tasks]
+    runner = next(task for task in tasks if task["name"].startswith("Run the no-pull"))
+    validator = next(task for task in tasks if task["name"].startswith("Validate candidate receipt JSON"))
+    json_gate = next(task for task in tasks if task["name"] == "Require verifier stdout to contain valid JSON")
+    parse = next(task for task in tasks if task["name"] == "Parse the fixed sanitized candidate receipt")
+
+    # Reproduce the original Jinja filter failure that bypassed the fixed refusal.
+    env = Environment()
+    env.filters["from_json"] = json.loads
+    with pytest.raises(json.JSONDecodeError):
+        env.from_string("{{ stdout | from_json }}").render(stdout=stdout)
+
+    assert names.index(validator["name"]) < names.index(json_gate["name"]) < names.index(parse["name"])
+    assert runner["no_log"] is True
+    assert validator["no_log"] is True
+    assert parse["no_log"] is True
+    assert json_gate["ansible.builtin.assert"]["that"][-1] == "_profile_receipt_json_check.rc == 0"
+    assert json_gate["ansible.builtin.assert"]["fail_msg"] == (
+        "The Alloy profile candidate verifier did not return a valid JSON receipt."
+    )
+
+    # Exercise the same Python JSON validator command declared by the playbook.
+    result = subprocess.run(validator["ansible.builtin.command"]["argv"], input=stdout, text=True, capture_output=True)
+    assert result.returncode != 0
+
+
+def test_playbook_accepts_only_allowlisted_unavailable_receipts_for_nonzero_exit():
+    from jinja2 import Environment
+
+    playbook = yaml.safe_load(PLAYBOOK.read_text())
+    tasks = playbook[-1]["tasks"][-1]["block"]
+    refusal_gate = next(
+        task for task in tasks
+        if task["name"] == "Require verifier success or an expected sanitized refusal"
+    )
+    condition = refusal_gate["ansible.builtin.assert"]["that"][0]
+
+    assert "_profile_raw_receipt.rc == 0" in condition
+    assert "_profile_receipt.get('status', '') == 'unavailable'" in condition
+    assert "_profile_receipt.get('reason', '') in _profile_candidate_refusals" in condition
+    accepted = Environment().compile_expression(condition)
+    assert accepted(
+        _profile_raw_receipt={"rc": 2},
+        _profile_receipt={"status": "unavailable", "reason": "image_unavailable"},
+        _profile_candidate_refusals=["image_unavailable"],
+    )
+    assert not accepted(
+        _profile_raw_receipt={"rc": 2},
+        _profile_receipt={"status": "unavailable", "reason": "unexpected"},
+        _profile_candidate_refusals=["image_unavailable"],
+    )
+    result = subprocess.run(
+        ["python3", "-c", "import json,sys; json.load(sys.stdin)"],
+        input=json.dumps({"status": "unavailable", "reason": "image_unavailable"}),
+        text=True,
+        capture_output=True,
+    )
+    assert result.returncode == 0
+
+
 def test_semaphore_entry_is_dev_bound_and_requires_only_public_revision():
     templates = yaml.safe_load(TEMPLATES.read_text())["templates"]
     entry = next(item for item in templates if item["name"] == "Verify o11y Profile Pilot Candidates (Dev)")
