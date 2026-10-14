@@ -1449,7 +1449,8 @@
               - _o11y_rules | map(attribute='isPaused', default='') | list == _o11y_expected_rules | map(attribute='isPaused', default='') | list
               - >-
                 _o11y_rules | map(attribute='labels', default={}) | map('default', {}, true) | list ==
-                _o11y_expected_rules | map(attribute='labels', default={}) | map('default', {}, true) | list
+                _o11y_expected_rules | map(attribute='labels', default={}) | map('default', {}, true) |
+                map('to_json') | map('replace', '$$', '$') | map('from_json') | list
               - >-
                 _o11y_rules | map(attribute='annotations', default={}) | map('default', {}, true) | list ==
                 _o11y_expected_rules | map(attribute='annotations', default={}) | map('default', {}, true) | list

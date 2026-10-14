@@ -125,7 +125,7 @@ groups:
 {% endif %}
 {% for target in _missing_targets %}
       - uid: {{ target.uid }}
-        title: {{ ('Missing telemetry for ' ~ target.service) | to_json }}
+        title: {{ ('Missing telemetry for ' ~ target.service ~ ' at ' ~ target.instance) | to_json }}
         condition: B
         data:
           - refId: A
@@ -172,7 +172,7 @@ groups:
 {% if o11y_alerts_enabled | default(false) | bool and (local_mode | default(false) | bool or _expected_targets_reviewed) and o11y_alert_canary_service is not defined %}
         notification_settings:
           receiver: agent-cloud-ops
-          group_by: [service, environment, cluster, alertname]
+          group_by: [service, environment, cluster]
           group_wait: 30s
           group_interval: 5m
           repeat_interval: 4h

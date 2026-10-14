@@ -16,7 +16,7 @@
 
 - [x] 3.1 Add bounded ownership/context labels, dashboard/runbook annotations, and rule-level grouping/timing to existing Grafana rules without provisioning the policy tree.
 - [ ] 3.2 Extend deploy read-back and focused tests for rule settings and run a bounded Discord delivery drill. Source tests now cover exact labels, annotations, duration, and routing drift; live deploy read-back and the delivery drill remain pending.
-- [ ] 3.3 Validate the spec scenarios “Several target failures occur in one service” and “A notification change is deployed.” Source tests now verify same-service rules share a title/group identity while retaining each instance. The separate estate inventory acceptance is recorded in the related OpenSpec evidence; grouped alerting and notification-change receipts remain pending.
+- [ ] 3.3 Validate the spec scenarios “Several target failures occur in one service” and “A notification change is deployed.” Source tests now verify same-service rules share service/environment/cluster grouping while retaining unique per-instance titles and details. The separate estate inventory acceptance is recorded in the related OpenSpec evidence; grouped alerting and notification-change receipts remain pending.
 
 ## 4. Promotion and evidence
 

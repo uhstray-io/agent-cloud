@@ -949,7 +949,7 @@ for enabled in (False, True):
         assert disk_rule['noDataState'] == 'Alerting'
         if rendered_targets:
             assert rules[2]['annotations']['dashboard_url'] == '/d/service-overview?var-service=caddy-reverse-proxy/caddy'
-            assert rules[2]['title'] == 'Missing telemetry for caddy-reverse-proxy/caddy'
+            assert rules[2]['title'] == 'Missing telemetry for caddy-reverse-proxy/caddy at caddy:2021'
             assert rules[2]['annotations']['summary'] == (
                 'Expected metrics have disappeared for caddy-reverse-proxy/caddy at caddy:2021.'
             )
@@ -964,7 +964,10 @@ for enabled in (False, True):
         if enabled:
             for rule in rules:
                 settings = rule['notification_settings']
-                assert settings['group_by'] == ['service', 'environment', 'cluster', 'alertname']
+                expected_group_by = ['service', 'environment', 'cluster']
+                if not rule['uid'].startswith('o11y_missing_'):
+                    expected_group_by.append('alertname')
+                assert settings['group_by'] == expected_group_by
                 assert settings['group_wait'] == '30s'
                 assert settings['group_interval'] == '5m'
                 assert settings['repeat_interval'] == '4h'
@@ -1008,11 +1011,14 @@ related_render = template.render(
 related_rules = yaml.safe_load(related_render)['groups'][0]['rules']
 target_rules = [rule for rule in related_rules if rule['uid'].startswith('o11y_missing_caddy')]
 assert len(target_rules) == 2
-assert len({rule['title'] for rule in target_rules}) == 1
+assert len({rule['title'] for rule in target_rules}) == 2
+assert all(' at ' in rule['title'] for rule in target_rules)
 assert len({rule['labels']['instance'] for rule in target_rules}) == 2
 assert all(rule['labels']['service'] == 'caddy-reverse-proxy/caddy' for rule in target_rules)
+assert all(rule['labels']['environment'] == 'prod' for rule in target_rules)
+assert all(rule['labels']['cluster'] == 'test-cluster' for rule in target_rules)
 assert all(
-    rule['notification_settings']['group_by'] == ['service', 'environment', 'cluster', 'alertname']
+    rule['notification_settings']['group_by'] == ['service', 'environment', 'cluster']
     for rule in target_rules
 )
 assert all(rule['labels']['instance'] in rule['annotations']['summary'] for rule in target_rules)
@@ -1320,7 +1326,16 @@ fields = settings_check['loop']
 assert {'receiver', 'group_by', 'group_wait', 'group_interval', 'repeat_interval', 'mute_time_intervals'} == set(fields)
 
 def live_of(doc, folder_uid='f1'):
-    return [dict(rule, folderUID=folder_uid, ruleGroup=group['name']) for group in doc['groups'] for rule in group['rules']]
+    return [
+        dict(
+            rule,
+            labels={key: value.replace('$$', '$') if isinstance(value, str) else value
+                    for key, value in rule.get('labels', {}).items()},
+            folderUID=folder_uid,
+            ruleGroup=group['name'],
+        )
+        for group in doc['groups'] for rule in group['rules']
+    ]
 
 def verify_rules(rules, provisioned, live_folders=({'uid': 'f1', 'title': 'agent-cloud'},)):
     names = {'_active_rules': {'stdout': json.dumps(rules)},
@@ -1354,6 +1369,10 @@ assert next(rule for rule in local_live if rule['uid'] == 'o11y_receiver_root_di
 assert verify_rules(local_live, local_doc)
 assert verify_rules(prod_live, prod_doc)
 assert verify_rules(inf_live, inf_doc)
+assert any(rule.get('labels', {}).get('service') == '{{ $$labels.job }}'
+           for group in prod_doc['groups'] for rule in group['rules'])
+assert any(rule.get('labels', {}).get('service') == '{{ $labels.job }}'
+           for rule in prod_live)
 # Out of scope: another folder, or an unprovisioned group in this folder.
 assert verify_rules(inf_live + [dict(inf_live[0], uid='unrelated', folderUID='f2')], inf_doc,
                     ({'uid': 'f1', 'title': 'agent-cloud'}, {'uid': 'f2', 'title': 'other'}))
