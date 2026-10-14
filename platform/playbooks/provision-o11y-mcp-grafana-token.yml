@@ -50,12 +50,12 @@
     _admin_curl: >-
       printf 'user = "admin:%s"\n' "$GF_SECURITY_ADMIN_PASSWORD" |
       curl -fsS --config - -H 'Content-Type: application/json'
-    # Token on stdin, status code on stdout. /api/org/ is a read-only endpoint
-    # accepted for service-account bearer tokens; /api/user is Basic-auth only.
+    # Token on stdin; /api/user returns the typed identity UID for service-account
+    # bearer tokens in Grafana 11.4, followed by the HTTP status delimiter.
     _token_check: >-
       read -r t; printf 'header = "Authorization: Bearer %s"\n' "$t" |
-      curl -sS -o /dev/null -w '%{http_code}' --config -
-      "$1/api/org/"
+      curl -sS -w '\n__HTTP_STATUS__%{http_code}' --config -
+      "$1/api/user"
   tasks:
     - name: Refuse a cleartext OpenBao endpoint
       ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
@@ -123,7 +123,7 @@
           this playbook recreates it, then re-run.
       when: _sa_id | string | length > 0
 
-    - name: Test the active token against Grafana's authenticated organization API
+    - name: Test the active token against Grafana's authenticated identity API
       ansible.builtin.command:
         argv: ["{{ _engine }}", exec, -i, o11y-grafana, sh, -c, "{{ _token_check }}", token-check, "{{ _gf }}"]
         stdin: "{{ _o11y_secret.json.data.data.mcp_grafana_token | default('') }}"
@@ -136,7 +136,16 @@
 
     - name: Reduce the active-token check to its status
       ansible.builtin.set_fact:
-        _active_status: "{{ (_active_check.stdout | default('none')) if _active_check is not skipped else 'none' }}"
+        _active_status: "{{ (_active_check.stdout | default('none') | split('__HTTP_STATUS__') | last) if _active_check is not skipped else 'none' }}"
+        _active_uid: >-
+          {{ ((_active_check.stdout | split('__HTTP_STATUS__') | first | trim | from_json).uid | default(''))
+             if (_active_check is not skipped and _active_check.stdout | default('') is search('__HTTP_STATUS__200$'))
+             else '' }}
+      no_log: true
+
+    - name: Classify whether the active token belongs to the exact service account
+      ansible.builtin.set_fact:
+        _active_matches: "{{ _active_status == '200' and _active_uid == ('service-account:' ~ (_sa_id | string)) }}"
       no_log: true
 
     - name: Refuse to replace an active token on a non-authentication failure
@@ -149,7 +158,7 @@
 
     - name: Require the MCP Grafana account for a valid stored token
       ansible.builtin.assert:
-        that: _active_status != '200' or _sa_id | string | length > 0
+        that: not _active_matches or _sa_id | string | length > 0
         fail_msg: "The active MCP Grafana token is accepted but its service account is missing; investigate Grafana before proceeding."
 
     - name: Create the MCP Grafana service account (Editor)
@@ -171,7 +180,7 @@
       changed_when: true
       when:
         - _sa_id | string | length == 0
-        - _active_status != '200'
+        - not _active_matches
         - not ansible_check_mode
 
     - name: Record the created account id
@@ -179,15 +188,18 @@
         _sa_created: "{{ _sa_create is defined and _sa_create is changed }}"
         _sa_id: "{{ (_sa_create.stdout | from_json).id if _sa_create is changed else _sa_id }}"
 
-    - name: Require a staged candidate after an authentication rejection or missing token
+    - name: Require a staged candidate when the active token is not the exact account token
       ansible.builtin.assert:
         that: (_o11y_secret.json.data.data.mcp_grafana_token_candidate | default('')) | length > 0
         fail_msg: >-
-          The MCP Grafana token is {{ 'missing' if _active_status == 'none' else 'rejected (' ~ _active_status ~ ')' }}.
+          The MCP Grafana active token is
+          {{ 'missing' if _active_status == 'none'
+             else 'rejected (' ~ _active_status ~ ')' if _active_status in ['401', '403']
+             else 'authenticated as a different service account' }}.
           Create a token for the enabled mcp-grafana Editor account in Grafana, copy it to a local
           0600 file, and seed secret/services/o11y:mcp_grafana_token_candidate with the isolated
           Seed OpenBao Key template before rerunning this task.
-      when: _active_status != '200'
+      when: not _active_matches
 
     - name: Refuse a candidate for a newly created service account
       ansible.builtin.assert:
@@ -199,10 +211,10 @@
           proven to belong to it. Mint a token from that account in Grafana, reseed the candidate,
           and rerun.
       when:
-        - _active_status != '200'
+        - not _active_matches
         - (_o11y_secret.json.data.data.mcp_grafana_token_candidate | default('')) | length > 0
 
-    - name: Test the candidate against Grafana's authenticated organization API
+    - name: Test the candidate against Grafana's authenticated identity API
       ansible.builtin.command:
         argv: ["{{ _engine }}", exec, -i, o11y-grafana, sh, -c, "{{ _token_check }}", token-check, "{{ _gf }}"]
         stdin: "{{ _o11y_secret.json.data.data.mcp_grafana_token_candidate }}"
@@ -215,23 +227,30 @@
 
     - name: Reduce the candidate-token check to its status
       ansible.builtin.set_fact:
-        _candidate_status: "{{ _candidate_check.stdout | default('none') if _candidate_check is not skipped else 'none' }}"
+        _candidate_status: "{{ (_candidate_check.stdout | default('none') | split('__HTTP_STATUS__') | last) if _candidate_check is not skipped else 'none' }}"
+        _candidate_uid: >-
+          {{ ((_candidate_check.stdout | split('__HTTP_STATUS__') | first | trim | from_json).uid | default(''))
+             if (_candidate_check is not skipped and _candidate_check.stdout | default('') is search('__HTTP_STATUS__200$'))
+             else '' }}
       no_log: true
 
     - name: Require a staged candidate to authenticate
       ansible.builtin.assert:
-        that: _candidate_status == '200'
+        that:
+          - _candidate_status == '200'
+          - _candidate_uid == ('service-account:' ~ (_sa_id | string))
         fail_msg: >-
-          Grafana answered the staged MCP Grafana token with status {{ _candidate_status }}.
-          The active OpenBao token was not changed; mint and seed a valid candidate, then rerun.
+          The staged token did not authenticate as the exact mcp-grafana service account
+          (HTTP status {{ _candidate_status }}). The active OpenBao token was not changed;
+          mint a token from the enabled mcp-grafana Editor account and reseed the candidate.
       when: (_o11y_secret.json.data.data.mcp_grafana_token_candidate | default('')) | length > 0
 
     - name: Reuse the accepted active token or report the staged promotion
       ansible.builtin.debug:
         msg: >-
-          {{ 'staged MCP Grafana token is valid; it ' ~ ('would be promoted' if ansible_check_mode else 'will be promoted')
+          {{ 'staged MCP Grafana token is valid for mcp-grafana; it ' ~ ('would be promoted' if ansible_check_mode else 'will be promoted')
              if (_o11y_secret.json.data.data.mcp_grafana_token_candidate | default('')) | length > 0
-             else 'active MCP Grafana token is valid; reusing it' }}
+             else 'active MCP Grafana token is valid for mcp-grafana; reusing it' }}
 
     - name: Promote the verified candidate into secret/services/o11y
       when:

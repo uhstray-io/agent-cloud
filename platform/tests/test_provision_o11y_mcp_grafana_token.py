@@ -12,6 +12,7 @@ PLAYBOOK = "platform/playbooks/provision-o11y-mcp-grafana-token.yml"
 STORED = "synthetic-stored-token"
 CANDIDATE = "synthetic-candidate-token"
 RACED_CANDIDATE = "synthetic-raced-candidate-token"
+OTHER_ACCOUNT_TOKEN = "synthetic-other-account-token"
 ADMIN = "synthetic-admin-password"
 ENGINE = f"""#!/bin/sh
 shift            # exec
@@ -22,7 +23,7 @@ GF_SECURITY_ADMIN_PASSWORD={ADMIN} exec "$@"
 
 
 def make_handler(stored=STORED, candidate=None, valid=(STORED,), health=200, account=None, rejection=401,
-                 race_on_merge=False):
+                 race_on_merge=False, identities=None):
     """`account` is the exact account's {role, isDisabled}, or None when absent."""
 
     class Handler(FakeBao):
@@ -33,6 +34,8 @@ def make_handler(stored=STORED, candidate=None, valid=(STORED,), health=200, acc
             **({"mcp_grafana_token_candidate": candidate} if candidate else {}),
         }
         accepted = set(valid)
+        identity_by_token = {STORED: "service-account:7", CANDIDATE: "service-account:7"}
+        identity_by_token.update(identities or {})
         sa = dict(account, id=7, name="mcp-grafana") if account else None
         version = 1
         inject_race = race_on_merge
@@ -80,10 +83,11 @@ def make_handler(stored=STORED, candidate=None, valid=(STORED,), health=200, acc
             path = urlsplit(self.path).path
             if path == "/v1/secret/data/services/o11y":
                 return self.reply({"data": {"data": cls.store, "metadata": {"version": cls.version}}})
-            if path == "/api/org/":
-                if self.headers.get("Authorization", "").removeprefix("Bearer ") not in cls.accepted:
+            if path == "/api/user":
+                token = self.headers.get("Authorization", "").removeprefix("Bearer ")
+                if token not in cls.accepted:
                     return self.reply({"message": "invalid API key"}, rejection)
-                return self.reply({"id": 1}, health)
+                return self.reply({"uid": cls.identity_by_token.get(token, "")}, health)
             if path == "/api/serviceaccounts/search":
                 return self.reply({"serviceAccounts": [cls.sa] if cls.sa else []})
             if path == "/api/serviceaccounts/7":
@@ -113,7 +117,8 @@ def run(tmp_path, handler, *, check=False):
             cwd=ROOT, env=env, text=True, capture_output=True, timeout=180, stdin=subprocess.DEVNULL,
         )
     out = result.stdout + result.stderr
-    for secret in (STORED, CANDIDATE, RACED_CANDIDATE, ADMIN, "synthetic-login-value", "synthetic-role-secret"):
+    for secret in (STORED, CANDIDATE, RACED_CANDIDATE, OTHER_ACCOUNT_TOKEN, ADMIN,
+                   "synthetic-login-value", "synthetic-role-secret"):
         assert secret not in out
     return result.returncode, out
 
@@ -130,6 +135,15 @@ def test_valid_active_token_is_reused(tmp_path):
     rc, out = run(tmp_path, handler)
     assert rc == 0, out
     assert "reusing it" in out
+    assert writes(handler) == [] and handler.store["mcp_grafana_token"] == STORED
+
+
+def test_active_token_for_another_service_account_is_not_reused(tmp_path):
+    handler = make_handler(identities={STORED: "service-account:99"},
+                           account={"role": "Editor", "isDisabled": False})
+    rc, out = run(tmp_path, handler)
+    assert rc != 0
+    assert "authenticated as a different service account" in out
     assert writes(handler) == [] and handler.store["mcp_grafana_token"] == STORED
 
 
@@ -190,6 +204,18 @@ def test_candidate_failure_preserves_active_and_candidate(tmp_path):
     assert writes(handler) == []
     assert handler.store["mcp_grafana_token"] == STORED
     assert handler.store["mcp_grafana_token_candidate"] == CANDIDATE
+
+
+def test_candidate_for_another_service_account_is_not_promoted(tmp_path):
+    handler = make_handler(candidate=OTHER_ACCOUNT_TOKEN, valid=(STORED, OTHER_ACCOUNT_TOKEN),
+                           identities={OTHER_ACCOUNT_TOKEN: "service-account:99"},
+                           account={"role": "Editor", "isDisabled": False})
+    rc, out = run(tmp_path, handler)
+    assert rc != 0
+    assert "exact mcp-grafana service account" in out
+    assert writes(handler) == []
+    assert handler.store["mcp_grafana_token"] == STORED
+    assert handler.store["mcp_grafana_token_candidate"] == OTHER_ACCOUNT_TOKEN
 
 
 def test_outage_status_fails_without_promoting_candidate(tmp_path):
