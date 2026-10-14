@@ -135,37 +135,10 @@
     # ── The administrator list is checked BEFORE anything acts on it ──────────
     # Each entry becomes an account, an env line and an OpenBao field, so a malformed
     # one fails here, naming the entry, rather than as an unusable account later.
-    - name: "Refuse a malformed administrator list"
-      ansible.builtin.assert:
-        that:
-          - item.key is defined and (item.key | string) is match('^[a-z][a-z0-9_]*$')
-          - item.username is defined and (item.username | string | trim | length) > 0
-          - item.name is defined and (item.name | string | trim | length) > 0
-          - (item.type | default('user')) in ['user', 'service_account']
-          - (item.type | default('user')) == 'service_account' or (item.email | default('') | string | trim | length) > 0
-        fail_msg: >-
-          platform_admins entry {{ item.key | default('<no key>') }} is malformed: it needs a
-          lowercase key (letters, digits, underscore), a username, a name, a type of user or
-          service_account, and an email unless it is a service account.
-        quiet: true
-      loop: "{{ _platform_admins }}"
-      loop_control:
-        label: "{{ item.key | default('<no key>') }}"
-
-    - name: "Refuse an empty list, duplicate administrators and secret-field collisions"
-      ansible.builtin.assert:
-        that:
-          - _platform_admins is sequence and _platform_admins is not string
-          - _platform_admins | length > 0
-          - (_platform_admins | map(attribute='key') | list | unique | length) == (_platform_admins | length)
-          - (_platform_admins | map(attribute='username') | list | unique | length) == (_platform_admins | length)
-          - (_platform_admins | selectattr('type', 'defined') | selectattr('type', 'equalto', 'service_account') | list | length) <= 1
-          - (_secret_definitions | map(attribute='name') | list | unique | length) == (_secret_definitions | length)
-        fail_msg: >-
-          platform_admins is empty or not a list, or has a repeated key or username, more than one service account (they
-          share one API token), or a key whose `<key>_password` field collides with another
-          declared secret. Keys: {{ _platform_admins | map(attribute='key') | join(', ') }}.
-        quiet: true
+    - name: "Validate the declared administrator list"
+      # One task file shared with the credential print (tasks/validate-platform-admins.yml):
+      # shape, duplicates, and keys that would name a non-user secret field.
+      ansible.builtin.include_tasks: tasks/validate-platform-admins.yml
 
     - name: "Place the monorepo + ensure podman/compose"
       ansible.builtin.include_tasks: tasks/place-monorepo.yml

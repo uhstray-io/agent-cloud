@@ -70,6 +70,14 @@ The bootstrap `akadmin` (`AUTHENTIK_BOOTSTRAP_*`) is not a blueprint user and is
 `platform_admins_exceptions` (names only, default empty) names `platform-admins` members that
 are deliberately NOT in the list. It exists for the drift guard below and nothing else.
 
+The list is validated before anything acts on it, by `platform/playbooks/tasks/validate-platform-admins.yml`,
+which the deploy and the credential print (`print-platform-user-credentials.yml`) both include: a lowercase
+slug key, a username, a name, an email unless a service account, no duplicate key or username, at most one
+service account, and no key whose `<key>_password` field or own name is a non-user secret (database,
+bootstrap, secret key, OIDC client secrets, the service-account token). The print also builds its
+allow-list only from keys that pass that rule, because `platform_admins` can arrive from an inventory or an
+extra var and a key such as `db` would otherwise name the database password as if it were a person's.
+
 Identity (username, name, email) is baked into the rendered blueprint; a password never is
 (`!Env <KEY>_PASSWORD`), because that file is world-readable on the host.
 

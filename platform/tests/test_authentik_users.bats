@@ -213,9 +213,14 @@ PY_DEF
   assert_grep -q "_platform_admins | map(attribute='username')" "$DEPLOY"
   # both list validations sit BEFORE the repo is placed or anything is written
   local order
-  order=$(grep -nE 'name: "(Refuse a malformed administrator list|Refuse an empty list, duplicate administrators and secret-field collisions|Place the monorepo)' "$DEPLOY" | cut -d: -f1 | tr '\n' ' ')
+  local shared="${BATS_TEST_DIRNAME}/../playbooks/tasks/validate-platform-admins.yml"
+  order=$(grep -nE 'name: "(Validate the declared administrator list|Place the monorepo)' "$DEPLOY" | cut -d: -f1 | tr '\n' ' ')
   set -- $order
-  [ "$#" -eq 3 ] && [ "$1" -lt "$3" ] && [ "$2" -lt "$3" ]
+  [ "$#" -eq 2 ] && [ "$1" -lt "$2" ]
+  assert_grep -q 'tasks/validate-platform-admins.yml' "$DEPLOY"
+  # the SAME file guards the credential print, which reads names back out of OpenBao
+  assert_grep -q 'tasks/validate-platform-admins.yml' "${BATS_TEST_DIRNAME}/../playbooks/print-platform-user-credentials.yml"
+  assert_grep -q 'Refuse a malformed administrator list' "$shared"
   # no computed declaration is left in the playbook's own vars (check-secrets would fail closed)
   refute_grep -qE '^    _secret_definitions:' "$DEPLOY"
 }

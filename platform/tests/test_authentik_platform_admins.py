@@ -304,13 +304,8 @@ def _deploy_tasks() -> list:
 
 
 def _validate(tmp: Path, inventory: dict) -> subprocess.CompletedProcess:
-    """Run the deploy's two list validations (lifted by name) against an inventory."""
-    tasks = _deploy_tasks()
-    names = [t.get("name", "") for t in tasks]
-    picked = [
-        tasks[names.index("Refuse a malformed administrator list")],
-        tasks[names.index("Refuse an empty list, duplicate administrators and secret-field collisions")],
-    ]
+    """Run the shared list validation (tasks/validate-platform-admins.yml) against an inventory."""
+    tasks = yaml.safe_load((PLAYBOOKS / "tasks/validate-platform-admins.yml").read_text())
     (tmp / "vars").symlink_to(PLAYBOOKS / "vars")
     play = [
         {
@@ -321,7 +316,7 @@ def _validate(tmp: Path, inventory: dict) -> subprocess.CompletedProcess:
                 str(PLAYBOOKS / "vars/platform-admins.yml"),
                 str(PLAYBOOKS / "vars/secret-declarations/authentik.yml"),
             ],
-            "tasks": picked,
+            "tasks": tasks,
         }
     ]
     (tmp / "validate.yml").write_text(yaml.safe_dump(play))
@@ -381,6 +376,16 @@ def test_the_committed_default_is_accepted(tmp_path):
             "two service accounts share one token",
         ),
         ([_entry(key="andrew")], "<key>_password collides with the platform-users password field"),
+        ([_entry(key="db")], "db_password is the Authentik database password"),
+        ([_entry(key="bootstrap")], "bootstrap_password is the akadmin bootstrap password"),
+        ([_entry(key="secret_key")], "the key is itself a static secret field"),
+        ([_entry(key="db_password")], "the key is itself a static secret field (db_password)"),
+        ([_entry(key="grafana_oidc_client_secret")], "an OIDC client secret field"),
+        ([_entry(key="../etc")], "path characters"),
+        ([_entry(key="a/b")], "path characters"),
+        ([_entry(key="a.b")], "regex characters"),
+        ([_entry(key=".*")], "regex wildcard"),
+        ([_entry(key="x;y")], "shell characters"),
         ([_entry(key="service_account", username="svc")], "no collision here: service_account_token differs"),
     ],
 )
@@ -422,7 +427,10 @@ def test_the_credential_print_allow_list_is_the_stored_passwords(tmp_path):
             "hosts": "localhost",
             "connection": "local",
             "gather_facts": False,
-            "vars_files": [str(PLAYBOOKS / "vars/platform-admins.yml")],
+            "vars_files": [
+                str(PLAYBOOKS / "vars/platform-admins.yml"),
+                str(PLAYBOOKS / "vars/secret-declarations/authentik.yml"),
+            ],
             "vars": {
                 "_blueprint": str(DEPLOYMENT / "blueprints/platform-users.yaml"),
                 "_allowed": play["vars"]["_allowed"],
@@ -500,3 +508,113 @@ def test_retiring_a_declared_administrators_username_is_refused(tmp_path):
 def test_a_retirement_that_names_nobody_declared_passes_the_guard(tmp_path):
     done = _collision_guard(tmp_path, {"andrew_legacy_username": "someone-long-gone"})
     assert done.returncode == 0, done.stdout + done.stderr
+
+
+# ── the credential print cannot be widened by the list ──────────────────────────
+HOSTILE_KEYS = ["db", "bootstrap", "secret_key", "db_password", "grafana_oidc_client_secret", "../etc", ".*"]
+
+
+def _print_playbook(tmp: Path, extra: dict) -> subprocess.CompletedProcess:
+    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
+    env["ANSIBLE_NOCOLOR"] = "1"
+    # An unreachable loopback store: a run that got past the guards would fail HERE, not at a guard.
+    args = {"openbao_addr": "http://127.0.0.1:9", "i_understand_this_prints_secrets": True, **extra}
+    return subprocess.run(
+        [
+            "ansible-playbook",
+            "-i",
+            "localhost,",
+            str(PLAYBOOKS / "print-platform-user-credentials.yml"),
+            "-e",
+            json.dumps(args),
+        ],
+        cwd=REPO,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
+def _failed_task(done: subprocess.CompletedProcess) -> str:
+    """The name of the task that failed, from the play output."""
+    lines = done.stdout.splitlines()
+    for i, ln in enumerate(lines):
+        if ln.startswith(("fatal:", "failed:")):
+            for back in range(i, -1, -1):
+                if lines[back].startswith("TASK ["):
+                    return lines[back]
+    return ""
+
+
+@pytest.mark.parametrize("key", HOSTILE_KEYS)
+def test_a_crafted_admin_key_cannot_make_the_print_read_a_non_user_secret(tmp_path, key):
+    # An extra var `platform_admins` reaches the print playbook. The refusal is the list validation,
+    # which runs before any OpenBao call: the run never gets as far as authenticating.
+    done = _print_playbook(tmp_path, {"platform_admins": [_entry(key=key)], "credential_users": key.split("/")[0]})
+    assert done.returncode != 0, done.stdout
+    assert "Validate the declared administrator list" in _failed_task(done) or "Refuse a malformed" in _failed_task(
+        done
+    ), (_failed_task(done), done.stdout[-600:])
+    assert "Authenticate to OpenBao" not in done.stdout
+
+
+def test_a_normal_admin_key_is_still_allowed_to_print(tmp_path):
+    # The guards pass for the committed default and a normal declared list; the run proceeds to the
+    # store, which here is unreachable, so the failure is the authentication task.
+    for extra in ({"credential_users": "wisward"}, {"platform_admins": [_entry()], "credential_users": "carol"}):
+        done = _print_playbook(tmp_path, extra)
+        assert done.returncode != 0
+        assert "Authenticate to OpenBao" in _failed_task(done), (extra, _failed_task(done), done.stdout[-800:])
+
+
+@pytest.mark.parametrize("key", ["db", "bootstrap", "secret_key", ".*", "../etc", "a b"])
+def test_the_allow_list_itself_never_admits_a_static_secret(tmp_path, key):
+    # Defence in depth: even with the validation removed, `_allowed` is built only from keys whose
+    # `<key>_password` is a per-user field the declaration generates and not a static secret.
+    plays = yaml.safe_load((PLAYBOOKS / "print-platform-user-credentials.yml").read_text())
+    play = next(p for p in plays if "vars" in p)
+    (tmp_path / "vars").symlink_to(PLAYBOOKS / "vars")
+    harness = [
+        {
+            "hosts": "localhost",
+            "connection": "local",
+            "gather_facts": False,
+            "vars_files": [
+                str(PLAYBOOKS / "vars/platform-admins.yml"),
+                str(PLAYBOOKS / "vars/secret-declarations/authentik.yml"),
+            ],
+            "vars": {
+                "_blueprint": str(DEPLOYMENT / "blueprints/platform-users.yaml"),
+                "_allowed": play["vars"]["_allowed"],
+            },
+            "tasks": [
+                {
+                    "ansible.builtin.copy": {
+                        "dest": str(tmp_path / "allowed.json"),
+                        "content": "{{ _allowed | to_json }}",
+                    }
+                }
+            ],
+        }
+    ]
+    (tmp_path / "h.yml").write_text(yaml.safe_dump(harness))
+    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
+    done = subprocess.run(
+        [
+            "ansible-playbook",
+            "-i",
+            "localhost,",
+            str(tmp_path / "h.yml"),
+            "-e",
+            json.dumps({"platform_admins": [_entry(key=key), _entry()]}),
+        ],
+        cwd=tmp_path,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert done.returncode == 0, done.stdout + done.stderr
+    allowed = json.loads((tmp_path / "allowed.json").read_text())
+    assert key not in allowed and "carol" in allowed, allowed
