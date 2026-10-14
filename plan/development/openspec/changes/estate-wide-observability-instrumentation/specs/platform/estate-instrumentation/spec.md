@@ -357,7 +357,9 @@ The platform SHALL use a reviewed, Dev-bound, GET-only survey before considering
 #### Scenario: Private declared thick-LVM store reports fixed reported-headroom facts
 - **WHEN** the private declared PBS VM-image store is an LVM-thin store or an eligible thick-LVM store
 - **THEN** the existing LVM-thin snapshot-unverified path retains its current behavior, while the thick-LVM path requires an exact match between the private declared storage ID's detail config, its visible cluster config, its target-node status row, and the linked VG candidate facts
-- **AND** it reports only `declared_thick_lvm_candidate_exact_match` and fixed `declared_thick_lvm_reported_vg_headroom_passes_{256,512,1024}_gib` booleans for an eligible exact match; absent, non-eligible, or inconsistent declarations leave these facts false
+- **AND** it reports `declared_thick_lvm_candidate_in_visible_eligible_set`, `declared_thick_lvm_required_config_fields_match`, `declared_thick_lvm_optional_config_fields_match`, and `declared_thick_lvm_status_content_matches_config` as fixed-schema booleans that decompose the exact-match diagnosis without exposing identifiers
+- **AND** `declared_thick_lvm_candidate_exact_match` remains fail-closed and is true only when the declared candidate is in the visible eligible set and all three config/status comparisons match; absent or non-eligible candidates leave the diagnostic booleans false
+- **AND** it reports fixed `declared_thick_lvm_reported_vg_headroom_passes_{256,512,1024}_gib` booleans only for an eligible exact match; mismatches leave these facts false
 - **AND** fixed headroom booleans describe reported VG free extents after a hypothetical allocation retaining at least 30% of reported VG size; they do not reserve capacity or authorize allocation
 - **AND** `storage_allocation_authorized`, `thick_lvm_allocation_authorized`, `thick_lvm_backing_media_verified`, `pbs_readiness_verified`, and `write_authorized` remain false, and no store ID, VG name, path, or exact capacity is reported
 
