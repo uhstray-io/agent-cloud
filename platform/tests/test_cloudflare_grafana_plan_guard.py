@@ -338,3 +338,5 @@ def test_editor_exception_is_scoped_and_rollout_tasks_stay_open():
     assert "openbao" in editor_task and "source of truth" in editor_task
     assert "mode 0600" in editor_task and "~/.config/mcp-grafana/prod.token" in editor_task
     assert "local profile" in task_text["2.2c"] and "--disable-write" in task_text["2.2c"]
+    assert "production profile" in task_text["2.2c"]
+    assert "without `--disable-write`" in task_text["2.2c"]
