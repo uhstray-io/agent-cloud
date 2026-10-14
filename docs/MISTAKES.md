@@ -53,6 +53,7 @@ and why.
 | 1.21 | **x2** — Said the live alert readback proved the inference alert groups; it filtered rule uids to `o11y_` and never read them, and no dashboard check covered the inference boards | Unverified claim | 2 | Test (`test_service_o11y.bats` readback mirror); selector choice Convention |
 | 1.22 | Stated the runner's ansible-core version twice (2.16 from a relayed comment, then 2.20.8 from a compose default); the live server runs v2.17.31, whose image ships 2.18.15 | Unverified claim | 1 | CI pin (requirements-test.txt) + Convention |
 | 1.23 | Named an incident's cause (a config the pinned image would reject) without reading the failing task's own stderr, which printed the real one: the rollback recreated the gateway without the TLS compose overlay | Unverified claim | 1 | Convention |
+| 1.24 | Projected 90-day Prometheus disk from a net 24 h block delta that retention was already offsetting; 2.4 GB stated where the at-rest size gives 6 GB or more | Unverified claim | 1 | Convention |
 | 2.1 | Test compiled a pattern as raw file text, not as the runtime decodes it | False-green test | 1 | Test |
 | 2.2 | Test pinned the vulnerable form of a security check in place | False-green test | 1 | Test |
 | 2.3 | Negative assertion aborted under `set -e` because a no-match grep exits 1 | False-green test | 1 | Convention |
@@ -974,6 +975,28 @@ from the YAML) and `platform/tests/test_rollback_inference_route.py` (both rollb
 the deploy's environment, `compose.tls.yml` included). Mutation-checked: dropping `COMPOSE_OVERLAYS`
 from the shared mapping, or inlining the environment on a rollback task, fails them. The reading habit
 (read the failing output before naming a cause) is Convention.
+
+### 1.24 A growth projection extrapolated from a net change that retention was already offsetting
+
+**What happened.** The first daily o11y baseline (production receipt task 5329, 2026-10-13) reported
+Prometheus block bytes of 992,962,502 and a 24 h change of +26,487,309, read with
+`delta(prometheus_tsdb_storage_blocks_bytes[24h])`. The operator was told, and a records PR stated,
+that Prometheus grows about 26.5 MB a day, so 90-day retention needs about 2.4 GB. The receiver had
+run 17 days against 15-day retention, so blocks were already being deleted. The delta is net of
+those deletions and excludes the head, which makes it a lower bound. The at-rest size gives at least
+about 66 MB a day, or about 6 GB or more for 90 days. The pull-request review caught it before
+merge. The conclusion (disk is not the blocker) held at either figure.
+
+**Root cause.** The figure was read by its label ("change in 24 h") and multiplied out, without
+asking what the query measures: a net delta of a gauge that retention and compaction both move.
+The same receipt's other numbers (at-rest size against the retention span, samples appended)
+contradicted it, and nobody cross-checked them.
+
+**The rule.** Before projecting a rate forward, name what the measured quantity is net of
+(deletion, compaction, restarts) and cross-check it against an independent figure from the same
+reading. When they disagree, report the bound each one gives, not the product of one.
+
+**Enforced by.** Convention.
 
 ## 2. Tests that would have passed for the wrong reason
 

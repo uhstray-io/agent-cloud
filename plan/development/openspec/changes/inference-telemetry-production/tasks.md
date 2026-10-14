@@ -511,12 +511,16 @@
       658f3ed9) added per-day figures to `Verify o11y Production Budgets`. Task 5329
       (repository 3e7ce6cc, receiver 95554ab4): Loki ingested 107,044,302 bytes and 58,490
       lines in 24 h; Prometheus appended 69,589,789 samples in 24 h; TSDB blocks 992,962,502
-      bytes, +26,487,309 in 24 h; 13,717 active series against the 2000 per-target
-      `sample_limit` (matches); root filesystem 84.2 GB free of 103.7 GB (81.22% free; all
-      five o11y volumes share it); memory headroom 86.22%; retention Loki 7d, Prometheus 15d
-      (size cap 0B), Tempo 168h. At these rates the 90d/45d target needs about 2.4 GB of
-      Prometheus blocks and at most about 4.8 GB of raw Loki intake before compression, well
-      inside the free space; disk is not the blocker. Remaining: alert thresholds from the
+      bytes, +26,487,309 in 24 h; total head series 13,717, and the live per-target sample
+      limit matches the declared 2000; root filesystem 84.2 GB free of 103.7 GB (81.22% free;
+      all five o11y volumes share it); memory headroom 86.22%; retention Loki 7d, Prometheus
+      15d (size cap 0B), Tempo 168h. The +26.5 MB is the NET 24 h change in compacted block
+      bytes, after 15d retention was already deleting blocks (the receiver has run since
+      2026-09-26), so it is a lower bound, not the growth rate. The at-rest size gives the
+      better bound: 993 MB holds at most 15 days, so at least about 66 MB/day, and 90d needs
+      about 6 GB or more. Loki at 107 MB/day raw needs at most about 4.8 GB for 45d before
+      compression. Both are small against the free space; disk is not the blocker. A
+      multi-day baseline would firm up the Prometheus rate. Remaining: alert thresholds from the
       baseline (operator decision on the figures), and the retention increase, still blocked
       on the estate-wide 4.6e isolated-restore receipt. Not ticked.
 - [x] 4.2 Append dated status lines to `plan/development/05-observability.md` and
