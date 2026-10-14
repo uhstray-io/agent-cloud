@@ -140,18 +140,7 @@ available API and LAN observations timed out; no route was retried and no
 private address is recorded. Installed executor behavior, private deployment
 bindings, and the prior protected-launch design gates remain unverified.
 
-**Installed Semaphore API observation (2026-10-10; directly queried read-only by the agent via the site-config HTTPS launch URL; sanitized output):** HTTPS
-`/api/info` reported version `v2.19.11-0c3f373-1787751354` and
-`use_remote_runner=false`. `/api/runners` returned two records: the default
-runner was active, offline, with `max_parallel=1`; the nondefault runner was
-inactive and online. The response exposed no tag counts. Historical task 4038
-in project 1/template 312 reported the reviewed Dev SHA and an empty playbook
-override; its template points to the journal-collector playbook and has
-repository/inventory IDs. Neither task nor template exposed `runner_id` or a
-runner tag. This suggests local execution but does not prove task-specific
-runner isolation, runner-token scope, or current behavior. Verify the installed
-execution path and isolation before relying on task attribution or admitting
-runtime proof; task 1.2a remains unchecked.
+**Installed Semaphore API observation (2026-10-14; sanitized read-only receipt, updating the 2026-10-10 observation):** `/api/info` reported version `v2.19.11-0c3f373-1787751354`, `jwt.enabled=false`, and `use_remote_runner=false`. Templates 224, 234, and 312 expose no `jwt_params`. `/api/runners` returned two records, one active; the API evidence establishes neither task isolation nor trusted task attribution. This confirms an activation gap only: it does not establish signer issuance, runner isolation, protected launch, or permission to mutate journal or receiver assets. Repository [`deploy-semaphore.yml:2-5`](../../../../platform/playbooks/deploy-semaphore.yml) permits provisioning on a new VM and warns against running on its own live controller. A reviewed independent live-controller maintenance/rollout path is required before enabling JWT. No core container restart is part of this evidence update; task 1.2a remains unchecked.
 
 **Conditional native task-JWT decision (2026-10-10; design only):** Use
 Semaphore's task JWT as the authentication input only when its signer is
