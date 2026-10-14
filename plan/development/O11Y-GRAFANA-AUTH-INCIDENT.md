@@ -1,7 +1,7 @@
 # Grafana Authentik sign-in incident
 
 **Date:** 2026-09-30  
-**Status:** PROPOSED  
+**Status:** RESOLVED  
 **Context:** Production Grafana returns to its login page after the Authentik OAuth round trip. This plan records the evidence and the controlled repair path.
 
 ## Problem
@@ -44,6 +44,8 @@ Both read-only diagnostics set Python's `TMPDIR` and Ansible's `ansible_remote_t
 Diagnostic run, 2026-10-04: `Diagnose Grafana OAuth Failure (Dev)` task 2746 on `dev` `21891372` ran end to end, unlike task 2103, and reported `category=no_oauth_failure_in_window`: no OAuth failure fell inside the diagnostic window. The playbook then stops by design, because it requires a failure category. Next: the operator attempts a Grafana sign-in and, if it fails, reruns the diagnostic inside the window.
 
 Operator report, 2026-10-08/09: Grafana's Authentik sign-in button now signs in. Direct Authentik sign-in and the original root cause remain unverified; bounded diagnostic task 2746 found no failure in its observation window. This report does not establish which change resolved the issue.
+
+Resolution, 2026-10-14: marked RESOLVED on the operator's confirmation of 2026-10-09 that Grafana's Authentik sign-in works (recorded in `estate-wide-observability-instrumentation` tasks.md 1.1). This is a manual receipt; no automated OAuth validation is claimed. The original root cause was never identified, and the confirmation covers Grafana's Authentik sign-in, not a separately reported direct Authentik login.
 
 ### Privileged root-LVM survey plan and current evidence
 

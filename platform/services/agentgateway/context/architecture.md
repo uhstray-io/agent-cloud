@@ -91,6 +91,15 @@ per-client layer. Everything is inventory-driven code (design §10):
 | Saved keys in the playground | Local-dev only: `agw_plaintext_keys: true` renders values instead of hashes so the UI can offer them. Prod stays on hashes |
 | Upstream key | `vllm_api_key` (`existing`, seeded separately) → `params.apiKey: $VLLM_API_KEY`; omitted when the upstream takes no key (LM Studio locally); rotated on vLLM's schedule (task 5.1) |
 
+### Admin UI (production v1.5.0)
+
+- The Routes page is empty by design: the `llm:` shortcut synthesizes its routes, so there is
+  nothing to list. It is not a fault.
+- The Playground needs a pasted raw key: production config holds sha256 hashes only. Local-dev
+  sets `agw_plaintext_keys: true`, which renders values, so the local UI lists saved keys.
+- Two `agw_models` entries (`nvidia/Qwen3.8-Flash-Next-NVFP4` and `qwen3.8-flash-next`) are
+  pending dgx-spark's canonical model name.
+
 ## Shared-key retirement (gateway task 5.1)
 
 Before the gateway, every client sent vLLM's one `--api-key`. During a dated grace period the

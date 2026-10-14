@@ -175,6 +175,12 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
         decided verify-only for the remaining check (option A). R1, the safety-default scenario
         through Manage GitHub Runner Group, is BLOCKED: the GitHub App returns 404 on every
         private repo, so the operator must re-grant the App's repository access. Not ticked
+      - 2026-10-14 (task output read from production Semaphore by the lead): Manage GitHub
+        Runner Group (Dev) task 5607, a dry run (the default), had the App issuer supplied and
+        still got HTTP 404 on all 6 declared repositories, so the App installation has not been
+        re-granted yet. Task 5606 was a launch without the survey variable
+        `github_app_client_id` and was refused at validation; that is not a regression. R1
+        stays blocked. Not ticked
 
 ## 3. Local-dev agent runtime (skynet)
 
@@ -471,6 +477,12 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
         and Inspect Service Runtime (Dev) task 5393 found the NetBox app container running
         unhealthy since 2026-09-23 with its worker restarted 20,601 times. Postiz is still
         undeployed. Not ticked.
+      - 2026-10-14, production (task output read from production Semaphore by the lead): the
+        NetBox double-deploy proof is COMPLETE. After Recover NetBox Runtime restored the
+        runtime, Deploy NetBox from main 67ce3d4d: task 5516 success (`changed=7`,
+        `changed_on_rerun` true, verified true), then task 5519 success (`changed=0`,
+        `changed_on_rerun` false, verified true). Postiz's production proof remains an
+        operator follow-up (no production containers). Not ticked
 - [x] 7.2 `provision-vm.yml` sets `onboot`; restart-policy check beside `enable-linger`.
       2026-09-22: onboot with per-host opt-out; `verify-service-persistence.yml` (step
       systemd-enablement) passes on local tududi, normal and check mode (tasks 977, 978)
@@ -722,10 +734,15 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
 
 ## 10. Greenfield pilot and close-out
 
-- [ ] 10.1 Operator picks the pilot service; all twenty-two steps pass, with its first
+- [ ] 10.1 Operator picks the pilot service; all twenty-three steps pass, with its first
       configuration landing through pull requests the workflow opened
-- [ ] 10.2 Update the diagram to the twenty-two steps, plan 15 status, root `AGENTS.md`
+      - 2026-10-14: the step count is twenty-three. `platform/workflows/service-onboarding/registry.yml`
+        carries 23 `- id:` entries (counted 2026-10-14); the 2026-10-04 note under 7.1 records
+        the step that raised it from twenty-two. Not ticked
+- [ ] 10.2 Update the diagram to the twenty-three steps, plan 15 status, root `AGENTS.md`
       workflow rows
+      - 2026-10-14: same count as 10.1 (23 registry entries; the diagram must show twenty-three).
+        Not ticked
 - [ ] 10.3 On archive, retain the outcome (worked / dead end / corrected) into bank
       `agent-cloud-750a33b9`
 - [ ] 10.4 Validation gate: `openspec validate service-deployment-workflow --store
