@@ -399,6 +399,24 @@ def test_direct_treats_a_derived_personal_identity_as_declared_not_retired(env):
     assert "direct_retired" not in Bao.store and "direct_pi" not in Bao.store
 
 
+def test_rollback_refuses_an_undeclared_admin_list_before_publishing_or_withdrawing(env):
+    Bao.store["direct_retired"] = LIVE
+    gateway = {"agw_clients": ["workstation"], "agw_admin_identities_enabled": True}  # no platform_admins
+    rc, out = _run(env, mode="direct", gateway=gateway)
+    assert rc != 0 and "platform_admins is not declared for this host" in out, out
+    assert Bao.store["direct_retired"] == LIVE and "direct_workstation" not in Bao.store and _patches() == []
+
+
+@pytest.mark.parametrize("entry", [{"username": "legacy-shared"}, {"username": "mcp-self"}, {"username": "Bad Name"}])
+def test_rollback_refuses_a_reserved_or_malformed_derived_name_before_any_write(env, entry):
+    Bao.store["direct_retired"] = LIVE
+    admins = [{"key": "bad", "name": "Bad", "email": "bad@example.invalid", **entry}]
+    gateway = {"agw_clients": ["workstation"], "agw_admin_identities_enabled": True, "platform_admins": admins}
+    rc, out = _run(env, mode="direct", gateway=gateway)
+    assert rc != 0 and "platform_admins entry bad" in out, out
+    assert Bao.store["direct_retired"] == LIVE and "direct_workstation" not in Bao.store and _patches() == []
+
+
 def test_direct_withdraws_a_personal_copy_once_the_gate_or_the_entry_is_gone(env):
     # Same store, the derivation off: carol is no longer an identity, so her copy is a retired one.
     Bao.store["direct_carol"] = LIVE

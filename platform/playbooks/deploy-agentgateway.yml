@@ -673,7 +673,14 @@
   hosts: agentgateway_svc
   gather_facts: false
   become: false
+  # agw_identities for the default verifying identity below (a play's vars_files do not cross plays).
+  vars_files:
+    - vars/secret-declarations/agentgateway.yml
   vars:
+    # The keyed round-trip is sent as agw_verify_client, else the first identity: agw_clients first,
+    # then the personal identities derived from the admin list, so it runs whenever any identity is
+    # enrolled. The fallback to agw_clients is for a caller that lacks the declaration.
+    _verify_default: "{{ (agw_identities | default(agw_clients | default([]))) | first | default('') }}"
     _engine: "{{ container_engine | default('podman') }}"
     _probe: "{{ _engine }} exec agentgateway-db wget -q -O - -T 5"
     _tls: "{{ agw_listener_tls | default(false) | bool }}"
@@ -695,6 +702,10 @@
     _legacy_shared_retired: "{{ (_legacy_expires | length > 0) and (_agw_today >= _legacy_expires) }}"
 
   tasks:
+    # The admin list the identities above derive from (a no-op with the gate off).
+    - name: "Load the shared platform admin list"
+      ansible.builtin.include_tasks: tasks/load-platform-admins.yml
+
     # A dry run skipped the deploy, so on a fresh host agentgateway does not exist and every
     # probe below would fail on it (PR 203 Codex review): check, and stop the dry run there.
     - name: "Dry run: is agentgateway running?"
@@ -846,9 +857,9 @@
     # whose order follows per-process hashing (test_no_first_of_set_operation.py).
     - name: "Keyed probes: pick the verifying identity, its models and the gateway URL"
       ansible.builtin.set_fact:
-        _verify_client: "{{ agw_verify_client | default((agw_clients | default([]) | first) | default('')) }}"
+        _verify_client: "{{ agw_verify_client | default(_verify_default) }}"
         _verify_models: >-
-          {{ ((agw_client_policies | default({}))[agw_verify_client | default((agw_clients | default([]) | first) | default(''))]
+          {{ ((agw_client_policies | default({}))[agw_verify_client | default(_verify_default)]
               | default({})).allowed_models
              | default(agw_models | map(attribute='name') | list)
              | select('in', agw_models | map(attribute='name') | list) | list }}
@@ -1055,7 +1066,7 @@
           {{ _verify_models[0] }} came back from upstream model
           {{ _keyed_chat.json.model }} at {{ agw_upstream_base_url }}
           ({{ _keyed_chat.json.usage.completion_tokens }} completion tokens).
-          {% else %}No enrolled identity (agw_clients is empty): the keyed round-trip was not
+          {% else %}No enrolled identity (agw_identities is empty): the keyed round-trip was not
           run.{% endif %}
 
     # Last: every verify task above passed (a failure stops the play before this records).

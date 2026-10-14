@@ -77,11 +77,11 @@ two surfaces. The Authentik catalog records `oidc`.
 
 A deploy is healthy when Phase 3 of `deploy-agentgateway.yml` passes. Conditions 1-3 are
 proved on every real run; 4 and 5 (the keyed round-trip) only when a verifying identity
-resolves, which is `agw_verify_client`, else the first `agw_clients` entry
-(`deploy-agentgateway.yml:594-596`). Each keyed task is conditioned on that identity being
-non-empty (`deploy-agentgateway.yml:610-722`), so with `agw_clients` empty and no
+resolves, which is `agw_verify_client`, else the first `agw_identities` entry (`agw_clients`
+first, then the personal identities derived from the admin list). Each keyed task is conditioned on that identity being
+non-empty, so with `agw_identities` empty and no
 `agw_verify_client` the keyed probes are skipped and the report says "No enrolled identity
-(agw_clients is empty): the keyed round-trip was not run" (`deploy-agentgateway.yml:740`).
+(agw_identities is empty): the keyed round-trip was not run".
 Such a run has not proved the upstream is reachable. Conditions:
 
 1. Readiness answers on `:19001/healthz/ready`, probed from the sibling `agentgateway-db`
@@ -89,7 +89,7 @@ Such a run has not proved the upstream is reachable. Conditions:
 2. When `agw_otlp_host` is declared: the o11y Prometheus holds an
    `agentgateway_config_synchronized == 1` sample newer than this run's readiness time.
 3. A keyless `GET /v1/models` answers **401** at the gateway (never reaches the upstream).
-4. One enrolled identity (`agw_verify_client`, default the first `agw_clients` entry) lists
+4. One enrolled identity (`agw_verify_client`, default the first `agw_identities` entry) lists
    every model it may use on `/v1/models` (200).
 5. The same identity completes one chat request, and the reply is a `chat.completion` with
    at least one choice and `usage.completion_tokens > 0`, which the gateway can only produce

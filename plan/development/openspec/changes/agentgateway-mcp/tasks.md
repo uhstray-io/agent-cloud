@@ -98,8 +98,8 @@ finding that contradicts a decision stops the work and reopens that decision.
       (rotate needs the name in the merged list; revoke needs it removed from it)
       The derivation is gated by `agw_admin_identities_enabled` (default false) so the next
       production gateway deploy mints nothing before the section 6 rollout.
-      The verify's default identity stays the first `agw_clients` entry
-      (unchanged behaviour). `rollback-inference-route.yml` and
+      The verify's default identity is `agw_verify_client`, else the first merged identity
+      (`agw_clients` first, so unchanged while any is declared). `rollback-inference-route.yml` and
       `run-agw-conformance.yml` read the merged list too (their default client is unchanged);
       `deploy-o11y.yml` keeps `agw_clients` on purpose: the probe is a service identity
 - [ ] 2.6 Equivalence proof: render the Authentik admin entries both ways for the same

@@ -264,6 +264,17 @@
       tags: [verify]
       ansible.builtin.include_tasks: tasks/load-platform-admins.yml
 
+    # The same refusal the deploy makes: a derived name that repeats, is reserved or is malformed
+    # would be published as a direct-path copy and later withdrawn on a wrong list, so nothing is
+    # published or withdrawn until the admin list is sound.
+    - name: "Refuse derived admin identities that collide, are reserved or are malformed"
+      tags: [verify]
+      ansible.builtin.assert:
+        that: _agw_identity_problems | length == 0
+        fail_msg: >-
+          platform_admins cannot be turned into gateway identities: {{ _agw_identity_problems | join('; ') }}.
+        quiet: true
+
     - name: "Require one gateway host and safe identity names"
       tags: [verify]
       ansible.builtin.assert:

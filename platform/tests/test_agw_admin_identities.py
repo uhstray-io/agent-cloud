@@ -31,6 +31,7 @@ DECL = REPO / "platform/playbooks/vars/secret-declarations/agentgateway.yml"
 CONFIG = REPO / "platform/services/agentgateway/deployment/templates/config.yaml.j2"
 
 PHASE1 = next(p for p in yaml.safe_load(DEPLOY.read_text()) if p.get("name", "").startswith("Phase 1"))
+PHASE3 = next(p for p in yaml.safe_load(DEPLOY.read_text()) if p.get("name", "").startswith("Phase 3"))
 MANAGE_PLAY = next(p for p in yaml.safe_load(MANAGE.read_text()) if p.get("name", "").startswith("Rotate or revoke"))
 
 LOAD_TASK = "Load the shared platform admin list"
@@ -462,7 +463,8 @@ SERVICE_LIST = [
     admin("svc", "svc-automation-user", type="service_account"),
 ]
 
-# The shared file's shape (the Authentik branch owns the real one): `_platform_admins` is the
+# The shared file's shape (a trimmed copy of platform/playbooks/vars/platform-admins.yml; the tests
+# against the real file are below): `_platform_admins` is the
 # inventory's `platform_admins` when set, else a default built from per-user vars.
 SHARED_FILE = """---
 _platform_admins_default:
@@ -614,3 +616,73 @@ def test_check_secrets_declared_list_holds_a_client_field_per_derived_admin(tmp_
     r = _ansible(tmp_path, hv, tasks, play_vars)
     assert r.returncode == 0, r.stdout + r.stderr
     assert json.loads(out.read_text())[-3:] == ["client_skynet", "client_alice", "client_svc-automation-user"]
+
+
+# ── The keyed verify's default identity ───────────────────────────────────────
+
+PICK_TASK = "Keyed probes: pick the verifying identity, its models and the gateway URL"
+
+
+def _picked(tmp: Path, host_vars: dict) -> str:
+    out = tmp / "picked.json"
+    tasks = [
+        _task(PHASE3, PICK_TASK),
+        {"ansible.builtin.copy": {"content": "{{ _verify_client | to_json }}", "dest": str(out)}},
+    ]
+    hv = {"agw_models": [{"name": "m"}], **host_vars}
+    r = _ansible(
+        tmp, hv, tasks, {"_verify_default": PHASE3["vars"]["_verify_default"], "_agwp_base": "http://gw.invalid"}
+    )
+    assert r.returncode == 0, r.stdout + r.stderr
+    return json.loads(out.read_text())
+
+
+def test_the_keyed_verify_runs_as_the_first_derived_identity_when_agw_clients_is_empty(tmp_path):
+    hv = {"agw_clients": [], "agw_admin_identities_enabled": True, "platform_admins": SERVICE_LIST}
+    assert _picked(tmp_path, hv) == "alice"
+
+
+def test_the_keyed_verify_keeps_the_first_service_identity_and_the_explicit_override(tmp_path):
+    hv = {"agw_clients": ["skynet"], "agw_admin_identities_enabled": True, "platform_admins": SERVICE_LIST}
+    assert _picked(tmp_path, hv) == "skynet"  # agw_clients come first in the merged list
+    assert _picked(tmp_path, {**hv, "agw_verify_client": "alice"}) == "alice"
+    assert _picked(tmp_path, {"agw_clients": ["workstation"]}) == "workstation"  # gate off: as before
+
+
+def test_with_no_identity_at_all_the_keyed_verify_has_nobody_to_send_as(tmp_path):
+    assert _picked(tmp_path, {"agw_clients": []}) == ""
+
+
+def test_phase_3_loads_the_declaration_and_the_admin_list_before_it_resolves_the_identity():
+    assert "vars/secret-declarations/agentgateway.yml" in PHASE3["vars_files"]
+    names = [t.get("name") for t in PHASE3["tasks"]]
+    assert names.index(LOAD_TASK) < names.index(PICK_TASK)
+    assert "agw_identities is empty" in DEPLOY.read_text()
+
+
+# ── Against the real shared file ──────────────────────────────────────────────
+
+REAL_SHARED = REPO / "platform/playbooks/vars/platform-admins.yml"
+
+
+def test_the_real_shared_file_loads_and_its_default_entries_derive_when_declared(tmp_path):
+    entries = yaml.safe_load(REAL_SHARED.read_text())["_platform_admins_default"]
+    hv = {"agw_clients": ["skynet"], "agw_admin_identities_enabled": True, "platform_admins": entries}
+    ids, out, loaded = _load(tmp_path, hv, REAL_SHARED.read_text())
+    # The real default's entries (the two operator admins, two people, one service account), declared
+    # for this host: every one gets an identity, and every name is valid.
+    assert ids == ["skynet", "stray", "agent-cloud-admin", "wisward", "jacob", "svc-automation"], ids
+    assert [e["key"] for e in loaded] == ["stray_admin", "agent_cloud_admin", "wisward", "jacob", "svc_automation"]
+    assert "absent" not in out
+    assert _eval(tmp_path, hv)["problems"] == []
+
+
+def test_the_real_shared_file_default_is_never_derived_on_the_gateway(tmp_path):
+    hv = {"agw_clients": ["skynet"], "agw_admin_identities_enabled": True}
+    r = _run_loader(tmp_path, hv, REAL_SHARED.read_text())
+    assert r.returncode != 0 and UNDECLARED in r.stdout + r.stderr
+
+
+def test_the_real_shared_file_defines_only_the_underscore_name_the_loader_reads():
+    names = set(yaml.safe_load(REAL_SHARED.read_text()))
+    assert "_platform_admins" in names and "platform_admins" not in names
