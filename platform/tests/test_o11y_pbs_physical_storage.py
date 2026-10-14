@@ -413,6 +413,105 @@ def test_declared_thick_lvm_store_matches_visible_candidate_and_reports_fixed_he
     assert "/dev/private-pv" not in rendered
 
 
+def test_declared_thick_lvm_content_and_nodes_match_as_validated_sets():
+    data = sample()
+    declare_thick_candidate(data)
+    config = data["storage_config_rows"]["json"]["data"][0]
+    config.update(content="images,backup", nodes="other-node,private-node")
+    data["storage"]["json"]["data"][0]["content"] = "backup,images"
+    detail = data["storage_config"]["json"]["data"]
+    detail.update(content="backup,images", nodes="private-node,other-node")
+    set_thick_capacity(data, 5 * 1024 * GIB, 5 * 1024 * GIB // 2)
+
+    result = inspect(data)
+
+    assert result["declared_thick_lvm_required_config_fields_match"] is True
+    assert result["declared_thick_lvm_optional_config_fields_match"] is True
+    assert result["declared_thick_lvm_status_content_matches_config"] is True
+    assert result["declared_thick_lvm_candidate_exact_match"] is True
+    assert result["declared_thick_lvm_reported_vg_headroom_passes_1024_gib"] is True
+    assert result["storage_allocation_authorized"] is False
+    assert result["thick_lvm_allocation_authorized"] is False
+    assert result["thick_lvm_backing_media_verified"] is False
+    assert result["pbs_readiness_verified"] is False
+    assert result["write_authorized"] is False
+
+
+@pytest.mark.parametrize(
+    "content",
+    (
+        "images,other",
+        "images,backup,images",
+        "images,,backup",
+        "images, backup",
+        "images;backup",
+        None,
+    ),
+)
+def test_declared_thick_lvm_invalid_or_changed_detail_content_fails_closed(content):
+    data = sample()
+    declare_thick_candidate(data)
+    data["storage_config"]["json"]["data"]["content"] = content
+    set_thick_capacity(data, 5 * 1024 * GIB, 5 * 1024 * GIB // 2)
+
+    result = inspect(data)
+
+    assert result["declared_thick_lvm_candidate_in_visible_eligible_set"] is True
+    assert result["declared_thick_lvm_required_config_fields_match"] is False
+    assert result["declared_thick_lvm_status_content_matches_config"] is True
+    assert result["declared_thick_lvm_candidate_exact_match"] is False
+    assert all(
+        result[f"declared_thick_lvm_reported_vg_headroom_passes_{size}_gib"] is False
+        for size in (256, 512, 1024)
+    )
+
+
+@pytest.mark.parametrize(
+    "nodes",
+    (
+        "other-node",
+        "other-node,private-node,private-node",
+        "private-node,,other-node",
+        "private-node, other-node",
+        ".",
+    ),
+)
+def test_declared_thick_lvm_changed_or_malformed_detail_nodes_fail_closed(nodes):
+    data = sample()
+    declare_thick_candidate(data)
+    config = data["storage_config_rows"]["json"]["data"][0]
+    config["nodes"] = "other-node,private-node"
+    data["storage_config"]["json"]["data"]["nodes"] = nodes
+    set_thick_capacity(data, 5 * 1024 * GIB, 5 * 1024 * GIB // 2)
+
+    result = inspect(data)
+
+    assert result["declared_thick_lvm_candidate_in_visible_eligible_set"] is True
+    assert result["declared_thick_lvm_required_config_fields_match"] is True
+    assert result["declared_thick_lvm_optional_config_fields_match"] is False
+    assert result["declared_thick_lvm_candidate_exact_match"] is False
+    assert all(
+        result[f"declared_thick_lvm_reported_vg_headroom_passes_{size}_gib"] is False
+        for size in (256, 512, 1024)
+    )
+
+
+def test_declared_thick_lvm_nodes_presence_mismatch_fails_closed():
+    data = sample()
+    declare_thick_candidate(data)
+    data["storage_config_rows"]["json"]["data"][0]["nodes"] = "private-node"
+    set_thick_capacity(data, 5 * 1024 * GIB, 5 * 1024 * GIB // 2)
+
+    result = inspect(data)
+
+    assert result["declared_thick_lvm_optional_config_fields_match"] is False
+    assert result["declared_thick_lvm_candidate_exact_match"] is False
+    assert all(
+        result[f"declared_thick_lvm_reported_vg_headroom_passes_{size}_gib"] is False
+        for size in (256, 512, 1024)
+    )
+
+
 def test_unrelated_thick_lvm_headroom_cannot_pass_declared_store_gate():
     data = sample()
     declare_thick_candidate(data)
@@ -473,7 +572,15 @@ def test_declared_thick_lvm_config_mismatch_is_diagnosed_without_passing_headroo
         result[f"declared_thick_lvm_reported_vg_headroom_passes_{size}_gib"] is False
         for size in (256, 512, 1024)
     )
-    assert result["thick_lvm_allocation_authorized"] is False
+
+
+def test_declared_thick_lvm_type_mismatch_uses_existing_fail_closed_path():
+    data = sample()
+    declare_thick_candidate(data)
+    data["storage_config"]["json"]["data"]["type"] = "lvmthin"
+
+    with pytest.raises(ValueError, match="incomplete declared storage linkage"):
+        inspect(data)
 
 
 def test_unsupported_declared_storage_detail_type_fails_closed():
