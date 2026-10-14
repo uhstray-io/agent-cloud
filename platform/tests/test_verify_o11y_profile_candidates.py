@@ -358,6 +358,80 @@ def test_component_api_requires_http_200_and_bounded_json_shape():
         )
 
 
+def test_component_api_readiness_retries_until_valid_response(monkeypatch):
+    class Process:
+        stdin = type("Stdin", (), {"close": lambda *_: None})()
+        stdout = None
+        pid = 123
+
+        @staticmethod
+        def poll():
+            return None
+
+        @staticmethod
+        def wait(*_args, **_kwargs):
+            return 0
+
+    responses = iter([
+        (1, b""),
+        (
+            0,
+            b"HTTP/1.1 200 OK\r\n\r\n"
+            b'[{"localID":"prometheus.scrape.local_containers"}]',
+        ),
+    ])
+    calls = []
+    monkeypatch.setattr(CHECK.subprocess, "Popen", lambda *_args, **_kwargs: Process())
+    monkeypatch.setattr(CHECK.os, "killpg", lambda *_args: None)
+    monkeypatch.setattr(CHECK, "_transfer_config", lambda *_args: time.monotonic())
+    monkeypatch.setattr(CHECK, "_wait_for_startup", lambda *_args: None)
+    monkeypatch.setattr(CHECK, "_cleanup_container", lambda _name: None)
+    monkeypatch.setattr(CHECK, "READY_SECONDS", 1)
+    monkeypatch.setattr(CHECK, "READY_RETRY_SECONDS", 0)
+
+    def probe(*_args, **_kwargs):
+        calls.append(True)
+        return next(responses)
+
+    monkeypatch.setattr(CHECK, "_bounded_command", probe)
+
+    assert CHECK._component_states(
+        "config", "docker.io/grafana/alloy@sha256:" + "a" * 64, scrape_env(), disabled=True,
+    ) == "loaded_without_profile"
+    assert len(calls) == 2
+
+
+def test_component_api_readiness_times_out_when_probe_never_succeeds(monkeypatch):
+    class Process:
+        stdin = type("Stdin", (), {"close": lambda *_: None})()
+        stdout = None
+        pid = 123
+
+        @staticmethod
+        def poll():
+            return None
+
+        @staticmethod
+        def wait(*_args, **_kwargs):
+            return 0
+
+    calls = []
+    monkeypatch.setattr(CHECK.subprocess, "Popen", lambda *_args, **_kwargs: Process())
+    monkeypatch.setattr(CHECK.os, "killpg", lambda *_args: None)
+    monkeypatch.setattr(CHECK, "_transfer_config", lambda *_args: time.monotonic())
+    monkeypatch.setattr(CHECK, "_wait_for_startup", lambda *_args: None)
+    monkeypatch.setattr(CHECK, "_cleanup_container", lambda _name: None)
+    monkeypatch.setattr(CHECK, "READY_SECONDS", 0.01)
+    monkeypatch.setattr(CHECK, "READY_RETRY_SECONDS", 0.001)
+    monkeypatch.setattr(CHECK, "_bounded_command", lambda *_args, **_kwargs: (calls.append(True) or 1, b""))
+
+    with pytest.raises(CHECK.Refusal, match="component_status_unavailable"):
+        CHECK._component_states(
+            "config", "docker.io/grafana/alloy@sha256:" + "a" * 64, scrape_env(), disabled=True,
+        )
+    assert len(calls) > 1
+
+
 def test_shell_http_reader_preserves_final_unterminated_json_body():
     response = subprocess.run(
         ["bash", "-c", CHECK.API_READ_LOOP], input=b"[]", capture_output=True, check=True,

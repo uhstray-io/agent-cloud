@@ -27,6 +27,8 @@ PROFILE_COMPONENT = "pyroscope.scrape.alloy_self_profile"
 API_READ_LOOP = 'while IFS= read -r line || [[ -n $line ]]; do printf \'%s\\n\' "$line"; done'
 IMAGE_TIMEOUT = 8
 STARTUP_SECONDS = 5
+READY_SECONDS = 30
+READY_RETRY_SECONDS = 0.5
 API_SECONDS = 5
 MAX_API_BYTES = 262_144
 MAX_CONFIG_BYTES = 1_048_576
@@ -417,21 +419,35 @@ def _component_states(config: str, image_ref: str, scrape_env: dict[str, str], *
             "printf 'GET /api/v0/web/components HTTP/1.0\\r\\nHost: localhost\\r\\n\\r\\n' >&3; "
             f"{API_READ_LOOP} <&3"
         )
-        try:
-            api_rc, api_bytes = _bounded_command(
-                ["podman", "exec", container, "bash", "-c", api_script],
-                timeout=API_SECONDS, max_bytes=MAX_API_BYTES,
-            )
-        except Refusal as exc:
-            raise Refusal("component_status_unavailable") from exc
-        if api_rc != 0:
-            raise Refusal("component_status_unavailable")
-        headers, separator, body = api_bytes.partition(b"\r\n\r\n")
-        if not separator:
-            headers, separator, body = api_bytes.partition(b"\n\n")
-        if not separator:
-            raise Refusal("component_status_invalid")
-        components = _parse_component_response(headers, body)
+        ready_deadline = time.monotonic() + READY_SECONDS
+        components = None
+        while components is None:
+            if process.poll() is not None:
+                raise Refusal("container_start_failed")
+            remaining = ready_deadline - time.monotonic()
+            if remaining <= 0:
+                raise Refusal("component_status_unavailable")
+            try:
+                api_rc, api_bytes = _bounded_command(
+                    ["podman", "exec", container, "bash", "-c", api_script],
+                    timeout=min(API_SECONDS, remaining), max_bytes=MAX_API_BYTES,
+                )
+            except Refusal:
+                api_rc, api_bytes = -1, b""
+            if api_rc == 0:
+                headers, separator, body = api_bytes.partition(b"\r\n\r\n")
+                if not separator:
+                    headers, separator, body = api_bytes.partition(b"\n\n")
+                if separator:
+                    try:
+                        components = _parse_component_response(headers, body)
+                    except Refusal:
+                        pass
+            if components is None:
+                remaining = ready_deadline - time.monotonic()
+                if remaining <= 0:
+                    raise Refusal("component_status_unavailable")
+                time.sleep(min(READY_RETRY_SECONDS, remaining))
         if disabled:
             return _project_disabled_components(components)
         states = _component_health_map(components)
