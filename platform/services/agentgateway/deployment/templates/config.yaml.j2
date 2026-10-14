@@ -28,6 +28,13 @@
    admin listener still carries its own unauthenticated UI copy on the container
    loopback, which is never published. #}
 {% set _ui = agw_ui_enabled | default(true) | bool %}
+{# agw_mcp_enabled (default false; agentgateway-mcp G4): serves MCP at /mcp on the `default` gateway and adds the
+   loopback gateway the MCP target calls. false renders none of it: the file is what it was before MCP. The loopback
+   listener port (agw_loopback_port, default 4002) is also where the one target kind rendered here, an OpenAPI
+   target over this gateway's own /v1, is aimed; the host is never an input, so no declaration can aim a target at
+   the external listener or at /mcp (a target pointing back at /mcp recurses without a bound, spike 1.5). #}
+{% set _mcp = agw_mcp_enabled | default(false) | bool %}
+{% set _lb_port = agw_loopback_port | default(4002) %}
 {# agw_listener_tls (default false; production-internal-ca task 5.2, gateway task 6.1): both
    listeners serve HTTPS from the step-ca-issued server leaf in the mounted /certs directory
    (`current/` is swapped by renewal; the image has no shell) and require a client certificate
@@ -164,6 +171,18 @@ gateways:
 {% if _tls %}
 {{ listener_tls() }}
 {%- endif %}
+{% if _mcp %}
+  # The MCP target's own call to /v1 (agentgateway-mcp task 3.7): plain HTTP, attached to `llm` only,
+  # never published. v1.5.0 gateways have no bind address, so this listener is on every container
+  # interface; the rule below is what keeps it to the gateway process's own 127.0.0.1 (a neighbour
+  # container is 403 with or without a key, spike 1.5). It needs no client certificate, so the
+  # external listener's SAN allowlist is not widened for the self-call.
+  loopback:
+    port: {{ _lb_port }}
+    authorization:
+      rules:
+        - require: 'source.address == "127.0.0.1"'
+{% endif %}
 {% if _ui %}
   ui:
     port: 4001
@@ -256,7 +275,11 @@ llm:
   # no second browser-reachable port. The OIDC policy above is scoped to the UI
   # routes: /v1 on :4001 is still apiKey-gated (401 without a key, verified
   # 2026-09-17), so the playground needs an enrolled client key pasted in.
+{% if _mcp %}
+  gateways: {{ '[default, ui, loopback]' if _ui else '[default, loopback]' }}
+{% else %}
   gateways: {{ '[default, ui]' if _ui else '[default]' }}
+{% endif %}
   policies:
 {{ apikey_policy(agw_identities | default(agw_clients | default([])), true, true) | trim('\n') }}
     # Request-rate ceiling for the gateway as a whole. v1.5.0 has no per-identity
@@ -318,3 +341,42 @@ llm:
     transformation:
       stream_options: 'has(llmRequest.messages) && has(llmRequest.stream) && llmRequest.stream == true ? (has(llmRequest.stream_options) && type(llmRequest.stream_options) == map ? llmRequest.stream_options : {}).merge({"include_usage": true, "continuous_usage_stats": true}) : llmRequest.stream_options'
 {% endfor %}
+{% if _mcp %}
+# MCP (agentgateway-mcp). One virtual MCP server at /mcp on the `default` gateway only (so /mcp is not also
+# served on the operator-UI listener), authenticated by the SAME key policy as /v1 minus the identities that
+# must never reach it: the legacy shared key, and mcp-self, which exists only as the target's own credential.
+# - statefulMode stateless: no session id, no held server stream (so nothing sits against the 125 s edge
+#   timeout), and GET /mcp is 405 (spike 1.6). The stateful session id is neither revocable nor bound to an
+#   identity.
+# - prefixMode conditional (the upstream default, pinned here so a change of default cannot rename tools): a
+#   tool name is the OpenAPI operationId while there is one target, and is prefixed with the target name once
+#   there are several.
+# - No budgets under these keys: accepted, never charged (spike 1.4). The only budgeted path is mcp-self's.
+# - No `timeout`, `retry` or dnsRebindingProtection: the gateway is reached by a non-local Host.
+# Targets come only from the structured declaration agw_mcp_openapi_targets (name + schema file name); the
+# deploy refuses anything else before this renders (vars/secret-declarations/agentgateway.yml,
+# _agw_mcp_problems). The schema is the shipped file under deployment/mcp-schemas/, read by the deploy and
+# embedded here as a string, so the config is self-contained (nothing to mount, and a schema change is a
+# config change). backendAuth is the mcp-self key by environment reference; the value lives in the 0600 .env.
+mcp:
+  gateways: [default]
+  statefulMode: stateless
+  prefixMode: conditional
+  targets:
+{% for t in agw_mcp_openapi_targets | default([]) %}
+  - name: {{ t.name }}
+    openapi:
+      schema: {{ _agw_mcp_schemas[t.schema] | to_json }}
+      host: 127.0.0.1:{{ _lb_port }}
+    policies:
+      backendAuth:
+        key:
+          value: $AGW_MCP_SELF_KEY
+          location:
+            header:
+              name: authorization
+              prefix: 'Bearer '
+{% endfor %}
+  policies:
+{{ apikey_policy((agw_identities | default(agw_clients | default([]))) | reject('in', _internal_ids) | list, false, false) | trim('\n') }}
+{% endif %}

@@ -285,6 +285,30 @@ all:
           # into secret/services/agentgateway and reuses it on every deploy.
           agw_clients:
             - dev-local
+            # The MCP target's own identity (agentgateway-mcp task 4.2): the gateway presents its key
+            # to its own /v1 over the loopback listener, so a model request made through MCP is
+            # charged to it and logged as `mcp-self`. Never handed out, and refused on /mcp. Enrolled
+            # on /v1 whether or not MCP is on; keep it AFTER the person identities (the deploy's verify
+            # defaults to the first one).
+            - mcp-self
+          agw_client_policies:
+            mcp-self: { tokens_per_hour: 500000 }
+          # MCP (agentgateway-mcp): the key-gated /mcp endpoint on the default gateway. OFF by default:
+          # false renders no mcp block and no loopback gateway, and the verify asserts /mcp is not served.
+          agw_mcp_enabled: false
+          # The hostname Caddy fronts /mcp on (the Caddy route is section 5 of the change; the gateway
+          # deploy does not read it).
+          agw_mcp_hostname: mcp.agent-cloud.test
+          # The loopback gateway's port: plain HTTP, attached to the LLM surface only, restricted to the
+          # container's own address, never published. It is where the MCP target calls /v1.
+          agw_loopback_port: 4002
+          # The MCP targets: ONLY name + schema (a .json file in
+          # platform/services/agentgateway/deployment/mcp-schemas/). Each is rendered as an OpenAPI target
+          # over this gateway's own /v1 on the loopback listener; its kind and host are not inputs and
+          # anything else is refused before the deploy renders. The first entry is the gateway's own
+          # chat-completions and model-listing tools (task 4.3).
+          agw_mcp_openapi_targets:
+            - { name: gateway, schema: agentgateway-v1.json }
           # LOCAL-DEV ONLY: render key VALUES (not hashes) into config.yaml so the UI's
           # playground lists them as saved keys. Never set in prod inventory.
           agw_plaintext_keys: true

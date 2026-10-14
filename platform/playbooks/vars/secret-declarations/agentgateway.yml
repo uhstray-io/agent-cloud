@@ -73,6 +73,53 @@ _agw_identity_problems: >-
                           ~ '" is outside ^[a-z0-9][a-z0-9-]*$; set agw_identity to a name that matches') -%}{%- endif -%}
   {%- endfor -%}
   {{ out }}
+# The MCP surface (agentgateway-mcp tasks 3.2, 3.7, 3.8, 4.2). What is wrong with an MCP declaration, one
+# sentence per offending entry (the target's name, else its position), empty when nothing is and always
+# empty while `agw_mcp_enabled` is false. The deploy refuses a non-empty list before anything is rendered or
+# restarted. This is an ALLOWLIST: a target is exactly `{name, schema}` and is rendered as an `openapi`
+# target whose schema is a file name under the shipped deployment/mcp-schemas/ directory and whose host is
+# the deploy's own loopback listener, which is not an input. So an `mcp`, `sse` or `stdio` target, a `host`,
+# a path outside the shipped directory and a target aimed at the gateway's own external listener or at /mcp
+# (which recurses without a bound, spike 1.5) cannot be declared at all. A string check on a host cannot
+# enumerate every alias of the external listener, which is why the host is not checked, it is not accepted.
+# The loopback port must not be one the gateway already binds. `mcp-self` (the target's own credential,
+# held in the env file) must be a declared identity or the env render has no key to hand the gateway.
+_agw_mcp_problems: >-
+  {%- set out = [] -%}
+  {%- if agw_mcp_enabled | default(false) | bool -%}
+    {%- set targets = agw_mcp_openapi_targets | default([]) -%}
+    {%- if targets is string or targets is mapping or targets is not sequence or targets | length == 0 -%}
+      {%- if out.append('agw_mcp_openapi_targets must be a non-empty list of {name, schema} entries: the mcp block needs at least one target') -%}{%- endif -%}
+    {%- else -%}
+      {%- set names = targets | map(attribute='name', default='') | list -%}
+      {%- for t in targets -%}
+        {%- set named = t is mapping and t.get('name') is string and t.get('name') | length > 0 -%}
+        {%- set who = ('agw_mcp_openapi_targets entry ' ~ t.get('name')) if named else ('agw_mcp_openapi_targets entry #' ~ loop.index) -%}
+        {%- if t is not mapping -%}
+          {%- if out.append(who ~ ': must be a mapping with the keys name and schema') -%}{%- endif -%}
+        {%- else -%}
+          {%- set extra = t.keys() | list | difference(['name', 'schema']) -%}
+          {%- if extra | length > 0
+                 and out.append(who ~ ': the key(s) ' ~ (extra | sort | join(', '))
+                                ~ ' are not accepted; a target is only name and schema, rendered as an OpenAPI target on the loopback listener') -%}{%- endif -%}
+          {%- if not (t.get('name') is string and t.get('name') is match('^[a-z0-9][a-z0-9-]*$'))
+                 and out.append(who ~ ': name must match ^[a-z0-9][a-z0-9-]*$') -%}{%- endif -%}
+          {%- if t.get('name') is string and (names[:loop.index0] | select('equalto', t.get('name')) | list | length) > 0
+                 and out.append(who ~ ': the target name is declared more than once') -%}{%- endif -%}
+          {%- if not (t.get('schema') is string and t.get('schema') is match('^[A-Za-z0-9][A-Za-z0-9._-]*[.]json$'))
+                 and out.append(who ~ ': schema must be the name of a .json file in the shipped deployment/mcp-schemas/ directory (no path)') -%}{%- endif -%}
+        {%- endif -%}
+      {%- endfor -%}
+    {%- endif -%}
+    {%- set lp = agw_loopback_port | default(4002) -%}
+    {%- if not ((lp | string) is match('^[0-9]+$')) or (lp | int) < 1024 or (lp | int) > 65535 or (lp | int) in [4000, 4001, 15000, 19001, 19002] -%}
+      {%- if out.append('agw_loopback_port must be an integer from 1024 to 65535 other than the ports the gateway already binds (4000, 4001, 15000, 19001, 19002)') -%}{%- endif -%}
+    {%- endif -%}
+    {%- if 'mcp-self' not in agw_identities -%}
+      {%- if out.append('the internal identity mcp-self must be declared in agw_clients (its key is the MCP target backendAuth credential)') -%}{%- endif -%}
+    {%- endif -%}
+  {%- endif -%}
+  {{ out }}
 # A native LIST, built in a statement block whose only output is the list itself (no
 # community.general, which is not a declared dependency). Text-built JSON broke on ansible-core
 # 2.19+ (PR 213; MISTAKES 10.16).
