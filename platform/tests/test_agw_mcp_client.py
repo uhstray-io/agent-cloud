@@ -386,7 +386,8 @@ def test_helper_command_is_shell_quoted_and_inert(tmp_path, monkeypatch):
 
 @pytest.mark.skipif(shutil.which("make") is None, reason="make not installed")
 def test_make_target_passes_values_as_environment_not_shell_text(env, tmp_path):
-    key_file = tmp_path / "k e'y$$(touch pwned).txt"
+    sentinel = tmp_path / "pwned"  # the payload writes only under the test's temp dir
+    key_file = f"{tmp_path}/k e'y$$(touch {sentinel}).txt"
     done = subprocess.run(
         [
             "make",
@@ -407,7 +408,7 @@ def test_make_target_passes_values_as_environment_not_shell_text(env, tmp_path):
     )
     assert done.returncode == 0, done.stderr
     assert done.stdout.strip() == "pi: would add agentgateway"
-    assert not (tmp_path / "pwned").exists() and not (ROOT / "pwned").exists()
+    assert not sentinel.exists()
     assert not env.pi_json.exists()
     bad = subprocess.run(
         ["make", "-C", str(ROOT), "agw-mcp-client", "HOST=", "IDENTITY=alice", "DRY_RUN=1"],
