@@ -865,3 +865,38 @@ gate remain open/off.
 Alert probes and active-drill recovery also protect raw Prometheus/Grafana
 responses and every identity-bearing assertion. Their visible success receipts
 use fixed wording and contain no target labels or endpoints.
+
+## 2026-10-14 bounded Proxmox backup-task failure diagnostic
+
+Extend inspect-only backup reconciliation only after its exact-node
+`Sys.Audit=1` permission check and complete bounded 72-hour node-task listing
+pass. A unique latest failed `vzdump` task within 26 hours permits a read-only
+task-log GET: read one line to obtain `total`, then fetch at most the last 100
+lines. Proxmox `start` is a zero-based offset while returned `n` values are
+one-based (`n = start + 1` for the first returned row); require contiguous
+one-based numbering on metadata and final pages. Reject malformed UPIDs,
+unknown statuses, ties, synthetic `no content` or `unable to open file` rows,
+invalid numbering or schema, oversized output, and changed totals. Match the
+upstream UPID shape exactly: validated node, eight-hex PID, eight- or nine-hex
+process start, eight-hex start time, `vzdump`, an empty or decimal VMID, a
+supported `user@realm` or `user@realm!tokenid`, and a final colon. Classify
+status using Proxmox's normalization: `OK` is success, `WARNINGS: N` is
+incomplete, exact `unexpected status` is unknown, and other nonempty status
+text is failure ([`PVE::UPID`](https://raw.githubusercontent.com/proxmox/pve-common/master/src/PVE/UPID.pm#L15-L97)).
+Keep task identity, status, raw log, URL, URI result, parser input/output, and errors
+under scoped `no_log`; keep only sanitized history and diagnostic `set_fact`
+results visible. Publish only fixed status/reason and `no_space`,
+`storage_unavailable`, `permission_denied`, `guest_lock`, `transport`, or
+`unknown` hints. Without an eligible unique recent failure, do not request the
+task log.
+
+At exact Dev merge `5b628700fccb2abdae1961428783a9e1c9f9a39e`, inspect-only task
+5571 succeeded: scheduler running; one enabled explicit-VMID job included
+o11y; VMID-filtered history count was one with no success in 26 hours; and the
+72-hour node archive contained three tasks, zero task IDs matching the declared
+VMID, three missing/empty IDs, and a latest failure within 26 hours. Job
+attribution remained unavailable. Read-only artifact-details task 5572
+succeeded with six dated candidates, the newest about 225.3 hours old, and all
+protected flags unknown. No evidence ties that failure to the selected job or
+o11y VM. Backup readiness, immutability, isolated restore, capacity, and
+retention gates remain open.

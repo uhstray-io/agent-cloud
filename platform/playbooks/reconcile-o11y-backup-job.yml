@@ -431,15 +431,109 @@
         _backup_node_history_summary: "{{ _backup_node_history_summary_result.stdout | from_json }}"
       when: _inspect_only
 
+    - name: Select one recent failed node task for a bounded diagnostic
+      ansible.builtin.command:
+        argv: [python3, "{{ _planner }}", node-failure-plan]
+        stdin: >-
+          {{ {'plan': _backup_node_history_query,
+              'first_page': {
+                'status': _backup_node_history_first.status | default(0),
+                'json': _backup_node_history_first.json | default({})
+              },
+              'later_pages': _backup_node_history_later.results | default([])} | to_json }}
+      register: _backup_node_failure_plan_result
+      failed_when: false
+      changed_when: false
+      check_mode: false
+      no_log: true
+      when: _inspect_only
+
+    - name: Keep private node-task diagnostic selection
+      ansible.builtin.set_fact:
+        _backup_node_failure_plan: "{{ _backup_node_failure_plan_result.stdout | from_json }}"
+      no_log: true
+      when: _inspect_only
+
+    - name: Read one task-log metadata line for a recent unique failure
+      ansible.builtin.uri:
+        url: "{{ _pve_host ~ _backup_node_failure_plan.metadata_path }}"
+        method: GET
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      register: _backup_node_failure_metadata
+      failed_when: false
+      changed_when: false
+      check_mode: false
+      no_log: true
+      when: _inspect_only and _backup_node_failure_plan.read_allowed | default(false) | bool
+
+    - name: Plan the bounded final task-log page
+      ansible.builtin.command:
+        argv: [python3, "{{ _planner }}", node-failure-pages]
+        stdin: >-
+          {{ {'read_allowed': _backup_node_failure_plan.read_allowed | default(false),
+              'diagnostic': _backup_node_failure_plan.diagnostic | default(None),
+              'metadata_path': _backup_node_failure_plan.metadata_path | default(''),
+              'metadata_response': {
+                'status': _backup_node_failure_metadata.status | default(0),
+                'json': _backup_node_failure_metadata.json | default({})
+              }} | to_json }}
+      register: _backup_node_failure_pages_result
+      failed_when: false
+      changed_when: false
+      check_mode: false
+      no_log: true
+      when: _inspect_only
+
+    - name: Keep private task-log pagination plan
+      ansible.builtin.set_fact:
+        _backup_node_failure_pages: "{{ _backup_node_failure_pages_result.stdout | from_json }}"
+      no_log: true
+      when: _inspect_only
+
+    - name: Read the bounded final task-log lines
+      ansible.builtin.uri:
+        url: "{{ _pve_host ~ _backup_node_failure_pages.log_path }}"
+        method: GET
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      register: _backup_node_failure_log
+      failed_when: false
+      changed_when: false
+      check_mode: false
+      no_log: true
+      when: _inspect_only and _backup_node_failure_pages.read_allowed | default(false) | bool
+
+    - name: Classify task log into a fixed failure hint
+      ansible.builtin.command:
+        argv: [python3, "{{ _planner }}", node-failure-summary]
+        stdin: >-
+          {{ {'page_plan': _backup_node_failure_pages,
+              'log_response': {
+                'status': _backup_node_failure_log.status | default(0),
+                'json': _backup_node_failure_log.json | default({})
+              }} | to_json }}
+      register: _backup_node_failure_summary_result
+      failed_when: false
+      changed_when: false
+      check_mode: false
+      no_log: true
+      when: _inspect_only
+
+    - name: Keep sanitized node-task failure diagnostic
+      ansible.builtin.set_fact:
+        _backup_node_failure_diagnostic: "{{ _backup_node_failure_summary_result.stdout | from_json }}"
+      when: _inspect_only
+
     - name: Report backup-job candidates for inventory selection
       ansible.builtin.debug:
         msg:
           backup_job_reconciliation: inspect_only
-          verified_o11y_vmid: "{{ _vmid }}"
           candidate_count: "{{ _backup_inspection.candidate_count }}"
           candidates: "{{ _backup_inspection.candidates }}"
           backup_task_history: "{{ _backup_history_summary }}"
           proxmox_node_task_history: "{{ _backup_node_history_summary }}"
+          proxmox_node_task_failure_diagnostic: "{{ _backup_node_failure_diagnostic }}"
           proxmox_scheduler_state: "{{ _backup_scheduler_state_summary }}"
       when: _inspect_only
 
