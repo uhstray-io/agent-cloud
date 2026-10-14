@@ -165,6 +165,12 @@ all:
             # agentgateway operator UI — the gateway runs its own OIDC login against
             # Authentik (ui.policies), so this is a plain proxy to its UI listener.
             - { host: "admin.inference.agent-cloud.test", upstream: "agentgateway:4001" }
+            # agentgateway MCP endpoint (change agentgateway-mcp) — mcp_api renders the same
+            # allowlist shape for the EXACT path /mcp only (Bearer-shape 401 at the edge, the
+            # gateway's key check is the authentication; everything else, /sse included, is a
+            # 404). The upstream is the gateway's `default` listener (:4000), the one that
+            # serves /mcp; the single-label host sits under the wildcard certificate.
+            - { host: "mcp.agent-cloud.test", upstream: "agentgateway:4000", mcp_api: true }
 
     # Authentik — central IdP / SSO. Server+worker+Postgres+Redis; serves HTTP
     # on :9000 behind Caddy (TLS). Deploy: make local-deploy-authentik. The
