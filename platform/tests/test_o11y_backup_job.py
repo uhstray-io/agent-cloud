@@ -26,6 +26,7 @@ from reconcile_proxmox_backup_job import (  # noqa: E402
     plan_history_pages,
     prepare_history_query,
     prepare_plan,
+    summarize_scheduler_state,
     summarize_task_history,
     verify_readback,
 )
@@ -518,6 +519,81 @@ def test_conflicting_latest_statuses_make_recency_unknown_and_output_stays_allow
     assert "1900" not in json.dumps(result)
 
 
+def scheduler_response(data=None, status=200, permissions_verified=True):
+    return {
+        "permissions_verified": permissions_verified,
+        "response": {
+            "status": status,
+            "json": {"data": {
+                "service": "pvescheduler",
+                "name": "pvescheduler",
+                "desc": "private node description",
+                "active-state": "active",
+                "state": "running",
+                "unit-state": "enabled",
+            } if data is None else data},
+        },
+    }
+
+
+def test_scheduler_state_reports_only_a_fixed_running_snapshot():
+    result = summarize_scheduler_state(scheduler_response())
+
+    assert result == {"status": "running", "reason": None}
+    assert set(result) == {"status", "reason"}
+    assert "private node description" not in json.dumps(result)
+
+
+def test_scheduler_state_reports_known_stopped_states():
+    stopped = scheduler_response(data={
+        "service": "pvescheduler", "name": "pvescheduler", "desc": "private",
+        "active-state": "inactive", "state": "dead", "unit-state": "disabled",
+    })
+
+    assert summarize_scheduler_state(stopped) == {"status": "not_running", "reason": None}
+
+
+def test_scheduler_state_permission_denial_and_http_errors_are_unknown():
+    denied = summarize_scheduler_state(scheduler_response(permissions_verified=False))
+    forbidden = summarize_scheduler_state(scheduler_response(status=403))
+    server_error = summarize_scheduler_state(scheduler_response(status=500))
+
+    assert denied == {"status": "unknown", "reason": "permission_unverified"}
+    assert forbidden == {"status": "unknown", "reason": "request_failed"}
+    assert server_error == {"status": "unknown", "reason": "request_failed"}
+
+
+def test_scheduler_state_malformed_schema_and_wrong_identity_fail_closed():
+    valid = scheduler_response()["response"]["json"]["data"]
+    malformed_payload = summarize_scheduler_state([])
+    malformed = summarize_scheduler_state({
+        "permissions_verified": True,
+        "response": {"status": 200, "json": {"data": valid | {"state": 1}}},
+    })
+    unknown_field = summarize_scheduler_state({
+        "permissions_verified": True,
+        "response": {"status": 200, "json": {"data": valid | {"extra": "private"}}},
+    })
+    wrong_service = summarize_scheduler_state(scheduler_response(data=valid | {"service": "other"}))
+    wrong_name = summarize_scheduler_state(scheduler_response(data=valid | {"name": "other"}))
+
+    assert malformed == {"status": "unknown", "reason": "response_invalid"}
+    assert malformed_payload == {"status": "unknown", "reason": "response_invalid"}
+    assert unknown_field == {"status": "unknown", "reason": "response_invalid"}
+    assert wrong_service == {"status": "unknown", "reason": "service_identity_invalid"}
+    assert wrong_name == {"status": "unknown", "reason": "service_identity_invalid"}
+    assert "private" not in json.dumps(malformed | unknown_field | wrong_service | wrong_name)
+
+
+def test_scheduler_state_unrecognized_values_remain_unknown():
+    result = summarize_scheduler_state(scheduler_response(data={
+        "service": "pvescheduler", "name": "pvescheduler", "desc": "private",
+        "active-state": "activating", "state": "start", "unit-state": "enabled",
+    }))
+
+    assert result == {"status": "unknown", "reason": "state_unavailable"}
+
+
 def test_playbook_requires_reviewed_dev_and_guards_every_mutation():
     plays = yaml.safe_load((ROOT / "platform/playbooks/reconcile-o11y-backup-job.yml").read_text())
     play = next(item for item in plays if item.get("name") == "Reconcile the declared o11y backup job")
@@ -550,6 +626,24 @@ def test_playbook_requires_reviewed_dev_and_guards_every_mutation():
         "Require one exact private selected backup job"
     ) < names.index("Read the selected backup-job detail")
     assert by_name["End after read-only backup-job inspection"][1]["when"] == "_inspect_only"
+    scheduler_get = by_name["Read pvescheduler state after verified node-scoped permission"][1]
+    assert scheduler_get["ansible.builtin.uri"]["method"] == "GET"
+    assert "/api2/json/nodes/{{ _node }}/services/pvescheduler/state" in scheduler_get[
+        "ansible.builtin.uri"
+    ]["url"]
+    assert scheduler_get["when"] == [
+        "_inspect_only", "_backup_history_query.read_allowed | default(false) | bool",
+    ]
+    assert scheduler_get["no_log"] is True
+    assert scheduler_get["check_mode"] is False
+    scheduler_parse = by_name["Summarize pvescheduler state without exposing the API response"][1]
+    assert scheduler_parse["ansible.builtin.command"]["argv"][2] == "scheduler-state"
+    assert scheduler_parse["no_log"] is True
+    assert scheduler_parse["when"] == "_inspect_only"
+    assert by_name["Keep the sanitized scheduler state private to this run"][1]["no_log"] is True
+    assert names.index("Read effective permissions on the declared Proxmox node") < names.index(
+        "Read pvescheduler state after verified node-scoped permission"
+    ) < names.index("Report backup-job candidates for inventory selection")
     history_tasks = [
         task for task in tasks
         if task.get("name", "").startswith((
@@ -623,6 +717,7 @@ def test_playbook_requires_reviewed_dev_and_guards_every_mutation():
         argv = task.get("ansible.builtin.command", {}).get("argv", [])
         if len(argv) > 2 and argv[2] in {
             "inspect", "plan", "recheck", "verify", "history-query", "history-pages", "history-summary",
+            "scheduler-state",
         }:
             assert task.get("no_log") is True
 

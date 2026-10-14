@@ -505,6 +505,19 @@ retention, or other job option, reads the job back, and converges to a no-op
 on a second run. Check mode issues no write. Backup artifact and isolated
 restore validation remain independent follow-on gates.
 
+### Read-only Proxmox scheduler snapshot
+
+The inspect-only backup-job workflow also reads the declared node's
+`pvescheduler` service state after verifying node-scoped `Sys.Audit`, using the
+existing OpenBao-sourced Proxmox token. This is one read-only snapshot, not
+evidence that a scheduled run occurred or produced an artifact. Validate the
+exact service identity and field types, then emit only `running`,
+`not_running`, or `unknown` with a fixed reason; permission gaps, request
+errors, malformed data, and unrecognized state remain unknown. Raw responses
+stay under `no_log`. Add no survey variables or credentials. This diagnostic
+does not close the backup-job, artifact, immutability, isolated-restore, or
+retention gates.
+
 ### Archived task history recency summary
 
 The inspect-only archived `vzdump` summary adds exactly one sanitized field,
