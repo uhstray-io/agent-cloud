@@ -489,8 +489,10 @@
       2026-10-14 (task output read from production Semaphore by the lead): site-config #78
       merged, and Deploy agentgateway (Dev) task 5523 at 11019dd9 applied it: 10M tokens per
       hour per identity, 120 requests per minute globally, `o11y-probe` 2M, `legacy-shared`
-      30M. The figures are derived from the 7-day MEASURED PEAK read from the o11y budgets,
-      NOT from a capacity ceiling. Remaining: the ceiling derivation. Not ticked.
+      30M. `legacy-shared` 30M is sized at about 1.6x the measured 19.0M/h 7-day peak (see
+      note above); 10M/h per identity, 120 req/min and `o11y-probe` 2M are the figures drafted
+      in site-config #78, not derived in this repo from a capacity ceiling. Remaining: the
+      ceiling derivation. Not ticked.
 - [x] 4.3 site-config: production Caddy block upstream to the gateway; `Caddyfile.local.j2`
       `inference_api` unchanged in shape (upstream already comes from `r.upstream`);
       redeploy Caddy through Semaphore

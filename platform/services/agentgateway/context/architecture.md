@@ -94,14 +94,15 @@ per-client layer. Everything is inventory-driven code (design §10):
 ### Admin UI (production v1.5.0)
 
 - The Routes page shows nothing (operator report, 2026-10-14). This config declares no `binds:` or
-  routes: it uses the top-level `llm:` block, which upstream documents as "simplified LLM mode", as
-  opposed to "traditional HTTP routing configuration"
-  (https://agentgateway.dev/docs/standalone/latest/llm/). An empty Routes page does not mean
-  traffic is unrouted; the keyed deploy verify proves the `/v1` path end to end.
+  routes: it uses the top-level `llm:` block, which the upstream LLM docs contrast with "traditional
+  HTTP routing configuration" (https://agentgateway.dev/docs/standalone/latest/llm/). An empty
+  Routes page does not mean traffic is
+  unrouted; the keyed deploy verify proves the `/v1` path end to end.
 - The Playground needs a pasted raw key: production config holds sha256 hashes only. Local-dev
   sets `agw_plaintext_keys: true`, which renders values, so the local UI lists saved keys.
 - Two `agw_models` entries (`nvidia/Qwen3.8-Flash-Next-NVFP4` and `qwen3.8-flash-next`) are
-  pending dgx-spark's canonical model name.
+  declared; the operator asked (2026-10-14) to keep only the one active for the DGX
+  deployment; which name stays waits on dgx-spark.
 
 ## Shared-key retirement (gateway task 5.1)
 
