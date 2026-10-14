@@ -911,7 +911,7 @@ templates:
     survey_vars:
       - name: client
         title: "Client identity"
-        description: "Name from agw_clients (rotate) or a name already removed from it (revoke)"
+        description: "Name in the merged identity list (rotate) or a name already removed from it (revoke)"
         type: string
         required: true
       - name: action

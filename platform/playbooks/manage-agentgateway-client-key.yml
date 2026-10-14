@@ -62,29 +62,12 @@
     _action: "{{ action | default('') }}"
     _field: "client_{{ _client }}"
     _declared: "{{ agw_identities }}"
-    # The shared admin list next to the playbooks, or '' when there is none (the task below says so).
-    _agw_admins_file: "{{ lookup('ansible.builtin.first_found', ['vars/platform-admins.yml'], paths=[playbook_dir], skip=True) | default('', true) }}"
 
   tasks:
-    # The declared admin list is a shared vars file, loaded only when admin identities are enabled
-    # (agw_admin_identities_enabled, default false: the list is non-empty by default and a gateway deploy
-    # would mint a key for every admin before the operator rollout). A missing file is reported, never
-    # fatal, and leaves platform_admins as the inventory has it (absent = no admin identities).
+    # The shared admin list, loaded only when admin identities are enabled
+    # (tasks/load-platform-admins.yml); every play that reads agw_identities includes it.
     - name: "Load the shared platform admin list"
-      ansible.builtin.include_vars:
-        file: "{{ _agw_admins_file }}"
-      when:
-        - agw_admin_identities_enabled | default(false) | bool
-        - _agw_admins_file | length > 0
-
-    - name: "Report that the shared platform admin list is missing"
-      ansible.builtin.debug:
-        msg: >-
-          agw_admin_identities_enabled is true but vars/platform-admins.yml was not found next to the
-          playbooks: no admin identities are derived from it (platform_admins from the inventory, if any, applies).
-      when:
-        - agw_admin_identities_enabled | default(false) | bool
-        - _agw_admins_file | length == 0
+      ansible.builtin.include_tasks: tasks/load-platform-admins.yml
 
     # A malformed admin list would make the deploy this run ends with refuse, after the store had
     # already been written. Refuse it first.

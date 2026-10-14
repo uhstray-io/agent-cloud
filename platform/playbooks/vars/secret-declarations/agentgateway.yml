@@ -10,9 +10,9 @@
 # Client keys are `random`: generated ONCE per identity and reused on every
 # later run, which is exactly "mint if absent, keep if present" (task 4.1);
 # rotation is a deliberate separate run, never implicit in a deploy.
-# Identities: one personal identity per declared platform admin (`platform_admins`, the list the
-# Authentik admin entries are rendered from: vars/platform-admins.yml, loaded by the playbooks, or
-# an inventory value), merged with the service identities in `agw_clients` into `agw_identities`.
+# Identities: one personal identity per declared platform admin (`_platform_admins`, the list the
+# Authentik admin entries are rendered from: vars/platform-admins.yml, loaded by
+# tasks/load-platform-admins.yml), merged with the service identities in `agw_clients` into `agw_identities`.
 # It is computed HERE, once, and every reader takes it from here: the declaration below,
 # deploy-agentgateway.yml's name checks and render check, the key loop in config.yaml.j2 and
 # manage-agentgateway-client-key.yml. An identity's name is the entry's `agw_identity` when set,
@@ -22,9 +22,10 @@
 # GATED by `agw_admin_identities_enabled` (default false): the list is non-empty by default, so a
 # gateway deploy would otherwise mint a key for every admin before the operator rollout. Off,
 # `agw_identities` equals `agw_clients` exactly and the render is what it was before. On, every
-# list entry gets an identity (service accounts included) and a bad name is refused.
+# list entry gets an identity (service accounts included) and a bad name is refused. With the
+# shared file absent, an inventory `platform_admins` is what the file would have resolved to.
 # Native LISTS built in statement blocks, as below.
-_agw_admins: "{{ (platform_admins | default([])) if (agw_admin_identities_enabled | default(false) | bool) else [] }}"
+_agw_admins: "{{ (_platform_admins | default(platform_admins | default([]))) if (agw_admin_identities_enabled | default(false) | bool) else [] }}"
 _agw_admin_identities: >-
   {%- set out = [] -%}
   {%- for a in _agw_admins -%}

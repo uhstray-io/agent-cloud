@@ -34,12 +34,13 @@ PHASE1 = next(p for p in yaml.safe_load(DEPLOY.read_text()) if p.get("name", "")
 MANAGE_PLAY = next(p for p in yaml.safe_load(MANAGE.read_text()) if p.get("name", "").startswith("Rotate or revoke"))
 
 LOAD_TASK = "Load the shared platform admin list"
-MISSING_TASK = "Report that the shared platform admin list is missing"
 PROBLEMS_TASK = "Refuse derived admin identities that collide, are reserved or are malformed"
 OVERLAP_TASK = "Report identities declared in both platform_admins and agw_clients"
 CHARSET_TASK = "Refuse identity or group names outside the safe charset"
 READ_TASK = "Read the identity names and key-entry count the render wrote"
-CHECK_TASK = "Require the rendered config to enrol exactly the declared identities"
+CHECK_MISSING = "Require the rendered config to enrol every declared identity"
+CHECK_EXTRA = "Require the rendered config to enrol only declared identities"
+CHECK_COUNT = "Require the rendered config to hold one key entry per declared identity"
 
 
 def _task(play: dict, name: str) -> dict:
@@ -322,7 +323,8 @@ def test_no_declared_admins_renders_exactly_what_the_fallback_renders(tmp_path):
 def _check(tmp: Path, config_text: str, host_vars: dict, legacy_active: bool = False):
     (tmp / "config.yaml").write_text(config_text)
     play_vars = {"_deploy_dir": str(tmp), "_legacy_shared_active": legacy_active}
-    return _ansible(tmp, host_vars, [_task(PHASE1, READ_TASK), _task(PHASE1, CHECK_TASK)], play_vars)
+    names = [READ_TASK, CHECK_MISSING, CHECK_EXTRA, CHECK_COUNT]
+    return _ansible(tmp, host_vars, [_task(PHASE1, n) for n in names], play_vars)
 
 
 def _drop_entry(text: str, name: str) -> str:
@@ -345,12 +347,35 @@ def test_the_render_check_passes_for_the_declared_identities(tmp_path):
     assert r.returncode == 0, r.stdout + r.stderr
 
 
+MISSING_MSG = "does not enrol these declared identities: "
+EXTRA_MSG = "enrols identities that are not declared: "
+COUNT_MSG = "key entries for"
+
+
 def test_the_render_check_names_a_dropped_identity_and_prints_no_hash(tmp_path):
     text = _render(tmp_path, **HV)
     r = _check(tmp_path, _drop_entry(text, "alice"), HV)
     out = r.stdout + r.stderr
-    assert r.returncode != 0 and "Missing: alice" in out and "Extra: none" in out
+    assert r.returncode != 0 and MISSING_MSG + "alice." in out and EXTRA_MSG not in out
     assert not re.search(r"sha256:[0-9a-f]{16}", out) and "stored-key-for" not in out
+
+
+def test_the_render_check_names_an_unexpected_identity(tmp_path):
+    # Nothing is missing and only the name is extra, so only the extra-name assert can say it.
+    text = _render(tmp_path, **HV)
+    r = _check(tmp_path, text, {**HV, "platform_admins": [admin("a", "alice")]})
+    out = r.stdout + r.stderr
+    assert r.returncode != 0 and EXTRA_MSG + "bob." in out and MISSING_MSG not in out
+
+
+def test_the_render_check_counts_key_entries_as_well_as_names(tmp_path):
+    # Every name present once over: only the count is wrong.
+    text = _render(tmp_path, **HV)
+    first = re.search(r"^\s*- keyHash: sha256:[0-9a-f]{64}$", text, re.M).group(0)
+    r = _check(tmp_path, text.replace(first, first + "\n" + first, 1), HV)
+    out = r.stdout + r.stderr
+    assert r.returncode != 0 and "holds 4 key entries for 3 declared identities" in out
+    assert MISSING_MSG not in out and EXTRA_MSG not in out
 
 
 def test_the_render_check_catches_a_swapped_name_that_keeps_the_count(tmp_path):
@@ -359,30 +384,35 @@ def test_the_render_check_catches_a_swapped_name_that_keeps_the_count(tmp_path):
     swapped = text.replace("name: alice\n", "name: mallory\n", 1)
     assert swapped != text
     r = _check(tmp_path, swapped, HV)
-    out = r.stdout + r.stderr
-    assert r.returncode != 0 and "Missing: alice" in out and "Extra: mallory" in out
-
-
-def test_the_render_check_names_an_unexpected_identity(tmp_path):
-    text = _render(tmp_path, **HV)
-    r = _check(tmp_path, text, {**HV, "platform_admins": [admin("a", "alice")]})
-    out = r.stdout + r.stderr
-    assert r.returncode != 0 and "Extra: bob" in out
-
-
-def test_the_render_check_counts_key_entries_as_well_as_names(tmp_path):
-    text = _render(tmp_path, **HV)
-    first = re.search(r"^\s*- keyHash: sha256:[0-9a-f]{64}$", text, re.M).group(0)
-    r = _check(tmp_path, text.replace(first, first + "\n" + first, 1), HV)
-    assert r.returncode != 0 and "Key entries rendered 4, identities expected 3" in r.stdout + r.stderr
+    assert r.returncode != 0 and MISSING_MSG + "alice." in r.stdout + r.stderr
 
 
 def test_the_render_check_expects_legacy_shared_only_while_its_grace_period_runs(tmp_path):
-    text = _render(tmp_path, **HV, _legacy_shared_active=True, secrets={**SECRETS, "agw_unused": "x"})
+    text = _render(tmp_path, **HV, _legacy_shared_active=True)
     assert "name: legacy-shared" in text
     assert _check(tmp_path, text, HV, legacy_active=True).returncode == 0
     r = _check(tmp_path, text, HV, legacy_active=False)
-    assert r.returncode != 0 and "Extra: legacy-shared" in r.stdout + r.stderr
+    assert r.returncode != 0 and EXTRA_MSG + "legacy-shared." in r.stdout + r.stderr
+
+
+def _with_mcp_keys(text: str, names: list) -> str:
+    """The config with a second, top-level policy carrying its own key list (the section 3 mcp loop)."""
+    entries = "".join(f"      - keyHash: sha256:{'ab' * 32}\n        metadata:\n          name: {n}\n" for n in names)
+    return text.rstrip("\n") + "\nmcp:\n  policies:\n    apiKey:\n      keys:\n" + entries
+
+
+def test_the_render_check_counts_the_llm_keys_only(tmp_path):
+    # Another policy's key list must not be counted as the llm one, or section 3's mcp loop (the
+    # same identities again) would fail every deploy.
+    text = _render(tmp_path, **HV)
+    assert _check(tmp_path, _with_mcp_keys(text, ["skynet", "alice", "bob"]), HV).returncode == 0
+
+
+def test_a_name_held_only_by_another_policy_does_not_cover_a_dropped_llm_key(tmp_path):
+    text = _render(tmp_path, **HV)
+    broken = _with_mcp_keys(_drop_entry(text, "alice"), ["skynet", "alice", "bob"])
+    r = _check(tmp_path, broken, HV)
+    assert r.returncode != 0 and MISSING_MSG + "alice." in r.stdout + r.stderr
 
 
 # ── The gate and the shared list (agw_admin_identities_enabled) ───────────────
@@ -427,43 +457,65 @@ def test_the_gate_on_derives_for_every_entry_service_accounts_included(tmp_path)
     }
 
 
-def _load(tmp: Path, host_vars: dict, shared: list | None):
-    """Run the deploy's load tasks in a directory that holds (or lacks) vars/platform-admins.yml, then
+# The shared file's shape (the Authentik branch owns the real one): `_platform_admins` is the
+# inventory's `platform_admins` when set, else a default built from per-user vars.
+SHARED_FILE = """---
+_platform_admins_default:
+  - {key: stray_admin, username: stray, name: stray, email: stray@agent-cloud.test}
+  - {key: wisward, username: "{{ wisward_username | default('wisward') }}", name: W, email: w@agent-cloud.test}
+  - {key: svc_automation, username: svc-automation-user, name: Service, type: service_account}
+_platform_admins: "{{ platform_admins if platform_admins is defined else _platform_admins_default }}"
+"""
+LOADER = yaml.safe_load((REPO / "platform/playbooks/tasks/load-platform-admins.yml").read_text())
+
+
+def _load(tmp: Path, host_vars: dict, shared: str | None):
+    """Run the shared loader tasks in a directory that holds (or lacks) vars/platform-admins.yml, then
     write what the vars file computed."""
     if shared is not None:
         (tmp / "vars").mkdir(exist_ok=True)
-        (tmp / "vars/platform-admins.yml").write_text(yaml.safe_dump({"platform_admins": shared}))
+        (tmp / "vars/platform-admins.yml").write_text(shared)
     out = tmp / "loaded.json"
-    expr = "{{ {'identities': agw_identities, 'loaded': platform_admins | default('UNSET')} | to_json }}"
-    tasks = [_task(PHASE1, LOAD_TASK), _task(PHASE1, MISSING_TASK)]
-    tasks.append({"ansible.builtin.copy": {"content": expr, "dest": str(out)}})
-    r = _ansible(tmp, host_vars, tasks, {"_agw_admins_file": PHASE1["vars"]["_agw_admins_file"]})
+    expr = "{{ {'identities': agw_identities, 'loaded': _platform_admins | default('UNSET')} | to_json }}"
+    tasks = [*LOADER, {"ansible.builtin.copy": {"content": expr, "dest": str(out)}}]
+    r = _ansible(tmp, host_vars, tasks)
     assert r.returncode == 0, r.stdout + r.stderr
     got = json.loads(out.read_text())
     return got["identities"], r.stdout, got["loaded"]
 
 
-def test_the_gate_on_loads_the_shared_list_next_to_the_playbooks(tmp_path):
-    ids, out, _ = _load(
-        tmp_path,
-        {"agw_clients": ["skynet"], "agw_admin_identities_enabled": True},
-        [admin("alice", "alice"), admin("bob", "bob.smith", agw_identity="bob")],
-    )
-    assert ids == ["skynet", "alice", "bob"] and "was not found" not in out
+def test_the_gate_on_loads_the_shared_list_with_every_entry_service_account_included(tmp_path):
+    ids, out, _ = _load(tmp_path, {"agw_clients": ["skynet"], "agw_admin_identities_enabled": True}, SHARED_FILE)
+    assert ids == ["skynet", "stray", "wisward", "svc-automation-user"] and "absent" not in out
+
+
+def test_an_inventory_list_wins_over_the_files_default(tmp_path):
+    hv = {"agw_clients": [], "agw_admin_identities_enabled": True, "platform_admins": [admin("zed", "zed")]}
+    ids, _, _ = _load(tmp_path, hv, SHARED_FILE)
+    assert ids == ["zed"]
 
 
 def test_the_gate_off_does_not_load_the_shared_list(tmp_path):
-    ids, out, loaded = _load(tmp_path, {"agw_clients": ["skynet"]}, [admin("alice", "alice")])
-    assert ids == ["skynet"] and "was not found" not in out
+    ids, out, loaded = _load(tmp_path, {"agw_clients": ["skynet"]}, SHARED_FILE)
+    assert ids == ["skynet"] and "absent" not in out
     assert loaded == "UNSET"  # the file itself was not read
 
 
 def test_the_gate_on_with_no_shared_list_says_so_and_derives_nothing(tmp_path):
     ids, out, _ = _load(tmp_path, {"agw_clients": ["skynet"], "agw_admin_identities_enabled": True}, None)
-    assert ids == ["skynet"] and "vars/platform-admins.yml was not found" in out
+    assert ids == ["skynet"] and "admin list file absent" in out
 
 
 def test_both_playbooks_load_the_list_before_the_refusal():
     for play in (PHASE1, MANAGE_PLAY):
         names = [t.get("name") for t in play["tasks"]]
         assert names.index(LOAD_TASK) < names.index(PROBLEMS_TASK)
+        assert _task(play, LOAD_TASK)["ansible.builtin.include_tasks"] == "tasks/load-platform-admins.yml"
+
+
+@pytest.mark.parametrize("path", ["rollback-inference-route.yml", "run-agw-conformance.yml"])
+def test_every_reader_of_the_merged_list_loads_the_declaration_and_the_admin_list(path):
+    plays = yaml.safe_load((REPO / "platform/playbooks" / path).read_text())
+    play = next(p for p in plays if "vars/secret-declarations/agentgateway.yml" in p.get("vars_files", []))
+    assert _task(play, LOAD_TASK)["ansible.builtin.include_tasks"] == "tasks/load-platform-admins.yml"
+    assert "agw_identities" in (REPO / "platform/playbooks" / path).read_text()

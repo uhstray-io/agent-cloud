@@ -384,6 +384,30 @@ def test_direct_publishes_the_live_key_then_routes_to_vllm_and_never_prints_it(e
     assert "already published" in out and len(_calls(tmp, "restart caddy")) == 1 and _unchanged(out), out
 
 
+ADMINS = [{"key": "carol", "username": "carol", "name": "Carol", "email": "carol@example.invalid"}]
+
+
+def test_direct_treats_a_derived_personal_identity_as_declared_not_retired(env):
+    # A personal identity derived from the declared admin list is an enrolled client: it gets its
+    # direct-path copy, and a copy it already holds is kept, never withdrawn as a retired name.
+    gateway = {"agw_clients": ["workstation"], "platform_admins": ADMINS, "agw_admin_identities_enabled": True}
+    Bao.store["direct_carol"] = LIVE
+    Bao.store["direct_retired"] = LIVE
+    rc, out = _run(env, mode="direct", gateway=gateway)
+    assert rc == 0, out
+    assert Bao.store["direct_workstation"] == LIVE and Bao.store["direct_carol"] == LIVE
+    assert "direct_retired" not in Bao.store and "direct_pi" not in Bao.store
+
+
+def test_direct_withdraws_a_personal_copy_once_the_gate_or_the_entry_is_gone(env):
+    # Same store, the derivation off: carol is no longer an identity, so her copy is a retired one.
+    Bao.store["direct_carol"] = LIVE
+    gateway = {"agw_clients": ["workstation"], "platform_admins": ADMINS, "agw_admin_identities_enabled": False}
+    rc, out = _run(env, mode="direct", gateway=gateway)
+    assert rc == 0, out
+    assert "direct_carol" not in Bao.store and Bao.store["direct_workstation"] == LIVE
+
+
 def test_restore_routes_back_but_keeps_copies_that_still_hold_the_live_key(env):
     tmp = env[0]
     assert _run(env, mode="direct")[0] == 0
