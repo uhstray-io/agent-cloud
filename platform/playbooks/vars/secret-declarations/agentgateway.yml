@@ -26,8 +26,8 @@
 # shared file absent, an inventory `platform_admins` is what the file would have resolved to.
 # With the gate on, `platform_admins` MUST be declared for the gateway host: the shared file's own
 # default is built from per-user vars that exist only on the Authentik host, so on the gateway it
-# would derive placeholder usernames. Undeclared, nothing is derived and the writers refuse
-# (`_agw_identity_problems`).
+# would derive placeholder usernames. Undeclared, nothing is derived here and the loader
+# (tasks/load-platform-admins.yml, included by every play that reads this) refuses the run.
 # Native LISTS built in statement blocks, as below.
 _agw_admins: >-
   {{ (_platform_admins | default(platform_admins))
@@ -61,10 +61,6 @@ _agw_identity_overlap: >-
 # from the shared vLLM key and `mcp-self` is the gateway's own MCP self-call identity.
 _agw_identity_problems: >-
   {%- set out = [] -%}
-  {%- if (agw_admin_identities_enabled | default(false) | bool) and platform_admins is not defined
-         and out.append('agw_admin_identities_enabled is true but platform_admins is not declared for this host: '
-                        ~ 'declare the admin list in the inventory (the default in the shared admin file is built from per-user '
-                        ~ 'vars that exist only on the Authentik host and would derive placeholder usernames)') -%}{%- endif -%}
   {%- for a in _agw_admin_identities -%}
     {%- set who = ('platform_admins entry ' ~ a['key']) if a['key'] else ('platform_admins entry #' ~ loop.index) -%}
     {%- if (_agw_admin_identities | selectattr('name', 'equalto', a['name']) | list | length) > 1

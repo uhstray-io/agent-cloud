@@ -42,8 +42,8 @@ agentgateway alongside skynet" (Proposed until the operator confirms). OpenSpec 
   unchanged; the deploy, the key-management playbook, the rollback, the conformance run and
   check-secrets load the file only when it is on, and say so when it is missing. With the gate on,
   `platform_admins` must be declared for the gateway host: the shared file's own default is built
-  from per-user vars that exist only on the Authentik host, so an undeclared list derives nothing
-  and the deploy and the key-management playbook refuse before any write.
+  from per-user vars that exist only on the Authentik host, so the loader refuses the run, in every play that includes it, before anything is read or
+  written.
   `agw_identities` is computed once in `vars/secret-declarations/agentgateway.yml` and read by the
   secret declaration, the name checks, the key loop in `config.yaml.j2` and
   `manage-agentgateway-client-key.yml`. `platform_admins` absent or empty leaves it equal to

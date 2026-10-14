@@ -13,6 +13,21 @@
 # run says so and derives nothing from the file (`_platform_admins` stays undefined: an inventory
 # `platform_admins`, which the file would have resolved to anyway, still applies, else the list is empty).
 
+# With the gate on, `platform_admins` must be declared in the inventory for this host. The shared
+# file's own default is built from per-user vars that exist only on the Authentik host, so on the
+# gateway it would derive placeholder usernames; the declaration does not derive from it. The check
+# reads the inventory's `platform_admins`, not `_platform_admins`, and runs before anything is read
+# or written.
+- name: "Require a declared platform admin list when admin identities are enabled"
+  ansible.builtin.assert:
+    that: platform_admins is defined
+    fail_msg: >-
+      agw_admin_identities_enabled is true but platform_admins is not declared for this host: declare
+      the admin list in the inventory (the default in the shared admin file is built from per-user vars
+      that exist only on the Authentik host and would derive placeholder usernames).
+    quiet: true
+  when: agw_admin_identities_enabled | default(false) | bool
+
 - name: "Find the shared platform admin list"
   ansible.builtin.set_fact:
     _agw_admins_file: "{{ lookup('ansible.builtin.first_found', ['vars/platform-admins.yml'], paths=[playbook_dir], skip=True) | default('', true) }}"

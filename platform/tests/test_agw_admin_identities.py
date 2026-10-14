@@ -499,13 +499,6 @@ def test_the_gate_on_loads_the_shared_file_and_derives_from_the_declared_list(tm
     assert loaded == SERVICE_LIST  # the file resolved to the inventory list: the inventory wins
 
 
-def test_the_gate_on_without_a_declared_list_never_uses_the_shared_files_default(tmp_path):
-    # The file's own default is built from per-user vars that exist only on the Authentik host:
-    # on the gateway it would derive placeholder usernames, so nothing is derived from it.
-    ids, _, loaded = _load(tmp_path, {"agw_clients": ["skynet"], "agw_admin_identities_enabled": True}, SHARED_FILE)
-    assert ids == ["skynet"] and loaded != "UNSET"  # the file loaded; its default was not used
-
-
 def test_the_gate_off_does_not_load_the_shared_list(tmp_path):
     ids, out, loaded = _load(tmp_path, {"agw_clients": ["skynet"]}, SHARED_FILE)
     assert ids == ["skynet"] and "absent" not in out
@@ -513,7 +506,8 @@ def test_the_gate_off_does_not_load_the_shared_list(tmp_path):
 
 
 def test_the_gate_on_with_no_shared_list_says_so_and_derives_nothing(tmp_path):
-    ids, out, _ = _load(tmp_path, {"agw_clients": ["skynet"], "agw_admin_identities_enabled": True}, None)
+    hv = {"agw_clients": ["skynet"], "agw_admin_identities_enabled": True, "platform_admins": []}
+    ids, out, _ = _load(tmp_path, hv, None)
     assert ids == ["skynet"] and "admin list file absent" in out
 
 
@@ -537,13 +531,39 @@ def test_every_reader_of_the_merged_list_loads_the_declaration_and_the_admin_lis
 UNDECLARED = "platform_admins is not declared for this host"
 
 
-def test_the_gate_on_with_no_declared_list_is_refused_before_any_write(tmp_path):
+def _run_loader(tmp: Path, host_vars: dict, shared: str | None = SHARED_FILE):
+    """The loader tasks alone, in a directory holding the shared file; no assertion on the result."""
+    if shared is not None:
+        (tmp / "vars").mkdir(exist_ok=True)
+        (tmp / "vars/platform-admins.yml").write_text(shared)
+    return _ansible(tmp, host_vars, LOADER)
+
+
+def test_the_gate_on_with_no_declared_list_is_refused_by_the_loader_and_derives_nothing(tmp_path):
     hv = {"agw_clients": ["skynet"], "agw_admin_identities_enabled": True}
+    # Even with the shared file present (and its built default) the run is refused, naming the gap.
+    r = _run_loader(tmp_path, hv)
+    assert r.returncode != 0 and UNDECLARED in r.stdout + r.stderr
+    assert "vars/platform-admins.yml was not found" not in r.stdout  # refused before the file is read
     got = _eval(tmp_path, hv)
-    assert got["identities"] == ["skynet"] and len(got["problems"]) == 1 and UNDECLARED in got["problems"][0]
-    for play, names in ((PHASE1, (PROBLEMS_TASK,)), (MANAGE_PLAY, (PROBLEMS_TASK,))):
-        r = _guard(tmp_path, hv, names, play)
-        assert r.returncode != 0 and UNDECLARED in r.stdout + r.stderr
+    assert got["identities"] == ["skynet"]  # and a reader that skips the loader derives nothing
+
+
+def test_a_loaded_shared_default_never_becomes_identities_without_a_declared_list(tmp_path):
+    # Belt and braces behind the loader's refusal: a reader that somehow holds the shared file's
+    # built default (`_platform_admins`) still derives nothing unless platform_admins is declared.
+    hv = {
+        "agw_clients": ["skynet"],
+        "agw_admin_identities_enabled": True,
+        "_platform_admins": [admin("p", "placeholder")],
+    }
+    assert _eval(tmp_path, hv)["identities"] == ["skynet"]
+
+
+def test_the_loader_is_what_refuses_so_every_includer_inherits_it():
+    assert LOADER[0]["name"] == "Require a declared platform admin list when admin identities are enabled"
+    assert LOADER[0]["ansible.builtin.assert"]["that"] == "platform_admins is defined"
+    assert LOADER[0]["when"] == "agw_admin_identities_enabled | default(false) | bool"
 
 
 def test_the_gate_on_with_an_explicit_list_derives(tmp_path):
@@ -563,6 +583,8 @@ def test_the_gate_off_with_no_declared_list_is_unaffected(tmp_path):
         got = _eval(tmp_path, hv)
         assert got["identities"] == ["skynet"] and got["problems"] == []
         assert _guard(tmp_path, hv).returncode == 0
+        assert _run_loader(tmp_path, hv).returncode == 0
+    assert _run_loader(tmp_path, hv).returncode == 0
 
 
 # ── check-secrets sees the same declaration ───────────────────────────────────
