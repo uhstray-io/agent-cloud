@@ -175,6 +175,46 @@
       changed_when: false
       check_mode: false
 
+    # Seven-day inference usage peak (inference-telemetry-production 4.2): the rate figures the
+    # route-switch gate needs to judge whether the `legacy-shared` identity fits 2,000,000
+    # tokens/hour and the 120 requests/minute global ceiling. Whole-estate vLLM traffic (every
+    # client, shared key and gateway), so by scope each figure is an upper bound for that one
+    # identity. Subqueries evaluate at step-aligned instants, so the 5m (tokens) and 1m (rate,
+    # gauges) steps make each figure a near-rolling peak; a coarser step would understate it.
+    # request_success counts requests by completion time, not arrival, so aborts and 429s do
+    # not appear in it. Query semantics are pinned here as text; CI does not evaluate them.
+    # Same exec path, read-only, and `unavailable` semantics as the daily ingestion read above.
+    - name: Read seven-day inference usage peak from vLLM
+      ansible.builtin.command:
+        argv:
+          - "{{ _engine }}"
+          - exec
+          - o11y-grafana
+          - curl
+          - -fsSG
+          - --data-urlencode
+          - "query={{ item.query }}"
+          - http://prometheus:9090/api/v1/query
+      loop:
+        - name: peak_tokens_per_hour
+          query: >-
+            max_over_time((sum(increase(vllm:prompt_tokens_total{job="dgx-spark-vllm"}[1h])) +
+            sum(increase(vllm:generation_tokens_total{job="dgx-spark-vllm"}[1h])))[7d:5m])
+        - name: peak_generation_tokens_per_hour
+          query: 'max_over_time(sum(increase(vllm:generation_tokens_total{job="dgx-spark-vllm"}[1h]))[7d:5m])'
+        - name: peak_requests_per_minute
+          decimals: 1
+          query: 'max_over_time((sum(rate(vllm:request_success_total{job="dgx-spark-vllm"}[1m])) * 60)[7d:1m])'
+        - name: peak_running_requests
+          query: 'max_over_time(sum(vllm:num_requests_running{job="dgx-spark-vllm"})[7d:1m])'
+        - name: peak_waiting_requests
+          query: 'max_over_time(sum(vllm:num_requests_waiting{job="dgx-spark-vllm"})[7d:1m])'
+      loop_control:
+        label: "{{ item.name }}"
+      register: _inference_peak_reads
+      changed_when: false
+      check_mode: false
+
     - name: Read current guest root filesystem capacity
       ansible.builtin.command:
         argv: [df, --block-size=1, "--output=size,avail", /]
@@ -309,6 +349,20 @@
           {%- endfor -%}
           {{- figures }}
 
+    - name: Fold the inference peak readings into named figures
+      ansible.builtin.set_fact:
+        _inference_peak: >-
+          {%- set figures = {} -%}
+          {%- for read in _inference_peak_reads.results -%}
+          {%- set series = ((read.stdout | from_json).get('data') or {}).get('result') or [] -%}
+          {%- set raw = (series[0].value[1] | string) if series | length > 0 else '' -%}
+          {%- set number = raw is match('^-?[0-9]+([.][0-9]+)?([eE][+-]?[0-9]+)?$') -%}
+          {%- set places = read.item.get('decimals', 0) -%}
+          {%- set rounded = (raw | float | round(places)) if places > 0 else (raw | float | round | int) -%}
+          {%- set _ = figures.update({read.item.name: rounded if number else 'unavailable'}) -%}
+          {%- endfor -%}
+          {{- figures }}
+
     - name: Report sanitized sample-limit and series diagnostics
       ansible.builtin.debug:
         msg: "{{ _budget_readback_diagnostics.stdout | from_json }}"
@@ -339,3 +393,4 @@
           o11y_volume_capacity: "{{ _volume_capacity.stdout | from_json }}"
           o11y_container_memory_mib: "{{ (_container_memory.stdout | from_json).containers }}"
           daily_ingestion: "{{ _daily_ingestion }}"
+          inference_peak_7d: "{{ _inference_peak }}"

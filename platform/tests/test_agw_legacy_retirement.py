@@ -7,6 +7,10 @@ fingerprint. The deploy's own play vars, guard, credential task file and verdict
 on localhost through harness_sandbox, against a synthetic KV-v2 OpenBao; the shared render step is
 a stand-in rendering the real config.yaml.j2, and deploy.sh is a stand-in that leaves a marker.
 `agw_today` pins the date.
+
+The verify play (Phase 3) proves the same boundary at the running gateway: the shared vLLM key is
+admitted as `legacy-shared` (200 on /v1/models) until the expiry and refused (401) from it. Its probe
+tasks run for real against a stub gateway that admits one key.
 """
 
 import hashlib
@@ -29,8 +33,15 @@ INCLUDE = "Shared-key retirement: record the fingerprint, compare the vLLM key w
 
 PLAYS = yaml.safe_load(DEPLOY.read_text())
 PHASE1 = next(p for p in PLAYS if p.get("name", "").startswith("Phase 1"))
+PHASE3 = next(p for p in PLAYS if p.get("name", "").startswith("Phase 3"))
 PHASE4 = next(p for p in PLAYS if p.get("name", "").startswith("Phase 4"))
 TASKS = {t["name"]: t for t in PHASE1["tasks"]}
+VERIFY_TASKS = {t["name"]: t for t in PHASE3["tasks"]}
+ADMITTED = "The shared key is admitted as legacy-shared (grace period)"
+REFUSED = "The shared key is refused once retired"
+ADMITTED_ASSERT = "Require the shared key to be admitted until legacy_shared_expires"
+REFUSED_ASSERT = "Require the shared key to be refused after legacy_shared_expires"
+LEGACY_VARS = ("_legacy_expires", "_agw_today", "_legacy_shared_active", "_legacy_shared_retired")
 OLD = "shared-vllm-key-OLD-0000"
 NEW = "rotated-vllm-key-NEW-1111"
 OTHER_FP = "f" * 64
@@ -232,3 +243,90 @@ def test_the_verdict_is_the_last_play_after_the_deploy_and_phase1_never_fails_on
     assert any(n.startswith("Phase 2") for n in names[:-1])
     check = yaml.safe_load(CHECK.read_text())
     assert not [t for t in check if "ansible.builtin.assert" in t or "ansible.builtin.fail" in t]
+
+
+class Gateway(seed_harness.FakeBao):
+    """A stub gateway: /v1/models is 200 for the one admitted key, 401 for anything else."""
+
+    admitted = ""
+
+    def do_GET(self):
+        self.record("GET")
+        key = self.headers.get("Authorization", "").removeprefix("Bearer ")
+        if self.path == "/v1/models" and key == type(self).admitted:
+            return self.reply({"data": []})
+        self.reply({"error": "unauthorized"}, 401)
+
+
+@pytest.fixture
+def gateway():
+    Gateway.requests = []
+    Gateway.admitted = ""
+    with seed_harness.serve(Gateway) as url:
+        yield url
+
+
+def _verify(tmp: Path, url: str, *args: str, **hv) -> subprocess.CompletedProcess:
+    """The verify play's shared-key probe and assert tasks, run for real against the stub gateway."""
+    names = [ADMITTED, "Shared-key grace period: keep the probe's status", ADMITTED_ASSERT, REFUSED,
+             "Shared-key retirement: keep the probe's status", REFUSED_ASSERT]
+    tasks = []
+    for n in names:
+        t = dict(VERIFY_TASKS[n])
+        if "ansible.builtin.include_tasks" in t:
+            t["ansible.builtin.include_tasks"] = str(REPO / "platform/playbooks" / t["ansible.builtin.include_tasks"])
+        tasks.append(t)
+    host = {"ansible_connection": "local", "_resolved": {"vllm_api_key": OLD}, "_agwp_base": url, **hv}
+    play_vars = {k: PHASE3["vars"][k] for k in LEGACY_VARS}
+    (tmp / "inv.yml").write_text(yaml.safe_dump({"all": {"hosts": {"gw": host}}}))
+    (tmp / "play.yml").write_text(yaml.safe_dump(
+        [{"hosts": "all", "gather_facts": False, "vars": play_vars, "tasks": tasks}]))
+    return harness_sandbox.run(["ansible-playbook", "-i", str(tmp / "inv.yml"), str(tmp / "play.yml"), *args],
+                               tmp, cwd=REPO, env=harness_sandbox.env_for(tmp))
+
+
+def test_the_verify_play_reads_the_grace_period_the_way_phase_one_does():
+    assert all(PHASE3["vars"][k] == PHASE1["vars"][k] for k in LEGACY_VARS)
+
+
+def test_the_shared_key_is_proven_admitted_before_expiry(tmp_path, gateway):
+    Gateway.admitted = OLD
+    r = _verify(tmp_path, gateway, "-e", "agw_today=2026-10-19", legacy_shared_expires=EXPIRES)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert Gateway.requests == [("GET", "/v1/models")]
+    assert "is admitted as legacy-shared until 2026-10-20" in r.stdout
+    _no_secret(r)
+
+
+def test_a_shared_key_the_gateway_does_not_admit_fails_the_deploy_before_expiry(tmp_path, gateway):
+    r = _verify(tmp_path, gateway, "-e", "agw_today=2026-10-19", legacy_shared_expires=EXPIRES)
+    assert r.returncode != 0
+    assert "not admitted at the gateway as legacy-shared (HTTP 401)" in " ".join(r.stdout.split())
+    _no_secret(r)
+
+
+def test_the_shared_key_is_proven_refused_after_expiry(tmp_path, gateway):
+    r = _verify(tmp_path, gateway, "-e", f"agw_today={EXPIRES}", legacy_shared_expires=EXPIRES)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert Gateway.requests == [("GET", "/v1/models")]
+    assert "is refused at the gateway after 2026-10-20" in r.stdout
+    _no_secret(r)
+
+
+def test_a_shared_key_still_admitted_after_expiry_fails_the_deploy(tmp_path, gateway):
+    Gateway.admitted = OLD
+    r = _verify(tmp_path, gateway, "-e", "agw_today=2026-11-01", legacy_shared_expires=EXPIRES)
+    assert r.returncode != 0
+    assert "answered with HTTP 200 at the gateway, not 401" in " ".join(r.stdout.split())
+    _no_secret(r)
+
+
+@pytest.mark.parametrize("args, hv", [
+    ((), {}),
+    (("--check",), {"legacy_shared_expires": EXPIRES}),
+])
+def test_no_declared_expiry_or_a_dry_run_sends_no_shared_key_probe(tmp_path, gateway, args, hv):
+    Gateway.admitted = OLD
+    r = _verify(tmp_path, gateway, *args, "-e", "agw_today=2026-10-19", **hv)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert Gateway.requests == []

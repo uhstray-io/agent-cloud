@@ -109,6 +109,10 @@ and starts `inference-probe.service` without stopping a container
 (`platform/playbooks/o11y-fault-drill.yml:341-373`), which is the playbook source and not an
 observation of that task.
 
+2026-10-14: the operator decided on 2026-10-13 that the `nocodb`, `nemoclaw` and `openhands`
+VMs are retired, and task 0.2 is closed on that decision. Their power state was not read; the
+investigation was Semaphore tasks 4857-4862, which found all three network-unreachable.
+
 ## Goals / Non-Goals
 
 Goals: one production Grafana with the two nodes and vLLM on graphs within a week of

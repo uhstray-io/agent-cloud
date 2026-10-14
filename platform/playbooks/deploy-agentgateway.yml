@@ -590,6 +590,12 @@
       {{ agw_verify_base_url | default('http://' ~ _agw_probe_ip ~ ':' ~ (agw_port | default('4000'))) }}
     _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
     _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
+    # The shared-key grace period, as Phase 1 reads it (the same four expressions; a play's vars
+    # do not cross plays, and test_agw_legacy_retirement.py asserts the copies stay equal).
+    _legacy_expires: "{{ legacy_shared_expires | default('', true) | string }}"
+    _agw_today: "{{ agw_today | default(now(utc=true).strftime('%Y-%m-%d')) | string }}"
+    _legacy_shared_active: "{{ (_legacy_expires | length > 0) and (_agw_today < _legacy_expires) }}"
+    _legacy_shared_retired: "{{ (_legacy_expires | length > 0) and (_agw_today >= _legacy_expires) }}"
 
   tasks:
     # A dry run skipped the deploy, so on a fresh host agentgateway does not exist and every
@@ -807,6 +813,71 @@
         - not ansible_check_mode
         - _verify_client | length > 0
         - not (_verify_refused | bool)
+
+    # The shared vLLM key is the credential every client held before the gateway. During the grace
+    # period the gateway must admit it as `legacy-shared`, or the route switch to the gateway
+    # would 401 every client still holding it; once retired it must be refused. Only the status is
+    # kept and asserted: the response body of a keyed call is never printed. The status list lets
+    # the call return 401/403/429 so the assert below, not the probe, reports the failure.
+    - name: "The shared key is admitted as legacy-shared (grace period)"
+      ansible.builtin.include_tasks: tasks/agw-probe.yml
+      vars:
+        _agwp_path: /v1/models
+        _agwp_status: [200, 401, 403, 429]
+        _agwp_key: "{{ _resolved.vllm_api_key }}"
+      when:
+        - not ansible_check_mode
+        - _legacy_shared_active | bool
+
+    - name: "Shared-key grace period: keep the probe's status"
+      ansible.builtin.set_fact:
+        _legacy_probe_status: "{{ _agwp_out.status | int }}"
+      when:
+        - not ansible_check_mode
+        - _legacy_shared_active | bool
+
+    - name: "Require the shared key to be admitted until legacy_shared_expires"
+      ansible.builtin.assert:
+        that: _legacy_probe_status | int == 200
+        fail_msg: >-
+          The shared vLLM key was not admitted at the gateway as legacy-shared (HTTP
+          {{ _legacy_probe_status }}) although legacy_shared_expires ({{ legacy_shared_expires }})
+          has not passed. Clients still holding the shared key would get 401 after the route
+          switch. Check that the vLLM key in OpenBao is the one the recorded fingerprint was taken
+          from, and that legacy-shared is rendered into the running gateway.
+        success_msg: "The shared key is admitted as legacy-shared until {{ legacy_shared_expires }}."
+      when:
+        - not ansible_check_mode
+        - _legacy_shared_active | bool
+
+    - name: "The shared key is refused once retired"
+      ansible.builtin.include_tasks: tasks/agw-probe.yml
+      vars:
+        _agwp_path: /v1/models
+        _agwp_status: [200, 401, 403, 429]
+        _agwp_key: "{{ _resolved.vllm_api_key }}"
+      when:
+        - not ansible_check_mode
+        - _legacy_shared_retired | bool
+
+    - name: "Shared-key retirement: keep the probe's status"
+      ansible.builtin.set_fact:
+        _retired_probe_status: "{{ _agwp_out.status | int }}"
+      when:
+        - not ansible_check_mode
+        - _legacy_shared_retired | bool
+
+    - name: "Require the shared key to be refused after legacy_shared_expires"
+      ansible.builtin.assert:
+        that: _retired_probe_status | int == 401
+        fail_msg: >-
+          The shared vLLM key was answered with HTTP {{ _retired_probe_status }} at the gateway,
+          not 401, although legacy_shared_expires ({{ legacy_shared_expires }}) has passed: the
+          retired identity is still admitted.
+        success_msg: "The shared key is refused at the gateway after {{ legacy_shared_expires }}."
+      when:
+        - not ansible_check_mode
+        - _legacy_shared_retired | bool
 
     - name: "An enrolled identity completes one chat request through the upstream"
       ansible.builtin.include_tasks: tasks/agw-probe.yml
