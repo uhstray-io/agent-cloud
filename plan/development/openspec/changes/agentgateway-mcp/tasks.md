@@ -26,17 +26,17 @@ a pull request or run against production until the operator says so for that act
 Scratch configuration only, in the scratchpad, never committed. Each answer is a dated
 paragraph under "Findings" in `design.md` with the command and the observed output; a
 finding that contradicts a decision stops the work and reopens that decision.
-- [ ] 1.1 `llm:` and `mcp:` in one file: add an `mcp:` block (`gateways: [default]`, one
+- [x] 1.1 `llm:` and `mcp:` in one file: add an `mcp:` block (`gateways: [default]`, one
       `openapi` target) to a copy of the local rendered config; run the pinned image's
       `--validate-only` through `tasks/agw-validate-config.yml`; start it and confirm `/v1`
       still serves. Also feed the validator a deliberately wrong `mcp:` block and record
       whether it refuses (G5 depends on it)
-- [ ] 1.2 Authentication on `/mcp`: `initialize` with an enrolled key returns a session;
+- [x] 1.2 Authentication on `/mcp`: `initialize` with an enrolled key returns a session;
       no key, an unknown key, and a key left out of the `mcp` list each return 401; record
       whether `initialize` needs a healthy target (`failureMode`)
-- [ ] 1.3 `apiKey.name` in an `mcpAuthorization` CEL rule: write a rule permitting one tool
+- [x] 1.3 `apiKey.name` in an `mcpAuthorization` CEL rule: write a rule permitting one tool
       to one identity only and record whether it is evaluated
-- [ ] 1.4 Budgets and `mcp.policies.apiKey`: record whether `budgets` entries under the MCP
+- [x] 1.4 Budgets and `mcp.policies.apiKey`: record whether `budgets` entries under the MCP
       key policy are accepted and charged (G2)
 - [ ] 1.5 The self-call: an `openapi` target whose host is the gateway's own `/v1`, with
       `backendAuth` carrying a key from an environment reference, once with the local
@@ -45,22 +45,22 @@ finding that contradicts a decision stops the work and reopens that decision.
       what widening, if any, that needs; record whether a target pointing back at `/mcp`
       terminates or recurses, bounded by a timeout. A widening of the SAN allowlist is
       reported to the operator, not decided here
-- [ ] 1.6 `statefulMode`: run `stateless` and `stateful`; record the session header
+- [x] 1.6 `statefulMode`: run `stateless` and `stateful`; record the session header
       behaviour, whether a server-initiated stream is opened, whether the transport needs any
       path or query beyond exact `/mcp` (the Caddy matcher is exact, G1), the exact request
       headers an `initialize` needs (for example `Accept`) and whether the response is a
       single JSON body or an event stream (task 3.4's probe depends on it), and how long
       an idle stream
       survives locally (the 125 s Cloudflare timeout is measured in production, 6.6)
-- [ ] 1.7 `mcp.policies.localRateLimit`: record whether an MCP request bucket renders and
+- [x] 1.7 `mcp.policies.localRateLimit`: record whether an MCP request bucket renders and
       limits (G6), and the request burst of a real `initialize` + `initialized` +
       `tools/list` handshake (feeds task 5.4's bucket)
-- [ ] 1.8 `/config_dump` redaction: with a canary value (never a real secret) in an
+- [x] 1.8 `/config_dump` redaction: with a canary value (never a real secret) in an
       environment-referenced field, read the dump on the container loopback and record
       whether the canary appears. Record only; D6 holds either way
-- [ ] 1.9 Write the findings into `design.md`; for each decision a finding contradicts,
+- [x] 1.9 Write the findings into `design.md`; for each decision a finding contradicts,
       stop and report instead of editing the decision
-- [ ] 1.10 Validation gate, local: with the scratch config, an `initialize` with no key is
+- [x] 1.10 Validation gate, local: with the scratch config, an `initialize` with no key is
       401 and reaches no target, proving scenario "Unauthenticated MCP request is
       refused"; `initialize` then `tools/list` with an enrolled key returns the target's
       tools, proving scenario "An enrolled identity lists tools"
