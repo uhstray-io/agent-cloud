@@ -14,6 +14,7 @@ keyed `initialize` that comes back as an MCP reply fails the deploy.
 """
 
 import json
+import os
 import sys
 import threading
 from http.server import ThreadingHTTPServer
@@ -180,20 +181,24 @@ def _tasks() -> list:
     return out
 
 
-def _engine(tmp_path, log: str):
-    """A stand-in container engine: `exec ... date` prints a fixed time, `logs` prints `log` and records its argv."""
+def _engine(tmp_path, log: str, clock: str = "2026-10-14T00:00:00Z"):
+    """A stand-in container engine named `podman` on a PATH directory: `exec ... date` prints `clock`, `logs`
+    prints `log`; every call's argv is recorded. Returns the engine name the playbook uses."""
     (tmp_path / "gateway.log").write_text(log)
-    stub = tmp_path / "engine"
+    (tmp_path / "clock.txt").write_text(clock)
+    bindir = tmp_path / "bin"
+    bindir.mkdir(exist_ok=True)
+    stub = bindir / "podman"
     stub.write_text(
         "#!/bin/sh\n"
         f'echo "$@" >> "{tmp_path}/engine.calls"\n'
         'case "$1" in\n'
-        "  exec) echo 2026-10-14T00:00:00Z ;;\n"
+        f'  exec) cat "{tmp_path}/clock.txt" ;;\n'
         f'  logs) printf "%b" "$(cat "{tmp_path}/gateway.log")" ;;\n'
         "esac\n"
     )
     stub.chmod(0o755)
-    return str(stub)
+    return "podman"
 
 
 def _run(
@@ -205,6 +210,8 @@ def _run(
     check=False,
     admins=None,
     log=LOOPBACK_LINE,
+    clock="2026-10-14T00:00:00Z",
+    engine=None,
 ):
     """`admins` are the identities derived from platform_admins (the only ones /mcp admits); by default every
     identity but the internal one and the service client `svc`."""
@@ -217,7 +224,7 @@ def _run(
         "_agw_admin_identities": [{"key": a, "name": a} for a in admins],
         "_verify_default": identities[0] if identities else "",
         "agw_mcp_enabled": enabled,
-        "_engine": _engine(tmp_path, log),
+        "_engine": engine if engine is not None else _engine(tmp_path, log, clock),
         "agw_models": [{"name": "m1"}, {"name": "m2"}],
         "_mcp_log_hits": PHASE3["vars"]["_mcp_log_hits"],
         **(extra or {}),
@@ -234,7 +241,11 @@ def _run(
         args,
         tmp_path,
         cwd=REPO,
-        env={**harness_sandbox.env_for(tmp_path), "ANSIBLE_STDOUT_CALLBACK": "default"},
+        env={
+            **harness_sandbox.env_for(tmp_path),
+            "ANSIBLE_STDOUT_CALLBACK": "default",
+            "PATH": f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}",
+        },
         timeout=180,
     )
     out = r.stdout + r.stderr
@@ -312,6 +323,36 @@ def test_the_calls_v1_request_must_be_logged_as_mcp_self_on_the_loopback_listene
     calls = (tmp_path / "engine.calls").read_text()
     assert "logs --since 2026-10-14T00:00:00Z agentgateway" in calls
     assert "logged as mcp-self on the loopback listener" in out
+
+
+@pytest.mark.parametrize(
+    "clock",
+    [
+        pytest.param("2026-10-14T00:00:00Z'; touch {tmp}/pwned; '", id="a-quote-breakout"),
+        pytest.param("2026-10-14T00:00:00Z $(touch {tmp}/pwned)", id="a-command-substitution"),
+        pytest.param("2026-10-14T00:00:00Z\ntouch {tmp}/pwned", id="a-second-line"),
+        pytest.param("", id="empty"),
+        pytest.param("yesterday", id="not-a-time"),
+    ],
+)
+def test_a_malformed_engine_clock_is_refused_before_any_shell_runs(tmp_path, gateway, clock):
+    rc, out = _run(tmp_path, gateway("normal"), clock=clock.format(tmp=tmp_path))
+    assert rc != 0 and "Require a well-formed engine clock" in out, out
+    assert not (tmp_path / "pwned").exists()
+    assert "logs" not in (tmp_path / "engine.calls").read_text().split()  # the log read never started
+
+
+@pytest.mark.parametrize("engine", ["podman; touch {tmp}/pwned", "/tmp/evil", "podman --version", ""])
+def test_an_unknown_engine_is_refused_before_any_command_is_built(tmp_path, gateway, engine):
+    rc, out = _run(tmp_path, gateway("normal"), engine=engine.format(tmp=tmp_path))
+    assert rc != 0 and "must be podman or docker" in out, out
+    assert not (tmp_path / "pwned").exists() and not (tmp_path / "engine.calls").exists()
+
+
+def test_a_docker_engine_is_accepted(tmp_path, gateway):
+    """The guard is a two-name allowlist; docker passes it (the stub is named podman, so the run itself fails later)."""
+    rc, out = _run(tmp_path, gateway("normal"), engine="docker")
+    assert "must be podman or docker" not in out
 
 
 @pytest.mark.parametrize(

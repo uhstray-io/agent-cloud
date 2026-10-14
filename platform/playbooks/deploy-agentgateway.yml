@@ -1350,6 +1350,21 @@
         - not (_mcp_init_refused | bool)
         - not (_mcp_tools_refused | bool)
 
+    # The log-count task below is a shell command: its two templated values are refused unless well formed, and
+    # quoted in the command besides. The engine is the one this playbook already uses (podman or docker); the
+    # clock is whatever `date` printed inside a container, which is container-controlled output.
+    - name: "Require a known container engine for the MCP log count"
+      ansible.builtin.assert:
+        that: _engine in ['podman', 'docker']
+        fail_msg: "container_engine must be podman or docker for the MCP log count; refusing before any command is built."
+        quiet: true
+      when:
+        - not ansible_check_mode
+        - agw_mcp_enabled | default(false) | bool
+        - _mcp_client | length > 0
+        - not (_mcp_init_refused | bool)
+        - not (_mcp_tools_refused | bool)
+
     - name: "MCP: read the engine's clock before the model call"
       ansible.builtin.command:
         argv: ["{{ _engine }}", exec, agentgateway-db, date, -u, "+%Y-%m-%dT%H:%M:%SZ"]
@@ -1427,6 +1442,20 @@
         - _mcp_chat_tool | length > 0
         - not (_mcp_call_refused | bool)
 
+    - name: "Require a well-formed engine clock before the MCP log count"
+      ansible.builtin.assert:
+        that: (_mcp_clock.stdout | trim) is match('^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$')
+        fail_msg: "The engine clock read for the MCP log count is not an RFC 3339 UTC time; refusing before any command is built."
+        quiet: true
+      when:
+        - not ansible_check_mode
+        - agw_mcp_enabled | default(false) | bool
+        - _mcp_client | length > 0
+        - not (_mcp_init_refused | bool)
+        - not (_mcp_tools_refused | bool)
+        - _mcp_chat_tool | length > 0
+        - not (_mcp_call_refused | bool)
+
     # The match runs on the host and prints a count, so no log line (client addresses, paths) can reach the task
     # output, with or without a failure: the task needs no no_log. pipefail makes a failed `logs` fail the task
     # instead of counting zero lines. The line is written when the self-call's response completes, so allow it a
@@ -1436,7 +1465,7 @@
         executable: /bin/bash
         cmd: |
           set -o pipefail
-          {{ _engine }} logs --since '{{ _mcp_clock.stdout | trim }}' agentgateway 2>&1 \
+          {{ _engine | quote }} logs --since {{ (_mcp_clock.stdout | trim) | quote }} agentgateway 2>&1 \
             | awk '{ gsub(/\033\[[0-9;]*m/, "") }
                    /listener=loopback/ && /identity="mcp-self"/ && /http\.path="\/v1\/chat\/completions"/ { n++ }
                    END { print n + 0 }'
