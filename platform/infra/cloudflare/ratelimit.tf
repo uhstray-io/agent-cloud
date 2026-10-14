@@ -1,9 +1,11 @@
 # ratelimit.tf — the http_ratelimit entrypoint ruleset for the zone.
 #
 # One ceiling per source address on the inference API (vLLM on the DGX Spark
-# pair). The team shares ONE bearer key, so the key cannot be the bucket;
-# ip.src is the one characteristic every plan offers, and it maps to "one
-# machine cannot starve the rest". Zone plan is Pro (read 2026-09-14): at most
+# pair), and a second, separate one on the agentgateway MCP endpoint (its own
+# host, path and bucket; the rule at the end of this file). The inference team
+# shares ONE bearer key, so the key cannot be the bucket; ip.src is the one
+# characteristic every plan offers, and it maps to "one machine cannot starve
+# the rest". Zone plan is Pro (read 2026-09-14): at most
 # TWO rate-limit rules, IP characteristic only, period up to 60 s — both rules
 # below use that whole budget. period and mitigation_timeout MUST be API fixed
 # values (10/60/120/300/600/3600; 0/10/60/120/300/600/3600/86400); cf.colo.id
@@ -46,6 +48,25 @@ locals {
     requests_per_period = 10
     mitigation_timeout  = 10
   }
+  # The agentgateway MCP endpoint: its own host, the exact /mcp path the Caddy allowlist proxies.
+  # ONE definition, used by this rule and by waf.tf's challenge skip, so the two cannot name
+  # different traffic. The inference rule's host set above is not widened: MCP has its own bucket.
+  mcp_endpoint = "(http.host eq \"mcp.${var.zone_name}\" and http.request.uri.path eq \"/mcp\")"
+  # PROVISIONAL figures: spike finding 1.7 (agentgateway-mcp design.md) measured the protocol
+  # minimum of a session, three requests (initialize, initialized notification, tools/list)
+  # before any tool call, and set no ceiling, so this reuses the inference bucket's shape and
+  # period: one source cannot exceed ten /mcp requests per ten seconds, which admits three full
+  # handshakes, or one handshake plus seven tool calls, in a window. A real harness's handshake count and the
+  # production behaviour are measured in tasks 6.6 and 7.7; adjust THEN, from the figures, not
+  # from this guess. Cloudflare answers a block with 429, which a MCP client sees as a failed
+  # HTTP request; the gateway's own refusal (a JSON-RPC -32003 inside HTTP 200) is a different,
+  # later control.
+  mcp_bucket = {
+    characteristics     = ["cf.colo.id", "ip.src"]
+    period              = 10
+    requests_per_period = 10
+    mitigation_timeout  = 10
+  }
 }
 
 resource "cloudflare_ruleset" "ratelimit" {
@@ -55,17 +76,29 @@ resource "cloudflare_ruleset" "ratelimit" {
   phase       = "http_ratelimit"
   description = "Per-source ceilings for machine APIs (inference)"
 
-  rules = [{
-    ref         = "inference-api-ratelimit-block"
-    action      = "block"
-    enabled     = true
-    description = "Inference API - block a source exceeding 10 req / 10 s (10 s mitigation)"
-    expression  = local.inference_v1
-    ratelimit   = local.inference_bucket
-    # No `logging` block: the API accepts logging.enabled ONLY on skip-action
-    # rules (error 20018 "it can only be used with the skip action", first
-    # apply = Semaphore task 882). Provider schema, `tofu validate` and `plan`
-    # all accepted it; only the create call refused. Match visibility for these
-    # rules is what the `log` action itself provides.
-  }]
+  rules = [
+    {
+      ref         = "inference-api-ratelimit-block"
+      action      = "block"
+      enabled     = true
+      description = "Inference API - block a source exceeding 10 req / 10 s (10 s mitigation)"
+      expression  = local.inference_v1
+      ratelimit   = local.inference_bucket
+      # No `logging` block: the API accepts logging.enabled ONLY on skip-action
+      # rules (error 20018 "it can only be used with the skip action", first
+      # apply = Semaphore task 882). Provider schema, `tofu validate` and `plan`
+      # all accepted it; only the create call refused. Match visibility for these
+      # rules is what the `log` action itself provides.
+    },
+    # The agentgateway MCP endpoint — the zone's second and LAST Pro rate-limit rule slot.
+    # Source-address bucket like the inference rule (the only characteristic the plan offers).
+    {
+      ref         = "mcp-api-ratelimit-block"
+      action      = "block"
+      enabled     = true
+      description = "MCP API - block a source exceeding 10 req / 10 s on /mcp (10 s mitigation; provisional)"
+      expression  = local.mcp_endpoint
+      ratelimit   = local.mcp_bucket
+    },
+  ]
 }
