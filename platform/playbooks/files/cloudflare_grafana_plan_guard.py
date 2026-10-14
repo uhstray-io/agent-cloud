@@ -10,6 +10,9 @@ import sys
 RESOURCE = "cloudflare_ruleset.custom_firewall"
 RULE_REF = "o11y-api-bypass-challenge"
 RULE_INDEX = 5
+# These computed fields and the nested nullable field are pinned to provider v5.21.1.
+PROVIDER_COMPUTED_ROOT_FIELDS = {"id", "version", "last_updated"}
+PROVIDER_COMPUTED_RULE_FIELDS = {"id"}
 EXPECTED_RULE = {
     "ref": RULE_REF,
     "action": "skip",
@@ -49,21 +52,43 @@ def _unknown_paths(value, prefix=""):
 
 
 def _contract_matches(rule):
-    if not isinstance(rule, dict) or any(rule.get(key) != value for key, value in EXPECTED_RULE.items()):
+    if not isinstance(rule, dict):
         return False
-    # Provider-normalized null/empty fields do not alter this rule. Reject populated
-    # unreviewed properties; `id` is the provider-computed identifier, covered below.
-    for key, value in rule.items():
-        if key not in EXPECTED_RULE and key != "id" and value not in (None, [], {}):
-            return False
-    return True
+    normalized = _without_unset_nulls(rule)
+    return (
+        all(normalized.get(key) == value for key, value in EXPECTED_RULE.items())
+        and all(key in EXPECTED_RULE or key in PROVIDER_COMPUTED_RULE_FIELDS for key in normalized)
+    )
+
+
+def _without_unset_nulls(value):
+    if isinstance(value, dict):
+        return {key: _without_unset_nulls(child) for key, child in value.items() if child is not None}
+    if isinstance(value, list):
+        return [_without_unset_nulls(child) for child in value]
+    return value
 
 
 def _validate_unknowns(change):
-    paths = _unknown_paths(change.get("after_unknown", {}))
-    allowed = [f"rules[{RULE_INDEX}].id"] if change.get("actions") == ["update"] else []
-    if paths not in ([], allowed):
+    paths = set(_unknown_paths(change.get("after_unknown", {})))
+    allowed = set()
+    if change.get("actions") == ["update"]:
+        allowed.update(PROVIDER_COMPUTED_ROOT_FIELDS)
+        allowed.update(f"rules[{RULE_INDEX}].{field}" for field in PROVIDER_COMPUTED_RULE_FIELDS)
+    if not paths <= allowed:
         _reject("unknown_values")
+    after = change.get("after")
+    if not isinstance(after, dict):
+        _reject("unknown_values")
+    for path in paths:
+        if path in PROVIDER_COMPUTED_ROOT_FIELDS:
+            if after.get(path) is not None:
+                _reject("unknown_values")
+        elif path == f"rules[{RULE_INDEX}].id":
+            rules = after.get("rules")
+            if (not isinstance(rules, list) or len(rules) <= RULE_INDEX
+                    or not isinstance(rules[RULE_INDEX], dict) or rules[RULE_INDEX].get("id") is not None):
+                _reject("unknown_values")
 
 
 def _digest(change):
@@ -110,8 +135,16 @@ def _target_state(target):
     before, after = change.get("before"), change.get("after")
     if not isinstance(before, dict) or not isinstance(after, dict):
         _reject("missing_resource_values")
-    if before.keys() != after.keys() or {k: v for k, v in before.items() if k != "rules"} != {
-        k: v for k, v in after.items() if k != "rules"
+    if not isinstance(before.get("id"), str) or not before["id"]:
+        _reject("missing_resource_identity")
+    computed_unknown = {
+        field for field in PROVIDER_COMPUTED_ROOT_FIELDS
+        if field in _unknown_paths(change.get("after_unknown", {})) and after.get(field) is None
+    }
+    before_root = {k: v for k, v in before.items() if k != "rules"}
+    after_root = {k: v for k, v in after.items() if k != "rules"}
+    if before.keys() != after.keys() or {k: v for k, v in before_root.items() if k not in computed_unknown} != {
+        k: v for k, v in after_root.items() if k not in computed_unknown
     }:
         _reject("root_field_change")
     before_rules, after_rules = before.get("rules"), after.get("rules")
@@ -154,7 +187,7 @@ def inspect_plan(plan, action, reviewed_digest=""):
         )):
             _reject("post_apply_not_zero_diff")
         matches = bool(re.fullmatch(r"sha256:[0-9a-f]{64}", reviewed_digest)) and reviewed_digest == digest
-        if action == "apply" and (status != "insert" or not matches):
+        if action == "apply" and (status not in ("insert", "present") or not matches):
             _reject("reviewed_digest_missing_or_mismatch")
         return _receipt(True, status, "exact_rule_insertion" if status == "insert" else "zero_diff", digest,
                         actions, matches)

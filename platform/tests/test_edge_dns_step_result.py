@@ -5,6 +5,7 @@ the plan results tofu would have registered, so pass/fail and the plan_changes c
 proven without tofu or Cloudflare. Requires ansible-playbook.
 """
 
+import copy
 import importlib.util
 import json
 import os
@@ -17,6 +18,7 @@ from ansible_python import needs_ansible
 
 REPO = Path(__file__).resolve().parents[2]
 PLAYBOOK = REPO / "platform/playbooks/apply-cloudflare-tofu.yml"
+FIXTURE = REPO / "platform/tests/fixtures/cloudflare-ruleset-v5.21.1-update.json"
 EMIT = REPO / "platform/playbooks/tasks/emit-step-result.yml"
 _guard_spec = importlib.util.spec_from_file_location(
     "cloudflare_grafana_plan_guard", REPO / "platform/playbooks/files/cloudflare_grafana_plan_guard.py"
@@ -38,15 +40,17 @@ TAIL = ("Summarise the tofu run (exit codes and change counts only)",
 
 
 def _grafana_plan(insertion):
-    existing = [{"ref": f"existing-{i}"} for i in range(7)]
-    before = existing if insertion else existing[:5] + [plan_guard.EXPECTED_RULE] + existing[5:]
-    after = existing[:5] + [plan_guard.EXPECTED_RULE] + existing[5:] if insertion else before
-    change = {"actions": ["update"] if insertion else ["no-op"],
-              "before": {"id": "ruleset", "zone_id": "zone", "rules": before},
-              "after": {"id": "ruleset", "zone_id": "zone", "rules": after},
-              "after_unknown": {"rules": [{}, {}, {}, {}, {}, {"id": True}]} if insertion else {}}
-    return json.dumps({"applyable": True, "errored": False, "resource_changes": [
-        {"address": plan_guard.RESOURCE, "change": change}]})
+    fixture = json.loads(FIXTURE.read_text())
+    change = fixture["resource_changes"][0]["change"]
+    if not insertion:
+        change["actions"] = ["no-op"]
+        change["before"] = copy.deepcopy(change["after"])
+        change["before"]["id"] = change["after"]["id"] = "11111111111111111111111111111111"
+        change["before"]["version"] = change["after"]["version"] = "2"
+        change["before"]["last_updated"] = change["after"]["last_updated"] = "2026-10-13T00:00:00Z"
+        change["before"]["rules"][5]["id"] = change["after"]["rules"][5]["id"] = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        change["after_unknown"] = {}
+    return json.dumps({"applyable": True, "errored": False, "resource_changes": fixture["resource_changes"]})
 
 
 GRAFANA_INSERT_PLAN = _grafana_plan(True)
@@ -239,7 +243,8 @@ ROOT_FILES = {".terraform.lock.hcl": "# committed lock\n", "backend.hcl": 'bucke
               "versions.tf": "terraform {}\n"}
 
 
-def _tofu_run(tmp_path, check, plan_rc=0, plan_stdout="No changes.", init_rc=0, show_rc=0, guard_script=None):
+def _tofu_run(tmp_path, check, plan_rc=0, plan_stdout="No changes.", init_rc=0, show_rc=0, guard_script=None,
+              grafana_guard=False):
     """Run the playbook's tofu block and its report through ansible-playbook with a fake tofu."""
     bin_dir, tf_dir, log = tmp_path / "bin", tmp_path / "tf", tmp_path / "tofu.log"
     bin_dir.mkdir()
@@ -257,7 +262,10 @@ def _tofu_run(tmp_path, check, plan_rc=0, plan_stdout="No changes.", init_rc=0, 
             t["ansible.builtin.include_tasks"] = str(EMIT)
     harness = [{"hosts": "localhost", "connection": "local", "gather_facts": False,
                 "vars": {**play["vars"], "_tf_dir": str(tf_dir), "tofu_action": "plan", "_zone_id": "z",
-                         "_tf_guard_script": str(guard_script or REPO / "platform/playbooks/files/cloudflare_grafana_plan_guard.py"),
+                         "_cloudflare_grafana_guard": grafana_guard,
+                         "_tf_guard_script": str(
+                             guard_script or REPO / "platform/playbooks/files/cloudflare_grafana_plan_guard.py"
+                         ),
                          "_caddy_ip": SECRET_ORIGIN,
                          "_cf": {"r2_access_key_id": "a", "r2_secret_access_key": "b", "api_token": "c"}},
                 "tasks": tasks}]
@@ -331,7 +339,7 @@ def test_a_real_plan_is_unchanged(tmp_path):
 def test_a_missing_or_malformed_guard_receipt_has_a_fixed_refusal(tmp_path, receipt):
     guard_script = tmp_path / "bad_guard.py"
     guard_script.write_text(f"import sys\nsys.stdout.write({receipt!r})\nsys.exit(1)\n")
-    proc, _, _, _ = _tofu_run(tmp_path, check=False, guard_script=guard_script)
+    proc, _, _, _ = _tofu_run(tmp_path, check=False, guard_script=guard_script, grafana_guard=True)
     assert proc.returncode != 0
     assert "Cloudflare plan guard refused: safe plan receipt is missing or malformed." in proc.stdout
     assert not receipt or receipt not in proc.stdout
@@ -339,7 +347,7 @@ def test_a_missing_or_malformed_guard_receipt_has_a_fixed_refusal(tmp_path, rece
 
 @needs_ansible
 def test_a_guard_that_cannot_start_has_a_fixed_refusal(tmp_path):
-    proc, _, _, _ = _tofu_run(tmp_path, check=False, guard_script=tmp_path / "missing_guard.py")
+    proc, _, _, _ = _tofu_run(tmp_path, check=False, guard_script=tmp_path / "missing_guard.py", grafana_guard=True)
     assert proc.returncode != 0
     assert "Cloudflare plan guard refused: safe plan receipt is missing or malformed." in proc.stdout
     assert "missing_guard.py" not in proc.stdout
@@ -352,7 +360,7 @@ def test_a_valid_unsafe_receipt_keeps_its_sanitized_reason(tmp_path):
                "actions": [], "digest_matches": False}
     guard_script = tmp_path / "refusing_guard.py"
     guard_script.write_text(f"import sys\nsys.stdout.write({json.dumps(json.dumps(receipt))})\nsys.exit(1)\n")
-    proc, _, _, _ = _tofu_run(tmp_path, check=False, guard_script=guard_script)
+    proc, _, _, _ = _tofu_run(tmp_path, check=False, guard_script=guard_script, grafana_guard=True)
     assert proc.returncode != 0
     assert "other_resource_changes" in proc.stdout
     assert "Cloudflare plan guard refused: safe plan receipt is missing or malformed." not in proc.stdout

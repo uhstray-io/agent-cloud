@@ -13,30 +13,48 @@ PLAYBOOK = REPO / "platform/playbooks/apply-cloudflare-tofu.yml"
 TEMPLATES = REPO / "platform/semaphore/templates.yml"
 TASKS = REPO / "plan/development/openspec/changes/o11y-signal-labeling-profiling-alerting/tasks.md"
 DESIGN = REPO / "plan/development/openspec/changes/o11y-signal-labeling-profiling-alerting/design.md"
+FIXTURE = REPO / "platform/tests/fixtures/cloudflare-ruleset-v5.21.1-update.json"
+LOCK = REPO / "platform/infra/cloudflare/.terraform.lock.hcl"
 HELPER = REPO / "platform/playbooks/files/cloudflare_grafana_plan_guard.py"
 spec = importlib.util.spec_from_file_location("cloudflare_grafana_plan_guard", HELPER)
 guard = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(guard)
 
 
-def _rule(ref):
-    return {"ref": ref, "action": "skip", "enabled": True, "expression": f"match {ref}"}
-
-
 def _plan(insertion=True):
-    before = [_rule(f"existing-{n}") for n in range(7)]
-    after = before[:5] + [copy.deepcopy(guard.EXPECTED_RULE)] + before[5:] if insertion else copy.deepcopy(before)
-    change = {
-        "actions": ["update"] if insertion else ["no-op"],
-        "before": {"id": "sensitive-ruleset-id", "zone_id": "sensitive-zone-id", "name": "default", "rules": before},
-        "after": {"id": "sensitive-ruleset-id", "zone_id": "sensitive-zone-id", "name": "default", "rules": after},
-        "after_unknown": {"rules": [{}, {}, {}, {}, {}, {"id": True}]} if insertion else {},
-    }
-    return {"errored": False, "applyable": True, "resource_changes": [
-        {"address": guard.RESOURCE, "change": change},
-        {"address": "cloudflare_record.unchanged", "change": {
-            "actions": ["no-op"], "before": {"content": "same"}, "after": {"content": "same"}}},
-    ]}
+    fixture = json.loads(FIXTURE.read_text())
+    plan = {"errored": False, "applyable": True, "resource_changes": fixture["resource_changes"]}
+    if not insertion:
+        change = plan["resource_changes"][0]["change"]
+        change["actions"] = ["no-op"]
+        change["before"] = copy.deepcopy(change["after"])
+        change["before"]["id"] = "11111111111111111111111111111111"
+        change["before"]["version"] = "2"
+        change["before"]["last_updated"] = "2026-10-13T00:00:00Z"
+        change["after"]["id"] = "11111111111111111111111111111111"
+        change["after"]["version"] = "2"
+        change["after"]["last_updated"] = "2026-10-13T00:00:00Z"
+        change["after"]["rules"][5]["id"] = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        change["before"]["rules"][5]["id"] = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        change["after_unknown"] = {}
+    plan["resource_changes"].append({"address": "cloudflare_record.unchanged", "change": {
+        "actions": ["no-op"], "before": {"content": "same"}, "after": {"content": "same"}}})
+    return plan
+
+
+def _move_rule_before(plan):
+    change = plan["resource_changes"][0]["change"]
+    change["after"]["rules"].insert(0, change["after"]["rules"].pop(5))
+    for field in ("id", "version", "last_updated"):
+        change["after"][field] = change["before"][field]
+    change["after_unknown"] = {}
+
+
+def test_provider_fixture_matches_the_locked_cloudflare_provider():
+    fixture = json.loads(FIXTURE.read_text())
+    assert fixture["provider_version"] == "5.21.1"
+    assert 'version     = "5.21.1"' in LOCK.read_text()
+    assert guard.inspect_plan(_plan(), "plan")["safe"]
 
 
 def test_exact_insertion_has_stable_redacted_receipt():
@@ -61,10 +79,12 @@ def test_exact_insertion_has_stable_redacted_receipt():
      "root_field_change"),
     (lambda p: p["resource_changes"][0]["change"]["after"]["rules"][5].update(expression="changed"),
      "not_exact_rule_insertion"),
-    (lambda p: p["resource_changes"][0]["change"]["after"]["rules"].insert(
-        0, p["resource_changes"][0]["change"]["after"]["rules"].pop(5)), "not_exact_rule_insertion"),
-    (lambda p: p["resource_changes"][0]["change"].update(actions=["delete", "create"], after_unknown={}),
-     "target_action_not_update"),
+    (_move_rule_before, "not_exact_rule_insertion"),
+    (lambda p: p["resource_changes"][0]["change"].update(
+        actions=["delete", "create"],
+        before=copy.deepcopy(p["resource_changes"][0]["change"]["before"]),
+        after=copy.deepcopy(p["resource_changes"][0]["change"]["before"]),
+        after_unknown={}), "target_action_not_update"),
     (lambda p: p["resource_changes"][0]["change"].update(after_unknown={"rules": [{"expression": True}]}),
      "unknown_values"),
 ])
@@ -84,14 +104,52 @@ def test_missing_and_mismatched_digest_refuse_apply():
     assert receipt["safe"] and receipt["digest_matches"]
 
 
+def test_matching_zero_diff_saved_plan_is_an_idempotent_apply():
+    plan = _plan(insertion=False)
+    digest = guard.inspect_plan(plan, "plan")["digest"]
+    receipt = guard.inspect_plan(plan, "apply", digest)
+    assert receipt["safe"] and receipt["status"] == "present" and receipt["digest_matches"]
+
+
+@pytest.mark.parametrize("mutate", [
+    lambda rule: rule.update(ratelimit=None),
+    lambda rule: rule["action_parameters"].update(response=None),
+    lambda rule: rule["action_parameters"].update(ruleset=None),
+])
+def test_unset_null_rule_fields_are_ignored_recursively(mutate):
+    plan = _plan()
+    mutate(plan["resource_changes"][0]["change"]["after"]["rules"][5])
+    receipt = guard.inspect_plan(plan, "plan")
+    assert receipt["safe"] and receipt["reason"] == "exact_rule_insertion"
+
+
+@pytest.mark.parametrize("mutate", [
+    lambda p: p["resource_changes"][0]["change"]["after_unknown"].update(name=True),
+    lambda p: p["resource_changes"][0]["change"]["after"]["rules"][5].update(custom_field="populated"),
+    lambda p: p["resource_changes"][0]["change"]["after"]["rules"][5].update(ratelimit={"requests_per_period": 10}),
+    lambda p: p["resource_changes"][0]["change"]["after"]["rules"][5]["action_parameters"].update(
+        response={"content_type": "application/json"}),
+    lambda p: p["resource_changes"][0]["change"]["after"]["rules"][5]["action_parameters"].update(ruleset="unreviewed"),
+    lambda p: p["resource_changes"][0]["change"]["after"]["rules"][5]["action_parameters"]["phases"].append(None),
+    lambda p: p["resource_changes"][0]["change"]["after"].update(id="11111111111111111111111111111111"),
+    lambda p: p["resource_changes"][0]["change"]["after"]["rules"][5].update(
+        id="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+])
+def test_unexpected_unknown_and_provider_fields_are_rejected(mutate):
+    plan = _plan()
+    mutate(plan)
+    assert not guard.inspect_plan(plan, "plan")["safe"]
+
+
+def test_existing_ruleset_identity_is_required():
+    plan = _plan()
+    plan["resource_changes"][0]["change"]["before"]["id"] = None
+    receipt = guard.inspect_plan(plan, "plan")
+    assert not receipt["safe"] and receipt["reason"] == "missing_resource_identity"
+
+
 def test_verify_requires_the_exact_present_rule_and_zero_diff():
     clean = _plan(insertion=False)
-    clean["resource_changes"][0]["change"]["after"]["rules"].insert(
-        5, copy.deepcopy(guard.EXPECTED_RULE)
-    )
-    clean["resource_changes"][0]["change"]["before"]["rules"].insert(
-        5, copy.deepcopy(guard.EXPECTED_RULE)
-    )
     receipt = guard.inspect_plan(clean, "verify")
     assert receipt["safe"] and receipt["status"] == "present"
     assert not guard.inspect_plan(_plan(), "verify")["safe"]
@@ -110,22 +168,34 @@ def test_apply_is_bound_to_the_saved_plan_and_digest_is_a_survey_input():
     apply_i = names.index("OpenTofu apply")
     apply = tasks[apply_i]["ansible.builtin.command"]["argv"]
     assert gate_i < apply_i
-    assert apply == ["tofu", "apply", "-input=false", "-no-color", "{{ _tf_planfile }}"]
-    assert "-auto-approve" not in apply
+    assert apply[-1] == "{{ _tf_planfile if _cloudflare_grafana_guard | default(false) else '-auto-approve' }}"
     assert tasks[names.index("Validate the exact Grafana ruleset plan")]["no_log"] is True
     validate = tasks[names.index("Validate the exact Grafana ruleset plan")]["ansible.builtin.command"]
     assert validate["stdin"] and "reviewed_plan_digest" in " ".join(validate["argv"])
     gate = tasks[gate_i]["ansible.builtin.assert"]
     assert gate["that"] == [
         "_tf_plan_guard.safe | default(false) | bool",
-        "_tf_plan_guard.status | default('') == 'insert'",
+        "_tf_plan_guard.status | default('') in ['insert', 'present']",
         "_tf_plan_guard.digest_matches | default(false) | bool",
     ]
     template = yaml.safe_load(TEMPLATES.read_text())["templates"]
-    entry = next(t for t in template if t.get("name") == "Apply Cloudflare Tofu")
+    entry = next(t for t in template if t.get("name") == "Apply Grafana API Cloudflare Tofu")
     digest = next(v for v in entry["survey_vars"] if v["name"] == "reviewed_plan_digest")
     assert digest["required"] is False
     assert "apply" in digest["description"].lower() and "SHA-256" in digest["description"]
+
+
+def test_generic_cloudflare_executor_stays_unrestricted_and_grafana_uses_wrapper():
+    generic = next(t for t in yaml.safe_load(TEMPLATES.read_text())["templates"]
+                   if t.get("name") == "Apply Cloudflare Tofu")
+    dedicated = next(t for t in yaml.safe_load(TEMPLATES.read_text())["templates"]
+                     if t.get("name") == "Apply Grafana API Cloudflare Tofu")
+    wrapper = yaml.safe_load((REPO / "platform/playbooks/apply-cloudflare-grafana-api-tofu.yml").read_text())
+    assert "reviewed_plan_digest" not in {v["name"] for v in generic["survey_vars"]}
+    assert dedicated["dev_variant"] is True
+    assert dedicated["playbook"] == "platform/playbooks/apply-cloudflare-grafana-api-tofu.yml"
+    assert wrapper[0]["ansible.builtin.import_playbook"] == "refuse-internal-extra-vars.yml"
+    assert wrapper[1]["vars"] == {"_extra_var_guard_nested": True, "_cloudflare_grafana_guard": True}
 
 
 def test_editor_exception_is_scoped_and_rollout_tasks_stay_open():

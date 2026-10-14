@@ -289,7 +289,7 @@
           when:
             - not ansible_check_mode
             - _tf_init.rc == 0
-            - tofu_action in ['plan', 'apply']
+            - tofu_action == 'plan' or (_cloudflare_grafana_guard | default(false) and tofu_action == 'apply')
 
         # The saved plan as JSON, for the resource addresses and actions the visible report
         # shows. The JSON also holds every before/after value (the origin address among them),
@@ -325,11 +325,14 @@
           failed_when: false
           no_log: true
           when:
+            - _cloudflare_grafana_guard | default(false)
             - (ansible_check_mode and (_tf_dry_result.show.rc | default(1) | int) == 0) or
               (not ansible_check_mode and _tf_show_plan is not skipped and _tf_show_plan.rc == 0)
 
         - name: "Unpack the safe plan receipt"
-          when: _tf_plan_guard_raw is not skipped
+          when:
+            - _cloudflare_grafana_guard | default(false)
+            - _tf_plan_guard_raw is not skipped
           block:
             - name: "Parse the safe plan receipt"
               ansible.builtin.set_fact:
@@ -354,19 +357,20 @@
           ansible.builtin.assert:
             that:
               - _tf_plan_guard.safe | default(false) | bool
-              - _tf_plan_guard.status | default('') == 'insert'
+              - _tf_plan_guard.status | default('') in ['insert', 'present']
               - _tf_plan_guard.digest_matches | default(false) | bool
             fail_msg: >-
               Cloudflare apply refused: the fresh plan does not match the reviewed exact Grafana
               API rule insertion digest. Run a new plan and review its safe receipt.
           when:
+            - _cloudflare_grafana_guard | default(false)
             - not ansible_check_mode
             - tofu_action == 'apply'
 
         - name: "OpenTofu apply"
           ansible.builtin.command:
             chdir: "{{ _tf_dir }}"
-            argv: [tofu, apply, -input=false, -no-color, "{{ _tf_planfile }}"]
+            argv: [tofu, apply, -input=false, -no-color, "{{ _tf_planfile if _cloudflare_grafana_guard | default(false) else '-auto-approve' }}"]
           environment: "{{ _tf_env }}"
           register: _tf_apply
           changed_when: "'Apply complete' in (_tf_apply.stdout | default(''))"
@@ -422,11 +426,14 @@
           failed_when: false
           no_log: true
           when:
+            - _cloudflare_grafana_guard | default(false)
             - _tf_show_verify is not skipped
             - _tf_show_verify.rc == 0
 
         - name: "Unpack the post-apply zero-diff receipt"
-          when: _tf_verify_guard_raw is not skipped
+          when:
+            - _cloudflare_grafana_guard | default(false)
+            - _tf_verify_guard_raw is not skipped
           block:
             - name: "Parse the post-apply zero-diff receipt"
               ansible.builtin.set_fact:
@@ -454,6 +461,7 @@
               - _tf_verify_guard.status | default('') == 'present'
             fail_msg: "Cloudflare apply did not converge to the reviewed Grafana rule with zero diff."
           when:
+            - _cloudflare_grafana_guard | default(false)
             - not ansible_check_mode
             - tofu_action == 'apply'
       # The real run's plan files sit in tofu's own .terraform/ (gitignored), which init
@@ -531,6 +539,7 @@
         msg:
           plan: "{{ _tf_report.plan_guard }}"
           post_apply: "{{ _tf_report.verify_guard }}"
+      when: _cloudflare_grafana_guard | default(false)
 
     - name: "Fail on a tofu error (details withheld: the commands carry credentials)"
       ansible.builtin.assert:
@@ -541,8 +550,8 @@
           - _tf_report.verify_rc in [none, ''] or (_tf_report.verify_rc | int) in [0, 2]
           - _tf_report.show_rc in [none, ''] or (_tf_report.show_rc | int) == 0
           - _tf_report.verify_show_rc in [none, ''] or (_tf_report.verify_show_rc | int) == 0
-          - ansible_check_mode or _tf_report.plan_guard.safe | bool
-          - tofu_action != 'apply' or _tf_report.verify_guard.safe | bool
+          - not (_cloudflare_grafana_guard | default(false)) or ansible_check_mode or _tf_report.plan_guard.safe | bool
+          - not (_cloudflare_grafana_guard | default(false)) or tofu_action != 'apply' or _tf_report.verify_guard.safe | bool
         fail_msg: >-
           tofu failed: {{ _tf_report }}. Its output is withheld because the commands run with
           the Cloudflare and R2 credentials; reproduce with the same plan from the controller.
