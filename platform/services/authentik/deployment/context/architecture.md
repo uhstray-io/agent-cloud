@@ -87,6 +87,28 @@ admins are not in it. The constant's underscore name cannot be overridden as an 
 Identity (username, name, email) is baked into the rendered blueprint; a password never is
 (`!Env <KEY>_PASSWORD`), because that file is world-readable on the host.
 
+## Retiring an account
+
+A retired account is declared, not deleted by hand. Name its username in the site-config
+inventory list `platform_retired_accounts` (default empty) and run Deploy Authentik:
+
+1. If the account is a platform administrator, remove it from `platform_admins` in the same
+   change. The deploy refuses a username that is both retired and active (an administrator, or a
+   user the users blueprint creates, including env.j2 defaults), and refuses `akadmin`, before it
+   applies anything.
+2. The deploy renders `templates/platform-retired.yaml.j2` into `blueprints-active/platform-retired.yaml`:
+   one `state: absent` `authentik_core.user` per name. With an empty list nothing is rendered and a
+   stale copy is pruned, so a platform that retires nobody carries no extra blueprint.
+3. The verify step expects that blueprint applied and every listed name gone from the live API;
+   a name that still resolves fails the deploy.
+4. For a gateway admin identity, also revoke its key: `Manage agentgateway Client Key` with
+   `action=revoke` (the identity must already be out of `platform_admins`).
+
+The list joins the set the legacy `*_LEGACY_USERNAME` variables (the users blueprint's `state: absent`
+entry) feed, so one guard and one verify cover both. New retirements use the list; no blueprint or
+`env.j2` line is added per account. The initial password in OpenBao (`<key>_password`) of a retired
+administrator is not deleted by this.
+
 ## Verify — the deploy reads the live state back
 
 Blueprint application is **asynchronous** in the worker: a deploy that placed the files
@@ -95,13 +117,13 @@ and saw a healthy server has proven only that the files landed. So the last step
 `authentik-server` (bootstrap token from the container env, same as the OIDC check).
 It fails the deploy unless:
 
-- every blueprint **this deploy assembled** (shared + enabled apps + `zz-sso-bindings` + `platform-admins`)
+- every blueprint **this deploy assembled** (shared + enabled apps + `zz-sso-bindings` + `platform-admins`, plus `platform-retired` when the retirement list is non-empty)
   has an API record under `custom/` **and** its status is `successful` — a file the
   worker never discovered has no record at all, which is why the expected set is
   derived from what was placed, not from what the API lists;
 - every account the users blueprint declares present exists, is active, and is in at
   least one group (a `!Find` that matched nothing leaves a user every gate refuses);
-- every account declared `state: absent` is gone;
+- every account declared `state: absent` (the users blueprint's legacy entry and `platform_retired_accounts`) is gone;
 - **drift guard:** the members of `platform-admins`, read from the group itself, equal the
   declared administrator list plus `platform_admins_exceptions` in both directions. A member
   added by hand in the UI, or by a blueprint block outside the list, fails the deploy
@@ -121,6 +143,7 @@ a new user their first login waits on this step passing.
 | `deployment/templates/env.j2` | compose-subst vars + authentik runtime config + secrets from OpenBao |
 | `deployment/blueprints/*.yaml` | config-as-code applied by the worker (committed; non-secret) |
 | `deployment/templates/platform-admins.yaml.j2` | the administrator accounts, rendered from the declared list at deploy |
+| `deployment/templates/platform-retired.yaml.j2` | the retired accounts (`state: absent`), rendered from `platform_retired_accounts`; not rendered when empty |
 | `deployment/templates/verify-users.py.j2` | post-apply live-state check (above); rendered per deploy, run inside the server container |
 
 `deployment/.env` is rendered per-deploy and gitignored. Local issuance/TLS is
