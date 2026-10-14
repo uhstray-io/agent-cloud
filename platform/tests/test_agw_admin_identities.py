@@ -457,6 +457,11 @@ def test_the_gate_on_derives_for_every_entry_service_accounts_included(tmp_path)
     }
 
 
+SERVICE_LIST = [
+    admin("alice", "alice"),
+    admin("svc", "svc-automation-user", type="service_account"),
+]
+
 # The shared file's shape (the Authentik branch owns the real one): `_platform_admins` is the
 # inventory's `platform_admins` when set, else a default built from per-user vars.
 SHARED_FILE = """---
@@ -484,15 +489,21 @@ def _load(tmp: Path, host_vars: dict, shared: str | None):
     return got["identities"], r.stdout, got["loaded"]
 
 
-def test_the_gate_on_loads_the_shared_list_with_every_entry_service_account_included(tmp_path):
-    ids, out, _ = _load(tmp_path, {"agw_clients": ["skynet"], "agw_admin_identities_enabled": True}, SHARED_FILE)
-    assert ids == ["skynet", "stray", "wisward", "svc-automation-user"] and "absent" not in out
+def test_the_gate_on_loads_the_shared_file_and_derives_from_the_declared_list(tmp_path):
+    ids, out, loaded = _load(
+        tmp_path,
+        {"agw_clients": ["skynet"], "agw_admin_identities_enabled": True, "platform_admins": SERVICE_LIST},
+        SHARED_FILE,
+    )
+    assert ids == ["skynet", "alice", "svc-automation-user"] and "absent" not in out
+    assert loaded == SERVICE_LIST  # the file resolved to the inventory list: the inventory wins
 
 
-def test_an_inventory_list_wins_over_the_files_default(tmp_path):
-    hv = {"agw_clients": [], "agw_admin_identities_enabled": True, "platform_admins": [admin("zed", "zed")]}
-    ids, _, _ = _load(tmp_path, hv, SHARED_FILE)
-    assert ids == ["zed"]
+def test_the_gate_on_without_a_declared_list_never_uses_the_shared_files_default(tmp_path):
+    # The file's own default is built from per-user vars that exist only on the Authentik host:
+    # on the gateway it would derive placeholder usernames, so nothing is derived from it.
+    ids, _, loaded = _load(tmp_path, {"agw_clients": ["skynet"], "agw_admin_identities_enabled": True}, SHARED_FILE)
+    assert ids == ["skynet"] and loaded != "UNSET"  # the file loaded; its default was not used
 
 
 def test_the_gate_off_does_not_load_the_shared_list(tmp_path):
@@ -519,3 +530,65 @@ def test_every_reader_of_the_merged_list_loads_the_declaration_and_the_admin_lis
     play = next(p for p in plays if "vars/secret-declarations/agentgateway.yml" in p.get("vars_files", []))
     assert _task(play, LOAD_TASK)["ansible.builtin.include_tasks"] == "tasks/load-platform-admins.yml"
     assert "agw_identities" in (REPO / "platform/playbooks" / path).read_text()
+
+
+# ── With the gate on, the list must be declared for the gateway host ──────────
+
+UNDECLARED = "platform_admins is not declared for this host"
+
+
+def test_the_gate_on_with_no_declared_list_is_refused_before_any_write(tmp_path):
+    hv = {"agw_clients": ["skynet"], "agw_admin_identities_enabled": True}
+    got = _eval(tmp_path, hv)
+    assert got["identities"] == ["skynet"] and len(got["problems"]) == 1 and UNDECLARED in got["problems"][0]
+    for play, names in ((PHASE1, (PROBLEMS_TASK,)), (MANAGE_PLAY, (PROBLEMS_TASK,))):
+        r = _guard(tmp_path, hv, names, play)
+        assert r.returncode != 0 and UNDECLARED in r.stdout + r.stderr
+
+
+def test_the_gate_on_with_an_explicit_list_derives(tmp_path):
+    hv = {"agw_clients": ["skynet"], "agw_admin_identities_enabled": True, "platform_admins": SERVICE_LIST}
+    got = _eval(tmp_path, hv)
+    assert got["identities"] == ["skynet", "alice", "svc-automation-user"] and got["problems"] == []
+    assert _guard(tmp_path, hv).returncode == 0
+
+
+def test_an_explicit_empty_list_with_the_gate_on_is_declared_not_refused(tmp_path):
+    got = _eval(tmp_path, {"agw_clients": ["skynet"], "agw_admin_identities_enabled": True, "platform_admins": []})
+    assert got["identities"] == ["skynet"] and got["problems"] == []
+
+
+def test_the_gate_off_with_no_declared_list_is_unaffected(tmp_path):
+    for hv in ({"agw_clients": ["skynet"]}, {"agw_clients": ["skynet"], "agw_admin_identities_enabled": False}):
+        got = _eval(tmp_path, hv)
+        assert got["identities"] == ["skynet"] and got["problems"] == []
+        assert _guard(tmp_path, hv).returncode == 0
+
+
+# ── check-secrets sees the same declaration ───────────────────────────────────
+
+CHECK_SECRETS = yaml.safe_load((REPO / "platform/playbooks/check-secrets.yml").read_text())
+CHECK_PLAY = next(p for p in CHECK_SECRETS if str(p.get("name", "")).startswith("Check secrets"))
+
+
+def test_check_secrets_loads_the_shared_list_after_the_declaration_and_before_it_reads_the_store():
+    names = [t.get("name") for t in CHECK_PLAY["tasks"]]
+    load = "Load the shared platform admin list (agentgateway admin identities)"
+    assert names.index("Load the service's computed secret declaration (evaluated against this host)") < names.index(
+        load
+    )
+    assert names.index(load) < names.index("Authenticate to OpenBao")
+    task = _task(CHECK_PLAY, load)
+    assert task["ansible.builtin.include_tasks"] == "tasks/load-platform-admins.yml"
+    assert task["when"] == "service_name == 'agentgateway'"
+
+
+def test_check_secrets_declared_list_holds_a_client_field_per_derived_admin(tmp_path):
+    out = tmp_path / "declared.json"
+    expr = "{{ _declared | map(attribute='name') | list | to_json }}"
+    tasks = [{"ansible.builtin.copy": {"content": expr, "dest": str(out)}}]
+    hv = {"agw_admin_identities_enabled": True, "platform_admins": SERVICE_LIST, "agw_clients": ["skynet"]}
+    play_vars = {"_declared": CHECK_PLAY["vars"]["_declared"], "_play_declared": []}
+    r = _ansible(tmp_path, hv, tasks, play_vars)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert json.loads(out.read_text())[-3:] == ["client_skynet", "client_alice", "client_svc-automation-user"]

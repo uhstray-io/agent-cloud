@@ -9,7 +9,7 @@
 #
 # Included by every play that reads `agw_identities`, so they cannot disagree about who exists:
 # deploy-agentgateway.yml, manage-agentgateway-client-key.yml, rollback-inference-route.yml,
-# run-agw-conformance.yml. With the gate off nothing is read. With it on and the file absent, the
+# run-agw-conformance.yml, check-secrets.yml (agentgateway only). With the gate off nothing is read. With it on and the file absent, the
 # run says so and derives nothing from the file (`_platform_admins` stays undefined: an inventory
 # `platform_admins`, which the file would have resolved to anyway, still applies, else the list is empty).
 

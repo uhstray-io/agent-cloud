@@ -27,6 +27,9 @@
 #   agw_clients            [names] one API-key identity each -> secret field client_<name>
 #   agw_admin_identities_enabled (default false) gate for the personal identities below: off,
 #                          agw_identities == agw_clients and the admin list is not read
+#   platform_admins        (REQUIRED when the gate is on, else the deploy refuses: declare it for this
+#                          host, the shared file's default is built from per-user vars that exist only on
+#                          the Authentik host)
 #   platform admin list    (read only when the gate is on: `_platform_admins` from
 #                          vars/platform-admins.yml, the list the Authentik admin entries are rendered
 #                          from) one personal identity per entry, service accounts included: its
