@@ -2654,6 +2654,12 @@ deeper = own(yaml.safe_load(template.render(local_mode=False, o11y_alerts_enable
 assert deeper[1]['uid'] == 'inference_queue_depth_high'
 assert deeper[1]['data'][1]['model']['conditions'][0]['evaluator'] == {'type': 'gt', 'params': [12]}
 assert deeper[0]['data'][1]['model']['conditions'][0]['evaluator'] == {'type': 'gt', 'params': [0]}
+# The alert text follows the threshold in use: the override appears, the default does not.
+assert '12' in deeper[1]['annotations']['summary'] and '12' in deeper[1]['annotations']['description']
+assert 'over the configured threshold of 12 ' in deeper[1]['annotations']['description']
+assert '6' not in deeper[1]['annotations']['summary'] + deeper[1]['annotations']['description']
+assert 'More than 6 requests' in depth['annotations']['summary'] and 'threshold of 6 ' in depth['annotations']['description']
+assert 'Every serving slot' not in depth['annotations']['description']
 tuned = own(yaml.safe_load(template.render(local_mode=False, o11y_alerts_enabled=True, o11y_expected_metrics_targets=[],
                                            dgx_spark_scrape_enabled=True,
                                            o11y_dgx_spark_memfree_floor_bytes=2147483648))['groups'])[3]['rules']

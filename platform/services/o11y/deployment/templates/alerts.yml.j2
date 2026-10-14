@@ -552,13 +552,15 @@ groups:
      '/d/inference-latency-capacity') }}
 {# Capacity warning from the measured baseline: over the production 7-day window
    (receipt task 5349) waiting requests peaked at 3 while running peaked at 8, the
-   serving slot count. The default is twice that waiting peak; override it per
-   inventory with o11y_inference_queue_waiting_warn when the baseline moves. #}
+   serving slot count. The default of 6 is twice that waiting peak; override it per
+   inventory with o11y_inference_queue_waiting_warn when the baseline moves. The
+   alert text renders the threshold in use, so it never states a stale number. #}
+{% set _queue_warn = o11y_inference_queue_waiting_warn | default(6) | int %}
 {{ inference_rule('inference_queue_depth_high', 'vLLM request queue deeper than the measured baseline',
      'sum by (model_name, node) (vllm:num_requests_waiting{job="dgx-spark-vllm",cluster="dgx-spark"})',
-     'gt', o11y_inference_queue_waiting_warn | default(6) | int, '10m', 'warning', 'vllm',
-     'More requests are waiting for a vLLM slot than at any point in the baseline week.',
-     'Every serving slot is busy and the queue is twice the measured 7-day peak (3, receipt task 5349). Clients see first-token latency grow; check for a load test or a runaway client before changing capacity. Never restart on this alert.',
+     'gt', _queue_warn, '10m', 'warning', 'vllm',
+     'More than ' ~ _queue_warn ~ ' requests have been waiting for a vLLM slot for ten minutes.',
+     'Requests are queueing for a vLLM slot: the queue has stayed over the configured threshold of ' ~ _queue_warn ~ ' for ten minutes. Clients see first-token latency grow; check for a load test or a runaway client before changing capacity. Never restart on this alert.',
      '/d/inference-latency-capacity') }}
 {% endif %}
 {% if _probe_on %}
