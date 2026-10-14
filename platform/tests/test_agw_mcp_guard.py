@@ -197,9 +197,19 @@ def test_the_guard_runs_before_the_monorepo_is_placed_and_before_anything_render
     assert NAMES.index(GUARD) < NAMES.index(READ_SCHEMA) < NAMES.index(RENDER)
 
 
-def test_a_reserved_name_cannot_be_a_personal_identity():
-    """Task 4.2: a person cannot be declared as the internal identity (guarded already by the admin-list derivation)."""
-    assert "'legacy-shared', 'mcp-self'" in DECL.read_text()
+def test_a_person_cannot_be_declared_as_the_internal_identity(tmp_path):
+    """Task 4.2: `mcp-self` is reserved for a derived identity, by the admin-list derivation the deploy already runs."""
+    hv = {
+        "agw_admin_identities_enabled": True,
+        "agw_clients": ["alice"],
+        "platform_admins": [{"key": "x", "username": "mcp-self", "name": "X", "email": "x@example.invalid"}],
+    }
+    out = tmp_path / "problems.json"
+    expr = "{{ _agw_identity_problems | to_json }}"
+    r = _play(tmp_path, hv, [{"ansible.builtin.copy": {"content": expr, "dest": str(out)}}])
+    assert r.returncode == 0, r.stdout + r.stderr
+    (problem,) = json.loads(out.read_text())
+    assert "mcp-self" in problem and "reserved" in problem
 
 
 # ── the schema read ───────────────────────────────────────────────────────────
@@ -313,6 +323,26 @@ def test_a_missing_mcp_block_while_the_flag_is_true_fails(tmp_path):
     cfg = _rendered(tmp_path, agw_mcp_enabled=False)
     r = _check(tmp_path, cfg, agw_identities=["alice", "bob", "mcp-self"])
     assert r.returncode != 0 and "has an mcp block: False" in r.stdout + r.stderr, r.stdout
+
+
+def test_a_loopback_gateway_rendered_while_the_flag_is_false_fails(tmp_path):
+    cfg = _rendered(tmp_path, agw_mcp_enabled=False)
+    text = cfg.read_text()
+    marker = "\ngateways:\n  default:\n    port: 4000\n"
+    assert marker in text
+    cfg.write_text(text.replace(marker, marker + "  loopback:\n    port: 4002\n", 1))
+    r = _check(tmp_path, cfg, agw_mcp_enabled=False, agw_identities=["alice", "bob", "mcp-self"])
+    assert r.returncode != 0 and "a loopback gateway: True" in r.stdout + r.stderr, r.stdout
+
+
+def test_a_missing_loopback_gateway_while_the_flag_is_true_fails(tmp_path):
+    cfg = _rendered(tmp_path)
+    text = cfg.read_text()
+    stripped = re.sub(r"^  loopback:\n(?:    .*\n)+", "", text, flags=re.M)
+    assert stripped != text
+    cfg.write_text(stripped)
+    r = _check(tmp_path, cfg, agw_identities=["alice", "bob", "mcp-self"])
+    assert r.returncode != 0 and "a loopback gateway: False" in r.stdout + r.stderr, r.stdout
 
 
 def test_an_mcp_block_with_no_key_policy_fails_closed(tmp_path):

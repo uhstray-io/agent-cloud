@@ -34,6 +34,15 @@ GATHER = "Gather this host's service-deploy result"
 PHASE3 = next(p for p in yaml.safe_load(DEPLOY.read_text()) if p.get("name", "").startswith("Phase 3"))
 NAMES = [t["name"] for t in PHASE3["tasks"]]
 TOOLS = [{"name": "chat_completions", "description": "d", "inputSchema": {"type": "object"}}]
+INIT_REPLY = {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "result": {
+        "protocolVersion": "2025-11-25",
+        "capabilities": {"tools": {}},
+        "serverInfo": {"name": "rmcp", "version": "x"},
+    },
+}
 
 
 def _frame(obj) -> bytes:
@@ -41,7 +50,8 @@ def _frame(obj) -> bytes:
 
 
 class Gateway(ThreadingHTTPServer):
-    """mode: normal | open | empty | ratelimit | stream-error | off | off-served."""
+    """mode: normal | open | empty | ratelimit | stream-error | init-500, or with MCP off:
+    off | off-served | off-200 | off-result-in-400."""
 
     def __init__(self, mode):
         self.mode, self.seen = mode, []
@@ -74,9 +84,13 @@ class Gateway(ThreadingHTTPServer):
                 )
                 keyed = auth in (f"Bearer {KEY}", f"Bearer {OTHER}")
                 mode = server.mode
-                if mode in ("off", "off-served"):
+                if mode in ("off", "off-served", "off-200", "off-result-in-400"):
                     if not keyed:
                         return self._send(401, b"api key authentication failure: no API Key found", "text/plain")
+                    if mode == "off-200":  # not an MCP reply, but not an error status either
+                        return self._send(200, b"ok", "text/plain")
+                    if mode == "off-result-in-400":  # an MCP reply carried by an error status
+                        return self._send(400, json.dumps(INIT_REPLY).encode(), "application/json")
                     if mode == "off":
                         err = {
                             "error": {
@@ -96,21 +110,7 @@ class Gateway(ThreadingHTTPServer):
                     }
                     return self._send(200, json.dumps(err).encode(), "application/json")
                 if body.get("method") == "initialize":
-                    return self._send(
-                        200,
-                        _frame(
-                            {
-                                "jsonrpc": "2.0",
-                                "id": 1,
-                                "result": {
-                                    "protocolVersion": "2025-11-25",
-                                    "capabilities": {"tools": {}},
-                                    "serverInfo": {"name": "rmcp", "version": "x"},
-                                },
-                            }
-                        ),
-                        "text/event-stream",
-                    )
+                    return self._send(500 if mode == "init-500" else 200, _frame(INIT_REPLY), "text/event-stream")
                 if body.get("method") == "tools/list":
                     tools = [] if mode == "empty" else TOOLS
                     if mode == "stream-error":
@@ -213,6 +213,11 @@ def test_a_gateway_raised_error_in_the_stream_fails_the_listing(tmp_path, gatewa
     assert rc != 0 and "listed no tool" in out, out
 
 
+def test_an_initialize_answered_with_an_error_status_fails_even_with_a_valid_body(tmp_path, gateway):
+    rc, out = _run(tmp_path, gateway("init-500"))
+    assert rc != 0 and "must get an MCP session" in out and "HTTP\n" not in out, out
+
+
 def test_a_rate_limit_refusal_is_unproven_not_passed(tmp_path, gateway):
     """-32003 comes back as HTTP 200 with the error in the body (spike 1.7)."""
     rc, out = _run(tmp_path, gateway("ratelimit"))
@@ -268,6 +273,18 @@ def test_with_mcp_off_a_keyed_initialize_that_is_not_an_mcp_reply_passes(tmp_pat
 
 def test_with_mcp_off_an_mcp_reply_fails_the_deploy(tmp_path, gateway):
     rc, out = _run(tmp_path, gateway("off-served"), enabled=False)
+    assert rc != 0 and "must not be served" in out, out
+
+
+def test_with_mcp_off_a_200_that_is_not_an_mcp_reply_still_fails(tmp_path, gateway):
+    """The status alone says the endpoint is served: nothing but an error status is acceptable."""
+    rc, out = _run(tmp_path, gateway("off-200"), enabled=False)
+    assert rc != 0 and "must not be served" in out, out
+
+
+def test_with_mcp_off_an_mcp_reply_in_an_error_status_still_fails(tmp_path, gateway):
+    """The body says it is served even when the status does not: the verdict reads the body."""
+    rc, out = _run(tmp_path, gateway("off-result-in-400"), enabled=False)
     assert rc != 0 and "must not be served" in out, out
 
 
