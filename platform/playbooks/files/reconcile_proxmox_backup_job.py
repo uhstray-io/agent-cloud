@@ -58,6 +58,22 @@ SCHEDULER_REASONS = {
     "service_identity_invalid",
     "state_unavailable",
 }
+SCHEDULER_ACTIVE_STATES = {
+    "active", "inactive", "failed", "activating", "deactivating", "maintenance",
+    "reloading", "refreshing", "unknown",
+}
+SCHEDULER_STATES = {
+    "dead", "condition", "start-pre", "start", "start-post", "running", "exited",
+    "reload", "reload-signal", "reload-notify", "mounting", "stop", "stop-watchdog",
+    "stop-sigterm", "stop-sigkill", "stop-post", "final-watchdog", "final-sigterm",
+    "final-sigkill", "failed", "dead-before-auto-restart", "failed-before-auto-restart",
+    "dead-resources-pinned", "auto-restart", "auto-restart-queued", "cleaning", "unknown",
+}
+SCHEDULER_UNIT_STATES = {
+    "enabled", "enabled-runtime", "linked", "linked-runtime", "alias", "masked",
+    "masked-runtime", "static", "disabled", "indirect", "generated", "transient",
+    "bad", "not-found", "unknown",
+}
 
 
 def _require(condition: bool, message: str) -> None:
@@ -271,9 +287,16 @@ def summarize_scheduler_state(payload: Mapping[str, object]) -> dict[str, object
 
     active_state = data["active-state"]
     state = data["state"]
+    unit_state = data["unit-state"]
+    if (active_state not in SCHEDULER_ACTIVE_STATES
+            or state not in SCHEDULER_STATES
+            or unit_state not in SCHEDULER_UNIT_STATES):
+        return _scheduler_unknown("state_unavailable")
+    if unit_state in {"bad", "not-found"}:
+        return _scheduler_unknown("state_unavailable")
     if active_state == "active" and state == "running":
         return {"status": "running", "reason": None}
-    if active_state in {"inactive", "failed"} or state in {"dead", "failed"}:
+    if (active_state, state) in {("inactive", "dead"), ("failed", "failed")}:
         return {"status": "not_running", "reason": None}
     return _scheduler_unknown("state_unavailable")
 

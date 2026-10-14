@@ -545,12 +545,12 @@ def test_scheduler_state_reports_only_a_fixed_running_snapshot():
 
 
 def test_scheduler_state_reports_known_stopped_states():
-    stopped = scheduler_response(data={
-        "service": "pvescheduler", "name": "pvescheduler", "desc": "private",
-        "active-state": "inactive", "state": "dead", "unit-state": "disabled",
-    })
-
-    assert summarize_scheduler_state(stopped) == {"status": "not_running", "reason": None}
+    for active_state, state in (("inactive", "dead"), ("failed", "failed")):
+        stopped = scheduler_response(data={
+            "service": "pvescheduler", "name": "pvescheduler", "desc": "private",
+            "active-state": active_state, "state": state, "unit-state": "disabled",
+        })
+        assert summarize_scheduler_state(stopped) == {"status": "not_running", "reason": None}
 
 
 def test_scheduler_state_permission_denial_and_http_errors_are_unknown():
@@ -589,6 +589,28 @@ def test_scheduler_state_unrecognized_values_remain_unknown():
     result = summarize_scheduler_state(scheduler_response(data={
         "service": "pvescheduler", "name": "pvescheduler", "desc": "private",
         "active-state": "activating", "state": "start", "unit-state": "enabled",
+    }))
+
+    assert result == {"status": "unknown", "reason": "state_unavailable"}
+
+
+@pytest.mark.parametrize(
+    ("active_state", "state", "unit_state"),
+    [
+        ("active", "running", "future-unit-state"),
+        ("unknown", "dead", "enabled"),
+        ("inactive", "future-state", "disabled"),
+        ("active", "dead", "enabled"),
+        ("inactive", "running", "disabled"),
+        ("active", "running", "not-found"),
+    ],
+)
+def test_scheduler_state_invalid_or_contradictory_combinations_remain_unknown(
+    active_state, state, unit_state,
+):
+    result = summarize_scheduler_state(scheduler_response(data={
+        "service": "pvescheduler", "name": "pvescheduler", "desc": "private",
+        "active-state": active_state, "state": state, "unit-state": unit_state,
     }))
 
     assert result == {"status": "unknown", "reason": "state_unavailable"}
