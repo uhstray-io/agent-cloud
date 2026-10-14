@@ -105,6 +105,12 @@ harnesses (Claude Code, pi) are the consumers the inference-gateway change named
   `platform/services/agentgateway/context/{architecture,agent-practices}.md` and
   `context/clients/`, a client installer script and a `Makefile` target,
   `platform/tests/` BATS for each.
+- The self-call under listener TLS (decided 2026-10-14): a second, plain-HTTP gateway for the
+  gateway's own `/v1` calls, attached to `llm` only, restricted by a `source.address` rule
+  (v1.5.0 has no bind address), unpublished and rendered only while `agw_mcp_enabled` is
+  true, plus a deploy-time allowlist that renders only OpenAPI targets whose host is that
+  listener. The external listener's client-certificate allowlist is not widened; the gateway
+  needs no mutual-TLS leaf of its own.
 - site-config, two changes through their own PRs: branch A (task 6.1) the declared admin
   list, the exceptions list, `agw_mcp_*` variables and the MCP Caddy managed site in
   `caddy_managed_sites`; branch B (task 6.8, merged only once the derivation is deployed)

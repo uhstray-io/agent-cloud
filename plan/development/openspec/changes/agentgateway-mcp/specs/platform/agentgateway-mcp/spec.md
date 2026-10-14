@@ -148,6 +148,29 @@ out.
 - THEN the internal key's value appears in none of them, and no documented handout names
   its field
 
+### Requirement: The gateway's self-call stays inside the container
+The gateway's own call for the first MCP target SHALL go to a loopback listener that is
+attached to the LLM surface only, is restricted to requests from the container's own
+loopback address, and is never published; and the deploy SHALL render only OpenAPI
+targets whose host is that listener, so no target can address the gateway's external
+listener or `/mcp`. The loopback listener and its LLM attachment SHALL be rendered only
+while MCP is enabled, and the external listener's client-certificate allowlist SHALL NOT
+be widened for the self-call.
+
+#### Scenario: A target cannot reach the gateway's own external listener
+- WHEN a target is declared as an `mcp` or `sse` kind, or with a host other than the
+  loopback listener's address and port (including one aimed at the external listener or
+  its `/mcp`)
+- THEN the deploy refuses it, naming the entry, before any render or restart; and where
+  such a call is made anyway, the external listener refuses it (a client leaf outside the
+  allowlist is 403, the internal identity is 401 on `/mcp`) and no request loop starts
+
+#### Scenario: The loopback listener refuses other containers
+- WHEN a client other than the gateway process, such as another container on the same
+  network, sends a request to the loopback listener's port, with or without a valid key
+- THEN the listener answers 403 `authorization failed`, and the port is absent from every
+  compose file's published ports
+
 ### Requirement: The administrative interface is not an MCP tool
 The gateway's configuration dump and admin API SHALL NOT be reachable as an MCP target or
 tool until the configuration dump's handling of environment-expanded secrets has been read

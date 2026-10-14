@@ -230,6 +230,12 @@ Authentik group membership and the gateway's identities.
   working; `manage-agentgateway-client-key.yml` validates against the merged list so its
   revoke step still deletes the field.
 
+Dated 2026-10-14, the operator's answer to Open Question 1: every `platform-admins` member moves
+into the declared list, so the declared exceptions list is empty by default. The consequence is that
+the break-glass account and the service account each get a stored `client_<name>` secret and a
+handed-out personal gateway key like any person (the operator confirms this under the Open Question 1
+follow-up).
+
 Rejected:
 - **A shared key held by the operator.** One leak rotates for everyone and no identity or
   budget is per person.
@@ -396,10 +402,18 @@ scenario that fails an `agw_clients` entry named `user-x`. This change is a comp
    be named in the declared exceptions list the drift guard reads (D3). Default proposed:
    only accounts a person signs in with are in the list; a service or break-glass account
    is an exception and is not given an API key.
+   - Answer 2026-10-14 (operator): every `platform-admins` member moves INTO the declared admin list,
+     including the break-glass account and the service account; each gets a personal gateway identity.
+     This replaces the proposed default above; no account is named in the exceptions list for now.
+   - Follow-up (open, for the operator): the break-glass account and the service account then each get a
+     stored `client_<name>` secret in OpenBao and a handed-out gateway key (see D3, dated line); confirm
+     that is intended.
 2. Per-caller attribution for model requests made through MCP: pass the caller's identity
    to the self-call, or accept `mcp-self`? Out of scope here.
 3. When `inference-personal-keys` lands, do admins keep the derived identity or move to
    the personal key?
+   - Answer 2026-10-14 (operator): admins first. `inference-personal-keys` later generalises the list
+     mechanism; admins keep their key.
 4. Where the helper reads the key first, the site-config file or the Keychain, and whether
    the Keychain item is created by the installer or by hand.
 5. The MCP rate-limit bucket figures, after measurement.
@@ -409,13 +423,256 @@ scenario that fails an `agw_clients` entry named `user-x`. This change is a comp
    include the internal `client_mcp-self` key and the upstream key. Existing behaviour, not
    introduced here; whether to add a field denylist is the operator's decision. Until then
    the documentation names fields explicitly and never shows an empty list.
+   - Answer 2026-10-14 (operator): no field denylist. Runbooks always name the fields explicitly.
 7. D2(a) is read as "the served `/mcp` endpoint", not "a target that points at it", because
    the gateway has no MCP tools of its own and a self-target may recurse. The operator
    confirms the reading (task 0.4); spike item 1.5 settles whether the literal form is even
    possible.
+8. How the gateway's own call is admitted when `agw_listener_tls` is on (spike 1.5): a second client
+   leaf plus a widening of `agw_client_cert_allowlist`, or a plain listener the gateway calls itself.
+   - Answer 2026-10-14 (operator): the loopback listener; no widening of the allowlist. Measured in the
+     spike (1.5, loopback paragraph); v1.5.0 has no gateway bind address, so the listener is restricted
+     by a `source.address` rule instead of a bind, which the operator should confirm is acceptable.
 
-## Findings
+## Findings (spike 2026-10-14)
 
-To be written by the local spike (tasks 1.1 to 1.9): one dated paragraph per unverified item,
-with the command and the observed output, before section 2 starts and before any
-template change depends on an answer.
+Local spike, tasks 1.1 to 1.8 and the local gate 1.10. Image: `cr.agentgateway.dev/agentgateway:v1.5.0`
+(the pin in `compose.yml`). Everything ran on the local container engine in throwaway containers
+named `agw-spike-*` (the gateway, its budget Postgres and a one-shot probe) on a private network, with a
+stub OpenAI-compatible and REST upstream run from the scratchpad. The scratch configuration was written
+by hand in the shape `config.yaml.j2` renders (`config:` with `database.url: $AGW_DATABASE_URL`,
+`gateways.default` on 4000, `llm:` with `keyHash: sha256:` identities and an hourly token budget each,
+one `custom` model, plus the `mcp:` block under test); it was not rendered from the template, and it
+has no UI listener or access-log policy. Keys are synthetic strings generated for the run, enrolled as
+hashes; no real secret, credential or host was used, and nothing was committed but this text. No
+finding contradicts a decision D1 to D6 or G1 to G6; the ones that change what a later task must do are
+marked **Impact**.
+
+**1.1 `llm:` and `mcp:` in one file (2026-10-14).** `--validate-only` accepts a file with both blocks
+(`Configuration is valid!`, exit 0), and so does `tasks/agw-validate-config.yml` when included from a
+throwaway play (`_deploy_dir` set to a scratch directory, `local_mode: false`, `_tls: false`, the OpenAPI
+schema inline so no schema mount is needed): exit 0, success assertion. Started, the gateway serves both:
+`GET /v1/models` without a key is 401 and with an enrolled key is 200, a chat completion through `/v1` is
+200 with the stub's `usage` (30 tokens), and `initialize` on `/mcp` is 200. Deliberately wrong `mcp:`
+blocks, each fed to the validator (exit code and the first line of its output):
+`mcp.bogusField` exit 1 `unknown field`; an `openapi` target with no `host` exit 1 `host or backend is
+required for MCP target backend configuration`; a syntactically broken `mcpAuthorization` CEL rule
+(`mcp.tool.name == `) exit 1 with the CEL parse error; `mcp.gateways: [nonexistent]` exit 1 `unknown
+gateway reference`; an `openapi.schema.file` that is not mounted exit 1 `read resource file`. Through the
+repository task the same blocks are refused with the allowlisted categories `config-schema-error` (the
+unknown field) and `validator-nonzero-exit-1` (the missing host and the broken CEL rule); the task's
+`no_log` and safe-category handling held. **The validator does not catch a semantic CEL error**: a rule
+naming an unknown field (`apiKey.nosuchfield == "x"`) is accepted (exit 0), and at runtime it silently
+matches nothing (see 1.3). **Impact (G5):** the pre-restart validation is real for structure and for CEL
+syntax and refuses before any restart, but a wrong identifier in an `mcpAuthorization` rule passes it, so
+the deploy verify must prove an authorised tool is listed, not only that `/mcp` answers. A second
+finding bears on 1.1: with no `mcp.policies.apiKey`, `/mcp` is open: `initialize`, `tools/list` and
+`tools/call` (the `ping` tool returned its result) all succeeded with no key, and `/sse` answered 200.
+**Impact (G4, G2):** the `mcp` block must never be rendered without the key policy; the render check in
+tasks 3.2 and 3.6 and the verify assert the policy is present whenever `agw_mcp_enabled`.
+
+**1.2 Authentication on `/mcp` (2026-10-14).** With `mcp.policies.apiKey` of the same shape as the `llm`
+one (`mode: strict`, `Bearer` header, a `keyHash` list of two identities, a third enrolled in `llm` only),
+a scripted client (JSON-RPC over HTTP, `Accept: application/json, text/event-stream`) got: no key 401
+`api key authentication failure: no API Key found`; an unknown key 401; the identity enrolled in `llm` but
+left out of the `mcp` list 401 on `initialize`, `notifications/initialized` and `tools/list`; an enrolled
+identity 200 on `initialize` (session header set), 202 on the notification, 200 on `tools/list`. A bare
+`GET /mcp` and `GET /sse` without a key are 401 as well. The same third identity still works on `/v1`
+(200), so the two key lists are independent, as G2 needs. The 401 requests are logged with
+`protocol=http` and never reach the MCP layer; the stub upstream's request log did not grow during the
+unauthenticated attempts (19 lines before and after). `initialize` and `tools/list` do **not** need a
+healthy target for an `openapi` target: with the stub upstream stopped, under both `failureMode:
+failClosed` (the default) and `failOpen`, `initialize` and `tools/list` returned 200 and the full tool
+list (the tool list comes from the schema); only `tools/call` failed, 503 `upstream call failed: Connect:
+Connection refused`. **Impact:** task 3.4's probe cannot use `initialize` or `tools/list` as a target
+health signal; it proves the key check and the schema only. A tool call is the only target-health proof.
+`failureMode` therefore changes nothing for an openapi target at handshake time; it was not exercised
+for `mcp` or `sse` targets.
+
+**1.3 `apiKey.name` in an `mcpAuthorization` CEL rule (2026-10-14).** Rules `allow: 'mcp.tool.name ==
+"ping"'` and `allow: 'mcp.tool.name == "echo" && apiKey.name == "alice"'` under `mcp.policies`: the
+identity `alice` listed both tools and called both (200 with the result); the identity `bob` listed only
+`ping`, called `ping` (200), and calling `echo` returned 400 JSON-RPC `-32602 Unknown tool: echo`. So the
+identity is evaluated, and a denied tool is hidden from the listing, not just refused at the call. A rule
+with a wrong field (`apiKey.nosuchfield`) denied the tool for everyone with the same `Unknown tool`
+answer and nothing in the gateway log beyond the request line. **Impact:** per-identity tool grants are
+available as designed; a typo fails closed and silently (see 1.1 for why the validator cannot catch it).
+
+**1.4 Budgets under `mcp.policies.apiKey` (2026-10-14).** `budgets:` entries on the MCP key entries are
+accepted by the validator and by the running gateway, and are **not charged and not enforced**. With an
+MCP budget named `mcp-tiny` of one token on both identities, three tool calls returned 200 each; the
+gateway's budget table (`budget_usage` in its Postgres) held only the `llm` row (30 tokens from an earlier
+chat) and no `mcp-tiny` row, and no MCP request appears in `request_logs` (one row in total, the chat).
+Budgets are charged from the LLM usage in a model response (`llm:` and the self-call below); an MCP
+request has no such usage. The budget identifier is the key hash plus the budget name, so an `llm` and
+an `mcp` budget with the same name on the same key would share one counter. **Impact (G2 holds):** the
+MCP key entries carry no budget; `mcp-self`'s `llm` budget is the only budgeted path, exactly the
+fallback G2 states. Rendering budgets under the MCP policy would be a silent no-op that reads as a
+control, so the template must not render them.
+
+**1.5 The self-call (2026-10-14).** Target: `openapi` over a two-operation schema of the gateway's own
+`/v1` (`list_models`, `chat_completions`) with `host: 127.0.0.1:4000`, `policies.backendAuth.key.value:
+$AGW_MCP_SELF_KEY` and `location.header` `authorization` with prefix `Bearer ` (the variable set in the
+container environment, as `VLLM_API_KEY` is), the `mcp-self` hash enrolled in `llm` and **not** in the
+`mcp` key list (G2). Plain listener: `tools/call list_models` and `chat_completions` as `alice` returned
+the upstream's bodies; the budget table gained a row for the `mcp-self` key hash (30 tokens), and
+`request_logs` recorded the model call with `agentgateway_user = mcp-self`, so the charge and the
+attribution are as D2(b) and the Risks section say, with the caller visible only on the `/mcp` request.
+The environment reference expanded and authenticated: the same call with the `backendAuth` removed came back as a tool result carrying `{"code":401,"message":"api key authentication failure: no API Key found"}`.
+
+*Mutual TLS.* Listener TLS was exercised against a scratch CA made with `openssl` (no step-ca leaf was
+minted and the local stack was not touched): server leaf, one client leaf with SAN `caddy-spike.test` in
+the allowlist (the role of the Caddy leaf), one with SAN `gw-self.test` outside it, and the exact
+`tls` + `authorization.require` block `listener_tls()` renders. From outside: no client certificate fails
+the handshake (`certificate required`); the non-allowlisted leaf with a valid key is 403 `authorization
+failed`; the allowlisted leaf without a key is 401, with a key 200, matching the 2026-10-02 `/v1`
+measurement in `config.yaml.j2`. The gateway's own call then needs, in order: (a) an `https` target host
+with `backendTLS.root` set (a plain-HTTP target against the TLS listener returns 503 `invalid HTTP
+version parsed`); (b) a client certificate and key presented by the gateway (`backendTLS.cert`/`key`;
+with the root only, 503 `CertificateRequired`); (c) that certificate's SAN **inside the allowlist**: with
+a client leaf outside it, the self-call is refused 403 by the gateway's own listener rule even with the
+valid `mcp-self` key. With the SAN added to the allowlist it succeeds and returns the model list.
+**Impact (reported to the operator, not decided):** under `agw_listener_tls` the self-call needs a
+second client-profile leaf for the gateway (cert and key mounted into its container, a declared
+`internal_leaves` entry) AND its SAN added to `agw_client_cert_allowlist`, which today is the Caddy leaf
+alone: a **widening of the allowlist**, now admitting any holder of that leaf. A different shape would
+avoid the widening, a second plain-HTTP listener attached to `llm` only; the operator took it, and it is
+built and tested in the next paragraph. Two further measured behaviours bear on the
+verify: a 403 (or the 401 above) from the self-call is returned to the MCP client as an HTTP 200 whose tool
+result is the text `{"code":403,"message":"authorization failed"}`, so a probe must inspect the tool
+result, not the status; and the loop below.
+
+*A target pointing back at `/mcp`.* It **recurses without a bound that protects the gateway.** An `mcp`
+target (`host` 127.0.0.1, port 4000, path `/mcp`) on an open `/mcp`: one `initialize` produced 17,350
+nested `/mcp` requests in about 15 s, took the gateway to 65% CPU and 3.9 GB, and ended 500 `Cannot assign
+requested address` (local port exhaustion); memory fell back over the next seconds and `/v1` readiness
+stayed 200 afterwards. On a key-gated `/mcp` the same target without `backendAuth` ends at once: the
+nested call is refused 401 (the client's `Authorization` header is not forwarded to a target) and that
+401 is returned to the client as the answer to `initialize`. With `backendAuth` carrying a key admitted
+on `/mcp` (here `mcp-self`, admitted for this test only) and `mcp.policies.timeout.requestTimeout: 3s`,
+`initialize` returned 504 `request timeout` at 3.0 s after about 9,850 nested requests and 870 MB, which
+settled to 420 MB; the timeout bounds the client's wait, not the loop's cost. The validator accepts all of
+these. **Impact (D2(a) as written):** the "if it recurses" branch applies: (a) is delivered as the served
+endpoint plus target (b), and no target may point at `/mcp`. Because the validator does not refuse it,
+the deploy needs its own refusal, before any restart, of any `mcp`/`sse` target whose host and port are
+the gateway's own listener (a task for section 3, not a decision change).
+
+**1.5, the loopback self-call (2026-10-14, after the operator's decision to take it instead of
+widening the allowlist).** Same scratch set-up as above (scratch CA, the `listener_tls()` block on the
+external gateway `default` on 4000 with the allowlist left at the one Caddy-role SAN) plus a second
+gateway, `loopback`, plain HTTP on 4002, attached to `llm` only (`llm.gateways: [default, loopback]`,
+`mcp.gateways: [default]`, no UI). The `openapi` self-target's host is `127.0.0.1:4002`, its
+`backendAuth` is the `mcp-self` key from an environment reference, and no client certificate is
+involved. **A deviation from the decision as phrased, forced by the schema:** v1.5.0 gateways take a
+`port` and no bind address (`LocalGateway` has `port`, `protocol`, `listeners`, `tls` and policies only;
+the schema offers an address only for the admin, stats and readiness servers), so the listener binds
+every container interface, "bound to the container loopback" is not expressible, and an unpublished port
+alone is not loopback. Measured with no extra rule: a neighbour container on the same compose-style
+network reached `loopback:4002` (no key 401, a valid key 200 with the model list). The restriction is
+therefore a gateway-level rule on the loopback gateway, `authorization.rules: - require:
+'source.address == "127.0.0.1"'`, and with it: the same neighbour is 403 `authorization failed` with or
+without a key (the rule runs before key authentication), while the gateway's own call (peer
+`127.0.0.1`) and an in-container client still pass. Results:
+(a) through the external mTLS listener with the Caddy-role leaf, `tools/call list_models` and
+`chat_completions` as `alice` returned the upstream's real bodies (not an embedded error); the budget
+table gained one row for the `mcp-self` key hash (30 tokens) and `request_logs` recorded the model call
+with `agentgateway_user = mcp-self`: charged and logged as `mcp-self`.
+(b) no port 4002 is published (`curl` from the host to 4002 failed to connect, exit 7); inside the
+container namespace a request to the loopback listener with no key is 401 `no API Key found` and
+with a valid key 200.
+(c) MCP is **not served** on the loopback listener, but it is not a clean 404 either: the `llm` route
+there accepts any path, so an MCP `initialize` posted to `/mcp` is answered 400 `LLM request body is
+missing string field 'model'`, `GET /sse` 400, no key 401; an LLM-shaped body posted to `/mcp` is
+**forwarded to the model upstream** as `/v1/mcp` and returns the upstream's own 404. The same
+pass-through exists on the external listener today (the reason Caddy is an allowlist); on loopback it is
+reachable only by the gateway's own calls (rule above) and those use only the two schema operations.
+(d) the external listener is unchanged and is not widened: no client certificate fails the handshake;
+the gateway-role leaf, whose SAN is not in the allowlist, is 403 even with a valid key; the Caddy-role
+leaf without a key is 401 and with a key 200; the allowlist expression names the Caddy-role SAN only.
+(e) a target aimed at the loopback `/mcp` (`mcp` kind, `127.0.0.1:4002/mcp`, `backendAuth` `mcp-self`)
+**does not recurse**: `initialize` returned 400 `missing_model` from the LLM handler at once and
+the gateway logged three MCP requests in total (the client's), CPU and memory idle afterwards.
+(f) a target aimed at the **external** listener's `/mcp` (`mcp` kind, port 4000, `backendTLS` with the
+gateway-role leaf, `backendAuth` `mcp-self`, which is not admitted on `/mcp`) is refused 403 by the
+external listener's SAN rule and terminates (one MCP request logged, no loop); with no client certificate
+it fails at the handshake (1.5 above) and on the plain listener with no key it is 401.
+**Impact (section 3, deploy-time refusal):** every self-reaching shape measured above terminates once the
+listener is TLS and `mcp-self` is not admitted on `/mcp`, but the validator accepts all of them, and a
+plain external listener with a key admitted on `/mcp` is the earlier unbounded recursion, so the deploy
+refuses, before any restart, by allowlist and not by denylist: (1) the only
+target kind rendered is `openapi` over the shipped schema; an `mcp` or `sse` target is refused; (2) an
+`openapi` target's host must equal the declared loopback listener address and port (`127.0.0.1` and the
+loopback port); any other host is refused, since a string check cannot enumerate every alias of the
+external listener (`localhost`, the container name, a bridge address) and a denylist of port 4000 would
+miss them; (3) the loopback listener carries the `source.address` rule, is attached to `llm` only, and its
+port is never in `compose.yml`'s published list (a BATS check on the rendered config and the compose
+file, mutation-checked); (4) `mcp-self` stays out of the `/mcp` key list (G2). The `source.address`
+comparison uses the IPv4 loopback literal; an IPv6-only path was not exercised.
+
+**1.6 `statefulMode` (2026-10-14).** Headers: `initialize` needs `Content-Type: application/json`
+(missing: 415) and an `Accept` naming **both** `application/json` and `text/event-stream` (JSON only, event
+stream only, `*/*` and none: 406 `client must accept both application/json and text/event-stream`). The
+response to `initialize`, `tools/list` and `tools/call` is always `Content-Type: text/event-stream`
+carrying one `event: message` / `data: {json-rpc}` frame, closed by the server, never a bare JSON body;
+errors raised by the gateway itself (unknown tool, rate limit) come as a JSON body with the JSON-RPC
+error and HTTP 200 or 400. **Impact (task 3.4):** the probe sends both `Accept` values and reads the
+`data:` line. *Default (stateful):* `initialize` returns an `Mcp-Session-Id`; a request without it is 400
+`session header is required for non-initialize requests`. The id is a self-describing token (base64 of
+a small JSON naming the target set and a random id): the gateway holds no session, so `DELETE /mcp` with
+it returns 202 and the same id keeps working afterwards, and an id issued to one identity worked with
+another identity's key (authorisation is still decided per request from the key). `GET /mcp` with a
+session opens a server stream (200, `text/event-stream`); with no data and no keep-alive it stayed
+open for the whole 155 s I held it and was not closed by the server, so behind Cloudflare an idle stream
+would be cut at the 125 s timeout (production measure stays 6.6); `GET` without a session is 400.
+*`statefulMode: stateless`:* `initialize` returns **no** session header; `tools/list` and `tools/call`
+succeed with no prior `initialize` and no session header; `GET /mcp` is 405, so no server-initiated
+stream is ever opened. **Impact (Risks, 125 s):** stateless is confirmed to remove the held stream, so
+the only request that can approach 125 s is one long `tools/call` (a model call through the self-call);
+it was not measured. *Paths:* `POST` to `/mcp`, `/mcp/`, `/mcp?x=1` and `/mcp/sub` all reach the
+transport; `/sse` is 422, `/message` and `/` are 400. Nothing beyond the exact `/mcp` is needed, so the
+exact-match Caddy block of G1 is sufficient (a client configured with a trailing slash would get the edge
+404). `dnsRebindingProtection` was not enabled (opt-in, not exercised).
+
+**1.7 `mcp.policies.localRateLimit` (2026-10-14).** The block renders and limits: with `[{type: requests,
+maxTokens: 4, tokensPerFill: 4, fillInterval: 60s}]` the validator accepts, and `/v1` is unaffected (six
+`/v1/models` calls all 200). One authenticated session consumed the bucket per HTTP request: `initialize`,
+`notifications/initialized`, `tools/list` and the first `tools/call` succeeded (four tokens), the second
+and third `tools/call` were refused. **A refusal is HTTP 200 with a JSON-RPC error** (`-32003 rate limit
+exceeded`, data with `limit`, `remaining`, `retryAfter`), not 429, so Cloudflare and a status-only probe
+see success. The bucket is one for the whole `/mcp` surface: a second identity (`bob`) was refused while
+`alice` had drained it, and the 401 for an unauthenticated request is answered before the bucket (key
+check first). **Impact (G6, task 5.4):** a handshake costs three requests (initialize, initialized,
+tools/list) before any tool call, so a bucket of N per minute admits at most N/3 new sessions a minute;
+whether the optional `GET` stream in stateful mode is a fourth request was not measured. The figure is a
+deploy choice, and the one shared bucket means one heavy caller starves the rest, as with the `llm`
+bucket. A real
+Claude Code or pi handshake was not run (client work is section 7); the count above is from a scripted
+client, so it is the protocol minimum.
+
+**1.8 `/config_dump` redaction (2026-10-14).** With an environment variable holding a canary
+(`CANARY-...-NOT-A-SECRET`) referenced as the target `backendAuth.key.value`, the dump was read from a
+one-shot probe container sharing the gateway's network namespace (`GET /config_dump` on the admin
+loopback): neither the canary value nor the variable name appears; the dump shows `'value':
+'<redacted>'` for `backendAuth.key`, and `'users': '<redacted>'` for every `apiKey` policy (no hash
+either). **But the dump does not redact `config.database.url`**: the synthetic Postgres password the
+gateway expanded from `$AGW_DATABASE_URL` appears in clear text in the dump (confirmed by a substring
+test, not printed). **Impact:** D6 holds, and is strengthened: the dump stays unexposed, and the admin
+listener is not only unauthenticated but holds the budget database credential in plain form; the
+loopback pin in `config.yaml.j2` is therefore load-bearing for that credential too. The OIDC client
+secret and cookie seed (also env-expanded) were not tested because the scratch config had no UI listener.
+
+**1.10 Local gate (2026-10-14), scratch config with `mcp.policies.apiKey` and two enrolled identities.**
+Scenario "Unauthenticated MCP request is refused": `initialize` with no key 401, a following `tools/call`
+with no key 401, both `api key authentication failure: no API Key found`, logged as `protocol=http`, and
+the stub upstream's log unchanged (19 lines before and after): refused and reached no target. Scenario
+"An enrolled identity lists tools": with an enrolled key `initialize` 200, `notifications/initialized`
+202, `tools/list` 200 returning the target's two tools (`ping`, `echo`); the gateway log shows the three
+MCP requests (`mcp.method.name` initialize, notifications/initialized, tools/list). Both scenarios passed
+locally.
+
+**Not exercised.** The 125 s Cloudflare timeout itself (production, 6.6); real Claude Code and pi
+handshakes (section 7); `mcp` and `sse` targets other than the loopback one, and `failureMode` for them;
+`/config_dump` handling of
+the UI's env-expanded OIDC values (1.8). The mutual-TLS cases used a scratch `openssl` CA, not the
+platform's internal CA, so the allowlist and handshake behaviour are measured but a step-ca leaf with its
+real SAN profile was not. Also not exercised: an IPv6-only path to the loopback listener (1.5).
