@@ -337,6 +337,14 @@ The platform SHALL use a reviewed, Dev-bound, GET-only survey before considering
 - **AND** `/storage` and node storage status may silently omit rows without `Datastore.Audit` or `Datastore.AllocateSpace` on the store, so counts describe visible stores and may be incomplete; `shared=0` does not prove local physical backing or rule out thin allocation behind a SAN/LUN
 - **AND** no storage/VG name or ID, exact capacity, device path, serial, or private topology is reported; raw API responses remain hidden by `no_log`
 
+#### Scenario: Dedicated selector reports one candidate ID for private review
+- **WHEN** an operator runs the separate Dev-bound candidate-identification workflow
+- **THEN** it imports the existing GET-only physical-storage survey and reuses its protected API responses without issuing duplicate Proxmox reads
+- **AND** it reports one candidate storage ID only when visible config/VG mappings are complete, every candidate PV has complete exact disk-path lineage with reported `used=LVM`, and exactly one candidate meets the reported 1024-GiB VG-headroom threshold
+- **AND** ambiguous candidates, malformed or incomplete inventory/lineage, or insufficient headroom produce one fixed refusal without private identifiers or topology
+- **AND** the regular aggregate survey continues to emit no storage IDs, and the selector emits no node, VG, PV, path, serial, or exact capacity
+- **AND** backing media, device safety, filesystem readiness, PBS suitability/readiness, allocation, write authorization, immutable restore, VM growth, and retention remain unverified or false; the selector makes no Proxmox mutation and does not complete tasks 4.6c, 4.6d, or 4.6e
+
 #### Scenario: Candidate thick-LVM PV path lineage reports inventory facts only
 - **WHEN** the survey has a non-empty set of eligible visible thick-LVM candidates
 - **THEN** it joins candidate VG PV `name` values against the already-fetched disk inventory by exact path and reports aggregate PV count, exact direct disk-path joins, exact partition-to-parent joins, `thick_lvm_pv_path_join_unknown_used_count`, missing paths, unverifiable joins, and candidate VGs with missing or empty PV-child inventories

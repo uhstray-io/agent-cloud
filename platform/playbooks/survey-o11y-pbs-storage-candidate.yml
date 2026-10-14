@@ -1,0 +1,32 @@
+# Identify one visible thick-LVM image-store candidate for private review only.
+- ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- ansible.builtin.import_playbook: survey-o11y-pbs-physical-storage.yml
+  vars:
+    _extra_var_guard_nested: true
+
+- name: Identify a unique thick-LVM image-store candidate
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    _inspector: "{{ playbook_dir }}/files/inspect_o11y_pbs_physical_storage.py"
+  tasks:
+    - name: Select candidate from the protected survey responses
+      ansible.builtin.command:
+        argv: [python3, "{{ _inspector }}", select-thick-lvm-candidate]
+        stdin: "{{ _physical_storage_payload }}"
+      register: _thick_lvm_candidate_selection
+      failed_when: false
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Require one complete candidate with reported 1024-GiB headroom
+      ansible.builtin.assert:
+        that: _thick_lvm_candidate_selection.rc == 0
+        fail_msg: "No unique thick-LVM storage candidate with complete visible mapping and lineage was identified."
+
+    - name: Report the candidate storage ID for private review
+      ansible.builtin.debug:
+        msg: "Candidate storage ID for private review: {{ (_thick_lvm_candidate_selection.stdout | from_json).candidate_storage_id }}"

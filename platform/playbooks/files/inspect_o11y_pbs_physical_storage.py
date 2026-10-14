@@ -41,6 +41,7 @@ SAFE_REFUSALS = {
     "Proxmox returned inconsistent thick-LVM capacity.",
 }
 FALLBACK_REFUSAL = "Physical-storage survey refused because Proxmox returned invalid data."
+SELECTOR_REFUSAL = "No unique thick-LVM storage candidate with complete visible mapping and lineage was identified."
 
 
 def _require(ok: bool, message: str) -> None:
@@ -265,6 +266,12 @@ def _headroom_band(total: int, available: int) -> str:
     if available * 10 < total * 7:
         return "30-to-under-70-percent"
     return "at-least-70-percent"
+
+
+def _reported_vg_headroom(group: Mapping, size_gib: int) -> bool:
+    total, free = group["size"], group["free"]
+    remaining = free - size_gib * 1024**3
+    return remaining >= 0 and remaining * 10 >= total * 3
 
 
 def _directory_facts(rows: list[object]) -> dict[str, object]:
@@ -519,7 +526,7 @@ def _thick_lvm_facts(
     status_rows: list[object], config_response: object, lvm_data: Mapping,
     target_node: str, disk_rows: list[object], declared_storage_id: str,
     declared_config_response: object,
-) -> dict[str, object]:
+) -> tuple[dict[str, object], list[tuple[Mapping, Mapping]]]:
     """Report visible non-shared thick-LVM image-store headroom only."""
     config_rows = _api_data(config_response, section="cluster storage config")
     _require(
@@ -733,10 +740,8 @@ def _thick_lvm_facts(
         "thick_lvm_allocation_authorized": False,
     }
     for status, group in candidates:
-        total, free = group["size"], group["free"]
         for size_gib in PROPOSED_DISK_SIZES:
-            remaining = free - size_gib * 1024**3
-            if remaining >= 0 and remaining * 10 >= total * 3:
+            if _reported_vg_headroom(group, size_gib):
                 result[f"thick_lvm_reported_vg_headroom_candidate_count_{size_gib}_gib"] += 1
                 if (
                     declared_candidate_exact_match
@@ -744,7 +749,7 @@ def _thick_lvm_facts(
                     and status["storage"] == declared_storage_id
                 ):
                     result[f"declared_thick_lvm_reported_vg_headroom_passes_{size_gib}_gib"] = True
-    return result | _thick_lvm_pv_lineage_facts(candidates, disk_rows)
+    return result | _thick_lvm_pv_lineage_facts(candidates, disk_rows), candidates
 
 
 def _thick_lvm_pv_lineage_facts(
@@ -810,7 +815,9 @@ def _thick_lvm_pv_lineage_facts(
     }
 
 
-def inspect(payload: object) -> dict[str, object]:
+def _inspection(
+    payload: object,
+) -> tuple[dict[str, object], list[tuple[Mapping, Mapping]], list[object]]:
     _require(isinstance(payload, Mapping), "Proxmox returned an incomplete disk inventory.")
     declared_storage_id = payload.get("declared_storage_id")
     _require(
@@ -848,21 +855,57 @@ def inspect(payload: object) -> dict[str, object]:
             payload.get("visible_volumes"),
             thin_rows,
         ),
-        **_thick_lvm_facts(
-            storage_rows, storage_config_rows, lvm_data, target_node, disk_rows,
-            declared_storage_id, payload.get("storage_config"),
-        ),
+    }
+    thick_lvm_facts, thick_lvm_candidates = _thick_lvm_facts(
+        storage_rows, storage_config_rows, lvm_data, target_node, disk_rows,
+        declared_storage_id, payload.get("storage_config"),
+    )
+    report.update(thick_lvm_facts)
+    report.update({
         "device_selected": False,
         "device_safety_verified": False,
         "filesystem_readiness_verified": False,
         "pbs_suitability_verified": False,
         "pbs_readiness_verified": False,
         "write_authorized": False,
-    }
-    return report
+    })
+    return report, thick_lvm_candidates, disk_rows
+
+
+def inspect(payload: object) -> dict[str, object]:
+    return _inspection(payload)[0]
+
+
+def select_thick_lvm_candidate(payload: object) -> dict[str, str]:
+    report, candidates, disk_rows = _inspection(payload)
+    _require(report["thick_lvm_config_vg_mappings_complete"] is True, SELECTOR_REFUSAL)
+
+    eligible: list[str] = []
+    for status, group in candidates:
+        lineage = _thick_lvm_pv_lineage_facts([(status, group)], disk_rows)
+        pv_count = lineage["thick_lvm_candidate_pv_count"]
+        mapped_pv_count = (
+            lineage["thick_lvm_pv_direct_disk_path_join_count"]
+            + lineage["thick_lvm_pv_partition_parent_disk_path_join_count"]
+        )
+        _require(
+            lineage["thick_lvm_candidate_vg_pv_inventory_incomplete_count"] == 0
+            and pv_count > 0
+            and mapped_pv_count == pv_count
+            and lineage["thick_lvm_pv_path_join_unknown_used_count"] == 0
+            and lineage["thick_lvm_pv_missing_disk_path_join_count"] == 0
+            and lineage["thick_lvm_pv_unverifiable_disk_path_join_count"] == 0,
+            SELECTOR_REFUSAL,
+        )
+        if _reported_vg_headroom(group, 1024):
+            eligible.append(status["storage"])
+
+    _require(len(eligible) == 1, SELECTOR_REFUSAL)
+    return {"candidate_storage_id": eligible[0]}
 
 
 def main() -> int:
+    operation = ""
     try:
         operation = sys.argv[1]
         payload = json.load(sys.stdin)
@@ -870,10 +913,13 @@ def main() -> int:
             result = validate_node(payload)
         elif operation == "inspect":
             result = inspect(payload)
+        elif operation == "select-thick-lvm-candidate":
+            result = select_thick_lvm_candidate(payload)
         else:
             raise ValueError("Unsupported physical-storage survey operation.")
     except (IndexError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
-        print(json.dumps({"refusal": _safe_refusal(exc)}, separators=(",", ":")))
+        refusal = SELECTOR_REFUSAL if operation == "select-thick-lvm-candidate" else _safe_refusal(exc)
+        print(json.dumps({"refusal": refusal}, separators=(",", ":")))
         return 2
     print(json.dumps(result, separators=(",", ":")))
     return 0

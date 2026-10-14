@@ -2106,6 +2106,19 @@ templates:
     # host. Reports coarse aggregate counts/bands only; no node, device, storage,
     # capacity value, or private identifier is visible. No selection or writes.
 
+  - name: Identify o11y PBS Storage Candidate (Dev)
+    playbook: platform/playbooks/survey-o11y-pbs-storage-candidate.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for the read-only storage-candidate selector"
+        type: string
+        required: true
+    # Reuses the protected physical-storage survey. Reports only the candidate
+    # storage ID for private review; no selection is written and no Proxmox API
+    # mutation is performed.
+
   - name: Survey o11y Log Source (Dev)
     playbook: platform/playbooks/survey-o11y-log-source.yml
     repository: agent-cloud dev
