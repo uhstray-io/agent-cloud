@@ -18,6 +18,7 @@ from reconcile_proxmox_backup_job import (  # noqa: E402
     HISTORY_LOOKBACK_SECONDS,
     HISTORY_MAX_ROWS,
     HISTORY_PAGE_SIZE,
+    HISTORY_RECENCY_SECONDS,
     _safe_refusal,
     assert_unchanged,
     inspect_candidates,
@@ -294,6 +295,7 @@ def test_history_query_requires_positive_node_scoped_sys_audit():
             "summary": {
                 "outcome": "unknown", "reason": "permission_unverified",
                 "task_count": None, "job_attribution": "unavailable",
+                "latest_success_within_26h": None,
             },
         }
         assert "Sys.Audit" not in json.dumps(result)
@@ -332,6 +334,7 @@ def test_history_empty_result_requires_permission_and_reports_no_job_attribution
     assert result == {
         "outcome": "no_archived_task_in_lookback", "reason": None,
         "task_count": 0, "job_attribution": "unavailable",
+        "latest_success_within_26h": False,
     }
 
 
@@ -345,6 +348,7 @@ def test_empty_task_page_without_total_is_a_valid_empty_result():
     assert summarize_task_history({"plan": plan, "first_page": first, "later_pages": []}) == {
         "outcome": "no_archived_task_in_lookback", "reason": None,
         "task_count": 0, "job_attribution": "unavailable",
+        "latest_success_within_26h": False,
     }
 
 
@@ -374,6 +378,7 @@ def test_history_exact_upper_bound_is_paginated_and_accepted():
     assert result == {
         "outcome": "success", "reason": None, "task_count": HISTORY_MAX_ROWS,
         "job_attribution": "unavailable",
+        "latest_success_within_26h": True,
     }
 
 
@@ -385,6 +390,7 @@ def test_history_over_bound_and_incomplete_pages_are_unknown():
         "summary": {
             "outcome": "unknown", "reason": "pagination_limit_exceeded",
             "task_count": None, "job_attribution": "unavailable",
+            "latest_success_within_26h": None,
         },
     }
     assert summarize_task_history({"plan": plan, "first_page": over_bound})["outcome"] == "unknown"
@@ -408,20 +414,21 @@ def test_history_over_bound_and_incomplete_pages_are_unknown():
     assert request_failed == {
         "outcome": "unknown", "reason": "request_failed", "task_count": None,
         "job_attribution": "unavailable",
+        "latest_success_within_26h": None,
     }
 
 
 @pytest.mark.parametrize(
-    ("status", "expected"),
+    ("status", "expected", "recency"),
     [
-        ("OK", "success"),
-        ("WARNINGS: 2", "incomplete"),
-        ("ERROR: private backup path failed", "failed"),
-        (None, "unknown"),
-        ("unexpected status", "unknown"),
+        ("OK", "success", True),
+        ("WARNINGS: 2", "incomplete", False),
+        ("ERROR: private backup path failed", "failed", False),
+        (None, "unknown", None),
+        ("unexpected status", "unknown", None),
     ],
 )
-def test_history_classifies_latest_status_without_exposing_it(status, expected):
+def test_history_classifies_latest_status_without_exposing_it(status, expected, recency):
     plan = history_plan()
     result = summarize_task_history({
         "plan": plan,
@@ -431,6 +438,7 @@ def test_history_classifies_latest_status_without_exposing_it(status, expected):
     encoded = json.dumps(result)
     assert result["outcome"] == expected
     assert result["job_attribution"] == "unavailable"
+    assert result["latest_success_within_26h"] is recency
     assert "private backup path failed" not in encoded
     assert "UPID:" not in encoded
 
@@ -452,6 +460,62 @@ def test_history_schema_gaps_and_wrong_identity_fail_closed_without_echo():
     assert wrong_id["outcome"] == "unknown"
     assert wrong_id["reason"] == "task_identity_invalid"
     assert "private" not in json.dumps(malformed | wrong_id)
+
+
+def test_history_recency_is_true_at_the_inclusive_26_hour_boundary_and_false_after():
+    exact_plan = history_plan(until=HISTORY_RECENCY_SECONDS + 1)
+    exact = summarize_task_history({
+        "plan": exact_plan,
+        "first_page": task_page([task_row(1, starttime=1)], 1),
+        "later_pages": [],
+    })
+    old_plan = history_plan(until=HISTORY_RECENCY_SECONDS + 2)
+    old = summarize_task_history({
+        "plan": old_plan,
+        "first_page": task_page([task_row(1, starttime=1)], 1),
+        "later_pages": [],
+    })
+
+    assert exact["latest_success_within_26h"] is True
+    assert old["outcome"] == "success"
+    assert old["latest_success_within_26h"] is False
+
+
+@pytest.mark.parametrize("cutoff", [True, False, "2000", 2000.0, None, 0, -1])
+def test_history_rejects_malformed_cutoff_types_as_unknown(cutoff):
+    plan = history_plan()
+    plan["query"]["until"] = cutoff
+    result = summarize_task_history({
+        "plan": plan,
+        "first_page": task_page([task_row(1)], 1),
+        "later_pages": [],
+    })
+
+    assert result == {
+        "outcome": "unknown", "reason": "response_invalid", "task_count": None,
+        "job_attribution": "unavailable", "latest_success_within_26h": None,
+    }
+
+
+def test_conflicting_latest_statuses_make_recency_unknown_and_output_stays_allowlisted():
+    plan = history_plan()
+    rows = [
+        task_row(1, status="OK", starttime=1_900, endtime=1_901),
+        task_row(2, status="WARNINGS: 1", starttime=1_900, endtime=1_901),
+    ]
+    result = summarize_task_history({
+        "plan": plan, "first_page": task_page(rows, 2), "later_pages": [],
+    })
+
+    assert result == {
+        "outcome": "unknown", "reason": "task_status_unavailable", "task_count": 2,
+        "job_attribution": "unavailable", "latest_success_within_26h": None,
+    }
+    assert set(result) == {
+        "outcome", "reason", "task_count", "job_attribution", "latest_success_within_26h",
+    }
+    assert "UPID:" not in json.dumps(result)
+    assert "1900" not in json.dumps(result)
 
 
 def test_playbook_requires_reviewed_dev_and_guards_every_mutation():

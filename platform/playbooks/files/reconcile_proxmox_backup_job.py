@@ -40,6 +40,7 @@ FALLBACK_REFUSAL = "Backup-job reconciliation refused because Proxmox returned i
 HISTORY_PAGE_SIZE = 50
 HISTORY_MAX_ROWS = 250
 HISTORY_LOOKBACK_SECONDS = 30 * 24 * 60 * 60
+HISTORY_RECENCY_SECONDS = 26 * 60 * 60
 HISTORY_REASONS = {
     "permission_unverified",
     "response_invalid",
@@ -227,6 +228,7 @@ def _history_unknown(reason: str) -> dict[str, object]:
         "reason": reason,
         "task_count": None,
         "job_attribution": "unavailable",
+        "latest_success_within_26h": None,
     }
 
 
@@ -342,10 +344,12 @@ def summarize_task_history(payload: Mapping[str, object]) -> dict[str, object]:
     query = plan.get("query")
     if not isinstance(query, Mapping):
         return _history_unknown("response_invalid")
+    until = query.get("until")
+    if type(until) is not int or until <= 0:
+        return _history_unknown("response_invalid")
     try:
         vmid = str(query["vmid"])
         since = int(query["since"])
-        until = int(query["until"])
     except (KeyError, TypeError, ValueError):
         return _history_unknown("response_invalid")
     seen_upids: set[str] = set()
@@ -365,17 +369,22 @@ def summarize_task_history(payload: Mapping[str, object]) -> dict[str, object]:
             "reason": None,
             "task_count": 0,
             "job_attribution": "unavailable",
+            "latest_success_within_26h": False,
         }
     latest_time = max(int(row["starttime"]) for row in rows)
     latest = [row for row in rows if row["starttime"] == latest_time]
     outcomes = {_classify_task_status(row.get("status")) for row in latest}
     outcome = outcomes.pop() if len(outcomes) == 1 else "unknown"
     reason = None if outcome != "unknown" else "task_status_unavailable"
+    recent_success = None
+    if outcome != "unknown":
+        recent_success = outcome == "success" and 0 <= until - latest_time <= HISTORY_RECENCY_SECONDS
     return {
         "outcome": outcome,
         "reason": reason,
         "task_count": total,
         "job_attribution": "unavailable",
+        "latest_success_within_26h": recent_success,
     }
 
 
