@@ -373,6 +373,9 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
         operator follow-up, not done: production discovery still runs the old agent config
         with `fast_mode`; it needs a production `Deploy Orb Agent` run once #589 reaches the
         branch production deploys from
+      - 2026-10-13, update: the operator did not stop the local stack on 2026-10-13 at
+        02:34 UTC. They suggested another agent session working on this machine may have.
+        Not verified; the cause stays undetermined
 
 ## 7. Executors, snapshots and tracking
 

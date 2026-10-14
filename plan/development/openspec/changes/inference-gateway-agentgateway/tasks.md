@@ -315,7 +315,7 @@
       `context/architecture.md` ("Conformance against direct vLLM"): first token +0.023/+0.026/+0.029
       s, gap p95 and max within ±0.002 s. Task 2709's saved output is truncated before the stream
       case, so its own stream deltas are not in the table.
-- [ ] 2.3 Confirm SSE keep-alive comment lines from vLLM pass through unchanged and
+- [x] 2.3 Confirm SSE keep-alive comment lines from vLLM pass through unchanged and
       unbuffered (needs dgx-spark `inference-endpoint-reliability` deployed)
       2026-10-12 (task output read from Semaphore by the lead): Run agentgateway Conformance
       (Dev) task 4910 with `agw_conformance_long_stream=true` (PR #566): PASS 15/15.
@@ -331,6 +331,22 @@
       vLLM emits `: keep-alive` while the measured stream waits. The production run with
       `agw_conformance_long_stream=true` and saturate=8 is pending: it occupies all 8 DGX
       slots, so it runs outside busy hours. Not ticked.
+      2026-10-13 (task output read from production Semaphore by the lead): keep-alive
+      pass-through PROVEN. After PR #578 and the survey publish (Publish Semaphore Template
+      Surveys (Dev) 5292 put `agw_conformance_long_stream_saturate` on the live template),
+      Run agentgateway Conformance (Dev) dry run 5309, then real run 5311 at 95554ab4, with
+      `agw_conformance_long_stream=true` and saturate 8, outside busy hours and with
+      dgx-spark's session confirming nothing in flight: PASS 15/15. `stream-long`: 8 fillers
+      accepted on each side. Direct: 2 keep-alives, longest gap 15 s, first byte 15.043 s,
+      246.9 s in all. Gateway: 2 keep-alives, longest gap 15 s, first byte 15.072 s, 279.4 s
+      in all. `keepalives_seen_from_vllm` true, and the "keep-alive pass-through is unproven"
+      warning task was skipped. vLLM's 15 s keep-alive interval (dgx-spark
+      `sse-keep-alive-interval` 15, on the chat and completions routes) reaches the client
+      through the gateway: the same number of comment lines, the same longest gap and first
+      byte, and no buffering. Scope: `conformance.sh` counts lines that start with `:` and
+      compares counts and timings. It does not compare the comment bytes, so "unchanged"
+      holds for count and cadence, which is what a keep-alive is for (clients ignore SSE
+      comments). Ticked on that scope.
 - [x] 2.3a Streams and the budget: confirm whether a streamed completion is charged to the
       per-key budget, and whether a model `overrides: {stream_options: {include_usage: true}}`
       entry makes vLLM report usage on streams without changing the client-visible contract
@@ -345,10 +361,13 @@
       task 2882 PASS 14/14, with `stream_usage.gateway` true on `stream-xhigh` and on the new
       `stream-options-without-usage` case. A production budget charge on a dropped stream was not
       measured; the 429 after a dropped stream is the local measurement.
-- [ ] 2.4 Validation gate: 2.2 proves scenario "Conformance against direct vLLM"; 2.3
+- [x] 2.4 Validation gate: 2.2 proves scenario "Conformance against direct vLLM"; 2.3
       with a stream past 130 s proves scenario "Stream is not buffered"
       2026-10-12: "Stream is not buffered" is proven by task 4910 (see 2.3); 2.4 waits on
       2.3's keep-alive half. Not ticked.
+      2026-10-13: 2.2 proved "Conformance against direct vLLM" (task 2709); "Stream is not
+      buffered" is proven by 4910 and the keep-alive half by 5311 (2.3; keep-alive count and
+      cadence, not comment bytes). Ticked.
 
 ## 3. Telemetry
 - [x] 3.1 o11y: `scrape.d/agentgateway.yml.j2` for the stats endpoint (`/metrics` on the
