@@ -14,6 +14,7 @@ tasks run for real against a stub gateway that admits one key.
 """
 
 import hashlib
+import re
 import subprocess
 from pathlib import Path
 
@@ -301,6 +302,17 @@ def _verify(tmp: Path, url: str, *args: str, **hv) -> subprocess.CompletedProces
         [{"hosts": "all", "gather_facts": False, "vars": play_vars, "tasks": tasks}]))
     return harness_sandbox.run(["ansible-playbook", "-i", str(tmp / "inv.yml"), str(tmp / "play.yml"), *args],
                                tmp, cwd=REPO, env=harness_sandbox.env_for(tmp))
+
+
+def test_the_rotated_key_flag_is_set_and_read_under_one_name():
+    # Phase 1's credential task sets it and Phase 3 reads it as a host fact: a rename on one side
+    # leaves the other defaulting to false, which silently restores the probe that 401s after rotation.
+    check = {t["name"]: t for t in yaml.safe_load(CHECK.read_text())}
+    set_names = set(check["Reduce the comparison to booleans"]["ansible.builtin.set_fact"])
+    probe_tasks = [ADMITTED, "Shared-key grace period: keep the probe's status", ADMITTED_ASSERT, ROTATED_NOTE]
+    read = {m for n in probe_tasks for c in VERIFY_TASKS[n]["when"] for m in re.findall(r"_legacy_key_\w+", c)}
+    assert read == {"_legacy_key_rotated"}
+    assert read <= set_names
 
 
 def test_the_verify_play_reads_the_grace_period_the_way_phase_one_does():
