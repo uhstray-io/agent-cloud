@@ -381,16 +381,26 @@ finding that contradicts a decision stops the work and reopens that decision.
       Done 2026-10-14, read by the lead from the local gateway: only two tools exist (`list_models`,
       `chat_completions`), none mentions configuration, admin or dump; the admin port 15000 from a neighbour
       container is connection refused.
-- [ ] 4.8 Validation gate, local: `tools/list` returns the chat and model-listing tools,
+- [x] 4.8 Validation gate, local: `tools/list` returns the chat and model-listing tools,
       proving scenario "An enrolled identity lists tools"; a model request through MCP is
       attributed to `mcp-self`, proving scenario "A model request through MCP is charged
       to the internal identity"; the key value is absent from the rendered config, the
       committed templates and the docs, proving scenario "The internal identity is never
       handed out"; no tool returns configuration and the admin port is refused, proving
       scenario "No tool exposes the configuration dump"
-      Status 2026-10-14: the lead's manual run showed the chat call attributed to `mcp-self` (4.6 evidence) and
-      the tools and admin-port checks (4.7). Stays open until the lead reruns the local deploy with the 4.6 verify
-      (`4b396795`) and reads its output.
+      2026-10-14 evening (task output read from the LOCAL Semaphore by the lead, task 6601;
+      no production run): local deploy of the local Semaphore's repository state
+      at local merge `3a586151`, which contains `feat/agw-mcp-gateway` at `a2b23a42`, with
+      the flag on. Later commits on that branch (the merge of `dev` and the review fixes) are
+      not exercised by this run. Its verify: "MCP: /mcp without a key is 401; as stray initialize returned a
+      session, tools/list listed list_models, chat_completions, and one chat call returned a
+      completion logged as mcp-self on the loopback listener." Scenario evidence: tools listed
+      (yes); a model request through MCP is charged to `mcp-self` (log identity `mcp-self`,
+      loopback listener); the key value is absent from the rendered config (only the
+      `mcp-self` key hash; the value sits in the 0600 `.env`) and from committed files (tests
+      in PR #634); no tool returns configuration (only two tools exist) and the admin port is
+      refused from a neighbour container (connection refused, the lead's probe). Ticked with PR #634's merge: run 6601 includes the 4.6
+      verify (`4b396795` is an ancestor of `a2b23a42`), which the earlier status line asked for.
 ## 5. Edge: Caddy and Cloudflare
 - [ ] 5.1 `Caddyfile.local.j2`: a route flag (proposed `mcp_api`) rendering the allowlist
       shape for the exact path `/mcp`: Bearer-shape 401 inside the handle block, `reverse_proxy`
