@@ -402,26 +402,48 @@ finding that contradicts a decision stops the work and reopens that decision.
       refused from a neighbour container (connection refused, the lead's probe). Ticked with PR #634's merge: run 6601 includes the 4.6
       verify (`4b396795` is an ancestor of `a2b23a42`), which the earlier status line asked for.
 ## 5. Edge: Caddy and Cloudflare
-- [ ] 5.1 `Caddyfile.local.j2`: a route flag (proposed `mcp_api`) rendering the allowlist
+- [x] 5.1 `Caddyfile.local.j2`: a route flag (proposed `mcp_api`) rendering the allowlist
       shape for the exact path `/mcp`: Bearer-shape 401 inside the handle block, `reverse_proxy`
       with
       `flush_interval -1` and the route's `upstream_tls`, bare `handle { respond 404 }`.
       Factor what it shares with the `inference_api` shape into one macro (no fork), and
       prove the inference route renders byte-identical before and after
-- [ ] 5.2 `platform/inventory/local-dev.yml.example`: the MCP route at
+      Done 2026-10-14: the `api_edge` macro renders both flags; `mcp_api` passes `/mcp` and no
+      `/health` handle, `inference_api` passes `/v1/*` with it. A render of the local example's
+      routes plus prod-like routes (plain, `upstream_tls`, `forward_auth`) is byte-identical to the
+      pre-change template, and `platform/tests/fixtures/caddy-inference-sites.golden`, rendered by
+      the pre-change template, pins the inference sites. The rendered MCP site was also run under a
+      real Caddy against a stand-in upstream: `/mcp` without a valid Bearer is 401, with one
+      200, and `/mcp/`, `/sse`, `/v1/models`, `/metrics`, `/health` are 404 (Caddy's `path`
+      matcher is case-insensitive, so `/MCP` and `//mcp` are proxied too; the gateway's key check
+      is the control there)
+- [x] 5.2 `platform/inventory/local-dev.yml.example`: the MCP route at
       `agw_mcp_hostname`'s local value, upstream the gateway's `default` listener; the
       single-label host needs no new certificate SAN
+      Done 2026-10-14: `mcp.agent-cloud.test` -> `agentgateway:4000` (the `default` listener,
+      `config.yaml.j2`), `mcp_api: true`, beside the `admin.inference` route
 - [ ] 5.3 Production site: the matching block in site-config's `caddy_managed_sites` for
       `agw_mcp_hostname`, on the site-config branch for this change (its own PR; the
       Caddy deploy that places it is task 6.5)
-- [ ] 5.4 `platform/infra/cloudflare`: the `mcp` record in `dns.tf` (proxied, like the
+- [x] 5.4 `platform/infra/cloudflare`: the `mcp` record in `dns.tf` (proxied, like the
       other platform names), the `mcp-api-bypass-challenge` skip rule in `waf.tf` limited to
       the MCP host and `/mcp`, and exactly one rate-limit rule in `ratelimit.tf` with its
       own bucket from finding 1.7 (G3). `tofu fmt -check` and `tofu validate` pass
-- [ ] 5.5 BATS: the MCP route answers 404 for `/v1/models`, `/sse`, `/metrics` and 401
+      Done 2026-10-14: one expression (`local.mcp_endpoint`: host `mcp.<zone>` and path equal
+      `/mcp`) feeds both the skip rule (appended LAST in `waf.tf`, so no existing rule moves) and
+      the rate-limit rule (second, last Pro slot, so the zone holds two). The bucket
+      (`mcp_bucket`: per `cf.colo.id` + `ip.src`, 10 requests / 10 s, 10 s mitigation) is
+      PROVISIONAL: finding 1.7 measured the three-request handshake but set no ceiling, so it
+      reuses the inference bucket's shape; tasks 6.6 and 7.7 correct it from measurement.
+      OpenTofu v1.12.6 (container image): `fmt -check` clean, `init -backend=false` and `validate`
+      pass. No plan or apply was run
+- [x] 5.5 BATS: the MCP route answers 404 for `/v1/models`, `/sse`, `/metrics` and 401
       for a missing or malformed Bearer header; the inference route's rendering is
       unchanged; a Terraform test or grep asserts the Cloudflare expressions name the MCP
       host and not the inference host's rules. Mutation-check each
+      Done 2026-10-14: `test_service_caddy.bats` (MCP handle structure, 401 shape, streaming and
+      TLS, inference golden) and `test_cloudflare_mcp_edge.bats` (expressions, last-position
+      skip, two-rule cap, record). 19 mutations, each red, each restored byte-exact
 - [ ] 5.6 Local proof through the local Caddy deploy (`deploy-caddy.yml` through the local
       Semaphore): the MCP hostname, then the inference hostname's `/mcp`
 - [ ] 5.7 Validation gate, local: no key and a malformed key are each 401 with no
