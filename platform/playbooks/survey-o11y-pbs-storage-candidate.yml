@@ -1,7 +1,9 @@
 # Identify one visible thick-LVM image-store candidate for private review only.
-- ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+- name: Refuse internal extra vars
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
 
-- ansible.builtin.import_playbook: survey-o11y-pbs-physical-storage.yml
+- name: Survey PBS physical storage
+  ansible.builtin.import_playbook: survey-o11y-pbs-physical-storage.yml
   vars:
     _extra_var_guard_nested: true
 
