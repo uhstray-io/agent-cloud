@@ -419,6 +419,11 @@ scenario that fails an `agw_clients` entry named `user-x`. This change is a comp
    the gateway has no MCP tools of its own and a self-target may recurse. The operator
    confirms the reading (task 0.4); spike item 1.5 settles whether the literal form is even
    possible.
+8. How the gateway's own call is admitted when `agw_listener_tls` is on (spike 1.5): a second client
+   leaf plus a widening of `agw_client_cert_allowlist`, or a plain listener the gateway calls itself.
+   - Answer 2026-10-14 (operator): the loopback listener; no widening of the allowlist. Measured in the
+     spike (1.5, loopback paragraph); v1.5.0 has no gateway bind address, so the listener is restricted
+     by a `source.address` rule instead of a bind, which the operator should confirm is acceptable.
 
 ## Findings (spike 2026-10-14)
 
@@ -522,8 +527,8 @@ valid `mcp-self` key. With the SAN added to the allowlist it succeeds and return
 second client-profile leaf for the gateway (cert and key mounted into its container, a declared
 `internal_leaves` entry) AND its SAN added to `agw_client_cert_allowlist`, which today is the Caddy leaf
 alone: a **widening of the allowlist**, now admitting any holder of that leaf. A different shape would
-avoid the widening, a second plain-HTTP listener on the container loopback attached to `llm` only; it was
-not built or tested here and would be a design change. Two further measured behaviours bear on the
+avoid the widening, a second plain-HTTP listener attached to `llm` only; the operator took it, and it is
+built and tested in the next paragraph. Two further measured behaviours bear on the
 verify: a 403 (or the 401 above) from the self-call is returned to the MCP client as an HTTP 200 whose tool
 result is the text `{"code":403,"message":"authorization failed"}`, so a probe must inspect the tool
 result, not the status; and the loop below.
@@ -542,6 +547,58 @@ these. **Impact (D2(a) as written):** the "if it recurses" branch applies: (a) i
 endpoint plus target (b), and no target may point at `/mcp`. Because the validator does not refuse it,
 the deploy needs its own refusal, before any restart, of any `mcp`/`sse` target whose host and port are
 the gateway's own listener (a task for section 3, not a decision change).
+
+**1.5, the loopback self-call (2026-10-14, after the operator's decision to take it instead of
+widening the allowlist).** Same scratch set-up as above (scratch CA, the `listener_tls()` block on the
+external gateway `default` on 4000 with the allowlist left at the one Caddy-role SAN) plus a second
+gateway, `loopback`, plain HTTP on 4002, attached to `llm` only (`llm.gateways: [default, loopback]`,
+`mcp.gateways: [default]`, no UI). The `openapi` self-target's host is `127.0.0.1:4002`, its
+`backendAuth` is the `mcp-self` key from an environment reference, and no client certificate is
+involved. **A deviation from the decision as phrased, forced by the schema:** v1.5.0 gateways take a
+`port` and no bind address (`LocalGateway` has `port`, `protocol`, `listeners`, `tls` and policies only;
+the schema offers an address only for the admin, stats and readiness servers), so the listener binds
+every container interface, "bound to the container loopback" is not expressible, and an unpublished port
+alone is not loopback. Measured with no extra rule: a neighbour container on the same compose-style
+network reached `loopback:4002` (no key 401, a valid key 200 with the model list). The restriction is
+therefore a gateway-level rule on the loopback gateway, `authorization.rules: - require:
+'source.address == "127.0.0.1"'`, and with it: the same neighbour is 403 `authorization failed` with or
+without a key (the rule runs before key authentication), while the gateway's own call (peer
+`127.0.0.1`) and an in-container client still pass. Results:
+(a) through the external mTLS listener with the Caddy-role leaf, `tools/call list_models` and
+`chat_completions` as `alice` returned the upstream's real bodies (not an embedded error); the budget
+table gained one row for the `mcp-self` key hash (30 tokens) and `request_logs` recorded the model call
+with `agentgateway_user = mcp-self`: charged and logged as `mcp-self`.
+(b) no port 4002 is published (`curl` from the host to 4002 failed to connect, exit 7); inside the
+container namespace a request to the loopback listener with no key is 401 `no API Key found` and
+with a valid key 200.
+(c) MCP is **not served** on the loopback listener, but it is not a clean 404 either: the `llm` route
+there accepts any path, so an MCP `initialize` posted to `/mcp` is answered 400 `LLM request body is
+missing string field 'model'`, `GET /sse` 400, no key 401; an LLM-shaped body posted to `/mcp` is
+**forwarded to the model upstream** as `/v1/mcp` and returns the upstream's own 404. The same
+pass-through exists on the external listener today (the reason Caddy is an allowlist); on loopback it is
+reachable only by the gateway's own calls (rule above) and those use only the two schema operations.
+(d) the external listener is unchanged and is not widened: no client certificate fails the handshake;
+the gateway-role leaf, whose SAN is not in the allowlist, is 403 even with a valid key; the Caddy-role
+leaf without a key is 401 and with a key 200; the allowlist expression names the Caddy-role SAN only.
+(e) a target aimed at the loopback `/mcp` (`mcp` kind, `127.0.0.1:4002/mcp`, `backendAuth` `mcp-self`)
+**does not recurse**: `initialize` returned 400 `missing_model` from the LLM handler at once and
+the gateway logged three MCP requests in total (the client's), CPU and memory idle afterwards.
+(f) a target aimed at the **external** listener's `/mcp` (`mcp` kind, port 4000, `backendTLS` with the
+gateway-role leaf, `backendAuth` `mcp-self`, which is not admitted on `/mcp`) is refused 403 by the
+external listener's SAN rule and terminates (one MCP request logged, no loop); with no client certificate
+it fails at the handshake (1.5 above) and on the plain listener with no key it is 401.
+**Impact (section 3, deploy-time refusal):** every self-reaching shape measured above terminates once the
+listener is TLS and `mcp-self` is not admitted on `/mcp`, but the validator accepts all of them, and a
+plain external listener with a key admitted on `/mcp` is the earlier unbounded recursion, so the deploy
+refuses, before any restart, by allowlist and not by denylist: (1) the only
+target kind rendered is `openapi` over the shipped schema; an `mcp` or `sse` target is refused; (2) an
+`openapi` target's host must equal the declared loopback listener address and port (`127.0.0.1` and the
+loopback port); any other host is refused, since a string check cannot enumerate every alias of the
+external listener (`localhost`, the container name, a bridge address) and a denylist of port 4000 would
+miss them; (3) the loopback listener carries the `source.address` rule, is attached to `llm` only, and its
+port is never in `compose.yml`'s published list (a BATS check on the rendered config and the compose
+file, mutation-checked); (4) `mcp-self` stays out of the `/mcp` key list (G2). The `source.address`
+comparison uses the IPv4 loopback literal; an IPv6-only path was not exercised.
 
 **1.6 `statefulMode` (2026-10-14).** Headers: `initialize` needs `Content-Type: application/json`
 (missing: 415) and an `Accept` naming **both** `application/json` and `text/event-stream` (JSON only, event
@@ -606,7 +663,7 @@ locally.
 
 **Not exercised.** The 125 s Cloudflare timeout itself (production, 6.6); real Claude Code and pi
 handshakes (section 7); `mcp` and `sse` targets other than the loopback one, and `failureMode` for them;
-the plain-HTTP-loopback-listener alternative to widening the allowlist (1.5); `/config_dump` handling of
+`/config_dump` handling of
 the UI's env-expanded OIDC values (1.8). The mutual-TLS cases used a scratch `openssl` CA, not the
 platform's internal CA, so the allowlist and handshake behaviour are measured but a step-ca leaf with its
-real SAN profile was not; for that reason task 1.5 is left unticked.
+real SAN profile was not. Also not exercised: an IPv6-only path to the loopback listener (1.5).

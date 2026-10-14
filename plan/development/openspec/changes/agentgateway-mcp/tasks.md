@@ -38,7 +38,7 @@ finding that contradicts a decision stops the work and reopens that decision.
       to one identity only and record whether it is evaluated
 - [x] 1.4 Budgets and `mcp.policies.apiKey`: record whether `budgets` entries under the MCP
       key policy are accepted and charged (G2)
-- [ ] 1.5 The self-call: an `openapi` target whose host is the gateway's own `/v1`, with
+- [x] 1.5 The self-call: an `openapi` target whose host is the gateway's own `/v1`, with
       `backendAuth` carrying a key from an environment reference, once with the local
       plain listener and once with `agw_listener_tls` on. Record what the mutual-TLS
       listener requires of the gateway's own call (client certificate, SAN allowlist) and
