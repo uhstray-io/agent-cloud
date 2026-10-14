@@ -50,7 +50,7 @@ and why.
 | 1.18 | Listed an auth failure's causes from the code, missed the database-error 401, and chased credentials while the orchestrator's disk was full | Unverified claim | 1 | Convention (disk alert proposed) |
 | 1.19 | A negative claim about a host's state from evidence that cannot establish it (widens 1.6) | Unverified claim | 1 | Convention |
 | 1.20 | Assumed Semaphore injected a task-id environment variable; the first production drill printed a blank receipt ID | Unverified runtime assumption | 1 | Test (o11y receipt checks) |
-| 1.21 | Said the live alert readback proved the inference alert groups; it filtered rule uids to `o11y_` and never read them, and no dashboard check covered the inference boards | Unverified claim | 1 | Test (`test_service_o11y.bats` readback mirror) |
+| 1.21 | **x2** — Said the live alert readback proved the inference alert groups; it filtered rule uids to `o11y_` and never read them, and no dashboard check covered the inference boards | Unverified claim | 2 | Test (`test_service_o11y.bats` readback mirror); selector choice Convention |
 | 1.22 | Stated the runner's ansible-core version twice (2.16 from a relayed comment, then 2.20.8 from a compose default); the live server runs v2.17.31, whose image ships 2.18.15 | Unverified claim | 1 | CI pin (requirements-test.txt) + Convention |
 | 1.23 | Named an incident's cause (a config the pinned image would reject) without reading the failing task's own stderr, which printed the real one: the rollback recreated the gateway without the TLS compose overlay | Unverified claim | 1 | Convention |
 | 2.1 | Test compiled a pattern as raw file text, not as the runtime decodes it | False-green test | 1 | Test |
@@ -894,6 +894,21 @@ stated past what its tests exercised); this is the live-verification form.
 live rule and contact state", "real deploy verifies every provisioned dashboard is live") —
 renders the alert file with the inference scrape and probe enabled and fails when an
 `inference_*` rule is missing or unrouted live, or a dashboard file's uid is not live.
+
+**Occurrences: 2** — 2026-10-04, 2026-10-13
+
+**Occurrence 2 — 2026-10-13.** Verify o11y Service (Dev) tasks 5257 and 5262 passed with the
+agentgateway canary, and the operator was told the Loki line read back "is a span log", so
+gateway task 3.1 (spans reach Loki as log lines) was ticked in PR #595. The check's Loki selector
+is `{service="agentgateway"}`. The lead searched only the Docker relabel and the journal
+collector for other sources of that label, and missed the gateway's own OTLP access logs, which
+reach Loki with the same `service` label through the `gateway_logs` attributes processor in
+`config.alloy.j2`. The pass therefore did not distinguish an access record from a span log. The
+pull-request review caught it before merge. The rule did not fire because the lead read what the
+check selects and then wrongly enumerated what else matches it. Reading the producers of the
+selected label means every pipeline that writes it, not the ones already in mind. The fix gives
+the check a discriminating selector (`signal="span"`, PR #597; proven by task 5299).
+Choosing it is still Convention.
 
 ### 1.22 A runner's tool version stated twice without reading the running system
 

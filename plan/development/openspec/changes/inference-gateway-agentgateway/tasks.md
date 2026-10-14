@@ -382,13 +382,16 @@
       alert record came back in the reply). PR #594 (merged as 08465c5f) sends the canary over
       the listener's TLS, as `probe-agentgateway-gate.yml` does. Dry run 5257 and real run
       5262 then both passed: "agentgateway verified: recent Loki log, metrics not requested,
-      recent Tempo trace." The Loki query is `{service="agentgateway"}`, and the only Loki
-      source that sets that label is the span-log processor in
-      `platform/services/o11y/deployment/templates/config.alloy.j2` (the attributes processor
-      `gateway_span_logs`): Docker discovery labels only the o11y host's own containers and
-      the journal collector only `o11y/alloy`. So the line read back is a gateway span log
-      line. The scrape half was proven 2026-10-06 (3142) and the client-view row by 4913
-      (task 3.3). Ticked.
+      recent Tempo trace." That Loki query, `{service="agentgateway"}`, also matches the
+      gateway's OTLP access logs (the `gateway_logs` processor in `config.alloy.j2` carries the
+      same `service` label), so those two runs do not prove the span-log stream (review of
+      #595; MISTAKES 1.21, occurrence 2). PR #597 (merged as d55530f9) added
+      `expected_log_signal`; Publish Semaphore Template Surveys (Dev) 5292 put it on the live
+      template. Dry run 5295 and real run 5299, with `expected_log_signal` span, then passed:
+      "agentgateway verified: recent Loki log (signal span), metrics not requested, recent
+      Tempo trace." `{service="agentgateway",signal="span"}` is set only by the
+      `gateway_span_logs` processor, so spans reach Loki as log lines. The scrape half was
+      proven 2026-10-06 (3142) and the client-view row by 4913 (task 3.3). Ticked.
 - [x] 3.2 Check whether `localRateLimit` has a log-only mode in the v1.5.0 schema; record
       the answer in `design.md` and set the first-week policy accordingly. 2026-09-17: no
       such mode (`RateLimitSpec` has only `maxTokens`, `tokensPerFill`, `fillInterval`,
