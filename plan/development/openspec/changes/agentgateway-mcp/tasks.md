@@ -148,11 +148,18 @@ finding that contradicts a decision stops the work and reopens that decision.
       ends their access"
 
 ## 3. Gateway MCP configuration and verify
-- [ ] 3.1 One shared key macro in `config.yaml.j2` taking the identity list and whether to
+- [x] 3.1 One shared key macro in `config.yaml.j2` taking the identity list and whether to
       include the legacy block and budgets (G2), used by `llm.policies.apiKey` and
       `mcp.policies.apiKey`. The `llm` output for the same inputs is byte-identical before
       and after (diff the rendered block): no fork
-- [ ] 3.2 The `mcp:` block behind `agw_mcp_enabled` (default false): `gateways: [default]`,
+      Done 2026-10-14 (branch `feat/agw-mcp-gateway`): the macro is `apikey_policy(identities, legacy, limits)`
+      in `config.yaml.j2`; `llm` calls it with all three, `mcp` with none. The `llm` block is byte-identical for the
+      same inputs: rendered with the pre-change template and with this one for a prod-like input (listener TLS,
+      shared-key grace period, OTLP, per-identity policies), the local plaintext example and a local TLS UI-off
+      input, config.yaml and .env each diffed empty. One deliberate difference, with `mcp-self` under the local
+      plaintext flag (4.2). BATS "the key loop is written once, in the shared macro"; mutation (a second key loop)
+      red.
+- [x] 3.2 The `mcp:` block behind `agw_mcp_enabled` (default false): `gateways: [default]`,
       `policies.apiKey` from the macro without `legacy-shared` and without `mcp-self`
       (the target's `backendAuth` identity must never authenticate a client), `prefixMode` and
       `statefulMode: stateless` (chosen 2026-10-14 from spike 1.6: no session header, no
@@ -165,10 +172,28 @@ finding that contradicts a decision stops the work and reopens that decision.
       entries (accepted but never charged or enforced, spike 1.4: a silent no-op that reads
       as a control). With the flag true and no target the deploy refuses, because the schema
       requires one
-- [ ] 3.3 Run the MCP-enabled rendering through `tasks/agw-validate-config.yml` before any
+      Done 2026-10-14. Block, key policy, `prefixMode` and `statefulMode: stateless`, targets only from
+      `agw_mcp_openapi_targets`, `dnsRebindingProtection` unset, no budgets and no `allowedModels` on the MCP key
+      entries, no `legacy-shared`, no `mcp-self`. The spec gives no `prefixMode` value: `conditional` (the schema
+      default, pinned) is rendered, so a tool is its `operationId` while there is one target and is prefixed by the
+      target name once there are several; confirm or change. No `mcp.policies.localRateLimit` is rendered (G6, task
+      5.4: not in this task's list). The deploy asserts the render: the flag false renders no `mcp` block, any
+      `mcp` block carries a strict key policy, and exactly the client identities are enrolled on it; flag true with
+      no target is refused (3.8). Tests: `test_agw_mcp_render.py` (flag false/true, key policy, key list, no budget,
+      llm unchanged) and `test_agw_mcp_guard.py` (render check). Mutations red: drop the policy, add a budget,
+      restore the legacy entry, admit `mcp-self`, `stateful`, render check blind to a missing policy.
+- [x] 3.3 Run the MCP-enabled rendering through `tasks/agw-validate-config.yml` before any
       container is recreated (G5), with the same allowlisted-category failure the existing
       validation gives
-- [ ] 3.4 Extend `tasks/agw-probe.yml` and the verify in `deploy-agentgateway.yml`: with MCP
+      Done 2026-10-14 by construction: the one `tasks/agw-validate-config.yml` include in Phase 1 follows the render
+      and runs for every render, so a flag-true render is validated by the pinned image before Phase 2 recreates
+      anything, with the existing allowlisted-category failure; BATS "the MCP-enabled render is validated by the pinned
+      image before any container is recreated" pins the order and that it is unconditional. The task file is
+      unchanged (the schema is embedded, so the validator needs no mount). Live: `--validate-only` accepts the
+      flag-true render (UI off; UI on cannot be validated offline, it fetches the OIDC discovery document) and the
+      TLS-on prod-like render with dummy certificates; a flag-true config with `AGW_MCP_SELF_KEY` absent from the env
+      is refused ("environment variable not found").
+- [x] 3.4 Extend `tasks/agw-probe.yml` and the verify in `deploy-agentgateway.yml`: with MCP
       enabled, `/mcp` without a key must be 401 and an authenticated `initialize` must
       succeed; with MCP disabled, `/mcp` must not be served. The probe gains an optional
       `_agwp_headers` input (merged into the request, for example `Accept`) and a session-id
@@ -186,19 +211,39 @@ finding that contradicts a decision stops the work and reopens that decision.
       `no_log` as it does today, and `platform/tests/test_no_request_in_loop_items.py` must
       still pass. `no_log` stays on the key-bearing step only. A check that cannot run
       reports itself unproven, never passed
-- [ ] 3.5 Inventory: `agw_mcp_enabled`, `agw_mcp_hostname`, the structured target
+      Done 2026-10-14 in `deploy-agentgateway.yml` Phase 3 and `tasks/agw-probe.yml`. Flag true: keyless `/mcp`
+      is 401 (a fail names the check and prints no key), an authenticated `initialize` returns a session, `tools/list`
+      lists at least one tool; flag false: a keyed `initialize` is not an MCP reply (status and body). The probe
+      gains `_agwp_headers` (Authorization merged last) and an opt-in `_agwp_rpc` that reads the `data:` line of the
+      event stream else a JSON body into `_agwp_out.rpc`; both `Accept` values are sent. Verdicts read the body;
+      `-32003` and the gateway's own 429 are unproven and fail the deploy unless `agw_verify_allow_unproven`, and are
+      reflected in the result's `verified`. The identity is never `mcp-self`. No new `no_log` task, no loop over a
+      protected result; `test_no_request_in_loop_items.py` passes. Not done: the session-id carry (stateless returns
+      none, spike 1.6, so it could not be exercised) and the model call through `/mcp` (4.6). Tests:
+      `test_agw_mcp_verify.py` runs the real tasks against a fake gateway; updated BATS counts (keyed probe tasks
+      2 to 5, `_agwp_out` keys, rate-limit literal 2 to 4). Mutations red: keyless assert, tool-listed assert,
+      unproven gate, initialize status, not-served status and body, `data:` parse, caller headers, mcp-self identity,
+      `verified`.
+- [x] 3.5 Inventory: `agw_mcp_enabled`, `agw_mcp_hostname`, the structured target
       declaration (proposed `agw_mcp_openapi_targets`: a list of entries, each a target name
       and a schema file name resolved under the shipped schema directory; the host is not an
       input) and `agw_loopback_port` (proposed, default 4002) in
       `platform/inventory/local-dev.yml.example`, with a comment that the first target is
       task 4.3's
-- [ ] 3.6 BATS: flag false renders no `mcp` block; flag true renders `gateways: [default]`
+      Done 2026-10-14 in `platform/inventory/local-dev.yml.example`: `agw_mcp_enabled` (false), `agw_mcp_hostname`
+      (consumed by the Caddy route of section 5, not by the gateway deploy), `agw_loopback_port` (4002),
+      `agw_mcp_openapi_targets` (`gateway` -> `agentgateway-v1.json`, commented as task 4.3's), and `mcp-self` with
+      its `agw_client_policies` budget (4.2).
+- [x] 3.6 BATS: flag false renders no `mcp` block; flag true renders `gateways: [default]`
       only, no legacy entry, the same identity list as `llm` minus `legacy-shared` and `mcp-self`;
       `mcp.policies.apiKey` present whenever the flag is true; no `budgets` under the MCP key
       entries; `statefulMode: stateless`; the macro is the only place the key loop is
       written. Mutation-check each (drop the policy, add a budget, restore the legacy entry,
       write a second key loop: each goes red)
-- [ ] 3.7 The loopback gateway, so the self-call needs no mutual-TLS leaf and no widening of
+      Done 2026-10-14 as pytest on the rendered YAML (`test_agw_mcp_render.py`, the harness 2.8 also uses) plus the
+      BATS macro test. Mutations red, each restored byte-exact (`git diff --exit-code` clean): drop the policy,
+      add a budget, restore the legacy entry, admit `mcp-self`, `stateful`, a second key loop.
+- [x] 3.7 The loopback gateway, so the self-call needs no mutual-TLS leaf and no widening of
       `agw_client_cert_allowlist` (the operator's decision 2026-10-14, Open Question 8): a
       second gateway `loopback` on `agw_loopback_port`, `llm.gateways: [default, loopback]`
       (attached to `llm` only, never `mcp`, never `ui`), carrying `authorization.rules:
@@ -209,20 +254,41 @@ finding that contradicts a decision stops the work and reopens that decision.
       gateway and the `loopback` entry in `llm.gateways` render ONLY when `agw_mcp_enabled` is
       true (G4): with the flag false the rendered file is unchanged and `llm.gateways` stays as
       it is today
-- [ ] 3.8 The deploy-time target allowlist, refusing before any render or restart, naming
+      Done 2026-10-14: `gateways.loopback` on `agw_loopback_port` (default 4002, refused if it is 4000, 4001,
+      15000, 19001, 19002 or outside 1024-65535), the `source.address` rule, `llm.gateways` gaining `loopback`
+      (`[default, ui, loopback]`, or `[default, loopback]` with the UI off) only with the flag; the flag false render
+      is unchanged. Live on a scratch v1.5.0 gateway rendered from the template (names only): no key, an unknown key
+      and `mcp-self` are 401 on `/mcp`, an enrolled identity is 200; `mcp-self` is 200 on `/v1`; a request to the
+      loopback port from a neighbour container is 403 and from the gateway's own namespace 200; a chat tool call
+      through `/mcp` is logged on the loopback listener as `identity="mcp-self"`, `/v1/chat/completions`, and on `/mcp`
+      as the caller with `mcp.target=gateway`.
+- [x] 3.8 The deploy-time target allowlist, refusing before any render or restart, naming
       the entry: only `openapi` targets are rendered, from the shipped schema; the rendered
       host is the declared loopback address and port and nothing else; an `mcp` or `sse`
       target, a schema outside the shipped directory, or any other host is refused (the
       validator accepts every one of these, and a target aimed at the gateway's own listener
       recurses without bound, spike 1.5). An allowlist and not a denylist, because a string
       check cannot enumerate every alias of the external listener
-- [ ] 3.9 BATS for 3.7 and 3.8, on the rendered config and the compose files, each
+      Done 2026-10-14 as an allowlist in `_agw_mcp_problems` (`vars/secret-declarations/agentgateway.yml`),
+      asserted in Phase 1 before the monorepo is placed and before anything renders: a target is exactly `name` and
+      `schema`, so an `mcp`, `sse` or `stdio` kind, a `host` or a `port` cannot be declared; the schema is a bare
+      `*.json` file name (no path), read from the shipped `mcp-schemas/` directory; the host is not an input, the
+      template renders `127.0.0.1:<agw_loopback_port>`. Each refusal names the entry. The schema is embedded in
+      `config.yaml` as one compact JSON string rather than mounted, so no compose file changes and a schema edit
+      is a config change the change-aware deploy sees.
+- [x] 3.9 BATS for 3.7 and 3.8, on the rendered config and the compose files, each
       mutation-checked (break it, watch its test fail, restore byte-exact): drop the
       `source.address` rule; attach `loopback` to `mcp` or to `ui`; publish the loopback
       port in any compose file; render the loopback gateway or the `loopback` entry in
       `llm.gateways` with the flag false (the flag-false render must show no loopback gateway
       and the unchanged `llm.gateways`); render an `mcp` or `sse` target; render a host other than the
       loopback address and port; a schema path outside the shipped directory
+      Done 2026-10-14: pytest on the rendered config (`test_agw_mcp_render.py`) and the guard
+      (`test_agw_mcp_guard.py`), BATS on the compose files ("the MCP loopback port is published by no compose
+      file"). Mutations red, each restored byte-exact: drop the `source.address` rule, attach `loopback` to `mcp`,
+      to `ui`, publish the port in `compose.yml`, loopback gateway and `llm.gateways` entry rendered with the flag
+      false, an `mcp`-kind target, a host other than the loopback listener, a schema path outside the shipped
+      directory, an `mcp`/`sse`/`host` key accepted on a target.
 - [ ] 3.10 Validation gate, local (uses task 4.1's schema file as the target): an `initialize`
       with no key is 401, proving scenario "Unauthenticated MCP request is refused"; an
       unknown key is 401, proving scenario "An unknown key is refused"; the legacy shared
@@ -241,22 +307,42 @@ finding that contradicts a decision stops the work and reopens that decision.
       target allowlist) pass and each mutation fails
 
 ## 4. The OpenAPI target over `/v1`
-- [ ] 4.1 The OpenAPI schema file in the repository (proposed under
+- [x] 4.1 The OpenAPI schema file in the repository (proposed under
       `platform/services/agentgateway/deployment/`): chat completions and model listing
       only; `responses` deferred. Parsed in a BATS test
-- [ ] 4.2 The internal identity: declare `mcp-self` in the local inventory's `agw_clients`
+      Done 2026-10-14: `platform/services/agentgateway/deployment/mcp-schemas/agentgateway-v1.json` (OpenAPI 3.0.3,
+      `list_models` and `chat_completions`, no `servers`). Parsed in `test_agw_mcp_render.py`; the gateway accepted it
+      and listed both tools live.
+- [x] 4.2 The internal identity: declare `mcp-self` in the local inventory's `agw_clients`
       with its own `agw_client_policies.mcp-self.tokens_per_hour`; reserve the name so a
       person cannot be declared with it; the key flows through the existing
       `client_<name>` declaration
-- [ ] 4.3 The target, declared in the structured form of 3.5 and rendered by 3.8: `openapi`,
+      Done 2026-10-14: `mcp-self` and `agw_client_policies.mcp-self.tokens_per_hour` in the local example. The
+      reservation already existed (`_agw_identity_problems` refuses `mcp-self` for a derived admin identity); a test
+      pins it (`test_a_person_cannot_be_declared_as_the_internal_identity`, mutation red). Beyond the task: the key
+      loop renders `mcp-self` as a hash even under the local `agw_plaintext_keys` flag, since a raw key would reach
+      the UI playground as a saved key; the one input that differs from before is `mcp-self` with that flag, which no
+      earlier inventory had.
+- [x] 4.3 The target, declared in the structured form of 3.5 and rendered by 3.8: `openapi`,
       the shipped schema, host the loopback listener of 3.7, `backendAuth` the shared
       `mcp-self` key from `$AGW_MCP_SELF_KEY`; no client certificate, no mutual-TLS leaf for
       the gateway and no change to `agw_client_cert_allowlist` (spike 1.5, Open Question 8)
-- [ ] 4.4 `env.j2`: `AGW_MCP_SELF_KEY` from the secret, in the 0600 environment file with
+      Done 2026-10-14: the target is `agw_mcp_openapi_targets` entry `gateway` (3.5), rendered by 3.8 as `openapi`,
+      the shipped schema, host the loopback listener, `backendAuth` the `$AGW_MCP_SELF_KEY` reference; no client
+      certificate, no mutual-TLS leaf, `agw_client_cert_allowlist` untouched.
+- [x] 4.4 `env.j2`: `AGW_MCP_SELF_KEY` from the secret, in the 0600 environment file with
       the other keys; the rendered config carries the reference only
-- [ ] 4.5 BATS: the key's value appears in no rendered file and no committed template, the
+      Done 2026-10-14: `AGW_MCP_SELF_KEY={{ secrets['client_mcp-self'] }}` in `env.j2` (0600), only with the flag;
+      the rendered config carries the reference only.
+- [x] 4.5 BATS: the key's value appears in no rendered file and no committed template, the
       reference is `$AGW_MCP_SELF_KEY`, the schema file lists exactly the intended
       operations, no target addresses the admin port or `/config_dump`. Mutation-check
+      Done 2026-10-14 in `test_agw_mcp_render.py`: the key value is in the env file once and in no rendered
+      config, under the hashed and the local plaintext inputs; the templates, compose files and schema name it
+      only by `$AGW_MCP_SELF_KEY` / `secrets['client_mcp-self']`; the schema lists exactly the two operations and
+      no target or schema addresses the admin port or `/config_dump`. Mutations red: the value as the
+      `backendAuth` value, the plaintext exemption removed, a `/config_dump` operation in the schema, the env line
+      dropped.
 - [ ] 4.6 Extend the verify: `tools/list` shows the chat tool; one model call through
       `/mcp` returns a completion; the access log line for the resulting `/v1` request
       carries `mcp-self` as `identity` (names only in the report)

@@ -75,6 +75,43 @@ agentgateway alongside skynet" (Proposed until the operator confirms). OpenSpec 
 - No log-only mode exists for `localRateLimit` in v1.5.0; the first week runs with a
   loose figure and tightens from observed rates (design open question, answered).
 
+## MCP (change `agentgateway-mcp`, gateway side)
+
+The gateway serves MCP as a second surface of the same process, behind the inventory flag
+`agw_mcp_enabled` (default `false`). With the flag false nothing below renders and the verify asserts
+`/mcp` is not served. Spike findings (v1.5.0, measured 2026-10-14) are in
+`plan/development/openspec/changes/agentgateway-mcp/design.md`, "Findings". The edge (Caddy hostname,
+Cloudflare record and rules) and the harness client templates are later sections of that change and
+are not described here.
+
+| Piece | Where | Notes |
+|---|---|---|
+| Endpoint | `/mcp` on gateway `default` only (`mcp.gateways: [default]`) | Not on the `ui` listener. `statefulMode: stateless`: no session id and no held server stream, `GET /mcp` is 405. `prefixMode: conditional`: a tool is named by its OpenAPI `operationId` while there is one target, prefixed with the target name once there are several. `dnsRebindingProtection` unset (the gateway is reached by a non-local Host) |
+| Authentication | `mcp.policies.apiKey`, `mode: strict`, the same header and the same key list as `/v1` | Rendered by the one `apikey_policy` macro in `config.yaml.j2` that `llm` also calls, so the lists cannot drift. Without `legacy-shared` and without `mcp-self`, and with no `budgets` or `allowedModels` (a budget under the MCP policy is accepted and never charged, spike 1.4). An `mcp` block with no key policy answers every request (spike 1.1), so the deploy asserts the policy is rendered whenever the flag is true |
+| Loopback gateway | `gateways.loopback`, container port `agw_loopback_port` (default `4002`), rendered only with the flag | Plain HTTP, attached to `llm` only (`llm.gateways` gains `loopback`; `mcp` and `ui` never do), `authorization` rule `source.address == "127.0.0.1"` because v1.5.0 gateways have no bind address (a neighbour container is 403 with or without a key, spike 1.5). Never in any compose file's `ports:`. Needs no client certificate, so `agw_client_cert_allowlist` is not widened for the self-call |
+| Target | `agw_mcp_openapi_targets`: a list of `{name, schema}` | Rendered as an `openapi` target whose `host` is `127.0.0.1:<agw_loopback_port>` and whose `schema` is the shipped file `deployment/mcp-schemas/<schema>` read by the deploy and embedded in `config.yaml` as one compact JSON string (nothing to mount; a schema edit is a config change the change-aware deploy sees). Its `backendAuth` is the `mcp-self` key by environment reference |
+| Shipped schema | `deployment/mcp-schemas/agentgateway-v1.json` | `/v1/models` (`list_models`) and `/v1/chat/completions` (`chat_completions`) only, no `servers` |
+| Internal identity | `mcp-self` in `agw_clients`, budget from `agw_client_policies.mcp-self` | Its key is `AGW_MCP_SELF_KEY` in the 0600 `.env`; `config.yaml` carries `$AGW_MCP_SELF_KEY` only. It is a hash even under the local-dev `agw_plaintext_keys` flag. Refused on `/mcp` (401), honoured on the `/v1` request the self-call makes, so a model request through MCP is charged to and logged as `mcp-self`. Never handed out: hand out keys with `Back Up Credentials to site-config` and an explicit `credential_fields` list |
+
+What the deploy refuses, before anything is rendered or restarted, naming the entry
+(`_agw_mcp_problems` in `vars/secret-declarations/agentgateway.yml`): an allowlist, not a denylist.
+A target is exactly `name` and `schema`: an `mcp`, `sse` or `stdio` kind, a `host` and a `port` are
+not accepted, because a target aimed at the gateway's own external listener or at `/mcp` recurses
+without a bound (spike 1.5) and a string check cannot enumerate every alias of that listener. The
+schema is a bare `*.json` file name, so it cannot leave `mcp-schemas/`. The loopback port must be an
+integer from 1024 to 65535 other than `4000`, `4001`, `15000`, `19001`, `19002`. The flag true needs
+at least one target and `mcp-self` in the merged identities. The rendered file is checked against the
+flag (no `mcp` block and no loopback gateway with the flag false; a strict key policy on any `mcp`
+block; exactly the client identities on it), then validated by the pinned image as for every render.
+
+Verify (`deploy-agentgateway.yml`, Phase 3, through the one probe path): flag true, a request with no
+key is 401, an authenticated `initialize` returns a session, and `tools/list` lists at least one tool
+(the validator accepts an `mcpAuthorization` rule naming a wrong field, which then denies every tool
+silently). Flag false, a keyed `initialize` must not be an MCP reply (keyless is 401 either way). The
+verdicts read the response body: the gateway's own rate-limit refusal is HTTP 200 with JSON-RPC error
+`-32003`, reported as unproven, which fails the deploy unless `-e agw_verify_allow_unproven=true`.
+The probing identity is `agw_verify_client`, else the first merged identity, never `mcp-self`.
+
 ## Virtual-key lifecycle (aligned with vLLM's single key)
 
 vLLM accepts one static `--api-key` and knows nothing about clients; the gateway owns the
