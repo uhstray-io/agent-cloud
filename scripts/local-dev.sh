@@ -7,7 +7,7 @@
 # accidents are blocked here AND by tasks/assert-orchestrated.yml.
 #
 # Subcommands: preflight | init | guard | bootstrap | deploy <service> |
-#              validate | clean | promote
+#              validate | clean | foundation-down | promote
 
 set -euo pipefail
 
@@ -326,6 +326,37 @@ clean() {
   info "clean. Re-create with: make local-bootstrap"
 }
 
+# Stop the genesis foundation (the OpenBao -> dns -> step-ca -> caddy -> authentik ->
+# Semaphore sequence `bootstrap` builds) WITHOUT removing anything: no `rm`, no volume
+# removal, no compose down. The local Semaphore cannot stop itself and the foundation is
+# genesis-managed rather than Semaphore-deployed, so `make local-service-down` cannot reach
+# it; `clean` can, but destroys it. `make local-bootstrap` brings it back (OpenBao's file
+# backend persists and it auto-unseals; a stopped authentik/caddy project is recreated over
+# its kept volumes). Idempotent: a container that is absent or already stopped is skipped.
+foundation_down() {
+  # Reverse genesis order. Names are fixed where each is declared: local-openbao and
+  # local-semaphore in platform/playbooks/bootstrap-local-dev.yml (_bao_name, _sem_name);
+  # dns, step-ca, caddy and the four authentik-* in each service's deployment/compose.yml.
+  local names="local-semaphore authentik-worker authentik-server authentik-redis authentik-postgresql caddy step-ca dns local-openbao"
+  local name running left=""
+  for name in $names; do
+    if ! running=$(podman inspect --format '{{.State.Running}}' "$name" 2>/dev/null); then
+      info "$name: not present, skipped"
+    elif [ "$running" != "true" ]; then
+      info "$name: already stopped"
+    else
+      podman stop "$name" >/dev/null || die "could not stop $name"
+      info "$name: stopped"
+    fi
+  done
+  for name in $names; do
+    running=$(podman inspect --format '{{.State.Running}}' "$name" 2>/dev/null || true)
+    [ "$running" != "true" ] || left="$left $name"
+  done
+  info "still running among the foundation containers: ${left:-none}"
+  info "containers, images and volumes kept. Bring it back with: make local-bootstrap"
+}
+
 # Confirm the system resolver (getaddrinfo / dscacheutil — NOT dig, which
 # ignores /etc/resolver) routes the zone to the local DNS. Soft: warns, never
 # fails — macOS picks new resolver files up immediately, but DNS must be up.
@@ -575,6 +606,7 @@ case "${1:-}" in
   tls-trust) shift; tls_trust "$@" ;;
   tls-untrust) tls_untrust ;;
   clean)     clean ;;
+  foundation-down) foundation_down ;;
   promote)   promote ;;
   *) cat <<EOF
 usage: scripts/local-dev.sh <subcommand>
@@ -602,6 +634,8 @@ usage: scripts/local-dev.sh <subcommand>
                      idempotent by fingerprint)
   tls-untrust        remove the trusted internal CA root (sudo)
   clean              remove local control plane (containers, volume, state)
+  foundation-down    STOP (never remove) the genesis foundation: Semaphore, authentik,
+                     caddy, step-ca, dns, OpenBao; restart with `bootstrap`
   promote            fast checks, push feature branch, open PR into dev
 EOF
      exit 2 ;;
