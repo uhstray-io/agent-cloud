@@ -476,7 +476,7 @@ groups:
 {# The synthetic probe rules read the probe's textfile samples, scraped by the
    receiver-host job, so they follow o11y_inference_probe_enabled instead of the
    DGX scrape; turning the probe off deletes them the same way. #}
-{% set _inference_uids = ['inference_queue_stalled', 'inference_target_down', 'inference_vllm_metrics_absent', 'inference_node_memavailable_low', 'inference_node_memfree_low', 'inference_benchmark_gate_placeholder'] %}
+{% set _inference_uids = ['inference_queue_stalled', 'inference_queue_depth_high', 'inference_target_down', 'inference_vllm_metrics_absent', 'inference_node_memavailable_low', 'inference_node_memfree_low', 'inference_benchmark_gate_placeholder'] %}
 {% set _probe_uids = ['inference_probe_failing', 'inference_probe_stale'] %}
 {% set _dgx_on = dgx_spark_scrape_enabled | default(false) | bool %}
 {% set _probe_on = o11y_inference_probe_enabled | default(false) | bool %}
@@ -549,6 +549,16 @@ groups:
      'gt', 0, '5m', 'critical', 'vllm',
      'vLLM has queued requests and has generated no tokens for five minutes.',
      'Health can still answer while inference is stuck. Check the head and worker ranks and the lifecycle state before restarting anything.',
+     '/d/inference-latency-capacity') }}
+{# Capacity warning from the measured baseline: over the production 7-day window
+   (receipt task 5349) waiting requests peaked at 3 while running peaked at 8, the
+   serving slot count. The default is twice that waiting peak; override it per
+   inventory with o11y_inference_queue_waiting_warn when the baseline moves. #}
+{{ inference_rule('inference_queue_depth_high', 'vLLM request queue deeper than the measured baseline',
+     'sum by (model_name, node) (vllm:num_requests_waiting{job="dgx-spark-vllm",cluster="dgx-spark"})',
+     'gt', o11y_inference_queue_waiting_warn | default(6) | int, '10m', 'warning', 'vllm',
+     'More requests are waiting for a vLLM slot than at any point in the baseline week.',
+     'Every serving slot is busy and the queue is twice the measured 7-day peak (3, receipt task 5349). Clients see first-token latency grow; check for a load test or a runaway client before changing capacity. Never restart on this alert.',
      '/d/inference-latency-capacity') }}
 {% endif %}
 {% if _probe_on %}
