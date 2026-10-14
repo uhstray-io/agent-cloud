@@ -22,16 +22,16 @@ PLAYBOOK = REPO / "platform/playbooks/verify-o11y-production-budgets.yml"
 QUERIES = {
     "peak_tokens_per_hour": (
         'max_over_time((sum(increase(vllm:prompt_tokens_total{job="dgx-spark-vllm"}[1h])) + '
-        'sum(increase(vllm:generation_tokens_total{job="dgx-spark-vllm"}[1h])))[7d:1h])'
+        'sum(increase(vllm:generation_tokens_total{job="dgx-spark-vllm"}[1h])))[7d:5m])'
     ),
     "peak_generation_tokens_per_hour": (
-        'max_over_time(sum(increase(vllm:generation_tokens_total{job="dgx-spark-vllm"}[1h]))[7d:1h])'
+        'max_over_time(sum(increase(vllm:generation_tokens_total{job="dgx-spark-vllm"}[1h]))[7d:5m])'
     ),
     "peak_requests_per_minute": (
-        'max_over_time((sum(rate(vllm:request_success_total{job="dgx-spark-vllm"}[5m])) * 60)[7d:5m])'
+        'max_over_time((sum(rate(vllm:request_success_total{job="dgx-spark-vllm"}[1m])) * 60)[7d:1m])'
     ),
-    "peak_running_requests": 'max_over_time(sum(vllm:num_requests_running{job="dgx-spark-vllm"})[7d:5m])',
-    "peak_waiting_requests": 'max_over_time(sum(vllm:num_requests_waiting{job="dgx-spark-vllm"})[7d:5m])',
+    "peak_running_requests": 'max_over_time(sum(vllm:num_requests_running{job="dgx-spark-vllm"})[7d:1m])',
+    "peak_waiting_requests": 'max_over_time(sum(vllm:num_requests_waiting{job="dgx-spark-vllm"})[7d:1m])',
 }
 
 READ = "Read seven-day inference usage peak from vLLM"
@@ -51,6 +51,8 @@ def _task(name: str) -> dict:
 def test_the_five_queries_are_read_verbatim():
     loop = _task(READ)["loop"]
     assert {i["name"]: i["query"] for i in loop} == QUERIES
+    # Only the request rate keeps a decimal: its ceiling is 120/min and a rounded 0.4 hides headroom.
+    assert {i["name"]: i["decimals"] for i in loop if "decimals" in i} == {"peak_requests_per_minute": 1}
     assert len(loop) == len(QUERIES)
     argv = _task(READ)["ansible.builtin.command"]["argv"]
     assert argv[-1] == "http://prometheus:9090/api/v1/query"
@@ -73,7 +75,9 @@ def test_the_figures_reach_the_receipt_under_their_own_key():
 
 
 def _reading(name: str, body: dict) -> dict:
-    return {"item": {"name": name}, "stdout": json.dumps(body)}
+    # The item is the playbook's own loop entry, so per-figure settings come from the real task.
+    item = next(i for i in _task(READ)["loop"] if i["name"] == name)
+    return {"item": {k: v for k, v in item.items() if k != "query"}, "stdout": json.dumps(body)}
 
 
 def _vector(value: str) -> dict:
@@ -115,7 +119,7 @@ def test_figures_are_numbers_and_an_empty_vector_is_unavailable(tmp_path):
     assert shown == {
         "peak_tokens_per_hour": 1234568,
         "peak_generation_tokens_per_hour": "unavailable",
-        "peak_requests_per_minute": 12,
+        "peak_requests_per_minute": 12.4,
         "peak_running_requests": "unavailable",
         "peak_waiting_requests": 0,
     }
