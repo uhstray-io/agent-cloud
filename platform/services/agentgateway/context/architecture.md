@@ -93,8 +93,11 @@ per-client layer. Everything is inventory-driven code (design §10):
 
 ### Admin UI (production v1.5.0)
 
-- The Routes page is empty by design: the `llm:` shortcut synthesizes its routes, so there is
-  nothing to list. It is not a fault.
+- The Routes page shows nothing (operator report, 2026-10-14). This config declares no `binds:` or
+  routes: it uses the top-level `llm:` block, which upstream documents as "simplified LLM mode", as
+  opposed to "traditional HTTP routing configuration"
+  (https://agentgateway.dev/docs/standalone/latest/llm/). An empty Routes page does not mean
+  traffic is unrouted; the keyed deploy verify proves the `/v1` path end to end.
 - The Playground needs a pasted raw key: production config holds sha256 hashes only. Local-dev
   sets `agw_plaintext_keys: true`, which renders values, so the local UI lists saved keys.
 - Two `agw_models` entries (`nvidia/Qwen3.8-Flash-Next-NVFP4` and `qwen3.8-flash-next`) are

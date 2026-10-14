@@ -105,7 +105,7 @@
       defaults are `O11Y_PROM_RETENTION` 15d (`templates/env.j2:26`) and `O11Y_LOKI_RETENTION`
       7d (`templates/env.j2:29`), and compose reads both (`compose.yml:43`, `compose.yml:67`).
       The Loki and Grafana VM-address binds rest on site-config #24/#36, not re-read here.
-- [x] 1.3 Caddy route `o11y.uhstray.io` to the Grafana port in site-config
+- [ ] 1.3 Caddy route `o11y.uhstray.io` to the Grafana port in site-config
       `caddy_managed_sites`, `forward_auth` to Authentik per the existing route shape,
       with two paths exempted from `forward_auth`: `/api/health` (unauthenticated liveness,
       no data) and `/api/datasources/uid/*/health` (Grafana validates the watcher's
@@ -122,11 +122,10 @@
       because it requires a failure category (`diagnose-o11y-grafana-auth.yml:85-97`). Next: the
       operator attempts a Grafana sign-in and, if it fails, reruns the diagnostic inside the window.
       Not ticked.
-      2026-10-14: ticked. The incident's phase 3 acceptance is met on the operator's receipt:
-      the operator confirmed Grafana's Authentik sign-in on 2026-10-09 (recorded in
-      `estate-wide-observability-instrumentation` tasks.md 1.1 and in
-      O11Y-GRAFANA-AUTH-INCIDENT.md, now RESOLVED). This is a manual receipt; no automated
-      OAuth validation is claimed, and the original root cause was never identified.
+      2026-10-14: half of the incident's phase 3 acceptance is met: the operator confirmed
+      Grafana's Authentik sign-in on 2026-10-09 (recorded in `estate-wide-observability-instrumentation`
+      tasks.md 1.1). The other half, the operator confirming direct Authentik sign-in, is outstanding
+      (O11Y-GRAFANA-AUTH-INCIDENT.md stays PROPOSED). Manual receipt only. Not ticked.
 - [x] 1.4 `firewall_allow_rules` on the o11y host: Grafana port from the Caddy host; Loki
       push port from the two node addresses; `apply-firewall.yml` through Semaphore
       2026-10-02 rescope: rules declared in site-config#36 and applied by firewall tasks 1661

@@ -1,7 +1,7 @@
 # Grafana Authentik sign-in incident
 
 **Date:** 2026-09-30  
-**Status:** RESOLVED  
+**Status:** PROPOSED  
 **Context:** Production Grafana returns to its login page after the Authentik OAuth round trip. This plan records the evidence and the controlled repair path.
 
 ## Problem
@@ -45,7 +45,7 @@ Diagnostic run, 2026-10-04: `Diagnose Grafana OAuth Failure (Dev)` task 2746 on 
 
 Operator report, 2026-10-08/09: Grafana's Authentik sign-in button now signs in. Direct Authentik sign-in and the original root cause remain unverified; bounded diagnostic task 2746 found no failure in its observation window. This report does not establish which change resolved the issue.
 
-Resolution, 2026-10-14: marked RESOLVED on the operator's confirmation of 2026-10-09 that Grafana's Authentik sign-in works (recorded in `estate-wide-observability-instrumentation` tasks.md 1.1). This is a manual receipt; no automated OAuth validation is claimed. The original root cause was never identified, and the confirmation covers Grafana's Authentik sign-in, not a separately reported direct Authentik login.
+Progress, 2026-10-14: not resolved yet. Phase 3 acceptance needs two things: Grafana opens an authenticated page, which the operator confirmed on 2026-10-09 (recorded in `estate-wide-observability-instrumentation` tasks.md 1.1), and the operator confirming direct Authentik sign-in, which is still outstanding. Once the operator confirms direct sign-in, this incident is RESOLVED and `inference-telemetry-production` task 1.3 can be ticked. The original root cause was never identified, and no automated OAuth validation is claimed.
 
 ### Privileged root-LVM survey plan and current evidence
 

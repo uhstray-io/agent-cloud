@@ -536,6 +536,11 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
         (`production-internal-ca/tasks.md:37-41`) for the DNS and CA hosts. Not re-read from
         Semaphore here. `instrument-host-o11y.yml` remains open (see 2026-10-05 above), so this
         task stays unticked
+      - 2026-10-14 (production Semaphore inventory read by the lead, key names only): no production
+        host declares `o11y_host_exporter_bind`, which the playbook requires on every host of the
+        target group. A `(Dev)` check-mode run would therefore only exercise the input refusal, so
+        it was not launched. Enrolling a host (its bind, port and `firewall_allow_groups` entry in
+        site-config) waits on `estate-wide-observability-instrumentation` 1.3/1.4. Not ticked
 - [x] 7.4 Snapshot templates for service, firewall and access assessment; each verify-only,
       emitting one JSON document. 2026-09-22: all three pass on local tududi in normal and
       check mode (tasks 971-976); the document is recorded with set_stats under `snapshot`
