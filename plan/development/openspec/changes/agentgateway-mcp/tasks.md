@@ -435,17 +435,32 @@ finding that contradicts a decision stops the work and reopens that decision.
 Operator-run, one `(Dev)` template at a time, dry run first (`--check` shows a diff and
 changes nothing), each result read before the next. No run is started without the
 operator's go for it. site-config changes land through its own pull requests.
-- [ ] 6.1 site-config branch A: the declared admin list, the declared exceptions list,
+- [x] 6.1 site-config branch A: the declared admin list, the declared exceptions list,
       `agw_mcp_*` variables (flag false) and the MCP Caddy block. `agw_clients` is left
       untouched in this change
-- [ ] 6.2 `Deploy Authentik (Dev)`: dry run, apply; the read-back verify passes (including
+      2026-10-14 (task output read from production Semaphore by the lead): landed as two
+      site-config pull requests. #86 (merged b95b65e6) declares `platform_admins` at
+      `agent_cloud.vars`: five entries, field-identical to the shared default per review;
+      the `jacob` identity is `agw_identity` `jacob`; `agw_admin_identities_enabled` is true.
+      #87 (merged cb38d044) declares `agw_mcp_enabled` false, `agw_mcp_hostname`
+      `mcp.uhstray.io`, `agw_loopback_port` 4002, `agw_mcp_openapi_targets` pointing at
+      `gateway/agentgateway-v1.json`, `mcp-self` in `agw_clients` with `tokens_per_hour`
+      2000000 (provisional, to be set from the 6.6 measurement), and the `mcp.uhstray.io`
+      Caddy block. The exceptions list is not needed: it is empty. Ticked.
+- [x] 6.2 `Deploy Authentik (Dev)`: dry run, apply; the read-back verify passes (including
       the drift guard, task 2.9) and no user changes (task 2.6's equality, live)
-      - [ ] 6.2a Preflight, before the FIRST production Authentik deploy of this change: read
+      2026-10-14 (task output read from production Semaphore by the lead): dry run task 5665
+      (changes read: the three old static blueprints removed, `platform-admins.yaml` rendered,
+      `platform-users.yaml` loses the admin entries; passwords and the `svc-automation` API
+      token identifier unchanged); real run task 5667 (changed 7; VERIFY OK: 12 blueprints,
+      6 accounts, 1 retired; group `platform-admins` members exactly the five declared);
+      rerun task 5669 changed=0. Ticked.
+      - [x] 6.2a Preflight, before the FIRST production Authentik deploy of this change: read
         the production `platform-admins` membership read-only (the group's member names, no
         values) and compare it with the declared list. Any member the list does not cover is
         declared in `platform_admins_exceptions` in site-config first; otherwise the drift
         guard fails the deploy after the blueprints have already applied
-      - [ ] 6.2b Preflight, before turning on `agw_admin_identities_enabled` in production:
+      - [x] 6.2b Preflight, before turning on `agw_admin_identities_enabled` in production:
         site-config declares `platform_admins` EXPLICITLY, at a scope both the Authentik and
         the agentgateway hosts see (the `agent_cloud` group vars or `all`). The shared default
         list is built from per-user vars (`wisward_*`, `jacob_*`, `stray_admin_email`) that
@@ -456,17 +471,30 @@ operator's go for it. site-config changes land through its own pull requests.
         Which administrators the credential print may print is NOT part of that list: it is the
         committed constant `_platform_admins_printable_keys`, changed by pull request, never by
         site-config or an extra var.
-- [ ] 6.3 `Deploy agentgateway (Dev)` with the flag false, from a branch that carries the
+        2026-10-14 (task output read from production Semaphore by the lead): 6.2a: the
+        production membership the verify read is exactly the declared list, so no exceptions
+        are needed. 6.2b: `platform_admins` is declared explicitly at `agent_cloud.vars`,
+        which both hosts see (site-config #86). Both ticked.
+- [x] 6.3 `Deploy agentgateway (Dev)` with the flag false, from a branch that carries the
       derivation (task 2.4): dry run; apply; then read the rendered config on the host (or
       the deploy's own report), counting `keyHash` lines and never printing them: the count
       equals the one read before the deploy plus the newly declared admins, the overlap is
       reported by name, existing hashes unchanged, verify asserts `/mcp` is not served.
       Whether `--check` output shows the rendered key-hash lines is UNVERIFIED, so the
       count is read from the host after the real deploy, not from the dry-run diff
+      2026-10-14 (task output read from production Semaphore by the lead): with admin
+      identities on, dry run task 5670 and real run task 5671 at 37ea003b: the render check
+      enrolled every identity, the overlap was reported ("Merged once, migration overlap
+      (platform_admins and agw_clients): stray."), and the keyed round-trip passed. With the
+      MCP code (#634, merged ec8da98b): dry run 5676, real run 5678: "MCP is disabled: a keyed
+      initialize at /mcp is not an MCP reply (HTTP 400)." After site-config #87: dry run 5681,
+      real run 5683 (`client_mcp-self` minted, MCP still disabled). Ticked.
 - [ ] 6.4 `Apply Cloudflare Tofu (Dev)`, `tofu_action` plan: expected diff exactly the
       record and two rules, zero other change; then apply, then a zero-diff plan
+      2026-10-14: not started; waits on PR #636.
 - [ ] 6.5 `Manage Caddy Sites (Dev)`: dry run, apply; the inference block unchanged in the
       dry-run diff
+      2026-10-14: not started; waits on PR #636.
 - [ ] 6.6 Flip `agw_mcp_enabled`, `Deploy agentgateway (Dev)`; verify; then through the
       MCP hostname hold an `initialize` and an idle stream past 125 s, recording the
       observed status; `statefulMode: stateless` was chosen from the spike (3.2), so confirm it
@@ -475,6 +503,12 @@ operator's go for it. site-config changes land through its own pull requests.
 - [ ] 6.7 Hand out each declared admin's key with `Back Up Credentials to site-config (Dev)`,
       `credential_service=agentgateway`, `credential_fields=client_<name>` listed
       explicitly (never empty, Open Question 6); output carries names only
+      2026-10-14 (task output read from production Semaphore by the lead): handed out so far:
+      `client_stray`, task 5638 (branch `backup/agentgateway-20261014T204513Z-ba2dec`), and
+      `client_jacob`, dry run 5672 then real run 5673 (branch
+      `backup/agentgateway-20261014T222727Z-f28619`), the fields named explicitly. The other
+      admins (`agent-cloud-admin`, `wisward`, `svc-automation`) are not handed out yet.
+      Not ticked.
 - [ ] 6.8 site-config branch B: remove each derived name from `agw_clients`. Hold this
       merge until 6.3's code is the deployed branch (before that the derivation does not
       exist and removal would drop the key). The render changes only on deploy, so after the

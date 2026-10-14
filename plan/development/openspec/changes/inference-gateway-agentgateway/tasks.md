@@ -474,6 +474,10 @@
       30M is about 1.6x the peak: a grace-period figure, deliberately above the "tightest
       budget" this task names. Deploy agentgateway (Dev) task 5357 rendered it. Still open:
       handing out the first key set. Not ticked.
+      2026-10-14 (task output read from production Semaphore by the lead): the personal admin
+      keys were minted by Deploy agentgateway (Dev) task 5671; `client_stray` and
+      `client_jacob` are handed out (Back Up Credentials to site-config (Dev) tasks 5638 and
+      5673). Not ticked: the rest of the first key set is not handed out.
 - [ ] 4.2 `localRateLimit` per identity: `type: requests` per minute and `type: tokens`
       per hour, figures derived from the measured ceiling and written as comments.
       2026-09-17: v1.5.0 has no per-identity REQUEST bucket under `llm.policies` (`key`
