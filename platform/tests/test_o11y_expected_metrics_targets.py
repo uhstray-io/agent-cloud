@@ -153,11 +153,13 @@ def test_expected_target_coverage_refuses_ambiguous_and_untrusted_inputs_without
     "targets,retired,other_uids",
     [
         ([_expected(uid="bad.uid")], [], []),
+        ([_expected(uid="o11y_missing_g00000000000000000000000000")], [], []),
         ([_expected(), _expected(uid="o11y_missing_copy")], [], []),
         ([_expected(), {**_expected(), "uid": "o11y_missing_copy"}], [], []),
         ([_expected(service='api"} or vector(1) #')], [], []),
         ([_expected(instance="api.example.test:9100\\nup")], [], []),
         ([_expected()], ["o11y_missing_api"], []),
+        ([], ["o11y_missing_g00000000000000000000000000"], []),
         ([_expected()], ["o11y_missing_retired"], ["o11y_missing_retired"]),
         ([], [], []),
         ([], ["unrelated_rule"], []),

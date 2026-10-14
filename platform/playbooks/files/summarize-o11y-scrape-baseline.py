@@ -263,7 +263,10 @@ def validate_expected_target_declaration(
         if not isinstance(target, dict) or set(target) != {"uid", *EXPECTED_IDENTITY_FIELDS}:
             raise Refusal("invalid_declaration")
         uid = target.get("uid")
-        if not isinstance(uid, str) or not EXPECTED_UID.fullmatch(uid):
+        if (
+            not isinstance(uid, str) or not EXPECTED_UID.fullmatch(uid)
+            or EXPECTED_GROUP_UID.fullmatch(uid)
+        ):
             raise Refusal("invalid_declaration")
         values: dict[str, str] = {}
         for field in EXPECTED_IDENTITY_FIELDS:
@@ -280,7 +283,10 @@ def validate_expected_target_declaration(
 
     if len(set(retired_uids)) != len(retired_uids):
         raise Refusal("invalid_declaration")
-    if any(not isinstance(uid, str) or not EXPECTED_UID.fullmatch(uid) for uid in retired_uids):
+    if any(
+        not isinstance(uid, str) or not EXPECTED_UID.fullmatch(uid) or EXPECTED_GROUP_UID.fullmatch(uid)
+        for uid in retired_uids
+    ):
         raise Refusal("invalid_declaration")
     if not isinstance(other_rule_uids, list) or any(
         not isinstance(uid, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,40}", uid) for uid in other_rule_uids
