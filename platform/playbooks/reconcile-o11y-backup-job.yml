@@ -529,7 +529,6 @@
       ansible.builtin.debug:
         msg:
           backup_job_reconciliation: inspect_only
-          verified_o11y_vmid: "{{ _vmid }}"
           candidate_count: "{{ _backup_inspection.candidate_count }}"
           candidates: "{{ _backup_inspection.candidates }}"
           backup_task_history: "{{ _backup_history_summary }}"

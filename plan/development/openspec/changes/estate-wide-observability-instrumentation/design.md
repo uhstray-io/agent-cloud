@@ -876,8 +876,14 @@ lines. Proxmox `start` is a zero-based offset while returned `n` values are
 one-based (`n = start + 1` for the first returned row); require contiguous
 one-based numbering on metadata and final pages. Reject malformed UPIDs,
 unknown statuses, ties, synthetic `no content` or `unable to open file` rows,
-invalid numbering or schema, oversized output, and changed totals. Keep task
-identity, status, raw log, URL, URI result, parser input/output, and errors
+invalid numbering or schema, oversized output, and changed totals. Match the
+upstream UPID shape exactly: validated node, eight-hex PID, eight- or nine-hex
+process start, eight-hex start time, `vzdump`, an empty or decimal VMID, a
+supported `user@realm` or `user@realm!tokenid`, and a final colon. Classify
+status using Proxmox's normalization: `OK` is success, `WARNINGS: N` is
+incomplete, exact `unexpected status` is unknown, and other nonempty status
+text is failure ([`PVE::UPID`](https://raw.githubusercontent.com/proxmox/pve-common/master/src/PVE/UPID.pm#L15-L97)).
+Keep task identity, status, raw log, URL, URI result, parser input/output, and errors
 under scoped `no_log`; keep only sanitized history and diagnostic `set_fact`
 results visible. Publish only fixed status/reason and `no_space`,
 `storage_unavailable`, `permission_denied`, `guest_lock`, `transport`, or

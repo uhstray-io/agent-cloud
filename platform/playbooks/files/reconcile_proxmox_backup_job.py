@@ -14,6 +14,7 @@ from urllib.parse import quote
 JOB_ID = re.compile(r"[A-Za-z0-9._-]{1,64}")
 VMID_LIST = re.compile(r"[1-9][0-9]*(?:,[1-9][0-9]*)*")
 VMID = re.compile(r"[1-9][0-9]*")
+NODE_NAME = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?")
 TRANSIENT_FIELDS = {"next-run"}
 SAFE_REFUSALS = {
     "The declared backup job ID is missing or malformed.",
@@ -349,11 +350,13 @@ def _task_log_path(node: str, upid: str, start: int, limit: int) -> str:
 
 
 def _valid_node_task_upid(upid: object, node: str, starttime: object) -> bool:
-    if not isinstance(upid, str) or not upid.isascii() or len(upid) > 512:
+    if (not isinstance(node, str) or NODE_NAME.fullmatch(node) is None
+            or not isinstance(upid, str) or not upid.isascii() or len(upid) > 512):
         return False
     pattern = (
-        rf"UPID:{re.escape(node)}:([0-9A-Fa-f]+):"
-        r"([0-9A-Fa-f]+):([0-9A-Fa-f]+):vzdump:([^:]*):([^:@]+)@([^:]+)(?::[^:]*)?"
+        rf"UPID:{re.escape(node)}:([0-9A-Fa-f]{{8}}):"
+        r"([0-9A-Fa-f]{8,9}):([0-9A-Fa-f]{8}):vzdump:"
+        r"([1-9][0-9]*|):([A-Za-z0-9._-]+@[A-Za-z0-9._-]+(?:![A-Za-z0-9._-]+)?):"
     )
     match = re.fullmatch(pattern, upid)
     return match is not None and type(starttime) is int and int(match.group(3), 16) == starttime
@@ -362,7 +365,7 @@ def _valid_node_task_upid(upid: object, node: str, starttime: object) -> bool:
 def prepare_node_task_query(payload: Mapping[str, object]) -> dict[str, object]:
     """Build the node-wide archive query after the existing exact-node Sys.Audit check."""
     node = payload.get("node")
-    _require(isinstance(node, str) and re.fullmatch(r"[A-Za-z0-9._-]+", node) is not None,
+    _require(isinstance(node, str) and NODE_NAME.fullmatch(node) is not None,
              "The declared VM node is malformed.")
     target_vmid = _parse_vmid(str(payload.get("vmid", "")))
     wrapper = payload.get("permissions_response")
@@ -651,18 +654,6 @@ def _classify_task_status(status: object) -> str:
     return "failed"
 
 
-def _classify_node_task_status(status: object) -> str:
-    if not isinstance(status, str) or not status:
-        return "unknown"
-    if status == "OK":
-        return "success"
-    if re.fullmatch(r"WARNINGS:\s*[0-9]+", status):
-        return "incomplete"
-    if re.match(r"ERROR(?::|$)", status):
-        return "failed"
-    return "unknown"
-
-
 def prepare_node_failure_plan(payload: Mapping[str, object]) -> dict[str, object]:
     """Select one recent failed node task from the already bounded, permission-checked listing."""
     plan = payload.get("plan")
@@ -678,11 +669,11 @@ def prepare_node_failure_plan(payload: Mapping[str, object]) -> dict[str, object
     for response in payload.get("later_pages", []):
         rows.extend(response["json"]["data"])
     node = plan.get("node")
-    if not isinstance(node, str) or re.fullmatch(r"[A-Za-z0-9._-]+", node) is None:
+    if not isinstance(node, str) or NODE_NAME.fullmatch(node) is None:
         return {"diagnostic": _task_log_result("unknown", "node_history_unavailable"), "read_allowed": False}
     for row in rows:
-        if (not _valid_node_task_upid(row.get("upid"), node, row.get("starttime"))
-                or _classify_node_task_status(row.get("status")) == "unknown"):
+        if (_classify_task_status(row.get("status")) == "unknown"
+                or not _valid_node_task_upid(row.get("upid"), node, row.get("starttime"))):
             return {"diagnostic": _task_log_result("unknown", "node_history_unavailable"), "read_allowed": False}
     latest_time = max(row["starttime"] for row in rows)
     latest = [row for row in rows if row["starttime"] == latest_time]
@@ -801,6 +792,11 @@ def main() -> int:
     operation = sys.argv[1] if len(sys.argv) > 1 else ""
     try:
         payload = json.load(sys.stdin)
+        if (
+            operation in {"node-failure-plan", "node-failure-pages", "node-failure-summary"}
+            and not isinstance(payload, Mapping)
+        ):
+            raise TypeError("Invalid operation input.")
         if operation == "plan":
             result = prepare_plan(payload)
         elif operation == "inspect":

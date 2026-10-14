@@ -642,7 +642,7 @@ def node_task_row(index, **overrides):
         row["endtime"] = row["starttime"] + 1
     row.setdefault(
         "upid",
-        f"UPID:node-a:00000001:00000001:{row['starttime']:x}:vzdump:{row['id'] or ''}:root@pam",
+        f"UPID:node-a:00000001:00000001:{row['starttime']:08x}:vzdump:{row['id'] or ''}:root@pam:",
     )
     return row
 
@@ -684,6 +684,15 @@ def test_node_history_query_uses_fixed_72_hour_window_without_vmid_filter():
     }
     assert NODE_TASK_LOOKBACK_SECONDS == 72 * 60 * 60
     assert "vmid" not in result["query"]
+
+
+@pytest.mark.parametrize("node", ["../node-a", "node/a", "node.a", "node-a/"])
+def test_node_history_query_rejects_nodes_outside_proxmox_node_syntax(node):
+    with pytest.raises(ValueError):
+        prepare_node_task_query({
+            "node": node, "vmid": "200", "until": 2_000,
+            "permissions_response": permission_response(),
+        })
 
 
 def test_node_history_query_accepts_only_integer_one_for_sys_audit():
@@ -787,6 +796,20 @@ def test_node_failure_selection_requires_permission_valid_unique_recent_failure(
     assert refused["diagnostic"]["reason"] == "permission_unverified"
 
 
+def test_unprefixed_proxmox_job_error_plans_only_the_bounded_metadata_get():
+    result = prepare_node_failure_plan({
+        "plan": node_history_plan(),
+        "first_page": task_page([node_task_row(1, starttime=1_900, status="job errors")], 1),
+        "later_pages": [],
+    })
+
+    assert result["read_allowed"] is True
+    assert result["metadata_path"].startswith("/api2/json/nodes/node-a/tasks/UPID%3A")
+    assert result["metadata_path"].endswith("/log?start=0&limit=1")
+    assert "job%20errors" not in result["metadata_path"]
+    assert "job errors" not in json.dumps(result)
+
+
 def test_node_failure_selection_refuses_malformed_task_identity_and_listing_drift():
     malformed = node_task_row(1, starttime=1_900, status="ERROR: private", upid="private-UPID")
     result = prepare_node_failure_plan({
@@ -801,6 +824,45 @@ def test_node_failure_selection_refuses_malformed_task_identity_and_listing_drif
     })
     assert drift["read_allowed"] is False
     assert "metadata_path" not in drift
+
+
+@pytest.mark.parametrize("upid", [
+    "UPID:node-a:0000001:00000001:0000076c:vzdump:200:root@pam:",
+    "UPID:node-a:00000001:0000000010:0000076c:vzdump:200:root@pam:",
+    "UPID:node-a:00000001:00000001:000076c:vzdump:200:root@pam:",
+    "UPID:node-a:00000001:00000001:0000076c:vzdump:../200:root@pam:",
+    "UPID:node-a:00000001:00000001:0000076c:vzdump:200/../201:root@pam:",
+    "UPID:node-a:00000001:00000001:0000076c:vzdump:200?:root@pam:",
+    "UPID:node-a:00000001:00000001:0000076c:vzdump:200#root@pam:",
+    "UPID:node-a:00000001:00000001:0000076c:vzdump:200%2froot@pam:",
+    "UPID:node-b:00000001:00000001:0000076c:vzdump:200:root@pam:",
+    "UPID:node-a:00000001:00000001:0000076c:other:200:root@pam:",
+    "UPID:node-a:00000001:00000001:0000076c:vzdump:200:unsupported-user:",
+    "UPID:node-a:00000001:00000001:0000076c:vzdump:200:root@pam",
+    "UPID:node-a:00000001:00000001:0000076c:vzdump:200:root@pam:trailing",
+])
+def test_node_failure_selection_rejects_malformed_or_path_injected_upids(upid):
+    result = prepare_node_failure_plan({
+        "plan": node_history_plan(),
+        "first_page": task_page([node_task_row(1, starttime=1_900, status="job errors", upid=upid)], 1),
+        "later_pages": [],
+    })
+
+    assert result["read_allowed"] is False
+    assert result["diagnostic"]["reason"] == "node_history_unavailable"
+    assert "metadata_path" not in result
+
+
+@pytest.mark.parametrize("user", ["root@pam", "operator@pam!automation"])
+def test_node_failure_selection_accepts_supported_upid_users(user):
+    upid = f"UPID:node-a:00000001:00000001:0000076c:vzdump::{user}:"
+    result = prepare_node_failure_plan({
+        "plan": node_history_plan(),
+        "first_page": task_page([node_task_row(1, starttime=1_900, status="job errors", upid=upid)], 1),
+        "later_pages": [],
+    })
+
+    assert result["read_allowed"] is True
 
 
 def test_task_log_metadata_read_plans_only_the_last_bounded_page():
@@ -959,6 +1021,32 @@ def test_task_log_cli_output_and_malformed_input_are_fixed_and_redacted(monkeypa
     assert json.loads(captured.out) == {"status": "unknown", "reason": "log_invalid", "failure_hint": "unknown"}
     assert captured.err == ""
     assert "private payload" not in captured.out
+
+
+@pytest.mark.parametrize(("operation", "expected"), [
+    ("node-failure-plan", {
+        "read_allowed": False,
+        "diagnostic": {"status": "unknown", "reason": "node_history_unavailable", "failure_hint": "unknown"},
+    }),
+    ("node-failure-pages", {
+        "read_allowed": False,
+        "diagnostic": {"status": "unknown", "reason": "metadata_invalid", "failure_hint": "unknown"},
+    }),
+    ("node-failure-summary", {
+        "status": "unknown", "reason": "log_invalid", "failure_hint": "unknown",
+    }),
+])
+def test_node_failure_cli_rejects_non_mapping_json_with_fixed_output(
+    operation, expected, monkeypatch, capsys,
+):
+    monkeypatch.setattr(sys, "argv", ["reconcile_proxmox_backup_job.py", operation])
+    monkeypatch.setattr(sys, "stdin", io.StringIO('["private input"]'))
+
+    assert main() == 0
+    captured = capsys.readouterr()
+    assert json.loads(captured.out) == expected
+    assert captured.err == ""
+    assert "private input" not in captured.out
 
 
 def test_task_log_rejects_pagination_drift_numbering_and_unbounded_responses():
@@ -1140,6 +1228,9 @@ def test_playbook_requires_reviewed_dev_and_guards_every_mutation():
         "Report backup-job candidates for inventory selection"
     ][1]["ansible.builtin.debug"]["msg"]
     assert "proxmox_node_task_failure_diagnostic" in by_name[
+        "Report backup-job candidates for inventory selection"
+    ][1]["ansible.builtin.debug"]["msg"]
+    assert "verified_o11y_vmid" not in by_name[
         "Report backup-job candidates for inventory selection"
     ][1]["ansible.builtin.debug"]["msg"]
     assert names.index("Read effective permissions on the declared Proxmox node") < names.index(
