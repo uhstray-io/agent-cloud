@@ -1,0 +1,55 @@
+---
+# The Authentik deploy's secret declaration, in its own file so every reader evaluates the SAME
+# declaration against its own host: deploy-authentik.yml loads it with vars_files, check-secrets.yml
+# with include_vars. It is computed (one password per declared administrator), and a computed value
+# read out of a playbook as text is only a string; test_check_secrets_verdict.py refuses a computed
+# declaration left in a playbook's own vars.
+
+# The administrator list, resolved the way vars/platform-admins.yml resolves it (the inventory's
+# `platform_admins` when set, else the committed default). check-secrets loads only THIS file, so the
+# default is read out of the shared file rather than copied: `key` and `type` are plain strings there,
+# which is all this declaration needs.
+_admin_secret_entries: >-
+  {{ platform_admins if platform_admins is defined
+     else (lookup('file', playbook_dir ~ '/vars/platform-admins.yml') | from_yaml)._platform_admins_default }}
+
+# One generated-once password per administrator that signs in (`<key>_password`, the existing
+# OpenBao field names). A service account has none: it authenticates with SERVICE_ACCOUNT_TOKEN.
+_admin_secret_defs: >-
+  {%- set out = [] -%}
+  {%- for a in _admin_secret_entries -%}
+    {%- if (a.type | default('user')) != 'service_account' -%}
+      {%- if out.append({'name': a.key ~ '_password', 'type': 'random', 'length': 32}) -%}{%- endif -%}
+    {%- endif -%}
+  {%- endfor -%}
+  {{ out }}
+
+# secret_key + DB password must be STABLE across redeploys (regenerating secret_key invalidates
+# sessions/tokens; a new DB password breaks auth) — manage-secrets generates once into OpenBao and
+# reuses on later runs.
+_static_secret_definitions:
+  - { name: secret_key, type: random, length: 60 }
+  - { name: bootstrap_password, type: random, length: 32 }
+  - { name: bootstrap_token, type: random, length: 40 }
+  - { name: db_password, type: random, length: 32 }
+  # OIDC client secrets — Authentik owns them (it's the IdP). The matching
+  # client services read them via manage-secrets `_shared_reads`. The worker
+  # injects them into the OAuth2-provider blueprints via !Env.
+  # (NetBox uses forward_auth locally — a proxy provider with no client
+  # secret; its OIDC secret is added on the prod composable path.)
+  - { name: grafana_oidc_client_secret, type: random, length: 40 }
+  - { name: erpnext_oidc_client_secret, type: random, length: 40 }
+  - { name: semaphore_oidc_client_secret, type: random, length: 40 }
+  - { name: openbao_oidc_client_secret, type: random, length: 40 }
+  - { name: tududi_oidc_client_secret, type: random, length: 40 }
+  - { name: postiz_oidc_client_secret, type: random, length: 40 }
+  - { name: agentgateway_oidc_client_secret, type: random, length: 40 }
+  # Platform service account API token (rendered into platform-admins.yaml for the
+  # service_account entry). Stable across redeploys; worker reads !Env.
+  - { name: service_account_token, type: random, length: 60 }
+  # Named non-admin platform users (platform-users.yaml). Initial passwords generated
+  # once + reused (stable), OpenBao-owned; worker reads via !Env. Administrators'
+  # passwords come from the declared list (_admin_secret_defs).
+  - { name: andrew_password, type: random, length: 32 }
+
+_secret_definitions: "{{ _static_secret_definitions + _admin_secret_defs }}"

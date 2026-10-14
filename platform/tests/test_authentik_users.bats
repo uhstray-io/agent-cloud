@@ -24,6 +24,11 @@ setup() {
   GROUPS_BP="${BP}/platform-groups.yaml"
   ENVJ2="${BATS_TEST_DIRNAME}/../services/authentik/deployment/templates/env.j2"
   DEPLOY="${BATS_TEST_DIRNAME}/../playbooks/deploy-authentik.yml"
+  # The secret declaration is computed (one password per declared administrator), so it
+  # lives where check-secrets.yml evaluates it too, not in the deploy playbook's own vars.
+  SECRET_DECL="${BATS_TEST_DIRNAME}/../playbooks/vars/secret-declarations/authentik.yml"
+  ADMIN_TPL="${BATS_TEST_DIRNAME}/../services/authentik/deployment/templates/platform-admins.yaml.j2"
+  VERIFY="${BATS_TEST_DIRNAME}/../services/authentik/deployment/templates/verify-users.py.j2"
 }
 
 # Every !Env name referenced by the users blueprint, one per line.
@@ -51,12 +56,14 @@ _env_names() {
 @test "authentik users: every user's password is an OpenBao-managed secret" {
   # A password read from env.j2 must trace to a _secret_definitions entry, or it
   # is generated nowhere and the account is created unusable. Derives the secret
-  # name from the env var, so it cannot drift out of step with the blueprint.
+  # name from the env var, so it cannot drift out of step with the blueprint. (The
+  # administrators' passwords are looped from the declared list; the pytest suite
+  # test_authentik_platform_admins.py proves those.)
   local missing="" name lower
   while read -r name; do
     case "$name" in *_PASSWORD) ;; *) continue ;; esac
     lower=$(printf '%s' "$name" | tr 'A-Z' 'a-z')
-    grep -qE "name: ${lower}," "$DEPLOY" || missing="${missing} ${lower}"
+    grep -qE "name: ${lower}," "$SECRET_DECL" || missing="${missing} ${lower}"
   done < <(_env_names)
   if [ -n "$missing" ]; then
     echo "password env vars with no _secret_definitions entry:${missing}" >&2
@@ -174,6 +181,145 @@ PY_DEF
     printf '%s\n' "$bad" >&2
     return 1
   fi
+}
+
+@test "platform admins: no fixed blueprint block puts anyone in platform-admins" {
+  # Task 2.1: every platform-admins member is declared in the list and RENDERED. A fixed
+  # `!Find [... platform-admins]` block in a committed blueprint is an administrator the list
+  # does not know about, which is exactly the drift the verify exists to catch.
+  local hits
+  hits=$(grep -lE '!Find \[authentik_core\.group, \[name, platform-admins\]\]' "$BP"/*.yaml || true)
+  if [ -n "$hits" ]; then
+    echo "fixed platform-admins membership outside the declared list:" >&2
+    printf '%s\n' "$hits" >&2
+    return 1
+  fi
+  [ ! -e "$BP/stray-admin.yaml" ]
+  [ ! -e "$BP/agent-cloud-admin.yaml" ]
+  [ ! -e "$BP/service-account.yaml" ]
+  # The one place the group is joined is the rendered template, from the list.
+  assert_grep -q 'for a in _platform_admins' "$ADMIN_TPL"
+  assert_grep -qF '!Find [authentik_core.group, [name, platform-admins]]' "$ADMIN_TPL"
+}
+
+@test "platform admins: the deploy renders the blueprint, loads the shared list and refuses a bad one first" {
+  assert_grep -q 'vars/platform-admins.yml' "$DEPLOY"
+  assert_grep -q 'vars/secret-declarations/authentik.yml' "$DEPLOY"
+  assert_grep -q 'templates/platform-admins.yaml.j2' "$DEPLOY"
+  # kept out of the stale-file prune, like zz-sso-bindings
+  assert_grep -qE "'zz-sso-bindings.yaml', 'platform-admins.yaml'" "$DEPLOY"
+  assert_grep -qE "'zz-sso-bindings.yaml', 'platform-admins.yaml'" "$VERIFY"
+  # the declared usernames join the collision guard's ACTIVE set explicitly (env.j2 no longer lists them)
+  assert_grep -q "_platform_admins | map(attribute='username')" "$DEPLOY"
+  # both list validations sit BEFORE the repo is placed or anything is written
+  local order
+  order=$(grep -nE 'name: "(Refuse a malformed administrator list|Refuse an empty list, duplicate administrators and secret-field collisions|Place the monorepo)' "$DEPLOY" | cut -d: -f1 | tr '\n' ' ')
+  set -- $order
+  [ "$#" -eq 3 ] && [ "$1" -lt "$3" ] && [ "$2" -lt "$3" ]
+  # no computed declaration is left in the playbook's own vars (check-secrets would fail closed)
+  refute_grep -qE '^    _secret_definitions:' "$DEPLOY"
+}
+
+@test "platform admins: env.j2 gets one password line per administrator, from the same list" {
+  assert_grep -q 'for a in _platform_admins' "$ENVJ2"
+  assert_grep -qF "{{ a.key | upper }}_PASSWORD={{ secrets[a.key ~ '_password'] }}" "$ENVJ2"
+  # the fixed per-user lines are gone: identity is rendered into the blueprint now
+  refute_grep -qE '^(WISWARD|JACOB|STRAY_ADMIN|AGENT_CLOUD_ADMIN)_(USERNAME|NAME|EMAIL|PASSWORD)=' "$ENVJ2"
+}
+
+# Renders the verifier against a stub API. $1 = the platform-admins members, $2 = the declared
+# exceptions (JSON list), $3 = the declared administrators (JSON list of usernames). Prints the
+# verifier's output and returns its exit status.
+_run_admin_verify() {
+  command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
+  local members="$1" exceptions="$2" declared="$3"
+  cat > "$BATS_TEST_TMPDIR/render-admin.yml" <<YAML
+- hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    _shared_blueprints: [platform-groups.yaml]
+    _enabled_apps: []
+    authentik_app_catalog: {}
+    _active_usernames: []
+    _retired_usernames: []
+    authentik_blueprint_settle_seconds: 0
+    _platform_admins_exceptions: $exceptions
+    _platform_admins: $(python3 -c "import json,sys; print(json.dumps([{'username': u} for u in json.loads(sys.argv[1])]))" "$declared")
+  tasks:
+    - ansible.builtin.template:
+        src: "$VERIFY"
+        dest: "$BATS_TEST_TMPDIR/verify-admins.py"
+        mode: "0644"
+YAML
+  ansible-playbook "$BATS_TEST_TMPDIR/render-admin.yml" >/dev/null 2>&1 || return 99
+  mkdir -p "$BATS_TEST_TMPDIR/stub/http"
+  : > "$BATS_TEST_TMPDIR/stub/http/__init__.py"
+  cat > "$BATS_TEST_TMPDIR/stub/http/client.py" <<'PY'
+import io, json, os
+class _Resp(io.BytesIO):
+    status = 200
+class HTTPConnection:
+    def __init__(self, *a, **k): pass
+    def request(self, method, path, headers=None):
+        data = json.load(open(os.environ["STUB_SCENARIO"]))
+        if "/managed/blueprints/" in path:
+            body = data["blueprints"]
+        elif "/core/groups/" in path:
+            body = data["groups"]
+        else:
+            body = data["users"]
+        self._body = json.dumps({"results": body}).encode()
+    def getresponse(self): return _Resp(self._body)
+PY
+  python3 - "$members" "$BATS_TEST_TMPDIR/admins.json" <<'PY'
+import json, sys
+members = json.loads(sys.argv[1])
+bp = [{"path": "custom/platform-groups.yaml", "status": "successful"},
+      {"path": "custom/zz-sso-bindings.yaml", "status": "successful"},
+      {"path": "custom/platform-admins.yaml", "status": "successful"}]
+json.dump({"blueprints": bp, "users": [],
+           "groups": [{"name": "platform-admins", "users_obj": [{"username": m} for m in members]}]},
+          open(sys.argv[2], "w"))
+PY
+  STUB_SCENARIO="$BATS_TEST_TMPDIR/admins.json" AUTHENTIK_BOOTSTRAP_TOKEN=x PYTHONPATH="$BATS_TEST_TMPDIR/stub" \
+    python3 "$BATS_TEST_TMPDIR/verify-admins.py"
+}
+
+@test "platform admins: the verify passes when platform-admins is exactly the declared list" {
+  run _run_admin_verify '["alice","bob"]' '[]' '["alice","bob"]'
+  [ "$status" -eq 0 ] || { echo "$output" >&2; false; }
+  assert_grep -q 'VERIFY OK' <<<"$output"
+}
+
+@test "platform admins: a declared exception is accepted as an extra member, and only that one" {
+  run _run_admin_verify '["alice","bob","breakglass"]' '["breakglass"]' '["alice","bob"]'
+  [ "$status" -eq 0 ] || { echo "$output" >&2; false; }
+  run _run_admin_verify '["alice","bob","breakglass","intruder"]' '["breakglass"]' '["alice","bob"]'
+  [ "$status" -eq 2 ]
+  assert_grep -q 'platform-admins member intruder: not in the declared administrator list' <<<"$output"
+  refute_grep -q 'breakglass' <<<"$output"
+}
+
+@test "platform admins: a member added outside the list and exceptions fails, naming the account only" {
+  # MUTATION 1 (task 2.9): add a member outside both lists -> the verify goes red.
+  run _run_admin_verify '["alice","bob","intruder"]' '[]' '["alice","bob"]'
+  [ "$status" -eq 2 ]
+  assert_grep -q 'platform-admins member intruder: not in the declared administrator list' <<<"$output"
+  assert_grep -q 'VERIFY FAILED' <<<"$output"
+}
+
+@test "platform admins: a declared administrator missing from the group fails" {
+  # MUTATION 2 (task 2.9): drop a list entry's membership -> the verify goes red.
+  run _run_admin_verify '["alice"]' '[]' '["alice","bob"]'
+  [ "$status" -eq 2 ]
+  assert_grep -q 'declared administrator bob is not a member' <<<"$output"
+}
+
+@test "platform admins: an empty declared list fails closed instead of accepting every member" {
+  run _run_admin_verify '["alice"]' '[]' '[]'
+  [ "$status" -eq 2 ]
+  assert_grep -q 'platform-admins member alice' <<<"$output"
 }
 
 @test "credential print: it cannot run without an explicit acknowledgement" {
@@ -399,6 +545,7 @@ PY_ORDER
     authentik_app_catalog: { tududi: { file: tududi-oidc.yaml } }
     _active_usernames: [alice]
     _retired_usernames: []
+    _platform_admins: [{username: alice}]
     authentik_blueprint_settle_seconds: 0
   tasks:
     - ansible.builtin.template:
@@ -421,7 +568,7 @@ class HTTPConnection:
     def __init__(self, *a, **k): pass
     def request(self, method, path, headers=None):
         data = json.load(open(os.environ["STUB_SCENARIO"]))
-        key = "blueprints" if "/managed/blueprints/" in path else "users"
+        key = "blueprints" if "/managed/blueprints/" in path else ("groups" if "/core/groups/" in path else "users")
         self._body = json.dumps({"results": data[key]}).encode()
     def getresponse(self): return _Resp(self._body)
 PY
@@ -434,9 +581,11 @@ PY
   local users_ok='{"path":"custom/platform-users.yaml","status":"successful"}'
   local tududi_ok='{"path":"custom/tududi-oidc.yaml","status":"successful"}'
   local sso_ok='{"path":"custom/zz-sso-bindings.yaml","status":"successful"}'
+  local adm_ok='{"path":"custom/platform-admins.yaml","status":"successful"}'
+  local grp='{"name":"platform-admins","users_obj":[{"username":"alice"}]}'
 
   # PASSES when every placed file has a successful instance and the account is right.
-  printf '{"blueprints":[%s,%s,%s,%s],"users":[%s]}' "$ok" "$users_ok" "$tududi_ok" "$sso_ok" "$alice" \
+  printf '{"blueprints":[%s,%s,%s,%s,%s],"users":[%s],"groups":[%s]}' "$ok" "$users_ok" "$tududi_ok" "$sso_ok" "$adm_ok" "$alice" "$grp" \
     > "$BATS_TEST_TMPDIR/all.json"
   run run_verifier "$BATS_TEST_TMPDIR/all.json"
   [ "$status" -eq 0 ]
@@ -444,7 +593,7 @@ PY
 
   # FAILS when platform-users.yaml was placed but never discovered — its siblings
   # are all successful, which is exactly the state the old check waved through.
-  printf '{"blueprints":[%s,%s,%s],"users":[%s]}' "$ok" "$tududi_ok" "$sso_ok" "$alice" \
+  printf '{"blueprints":[%s,%s,%s,%s],"users":[%s],"groups":[%s]}' "$ok" "$tududi_ok" "$sso_ok" "$adm_ok" "$alice" "$grp" \
     > "$BATS_TEST_TMPDIR/missing.json"
   run run_verifier "$BATS_TEST_TMPDIR/missing.json"
   [ "$status" -eq 2 ]

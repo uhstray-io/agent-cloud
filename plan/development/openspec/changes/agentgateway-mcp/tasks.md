@@ -72,16 +72,16 @@ finding that contradicts a decision stops the work and reopens that decision.
       tools, proving scenario "An enrolled identity lists tools"
 
 ## 2. Identities from the admin list
-- [ ] 2.1 Move every fixed-block member of `platform-admins` into the declared list
+- [x] 2.1 Move every fixed-block member of `platform-admins` into the declared list
       (`platform-users.yaml:39,74`, `stray-admin.yaml:25`, `agent-cloud-admin.yaml:35`,
       `service-account.yaml:22`), the break-glass account and the service account included:
       the operator's answer to Open Question 1 (2026-10-14). The declared exceptions list
       stays as the drift guard's mechanism and is empty by default; `openbao-oidc.yaml:44`
       only maps the group. No fixed block stays outside the list
-- [ ] 2.2 Define the declared list's shape (proposed variable `platform_admins`; each entry
+- [x] 2.2 Define the declared list's shape (proposed variable `platform_admins`; each entry
       the Authentik username, display name, email and an optional `agw_identity`) in the
       local inventory example and the Authentik README; real values stay in site-config
-- [ ] 2.3 Render the Authentik admin entries from the list: a templated blueprint, the
+- [x] 2.3 Render the Authentik admin entries from the list: a templated blueprint, the
       per-entry password secret definitions looped in `deploy-authentik.yml`, the
       environment lines looped in the Authentik `env.j2`. The existing OpenBao field names
       are kept so no password changes
@@ -99,7 +99,11 @@ finding that contradicts a decision stops the work and reopens that decision.
 - [ ] 2.6 Equivalence proof: render the Authentik admin entries both ways for the same
       inputs and diff them (username, name, email, active, path, groups, password field);
       run the local Authentik deploy twice, the second reporting nothing changed and the
-      read-back verify passing
+      read-back verify passing. Render equivalence done (the old fixed blocks at 724528c7
+      against the template, for the placeholder defaults and a synthetic per-user override
+      set; `platform/tests/test_authentik_platform_admins.py` holds the golden). The twice-run
+      local deploy is PENDING: the local Semaphore mounts another checkout, so it runs only
+      after this merges
 - [ ] 2.7 Local migration: declare each person identity in the list under its existing
       name, first with the name still in `agw_clients` (overlap reported) and then with it
       removed. Prove no key is re-minted and the rendered key-hash count does not drop by
@@ -117,7 +121,8 @@ finding that contradicts a decision stops the work and reopens that decision.
       identity list), not a second membership guard: "derived equals declared" is true by
       construction. BATS for both; mutation-check the verify by adding a member outside both
       lists and by dropping a list entry, and the render check by dropping one rendered key,
-      watching each fail
+      watching each fail. The Authentik half (verify + BATS + mutations) is done; the gateway
+      render check remains
 - [ ] 2.10 Validation gate, local: the rendered admin entries equal the fixed blocks and the
       verify passes, proving scenario "The rendered admin accounts match the fixed blocks";
       a new list entry mints a `client_<name>` and its hash is enrolled on the next

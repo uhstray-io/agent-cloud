@@ -1,0 +1,57 @@
+---
+# The platform administrators: ONE list, read by every deploy that needs to know who
+# the platform-admins members are (deploy-authentik.yml renders the accounts, the
+# agentgateway deploy derives a gateway identity per entry). Plan:
+# plan/development/openspec/changes/agentgateway-mcp (design D3, tasks 2.1-2.3).
+#
+# Each entry:
+#   key        lowercase slug. Its upper-cased form is the worker env prefix and
+#              `<key>_password` is the field name in secret/services/authentik, so it
+#              MUST equal today's name: changing one re-keys a stored password.
+#   username   the Authentik username (the account's identity; changing it declares a
+#              SECOND account, it does not rename the first).
+#   name       display name.
+#   email      required, except for `type: service_account`.
+#   type       optional, Authentik only: `user` (default) or `service_account`
+#              (path users/service-accounts, no email, no password; its API token is
+#              SERVICE_ACCOUNT_TOKEN). At most one service account.
+#   agw_identity  optional, gateway only: overrides the derived gateway identity name.
+#              Authentik ignores it.
+#
+# Where the list comes from. An inventory that sets `platform_admins` REPLACES the
+# default below entirely (it is a whole list, not a merge). With none set, the default is
+# built from the per-user inventory vars site-config already declares (wisward_*, jacob_*,
+# stray_admin_email), with the same defaults env.j2 and the old fixed blueprints used, so
+# an inventory that has not adopted the list renders exactly what it rendered before.
+# Real values stay in site-config; the literals here are the local-dev placeholders.
+#
+# Why this file defines `_platform_admins` and not `platform_admins`: a vars_files entry
+# outranks inventory vars, so defining `platform_admins` here would override site-config.
+# The `is defined` test below is what lets the inventory win.
+#
+# `platform_admins_exceptions` (names only, default empty) lists platform-admins members
+# that are deliberately NOT in the list; verify-users.py.j2 accepts them as extra members.
+_platform_admins_default:
+  - key: stray_admin
+    username: stray
+    name: stray
+    email: "{{ stray_admin_email | default('stray@agent-cloud.test') }}"
+  - key: agent_cloud_admin
+    username: agent-cloud-admin
+    name: agent-cloud Admin
+    email: agent-cloud-admin@agent-cloud.test
+  - key: wisward
+    username: "{{ wisward_username | default('wisward') }}"
+    name: "{{ wisward_name | default('Platform Admin') }}"
+    email: "{{ wisward_email | default('wisward@agent-cloud.test') }}"
+  - key: jacob
+    username: "{{ jacob_username | default('jacob') }}"
+    name: "{{ jacob_name | default('Platform Admin 2') }}"
+    email: "{{ jacob_email | default('jacob@agent-cloud.test') }}"
+  - key: svc_automation
+    username: svc-automation
+    name: Platform Service Account
+    type: service_account
+
+_platform_admins: "{{ platform_admins if platform_admins is defined else _platform_admins_default }}"
+_platform_admins_exceptions: "{{ platform_admins_exceptions | default([]) }}"
