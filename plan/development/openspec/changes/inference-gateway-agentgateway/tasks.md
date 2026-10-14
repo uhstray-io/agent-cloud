@@ -464,6 +464,16 @@
       deploy, hand each out with `backup-credentials-to-site-config.yml`, and enrol the
       legacy shared key as identity `legacy-shared` with the tightest budget and
       `legacy_shared_expires: <date>` in inventory (task 5.1 enforces the expiry)
+      2026-10-14 (task output read from production Semaphore by the lead): `legacy-shared` is now
+      enrolled with an expiry and a budget (site-config #77): `legacy_shared_expires` 2026-10-28
+      and an `agw_client_policies` entry of 30,000,000 tokens per hour. Sizing: Verify o11y
+      Production Budgets (Dev) task 5349 (agent-cloud #606) read a 7-day near-rolling peak of
+      19.0M prompt+generation tokens per hour (241k generation tokens per hour, 38.7 requests
+      per minute, 8 running, 3 waiting). Every current client reaches vLLM with the shared key,
+      so after the switch all traffic is `legacy-shared`; the 2M default would have blocked it.
+      30M is about 1.5x the peak: a grace-period figure, deliberately above the "tightest
+      budget" this task names. Deploy agentgateway (Dev) task 5357 rendered it. Still open:
+      handing out the first key set. Not ticked.
 - [ ] 4.2 `localRateLimit` per identity: `type: requests` per minute and `type: tokens`
       per hour, figures derived from the measured ceiling and written as comments.
       2026-09-17: v1.5.0 has no per-identity REQUEST bucket under `llm.policies` (`key`
@@ -472,7 +482,11 @@
       global request bucket (`agw_rate_requests_per_minute_total`) + `hourly-tokens`
       budget per key (`agw_rate_tokens_per_hour`). Left for this task: derive both
       figures from the measured ceiling and write them into site-config inventory
-- [ ] 4.3 site-config: production Caddy block upstream to the gateway; `Caddyfile.local.j2`
+      2026-10-14: provisional figures are drafted in site-config #78 (draft, awaiting operator
+      review): 10M tokens per hour per identity, 120 requests per minute, and `o11y-probe`
+      pinned at 2M. Deriving them from the measured capacity ceiling is still pending. Not
+      ticked.
+- [x] 4.3 site-config: production Caddy block upstream to the gateway; `Caddyfile.local.j2`
       `inference_api` unchanged in shape (upstream already comes from `r.upstream`);
       redeploy Caddy through Semaphore
       2026-10-12 (task output read from Semaphore by the lead): Probe agentgateway Gate (Dev)
@@ -488,8 +502,24 @@
       gateway's readiness port stays off the public edge. Gateway mode therefore keeps
       Caddy's path to vLLM `/health` open. Remaining: the operator's go on site-config #66,
       then the Caddy redeploy. Not ticked.
+      2026-10-14 (task output read from production Semaphore by the lead): the route is
+      switched. site-config #66 (route mode, direct) merged as a852c64d and #77 (the flip:
+      Caddy `inference_route_mode` gateway, with the 4.7 expiry) merged as e05a726d; #79 adds an
+      inventory-sync step to the runbook (83c9f38e). Production Semaphore runs from its own
+      stored copy of the inventory, so `sync-inventory.yml` pushed site-config main after #66
+      and after #77, each time with a key-path diff of exactly that PR's keys. Deploy
+      agentgateway (Dev) dry run 5356 and real run 5357: "The shared key is admitted as
+      legacy-shared until 2026-10-28."; the keyed round-trip passed. Manage Caddy Sites (Dev)
+      dry run 5365: the diff is only the inference block (`/v1/*` to the https gateway;
+      `/health` unchanged, to the vLLM head node); real run 5366 at 04:29 UTC validated and
+      restarted Caddy. Public edge afterwards: `/health` 200, keyless `/v1/models` 401,
+      `/metrics` 403 (Cloudflare challenge). Rollback Inference Route (Dev) `gateway-config`
+      dry run 5370 reads the live route as `/v1/*` through the gateway and `/health` direct to
+      vLLM.
 - [ ] 4.4 Run dgx-spark's public-path verify play against the live hostname; update
       dgx-spark `docs/TEAM-ENDPOINT.md` (key changes, base URL does not)
+      2026-10-14: dgx-spark's public-path verify play is requested; no result yet. Not
+      ticked.
 - [ ] 4.5 Validation gate: an unenrolled key gets 401 at the gateway with no vLLM log
       line, proving scenario "Unknown key is rejected"; a burst from one identity gets
       429 while another identity is served, proving scenario "One client cannot exceed its
@@ -500,6 +530,10 @@
       key is rejected" read from Probe agentgateway Gate (Dev) task 4875 (PR #559): keyless
       `/v1/models` 401 and invalid-key `/v1/models` 401. The "Public path traverses the
       gateway", burst and rollback scenarios need the route switch (4.3). Not ticked.
+      2026-10-14: PARTIAL. After the switch, the keyless request is refused at the edge
+      (`/v1/models` 401 after Caddy run 5366). The rollback path is proven by the 4.6 drill,
+      but through the playbook, not as "one inventory change and a Caddy redeploy". The 429
+      isolation scenario and the access-log scenario are not proven. Not ticked.
 - [ ] 4.6 `rollback-inference-route.yml` with `mode=gateway-config|direct|restore` as in the
       proposal's Rollback Plan, each mode idempotent (re-run converges, no duplicate key
       publication, `restore` is a no-op once the upstream is the gateway and the key is
@@ -563,9 +597,24 @@
       the gateway answered readiness, `failed=0`. Deploy agentgateway (Dev) task 3946 then
       rendered the current config from code again (recreated, verify passed). Still owed for this
       box: the live `direct` then `restore` drill, in a window Joe names
+      2026-10-14 (task output read from production Semaphore by the lead): the live drill ran
+      after a 30-minute soak on the gateway route. `mode=direct`: dry run 5378, real run 5380
+      (route direct; it published the live vLLM key as `direct_stray`, `direct_opencode`,
+      `direct_pi`, `direct_skynet` and `direct_o11y-probe` in `secret/services/agentgateway`).
+      `mode=restore`: dry run 5384, real run 5385 put the route back on the gateway (declared
+      and running config: `/v1/*` to the gateway on port 4000, `/health` to the head node on
+      port 8000), then stopped by design at the grace-period check: "The route is back on the
+      gateway, but direct_* still hold the LIVE vLLM key ... Rotate it, then run this again."
+      The edge answered 200 and 401 throughout, except for seconds-long 525 windows during each
+      Caddy restart. RESIDUAL: five copies of the live vLLM key sit in OpenBao as `direct_<name>`
+      until dgx-spark rotates the key (5.1); a `restore` after that rotation retires them. The
+      scenario "Rollback after retirement is the playbook" needs that rotation. Not ticked.
 
-- [ ] 4.7 `legacy_shared_expires` = the route-switch date + 14 days (operator decision
+- [x] 4.7 `legacy_shared_expires` = the route-switch date + 14 days (operator decision
       2026-09-27), set in site-config in the same change that switches the route
+      2026-10-14: set in site-config #77 (`legacy_shared_expires` 2026-10-28 = the switch date
+      2026-10-14 UTC + 14 days), in the same change that switched the route (4.3). Deploy
+      agentgateway (Dev) real run 5357 reported it.
 
 ## 5. Retire the shared key, records
 - [ ] 5.1 Retirement, enforced by the deploy rather than remembered: the config template
@@ -585,6 +634,12 @@
       the retirement date is recorded in `context/architecture.md` once 4.7 sets it
       2026-10-03: the deploy half is PR #400 (merged). The vLLM rotation waits on the dgx-spark
       handoff, which has not been sent
+      2026-10-14: still open. Two follow-ups. (1) The drill in 4.6 left five copies of the live
+      vLLM key in OpenBao (`direct_<name>`); they stay until dgx-spark rotates the key, after
+      which `restore` retires them. (2) From the agent-cloud #611 review: the grace-period probe
+      false-reds if the vLLM key is rotated BEFORE `legacy_shared_expires`, because the stored
+      fingerprint pins the old key. Rotate after the expiry, or skip the probe when the
+      fingerprints differ. Not ticked.
 - [x] 5.2 Accept the architecture record; append a dated pointer line to
       `plan/development/06-inference-skynet.md`; `platform/services/inference/` stub
       gains a README pointing at the gateway service and the dgx-spark roadmap record
@@ -733,7 +788,7 @@
       readiness check execs `wget` in the db container (`:398`). The sibling checks are named in
       their own tasks: `inference-benchmarking/tasks.md:45`, `inference-personal-keys/tasks.md:172`,
       `production-internal-ca/tasks.md:313`
-- [ ] 6.2 Caddy's `inference` and `admin.inference` blocks proxy to `https://` with
+- [x] 6.2 Caddy's `inference` and `admin.inference` blocks proxy to `https://` with
       `transport http { tls_server_name <gateway SAN>; tls_trust_pool file <root>;
       tls_client_auth <cert> <key> }` (Caddy 2.11.4), the leaf files read from the Caddy
       host's mounted `current/` directory. The architecture document's deprecated
@@ -743,6 +798,12 @@
       origin: 302 to the Authentik authorize endpoint with `client_id=agentgateway` (the public
       URL sits behind the Cloudflare challenge). Open: the `inference` block still dials vLLM
       directly until task 4.3
+      2026-10-14 production: the `inference` block now proxies `https://` to the gateway with
+      `tls_server_name`, `tls_trust_pool` and `tls_client_auth`, as `admin.inference` already
+      did (2026-10-02 note). Manage Caddy Sites (Dev) dry run 5365 (only that block changed) and
+      real run 5366; Rollback Inference Route (Dev) `gateway-config` dry run 5370 reads the
+      route as `/v1/*` through the gateway and `/health` direct to vLLM. Task output read from
+      production Semaphore by the lead.
 - [ ] 6.3 The model's `tls: {root, hostname, cert, key}` (the `agw-upstream` client leaf,
       production-internal-ca task 5.4a; mutual TLS decided 2026-09-28) and an `https://`
       base URL, once dgx-spark

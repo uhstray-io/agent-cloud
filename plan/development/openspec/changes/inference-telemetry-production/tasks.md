@@ -3,7 +3,7 @@
 ## 0. Branch and inventory
 - [x] 0.1 Feature branch from `dev`: `feat/inference-telemetry-production`. Pull requests
       only when Joe asks for them (repo rule)
-- [ ] 0.2 Read-only inventory through Semaphore: confirm no o11y containers run on any
+- [x] 0.2 Read-only inventory through Semaphore: confirm no o11y containers run on any
       production host today; record the result in `design.md` Context
       2026-10-02 rescope: PARTIAL — tasks 1105/1134 found no `o11y-*` on every reachable host;
       `grafanapodman` retired by the operator 2026-09-26 (site-config#33). `nemoclaw`,
@@ -24,6 +24,11 @@
       2026-10-13: investigation so far (task ids as reported by the coordinator): the nocodb,
       nemoclaw and openhands VMs were network-unreachable from the controller and from Caddy
       (tasks 4857-4862). The operator's decision on their VM state is pending. Not ticked.
+      2026-10-14: ticked. Operator decision 2026-10-13: the nocodb, nemoclaw and openhands VMs
+      are RETIRED, which closes the inventory (they were unreachable in tasks 4857-4862). Open
+      and separate: root `CLAUDE.md` still lists OpenHands as deployed at `canvas.uhstray.io`,
+      and the Caddy route for canvas is still declared and live; removing the route, the
+      inventory entries and those docs is its own step.
 - [ ] 0.3 Allocate the o11y VM in site-config `proxmox/vm-specs.yml` (Auxiliary tier,
       Podman) and provision it through the onboarding checklist phases 1 to 2
       2026-10-02 rescope: PARTIAL — the VM is reserved and provisioned under
@@ -525,6 +530,10 @@
       multi-day baseline would firm up the Prometheus rate. Remaining: alert thresholds from the
       baseline (operator decision on the figures), and the retention increase, still blocked
       on the estate-wide 4.6e isolated-restore receipt. Not ticked.
+      2026-10-14: the alert threshold draft is agent-cloud #610 (`inference_queue_depth_high`:
+      warn when more than 6 requests wait for 10 minutes, twice the 7-day peak of 3 waiting read
+      by Verify o11y Production Budgets (Dev) task 5349). It awaits operator review. Not
+      ticked.
 - [x] 4.2 Append dated status lines to `plan/development/05-observability.md` and
       `plan/architecture/06-observability-instrumentation.md`
       2026-10-02 rescope: PARTIAL — 05-observability.md carries the dated production lines
