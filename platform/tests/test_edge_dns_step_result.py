@@ -82,11 +82,13 @@ def _run(tmp_path, tf_plan, tf_verify, action, show_plan=None, show_verify=None,
                          "_tf_plan_guard": {"safe": True, "status": "present", "reason": "zero_diff",
                                             "digest": "sha256:" + "0" * 64, "resource": plan_guard.RESOURCE,
                                             "rule_ref": plan_guard.RULE_REF, "position": plan_guard.RULE_INDEX,
-                                            "actions": ["no-op"], "digest_matches": False},
+                                            "actions": ["no-op"], "digest_matches": False,
+                                            "root_field_changes": []},
                          "_tf_verify_guard": {"safe": True, "status": "present", "reason": "zero_diff",
                                               "digest": "sha256:" + "0" * 64, "resource": plan_guard.RESOURCE,
                                               "rule_ref": plan_guard.RULE_REF, "position": plan_guard.RULE_INDEX,
-                                              "actions": ["no-op"], "digest_matches": False},
+                                              "actions": ["no-op"], "digest_matches": False,
+                                              "root_field_changes": []},
                          "tofu_action": action},
                 "tasks": tail}]
     (tmp_path / "p.yml").write_text(json.dumps(harness))
@@ -357,7 +359,7 @@ def test_a_guard_that_cannot_start_has_a_fixed_refusal(tmp_path):
 def test_a_valid_unsafe_receipt_keeps_its_sanitized_reason(tmp_path):
     receipt = {"safe": False, "status": "rejected", "reason": "other_resource_changes", "digest": None,
                "resource": plan_guard.RESOURCE, "rule_ref": plan_guard.RULE_REF, "position": plan_guard.RULE_INDEX,
-               "actions": [], "digest_matches": False}
+               "actions": [], "digest_matches": False, "root_field_changes": []}
     guard_script = tmp_path / "refusing_guard.py"
     guard_script.write_text(f"import sys\nsys.stdout.write({json.dumps(json.dumps(receipt))})\nsys.exit(1)\n")
     proc, _, _, _ = _tofu_run(tmp_path, check=False, guard_script=guard_script, grafana_guard=True)
