@@ -370,6 +370,14 @@ scenario that fails an `agw_clients` entry named `user-x`. This change is a comp
   chosen the weaker path; the documentation says so.
 - **Rate-limit slot.** G3 uses the last free slot on the zone.
 - **The internal key and the empty-fields handout.** See Open Question 6.
+- **Who may call `/mcp` (2026-10-14, security review).** MCP admits personal admin identities only; a
+  service client cannot reach the chat tool, so `allowedModels` and per-client budgets are not escapable
+  through `mcp-self` (the self-call runs as `mcp-self`, which carries neither the caller's model allow-list
+  nor the caller's budget). An admin's MCP model spend is bounded by `mcp-self`'s budget, not their own
+  (accepted). Enforced by the deploy: `/mcp` is rendered from the admin-derived identity list, never from
+  `agw_clients`; the deploy refuses MCP with no admin identities, with an `allowed_models` on an admin
+  identity, or without `agw_client_policies.mcp-self.tokens_per_hour`. This amends G2: the `mcp` call no
+  longer passes the merged identities.
 - **Mutual TLS for the self-call.** If the listener cannot admit the gateway's own call
   without widening the SAN allowlist beyond the Caddy leaf, that widening is a security
   trade-off for the operator to take, not a default (spike item 1.5 reports it).

@@ -86,6 +86,57 @@ setup() {
   assert_grep -qE '^  adminAddr: 127\.0\.0\.1:15000$' "$CONFIG"
 }
 
+@test "agentgateway: the MCP loopback port is published by no compose file and no env value" {
+  # The loopback gateway (agentgateway-mcp task 3.7) is unpublished: only the gateway's own call reaches
+  # it. Every published container port, across the base file and both overlays, is one of the four that
+  # existed before MCP. Parsed as YAML so a re-indented or re-quoted mapping cannot hide one.
+  python3 - "$DEPLOY_DIR" <<'PY'
+import pathlib
+import sys
+import yaml
+
+class Loader(yaml.SafeLoader):
+    pass
+
+# podman-compose's `!override` tag wraps a plain sequence or mapping.
+Loader.add_multi_constructor("!", lambda loader, suffix, node: loader.construct_sequence(node) if isinstance(node, yaml.SequenceNode) else loader.construct_mapping(node))
+root = pathlib.Path(sys.argv[1])
+published = set()
+for name in ("compose.yml", "compose.local.yml", "compose.tls.yml"):
+    doc = yaml.load((root / name).read_text(), Loader=Loader)
+    for service in (doc.get("services") or {}).values():
+        for entry in service.get("ports") or []:
+            published.add(str(entry).rsplit(":", 1)[-1])
+assert published == {"4000", "4001", "19001", "19002"}, published
+# No compose substitution value could publish it either: the port is not named in a compose file, and
+# the env file template carries no bind or port value for it.
+for name in ("compose.yml", "compose.local.yml", "compose.tls.yml", "templates/env.j2"):
+    text = (root / name).read_text()
+    assert "4002" not in text and "AGW_LOOPBACK" not in text, name
+PY
+}
+
+@test "agentgateway: the MCP-enabled render is validated by the pinned image before any container is recreated" {
+  # G5 / task 3.3: the one validation include follows the render, is unconditional (so a flag-true render
+  # is always checked), and sits in Phase 1, before Phase 2 starts the containers.
+  python3 - "$PLAYBOOK" <<'PY'
+import sys
+import yaml
+plays = yaml.safe_load(open(sys.argv[1], encoding='utf-8'))
+names = [p.get('name', '') for p in plays]
+phase1 = next(i for i, n in enumerate(names) if n.startswith('Phase 1'))
+phase2 = next(i for i, n in enumerate(names) if n.startswith('Phase 2'))
+assert phase1 < phase2
+tasks = plays[phase1]['tasks']
+order = [t.get('name') for t in tasks]
+validate = next(t for t in tasks if t.get('ansible.builtin.include_tasks') == 'tasks/agw-validate-config.yml')
+assert 'when' not in validate
+assert order.index('Manage secrets and render env + config') < order.index(validate['name'])
+assert order.index('Require the rendered mcp block to carry its own strict key policy') < order.index(validate['name'])
+assert not any(t.get('ansible.builtin.shell', '').find('deploy.sh') >= 0 and '--pull-only' not in t['ansible.builtin.shell'] for t in tasks)
+PY
+}
+
 @test "agentgateway: config is a read-only bind mount; the only volume is the budget db" {
   local f="$DEPLOY_DIR/compose.yml"
   assert_grep -E './config.yaml:/config.yaml:ro' "$f"
@@ -137,13 +188,34 @@ setup() {
   assert_grep -qF "keyHash: sha256:{{ secrets['client_' ~ c] | hash('sha256') }}" "$CONFIG"
   # A plaintext `key:` exists only inside the local-dev-only flag branch, default off.
   # ...and only together with local_mode, so a prod inventory cannot enable it.
-  assert_grep -qF "{% if (agw_plaintext_keys | default(false) | bool) and (local_mode | default(false) | bool) %}" "$CONFIG"
+  assert_grep -qF "{% if (agw_plaintext_keys | default(false) | bool) and (local_mode | default(false) | bool) and c not in _internal_ids %}" "$CONFIG"
   [ "$(grep -cE '^\s*-\s*key:\s' "$CONFIG")" -eq 1 ]
   # The deploy refuses the flag outside local_mode instead of silently ignoring it.
   assert_grep -qF "not (agw_plaintext_keys | default(false) | bool) or (local_mode | default(false) | bool)" "$REPO_ROOT/platform/playbooks/deploy-agentgateway.yml"
   # strict: an unknown key is 401 at the gateway.
   assert_grep -qE '^\s*mode: strict' "$CONFIG"
   refute_grep -E '192\.168\.|10\.[0-9]+\.' "$CONFIG"
+}
+
+@test "agentgateway: the key loop is written once, in the shared macro every apiKey policy calls" {
+  # llm and mcp authenticate with the same key list; a second loop is where they would drift.
+  python3 - "$CONFIG" <<'PY'
+import re
+import sys
+text = open(sys.argv[1], encoding='utf-8').read()
+macro = re.search(r"\{% macro apikey_policy\(.*?\{% endmacro %\}", text, re.S)
+assert macro, "no apikey_policy macro"
+inside, outside = macro.group(0), text.replace(macro.group(0), "")
+assert text.count("{% macro apikey_policy(") == 1
+# The loop, and every place a key or its hash is written, are inside the macro and nowhere else.
+for needle in ("{% for c in identities %}", "secrets['client_' ~ c]", "keyHash: sha256:{{", "- key: {{"):
+    assert needle in inside, needle
+for needle in ("{% for c in", "secrets['client_'", "keyHash: sha256:{{", "- key: {{"):
+    assert needle not in outside, needle
+# The llm policy calls it with the legacy block and the limits.
+llm = text.split("\nllm:\n", 1)[1]
+assert re.search(r"\{\{ apikey_policy\(agw_identities \| default\(agw_clients \| default\(\[\]\)\), true, true\) \| trim\('\\n'\) \}\}", llm), "llm call shape"
+PY
 }
 
 @test "agentgateway: observability — identity label on metrics and logs, never prompt content" {
@@ -233,8 +305,9 @@ setup() {
 
 @test "agentgateway: playbook verifies through the one probe path, asserts the 401, puts no key on an argv" {
   # Every gateway probe outside Caddy is tasks/agw-probe.yml (task 6.1a). The client key reaches
-  # exactly two tasks, both includes of that file, and inside it only a no_log `uri` header: no
-  # command or shell task ever sees it (a shell probe put it on wget's argv, PR 221 Codex review).
+  # exactly six tasks (the keyed /v1 listing and completion, and the four keyed MCP probes), all
+  # includes of that file, and inside it only a no_log `uri` header: no command or shell task ever
+  # sees it (a shell probe put it on wget's argv, PR 221 Codex review).
   PROBE="$REPO_ROOT/platform/playbooks/tasks/agw-probe.yml"
   python3 - "$PLAYBOOK" "$PROBE" <<'PY'
 import sys, yaml
@@ -249,7 +322,14 @@ for play in yaml.safe_load(open(sys.argv[1])):
         body = {k: v for k, v in t.items() if k not in ("name", "when")}
         if "_resolved['client_" in str(body):
             keyed.append(t)
-assert len(keyed) == 2, [t.get("name") for t in keyed]
+assert [t.get("name") for t in keyed] == [
+    "An enrolled identity lists the served models",
+    "An enrolled identity completes one chat request through the upstream",
+    "MCP: an enrolled identity initialises a session",
+    "MCP: an enrolled identity lists the tools",
+    "MCP: an enrolled identity makes one model call through the chat tool",
+    "MCP: with MCP disabled a keyed initialize is not an MCP reply",
+], [t.get("name") for t in keyed]
 for t in keyed:
     assert t.get("ansible.builtin.include_tasks") == "tasks/agw-probe.yml", t.get("name")
     assert "_resolved['client_" in t["vars"]["_agwp_key"], t.get("name")
@@ -260,7 +340,7 @@ assert call.get("no_log") is True and "_agwp_key" in call["ansible.builtin.uri"]
 assert "_agwp_key" not in str({k: v for k, v in call["ansible.builtin.uri"].items() if k != "headers"})
 # The raw result carries the request, so only a no_log copy of response fields leaves the file.
 keep = next(t for t in probe if "ansible.builtin.set_fact" in t)
-assert keep.get("no_log") is True and set(keep["ansible.builtin.set_fact"]["_agwp_out"]) == {"status", "content", "json", "msg"}
+assert keep.get("no_log") is True and set(keep["ansible.builtin.set_fact"]["_agwp_out"]) == {"status", "content", "json", "msg", "rpc"}
 PY
   python3 - "$PLAYBOOK" <<'PY'
 import os
@@ -292,8 +372,9 @@ PY
   assert_grep -qF '.allowed_models' "$PLAYBOOK"
   assert_grep -qF 'model: "{{ _verify_models[0] }}"' "$PLAYBOOK"
   assert_grep -qF '(_keyed_models.status | default(-1) | int) == 429' "$PLAYBOOK"
-  # Only the gateway's own refusal body counts; a 429 relayed from the upstream fails.
-  [ "$(grep -cF "| trim) == 'rate limit exceeded'" "$PLAYBOOK")" -eq 2 ]
+  # Only the gateway's own refusal body counts; a 429 relayed from the upstream fails. Two checks on
+  # the keyed /v1 round-trip, and the same on the MCP initialize, tool listing and model call.
+  [ "$(grep -cF "| trim) == 'rate limit exceeded'" "$PLAYBOOK")" -eq 5 ]
   assert_grep -qF 'round-trip was NOT proven on this run' "$PLAYBOOK"
   # An unproven round-trip fails the deploy unless the operator accepts it, and that refusal
   # runs before the completion assert it would otherwise skip.
