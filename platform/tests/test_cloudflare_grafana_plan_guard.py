@@ -67,7 +67,35 @@ def test_exact_insertion_has_stable_redacted_receipt():
     assert receipt["digest"] == guard.inspect_plan(reordered, "plan")["digest"]
     assert receipt["digest"] != guard.inspect_plan(metadata_changed, "plan")["digest"]
     assert set(receipt) == set(guard.RECEIPT_FIELDS)
+    assert receipt["root_field_changes"] == []
     assert "sensitive-zone-id" not in json.dumps(receipt)
+
+
+def test_root_field_refusal_reports_only_allowlisted_names_and_key_presence():
+    plan = _plan()
+    after = plan["resource_changes"][0]["change"]["after"]
+    after["description"] = "unrelated root drift"
+    del after["zone_id"]
+    after["private_metadata"] = "must not leave the plan boundary"
+
+    receipt = guard.inspect_plan(plan, "plan")
+
+    assert not receipt["safe"] and receipt["reason"] == "root_field_change"
+    assert receipt["root_field_changes"] == ["description", "unknown_field", "zone_id"]
+    assert "private_metadata" not in json.dumps(receipt)
+    assert "unrelated root drift" not in json.dumps(receipt)
+
+
+def test_root_field_diagnostic_uses_fixed_marker_for_unknown_field_names():
+    plan = _plan()
+    plan["resource_changes"][0]["change"]["after"]["private_metadata"] = "sensitive value"
+
+    receipt = guard.inspect_plan(plan, "plan")
+
+    assert receipt["reason"] == "root_field_change"
+    assert receipt["root_field_changes"] == ["unknown_field"]
+    assert "private_metadata" not in json.dumps(receipt)
+    assert "sensitive value" not in json.dumps(receipt)
 
 
 @pytest.mark.parametrize("mutate,reason", [
@@ -164,6 +192,9 @@ def _tasks():
 def test_apply_is_bound_to_the_saved_plan_and_digest_is_a_survey_input():
     tasks = _tasks()
     names = [t.get("name") for t in tasks]
+    for name in ("Unpack the safe plan receipt", "Unpack the post-apply zero-diff receipt"):
+        unpack = next(t for t in tasks if t.get("name") == name)
+        assert "root_field_changes" in " ".join(unpack["block"][1]["ansible.builtin.assert"]["that"])
     gate_i = names.index("Require the reviewed Grafana rule insertion before apply")
     apply_i = names.index("OpenTofu apply")
     apply = tasks[apply_i]["ansible.builtin.command"]["argv"]

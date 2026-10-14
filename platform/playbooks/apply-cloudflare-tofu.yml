@@ -346,7 +346,7 @@
                   - >-
                     (_tf_plan_guard.keys() | list | sort) ==
                     ['actions', 'digest', 'digest_matches', 'position', 'reason', 'resource',
-                     'rule_ref', 'safe', 'status'] | sort
+                     'root_field_changes', 'rule_ref', 'safe', 'status'] | sort
                 fail_msg: "Cloudflare plan guard receipt is malformed."
               no_log: true
           rescue:
@@ -448,7 +448,7 @@
                   - >-
                     (_tf_verify_guard.keys() | list | sort) ==
                     ['actions', 'digest', 'digest_matches', 'position', 'reason', 'resource',
-                     'rule_ref', 'safe', 'status'] | sort
+                     'root_field_changes', 'rule_ref', 'safe', 'status'] | sort
                 fail_msg: "Cloudflare post-apply receipt is malformed."
               no_log: true
           rescue:
@@ -520,11 +520,11 @@
           plan_guard: >-
             {{ _tf_plan_guard | default({'safe': false, 'status': 'unavailable', 'reason': 'plan_not_reviewed',
                'digest': none, 'resource': 'cloudflare_ruleset.custom_firewall', 'rule_ref': 'o11y-api-bypass-challenge',
-               'position': 5, 'actions': [], 'digest_matches': false}) }}
+               'position': 5, 'actions': [], 'digest_matches': false, 'root_field_changes': []}) }}
           verify_guard: >-
             {{ _tf_verify_guard | default({'safe': false, 'status': 'unavailable', 'reason': 'not_applied',
                'digest': none, 'resource': 'cloudflare_ruleset.custom_firewall', 'rule_ref': 'o11y-api-bypass-challenge',
-               'position': 5, 'actions': [], 'digest_matches': false}) }}
+               'position': 5, 'actions': [], 'digest_matches': false, 'root_field_changes': []}) }}
       # A dry run's results come from the throwaway run; a real run's from its own tasks.
       vars:
         _re: 'Plan: (\d+) to add, (\d+) to change, (\d+) to destroy'
