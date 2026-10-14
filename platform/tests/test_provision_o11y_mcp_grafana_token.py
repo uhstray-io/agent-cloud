@@ -6,9 +6,11 @@ import subprocess
 from urllib.parse import urlsplit
 
 import pytest
+import yaml
 from seed_harness import ROLE, ROOT, FakeBao, serve
 
 PLAYBOOK = "platform/playbooks/provision-o11y-mcp-grafana-token.yml"
+TEMPLATES = ROOT / "platform/semaphore/templates.yml"
 STORED = "synthetic-stored-token"
 CANDIDATE = "synthetic-candidate-token"
 RACED_CANDIDATE = "synthetic-raced-candidate-token"
@@ -20,6 +22,17 @@ shift            # exec
 shift            # container name
 GF_SECURITY_ADMIN_PASSWORD={ADMIN} exec "$@"
 """
+
+
+def test_semaphore_entry_is_dev_source_and_preserves_existing_inventory_binding():
+    templates = yaml.safe_load(TEMPLATES.read_text())["templates"]
+    entry = next(t for t in templates if t.get("name") == "Provision o11y MCP Grafana Token (Dev)")
+
+    assert entry["playbook"] == PLAYBOOK
+    assert entry["repository"] == "agent-cloud dev"
+    assert "dev_variant" not in entry
+    assert "inventory" not in entry and "inventory_id" not in entry
+    assert not any(t.get("name") == "Provision o11y MCP Grafana Token" for t in templates)
 
 
 def make_handler(stored=STORED, candidate=None, valid=(STORED,), health=200, account=None, rejection=401,

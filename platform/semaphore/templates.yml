@@ -245,11 +245,11 @@ templates:
     playbook: platform/playbooks/provision-o11y-watcher-token.yml
     dev_variant: true
 
-  # Provisions the MCP Grafana Editor service account and verifies/promotes a staged
-  # mcp_grafana_token_candidate to secret/services/o11y:mcp_grafana_token.
-  - name: Provision o11y MCP Grafana Token
+  # Dev source; preserve the existing production inventory ID 2; no service deployment.
+  # Provisions the MCP Grafana Editor account and verifies/promotes its staged token.
+  - name: Provision o11y MCP Grafana Token (Dev)
     playbook: platform/playbooks/provision-o11y-mcp-grafana-token.yml
-    dev_variant: true
+    repository: agent-cloud dev
 
   - name: Verify o11y Metrics Target (Dev)
     playbook: platform/playbooks/verify-o11y-metrics-target.yml

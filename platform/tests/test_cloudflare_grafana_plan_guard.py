@@ -98,6 +98,21 @@ def test_root_field_diagnostic_uses_fixed_marker_for_unknown_field_names():
     assert "sensitive value" not in json.dumps(receipt)
 
 
+@pytest.mark.parametrize("missing_from", ["before", "after"])
+def test_computed_unknown_root_field_presence_change_is_rejected(missing_from):
+    plan = _plan()
+    change = plan["resource_changes"][0]["change"]
+    change["after_unknown"]["version"] = True
+    change[missing_from].pop("version")
+    if missing_from == "before":
+        change["after"]["version"] = None
+
+    receipt = guard.inspect_plan(plan, "plan")
+
+    assert not receipt["safe"] and receipt["reason"] == "root_field_change"
+    assert receipt["root_field_changes"] == ["version"]
+
+
 @pytest.mark.parametrize("mutate,reason", [
     (lambda p: p.update(complete=False), "plan_not_applyable"),
     (lambda p: p["resource_changes"].append({"address": "cloudflare_record.drift", "change": {"actions": ["update"]}}),
@@ -192,9 +207,16 @@ def _tasks():
 def test_apply_is_bound_to_the_saved_plan_and_digest_is_a_survey_input():
     tasks = _tasks()
     names = [t.get("name") for t in tasks]
-    for name in ("Unpack the safe plan receipt", "Unpack the post-apply zero-diff receipt"):
+    receipt_keys = ["actions", "digest", "digest_matches", "position", "reason", "resource",
+                    "root_field_changes", "rule_ref", "safe", "status"]
+    for name, variable in (("Unpack the safe plan receipt", "_tf_plan_guard"),
+                           ("Unpack the post-apply zero-diff receipt", "_tf_verify_guard")):
         unpack = next(t for t in tasks if t.get("name") == name)
-        assert "root_field_changes" in " ".join(unpack["block"][1]["ansible.builtin.assert"]["that"])
+        conditions = unpack["block"][1]["ansible.builtin.assert"]["that"]
+        assert [" ".join(condition.split()) for condition in conditions] == [
+            f"{variable} is mapping",
+            f"({variable}.keys() | list | sort) == {receipt_keys!r} | sort",
+        ]
     gate_i = names.index("Require the reviewed Grafana rule insertion before apply")
     apply_i = names.index("OpenTofu apply")
     apply = tasks[apply_i]["ansible.builtin.command"]["argv"]

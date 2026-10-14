@@ -49,6 +49,9 @@ def _reject(reason, root_field_changes=()):
 def _root_field_changes(before, after, computed_unknown):
     changed = set()
     for key in before.keys() | after.keys():
+        if key not in before or key not in after:
+            changed.add(key if key in PROVIDER_ROOT_FIELD_NAMES else UNKNOWN_FIELD_MARKER)
+            continue
         if key == "rules" and key in before and key in after:
             continue
         if key in computed_unknown and key in after and after[key] is None:
