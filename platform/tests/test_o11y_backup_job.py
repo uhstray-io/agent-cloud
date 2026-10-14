@@ -245,7 +245,7 @@ def test_cli_refusal_reports_only_allow_listed_text(monkeypatch, capsys):
 
 
 def permission_response(rights=None, status=200, path="/nodes/node-a"):
-    return {"status": status, "json": {"data": {path: rights or {"Sys.Audit": 1}}}}
+    return {"status": status, "json": {"data": {path: {"Sys.Audit": 1} if rights is None else rights}}}
 
 
 def task_row(index, status="OK", **overrides):
@@ -276,8 +276,11 @@ def history_plan(until=2_000):
 
 def test_history_query_requires_positive_node_scoped_sys_audit():
     for permissions in (
-        permission_response({"Sys.Audit": 0}),
         permission_response({"Sys.Audit": True}),
+        permission_response({"Sys.Audit": False}),
+        permission_response({"Sys.Audit": "1"}),
+        permission_response({"Sys.Audit": None}),
+        permission_response({}),
         permission_response({"Sys.Audit": 1}, path="/nodes/other-node"),
         permission_response(status=403),
         {"status": 200, "json": {"data": []}},
@@ -295,6 +298,17 @@ def test_history_query_requires_positive_node_scoped_sys_audit():
         }
         assert "Sys.Audit" not in json.dumps(result)
         assert "/nodes/other-node" not in json.dumps(result)
+
+
+@pytest.mark.parametrize("propagation", [0, 1])
+def test_history_query_accepts_valid_sys_audit_propagation_flags(propagation):
+    result = prepare_history_query({
+        "node": "node-a", "vmid": "200", "until": 2_000,
+        "permissions_response": permission_response({"Sys.Audit": propagation}),
+    })
+
+    assert result["read_allowed"] is True
+    assert result["query"]["source"] == "archive"
 
 
 def test_history_query_uses_archived_vzdump_vm_window_and_30_day_lookback():
@@ -319,6 +333,28 @@ def test_history_empty_result_requires_permission_and_reports_no_job_attribution
         "outcome": "no_archived_task_in_lookback", "reason": None,
         "task_count": 0, "job_attribution": "unavailable",
     }
+
+
+def test_empty_task_page_without_total_is_a_valid_empty_result():
+    plan = history_plan()
+    first = {"status": 200, "json": {"data": []}}
+
+    assert plan_history_pages({"read_allowed": True, "first_page": first}) == {
+        "page_starts": [], "summary": None,
+    }
+    assert summarize_task_history({"plan": plan, "first_page": first, "later_pages": []}) == {
+        "outcome": "no_archived_task_in_lookback", "reason": None,
+        "task_count": 0, "job_attribution": "unavailable",
+    }
+
+
+def test_nonempty_task_page_without_total_is_invalid():
+    plan = history_plan()
+    first = {"status": 200, "json": {"data": [task_row(1)]}}
+
+    result = summarize_task_history({"plan": plan, "first_page": first, "later_pages": []})
+    assert result["outcome"] == "unknown"
+    assert result["reason"] == "response_invalid"
 
 
 def test_history_exact_upper_bound_is_paginated_and_accepted():

@@ -244,7 +244,8 @@ def prepare_history_query(payload: Mapping[str, object]) -> dict[str, object]:
     body = wrapper.get("json")
     data = body.get("data") if isinstance(body, Mapping) else None
     rights = data.get(path) if isinstance(data, Mapping) else None
-    if not isinstance(rights, Mapping) or type(rights.get("Sys.Audit")) is not int or rights["Sys.Audit"] != 1:
+    audit = rights.get("Sys.Audit") if isinstance(rights, Mapping) else None
+    if type(audit) is not int or audit not in (0, 1):
         return {"read_allowed": False, "summary": _history_unknown("permission_unverified")}
     until = payload.get("until", int(time.time()))
     if type(until) is not int or until <= 0:
@@ -291,6 +292,8 @@ def _valid_task_page(response: object) -> dict[str, object] | None:
         return None
     rows = body.get("data")
     total = body.get("total")
+    if isinstance(rows, list) and not rows and "total" not in body:
+        total = 0
     if (not isinstance(rows, list) or type(total) is not int or total < 0
             or len(rows) > HISTORY_PAGE_SIZE):
         return None
