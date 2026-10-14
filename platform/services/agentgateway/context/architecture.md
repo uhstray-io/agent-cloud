@@ -408,6 +408,19 @@ The two bodies are not compared: generation over thousands of tokens is not bit-
 temperature 0 with a seed, and the usage-chunk check belongs to `stream-xhigh`. No result is
 recorded here yet; the first production run's task number and figures go in this section.
 
+Per-identity isolation (task 4.5, scenario "One client cannot exceed its share"): the Semaphore
+template `Probe agentgateway Isolation (Dev)` (`platform/playbooks/probe-agentgateway-isolation.yml`)
+sends up to five small chat completions as `agw_isolation_burst`, then one as `agw_isolation_control`.
+It passes when the burst identity gets HTTP 429 with error code `budget_exceeded` and the control
+identity gets 200. A 429 without that code is the global request bucket, not isolation, and fails.
+The burst identity must declare `agw_client_policies.<name>.tokens_per_hour` of at most 1000, so
+a run can never exhaust a real client's budget or burn meaningful GPU time. The budget window is a
+rolling hour, so a burst identity already exhausted answers 429 on its first request, which still
+counts. Both keys are read from OpenBao in `no_log` tasks; the report carries statuses and error
+codes only. A workable probe budget is below about five times the per-request charge of the chosen
+model (local-dev uses 50 against roughly 94 tokens per completion); a budget above what five attempts
+can exhaust ends the run "NOT proven", loudly, never as a false pass.
+
 ## Verification log
 
 - 2026-09-17 — structural: BATS `platform/tests/test_service_agentgateway.bats` 17/17;
