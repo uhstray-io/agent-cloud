@@ -936,6 +936,7 @@
       when:
         - not ansible_check_mode
         - _legacy_shared_active | bool
+        - not (_legacy_key_rotated | default(false) | bool)
 
     - name: "Shared-key grace period: keep the probe's status"
       ansible.builtin.set_fact:
@@ -943,6 +944,7 @@
       when:
         - not ansible_check_mode
         - _legacy_shared_active | bool
+        - not (_legacy_key_rotated | default(false) | bool)
 
     - name: "Require the shared key to be admitted until legacy_shared_expires"
       ansible.builtin.assert:
@@ -957,6 +959,23 @@
       when:
         - not ansible_check_mode
         - _legacy_shared_active | bool
+        - not (_legacy_key_rotated | default(false) | bool)
+
+    # Rotation before expiry (gateway 5.1): legacy-shared is pinned to the recorded PRE-rotation
+    # fingerprint, so once the vLLM key has been rotated the gateway never enrolled the current key
+    # and the probe above would 401 although the grace period works for clients holding the old key.
+    # The old key is not held here, so admission cannot be probed; the render check still proves
+    # legacy-shared is enrolled. Prints no secret, so it is not no_log.
+    - name: "Shared-key grace period: the vLLM key was rotated, so admission is not probed"
+      ansible.builtin.debug:
+        msg: >-
+          The vLLM key was rotated during the grace period (before legacy_shared_expires,
+          {{ legacy_shared_expires }}): the pre-rotation shared key is not held, so its admission as
+          legacy-shared cannot be probed. The render check still proves legacy-shared is enrolled.
+      when:
+        - not ansible_check_mode
+        - _legacy_shared_active | bool
+        - _legacy_key_rotated | default(false) | bool
 
     - name: "The shared key is refused once retired"
       ansible.builtin.include_tasks: tasks/agw-probe.yml
