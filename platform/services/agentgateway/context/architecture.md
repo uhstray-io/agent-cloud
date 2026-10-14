@@ -112,7 +112,15 @@ key is 401, an authenticated `initialize` returns a session, and `tools/list` li
 silently). Flag false, a keyed `initialize` must not be an MCP reply (keyless is 401 either way). The
 verdicts read the response body: the gateway's own rate-limit refusal is HTTP 200 with JSON-RPC error
 `-32003`, reported as unproven, which fails the deploy unless `-e agw_verify_allow_unproven=true`.
-The probing identity is `agw_verify_client`, else the first merged identity, never `mcp-self`.
+The probing identity is `agw_verify_client`, else the first merged identity, never `mcp-self`; with MCP on it is
+an admin-derived identity (`agw_verify_client` if it is one, else the first admin). After `tools/list` the verify makes one chat
+call and requires the gateway's access log to show the `/v1` request as `mcp-self` on the loopback listener.
+
+Rollback across the flag: with `agw_mcp_enabled` OFF live, a previous config that has the `mcp` block is refused by the
+validator (it references `$AGW_MCP_SELF_KEY`, which the flag-off `.env` does not carry); the reverse, flag ON live and a
+previous config without the block, validates and is put back, which drops `/mcp`. Both measured with `--validate-only`
+on the pinned image. Crossing back needs a redeploy of the older flag state (`agw_mcp_enabled`), not a
+`rollback-inference-route.yml` gateway-config rollback.
 
 ## Virtual-key lifecycle (aligned with vLLM's single key)
 
