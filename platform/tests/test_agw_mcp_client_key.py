@@ -23,6 +23,9 @@ FAKE_SECURITY = textwrap.dedent(
     #!{sys.executable}
     import os, sys
     want = ["find-generic-password", "-s", "agentgateway-mcp", "-a", "alice", "-w"]
+    if sys.argv[1:] == want and "FAKE_KEYCHAIN_HEX" in os.environ:
+        sys.stdout.buffer.write(bytes.fromhex(os.environ["FAKE_KEYCHAIN_HEX"]) + b"\\n")
+        sys.exit(0)
     if sys.argv[1:] == want and "FAKE_KEYCHAIN_VALUE" in os.environ:
         print(os.environ["FAKE_KEYCHAIN_VALUE"])
         sys.exit(0)
@@ -130,3 +133,49 @@ def test_success_writes_nothing_and_stdout_is_only_the_header(box):
 def test_identity_shape_is_enforced(box, identity):
     done = box.run("--format", "pi", "--identity", identity, FAKE_KEYCHAIN_VALUE=KEYCHAIN)
     assert done.returncode == 2 and done.stdout == ""
+
+
+SECRET = "sentinel-secret-9f8e7d6c5b4a"
+
+
+@pytest.mark.parametrize("content", [f"{SECRET} extra", f"{SECRET}\nline2"])
+def test_a_malformed_file_key_never_reaches_stdout_or_stderr(box, content):
+    handout = box.path / "client_alice.txt"
+    handout.write_text(content)
+    handout.chmod(0o600)
+    done = box.run("--format", "claude", "--identity", "alice", "--key-file", str(handout))
+    assert done.returncode == 1
+    assert SECRET not in done.stdout + done.stderr
+
+
+def test_a_malformed_keychain_value_never_reaches_stdout_or_stderr(box):
+    done = box.run("--format", "claude", "--identity", "alice", FAKE_KEYCHAIN_VALUE=f"{SECRET} extra")
+    assert done.returncode == 1
+    assert SECRET not in done.stdout + done.stderr
+
+
+def test_a_binary_keychain_value_is_a_names_only_failure(box):
+    done = box.run("--format", "claude", "--identity", "alice", FAKE_KEYCHAIN_HEX="fffe80")
+    assert done.returncode == 1 and done.stdout == ""
+    assert "Traceback" not in done.stderr and "alice" in done.stderr
+
+
+def test_a_binary_keychain_value_falls_through_to_the_file(box):
+    handout = box.path / "client_alice.txt"
+    handout.write_text(FILE_KEY)
+    handout.chmod(0o600)
+    done = box.run("--format", "pi", "--identity", "alice", "--key-file", str(handout), FAKE_KEYCHAIN_HEX="fffe80")
+    assert done.stdout == f"Bearer {FILE_KEY}\n"
+
+
+def test_a_key_file_readable_by_others_warns_by_name_but_is_still_read(box):
+    handout = box.path / "client_alice.txt"
+    handout.write_text(FILE_KEY)
+    handout.chmod(0o644)
+    done = box.run("--format", "pi", "--identity", "alice", "--key-file", str(handout))
+    assert done.stdout == f"Bearer {FILE_KEY}\n"
+    assert "key file is group- or other-accessible" in done.stderr
+    assert FILE_KEY not in done.stderr
+    handout.chmod(0o600)
+    quiet = box.run("--format", "pi", "--identity", "alice", "--key-file", str(handout))
+    assert quiet.stdout == f"Bearer {FILE_KEY}\n" and quiet.stderr == ""

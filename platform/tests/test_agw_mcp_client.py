@@ -7,8 +7,10 @@ Code 2.1.299). One test drives the real CLI, isolated by HOME and CLAUDE_CONFIG_
 where it is not installed. Nothing here reads or writes the real home.
 """
 
+import importlib.util
 import json
 import os
+import shlex
 import shutil
 import stat
 import subprocess
@@ -37,7 +39,7 @@ FAKE_CLAUDE = textwrap.dedent(
     data = json.loads(cfg.read_text()) if cfg.exists() else {{}}
     servers = data.setdefault("mcpServers", {{}})
     if args[:2] == ["mcp", "add-json"] and args[2:4] == ["-s", "user"]:
-        if args[4] in servers:
+        if args[4] in servers or os.environ.get("FAKE_CLAUDE_FAIL_ADD"):
             sys.exit(1)
         servers[args[4]] = json.loads(args[5])
     elif args[:2] == ["mcp", "remove"] and args[2:4] == ["-s", "user"]:
@@ -332,3 +334,94 @@ def test_real_claude_cli_agrees_with_the_fake(tmp_path):
     assert servers()["agentgateway"]["url"] == "https://mcp2.example.test/mcp"
     assert run("--remove").returncode == 0
     assert servers() == OTHER_CLAUDE["mcpServers"]
+
+
+def test_a_failed_add_after_the_remove_says_so_and_exits_non_zero(env):
+    env.seed(claude=OTHER_CLAUDE)
+    assert env.install("--harness", "claude").returncode == 0
+    env.env["FAKE_CLAUDE_FAIL_ADD"] = "1"
+    done = env.install("--harness", "claude", host="mcp2.example.test")
+    assert done.returncode != 0
+    assert done.stderr.strip() == "claude: removed agentgateway; add failed, rerun the installer"
+    assert env.claude_data() == OTHER_CLAUDE
+    assert env.claude_calls() == ["add-json", "remove", "add-json"]
+
+
+def test_a_plain_failed_add_is_a_named_failure_without_the_removed_note(env):
+    env.env["FAKE_CLAUDE_FAIL_ADD"] = "1"
+    done = env.install("--harness", "claude")
+    assert done.returncode != 0
+    assert "add-json" in done.stderr and "removed" not in done.stderr
+
+
+def load_installer():
+    spec = importlib.util.spec_from_file_location("agw_mcp_client_under_test", INSTALLER)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_helper_command_is_shell_quoted_and_inert(tmp_path, monkeypatch):
+    """A space, a quote and a command substitution in a path stay one literal argument each."""
+    nasty_dir = tmp_path / "d i r'q$(touch pwned)"
+    nasty_dir.mkdir()
+    stub = nasty_dir / "agw-mcp-key"
+    stub.write_text(f"#!{sys.executable}\nimport sys\nprint('|'.join(sys.argv[1:]))\n")
+    stub.chmod(0o755)
+    key_file = tmp_path / "k e'y$(touch pwned).txt"
+    mod = load_installer()
+    monkeypatch.setattr(mod, "HELPER", stub)
+    cmd = mod.helper_command("pi", "alice", str(key_file))
+    resolved = str(key_file.resolve())
+    assert shlex.split(cmd) == [str(stub), "--format", "pi", "--identity", "alice", "--key-file", resolved]
+    done = subprocess.run(["sh", "-c", cmd], cwd=tmp_path, capture_output=True, text=True, check=False)
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.strip() == f"--format|pi|--identity|alice|--key-file|{resolved}"
+    assert not (tmp_path / "pwned").exists()
+    claude = mod.render_claude("mcp.example.test", "alice", str(key_file))
+    pi = mod.render_pi("mcp.example.test", "alice", str(key_file))
+    assert shlex.split(claude["headersHelper"])[-1] == resolved
+    assert shlex.split(pi["headers"]["Authorization"][1:])[-1] == resolved
+
+
+@pytest.mark.skipif(shutil.which("make") is None, reason="make not installed")
+def test_make_target_passes_values_as_environment_not_shell_text(env, tmp_path):
+    key_file = tmp_path / "k e'y$$(touch pwned).txt"
+    done = subprocess.run(
+        [
+            "make",
+            "-C",
+            str(ROOT),
+            "agw-mcp-client",
+            f"HOST={HOST}",
+            "IDENTITY=alice",
+            f"KEY_FILE={key_file}",
+            "HARNESS=pi",
+            "DRY_RUN=1",
+        ],
+        env=env.env,
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.strip() == "pi: would add agentgateway"
+    assert not (tmp_path / "pwned").exists() and not (ROOT / "pwned").exists()
+    assert not env.pi_json.exists()
+    bad = subprocess.run(
+        ["make", "-C", str(ROOT), "agw-mcp-client", "HOST=", "IDENTITY=alice", "DRY_RUN=1"],
+        env=env.env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert bad.returncode != 0 and "--host" in bad.stderr
+
+
+def test_the_installer_reads_its_defaults_from_the_environment(env):
+    env.env.update(AGW_MCP_HOST=HOST, AGW_MCP_IDENTITY="alice", AGW_MCP_HARNESS="pi")
+    done = env.run("--dry-run")
+    assert done.returncode == 0 and done.stdout.strip() == "pi: would add agentgateway"
+    env.env["AGW_MCP_HARNESS"] = "nonsense"
+    assert env.run("--dry-run").returncode == 2

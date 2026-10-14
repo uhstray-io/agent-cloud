@@ -34,12 +34,17 @@ def keychain_key(identity):
             timeout=8,
             check=False,
         )
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError, UnicodeDecodeError):
         return None
     return done.stdout.strip() if done.returncode == 0 else None
 
 
 def file_key(path):
+    try:
+        if os.stat(path).st_mode & 0o077:
+            print("agw-mcp-key: key file is group- or other-accessible; chmod 600 it", file=sys.stderr)
+    except OSError:
+        return None
     try:
         with open(path, encoding="utf-8") as handle:
             return handle.read().strip()

@@ -52,9 +52,11 @@ def test_templates_use_the_placeholder_host_and_a_command_reference():
     assert "headersHelper" in claude and "Bearer" not in json.dumps([claude, pi])
 
 
-def test_rendered_entries_have_exactly_the_documented_fields_and_no_placeholder_left():
+def test_rendered_entries_have_exactly_the_documented_fields_and_no_placeholder_left(monkeypatch):
     """The fields are those the two harnesses document; a template gaining one must be a decision."""
     mod = installer()
+    # The helper path is the checkout's own, so a long directory name would look key-shaped to the scan.
+    monkeypatch.setattr(mod, "HELPER", Path("/opt/agw/agw-mcp-key"))
     claude = mod.render_claude("mcp.example.test", "alice", None)
     pi = mod.render_pi("mcp.example.test", "alice", None)
     assert set(claude) == {"type", "url", "headersHelper"}

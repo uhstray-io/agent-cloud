@@ -137,6 +137,11 @@ hostname given and merges the one entry: Claude Code through its own CLI (`claud
 a merge-only edit of `~/.pi/agent/mcp.json` (atomic, mode kept, an unparseable file refused and untouched).
 Re-running is a no-op; every other server entry is left as parsed. `KEY_FILE` is optional; without it the helper
 reads the Keychain only.
+Install from a permanent checkout: each entry stores the helper's absolute path, so after moving or deleting
+the checkout re-run the installer. `make` hands the values to the installer as environment variables
+(`AGW_MCP_HOST`, `AGW_MCP_IDENTITY`, `AGW_MCP_KEY_FILE`, `AGW_MCP_HARNESS`), never as text in a shell line.
+Keep a handout file mode 0600; the helper still reads a group- or other-readable one but warns by name on stderr.
+If replacing an entry fails after the old one was removed, the installer says so and exits non-zero; re-run it.
 
 The key never sits in either file. Each entry runs `scripts/agw-mcp-key` at connect time (Claude Code
 `headersHelper`, pi `!command`), which reads the macOS Keychain item first, then the handout file. Store the

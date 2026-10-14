@@ -128,7 +128,12 @@ def apply_claude(host, identity, key_file, remove, dry_run):
         if action in ("remove", "replace"):
             run_claude("remove", "-s", "user", SERVER)
         if action in ("add", "replace"):
-            run_claude("add-json", "-s", "user", SERVER, json.dumps(desired))
+            try:
+                run_claude("add-json", "-s", "user", SERVER, json.dumps(desired))
+            except Refusal:
+                if action == "replace":
+                    raise Refusal(f"claude: removed {SERVER}; add failed, rerun the installer") from None
+                raise
     return action
 
 
@@ -155,13 +160,30 @@ HARNESSES = {"claude": apply_claude, "pi": apply_pi}
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--host", help="MCP hostname, no scheme or path (required unless --remove)")
-    parser.add_argument("--identity", help="gateway identity the key was minted for (required unless --remove)")
-    parser.add_argument("--key-file", help="handout file holding the key (a path; the helper reads it at connect time)")
-    parser.add_argument("--harness", choices=("claude", "pi", "both"), default="both")
+    env = os.environ.get
+    parser.add_argument(
+        "--host",
+        default=env("AGW_MCP_HOST"),
+        help="MCP hostname, no scheme or path (env AGW_MCP_HOST; required unless --remove)",
+    )
+    parser.add_argument(
+        "--identity",
+        default=env("AGW_MCP_IDENTITY"),
+        help="gateway identity the key was minted for (env AGW_MCP_IDENTITY; required unless --remove)",
+    )
+    parser.add_argument(
+        "--key-file",
+        default=env("AGW_MCP_KEY_FILE"),
+        help="handout file holding the key (env AGW_MCP_KEY_FILE; a path, the helper reads it at connect time)",
+    )
+    parser.add_argument(
+        "--harness", default=env("AGW_MCP_HARNESS") or "both", help="claude, pi or both (env AGW_MCP_HARNESS)"
+    )
     parser.add_argument("--dry-run", action="store_true", help="report what would change, change nothing")
     parser.add_argument("--remove", action="store_true", help=f"delete exactly the {SERVER} entry")
     args = parser.parse_args(argv)
+    if args.harness not in ("claude", "pi", "both"):
+        parser.error("--harness must be claude, pi or both")
     if not args.remove:
         if not args.host or not HOSTNAME.fullmatch(args.host):
             parser.error("--host must be a bare hostname such as mcp.example.com")

@@ -129,10 +129,14 @@ local-clean: ## Remove the local control plane (containers, volume, state)
 promote: ## Fast checks, push feature branch, open PR into dev
 	@$(LOCAL_DEV) promote
 
+# Values reach the installer as environment variables, never as text in a shell line.
+agw-mcp-client: export AGW_MCP_HOST := $(HOST)
+agw-mcp-client: export AGW_MCP_IDENTITY := $(IDENTITY)
+agw-mcp-client: export AGW_MCP_KEY_FILE := $(or $(KEY_FILE),$(AGW_MCP_KEY_FILE))
+agw-mcp-client: export AGW_MCP_HARNESS := $(HARNESS)
 agw-mcp-client: ## Install the agentgateway MCP server into Claude Code + pi, key by command (HOST=, IDENTITY=, [KEY_FILE=], [HARNESS=], [DRY_RUN=1])
-	@test -n "$(HOST)" -a -n "$(IDENTITY)" || { echo 'usage: make agw-mcp-client HOST=<mcp hostname> IDENTITY=<name> [KEY_FILE=<handout file>]'; exit 2; }
-	@python3 scripts/agw-mcp-client.py --host "$(HOST)" --identity "$(IDENTITY)" \
-		$(if $(KEY_FILE),--key-file "$(KEY_FILE)") $(if $(HARNESS),--harness "$(HARNESS)") $(if $(DRY_RUN),--dry-run)
+	@python3 scripts/agw-mcp-client.py $(if $(DRY_RUN),--dry-run)
 
+agw-mcp-client-remove: export AGW_MCP_HARNESS := $(HARNESS)
 agw-mcp-client-remove: ## Remove exactly the agentgateway MCP entry from Claude Code + pi ([HARNESS=], [DRY_RUN=1])
-	@python3 scripts/agw-mcp-client.py --remove $(if $(HARNESS),--harness "$(HARNESS)") $(if $(DRY_RUN),--dry-run)
+	@python3 scripts/agw-mcp-client.py --remove $(if $(DRY_RUN),--dry-run)
