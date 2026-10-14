@@ -122,6 +122,12 @@ templates:
         type: string
         required: false
         default_value: "true"
+      - name: expected_log_signal
+        title: "Log signal"
+        description: "Optional Loki signal label the recent log line must carry, e.g. span; empty accepts any"
+        type: string
+        required: false
+        default_value: ""
       - name: expect_traces
         title: "Expect recent traces"
         description: "true to require a service.name trace in Tempo from the last hour"
