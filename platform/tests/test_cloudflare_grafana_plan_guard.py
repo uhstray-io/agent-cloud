@@ -118,6 +118,26 @@ def test_explicitly_unknown_computed_root_field_may_be_absent_or_null(field, mis
     assert receipt["root_field_changes"] == []
 
 
+@pytest.mark.parametrize(("field", "missing_from"), [
+    ("version", "before"),
+    ("version", "after"),
+    ("last_updated", "before"),
+    ("last_updated", "after"),
+])
+@pytest.mark.parametrize("marker", [1, 2, "not-true"])
+def test_computed_metadata_presence_exception_rejects_nonboolean_unknown_markers(field, missing_from, marker):
+    plan = _plan()
+    change = plan["resource_changes"][0]["change"]
+    change["after_unknown"][field] = marker
+    change[missing_from].pop(field)
+    if missing_from == "before":
+        change["after"][field] = None
+
+    receipt = guard.inspect_plan(plan, "plan")
+
+    assert not receipt["safe"] and receipt["reason"] == "unknown_values"
+
+
 def test_computed_resource_identity_presence_change_still_refuses():
     plan = _plan()
     change = plan["resource_changes"][0]["change"]

@@ -105,9 +105,11 @@ def _validate_unknowns(change):
     after = change.get("after")
     if not isinstance(after, dict):
         _reject("unknown_values")
+    after_unknown = change.get("after_unknown")
     for path in paths:
         if path in PROVIDER_COMPUTED_ROOT_FIELDS:
-            if after.get(path) is not None:
+            if (not isinstance(after_unknown, dict) or after_unknown.get(path) is not True
+                    or after.get(path) is not None):
                 _reject("unknown_values")
         elif path == f"rules[{RULE_INDEX}].id":
             rules = after.get("rules")
