@@ -19,6 +19,7 @@ from reconcile_proxmox_backup_job import (  # noqa: E402
     HISTORY_MAX_ROWS,
     HISTORY_PAGE_SIZE,
     HISTORY_RECENCY_SECONDS,
+    NODE_TASK_LOOKBACK_SECONDS,
     _safe_refusal,
     assert_unchanged,
     inspect_candidates,
@@ -26,7 +27,9 @@ from reconcile_proxmox_backup_job import (  # noqa: E402
     plan_history_pages,
     prepare_history_query,
     prepare_plan,
+    prepare_node_task_query,
     summarize_scheduler_state,
+    summarize_node_task_history,
     summarize_task_history,
     verify_readback,
 )
@@ -278,6 +281,7 @@ def history_plan(until=2_000):
 
 def test_history_query_requires_positive_node_scoped_sys_audit():
     for permissions in (
+        permission_response({"Sys.Audit": 0}),
         permission_response({"Sys.Audit": True}),
         permission_response({"Sys.Audit": False}),
         permission_response({"Sys.Audit": "1"}),
@@ -285,6 +289,8 @@ def test_history_query_requires_positive_node_scoped_sys_audit():
         permission_response({}),
         permission_response({"Sys.Audit": 1}, path="/nodes/other-node"),
         permission_response(status=403),
+        {"status": True, "json": {"data": {"/nodes/node-a": {"Sys.Audit": 1}}}},
+        {"status": "200", "json": {"data": {"/nodes/node-a": {"Sys.Audit": 1}}}},
         {"status": 200, "json": {"data": []}},
     ):
         result = prepare_history_query({
@@ -303,11 +309,10 @@ def test_history_query_requires_positive_node_scoped_sys_audit():
         assert "/nodes/other-node" not in json.dumps(result)
 
 
-@pytest.mark.parametrize("propagation", [0, 1])
-def test_history_query_accepts_valid_sys_audit_propagation_flags(propagation):
+def test_history_query_accepts_only_integer_one_for_sys_audit():
     result = prepare_history_query({
         "node": "node-a", "vmid": "200", "until": 2_000,
-        "permissions_response": permission_response({"Sys.Audit": propagation}),
+        "permissions_response": permission_response({"Sys.Audit": 1}),
     })
 
     assert result["read_allowed"] is True
@@ -616,6 +621,177 @@ def test_scheduler_state_invalid_or_contradictory_combinations_remain_unknown(
     assert result == {"status": "unknown", "reason": "state_unavailable"}
 
 
+def node_history_plan(until=2_000):
+    return prepare_node_task_query({
+        "node": "node-a", "vmid": "200", "until": until,
+        "permissions_response": permission_response(),
+    })
+
+
+def node_task_row(index, **overrides):
+    row = {
+        "upid": f"private-UPID-{index}", "starttime": 1_000 + index,
+        "endtime": 1_001 + index, "type": "vzdump", "id": "201", "status": "OK",
+    }
+    row.update(overrides)
+    return row
+
+
+def test_node_history_query_requires_existing_exact_node_scoped_sys_audit():
+    for permissions in (
+        permission_response({"Sys.Audit": 0}),
+        permission_response({"Sys.Audit": True}),
+        permission_response({"Sys.Audit": False}),
+        permission_response({"Sys.Audit": "1"}),
+        permission_response({}),
+        permission_response(path="/nodes/other-node"),
+        permission_response(status=403),
+        {"status": True, "json": {"data": {"/nodes/node-a": {"Sys.Audit": 1}}}},
+        {"status": "200", "json": {"data": {"/nodes/node-a": {"Sys.Audit": 1}}}},
+        {"status": 200, "json": {"data": []}},
+    ):
+        result = prepare_node_task_query({
+            "node": "node-a", "vmid": "200", "until": 2_000,
+            "permissions_response": permissions,
+        })
+        assert result["read_allowed"] is False
+        assert result["summary"]["status"] == "unknown"
+        assert result["summary"]["reason"] == "permission_unverified"
+
+
+def test_node_history_query_uses_fixed_72_hour_window_without_vmid_filter():
+    until = 2_000_000_000
+    result = prepare_node_task_query({
+        "node": "node-a", "vmid": "200", "until": until,
+        "permissions_response": permission_response(),
+    })
+
+    assert result["read_allowed"] is True
+    assert result["query"] == {
+        "source": "archive", "typefilter": "vzdump",
+        "since": until - NODE_TASK_LOOKBACK_SECONDS, "until": until,
+        "start": 0, "limit": HISTORY_PAGE_SIZE,
+    }
+    assert NODE_TASK_LOOKBACK_SECONDS == 72 * 60 * 60
+    assert "vmid" not in result["query"]
+
+
+def test_node_history_query_accepts_only_integer_one_for_sys_audit():
+    result = prepare_node_task_query({
+        "node": "node-a", "vmid": "200", "until": 2_000,
+        "permissions_response": permission_response({"Sys.Audit": 1}),
+    })
+
+    assert result["read_allowed"] is True
+
+
+def test_node_history_empty_and_target_plus_missing_id_rows_are_allowlisted():
+    plan = node_history_plan()
+    empty = summarize_node_task_history({
+        "plan": plan, "first_page": task_page([], 0), "later_pages": [],
+    })
+    rows = [
+        node_task_row(1, starttime=1_800, endtime=1_801, id="200", user="private-user"),
+        node_task_row(
+            2, starttime=1_900, endtime=1_901, id=None,
+            status="ERROR: private-status-detail", user="private-user",
+        ),
+        node_task_row(3, starttime=1_950, endtime=1_951, id=""),
+    ]
+    result = summarize_node_task_history({
+        "plan": plan, "first_page": task_page(rows, 3), "later_pages": [],
+    })
+
+    assert empty["total_recent_node_vzdump_tasks"] == 0
+    assert empty["latest_task_outcome"] == "none"
+    assert result == {
+        "status": "complete", "reason": None,
+        "total_recent_node_vzdump_tasks": 3,
+        "target_vmid_task_id_count": 1,
+        "potential_multi_vm_or_unattributed_task_count": 2,
+        "job_attribution": "unavailable",
+        "latest_task_outcome": "success", "latest_task_recency": "within_26h",
+    }
+    encoded = json.dumps(result)
+    for private in ("private-UPID", '"id"', "node-a", "200", "private-user", "private-status-detail"):
+        assert private not in encoded
+
+
+def test_node_history_unknown_latest_status_returns_fixed_unknown_receipt():
+    result = summarize_node_task_history({
+        "plan": node_history_plan(),
+        "first_page": task_page([node_task_row(1, status="unexpected status")], 1),
+        "later_pages": [],
+    })
+
+    assert result == {
+        "status": "unknown", "reason": "task_status_unavailable",
+        "job_attribution": "unavailable",
+        "total_recent_node_vzdump_tasks": None,
+        "target_vmid_task_id_count": None,
+        "potential_multi_vm_or_unattributed_task_count": None,
+        "latest_task_outcome": "unknown", "latest_task_recency": "unknown",
+    }
+    assert "private-UPID" not in json.dumps(result)
+
+
+@pytest.mark.parametrize(
+    "rows",
+    [
+        [node_task_row(1, type="other")],
+        [node_task_row(1, starttime=2_001)],
+        [node_task_row(1, status=None)],
+        [node_task_row(1), node_task_row(1)],
+        [node_task_row(1, id="private-id")],
+    ],
+)
+def test_node_history_malformed_rows_become_sanitized_unknown(rows):
+    result = summarize_node_task_history({
+        "plan": node_history_plan(), "first_page": task_page(rows, len(rows)), "later_pages": [],
+    })
+
+    assert result["status"] == "unknown"
+    assert result["total_recent_node_vzdump_tasks"] is None
+    assert "private" not in json.dumps(result)
+    assert "UPID" not in json.dumps(result)
+
+
+def test_node_history_unbounded_incomplete_and_failed_responses_are_unknown():
+    plan = node_history_plan()
+    over_bound = task_page([node_task_row(i) for i in range(HISTORY_PAGE_SIZE)], HISTORY_MAX_ROWS + 1)
+    incomplete = summarize_node_task_history({
+        "plan": plan, "first_page": task_page([node_task_row(i) for i in range(HISTORY_PAGE_SIZE)], 51),
+        "later_pages": [],
+    })
+    bounded = summarize_node_task_history({
+        "plan": plan, "first_page": over_bound, "later_pages": [],
+    })
+    failed = summarize_node_task_history({
+        "plan": plan, "first_page": {"status": 403, "json": {}}, "later_pages": [],
+    })
+
+    assert incomplete["reason"] == "pagination_incomplete"
+    assert bounded["reason"] == "pagination_limit_exceeded"
+    assert failed["reason"] == "request_failed"
+
+
+def test_node_history_summarizes_complete_multi_page_response():
+    plan = node_history_plan()
+    rows = [node_task_row(index) for index in range(HISTORY_PAGE_SIZE + 1)]
+    result = summarize_node_task_history({
+        "plan": plan,
+        "first_page": task_page(rows[:HISTORY_PAGE_SIZE], len(rows)),
+        "later_pages": [task_page(rows[HISTORY_PAGE_SIZE:], len(rows))],
+    })
+
+    assert result["status"] == "complete"
+    assert result["total_recent_node_vzdump_tasks"] == HISTORY_PAGE_SIZE + 1
+    assert result["target_vmid_task_id_count"] == 0
+    assert result["potential_multi_vm_or_unattributed_task_count"] == 0
+    assert result["job_attribution"] == "unavailable"
+    assert "private-UPID" not in json.dumps(result)
+
+
 def test_playbook_requires_reviewed_dev_and_guards_every_mutation():
     plays = yaml.safe_load((ROOT / "platform/playbooks/reconcile-o11y-backup-job.yml").read_text())
     play = next(item for item in plays if item.get("name") == "Reconcile the declared o11y backup job")
@@ -648,6 +824,10 @@ def test_playbook_requires_reviewed_dev_and_guards_every_mutation():
         "Require one exact private selected backup job"
     ) < names.index("Read the selected backup-job detail")
     assert by_name["End after read-only backup-job inspection"][1]["when"] == "_inspect_only"
+    history_get = by_name["Read the first archived vzdump task page"][1]
+    assert history_get["ansible.builtin.uri"]["method"] == "GET"
+    assert history_get["when"] == "_inspect_only and _backup_history_query.read_allowed | bool"
+    assert history_get["no_log"] is True and history_get["check_mode"] is False
     scheduler_get = by_name["Read pvescheduler state after verified node-scoped permission"][1]
     assert scheduler_get["ansible.builtin.uri"]["method"] == "GET"
     assert "/api2/json/nodes/{{ _node }}/services/pvescheduler/state" in scheduler_get[
@@ -663,6 +843,41 @@ def test_playbook_requires_reviewed_dev_and_guards_every_mutation():
     assert scheduler_parse["no_log"] is True
     assert scheduler_parse["when"] == "_inspect_only"
     assert by_name["Keep the sanitized scheduler state private to this run"][1]["no_log"] is True
+    node_query = by_name["Plan bounded node-wide archived vzdump history inspection"][1]
+    assert node_query["ansible.builtin.command"]["argv"][2] == "node-history-query"
+    assert node_query["no_log"] is True
+    assert node_query["when"] == "_inspect_only"
+    node_get = by_name["Read the first node-wide archived vzdump task page"][1]
+    node_url = node_get["ansible.builtin.uri"]["url"]
+    assert node_get["ansible.builtin.uri"]["method"] == "GET"
+    assert "source=archive" in node_url and "typefilter=vzdump" in node_url
+    assert "since=" in node_url and "until=" in node_url
+    assert "start=0&limit=50" in node_url and "vmid" not in node_url
+    assert node_get["when"] == "_inspect_only and _backup_node_history_query.read_allowed | bool"
+    assert node_get["no_log"] is True and node_get["check_mode"] is False
+    node_pages = by_name["Plan remaining bounded node-history pages"][1]
+    assert node_pages["ansible.builtin.command"]["argv"][2] == "history-pages"
+    node_later = by_name["Read later node-wide archived vzdump task pages"][1]
+    assert node_later["loop"] == "{{ _backup_node_history_pages.page_starts }}"
+    assert "start=' ~ item ~ '&limit=50'" in node_later["ansible.builtin.uri"]["url"]
+    assert "vmid" not in node_later["ansible.builtin.uri"]["url"]
+    assert node_later["no_log"] is True and node_later["check_mode"] is False
+    node_summary = by_name[
+        "Summarize node-wide archived task history without task identity or details"
+    ][1]
+    assert node_summary["ansible.builtin.command"]["argv"][2] == "node-history-summary"
+    assert node_summary["no_log"] is True
+    assert by_name["Keep the sanitized node-history summary private to this run"][1][
+        "no_log"
+    ] is True
+    assert names.index("Read effective permissions on the declared Proxmox node") < names.index(
+        "Plan bounded node-wide archived vzdump history inspection"
+    ) < names.index("Read the first node-wide archived vzdump task page") < names.index(
+        "Report backup-job candidates for inventory selection"
+    )
+    assert "proxmox_node_task_history" in by_name[
+        "Report backup-job candidates for inventory selection"
+    ][1]["ansible.builtin.debug"]["msg"]
     assert names.index("Read effective permissions on the declared Proxmox node") < names.index(
         "Read pvescheduler state after verified node-scoped permission"
     ) < names.index("Report backup-job candidates for inventory selection")

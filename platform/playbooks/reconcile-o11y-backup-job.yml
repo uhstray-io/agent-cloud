@@ -330,6 +330,108 @@
       no_log: true
       when: _inspect_only
 
+    - name: Plan bounded node-wide archived vzdump history inspection
+      ansible.builtin.command:
+        argv: [python3, "{{ _planner }}", node-history-query]
+        stdin: >-
+          {{ {'node': _node, 'vmid': _vmid,
+              'permissions_response': {
+                'status': _backup_history_permissions.status | default(0),
+                'json': {'data': _backup_history_permissions.json.data | default({})}
+              }} | to_json }}
+      register: _backup_node_history_query_result
+      failed_when: false
+      changed_when: false
+      check_mode: false
+      no_log: true
+      when: _inspect_only
+
+    - name: Keep the bounded node-history query private to this run
+      ansible.builtin.set_fact:
+        _backup_node_history_query: "{{ _backup_node_history_query_result.stdout | from_json }}"
+      no_log: true
+      when: _inspect_only
+
+    - name: Read the first node-wide archived vzdump task page
+      ansible.builtin.uri:
+        url: >-
+          {{ _pve_host ~ '/api2/json/nodes/' ~ _node ~ '/tasks?source=archive&typefilter=vzdump&since='
+             ~ _backup_node_history_query.query.since ~ '&until=' ~ _backup_node_history_query.query.until
+             ~ '&start=0&limit=50' }}
+        method: GET
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      register: _backup_node_history_first
+      failed_when: false
+      changed_when: false
+      check_mode: false
+      no_log: true
+      when: _inspect_only and _backup_node_history_query.read_allowed | bool
+
+    - name: Plan remaining bounded node-history pages
+      ansible.builtin.command:
+        argv: [python3, "{{ _planner }}", history-pages]
+        stdin: >-
+          {{ {'read_allowed': _backup_node_history_query.read_allowed | default(false),
+              'first_page': {
+                'status': _backup_node_history_first.status | default(0),
+                'json': _backup_node_history_first.json | default({})
+              }} | to_json }}
+      register: _backup_node_history_pages_result
+      failed_when: false
+      changed_when: false
+      check_mode: false
+      no_log: true
+      when: _inspect_only
+
+    - name: Keep the node-history pagination plan private to this run
+      ansible.builtin.set_fact:
+        _backup_node_history_pages: "{{ _backup_node_history_pages_result.stdout | from_json }}"
+      no_log: true
+      when: _inspect_only
+
+    - name: Read later node-wide archived vzdump task pages
+      ansible.builtin.uri:
+        url: >-
+          {{ _pve_host ~ '/api2/json/nodes/' ~ _node ~ '/tasks?source=archive&typefilter=vzdump&since='
+             ~ _backup_node_history_query.query.since ~ '&until=' ~ _backup_node_history_query.query.until
+             ~ '&start=' ~ item ~ '&limit=50' }}
+        method: GET
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      loop: "{{ _backup_node_history_pages.page_starts }}"
+      register: _backup_node_history_later
+      failed_when: false
+      changed_when: false
+      check_mode: false
+      no_log: true
+      when:
+        - _inspect_only
+        - _backup_node_history_query.read_allowed | bool
+
+    - name: Summarize node-wide archived task history without task identity or details
+      ansible.builtin.command:
+        argv: [python3, "{{ _planner }}", node-history-summary]
+        stdin: >-
+          {{ {'plan': _backup_node_history_query,
+              'first_page': {
+                'status': _backup_node_history_first.status | default(0),
+                'json': _backup_node_history_first.json | default({})
+              },
+              'later_pages': _backup_node_history_later.results | default([])} | to_json }}
+      register: _backup_node_history_summary_result
+      failed_when: false
+      changed_when: false
+      check_mode: false
+      no_log: true
+      when: _inspect_only
+
+    - name: Keep the sanitized node-history summary private to this run
+      ansible.builtin.set_fact:
+        _backup_node_history_summary: "{{ _backup_node_history_summary_result.stdout | from_json }}"
+      no_log: true
+      when: _inspect_only
+
     - name: Report backup-job candidates for inventory selection
       ansible.builtin.debug:
         msg:
@@ -338,6 +440,7 @@
           candidate_count: "{{ _backup_inspection.candidate_count }}"
           candidates: "{{ _backup_inspection.candidates }}"
           backup_task_history: "{{ _backup_history_summary }}"
+          proxmox_node_task_history: "{{ _backup_node_history_summary }}"
           proxmox_scheduler_state: "{{ _backup_scheduler_state_summary }}"
       when: _inspect_only
 

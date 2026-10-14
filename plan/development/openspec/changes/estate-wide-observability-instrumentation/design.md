@@ -532,10 +532,37 @@ verified empty archive. It is `null` whenever the existing outcome is unknown,
 including permission, request, pagination, identity, schema, cutoff, or
 conflicting-latest-status ambiguity. Existing outcome, reason, task count,
 `job_attribution: unavailable`, the 30-day query, and inspect-only guards stay
-unchanged. Task rows remain VM-scoped and cannot establish which scheduled job
-produced an archive; this field is not job attribution, artifact presence,
-immutability, or restore readiness. Parent task 4.5a and every restore gate
-remain open.
+unchanged. Task rows remain VMID-filtered and cannot establish which scheduled
+job produced an archive; this field is not job attribution, artifact presence,
+immutability, or restore readiness. An empty result or stale latest task means
+only that no recent VMID-identified task was returned by this query.
+
+### Bounded node-wide archived vzdump history diagnostic
+
+Inspect mode MAY issue an additional read-only `GET /nodes/{node}/tasks` using
+the existing OpenBao Proxmox token only after the existing exact-node
+`/access/permissions?path=/nodes/{node}` check reports integer `Sys.Audit: 1`.
+Zero, booleans, strings, missing rights, a different path, or a failed
+permission response return `permission_unverified` without issuing the task
+GET. The query
+fixes `source=archive`, `typefilter=vzdump`, a 72-hour `since`/`until` window,
+and omits `vmid`. Reuse the existing 50-row page size and 250-row total cap;
+failed, malformed, truncated, or over-cap responses return a fixed `unknown`
+reason with all counts and recency unknown. Validate every row's `vzdump`
+type, unique task identifier, start time within the fixed window, task-ID
+shape, and nonempty status before summarizing. Keep raw API data, task
+identifiers, node, VMID, status text, and credentials under `no_log`.
+
+The sanitized receipt may report only total recent node-level `vzdump` tasks,
+the count whose task ID equals the declared VMID, and
+`potential_multi_vm_or_unattributed_task_count`, which counts rows with a
+missing or empty task ID. A missing task ID is not proof of a multi-VM run.
+Every receipt fixes `job_attribution` to `unavailable`; it cannot prove the
+selected job ran or included o11y. If the latest task outcome is unknown, return
+the fixed `task_status_unavailable` unknown receipt with counts and recency
+unknown. Task success is not backup success without a matching fresh artifact.
+This is a source-only diagnostic, not live proof, and does not close parent
+4.6e, immutable-artifact, isolated-restore, capacity, or retention gates.
 
 ## 2026-09-29 production disk-alert receipt
 
