@@ -249,3 +249,8 @@
             _bm_remove: [mcp_grafana_token_candidate]
             _bm_on_missing: fail
             _bm_missing_msg: "secret/services/o11y does not exist; deploy o11y first."
+            # The candidate was read and verified before entering the helper. Refuse
+            # if another seed replaced it, then use KV-v2 CAS so a seed racing the
+            # helper's fresh read cannot be overwritten or removed.
+            _bm_guard_key: mcp_grafana_token_candidate
+            _bm_guard_value: "{{ _o11y_secret.json.data.data.mcp_grafana_token_candidate }}"

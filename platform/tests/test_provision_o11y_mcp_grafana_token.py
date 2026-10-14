@@ -11,6 +11,7 @@ from seed_harness import ROLE, ROOT, FakeBao, serve
 PLAYBOOK = "platform/playbooks/provision-o11y-mcp-grafana-token.yml"
 STORED = "synthetic-stored-token"
 CANDIDATE = "synthetic-candidate-token"
+RACED_CANDIDATE = "synthetic-raced-candidate-token"
 ADMIN = "synthetic-admin-password"
 ENGINE = f"""#!/bin/sh
 shift            # exec
@@ -20,7 +21,8 @@ GF_SECURITY_ADMIN_PASSWORD={ADMIN} exec "$@"
 """
 
 
-def make_handler(stored=STORED, candidate=None, valid=(STORED,), health=200, account=None, rejection=401):
+def make_handler(stored=STORED, candidate=None, valid=(STORED,), health=200, account=None, rejection=401,
+                 race_on_merge=False):
     """`account` is the exact account's {role, isDisabled}, or None when absent."""
 
     class Handler(FakeBao):
@@ -32,16 +34,29 @@ def make_handler(stored=STORED, candidate=None, valid=(STORED,), health=200, acc
         }
         accepted = set(valid)
         sa = dict(account, id=7, name="mcp-grafana") if account else None
+        version = 1
+        inject_race = race_on_merge
 
         def _drain(self):
             return self.body() if int(self.headers.get("Content-Length", 0)) else {}
 
         def do_POST(self):
             self.record("POST")
-            self._drain()
+            body = self._drain()
             cls = type(self)
             if self.path == "/v1/auth/approle/login":
                 return self.reply({"auth": {"client_token": "synthetic-login-value"}})
+            if self.path == "/v1/secret/data/services/o11y":
+                if cls.inject_race:
+                    # A second seed wins after the helper's fresh read but before its CAS.
+                    cls.inject_race = False
+                    cls.store["mcp_grafana_token_candidate"] = RACED_CANDIDATE
+                    cls.version += 1
+                if body.get("options", {}).get("cas") != cls.version:
+                    return self.reply({"errors": ["check-and-set parameter did not match current version"]}, 400)
+                cls.store = body["data"]
+                cls.version += 1
+                return self.reply({"data": {"version": cls.version}})
             if self.path == "/api/serviceaccounts":
                 cls.sa = {"id": 7, "name": "mcp-grafana", "role": "Editor", "isDisabled": False}
                 return self.reply(cls.sa, 201)
@@ -56,6 +71,7 @@ def make_handler(stored=STORED, candidate=None, valid=(STORED,), health=200, acc
                     cls.store.pop(key, None)
                 else:
                     cls.store[key] = value
+            cls.version += 1
             return self.reply({"data": {"version": 2}})
 
         def do_GET(self):
@@ -63,7 +79,7 @@ def make_handler(stored=STORED, candidate=None, valid=(STORED,), health=200, acc
             cls = type(self)
             path = urlsplit(self.path).path
             if path == "/v1/secret/data/services/o11y":
-                return self.reply({"data": {"data": cls.store, "metadata": {"version": 1}}})
+                return self.reply({"data": {"data": cls.store, "metadata": {"version": cls.version}}})
             if path == "/api/org/":
                 if self.headers.get("Authorization", "").removeprefix("Bearer ") not in cls.accepted:
                     return self.reply({"message": "invalid API key"}, rejection)
@@ -97,13 +113,16 @@ def run(tmp_path, handler, *, check=False):
             cwd=ROOT, env=env, text=True, capture_output=True, timeout=180, stdin=subprocess.DEVNULL,
         )
     out = result.stdout + result.stderr
-    for secret in (STORED, CANDIDATE, ADMIN, "synthetic-login-value", "synthetic-role-secret"):
+    for secret in (STORED, CANDIDATE, RACED_CANDIDATE, ADMIN, "synthetic-login-value", "synthetic-role-secret"):
         assert secret not in out
     return result.returncode, out
 
 
 def writes(handler):
-    return [r for r in handler.requests if r[0] in ("PATCH", "DELETE")]
+    return [
+        r for r in handler.requests
+        if r[0] in ("PATCH", "DELETE") or (r[0] == "POST" and r[1].startswith("/v1/secret/"))
+    ]
 
 
 def test_valid_active_token_is_reused(tmp_path):
@@ -122,7 +141,7 @@ def test_valid_active_token_with_staged_candidate_promotes_candidate(tmp_path):
     assert "will be promoted" in out
     assert handler.store["mcp_grafana_token"] == CANDIDATE
     assert "mcp_grafana_token_candidate" not in handler.store
-    assert writes(handler) == [("PATCH", "/v1/secret/data/services/o11y")]
+    assert writes(handler) == [("POST", "/v1/secret/data/services/o11y")]
 
 
 def test_valid_token_does_not_bypass_account_role_validation(tmp_path):
@@ -141,7 +160,18 @@ def test_rejected_active_token_promotes_verified_candidate(tmp_path, rejection):
     assert rc == 0, out
     assert handler.store["mcp_grafana_token"] == CANDIDATE
     assert "mcp_grafana_token_candidate" not in handler.store
-    assert writes(handler) == [("PATCH", "/v1/secret/data/services/o11y")]
+    assert writes(handler) == [("POST", "/v1/secret/data/services/o11y")]
+
+
+def test_concurrent_candidate_seed_is_not_promoted_or_removed(tmp_path):
+    handler = make_handler(candidate=CANDIDATE, valid=(STORED, CANDIDATE),
+                           account={"role": "Editor", "isDisabled": False}, race_on_merge=True)
+    rc, out = run(tmp_path, handler)
+    assert rc != 0
+    assert "version-guarded update" in out
+    assert handler.store["mcp_grafana_token"] == STORED
+    assert handler.store["mcp_grafana_token_candidate"] == RACED_CANDIDATE
+    assert writes(handler) == [("POST", "/v1/secret/data/services/o11y")]
 
 
 def test_rejected_active_token_without_candidate_fails_without_change(tmp_path):
