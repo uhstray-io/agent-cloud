@@ -13,6 +13,7 @@ STORAGE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 VG_NAME = re.compile(r"[A-Za-z0-9+_.-]{1,127}")
 CONTENT_TOKEN = re.compile(r"[A-Za-z][A-Za-z0-9_-]{0,31}")
 PATH = re.compile(r"/[A-Za-z0-9._/+:-]{1,255}")
+DEVICE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._:+-]{0,127}")
 SIZE_BANDS = ((100 * 1024**3, "under-100-GiB"), (1024**4, "100-GiB-to-under-1-TiB"))
 PROPOSED_DISK_SIZES = (256, 512, 1024)
 SAFE_REFUSALS = {
@@ -945,6 +946,89 @@ def select_thick_lvm_candidate(payload: object) -> dict[str, str]:
     return {"candidate_storage_id": eligible[0]}
 
 
+def identify_thick_lvm_backing_identity(payload: object) -> dict[str, object]:
+    """Return one declared candidate's reported disk identity for private review."""
+    report, candidates, disk_rows = _inspection(payload)
+    declared_storage_id = payload["declared_storage_id"]
+    _require(
+        report["thick_lvm_config_vg_mappings_complete"] is True
+        and report["declared_thick_lvm_candidate_exact_match"] is True
+        and report["declared_thick_lvm_reported_vg_headroom_passes_1024_gib"] is True
+        and len(candidates) == 1
+        and candidates[0][0].get("storage") == declared_storage_id,
+        SELECTOR_REFUSAL,
+    )
+
+    _, group = candidates[0]
+    children = group.get("children")
+    _require(
+        isinstance(children, list)
+        and len(children) == 1
+        and isinstance(children[0], Mapping)
+        and isinstance(children[0].get("name"), str)
+        and PATH.fullmatch(children[0]["name"]) is not None,
+        SELECTOR_REFUSAL,
+    )
+    pv_path = children[0]["name"]
+    disks_by_path = {row["devpath"]: row for row in disk_rows}
+    disk = disks_by_path.get(pv_path)
+    _require(
+        isinstance(disk, Mapping)
+        and "parent" not in disk
+        and disk.get("used") == "LVM",
+        SELECTOR_REFUSAL,
+    )
+
+    serial = disk.get("serial")
+    _require(
+        isinstance(serial, str)
+        and serial == serial.strip()
+        and DEVICE_ID.fullmatch(serial) is not None,
+        SELECTOR_REFUSAL,
+    )
+    raw_wwn = disk.get("wwn")
+    _require(raw_wwn is None or isinstance(raw_wwn, str), SELECTOR_REFUSAL)
+    wwn = raw_wwn.strip() if isinstance(raw_wwn, str) else None
+    if wwn == "":
+        wwn = None
+    _require(
+        wwn is None
+        or (wwn == raw_wwn and DEVICE_ID.fullmatch(wwn) is not None),
+        SELECTOR_REFUSAL,
+    )
+    serial_matches = 0
+    wwn_matches = 0
+    for row in disk_rows:
+        row_serial = row.get("serial")
+        if row_serial is not None and row_serial != "":
+            _require(
+                isinstance(row_serial, str)
+                and row_serial == row_serial.strip()
+                and DEVICE_ID.fullmatch(row_serial) is not None,
+                SELECTOR_REFUSAL,
+            )
+            serial_matches += row_serial.casefold() == serial.casefold()
+        row_wwn = row.get("wwn")
+        _require(row_wwn is None or isinstance(row_wwn, str), SELECTOR_REFUSAL)
+        if row_wwn is None or row_wwn.strip() == "":
+            continue
+        _require(
+            row_wwn == row_wwn.strip()
+            and DEVICE_ID.fullmatch(row_wwn) is not None,
+            SELECTOR_REFUSAL,
+        )
+        if wwn is not None and row_wwn.casefold() == wwn.casefold():
+            wwn_matches += 1
+    _require(serial_matches == 1, SELECTOR_REFUSAL)
+    _require(wwn is None or wwn_matches == 1, SELECTOR_REFUSAL)
+
+    return {
+        "candidate_storage_id": declared_storage_id,
+        "backing_disk_serial": serial,
+        "backing_disk_wwn": wwn,
+    }
+
+
 def main() -> int:
     operation = ""
     try:
@@ -956,10 +1040,19 @@ def main() -> int:
             result = inspect(payload)
         elif operation == "select-thick-lvm-candidate":
             result = select_thick_lvm_candidate(payload)
+        elif operation == "identify-thick-lvm-backing-identity":
+            result = identify_thick_lvm_backing_identity(payload)
         else:
             raise ValueError("Unsupported physical-storage survey operation.")
     except (IndexError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
-        refusal = SELECTOR_REFUSAL if operation == "select-thick-lvm-candidate" else _safe_refusal(exc)
+        refusal = (
+            SELECTOR_REFUSAL
+            if operation in {
+                "select-thick-lvm-candidate",
+                "identify-thick-lvm-backing-identity",
+            }
+            else _safe_refusal(exc)
+        )
         print(json.dumps({"refusal": refusal}, separators=(",", ":")))
         return 2
     print(json.dumps(result, separators=(",", ":")))
