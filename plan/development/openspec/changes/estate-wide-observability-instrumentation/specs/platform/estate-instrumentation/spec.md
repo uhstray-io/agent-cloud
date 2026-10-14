@@ -253,6 +253,16 @@ When the forecast lacks headroom, the wave SHALL wait for a reviewed, non-destru
 - **THEN** the workflow verifies the exact job and VM, adds the VM only to an enabled explicit-VMID selection, preserves other job settings and members, verifies the readback, and reports a no-op on repetition; jobs selected by all, pool, or exclusion fail closed
 - **AND** backup artifact presence and an isolated restore remain required before guest disk growth or longer retention
 
+#### Scenario: Node-wide archived vzdump history remains bounded and unattributed
+- **WHEN** inspect mode reads archived `vzdump` tasks for the declared Proxmox node using the existing OpenBao token after the exact-node permission response reports integer `Sys.Audit: 1`
+- **THEN** the GET fixes `source=archive`, `typefilter=vzdump`, and a 72-hour `since`/`until` window, omits `vmid`, paginates in 50-row pages, and refuses totals above 250
+- **AND** zero, boolean, string, missing, wrong-path, or failed permission responses report `permission_unverified` and prevent the task GET
+- **AND** HTTP failures, malformed or duplicate task rows, out-of-window timestamps, invalid IDs/statuses, incomplete pages, and over-cap results report `status=unknown`, a fixed reason, and no counts or recency
+- **AND** a complete response reports only the total node-level task count, count of task IDs equal to the declared VMID, `potential_multi_vm_or_unattributed_task_count` (the count of missing/empty task IDs), latest task outcome plus coarse recency, and `job_attribution: unavailable`
+- **AND** an unknown latest task outcome reports the fixed `task_status_unavailable` unknown receipt with counts and recency unknown
+- **AND** raw API responses, credentials, UPIDs, task IDs, user, node, VMID, and status text remain under `no_log` and do not enter visible or durable output
+- **AND** a missing/empty task ID does not prove multi-VM work, and the result does not attribute a task to the selected backup job, prove that job ran or included o11y, or infer backup success without a matching fresh artifact; parent 4.6e, immutable restore, and retention gates remain open
+
 ### Requirement: Artifact selection is exact and remains private
 The read-only artifact survey MAY accept an optional private selector containing exactly the artifact volid, backend, format, creation epoch, and byte size. It SHALL match every supplied value against exactly one enumerated artifact for the declared VM and its source storage. With no selector it SHALL preserve census behavior and SHALL NOT infer a choice from recency. Malformed, missing, duplicate, stale, or changed selections SHALL fail closed with a fixed nonprivate refusal. Visible output SHALL omit artifact identifiers, selector values, raw API rows, and helper stderr. A selected result MAY expose only its census index and sanitized candidate metadata to the feasibility inspector; the original census count SHALL remain intact. Current VM configuration SHALL NOT be treated as proof of the selected archive's disk contents. Artifact selection SHALL NOT establish immutability, isolated restore, or restore success.
 

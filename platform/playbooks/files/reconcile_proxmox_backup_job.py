@@ -41,6 +41,7 @@ HISTORY_PAGE_SIZE = 50
 HISTORY_MAX_ROWS = 250
 HISTORY_LOOKBACK_SECONDS = 30 * 24 * 60 * 60
 HISTORY_RECENCY_SECONDS = 26 * 60 * 60
+NODE_TASK_LOOKBACK_SECONDS = 72 * 60 * 60
 HISTORY_REASONS = {
     "permission_unverified",
     "response_invalid",
@@ -57,6 +58,11 @@ SCHEDULER_REASONS = {
     "response_invalid",
     "service_identity_invalid",
     "state_unavailable",
+}
+NODE_TASK_REASONS = {
+    "permission_unverified", "request_failed", "response_invalid",
+    "pagination_incomplete", "pagination_limit_exceeded", "task_schema_invalid",
+    "task_identity_invalid", "task_status_unavailable",
 }
 SCHEDULER_ACTIVE_STATES = {
     "active", "inactive", "failed", "activating", "deactivating", "maintenance",
@@ -301,6 +307,142 @@ def summarize_scheduler_state(payload: Mapping[str, object]) -> dict[str, object
     return _scheduler_unknown("state_unavailable")
 
 
+def _node_task_unknown(reason: str) -> dict[str, object]:
+    if reason not in NODE_TASK_REASONS:
+        reason = "response_invalid"
+    return {
+        "status": "unknown",
+        "reason": reason,
+        "job_attribution": "unavailable",
+        "total_recent_node_vzdump_tasks": None,
+        "target_vmid_task_id_count": None,
+        "potential_multi_vm_or_unattributed_task_count": None,
+        "latest_task_outcome": "unknown",
+        "latest_task_recency": "unknown",
+    }
+
+
+def prepare_node_task_query(payload: Mapping[str, object]) -> dict[str, object]:
+    """Build the node-wide archive query after the existing exact-node Sys.Audit check."""
+    node = payload.get("node")
+    _require(isinstance(node, str) and re.fullmatch(r"[A-Za-z0-9._-]+", node) is not None,
+             "The declared VM node is malformed.")
+    target_vmid = _parse_vmid(str(payload.get("vmid", "")))
+    wrapper = payload.get("permissions_response")
+    if not isinstance(wrapper, Mapping) or type(wrapper.get("status")) is not int or wrapper["status"] != 200:
+        return {"read_allowed": False, "summary": _node_task_unknown("permission_unverified")}
+    body = wrapper.get("json")
+    data = body.get("data") if isinstance(body, Mapping) else None
+    rights = data.get(f"/nodes/{node}") if isinstance(data, Mapping) else None
+    audit = rights.get("Sys.Audit") if isinstance(rights, Mapping) else None
+    if type(audit) is not int or audit != 1:
+        return {"read_allowed": False, "summary": _node_task_unknown("permission_unverified")}
+    until = payload.get("until", int(time.time()))
+    if type(until) is not int or until <= 0:
+        return {"read_allowed": False, "summary": _node_task_unknown("response_invalid")}
+    return {
+        "read_allowed": True,
+        "query": {
+            "source": "archive", "typefilter": "vzdump",
+            "since": max(0, until - NODE_TASK_LOOKBACK_SECONDS), "until": until,
+            "start": 0, "limit": HISTORY_PAGE_SIZE,
+        },
+        "target_vmid": target_vmid,
+        "summary": None,
+    }
+
+
+def summarize_node_task_history(payload: Mapping[str, object]) -> dict[str, object]:
+    """Summarize bounded node-wide vzdump rows without exposing task identity or text."""
+    plan = payload.get("plan")
+    if not isinstance(plan, Mapping) or plan.get("read_allowed") is not True:
+        return _node_task_unknown("permission_unverified")
+    first_response = payload.get("first_page")
+    if isinstance(first_response, Mapping) and first_response.get("status") != 200:
+        return _node_task_unknown("request_failed")
+    first = _valid_task_page(first_response)
+    if first is None:
+        return _node_task_unknown("response_invalid")
+    total = first["total"]
+    if total > HISTORY_MAX_ROWS:
+        return _node_task_unknown("pagination_limit_exceeded")
+    later = payload.get("later_pages", [])
+    if not isinstance(later, list):
+        return _node_task_unknown("pagination_incomplete")
+    expected_pages = (total + HISTORY_PAGE_SIZE - 1) // HISTORY_PAGE_SIZE
+    if len(later) != max(0, expected_pages - 1):
+        return _node_task_unknown("pagination_incomplete")
+    pages = [first]
+    for response in later:
+        if isinstance(response, Mapping) and response.get("status") != 200:
+            return _node_task_unknown("request_failed")
+        page = _valid_task_page(response)
+        if page is None or page["total"] != total:
+            return _node_task_unknown("pagination_incomplete")
+        pages.append(page)
+    rows: list[Mapping[str, object]] = []
+    for index, page in enumerate(pages):
+        expected_count = min(HISTORY_PAGE_SIZE, max(0, total - index * HISTORY_PAGE_SIZE))
+        if len(page["rows"]) != expected_count or any(not isinstance(row, Mapping) for row in page["rows"]):
+            return _node_task_unknown("pagination_incomplete")
+        rows.extend(page["rows"])
+    if len(rows) != total:
+        return _node_task_unknown("pagination_incomplete")
+
+    query = plan.get("query")
+    try:
+        since, until, target_vmid = query["since"], query["until"], plan["target_vmid"]
+    except (KeyError, TypeError):
+        return _node_task_unknown("response_invalid")
+    if (not isinstance(query, Mapping) or type(since) is not int or type(until) is not int
+            or since < 0 or until <= 0 or since > until
+            or type(target_vmid) is not int or target_vmid < 100):
+        return _node_task_unknown("response_invalid")
+    seen_upids: set[str] = set()
+    target_count = missing_id_count = 0
+    classified: list[tuple[int, str]] = []
+    for row in rows:
+        upid, task_type, starttime = row.get("upid"), row.get("type"), row.get("starttime")
+        task_id, status = row.get("id"), row.get("status")
+        if (not isinstance(upid, str) or not upid or upid in seen_upids
+                or task_type != "vzdump" or type(starttime) is not int
+                or not since <= starttime <= until):
+            return _node_task_unknown("task_identity_invalid")
+        if "endtime" in row and (type(row["endtime"]) is not int or row["endtime"] < starttime):
+            return _node_task_unknown("task_schema_invalid")
+        if task_id is None or task_id == "":
+            missing_id_count += 1
+        elif ((not isinstance(task_id, str) and type(task_id) is not int)
+              or re.fullmatch(r"[1-9][0-9]*", str(task_id)) is None):
+            return _node_task_unknown("task_identity_invalid")
+        elif str(task_id) == str(target_vmid):
+            target_count += 1
+        if not isinstance(status, str) or not status:
+            return _node_task_unknown("task_status_unavailable")
+        classified.append((starttime, _classify_task_status(status)))
+        seen_upids.add(upid)
+
+    if not rows:
+        latest_outcome, latest_recency = "none", "none"
+    else:
+        latest_time = max(starttime for starttime, _ in classified)
+        outcomes = {outcome for starttime, outcome in classified if starttime == latest_time}
+        latest_outcome = outcomes.pop() if len(outcomes) == 1 else "unknown"
+        if latest_outcome == "unknown":
+            return _node_task_unknown("task_status_unavailable")
+        latest_recency = "within_26h" if 0 <= until - latest_time <= HISTORY_RECENCY_SECONDS else "older_than_26h"
+    return {
+        "status": "complete",
+        "reason": None,
+        "total_recent_node_vzdump_tasks": total,
+        "target_vmid_task_id_count": target_count,
+        "potential_multi_vm_or_unattributed_task_count": missing_id_count,
+        "job_attribution": "unavailable",
+        "latest_task_outcome": latest_outcome,
+        "latest_task_recency": latest_recency,
+    }
+
+
 def prepare_history_query(payload: Mapping[str, object]) -> dict[str, object]:
     """Build a bounded archive query only with verified node-scoped Sys.Audit."""
     node = payload.get("node")
@@ -310,13 +452,14 @@ def prepare_history_query(payload: Mapping[str, object]) -> dict[str, object]:
     target_vmid = _parse_vmid(str(vmid or ""))
     path = f"/nodes/{node}"
     wrapper = payload.get("permissions_response")
-    if not isinstance(wrapper, Mapping) or wrapper.get("status") != 200:
+    if (not isinstance(wrapper, Mapping) or type(wrapper.get("status")) is not int
+            or wrapper["status"] != 200):
         return {"read_allowed": False, "summary": _history_unknown("permission_unverified")}
     body = wrapper.get("json")
     data = body.get("data") if isinstance(body, Mapping) else None
     rights = data.get(path) if isinstance(data, Mapping) else None
     audit = rights.get("Sys.Audit") if isinstance(rights, Mapping) else None
-    if type(audit) is not int or audit not in (0, 1):
+    if type(audit) is not int or audit != 1:
         return {"read_allowed": False, "summary": _history_unknown("permission_unverified")}
     until = payload.get("until", int(time.time()))
     if type(until) is not int or until <= 0:
@@ -491,6 +634,10 @@ def main() -> int:
             result = summarize_task_history(payload)
         elif operation == "scheduler-state":
             result = summarize_scheduler_state(payload)
+        elif operation == "node-history-query":
+            result = prepare_node_task_query(payload)
+        elif operation == "node-history-summary":
+            result = summarize_node_task_history(payload)
         else:
             raise ValueError("Unsupported reconciliation operation.")
     except (IndexError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
