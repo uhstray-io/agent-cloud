@@ -338,11 +338,19 @@ foundation_down() {
   # local-semaphore in platform/playbooks/bootstrap-local-dev.yml (_bao_name, _sem_name);
   # dns, step-ca, caddy and the four authentik-* in each service's deployment/compose.yml.
   local names="local-semaphore authentik-worker authentik-server authentik-redis authentik-postgresql caddy step-ca dns local-openbao"
-  local name running left=""
+  local name running rc left=""
   for name in $names; do
-    if ! running=$(podman inspect --format '{{.State.Running}}' "$name" 2>/dev/null); then
+    # `container exists` answers 0 (present) or 1 (absent); anything else is podman itself
+    # failing (machine down, bad connection), which must not read as "nothing to stop".
+    rc=0; podman container exists "$name" >/dev/null 2>&1 || rc=$?
+    if [ "$rc" -eq 1 ]; then
       info "$name: not present, skipped"
-    elif [ "$running" != "true" ]; then
+      continue
+    fi
+    [ "$rc" -eq 0 ] || die "podman unreachable or failed (rc $rc) checking $name"
+    running=$(podman inspect --format '{{.State.Running}}' "$name") \
+      || die "could not inspect $name"
+    if [ "$running" != "true" ]; then
       info "$name: already stopped"
     else
       podman stop "$name" >/dev/null || die "could not stop $name"
@@ -350,8 +358,12 @@ foundation_down() {
     fi
   done
   for name in $names; do
-    running=$(podman inspect --format '{{.State.Running}}' "$name" 2>/dev/null || true)
-    [ "$running" != "true" ] || left="$left $name"
+    rc=0; podman container exists "$name" >/dev/null 2>&1 || rc=$?
+    [ "$rc" -ne 1 ] || continue
+    [ "$rc" -eq 0 ] || die "podman unreachable or failed (rc $rc) checking $name"
+    running=$(podman inspect --format '{{.State.Running}}' "$name") \
+      || die "could not inspect $name"
+    [ "$running" != "true" ] || left="${left:+$left }$name"
   done
   info "still running among the foundation containers: ${left:-none}"
   info "containers, images and volumes kept. Bring it back with: make local-bootstrap"

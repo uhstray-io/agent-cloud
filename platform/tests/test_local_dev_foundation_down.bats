@@ -16,15 +16,21 @@ setup() {
   LOG="$BATS_TEST_TMPDIR/podman.log"
   : > "$LOG"
   mkdir -p "$BATS_TEST_TMPDIR/bin"
-  # Stub: `inspect` answers from STATE_<name> (running | stopped | absent, default running);
+  # Stub: STATE_<name> is running | stopped | absent (default running). `container exists`
+  # answers 1 for absent and EXISTS_RC (default 0) otherwise, so EXISTS_RC=125 models podman
+  # itself failing; `inspect` answers the running state or fails when INSPECT_FAIL is set;
   # `stop` fails for any name in FAIL_STOP; every call is logged.
   cat > "$BATS_TEST_TMPDIR/bin/podman" <<'STUB'
 #!/usr/bin/env bash
 echo "$*" >> "$LOG"
+name="${!#}"
+var="STATE_${name//-/_}"
 case "$1" in
+  container)
+    [ "${!var:-running}" != absent ] || exit 1
+    exit "${EXISTS_RC:-0}" ;;
   inspect)
-    name="${!#}"
-    var="STATE_${name//-/_}"
+    [ -z "${INSPECT_FAIL:-}" ] || exit 1
     case "${!var:-running}" in
       running) echo true ;;
       stopped) echo false ;;
@@ -63,8 +69,9 @@ _stops() { grep '^stop ' "$LOG" | sed 's/^stop //' | tr '\n' ' ' | sed 's/ $//';
 @test "foundation-down: never removes a container or touches a volume" {
   _run_down
   [ "$status" -eq 0 ]
-  # Only `inspect` and `stop` may ever be issued (anchored: `--format` contains "rm").
-  refute_grep -qvE '^(inspect|stop) ' "$LOG"
+  # Only `container exists`, `inspect` and `stop` may ever be issued (anchored: `--format`
+  # contains "rm").
+  refute_grep -qvE '^(container exists|inspect|stop) ' "$LOG"
   refute_grep -qE ' (rm|volume|kill|down)( |$)' "$LOG"
 }
 
@@ -89,6 +96,38 @@ _stops() { grep '^stop ' "$LOG" | sed 's/^stop //' | tr '\n' ' ' | sed 's/ $//';
   _run_down FAIL_STOP=step-ca
   [ "$status" -ne 0 ]
   assert_contains "$output" "could not stop step-ca"
+}
+
+@test "foundation-down: podman failing (not just absent) is a non-zero exit, never an all-clear" {
+  _run_down EXISTS_RC=125
+  [ "$status" -ne 0 ]
+  assert_contains "$output" "podman unreachable or failed (rc 125)"
+  refute_contains "$output" "none"
+  [ -z "$(_stops)" ]
+}
+
+@test "foundation-down: failing to inspect an existing container is a non-zero exit" {
+  _run_down INSPECT_FAIL=1
+  [ "$status" -ne 0 ]
+  assert_contains "$output" "could not inspect"
+  refute_contains "$output" "none"
+}
+
+@test "foundation-down: the script's container list equals the names the services declare" {
+  # Parse the list from the script; the declarations are the compose container_name values and
+  # the two names bootstrap-local-dev.yml gives OpenBao and Semaphore.
+  listed=$(_fn | sed -n 's/^  local names="\(.*\)"$/\1/p' | tr ' ' '\n' | sort)
+  [ -n "$listed" ]
+  declared=$(
+    {
+      for svc in dns step-ca caddy authentik; do
+        sed -n 's/^ *container_name: *//p' "$REPO_ROOT/platform/services/$svc/deployment/compose.yml"
+      done
+      sed -nE 's/^ *_(bao|sem)_name: *//p' "$REPO_ROOT/platform/playbooks/bootstrap-local-dev.yml"
+    } | sort
+  )
+  [ "$(echo "$declared" | wc -l | tr -d ' ')" -eq 9 ]
+  [ "$listed" = "$declared" ]
 }
 
 @test "Makefile: local-foundation-down calls the foundation-down subcommand and is a phony target" {
