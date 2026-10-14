@@ -47,13 +47,15 @@ all:
     #   platform_admins:
     #   - { key: stray_admin, username: stray, name: stray, email: stray@agent-cloud.test }
     #   - { key: agent_cloud_admin, username: agent-cloud-admin, name: "agent-cloud Admin", email: agent-cloud-admin@agent-cloud.test }
-    #   - { key: wisward, username: wisward, name: "Platform Admin", email: wisward@agent-cloud.test }
-    #   - { key: jacob, username: jacob, name: "Platform Admin 2", email: jacob@agent-cloud.test }
+    #   - { key: wisward, username: wisward, name: "Platform Admin", email: wisward@agent-cloud.test, credential_print: true }
+    #   - { key: jacob, username: jacob, name: "Platform Admin 2", email: jacob@agent-cloud.test, credential_print: true }
     #   - { key: svc_automation, username: svc-automation, name: "Platform Service Account", type: service_account }
     # `key` (lowercase) names the existing OpenBao field `<key>_password` and the worker env
     # prefix, so it must equal today's name: renaming one re-keys a stored password.
     # `type: service_account` is Authentik-only (no email, no password); `agw_identity` is
-    # optional and gateway-only. `platform_admins_exceptions` (names only, default empty)
+    # optional and gateway-only. `credential_print: true` (default false) lets the credential
+    # print playbook read that administrator's initial password; the default sets it only for
+    # the two entries that were printable before the list. `platform_admins_exceptions` (names only, default empty)
     # lists platform-admins members that are deliberately not in the list; the Authentik
     # verify accepts them and fails on any other member.
 

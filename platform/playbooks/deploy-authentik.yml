@@ -103,6 +103,13 @@
       loop_control:
         label: "{{ item[0] }}"
 
+    # The administrator list is checked BEFORE the next task reads its usernames (it joins the
+    # ACTIVE set there) and before anything acts on it. This task writes nothing.
+    - name: "Validate the declared administrator list"
+      # One task file shared with the credential print (tasks/validate-platform-admins.yml):
+      # shape, duplicates, and keys that would name a non-user secret field.
+      ansible.builtin.include_tasks: tasks/validate-platform-admins.yml
+
     - name: "Split them into the accounts being kept and the ones being deleted"
       ansible.builtin.set_fact:
         # The declared administrators are active accounts too, but their usernames are
@@ -131,14 +138,6 @@
         success_msg: >-
           {{ _retired_usernames | length }} retired username(s), none colliding
           with the {{ _active_usernames | length }} active one(s).
-
-    # ── The administrator list is checked BEFORE anything acts on it ──────────
-    # Each entry becomes an account, an env line and an OpenBao field, so a malformed
-    # one fails here, naming the entry, rather than as an unusable account later.
-    - name: "Validate the declared administrator list"
-      # One task file shared with the credential print (tasks/validate-platform-admins.yml):
-      # shape, duplicates, and keys that would name a non-user secret field.
-      ansible.builtin.include_tasks: tasks/validate-platform-admins.yml
 
     - name: "Place the monorepo + ensure podman/compose"
       ansible.builtin.include_tasks: tasks/place-monorepo.yml

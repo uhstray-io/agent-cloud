@@ -55,6 +55,7 @@ Each entry (a mapping):
 | `name`, `email` | display name and address; `email` is required except for a service account |
 | `type` | optional, Authentik only: `user` (default) or `service_account` (path `users/service-accounts`, no email, no password; its API token entry is rendered with it from `SERVICE_ACCOUNT_TOKEN`; at most one) |
 | `agw_identity` | optional, gateway only; Authentik ignores it |
+| `credential_print` | optional boolean, default `false`: whether `print-platform-user-credentials.yml` may print this administrator's initial password. Declaring an administrator never widens the print; the default list sets it `true` only for `wisward` and `jacob`, the entries that were printable before the list existed. A list declared in an inventory must opt in explicitly |
 
 Where the list comes from: an inventory that sets `platform_admins` REPLACES the default
 entirely (it is a whole list, not a merge). With none set, the default in
@@ -75,7 +76,7 @@ which the deploy and the credential print (`print-platform-user-credentials.yml`
 slug key, a username, a name, an email unless a service account, no duplicate key or username, at most one
 service account, and no key whose `<key>_password` field or own name is a non-user secret (database,
 bootstrap, secret key, OIDC client secrets, the service-account token). The print also builds its
-allow-list only from keys that pass that rule, because `platform_admins` can arrive from an inventory or an
+allow-list only from opted-in keys (`credential_print: true`) that pass that rule, because `platform_admins` can arrive from an inventory or an
 extra var and a key such as `db` would otherwise name the database password as if it were a person's.
 
 Identity (username, name, email) is baked into the rendered blueprint; a password never is

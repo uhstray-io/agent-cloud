@@ -17,6 +17,11 @@
 #              SERVICE_ACCOUNT_TOKEN). At most one service account.
 #   agw_identity  optional, gateway only: overrides the derived gateway identity name.
 #              Authentik ignores it.
+#   credential_print  optional boolean, default false: whether print-platform-user-credentials.yml
+#              may read this administrator's initial password back out of OpenBao. Off unless
+#              set, so declaring an administrator never widens what that playbook can print;
+#              the default list turns it on only for the entries that were printable before
+#              the list existed (wisward, jacob). The break-glass and operator admins stay off.
 #
 # Where the list comes from. An inventory that sets `platform_admins` REPLACES the
 # default below entirely (it is a whole list, not a merge). With none set, the default is
@@ -44,10 +49,12 @@ _platform_admins_default:
     username: "{{ wisward_username | default('wisward') }}"
     name: "{{ wisward_name | default('Platform Admin') }}"
     email: "{{ wisward_email | default('wisward@agent-cloud.test') }}"
+    credential_print: true
   - key: jacob
     username: "{{ jacob_username | default('jacob') }}"
     name: "{{ jacob_name | default('Platform Admin 2') }}"
     email: "{{ jacob_email | default('jacob@agent-cloud.test') }}"
+    credential_print: true
   - key: svc_automation
     username: svc-automation
     name: Platform Service Account

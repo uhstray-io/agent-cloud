@@ -23,6 +23,7 @@
       - item.name is defined and (item.name | string | trim | length) > 0
       - (item.type | default('user')) in ['user', 'service_account']
       - (item.type | default('user')) == 'service_account' or (item.email | default('') | string | trim | length) > 0
+      - item.credential_print is not defined or item.credential_print in [true, false]
       - ((item.key | default('') | string) ~ '_password') not in (_static_secret_definitions | map(attribute='name') | list)
       - (item.key | default('') | string) not in (_static_secret_definitions | map(attribute='name') | list)
     fail_msg: >-
@@ -30,7 +31,7 @@
       lowercase key (letters, digits, underscore) whose `<key>_password` field and own name are
       not an existing non-user secret (database, bootstrap, secret key, OIDC client secrets,
       service-account token, another user's password), a username, a name, a type of user or
-      service_account, and an email unless it is a service account.
+      service_account, an email unless it is a service account, and a boolean credential_print when set.
     quiet: true
   loop: "{{ _platform_admins }}"
   loop_control:

@@ -457,7 +457,9 @@ def test_the_credential_print_allow_list_is_the_stored_passwords(tmp_path):
     )
     assert done.returncode == 0, done.stdout + done.stderr
     allowed = json.loads((tmp_path / "allowed.json").read_text())
-    assert sorted(allowed) == sorted(["andrew", "wisward", "jacob", "stray_admin", "agent_cloud_admin"])
+    # Exactly what was printable before the list existed: the break-glass and operator admins stay out.
+    assert sorted(allowed) == sorted(["andrew", "wisward", "jacob"])
+    assert "stray_admin" not in allowed and "agent_cloud_admin" not in allowed
     assert "svc_automation" not in allowed and "service_account_token" not in allowed
 
 
@@ -472,15 +474,21 @@ def _collision_guard(tmp: Path, inventory: dict) -> subprocess.CompletedProcess:
         )
         + 1
     ]
-    # The guard reads env.j2 at playbook_dir/../services/..., so mirror that layout.
+    # The guard reads env.j2 at playbook_dir/../services/..., and includes the shared list validation,
+    # so mirror that layout.
     (tmp / "playbooks").mkdir()
+    (tmp / "playbooks/vars").symlink_to(PLAYBOOKS / "vars")
+    (tmp / "playbooks/tasks").symlink_to(PLAYBOOKS / "tasks")
     (tmp / "services").symlink_to(REPO / "platform/services")
     play = [
         {
             "hosts": "localhost",
             "connection": "local",
             "gather_facts": False,
-            "vars_files": [str(PLAYBOOKS / "vars/platform-admins.yml")],
+            "vars_files": [
+                str(PLAYBOOKS / "vars/platform-admins.yml"),
+                str(PLAYBOOKS / "vars/secret-declarations/authentik.yml"),
+            ],
             "tasks": picked,
         }
     ]
@@ -562,10 +570,43 @@ def test_a_crafted_admin_key_cannot_make_the_print_read_a_non_user_secret(tmp_pa
 def test_a_normal_admin_key_is_still_allowed_to_print(tmp_path):
     # The guards pass for the committed default and a normal declared list; the run proceeds to the
     # store, which here is unreachable, so the failure is the authentication task.
-    for extra in ({"credential_users": "wisward"}, {"platform_admins": [_entry()], "credential_users": "carol"}):
+    for extra in (
+        {"credential_users": "wisward"},
+        {"credential_users": "jacob"},
+        {"platform_admins": [_entry(credential_print=True)], "credential_users": "carol"},
+    ):
         done = _print_playbook(tmp_path, extra)
         assert done.returncode != 0
         assert "Authenticate to OpenBao" in _failed_task(done), (extra, _failed_task(done), done.stdout[-800:])
+
+
+def _refused_by_the_allow_list(done: subprocess.CompletedProcess) -> bool:
+    """The run stopped at one of the two allow-list refusals, before it touched the store."""
+    failed = _failed_task(done)
+    return ("Refuse unless the caller" in failed or "Refuse any name the users blueprint" in failed) and (
+        "Authenticate to OpenBao" not in done.stdout
+    )
+
+
+@pytest.mark.parametrize("who", ["stray_admin", "agent_cloud_admin"])
+def test_the_break_glass_and_operator_admins_are_not_printable(tmp_path, who):
+    # Declaring an administrator must not widen what the print can read: only an explicit
+    # credential_print opt-in (set for wisward and jacob in the default) makes one printable.
+    done = _print_playbook(tmp_path, {"credential_users": who})
+    assert done.returncode != 0
+    assert _refused_by_the_allow_list(done), _failed_task(done)
+    assert "Authenticate to OpenBao" not in done.stdout
+
+
+def test_a_declared_admin_without_the_opt_in_is_not_printable(tmp_path):
+    done = _print_playbook(tmp_path, {"platform_admins": [_entry()], "credential_users": "carol"})
+    assert done.returncode != 0
+    assert _refused_by_the_allow_list(done), _failed_task(done)
+
+
+def test_a_non_boolean_credential_print_is_refused(tmp_path):
+    done = _validate(tmp_path, {"platform_admins": [_entry(credential_print="yes please")]})
+    assert done.returncode != 0
 
 
 @pytest.mark.parametrize("key", ["db", "bootstrap", "secret_key", ".*", "../etc", "a b"])
@@ -607,7 +648,7 @@ def test_the_allow_list_itself_never_admits_a_static_secret(tmp_path, key):
             "localhost,",
             str(tmp_path / "h.yml"),
             "-e",
-            json.dumps({"platform_admins": [_entry(key=key), _entry()]}),
+            json.dumps({"platform_admins": [_entry(key=key, credential_print=True), _entry(credential_print=True)]}),
         ],
         cwd=tmp_path,
         env=env,
@@ -618,3 +659,12 @@ def test_the_allow_list_itself_never_admits_a_static_secret(tmp_path, key):
     assert done.returncode == 0, done.stdout + done.stderr
     allowed = json.loads((tmp_path / "allowed.json").read_text())
     assert key not in allowed and "carol" in allowed, allowed
+
+
+def test_the_list_is_validated_before_the_guard_reads_its_usernames(tmp_path):
+    # A malformed entry (no username) fails at the shared validation, naming the entry, not as a
+    # template error inside the task that joins the usernames into the active set.
+    done = _collision_guard(tmp_path, {"platform_admins": [{"key": "ghost"}]})
+    assert done.returncode != 0
+    assert "Refuse a malformed administrator list" in _failed_task(done), (_failed_task(done), done.stdout[-500:])
+    assert "Split them into the accounts being kept" not in done.stdout

@@ -217,6 +217,11 @@ PY_DEF
   order=$(grep -nE 'name: "(Validate the declared administrator list|Place the monorepo)' "$DEPLOY" | cut -d: -f1 | tr '\n' ' ')
   set -- $order
   [ "$#" -eq 2 ] && [ "$1" -lt "$2" ]
+  # and BEFORE the task that reads the administrators' usernames into the collision guard's active set
+  local v_line s_line
+  v_line=$(grep -n 'name: "Validate the declared administrator list"' "$DEPLOY" | cut -d: -f1)
+  s_line=$(grep -n 'name: "Split them into the accounts being kept' "$DEPLOY" | cut -d: -f1)
+  [ -n "$v_line" ] && [ -n "$s_line" ] && [ "$v_line" -lt "$s_line" ]
   assert_grep -q 'tasks/validate-platform-admins.yml' "$DEPLOY"
   # the SAME file guards the credential print, which reads names back out of OpenBao
   assert_grep -q 'tasks/validate-platform-admins.yml' "${BATS_TEST_DIRNAME}/../playbooks/print-platform-user-credentials.yml"
@@ -447,7 +452,11 @@ for i, line in enumerate(lines):
         if re.match(r'^    - name: ', nxt):
             break
         body.append(nxt)
-    if not any(re.match(r'^      ansible\.builtin\.set_fact:', b) for b in body):
+    # set_fact writes nothing; the shared list validation is assert-only and must run first,
+    # because the next set_fact reads the administrators' usernames.
+    pure = any(re.match(r'^      ansible\.builtin\.set_fact:', b) for b in body) or \
+        any(re.match(r'^      ansible\.builtin\.include_tasks: tasks/validate-platform-admins\.yml\s*$', b) for b in body)
+    if not pure:
         print(m.group(1))
 PY_ORDER
 )

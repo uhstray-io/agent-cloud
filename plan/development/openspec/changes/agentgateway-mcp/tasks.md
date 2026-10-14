@@ -298,6 +298,21 @@ operator's go for it. site-config changes land through its own pull requests.
       untouched in this change
 - [ ] 6.2 `Deploy Authentik (Dev)`: dry run, apply; the read-back verify passes (including
       the drift guard, task 2.9) and no user changes (task 2.6's equality, live)
+      - [ ] 6.2a Preflight, before the FIRST production Authentik deploy of this change: read
+        the production `platform-admins` membership read-only (the group's member names, no
+        values) and compare it with the declared list. Any member the list does not cover is
+        declared in `platform_admins_exceptions` in site-config first; otherwise the drift
+        guard fails the deploy after the blueprints have already applied
+      - [ ] 6.2b Preflight, before turning on `agw_admin_identities_enabled` in production:
+        site-config declares `platform_admins` EXPLICITLY, at a scope both the Authentik and
+        the agentgateway hosts see (the `agent_cloud` group vars or `all`). The shared default
+        list is built from per-user vars (`wisward_*`, `jacob_*`, `stray_admin_email`) that
+        site-config sets on the Authentik host only; on the gateway host they are undefined,
+        so the default would yield placeholder usernames and the wrong identities. Guard task
+        idea: the gateway deploy, with the gate on, refuses when `platform_admins` is not
+        explicitly defined (that is, when it would fall back to the built default). An
+        explicit list must also set `credential_print: true` on any entry whose initial
+        password the credential print should still reach
 - [ ] 6.3 `Deploy agentgateway (Dev)` with the flag false, from a branch that carries the
       derivation (task 2.4): dry run; apply; then read the rendered config on the host (or
       the deploy's own report), counting `keyHash` lines and never printing them: the count
