@@ -188,7 +188,10 @@ finding that contradicts a decision stops the work and reopens that decision.
       - require: 'source.address == "127.0.0.1"'` because v1.5.0 gateways have no bind
       address and bind every container interface (spike 1.5: without the rule a neighbour
       container reaches it, with it that container is 403). The port is never added to the
-      published ports of `compose.yml`, `compose.local.yml` or `compose.tls.yml`
+      published ports of `compose.yml`, `compose.local.yml` or `compose.tls.yml`. The loopback
+      gateway and the `loopback` entry in `llm.gateways` render ONLY when `agw_mcp_enabled` is
+      true (G4): with the flag false the rendered file is unchanged and `llm.gateways` stays as
+      it is today
 - [ ] 3.8 The deploy-time target allowlist, refusing before any render or restart, naming
       the entry: only `openapi` targets are rendered, from the shipped schema; the rendered
       host is the declared loopback address and port and nothing else; an `mcp` or `sse`
@@ -199,7 +202,9 @@ finding that contradicts a decision stops the work and reopens that decision.
 - [ ] 3.9 BATS for 3.7 and 3.8, on the rendered config and the compose files, each
       mutation-checked (break it, watch its test fail, restore byte-exact): drop the
       `source.address` rule; attach `loopback` to `mcp` or to `ui`; publish the loopback
-      port in any compose file; render an `mcp` or `sse` target; render a host other than the
+      port in any compose file; render the loopback gateway or the `loopback` entry in
+      `llm.gateways` with the flag false (the flag-false render must show no loopback gateway
+      and the unchanged `llm.gateways`); render an `mcp` or `sse` target; render a host other than the
       loopback address and port; a schema path outside the shipped directory
 - [ ] 3.10 Validation gate, local (uses task 4.1's schema file as the target): an `initialize`
       with no key is 401, proving scenario "Unauthenticated MCP request is refused"; an
@@ -211,8 +216,12 @@ finding that contradicts a decision stops the work and reopens that decision.
       MCP removes the endpoint"; a break-glass edit that makes `/mcp` answer without a key
       fails the deploy, proving scenario "Deploy fails when /mcp answers without a key"; a
       normal deploy records the authenticated session, proving scenario "Deploy proves an
-      authenticated initialize"; the 3.9 BATS (loopback
-      rule, attachment, unpublished port, target allowlist) pass and each mutation fails
+      authenticated initialize"; a target aimed at the gateway's own external
+      listener is refused or cannot connect, proving scenario
+      "A target cannot reach the gateway's own external listener"; a request to the loopback
+      listener from another container is refused, proving scenario
+      "The loopback listener refuses other containers"; the 3.9 BATS (loopback rule, attachment, flag scope, unpublished port,
+      target allowlist) pass and each mutation fails
 
 ## 4. The OpenAPI target over `/v1`
 - [ ] 4.1 The OpenAPI schema file in the repository (proposed under
