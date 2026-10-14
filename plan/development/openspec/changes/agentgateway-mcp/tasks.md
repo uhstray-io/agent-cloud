@@ -103,12 +103,15 @@ finding that contradicts a decision stops the work and reopens that decision.
       and reported, charset refusal, `legacy-shared` and `mcp-self` refusals, revoke needing
       removal from the merged list.
       Mutation-check each refusal: break it, watch its test fail, restore it byte-exact
-- [ ] 2.9 The drift guard (D3): extend the Authentik read-back verify
-      (`verify-users.py.j2`, run inside the server container) to assert the members of
-      `platform-admins` equal the declared admin list plus the declared exceptions list,
-      failing with the account name only; extend `deploy-agentgateway.yml` to assert its
-      derived identities equal the declared admin list. BATS for both; mutation-check each
-      by adding a member outside both lists and by dropping a list entry, watching each fail
+- [ ] 2.9 The drift guard (D3), which is the Authentik verify alone: extend the read-back
+      verify (`verify-users.py.j2`, run inside the server container) to assert the members
+      of `platform-admins` equal the declared admin list plus the declared exceptions list,
+      failing with the account name only. The gateway deploy gets a consistency check of its
+      own render instead (the name set and `keyHash` count rendered equal the merged
+      identity list), not a second membership guard: "derived equals declared" is true by
+      construction. BATS for both; mutation-check the verify by adding a member outside both
+      lists and by dropping a list entry, and the render check by dropping one rendered key,
+      watching each fail
 - [ ] 2.10 Validation gate, local: the rendered admin entries equal the fixed blocks and the
       verify passes, proving scenario "The rendered admin accounts match the fixed blocks";
       a new list entry mints a `client_<name>` and its hash is enrolled on the next
@@ -236,9 +239,12 @@ operator's go for it. site-config changes land through its own pull requests.
 - [ ] 6.2 `Deploy Authentik (Dev)`: dry run, apply; the read-back verify passes (including
       the drift guard, task 2.9) and no user changes (task 2.6's equality, live)
 - [ ] 6.3 `Deploy agentgateway (Dev)` with the flag false, from a branch that carries the
-      derivation (task 2.4): dry run, check the rendered key-hash count does not drop and
-      the overlap is reported by name; apply; new identities minted, existing hashes
-      unchanged, verify asserts `/mcp` is not served
+      derivation (task 2.4): dry run; apply; then read the rendered config on the host (or
+      the deploy's own report), counting `keyHash` lines and never printing them: the count
+      equals the one read before the deploy plus the newly declared admins, the overlap is
+      reported by name, existing hashes unchanged, verify asserts `/mcp` is not served.
+      Whether `--check` output shows the rendered key-hash lines is UNVERIFIED, so the
+      count is read from the host after the real deploy, not from the dry-run diff
 - [ ] 6.4 `Apply Cloudflare Tofu (Dev)`, `tofu_action` plan: expected diff exactly the
       record and two rules, zero other change; then apply, then a zero-diff plan
 - [ ] 6.5 `Manage Caddy Sites (Dev)`: dry run, apply; the inference block unchanged in the
@@ -252,8 +258,11 @@ operator's go for it. site-config changes land through its own pull requests.
       explicitly (never empty, Open Question 6); output carries names only
 - [ ] 6.8 site-config branch B: remove each derived name from `agw_clients`. Hold this
       merge until 6.3's code is the deployed branch (before that the derivation does not
-      exist and removal would drop the key). Dry run first and check the rendered key-hash
-      count does not drop; then apply
+      exist and removal would drop the key). The render changes only on deploy, so after the
+      site-config merge: sync the inventory into Semaphore (`sync-inventory.yml`, check
+      mode first), then `Deploy agentgateway (Dev)`, dry run then real; read the rendered
+      `keyHash` count on the host (or the deploy's own report) before and after, as in 6.3.
+      A drop is a dead key: revert branch B, sync, redeploy
 - [ ] 6.9 Validation gate, production: an unauthenticated `initialize` to the MCP hostname
       is 401 with no challenge header, proving scenario "The MCP hostname is not reachable
       without a key"; the newly declared admin's `client_<name>` exists and its key

@@ -64,8 +64,8 @@ harnesses (Claude Code, pi) are the consumers the inference-gateway change named
   group membership of platform admins and the gateway's personal identities. The Authentik
   admin entries are rendered from it; the gateway deploy derives one identity per entry and
   merges them with the service identities in `agw_clients`, refusing a duplicate within the
-  list and reporting an overlap with `agw_clients` by name; a drift guard fails the Authentik
-  and gateway deploys when `platform-admins` and the list disagree. Declaring
+  list and reporting an overlap with `agw_clients` by name; the Authentik
+  deploy's verify fails when `platform-admins` and the list disagree. Declaring
   an admin therefore mints their `client_<name>` on the next gateway deploy, an existing
   identity keeps its key, and handout stays `Back Up Credentials to site-config (Dev)`.
   The same identities are admitted on `/mcp`.
@@ -105,9 +105,10 @@ harnesses (Claude Code, pi) are the consumers the inference-gateway change named
   `platform/services/agentgateway/context/{architecture,agent-practices}.md` and
   `context/clients/`, a client installer script and a `Makefile` target,
   `platform/tests/` BATS for each.
-- site-config (separate branch, via its own PR): the declared admin list, `agw_mcp_*`
-  variables, the MCP Caddy managed site in `caddy_managed_sites`, and the removal of any
-  `agw_clients` entry now derived from the admin list.
+- site-config, two changes through their own PRs: branch A (task 6.1) the declared admin
+  list, the exceptions list, `agw_mcp_*` variables and the MCP Caddy managed site in
+  `caddy_managed_sites`; branch B (task 6.8, merged only once the derivation is deployed)
+  the removal of every `agw_clients` entry now derived from the admin list.
 - OpenBao: `secret/services/agentgateway` gains `client_mcp-self` and one `client_<name>`
   per newly declared admin (existing fields are reused, never re-minted).
 - Live: one Authentik redeploy (blueprint render, no user change expected), one gateway

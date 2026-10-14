@@ -71,8 +71,7 @@ appears twice in the list, equals a reserved internal identity, or falls outside
 permitted charset MUST fail the deploy before any restart; a name present in both the list
 and the service identities SHALL be merged once and reported by name as an overlap. An
 identity that already has a stored key SHALL keep it. The Authentik verify SHALL assert the
-members of `platform-admins` equal the declared admin list plus a declared exceptions list,
-and the gateway deploy SHALL assert its derived identities equal the declared admin list.
+members of `platform-admins` equal the declared admin list plus a declared exceptions list.
 
 #### Scenario: A declared admin gets an identity on the next deploy
 - WHEN a new admin is added to the declared list and the gateway deploy runs
@@ -99,8 +98,7 @@ and the gateway deploy SHALL assert its derived identities equal the declared ad
 #### Scenario: Admin membership and the declared list agree
 - WHEN a user is added to `platform-admins` outside the declared list and exceptions list,
   or a declared admin is missing from the group
-- THEN the Authentik deploy's verify fails naming the account, and the gateway deploy
-  fails if its derived identities differ from the declared admin list
+- THEN the Authentik deploy's verify fails naming the account
 
 #### Scenario: The rendered admin accounts match the fixed blocks
 - WHEN the Authentik admin entries are rendered from the declared list for the inputs the

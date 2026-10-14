@@ -213,14 +213,17 @@ Authentik group membership and the gateway's identities.
   merged once and reported by name as a migration overlap; this is what lets the code that
   derives identities be deployed before site-config removes the derived names (Migration
   Plan).
-- **A drift guard keeps the list and the group in agreement.** The Authentik deploy's
-  read-back verify (`verify-users.py.j2`, run inside the server container) additionally
-  asserts the members of `platform-admins` equal the declared admin list plus an explicit
-  declared exceptions list (break-glass and service accounts, names only, in site-config);
-  the gateway deploy asserts the personal identities it derived equal the declared admin
-  list. A member added by hand in the Authentik UI, or a blueprint block added outside the
-  list, fails the verify instead of silently holding an admin tier with no gateway
-  identity (task 2.9).
+- **The Authentik verify is the one drift guard.** The Authentik deploy's read-back verify
+  (`verify-users.py.j2`, run inside the server container) additionally asserts the members
+  of `platform-admins` equal the declared admin list plus an explicit declared exceptions
+  list (break-glass and service accounts, names only, in site-config). A member added by
+  hand in the Authentik UI, or a blueprint block added outside the list, fails the verify
+  instead of silently holding an admin tier with no gateway identity (task 2.9). The
+  gateway side adds no second guard: it derives its identities from the same list, so
+  "derived equals declared" is true by construction. What the gateway deploy does carry is
+  a consistency check of its own render (the name set and the `keyHash` count it renders
+  equal the merged identity list), which catches a templating fault, not a membership
+  drift.
 - Declaring an admin mints `client_<name>` on the next gateway deploy; handout is
   `Back Up Credentials to site-config (Dev)`. The same identities are admitted on `/mcp`.
 - Removing an admin from the list drops the hash from the next render, so the key stops
@@ -373,10 +376,13 @@ scenario that fails an `agw_clients` entry named `user-x`. This change is a comp
    so it is merged AND deployed before any site-config change removes a derived name from
    `agw_clients`.
 3. Land the gateway merge and the `mcp` block flagged off (sections 2 and 3); deploy
-   through the `(Dev)` template, dry run first, checking the rendered key-hash count does
-   not drop; verify asserts MCP is not served. Only then does a second site-config change
-   remove the derived names from `agw_clients` (task 6.8), held until the deployed branch
-   carries the derivation.
+   through the `(Dev)` template, dry run first; verify asserts MCP is not served. The
+   rendered key-hash count is read from the rendered config on the host (or the deploy's
+   own report) before and after the real deploy, never from a check-mode diff: whether
+   `--check` output shows the rendered `keyHash` lines is unverified. Only then does a
+   second site-config change remove the derived names from `agw_clients` (task 6.8), held
+   until the deployed branch carries the derivation, followed by an inventory sync and a
+   real deploy, because the render changes only on deploy.
 4. Add the first target (section 4), then the edge (section 5): Cloudflare plan then
    apply, Caddy managed site dry run then apply.
 5. Flip `agw_mcp_enabled`, deploy, verify, hand out keys (section 6).
