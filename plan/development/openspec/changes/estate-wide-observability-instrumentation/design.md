@@ -944,3 +944,25 @@ succeeded with six dated candidates, the newest about 225.3 hours old, and all
 protected flags unknown. No evidence ties that failure to the selected job or
 o11y VM. Backup readiness, immutability, isolated restore, capacity, and
 retention gates remain open.
+
+## 2026-10-14 thick-LVM candidate identification source slice
+
+Add a dedicated Dev-bound Semaphore template and importing playbook for private
+review of the single eligible thick-LVM image-store candidate. The wrapper imports
+the existing GET-only physical-storage survey, then invokes its inspector against
+the already registered, protected response payload; it makes no duplicate API
+reads. Refactor `_thick_lvm_facts` to return the same validated candidate rows
+alongside its sanitized aggregate facts. Normal `inspect` continues to emit no
+candidate IDs. The selector requires complete visible config/VG mappings, complete
+PV-child inventory and exact disk-path lineage with reported `used=LVM` for each
+candidate, plus exactly one candidate meeting the existing 1024-GiB reported VG
+headroom rule. Its only successful identifier is the storage ID; ambiguity,
+malformed input, incomplete lineage, or insufficient headroom yields one fixed
+refusal.
+
+This is candidate identification for a later reviewed private `site-config`
+declaration only. It does not establish local physical media, device safety,
+allocation, PBS suitability/readiness, guest filesystem readiness, backup
+immutability, restore success, VM growth, or retention eligibility. It performs no
+Proxmox mutation and has no live receipt. Keep parent tasks 4.6c, 4.6d, and 4.6e
+unchecked.

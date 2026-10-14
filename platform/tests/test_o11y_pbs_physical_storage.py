@@ -13,7 +13,12 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "platform/playbooks/files"))
 
-from inspect_o11y_pbs_physical_storage import inspect, main, validate_node  # noqa: E402
+from inspect_o11y_pbs_physical_storage import (  # noqa: E402
+    inspect,
+    main,
+    select_thick_lvm_candidate,
+    validate_node,
+)
 
 GIB = 1024**3
 
@@ -108,6 +113,15 @@ def set_thick_capacity(data, total, free):
     group = data["lvm"]["json"]["data"]["children"][0]
     group.update(size=total, free=free)
     group["children"][0].update(size=total, free=free)
+
+
+def selectable_thick_candidate():
+    data = sample()
+    declare_thick_candidate(data)
+    total = 5 * 1024 * GIB
+    set_thick_capacity(data, total, total // 2)
+    data["lvm"]["json"]["data"]["children"][0]["children"][0]["name"] = "/dev/private-disk-a"
+    return data
 
 
 def test_target_node_must_be_private_declared_unique_and_online():
@@ -1308,7 +1322,92 @@ def test_cli_success_prints_no_candidate_id_or_exact_capacity(monkeypatch, capsy
     assert main() == 0
     captured = capsys.readouterr()
     assert "private-candidate" not in captured.out
+    assert "private-lvm" not in captured.out
+    assert "private-vg" not in captured.out
+    assert "/dev/" not in captured.out
     assert str(8192 * GIB) not in captured.out
+    assert captured.err == ""
+
+
+def test_candidate_selector_returns_only_the_unique_storage_id():
+    result = select_thick_lvm_candidate(selectable_thick_candidate())
+
+    assert result == {"candidate_storage_id": "private-lvm"}
+
+
+def test_candidate_selector_cli_emits_only_the_storage_id(monkeypatch, capsys):
+    data = selectable_thick_candidate()
+    monkeypatch.setattr(
+        sys, "argv", ["inspect_o11y_pbs_physical_storage.py", "select-thick-lvm-candidate"]
+    )
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(data)))
+
+    assert main() == 0
+    captured = capsys.readouterr()
+    assert captured.out == '{"candidate_storage_id":"private-lvm"}\n'
+    assert "/dev/" not in captured.out
+    assert "private-node" not in captured.out
+    assert "private-vg" not in captured.out
+    assert str(5 * 1024 * GIB) not in captured.out
+    assert captured.err == ""
+
+
+def test_candidate_selector_refuses_two_eligible_stores():
+    data = selectable_thick_candidate()
+    total = 5 * 1024 * GIB
+    data["storage_config_rows"]["json"]["data"].append({
+        "storage": "private-lvm-two", "type": "lvm", "content": "images,backup",
+        "vgname": "private-vg-two",
+    })
+    data["storage"]["json"]["data"].append({
+        "storage": "private-lvm-two", "type": "lvm", "content": "images,backup",
+        "active": 1, "shared": 0, "total": total, "used": total // 2,
+        "avail": total // 2,
+    })
+    data["lvm"]["json"]["data"]["children"].append({
+        "name": "private-vg-two", "size": total, "free": total // 2,
+        "children": [{"name": "/dev/private-disk-c", "size": total, "free": total // 2}],
+    })
+    data["disks"]["json"]["data"].append({
+        "devpath": "/dev/private-disk-c", "size": total, "used": "LVM",
+    })
+
+    with pytest.raises(ValueError, match="No unique thick-LVM storage candidate"):
+        select_thick_lvm_candidate(data)
+
+
+def test_candidate_selector_refuses_insufficient_reported_headroom():
+    data = selectable_thick_candidate()
+    set_thick_capacity(data, 5 * 1024 * GIB, 2 * 1024 * GIB)
+
+    with pytest.raises(ValueError, match="No unique thick-LVM storage candidate"):
+        select_thick_lvm_candidate(data)
+
+
+def test_candidate_selector_refuses_incomplete_pv_lineage():
+    data = selectable_thick_candidate()
+    data["lvm"]["json"]["data"]["children"][0]["children"] = []
+
+    with pytest.raises(ValueError, match="No unique thick-LVM storage candidate"):
+        select_thick_lvm_candidate(data)
+
+
+def test_candidate_selector_cli_refusal_hides_malformed_private_data(monkeypatch, capsys):
+    data = selectable_thick_candidate()
+    data["storage_config_rows"]["status"] = 403
+    monkeypatch.setattr(
+        sys, "argv", ["inspect_o11y_pbs_physical_storage.py", "select-thick-lvm-candidate"]
+    )
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(data)))
+
+    assert main() == 2
+    captured = capsys.readouterr()
+    assert captured.out == (
+        '{"refusal":"No unique thick-LVM storage candidate with complete visible mapping '
+        'and lineage was identified."}\n'
+    )
+    assert "private-" not in captured.out
+    assert "/dev/" not in captured.out
     assert captured.err == ""
 
 
@@ -1388,10 +1487,16 @@ def test_playbook_is_dev_bound_get_only_and_keeps_raw_reads_private():
         task for task in tasks
         if task.get("name") == "Build fixed aggregate physical and virtual-disk capacity receipt"
     )
-    assert "declared_storage_id" in str(inspection)
-    assert "target_node" in str(inspection)
-    assert "_validated_target_node" in str(inspection)
+    assert inspection["ansible.builtin.command"]["stdin"] == "{{ _physical_storage_payload }}"
     assert inspection.get("no_log") is True
+    payload = next(
+        task for task in tasks
+        if task.get("name") == "Assemble protected physical-storage inspection payload"
+    )
+    assert "declared_storage_id" in str(payload)
+    assert "target_node" in str(payload)
+    assert "_validated_target_node" in str(payload)
+    assert payload.get("no_log") is True
     assert all("{{ _target_node" not in str(task) for task in api_reads)
 
 
@@ -1399,6 +1504,53 @@ def test_semaphore_template_requires_exact_sha_and_has_no_node_input():
     templates = yaml.safe_load((ROOT / "platform/semaphore/templates.yml").read_text())["templates"]
     template = next(item for item in templates if item.get("name") == "Survey o11y PBS Physical Storage (Dev)")
     assert template["playbook"] == "platform/playbooks/survey-o11y-pbs-physical-storage.yml"
+    assert template["repository"] == "agent-cloud dev"
+    vars_by_name = {item["name"]: item for item in template["survey_vars"]}
+    assert vars_by_name["expected_repository_sha"]["required"] is True
+    assert len(vars_by_name) == 1
+
+
+def test_candidate_workflow_reuses_get_only_survey_and_protects_selector_input():
+    plays = yaml.safe_load((ROOT / "platform/playbooks/survey-o11y-pbs-storage-candidate.yml").read_text())
+    assert plays[0]["ansible.builtin.import_playbook"] == "refuse-internal-extra-vars.yml"
+    survey_import = plays[1]
+    assert survey_import["ansible.builtin.import_playbook"] == "survey-o11y-pbs-physical-storage.yml"
+    assert survey_import["vars"]["_extra_var_guard_nested"] is True
+    play = plays[2]
+    assert play["hosts"] == "localhost"
+    assert not any("ansible.builtin.uri" in task for task in play["tasks"])
+    selector = next(
+        task for task in play["tasks"]
+        if task.get("name") == "Select candidate from the protected survey responses"
+    )
+    command = selector["ansible.builtin.command"]
+    assert command["argv"][-1] == "select-thick-lvm-candidate"
+    assert command["stdin"] == "{{ _physical_storage_payload }}"
+    assert selector["no_log"] is True
+    assert selector["changed_when"] is False
+    assert selector["check_mode"] is False
+    assert selector["failed_when"] is False
+    refusal = next(
+        task for task in play["tasks"]
+        if task.get("name", "").startswith("Require one complete candidate")
+    )
+    assert refusal["ansible.builtin.assert"]["that"] == "_thick_lvm_candidate_selection.rc == 0"
+    assert "{{" not in refusal["ansible.builtin.assert"]["fail_msg"]
+    report = next(
+        task for task in play["tasks"]
+        if task.get("name", "").startswith("Report the candidate storage ID")
+    )
+    assert "candidate_storage_id" in report["ansible.builtin.debug"]["msg"]
+    assert "node" not in report["ansible.builtin.debug"]["msg"].lower()
+
+
+def test_candidate_semaphore_template_is_dev_bound_and_accepts_only_reviewed_sha():
+    templates = yaml.safe_load((ROOT / "platform/semaphore/templates.yml").read_text())["templates"]
+    template = next(
+        item for item in templates
+        if item.get("name") == "Identify o11y PBS Storage Candidate (Dev)"
+    )
+    assert template["playbook"] == "platform/playbooks/survey-o11y-pbs-storage-candidate.yml"
     assert template["repository"] == "agent-cloud dev"
     vars_by_name = {item["name"]: item for item in template["survey_vars"]}
     assert vars_by_name["expected_repository_sha"]["required"] is True
