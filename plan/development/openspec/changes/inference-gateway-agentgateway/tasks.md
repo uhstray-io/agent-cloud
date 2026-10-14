@@ -471,7 +471,7 @@
       19.0M prompt+generation tokens per hour (241k generation tokens per hour, 38.7 requests
       per minute, 8 running, 3 waiting). Every current client reaches vLLM with the shared key,
       so after the switch all traffic is `legacy-shared`; the 2M default would have blocked it.
-      30M is about 1.5x the peak: a grace-period figure, deliberately above the "tightest
+      30M is about 1.6x the peak: a grace-period figure, deliberately above the "tightest
       budget" this task names. Deploy agentgateway (Dev) task 5357 rendered it. Still open:
       handing out the first key set. Not ticked.
 - [ ] 4.2 `localRateLimit` per identity: `type: requests` per minute and `type: tokens`
@@ -509,13 +509,16 @@
       stored copy of the inventory, so `sync-inventory.yml` pushed site-config main after #66
       and after #77, each time with a key-path diff of exactly that PR's keys. Deploy
       agentgateway (Dev) dry run 5356 and real run 5357: "The shared key is admitted as
-      legacy-shared until 2026-10-28."; the keyed round-trip passed. Manage Caddy Sites (Dev)
+      legacy-shared until 2026-10-28."; the keyed round-trip there is the deploy's own verify
+      from the gateway host, not a request through Caddy. Manage Caddy Sites (Dev)
       dry run 5365: the diff is only the inference block (`/v1/*` to the https gateway;
       `/health` unchanged, to the vLLM head node); real run 5366 at 04:29 UTC validated and
       restarted Caddy. Public edge afterwards: `/health` 200, keyless `/v1/models` 401,
       `/metrics` 403 (Cloudflare challenge). Rollback Inference Route (Dev) `gateway-config`
       dry run 5370 reads the live route as `/v1/*` through the gateway and `/health` direct to
-      vLLM.
+      vLLM. This tick is on config scope: the declared block, the Caddy redeploy and route
+      report 5370, which reads upstream destinations only. A keyed request through the public
+      edge is 4.5's proof and is still owed.
 - [ ] 4.4 Run dgx-spark's public-path verify play against the live hostname; update
       dgx-spark `docs/TEAM-ENDPOINT.md` (key changes, base URL does not)
       2026-10-14: dgx-spark's public-path verify play is requested; no result yet. Not
@@ -803,7 +806,9 @@
       did (2026-10-02 note). Manage Caddy Sites (Dev) dry run 5365 (only that block changed) and
       real run 5366; Rollback Inference Route (Dev) `gateway-config` dry run 5370 reads the
       route as `/v1/*` through the gateway and `/health` direct to vLLM. Task output read from
-      production Semaphore by the lead.
+      production Semaphore by the lead. This tick is on config scope: the declared block, the
+      redeploy and route report 5370, which reads upstream destinations only; a keyed request
+      through the public edge is 4.5's proof, still owed.
 - [ ] 6.3 The model's `tls: {root, hostname, cert, key}` (the `agw-upstream` client leaf,
       production-internal-ca task 5.4a; mutual TLS decided 2026-09-28) and an `https://`
       base URL, once dgx-spark

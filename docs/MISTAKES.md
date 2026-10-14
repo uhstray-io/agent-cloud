@@ -98,7 +98,7 @@ and why.
 | 3.12 | Launched two `(Dev)` deploys through the API without `service_branch`; Semaphore applies survey defaults only in its form, so both hosts checked out `main` under Dev playbooks | Live state | 1 | Playbook guard (`assert-placement-branch.yml`) + launcher default fill + tests (`test_placement_branch_guard.py`, `test_semaphore_launch.py`, mutation-checked) |
 | 3.13 | The `dev` -> `main` promotion merge let the repo's delete-head-branch-on-merge setting delete `dev`, the long-lived integration branch; the main -> dev sync then failed | Live state | 1 | Ruleset (`protect-dev.json`, deletion rule) + test (`test_ruleset_protect_dev.py`); live since 2026-10-08 |
 | 3.14 | Ran a real rollback drill on the strength of a dry run that skips the step that failed; the gateway came up broken and stayed down ~6 minutes | Live state | 1 | Test (`test_rollback_inference_route.py`: validation before recreate, auto-restore on a failed readiness) |
-| 3.15 | **x2** — A proof run deployed unproven `dev` merges to production: the second-run proof's real o11y deploy carried a scrape-budget change no real run had loaded, and production telemetry was down ~1h45m | Live state | 2 | Convention (launcher refusal on unproven changes proposed) |
+| 3.15 | A proof run deployed unproven `dev` merges to production: the second-run proof's real o11y deploy carried a scrape-budget change no real run had loaded, and production telemetry was down ~1h45m | Live state | 1 | Convention (launcher refusal on unproven changes proposed) |
 | 4.1 | `while read` silently dropped an unterminated final line | Data handling | 1 | Convention |
 | 4.2 | Stored `.env` values without stripping surrounding quotes | Data handling | 1 | Convention |
 | 4.3 | Used a real internal IP address as a test vector | Data leak | 1 | Pre-commit (existing) |
@@ -129,6 +129,7 @@ and why.
 | 5.17 | Upgraded production's ansible-core before CI ran the playbooks on the new version; 2.20 templates `delegate_to` strictly, a probe drill dry run failed | Process | 1 | Test (`test_delegate_to_strict_undefined.py`) + CI pin + Convention (upgrade ordering) |
 | 5.18 | ansible-core 2.20 rejects template delimiters inside a conditional; the Authentik promotion guard's `'{{ '{{' }}'` broke Deploy Authentik on every branch | Process | 1 | Test (`test_no_template_delimiters_in_conditionals.py`) |
 | 5.19 | A worker killed other sessions' test runs and the lead's watchers with `pkill -f` by process-name pattern on the shared machine | Process | 1 | Convention (PreToolUse hook proposed) |
+| 5.20 | A promotion merged a head newer than the one its review covered; widens 5.16 from feature-to-dev merges to `dev` to `main` promotions | Process | 1 | Convention (the pin is an operator-side practice) |
 | 6.1 | Built an edit from an assumed file structure instead of a read one | Process | 1 | Convention |
 | 6.2 | Built an interface the consumer never calls, without reading how it invokes | Process | 1 | Test |
 | 6.3 | Repeated 6.2 — assumed openssl and jq exist on the orchestrator image; neither does — **x3** (CI never installed the playbook collections) | Process | 3 | Convention -> **Test + declared dep**; CI installs `collections/requirements.yml` |
@@ -2395,7 +2396,7 @@ the previous config was not the problem, and the restore failed the same way.
 
 ### 3.15 A proof run deployed unproven `dev` merges to production
 
-**Occurrences: 2** — 2026-10-13, 2026-10-14
+**Occurrences: 1** — 2026-10-13
 
 **What happened.** The service-deployment-workflow 7.1 second-run proof launched a real
 `Deploy o11y (Dev)` (Semaphore task 5000) at `dev` commit `4872faad`. The last real o11y deploy
@@ -2424,15 +2425,6 @@ separate, wider rule for that reason.
 evidence, the service paths changed since the revision of the last successful real deploy, and
 the launcher refuses a real run with unproven changes unless an explicit acknowledgement
 variable is set. Related: 3.14, 10.26.
-
-**Occurrence 2 — 2026-10-14.** The dev to main promotion (PR #607) was merged by passing
-merge-when-green the PR's LIVE head (4e365db4) instead of the SHA the review and its last note
-covered (2b58f5ce). A peer PR (#608, the Cloudflare Grafana API skip rule, with CodeRabbit
-changes requested) merged to `dev` in between and so reached `main` unreviewed by the
-promotion. It was not run (no schedule), so there was no production effect. Why 3.15's rule
-did not fire: it is phrased for a real production run, and a promotion is the same hazard one
-step earlier. Guard: pass the SHA cited in the last review note, so that
-`gh pr merge --match-head-commit` refuses a newer head. Enforced by: Convention.
 
 ## 4. Data handling
 
@@ -3219,6 +3211,8 @@ This remains a convention because `dev` intentionally has no required-check rule
 main-to-Dev sync workflow pushes directly to `dev`. A direct merge command can bypass the
 CLI, and a concurrently started rerun or review can race the separate API reads and merge.
 
+Widened by 5.20 (2026-10-14): the same pin applies to promotions.
+
 ### 5.17 Upgraded production's ansible-core before CI exercised the playbooks on the new version
 
 **Occurrences: 1** — 2026-10-12
@@ -3305,6 +3299,27 @@ in the worker's brief said the machine was shared, and nothing stopped the comma
 operator-private and not visible in this repository, so the only repo-visible guard is the
 proposed one: a PreToolUse hook refusing `pkill`, `killall` and `kill $(pgrep ...)`. Related:
 5.10, 5.14.
+
+### 5.20 A promotion merged a head newer than the one its review covered (widens 5.16)
+
+**What happened.** On 2026-10-14 the `dev` to `main` promotion, PR #607, was merged through
+merge-when-green, which was given the PR's live head `4e365db4`. The review and its last note
+covered `2b58f5ce`. In between, a peer PR (#608, the Cloudflare Grafana API skip rule, with
+CodeRabbit changes requested on it) merged to `dev` at 05:11 UTC, so it reached `main` without
+the promotion's review. It changed the main-bound Apply Cloudflare Tofu playbook. That playbook
+has no schedule and was not run, so there was no production effect.
+
+**Root cause.** 5.16's rule, pin the merge to the exact reviewed head with
+`--match-head-commit FULL_HEAD_SHA`, is written for feature-to-Dev merges. The promotion merge
+passed the live head rather than the reviewed one, so the pin compared the head to itself and
+checked nothing.
+
+**The rule.** Every merge, including a `dev` to `main` promotion, passes the full SHA that the
+last review, or its last note, covered. A head newer than that SHA gets its delta reviewed
+first. Widens 5.16.
+
+**Enforced by.** Convention. The pin is an operator-side practice; nothing refuses a merge
+whose head is newer than the reviewed one when the caller passes the live head.
 
 ## 6. Working from assumptions about files
 
