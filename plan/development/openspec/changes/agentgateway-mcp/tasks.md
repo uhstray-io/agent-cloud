@@ -15,9 +15,13 @@ a pull request or run against production until the operator says so for that act
 - [ ] 0.3 Confirm the local gateway deploys cleanly from `origin/dev` before any change
       (`make local-deploy-agentgateway`, then its verify): the spike and every later local
       proof assume a working baseline
-- [ ] 0.4 Operator confirms the small decisions G1 to G6 and Open Questions 1, 3, 6 and 7
-      in `design.md` (7 is the reading of D2(a) as "the served `/mcp` endpoint"); any
-      answer that contradicts a decision reopens it before code
+- [ ] 0.4 Operator confirmation still outstanding in `design.md`: the small decisions G1 to
+      G6; Open Question 7 (the reading of D2(a) as "the served `/mcp` endpoint"; the spike
+      showed a target pointing back at `/mcp` recurses, so the "nothing points at `/mcp`"
+      branch applies); Open Question 8 (the loopback self-call restricted by a
+      `source.address` rule, because v1.5.0 has no gateway bind address). Open Questions 1, 3
+      and 6 were answered 2026-10-14 and are recorded under each. Any answer that
+      contradicts a decision reopens it before code
 - [ ] 0.5 Validation gate: `openspec validate agentgateway-mcp --strict` passes, and every
       scenario title quoted in the gates below exists verbatim in
       `specs/platform/agentgateway-mcp/spec.md`
@@ -30,7 +34,8 @@ finding that contradicts a decision stops the work and reopens that decision.
       `openapi` target) to a copy of the local rendered config; run the pinned image's
       `--validate-only` through `tasks/agw-validate-config.yml`; start it and confirm `/v1`
       still serves. Also feed the validator a deliberately wrong `mcp:` block and record
-      whether it refuses (G5 depends on it)
+      whether it refuses (G5 depends on it). Done 2026-10-14 against a hand-written scratch
+      config in the rendered shape, not a render of `config.yaml.j2`
 - [x] 1.2 Authentication on `/mcp`: `initialize` with an enrolled key returns a session;
       no key, an unknown key, and a key left out of the `mcp` list each return 401; record
       whether `initialize` needs a healthy target (`failureMode`)
@@ -54,7 +59,8 @@ finding that contradicts a decision stops the work and reopens that decision.
       survives locally (the 125 s Cloudflare timeout is measured in production, 6.6)
 - [x] 1.7 `mcp.policies.localRateLimit`: record whether an MCP request bucket renders and
       limits (G6), and the request burst of a real `initialize` + `initialized` +
-      `tools/list` handshake (feeds task 5.4's bucket)
+      `tools/list` handshake (feeds task 5.4's bucket). Done 2026-10-14 with a scripted
+      client; the real Claude Code and pi handshake burst is measured in 7.7
 - [x] 1.8 `/config_dump` redaction: with a canary value (never a real secret) in an
       environment-referenced field, read the dump on the container loopback and record
       whether the canary appears. Record only; D6 holds either way
@@ -66,12 +72,12 @@ finding that contradicts a decision stops the work and reopens that decision.
       tools, proving scenario "An enrolled identity lists tools"
 
 ## 2. Identities from the admin list
-- [ ] 2.1 Decide, for each fixed-block file that puts a user in `platform-admins`
+- [ ] 2.1 Move every fixed-block member of `platform-admins` into the declared list
       (`platform-users.yaml:39,74`, `stray-admin.yaml:25`, `agent-cloud-admin.yaml:35`,
-      `service-account.yaml:22`), whether it moves into the declared list or is named in the
-      declared exceptions list (break-glass and service accounts, names only, in
-      site-config); `openbao-oidc.yaml:44` only maps the group. The operator confirms
-      (Open Question 1). No fixed block stays outside both lists
+      `service-account.yaml:22`), the break-glass account and the service account included:
+      the operator's answer to Open Question 1 (2026-10-14). The declared exceptions list
+      stays as the drift guard's mechanism and is empty by default; `openbao-oidc.yaml:44`
+      only maps the group. No fixed block stays outside the list
 - [ ] 2.2 Define the declared list's shape (proposed variable `platform_admins`; each entry
       the Authentik username, display name, email and an optional `agw_identity`) in the
       local inventory example and the Authentik README; real values stay in site-config
@@ -132,9 +138,16 @@ finding that contradicts a decision stops the work and reopens that decision.
 - [ ] 3.2 The `mcp:` block behind `agw_mcp_enabled` (default false): `gateways: [default]`,
       `policies.apiKey` from the macro without `legacy-shared` and without `mcp-self`
       (the target's `backendAuth` identity must never authenticate a client), `prefixMode` and
-      `statefulMode` as the spike chose, targets from `agw_mcp_targets`,
+      `statefulMode: stateless` (chosen 2026-10-14 from spike 1.6: no session header, no
+      server-initiated stream so nothing is held against the 125 s timeout, `GET /mcp` is 405,
+      and the stateful session id is neither revocable nor bound to an identity), targets
+      rendered only from the structured declaration of 3.8 (never a free-form list),
       `dnsRebindingProtection` left unset (the gateway is reached by a non-local Host).
-      With the flag true and no target the deploy refuses, because the schema requires one
+      The render asserts `mcp.policies.apiKey` is present whenever `agw_mcp_enabled` (without
+      it `/mcp` answers every request, spike 1.1) and renders NO `budgets` on the MCP key
+      entries (accepted but never charged or enforced, spike 1.4: a silent no-op that reads
+      as a control). With the flag true and no target the deploy refuses, because the schema
+      requires one
 - [ ] 3.3 Run the MCP-enabled rendering through `tasks/agw-validate-config.yml` before any
       container is recreated (G5), with the same allowlisted-category failure the existing
       validation gives
@@ -143,21 +156,52 @@ finding that contradicts a decision stops the work and reopens that decision.
       succeed; with MCP disabled, `/mcp` must not be served. The probe gains an optional
       `_agwp_headers` input (merged into the request, for example `Accept`) and a session-id
       carry for a follow-up call; the exact headers and whether the reply is an event stream
-      are fixed by spike item 1.6. The request is a `uri` call from the verify step (headers
+      are fixed by spike item 1.6 (both `Accept` values required; the reply is a one-frame
+      event stream, read from its `data:` line). The verify proves an authorised tool is
+      LISTED for an enrolled identity, not just that `/mcp` answers, because the validator
+      accepts an `mcpAuthorization` rule naming a wrong field, which then denies every tool
+      silently (spike 1.1, 1.3). Every probe reads the BODY, not the HTTP status: a self-call
+      401 or 403 comes back as HTTP 200 with the error in the tool result (spike 1.5), and a
+      rate-limit refusal is HTTP 200 with JSON-RPC error `-32003` (spike 1.7). The request is a `uri` call from the verify step (headers
       in the request, never in any process's argument list). Per AGENTS.md, "a visible task
       never loops over, or prints, a protected registered result" (`docs/MISTAKES.md` 4.6):
       a `uri` result carries its request headers, so the probe keeps copying fields under
       `no_log` as it does today, and `platform/tests/test_no_request_in_loop_items.py` must
       still pass. `no_log` stays on the key-bearing step only. A check that cannot run
       reports itself unproven, never passed
-- [ ] 3.5 Inventory: `agw_mcp_enabled`, `agw_mcp_hostname`, `agw_mcp_targets` in
-      `platform/inventory/local-dev.yml.example` with a comment that the first target is
+- [ ] 3.5 Inventory: `agw_mcp_enabled`, `agw_mcp_hostname`, the structured target
+      declaration (proposed `agw_mcp_openapi_targets`: a list of entries, each a target name
+      and a schema file name resolved under the shipped schema directory; the host is not an
+      input) and `agw_loopback_port` (proposed, default 4002) in
+      `platform/inventory/local-dev.yml.example`, with a comment that the first target is
       task 4.3's
 - [ ] 3.6 BATS: flag false renders no `mcp` block; flag true renders `gateways: [default]`
       only, no legacy entry, the same identity list as `llm` minus `legacy-shared` and `mcp-self`;
-      the macro is the only place
-      the key loop is written. Mutation-check each
-- [ ] 3.7 Validation gate, local (uses task 4.1's schema file as the target): an `initialize`
+      `mcp.policies.apiKey` present whenever the flag is true; no `budgets` under the MCP key
+      entries; `statefulMode: stateless`; the macro is the only place the key loop is
+      written. Mutation-check each (drop the policy, add a budget, restore the legacy entry,
+      write a second key loop: each goes red)
+- [ ] 3.7 The loopback gateway, so the self-call needs no mutual-TLS leaf and no widening of
+      `agw_client_cert_allowlist` (the operator's decision 2026-10-14, Open Question 8): a
+      second gateway `loopback` on `agw_loopback_port`, `llm.gateways: [default, loopback]`
+      (attached to `llm` only, never `mcp`, never `ui`), carrying `authorization.rules:
+      - require: 'source.address == "127.0.0.1"'` because v1.5.0 gateways have no bind
+      address and bind every container interface (spike 1.5: without the rule a neighbour
+      container reaches it, with it that container is 403). The port is never added to the
+      published ports of `compose.yml`, `compose.local.yml` or `compose.tls.yml`
+- [ ] 3.8 The deploy-time target allowlist, refusing before any render or restart, naming
+      the entry: only `openapi` targets are rendered, from the shipped schema; the rendered
+      host is the declared loopback address and port and nothing else; an `mcp` or `sse`
+      target, a schema outside the shipped directory, or any other host is refused (the
+      validator accepts every one of these, and a target aimed at the gateway's own listener
+      recurses without bound, spike 1.5). An allowlist and not a denylist, because a string
+      check cannot enumerate every alias of the external listener
+- [ ] 3.9 BATS for 3.7 and 3.8, on the rendered config and the compose files, each
+      mutation-checked (break it, watch its test fail, restore byte-exact): drop the
+      `source.address` rule; attach `loopback` to `mcp` or to `ui`; publish the loopback
+      port in any compose file; render an `mcp` or `sse` target; render a host other than the
+      loopback address and port; a schema path outside the shipped directory
+- [ ] 3.10 Validation gate, local (uses task 4.1's schema file as the target): an `initialize`
       with no key is 401, proving scenario "Unauthenticated MCP request is refused"; an
       unknown key is 401, proving scenario "An unknown key is refused"; the legacy shared
       key is 401 on `/mcp` and still served on `/v1`, proving scenario "The legacy shared
@@ -167,7 +211,8 @@ finding that contradicts a decision stops the work and reopens that decision.
       MCP removes the endpoint"; a break-glass edit that makes `/mcp` answer without a key
       fails the deploy, proving scenario "Deploy fails when /mcp answers without a key"; a
       normal deploy records the authenticated session, proving scenario "Deploy proves an
-      authenticated initialize"
+      authenticated initialize"; the 3.9 BATS (loopback
+      rule, attachment, unpublished port, target allowlist) pass and each mutation fails
 
 ## 4. The OpenAPI target over `/v1`
 - [ ] 4.1 The OpenAPI schema file in the repository (proposed under
@@ -177,9 +222,10 @@ finding that contradicts a decision stops the work and reopens that decision.
       with its own `agw_client_policies.mcp-self.tokens_per_hour`; reserve the name so a
       person cannot be declared with it; the key flows through the existing
       `client_<name>` declaration
-- [ ] 4.3 The target in `agw_mcp_targets`: `openapi`, the schema file, the gateway's own
-      `/v1` as host, `backendAuth` from `$AGW_MCP_SELF_KEY`, and whatever the spike's
-      finding 1.5 requires for the listener's mutual TLS
+- [ ] 4.3 The target, declared in the structured form of 3.5 and rendered by 3.8: `openapi`,
+      the shipped schema, host the loopback listener of 3.7, `backendAuth` the shared
+      `mcp-self` key from `$AGW_MCP_SELF_KEY`; no client certificate, no mutual-TLS leaf for
+      the gateway and no change to `agw_client_cert_allowlist` (spike 1.5, Open Question 8)
 - [ ] 4.4 `env.j2`: `AGW_MCP_SELF_KEY` from the secret, in the 0600 environment file with
       the other keys; the rendered config carries the reference only
 - [ ] 4.5 BATS: the key's value appears in no rendered file and no committed template, the
@@ -251,8 +297,9 @@ operator's go for it. site-config changes land through its own pull requests.
       dry-run diff
 - [ ] 6.6 Flip `agw_mcp_enabled`, `Deploy agentgateway (Dev)`; verify; then through the
       MCP hostname hold an `initialize` and an idle stream past 125 s, recording the
-      observed status, and set `statefulMode` and the rate-limit bucket from it (a bucket
-      change is a follow-up tofu plan and apply)
+      observed status; `statefulMode: stateless` was chosen from the spike (3.2), so confirm it
+      holds and set the rate-limit bucket from the measurement (a bucket change is a
+      follow-up tofu plan and apply)
 - [ ] 6.7 Hand out each declared admin's key with `Back Up Credentials to site-config (Dev)`,
       `credential_service=agentgateway`, `credential_fields=client_<name>` listed
       explicitly (never empty, Open Question 6); output carries names only
@@ -304,7 +351,9 @@ operator's go for it. site-config changes land through its own pull requests.
       or key-shaped string in any
       client file, and no repo-root `.mcp.json`. Mutation-check each
 - [ ] 7.7 Live proof with a real handed-out key: each harness lists the tools; a wrong key
-      fails with a 401 reported by name only
+      fails with a 401 reported by name only; record each harness's handshake request count
+      against the bucket (spike 1.7 measured only a scripted client's three) and, if it
+      differs, correct task 5.4's figure in a follow-up plan
 - [ ] 7.8 Validation gate: the scan finds no secret and no `.mcp.json`, proving scenario
       "Client templates contain no secret"; the temporary-home run proves scenario
       "Installing client configuration preserves existing servers"; the repeat run proves
@@ -326,7 +375,13 @@ operator's go for it. site-config changes land through its own pull requests.
       line gains a pointer here
 - [ ] 8.5 `docs/MISTAKES.md`: an entry for any mistake that survived long enough to cost
       work during this change, in that file's format, naming where it is enforced
-- [ ] 8.6 Validation gate: every row added in 8.1 names a template or variable found by
+- [ ] 8.6 Operator hand-off, no fix in this change: `/config_dump` leaves
+      `config.database.url` (the budget Postgres password, expanded from `$AGW_DATABASE_URL`)
+      unredacted on the admin listener, which is pinned to the container loopback (spike
+      1.8). This is existing in every current deployment; record it in the PR description
+      and track it as its own change (for example a read-only database role, or removing the
+      password from the URL)
+- [ ] 8.7 Validation gate: every row added in 8.1 names a template or variable found by
       search in the repository, proving scenario "The operator documentation covers every
       MCP change"
 

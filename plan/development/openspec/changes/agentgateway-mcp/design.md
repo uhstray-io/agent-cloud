@@ -230,6 +230,12 @@ Authentik group membership and the gateway's identities.
   working; `manage-agentgateway-client-key.yml` validates against the merged list so its
   revoke step still deletes the field.
 
+Dated 2026-10-14, the operator's answer to Open Question 1: every `platform-admins` member moves
+into the declared list, so the declared exceptions list is empty by default. The consequence is that
+the break-glass account and the service account each get a stored `client_<name>` secret and a
+handed-out personal gateway key like any person (the operator confirms this under the Open Question 1
+follow-up).
+
 Rejected:
 - **A shared key held by the operator.** One leak rotates for everyone and no identity or
   budget is per person.
@@ -399,6 +405,9 @@ scenario that fails an `agw_clients` entry named `user-x`. This change is a comp
    - Answer 2026-10-14 (operator): every `platform-admins` member moves INTO the declared admin list,
      including the break-glass account and the service account; each gets a personal gateway identity.
      This replaces the proposed default above; no account is named in the exceptions list for now.
+   - Follow-up (open, for the operator): the break-glass account and the service account then each get a
+     stored `client_<name>` secret in OpenBao and a handed-out gateway key (see D3, dated line); confirm
+     that is intended.
 2. Per-caller attribution for model requests made through MCP: pass the caller's identity
    to the self-call, or accept `mcp-self`? Out of scope here.
 3. When `inference-personal-keys` lands, do admins keep the derived identity or move to
@@ -460,7 +469,7 @@ the deploy verify must prove an authorised tool is listed, not only that `/mcp` 
 finding bears on 1.1: with no `mcp.policies.apiKey`, `/mcp` is open: `initialize`, `tools/list` and
 `tools/call` (the `ping` tool returned its result) all succeeded with no key, and `/sse` answered 200.
 **Impact (G4, G2):** the `mcp` block must never be rendered without the key policy; the render check in
-task 2.9 and the verify should assert the policy is present whenever `agw_mcp_enabled`.
+tasks 3.2 and 3.6 and the verify assert the policy is present whenever `agw_mcp_enabled`.
 
 **1.2 Authentication on `/mcp` (2026-10-14).** With `mcp.policies.apiKey` of the same shape as the `llm`
 one (`mode: strict`, `Bearer` header, a `keyHash` list of two identities, a third enrolled in `llm` only),
