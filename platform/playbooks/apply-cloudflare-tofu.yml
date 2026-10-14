@@ -323,6 +323,7 @@
           register: _tf_plan_guard_raw
           changed_when: false
           failed_when: false
+          check_mode: false
           no_log: true
           when:
             - _cloudflare_grafana_guard | default(false)
@@ -424,6 +425,7 @@
           register: _tf_verify_guard_raw
           changed_when: false
           failed_when: false
+          check_mode: false
           no_log: true
           when:
             - _cloudflare_grafana_guard | default(false)
