@@ -37,12 +37,19 @@ KEYS = {
     "pi": "pi-key-BBBB-2222",
     "mcp-self": "SELF-key-CCCC-3333",
     "dev-local": "dev-key-DDDD-4444",
+    "alice": "alice-key-EEEE-5555",
+    "bob": "bob-key-FFFF-6666",
 }
 LEGACY_FP = "f" * 64
 TARGETS = [{"name": "gateway", "schema": SCHEMA_FILE}]
 
+# Service identities (agw_clients) and personal admin identities (derived from platform_admins). /mcp admits
+# the admins only; /v1 admits both.
+ADMINS = [{"key": "alice", "name": "alice"}, {"key": "bob", "name": "bob"}]
 BASE = {
     "agw_clients": ["workstation", "pi", "mcp-self"],
+    "_agw_admin_identities": ADMINS,
+    "agw_identities": ["workstation", "pi", "mcp-self", "alice", "bob"],
     "agw_client_policies": {
         "pi": {"allowed_models": ["m"], "tokens_per_hour": 5000},
         "mcp-self": {"tokens_per_hour": 100},
@@ -62,7 +69,7 @@ def _secrets(hv: dict) -> dict:
         "agw_oidc_cookie_seed": "s",
         "agentgateway_oidc_client_secret": "c",
     }
-    for name in hv["agw_clients"]:
+    for name in hv["agw_identities"]:
         out["client_" + name] = KEYS[name]
     return out
 
@@ -174,14 +181,35 @@ def test_the_mcp_policy_is_a_strict_key_policy_and_nothing_else(render):
     assert policies["apiKey"]["location"] == cfg["llm"]["policies"]["apiKey"]["location"]
 
 
-def test_the_mcp_key_list_is_the_llm_list_without_the_legacy_and_internal_identities(render):
+def test_the_mcp_key_list_is_the_admin_identities_only(render):
+    """/mcp admits the admin-derived personal identities and nothing else (the confused-deputy fix)."""
     cfg, _, _ = render(**ON)
     llm, mcp = cfg["llm"]["policies"]["apiKey"], cfg["mcp"]["policies"]["apiKey"]
-    assert _names(llm) == ["workstation", "pi", "mcp-self", "legacy-shared"]
-    assert _names(mcp) == ["workstation", "pi"]
+    assert _names(llm) == ["workstation", "pi", "mcp-self", "alice", "bob", "legacy-shared"]
+    assert _names(mcp) == ["alice", "bob"]
     by_name = {k["metadata"]["name"]: k for k in llm["keys"]}
     for entry in mcp["keys"]:
         assert entry["keyHash"] == by_name[entry["metadata"]["name"]]["keyHash"] == _hash(entry["metadata"]["name"])
+
+
+def test_a_service_client_is_enrolled_on_v1_and_absent_from_mcp(render):
+    """A service client on /mcp would reach the chat tool, whose self-call runs as mcp-self, and so escape its own
+    allowedModels and hourly budget."""
+    cfg, _, _ = render(**ON)
+    llm, mcp = _names(cfg["llm"]["policies"]["apiKey"]), _names(cfg["mcp"]["policies"]["apiKey"])
+    for service in ("workstation", "pi"):
+        assert service in llm and service not in mcp
+
+
+def test_an_admin_that_is_also_a_service_identity_is_admitted_on_mcp(render):
+    admins = [*ADMINS, {"key": "w", "name": "workstation"}]
+    cfg, _, _ = render(**{**ON, "_agw_admin_identities": admins})
+    assert _names(cfg["mcp"]["policies"]["apiKey"]) == ["alice", "bob", "workstation"]
+
+
+def test_an_admin_derived_internal_name_is_never_admitted_on_mcp(render):
+    cfg, _, _ = render(**{**ON, "_agw_admin_identities": [*ADMINS, {"key": "s", "name": "mcp-self"}]})
+    assert _names(cfg["mcp"]["policies"]["apiKey"]) == ["alice", "bob"]
 
 
 def test_the_legacy_shared_key_is_not_admitted_on_mcp(render):

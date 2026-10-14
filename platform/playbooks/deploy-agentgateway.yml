@@ -593,13 +593,13 @@
           - _extra | length == 0
           - _render.mcp_entries | int == _expected | length
         fail_msg: >-
-          The rendered mcp key policy does not enrol the client identities (every declared identity except
-          mcp-self, never legacy-shared): missing {{ _missing | join(', ') }}; not allowed
+          The rendered mcp key policy does not enrol exactly the admin-derived personal identities (never an
+          agw_clients service client, mcp-self or legacy-shared): missing {{ _missing | join(', ') }}; not allowed
           {{ _extra | join(', ') }}; {{ _render.mcp_entries }} key entries for {{ _expected | length }} identities.
         quiet: true
       vars:
         _render: "{{ _agw_render_read.stdout | from_json }}"
-        _expected: "{{ agw_identities | reject('equalto', 'mcp-self') | list }}"
+        _expected: "{{ _agw_admin_identities | map(attribute='name') | reject('equalto', 'mcp-self') | list }}"
         _missing: "{{ _expected | difference(_render.mcp_names) | sort }}"
         _extra: "{{ _render.mcp_names | difference(_expected) | sort }}"
       when:
@@ -1172,7 +1172,7 @@
     # on or off, since the /v1 route answers any path with the key check first, so it proves nothing).
     # Every verdict reads the BODY: a self-call 401/403 comes back as HTTP 200 with the error in a tool
     # result, and the gateway's own rate-limit refusal is HTTP 200 with JSON-RPC error -32003 (spike 1.5,
-    # 1.7). The identity is never mcp-self (its key is refused on /mcp). A check that cannot run reports
+    # 1.7). With MCP on the identity is an admin-derived one (the only kind /mcp admits); never mcp-self. A check that cannot run reports
     # itself unproven, and an unproven MCP check fails the deploy unless agw_verify_allow_unproven accepts it,
     # exactly as the keyed /v1 round-trip does. Every call is the one probe path: the key is a `uri` header
     # from this host, never any process's argv, and no key-bearing step is added to the no_log set.
@@ -1180,7 +1180,12 @@
       ansible.builtin.set_fact:
         _mcp_client: >-
           {%- set pick = agw_verify_client | default(_verify_default) -%}
-          {{ pick if pick != 'mcp-self' else ((agw_identities | default(agw_clients | default([]))) | reject('equalto', 'mcp-self') | first | default('')) }}
+          {%- set admins = _agw_admin_identities | default([]) | map(attribute='name') | reject('equalto', 'mcp-self') | list -%}
+          {%- if agw_mcp_enabled | default(false) | bool -%}
+            {{ pick if pick in admins else (admins | first | default('')) }}
+          {%- else -%}
+            {{ pick if pick != 'mcp-self' else ((agw_identities | default(agw_clients | default([]))) | reject('equalto', 'mcp-self') | first | default('')) }}
+          {%- endif -%}
         _mcp_headers: {Accept: "application/json, text/event-stream"}
         _mcp_initialize:
           jsonrpc: "2.0"

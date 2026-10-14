@@ -345,6 +345,9 @@ llm:
 # MCP (agentgateway-mcp). One virtual MCP server at /mcp on the `default` gateway only (so /mcp is not also
 # served on the operator-UI listener), authenticated by the SAME key policy as /v1 minus the identities that
 # must never reach it: the legacy shared key, and mcp-self, which exists only as the target's own credential.
+# It admits the admin-derived personal identities ONLY (_agw_admin_identities), never an agw_clients service
+# client: the chat tool's self-call runs as mcp-self, so a service client admitted here would escape its own
+# allowedModels and hourly budget. Admin MCP model spend is bounded by mcp-self's budget instead.
 # - statefulMode stateless: no session id, no held server stream (so nothing sits against the 125 s edge
 #   timeout), and GET /mcp is 405 (spike 1.6). The stateful session id is neither revocable nor bound to an
 #   identity.
@@ -378,5 +381,5 @@ mcp:
               prefix: 'Bearer '
 {% endfor %}
   policies:
-{{ apikey_policy((agw_identities | default(agw_clients | default([]))) | reject('in', _internal_ids) | list, false, false) | trim('\n') }}
+{{ apikey_policy((_agw_admin_identities | default([]) | map(attribute='name') | list) | reject('in', _internal_ids) | list, false, false) | trim('\n') }}
 {% endif %}

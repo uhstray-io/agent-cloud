@@ -182,6 +182,13 @@ finding that contradicts a decision stops the work and reopens that decision.
       no target is refused (3.8). Tests: `test_agw_mcp_render.py` (flag false/true, key policy, key list, no budget,
       llm unchanged) and `test_agw_mcp_guard.py` (render check). Mutations red: drop the policy, add a budget,
       restore the legacy entry, admit `mcp-self`, `stateful`, render check blind to a missing policy.
+      Amended 2026-10-14 (security review, confused deputy): the MCP key list is the admin-derived personal
+      identities ONLY (`_agw_admin_identities`), never an `agw_clients` entry, because the chat tool's self-call runs
+      as `mcp-self` and a service client admitted on `/mcp` would escape its own `allowedModels` and hourly budget.
+      The deploy refuses MCP with no admin-derived identity (naming `agw_admin_identities_enabled` and
+      `platform_admins`), with an `allowed_models` on an admin identity (naming it), or without
+      `agw_client_policies.mcp-self.tokens_per_hour`; the verify probes as an admin identity. Tests and
+      mutation: see the `fix(agentgateway): admit only personal admin identities on /mcp` commit.
 - [x] 3.3 Run the MCP-enabled rendering through `tasks/agw-validate-config.yml` before any
       container is recreated (G5), with the same allowlisted-category failure the existing
       validation gives

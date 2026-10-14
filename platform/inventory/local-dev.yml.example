@@ -295,6 +295,12 @@ all:
             mcp-self: { tokens_per_hour: 500000 }
           # MCP (agentgateway-mcp): the key-gated /mcp endpoint on the default gateway. OFF by default:
           # false renders no mcp block and no loopback gateway, and the verify asserts /mcp is not served.
+          # /mcp admits the PERSONAL ADMIN identities only (derived from platform_admins), never an
+          # agw_clients service client: the chat tool's call runs as mcp-self, so a service client on
+          # /mcp would escape its own allowedModels and hourly budget. Turning it on therefore needs
+          # agw_admin_identities_enabled: true with platform_admins declared for this host, no
+          # allowed_models on an admin identity, and agw_client_policies.mcp-self.tokens_per_hour (the
+          # aggregate cap on every model request made through MCP); the deploy refuses otherwise.
           agw_mcp_enabled: false
           # The hostname Caddy fronts /mcp on (the Caddy route is section 5 of the change; the gateway
           # deploy does not read it).

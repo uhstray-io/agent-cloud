@@ -82,6 +82,10 @@ _agw_identity_problems: >-
 # a path outside the shipped directory and a target aimed at the gateway's own external listener or at /mcp
 # (which recurses without a bound, spike 1.5) cannot be declared at all. A string check on a host cannot
 # enumerate every alias of the external listener, which is why the host is not checked, it is not accepted.
+# /mcp admits the admin-derived personal identities ONLY (`_agw_admin_identities`, never an `agw_clients` entry,
+# operator decision 2026-10-14): the chat tool's self-call runs as mcp-self, so any other admitted identity
+# would escape its own allowedModels and hourly budget; an admin's model spend through MCP is bounded by
+# mcp-self's budget (agw_client_policies.mcp-self.tokens_per_hour, required), not by their own.
 # The loopback port must not be one the gateway already binds. `mcp-self` (the target's own credential,
 # held in the env file) must be a declared identity or the env render has no key to hand the gateway.
 _agw_mcp_problems: >-
@@ -118,6 +122,21 @@ _agw_mcp_problems: >-
     {%- if 'mcp-self' not in agw_identities -%}
       {%- if out.append('the internal identity mcp-self must be declared in agw_clients (its key is the MCP target backendAuth credential)') -%}{%- endif -%}
     {%- endif -%}
+    {%- if (((agw_client_policies | default({})).get('mcp-self') | default({}, true)).get('tokens_per_hour') | default('', true)) == '' -%}
+      {%- if out.append('agw_client_policies.mcp-self.tokens_per_hour is required: it is the aggregate cap on every model request made through MCP') -%}{%- endif -%}
+    {%- endif -%}
+    {#- /mcp admits the admin-derived personal identities ONLY (never an agw_clients service client), so a service
+        client cannot reach the chat tool and borrow mcp-self's allowedModels and budget. -#}
+    {%- if _agw_admin_identities | length == 0 -%}
+      {%- if out.append('/mcp admits only the personal identities derived from platform_admins, and there are none: '
+                        ~ 'set agw_admin_identities_enabled: true and declare platform_admins for the gateway host') -%}{%- endif -%}
+    {%- endif -%}
+    {%- for a in _agw_admin_identities -%}
+      {%- if ((agw_client_policies | default({})).get(a['name']) | default({}, true)).get('allowed_models') is not none
+             and out.append('admin identity ' ~ a['name'] ~ ' has agw_client_policies.' ~ a['name']
+                            ~ '.allowed_models, which MCP would widen: its chat tool runs as mcp-self, which is not '
+                            ~ 'model-restricted; remove the restriction or the identity') -%}{%- endif -%}
+    {%- endfor -%}
   {%- endif -%}
   {{ out }}
 # A native LIST, built in a statement block whose only output is the list itself (no

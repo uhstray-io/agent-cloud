@@ -41,9 +41,18 @@ CHECK_POLICY = "Require the rendered mcp block to carry its own strict key polic
 CHECK_ENROL = "Require the mcp key policy to enrol exactly the client identities"
 RENDER = "Manage secrets and render env + config"
 
+
+def _admin(name: str) -> dict:
+    return {"key": name, "username": name, "name": name.title(), "email": f"{name}@example.invalid"}
+
+
+# One service client, the internal identity, and two personal admins: /mcp admits the admins only.
 OK = {
     "agw_mcp_enabled": True,
-    "agw_clients": ["alice", "bob", "mcp-self"],
+    "agw_clients": ["svc", "mcp-self"],
+    "agw_admin_identities_enabled": True,
+    "platform_admins": [_admin("alice"), _admin("bob")],
+    "agw_client_policies": {"mcp-self": {"tokens_per_hour": 100}},
     "agw_mcp_openapi_targets": [{"name": "gateway", "schema": SCHEMA_FILE}],
 }
 
@@ -188,8 +197,42 @@ def test_a_free_loopback_port_is_accepted(tmp_path, port):
 
 
 def test_the_internal_identity_must_be_declared(tmp_path):
-    (problem,) = _problems(tmp_path, {**OK, "agw_clients": ["alice"]})
+    (problem,) = _problems(tmp_path, {**OK, "agw_clients": ["svc"]})
     assert "mcp-self must be declared in agw_clients" in problem
+
+
+@pytest.mark.parametrize(
+    "hv",
+    [
+        pytest.param({"agw_admin_identities_enabled": False}, id="the-gate-is-off"),
+        pytest.param({"platform_admins": []}, id="no-admin-is-declared"),
+    ],
+)
+def test_mcp_needs_admin_identities_and_the_refusal_names_both_knobs(tmp_path, hv):
+    (problem,) = _problems(tmp_path, {**OK, **hv})
+    assert "agw_admin_identities_enabled" in problem and "platform_admins" in problem
+    r = _guard(tmp_path, {**OK, **hv})
+    assert r.returncode != 0 and "agw_admin_identities_enabled" in r.stdout + r.stderr
+
+
+def test_an_admin_identity_with_a_model_restriction_is_refused_naming_it(tmp_path):
+    """MCP would widen it: the chat tool runs as mcp-self, which is not model-restricted."""
+    policies = {**OK["agw_client_policies"], "bob": {"allowed_models": ["m"]}}
+    (problem,) = _problems(tmp_path, {**OK, "agw_client_policies": policies})
+    assert "admin identity bob" in problem and "allowed_models" in problem
+
+
+def test_a_service_client_with_a_model_restriction_is_not_a_problem(tmp_path):
+    """It cannot reach /mcp, so there is nothing to widen."""
+    policies = {**OK["agw_client_policies"], "svc": {"allowed_models": ["m"]}}
+    assert _problems(tmp_path, {**OK, "agw_client_policies": policies}) == []
+
+
+@pytest.mark.parametrize("policies", [{}, {"mcp-self": {}}, {"mcp-self": {"allowed_models": ["m"]}}])
+def test_the_internal_identity_must_carry_its_own_budget(tmp_path, policies):
+    """Its budget is the aggregate cap on every model request made through MCP."""
+    (problem,) = _problems(tmp_path, {**OK, "agw_client_policies": policies})
+    assert "agw_client_policies.mcp-self.tokens_per_hour is required" in problem
 
 
 def test_the_guard_runs_before_the_monorepo_is_placed_and_before_anything_renders():
@@ -271,7 +314,8 @@ def _rendered(tmp: Path, **hv) -> Path:
     d = tmp / "d"
     d.mkdir(exist_ok=True)
     clients = hv.get("agw_clients", OK["agw_clients"])
-    secrets = {f"client_{c}": f"key-{c}" for c in clients} | {
+    admins = hv.get("admins", ["alice", "bob"])
+    secrets = {f"client_{c}": f"key-{c}" for c in [*clients, *admins]} | {
         "vllm_api_key": "v",
         "agw_oidc_cookie_seed": "s",
         "agentgateway_oidc_client_secret": "c",
@@ -282,7 +326,8 @@ def _rendered(tmp: Path, **hv) -> Path:
         "secrets": secrets,
         "agw_models": [{"name": "m"}],
         "agw_upstream_base_url": "http://u.invalid/v1",
-        "agw_identities": clients,
+        "agw_identities": [*clients, *admins],
+        "platform_admins": [_admin(a) for a in admins],  # the vars file derives the identities from it
         "_agw_mcp_schemas": {SCHEMA_FILE: SCHEMA_TEXT},
     }
     r = _play(
@@ -302,26 +347,26 @@ def _check(tmp: Path, cfg: Path, **hv):
 
 def test_a_correct_render_passes_every_check(tmp_path):
     cfg = _rendered(tmp_path)
-    r = _check(tmp_path, cfg, agw_identities=["alice", "bob", "mcp-self"])
+    r = _check(tmp_path, cfg)
     assert r.returncode == 0, r.stdout + r.stderr
 
 
 def test_a_correct_flag_false_render_passes_and_has_nothing_mcp(tmp_path):
     cfg = _rendered(tmp_path, agw_mcp_enabled=False)
     assert not re.search(r"^mcp:$|^  loopback:$", cfg.read_text(), re.M)
-    r = _check(tmp_path, cfg, agw_mcp_enabled=False, agw_identities=["alice", "bob", "mcp-self"])
+    r = _check(tmp_path, cfg, agw_mcp_enabled=False)
     assert r.returncode == 0, r.stdout + r.stderr
 
 
 def test_an_mcp_block_rendered_while_the_flag_is_false_fails(tmp_path):
     cfg = _rendered(tmp_path)  # a flag-true render, checked against a flag-false deploy
-    r = _check(tmp_path, cfg, agw_mcp_enabled=False, agw_identities=["alice", "bob", "mcp-self"])
+    r = _check(tmp_path, cfg, agw_mcp_enabled=False)
     assert r.returncode != 0 and "has an mcp block: True" in r.stdout + r.stderr, r.stdout
 
 
 def test_a_missing_mcp_block_while_the_flag_is_true_fails(tmp_path):
     cfg = _rendered(tmp_path, agw_mcp_enabled=False)
-    r = _check(tmp_path, cfg, agw_identities=["alice", "bob", "mcp-self"])
+    r = _check(tmp_path, cfg)
     assert r.returncode != 0 and "has an mcp block: False" in r.stdout + r.stderr, r.stdout
 
 
@@ -331,7 +376,7 @@ def test_a_loopback_gateway_rendered_while_the_flag_is_false_fails(tmp_path):
     marker = "\ngateways:\n  default:\n    port: 4000\n"
     assert marker in text
     cfg.write_text(text.replace(marker, marker + "  loopback:\n    port: 4002\n", 1))
-    r = _check(tmp_path, cfg, agw_mcp_enabled=False, agw_identities=["alice", "bob", "mcp-self"])
+    r = _check(tmp_path, cfg, agw_mcp_enabled=False)
     assert r.returncode != 0 and "a loopback gateway: True" in r.stdout + r.stderr, r.stdout
 
 
@@ -341,7 +386,7 @@ def test_a_missing_loopback_gateway_while_the_flag_is_true_fails(tmp_path):
     stripped = re.sub(r"^  loopback:\n(?:    .*\n)+", "", text, flags=re.M)
     assert stripped != text
     cfg.write_text(stripped)
-    r = _check(tmp_path, cfg, agw_identities=["alice", "bob", "mcp-self"])
+    r = _check(tmp_path, cfg)
     assert r.returncode != 0 and "a loopback gateway: False" in r.stdout + r.stderr, r.stdout
 
 
@@ -351,7 +396,7 @@ def test_an_mcp_block_with_no_key_policy_fails_closed(tmp_path):
     head, mcp = text.split("\nmcp:\n", 1)
     mcp = re.split(r"^  policies:\n", mcp, maxsplit=1, flags=re.M)[0]  # drop mcp.policies and the key list with it
     cfg.write_text(head + "\nmcp:\n" + mcp)
-    r = _check(tmp_path, cfg, agw_identities=["alice", "bob", "mcp-self"])
+    r = _check(tmp_path, cfg)
     assert r.returncode != 0 and "no strict apiKey policy" in r.stdout + r.stderr, r.stdout
 
 
@@ -369,7 +414,7 @@ def test_a_key_policy_that_is_not_strict_fails(tmp_path, edit, expect):
     cfg = _rendered(tmp_path)
     head, mcp = cfg.read_text().split("\nmcp:\n", 1)
     cfg.write_text(head + "\nmcp:\n" + edit(mcp))
-    r = _check(tmp_path, cfg, agw_identities=["alice", "bob", "mcp-self"])
+    r = _check(tmp_path, cfg)
     assert r.returncode != 0 and expect in r.stdout + r.stderr, r.stdout
 
 
@@ -378,18 +423,18 @@ def test_the_internal_identity_enrolled_on_mcp_fails_naming_it(tmp_path):
     head, mcp = cfg.read_text().split("\nmcp:\n", 1)
     entry = "      - keyHash: sha256:" + "0" * 64 + "\n        metadata:\n          name: mcp-self\n"
     cfg.write_text(head + "\nmcp:\n" + mcp.rstrip("\n") + "\n" + entry)
-    r = _check(tmp_path, cfg, agw_identities=["alice", "bob", "mcp-self"])
+    r = _check(tmp_path, cfg)
     assert r.returncode != 0 and "not allowed" in r.stdout + r.stderr and "mcp-self" in r.stdout + r.stderr, r.stdout
 
 
 def test_a_client_missing_from_the_mcp_policy_fails_naming_it(tmp_path):
-    cfg = _rendered(tmp_path, agw_clients=["alice", "mcp-self"])  # rendered without bob
-    r = _check(tmp_path, cfg, agw_identities=["alice", "bob", "mcp-self"])
+    cfg = _rendered(tmp_path, admins=["alice"])  # rendered without bob
+    r = _check(tmp_path, cfg)
     assert r.returncode != 0 and "missing bob" in r.stdout + r.stderr, r.stdout
 
 
 def test_the_check_output_carries_no_hash_or_key(tmp_path):
-    cfg = _rendered(tmp_path, agw_clients=["alice", "mcp-self"])
-    r = _check(tmp_path, cfg, agw_identities=["alice", "bob", "mcp-self"])
+    cfg = _rendered(tmp_path, admins=["alice"])
+    r = _check(tmp_path, cfg)
     assert r.returncode != 0
     assert "sha256:" not in r.stdout + r.stderr and "key-alice" not in r.stdout + r.stderr

@@ -29,6 +29,7 @@ DEPLOY = REPO / "platform/playbooks/deploy-agentgateway.yml"
 PROBE = REPO / "platform/playbooks/tasks/agw-probe.yml"
 KEY = "SYNTHETIC-MCP-KEY-0001"
 OTHER = "SYNTHETIC-MCP-KEY-0002"
+SVC = "SYNTHETIC-MCP-KEY-SERVICE"
 FIRST, LAST = "MCP probes: pick the identity and the requests", "Report the MCP checks"
 GATHER = "Gather this host's service-deploy result"
 PHASE3 = next(p for p in yaml.safe_load(DEPLOY.read_text()) if p.get("name", "").startswith("Phase 3"))
@@ -151,11 +152,16 @@ def _tasks() -> list:
     return out
 
 
-def _run(tmp_path, gw, enabled=True, identities=("alice", "mcp-self"), extra=None, check=False):
+def _run(tmp_path, gw, enabled=True, identities=("alice", "mcp-self"), extra=None, check=False, admins=None):
+    """`admins` are the identities derived from platform_admins (the only ones /mcp admits); by default every
+    identity but the internal one and the service client `svc`."""
+    if admins is None:
+        admins = [i for i in identities if i not in ("mcp-self", "svc")]
     hv = {
         "_agwp_base": f"http://127.0.0.1:{gw.server_port}",
-        "_resolved": {"client_alice": KEY, "client_bob": OTHER, "client_mcp-self": "SYNTHETIC-SELF"},
+        "_resolved": {"client_alice": KEY, "client_bob": OTHER, "client_mcp-self": "SYNTHETIC-SELF", "client_svc": SVC},
         "agw_identities": list(identities),
+        "_agw_admin_identities": [{"key": a, "name": a} for a in admins],
         "_verify_default": identities[0] if identities else "",
         "agw_mcp_enabled": enabled,
         **(extra or {}),
@@ -176,7 +182,9 @@ def _run(tmp_path, gw, enabled=True, identities=("alice", "mcp-self"), extra=Non
         timeout=180,
     )
     out = r.stdout + r.stderr
-    assert KEY not in out and OTHER not in out and "SYNTHETIC-SELF" not in out, "a key reached the task output"
+    assert KEY not in out and OTHER not in out and SVC not in out and "SYNTHETIC-SELF" not in out, (
+        "a key reached the task output"
+    )
     return r.returncode, out
 
 
@@ -241,6 +249,8 @@ def test_with_no_identity_that_may_call_mcp_the_checks_are_unproven(tmp_path, ga
         pytest.param(("mcp-self", "alice"), None, KEY, id="a-default-of-mcp-self-is-skipped"),
         pytest.param(("alice", "bob"), "mcp-self", KEY, id="a-named-mcp-self-is-skipped"),
         pytest.param(("alice", "bob"), "bob", OTHER, id="a-named-identity-is-used"),
+        pytest.param(("svc", "alice"), None, KEY, id="a-service-client-default-falls-back-to-an-admin"),
+        pytest.param(("svc", "alice"), "svc", KEY, id="a-named-service-client-falls-back-to-an-admin"),
     ],
 )
 def test_the_probing_identity_is_never_the_internal_one(tmp_path, gateway, identities, verify_client, expected):
@@ -286,6 +296,14 @@ def test_with_mcp_off_an_mcp_reply_in_an_error_status_still_fails(tmp_path, gate
     """The body says it is served even when the status does not: the verdict reads the body."""
     rc, out = _run(tmp_path, gateway("off-result-in-400"), enabled=False)
     assert rc != 0 and "must not be served" in out, out
+
+
+def test_with_mcp_off_any_non_internal_identity_may_probe(tmp_path, gateway):
+    """Nothing is admitted on /mcp then, so a service client is as good a prober as an admin."""
+    gw = gateway("off")
+    rc, out = _run(tmp_path, gw, enabled=False, identities=("svc", "mcp-self"))
+    assert rc == 0, out
+    assert {s["auth"] for s in gw.seen if s["auth"]} == {f"Bearer {SVC}"}
 
 
 def test_with_mcp_off_and_no_identity_the_probe_is_not_run_and_nothing_fails(tmp_path, gateway):
