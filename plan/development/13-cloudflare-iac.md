@@ -82,7 +82,7 @@ flowchart TD
 - **Adopt with zero-diff.** Every existing resource is imported; `plan` must show
   "No changes" before it is considered managed. This is why bringing prod DNS
   under tofu changes nothing live.
-- **Gated apply.** `plan` on PR; `apply` only on merge to `main`, reviewed.
+- **Gated apply.** Review the `dev`-bound Semaphore plan receipt and digest, then apply only the matching saved plan; accept only the exact non-destructive Grafana rule insertion and require a zero-diff follow-up.
 - **Never own external/ephemeral records** (§2) — especially `_acme-challenge`.
 - **No secrets/ids in the public repo.** Token + R2 keys via env from OpenBao;
   bucket/endpoint/zone id via partial backend config + `TF_VAR_zone_id`.

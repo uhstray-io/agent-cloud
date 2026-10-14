@@ -2176,10 +2176,15 @@ templates:
     survey_vars:
       - name: tofu_action
         title: "Action"
-        description: "plan (read-only, default) or apply (gated change)"
+        description: "plan (read-only, default) or apply the exact rule insertion matched by reviewed_plan_digest"
         type: string
         required: false
         default_value: "plan"
+      - name: reviewed_plan_digest
+        title: "Reviewed plan digest"
+        description: "SHA-256 receipt from a reviewed plan run; required when tofu_action=apply, ignored for plan"
+        type: string
+        required: false
 
   - name: Publish Semaphore Template Surveys
     playbook: platform/playbooks/publish-semaphore-templates.yml

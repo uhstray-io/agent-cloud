@@ -40,6 +40,7 @@
     _cf_api: "https://api.cloudflare.com/client/v4"
     _tf_planfile: .terraform/edge-dns.tfplan
     _tf_verify_planfile: .terraform/edge-dns-verify.tfplan
+    _tf_guard_script: "{{ playbook_dir }}/files/cloudflare_grafana_plan_guard.py"
 
   tasks:
     - name: "Pre-flight validation"
@@ -288,7 +289,7 @@
           when:
             - not ansible_check_mode
             - _tf_init.rc == 0
-            - tofu_action == 'plan'
+            - tofu_action in ['plan', 'apply']
 
         # The saved plan as JSON, for the resource addresses and actions the visible report
         # shows. The JSON also holds every before/after value (the origin address among them),
@@ -307,10 +308,65 @@
             - _tf_plan is not skipped
             - _tf_plan.rc in [0, 2]
 
+        # Keep the plan JSON inside this boundary. The helper emits only fixed receipt fields.
+        - name: "Validate the exact Grafana ruleset plan"
+          ansible.builtin.command:
+            argv:
+              - "{{ ansible_playbook_python }}"
+              - "{{ _tf_guard_script }}"
+              - --action
+              - "{{ 'plan' if ansible_check_mode else tofu_action }}"
+              - --reviewed-digest
+              - "{{ reviewed_plan_digest | default('') }}"
+            stdin: "{{ _tf_dry_result.show.stdout if ansible_check_mode else _tf_show_plan.stdout }}"
+            stdin_add_newline: false
+          register: _tf_plan_guard_raw
+          changed_when: false
+          failed_when: false
+          no_log: true
+          when:
+            - (ansible_check_mode and (_tf_dry_result.show.rc | default(1) | int) == 0) or
+              (not ansible_check_mode and _tf_show_plan is not skipped and _tf_show_plan.rc == 0)
+
+        - name: "Unpack the safe plan receipt"
+          when: _tf_plan_guard_raw is not skipped
+          block:
+            - name: "Parse the safe plan receipt"
+              ansible.builtin.set_fact:
+                _tf_plan_guard: "{{ _tf_plan_guard_raw.stdout | from_json }}"
+              no_log: true
+            - name: "Validate the safe plan receipt fields"
+              ansible.builtin.assert:
+                that:
+                  - _tf_plan_guard is mapping
+                  - >-
+                    (_tf_plan_guard.keys() | list | sort) ==
+                    ['actions', 'digest', 'digest_matches', 'position', 'reason', 'resource',
+                     'rule_ref', 'safe', 'status'] | sort
+                fail_msg: "Cloudflare plan guard receipt is malformed."
+              no_log: true
+          rescue:
+            - name: "Refuse a missing or malformed plan receipt"
+              ansible.builtin.fail:
+                msg: "Cloudflare plan guard refused: safe plan receipt is missing or malformed."
+
+        - name: "Require the reviewed Grafana rule insertion before apply"
+          ansible.builtin.assert:
+            that:
+              - _tf_plan_guard.safe | default(false) | bool
+              - _tf_plan_guard.status | default('') == 'insert'
+              - _tf_plan_guard.digest_matches | default(false) | bool
+            fail_msg: >-
+              Cloudflare apply refused: the fresh plan does not match the reviewed exact Grafana
+              API rule insertion digest. Run a new plan and review its safe receipt.
+          when:
+            - not ansible_check_mode
+            - tofu_action == 'apply'
+
         - name: "OpenTofu apply"
           ansible.builtin.command:
             chdir: "{{ _tf_dir }}"
-            argv: [tofu, apply, -input=false, -no-color, -auto-approve]
+            argv: [tofu, apply, -input=false, -no-color, "{{ _tf_planfile }}"]
           environment: "{{ _tf_env }}"
           register: _tf_apply
           changed_when: "'Apply complete' in (_tf_apply.stdout | default(''))"
@@ -351,6 +407,55 @@
           when:
             - _tf_verify is not skipped
             - _tf_verify.rc in [0, 2]
+
+        - name: "Validate the post-apply zero-diff plan"
+          ansible.builtin.command:
+            argv:
+              - "{{ ansible_playbook_python }}"
+              - "{{ _tf_guard_script }}"
+              - --action
+              - verify
+            stdin: "{{ _tf_show_verify.stdout }}"
+            stdin_add_newline: false
+          register: _tf_verify_guard_raw
+          changed_when: false
+          failed_when: false
+          no_log: true
+          when:
+            - _tf_show_verify is not skipped
+            - _tf_show_verify.rc == 0
+
+        - name: "Unpack the post-apply zero-diff receipt"
+          when: _tf_verify_guard_raw is not skipped
+          block:
+            - name: "Parse the post-apply zero-diff receipt"
+              ansible.builtin.set_fact:
+                _tf_verify_guard: "{{ _tf_verify_guard_raw.stdout | from_json }}"
+              no_log: true
+            - name: "Validate the post-apply receipt fields"
+              ansible.builtin.assert:
+                that:
+                  - _tf_verify_guard is mapping
+                  - >-
+                    (_tf_verify_guard.keys() | list | sort) ==
+                    ['actions', 'digest', 'digest_matches', 'position', 'reason', 'resource',
+                     'rule_ref', 'safe', 'status'] | sort
+                fail_msg: "Cloudflare post-apply receipt is malformed."
+              no_log: true
+          rescue:
+            - name: "Refuse a missing or malformed post-apply receipt"
+              ansible.builtin.fail:
+                msg: "Cloudflare apply refused: post-apply safe receipt is missing or malformed."
+
+        - name: "Require the post-apply zero-diff proof"
+          ansible.builtin.assert:
+            that:
+              - _tf_verify_guard.safe | default(false) | bool
+              - _tf_verify_guard.status | default('') == 'present'
+            fail_msg: "Cloudflare apply did not converge to the reviewed Grafana rule with zero diff."
+          when:
+            - not ansible_check_mode
+            - tofu_action == 'apply'
       # The real run's plan files sit in tofu's own .terraform/ (gitignored), which init
       # already writes. A dry run saves its plan inside the throwaway root instead, so this
       # removal is only simulated under --check and there is nothing for it to remove.
@@ -402,6 +507,14 @@
             {%- if rc.change.actions != ['no-op'] -%}
             {%- set _ = out.append(rc.address ~ ': ' ~ (rc.change.actions | join('/'))) -%}
             {%- endif -%}{%- endfor -%}{{ out }}{%- endif -%}
+          plan_guard: >-
+            {{ _tf_plan_guard | default({'safe': false, 'status': 'unavailable', 'reason': 'plan_not_reviewed',
+               'digest': none, 'resource': 'cloudflare_ruleset.custom_firewall', 'rule_ref': 'o11y-api-bypass-challenge',
+               'position': 5, 'actions': [], 'digest_matches': false}) }}
+          verify_guard: >-
+            {{ _tf_verify_guard | default({'safe': false, 'status': 'unavailable', 'reason': 'not_applied',
+               'digest': none, 'resource': 'cloudflare_ruleset.custom_firewall', 'rule_ref': 'o11y-api-bypass-challenge',
+               'position': 5, 'actions': [], 'digest_matches': false}) }}
       # A dry run's results come from the throwaway run; a real run's from its own tasks.
       vars:
         _re: 'Plan: (\d+) to add, (\d+) to change, (\d+) to destroy'
@@ -413,6 +526,12 @@
       ansible.builtin.debug:
         var: _tf_report
 
+    - name: "Show the safe Cloudflare rule-level receipt"
+      ansible.builtin.debug:
+        msg:
+          plan: "{{ _tf_report.plan_guard }}"
+          post_apply: "{{ _tf_report.verify_guard }}"
+
     - name: "Fail on a tofu error (details withheld: the commands carry credentials)"
       ansible.builtin.assert:
         that:
@@ -422,6 +541,8 @@
           - _tf_report.verify_rc in [none, ''] or (_tf_report.verify_rc | int) in [0, 2]
           - _tf_report.show_rc in [none, ''] or (_tf_report.show_rc | int) == 0
           - _tf_report.verify_show_rc in [none, ''] or (_tf_report.verify_show_rc | int) == 0
+          - ansible_check_mode or _tf_report.plan_guard.safe | bool
+          - tofu_action != 'apply' or _tf_report.verify_guard.safe | bool
         fail_msg: >-
           tofu failed: {{ _tf_report }}. Its output is withheld because the commands run with
           the Cloudflare and R2 credentials; reproduce with the same plan from the controller.

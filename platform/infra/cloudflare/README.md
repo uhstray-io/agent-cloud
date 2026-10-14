@@ -27,11 +27,16 @@ Do not put credentials in this directory or pass them on a command line.
 ## Operation
 
 1. Change the declared HCL through the repository branch workflow.
-2. Run **Apply Cloudflare Tofu** with `tofu_action=plan` (the default) and inspect the diff.
-3. Run the same template with `tofu_action=apply` after reviewing the intended changes.
+2. Run **Apply Cloudflare Tofu** with `tofu_action=plan` (the default). For the Grafana API challenge bypass, review the safe rule-level receipt and copy its SHA-256 digest.
+3. Run the same template with `tofu_action=apply` and that `reviewed_plan_digest`.
+   Semaphore recomputes the plan, refuses anything except the exact in-place Grafana
+   rule insertion with the matching digest, and applies that saved plan file. A
+   post-apply plan must prove zero diff.
 
-The apply branch uses `-auto-approve`; the preceding review is essential. The
-checked-in template does not itself implement an automatic PR-plan/merge-apply pipeline.
+The guard is scoped to this exact Grafana WAF insertion. Other Cloudflare changes
+remain visible in plan diagnostics but receive an unsafe receipt and are refused
+by both the plan check and apply gate until they have a reviewed plan contract.
+This is not an automatic PR-plan/merge-apply pipeline.
 For any future adoption, declare imports and verify the plan preserves existing
 objects before applying; do not recreate live DNS or WAF objects to gain ownership.
 
