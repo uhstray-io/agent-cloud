@@ -2021,7 +2021,8 @@ assert set(summary) == {'status', 'receipt_instruction', 'prometheus_retention',
     'prometheus_retention_size', 'loki_retention', 'tempo_retention',
     'scrape_sample_limit', 'active_prometheus_series',
     'guest_root_filesystem_total_bytes', 'guest_root_filesystem_available_bytes',
-    'guest_memory_headroom_percent', 'o11y_volume_capacity', 'o11y_container_memory_mib'}
+    'guest_memory_headroom_percent', 'o11y_volume_capacity', 'o11y_container_memory_mib',
+    'daily_ingestion'}
 assert 'http://' not in str(summary)
 assert not any(any(key in task for key in ('ansible.builtin.file', 'ansible.builtin.copy',
     'ansible.builtin.template', 'ansible.builtin.uri')) for task in tasks)

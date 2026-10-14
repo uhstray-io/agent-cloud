@@ -4,7 +4,7 @@
 LOCAL_DEV := scripts/local-dev.sh
 
 .PHONY: help local-preflight local-init local-bootstrap local-up local-all local-creds local-validate local-templates local-dns local-dns-resolver local-https local-https-down local-tls-trust local-tls-untrust local-clean local-o11y-render-proof promote
-.PHONY: local-deploy-% local-clean-deploy-% local-service-down git-setup
+.PHONY: local-deploy-% local-clean-deploy-% local-service-down local-foundation-down git-setup
 
 help: ## Show available targets
 	@grep -E '^[a-zA-Z%-]+:.*##' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "  %-22s %s\n", $$1, $$2}'
@@ -81,6 +81,9 @@ local-service-down: ## Stop ONE idle local service (containers stopped; volumes 
 	@case "$$SERVICE" in ''|*[!A-Za-z0-9_]*) bad=1 ;; ?*_svc) bad=0 ;; *) bad=1 ;; esac; \
 	  [ "$$bad" = 0 ] || { echo "usage: make local-service-down SERVICE=<inventory group>  (letters, digits and _, ending in _svc, e.g. erpnext_svc)" >&2; exit 1; }; \
 	  $(LOCAL_DEV) run stop-local-service.yml '{"target_service":"'"$$SERVICE"'"}'
+
+local-foundation-down: ## Stop the genesis foundation (OpenBao, dns, step-ca, Caddy, Authentik, Semaphore) without removing containers, images or volumes. Bring it back with: make local-bootstrap
+	@$(LOCAL_DEV) foundation-down
 
 local-validate: ## Run Validate All through the LOCAL Semaphore
 	@$(LOCAL_DEV) validate

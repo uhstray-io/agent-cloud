@@ -182,8 +182,19 @@ policy. A re-run changes nothing; `DRY_RUN=1 ./scripts/local-dev.sh run stop-loc
   existing local Semaphore picks it up when `make local-bootstrap` re-runs its
   "Create or update local inventory" step.
 
+**Stopping the foundation.** `make local-service-down` cannot stop the genesis foundation:
+the local Semaphore cannot stop itself, and the foundation is genesis-managed, not
+Semaphore-deployed. `make local-foundation-down` runs `podman stop` on `local-semaphore`,
+the four `authentik-*` containers, `caddy`, `step-ca`, `dns` and `local-openbao`, in
+reverse genesis order. It never removes a container, image or volume (unlike
+`make local-clean`), skips a container that is absent or already stopped, and ends by
+listing any foundation container still running. Bring everything back with
+`make local-bootstrap`: OpenBao's file backend persists and it auto-unseals, a stopped
+`local-openbao` / `local-semaphore` is started, and a stopped authentik or caddy project is
+recreated over its kept volumes.
+
 The `make` targets (`local-init`, `local-bootstrap`, `local-deploy-<service>`,
-`local-service-down`, `local-validate`, `local-clean`, `promote`) wrap this flow via
+`local-service-down`, `local-foundation-down`, `local-validate`, `local-clean`, `promote`) wrap this flow via
 `scripts/local-dev.sh`, which also enforces the local-only guard (refuses
 non-local inventories and non-local `openbao_addr`).
 
