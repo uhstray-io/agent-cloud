@@ -12,7 +12,6 @@ REPO = Path(__file__).resolve().parents[2]
 PLAYBOOK = REPO / "platform/playbooks/apply-cloudflare-tofu.yml"
 TEMPLATES = REPO / "platform/semaphore/templates.yml"
 TASKS = REPO / "plan/development/openspec/changes/o11y-signal-labeling-profiling-alerting/tasks.md"
-DESIGN = REPO / "plan/development/openspec/changes/o11y-signal-labeling-profiling-alerting/design.md"
 FIXTURE = REPO / "platform/tests/fixtures/cloudflare-ruleset-v5.21.1-update.json"
 LOCK = REPO / "platform/infra/cloudflare/.terraform.lock.hcl"
 HELPER = REPO / "platform/playbooks/files/cloudflare_grafana_plan_guard.py"
@@ -317,11 +316,27 @@ def test_generic_cloudflare_executor_stays_unrestricted_and_grafana_uses_wrapper
 
 def test_editor_exception_is_scoped_and_rollout_tasks_stay_open():
     tasks = TASKS.read_text()
-    design = DESIGN.read_text()
-    assert "- [ ] 2.2a" in tasks and "- [ ] 2.2b" in tasks
-    assert "requested Editor role" in tasks
-    assert "OpenBao remains the token source of truth" in tasks
-    assert "0600 client copy" in tasks and "~/.config/mcp-grafana/prod.token" in tasks
-    assert "remains Viewer" in tasks
-    assert "scoped grafana mcp write access" in design.lower()
-    assert "existing o11y liveness watcher" in design
+    task_status = {}
+    task_text = {}
+    for line in tasks.splitlines():
+        if line.startswith(("- [ ] ", "- [x] ")):
+            task_id = line.split("] ", 1)[1].split(maxsplit=1)[0]
+            task_status[task_id] = line[3] == "x"
+            task_text[task_id] = line.lower()
+
+    assert {task_id: task_status[task_id] for task_id in ("2.2a", "2.2b", "2.2c", "2.3", "5.4", "5.5")} == {
+        "2.2a": True,
+        "2.2b": True,
+        "2.2c": True,
+        "2.3": False,
+        "5.4": False,
+        "5.5": False,
+    }
+    editor_task = task_text["2.2b"]
+    assert "editor" in editor_task and "dedicated account" in editor_task and "scoped" in editor_task
+    assert "watcher" in editor_task and "viewer" in editor_task
+    assert "openbao" in editor_task and "source of truth" in editor_task
+    assert "mode 0600" in editor_task and "~/.config/mcp-grafana/prod.token" in editor_task
+    assert "local profile" in task_text["2.2c"] and "--disable-write" in task_text["2.2c"]
+    assert "production profile" in task_text["2.2c"]
+    assert "without `--disable-write`" in task_text["2.2c"]

@@ -534,6 +534,14 @@
       warn when more than 6 requests wait for 10 minutes, twice the 7-day peak of 3 waiting read
       by Verify o11y Production Budgets (Dev) task 5349). It awaits operator review. Not
       ticked.
+      2026-10-14: read-only Dev-bound budget task 5474 at controller `bac2e451` and receiver
+      `95554ab4` succeeded with no changed tasks. All five named data volumes still share the
+      103.7 GB guest root filesystem, with 84.1 GB available (81.15%); memory headroom is
+      85.41%. Prometheus reports 13,789 active series, 73,695,682 appended samples in 24 h,
+      1.02 GB of TSDB blocks and a 28.5 MB net block-size increase in 24 h. Loki received
+      110,843,256 bytes and 60,863 lines in 24 h. Live and declared retention still match at
+      Prometheus 15d (0B size cap), Loki 7d, and Tempo 168h. These are one-day observations,
+      not the seven-day capacity forecast or isolated-restore proof; 4.1 remains open.
 - [x] 4.2 Append dated status lines to `plan/development/05-observability.md` and
       `plan/architecture/06-observability-instrumentation.md`
       2026-10-02 rescope: PARTIAL — 05-observability.md carries the dated production lines
