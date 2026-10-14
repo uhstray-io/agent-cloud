@@ -71,7 +71,13 @@ _stops() { grep '^stop ' "$LOG" | sed 's/^stop //' | tr '\n' ' ' | sed 's/ $//';
   [ "$status" -eq 0 ]
   # Only `container exists`, `inspect` and `stop` may ever be issued (anchored: `--format`
   # contains "rm").
-  refute_grep -qvE '^(container exists|inspect|stop) ' "$LOG"
+  # Every logged call is one of the three: the allowed-line count equals the total. Counted
+  # with awk, not `grep -v -q` or `|| true`, which test_assertions_are_real.bats refuses.
+  local total allowed
+  total=$(awk 'END { print NR }' "$LOG")
+  allowed=$(awk '/^(container exists|inspect|stop) / { n++ } END { print n + 0 }' "$LOG")
+  [ "$total" -gt 0 ]
+  [ "$allowed" -eq "$total" ]
   refute_grep -qE ' (rm|volume|kill|down)( |$)' "$LOG"
 }
 
