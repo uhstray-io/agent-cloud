@@ -33,9 +33,33 @@ agentgateway alongside skynet" (Proposed until the operator confirms). OpenSpec 
 ## Identity and limits
 
 - Policy `apiKey`, `mode: strict`, header `Authorization: Bearer <key>`.
-- One identity per name in inventory `agw_clients`. manage-secrets generates the field
-  `client_<name>` (48 chars) once into `secret/services/agentgateway` and reuses it on
-  every deploy; rotation is a deliberate separate step, never implicit.
+- One identity per name in `agw_identities`: inventory `agw_clients` plus one personal identity
+  per entry of the declared admin list `platform_admins` (the list the Authentik admin entries are
+  rendered from, the shared `platform/playbooks/vars/platform-admins.yml`; the identity is the entry's `agw_identity` when set,
+  else its `username`, service accounts included). The derivation is GATED by
+  `agw_admin_identities_enabled` (default false): the list is non-empty by default, so with the
+  gate off `agw_identities` equals `agw_clients` exactly, the list is not read and the render is
+  unchanged; the deploy, the key-management playbook, the rollback, the conformance run and
+  check-secrets load the file only when it is on, and say so when it is missing. With the gate on,
+  `platform_admins` must be declared for the gateway host: the shared file's own default is built
+  from per-user vars that exist only on the Authentik host, so the loader refuses the run, in every
+  play that includes it, before anything is read or written. The deploy, the key-management
+  playbook and the rollback also refuse a derived name that repeats, is reserved or is malformed.
+  `agw_identities` is computed once in `vars/secret-declarations/agentgateway.yml` and read by the
+  secret declaration, the name checks, the key loop in `config.yaml.j2` and
+  `manage-agentgateway-client-key.yml`. `platform_admins` absent or empty leaves it equal to
+  `agw_clients`. The rollback's `direct` mode publishes a `direct_<name>` copy for every enrolled
+  identity, personal ones included, by design: a personal identity is a client the direct path
+  must serve like any other, and its copy is withdrawn only when the identity is removed.
+  manage-secrets generates the field `client_<name>` (48 chars) once into
+  `secret/services/agentgateway` and reuses it on every deploy; rotation is a deliberate
+  separate step, never implicit.
+- A derived name that repeats within `platform_admins`, falls outside `^[a-z0-9][a-z0-9-]*$`, or is
+  `legacy-shared` or `mcp-self` fails the deploy before anything is rendered, naming the entry (set
+  `agw_identity` to rename). A name in both lists is one identity (the same `client_<name>`, so
+  nothing is minted twice) and is reported by name as a migration overlap. After the render the
+  deploy checks that the key entries written equal `agw_identities` (plus `legacy-shared` while its
+  grace period runs), naming a missing or extra identity, never a hash.
 - The key's `metadata.name` is the identity; CEL sees it as `apiKey.name` (metadata is
   flattened onto the apiKey object — upstream `http/apikey.rs` `Claims`).
 - `localRateLimit`: ONE global `requests` bucket per minute
@@ -58,10 +82,10 @@ per-client layer. Everything is inventory-driven code (design §10):
 
 | Operation | How |
 |---|---|
-| Add a client | Add the name to `agw_clients` (site-config / local inventory) and deploy: manage-secrets mints `client_<name>` once and reuses it; the config enrols its sha256 hash |
+| Add a client | Add the name to `agw_clients` (site-config / local inventory), or declare the admin in `platform_admins`, and deploy: manage-secrets mints `client_<name>` once and reuses it; the config enrols its sha256 hash |
 | Per-client policy | `agw_client_policies.<name>.allowed_models` and `.tokens_per_hour` render `allowedModels` and the budget amount |
 | Rotate | Semaphore `Manage agentgateway Client Key`, `client=<name> action=rotate` (name must be declared); merges a new value, re-renders, reloads |
-| Revoke | Remove the name from `agw_clients` FIRST, then `action=revoke`: deletes the field (KV-v2 merge-patch null), re-renders, reloads; the old key is 401 |
+| Revoke | Remove the name from `agw_clients` and `platform_admins` FIRST, then `action=revoke`: deletes the field (KV-v2 merge-patch null), re-renders, reloads; the old key is 401 |
 | Hand out | `Back Up Credentials to site-config` with `credential_service=agentgateway credential_fields=client_<name>`: a site-config branch, names only in the task output |
 | UI key editor | Disabled on purpose: `UI_READ_ONLY=true` in `.env` puts the config store in read-only mode (writes get 403), and `config.yaml` is mounted `:ro`; configuration is code |
 | Saved keys in the playground | Local-dev only: `agw_plaintext_keys: true` renders values instead of hashes so the UI can offer them. Prod stays on hashes |

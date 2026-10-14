@@ -24,7 +24,7 @@
 #                   gateway's OpenBao path (`direct_<name>` beside `client_<name>`, handed out
 #                   through the same channel: backup-credentials-to-site-config.yml), THEN
 #                   point the route at the head node and redeploy Caddy through
-#                   manage-caddy-sites.yml. Copies for names no longer in agw_clients are
+#                   manage-caddy-sites.yml. Copies for names no longer in agw_identities are
 #                   removed in the same write.
 #   restore         Point the route back at the gateway and redeploy Caddy, then retire the
 #                   published copies. A copy is removed only once the vLLM key it holds is no
@@ -248,13 +248,33 @@
   gather_facts: false
   become: false
   any_errors_fatal: true
+  # The gateway's own identity list (agw_clients plus the personal identities derived from the
+  # declared admin list), so a personal identity is an enrolled client here and its copy is not
+  # withdrawn as retired.
+  vars_files:
+    - vars/secret-declarations/agentgateway.yml
   vars:
     _rb_mode: "{{ mode | default('gateway-config') }}"
     _bao_url: "{{ openbao_addr | default('') }}"
     _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
-    _declared: "{{ agw_clients | default([]) }}"
+    _declared: "{{ agw_identities }}"
   tasks:
+    - name: "Load the shared platform admin list"
+      tags: [verify]
+      ansible.builtin.include_tasks: tasks/load-platform-admins.yml
+
+    # The same refusal the deploy makes: a derived name that repeats, is reserved or is malformed
+    # would be published as a direct-path copy and later withdrawn on a wrong list, so nothing is
+    # published or withdrawn until the admin list is sound.
+    - name: "Refuse derived admin identities that collide, are reserved or are malformed"
+      tags: [verify]
+      ansible.builtin.assert:
+        that: _agw_identity_problems | length == 0
+        fail_msg: >-
+          platform_admins cannot be turned into gateway identities: {{ _agw_identity_problems | join('; ') }}.
+        quiet: true
+
     - name: "Require one gateway host and safe identity names"
       tags: [verify]
       ansible.builtin.assert:
@@ -262,7 +282,7 @@
           - groups['agentgateway_svc'] | length == 1
           - (_declared | reject('match', '^[a-z0-9][a-z0-9-]*$') | list) | length == 0
         fail_msg: >-
-          agentgateway_svc must hold exactly one host, and agw_clients entries must match
+          agentgateway_svc must hold exactly one host, and agw_identities entries must match
           ^[a-z0-9][a-z0-9-]*$ (offending: {{ _declared | reject('match', '^[a-z0-9][a-z0-9-]*$') | list }}).
 
     - name: "Refuse a cleartext OpenBao endpoint"
@@ -336,7 +356,7 @@
     - name: "Direct: refuse a gateway with no enrolled client"
       ansible.builtin.assert:
         that: _declared | length > 0
-        fail_msg: "agw_clients is empty: there is no enrolled client to publish the direct-path key to."
+        fail_msg: "agw_identities is empty: there is no enrolled client to publish the direct-path key to."
       when:
         - _rb_mode == 'direct'
         - _rb_key_present

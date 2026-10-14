@@ -25,6 +25,17 @@
 #                          http://host.containers.internal:1234/v1 (local LM Studio)
 #   agw_models             [{name, upstream_model?}] one entry per served name
 #   agw_clients            [names] one API-key identity each -> secret field client_<name>
+#   agw_admin_identities_enabled (default false) gate for the personal identities below: off,
+#                          agw_identities == agw_clients and the admin list is not read
+#   platform_admins        (REQUIRED when the gate is on, else the deploy refuses: declare it for this
+#                          host, the shared file's default is built from per-user vars that exist only on
+#                          the Authentik host)
+#   platform admin list    (read only when the gate is on: `_platform_admins` from
+#                          vars/platform-admins.yml, the list the Authentik admin entries are rendered
+#                          from) one personal identity per entry, service accounts included: its
+#                          `agw_identity` if set, else its `username`. Merged with agw_clients into
+#                          agw_identities (vars/secret-declarations/agentgateway.yml); a name in both
+#                          is one identity (the same client_<name>), reported as an overlap
 #   agw_client_policies    (optional) {name: {allowed_models: [...], tokens_per_hour: N}}
 #                          rotate/revoke: manage-agentgateway-client-key.yml
 #   legacy_shared_expires  (optional) ISO date ending the shared-key grace period: before it the
@@ -115,16 +126,41 @@
           agentgateway_svc needs agw_upstream_base_url and a non-empty agw_models
           list in inventory — an empty gateway would answer 404 for every model.
 
+    # The shared admin list, loaded only when admin identities are enabled
+    # (tasks/load-platform-admins.yml); every play that reads agw_identities includes it.
+    - name: "Load the shared platform admin list"
+      ansible.builtin.include_tasks: tasks/load-platform-admins.yml
+
+    # One personal identity per declared platform admin joins agw_clients in agw_identities
+    # (vars/secret-declarations/agentgateway.yml). A derived name that repeats, is reserved
+    # (legacy-shared, mcp-self) or falls outside the charset below is refused here, naming the
+    # entry, before anything is rendered or restarted.
+    - name: "Refuse derived admin identities that collide, are reserved or are malformed"
+      ansible.builtin.assert:
+        that: _agw_identity_problems | length == 0
+        fail_msg: >-
+          platform_admins cannot be turned into gateway identities: {{ _agw_identity_problems | join('; ') }}.
+        quiet: true
+
+    # A name in both platform_admins and agw_clients is the same identity (the same client_<name>
+    # field), merged once. Reported by name so the migration overlap is visible; names only.
+    - name: "Report identities declared in both platform_admins and agw_clients"
+      ansible.builtin.debug:
+        msg: >-
+          Merged once, migration overlap (platform_admins and agw_clients): {{ _agw_identity_overlap | join(', ') }}.
+      when: _agw_identity_overlap | length > 0
+
     # Names are interpolated into YAML, JSON (the secret definitions) and a CEL
     # string literal; restrict them to a charset that is inert in all three.
     - name: "Refuse identity or group names outside the safe charset"
       ansible.builtin.assert:
         that:
-          - (agw_clients | default([]) | reject('match', '^[a-z0-9][a-z0-9-]*$') | list) | length == 0
+          - (agw_identities | reject('match', '^[a-z0-9][a-z0-9-]*$') | list) | length == 0
           - agw_ui_admin_group | default('platform-admins') is match('^[a-z0-9][a-z0-9-]*$')
         fail_msg: >-
-          agw_clients entries and agw_ui_admin_group must match ^[a-z0-9][a-z0-9-]*$
-          (offending clients: {{ agw_clients | default([]) | reject('match', '^[a-z0-9][a-z0-9-]*$') | list }}).
+          agw_identities (agw_clients plus the names derived from platform_admins) and agw_ui_admin_group
+          must match ^[a-z0-9][a-z0-9-]*$
+          (offending identities: {{ agw_identities | reject('match', '^[a-z0-9][a-z0-9-]*$') | list }}).
 
     # `legacy-shared` is rendered from the vLLM key's fingerprint, never minted as a client key,
     # and its expiry must be a real calendar date in ISO form, or the string comparison above
@@ -397,6 +433,67 @@
       changed_when: false
       when: _keep_previous and not ansible_check_mode
 
+    # The render must enrol exactly the identities declared: every name in agw_identities (plus
+    # `legacy-shared` while its grace period runs) with one key entry each, nothing else. That
+    # catches a templating fault (a key loop that skips or repeats a name), not a membership
+    # drift: the identities are derived from the declared admin list, so "derived equals
+    # declared" holds by construction (the Authentik verify is the drift guard). The reader prints
+    # names and a count only, never a hash or key, so the task needs no no_log.
+    - name: "Read the identity names and key-entry count the render wrote"
+      ansible.builtin.command:
+        argv:
+          - python3
+          - -c
+          - |
+            import json, re, sys
+            text = open(sys.argv[1], encoding="utf-8").read()
+            # The llm block only: it runs from `llm:` to the next top-level key, so another policy's
+            # key list (the mcp one) is never counted as this one's.
+            block = text.split("\nllm:\n", 1)[1] if "\nllm:\n" in text else ""
+            block = re.split(r"^[^\s#]", block, maxsplit=1, flags=re.M)[0]
+            print(json.dumps({
+                "names": re.findall(r"^[ \t]+metadata:\n[ \t]+name: (\S+)[ \t]*$", block, re.M),
+                "entries": len(re.findall(r"^[ \t]*- (?:keyHash|key):", block, re.M)),
+            }))
+          - "{{ _deploy_dir }}/config.yaml"
+      register: _agw_render_read
+      changed_when: false
+      check_mode: false
+      when: not ansible_check_mode
+
+    # One assert per property, each with its own message, so a missing name, an extra name and a
+    # wrong count are told apart (and each can be broken on its own in the tests).
+    - name: "Require the rendered config to enrol every declared identity"
+      ansible.builtin.assert:
+        that: _missing | length == 0
+        fail_msg: "The rendered config.yaml does not enrol these declared identities: {{ _missing | join(', ') }}."
+        quiet: true
+      vars:
+        _expected: "{{ agw_identities + (['legacy-shared'] if _legacy_shared_active | bool else []) }}"
+        _missing: "{{ _expected | difference((_agw_render_read.stdout | from_json).names) | sort }}"
+      when: not ansible_check_mode
+
+    - name: "Require the rendered config to enrol only declared identities"
+      ansible.builtin.assert:
+        that: _extra | length == 0
+        fail_msg: "The rendered config.yaml enrols identities that are not declared: {{ _extra | join(', ') }}."
+        quiet: true
+      vars:
+        _expected: "{{ agw_identities + (['legacy-shared'] if _legacy_shared_active | bool else []) }}"
+        _extra: "{{ (_agw_render_read.stdout | from_json).names | difference(_expected) | sort }}"
+      when: not ansible_check_mode
+
+    - name: "Require the rendered config to hold one key entry per declared identity"
+      ansible.builtin.assert:
+        that: (_agw_render_read.stdout | from_json).entries | int == _expected | length
+        fail_msg: >-
+          The rendered config.yaml holds {{ (_agw_render_read.stdout | from_json).entries }} key entries
+          for {{ _expected | length }} declared identities (a name rendered twice or a key without a name).
+        quiet: true
+      vars:
+        _expected: "{{ agw_identities + (['legacy-shared'] if _legacy_shared_active | bool else []) }}"
+      when: not ansible_check_mode
+
     # vllm_api_key is `existing`: manage-secrets renders it empty when the store has
     # none, and an empty key starts a gateway that is ready but answers every client
     # with the upstream's invalid_api_key. Refuse that unless the inventory declares
@@ -576,7 +673,14 @@
   hosts: agentgateway_svc
   gather_facts: false
   become: false
+  # agw_identities for the default verifying identity below (a play's vars_files do not cross plays).
+  vars_files:
+    - vars/secret-declarations/agentgateway.yml
   vars:
+    # The keyed round-trip is sent as agw_verify_client, else the first identity: agw_clients first,
+    # then the personal identities derived from the admin list, so it runs whenever any identity is
+    # enrolled. The fallback to agw_clients is for a caller that lacks the declaration.
+    _verify_default: "{{ (agw_identities | default(agw_clients | default([]))) | first | default('') }}"
     _engine: "{{ container_engine | default('podman') }}"
     _probe: "{{ _engine }} exec agentgateway-db wget -q -O - -T 5"
     _tls: "{{ agw_listener_tls | default(false) | bool }}"
@@ -598,6 +702,10 @@
     _legacy_shared_retired: "{{ (_legacy_expires | length > 0) and (_agw_today >= _legacy_expires) }}"
 
   tasks:
+    # The admin list the identities above derive from (a no-op with the gate off).
+    - name: "Load the shared platform admin list"
+      ansible.builtin.include_tasks: tasks/load-platform-admins.yml
+
     # A dry run skipped the deploy, so on a fresh host agentgateway does not exist and every
     # probe below would fail on it (PR 203 Codex review): check, and stop the dry run there.
     - name: "Dry run: is agentgateway running?"
@@ -749,9 +857,9 @@
     # whose order follows per-process hashing (test_no_first_of_set_operation.py).
     - name: "Keyed probes: pick the verifying identity, its models and the gateway URL"
       ansible.builtin.set_fact:
-        _verify_client: "{{ agw_verify_client | default((agw_clients | default([]) | first) | default('')) }}"
+        _verify_client: "{{ agw_verify_client | default(_verify_default) }}"
         _verify_models: >-
-          {{ ((agw_client_policies | default({}))[agw_verify_client | default((agw_clients | default([]) | first) | default(''))]
+          {{ ((agw_client_policies | default({}))[agw_verify_client | default(_verify_default)]
               | default({})).allowed_models
              | default(agw_models | map(attribute='name') | list)
              | select('in', agw_models | map(attribute='name') | list) | list }}
@@ -958,7 +1066,7 @@
           {{ _verify_models[0] }} came back from upstream model
           {{ _keyed_chat.json.model }} at {{ agw_upstream_base_url }}
           ({{ _keyed_chat.json.usage.completion_tokens }} completion tokens).
-          {% else %}No enrolled identity (agw_clients is empty): the keyed round-trip was not
+          {% else %}No enrolled identity (agw_identities is empty): the keyed round-trip was not
           run.{% endif %}
 
     # Last: every verify task above passed (a failure stops the play before this records).

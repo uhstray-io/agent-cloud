@@ -5,17 +5,20 @@
 # The model (upstream docs llm/cost-controls/virtual-keys, llm/api-keys):
 #   - vLLM accepts ONE static --api-key. It cannot know clients apart, so the
 #     gateway owns the per-client layer: "virtual keys" checked by its apiKey
-#     policy, one identity per name in inventory `agw_clients`, each with its own
+#     policy, one identity per name in `agw_identities` (inventory `agw_clients` plus one
+#     personal identity per declared `platform_admins` entry), each with its own
 #     token budget and its own metrics/log identity. The vLLM key is the gateway's
 #     internal upstream credential (`vllm_api_key`), rotated separately.
 #   - The deploy MINTS: manage-secrets generates `client_<name>` once per declared
 #     identity and reuses it. So "add a client" = add the name to `agw_clients`,
-#     deploy. This playbook covers the two operations a deploy must never do
+#     deploy; declaring an admin in `platform_admins` mints theirs the same way. This playbook
+#     covers the two operations a deploy must never do
 #     implicitly: ROTATE (new value for an existing identity) and REVOKE (remove
 #     the stored value after the name left the inventory).
 #   - Inventory is the source of WHO exists. rotate refuses a name that is not
 #     declared; revoke refuses a name that still is — remove it from `agw_clients`
-#     first, so the config and the store cannot disagree about an identity.
+#     (and, for a personal identity, from `platform_admins`) first, so the config and the store
+#     cannot disagree about an identity.
 #   - Enrolment is by sha256 hash in the rendered config; the value lives only in
 #     OpenBao. Handing a key to its owner is the existing channel:
 #       backup-credentials-to-site-config.yml -e credential_service=agentgateway
@@ -26,7 +29,7 @@
 #
 # Usage (Semaphore template "Manage agentgateway Client Key"):
 #   -e client=opencode -e action=rotate
-#   -e client=old-laptop -e action=revoke     # after removing it from agw_clients
+#   -e client=old-laptop -e action=revoke     # after removing it from agw_clients / platform_admins
 #
 # Every run ends by importing deploy-agentgateway.yml: it re-renders config.yaml
 # from the store (new hash in, revoked hash out) and force-recreates the gateway,
@@ -48,6 +51,9 @@
   hosts: agentgateway_svc
   gather_facts: false
   become: false
+  # The same declaration the deploy loads, so the merged identity list is computed once.
+  vars_files:
+    - vars/secret-declarations/agentgateway.yml
   vars:
     _bao_url: "{{ openbao_addr | default('') }}"
     _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
@@ -55,9 +61,23 @@
     _client: "{{ client | default('') }}"
     _action: "{{ action | default('') }}"
     _field: "client_{{ _client }}"
-    _declared: "{{ agw_clients | default([]) }}"
+    _declared: "{{ agw_identities }}"
 
   tasks:
+    # The shared admin list, loaded only when admin identities are enabled
+    # (tasks/load-platform-admins.yml); every play that reads agw_identities includes it.
+    - name: "Load the shared platform admin list"
+      ansible.builtin.include_tasks: tasks/load-platform-admins.yml
+
+    # A malformed admin list would make the deploy this run ends with refuse, after the store had
+    # already been written. Refuse it first.
+    - name: "Refuse derived admin identities that collide, are reserved or are malformed"
+      ansible.builtin.assert:
+        that: _agw_identity_problems | length == 0
+        fail_msg: >-
+          platform_admins cannot be turned into gateway identities: {{ _agw_identity_problems | join('; ') }}.
+        quiet: true
+
     - name: "Require an explicit client and action"
       ansible.builtin.assert:
         that:
@@ -67,13 +87,14 @@
         fail_msg: >-
           Pass -e client=<name> (lowercase letters, digits, dashes) and
           -e action=rotate|revoke. Adding a client is not an action here: add the
-          name to agw_clients in inventory and deploy — the deploy mints it.
+          name to agw_clients (or an entry to platform_admins) in inventory and deploy — the deploy
+          mints it.
 
     - name: "Rotate: the identity must be declared in inventory"
       ansible.builtin.assert:
         that: _client in _declared
         fail_msg: >-
-          '{{ _client }}' is not in agw_clients ({{ _declared | join(', ') }}). Rotating
+          '{{ _client }}' is not in agw_identities ({{ _declared | join(', ') }}). Rotating
           an undeclared identity would store a key no config ever enrols.
       when: _action == 'rotate'
 
@@ -81,7 +102,8 @@
       ansible.builtin.assert:
         that: _client not in _declared
         fail_msg: >-
-          '{{ _client }}' is still in agw_clients. Remove it from the inventory first —
+          '{{ _client }}' is still in agw_identities (agw_clients or a platform_admins entry).
+          Remove it from the inventory first —
           otherwise the next deploy would mint a fresh key for it and the revocation
           would silently undo itself.
       when: _action == 'revoke'
