@@ -179,7 +179,10 @@ def test_apply_is_bound_to_the_saved_plan_and_digest_is_a_survey_input():
         "_tf_plan_guard.digest_matches | default(false) | bool",
     ]
     template = yaml.safe_load(TEMPLATES.read_text())["templates"]
-    entry = next(t for t in template if t.get("name") == "Apply Grafana API Cloudflare Tofu")
+    entry = next(t for t in template if t.get("name") == "Apply Grafana API Cloudflare Tofu (Dev)")
+    assert entry["repository"] == "agent-cloud dev"
+    assert "dev_variant" not in entry
+    assert not any(t.get("name") == "Apply Grafana API Cloudflare Tofu" for t in template)
     digest = next(v for v in entry["survey_vars"] if v["name"] == "reviewed_plan_digest")
     assert digest["required"] is False
     assert "apply" in digest["description"].lower() and "SHA-256" in digest["description"]
@@ -189,10 +192,13 @@ def test_generic_cloudflare_executor_stays_unrestricted_and_grafana_uses_wrapper
     generic = next(t for t in yaml.safe_load(TEMPLATES.read_text())["templates"]
                    if t.get("name") == "Apply Cloudflare Tofu")
     dedicated = next(t for t in yaml.safe_load(TEMPLATES.read_text())["templates"]
-                     if t.get("name") == "Apply Grafana API Cloudflare Tofu")
+                     if t.get("name") == "Apply Grafana API Cloudflare Tofu (Dev)")
     wrapper = yaml.safe_load((REPO / "platform/playbooks/apply-cloudflare-grafana-api-tofu.yml").read_text())
     assert "reviewed_plan_digest" not in {v["name"] for v in generic["survey_vars"]}
-    assert dedicated["dev_variant"] is True
+    assert dedicated["repository"] == "agent-cloud dev"
+    assert "dev_variant" not in dedicated
+    assert not any(t.get("name") == "Apply Grafana API Cloudflare Tofu"
+                   for t in yaml.safe_load(TEMPLATES.read_text())["templates"])
     assert dedicated["playbook"] == "platform/playbooks/apply-cloudflare-grafana-api-tofu.yml"
     assert wrapper[0]["ansible.builtin.import_playbook"] == "refuse-internal-extra-vars.yml"
     assert wrapper[1]["vars"] == {"_extra_var_guard_nested": True, "_cloudflare_grafana_guard": True}

@@ -2181,9 +2181,9 @@ templates:
         required: false
         default_value: "plan"
 
-  - name: Apply Grafana API Cloudflare Tofu
+  - name: Apply Grafana API Cloudflare Tofu (Dev)
     playbook: platform/playbooks/apply-cloudflare-grafana-api-tofu.yml
-    dev_variant: true
+    repository: agent-cloud dev
     # The wrapper fixes the internal Grafana guard mode; only this Dev operation
     # accepts the reviewed-plan digest and enforces the exact saved-plan contract.
     survey_vars:
