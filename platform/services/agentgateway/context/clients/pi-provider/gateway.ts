@@ -29,6 +29,7 @@ const CONTEXT_WINDOWS: ReadonlyMap<string, number> = new Map([
   ["openai/gpt-6-luna", 1050000],
   ["mistralai/mistral-large-4-0", 1048576],
   ["z-ai/glm-5.3", 1048576],
+  ["anthropic/claude-opus-5.5", 1000000],
 ]);
 const DEFAULT_CONTEXT_WINDOW = 131072;
 const MAX_TOKENS = 16384;
