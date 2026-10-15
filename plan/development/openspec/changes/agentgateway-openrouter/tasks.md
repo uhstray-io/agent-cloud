@@ -74,6 +74,12 @@ templates, never one-off writes.
       false; `qwen3.8-flash-next` answered 200. The refusal for a service identity is NOT proven
       live: no service key has been handed out, so that half rests on the render and test proof
       (3.6), not on a request. Not ticked: the task text asks for both.
+- [x] 3.9 Add `anthropic/claude-opus-5.5` (operator request 2026-10-15, after adding it to the
+      OpenRouter account allowlist). site-config #94 (merged 8ee123d1, reviewed) declares it;
+      inventory synced; Deploy agentgateway (Dev) dry run 5770, real run 5771: the verifying identity
+      lists `qwen3.8-flash-next` and all eight OpenRouter models. Lead probe 2026-10-15 with the
+      operator's key: `anthropic/claude-opus-5.5` answered 200 through
+      https://inference.uhstray.io/v1 (22 tokens).
 - [ ] 3.5 Measure whether OpenRouter tolerates `continuous_usage_stats`; if so, use the vLLM
       transformation for OpenRouter models too (design D5)
 - [x] 3.6 `mcp-self` excludes the OpenRouter names through the shared macro; it and `legacy-shared`
