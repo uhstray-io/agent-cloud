@@ -88,7 +88,18 @@ def assess(responses: dict[str, object], now: int) -> dict:
     source_points = points(source_rows[0])
     require(len(source_points) >= MIN_METRIC_POINTS)
     source_values = [(evaluation, int(value)) for evaluation, value in source_points.items()]
-    timestamps = sorted({sample for _, sample in source_values})
+    source_events = []
+    previous = None
+    for evaluation, sampled_at in sorted(source_values):
+        if sampled_at == previous:
+            continue
+        require(sampled_at <= evaluation)
+        require(not source_events or sampled_at > source_events[-1][1])
+        source_events.append((evaluation, sampled_at))
+        previous = sampled_at
+    if source_events and source_events[0][0] - source_events[0][1] > STEP_SECONDS + 300:
+        source_events = source_events[1:]
+    timestamps = [sampled_at for _, sampled_at in source_events]
     require(len(timestamps) >= 8)
     require(timestamps[-1] - timestamps[0] >= MIN_HISTORY_SECONDS)
     require(now - timestamps[-1] <= MAX_SAMPLE_AGE_SECONDS and timestamps[-1] <= now + 300)
@@ -107,16 +118,12 @@ def assess(responses: dict[str, object], now: int) -> dict:
     # Each changed source timestamp must have all five byte gauges at the same
     # Prometheus evaluation, proving the values came from that complete file write.
     sample_values: dict[str, list[float]] = {name: [] for name in BACKENDS}
-    previous = None
-    for evaluation, sampled_at in sorted(source_values):
-        if sampled_at == previous:
-            continue
+    for evaluation, sampled_at in source_events:
         require(0 <= evaluation - sampled_at <= STEP_SECONDS + 300)
         for name in BACKENDS:
             value = backend_points[name].get(evaluation)
             require(value is not None and value >= 0)
             sample_values[name].append(value)
-        previous = sampled_at
     require(all(len(values) == len(timestamps) for values in sample_values.values()))
 
     observations: dict[str, object] = {}

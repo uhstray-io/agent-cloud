@@ -73,10 +73,10 @@ def _matrix(metric, rows):
     return {"status": "success", "data": {"resultType": "matrix", "result": rows}}
 
 
-def _history(now):
+def _history(now, samples=None):
     start = now - survey.RANGE_SECONDS
     evaluations = list(range(start, now + 1, survey.STEP_SECONDS))
-    samples = [now - survey.MIN_HISTORY_SECONDS + day * 86400 for day in range(8)]
+    samples = samples or [now - survey.MIN_HISTORY_SECONDS + day * 86400 for day in range(8)]
     source_values = []
     for evaluation in evaluations:
         eligible = [sample for sample in samples if sample <= evaluation]
@@ -113,6 +113,44 @@ def test_history_requires_distinct_source_samples_across_seven_days():
     assert receipt["receiver_host_observations"]["cpu"]["points"] >= 2017
     assert receipt["receiver_host_observations"]["cpu"]["p95_method"] == "p95_of_evaluated_five_minute_means"
     assert set(receipt["backend_stored_bytes"]) == survey.BACKENDS
+
+
+def test_history_excludes_carried_in_sample_from_window_evidence():
+    now = 1_800_000_000
+    samples = [now - survey.RANGE_SECONDS - 12 * 60 * 60 + day * 86400 for day in range(9)]
+
+    receipt = survey.assess(_history(now, samples), now)
+
+    assert receipt["status"] == "ready_for_separate_forecast_review"
+    assert receipt["history"]["source_samples"] == 8
+    assert receipt["history"]["source_span_seconds"] == 7 * 86400
+    assert receipt["history"]["latest_sample_age_seconds"] == 12 * 60 * 60
+    first_index = (samples[1] - (now - survey.RANGE_SECONDS)) // survey.STEP_SECONDS
+    last_index = (samples[-1] - (now - survey.RANGE_SECONDS)) // survey.STEP_SECONDS
+    assert all(
+        backend["source_samples"] == 8
+        and backend["first_bytes"] == 100 + first_index
+        and backend["last_bytes"] == 100 + last_index
+        for backend in receipt["backend_stored_bytes"].values()
+    )
+
+
+def test_history_rejects_carried_in_sample_plus_only_seven_in_window_samples():
+    now = 1_800_000_000
+    start = now - survey.RANGE_SECONDS
+    samples = [start - 12 * 60 * 60, *[start + 12 * 60 * 60 + day * 86400 for day in range(7)]]
+
+    with pytest.raises(survey.InsufficientHistory):
+        survey.assess(_history(now, samples), now)
+
+
+def test_history_rejects_a_stale_latest_capacity_sample():
+    now = 1_800_000_000
+    latest = now - survey.MAX_SAMPLE_AGE_SECONDS - 60
+    samples = [latest - 7 * 86400 + day * 86400 for day in range(8)]
+
+    with pytest.raises(survey.InsufficientHistory):
+        survey.assess(_history(now, samples), now)
 
 
 def test_history_rejects_a_repeated_single_point_snapshot():
