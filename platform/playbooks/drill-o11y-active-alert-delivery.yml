@@ -176,18 +176,11 @@
       vars:
         o11y_live_expected_rules_json: "{{ _active_o11y_rules.stdout }}"
 
-    - name: Require all provisioned o11y rules to remain active
-      ansible.builtin.assert:
-        that:
-          - _drill_rules | length > 0
-          - _drill_non_target_rules | selectattr('isPaused', 'defined') | list | length == _drill_non_target_rules | length
-          - _drill_non_target_rules | selectattr('isPaused', 'equalto', false) | list | length == _drill_non_target_rules | length
-          - _drill_rules | selectattr('uid', 'equalto', 'o11y_service_down') | list | length == 1
-        fail_msg: "Every production o11y rule must be active before the drill; no fault was injected."
+    - name: Require the provisioned alert pause baseline before the drill
+      ansible.builtin.include_tasks: tasks/o11y-assert-provisioned-rule-pause-baseline.yml
       no_log: true
       vars:
-        _drill_rules: "{{ _active_o11y_rules.stdout | from_json | selectattr('uid', 'match', '^o11y_') | list }}"
-        _drill_non_target_rules: "{{ _drill_rules | rejectattr('uid', 'match', '^o11y_missing_') | list }}"
+        o11y_live_alert_rules_json: "{{ _active_o11y_rules.stdout }}"
 
     - name: Read active production contacts without displaying webhook settings
       ansible.builtin.command:
